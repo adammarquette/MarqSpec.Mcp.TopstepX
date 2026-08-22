@@ -33,10 +33,12 @@ ADR, `AGENTS.md`, or the code, **put it there instead**.
 
 ## Notes & communications
 
-- **[2026-08-22] The integration tier has never run on this machine.** Docker Desktop was not running, so
-  `SchemaTests` (hypertables, HNSW index, CHECK constraints, upsert idempotence) has only ever been compiled,
-  not executed. It runs in CI on `ubuntu-latest`. **Treat it as unproven until a CI run goes green**, and do
-  not take a local "0 tests failed" from a skipped tier as evidence.
+- **[2026-08-22] The integration tier does not run locally on Adam's machine — Docker Desktop is not up.**
+  `dotnet test` on `MarqSpec.Mcp.TopstepX.IntegrationTests` fails at container start with
+  `DockerUnavailableException`, and **that is not a code failure**. The tier runs in CI on `ubuntu-latest`,
+  where it passed on gh#14 — so hypertables, the HNSW index, the CHECK constraints and upsert idempotence
+  are proven, just not from here. Start Docker Desktop before running it locally, and do not read a local
+  Docker failure as a broken schema.
 - **[2026-08-22] `dotnet ef` fights the style rules, and the fix is scoped exemptions.** Generated migrations
   use block-scoped namespaces and a UTF-8 BOM. `.editorconfig` exempts `**/Migrations/*.cs` from IDE0161,
   IDE0055 and the charset rule rather than reformatting generated files by hand after every

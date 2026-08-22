@@ -49,6 +49,7 @@ order placement from retry. Reimplementing that is reimplementing the bugs.
 | Update | What changed |
 |---|---|
 | [2026-08-22](#update-2026-08-22--the-package-lags-the-fixes) | The published package predates the fixes this server needs; the reference is deferred behind a seam |
+| [2026-08-22](#update-2026-08-22--resolved-by-210) | 2.1.0 published; the reference is live and the adapter has landed |
 
 ## Update (2026-08-22) — the package lags the fixes
 
@@ -78,4 +79,23 @@ release workflow that the version it just tagged actually resolves on nuget.org.
 
 The submodule alternative was reconsidered here and **again rejected** — the operator's call. The correct fix
 is to publish the client, not to route around its release process.
+
+## Update (2026-08-22) — resolved by 2.1.0
+
+The operator published **2.1.0**, and the reference is live. The interim seam did its job and stays: the
+adapter is one implementation of `IMarketDataGateway`, and the server still starts and serves the venue-free
+tools when no credentials are configured.
+
+Two things worth recording rather than rediscovering.
+
+**The jump was 1.0.4 → 2.0.0 → 2.1.0, a major bump**, so the API was re-read from the published package
+rather than assumed from the source branch this repo had previously inspected. It turned out compatible with
+the adapter as designed, but that was checked, not hoped: `ProjectXApiException` exposes `StatusCode` and not
+the `ErrorCode` the older source carried, which would have been a compile error at best and a wrong error
+code at worst.
+
+**The no-order-path gate proved something for the first time here.** Through Phase 0 the package was
+commented out, so `PlaceOrderAsync` was not reachable and a green gate was consistent with an empty
+repository. With 2.1.0 referenced those methods are genuinely one call away, and the gate is green because
+nothing calls them — which is the claim it was written to make.
 

@@ -55,3 +55,33 @@ difference between the two entry points is a handful of lines.
 - Logging configuration differs by mode. That is a real branch, and it is exactly the branch a test should
   cover: assert no stdout provider survives stdio startup.
 - If a future transport arrives, it is another mode on the same host, not another project.
+
+## Decision log
+
+| Update | What changed |
+|---|---|
+| [2026-08-22](#update-2026-08-22--starting-is-not-the-same-as-being-ready) | A missing dependency degrades to a refusal at the point of use, rather than to a dead process |
+
+## Update (2026-08-22) — starting is not the same as being ready
+
+The decision stands. What it did not say is **what happens when a dependency the server needs is absent**, and
+the answer chosen at first was the wrong one: the composition root migrated the database before choosing a
+transport, so with Postgres down the process printed a stack trace and exited (gh#18).
+
+That is a bad failure precisely *because* of this record. An MCP client launches the server as a child
+process, so a process that dies is reported as a **transport failure** — and nothing the operator sees
+mentions a database. The first thing a new operator meets pointed nowhere near the cause.
+
+**The server now starts regardless.** The tool list is real, and the tools needing no store — `list_instruments`,
+`get_market_session`, `search_contracts` — answer normally. The ones that need it refuse with a sentence
+naming the fix. That is the same shape the absent venue already used, and it is now the general rule:
+
+> **An absent dependency degrades to a clear refusal at the point of use, never to a dead process.**
+
+One distinction is load-bearing. **Unreachable** is an environment fact and is survivable. **Broken** — the
+database answered and the migration itself failed — is a defect in this repository and still fails the
+process, because degrading there would leave the server answering reads against a schema nobody has verified.
+
+Verified by driving the built server over stdio with nothing listening on the connection string: `initialize`
+and `tools/list` both answer, stdout carries only JSON-RPC, and the warning reaches stderr.
+

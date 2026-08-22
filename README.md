@@ -20,8 +20,10 @@ open and should have published one. A weekend is not a gap.
 > server computes is a number, not a recommendation — and a number that is subtly wrong looks exactly like one
 > that is right.
 
-> **Status: pre-release — Phase 0/1.** The documentation layer is the source of truth and the code is written
-> against it. See the [project board](https://github.com/users/adammarquette/projects/4) for what has landed.
+> **Status: pre-release.** Phase 0 is merged and the ProjectX adapter has landed on
+> `MarqSpec.Client.ProjectX` 2.1.0, so the venue is live. The documentation layer is the source of truth
+> and the code is written against it. See the
+> [project board](https://github.com/users/adammarquette/projects/4) for what is next.
 
 ---
 
@@ -30,7 +32,7 @@ open and should have published one. A weekend is not a gap.
 Requires Docker and the .NET 10 SDK.
 
 ```bash
-cp .env.example .env       # then fill in ProjectX__ApiKey / ProjectX__ApiSecret
+cp .env.example .env       # then fill in ProjectX__ApiKey / ProjectX__ApiSecret / ProjectX__DataTier
 docker compose up -d       # Postgres (TimescaleDB + pgvector) and the server
 ```
 
@@ -45,6 +47,12 @@ Or drive it directly to see the tool list:
 ```bash
 npx @modelcontextprotocol/inspector dotnet run --project MarqSpec.Mcp.TopstepX
 ```
+
+**It starts even when nothing is configured yet**, which is deliberate. With no database the tool list is
+still real and `list_instruments` / `get_market_session` answer normally; with no credentials the venue tools
+say so. Each absent dependency produces a refusal naming the fix, rather than a dead process an MCP client
+would report as a bare transport failure ([ADR-0007](documentation/adr/0007-dual-transport.md)). So you can
+register it first and configure it after.
 
 **Two credential facts that are not guessable from the field names**, and both of which cost real debugging
 time in the sibling repo:

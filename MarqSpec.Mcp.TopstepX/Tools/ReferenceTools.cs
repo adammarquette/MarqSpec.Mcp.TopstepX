@@ -115,15 +115,23 @@ public sealed class ReferenceTools(
     }
 
     /// <summary>
-    /// Walks forward to the next instant the market is open.
+    /// Finds when the market next opens.
     /// </summary>
     /// <param name="from">Where to start.</param>
-    /// <returns>The next open, or <see langword="null"/> if none within a fortnight.</returns>
+    /// <returns>The next session open, or <see langword="null"/> if none within a fortnight.</returns>
     /// <remarks>
-    /// A forward scan in 15-minute steps rather than a closed-form calculation. The closed form has to
-    /// reproduce every rule in the calendar — the weekend, the maintenance window, the holiday-suppresses-the
-    /// -previous-evening rule — and a second implementation of those rules is a second place for them to be
-    /// subtly wrong. The scan asks the calendar itself, so the two cannot disagree.
+    /// <para>
+    /// A forward scan rather than a closed-form calculation. The closed form has to reproduce every rule in
+    /// the calendar — the weekend, the maintenance window, the holiday-suppresses-the-previous-evening rule —
+    /// and a second implementation of those rules is a second place for them to be subtly wrong. The scan
+    /// asks the calendar itself, so the two cannot disagree.
+    /// </para>
+    /// <para>
+    /// <b>The scan finds a session, then reports that session's actual open</b> rather than the probe instant
+    /// that happened to land inside it. Returning the probe made the answer depend on the coarseness of the
+    /// step and on the seconds in "now" — it reported an open at 17:09 for a session that opens at 17:00,
+    /// which is wrong in exactly the way an agent would act on without noticing.
+    /// </para>
     /// <para>
     /// Bounded at a fortnight so a misconfigured calendar that never opens returns null rather than spinning.
     /// </para>
@@ -135,10 +143,19 @@ public sealed class ReferenceTools(
 
         for (DateTimeOffset probe = from; probe <= limit; probe += step)
         {
-            if (_calendar.TradeDateFor(probe) is not null)
+            if (_calendar.TradeDateFor(probe) is not { } tradeDate)
             {
-                return probe.ToUniversalTime();
+                continue;
             }
+
+            // A trade date's session opens the PREVIOUS evening — that off-by-one-evening is the whole shape
+            // of a futures session, and computing it from the trade date is what makes this exact.
+            DateTimeOffset open =
+                MarketClock.FromMarket(tradeDate.AddDays(-1), _calendar.SessionOpen).ToUniversalTime();
+
+            // If that open is already behind us the scan started mid-session, which the caller has ruled out
+            // before asking; fall back to the probe rather than reporting a time in the past.
+            return open >= from ? open : probe.ToUniversalTime();
         }
 
         return null;

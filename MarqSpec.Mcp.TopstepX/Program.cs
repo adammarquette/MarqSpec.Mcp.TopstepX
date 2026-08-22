@@ -1,3 +1,4 @@
+using MarqSpec.Client.ProjectX.DependencyInjection;
 using MarqSpec.Mcp.TopstepX.Configuration;
 using MarqSpec.Mcp.TopstepX.Data;
 using MarqSpec.Mcp.TopstepX.Domain.MarketData;
@@ -37,7 +38,10 @@ public static class Program
             return await RebuildIndicatorsAsync(app, args).ConfigureAwait(false);
         }
 
-        await MigrateAsync(app).ConfigureAwait(false);
+        // The result is published into DI rather than thrown: the tools that need a store ask it, and the
+        // ones that do not are unaffected.
+        StoreAvailability store = await MigrateAsync(app).ConfigureAwait(false);
+        app.Services.GetRequiredService<StoreAvailabilityHolder>().Set(store);
 
         if (mcp.Transport == McpTransport.Http)
         {
@@ -123,10 +127,33 @@ public static class Program
         services.AddSingleton<IndicatorCatalog>();
         services.AddSingleton<IndicatorCatalogNames>();
         services.AddSingleton<ToolGuards>();
+        services.AddSingleton<StoreAvailabilityHolder>();
 
-        // Blocked on a client release (gh#13). Every venue call fails with an explanation; everything that
-        // does not touch the venue works.
-        services.AddSingleton<IMarketDataGateway, UnconfiguredMarketDataGateway>();
+        // The venue (gh#13). Configured means BOTH credentials present AND a data tier chosen; anything less
+        // and the server still starts, serving everything that needs no venue, with the venue tools refusing
+        // and saying why. A trading server that will not boot without credentials is one an operator cannot
+        // inspect before configuring.
+        VenueOptions venue = builder.Configuration.GetSection(VenueOptions.SectionName).Get<VenueOptions>()
+            ?? new VenueOptions();
+
+        services.AddOptions<VenueOptions>()
+            .Bind(builder.Configuration.GetSection(VenueOptions.SectionName))
+            .Validate(
+                o => !o.IsConfigured || o.DataTier != ProjectXDataTier.Unspecified,
+                "ProjectX__DataTier is required (Simulated or Live) whenever credentials are set, and has no "
+                + "default on purpose: the WRONG tier returns an empty universe rather than an error, so a "
+                + "silent default is indistinguishable from a missing instrument.")
+            .ValidateOnStart();
+
+        if (venue.IsConfigured && venue.DataTier != ProjectXDataTier.Unspecified)
+        {
+            services.AddProjectXApiClient(builder.Configuration);
+            services.AddSingleton<IMarketDataGateway, ProjectXMarketDataGateway>();
+        }
+        else
+        {
+            services.AddSingleton<IMarketDataGateway, UnconfiguredMarketDataGateway>();
+        }
 
         string connection = builder.Configuration.GetConnectionString("Default")
             ?? "Host=localhost;Port=5432;Database=topstepx_mcp;Username=topstepx;Password=changeme-local";
@@ -153,11 +180,58 @@ public static class Program
         }
     }
 
-    private static async Task MigrateAsync(WebApplication app)
+    /// <summary>
+    /// Brings the schema up to date, and reports whether the store is usable at all.
+    /// </summary>
+    /// <param name="app">The built host.</param>
+    /// <returns>What to tell callers about the store.</returns>
+    /// <remarks>
+    /// <para>
+    /// Two failures live here and they are not the same fact.
+    /// </para>
+    /// <para>
+    /// <b>Unreachable</b> — nothing answered on the connection string. That is an environment fact, usually
+    /// "Postgres is not running yet", and it is survivable: the server starts, the tool list is real, and the
+    /// tools that need no store still work. Crashing instead would reach an MCP client as a bare transport
+    /// failure, which says nothing about databases.
+    /// </para>
+    /// <para>
+    /// <b>Broken</b> — the database answered and the migration itself failed. That is a defect in this
+    /// repository, and it still fails the process. Degrading there would leave the server answering reads
+    /// against a schema nobody has verified, which is worse than not starting.
+    /// </para>
+    /// </remarks>
+    public static async Task<StoreAvailability> MigrateAsync(WebApplication app)
     {
+        ArgumentNullException.ThrowIfNull(app);
+
         using IServiceScope scope = app.Services.CreateScope();
         TopstepXDbContext database = scope.ServiceProvider.GetRequiredService<TopstepXDbContext>();
-        await database.Database.MigrateAsync().ConfigureAwait(false);
+        ILogger logger = scope.ServiceProvider.GetRequiredService<ILoggerFactory>().CreateLogger("startup");
+
+        if (!await database.Database.CanConnectAsync().ConfigureAwait(false))
+        {
+            // One line, not a stack trace. This is the first thing a new operator meets, and the stack trace
+            // it used to print named a socket rather than the thing they need to do.
+            StoreAvailability unavailable = StoreAvailability.Unavailable("Nothing answered on the configured connection string.");
+            logger.LogWarning("{Explanation}", unavailable.Explanation);
+            return unavailable;
+        }
+
+        try
+        {
+            await database.Database.MigrateAsync().ConfigureAwait(false);
+            return StoreAvailability.Available();
+        }
+        catch (Npgsql.NpgsqlException ex) when (ex.InnerException is System.Net.Sockets.SocketException)
+        {
+            // The database was there a moment ago and went away mid-migration -- still an environment fact,
+            // not a schema defect, so it degrades rather than crashing.
+            StoreAvailability unavailable =
+                StoreAvailability.Unavailable("The connection dropped while applying migrations.");
+            logger.LogWarning("{Explanation}", unavailable.Explanation);
+            return unavailable;
+        }
     }
 
     private static async Task<int> RebuildIndicatorsAsync(WebApplication app, string[] args)

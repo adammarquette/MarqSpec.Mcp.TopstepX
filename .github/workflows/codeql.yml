@@ -1,0 +1,59 @@
+name: CodeQL Security Analysis
+
+on:
+  pull_request:
+    branches: [develop, staging, main]
+  push:
+    branches: [develop, staging, main]
+  schedule:
+    # Run every Monday at 08:00 UTC to catch newly published CVEs.
+    - cron: '0 8 * * 1'
+
+permissions:
+  contents: read
+  actions: read  # required for CodeQL to fetch workflow run information
+
+jobs:
+  analyze:
+    name: Analyze (${{ matrix.language }})
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write  # required to upload SARIF results
+
+    strategy:
+      fail-fast: false
+      matrix:
+        language:
+          - csharp
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          # MinVer needs tag history; without it the build stamps 0.0.0-alpha.0. Harmless for analysis, but a
+          # shallow clone here would make this the one job whose build differs from every other (ADR-0006).
+          fetch-depth: 0
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v3
+        with:
+          languages: ${{ matrix.language }}
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          # Both, matching ci.yml. This job previously installed only the 10.0 SDK while the library
+          # multi-targets net8.0 — it worked via targeting packs, but a job that analyses a different build
+          # from the one CI gates is analysing something nobody ships (ADR-0005).
+          dotnet-version: |
+            8.0.x
+            10.0.x
+
+      - name: Build
+        run: dotnet build MarqSpec.Mcp.TopstepX.slnx --configuration Release
+
+      - name: Perform CodeQL analysis
+        uses: github/codeql-action/analyze@v3
+        with:
+          category: '/language:${{ matrix.language }}'

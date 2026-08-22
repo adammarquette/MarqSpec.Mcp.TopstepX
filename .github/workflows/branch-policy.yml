@@ -1,0 +1,176 @@
+name: Branch policy
+
+on:
+  pull_request:
+    types: [opened, reopened, synchronize, edited, labeled, unlabeled]
+  merge_group:
+
+concurrency:
+  group: branch-policy-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  # Enforces the one-way promotion ladder from CONTRIBUTING.md. Required on staging and main.
+  ladder:
+    name: ladder
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate the base/head pair
+        env:
+          BASE: ${{ github.base_ref }}
+          HEAD: ${{ github.head_ref }}
+          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+          THIS_REPO: ${{ github.repository }}
+          LABELS: ${{ join(github.event.pull_request.labels.*.name, ',') }}
+        run: |
+          set -euo pipefail
+          echo "$HEAD ($HEAD_REPO) -> $BASE"
+
+          # Checked BEFORE the branch name, and deliberately: a fork branch merely NAMED staging is a
+          # different lineage, and no label may excuse a foreign repository.
+          if [ "$BASE" = "staging" ] || [ "$BASE" = "main" ]; then
+            if [ "$HEAD_REPO" != "$THIS_REPO" ]; then
+              echo "::error::A promotion into '$BASE' must come from a branch in $THIS_REPO, not $HEAD_REPO."
+              echo "::error::Fork contributions go to develop, which carries no ladder constraint."
+              exit 1
+            fi
+          fi
+
+          case "$BASE" in
+            main)
+              # No exception exists for main, on purpose. Release history stays single-source.
+              if [ "$HEAD" != "staging" ]; then
+                echo "::error::'main' accepts only 'staging'. Got '$HEAD'."
+                echo "::error::There is no ladder-exception for main — promote through staging."
+                exit 1
+              fi
+              ;;
+            staging)
+              if [ "$HEAD" = "develop" ]; then
+                exit 0
+              fi
+              if echo "$LABELS" | tr ',' '\n' | grep -qx 'ladder-exception'; then
+                echo "::notice::Non-standard source '$HEAD' allowed by the ladder-exception label."
+                exit 0
+              fi
+              echo "::error::'staging' accepts only 'develop'. Got '$HEAD'."
+              echo "::error::State the reason in the PR and add the 'ladder-exception' label to override."
+              exit 1
+              ;;
+            *)
+              echo "No ladder constraint on '$BASE'."
+              ;;
+          esac
+
+  # Required everywhere. The repo rebase-merges, so every commit on the branch reaches develop by name.
+  commit-hygiene:
+    name: commit-hygiene
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check commit subjects
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          MG_BASE: ${{ github.event.merge_group.base_sha }}
+          MG_HEAD: ${{ github.event.merge_group.head_sha }}
+        run: |
+          set -euo pipefail
+          TYPES='build|chore|ci|docs|feat|fix|perf|refactor|revert|style|test'
+
+          if [ "$EVENT" = "merge_group" ]; then
+            RANGE="${MG_BASE}..${MG_HEAD}"
+          else
+            RANGE="${BASE_SHA}..${HEAD_SHA}"
+          fi
+
+          # --no-merges: a merge commit's subject is GitHub's, not the author's.
+          mapfile -t subjects < <(git log --no-merges --format=%s "$RANGE")
+
+          if [ "${#subjects[@]}" -eq 0 ]; then
+            if [ "$EVENT" = "merge_group" ]; then
+              echo "::error::Resolved zero commits for '$RANGE'. Refusing to pass vacuously."
+              exit 1
+            fi
+            echo "No non-merge commits to check."
+            exit 0
+          fi
+
+          failed=0
+          for subject in "${subjects[@]}"; do
+            if echo "$subject" | grep -qE '^(fixup!|squash!|amend!|wip\b)'; then
+              echo "::error::Leftover work-in-progress commit: '$subject'"
+              echo "::error::Interactive-rebase the branch into units of work before merging."
+              failed=1
+              continue
+            fi
+
+            if echo "$subject" | grep -qE "^Revert \"|^(${TYPES})(\([[:alnum:]._/-]+\))?!?: .+"; then
+              echo "ok  $subject"
+            else
+              echo "::error::Not a Conventional Commit subject: '$subject'"
+              echo "::error::Expected '<type>(<scope>): <description>' with type one of: ${TYPES//|/, }"
+              failed=1
+            fi
+          done
+
+          exit "$failed"
+
+  # ADVISORY — never fails. A false block on traceability trains people to ignore the whole workflow.
+  issue-link:
+    name: issue-link
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check the closing reference
+        # Belt and braces on "never fails": no `set -e`, every fallible call defaulted, and an explicit exit 0
+        # at the end. This job failed on its very first run because it has no checkout, so `gh` could not infer
+        # the repository and the bare `set -euo pipefail` turned that into a red check on an advisory job.
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+          TITLE: ${{ github.event.pull_request.title }}
+          BODY: ${{ github.event.pull_request.body }}
+        run: |
+          set -uo pipefail
+
+          # closingIssuesReferences is ground truth: it reflects what GitHub actually BOUND, which is not the
+          # same as what the body appears to say. A backticked `Closes #N` does not bind, and a closing keyword
+          # in the TITLE is ignored entirely.
+          closes=$(gh pr view "$PR" --json closingIssuesReferences --jq '.closingIssuesReferences | length' 2>/dev/null || echo "unknown")
+
+          if [ "$closes" = "unknown" ]; then
+            echo "::warning::Could not read the PR's closing references. Skipping the advisory check."
+            exit 0
+          fi
+
+          if [ "$closes" -gt 0 ]; then
+            echo "::notice::PR closes $closes issue(s)."
+            exit 0
+          fi
+
+          if echo "$TITLE" | grep -qiE '(close[sd]?|fix(e[sd])?|resolve[sd]?) +#[0-9]+'; then
+            echo "::warning::The title contains a closing keyword. GitHub ignores those — move it into the body."
+          fi
+
+          if echo "$BODY" | grep -qE '`[^`]*(close[sd]?|fix(e[sd])?|resolve[sd]?) +#[0-9]+[^`]*`'; then
+            echo "::warning::A closing keyword appears inside backticks, which does not bind. Remove the backticks."
+          fi
+
+          if echo "$BODY" | grep -qiE '(settles|delivers|implements|completes|addresses) +#[0-9]+'; then
+            echo "::warning::Near-miss verb before an issue reference. Only close/fix/resolve bind."
+          fi
+
+          echo "::warning::This PR closes no issue. Issue-first: add a plain 'Closes #N' to the body."
+          exit 0

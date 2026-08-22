@@ -39,6 +39,11 @@ ADR, `AGENTS.md`, or the code, **put it there instead**.
   with a message naming the fix, and the server always starts. If you add a third dependency, follow the same
   shape. The one exception is a migration failing against a database that **did** answer: that is a defect
   here, not an environment fact, and it still fails the process.
+- **[2026-08-22] `gh pr checks` HIDES a cancelled required check.** It reports the latest run per name, so a
+  merge blocked by a cancelled required context shows as all-green there. Diagnose with
+  `gh pr view N --json statusCheckRollup` instead, and unblock with `gh run rerun <cancelled-run-id>`. Cost a
+  real diagnosis on gh#25 before the cause was clear; the workflows now set `cancel-in-progress: false`
+  (gh#26), so it should not recur.
 - **[2026-08-22] `dotnet run` is safe for the stdio transport** — checked, not assumed. MSBuild writes its
   build output to stderr, and this server's logging is stderr-only, so the first line on stdout is clean
   JSON-RPC. That is why the README can tell an operator to register `dotnet run --project ...` directly

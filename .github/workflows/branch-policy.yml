@@ -7,7 +7,19 @@ on:
 
 concurrency:
   group: branch-policy-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  # cancel-in-progress is FALSE deliberately (gh#26).
+  #
+  # A cancelled run leaves its check-runs in CANCELLED on the commit, and a cancelled REQUIRED check blocks the
+  # merge -- while `gh pr checks` reports the latest run per name and shows green, so the block is invisible
+  # from the tool anyone reaches for first.
+  #
+  # It fires easily: this workflow triggers on `labeled`, so opening a PR with a label in the same call
+  # produces `opened` and `labeled` together, two pull_request events on the same ref, and one cancels the
+  # other. Which one survives is a race.
+  #
+  # Grouping on the PR number instead does NOT fix it -- that still cancels, and the cancelled run still leaves
+  # cancelled checks. Letting a superseded run finish is the cheap half of this trade.
+  cancel-in-progress: false
 
 permissions:
   contents: read

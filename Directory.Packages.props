@@ -36,20 +36,12 @@
     <!--
       The ProjectX/TopstepX gateway client, consumed as a package rather than a submodule (ADR-0003).
 
-      COMMENTED OUT, DELIBERATELY, AND NOT BECAUSE THE DECISION CHANGED (gh#13).
-
-      nuget.org carries 1.0.4. The fixes this server needs are on the client's `develop` and have never been
-      released: the Refit integer-enum serialization, without which EVERY retrieveBars call returns 400; the
-      Retry-After handling; and the startTimestamp rename that Order/Trade search silently requires.
-
-      Referencing 1.0.4 would restore and build, and then fail at the first bar request with a serialization
-      error that names an enum rather than a version. Referencing an unpublished 1.0.6 fails restore, which
-      would leave the whole repository unbuildable while the venue layer is the only part that needs it.
-
-      So the venue is reached through IMarketDataGateway, and the ProjectX-backed implementation of it lands
-      with the release. Uncomment this, pin the published version, and implement the adapter: gh#13.
+      2.1.0 is the first release carrying the fixes this server needs. The 1.0.x line on nuget.org predated
+      all of them, which is why the reference sat commented out through Phase 0 (gh#13): the integer-enum
+      serialization, without which EVERY retrieveBars call returned 400; the Retry-After handling; and the
+      startTimestamp rename that Order/Trade search silently requires.
     -->
-    <!-- <PackageVersion Include="MarqSpec.Client.ProjectX" Version="1.0.6" /> -->
+    <PackageVersion Include="MarqSpec.Client.ProjectX" Version="2.1.0" />
   </ItemGroup>
 
   <ItemGroup Label="Persistence">

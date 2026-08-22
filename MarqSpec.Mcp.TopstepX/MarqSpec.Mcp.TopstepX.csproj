@@ -21,8 +21,7 @@
   <ItemGroup>
     <PackageReference Include="ModelContextProtocol" />
     <PackageReference Include="ModelContextProtocol.AspNetCore" />
-    <!-- Blocked on a client release; see Directory.Packages.props and gh#13. -->
-    <!-- <PackageReference Include="MarqSpec.Client.ProjectX" /> -->
+    <PackageReference Include="MarqSpec.Client.ProjectX" />
     <PackageReference Include="Microsoft.EntityFrameworkCore.Design">
       <PrivateAssets>all</PrivateAssets>
       <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>

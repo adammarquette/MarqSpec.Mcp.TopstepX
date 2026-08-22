@@ -1,0 +1,50 @@
+version: 2
+
+updates:
+  # NuGet. Versions live in Directory.Packages.props (central package management), which Dependabot
+  # understands — a bump lands in that one file rather than in each csproj.
+  - package-ecosystem: nuget
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+      time: "07:00"
+    open-pull-requests-limit: 5
+    target-branch: develop
+    labels:
+      - work:platform
+      - "Work Estimate: 1"
+    commit-message:
+      prefix: build
+      include: scope
+    groups:
+      # The Microsoft.Extensions.* packages move together; separate PRs for each would produce the version
+      # split this repo just finished resolving.
+      microsoft-extensions:
+        patterns:
+          - "Microsoft.Extensions.*"
+      test-stack:
+        patterns:
+          - "xunit*"
+          - "FakeItEasy"
+          - "coverlet.*"
+          - "Microsoft.NET.Test.Sdk"
+    ignore:
+      # LICENSE CAP: FluentAssertions v8+ is commercially licensed. Do not let a bot walk into that.
+      - dependency-name: "FluentAssertions"
+        versions: [">=8.0.0"]
+
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+      time: "07:00"
+    open-pull-requests-limit: 3
+    target-branch: develop
+    labels:
+      - work:platform
+      - "Work Estimate: 1"
+    commit-message:
+      prefix: ci
+      include: scope

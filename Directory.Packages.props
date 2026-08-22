@@ -73,13 +73,13 @@
   </ItemGroup>
 
   <ItemGroup Label="Test stack">
-    <PackageVersion Include="Microsoft.NET.Test.Sdk" Version="17.14.1" />
+    <PackageVersion Include="Microsoft.NET.Test.Sdk" Version="18.9.0" />
     <PackageVersion Include="xunit" Version="2.9.3" />
-    <PackageVersion Include="xunit.runner.visualstudio" Version="3.1.4" />
-    <PackageVersion Include="FakeItEasy" Version="8.0.0" />
+    <PackageVersion Include="xunit.runner.visualstudio" Version="4.0.0" />
+    <PackageVersion Include="FakeItEasy" Version="9.0.1" />
     <!-- LICENSE CAP: FluentAssertions v8+ is commercially licensed. Do not bump past 7.x. -->
     <PackageVersion Include="FluentAssertions" Version="6.12.2" />
-    <PackageVersion Include="coverlet.collector" Version="6.0.4" />
+    <PackageVersion Include="coverlet.collector" Version="10.0.1" />
     <!-- FakeTimeProvider. Session rules are wall-clock rules, so a test has to be able to stand
          at 15:58 on a Tuesday or at 03:00 on a Sunday exactly. -->
     <PackageVersion Include="Microsoft.Extensions.TimeProvider.Testing" Version="10.9.0" />

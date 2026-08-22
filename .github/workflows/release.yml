@@ -1,0 +1,68 @@
+name: Release container image
+
+# This repository ships an APPLICATION. The template it came from publishes a NuGet package, and that job was
+# replaced rather than adapted: packing an app produces something that succeeds and that nobody consumes.
+#
+# Triggered by a published GitHub release, so the tag is the version (ADR-0001) and cutting a release is a
+# deliberate act rather than a side effect of a merge.
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+
+jobs:
+  # Pauses until the "production" environment's required reviewers approve, before anything is built or
+  # pushed. A published image tag can be overwritten but not un-pulled.
+  gate:
+    name: Await release approval
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - name: Release approved
+        run: echo "Release approved - proceeding to build and publish."
+
+  publish:
+    name: Build and publish to GHCR
+    needs: gate
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # MinVer derives the version from the nearest v-prefixed tag, and a shallow clone yields
+          # 0.0.0-alpha.0 SILENTLY rather than failing. Every job that builds or stamps a version needs this.
+          fetch-depth: 0
+
+      - name: Verify the tag looks like a version
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          if ! printf '%s' "$TAG" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$'; then
+            echo "::error::Tag '$TAG' is not a vMAJOR.MINOR.PATCH release tag."
+            exit 1
+          fi
+          echo "VERSION=${TAG#v}" >> "$GITHUB_ENV"
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: |
+            ghcr.io/${{ github.repository }}:${{ env.VERSION }}
+            ghcr.io/${{ github.repository }}:latest
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.version=${{ env.VERSION }}
+            org.opencontainers.image.revision=${{ github.sha }}

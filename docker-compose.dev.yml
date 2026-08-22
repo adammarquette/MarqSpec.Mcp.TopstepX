@@ -1,0 +1,35 @@
+# Toolchain override: run the build, tests and formatter inside a pinned SDK container.
+#
+#   docker compose -f docker-compose.yml -f docker-compose.dev.yml run --rm sdk dotnet test
+#   docker compose -f docker-compose.yml -f docker-compose.dev.yml run --rm sdk dotnet format --verify-no-changes
+#
+# Two reasons this exists.
+#
+# A local check that disagrees with CI is worse than no local check. CI runs on ubuntu-latest with LF line
+# endings and a pinned SDK; this reproduces that exactly, so `dotnet format` cannot pass here and fail there.
+#
+# And on Windows, Smart App Control intermittently blocks freshly built unsigned assemblies (0x800711C7),
+# which fails a local build for reasons that have nothing to do with the code. Building in the container
+# sidesteps it entirely.
+
+services:
+  sdk:
+    image: mcr.microsoft.com/dotnet/sdk:10.0
+    working_dir: /repo
+    volumes:
+      - .:/repo
+      # A named volume, not a bind mount: NuGet's cache is full of small files and a bind mount across the
+      # Windows filesystem boundary makes restore crawl.
+      - nuget-cache:/root/.nuget/packages
+    environment:
+      DOTNET_CLI_TELEMETRY_OPTOUT: "1"
+      DOTNET_NOLOGO: "1"
+      # The integration suite defaults to hosting the gateway in-process. Point it at the composed one instead
+      # when both services are up.
+      PROJECTX_FAKE_GATEWAY_URL: "${PROJECTX_FAKE_GATEWAY_URL:-}"
+    # Overridden by whatever follows `run --rm sdk`.
+    entrypoint: ["dotnet"]
+    command: ["--info"]
+
+volumes:
+  nuget-cache:

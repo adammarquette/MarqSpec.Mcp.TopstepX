@@ -1,0 +1,22 @@
+# Normalize line endings to LF in the repo and on checkout — avoids CRLF/LF churn on Windows.
+# Must agree with .editorconfig (`end_of_line = lf`): git decides what lands in the working
+# tree, `dotnet format` decides what it considers correct, and when the two disagree a Windows
+# contributor sees whitespace violations that CI (ubuntu-latest, LF) does not.
+* text=auto eol=lf
+
+# Shell scripts must stay LF regardless of platform — CRLF breaks the shebang.
+*.sh text eol=lf
+
+# Diff C# with language awareness (hunk headers name the enclosing member).
+*.cs diff=csharp
+
+# Binary types — never normalize.
+*.png   binary
+*.jpg   binary
+*.jpeg  binary
+*.gif   binary
+*.ico   binary
+*.pdf   binary
+*.zip   binary
+*.snk   binary
+*.nupkg binary

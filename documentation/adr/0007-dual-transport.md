@@ -61,6 +61,7 @@ difference between the two entry points is a handful of lines.
 | Update | What changed |
 |---|---|
 | [2026-08-22](#update-2026-08-22--starting-is-not-the-same-as-being-ready) | A missing dependency degrades to a refusal at the point of use, rather than to a dead process |
+| [2026-08-22](#update-2026-08-22--the-token-was-required-and-never-checked) | The bearer token is now enforced in the pipeline, not merely required in configuration |
 
 ## Update (2026-08-22) — starting is not the same as being ready
 
@@ -84,4 +85,25 @@ process, because degrading there would leave the server answering reads against 
 
 Verified by driving the built server over stdio with nothing listening on the connection string: `initialize`
 and `tools/list` both answer, stdout carries only JSON-RPC, and the warning reaches stderr.
+
+## Update (2026-08-22) — the token was required and never checked
+
+This record said the HTTP endpoint sits "behind a bearer token". It did not.
+
+Options validation refused to start the HTTP transport without a token, `.env.example` explained why one was
+needed, and **the request pipeline never looked at it** — `POST /mcp` with no `Authorization` header returned
+200 and a full handshake. Three places asserted the endpoint was authenticated, which is precisely why nobody
+would have thought to check the middleware.
+
+A `BearerTokenGate` now sits in front of `MapMcp`. It compares in **fixed time**, returns 401 with
+`WWW-Authenticate: Bearer`, and **refuses to install itself if handed a blank token** — a gate that admits
+everything when misconfigured is the worst available failure for this particular component.
+
+**The lesson generalises past this endpoint.** "Configuration requires X" and "the code enforces X" are
+different claims, and this repository had already learned it once: ADR-0002's read-only boundary is backed by a
+CI gate for exactly this reason. The token had the assertion and no enforcement.
+
+The compose stack defaults the token to `changeme-local`, the same posture as `POSTGRES_PASSWORD`, so
+`docker compose up` works out of the box on a port published to localhost. That value is in a public
+repository and must change before the stack is reachable from anywhere else.
 

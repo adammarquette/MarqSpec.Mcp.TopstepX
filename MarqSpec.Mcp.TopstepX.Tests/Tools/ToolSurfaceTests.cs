@@ -122,6 +122,26 @@ public sealed class ToolSurfaceTests
     }
 
     [Fact]
+    public void GetMarketSession_ReportsTheSessionsActualOpen_NotWhereTheScanLanded()
+    {
+        // Regression. The scan steps in 15-minute increments from "now", and it used to report the probe
+        // instant -- so a query at 10:09:06 on a Saturday answered "opens at 17:09", nine minutes late for a
+        // session that opens at 17:00. Wrong in exactly the way an agent acts on without noticing.
+        DateTimeOffset saturday =
+            MarketClock.FromMarket(new DateOnly(2026, 8, 22), new TimeOnly(10, 9))
+                .AddSeconds(6).AddMilliseconds(319).ToUniversalTime();
+
+        ToolPayloads.SessionState state = Reference(saturday).GetMarketSession("ES");
+
+        DateTimeOffset expected =
+            MarketClock.FromMarket(new DateOnly(2026, 8, 23), new TimeOnly(17, 0)).ToUniversalTime();
+
+        state.NextOpenUtc.Should().Be(expected);
+        state.NextOpenUtc!.Value.Second.Should().Be(0);
+        state.NextOpenUtc!.Value.Minute.Should().Be(0);
+    }
+
+    [Fact]
     public void GetMarketSession_FlagsADeclaredHoliday()
     {
         MarketDataOptions options = new()

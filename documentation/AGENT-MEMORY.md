@@ -33,6 +33,22 @@ ADR, `AGENTS.md`, or the code, **put it there instead**.
 
 ## Notes & communications
 
+- **[2026-08-22] `dotnet test` is blocked on Adam's machine by Windows Application Control** (`0x800711C7`,
+  "An Application Control policy has blocked this file"). It is not a code failure. Run the suite in the
+  pinned SDK container instead, which is what `docker-compose.dev.yml` exists for:
+  `docker compose -f docker-compose.yml -f docker-compose.dev.yml run --rm --no-deps sdk test <project>`.
+  The same applies to `dotnet format`.
+- **[2026-08-22] Test the COMPOSITION ROOT, not just the types.** Every unit test here builds its subject by
+  hand, so none of them touched DI — and a captive-dependency bug (singleton gateway consuming the scoped
+  vendor client) killed the container at `builder.Build()` with everything green. `CompositionRootTests` now
+  builds the real container with `ValidateOnBuild` + `ValidateScopes`. **Cover the configured AND unconfigured
+  venue paths**: the fault only existed on the configured one, which is the path no local run without a
+  `.env` ever reaches.
+- **[2026-08-22] Register the MCP tool types explicitly.** The SDK activates a tool per call and resolves its
+  constructor parameters from DI *without* recursively activating unregistered types. `SnapshotTools` composes
+  `MarketDataTools`, so leaving them unregistered failed at call time on one tool while startup and
+  `tools/list` both looked healthy.
+
 - **[2026-08-22] Absent dependencies must degrade, not crash — this is now a general rule (ADR-0007).** An MCP
   client launches this server as a child process, so a process that exits is reported as a **transport
   failure** with no mention of the cause. Both the store and the venue therefore refuse *at the point of use*

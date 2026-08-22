@@ -88,12 +88,48 @@ a *data-entitlement* axis, not an account axis.
 Hence `ProjectX__DataTier` is **required, never defaulted** (`R-7.2`). A silent default here is
 indistinguishable from a missing instrument.
 
-### Contract ids
-Opaque strings shaped `CON.F.US.<PRODUCT>.<EXPIRY>` — for example the September-2026 E-mini S&P is
-`CON.F.US.EP.U26`.
+### Contract search is FUZZY, and everything it returns is marked active
 
-**The product code is not the trading symbol**: ES maps to `EP`. Do not derive one from the other; resolve
-through contract search and prefer the contract the gateway marks active.
+> **Verified live, 2026-08-22.** This is the most dangerous behaviour on this page.
+
+A search for `ES` returns **six** contracts, **every one with `ActiveContract = true`**:
+
+| product | what it actually is | tick size |
+|---|---|---|
+| `EP` | E-mini S&P 500 — the one you asked for | 0.25 |
+| `MES` | the **micro**, one tenth the point value | 0.25 |
+| `FVA` | a Treasury note | 0.0078125 |
+| `JY6` | **Japanese Yen** | 0.0000005 |
+| `MX6` | — | 0.00001 |
+| `TYA` | a Treasury note | 0.015625 |
+
+So **`ActiveContract` does not identify the contract**, and neither does result order. Taking the first result
+means a request for ES can return Yen bars — which, in a caching consumer, are then stored under `ES` and have
+every indicator and level computed from them. Nothing errors, and the chart looks ordinary.
+
+`YM` is the quieter form: the search returns `YM` and `MYM`, the full contract and the micro. Same tick size,
+point values a factor of ten apart.
+
+**Filter on the product code and fail when nothing matches.** Match on the id's product *segment*, not a
+substring — `Contains("ES")` matches `MES`, and `Contains("CL")` matches `MCLE`.
+
+### Contract ids and product codes
+Opaque strings shaped `CON.F.US.<PRODUCT>.<EXPIRY>` — the September-2026 E-mini S&P is `CON.F.US.EP.U26`.
+
+**The product code is not derivable from the trading symbol.** Read off a live search on the Simulated tier,
+2026-08-22:
+
+| symbol | product | | symbol | product |
+|---|---|---|---|---|
+| `ES` | `EP` | | `MES` | `MES` |
+| `NQ` | `ENQ` | | `MNQ` | `MNQ` |
+| `YM` | `YM` | | `MYM` | `MYM` |
+| `CL` | `CLE` | | `MCL` | `MCLE` |
+| `GC` | `GCE` | | `MGC` | `MGC` |
+| `SI` | `SIE` | | `SIL` | `SIL` |
+
+No rule produces `ES → EP` or `NQ → ENQ`. Anything not in this table needs verifying against a live search
+before it is served — a guessed code resolves to a **real contract in the wrong instrument**.
 
 `tickSize` and `tickValue` come back on the contract. `tickValue` is money per **tick**; money per **point** is
 `tickValue / tickSize`. ES at \$12.50 a tick on a 0.25 tick size is \$50 a point.

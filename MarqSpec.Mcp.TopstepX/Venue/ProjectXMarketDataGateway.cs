@@ -3,6 +3,7 @@ using MarqSpec.Client.ProjectX.Api.Models;
 using MarqSpec.Mcp.TopstepX.Configuration;
 using MarqSpec.Mcp.TopstepX.Domain;
 using MarqSpec.Mcp.TopstepX.Domain.MarketData;
+using MarqSpec.Mcp.TopstepX.MarketData;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
@@ -29,21 +30,25 @@ public sealed class ProjectXMarketDataGateway : IMarketDataGateway
     public const int MaxBarsPerRequest = 1_000;
 
     private readonly IProjectXApiClient _client;
+    private readonly InstrumentRegistry _registry;
     private readonly bool _live;
     private readonly ILogger<ProjectXMarketDataGateway> _logger;
 
     /// <summary>Creates the gateway.</summary>
     /// <param name="client">The vendor client.</param>
+    /// <param name="registry">The served instruments, carrying the product code each contract must match.</param>
     /// <param name="options">The venue options, carrying the required data tier.</param>
     /// <param name="logger">The logger.</param>
     public ProjectXMarketDataGateway(
         IProjectXApiClient client,
+        InstrumentRegistry registry,
         IOptions<VenueOptions> options,
         ILogger<ProjectXMarketDataGateway> logger)
     {
         ArgumentNullException.ThrowIfNull(options);
 
         _client = client;
+        _registry = registry;
         _live = options.Value.DataTier == ProjectXDataTier.Live;
         _logger = logger;
     }
@@ -73,12 +78,49 @@ public sealed class ProjectXMarketDataGateway : IMarketDataGateway
             return [];
         }
 
-        // The active contract first -- a search also returns expired and back months, and the front month is
-        // what a caller asking for "ES" means.
+        // THE SEARCH IS FUZZY, AND EVERYTHING IT RETURNS IS FLAGGED ACTIVE.
+        //
+        // Observed live: searching "ES" returns EP (correct) alongside FVA (a Treasury note), JY6 (Japanese
+        // Yen), MX6, TYA and MES -- six contracts, every one ActiveContract=true. Searching "YM" returns YM
+        // and MYM, the full contract and the micro, whose point values differ by a factor of ten.
+        //
+        // So ActiveContract cannot select, and neither can list order. The product code is the only thing
+        // that identifies the contract, and it is CHECKED rather than preferred: a request for ES that cannot
+        // find an EP contract fails, instead of returning Yen bars that would be stored under ES and have
+        // every indicator and key level computed from them.
+        string productCode = _registry.ProductCodeFor(instrument);
+        List<Contract> matching = [.. found.Where(c => HasProductCode(c.Id, productCode))];
+
+        if (matching.Count == 0)
+        {
+            throw new VenueException(
+                "The venue returned " + found.Count.ToString(System.Globalization.CultureInfo.InvariantCulture)
+                + " contract(s) for '" + instrument.Symbol + "' but none carries the expected product code '"
+                + productCode + "'. The search is fuzzy, so those results are other instruments. Either the "
+                + "venue changed this product's code -- verify it against a live search and update "
+                + "InstrumentRegistry -- or the data tier is wrong.");
+        }
+
+        // A second, independent check. If a product code ever starts pointing at a different contract, the
+        // tick size is what catches it, and a wrong tick size silently rescales every money figure.
+        decimal expectedTick = _registry.SpecFor(instrument).TickSize;
+        foreach (Contract candidate in matching.Where(c => c.TickSize != expectedTick))
+        {
+            throw new VenueException(
+                "Contract '" + candidate.Id + "' matches the product code for '" + instrument.Symbol
+                + "' but reports a tick size of "
+                + candidate.TickSize.ToString(System.Globalization.CultureInfo.InvariantCulture)
+                + " where this server expects "
+                + expectedTick.ToString(System.Globalization.CultureInfo.InvariantCulture)
+                + ". Refusing rather than pricing this instrument on the wrong scale.");
+        }
+
+        // Active first, then the nearest expiry -- the front month is what a caller asking for "ES" means.
         return
         [
-            .. found
+            .. matching
                 .OrderByDescending(c => c.ActiveContract)
+                .ThenBy(c => c.Id, StringComparer.Ordinal)
                 .Select(c => ProjectXMapping.ToContract(c, instrument)),
         ];
     }
@@ -191,6 +233,30 @@ public sealed class ProjectXMarketDataGateway : IMarketDataGateway
             "searching trades").ConfigureAwait(false);
 
         return [.. trades.Select(ProjectXMapping.ToTrade)];
+    }
+
+    /// <summary>
+    /// Whether a contract id carries a product code, as <c>CON.F.US.{code}.{expiry}</c>.
+    /// </summary>
+    /// <param name="contractId">The venue contract id.</param>
+    /// <param name="productCode">The expected product code.</param>
+    /// <returns><see langword="true"/> when the id's product segment matches exactly.</returns>
+    /// <remarks>
+    /// Segment equality, not a substring test. A <c>Contains</c> check for <c>ES</c> would match <c>MES</c>,
+    /// and one for <c>CL</c> would match <c>MCLE</c> — selecting a micro contract for a full-size request,
+    /// which is a tenfold error in every money figure and looks entirely plausible on a chart.
+    /// </remarks>
+    public static bool HasProductCode(string contractId, string productCode)
+    {
+        if (string.IsNullOrWhiteSpace(contractId))
+        {
+            return false;
+        }
+
+        // CON.F.US.{product}.{expiry} — the product is the second-to-last segment, which stays true even if
+        // the venue ever lengthens the prefix.
+        string[] segments = contractId.Split('.');
+        return segments.Length >= 2 && string.Equals(segments[^2], productCode, StringComparison.Ordinal);
     }
 
     /// <summary>

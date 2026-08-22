@@ -78,6 +78,21 @@ public sealed class ReferenceTools(
             throw new McpException("The venue could not answer: " + ex.Message);
         }
 
+        if (contracts.Count == 0)
+        {
+            // An empty list here is NOT "no results". This instrument is on the served list, so the venue
+            // knowing nothing about it means something is wrong with the request -- and the overwhelmingly
+            // likely cause is the data tier, which returns an empty universe rather than an error.
+            //
+            // Returning [] would be the exact failure R-5.3 exists to prevent: indistinguishable from a
+            // legitimate empty answer, and the caller reasons about the silence instead of the cause.
+            throw new McpException(
+                "The venue returned no contracts for '" + instrument.Symbol + "'. This instrument IS on this "
+                + "server's list, so the likely cause is ProjectX__DataTier: the wrong market-data tier "
+                + "returns an empty universe rather than an error. Practice credentials need Simulated; Live "
+                + "needs a live data entitlement.");
+        }
+
         return [.. contracts.Select(c => new ToolPayloads.ContractInfo(
             c.ContractId, c.Instrument.Symbol, c.IsActive, c.TickSize, c.TickValue))];
     }

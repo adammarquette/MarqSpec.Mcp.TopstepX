@@ -50,7 +50,13 @@ services:
       # The composed server is the HTTP one. Stdio is for a client launching the process directly, and a
       # long-lived container with nothing attached to its stdin would sit idle forever (ADR-0007).
       Mcp__Transport: "Http"
-      Mcp__HttpBearerToken: "${Mcp__HttpBearerToken:-}"
+      # Defaulted so `docker compose up` works out of the box, exactly as POSTGRES_PASSWORD is.
+      #
+      # The token is REQUIRED whenever the HTTP transport is on (ADR-0007) and startup fails without one --
+      # an endpoint carrying balances, positions and trade history is a data leak even though nothing here can
+      # trade. Defaulting it here is a local-development convenience for a port published to localhost, and
+      # this value is in a public repository: change it before this stack is reachable from anywhere else.
+      Mcp__HttpBearerToken: "${Mcp__HttpBearerToken:-changeme-local}"
 
       MarketData__SessionCloseCentral: "${MarketData__SessionCloseCentral:-16:00}"
       MarketData__Holidays: "${MarketData__Holidays:-}"

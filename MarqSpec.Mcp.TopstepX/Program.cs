@@ -45,6 +45,10 @@ public static class Program
 
         if (mcp.Transport == McpTransport.Http)
         {
+            // BEFORE MapMcp, so the gate sits in front of the endpoint rather than beside it. Options
+            // validation already refuses to start the HTTP transport without a token; this is what makes that
+            // requirement mean something at request time (ADR-0007).
+            app.UseBearerTokenGate(mcp.HttpBearerToken);
             app.MapMcp("/mcp");
             await app.RunAsync().ConfigureAwait(false);
         }
@@ -145,14 +149,24 @@ public static class Program
                 + "silent default is indistinguishable from a missing instrument.")
             .ValidateOnStart();
 
+        // SCOPED, not singleton, and the same lifetime on both branches.
+        //
+        // The vendor client registers IProjectXApiClient as SCOPED, so a singleton gateway consuming it is a
+        // captive dependency -- the container refuses to build, and the process dies before the transport
+        // exists. It only bites when credentials ARE configured, which is exactly the path a run without them
+        // never reaches.
+        //
+        // Both branches use one lifetime deliberately. A lifetime that varies with configuration means the
+        // container is a different shape in the configured case than in the unconfigured one, which is how
+        // this got shipped: everything that ran locally ran unconfigured.
         if (venue.IsConfigured && venue.DataTier != ProjectXDataTier.Unspecified)
         {
             services.AddProjectXApiClient(builder.Configuration);
-            services.AddSingleton<IMarketDataGateway, ProjectXMarketDataGateway>();
+            services.AddScoped<IMarketDataGateway, ProjectXMarketDataGateway>();
         }
         else
         {
-            services.AddSingleton<IMarketDataGateway, UnconfiguredMarketDataGateway>();
+            services.AddScoped<IMarketDataGateway, UnconfiguredMarketDataGateway>();
         }
 
         string connection = builder.Configuration.GetConnectionString("Default")
@@ -163,6 +177,19 @@ public static class Program
 
         services.AddScoped<IndicatorProjector>();
         services.AddScoped<BarCacheService>();
+
+        // The tool types themselves. The SDK activates a tool per call with ActivatorUtilities, which resolves
+        // constructor parameters from DI but does NOT recursively activate unregistered types -- so a tool that
+        // composes another tool (SnapshotTools takes MarketDataTools and ReferenceTools) fails at CALL time
+        // with "unable to resolve service", while startup and tools/list both look perfectly healthy.
+        //
+        // Registering them explicitly is what makes that a startup-time guarantee rather than a per-tool
+        // surprise the first time someone calls the one composed tool.
+        services.AddScoped<ReferenceTools>();
+        services.AddScoped<MarketDataTools>();
+        services.AddScoped<AccountTools>();
+        services.AddScoped<SnapshotTools>();
+        services.AddScoped<ObservationTools>();
 
         // One registration, one tool set, two ways in (ADR-0007). The transport is the only thing that
         // differs, and it is chosen here rather than by a second AddMcpServer call — registering the server

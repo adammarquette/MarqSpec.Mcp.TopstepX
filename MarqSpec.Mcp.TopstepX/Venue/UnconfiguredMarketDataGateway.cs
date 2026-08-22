@@ -8,8 +8,8 @@ namespace MarqSpec.Mcp.TopstepX.Venue;
 /// </summary>
 /// <remarks>
 /// <para>
-/// The ProjectX adapter is blocked on a client release (gh#13): nuget.org carries a version that predates the
-/// integer-enum serialization fix, without which every bar retrieval returns 400.
+/// Registered when the venue is <b>not configured</b> — no credentials, or no data tier. The real adapter
+/// (<see cref="ProjectXMarketDataGateway"/>) takes its place as soon as both are present.
 /// </para>
 /// <para>
 /// <b>Why a failing implementation rather than no registration at all.</b> With nothing registered, the host
@@ -27,11 +27,12 @@ namespace MarqSpec.Mcp.TopstepX.Venue;
 public sealed class UnconfiguredMarketDataGateway : IMarketDataGateway
 {
     private const string Explanation =
-        "No venue gateway is configured. The ProjectX adapter is waiting on a release of "
-        + "MarqSpec.Client.ProjectX: nuget.org carries a version predating the integer-enum serialization "
-        + "fix, without which every bar retrieval returns HTTP 400. See gh#13. "
-        + "Tools that do not touch the venue — list_instruments, get_market_session, get_indicators over "
-        + "already-stored bars, and the observation tools — work normally.";
+        "No venue credentials are configured, so nothing can be read from the broker. Set ProjectX__ApiKey "
+        + "(your USERNAME), ProjectX__ApiSecret (your API KEY) and ProjectX__DataTier (Simulated or Live), "
+        + "then restart this server. Note the first two names are inverted from what they read like: putting "
+        + "the API key in both fields authenticates as a user who does not exist. "
+        + "Tools that need no venue - list_instruments, get_market_session, and anything served from bars "
+        + "already in the store - work normally.";
 
     /// <inheritdoc />
     public string VenueId => "projectx";

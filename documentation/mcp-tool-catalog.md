@@ -1,0 +1,145 @@
+# MCP tool catalogue
+
+**Status:** Living · **Date:** 2026-08-21 · **Relates to:** PRD `R-5` ·
+[ADR-0002](adr/0002-read-only-venue-boundary.md) (read-only) ·
+[ADR-0008](adr/0008-numeric-only-tool-payloads.md) (numeric-only) ·
+[ADR-0007](adr/0007-dual-transport.md) (transports)
+
+The tool surface is a contract with something that cannot read the code. This page is that contract; change a
+tool and change this page in the same PR.
+
+## Rules that apply to every tool
+
+- **Read-only against the venue.** Nothing here transmits an order. Not behind a flag.
+- **Numeric-only payloads.** Every field is a number, a timestamp, a boolean, or an enum name from a closed set
+  this repository defines. No vendor free text is echoed back.
+- **An unknown instrument is an error**, and it names what would have been valid. A wrong symbol and a quiet
+  market must not be indistinguishable. A *known* instrument with no data in the window returns an empty series
+  — a different statement, and a true one.
+- **Windowed reads refuse rather than truncate.** The cap is `MaxRows` (default 5000). The implementation
+  fetches `cap + 1` and errors with the real count, so "you asked for too much" never arrives disguised as
+  "here is all there was".
+- **Times are ISO-8601 UTC**, in and out. A naive local timestamp in a request is rejected, not guessed at.
+- **A missing number is `null`, meaning *cannot measure*.** Never a substituted default. The caller is expected
+  to say so rather than proceed.
+
+## Reference and session
+
+### `list_instruments`
+The instruments this server is configured for, with the contract arithmetic.
+
+Returns `[{ symbol, tickSize, pointValue, sessionCloseCentral, resolutionsAvailable[] }]`.
+
+Where `tickSize` and `pointValue` come from matters: the venue publishes money-per-**tick**, and this returns
+money-per-**point** (they differ by the tick size). A configured override replaces an entry **wholesale** — a
+new tick size against a stale point value is a silently wrong contract, and every number derived from it is
+wrong by a plausible-looking constant factor.
+
+### `search_contracts(symbol)`
+Resolves a symbol to the venue contracts quoting it.
+
+Returns `[{ contractId, symbol, isActive, tickSize, tickValue }]`, front month first.
+
+> **The `live` tier is the trap here.** The gateway takes a tier flag on every contract and bar call, and the
+> **wrong tier returns an empty result, not an error**. Practice credentials asking for the live universe see
+> zero contracts, and the failure surfaces far away as "no contract matches ES". `ProjectX__DataTier` is
+> required and never defaulted for exactly this reason.
+
+### `get_market_session(symbol, at?)`
+Whether the market is open, and what happens next.
+
+Returns `{ isOpen, tradeDate, sessionOpenUtc, sessionCloseUtc, minutesToClose, nextOpenUtc, isHoliday }`.
+
+Cheap, and worth calling before interpreting anything else — "the last bar is two hours old" means something
+different on a Tuesday afternoon than at 03:00 on a Sunday.
+
+## Market data
+
+### `get_bars(symbol, resolutionMinutes, fromUtc, toUtc)`
+The workhorse. Cache-aside: served from the store, with only genuinely missing buckets fetched.
+
+Returns `{ symbol, resolutionMinutes, bars: [{ t, o, h, l, c, v }], fromCache, fetchedBuckets }`.
+
+`fetchedBuckets` is deliberately in the response. It is how a caller — and a test — can see whether a read cost
+a vendor round trip, and it is what makes "the second identical call fetches nothing" observable rather than a
+claim.
+
+### `get_latest_bars(symbol, resolutionMinutes, count)`
+The recent window, which is what an agent actually asks for. Same shape as `get_bars`.
+
+Anchored on the last **closed** bucket, never a forming one.
+
+### `get_indicators(symbol, resolutionMinutes, indicator, period, fromUtc, toUtc)`
+A stored indicator series.
+
+Returns `{ symbol, resolutionMinutes, indicator, period, values: [{ t, v }] }`.
+
+`indicator` is a **closed vocabulary**: `atr`, `rsi`, `sma`, `ema`, `macd`, `macd-signal`, `macd-histogram`,
+`vwap`, `bb-upper`, `bb-middle`, `bb-lower`. An unknown name errors and lists the known ones — a typo must not
+read as "no data".
+
+MACD's fast and signal lengths (12, 9) and Bollinger's width (2σ) are **fixed**, not configurable. The storage
+key carries one period, and a parameter it cannot see would make two parameterisations indistinguishable once
+stored.
+
+### `get_indicator_at(symbol, resolutionMinutes, indicator, period, asOfUtc)`
+One value, as of a moment. Reads the value at or **before** `asOfUtc`, never after — a value from after the
+moment is information the market did not have.
+
+Returns `{ value, bucketStart }`, or `{ value: null }` meaning *cannot measure*.
+
+### `get_key_levels(symbol, timeframeMinutes[])`
+Support and resistance as **zones**, not lines.
+
+Returns `[{ timeframeMinutes, bottom, top, midpoint, kind, significance, touchCount, formedAt }]`.
+
+`significance` is prominence in ATR multiples, so a 2.0 on ES and a 2.0 on NQ mean the same thing. `kind` is
+assigned **relative to the current price**, not to how the level formed: a broken resistance is today's support,
+and reporting it otherwise puts a ceiling underneath the market.
+
+## Account reads
+
+All read-only. Reading what already happened transmits nothing.
+
+### `list_accounts`
+Returns `[{ accountId, stage, canTrade, isVisible, balance }]`.
+
+`stage` is `Practice | Evaluation | Funded | Unknown`, **parsed** from the account name against anchored
+patterns rather than passed through as text. A near-miss is `Unknown`, never a guess.
+
+> The venue's `simulated` flag is **not** reported as an economic-stake signal. It describes where an order
+> executes, and on a prop platform a *funded* account reports `simulated: true` while a real payout rides on it.
+> Against a real login it classifies every account, funded ones included, as practice.
+
+### `get_positions(accountId)` · `get_orders(accountId, fromUtc?, toUtc?, openOnly?)` · `get_trades(accountId, fromUtc, toUtc)`
+Positions carry a **signed** size — the venue reports an unsigned size plus a direction enum, and a
+directionless non-zero position is an error rather than a flat report.
+
+> `Order/search` and `Trade/search` take `startTimestamp`/`endTimestamp` while bar retrieval takes
+> `startTime`/`endTime`. Sending the wrong pair does not error: the gateway drops the field and returns nothing.
+
+## Composed
+
+### `get_market_snapshot(symbol, resolutionMinutes[], barCount?)`
+Bars, indicators, key levels and session state in one call — the common question at one round trip instead of
+five or six.
+
+Returns `{ session, perResolution: [{ resolutionMinutes, bars[], indicators{}, levels[] }] }`.
+
+This should be the tool an agent reaches for first. The single-purpose tools exist for when it needs something
+specific or a longer window.
+
+## Observations
+
+### `record_observation(text, symbol?, kind?, tags[]?)` · `search_observations(query, symbol?, k?)`
+Writes to **this** database. Not the venue, and no weakening of the read-only boundary.
+
+Search is semantic when an embedding provider is configured and **degrades to text search when it is not** —
+an unset key is never a crash, and availability means a key *and* a vector store that actually exists.
+
+`record_observation` is the one place free text enters, and it is the deliberate exception to the numeric-only
+rule. The text originates with the operator's own agent rather than the vendor.
+
+---
+*Adding or changing a tool? Update this page and the PRD's `R-5` in the same PR. A catalogue that lags the
+surface is worse than none — it is read as the contract.*

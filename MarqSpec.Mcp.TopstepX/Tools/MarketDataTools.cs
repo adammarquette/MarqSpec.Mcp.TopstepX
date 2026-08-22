@@ -21,6 +21,7 @@ public sealed class MarketDataTools(
     IndicatorCatalog catalog,
     IMarketDataGateway gateway,
     ToolGuards guards,
+    StoreAvailabilityHolder store,
     TimeProvider clock)
 {
     private readonly BarCacheService _cache = cache;
@@ -29,6 +30,7 @@ public sealed class MarketDataTools(
     private readonly IndicatorCatalog _catalog = catalog;
     private readonly IMarketDataGateway _gateway = gateway;
     private readonly ToolGuards _guards = guards;
+    private readonly StoreAvailabilityHolder _store = store;
     private readonly TimeProvider _clock = clock;
 
     /// <summary>Reads OHLCV bars for a window.</summary>
@@ -282,6 +284,10 @@ public sealed class MarketDataTools(
 
     private InstrumentId Resolve(string symbol)
     {
+        // Every tool in this class reads the store, so the check sits on the path they all take. A per-tool
+        // check is a check a new tool forgets.
+        _store.Value.Require();
+
         try
         {
             return _registry.Resolve(symbol);

@@ -32,11 +32,13 @@ public sealed class ObservationTools(
     TopstepXDbContext database,
     InstrumentRegistry registry,
     ToolGuards guards,
+    StoreAvailabilityHolder store,
     TimeProvider clock)
 {
     private readonly TopstepXDbContext _database = database;
     private readonly InstrumentRegistry _registry = registry;
     private readonly ToolGuards _guards = guards;
+    private readonly StoreAvailabilityHolder _store = store;
     private readonly TimeProvider _clock = clock;
 
     /// <summary>Records an observation.</summary>
@@ -58,6 +60,8 @@ public sealed class ObservationTools(
         [Description("Tags for later filtering.")] string[]? tags,
         CancellationToken cancellationToken)
     {
+        _store.Value.Require();
+
         if (string.IsNullOrWhiteSpace(text))
         {
             throw new McpException("An observation needs text.");
@@ -111,6 +115,8 @@ public sealed class ObservationTools(
         [Description("How many to return. Defaults to 20.")] int limit,
         CancellationToken cancellationToken)
     {
+        _store.Value.Require();
+
         int wanted = _guards.ValidateCount(limit <= 0 ? 20 : limit);
 
         IQueryable<ObservationRecord> q = _database.Observations;

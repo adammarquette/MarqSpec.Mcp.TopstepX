@@ -41,7 +41,7 @@ jobs:
           languages: ${{ matrix.language }}
 
       - name: Setup .NET
-        uses: actions/setup-dotnet@v4
+        uses: actions/setup-dotnet@v6
         with:
           # Both, matching ci.yml. This job previously installed only the 10.0 SDK while the library
           # multi-targets net8.0 — it worked via targeting packs, but a job that analyses a different build

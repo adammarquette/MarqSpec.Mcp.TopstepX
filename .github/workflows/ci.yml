@@ -55,7 +55,7 @@ jobs:
           # version is stamped into the assembly (ADR-0006).
           fetch-depth: 0
 
-      - uses: actions/setup-dotnet@v4
+      - uses: actions/setup-dotnet@v6
         with:
           # Both target frameworks are first-class (ADR-0005). Installing one SDK is how a job stops catching
           # one of them.
@@ -98,7 +98,7 @@ jobs:
         with:
           fetch-depth: 0
 
-      - uses: actions/setup-dotnet@v4
+      - uses: actions/setup-dotnet@v6
         with:
           dotnet-version: |
             8.0.x

@@ -27,7 +27,7 @@ Three assemblies, layered so the pure part stays pure:
 |---|---|---|
 | `…​.Domain` | **nothing** | `Bar`, `InstrumentId`, `InstrumentSpec`, `IIndicator` + implementations, `BarSessionCalendar`, `BarGapDetector`, `KeyLevels` |
 | `…​.Data` | Domain | Entities, `DbContext`, migrations |
-| `MarqSpec.Mcp.TopstepX` | Domain, Data, the venue client | Tools, transports, cache-aside services, composition root |
+| `MarqSpec.Mcp.TopstepX` | Domain, Data, the venue client | Tools, transports, cache-aside services, the ProjectX adapter, composition root |
 
 `Domain`'s emptiness is load-bearing. An indicator is a pure function of the bars handed in, and that is what
 makes "rebuild = replay" true — a dependency on a clock or a store there would make a recomputation depend on
@@ -94,6 +94,24 @@ One host, one tool registration, two ways in ([ADR-0007](adr/0007-dual-transport
 - **stdio** — what an MCP client launches locally. **All logging goes to stderr**; anything on stdout corrupts
   the protocol frame, and it surfaces as a confusing handshake error rather than as a logging problem.
 - **streamable HTTP** — for a deployed instance, behind a bearer token.
+
+## Degradation — what an absent dependency does
+
+Neither the store nor the venue is required to start. Each absence becomes a **refusal at the point of use**,
+carrying the fix, rather than a dead process (ADR-0007):
+
+| Absent | What still works | What refuses |
+|---|---|---|
+| Database | The tool list, `list_instruments`, `get_market_session`, `search_contracts` | Anything reading bars, indicators, levels or observations |
+| Credentials | Everything served from the store, plus session and instrument reference | Contract resolution, account reads, and any cache miss |
+
+The reason is the transport. An MCP client launches this as a child process, so a process that exits is
+reported as a transport failure and says nothing about *why* — the operator is told the server is broken when
+the truth is that Postgres is not running.
+
+The one thing that still fails hard is a migration that fails against a database which **did** answer. That is
+a defect here, not an environment fact, and serving reads against an unverified schema is worse than not
+starting.
 
 ## What is deliberately absent
 

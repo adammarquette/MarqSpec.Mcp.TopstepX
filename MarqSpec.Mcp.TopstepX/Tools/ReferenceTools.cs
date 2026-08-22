@@ -63,8 +63,20 @@ public sealed class ReferenceTools(
         CancellationToken cancellationToken)
     {
         InstrumentId instrument = Resolve(symbol);
-        IReadOnlyList<VenueContract> contracts =
-            await _gateway.ResolveContractsAsync(instrument, cancellationToken).ConfigureAwait(false);
+
+        IReadOnlyList<VenueContract> contracts;
+        try
+        {
+            contracts = await _gateway.ResolveContractsAsync(instrument, cancellationToken)
+                .ConfigureAwait(false);
+        }
+        catch (VenueException ex)
+        {
+            // Without this the SDK reports a bare "An error occurred invoking 'search_contracts'" and the
+            // reason -- which is usually "no credentials yet" -- never reaches the caller at all. This is the
+            // only tool here that touches the venue, and it was the only one missing the translation.
+            throw new McpException("The venue could not answer: " + ex.Message);
+        }
 
         return [.. contracts.Select(c => new ToolPayloads.ContractInfo(
             c.ContractId, c.Instrument.Symbol, c.IsActive, c.TickSize, c.TickValue))];

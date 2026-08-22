@@ -1,0 +1,76 @@
+# The local stack: one Postgres carrying both extensions, and the MCP server.
+#
+#   docker compose up -d
+#
+# Configuration comes from `.env` (copy `.env.example`). Every key forwarded below must be documented there,
+# and every key documented there must be forwarded here -- a key that is documented but not forwarded is a
+# setting that silently does nothing in a container, which is the hardest kind of configuration bug to see.
+
+services:
+  postgres:
+    # timescaledb-ha bundles BOTH timescaledb and pgvector, which is what makes ADR-0004's "one Postgres"
+    # practical rather than a compromise. Pinned to a major: an unpinned tag turns a database upgrade into
+    # something that happens when you happen to pull.
+    image: timescale/timescaledb-ha:pg17
+    environment:
+      POSTGRES_USER: "${POSTGRES_USER:-topstepx}"
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:-changeme-local}"
+      POSTGRES_DB: "${POSTGRES_DB:-topstepx_mcp}"
+    ports:
+      # Exposed so `dotnet ef` and a local run can reach it without entering the network.
+      - "5432:5432"
+    volumes:
+      - postgres-data:/home/postgres/pgdata/data
+    healthcheck:
+      # pg_isready, not a TCP probe: the port accepts connections a little before the server will answer, and
+      # the app's first migration would land in that window and fail on an otherwise healthy stack.
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-topstepx} -d ${POSTGRES_DB:-topstepx_mcp}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 20s
+
+  server:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    depends_on:
+      postgres:
+        # service_healthy, not service_started. Migrations run at startup, and "the container exists" is not
+        # the same claim as "the database will answer".
+        condition: service_healthy
+    environment:
+      ConnectionStrings__Default: "${ConnectionStrings__Default:-Host=postgres;Port=5432;Database=topstepx_mcp;Username=topstepx;Password=changeme-local}"
+
+      ProjectX__ApiKey: "${ProjectX__ApiKey:-}"
+      ProjectX__ApiSecret: "${ProjectX__ApiSecret:-}"
+      ProjectX__DataTier: "${ProjectX__DataTier:-Simulated}"
+      ProjectX__BaseUrl: "${ProjectX__BaseUrl:-https://api.topstepx.com}"
+
+      # The composed server is the HTTP one. Stdio is for a client launching the process directly, and a
+      # long-lived container with nothing attached to its stdin would sit idle forever (ADR-0007).
+      Mcp__Transport: "Http"
+      Mcp__HttpBearerToken: "${Mcp__HttpBearerToken:-}"
+
+      MarketData__SessionCloseCentral: "${MarketData__SessionCloseCentral:-16:00}"
+      MarketData__Holidays: "${MarketData__Holidays:-}"
+      MarketData__MaxRows: "${MarketData__MaxRows:-5000}"
+      MarketData__Instruments: "${MarketData__Instruments:-ES,NQ}"
+
+      Indicators__AtrPeriod: "${Indicators__AtrPeriod:-14}"
+      Indicators__RsiPeriod: "${Indicators__RsiPeriod:-14}"
+      Indicators__SmaPeriod: "${Indicators__SmaPeriod:-20}"
+      Indicators__EmaPeriod: "${Indicators__EmaPeriod:-20}"
+      Indicators__MacdSlowPeriod: "${Indicators__MacdSlowPeriod:-26}"
+      Indicators__BollingerPeriod: "${Indicators__BollingerPeriod:-20}"
+
+      Embeddings__ApiKey: "${Embeddings__ApiKey:-}"
+
+      ASPNETCORE_ENVIRONMENT: "${ASPNETCORE_ENVIRONMENT:-Development}"
+      ASPNETCORE_HTTP_PORTS: "8080"
+      Logging__LogLevel__Default: "${Logging__LogLevel__Default:-Information}"
+    ports:
+      - "8080:8080"
+
+volumes:
+  postgres-data:

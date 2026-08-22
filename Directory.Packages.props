@@ -19,7 +19,7 @@
 
   <ItemGroup Label="Build">
     <!-- Versioning from the git tag. Build-time only; never a runtime dependency. -->
-    <PackageVersion Include="MinVer" Version="6.0.0" />
+    <PackageVersion Include="MinVer" Version="7.0.0" />
   </ItemGroup>
 
   <ItemGroup Label="MCP">

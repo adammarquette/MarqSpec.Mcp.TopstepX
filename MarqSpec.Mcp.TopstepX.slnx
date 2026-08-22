@@ -1,0 +1,58 @@
+<Solution>
+  <Folder Name="/.github/">
+    <File Path=".github/copilot-instructions.md" />
+    <File Path=".github/dependabot.yml" />
+    <File Path=".github/pull_request_template.md" />
+  </Folder>
+  <Folder Name="/.github/workflows/">
+    <File Path=".github/workflows/AGENTS.md" />
+    <File Path=".github/workflows/branch-policy.yml" />
+    <File Path=".github/workflows/ci.yml" />
+    <File Path=".github/workflows/codeql.yml" />
+    <File Path=".github/workflows/release.yml" />
+  </Folder>
+  <Folder Name="/Solution Items/">
+    <File Path="AGENTS.md" />
+    <File Path="CHANGELOG.md" />
+    <File Path="CONTRIBUTING.md" />
+    <File Path="README.md" />
+    <File Path=".env.example" />
+    <File Path="docker-compose.yml" />
+    <File Path="docker-compose.dev.yml" />
+  </Folder>
+  <Folder Name="/Solution Items/documentation/">
+    <File Path="documentation/README.md" />
+    <File Path="documentation/AGENT-MEMORY.md" />
+    <File Path="documentation/prd.md" />
+    <File Path="documentation/architecture.md" />
+    <File Path="documentation/data-dictionary.md" />
+    <File Path="documentation/mcp-tool-catalog.md" />
+    <File Path="documentation/project-board-workflow.md" />
+    <File Path="documentation/work-estimate-rubric.md" />
+  </Folder>
+  <Folder Name="/Solution Items/documentation/adr/">
+    <File Path="documentation/adr/README.md" />
+    <File Path="documentation/adr/0001-tag-driven-versioning.md" />
+    <File Path="documentation/adr/0002-read-only-venue-boundary.md" />
+    <File Path="documentation/adr/0003-client-as-package.md" />
+    <File Path="documentation/adr/0004-one-postgres-timescale-pgvector.md" />
+    <File Path="documentation/adr/0005-session-aware-gap-detection.md" />
+    <File Path="documentation/adr/0006-indicators-as-projections.md" />
+    <File Path="documentation/adr/0007-dual-transport.md" />
+    <File Path="documentation/adr/0008-numeric-only-tool-payloads.md" />
+  </Folder>
+  <Folder Name="/Solution Items/documentation/agents/">
+    <File Path="documentation/agents/README.md" />
+    <File Path="documentation/agents/code-reviewer.md" />
+    <File Path="documentation/agents/platform.md" />
+  </Folder>
+  <Folder Name="/Solution Items/documentation/wiki/">
+    <File Path="documentation/wiki/index.md" />
+    <File Path="documentation/wiki/SCHEMA.md" />
+  </Folder>
+  <Project Path="MarqSpec.Mcp.TopstepX.Data/MarqSpec.Mcp.TopstepX.Data.csproj" />
+  <Project Path="MarqSpec.Mcp.TopstepX.Domain/MarqSpec.Mcp.TopstepX.Domain.csproj" />
+  <Project Path="MarqSpec.Mcp.TopstepX.IntegrationTests/MarqSpec.Mcp.TopstepX.IntegrationTests.csproj" />
+  <Project Path="MarqSpec.Mcp.TopstepX.Tests/MarqSpec.Mcp.TopstepX.Tests.csproj" />
+  <Project Path="MarqSpec.Mcp.TopstepX/MarqSpec.Mcp.TopstepX.csproj" />
+</Solution>

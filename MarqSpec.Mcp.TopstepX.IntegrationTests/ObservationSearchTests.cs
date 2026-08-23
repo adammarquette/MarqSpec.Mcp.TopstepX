@@ -206,6 +206,42 @@ public sealed class ObservationSearchTests(SchemaFixture fixture)
     }
 
     [Fact]
+    public async Task AFullPageDoesNotPayForTheUnsearchableCount()
+    {
+        // The count is a correlated NOT EXISTS over the whole corpus in scope, with a per-row uuid-to-text
+        // cast no index can serve. Paying it when the caller already has every result they asked for buys
+        // them nothing -- they are not missing anything they requested.
+        //
+        // Null, NOT zero. Zero is an answer and this is the absence of one; reporting zero here would tell a
+        // caller "nothing is missing" on the strength of never having looked.
+        string scope = Scope();
+        ScriptedEmbeddingProvider provider = new();
+        provider.At($"query {scope}", 0);
+
+        await using TopstepXDbContext database = fixture.CreateContext();
+        for (int i = 0; i < 4; i++)
+        {
+            ObservationSeed.Add(database, $"embedded {i} {scope}", i, provider.Model, scope);
+        }
+
+        ObservationSeed.Add(database, $"no vector {scope}", null, provider.Model, scope);
+        await database.SaveChangesAsync();
+
+        ObservationSearchOutcome full = await ObservationSeed.Service(database, provider)
+            .SearchAsync($"query {scope}", scope, 2, CancellationToken.None);
+
+        full.Matches.Should().HaveCount(2);
+        full.UnsearchableCount.Should().BeNull("the page was full, so the answer would change nothing");
+
+        // Ask for more than exist and the page comes back short -- now it matters, so now it is counted.
+        ObservationSearchOutcome short_ = await ObservationSeed.Service(database, provider)
+            .SearchAsync($"query {scope}", scope, 20, CancellationToken.None);
+
+        short_.Matches.Should().HaveCount(4);
+        short_.UnsearchableCount.Should().Be(1, "a short page is exactly when the gap explains the shortfall");
+    }
+
+    [Fact]
     public async Task TheTextPathReportsNothingUnsearchable()
     {
         // Not a shortcut -- it reads Observations directly, so every row takes part whether or not it has a
@@ -221,7 +257,7 @@ public sealed class ObservationSearchTests(SchemaFixture fixture)
             .Service(database, provider, available: false)
             .SearchAsync(scope, scope, 10, CancellationToken.None);
 
-        result.UnsearchableCount.Should().Be(0);
+        result.UnsearchableCount.Should().Be(0, "this path read every row, so the answer is none rather than unknown");
         result.Matches.Should().ContainSingle();
     }
 

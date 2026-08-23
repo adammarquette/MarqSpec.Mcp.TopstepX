@@ -176,6 +176,36 @@ public static class ToolPayloads
         IReadOnlyDictionary<string, decimal?> Indicators,
         IReadOnlyList<LevelInfo> Levels);
 
+    /// <summary>How an observation search was answered.</summary>
+    /// <remarks>
+    /// Reported so a caller can tell a semantic match from a substring one. Without it, an agent receiving
+    /// three weak text matches cannot distinguish "semantic search found little" from "semantic search never
+    /// ran" — and those warrant different conclusions.
+    /// </remarks>
+    public enum SearchMode
+    {
+        /// <summary>Unset.</summary>
+        Unknown = 0,
+
+        /// <summary>Substring matching. The fallback, and a supported state rather than a degraded one.</summary>
+        Text = 1,
+
+        /// <summary>Vector similarity over the embedding index.</summary>
+        Semantic = 2,
+    }
+
+    /// <summary>The result of an observation search.</summary>
+    /// <param name="Mode">Which path answered.</param>
+    /// <param name="ModeReason">
+    /// Why, when it was not semantic — the missing key or the missing vector store, in a sentence naming the
+    /// fix. Null when semantic.
+    /// </param>
+    /// <param name="Observations">The matches, most recent first.</param>
+    public sealed record ObservationSearchResult(
+        SearchMode Mode,
+        string? ModeReason,
+        IReadOnlyList<ObservationInfo> Observations);
+
     /// <summary>A recorded observation.</summary>
     /// <param name="Id">Its identity.</param>
     /// <param name="Symbol">The instrument it is about, when it is about one.</param>

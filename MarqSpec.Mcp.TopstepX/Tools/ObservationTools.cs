@@ -1,6 +1,7 @@
 using System.ComponentModel;
 using MarqSpec.Mcp.TopstepX.Data;
 using MarqSpec.Mcp.TopstepX.Data.Entities;
+using MarqSpec.Mcp.TopstepX.Embeddings;
 using MarqSpec.Mcp.TopstepX.MarketData;
 using Microsoft.EntityFrameworkCore;
 using ModelContextProtocol;
@@ -33,12 +34,14 @@ public sealed class ObservationTools(
     InstrumentRegistry registry,
     ToolGuards guards,
     StoreAvailabilityHolder store,
+    EmbeddingAvailabilityHolder embeddings,
     TimeProvider clock)
 {
     private readonly TopstepXDbContext _database = database;
     private readonly InstrumentRegistry _registry = registry;
     private readonly ToolGuards _guards = guards;
     private readonly StoreAvailabilityHolder _store = store;
+    private readonly EmbeddingAvailabilityHolder _embeddings = embeddings;
     private readonly TimeProvider _clock = clock;
 
     /// <summary>Records an observation.</summary>
@@ -106,10 +109,11 @@ public sealed class ObservationTools(
     /// <returns>The matches, most recent first.</returns>
     [McpServerTool(ReadOnly = true, Title = "Search observations")]
     [Description(
-        "Searches previously recorded observations, most recent first. Matching is currently by substring; "
-        + "semantic search lands with the embedding provider. An empty result means nothing matched, not that "
-        + "search is unavailable.")]
-    public async Task<IReadOnlyList<ToolPayloads.ObservationInfo>> SearchObservations(
+        "Searches previously recorded observations, most recent first. The result reports which mode "
+        + "answered: Semantic for vector similarity, Text for substring matching, with the reason when it is "
+        + "not semantic. An empty Text result means nothing matched THAT SUBSTRING — it is not evidence that "
+        + "nothing relevant was recorded, and is worth retrying with different wording.")]
+    public async Task<ToolPayloads.ObservationSearchResult> SearchObservations(
         [Description("What to look for.")] string query,
         [Description("Restrict to one instrument, e.g. ES.")] string? symbol,
         [Description("How many to return. Defaults to 20.")] int limit,
@@ -139,7 +143,17 @@ public sealed class ObservationTools(
             .ToListAsync(cancellationToken)
             .ConfigureAwait(false);
 
-        return [.. rows.Select(ToInfo)];
+        // Semantic search itself lands in gh#47. What is settled here is the CONTRACT: the caller is told
+        // which path answered and why, so an empty result never has to be guessed at. Reporting Text while
+        // embeddings are available would be a lie, so the mode is read from the probe rather than hard-coded.
+        EmbeddingAvailability availability = _embeddings.Value;
+
+        return new ToolPayloads.ObservationSearchResult(
+            ToolPayloads.SearchMode.Text,
+            availability.IsAvailable
+                ? "Semantic search is not implemented yet (gh#47); this result is substring matching."
+                : availability.Explanation,
+            [.. rows.Select(ToInfo)]);
     }
 
     private static ToolPayloads.ObservationInfo ToInfo(ObservationRecord record) =>

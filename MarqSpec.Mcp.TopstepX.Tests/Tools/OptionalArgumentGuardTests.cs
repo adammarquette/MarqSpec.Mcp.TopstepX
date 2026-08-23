@@ -42,9 +42,9 @@ public sealed class OptionalArgumentGuardTests : IDisposable
     // ── get_orders: the pairing the schema cannot express ────────────────────────────────────────────
 
     [Theory]
-    [InlineData(false, true)]    // neither bound
+    [InlineData(false, false)]   // neither bound
     [InlineData(true, false)]    // only fromUtc
-    [InlineData(false, false)]   // only toUtc — inverted from the pair above
+    [InlineData(false, true)]    // only toUtc
     public async Task GetOrders_WithoutAWindow_RefusesWhenNotOpenOnly(bool withFrom, bool withTo)
     {
         AccountTools tools = new(new CountingGateway([]), Guards());

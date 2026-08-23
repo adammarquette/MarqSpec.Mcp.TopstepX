@@ -293,6 +293,75 @@ public sealed class IndicatorProjectorTests : IDisposable
         survivor!.Value.Should().Be(42m);
     }
 
+    [Theory]
+    [InlineData("nq", 5, "test")]      // another instrument
+    [InlineData("ES", 60, "test")]     // another resolution
+    [InlineData("ES", 5, "other")]     // another venue
+    public async Task Reconciling_ReachesOnlyTheSeriesItProjected(
+        string instrument,
+        int resolutionMinutes,
+        string venue)
+    {
+        // gh#42 review round two, finding 2. The delete is scoped on FOUR dimensions -- venue, instrument,
+        // resolution (in the query) and (indicator, period) (in memory) -- and only the last had a test.
+        // Dropping any of the other three predicates left all 228 green, so three quarters of the guard on a
+        // destructive operation was resting on nothing.
+        //
+        // Each row below is planted at the seam bucket with the indicator and period this catalogue DOES
+        // compute, so it is a row reconciliation would delete if it could reach it. Surviving is the assertion.
+        await SeedRolledBarsAsync(withProvenance: true);
+
+        _database.IndicatorValues.Add(new IndicatorValueRecord
+        {
+            Venue = venue,
+            Instrument = instrument,
+            ResolutionMinutes = resolutionMinutes,
+            Indicator = "atr",
+            Period = 3,
+            BucketStart = Bucket(4),
+            Value = 42m,
+            RecordedAt = SessionStart,
+        });
+
+        await _database.SaveChangesAsync();
+
+        await Projector().ProjectAsync(Venue, _es, 5, SessionStart, CancellationToken.None);
+        await _database.SaveChangesAsync();
+
+        IndicatorValueRecord? survivor = await _database.IndicatorValues.FirstOrDefaultAsync(
+            v => v.Venue == venue
+                && v.Instrument == instrument
+                && v.ResolutionMinutes == resolutionMinutes
+                && v.Indicator == "atr"
+                && v.Period == 3
+                && v.BucketStart == Bucket(4));
+
+        survivor.Should().NotBeNull(
+            "a projection of (test, ES, 5) has no standing over another series' rows");
+        survivor!.Value.Should().Be(42m);
+    }
+
+    [Fact]
+    public async Task Reconciling_RemovesEveryValue_WhenTheBarsAreAllGone()
+    {
+        // The empty-series case, which is where the early return used to sit. Values standing over a series
+        // with no bars left are the purest form of a number nothing justifies, so the pass must reach them
+        // rather than return early.
+        await SeedRolledBarsAsync(withProvenance: true);
+        await Projector().ProjectAsync(Venue, _es, 5, SessionStart, CancellationToken.None);
+        await _database.SaveChangesAsync();
+
+        (await AtrAsync()).Should().NotBeEmpty("the fixture has to produce something for this to be a test");
+
+        _database.Bars.RemoveRange(await _database.Bars.ToListAsync());
+        await _database.SaveChangesAsync();
+
+        await Projector().ProjectAsync(Venue, _es, 5, SessionStart.AddHours(1), CancellationToken.None);
+        await _database.SaveChangesAsync();
+
+        (await AtrAsync()).Should().BeEmpty();
+    }
+
     private async Task<Dictionary<DateTimeOffset, decimal>> AtrAsync() =>
         await _database.IndicatorValues
             .Where(v => v.Indicator == "atr" && v.Period == 3)

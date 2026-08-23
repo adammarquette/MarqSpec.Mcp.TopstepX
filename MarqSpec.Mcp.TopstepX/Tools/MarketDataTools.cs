@@ -322,6 +322,11 @@ public sealed class MarketDataTools(
                 && b.BucketStart >= window.Start
                 && b.BucketStart < window.End)
             .OrderBy(b => b.BucketStart)
+            // Prices are structural zeros, never read. Coverage is a question about PROVENANCE, and
+            // ContractRollDetector.Segment looks only at the bucket and the contract id -- so this projects
+            // the two fields the answer depends on and leaves the rest unpopulated rather than fetching an
+            // OHLCV payload to throw away. If anything downstream ever reads a price off one of these, it is
+            // reading a zero that was never a price.
             .Select(b => new Bar(b.BucketStart, 0m, 0m, 0m, 0m, 0L, b.ContractId))
             .ToListAsync(cancellationToken)
             .ConfigureAwait(false);

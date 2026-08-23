@@ -57,15 +57,15 @@ The server serves OHLCV bars for a futures instrument at a requested resolution 
 - **R-2.6** Supported at v1: ATR, RSI, SMA, EMA, MACD (line, signal, histogram), session-anchored VWAP, and
   Bollinger bands. The set is a **closed vocabulary** at the tool boundary — an unknown name is an error that
   names the known ones.
-- **R-2.8** A projection **removes stored values the current bars no longer justify**, for the indicators
-  and periods it is configured to produce. Until segmenting, a bucket could only move from *not computable* to
-  *computable*, so an upsert-only projection was safe; a contract seam moves the boundary the other way, and a
-  value left standing is a number the bars cannot account for. A confirming rebuild still removes nothing.
 - **R-2.7** **No indicator value is computed across a contract roll.** Adjacent quarters do not trade at the
   same price, so a value smoothed across the seam reports a bookkeeping gap as market movement. The projection
   seeds each contract's run separately, which means the warm-up restarts at every roll and the values
   immediately after one are **absent** — an instance of `R-2.3`, not an exception to it
   ([ADR-0011](adr/0011-contract-roll-boundary.md)).
+- **R-2.8** A projection **removes stored values the current bars no longer justify**, for the indicators
+  and periods it is configured to produce. Until segmenting, a bucket could only move from *not computable* to
+  *computable*, so an upsert-only projection was safe; a contract seam moves the boundary the other way, and a
+  value left standing is a number the bars cannot account for. A confirming rebuild still removes nothing.
 
 ## R-3 — Key levels
 

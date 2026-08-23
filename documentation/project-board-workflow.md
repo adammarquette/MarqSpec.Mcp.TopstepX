@@ -32,10 +32,11 @@ working column, not to Done.
 Only **issues** are cards. Two relationships hang off them, using different mechanisms:
 
 - **A PR is an issue's implementation, not a card.** It links with a closing keyword — `Closes #N` — which
-  auto-closes the issue on merge and surfaces the PR in the board's *Linked pull requests* field. `Related to #N`
-  links without closing, for a PR that touches but does not complete an issue. **Neither linkage forms on a PR
-  into `staging` or `main`**: GitHub binds a closing keyword only on a PR into the default branch, so a
-  promotion's card neither links nor auto-closes and has to be moved and closed by hand (gh#101).
+  auto-closes the issue on merge and surfaces the PR in the board's *Linked pull requests* field. GitHub binds
+  that keyword **only on a PR into the default branch**, so a promotion into `staging` or `main` gets neither
+  the field nor the auto-close, and its card is moved and closed by hand (gh#101). `Related to #N` — for a PR
+  that touches but does not complete an issue — never binds on any base: a bare `#N` leaves a cross-reference
+  on the issue's timeline and nothing in *Linked pull requests*, which is how #100 and #106 stayed traceable.
 - **A sub-issue is issue→issue decomposition.** An epic's tasks are its sub-issues. **A PR cannot be a
   sub-issue** — GitHub restricts those to issues — so PR→issue always uses linking.
 

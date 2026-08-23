@@ -61,6 +61,32 @@ fails to convert fails to bind at all, so a serialisation fault presents as a mi
 
 Handled inside the client. Any new code path constructing a request must not reintroduce it.
 
+### A zero that means something is a missing field wearing an answer
+
+Integer-typed enums bind by value, so **an absent field lands on the enum's zero** — and whether that is safe
+depends entirely on what the client declared at zero.
+
+| Client enum | Zero | An absent field becomes |
+|---|---|---|
+| `OrderStatus` | `None` | `Unknown` — correct |
+| `PositionType` | `Undefined` | refused by the signed-size guard — correct |
+| `OrderType` | `Unknown` | correct |
+| **`OrderSide`** | **`Bid`** | **`Buy` — a direction the venue never stated** |
+
+`OrderSide` is the only enum this server binds from a *response* whose zero is a real value, and the property
+is non-nullable, so nothing downstream can tell an omitted `side` from an explicit buy. The client exposes no
+raw body and no extension data, so the distinction is destroyed before this repository sees the object
+(gh#84). An out-of-range value is different and *is* caught — `"side":9` binds to `(OrderSide)9` and maps to
+`Unknown`.
+
+**The fix is upstream** — a nullable `Side`, or a zero meaning unset as the other three already have,
+filed as [MarqSpec.Client.ProjectX#83](https://github.com/adammarquette/MarqSpec.Client.ProjectX/issues/83). Until
+then `side` on `get_orders` and `get_trades` carries the caveat, and
+`VenueSideBindingTests.AnAbsentSide_IsIndistinguishableFromABuy` is the tripwire that goes red when it is over.
+
+`AggregateBarUnit`'s zero is `Unspecified`, a real value — but it is only ever *constructed* for a request and
+never bound from a response, so it cannot carry this fault.
+
 ## Rate limits
 
 > **Documented, not observed.** Read from the vendor's own rate-limits page on **2026-08-23**

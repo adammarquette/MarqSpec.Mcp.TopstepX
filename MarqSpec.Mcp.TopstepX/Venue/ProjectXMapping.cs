@@ -268,9 +268,19 @@ public static partial class ProjectXMapping
     /// <param name="side">The gateway's side.</param>
     /// <returns>This server's side.</returns>
     /// <remarks>
+    /// <para>
     /// <b>Bid is BUY and Ask is SELL</b> — the gateway names the side of the book the order rests on, not the
     /// direction of the trade, and reading it the other way inverts every position report. An unrecognised
     /// value maps to <see cref="VenueSide.Unknown"/> rather than defaulting to either direction.
+    /// </para>
+    /// <para>
+    /// <b>This cannot catch an ABSENT side, and no arrangement of this method could.</b> The client declares
+    /// <c>OrderSide { Bid = 0, Ask = 1 }</c> on a non-nullable property, so a payload with no <c>side</c>
+    /// arrives here already bound to <c>Bid</c> — byte-identical to an explicit buy. The default arm below is
+    /// reachable only for a value outside the enum, which the binder does admit (<c>"side":9</c> becomes
+    /// <c>(OrderSide)9</c>). Measured against 2.1.0 and pinned by <c>VenueSideBindingTests</c>; see
+    /// <see cref="VenueSide.Unknown"/> for why the fix is upstream (gh#84).
+    /// </para>
     /// </remarks>
     public static VenueSide ToSide(OrderSide side) => side switch
     {

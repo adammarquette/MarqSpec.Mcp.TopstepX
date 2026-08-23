@@ -93,7 +93,15 @@ public sealed class IndicatorProjector(
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(venue);
 
+        // AsNoTracking because NOTHING HERE MUTATES A BAR -- the projection reads them and writes
+        // IndicatorValues. Tracked, a whole series' history sits in the change tracker being re-examined by
+        // every subsequent SaveChanges, and EF's change detection is superlinear in the tracked count. That
+        // is invisible on one series and is the whole cost on a store-wide rebuild (gh#73 review).
+        //
+        // Safe against the cache-aside path too: BarCacheService saves its bars BEFORE projecting -- a query
+        // cannot see tracked-only rows (gh#31) -- so this reads exactly what tracking would have returned.
         List<BarRecord> stored = await _database.Bars
+            .AsNoTracking()
             .Where(b => b.Venue == venue
                 && b.Instrument == instrument.Symbol
                 && b.ResolutionMinutes == resolutionMinutes)

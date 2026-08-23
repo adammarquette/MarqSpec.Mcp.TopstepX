@@ -59,6 +59,48 @@ The root contract's five apply here unchanged. Four land specifically on the pip
   "tidy" the filter back.** Note the residue: running the checks does not make them *required* for a
   feature-branch base, because rulesets protect named branches. Visibility is what this buys; enforcement
   still happens at the `develop` gate.
+- **CI must build the image by the mechanism the release uses** (gh#54). `ci.yml`'s `image` job built with raw
+  `docker build` while `release.yml` built with `docker/build-push-action`, so no number of green checks could
+  fail for a publish-path regression — and two major bumps merged on exactly that basis without executing once
+  (`docker/login-action` v3→v4 in gh#15, `docker/build-push-action` v6→v7 in gh#52). Both jobs now declare
+  `docker/setup-buildx-action` and build through `docker/build-push-action` at the **same major version**;
+  Dependabot's `github-actions` ecosystem covers both files, so a bump that touches only one is the defect.
+  Five things that arrangement does **not** give you for free:
+  - **`push: false` is not enough — CI needs `load: true`.** Under Buildx the result stays in BuildKit's cache
+    and never reaches the local daemon; the build still exits 0, warning only that the *result will only
+    remain in the build cache*. The smoke `docker run` then fails trying to **pull** the tag from Docker Hub,
+    which reads as a typo in the tag rather than as a missing export.
+  - **A green `image` does not mean the entrypoint works.** The smoke step runs
+    `docker run --entrypoint dotnet … --list-runtimes`, and `--entrypoint` **replaces** the image's own
+    `ENTRYPOINT` — so the app assembly is never loaded, and an `ENTRYPOINT` naming a DLL that does not exist
+    passes the step while `docker run` on that image exits 155 (gh#67). What a green `image`
+    licenses, exactly: the Dockerfile builds, the image loads into the daemon, and the .NET runtime inside it
+    answers.
+  - **`docker/login-action` stays uncovered, on purpose.** Exercising it in CI would mean granting
+    `packages: write` to a job that must not push, on every pull request — forks included, where
+    `GITHUB_TOKEN` is read-only and the step would fail for a reason unrelated to the change. The login and
+    the registry export therefore still first execute at a real release; the publish path is not proven end
+    to end by any green check.
+  - **Declaring the builder changes what the release publishes, unless you pin it.** Under the
+    `docker-container` driver, buildx attaches a provenance attestation **by default** when pushing, and the
+    published tag becomes an image index carrying an `unknown/unknown` attestation manifest rather than a
+    plain manifest — measured against a local registry, where the image manifest digest came out identical
+    either way, so the pin changes the wrapper and nothing else. `release.yml` pins `provenance: false`. Be
+    clear what that pin is *not*: **nothing has ever been published from this pipeline** — no `v*` tag, no
+    release, no run of `release.yml` — so it protects no existing consumer. It fixes the published shape
+    deliberately while doing so is still free, rather than inheriting whichever default the builder brings.
+    Turning attestations on later is an ADR, not a drift. No green check can cover the choice: CI exports
+    with `load` and never pushes, so the published shape is only ever produced by a real release.
+  - **The same action uploads a `.dockerbuild` build record as a workflow artifact by default** — on a public
+    repo, from fork PRs included, which `docker build` never did. Both jobs turn it off
+    (`DOCKER_BUILD_RECORD_UPLOAD`, `DOCKER_BUILD_SUMMARY`) rather than leave a fourth export surface on by
+    inheritance. **This is not free**: the record is what `buildx history` reads, and the job that can least
+    cheaply be repeated — a release, behind a `production` approval on a tag already cut — is the one now
+    keeping no **build-record** forensics. The run log survives and carries most of a Dockerfile build's
+    diagnostic value; what is given up is the structured view — step timings, cache hit/miss, the build
+    graph. Re-enable them for a run that needs diagnosing. Note also that this and
+    `provenance:` are **unrelated mechanisms with adjacent names**, both currently `false` in the same step:
+    one is a workflow artifact, the other an attestation on the pushed image.
 
 **A local check that disagrees with CI is worse than no local check.** When they diverge, fix the divergence,
 not the symptom.

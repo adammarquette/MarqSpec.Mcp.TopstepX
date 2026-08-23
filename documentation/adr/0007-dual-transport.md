@@ -127,8 +127,18 @@ that still killed the process.
 
 **A shutdown requested before startup finishes is now honoured as a shutdown.** `Program.RunHostAsync` treats
 a cancellation raised while this host has been asked to stop as a clean exit 0, and logs one line saying that
-stdin closed before the handshake and `-i` is what keeps a session. Every other startup failure — a port in
-use, a broken migration, a captive dependency, a cancellation from any other cause — still fails the process.
+stdin closed before the handshake and `-i` is what keeps a session. Every non-cancellation startup failure — a
+port in use, a broken migration, a captive dependency — still fails the process, as does any cancellation with
+no stop pending.
+
+**"A stop was requested" is not on its own a statement about success**, and the filter says so in two parts.
+`StopApplication()` is called by success and by failure alike: the SDK's transport is a `BackgroundService`,
+so a read loop that *faults* after its first await reaches the same call by way of the host's default
+`BackgroundServiceExceptionBehavior.StopHost` — `crit`, then stop — and leaves state identical to a clean EOF.
+Discriminating on the state alone would exit 0 for a server that faulted and never served, so the fault is
+**observed** rather than assumed: the hosted services are resolved before the run and their `ExecuteTask` is
+read in the filter. What remains undistinguished is stated in the method's own remarks — a cancellation raised
+while a stop is pending is swallowed whatever asked for the stop, provided no background service faulted.
 
 Two alternatives were rejected, both offered by the issue. **Not starting Kestrel under stdio** treats the
 symptom's location as its cause: it needs a second host type and a forked composition root, against this

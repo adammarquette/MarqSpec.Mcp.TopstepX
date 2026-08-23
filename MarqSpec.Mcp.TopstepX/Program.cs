@@ -62,7 +62,10 @@ public static class Program
         // from either -- it is a property of the host, not of stdio -- and a second `RunAsync` here is how the
         // HTTP branch would quietly keep the old behaviour (gh#76).
         //
-        // Stdio needs no branch of its own: the host still builds, it simply never listens.
+        // Stdio needs no branch of its own -- and NOT because the host never starts a listener. It does:
+        // `WebApplication` always adds Kestrel as a hosted service and always starts it, under both
+        // transports. Under stdio Kestrel is simply not the transport, nothing is mapped in front of it, and
+        // the session runs over stdin and stdout (ADR-0007).
         return await RunHostAsync(app).ConfigureAwait(false);
     }
 
@@ -99,12 +102,30 @@ public static class Program
     /// <c>scripts/check-image-entrypoint.sh</c> names as its reason for hard-bounding the run.
     /// </para>
     /// <para>
-    /// <b>So: honour the request, and record that honouring it is not a failure.</b> The filter is deliberately
-    /// narrow — only a cancellation raised while <b>this host has been asked to stop</b> is swallowed. A
-    /// cancellation from any other cause, and every non-cancellation startup failure (a port already in use, a
-    /// broken migration, a captive dependency), still propagates and still fails the process. Widening it to a
-    /// bare <c>catch (OperationCanceledException)</c> would turn a genuinely failed startup into a silent
-    /// exit 0, which is the one outcome worse than the crash.
+    /// <b>So: honour the request, and record that honouring it is not a failure.</b> The filter matches on two
+    /// facts rather than one — this host <b>has been asked to stop</b>, <b>and</b> no
+    /// <see cref="BackgroundService"/> it started has faulted.
+    /// </para>
+    /// <para>
+    /// <b>Why the second fact is there.</b> "A stop was requested" on its own is a permissive discriminator:
+    /// <see cref="IHostApplicationLifetime.StopApplication"/> is called by success and by failure alike. Under
+    /// stdio the only caller is the SDK's <c>SingleSessionMcpServerHostedService</c>, and it reaches that call
+    /// by two routes — its read loop completing on EOF, which is gh#76 and is clean, or its
+    /// <c>ExecuteAsync</c> <b>faulting</b> after its first await, which the host's default
+    /// <see cref="BackgroundServiceExceptionBehavior.StopHost"/> turns into a <c>crit</c> log line followed by
+    /// that same <c>StopApplication()</c>. The two leave identical state, so discriminating on the state alone
+    /// exits 0 for a server that faulted and never served: <c>docker run</c> prints success and
+    /// <c>restart: on-failure</c> does not restart. The fault is therefore <b>observed</b> —
+    /// <see cref="BackgroundService.ExecuteTask"/> is read — never assumed.
+    /// </para>
+    /// <para>
+    /// <b>What this still does not distinguish.</b> A cancellation raised while a stop is pending is swallowed
+    /// whatever asked for the stop, provided no background service faulted; the faulted background service is
+    /// singled out because it is the one failing cause the host itself makes observable. Every
+    /// non-cancellation startup failure — a port already in use, a broken migration, a captive dependency —
+    /// still propagates and still fails the process, as does any cancellation with no stop pending. Widening
+    /// this to a bare <c>catch (OperationCanceledException)</c> would turn a genuinely failed startup into a
+    /// silent exit 0, which is the one outcome worse than the crash.
     /// </para>
     /// </remarks>
     public static async Task<int> RunHostAsync(WebApplication app)
@@ -125,11 +146,20 @@ public static class Program
         CancellationToken stopping = app.Lifetime.ApplicationStopping;
         ILogger logger = app.Services.GetRequiredService<ILoggerFactory>().CreateLogger("startup");
 
+        // AND SO IS THIS, for that reason and one more.
+        //
+        // Hosted services are singletons, so these are the very instances the host is about to start --
+        // resolving them here constructs them a moment earlier than the host would and changes nothing else.
+        // Resolving them after the run is not an option, for the reason above; and a BackgroundService only
+        // publishes its `ExecuteTask` once it has been started, so the reference has to be taken first and the
+        // task read last.
+        IHostedService[] hosted = [.. app.Services.GetServices<IHostedService>()];
+
         try
         {
             await app.RunAsync().ConfigureAwait(false);
         }
-        catch (OperationCanceledException) when (stopping.IsCancellationRequested)
+        catch (OperationCanceledException) when (stopping.IsCancellationRequested && !AnyFaulted(hosted))
         {
             // The framework has already logged its own "Hosting failed to start" at fail level, naming
             // Kestrel. That line is true and useless -- it names the service that noticed, not the thing that
@@ -138,11 +168,36 @@ public static class Program
                 "Shutdown was requested before the server finished starting, so it stopped without "
                 + "listening. On stdio this is what `docker run` WITHOUT `-i` looks like: stdin is closed "
                 + "before the handshake, so there is no client to serve. Pass `-i` (or start the server "
-                + "from an MCP client, which holds stdin open) to keep a session. This is a clean exit, "
-                + "not a fault.");
+                + "from an MCP client, which holds stdin open) to keep a session. No background service "
+                + "faulted on the way here, so this exit code is not covering for one.");
         }
 
         return 0;
+    }
+
+    /// <summary>Reports whether any background service this host started ended in a fault.</summary>
+    /// <param name="hosted">The hosted services, resolved before the run.</param>
+    /// <returns>
+    /// <c>true</c> if at least one of them is a <see cref="BackgroundService"/> whose
+    /// <see cref="BackgroundService.ExecuteTask"/> has faulted.
+    /// </returns>
+    /// <remarks>
+    /// Called from an exception filter, so it must not throw: every member it touches is a plain property read
+    /// on objects resolved before the host was disposed. An exception thrown inside a filter is swallowed and
+    /// reads as "does not match", which here would silently restore the crash — the same trap the comment in
+    /// <see cref="RunHostAsync"/> records.
+    /// </remarks>
+    private static bool AnyFaulted(IHostedService[] hosted)
+    {
+        foreach (IHostedService service in hosted)
+        {
+            if (service is BackgroundService { ExecuteTask.IsFaulted: true })
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /// <summary>

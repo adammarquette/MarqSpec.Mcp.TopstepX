@@ -13,7 +13,7 @@ folder.
 
 | Page | Authoritative for | Trust | Informs |
 |---|---|---|---|
-| [projectx-gateway-api](pages/projectx-gateway-api.md) | The ProjectX/TopstepX gateway — auth, bars, contracts, accounts, and the failure modes that are not guessable from the API's shape | authoritative | `R-1`, `R-4`, `R-5`, `R-7`, `R-8` |
+| [projectx-gateway-api](pages/projectx-gateway-api.md) | The ProjectX/TopstepX gateway — auth, bars, contracts, accounts, rate limits, and the failure modes that are not guessable from the API's shape | authoritative | `R-1` (incl. `R-1.10`), `R-4`, `R-5`, `R-7`, `R-8`, `Q-1`, `Q-3` |
 | [market-sessions-and-settlement](pages/market-sessions-and-settlement.md) | CME equity-index sessions, the maintenance window, the week, and holidays — the model behind gap detection | authoritative | `R-1.2`, `R-3`, ADR-0005 |
 
 ## Read these when
@@ -22,13 +22,15 @@ folder.
   Four of its notes describe failures that return a *successful-looking* result: the inverted auth fields, the
   200-with-`success:false` convention, the wrong data tier returning an empty universe, and order search
   silently ignoring the wrong timestamp parameter names. None of them will announce themselves.
+- **Before adding anything that calls the gateway in a loop** — the
+  [rate-limits section](pages/projectx-gateway-api.md#rate-limits). `History/retrieveBars` allows 50 requests
+  in 30 seconds and everything else 200 in 60, and only the bar paging loop is paced today.
 - **Before changing `BarSessionCalendar`** — the
   [sessions page](pages/market-sessions-and-settlement.md). The trade-date-opens-the-previous-evening model is
   the part that is easy to get subtly wrong.
 
 ## Not here yet
 
-- **Vendor rate limits** (`Q-3`). Documented by ProjectX, not yet extracted.
 - **Instrument specifications** beyond ES and NQ — tick sizes and point values for energy and metals, and their
   session closes, which differ from the equity-index ones this repo defaults to.
 - **Webull's API**, for the eventual sibling server. It lives in `trading-copilot`'s wiki today.

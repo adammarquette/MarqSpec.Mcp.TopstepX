@@ -111,6 +111,33 @@ public sealed class CompositionRootTests
     }
 
     [Fact]
+    public void TheHistoryPacerIsOneAllowanceSharedByEveryScope()
+    {
+        // The vendor counts History/retrieveBars against the CREDENTIAL, not against a request scope. The
+        // gateway is deliberately scoped (see above), so a pacer registered alongside it at the same lifetime
+        // would give every concurrent tool call its own full allowance -- N times the documented rate, with
+        // nothing anywhere reporting it. Lifetime is the whole of this mechanism's correctness (gh#43).
+        Dictionary<string, string?> configured = new()
+        {
+            ["ProjectX:ApiKey"] = "a-username",
+            ["ProjectX:ApiSecret"] = "an-api-key",
+            ["ProjectX:DataTier"] = "Simulated",
+        };
+
+        using ServiceProvider provider = Build(configured, new McpOptions { Transport = McpTransport.Stdio });
+
+        using IServiceScope first = provider.CreateScope();
+        using IServiceScope second = provider.CreateScope();
+
+        VenueRequestPacer one = first.ServiceProvider.GetRequiredService<VenueRequestPacer>();
+        VenueRequestPacer other = second.ServiceProvider.GetRequiredService<VenueRequestPacer>();
+
+        one.Should().BeSameAs(other);
+        one.Capacity.Should().Be(VenueRequestPacer.HistoryRequestsPerWindow);
+        one.Window.Should().Be(VenueRequestPacer.HistoryWindow);
+    }
+
+    [Fact]
     public void TheContainerBuilds_ForTheHttpTransport()
     {
         McpOptions http = new() { Transport = McpTransport.Http, HttpBearerToken = "a-token" };

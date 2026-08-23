@@ -66,6 +66,24 @@ jobs:
       - name: No order path in product code
         run: ./scripts/check-no-order-path.sh
 
+  # gh#43. The pacer that keeps the bar paging loop inside the vendor's 50-requests-per-30-seconds allowance
+  # is unit-tested; its CONNECTION to the loop was not, and deleting the await left all 208 tests green.
+  #
+  # Its own job for the same reason no-order-path has one: a failure here means "the burst protection came
+  # unpicked", and folding it into no-order-path would report that as "the read-only boundary was crossed",
+  # which is a different and far more alarming claim. NOTE: a new job is not automatically a REQUIRED check --
+  # the develop ruleset names those, and a ruleset cannot be edited from a pull request. So this REPORTS and
+  # does not block; adding it to the ruleset is tracked as gh#72. Read a red `paced-paging` as real even
+  # though the merge box does not.
+  paced-paging:
+    name: paced-paging
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Bar paging takes a rate-limit slot per page
+        run: ./scripts/check-paced-paging.sh
+
   build-test:
     name: build & unit tests
     runs-on: ubuntu-latest
@@ -225,8 +243,78 @@ jobs:
           # MinVer reads the tag, and a shallow clone yields 0.0.0-alpha.0 SILENTLY rather than failing.
           fetch-depth: 0
 
+      # DECLARED, not inherited from the runner image (gh#54). Buildx is preinstalled on GitHub-hosted
+      # runners, so this job and release.yml's `publish` both built fine without either one ever asking for
+      # it -- which made the builder a property of the runner image rather than of this repository, and left
+      # the two free to differ silently: the preinstalled `default` builder uses the `docker` driver, while
+      # this action creates a `docker-container` one. release.yml now declares the same step, so "CI builds
+      # the way the release builds" is true of the BUILDER and not only of the action.
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v4
+
+      # BUILT WITH THE ACTION THE RELEASE USES. Do NOT "simplify" this back to `docker build` (gh#54).
+      #
+      # This job and release.yml's `publish` build the same Dockerfile, and they used to do it by two
+      # different mechanisms -- `docker build` here, `docker/build-push-action` there. CI therefore could not
+      # fail for ANY regression in the publish path, and two major bumps merged green on exactly that basis:
+      # docker/login-action v3 -> v4 (gh#15) and docker/build-push-action v6 -> v7 (gh#52). Neither had run
+      # anywhere when it merged; the first execution of either would have been a real release, behind the
+      # production approval, against a tag that "can be overwritten but not un-pulled".
+      #
+      # Keep this MAJOR VERSION equal to release.yml's. Both files are in the one `github-actions` Dependabot
+      # ecosystem, so a bump arrives as a single PR touching both; a PR that moves only one is the bug.
+      #
+      # STILL UNCOVERED, deliberately: docker/login-action. Exercising it would mean granting `packages:
+      # write` to a job that must not push, on every pull request -- including forks, where GITHUB_TOKEN is
+      # read-only and the step would fail for a reason unrelated to the change. The registry-credential
+      # boundary is worth more than coverage of a three-input action.
+      #
+      # WHAT A GREEN `image` LICENSES, exactly: the Dockerfile builds, the image loads into the local daemon,
+      # and the .NET runtime inside it answers. NOT that the entrypoint works -- the smoke step below passes
+      # `--entrypoint dotnet`, which REPLACES the image's own ENTRYPOINT, so the app assembly is never loaded
+      # and an ENTRYPOINT naming a missing DLL smokes green (gh#67). And NOT that the publish path is proven
+      # end to end -- the login and the registry export still first execute at a real release.
       - name: Build the image
-        run: docker build -t marqspec-mcp-topstepx:ci .
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          # Nothing here reaches a registry, and nothing here needs a credential to build.
+          push: false
+          # LOAD-BEARING, and the whole reason this is not a one-line swap. Under Buildx, `push: false`
+          # alone leaves the result in BuildKit's cache and NOT in the local daemon -- BuildKit says so
+          # ("Build result will only remain in the build cache") in a WARNING on a build that exits 0. The
+          # smoke step below then reports "Unable to find image ... locally" and fails trying to PULL the tag
+          # from Docker Hub, which reads like a typo in the tag rather than like a missing export.
+          load: true
+          tags: marqspec-mcp-topstepx:ci
+        env:
+          # DISABLED, and stated rather than inherited (gh#54 review). `build-push-action` v6+ exports a
+          # `.dockerbuild` build record and uploads it as a downloadable workflow ARTIFACT on every run --
+          # something `docker build` never did, and a fourth surface on a PUBLIC repo whose non-negotiable is
+          # "no secret reaches a workflow, log, or image layer". It is benign as this step stands (no
+          # `build-args`, no `secrets`), but the day someone adds `build-args` for a private NuGet feed the
+          # build definition lands in that artifact and nothing would have said so.
+          #
+          # IT IS NOT FREE, and the cost lands on the worst job to pay it. The record is what `buildx
+          # history` reads, so switching it off gives up post-hoc build-RECORD forensics -- the structured
+          # view: step timings, cache hit/miss, the build graph. The run log survives and carries most of a
+          # Dockerfile build's diagnostic value; it is the structure that goes. `release.yml` sets the same
+          # two variables, where a run happens behind a `production` approval on a tag already cut and
+          # cannot be cheaply repeated. The trade is taken anyway: a leak from a public artifact is not
+          # recoverable and a missing build record is. Turn them back on for a run that needs diagnosing;
+          # that is a decision, not a two-line deletion.
+          #
+          # NOT THE SAME MECHANISM as `provenance:` in release.yml, despite the adjacent names and both being
+          # `false`. This is a WORKFLOW ARTIFACT; that is an attestation attached to the PUSHED IMAGE.
+          # Changing one says nothing about the other.
+          #
+          # ONLY THE FIRST of these closes the export surface. `DOCKER_BUILD_SUMMARY` suppresses the summary
+          # rendered on the run page, which never leaves GitHub and is not an export at all -- it is set
+          # because with the record upload off, the summary's headline affordance is a download link to an
+          # artifact that no longer exists, and because release.yml should not diverge from this job over a
+          # detail. Re-enable them as a pair.
+          DOCKER_BUILD_RECORD_UPLOAD: false
+          DOCKER_BUILD_SUMMARY: false
 
       - name: Smoke — the entrypoint starts and reports its tools
         # A build that produces an image which cannot start is a green build and a broken artifact. This does

@@ -135,6 +135,72 @@ saying it will match on text until re-embedded. The observation is the durable t
 over it that can be rebuilt. Every call is metered, failures included — an unmetered failure is invisible spend
 on the operator's own key.
 
+## The observation search
+
+One call, two paths, one shape. `search_observations` embeds the query as a **query**
+(`input_type: search_query`, not the `search_document` used when storing) and orders by cosine distance; when
+it cannot embed — no key, a rate limit, an outage, an unusable response — it matches substrings instead and
+says so. **The fallback is a path, not an error**: a busy vendor must not turn a working tool into a broken
+one.
+
+### The vector query must not join
+
+The nearest-neighbour query selects **owner ids only**, and the observations are hydrated in a second round
+trip. That looks like a needless extra query and is not:
+
+> Joining `Observations` inside the ordering query makes the planner hash-join both tables and sort **every
+> vector in the store**. The HNSW index is never touched.
+
+This was measured, not reasoned about — `EXPLAIN` over four thousand rows, comparing the joined and unjoined
+shapes. It is guarded by `ObservationSearchIndexTests.TheCosineIndexIsActuallyChosen`, which takes the plan of
+the query the service itself builds rather than a hand-written lookalike, because the two would drift and the
+day they did the assertion would stop meaning anything. **An index that exists but is never chosen is not an
+index.**
+
+The second round trip is bounded by the read cap, so it costs one lookup of at most `k` rows.
+
+### The symbol filter takes a different plan, on purpose
+
+With a symbol filter the query becomes a semi-join, which the planner drives from the (small) filtered
+observation set and which does **not** use the vector index. That is the right trade: at the row counts a
+single instrument produces, that plan is both cheaper and — more importantly — **complete**. The unfiltered
+path is the one that has to scale, and it is the one the index serves.
+
+`hnsw.iterative_scan = strict_order` is set per transaction regardless. An HNSW scan visits a fixed number of
+candidates and applies remaining filters *afterwards*, so a filtered index scan can return fewer rows than
+asked for while matching rows sit in the table — not an error, just a short list that reads exactly like "that
+is all there is". `SET LOCAL`, so it cannot outlive the transaction on a pooled connection.
+
+### That makes pgvector 0.8 a hard requirement, checked at startup
+
+`hnsw.iterative_scan` is a 0.8 GUC. On 0.7.4 the statement above raises `invalid configuration parameter name`
+— "hnsw" is a reserved prefix — **and aborts the transaction**. Measured, not assumed. Reaching that at query
+time would turn a search into an exception in a design whose entire contract is that the text path is a
+fallback and not an error path.
+
+So the startup probe reads `extversion`, not merely `extname`, and an older pgvector is reported through the
+same `EmbeddingAvailability` channel as a missing key: **search matches text, and says which version it found
+and which it needs.** The whole vector path is refused rather than run without the iterative scan — unfiltered
+search would work on 0.7, but a filtered one would quietly return fewer rows than exist, and a quietly-short
+answer is worse than an honest substring match.
+
+An unparseable version counts as too old. The safe default is the one that degrades, not the one that assumes
+the best and throws later.
+
+### What the vector path cannot see
+
+An observation whose embedding failed at write time has no vector, and semantic search cannot reach it —
+which is in tension with what `record_observation` told its author, that the note would match on text until
+re-embedded. Rather than paper over that, the result carries `unsearchableCount`: how many observations in
+scope were invisible to this search. A gap that is reported is a gap someone can act on.
+
+**It is computed only when the page came back short.** The count is a correlated `NOT EXISTS` over every
+observation in scope, casting a `uuid` to text per row — nothing an index on `OwnerId` can serve, so at a
+hundred thousand observations it is a hundred thousand row scan to produce one integer. A caller holding a
+full page is not missing anything they asked for, so the number would not change what they do. When it is not
+computed it is **`null`, never `0`**: zero is an answer, and reporting one on the strength of never having
+looked is the same fabrication as a `1.0` similarity on the text path.
+
 ## What is deliberately absent
 
 - **No order path.** Not a guarded one ([ADR-0002](adr/0002-read-only-venue-boundary.md)).

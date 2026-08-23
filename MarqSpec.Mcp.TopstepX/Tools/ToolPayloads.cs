@@ -200,11 +200,23 @@ public static class ToolPayloads
     /// Why, when it was not semantic — the missing key or the missing vector store, in a sentence naming the
     /// fix. Null when semantic.
     /// </param>
-    /// <param name="Observations">The matches, most recent first.</param>
+    /// <param name="Observations">
+    /// The matches — <b>best first when semantic, most recent first when text</b>. The two orderings are not
+    /// interchangeable, which is another reason <c>Mode</c> has to be read.
+    /// </param>
+    /// <param name="UnsearchableCount">
+    /// How many observations in scope have no vector and so could not take part — <see langword="null"/> when
+    /// the question was not asked. A non-zero value means this search saw less than the whole corpus, and it
+    /// is reported rather than logged because a short result and a small corpus are otherwise
+    /// indistinguishable. It is computed only when the page came back short, since that is the only time the
+    /// answer changes what a caller should do; <see langword="null"/> is therefore "not asked", never "none".
+    /// Zero on the text path, which genuinely reads every row.
+    /// </param>
     public sealed record ObservationSearchResult(
         SearchMode Mode,
         string? ModeReason,
-        IReadOnlyList<ObservationInfo> Observations);
+        IReadOnlyList<ObservationInfo> Observations,
+        int? UnsearchableCount = null);
 
     /// <summary>A recorded observation.</summary>
     /// <param name="Id">Its identity.</param>
@@ -218,6 +230,13 @@ public static class ToolPayloads
     /// logged: a note stored without a vector will not be found by meaning until it is re-embedded, and the
     /// caller is the only one in a position to notice that its later search came up short.
     /// </param>
+    /// <param name="Similarity">
+    /// How close this is to the query, in <c>[-1, 1]</c>, higher being closer — or <see langword="null"/> when
+    /// the text path answered. Null rather than a stand-in: substring matching produces no score, and a 1.0
+    /// meaning "it matched" would invite comparison across modes as though the numbers meant the same thing.
+    /// Without a score an agent cannot tell a strong match from the least-bad of a weak set, and will act on
+    /// both the same way.
+    /// </param>
     public sealed record ObservationInfo(
         Guid Id,
         string? Symbol,
@@ -225,7 +244,8 @@ public static class ToolPayloads
         string Text,
         IReadOnlyList<string> Tags,
         DateTimeOffset RecordedAt,
-        string? EmbeddingNote = null);
+        string? EmbeddingNote = null,
+        double? Similarity = null);
 
     /// <summary>Maps a domain bar to its wire shape.</summary>
     /// <param name="bar">The bar.</param>

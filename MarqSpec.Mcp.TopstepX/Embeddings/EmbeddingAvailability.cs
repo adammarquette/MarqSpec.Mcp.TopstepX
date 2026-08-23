@@ -14,6 +14,9 @@ public enum EmbeddingUnavailableReason
 
     /// <summary>The database is reachable but the <c>vector</c> extension is not installed.</summary>
     NoVectorExtension = 3,
+
+    /// <summary>The <c>vector</c> extension is installed but predates what semantic search needs.</summary>
+    VectorExtensionTooOld = 4,
 }
 
 /// <summary>
@@ -87,4 +90,36 @@ public sealed class EmbeddingAvailability
             "The database is reachable but the 'vector' extension is not installed, so there is nowhere to "
             + "put an embedding. Embedding is disabled rather than paid for and discarded. The compose stack "
             + "runs timescale/timescaledb-ha, which bundles it; a plain Postgres does not.");
+
+    /// <summary>The lowest <c>vector</c> version semantic search can run on.</summary>
+    /// <remarks>
+    /// <para>
+    /// <b>0.8 is where <c>hnsw.iterative_scan</c> arrives</b>, and search is not correct without it: an HNSW
+    /// scan visits a fixed number of candidates and applies remaining filters afterwards, so a filtered
+    /// search silently returns a short list rather than an error.
+    /// </para>
+    /// <para>
+    /// Verified on 0.7.4 rather than assumed — <c>SET LOCAL hnsw.iterative_scan</c> there raises
+    /// <c>invalid configuration parameter name</c> ("hnsw" is a reserved prefix) <b>and aborts the
+    /// transaction</b>. Reaching that at query time turns a search into an exception, which is precisely what
+    /// this server's fallback contract says must not happen.
+    /// </para>
+    /// </remarks>
+    public static readonly Version MinimumVectorVersion = new(0, 8);
+
+    /// <summary>The <c>vector</c> extension is older than semantic search requires.</summary>
+    /// <param name="installed">The version actually installed, for the message.</param>
+    /// <returns>An unavailable marker.</returns>
+    /// <remarks>
+    /// Refuses the whole vector path rather than running it without the iterative scan. Unfiltered search
+    /// would work on an older pgvector; a filtered one would quietly return fewer rows than exist, and a
+    /// quietly-short answer is worse than an honest substring match.
+    /// </remarks>
+    public static EmbeddingAvailability VectorExtensionTooOld(string installed) =>
+        new(
+            EmbeddingUnavailableReason.VectorExtensionTooOld,
+            $"The 'vector' extension is version {installed}, and semantic search needs "
+            + $"{MinimumVectorVersion.Major}.{MinimumVectorVersion.Minor} or newer for hnsw.iterative_scan - "
+            + "without it a filtered search silently returns fewer results than exist. Observation search "
+            + "matches text instead, which is correct if less precise. Upgrade pgvector to enable it.");
 }

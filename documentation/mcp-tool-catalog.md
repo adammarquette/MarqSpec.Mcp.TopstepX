@@ -134,13 +134,43 @@ specific or a longer window.
 ### `record_observation(text, symbol?, kind?, tags[]?)` · `search_observations(query, symbol?, k?)`
 Writes to **this** database. Not the venue, and no weakening of the read-only boundary.
 
-`search_observations` returns `{ mode, modeReason, observations }`. **`mode` says which path answered** —
-`Semantic` for vector similarity, `Text` for substring matching — and `modeReason` says why when it is not
-semantic.
+`search_observations` returns `{ mode, modeReason, observations, unsearchableCount }`. **`mode` says which
+path answered** — `Semantic` for vector similarity, `Text` for substring matching — and `modeReason` says why
+when it is not semantic.
 
 That field exists because an empty result is ambiguous without it: an agent receiving nothing cannot otherwise
 tell "semantic search found no match" from "semantic search never ran". Those warrant different next steps, and
 an empty `Text` result is worth retrying with different wording.
+
+**The two modes are not the same list in a different order.**
+
+| | `Semantic` | `Text` |
+|---|---|---|
+| Ordering | **Best first**, by similarity | **Most recent first** |
+| `similarity` on each match | Cosine, in `[-1, 1]` | `null` |
+| Reaches notes with no vector | No — see `unsearchableCount` | Yes, every row |
+| `modeReason` | `null` | Names the cause |
+
+`similarity` is `null` rather than a stand-in on the text path. A `1.0` meaning "it matched" would invite
+comparison across modes as though the numbers meant the same thing. Where it *is* present it should be read:
+without a score an agent cannot tell a strong match from the least-bad of a weak set, and will act on both the
+same way.
+
+**`unsearchableCount` is how many observations in scope have no vector**, and so could not take part. A
+non-zero value means this search saw less than the whole corpus — reported rather than logged, because a short
+result and a small corpus are otherwise indistinguishable. It goes non-zero when a note was written while the
+provider was rate-limited or down (see `embeddingNote` below), and returns to zero when those notes are
+re-embedded.
+
+**`null` there means "not asked", never "none".** On the semantic path the number is computed only when the
+page came back short, because that is the only time it changes what a caller should do — a full page is not
+missing anything that was requested, and the count costs a scan of the whole corpus in scope. On the text path
+it is `0`: that path reads every row, so the question was asked and the answer really is none.
+
+**Semantic search requires pgvector 0.8 or newer.** On anything older the server reports embeddings
+unavailable at startup and search matches text, naming the installed version and the required one. That is a
+deliberate refusal rather than a degraded vector search: 0.8 is where `hnsw.iterative_scan` arrives, and
+without it a *filtered* similarity search silently returns fewer results than exist.
 
 **Availability means a key AND somewhere to put the vector**, checked once at startup. A key with no `vector`
 extension would embed at real cost and then fail to store the result, so that combination reports unavailable

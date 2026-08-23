@@ -32,7 +32,7 @@ jobs:
       contents: read
       packages: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           # MinVer derives the version from the nearest v-prefixed tag, and a shallow clone yields
           # 0.0.0-alpha.0 SILENTLY rather than failing. Every job that builds or stamps a version needs this.

@@ -56,6 +56,22 @@ The root contract's five apply here unchanged. Four land specifically on the pip
   not the evidence. (`check-paced-paging.sh`, gh#43, cost one red CI run.)
 - **A conflicting PR gets no CI at all** — `mergeable_state: dirty` produces zero workflow runs, which reads as
   "no checks reported" rather than as a conflict. Check the state before waiting on checks.
+- **A closing keyword binds only on a PR into the DEFAULT branch** (gh#101). `closingIssuesReferences` is
+  therefore empty on every ladder promotion however the body is written, so `issue-link` — which reads it as
+  ground truth, correctly — could never pass a promotion on its primary path and fell through to
+  `This PR cites no issue` about a body whose first line was `Closes #99`. Both promotions this repo has ever
+  made (#100, #106) hit it, and both reached for the weaker `Related to #N`, which is how a gate teaches people
+  to route around it. The gate now accepts a body-read `Closes #N` **on `staging` and `main` only** — not an
+  exemption: a promotion citing nothing still fails, and the issue still does not auto-close, so the run says
+  so. Stacked PRs onto a feature branch stay excluded on purpose; `Related to #N` is the correct form there
+  (gh#57). **Generalise past this gate**: any check that reads a GitHub linkage as truth has to ask what base
+  the PR targets, because most of that machinery is default-branch-only.
+- **Run a text-matching gate before believing its diagnostics.** Proving the above by mutation turned up a
+  second defect nobody could have read off the file: `issue-link`'s backtick diagnostic was the only one of the
+  three greps without `-i`, so it matched a lowercase `` `closes #1` `` and **missed the canonical**
+  `` `Closes #N` `` that `CONTRIBUTING.md` tells everyone to write. It had been absent for the exact input it
+  exists to explain since gh#35, on the path that fires most often, and every reading of that line said it
+  worked.
 - **A PR into a non-integration base used to get no CI at all, and read as `CLEAN`** (gh#60). `ci.yml` and
   `codeql.yml` filtered `pull_request` to `[develop, staging, main]`, so a stacked PR onto a feature branch
   produced zero runs — and because the required checks hang off the `develop` ruleset, nothing was pending or

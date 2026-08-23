@@ -47,8 +47,19 @@ public sealed class MarketDataOptions
     /// The largest number of rows a single windowed read returns.
     /// </summary>
     /// <remarks>
+    /// <para>
     /// Over this, a read <b>refuses and reports the real count</b>. It never truncates: a silently shortened
     /// series is a chart with the interesting part cut off, and it arrives looking exactly like a complete one.
+    /// </para>
+    /// <para>
+    /// <b>It is not the only cap on that quantity, and above 250,000 it stops being the binding one.</b>
+    /// <c>BarGapDetector.MaxBucketsPerPass</c> bounds what a single detection pass will enumerate, at a fixed
+    /// 250,000, so the effective ceiling on a windowed read is the lesser of the two. Setting this higher
+    /// widens no read; it only changes which cap the refusal names. The range is left open to 1,000,000
+    /// anyway, because the disagreement is reported at the tool boundary as an error naming both numbers
+    /// rather than refused at startup — a server that will not boot on a number it can simply explain is a
+    /// server an operator cannot inspect (gh#96).
+    /// </para>
     /// </remarks>
     [Range(1, 1_000_000)]
     public int MaxRows { get; init; } = 5_000;

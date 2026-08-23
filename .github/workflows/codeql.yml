@@ -1,8 +1,10 @@
 name: CodeQL Security Analysis
 
 on:
+  # NO `branches:` filter, for the reason spelled out in ci.yml (gh#60): a filtered trigger gave a PR into a
+  # non-integration base no run at all, which reads as CLEAN rather than as unchecked. Security analysis is
+  # the last thing that should skip itself silently on a stacked PR.
   pull_request:
-    branches: [develop, staging, main]
   push:
     branches: [develop, staging, main]
   schedule:

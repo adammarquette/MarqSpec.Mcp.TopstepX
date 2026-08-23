@@ -37,13 +37,19 @@ tool and change this page in the same PR.
   **Entries below have not yet been brought into line** — six write `null` without saying which form they
   mean, and all six are in fact omitted fields. Classifying and correcting them is gh#85; until then, read
   this table rather than the individual entry.
-- **`resolutionMinutes` is caller-chosen, and any *positive* resolution is servable.** No tool enumerates
-  supported timeframes, because there is no list — each resolution is an independent cached series fetched from
-  the venue, never derived from a finer one
-  ([ADR-0010](adr/0010-per-call-resolutions-fetched-not-derived.md)). **Zero and negative are refused**, by
-  every tool that takes a resolution and with the offending value named. They used to be refused only by the
+- **`resolutionMinutes` is caller-chosen, and every resolution from `1` to `10080` — one minute to one week —
+  is servable.** No tool enumerates supported timeframes, because the range is contiguous rather than a list —
+  each resolution is an independent cached series fetched from the venue, never derived from a finer one
+  ([ADR-0010](adr/0010-per-call-resolutions-fetched-not-derived.md)). **Both ends are refused**, by every tool
+  that takes a resolution and with the offending value named. Zero and negative used to be refused only by the
   tools that also validate a window; on the other four a `0` arrived as a raw `ArgumentOutOfRangeException` or,
-  worse, as an empty series — a caller's mistake wearing the shape of a quiet market (gh#69).
+  worse, as an empty series — a caller's mistake wearing the shape of a quiet market (gh#69). The ceiling
+  arrived later, for the same fault at the other end: `2147483647` overflowed the look-back arithmetic and
+  faulted, while sailing past that guard because it is positive (gh#81). Above a week a timeframe is a calendar
+  month or a quarter, whose length in minutes is not fixed, so nothing above the ceiling is a bar anyone could
+  be asking for. **A large `count` is refused alongside it**: `get_latest_bars` reaches back four bar spans per
+  bar wanted, so a coarse resolution and a big count — each inside its own bound — can name a window starting
+  before the calendar does, and that is an error naming both rather than a fault.
 - **Nothing is derived across a contract roll.** A series is keyed by the venue-neutral symbol and the front
   month rolls quarterly, so a long window holds **two contracts** that do not trade at the same price. Every
   bar-derived payload carries `contracts` — `span`, plus one segment per contiguous run with its

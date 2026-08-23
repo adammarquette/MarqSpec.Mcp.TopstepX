@@ -23,6 +23,24 @@ public sealed class ToolGuards(IOptions<MarketDataOptions> options)
 {
     private readonly MarketDataOptions _options = options.Value;
 
+    /// <summary>
+    /// The coarsest bar this server serves, in minutes — one week.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>A product bound, not an arithmetic one.</b> It is not <c>int.MaxValue</c> divided by something that
+    /// happens to survive; it is the coarsest thing a minute count can mean. Timeframes run 1m through 60m,
+    /// then 240m, then the day at 1,440 and the week at 10,080. Above a week the conventional units are the
+    /// calendar month and the quarter, whose length in minutes is <i>not fixed</i> — no integer expresses
+    /// them, so there is nothing above this a caller could be asking for.
+    /// </para>
+    /// <para>
+    /// The overflow that prompted it is a consequence, not the reason. See <see cref="LookbackWindow"/>: the
+    /// ceiling on its own does not make that arithmetic safe.
+    /// </para>
+    /// </remarks>
+    public const int MaxResolutionMinutes = 7 * 24 * 60;
+
     /// <summary>The row cap a single windowed read may return.</summary>
     public int MaxRows => _options.MaxRows;
 
@@ -31,7 +49,10 @@ public sealed class ToolGuards(IOptions<MarketDataOptions> options)
     /// </summary>
     /// <param name="resolutionMinutes">The bar size in minutes.</param>
     /// <returns>The resolution.</returns>
-    /// <exception cref="McpException"><paramref name="resolutionMinutes"/> is not positive.</exception>
+    /// <exception cref="McpException">
+    /// <paramref name="resolutionMinutes"/> is not positive, or is coarser than
+    /// <see cref="MaxResolutionMinutes"/>.
+    /// </exception>
     /// <remarks>
     /// <para>
     /// Separate from <see cref="ValidateWindow"/> because half this surface never validates a window: the tools
@@ -41,18 +62,86 @@ public sealed class ToolGuards(IOptions<MarketDataOptions> options)
     /// (gh#69).
     /// </para>
     /// <para>
+    /// <b>The bound is stated in both directions.</b> gh#69 fixed the floor and left the ceiling reading as
+    /// though it were exhaustive; it was not. <c>int.MaxValue</c> minutes is a bar span of ~1.3 × 10^18 ticks,
+    /// and it faulted for the same reason a <c>0</c> did — while sailing past the new guard, because it is
+    /// positive (gh#81).
+    /// </para>
+    /// <para>
     /// <b>Static, and deliberately so.</b> Unlike the row cap this rule depends on no configuration, so it can
     /// be reached from a pure policy function — <see cref="SnapshotTools.ResolveResolutions"/> — without that
     /// function acquiring a constructor, a container, and a reason not to be pinned by a test that needs
     /// neither.
     /// </para>
     /// </remarks>
-    public static int ValidateResolution(int resolutionMinutes) =>
-        resolutionMinutes <= 0
-            ? throw new McpException(
+    public static int ValidateResolution(int resolutionMinutes)
+    {
+        if (resolutionMinutes <= 0)
+        {
+            throw new McpException(
                 "resolutionMinutes must be positive; got "
-                + resolutionMinutes.ToString(System.Globalization.CultureInfo.InvariantCulture) + ".")
+                + resolutionMinutes.ToString(System.Globalization.CultureInfo.InvariantCulture) + ".");
+        }
+
+        return resolutionMinutes > MaxResolutionMinutes
+            ? throw new McpException(
+                "resolutionMinutes "
+                + resolutionMinutes.ToString(System.Globalization.CultureInfo.InvariantCulture)
+                + " is coarser than the largest bar this server serves, "
+                + MaxResolutionMinutes.ToString(System.Globalization.CultureInfo.InvariantCulture)
+                + " minutes (one week). Above a week a timeframe is a calendar month or a quarter, whose "
+                + "length in minutes is not fixed, so no minute count expresses one.")
             : resolutionMinutes;
+    }
+
+    /// <summary>
+    /// Sizes the look-back window a bar count needs, anchored on a closed bucket.
+    /// </summary>
+    /// <param name="end">The window end — the last closed bucket, exclusive.</param>
+    /// <param name="resolutionMinutes">The bar size in minutes, already validated.</param>
+    /// <param name="count">How many bars are wanted, already validated.</param>
+    /// <returns>The window to read.</returns>
+    /// <exception cref="McpException">The window would start before the calendar does.</exception>
+    /// <remarks>
+    /// <para>
+    /// The reach is four bar spans per bar wanted, plus four days. Sessions are shut roughly a quarter of the
+    /// clock and closed for whole weekends, so a window sized to the bar count alone comes up short.
+    /// </para>
+    /// <para>
+    /// <b>It lives here, and it is widened to <see cref="Int128"/>, because the <see cref="long"/> form was
+    /// unchecked.</b> <c>barSize.Ticks * count * 4</c> wrapped negative at a large resolution and
+    /// <c>end - reach</c> left the tool boundary as a raw <see cref="ArgumentOutOfRangeException"/> (gh#81).
+    /// </para>
+    /// <para>
+    /// <b><see cref="MaxResolutionMinutes"/> does not on its own make this safe, which is why the check is
+    /// here as well as there.</b> <c>MaxRows</c> is operator configuration and ranges to 1,000,000. At a
+    /// weekly bar — exactly at the ceiling, nothing out of range about it — 62,500 bars is a reach of about
+    /// 1,200 years, so the window starts before year one and the same fault returns. Both axes are inside
+    /// their own bound and the product is not; a bound on either alone is not the rule.
+    /// </para>
+    /// <para>
+    /// <b>It refuses rather than clamping to the start of the calendar.</b> A clamped window answers with
+    /// however many bars the store happens to hold, and a short series is indistinguishable from a complete
+    /// one — the same reason <see cref="ValidateWindow"/> refuses an over-cap window instead of truncating it.
+    /// </para>
+    /// </remarks>
+    public static BarRange LookbackWindow(DateTimeOffset end, int resolutionMinutes, int count)
+    {
+        Int128 reach = ((Int128)TimeSpan.FromMinutes(resolutionMinutes).Ticks * count * 4)
+            + (4 * TimeSpan.TicksPerDay);
+
+        if (reach > end.UtcTicks)
+        {
+            throw new McpException(
+                "count " + count.ToString(System.Globalization.CultureInfo.InvariantCulture)
+                + " at resolutionMinutes "
+                + resolutionMinutes.ToString(System.Globalization.CultureInfo.InvariantCulture)
+                + " reaches back further than the calendar goes, so there is no window to read. "
+                + "Ask for fewer bars, or a finer resolution.");
+        }
+
+        return new BarRange(end - TimeSpan.FromTicks((long)reach), end);
+    }
 
     /// <summary>
     /// Validates a requested window and returns it as a range.

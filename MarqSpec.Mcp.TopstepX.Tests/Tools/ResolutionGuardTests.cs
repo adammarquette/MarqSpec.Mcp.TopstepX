@@ -54,6 +54,9 @@ public sealed class ResolutionGuardTests : IDisposable
     private readonly CountingGateway _gateway;
     private readonly MarketDataTools _marketData;
     private readonly SnapshotTools _snapshot;
+    private readonly BarCacheService _cache;
+    private readonly IndicatorCatalog _catalog;
+    private readonly FakeTimeProvider _clock;
 
     public ResolutionGuardTests()
     {
@@ -92,30 +95,30 @@ public sealed class ResolutionGuardTests : IDisposable
         });
 
         BarSessionCalendar calendar = BarSessionCalendar.Parse("16:00", []);
-        IndicatorCatalog catalog = new(
+        _catalog = new IndicatorCatalog(
             Options.Create(new IndicatorOptions { AtrPeriod = 3, RsiPeriod = 3 }), calendar);
-        FakeTimeProvider clock = new(Bucket(SeededBars).AddHours(2));
+        _clock = new FakeTimeProvider(Bucket(SeededBars).AddHours(2));
 
         _gateway = new CountingGateway([]);
 
-        IndicatorProjector projector = new(_database, catalog, NullLogger<IndicatorProjector>.Instance);
-        BarCacheService cache = new(
-            _database, _gateway, calendar, projector, clock, NullLogger<BarCacheService>.Instance);
+        IndicatorProjector projector = new(_database, _catalog, NullLogger<IndicatorProjector>.Instance);
+        _cache = new BarCacheService(
+            _database, _gateway, calendar, projector, _clock, NullLogger<BarCacheService>.Instance);
 
         _marketData = new MarketDataTools(
-            cache,
+            _cache,
             _database,
             new InstrumentRegistry(options),
-            catalog,
+            _catalog,
             _gateway,
             new ToolGuards(options),
             new StoreAvailabilityHolder(),
-            clock);
+            _clock);
 
         _snapshot = new SnapshotTools(
             _marketData,
-            new ReferenceTools(new InstrumentRegistry(options), calendar, _gateway, options, clock),
-            new IndicatorCatalogNames(catalog));
+            new ReferenceTools(new InstrumentRegistry(options), calendar, _gateway, options, _clock),
+            new IndicatorCatalogNames(_catalog));
     }
 
     public void Dispose() => _database.Dispose();
@@ -254,15 +257,127 @@ public sealed class ResolutionGuardTests : IDisposable
         series.Bars.Should().HaveCount(10, "forty five-minute bars were seeded and ten were asked for");
     }
 
-    // ── The drift guard ──────────────────────────────────────────────────────────────────────────────
+    // ── The other end of the same axis (gh#81) ───────────────────────────────────────────────────────
+
+    [Theory]
+    [InlineData(int.MaxValue)]
+    [InlineData(ToolGuards.MaxResolutionMinutes + 1)]
+    public void AResolutionPastTheCeiling_IsRefused(int resolutionMinutes)
+    {
+        // The rule's other direction. gh#69 gave it a floor and left the wording exhaustive; it was not.
+        Action validate = () => ToolGuards.ValidateResolution(resolutionMinutes);
+
+        validate.Should().Throw<McpException>()
+            .WithMessage("*resolutionMinutes*")
+            .WithMessage("*" + resolutionMinutes.ToString(CultureInfo.InvariantCulture) + "*");
+    }
 
     [Fact]
-    public async Task NoToolTakingAResolution_LetsANonPositiveOneThrough()
+    public void AResolutionAtTheCeiling_PassesThroughUnchanged()
+    {
+        // A guard that is red on correct input is not a guard, it is an outage. The ceiling is inclusive.
+        ToolGuards.ValidateResolution(ToolGuards.MaxResolutionMinutes)
+            .Should().Be(ToolGuards.MaxResolutionMinutes);
+    }
+
+    [Fact]
+    public void TheLookbackReach_IsUnchangedForAnOrdinaryRequest()
+    {
+        // The arithmetic moved into ToolGuards, so pin what it produces rather than trusting the move. Four
+        // bar spans per bar wanted, plus four days -- hand-computed, not read back from the implementation.
+        DateTimeOffset end = Bucket(SeededBars);
+
+        BarRange window = ToolGuards.LookbackWindow(end, 5, 10);
+
+        window.End.Should().Be(end);
+        window.Start.Should().Be(end - TimeSpan.FromMinutes(5 * 10 * 4) - TimeSpan.FromDays(4));
+    }
+
+    [Theory]
+    [InlineData(int.MaxValue)]
+    [InlineData(10_081)]
+    public async Task GetLatestBars_RefusesAResolutionPastTheCeiling(int resolutionMinutes)
+    {
+        // The reported symptom. `barSize.Ticks * wanted * 4` is long arithmetic in an UNCHECKED context: at
+        // int.MaxValue minutes barSize.Ticks is already ~1.3e18, so the product wraps and `end - reach` lands
+        // outside DateTime's range -- a raw ArgumentOutOfRangeException where a tool error belongs. It
+        // survives gh#69's guard for the one reason that guard cannot help with: the value is positive.
+        Func<Task> call = () =>
+            _marketData.GetLatestBars("ES", resolutionMinutes, 10, CancellationToken.None);
+
+        (await call.Should().ThrowAsync<McpException>()).WithMessage("*resolutionMinutes*");
+    }
+
+    [Fact]
+    public async Task AResolutionAtTheCeiling_StillAnswers()
+    {
+        // The boundary from the servable side. A ceiling that also refuses the coarsest bar it claims to
+        // serve is a ceiling one minute lower, and nothing in the error would say so.
+        Func<Task> call = () => _marketData.GetLatestBars("ES", 10_080, 10, CancellationToken.None);
+
+        await call.Should().NotThrowAsync();
+    }
+
+    [Fact]
+    public async Task ACountThatWouldReachBeforeTheCalendar_IsRefused_NotFaulted()
+    {
+        // The ceiling alone does NOT close this bug, and this is the proof. MaxRows is operator
+        // configuration -- [Range(1, 1_000_000)] on MarketDataOptions -- and the reach is four bar spans per
+        // bar asked for. At a weekly bar, exactly at the ceiling, 62,500 bars reaches back about 1,200 years:
+        // past year one, so `end - reach` throws exactly the way int.MaxValue did. Nothing about that
+        // request is out of range on either axis taken alone.
+        MarketDataTools capped = WithRowCap(1_000_000);
+
+        Func<Task> call = () => capped.GetLatestBars("ES", 10_080, 62_500, CancellationToken.None);
+
+        (await call.Should().ThrowAsync<McpException>()).WithMessage("*resolutionMinutes*");
+
+        // Refused, not quietly shortened. Clamping the window to year one would answer with however many
+        // bars the store happened to hold -- a series indistinguishable from a complete one, which is the
+        // failure mode ValidateWindow already refuses to commit for an over-cap window.
+        _gateway.BarRequests.Should().Be(0, "the reach is judged before the first page is read");
+    }
+
+    /// <summary>Rebuilds the market-data tools against a different row cap.</summary>
+    /// <param name="maxRows">The cap to build against.</param>
+    /// <returns>The tools.</returns>
+    private MarketDataTools WithRowCap(int maxRows)
+    {
+        IOptions<MarketDataOptions> capped = Options.Create(new MarketDataOptions
+        {
+            Instruments = "ES,NQ",
+            MaxRows = maxRows,
+            SessionCloseCentral = "16:00",
+        });
+
+        return new MarketDataTools(
+            _cache,
+            _database,
+            new InstrumentRegistry(capped),
+            _catalog,
+            _gateway,
+            new ToolGuards(capped),
+            new StoreAvailabilityHolder(),
+            _clock);
+    }
+
+    // ── The drift guard ──────────────────────────────────────────────────────────────────────────────
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(-5)]
+    [InlineData(ToolGuards.MaxResolutionMinutes + 1)]
+    [InlineData(int.MaxValue)]
+    public async Task NoToolTakingAResolution_LetsAnUnservableOneThrough(int bad)
     {
         // "A cap enforced in three of four places is not a cap; it is a cap plus one tool that quietly
         // returns everything." -- ToolGuards' own XML docs, and exactly what happened to this rule. So the
         // sweep walks the surface by reflection rather than naming tools: a tool added tomorrow is covered
         // without anyone remembering to come back here.
+        //
+        // It walks the whole AXIS as well as the whole surface (gh#81). Driven by 0 alone it stayed green
+        // through a ceiling that did not exist, because every tool refused the value it was handed -- the
+        // sweep proved the floor and read as though it proved the parameter.
         const BindingFlags Surface = BindingFlags.Public | BindingFlags.Instance | BindingFlags.DeclaredOnly;
 
         List<MethodInfo> takingAResolution =
@@ -281,11 +396,15 @@ public sealed class ResolutionGuardTests : IDisposable
         {
             _gateway.ResetCounters();
 
-            Func<Task> call = () => Invoke(tool, Instance(tool.DeclaringType!));
+            Func<Task> call = () => Invoke(tool, Instance(tool.DeclaringType!), bad);
 
+            // The EXCEPTION TYPE is the assertion, not merely that something threw. An
+            // ArgumentOutOfRangeException out of the arithmetic also "throws", and it is exactly the failure
+            // this fixture exists to keep off the tool boundary.
             (await call.Should().ThrowAsync<McpException>(
-                tool.Name + " accepts a resolutionMinutes and does not refuse a non-positive one, so a "
-                + "caller mistake reaches it as a fault or as a plausible-looking empty answer."))
+                tool.Name + " accepts a resolutionMinutes and does not refuse "
+                + bad.ToString(CultureInfo.InvariantCulture) + ", so a caller mistake reaches it as a fault "
+                + "or as a plausible-looking empty answer."))
                 .WithMessage("*resolutionMinutes*");
 
             // Refusing is only half of it, and the half that a per-call-site patch also satisfies. Deleting
@@ -313,10 +432,11 @@ public sealed class ResolutionGuardTests : IDisposable
     /// <summary>Invokes a tool with a bad resolution and every other argument filled plausibly.</summary>
     /// <param name="tool">The tool method.</param>
     /// <param name="instance">The tool instance.</param>
+    /// <param name="bad">The unservable resolution to drive it with.</param>
     /// <returns>The completed call.</returns>
-    private static async Task Invoke(MethodInfo tool, object instance)
+    private static async Task Invoke(MethodInfo tool, object instance, int bad)
     {
-        object?[] arguments = [.. tool.GetParameters().Select(Filler)];
+        object?[] arguments = [.. tool.GetParameters().Select(p => Filler(p, bad))];
 
         try
         {
@@ -335,16 +455,17 @@ public sealed class ResolutionGuardTests : IDisposable
 
     /// <summary>A plausible value for one tool argument — and a deliberately bad resolution.</summary>
     /// <param name="parameter">The parameter to fill.</param>
+    /// <param name="bad">The unservable resolution to drive it with.</param>
     /// <returns>The value to pass.</returns>
-    private static object? Filler(ParameterInfo parameter) => parameter.Name switch
+    private static object? Filler(ParameterInfo parameter, int bad) => parameter.Name switch
     {
         // A MIXED set, not a bare [0]. On its own that proves less than it looks: a per-slice check still
         // throws an McpException, only one slice later, so the throw assertion cannot tell the two designs
         // apart either way. It is the BarRequests == 0 assertion in the sweep that separates them, and the
         // mixed set is what gives that assertion something to catch -- a bare [0] would refuse on the first
         // member under both designs and spend nothing under either.
-        "resolutionMinutes" when parameter.ParameterType == typeof(int[]) => new[] { 5, 0 },
-        "resolutionMinutes" => 0,
+        "resolutionMinutes" when parameter.ParameterType == typeof(int[]) => new[] { 5, bad },
+        "resolutionMinutes" => bad,
         "indicator" => "atr",
         "symbol" => "ES",
         _ => Blank(parameter),

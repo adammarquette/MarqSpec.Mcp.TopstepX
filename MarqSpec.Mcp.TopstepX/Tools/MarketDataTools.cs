@@ -109,10 +109,9 @@ public sealed class MarketDataTools(
         DateTimeOffset now = _clock.GetUtcNow();
         DateTimeOffset end = BarGapDetector.AlignDown(now, barSize);
 
-        // Reach back four times the bar span, plus four days. Sessions are shut roughly a quarter of the
-        // clock and closed for whole weekends, so a window sized to the bar count alone comes up short.
-        TimeSpan reach = TimeSpan.FromTicks(barSize.Ticks * wanted * 4) + TimeSpan.FromDays(4);
-        BarRange window = new(end - reach, end);
+        // Sized in ToolGuards rather than here. Reaching back is a rule about the resolution and the count
+        // together -- and it was the one arithmetic on this surface that could still fault (gh#81).
+        BarRange window = ToolGuards.LookbackWindow(end, resolutionMinutes, wanted);
 
         BarReadResult result = await ReadAsync(instrument, resolutionMinutes, window, cancellationToken)
             .ConfigureAwait(false);

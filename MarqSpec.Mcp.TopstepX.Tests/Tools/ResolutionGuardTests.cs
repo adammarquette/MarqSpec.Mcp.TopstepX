@@ -322,10 +322,12 @@ public sealed class ResolutionGuardTests : IDisposable
     public async Task ACountThatWouldReachBeforeTheCalendar_IsRefused_NotFaulted()
     {
         // The ceiling alone does NOT close this bug, and this is the proof. MaxRows is operator
-        // configuration -- [Range(1, 1_000_000)] on MarketDataOptions -- and the reach is four bar spans per
-        // bar asked for. At a weekly bar, exactly at the ceiling, 62,500 bars reaches back about 1,200 years:
-        // past year one, so `end - reach` throws exactly the way int.MaxValue did. Nothing about that
-        // request is out of range on either axis taken alone.
+        // configuration -- [Range(1, 1_000_000)] on MarketDataOptions -- and the reach is FOUR bar spans per
+        // bar asked for. At a weekly bar, exactly at the ceiling, 62,500 bars SPAN about 1,200 years, so they
+        // REACH about 4,800: past year one, and `end - reach` throws exactly the way int.MaxValue did. The 4x
+        // is the whole finding -- it is what carries a pair that is legal on both axes past a calendar neither
+        // axis knows about, and it puts the real boundary near 26,400 weekly bars rather than 62,500. Nothing
+        // about this request is out of range on either axis taken alone.
         MarketDataTools capped = WithRowCap(1_000_000);
 
         Func<Task> call = () => capped.GetLatestBars("ES", 10_080, 62_500, CancellationToken.None);
@@ -336,6 +338,21 @@ public sealed class ResolutionGuardTests : IDisposable
         // bars the store happened to hold -- a series indistinguishable from a complete one, which is the
         // failure mode ValidateWindow already refuses to commit for an over-cap window.
         _gateway.BarRequests.Should().Be(0, "the reach is judged before the first page is read");
+    }
+
+    [Fact]
+    public void ANegativeCount_IsRefused_RatherThanWrappingBackThroughTheNarrowingCast()
+    {
+        // The guard bounds only the UPPER side of the reach, and the widened Int128 is narrowed back with an
+        // UNCHECKED cast. A negative count makes the product negative, so `reach > end.UtcTicks` is false and
+        // `(long)reach` wraps -- reintroducing, inside the new guard, the raw fault this guard exists to
+        // remove. Not reachable through a tool today because ValidateCount runs first, but LookbackWindow is
+        // public static and its only stated defence is a <param> comment saying "already validated".
+        Action size = () => ToolGuards.LookbackWindow(Bucket(SeededBars), 10_080, -1_000_000);
+
+        size.Should().Throw<McpException>()
+            .WithMessage("*count*")
+            .WithMessage("*-1000000*");
     }
 
     /// <summary>Rebuilds the market-data tools against a different row cap.</summary>

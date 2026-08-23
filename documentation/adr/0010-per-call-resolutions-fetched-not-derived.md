@@ -208,13 +208,24 @@ supported-resolutions *list* — the range is contiguous, and the reason for rej
 above (it caps cost by capping the questions) is untouched by closing an end nobody can ask a question in.
 
 **And the ceiling alone would not have fixed the bug, which is the part worth carrying forward.** The
-look-back on `get_latest_bars` reaches four bar spans per bar wanted. `MaxRows` is operator configuration and
-its range is `[1, 1_000_000]`, so 62,500 weekly bars — a resolution exactly at the ceiling and a count exactly
-inside the cap — reaches back about 1,200 years and starts the window before year one. Same fault, both axes
-legal. The bound that actually holds is on the **product**, in `ToolGuards.LookbackWindow`, which widens the
-multiply to `Int128` and refuses rather than clamping the window to the start of the calendar — a clamped
-window answers with whatever the store happened to hold, and a short series is indistinguishable from a
-complete one.
+look-back on `get_latest_bars` reaches **four bar spans per bar wanted**. `MaxRows` is operator configuration
+and its range is `[1, 1_000_000]`, so 62,500 weekly bars — a resolution exactly at the ceiling and a count
+exactly inside the cap — *span* about 1,200 years and therefore *reach* about **4,800**, starting the window
+before year one. Same fault, both axes legal.
+
+**The 4× is the finding, not an aside.** It is the multiplier that carries a pair legal on both axes past a
+calendar neither axis knows about, and it also places the boundary: refusal begins around **26,400** weekly
+bars, not 62,500. The bound that actually holds is therefore on the **product**, in `ToolGuards.LookbackWindow`,
+which widens the multiply to `Int128`, refuses a non-positive reach as well as an over-long one — the narrowing
+cast back to `long` is unchecked, so a negative product would otherwise wrap — and refuses rather than clamping
+the window to the start of the calendar. A clamped window answers with whatever the store happened to hold, and
+a short series is indistinguishable from a complete one.
+
+**`LookbackWindow` bounds the calendar, and only the calendar.** It says nothing about the row cap disagreeing
+with `BarGapDetector.MaxBucketsPerPass`: `MaxRows` ranges to 1,000,000 and a single detection pass enumerates
+at most 250,000 buckets, so an operator can configure a request that clears every boundary check and still
+faults one layer down as a raw `ArgumentOutOfRangeException`. That is a separate bound on a separate quantity
+and it is carded as **gh#96**.
 
 ## Follow-ups
 

@@ -51,7 +51,7 @@ ADR, `AGENTS.md`, or the code, **put it there instead**.
   least announces itself as a catastrophic failure. **Read the COUNT, not the exit code** — `Passed: N` with
   the N you expected, never a bare "green". A run that says `Total: 0` is a run that proved nothing. Found
   during the review of gh#73/PR #79, where the reviewer worked around it by running every gate from a
-  worktree under `C:	mp` instead.
+  worktree under `C:/tmp` instead.
 
 - **[2026-08-23] Docker IS up now, so the integration tier runs locally — and the Application Control block
   is INTERMITTENT, not gone.** Two corrections to the entries below, from gh#42, and they point in opposite

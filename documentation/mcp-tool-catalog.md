@@ -143,7 +143,7 @@ Returns `{ value, bucketStart, contractId }`, or `{ value: null }` meaning *cann
 `contractId` is the contract the value belongs to. Two readings from different contracts are not
 comparable, and nothing in a bare number says so.
 
-### `get_key_levels(symbol, resolutionMinutes, lookbackBars)`
+### `get_key_levels(symbol, resolutionMinutes, lookbackBars?)`
 Support and resistance as **zones**, not lines.
 
 Returns `{ levels: [{ timeframeMinutes, bottom, top, midpoint, kind, significance, touchCount,
@@ -155,8 +155,9 @@ about to reach. So when the requested lookback spans a roll, `detectedOverBars` 
 lookback asked for — reported rather than implied, because silently halving the history behind a level
 changes how much weight it deserves.
 
-**One resolution per call, and `lookbackBars` is required** — this page described an array of timeframes and
-no lookback until gh#48, and neither has ever matched the code. The returned field is named
+**One resolution per call**, and `lookbackBars` defaults to 500 — its description said *"500 is a reasonable
+default"* while the schema required it, until gh#70. This page described an array of timeframes and no
+lookback at all until gh#48, and neither had ever matched the code. The returned field is named
 `timeframeMinutes` while the argument is `resolutionMinutes`; that asymmetry is real, and renaming the payload
 field is a breaking change to the tool contract rather than a typo to quietly fix here.
 
@@ -178,12 +179,14 @@ patterns rather than passed through as text. A near-miss is `Unknown`, never a g
 > executes, and on a prop platform a *funded* account reports `simulated: true` while a real payout rides on it.
 > Against a real login it classifies every account, funded ones included, as practice.
 
-### `get_positions(accountId)` · `get_orders(accountId, openOnly?, fromUtc?, toUtc?)` · `get_trades(accountId, fromUtc, toUtc)`
+### `get_positions(accountId)` · `get_orders(accountId, openOnly, fromUtc?, toUtc?)` · `get_trades(accountId, fromUtc, toUtc)`
 
-**`get_orders` takes `openOnly` first, and it defaults to `false`.** When it is true the window is ignored,
-so `fromUtc` and `toUtc` may be omitted; when it is false they must both be supplied or the call errors. That
-is a **conditional** requirement, which a JSON schema cannot express — the schema marks both optional and the
-server enforces the pairing with a message naming what is missing.
+**`get_orders` takes `openOnly` first, and it is required — deliberately.** `true` and `false` ask
+*different questions* — the working book, or a historical window — and defaulting to either answers the one
+the caller did not ask. When it is true the window is ignored, so `fromUtc` and `toUtc` may be omitted; when
+it is false they must both be supplied. That is a **conditional** requirement, which a JSON schema cannot
+express, so the schema marks the window optional and the server enforces the pairing, naming which of the two
+is absent.
 
 Until gh#70 both window arguments were required on the wire while their descriptions said *"Required unless
 openOnly"*, so the documented way to ask for working orders was rejected before it reached any code.

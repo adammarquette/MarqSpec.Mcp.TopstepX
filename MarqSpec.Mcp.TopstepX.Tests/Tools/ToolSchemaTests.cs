@@ -100,6 +100,37 @@ public sealed class ToolSchemaTests
         }
     }
 
+    [Theory]
+    [MemberData(nameof(EveryToolParameter))]
+    public void ANullableParameter_IsOmittableInTheSchema(string tool, string parameterName)
+    {
+        // The structural half, and the one that does not depend on how a description happens to be worded.
+        //
+        // The wording check below it is a heuristic over four phrases, so it is silenced by rewording rather
+        // than by fixing — a real weakness, and the review of gh#70 proved it by finding `lookbackBars`
+        // ("500 is a reasonable default") and `openOnly` sitting outside those phrases. This asks the type
+        // system instead: a parameter declared nullable is one the author has already said may be absent, so
+        // the schema must agree. Nothing about it can be reworded away.
+        //
+        // It does not subsume the wording check: `lookbackBars` is a non-nullable `int` whose description
+        // promises a default, and only the wording check reaches that.
+        MethodInfo method = ToolMethods().Single(m => m.DeclaringType!.Name + "." + m.Name == tool);
+        ParameterInfo parameter = method.GetParameters().Single(p => p.Name == parameterName);
+
+        if (!IsNullable(parameter))
+        {
+            return;
+        }
+
+        RequiredOf(method).Should().NotContain(
+            parameterName,
+            "{0}.{1} is declared nullable, so the author has already said it may be absent — but the SDK "
+            + "reads the C# DEFAULT VALUE, not the type, so it needs an explicit '= null' to be omittable "
+            + "on the wire.",
+            tool,
+            parameterName);
+    }
+
     // ── The search limit, which is a stated number rather than a hint ────────────────────────────────
 
     [Fact]
@@ -130,11 +161,16 @@ public sealed class ToolSchemaTests
 
     // ── Helpers ──────────────────────────────────────────────────────────────────────────────────────
 
+    private static bool IsNullable(ParameterInfo parameter) =>
+        Nullable.GetUnderlyingType(parameter.ParameterType) is not null
+        || new NullabilityInfoContext().Create(parameter).WriteState == NullabilityState.Nullable;
+
     private static IEnumerable<MethodInfo> ToolMethods() =>
         typeof(ToolPayloads).Assembly
             .GetTypes()
             .Where(t => t.GetCustomAttribute<McpServerToolTypeAttribute>() is not null)
-            .SelectMany(t => t.GetMethods(BindingFlags.Public | BindingFlags.Instance | BindingFlags.DeclaredOnly))
+            .SelectMany(t => t.GetMethods(
+                BindingFlags.Public | BindingFlags.Instance | BindingFlags.Static | BindingFlags.DeclaredOnly))
             .Where(m => m.GetCustomAttribute<McpServerToolAttribute>() is not null)
             .OrderBy(m => m.DeclaringType!.Name)
             .ThenBy(m => m.Name);

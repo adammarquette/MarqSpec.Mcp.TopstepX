@@ -331,7 +331,9 @@ observation in scope, casting a `uuid` to text per row — nothing an index on `
 hundred thousand observations it is a hundred thousand row scan to produce one integer. A caller holding a
 full page is not missing anything they asked for, so the number would not change what they do. When it is not
 computed it is **`null`, never `0`**: zero is an answer, and reporting one on the strength of never having
-looked is the same fabrication as a `1.0` similarity on the text path.
+looked is the same fabrication as a `1.0` similarity on the text path. It is a property rather than a map
+entry, so that null **reaches the caller as an omitted key**, not as `null` — the two forms and their tests are
+in the [tool catalogue](mcp-tool-catalog.md).
 
 ## What is deliberately absent
 

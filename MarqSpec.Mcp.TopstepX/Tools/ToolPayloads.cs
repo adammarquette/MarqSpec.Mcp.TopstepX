@@ -17,6 +17,17 @@ namespace MarqSpec.Mcp.TopstepX.Tools;
 /// Property names are short on the hot paths (<c>t</c>, <c>o</c>, <c>h</c>, <c>l</c>, <c>c</c>, <c>v</c>)
 /// because a 500-bar answer repeats them 500 times, and the reader is a token budget.
 /// </para>
+/// <para>
+/// <b>A null does not reach the wire the same way everywhere, and the container decides which.</b> The SDK
+/// serialises results with <c>DefaultIgnoreCondition = WhenWritingNull</c>, so a <b>nullable property is
+/// dropped from the object entirely</b> — but that condition does not reach inside a dictionary, so a
+/// <b>null value in a map survives, spelled <c>null</c></b>. Every null below therefore says which form it
+/// takes, because a caller testing the wrong one gets a confident answer that is backwards:
+/// <c>order.limitPrice === null</c> is <c>false</c> for every limitless order, and testing
+/// <see cref="ResolutionSnapshot.Indicators"/> for key presence says nothing at all. Moving a value between
+/// the two shapes changes the tool contract; <c>PayloadNullWireShapeTests</c> pins both against the real
+/// options (gh#85).
+/// </para>
 /// </remarks>
 public static class ToolPayloads
 {
@@ -38,6 +49,8 @@ public static class ToolPayloads
     /// <param name="ContractId">
     /// The contract, or <see langword="null"/> when the run's provenance was never recorded — bars stored
     /// before this server tracked it. Null is <b>unknown</b>, not "the same as the run beside it".
+    /// <b>A property, so it is omitted from the wire object</b> rather than serialised as <c>null</c>: the
+    /// caller's test is key presence.
     /// </param>
     /// <param name="FirstBucket">When the run's first bar opened.</param>
     /// <param name="LastBucket">When the run's last bar opened.</param>
@@ -135,7 +148,12 @@ public static class ToolPayloads
     /// <param name="ResolutionMinutes">The bar size.</param>
     /// <param name="Indicator">The indicator name.</param>
     /// <param name="Period">The period it was computed at.</param>
-    /// <param name="Values">The values, ascending. Buckets where the indicator could not measure are absent.</param>
+    /// <param name="Values">
+    /// The values, ascending. Buckets where the indicator could not measure <b>have no entry at all</b> —
+    /// <see cref="IndicatorPoint.V"/> is not nullable and there is no <c>{ t, v: null }</c> point. So this is
+    /// not one entry per bucket, and a caller must pair each value with its own <c>t</c> rather than with a
+    /// bar at the same index.
+    /// </param>
     /// <param name="Contracts">
     /// Which contracts produced the bars these values were derived from. Every value is computed inside a
     /// single contract — the projection never smooths across a roll — but the <i>series</i> can still cross
@@ -153,13 +171,18 @@ public static class ToolPayloads
     /// <summary>One indicator value as of a moment.</summary>
     /// <param name="Value">
     /// The value, or <see langword="null"/> meaning <b>cannot measure</b> — not zero, and not a neutral
-    /// reading. A caller receiving null should refuse to conclude, rather than substitute.
+    /// reading. A caller receiving it should refuse to conclude, rather than substitute.
+    /// <b>A property, so cannot-measure reaches the wire as an omitted key</b>, not as <c>"value": null</c>.
+    /// Every field on this record is nullable, so the whole reading serialises to <c>{}</c> in that case —
+    /// a caller testing <c>reading.value === null</c> compares <c>undefined</c> to <c>null</c>, gets
+    /// <c>false</c>, and concludes it measured.
     /// </param>
     /// <param name="BucketStart">The bucket the value came from, at or before the requested moment.</param>
     /// <param name="ContractId">
     /// The contract whose bars produced this value, or <see langword="null"/> when there is no value or the
     /// bar's provenance was never recorded. Two readings from different contracts are not comparable — the
-    /// quarters do not trade at the same price — and nothing in a bare number says so.
+    /// quarters do not trade at the same price — and nothing in a bare number says so. Omitted from the wire
+    /// object when null, like the other two.
     /// </param>
     public sealed record IndicatorReading(
         decimal? Value,
@@ -204,8 +227,15 @@ public static class ToolPayloads
     /// <param name="NextOpenUtc">When the next session opens, when the market is shut.</param>
     /// <param name="IsHoliday">Whether the queried day is a declared holiday.</param>
     /// <remarks>
+    /// <para>
     /// Worth calling before interpreting a stale-looking series: "the last bar is two hours old" means
     /// something entirely different on a Tuesday afternoon than at 03:00 on a Sunday.
+    /// </para>
+    /// <para>
+    /// The four nullable members are <b>properties, so an inapplicable one is omitted from the wire object</b>
+    /// rather than sent as <c>null</c>: a shut market carries no close and no minutes-to-close, a running one
+    /// carries no next open. Branch on <paramref name="IsOpen"/>, or test for the key.
+    /// </para>
     /// </remarks>
     public sealed record SessionState(
         string Symbol,
@@ -329,7 +359,8 @@ public static class ToolPayloads
     /// <param name="Mode">Which path answered.</param>
     /// <param name="ModeReason">
     /// Why, when it was not semantic — the missing key or the missing vector store, in a sentence naming the
-    /// fix. Null when semantic.
+    /// fix. Null when semantic, and <b>a property, so it is omitted from the wire object</b> then rather than
+    /// serialised as <c>null</c>.
     /// </param>
     /// <param name="Observations">
     /// The matches — <b>best first when semantic, most recent first when text</b>. The two orderings are not
@@ -341,7 +372,9 @@ public static class ToolPayloads
     /// is reported rather than logged because a short result and a small corpus are otherwise
     /// indistinguishable. It is computed only when the page came back short, since that is the only time the
     /// answer changes what a caller should do; <see langword="null"/> is therefore "not asked", never "none".
-    /// Zero on the text path, which genuinely reads every row.
+    /// Zero on the text path, which genuinely reads every row. <b>A property, so "not asked" arrives as an
+    /// omitted key</b> — and a caller reading a falsy value as zero substitutes "none" for the one answer this
+    /// count exists to distinguish from it.
     /// </param>
     public sealed record ObservationSearchResult(
         SearchMode Mode,
@@ -351,7 +384,10 @@ public static class ToolPayloads
 
     /// <summary>A recorded observation.</summary>
     /// <param name="Id">Its identity.</param>
-    /// <param name="Symbol">The instrument it is about, when it is about one.</param>
+    /// <param name="Symbol">
+    /// The instrument it is about, when it is about one. <b>A property, so a general observation omits the
+    /// key</b> rather than sending <c>null</c>.
+    /// </param>
     /// <param name="Kind">The caller's classification.</param>
     /// <param name="Text">The observation.</param>
     /// <param name="Tags">Its tags.</param>
@@ -359,14 +395,16 @@ public static class ToolPayloads
     /// <param name="EmbeddingNote">
     /// Why this observation has no vector, or <see langword="null"/> when it has one. Reported rather than
     /// logged: a note stored without a vector will not be found by meaning until it is re-embedded, and the
-    /// caller is the only one in a position to notice that its later search came up short.
+    /// caller is the only one in a position to notice that its later search came up short. <b>A property, so
+    /// the normal path omits the key</b> rather than sending <c>null</c>.
     /// </param>
     /// <param name="Similarity">
     /// How close this is to the query, in <c>[-1, 1]</c>, higher being closer — or <see langword="null"/> when
     /// the text path answered. Null rather than a stand-in: substring matching produces no score, and a 1.0
     /// meaning "it matched" would invite comparison across modes as though the numbers meant the same thing.
     /// Without a score an agent cannot tell a strong match from the least-bad of a weak set, and will act on
-    /// both the same way.
+    /// both the same way. <b>A property, so a text-path match omits the key</b> — read <c>Mode</c>, or test
+    /// for the key, rather than comparing to <c>null</c>.
     /// </param>
     public sealed record ObservationInfo(
         Guid Id,

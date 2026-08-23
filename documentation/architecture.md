@@ -35,6 +35,10 @@ makes "rebuild = replay" true — a dependency on a clock or a store there would
 
 ## The cache-aside read — the only genuinely interesting path
 
+**`resolution` is chosen by the caller, not by configuration.** There is no supported-resolution list: any
+resolution is servable, each becomes an independent cached series, and a timeframe is fetched from the venue
+rather than derived from a finer one — [ADR-0010](adr/0010-per-call-resolutions-fetched-not-derived.md).
+
 `BarCacheService.GetBarsAsync(instrument, resolution, window)`:
 
 1. **Read** stored bars for the window.
@@ -44,7 +48,9 @@ makes "rebuild = replay" true — a dependency on a clock or a store there would
 4. **Consult the coverage ledger.** A range the vendor previously answered empty is treated as covered, so a
    genuine hole is not re-requested forever.
 5. **Fetch** each remaining range, paged at `1000 × barSize` — the gateway caps a history call at 1000 bars and
-   silently truncates past it.
+   silently truncates past it. The pages are **paced** to the vendor's 50-per-30-seconds allowance on the
+   history endpoint, shared process-wide, because a cold year of five-minute bars is 106 requests back to back
+   (`R-1.10`, [wiki — rate limits](wiki/pages/projectx-gateway-api.md#rate-limits)).
 6. **Drop still-forming bars** (`OpenTime + barSize <= now`) even though the request already sends
    `includePartialBar: false`. This does not depend on a venue behaving.
 7. **Upsert** on `(Venue, Instrument, ResolutionMinutes, BucketStart)` — load the overlap, merge in memory, one

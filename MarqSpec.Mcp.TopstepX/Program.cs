@@ -146,7 +146,29 @@ public static class Program
         services.AddOptions<EmbeddingOptions>()
             .Bind(builder.Configuration.GetSection(EmbeddingOptions.SectionName));
 
-        services.AddSingleton<IEmbeddingProvider, UnconfiguredEmbeddingProvider>();
+        EmbeddingOptions embeddings =
+            builder.Configuration.GetSection(EmbeddingOptions.SectionName).Get<EmbeddingOptions>()
+            ?? new EmbeddingOptions();
+
+        if (embeddings.IsConfigured)
+        {
+            services.AddHttpClient<IEmbeddingProvider, CohereEmbeddingProvider>(client =>
+            {
+                client.BaseAddress = new Uri("https://api.cohere.com/");
+                client.DefaultRequestHeaders.Authorization =
+                    new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", embeddings.ApiKey);
+
+                // Bounded on purpose. An embedding is an optional index over an observation, so a slow
+                // provider must degrade to text search rather than hold a tool call open.
+                client.Timeout = TimeSpan.FromSeconds(20);
+            });
+        }
+        else
+        {
+            services.AddSingleton<IEmbeddingProvider, UnconfiguredEmbeddingProvider>();
+        }
+
+        services.AddScoped<EmbeddingWriter>();
 
         // The venue (gh#13). Configured means BOTH credentials present AND a data tier chosen; anything less
         // and the server still starts, serving everything that needs no venue, with the venue tools refusing

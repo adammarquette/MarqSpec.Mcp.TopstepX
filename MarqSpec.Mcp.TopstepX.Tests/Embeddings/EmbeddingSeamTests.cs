@@ -121,7 +121,7 @@ public sealed class EmbeddingSeamTests : IDisposable
         // An implementation must not throw for anything an operator could reasonably hit. No key is the most
         // reasonable of all -- it is the shipped default.
         EmbeddingResult result = await new UnconfiguredEmbeddingProvider(Options.Create(Keyless()))
-            .EmbedAsync("anything", CancellationToken.None);
+            .EmbedAsync("anything", EmbeddingPurpose.Document, CancellationToken.None);
 
         result.Outcome.Should().Be(EmbeddingOutcome.NotConfigured);
         result.HasVector.Should().BeFalse();
@@ -138,7 +138,7 @@ public sealed class EmbeddingSeamTests : IDisposable
         await cancelled.CancelAsync();
 
         Func<Task> embed = () => new UnconfiguredEmbeddingProvider(Options.Create(Keyless()))
-            .EmbedAsync("anything", cancelled.Token);
+            .EmbedAsync("anything", EmbeddingPurpose.Document, cancelled.Token);
 
         await embed.Should().ThrowAsync<OperationCanceledException>();
     }

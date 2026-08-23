@@ -149,6 +149,21 @@ rather than trying.
 `record_observation` is the one place free text enters, and it is the deliberate exception to the numeric-only
 rule. The text originates with the operator's own agent rather than the vendor.
 
+**`record_observation` embeds as it writes**, in the same unit of work, so a note is searchable the moment it
+lands rather than after some later pass. Two consequences are worth knowing before calling it:
+
+- **It returns `embeddingNote` when — and only when — no vector was stored.** A rate limit, an outage, an
+  unusable response or an unconfigured key all leave the observation stored and say so in words. The note is
+  `null` on the normal path; a caller that reads it as a status field will find nothing to report, which is the
+  intent. **The write never fails because embedding failed** — the observation is the durable thing and a
+  vector is an index over it that can be rebuilt.
+- **Identical text is embedded once.** The same text under the same model is the same vector, so a recurring
+  note is matched against what is already stored and reuses it rather than buying it again. Text is matched
+  **as stored** — trimmed — so surrounding whitespace does not defeat it.
+
+Every call is metered, failures included, because an unmetered failure is invisible spend on the operator's own
+key.
+
 ---
 *Adding or changing a tool? Update this page and the PRD's `R-5` in the same PR. A catalogue that lags the
 surface is worse than none — it is read as the contract.*

@@ -120,15 +120,24 @@ backing up.
 | `Model` | `varchar(128)` | PK · so a re-embedding under a new model does not overwrite the old vector |
 | `Dimensions` | `integer` | |
 | `Embedding` | `vector(1024)` | |
-| `ContentHash` | `varchar(64)` | Skip re-embedding unchanged text — embeddings cost money |
+| `ContentHash` | `varchar(64)` | SHA-256 of the text **as stored**. Matched before buying — see below |
 | `RecordedAt` | `timestamptz` | |
 
 Index: **HNSW** over `vector_cosine_ops`. HNSW rather than IVFFlat because IVFFlat needs representative data
 before its lists are meaningful, and this table starts empty. Cosine because embedding models emit
 direction-normalised vectors.
 
+`ContentHash` is matched **across owners, not just within one**: identical text under one model is an
+identical vector, so a second observation saying the same thing copies the stored vector instead of paying for
+it. The hash is taken over the text *exactly as it is written to `Observations.Text`* — trimmed. Hashing the
+raw input instead would produce a hash describing text that is not in the table, and the guard would miss
+matches it should have found and quietly buy a vector it already had. That is gh#37's failure shape wearing
+different clothes: **compare like with like, and derive both sides from the stored form.**
+
 The entity is excluded from the model on non-Npgsql providers — nothing else maps the vector type, and
-configuring it unconditionally breaks every provider-agnostic test.
+configuring it unconditionally breaks every provider-agnostic test. That is also why the writer's tests live in
+the integration tier: there is no unit-tier database that has this table, and the guard above is a query
+Postgres executes, not a predicate C# evaluates.
 
 ---
 *Changing an entity or a migration? Update the section above in the same PR. A data dictionary that lags the

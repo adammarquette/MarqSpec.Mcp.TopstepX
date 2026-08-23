@@ -35,6 +35,7 @@ public sealed class ObservationTools(
     ToolGuards guards,
     StoreAvailabilityHolder store,
     EmbeddingAvailabilityHolder embeddings,
+    EmbeddingWriter embeddingWriter,
     TimeProvider clock)
 {
     private readonly TopstepXDbContext _database = database;
@@ -42,6 +43,7 @@ public sealed class ObservationTools(
     private readonly ToolGuards _guards = guards;
     private readonly StoreAvailabilityHolder _store = store;
     private readonly EmbeddingAvailabilityHolder _embeddings = embeddings;
+    private readonly EmbeddingWriter _embeddingWriter = embeddingWriter;
     private readonly TimeProvider _clock = clock;
 
     /// <summary>Records an observation.</summary>
@@ -96,9 +98,17 @@ public sealed class ObservationTools(
         };
 
         _database.Observations.Add(record);
+
+        // The vector lands in the SAME unit of work as the observation, so a partial commit cannot leave a
+        // note whose vector points at nothing. A provider failure is not an error here: the observation is the
+        // durable thing and an index over it can always be rebuilt.
+        EmbeddingOutcome outcome = await _embeddingWriter
+            .EnsureEmbeddedAsync(record, record.RecordedAt, cancellationToken)
+            .ConfigureAwait(false);
+
         await _database.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
 
-        return ToInfo(record);
+        return ToInfo(record) with { EmbeddingNote = EmbeddingWriter.Explain(outcome) };
     }
 
     /// <summary>Searches recorded observations.</summary>

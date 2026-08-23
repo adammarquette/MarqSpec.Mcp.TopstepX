@@ -111,9 +111,23 @@ The workhorse. Cache-aside: served from the store, with only genuinely missing b
 Returns `{ symbol, resolutionMinutes, bars: [{ t, o, h, l, c, v }], fetchedBuckets, venueRequests,
 contracts: { span, segments: [{ contractId, firstBucket, lastBucket, barCount }] } }`.
 
-`fetchedBuckets` and `venueRequests` are deliberately in the response. They are how a caller — and a test — can
-see whether a read cost a vendor round trip, and they are what make "the second identical call fetches nothing"
-observable rather than a claim.
+`fetchedBuckets` and `venueRequests` are deliberately in the response, and **they answer different questions.**
+This page paired them as equivalent evidence until gh#73; only one of them is evidence of a round trip.
+
+| Field | Answers | Zero means |
+|---|---|---|
+| `venueRequests` | did this call reach the venue? | **nothing was fetched** — the exact test, and the one to use |
+| `fetchedBuckets` | how much did the answer change the store? | only that nothing was *written* |
+
+`fetchedBuckets` reads zero after a real fetch in two ordinary cases: a range the venue answers **empty**
+(`R-1.7`) costs a request and returns no buckets, and a write that loses a serialization race re-derives
+against the winner's committed state and finds its buckets already there (gh#73). Reading it as "free"
+therefore **undercounts** venue traffic and never overcounts it — and the gateway's history limit belongs to
+the whole process rather than to one call, so a caller pacing itself on this number spends more of a shared
+budget than it believes.
+
+`venueRequests == 0` is what makes "the second identical call fetches nothing" observable rather than a
+claim.
 
 **There is no `fromCache`.** This page documented one until gh#48 and `ToolPayloads.BarSeries` has never had
 it — which mattered more than the other drifts on this page, because `fromCache` is exactly the field an agent

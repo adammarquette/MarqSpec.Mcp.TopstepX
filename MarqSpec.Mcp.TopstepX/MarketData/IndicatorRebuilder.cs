@@ -92,6 +92,15 @@ public sealed class IndicatorRebuilder(
             int changed = await ReplaySeriesAsync(s.Venue, s.Instrument, s.ResolutionMinutes, now, cancellationToken)
                 .ConfigureAwait(false);
 
+            // The series is committed and this context will never look at it again, so let it go. Without
+            // this the run accumulates every series' IndicatorValues for its whole length, and each later
+            // series pays for the earlier ones on every SaveChanges. It is the REPAIR verb over the WHOLE
+            // store, so it degrades worst exactly where the store is largest (gh#73 review).
+            //
+            // Safe here and nowhere else in this class: RunAsync has committed, `series` holds projections
+            // rather than entities, and nothing below reads a tracked object.
+            _database.ChangeTracker.Clear();
+
             total += changed;
 
             _logger.LogInformation(

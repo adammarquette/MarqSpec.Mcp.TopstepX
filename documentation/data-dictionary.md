@@ -127,6 +127,11 @@ Index: **HNSW** over `vector_cosine_ops`. HNSW rather than IVFFlat because IVFFl
 before its lists are meaningful, and this table starts empty. Cosine because embedding models emit
 direction-normalised vectors.
 
+**The index only serves a query that does not join.** A nearest-neighbour query that joins `Observations` gets
+a hash join and a full sort instead, touching the index not at all — so the search selects owner ids here and
+hydrates the observations separately. Measured with `EXPLAIN`, and guarded by a test that takes the plan of the
+real query; see [architecture](architecture.md).
+
 `ContentHash` is matched **across owners, not just within one**: identical text under one model is an
 identical vector, so a second observation saying the same thing copies the stored vector instead of paying for
 it. The hash is taken over the text *exactly as it is written to `Observations.Text`* — trimmed. Hashing the

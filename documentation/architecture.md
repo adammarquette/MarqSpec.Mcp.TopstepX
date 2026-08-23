@@ -135,6 +135,49 @@ saying it will match on text until re-embedded. The observation is the durable t
 over it that can be rebuilt. Every call is metered, failures included — an unmetered failure is invisible spend
 on the operator's own key.
 
+## The observation search
+
+One call, two paths, one shape. `search_observations` embeds the query as a **query**
+(`input_type: search_query`, not the `search_document` used when storing) and orders by cosine distance; when
+it cannot embed — no key, a rate limit, an outage, an unusable response — it matches substrings instead and
+says so. **The fallback is a path, not an error**: a busy vendor must not turn a working tool into a broken
+one.
+
+### The vector query must not join
+
+The nearest-neighbour query selects **owner ids only**, and the observations are hydrated in a second round
+trip. That looks like a needless extra query and is not:
+
+> Joining `Observations` inside the ordering query makes the planner hash-join both tables and sort **every
+> vector in the store**. The HNSW index is never touched.
+
+This was measured, not reasoned about — `EXPLAIN` over four thousand rows, comparing the joined and unjoined
+shapes. It is guarded by `ObservationSearchIndexTests.TheCosineIndexIsActuallyChosen`, which takes the plan of
+the query the service itself builds rather than a hand-written lookalike, because the two would drift and the
+day they did the assertion would stop meaning anything. **An index that exists but is never chosen is not an
+index.**
+
+The second round trip is bounded by the read cap, so it costs one lookup of at most `k` rows.
+
+### The symbol filter takes a different plan, on purpose
+
+With a symbol filter the query becomes a semi-join, which the planner drives from the (small) filtered
+observation set and which does **not** use the vector index. That is the right trade: at the row counts a
+single instrument produces, that plan is both cheaper and — more importantly — **complete**. The unfiltered
+path is the one that has to scale, and it is the one the index serves.
+
+`hnsw.iterative_scan = strict_order` is set per transaction regardless. An HNSW scan visits a fixed number of
+candidates and applies remaining filters *afterwards*, so a filtered index scan can return fewer rows than
+asked for while matching rows sit in the table — not an error, just a short list that reads exactly like "that
+is all there is". `SET LOCAL`, so it cannot outlive the transaction on a pooled connection.
+
+### What the vector path cannot see
+
+An observation whose embedding failed at write time has no vector, and semantic search cannot reach it —
+which is in tension with what `record_observation` told its author, that the note would match on text until
+re-embedded. Rather than paper over that, the result carries `unsearchableCount`: how many observations in
+scope were invisible to this search. A gap that is reported is a gap someone can act on.
+
 ## What is deliberately absent
 
 - **No order path.** Not a guarded one ([ADR-0002](adr/0002-read-only-venue-boundary.md)).

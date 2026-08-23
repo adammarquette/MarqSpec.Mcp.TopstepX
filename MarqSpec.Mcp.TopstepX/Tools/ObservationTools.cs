@@ -23,9 +23,9 @@ namespace MarqSpec.Mcp.TopstepX.Tools;
 /// smaller surface — not a zero one, and worth revisiting if observations ever become shared across agents.
 /// </para>
 /// <para>
-/// <b>Search is text-only today.</b> The embedding provider and its pgvector index are Phase 4; until then
-/// this matches on substrings, which is honest and useful rather than a stub. When embeddings land, the
-/// fallback stays: an unset key must never be a crash.
+/// <b>Search answers by meaning when it can and by substring when it cannot</b>, as one call with one shape.
+/// The result always says which path ran, because an empty list is otherwise ambiguous between "nothing is
+/// similar" and "similarity never ran". An unset key is a supported state, never a crash.
 /// </para>
 /// </remarks>
 [McpServerToolType]
@@ -34,16 +34,16 @@ public sealed class ObservationTools(
     InstrumentRegistry registry,
     ToolGuards guards,
     StoreAvailabilityHolder store,
-    EmbeddingAvailabilityHolder embeddings,
     EmbeddingWriter embeddingWriter,
+    ObservationSearchService search,
     TimeProvider clock)
 {
     private readonly TopstepXDbContext _database = database;
     private readonly InstrumentRegistry _registry = registry;
     private readonly ToolGuards _guards = guards;
     private readonly StoreAvailabilityHolder _store = store;
-    private readonly EmbeddingAvailabilityHolder _embeddings = embeddings;
     private readonly EmbeddingWriter _embeddingWriter = embeddingWriter;
+    private readonly ObservationSearchService _search = search;
     private readonly TimeProvider _clock = clock;
 
     /// <summary>Records an observation.</summary>
@@ -116,13 +116,15 @@ public sealed class ObservationTools(
     /// <param name="symbol">Restrict to one instrument.</param>
     /// <param name="limit">How many to return.</param>
     /// <param name="cancellationToken">The caller's cancellation token.</param>
-    /// <returns>The matches, most recent first.</returns>
+    /// <returns>The matches — best first when semantic, most recent first when text.</returns>
     [McpServerTool(ReadOnly = true, Title = "Search observations")]
     [Description(
-        "Searches previously recorded observations, most recent first. The result reports which mode "
-        + "answered: Semantic for vector similarity, Text for substring matching, with the reason when it is "
-        + "not semantic. An empty Text result means nothing matched THAT SUBSTRING — it is not evidence that "
-        + "nothing relevant was recorded, and is worth retrying with different wording.")]
+        "Searches previously recorded observations by meaning, falling back to substring matching when "
+        + "embeddings are unavailable. The result reports which mode answered: Semantic, ordered best-first "
+        + "with a similarity score on each match, or Text, ordered most-recent-first with no score and a "
+        + "reason. An empty Text result means nothing matched THAT SUBSTRING — it is not evidence that "
+        + "nothing relevant was recorded, and is worth retrying with different wording. A non-zero "
+        + "unsearchableCount means some observations have no vector yet and this search could not see them.")]
     public async Task<ToolPayloads.ObservationSearchResult> SearchObservations(
         [Description("What to look for.")] string query,
         [Description("Restrict to one instrument, e.g. ES.")] string? symbol,
@@ -133,37 +135,32 @@ public sealed class ObservationTools(
 
         int wanted = _guards.ValidateCount(limit <= 0 ? 20 : limit);
 
-        IQueryable<ObservationRecord> q = _database.Observations;
-
+        string? normalisedSymbol = null;
         if (!string.IsNullOrWhiteSpace(symbol))
         {
-            string normalised = symbol.Trim().ToUpperInvariant();
-            q = q.Where(o => o.Instrument == normalised);
+            // Normalised the same way the write path normalises it. A search for "es" against rows written
+            // under "ES" is a search that finds nothing and reports it as nothing being there.
+            try
+            {
+                normalisedSymbol = _registry.Resolve(symbol).Symbol;
+            }
+            catch (KeyNotFoundException ex)
+            {
+                throw new McpException(ex.Message);
+            }
         }
 
-        if (!string.IsNullOrWhiteSpace(query))
-        {
-            string needle = query.Trim();
-            q = q.Where(o => EF.Functions.ILike(o.Text, "%" + needle + "%"));
-        }
-
-        List<ObservationRecord> rows = await q
-            .OrderByDescending(o => o.RecordedAt)
-            .Take(wanted)
-            .ToListAsync(cancellationToken)
+        ObservationSearchOutcome outcome = await _search
+            .SearchAsync(query, normalisedSymbol, wanted, cancellationToken)
             .ConfigureAwait(false);
 
-        // Semantic search itself lands in gh#47. What is settled here is the CONTRACT: the caller is told
-        // which path answered and why, so an empty result never has to be guessed at. Reporting Text while
-        // embeddings are available would be a lie, so the mode is read from the probe rather than hard-coded.
-        EmbeddingAvailability availability = _embeddings.Value;
-
         return new ToolPayloads.ObservationSearchResult(
-            ToolPayloads.SearchMode.Text,
-            availability.IsAvailable
-                ? "Semantic search is not implemented yet (gh#47); this result is substring matching."
-                : availability.Explanation,
-            [.. rows.Select(ToInfo)]);
+            outcome.Mode == ObservationSearchMode.Semantic
+                ? ToolPayloads.SearchMode.Semantic
+                : ToolPayloads.SearchMode.Text,
+            outcome.Reason,
+            [.. outcome.Matches.Select(m => ToInfo(m.Observation) with { Similarity = m.Similarity })],
+            outcome.UnsearchableCount);
     }
 
     private static ToolPayloads.ObservationInfo ToInfo(ObservationRecord record) =>

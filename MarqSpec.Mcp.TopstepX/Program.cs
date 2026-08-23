@@ -181,6 +181,7 @@ public static class Program
         }
 
         services.AddScoped<EmbeddingWriter>();
+        services.AddScoped<ObservationSearchService>();
 
         // The venue (gh#13). Configured means BOTH credentials present AND a data tier chosen; anything less
         // and the server still starts, serving everything that needs no venue, with the venue tools refusing

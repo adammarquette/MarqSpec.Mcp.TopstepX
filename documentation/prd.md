@@ -30,11 +30,12 @@ The server serves OHLCV bars for a futures instrument at a requested resolution 
 - **R-1.9** The supported resolutions are **any positive number of minutes** — deliberately. Resolution is a
   per-call parameter rather than configuration, so an agent is never blocked on a config change to look at a
   timeframe nobody anticipated, and no tool advertises a resolution list because there is none. Non-positive is
-  the sole refusal, and it is refused as a *caller error the server names* rather than as a timeframe the
-  server lacks — on every tool that takes a resolution, not only the ones that also validate a window
-  (gh#69). A timeframe is fetched from the venue independently, never derived from a finer one: a bar derived
-  from an incomplete set of constituents is indistinguishable from a real one, which R-2.3's rule forbids in
-  the indicator path and which is no more acceptable here.
+  refused at the boundary, as a *caller error the server names* rather than as a timeframe the server lacks —
+  on every tool that takes a resolution, not only the ones that also validate a window (gh#69). That is a floor,
+  not a claim that every other value is servable: an absurdly large one still overflows the latest-bars reach
+  arithmetic and faults (gh#81). A timeframe is fetched from the venue independently, never derived from a
+  finer one: a bar derived from an incomplete set of constituents is indistinguishable from a real one, which
+  R-2.3's rule forbids in the indicator path and which is no more acceptable here.
   See [ADR-0010](adr/0010-per-call-resolutions-fetched-not-derived.md).
 - **R-1.10** Those pages are **paced** to the vendor's documented allowance for the history endpoint —
   **50 requests / 30 seconds**, one allowance shared by the whole process. A cold year of five-minute bars is

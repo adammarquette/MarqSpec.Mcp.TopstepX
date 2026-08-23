@@ -17,6 +17,12 @@ What genuinely needs a real database:
 - The composite primary key really is the idempotence guard: writing an overlapping window twice updates
   rather than duplicating or throwing.
 - Database CHECK constraints reject what they claim to reject.
+- **An isolation-level claim, or anything that turns on two reads straddling another transaction's commit.**
+  The in-memory provider has no transactions and no isolation levels at all, so the failure is not merely hard
+  to reproduce there — it is unrepresentable, and the test would be green on the day the fix was reverted.
+  Place the other transaction with a `DbCommandInterceptor` rather than with threads: two units of work merely
+  started at the same time hit the ordering by luck, and a concurrency test nobody has seen red is worth
+  nothing. **Assert the interceptor actually fired** — one that never did passes by exercising nothing.
 
 ## Independence
 

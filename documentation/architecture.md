@@ -63,6 +63,34 @@ path (gh#69).
    its bar does.
 9. **Record coverage** for ranges that came back empty.
 
+**Step 5 sits outside the transaction; steps 7–9 sit inside one, at `RepeatableRead`.** The projection reads
+the bars and then the values standing over them; under `READ COMMITTED` those are two snapshots, so a
+concurrent fill of the same series can commit between them and the pass then deletes values it never saw the
+bars for (gh#73). Not `SERIALIZABLE`: SSI would take predicate locks over a whole-series scan, escalate them
+from page to relation on `Bars`, and start aborting fills of unrelated instruments — for an anomaly that is
+read skew between two statements, which `RepeatableRead` already forbids.
+
+**The fetch is deliberately outside.** The pacer sits inside the gateway's page loop, so a cold year of
+five-minute bars is 106 pages at 50-per-30-seconds — about a minute of sleeping. Holding a snapshot across that
+would pin the transaction's `xmin`, and vacuum's horizon with it, for the whole minute, and would widen every
+serialization window on this path from milliseconds to a minute. The whole venue answer is held in memory and
+written afterwards.
+
+**One retry, and the conflict it survives is ordinary.** Snapshot isolation turns a silent last-writer-wins
+into a `40001`, and that is reachable from the tool surface: the reconcile is unscoped by bucket range, so a
+whole-series sweep is a whole-series *write set* — two fills whose fetched ranges share no bucket still delete
+the same unjustified rows — and the coverage ledger reaches it with no bars at all, because two callers asking
+for one empty range both *refresh* one row. The retry is not a gamble: in every shape of this conflict the
+transaction that won committed exactly the work the loser was missing, so the second attempt runs over a
+better-informed store, and because the fetch already happened it costs no vendor requests. A second collision
+is sustained contention rather than a race, so it becomes a `StoreContentionException`, which the tool layer
+turns into an `McpException` naming the condition rather than a nested Postgres stack.
+
+What is *not* fixed is a fill whose snapshot misses a range another fill is filling: its values are seeded from
+the wrong bar and are stale until the next pass, which is recoverable by construction (`R-2.9`,
+[ADR-0006](adr/0006-indicators-as-projections.md)). Closing that means serialising fills per series — a lock
+rather than an isolation level, tracked as gh#80.
+
 ### Why step 2 exists
 
 Without it, "the store has no bar at 03:00 on Sunday" and "the store is missing a bar the venue published" are
@@ -130,6 +158,23 @@ stays. There is **no foreign key** between `Bars` and `IndicatorValues` (a proje
 deleting bars alone would orphan their values rather than remove them; the reconciliation is what actually
 reaches them. It is scoped to the `(Indicator, Period)` pairs the catalogue computes, so a series the operator
 merely configured a period away from is left alone rather than erased.
+
+It is **not** scoped by bucket range, and that is only sound because a pass reads the whole series — true at
+both call sites, and until gh#73 guaranteed by nothing. So the claim is checked rather than trusted: a pass
+that read a different number of bars from what the store holds **refuses to reconcile**, naming the two counts,
+instead of deleting every value outside what it read. That is the shape a future `ProjectAsync(range)` would
+have. Under one snapshot it cannot fire — both counts come from the same predicate on the same snapshot — so it
+is a regression guard against a narrowed read or a weakened isolation level, not a second line of defence
+standing behind gh#73 in production. The check costs one count, and only when there is something to remove,
+which is neither a confirming rebuild nor an ordinary fill.
+
+The same whole-series sweep is why concurrent fills collide at all: it makes the pass's *write* set the whole
+series regardless of which range it fetched. That is the substance of the retry described above.
+
+`rebuild-indicators` runs the same projection over every stored series and is **transactional per series**, at
+the same isolation level, for the same reason. The series is the unit of work because a rebuild is idempotent
+per series; one snapshot held across the whole run would be pinned for its length and would discard everything
+on a late failure.
 
 Multi-output and multi-parameter indicators are the awkward case: the key carries *one* period, and MACD takes
 three parameters. The non-period ones are **fixed at their conventional values** rather than hidden behind a

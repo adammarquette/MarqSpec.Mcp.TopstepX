@@ -91,6 +91,10 @@ what the bars no longer justify. It does: a pass deletes every value it is confi
 pass did not, scoped to the `(Indicator, Period)` pairs the catalogue computes so that a series left behind by
 a period change is not swept up with it.
 
+That sweep is **not** scoped by bucket range, so a pass has to read the whole series and read it in **one
+snapshot** — otherwise it removes values a concurrent write justified between its two reads, and the loss
+arrives as an absence (`R-2.9`, gh#73). A pass that finds the two disagree refuses rather than deleting.
+
 ## §3 `BarCoverage` — the negative-result ledger
 
 | Column | Type | Note |

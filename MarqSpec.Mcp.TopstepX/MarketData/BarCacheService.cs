@@ -1,10 +1,10 @@
+using System.Globalization;
 using MarqSpec.Mcp.TopstepX.Data;
 using MarqSpec.Mcp.TopstepX.Data.Entities;
 using MarqSpec.Mcp.TopstepX.Domain;
 using MarqSpec.Mcp.TopstepX.Domain.MarketData;
 using MarqSpec.Mcp.TopstepX.Venue;
 using Microsoft.EntityFrameworkCore;
-using Microsoft.EntityFrameworkCore.Storage;
 using Microsoft.Extensions.Logging;
 
 namespace MarqSpec.Mcp.TopstepX.MarketData;
@@ -12,11 +12,18 @@ namespace MarqSpec.Mcp.TopstepX.MarketData;
 /// <summary>The outcome of a cache-aside read.</summary>
 /// <param name="Bars">The bars, ascending.</param>
 /// <param name="FetchedBuckets">
-/// How many buckets came from the venue on this call. <b>Zero means the read was served entirely from the
-/// store</b>, which is the property this whole design exists to provide — and it is reported rather than
-/// logged so that a test, and a caller, can actually observe it.
+/// How many buckets this call wrote or revised from the venue's answer. Reported rather than logged so that
+/// a test, and a caller, can actually observe what a question cost.
+/// <para>
+/// <b>Zero no longer proves the read touched no venue.</b> It did before the serialization retry: a second
+/// attempt re-derives against the winner's committed state, so the buckets it would have written are already
+/// there and it writes none — after a real fetch. <see cref="VenueRequests"/> is the exact test for "served
+/// entirely from the store", and it stays truthful on that path.
+/// </para>
 /// </param>
-/// <param name="VenueRequests">How many requests were issued to the venue.</param>
+/// <param name="VenueRequests">
+/// How many requests were issued to the venue. Zero is the precise statement that nothing was fetched.
+/// </param>
 public sealed record BarReadResult(
     IReadOnlyList<Bar> Bars,
     int FetchedBuckets,
@@ -148,53 +155,56 @@ public sealed class BarCacheService
 
         if (outstanding.Count > 0)
         {
-            // One transaction spanning the bar write AND the projection over it. They must land together: a
-            // committed bar whose indicators are missing reads back as a market that produced no signal,
-            // which is indistinguishable from a real absence of one.
+            // THE VENUE IS CALLED FIRST, AND OUTSIDE THE TRANSACTION.
             //
-            // The in-memory provider used by the unit tier has no transactions, so this is conditional. What
-            // is NOT conditional is the ordering below.
-            IDbContextTransaction? transaction = _database.Database.IsRelational()
-                ? await _database.Database.BeginTransactionAsync(cancellationToken).ConfigureAwait(false)
-                : null;
+            // The pacer sits inside the gateway page loop, so a cold year of five-minute bars is 106 pages at
+            // 50-per-30-seconds -- roughly a minute of deliberate sleeping. Holding a RepeatableRead snapshot
+            // across that would pin the transaction xmin, and therefore vacuum's horizon, for the whole
+            // minute, and would widen every serialization window on this path from milliseconds to a minute.
+            // It also makes the retry below free: a second attempt re-reads the store and re-derives
+            // everything, but re-fetches nothing.
+            //
+            // The whole answer is held in memory before any of it is written. A cold year is on the order of
+            // 70,000 small records per instrument, which is comfortable; if that ever stops being true the
+            // answer is to fetch and apply in bounded chunks, not to put the network back inside the snapshot.
+            (IReadOnlyList<FetchedSlice> slices, requests) = await FetchAsync(
+                instrument, barSize, outstanding, now, cancellationToken).ConfigureAwait(false);
 
-            try
-            {
-                (fetched, requests) = await FillAsync(
-                    venue, instrument, resolutionMinutes, barSize, outstanding, now, cancellationToken)
-                    .ConfigureAwait(false);
-
-                // Saved BEFORE projecting, and this ordering is load-bearing. The projector reads the series
-                // back with a query, and a query does not see rows that are only tracked -- so projecting
-                // first silently produced no indicators at all, with no error anywhere.
-                if (_database.ChangeTracker.HasChanges())
+            fetched = await SeriesUnitOfWork.RunAsync(
+                _database,
+                instrument.Symbol + " " + resolutionMinutes.ToString(CultureInfo.InvariantCulture) + "m",
+                async token =>
                 {
-                    await _database.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
-                }
+                    // One transaction spanning the bar write AND the projection over it. They must land
+                    // together: a committed bar whose indicators are missing reads back as a market that
+                    // produced no signal, which is indistinguishable from a real absence of one.
+                    int written = await ApplyAsync(
+                        venue, instrument, resolutionMinutes, slices, now, token).ConfigureAwait(false);
 
-                if (fetched > 0)
-                {
-                    await _projector.ProjectAsync(venue, instrument, resolutionMinutes, now, cancellationToken)
-                        .ConfigureAwait(false);
-
+                    // Saved BEFORE projecting, and this ordering is load-bearing. The projector reads the
+                    // series back with a query, and a query does not see rows that are only tracked -- so
+                    // projecting first silently produced no indicators at all, with no error anywhere.
                     if (_database.ChangeTracker.HasChanges())
                     {
-                        await _database.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+                        await _database.SaveChangesAsync(token).ConfigureAwait(false);
                     }
-                }
 
-                if (transaction is not null)
-                {
-                    await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
-                }
-            }
-            finally
-            {
-                if (transaction is not null)
-                {
-                    await transaction.DisposeAsync().ConfigureAwait(false);
-                }
-            }
+                    if (written > 0)
+                    {
+                        await _projector
+                            .ProjectAsync(venue, instrument, resolutionMinutes, now, token)
+                            .ConfigureAwait(false);
+
+                        if (_database.ChangeTracker.HasChanges())
+                        {
+                            await _database.SaveChangesAsync(token).ConfigureAwait(false);
+                        }
+                    }
+
+                    return written;
+                },
+                _logger,
+                cancellationToken).ConfigureAwait(false);
         }
 
         List<BarRecord> rows = await _database.Bars
@@ -252,10 +262,21 @@ public sealed class BarCacheService
         return outstanding;
     }
 
-    private async Task<(int Fetched, int Requests)> FillAsync(
-        string venue,
+    /// <summary>One venue answer, held until the transaction that will store it opens.</summary>
+    /// <param name="Slice">The range that was asked for.</param>
+    /// <param name="Closed">The closed bars it answered with. Empty means the venue has none for the range.</param>
+    private sealed record FetchedSlice(BarRange Slice, IReadOnlyList<Bar> Closed);
+
+    /// <summary>
+    /// Asks the venue for every outstanding range, and touches no database at all.
+    /// </summary>
+    /// <remarks>
+    /// Separated from the write so the paced page-walk happens outside the transaction, and so a retry of the
+    /// write costs no vendor requests. A venue failure here also leaves nothing half-written, because nothing
+    /// has been written yet.
+    /// </remarks>
+    private async Task<(IReadOnlyList<FetchedSlice> Slices, int Requests)> FetchAsync(
         InstrumentId instrument,
-        int resolutionMinutes,
         TimeSpan barSize,
         IReadOnlyList<BarRange> ranges,
         DateTimeOffset now,
@@ -276,7 +297,7 @@ public sealed class BarCacheService
         }
 
         VenueContract contract = contracts[0];
-        int fetched = 0;
+        List<FetchedSlice> slices = [];
         int requests = 0;
 
         foreach (BarRange range in ranges)
@@ -317,21 +338,43 @@ public sealed class BarCacheService
                 // Drop still-forming bars even though the request already asks the venue not to send them.
                 // A half-formed bar stored as final is indistinguishable from data and corrupts everything
                 // derived from it -- this must not depend on a venue behaving.
-                List<Bar> closed = [.. bars.Where(b => b.OpenTime + barSize <= now)];
-
-                if (closed.Count == 0)
-                {
-                    await RecordEmptyAsync(venue, instrument, resolutionMinutes, slice, now, cancellationToken)
-                        .ConfigureAwait(false);
-                    continue;
-                }
-
-                fetched += await UpsertAsync(
-                    venue, instrument, resolutionMinutes, closed, now, cancellationToken).ConfigureAwait(false);
+                slices.Add(new FetchedSlice(slice, [.. bars.Where(b => b.OpenTime + barSize <= now)]));
             }
         }
 
-        return (fetched, requests);
+        return (slices, requests);
+    }
+
+    /// <summary>
+    /// Writes what the venue answered. Runs inside the transaction, and in full again if it is retried.
+    /// </summary>
+    /// <returns>How many buckets were written or revised.</returns>
+    private async Task<int> ApplyAsync(
+        string venue,
+        InstrumentId instrument,
+        int resolutionMinutes,
+        IReadOnlyList<FetchedSlice> slices,
+        DateTimeOffset now,
+        CancellationToken cancellationToken)
+    {
+        int fetched = 0;
+
+        foreach (FetchedSlice slice in slices)
+        {
+            if (slice.Closed.Count == 0)
+            {
+                await RecordEmptyAsync(
+                    venue, instrument, resolutionMinutes, slice.Slice, now, cancellationToken)
+                    .ConfigureAwait(false);
+                continue;
+            }
+
+            fetched += await UpsertAsync(
+                venue, instrument, resolutionMinutes, slice.Closed, now, cancellationToken)
+                .ConfigureAwait(false);
+        }
+
+        return fetched;
     }
 
     private async Task<int> UpsertAsync(

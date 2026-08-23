@@ -102,8 +102,9 @@ public static class ToolPayloads
     /// <param name="ResolutionMinutes">The bar size.</param>
     /// <param name="Bars">The bars, ascending.</param>
     /// <param name="FetchedBuckets">
-    /// How many buckets came from the venue on this call. Reported rather than merely logged, so the caller
-    /// can see what a question cost.
+    /// How many buckets the venue supplied that this call actually <b>wrote or revised</b>. Reported rather
+    /// than merely logged, so the caller can see what a question cost. Not a count of what arrived: still
+    /// forming bars are dropped before counting, and an upsert that finds an identical row is skipped.
     /// <para>
     /// <b>Zero does not prove the read cost nothing.</b> A range the venue answers <i>empty</i> (<c>R-1.7</c>)
     /// costs a request and returns no buckets, so this reads zero after a genuine round trip. The exact test

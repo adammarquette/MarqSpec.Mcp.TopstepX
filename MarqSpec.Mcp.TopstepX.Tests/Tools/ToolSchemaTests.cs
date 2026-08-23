@@ -155,24 +155,78 @@ public sealed class ToolSchemaTests
         }
 
         string description = parameter.GetCustomAttribute<DescriptionAttribute>()?.Description ?? string.Empty;
-        string advertised = parameter.DefaultValue switch
-        {
-            bool b => b ? "true" : "false",
-            IFormattable f => f.ToString(null, CultureInfo.InvariantCulture),
-            object o => o.ToString() ?? string.Empty,
-        };
+        string advertised = Render(parameter.DefaultValue);
+
+        // An empty rendering collapses the pattern to a lookaround pair matching almost any text -- a vacuous
+        // pass dressed as a check. Nothing defaults to "" today; this is here so that if something does, the
+        // gate says so rather than going quietly green.
+        advertised.Should().NotBeEmpty(
+            "{0}.{1} has a default this test cannot render, so it cannot be gated", tool, parameterName);
 
         description.Should().MatchRegex(
-            // No digit or decimal point before; no digit after, and no decimal point that is followed by
-            // one. A trailing sentence period must NOT disqualify a match -- "Omit for 500." is the normal
-            // way to write this, and excluding every following period made the gate fail on correct text.
-            @"(?<![\d.])" + Regex.Escape(advertised) + @"(?!\.?\d)",
+            Boundary(advertised),
             "{0}.{1} defaults to {2}, and an agent reads the description rather than the code — so the "
             + "description has to name that value. Current text: \"{3}\"",
             tool,
             parameterName,
             advertised,
             description);
+    }
+
+    public static TheoryData<string, string, string> EveryAdvertisedDefault()
+    {
+        TheoryData<string, string, string> data = [];
+
+        foreach (Type type in ToolTypes())
+        {
+            foreach (MemberInfo member in DefaultMembers(type))
+            {
+                foreach (string value in AdvertisedValues(member))
+                {
+                    data.Add(type.Name, member.Name, value);
+                }
+            }
+        }
+
+        return data;
+    }
+
+    [Theory]
+    [MemberData(nameof(EveryAdvertisedDefault))]
+    public void ADefaultHeldInAConstant_IsNamedBySomeDescriptionOnItsTool(
+        string toolType,
+        string member,
+        string value)
+    {
+        // The theory above reaches a default only when the C# parameter default IS the value. Three on this
+        // surface are not: `limit` is `int? = null` resolving to 20, `kind` is `string? = null` resolving to
+        // "note", and `resolutionMinutes` is `int[]? = null` resolving to [5, 60]. All three advertise their
+        // real default in prose and all three were invisible to it -- which gh#82 listed in its own scope and
+        // the first attempt did not deliver.
+        //
+        // Walking the constants needs no parameter-to-constant mapping: the value has to appear in SOME
+        // description on the type that declares it. Looser than a per-parameter assertion, and it catches
+        // what actually goes wrong -- a constant edited without the sentence that promises it.
+        Type type = ToolTypes().Single(t => t.Name == toolType);
+
+        string descriptions = string.Join(
+            " | ",
+            type.GetMethods(
+                    BindingFlags.Public | BindingFlags.Instance | BindingFlags.Static | BindingFlags.DeclaredOnly)
+                .Where(m => m.GetCustomAttribute<McpServerToolAttribute>() is not null)
+                .SelectMany(m => m.GetParameters()
+                    .Select(parameter =>
+                        parameter.GetCustomAttribute<DescriptionAttribute>()?.Description ?? string.Empty)
+                    .Append(m.GetCustomAttribute<DescriptionAttribute>()?.Description ?? string.Empty)));
+
+        descriptions.Should().MatchRegex(
+            Boundary(value),
+            "{0}.{1} is {2} and it is what a caller gets by omitting an argument, so some description on "
+            + "{0} has to name it. Change the constant without the sentence and an agent is told a value the "
+            + "server does not use.",
+            toolType,
+            member,
+            value);
     }
 
     // ── The search limit, which is a stated number rather than a hint ────────────────────────────────
@@ -205,18 +259,95 @@ public sealed class ToolSchemaTests
 
     // ── Helpers ──────────────────────────────────────────────────────────────────────────────────────
 
-    private static bool IsNullable(ParameterInfo parameter) =>
-        Nullable.GetUnderlyingType(parameter.ParameterType) is not null
-        // ReadState rather than WriteState: `[DisallowNull] string? x` has write = NotNull, so it would
-        // escape this check AND the wording check at once. No such attribute exists here today and the
-        // combination is close to self-defeating (the compiler warns at any null call site), but the wrong
-        // half of the pair is not a thing to leave in a gate.
-        || new NullabilityInfoContext().Create(parameter).ReadState == NullabilityState.Nullable;
-
-    private static IEnumerable<MethodInfo> ToolMethods() =>
+    private static IEnumerable<Type> ToolTypes() =>
         typeof(ToolPayloads).Assembly
             .GetTypes()
             .Where(t => t.GetCustomAttribute<McpServerToolTypeAttribute>() is not null)
+            .OrderBy(t => t.Name);
+
+    /// <summary>Members holding a default a caller gets by omitting an argument.</summary>
+    /// <remarks>
+    /// Convention rather than registration: a <c>Default*</c> public constant or static property on a tool
+    /// type is one of these. A hand-maintained list would need maintaining, which is the failure this gate
+    /// exists to stop.
+    /// </remarks>
+    private static IEnumerable<MemberInfo> DefaultMembers(Type type) =>
+        type.GetFields(BindingFlags.Public | BindingFlags.Static | BindingFlags.DeclaredOnly)
+            .Where(f => f.IsLiteral && f.Name.StartsWith("Default", StringComparison.Ordinal))
+            .Cast<MemberInfo>()
+            .Concat(type.GetProperties(BindingFlags.Public | BindingFlags.Static | BindingFlags.DeclaredOnly)
+                .Where(p => p.Name.StartsWith("Default", StringComparison.Ordinal)))
+            .OrderBy(m => m.Name);
+
+    private static IEnumerable<string> AdvertisedValues(MemberInfo member)
+    {
+        object? value = member switch
+        {
+            FieldInfo f => f.GetRawConstantValue(),
+            PropertyInfo p => p.GetValue(null),
+            _ => null,
+        };
+
+        return value switch
+        {
+            null => [],
+            string text => [text],
+            System.Collections.IEnumerable many => [.. many.Cast<object>().Select(Render)],
+            _ => [Render(value)],
+        };
+    }
+
+    private static string Render(object? value) => value switch
+    {
+        null => string.Empty,
+        bool flag => flag ? "true" : "false",
+        IFormattable formattable => formattable.ToString(null, CultureInfo.InvariantCulture),
+        _ => value.ToString() ?? string.Empty,
+    };
+
+    /// <summary>Matches a value as a whole token, so it cannot hide inside a longer one.</summary>
+    /// <remarks>
+    /// A number or a boolean is matched bare: no digit or decimal point before, no digit after, and no
+    /// decimal point followed by one — so <c>2.5</c> does not satisfy a search for <c>5</c> while
+    /// <c>"Omit for 500."</c> does satisfy one for <c>500</c>.
+    /// <para>
+    /// <b>A string default must appear quoted.</b> Matching a bare word against a whole type's descriptions
+    /// is not discriminating: searching <c>ObservationTools</c> for <c>observation</c> succeeds on "The
+    /// observation itself" no matter what the constant holds, so the gate would pass on any value that
+    /// happens to be a word this tool already uses. That was not hypothetical — it is how the first version
+    /// of this check let a mutated <c>DefaultObservationKind</c> through. Requiring quotes also matches how
+    /// these descriptions already write a literal: <i>"Defaults to 'note'."</i>
+    /// </para>
+    /// </remarks>
+    private static string Boundary(string value) =>
+        double.TryParse(value, NumberStyles.Any, CultureInfo.InvariantCulture, out _)
+        || value is "true" or "false"
+            ? @"(?<![\d.])" + Regex.Escape(value) + @"(?!\.?\d)"
+            : "['\"“‘]" + Regex.Escape(value) + "['\"”’]";
+
+    private static bool IsNullable(ParameterInfo parameter) =>
+        Nullable.GetUnderlyingType(parameter.ParameterType) is not null
+        || EitherDirectionIsNullable(new NullabilityInfoContext().Create(parameter));
+
+    /// <summary>True when either direction of a parameter nullability says it may be absent.</summary>
+    /// <remarks>
+    /// Neither half is right alone, and they fail in opposite directions. <c>WriteState</c> is what a caller
+    /// may pass, so it is the direction the question is about — but <c>[DisallowNull] string? x</c> has
+    /// write = NotNull and would escape this check and the wording check together. <c>ReadState</c> closes
+    /// that and opens the mirror: <c>[AllowNull] string x</c> genuinely may be null and has read = NotNull,
+    /// so it would be missed, while a genuinely-required <c>[DisallowNull]</c> parameter would go red on
+    /// correct code.
+    /// <para>
+    /// Taking either makes the gate fail closed. Every parameter on the surface today has
+    /// <c>read == write</c>, so this changes nothing now; it is the shape that stops being wrong when
+    /// somebody adds one of those attributes.
+    /// </para>
+    /// </remarks>
+    private static bool EitherDirectionIsNullable(NullabilityInfo info) =>
+        info.ReadState == NullabilityState.Nullable || info.WriteState == NullabilityState.Nullable;
+
+    private static IEnumerable<MethodInfo> ToolMethods() =>
+        ToolTypes()
             .SelectMany(t => t.GetMethods(
                 BindingFlags.Public | BindingFlags.Instance | BindingFlags.Static | BindingFlags.DeclaredOnly))
             .Where(m => m.GetCustomAttribute<McpServerToolAttribute>() is not null)

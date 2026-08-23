@@ -142,6 +142,7 @@ public static class KeyLevels
         }
 
         IndicatorGuard.RequireStrictlyAscending(bars, nameof(bars));
+        IndicatorGuard.RequireSingleContract(bars, nameof(bars));
 
         if (bars.Count < (2 * options.Lookback) + 1)
         {

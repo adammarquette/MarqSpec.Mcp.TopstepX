@@ -1,0 +1,115 @@
+name: Release container image
+
+# This repository ships an APPLICATION. The template it came from publishes a NuGet package, and that job was
+# replaced rather than adapted: packing an app produces something that succeeds and that nobody consumes.
+#
+# Triggered by a published GitHub release, so the tag is the version (ADR-0001) and cutting a release is a
+# deliberate act rather than a side effect of a merge.
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+
+jobs:
+  # Pauses until the "production" environment's required reviewers approve, before anything is built or
+  # pushed. A published image tag can be overwritten but not un-pulled.
+  gate:
+    name: Await release approval
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - name: Release approved
+        run: echo "Release approved - proceeding to build and publish."
+
+  publish:
+    name: Build and publish to GHCR
+    needs: gate
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # MinVer derives the version from the nearest v-prefixed tag, and a shallow clone yields
+          # 0.0.0-alpha.0 SILENTLY rather than failing. Every job that builds or stamps a version needs this.
+          fetch-depth: 0
+
+      - name: Verify the tag looks like a version
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          if ! printf '%s' "$TAG" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$'; then
+            echo "::error::Tag '$TAG' is not a vMAJOR.MINOR.PATCH release tag."
+            exit 1
+          fi
+          echo "VERSION=${TAG#v}" >> "$GITHUB_ENV"
+
+      # DECLARED, not inherited from the runner image (gh#54). Buildx is preinstalled on GitHub-hosted
+      # runners, so this step was never needed to make the build work -- which is the problem: the builder was
+      # a property of the runner image, and the release could silently build under a different driver than CI
+      # did. ci.yml's `image` job declares the same step at the same major version so the two stay identical.
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # ci.yml's `image` job builds through this same action at this same MAJOR version, with
+      # `push: false, load: true`, so a change to it is exercised on every pull request instead of first
+      # running here (gh#54). Bump the two together -- Dependabot's `github-actions` ecosystem covers both
+      # files, so one PR should touch both.
+      #
+      # THE RESIDUAL DELTA, named because it cannot be closed: CI and this job now match on action, major
+      # version and builder driver, but NOT on exporter. CI exports through the DOCKER exporter (`load`),
+      # this one through the REGISTRY exporter (`push`). No pull-request run can cover a push to GHCR without
+      # handing every PR a write credential, so `docker-container` + `push: true` still first executes here.
+      - name: Build and push
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          push: true
+          # PINNED, not inherited (gh#54 review). Under the `docker-container` driver the step above now
+          # introduces, buildx attaches a provenance attestation BY DEFAULT when pushing to a registry: the
+          # published tag becomes an image index carrying an `unknown/unknown` attestation manifest rather
+          # than a plain manifest, which some pullers and `docker manifest inspect` consumers read badly.
+          # Measured against a local registry with this Dockerfile -- buildx defaults exported an attestation
+          # manifest plus a manifest list; `--provenance=false` exported only the image manifest and config;
+          # the image manifest DIGEST was identical either way. The pin changes the wrapper, nothing else.
+          #
+          # WHAT THIS PIN IS NOT: protection for existing consumers. NOTHING has been published from this
+          # pipeline -- no `v*` tag, no GitHub release, no run of this workflow, ever. It fixes the published
+          # shape deliberately at the one moment that is still free, instead of letting it be decided by
+          # whichever driver happens to be set up. Turning attestations ON later is a fine decision to take
+          # on its own ADR. No pull request can cover the choice either way: `ci.yml` exports with `load` and
+          # never pushes, so the published shape is never produced outside a real release.
+          provenance: false
+          tags: |
+            ghcr.io/${{ github.repository }}:${{ env.VERSION }}
+            ghcr.io/${{ github.repository }}:latest
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.version=${{ env.VERSION }}
+            org.opencontainers.image.revision=${{ github.sha }}
+        env:
+          # Same reasoning as ci.yml's `image` job, where it is written out: `build-push-action` v6+ uploads
+          # a `.dockerbuild` build record as a downloadable workflow artifact by default, and this job holds
+          # a registry credential, so it is the last place to leave a new export surface on by inheritance.
+          #
+          # This is where the cost of that lands, though: the record is what `buildx history` reads, and a
+          # release runs behind a `production` approval on a tag already cut -- the run you can least cheaply
+          # reproduce is the one now keeping no build-RECORD forensics. The log still survives; what is given
+          # up is the structured view. If a release build ever needs diagnosing, turning these back on for
+          # that run is the intended move.
+          #
+          # UNRELATED to `provenance:` above, despite the adjacency and both being `false`: that is an
+          # attestation on the PUSHED IMAGE, this is a WORKFLOW ARTIFACT. Changing one says nothing about
+          # the other.
+          DOCKER_BUILD_RECORD_UPLOAD: false
+          DOCKER_BUILD_SUMMARY: false

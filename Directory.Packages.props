@@ -1,0 +1,99 @@
+<Project>
+
+  <!--
+    Central Package Management — .csproj files carry no versions.
+
+    This exists because they drift otherwise. In the repo this convention came from, the library pinned
+    Microsoft.Extensions.* at 9.0.3 while two console apps pulled 10.0.0 of the same packages, which is how a
+    downgrade warning appears the moment they compose.
+
+    Adding a dependency needs a line in the PR saying why. This repository is an *application*, not a package,
+    so its dependency surface is not a public contract — but it is still a supply-chain surface, and
+    NuGetAudit is set to fail restore on a HIGH advisory rather than warn about one.
+  -->
+
+  <PropertyGroup>
+    <ManagePackageVersionsCentrally>true</ManagePackageVersionsCentrally>
+    <CentralPackageTransitivePinningEnabled>true</CentralPackageTransitivePinningEnabled>
+  </PropertyGroup>
+
+  <ItemGroup Label="Build">
+    <!-- Versioning from the git tag. Build-time only; never a runtime dependency. -->
+    <PackageVersion Include="MinVer" Version="7.0.0" />
+  </ItemGroup>
+
+  <ItemGroup Label="MCP">
+    <!--
+      The official C# SDK. 2.2.0 is the current stable line; the 0.x previews are a different API shape, so a
+      downgrade here is a rewrite, not a bump. .AspNetCore carries the streamable-HTTP transport (ADR-0007);
+      the stdio transport lives in the core package.
+    -->
+    <PackageVersion Include="ModelContextProtocol" Version="2.2.0" />
+    <PackageVersion Include="ModelContextProtocol.AspNetCore" Version="2.2.0" />
+  </ItemGroup>
+
+  <ItemGroup Label="Venue">
+    <!--
+      The ProjectX/TopstepX gateway client, consumed as a package rather than a submodule (ADR-0003).
+
+      2.1.0 is the first release carrying the fixes this server needs. The 1.0.x line on nuget.org predated
+      all of them, which is why the reference sat commented out through Phase 0 (gh#13): the integer-enum
+      serialization, without which EVERY retrieveBars call returned 400; the Retry-After handling; and the
+      startTimestamp rename that Order/Trade search silently requires.
+    -->
+    <PackageVersion Include="MarqSpec.Client.ProjectX" Version="2.1.0" />
+  </ItemGroup>
+
+  <ItemGroup Label="Persistence">
+    <PackageVersion Include="Microsoft.EntityFrameworkCore" Version="10.0.11" />
+    <PackageVersion Include="Microsoft.EntityFrameworkCore.Design" Version="10.0.11" />
+    <PackageVersion Include="Microsoft.EntityFrameworkCore.Relational" Version="10.0.11" />
+    <PackageVersion Include="Npgsql" Version="10.0.3" />
+    <PackageVersion Include="Npgsql.EntityFrameworkCore.PostgreSQL" Version="10.0.3" />
+    <!-- pgvector: the CLR type plus its EF Core mapping. Both are needed; the type alone does not map. -->
+    <PackageVersion Include="Pgvector" Version="0.3.2" />
+    <PackageVersion Include="Pgvector.EntityFrameworkCore" Version="0.3.0" />
+  </ItemGroup>
+
+  <ItemGroup Label="Configuration, options, logging, hosting">
+    <!--
+      10.0.x, NOT 9.0.x. The web host pulls the 10.0 line transitively, and with transitive pinning on, a
+      9.0 pin here is a downgrade error at restore rather than a warning at compose time.
+    -->
+    <PackageVersion Include="Microsoft.Extensions.Configuration" Version="10.0.11" />
+    <PackageVersion Include="Microsoft.Extensions.Configuration.Binder" Version="10.0.11" />
+    <PackageVersion Include="Microsoft.Extensions.Configuration.EnvironmentVariables" Version="10.0.11" />
+    <PackageVersion Include="Microsoft.Extensions.Configuration.Json" Version="10.0.11" />
+    <PackageVersion Include="Microsoft.Extensions.Configuration.UserSecrets" Version="10.0.11" />
+    <PackageVersion Include="Microsoft.Extensions.DependencyInjection.Abstractions" Version="10.0.11" />
+    <PackageVersion Include="Microsoft.Extensions.Hosting" Version="10.0.11" />
+    <PackageVersion Include="Microsoft.Extensions.Logging.Abstractions" Version="10.0.11" />
+    <PackageVersion Include="Microsoft.Extensions.Options" Version="10.0.11" />
+    <PackageVersion Include="Microsoft.Extensions.Options.ConfigurationExtensions" Version="10.0.11" />
+  </ItemGroup>
+
+  <ItemGroup Label="Test stack">
+    <PackageVersion Include="Microsoft.NET.Test.Sdk" Version="18.9.0" />
+    <PackageVersion Include="xunit" Version="2.9.3" />
+    <PackageVersion Include="xunit.runner.visualstudio" Version="4.0.0" />
+    <!-- LICENSE CAP: FluentAssertions v8+ is commercially licensed. Do not bump past 7.x. -->
+    <PackageVersion Include="FluentAssertions" Version="7.2.2" />
+    <PackageVersion Include="coverlet.collector" Version="10.0.1" />
+    <!-- FakeTimeProvider. Session rules are wall-clock rules, so a test has to be able to stand
+         at 15:58 on a Tuesday or at 03:00 on a Sunday exactly. -->
+    <PackageVersion Include="Microsoft.Extensions.TimeProvider.Testing" Version="10.9.0" />
+    <!--
+      A real Postgres for the integration tier. The bar store's hypertable and the HNSW vector index are
+      Timescale/pgvector features; an in-memory provider would pass a suite that proves nothing about them.
+    -->
+    <PackageVersion Include="Testcontainers.PostgreSql" Version="4.14.0" />
+    <!--
+      For the unit tier only. The cache's central claim — that a repeated read costs ZERO vendor calls — is
+      about logic, not SQL, so it is pinned by a fast in-memory test rather than only by a container the suite
+      has to wait for. The schema-level claims (hypertable, HNSW index, CHECK constraints, upsert idempotence)
+      still need a real Postgres; an in-memory provider would pass a suite that proves nothing about them.
+    -->
+    <PackageVersion Include="Microsoft.EntityFrameworkCore.InMemory" Version="10.0.11" />
+  </ItemGroup>
+
+</Project>

@@ -1,0 +1,203 @@
+using System.ComponentModel;
+using MarqSpec.Mcp.TopstepX.Data;
+using MarqSpec.Mcp.TopstepX.Data.Entities;
+using MarqSpec.Mcp.TopstepX.Embeddings;
+using MarqSpec.Mcp.TopstepX.MarketData;
+using Microsoft.EntityFrameworkCore;
+using ModelContextProtocol;
+using ModelContextProtocol.Server;
+
+namespace MarqSpec.Mcp.TopstepX.Tools;
+
+/// <summary>
+/// Somewhere for an agent to put what it noticed, and a way to find it again.
+/// </summary>
+/// <remarks>
+/// <para>
+/// <b>These write to this server's own database, not to the venue.</b> ADR-0002's boundary is about what
+/// reaches the gateway, and nothing here does.
+/// </para>
+/// <para>
+/// This is also the deliberate exception to the numeric-only rule (ADR-0008): free text enters here and is
+/// read back later. The text originates with the operator's own agent rather than with a vendor, which is a
+/// smaller surface — not a zero one, and worth revisiting if observations ever become shared across agents.
+/// </para>
+/// <para>
+/// <b>Search answers by meaning when it can and by substring when it cannot</b>, as one call with one shape.
+/// The result always says which path ran, because an empty list is otherwise ambiguous between "nothing is
+/// similar" and "similarity never ran". An unset key is a supported state, never a crash.
+/// </para>
+/// </remarks>
+[McpServerToolType]
+public sealed class ObservationTools(
+    TopstepXDbContext database,
+    InstrumentRegistry registry,
+    ToolGuards guards,
+    StoreAvailabilityHolder store,
+    EmbeddingWriter embeddingWriter,
+    ObservationSearchService search,
+    TimeProvider clock)
+{
+    private readonly TopstepXDbContext _database = database;
+    private readonly InstrumentRegistry _registry = registry;
+    private readonly ToolGuards _guards = guards;
+    private readonly StoreAvailabilityHolder _store = store;
+    private readonly EmbeddingWriter _embeddingWriter = embeddingWriter;
+    private readonly ObservationSearchService _search = search;
+    private readonly TimeProvider _clock = clock;
+
+    /// <summary>How many observations a search returns when the caller does not say.</summary>
+    /// <remarks>
+    /// Absent means this; a stated number is taken at face value. Coercing a stated zero up to this value
+    /// would substitute a guess for a request the caller made explicitly.
+    /// </remarks>
+    public const int DefaultSearchLimit = 20;
+
+    /// <summary>The classification an observation takes when the caller does not give one.</summary>
+    /// <remarks>
+    /// Named rather than inline so the description advertising it can be gated against it. It was a literal
+    /// in the middle of a record initialiser, which is exactly where a value drifts from the sentence that
+    /// promises it (gh#82).
+    /// </remarks>
+    public const string DefaultObservationKind = "note";
+
+    /// <summary>
+    /// Decides how many observations a search returns.
+    /// </summary>
+    /// <param name="requested">What the caller asked for, if anything.</param>
+    /// <returns><paramref name="requested"/> unchanged, or <see cref="DefaultSearchLimit"/> when absent.</returns>
+    /// <remarks>
+    /// A pure function, separated from the call so the policy can be pinned without a store. <b>It does not
+    /// clamp.</b> A stated zero or negative is returned unchanged and refused downstream by
+    /// <c>ToolGuards.ValidateCount</c>, naming the value. The form this replaced was
+    /// <c>limit &lt;= 0 ? 20 : limit</c>, which turned a caller's explicit 0 into 20 — a stated number
+    /// silently replaced by a guess (gh#70).
+    /// </remarks>
+    public static int ResolveLimit(int? requested) => requested ?? DefaultSearchLimit;
+
+    /// <summary>Records an observation.</summary>
+    /// <param name="text">The observation.</param>
+    /// <param name="symbol">The instrument it concerns, when it concerns one.</param>
+    /// <param name="kind">A short classification.</param>
+    /// <param name="tags">Tags, for filtering that does not need a search.</param>
+    /// <param name="cancellationToken">The caller's cancellation token.</param>
+    /// <returns>The stored observation.</returns>
+    [McpServerTool(Title = "Record observation", Destructive = false)]
+    [Description(
+        "Records something you noticed about a market, so it can be found again later. Writes to this "
+        + "server's own database — nothing is sent to the broker. Use it for setups, context and mistakes "
+        + "worth remembering across sessions.")]
+    public async Task<ToolPayloads.ObservationInfo> RecordObservation(
+        [Description("The observation itself.")] string text,
+        [Description("The instrument it concerns, e.g. ES. Omit for a general observation.")]
+        string? symbol = null,
+        [Description("A short classification, e.g. setup, context, mistake. Defaults to 'note'.")]
+        string? kind = null,
+        [Description("Tags for later filtering. Omit if there are none.")]
+        string[]? tags = null,
+        CancellationToken cancellationToken = default)
+    {
+        _store.Value.Require();
+
+        if (string.IsNullOrWhiteSpace(text))
+        {
+            throw new McpException("An observation needs text.");
+        }
+
+        string? normalisedSymbol = null;
+        if (!string.IsNullOrWhiteSpace(symbol))
+        {
+            // Validated against the served list rather than stored as typed. An observation filed under a
+            // symbol this server does not serve is one that no later search will surface.
+            try
+            {
+                normalisedSymbol = _registry.Resolve(symbol).Symbol;
+            }
+            catch (KeyNotFoundException ex)
+            {
+                throw new McpException(ex.Message);
+            }
+        }
+
+        ObservationRecord record = new()
+        {
+            Id = Guid.NewGuid(),
+            Instrument = normalisedSymbol,
+            Kind = string.IsNullOrWhiteSpace(kind) ? DefaultObservationKind : kind.Trim().ToLowerInvariant(),
+            Text = text.Trim(),
+            Tags = tags ?? [],
+            RecordedAt = _clock.GetUtcNow(),
+        };
+
+        _database.Observations.Add(record);
+
+        // The vector lands in the SAME unit of work as the observation, so a partial commit cannot leave a
+        // note whose vector points at nothing. A provider failure is not an error here: the observation is the
+        // durable thing and an index over it can always be rebuilt.
+        EmbeddingOutcome outcome = await _embeddingWriter
+            .EnsureEmbeddedAsync(record, record.RecordedAt, cancellationToken)
+            .ConfigureAwait(false);
+
+        await _database.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+
+        return ToInfo(record) with { EmbeddingNote = EmbeddingWriter.Explain(outcome) };
+    }
+
+    /// <summary>Searches recorded observations.</summary>
+    /// <param name="query">What to look for.</param>
+    /// <param name="symbol">Restrict to one instrument.</param>
+    /// <param name="limit">How many to return.</param>
+    /// <param name="cancellationToken">The caller's cancellation token.</param>
+    /// <returns>The matches — best first when semantic, most recent first when text.</returns>
+    [McpServerTool(ReadOnly = true, Title = "Search observations")]
+    [Description(
+        "Searches previously recorded observations by meaning, falling back to substring matching when "
+        + "embeddings are unavailable. The result reports which mode answered: Semantic, ordered best-first "
+        + "with a similarity score on each match, or Text, ordered most-recent-first with no score and a "
+        + "reason. An empty Text result means nothing matched THAT SUBSTRING — it is not evidence that "
+        + "nothing relevant was recorded, and is worth retrying with different wording. A non-zero "
+        + "unsearchableCount means some observations have no vector yet and this search could not see them.")]
+    public async Task<ToolPayloads.ObservationSearchResult> SearchObservations(
+        [Description("What to look for.")] string query,
+        [Description("Restrict to one instrument, e.g. ES. Omit to search every instrument.")]
+        string? symbol = null,
+        [Description("How many to return. Omit for 20. A number is taken at face value: zero or negative "
+            + "is refused, not rounded up to the default.")]
+        int? limit = null,
+        CancellationToken cancellationToken = default)
+    {
+        _store.Value.Require();
+
+        int wanted = _guards.ValidateCount(ResolveLimit(limit));
+
+        string? normalisedSymbol = null;
+        if (!string.IsNullOrWhiteSpace(symbol))
+        {
+            // Normalised the same way the write path normalises it. A search for "es" against rows written
+            // under "ES" is a search that finds nothing and reports it as nothing being there.
+            try
+            {
+                normalisedSymbol = _registry.Resolve(symbol).Symbol;
+            }
+            catch (KeyNotFoundException ex)
+            {
+                throw new McpException(ex.Message);
+            }
+        }
+
+        ObservationSearchOutcome outcome = await _search
+            .SearchAsync(query, normalisedSymbol, wanted, cancellationToken)
+            .ConfigureAwait(false);
+
+        return new ToolPayloads.ObservationSearchResult(
+            outcome.Mode == ObservationSearchMode.Semantic
+                ? ToolPayloads.SearchMode.Semantic
+                : ToolPayloads.SearchMode.Text,
+            outcome.Reason,
+            [.. outcome.Matches.Select(m => ToInfo(m.Observation) with { Similarity = m.Similarity })],
+            outcome.UnsearchableCount);
+    }
+
+    private static ToolPayloads.ObservationInfo ToInfo(ObservationRecord record) =>
+        new(record.Id, record.Instrument, record.Kind, record.Text, record.Tags, record.RecordedAt);
+}

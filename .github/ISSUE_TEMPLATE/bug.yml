@@ -1,0 +1,57 @@
+name: Bug
+description: Something behaves differently from what the contract says.
+title: "<what is wrong>"
+labels: [bug]
+assignees: [adammarquette]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Bug fixes are **regression-first**: the fix ships with a test that failed before it.
+
+        If the bug is on an order, position or hub-reconnect path, add the **`safety-critical`** label — that
+        pins the work to a `Work Estimate` of 4 or higher.
+  - type: textarea
+    id: observed
+    attributes:
+      label: Observed behaviour
+      description: What happened. Include the log line, exception, or wire payload if you have one.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behaviour
+      description: What should have happened, and what says so — `swagger.json`, an `R-#`, an ADR.
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Reproduction
+      description: Smallest sequence that shows it. Say whether it reproduces against the fake gateway.
+      value: |
+        1.
+        2.
+        3.
+    validations:
+      required: true
+  - type: dropdown
+    id: blast-radius
+    attributes:
+      label: Blast radius
+      description: What is exposed if this is wrong in production.
+      options:
+        - Cosmetic or developer-facing only
+        - Wrong data returned to the consumer
+        - Order, position or account state can diverge from the venue
+        - An order can be placed, duplicated, or lost
+    validations:
+      required: true
+  - type: input
+    id: versions
+    attributes:
+      label: Version / target framework
+      placeholder: "v1.0.5, net10.0"
+    validations:
+      required: false

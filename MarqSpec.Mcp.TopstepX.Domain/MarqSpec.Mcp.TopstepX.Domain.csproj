@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    The pure layer: bars, instruments, indicators, the session calendar, gap detection, key levels.
+
+    It references NOTHING — no venue client, no EF Core, no hosting. That is deliberate and load-bearing:
+    an indicator's Compute is a pure function of the bars handed in, which is what makes "rebuild = replay"
+    true (ADR-0006). A dependency on a clock or a store here would quietly make a recomputation depend on
+    when it ran.
+  -->
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+</Project>

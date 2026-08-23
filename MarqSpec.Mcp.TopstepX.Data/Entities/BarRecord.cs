@@ -19,6 +19,11 @@ namespace MarqSpec.Mcp.TopstepX.Data.Entities;
 /// same instant. Keyed on time alone they would silently overwrite each other, and the survivor would look
 /// entirely ordinary.
 /// </para>
+/// <para>
+/// <b><see cref="ContractId"/> is provenance, not key.</b> The key stays the venue-neutral symbol
+/// (ADR-0011): a roll therefore still writes the new contract's bars beside the old one's, but the seam is
+/// now recorded, and a read that would cross it says so instead of splicing silently.
+/// </para>
 /// </remarks>
 public sealed class BarRecord
 {
@@ -48,6 +53,30 @@ public sealed class BarRecord
 
     /// <summary>The traded volume in the bar.</summary>
     public required long Volume { get; set; }
+
+    /// <summary>
+    /// The venue contract this bar was fetched from, e.g. <c>CON.F.US.EP.U26</c> — or <see langword="null"/>
+    /// when the provenance was never recorded.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>Nullable, and deliberately never backfilled.</b> Rows written before this column existed carry no
+    /// contract, and the information was not captured anywhere at the time — it cannot be recovered. It could
+    /// be <i>guessed</i>: contract ids encode an expiry month, and a front-month convention would map a bucket
+    /// to a plausible quarter. That guess is precisely the failure this column was added to stop, so the
+    /// absence is left visible instead (ADR-0011).
+    /// </para>
+    /// <para>
+    /// Null therefore means <b>unknown</b>, never "the same contract as the row beside it". An unrecorded run
+    /// adjacent to a recorded one is reported as a roll boundary, because the two are not known to be the same
+    /// contract.
+    /// </para>
+    /// <para>
+    /// Not <c>required</c>, unlike its siblings: a required member would make the unknown state
+    /// unrepresentable, and the whole point is that it is a state the store is genuinely in.
+    /// </para>
+    /// </remarks>
+    public string? ContractId { get; set; }
 
     /// <summary>When this row was last written or revised.</summary>
     public required DateTimeOffset RecordedAt { get; set; }

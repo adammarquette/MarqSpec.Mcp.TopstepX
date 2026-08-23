@@ -159,6 +159,67 @@ public sealed class SchemaTests(SchemaFixture fixture)
     }
 
     [Fact]
+    public async Task ABarsContractId_IsNullableSoUnknownProvenanceIsRepresentable()
+    {
+        // gh#42 / ADR-0011. Bars stored before this column existed carry no contract and it cannot be
+        // recovered — the information was never captured. NOT NULL here would force the migration to invent
+        // a value for every one of them, and a guessed provenance is indistinguishable from a recorded one
+        // once written. The nullability IS the decision, so it is pinned in the database rather than only in
+        // the entity, where a later `required` would silently change it.
+        long nullable = await ScalarAsync(
+            "SELECT count(*) FROM information_schema.columns "
+            + "WHERE table_name = 'Bars' AND column_name = 'ContractId' AND is_nullable = 'YES';");
+
+        nullable.Should().Be(1);
+    }
+
+    [Fact]
+    public async Task ABarWithNoContract_IsAcceptedAndReadsBackAsUnknown()
+    {
+        // The state every pre-existing row is in. It must round-trip as null rather than as an empty string:
+        // "" is a contract id nobody has, and it would compare equal to itself across a roll, which is the
+        // splice being hidden again by a different mechanism.
+        await using TopstepXDbContext database = _fixture.CreateContext();
+        DateTimeOffset bucket = new(2026, 8, 18, 16, 0, 0, TimeSpan.Zero);
+
+        database.Bars.Add(NewBar("NOCON", bucket, close: 100m));
+        await database.SaveChangesAsync();
+
+        await using TopstepXDbContext reader = _fixture.CreateContext();
+        BarRecord stored = await reader.Bars.SingleAsync(b =>
+            b.Instrument == "NOCON" && b.BucketStart == bucket);
+
+        stored.ContractId.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task TwoContractsCanShareASymbol_WhichIsWhyTheSeamHasToBeRecorded()
+    {
+        // The roll, in the store: consecutive buckets under one symbol, produced by two different contracts.
+        // The key does not change — that is deliberate (ADR-0011 keeps symbol keying) — so the ONLY thing
+        // distinguishing them is this column.
+        await using TopstepXDbContext database = _fixture.CreateContext();
+        DateTimeOffset first = new(2026, 8, 18, 17, 0, 0, TimeSpan.Zero);
+
+        BarRecord expiring = NewBar("ROLL", first, close: 100m);
+        expiring.ContractId = "CON.F.US.EP.U26";
+        BarRecord newFront = NewBar("ROLL", first.AddMinutes(5), close: 140m);
+        newFront.ContractId = "CON.F.US.EP.Z26";
+
+        database.Bars.AddRange(expiring, newFront);
+        await database.SaveChangesAsync();
+
+        await using TopstepXDbContext reader = _fixture.CreateContext();
+        List<string?> contracts = await reader.Bars
+            .Where(b => b.Instrument == "ROLL")
+            .OrderBy(b => b.BucketStart)
+            .Select(b => b.ContractId)
+            .ToListAsync();
+
+        contracts.Should().Equal("CON.F.US.EP.U26", "CON.F.US.EP.Z26");
+    }
+
+    [Fact]
     public async Task BarsAndIndicatorValues_CarryNoRetentionPolicy()
     {
         // Deliberate, and worth pinning: both are records rather than pipelines. A replay reaching for the

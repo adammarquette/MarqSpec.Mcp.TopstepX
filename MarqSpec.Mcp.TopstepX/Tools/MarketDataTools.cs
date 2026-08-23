@@ -362,16 +362,13 @@ public sealed class MarketDataTools(
             // operator the vendor is down when they made a typo.
             throw new McpException("The venue could not answer: " + ex.Message);
         }
-        catch (StoreContentionException ex)
-        {
-            // A THIRD fact: nothing upstream failed and nothing was refused -- the store would not serialise
-            // this write against another one, and a retry has already been spent. Raw, it reaches a caller as
-            // a nested PostgresException about "concurrent delete", which says nothing about what to do; this
-            // is the gh#69 shape on the path gh#73 reshaped. Caught NARROWLY on purpose: IndicatorProjector's
-            // whole-series guard also surfaces as an InvalidOperationException, and a blanket catch would
-            // swallow an invariant violation as though it were contention.
-            throw new McpException(ex.Message);
-        }
+
+        // NO CATCH FOR THE STORE HERE, DELIBERATELY. A StoreContentionException, a 23505 from a lost race and
+        // a connection dropped mid-save are all facts about this server's database, and they are translated
+        // once for the whole tool surface by StoreFaultGuard at the call-tool boundary (gh#89). A second copy
+        // here would cover the two tools that reach this method and leave get_indicators, get_key_levels and
+        // record_observation exactly as exposed as they were -- which is the shape this repository has now
+        // been bitten by three times.
     }
 
     private IIndicator ResolveIndicator(string name)

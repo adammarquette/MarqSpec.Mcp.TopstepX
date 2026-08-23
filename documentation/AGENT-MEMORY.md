@@ -18,6 +18,14 @@ ADR, `AGENTS.md`, or the code, **put it there instead**.
 
 ## Practices to follow
 
+- **[2026-08-23] A cross-cutting tool rule belongs in an MCP *filter*, not in each tool.** The SDK (2.2.0)
+  has a request-filter pipeline — `AddMcpServer().WithRequestFilters(f => f.AddCallToolFilter(...))` — and
+  every `tools/call` goes through it, so a tool added tomorrow is covered by wiring rather than by its author
+  remembering a `try`. `StoreFaultGuard` is the first user (gh#89). **A filter can throw `McpException`** and
+  it reaches the caller as a tool error exactly as one thrown inside a tool does. Reach for this the next time
+  a rule would otherwise be repeated per tool — that repetition is what gh#69, gh#81 and gh#89 each were.
+  A filter is resolvable in a test from `IOptions<McpServerOptions>.Value.Filters.Request.CallToolFilters`,
+  so *"the composition root registers it"* is a unit test rather than a hope.
 - **[2026-08-22] The venue seam is the safety boundary, not just a testing convenience.** `IMarketDataGateway`
   has no order method, so a caller holding one has nothing to reach for. Keep it that way: if a task seems to
   need an order call, the task is wrong or it belongs in `trading-copilot`. `scripts/check-no-order-path.sh`

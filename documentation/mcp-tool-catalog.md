@@ -21,6 +21,18 @@ tool and change this page in the same PR.
   fetches `cap + 1` and errors with the real count, so "you asked for too much" never arrives disguised as
   "here is all there was".
 - **Times are ISO-8601 UTC**, in and out. A naive local timestamp in a request is rejected, not guessed at.
+- **A fault in this server's own database is stated, never emitted as a stack.** A lost write race, a dropped
+  connection, a constraint this repo adds later — each reaches the caller as an error naming the condition and
+  its Postgres SqlState, from *every* tool, because the guard is a call-tool filter on the server rather than a
+  `try` in one tool. Until gh#89, only the two bar-filling tools translated anything, and a `23505` from two
+  concurrent fills arrived at `get_bars` as a raw `DbUpdateException`.
+
+  **A lost race is an error, not a quiet success.** The rows the loser collided on are in the store — the
+  other writer committed them — but the loser's *whole* transaction rolled back, including the coverage ledger
+  and the indicator projection over the same series. So the answer is "retry", and the retry is served from
+  what the other writer committed. **A defect in this server is still a defect**: an invariant violation
+  propagates unchanged rather than being dressed up as a transient store condition an operator would retry
+  forever.
 - **A missing number means *cannot measure*.** Never a substituted default, and the caller is expected to say
   so rather than proceed. **How that reaches the wire depends on where the value sits**, and the two forms
   need different tests:

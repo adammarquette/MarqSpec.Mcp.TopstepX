@@ -83,13 +83,32 @@ the same unjustified rows — and the coverage ledger reaches it with no bars at
 for one empty range both *refresh* one row. The retry is not a gamble: in every shape of this conflict the
 transaction that won committed exactly the work the loser was missing, so the second attempt runs over a
 better-informed store, and because the fetch already happened it costs no vendor requests. A second collision
-is sustained contention rather than a race, so it becomes a `StoreContentionException`, which the tool layer
-turns into an `McpException` naming the condition rather than a nested Postgres stack.
+is sustained contention rather than a race, so it becomes a `StoreContentionException`, which the **store-fault
+boundary** below turns into an `McpException` naming the condition rather than a nested Postgres stack.
 
-What is *not* fixed is a fill whose snapshot misses a range another fill is filling: its values are seeded from
-the wrong bar and are stale until the next pass, which is recoverable by construction (`R-2.9`,
-[ADR-0006](adr/0006-indicators-as-projections.md)). Closing that means serialising fills per series — a lock
-rather than an isolation level, tracked as gh#80.
+**Every store fault stops at one boundary, not at a call site.** A `StoreFaultGuard` call-tool filter is
+registered on the MCP server itself, so *every* `tools/call` passes through it — a tool added tomorrow is
+covered by having been registered rather than by its author remembering a `try`. It translates a
+`StoreContentionException`, a `DbUpdateException` and a bare `NpgsqlException` into an `McpException` stating
+the condition and its SqlState; it catches nothing else, so an `InvalidOperationException` — the projector's
+whole-series guard among them — still propagates as the defect it is. Before it, `MarketDataTools.ReadAsync`
+was the only translation on the surface, and the six tools that never call it had none: a `23505` from two
+overlapping fills reached a caller of `get_bars` as a raw `DbUpdateException` (gh#89).
+
+**A lost race is reported, not swallowed and not retried at the boundary.** Two fills of overlapping ranges
+both find a bucket absent and both insert it; the loser gets `23505`. The rows it collided on *are* in the
+store — so a duplicate key on an idempotent upsert looks like a success someone else achieved. It is not one:
+the collision aborts the whole transaction, and that transaction is also the coverage ledger and the indicator
+projection over the same series, none of which the winner wrote on this caller's behalf. Answering "fine"
+would return a series assembled inside a transaction that rolled back. Retrying at the boundary is equally
+wrong — it would re-run the whole tool call, paced page-walk included; a retry belongs in `SeriesUnitOfWork`,
+bounded, where the fetch already happened. So the caller is told plainly, and told that a retry is served from
+what the other writer committed.
+
+What is *not* fixed is the race itself, nor a fill whose snapshot misses a range another fill is filling: its
+values are seeded from the wrong bar and are stale until the next pass, which is recoverable by construction
+(`R-2.9`, [ADR-0006](adr/0006-indicators-as-projections.md)). Closing both means serialising fills per series —
+a lock rather than an isolation level, tracked as gh#80 and still open.
 
 ### Why step 2 exists
 

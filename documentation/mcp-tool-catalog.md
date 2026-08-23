@@ -193,8 +193,46 @@ is absent.
 
 Until gh#70 both window arguments were required on the wire while their descriptions said *"Required unless
 openOnly"*, so the documented way to ask for working orders was rejected before it reached any code.
+
+These three return the venue records directly, and this page did not state their shapes until gh#71:
+
+```
+get_positions -> [{ contractId, signedSize, averagePrice, openedAt }]
+get_orders    -> [{ orderId, contractId, side, size, filledSize, status,
+                    limitPrice, stopPrice, filledPrice, createdAt }]
+get_trades    -> [{ tradeId, orderId, contractId, side, size, price,
+                    profitAndLoss, fees, voided, filledAt }]
+```
+
 Positions carry a **signed** size — the venue reports an unsigned size plus a direction enum, and a
-directionless non-zero position is an error rather than a flat report.
+directionless non-zero position is an error rather than a flat report. Positive is long, negative short.
+
+**Closed vocabularies**, both this server's own rather than the vendor's wire values:
+
+| Field | Values |
+|---|---|
+| `side` | `Buy` · `Sell` · `Unknown` |
+| `status` | `Open` · `Filled` · `Cancelled` · `Expired` · `Rejected` · `Pending` · `Unknown` |
+
+`Unknown` on either means **this server did not recognise the wire value**, not that the venue reported
+nothing. It is never a valid mapped value, and it is the same shape as `stage` above: a near-miss resolves to
+`Unknown` rather than to a guess.
+
+**Four fields are nullable, and each null is a fact rather than a zero:**
+
+| Field | `null` means |
+|---|---|
+| `limitPrice` | the order carries no limit |
+| `stopPrice` | the order carries no stop |
+| `filledPrice` | nothing has filled yet — **not** a fill at zero |
+| `profitAndLoss` | the venue attributed no realised P&L to this half of the round trip |
+
+`voided` is worth reading before totalling anything: a voided fill is still returned, and summing `price` or
+`fees` across trades without checking it counts something the venue has struck out.
+
+**Two fields the venue sends are deliberately absent.** An order's `customTag` is arbitrary caller-supplied
+text and an account's `name` is vendor free text, and neither crosses into a payload a language model reads
+(ADR-0008). Everything the account name usefully carried is already parsed into `stage`.
 
 > `Order/search` and `Trade/search` take `startTimestamp`/`endTimestamp` while bar retrieval takes
 > `startTime`/`endTime`. Sending the wrong pair does not error: the gateway drops the field and returns nothing.

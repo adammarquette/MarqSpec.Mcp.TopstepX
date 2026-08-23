@@ -126,6 +126,16 @@ The root contract's five apply here unchanged. Four land specifically on the pip
     than papered over: the fixture is rejected by check 1, so nothing exercises the handshake or the
     exit-code assertion behind it — that would need an image that serves and then exits dirty on purpose,
     which cannot be built without a switch in product code whose only job is to break the server.
+
+    It derives that fixture with **`docker commit`, not a `FROM` build**, and the reason generalises to any
+    future step that builds *from* a locally loaded tag: a `docker-container` buildx builder — which
+    `docker/setup-buildx-action` makes current — runs in its own container and **cannot see the local
+    daemon's image store**, so `FROM marqspec-mcp-topstepx:ci` fails in CI trying to *pull* a tag that only
+    exists locally. Naming `--builder default` fixes CI and breaks Docker Desktop, where the current context
+    is `desktop-linux` and buildx answers `use docker --context=default buildx to switch to context
+    "default"` — while `docker buildx inspect default` **succeeds** there, so a guard written on it reads as
+    a working probe right up to the failure. `docker commit` involves no builder, driver, context or
+    registry and behaves the same on both.
   - **`docker/login-action` stays uncovered, on purpose.** Exercising it in CI would mean granting
     `packages: write` to a job that must not push, on every pull request — forks included, where
     `GITHUB_TOKEN` is read-only and the step would fail for a reason unrelated to the change. The login and

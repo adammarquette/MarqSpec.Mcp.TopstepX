@@ -31,14 +31,16 @@ public sealed class EmbeddingWriterTests(SchemaFixture fixture)
     private const string Model = "embed-v4.0-test";
 
     /// <summary>A provider that counts calls and answers however the test needs.</summary>
-    private sealed class CountingProvider(EmbeddingOutcome outcome = EmbeddingOutcome.Succeeded)
+    private sealed class CountingProvider(
+        EmbeddingOutcome outcome = EmbeddingOutcome.Succeeded,
+        string? model = null)
         : IEmbeddingProvider
     {
         public int Calls { get; private set; }
 
         public List<EmbeddingPurpose> Purposes { get; } = [];
 
-        public string Model => EmbeddingWriterTests.Model;
+        public string Model => model ?? EmbeddingWriterTests.Model;
 
         public int Dimensions => TopstepXDbContext.EmbeddingDimensions;
 
@@ -254,6 +256,7 @@ public sealed class EmbeddingWriterTests(SchemaFixture fixture)
     [InlineData(EmbeddingOutcome.RateLimited)]
     [InlineData(EmbeddingOutcome.Unavailable)]
     [InlineData(EmbeddingOutcome.Malformed)]
+    [InlineData(EmbeddingOutcome.Rejected)]
     public async Task AProviderFailureLeavesTheObservationStoredWithoutAVector(EmbeddingOutcome failure)
     {
         // The observation is the durable thing; a vector is an index over it and can be rebuilt. Losing the
@@ -307,6 +310,86 @@ public sealed class EmbeddingWriterTests(SchemaFixture fixture)
         stored.Embedding.ToArray().Should().HaveCount(TopstepXDbContext.EmbeddingDimensions);
         stored.OwnerKind.Should().Be(EmbeddingOwnerKind.Observation);
         stored.ContentHash.Should().Be(EmbeddingWriter.HashOf(record.Text));
+    }
+
+    [Fact]
+    public async Task ASecondModelAddsARow_RatherThanOverwritingTheFirst()
+    {
+        // gh#46's fourth acceptance criterion, and the reason Model is in the primary key: vectors from two
+        // models live in different spaces and are not comparable, so a re-embed under a new one must ADD.
+        // Overwriting would silently discard the old vector and leave a table that looks single-model while
+        // holding a mix -- similarity scores across it would be arithmetic between incomparable things.
+        CountingProvider first = new();
+        CountingProvider second = new(model: "embed-v4.0-successor");
+        string text = UniqueText("a note embedded under two models");
+
+        await using TopstepXDbContext database = fixture.CreateContext();
+        ObservationRecord record = await AddObservationAsync(database, text);
+
+        await Writer(database, first).EnsureEmbeddedAsync(
+            record, DateTimeOffset.UtcNow, CancellationToken.None);
+        await database.SaveChangesAsync();
+
+        await Writer(database, second).EnsureEmbeddedAsync(
+            record, DateTimeOffset.UtcNow, CancellationToken.None);
+        await database.SaveChangesAsync();
+
+        List<EmbeddingRecord> stored = await database.Embeddings
+            .Where(e => e.OwnerId == record.Id.ToString())
+            .ToListAsync();
+
+        stored.Should().HaveCount(2, "Model is part of the key precisely so both survive");
+        stored.Select(e => e.Model).Should().BeEquivalentTo([Model, "embed-v4.0-successor"]);
+
+        // And the reuse guard did not cross the model boundary: the second model paid for its own vector.
+        first.Calls.Should().Be(1);
+        second.Calls.Should().Be(1);
+    }
+
+    [Fact]
+    public async Task AVectorStoredForAnotherPurposeIsNotReused()
+    {
+        // The premise "identical text under one model is an identical vector" is FALSE in general -- purpose
+        // changes the vector -- and nothing in EmbeddingRecord distinguishes the two. OwnerKind is the only
+        // thing that does, which is why it is in the lookup predicate.
+        //
+        // This pins that clause. Without it, a stored non-observation vector for identical text would be
+        // handed to the next matching observation: well-formed, from the wrong region, retrieving worse, and
+        // reporting nothing.
+        CountingProvider provider = new();
+        string text = UniqueText("a note whose text was also embedded as a query");
+
+        await using TopstepXDbContext database = fixture.CreateContext();
+
+        // A vector filed under a DIFFERENT OwnerKind, standing in for anything that is not a stored
+        // observation document -- a cached query embedding being the case gh#47 makes reachable.
+        database.Embeddings.Add(new EmbeddingRecord
+        {
+            OwnerKind = (EmbeddingOwnerKind)99,
+            OwnerId = "not-an-observation",
+            Model = Model,
+            Dimensions = TopstepXDbContext.EmbeddingDimensions,
+            Embedding = new Pgvector.Vector(
+                Enumerable.Repeat(0.9f, TopstepXDbContext.EmbeddingDimensions).ToArray().AsMemory()),
+            ContentHash = EmbeddingWriter.HashOf(text.Trim()),
+            RecordedAt = DateTimeOffset.UtcNow,
+        });
+
+        await database.SaveChangesAsync();
+
+        ObservationRecord record = await AddObservationAsync(database, text);
+        await Writer(database, provider).EnsureEmbeddedAsync(
+            record, DateTimeOffset.UtcNow, CancellationToken.None);
+        await database.SaveChangesAsync();
+
+        provider.Calls.Should().Be(1, "the stored vector was not an observation document, so it is not a twin");
+
+        EmbeddingRecord stored = await database.Embeddings
+            .SingleAsync(e => e.OwnerId == record.Id.ToString());
+
+        stored.Embedding.ToArray().Should().NotEqual(
+            [.. Enumerable.Repeat(0.9f, TopstepXDbContext.EmbeddingDimensions)],
+            "adopting the other vector is the silent failure this clause exists to prevent");
     }
 
     [Fact]

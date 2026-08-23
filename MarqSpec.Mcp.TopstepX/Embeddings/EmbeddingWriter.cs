@@ -1,4 +1,3 @@
-using System.Globalization;
 using System.Security.Cryptography;
 using System.Text;
 using MarqSpec.Mcp.TopstepX.Data;
@@ -16,7 +15,9 @@ namespace MarqSpec.Mcp.TopstepX.Embeddings;
 /// <para>
 /// Embeddings cost money per call, so this does two things before reaching for the provider: it refuses when
 /// embeddings are unavailable at all, and it <b>reuses an existing vector for identical text</b>. Identical
-/// text under the same model produces an identical vector, so paying twice buys nothing.
+/// text embedded <i>for the same purpose</i> under the same model produces an identical vector, so paying
+/// twice buys nothing — and the purpose half of that is carried by <c>OwnerKind</c>, which is why the lookup
+/// filters on it. See the comment on the lookup itself.
 /// </para>
 /// <para>
 /// It never throws for a provider failure. A rate limit or an outage leaves the observation stored without a
@@ -93,11 +94,23 @@ public sealed class EmbeddingWriter(
         string hash = HashOf(observation.Text);
         string ownerId = observation.Id.ToString();
 
-        // Reuse before buying. Identical text under the same model is an identical vector, and an agent
-        // recording a recurring note should not pay for it every time.
+        // Reuse before buying. An agent recording a recurring note should not pay for it every time.
+        //
+        // OwnerKind IS PART OF THE PREDICATE, and not for tidiness. The premise "identical text under one
+        // model is an identical vector" is FALSE in general: EmbeddingPurpose changes the vector, so a
+        // search_query and a search_document embedding of the same text under the same model differ, and
+        // EmbeddingRecord stores nothing that tells them apart. Only OwnerKind does -- an Observation row is
+        // a document embedding by construction, because that is the only thing that writes one.
+        //
+        // Without this clause the guard would be correct only by accident of what currently writes to the
+        // table. Anything that later stores query vectors MUST file them under a different OwnerKind; storing
+        // one as an Observation would hand the next identical note a well-formed vector from the wrong
+        // region, which retrieves measurably worse and reports nothing.
         EmbeddingRecord? twin = await _database.Embeddings
             .FirstOrDefaultAsync(
-                e => e.ContentHash == hash && e.Model == _provider.Model,
+                e => e.OwnerKind == EmbeddingOwnerKind.Observation
+                    && e.ContentHash == hash
+                    && e.Model == _provider.Model,
                 cancellationToken)
             .ConfigureAwait(false);
 
@@ -191,16 +204,17 @@ public sealed class EmbeddingWriter(
         EmbeddingOutcome.RateLimited =>
             "Stored without a vector: the embedding provider rate-limited the call. It will match on text "
             + "until re-embedded.",
+        EmbeddingOutcome.Rejected =>
+            "Stored without a vector: the embedding provider rejected the credential. Check Embeddings__ApiKey "
+            + "— retrying will not help. It will match on text until re-embedded.",
         EmbeddingOutcome.Malformed =>
             "Stored without a vector: the embedding provider returned an unusable response. It will match on "
             + "text until re-embedded.",
+        // Deliberately does NOT say "could not be reached". This bucket also holds statuses where the
+        // provider answered and refused, and sending an operator to check the network when the service
+        // returned 400 is the same overclaiming this repository keeps having to undo.
         _ =>
-            "Stored without a vector: the embedding provider could not be reached. It will match on text "
-            + "until re-embedded.",
+            "Stored without a vector: the embedding provider did not return one. It will match on text until "
+            + "re-embedded.",
     };
-
-    /// <summary>Formats a count for a message, invariantly.</summary>
-    /// <param name="value">The count.</param>
-    /// <returns>The text.</returns>
-    public static string Count(int value) => value.ToString(CultureInfo.InvariantCulture);
 }

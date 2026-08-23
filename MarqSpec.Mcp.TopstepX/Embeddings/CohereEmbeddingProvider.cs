@@ -161,7 +161,11 @@ public sealed class CohereEmbeddingProvider : IEmbeddingProvider
     private static EmbeddingOutcome MapStatus(HttpStatusCode status) => status switch
     {
         HttpStatusCode.TooManyRequests => EmbeddingOutcome.RateLimited,
-        HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden => EmbeddingOutcome.Unavailable,
+
+        // Its own outcome, not Unavailable. A rejected key and an unreachable service need opposite
+        // responses -- fix the configuration, or wait -- and only the operator can act on the difference.
+        HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden => EmbeddingOutcome.Rejected,
+
         _ => EmbeddingOutcome.Unavailable,
     };
 

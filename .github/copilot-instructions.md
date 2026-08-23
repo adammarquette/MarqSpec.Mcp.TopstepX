@@ -40,8 +40,11 @@ The recurring defect shape is a permissive default.
 
 - Never log a key, a secret, a token, or a body containing them — including in exception messages and
   `ToString()` overrides on options types.
-- `AddHttpClient`'s request-header logging **redacts nothing by default**. A typed client carrying a secret
-  header needs `RedactLoggedHeaders`.
+- `AddHttpClient`'s request-header logging **redacts every header by default** — so `RedactLoggedHeaders` is
+  usually the wrong instinct: it *replaces* that default with an allow-list, and every header outside the list
+  starts being logged in the clear. Reach for it only to redact something the default would not, and never as
+  a reflex on a client carrying a secret. Verified on the runtime this repo targets (gh#46); if you are about
+  to raise this as a finding, check `HttpClientFactoryOptions.ShouldRedactHeaderValue` first.
 - A tracked `appsettings.json` with a credential-shaped key is a finding regardless of whether the value is a
   placeholder.
 

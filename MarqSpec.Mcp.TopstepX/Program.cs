@@ -162,6 +162,18 @@ public static class Program
                 // provider must degrade to text search rather than hold a tool call open.
                 client.Timeout = TimeSpan.FromSeconds(20);
             });
+
+            // NO RedactLoggedHeaders CALL HERE, DELIBERATELY -- adding one would make this WORSE.
+            //
+            // IHttpClientFactory's default ShouldRedactHeaderValue redacts EVERY header, not none. Calling
+            // RedactLoggedHeaders(["Authorization"]) replaces that predicate with an allow-list of one, which
+            // keeps the bearer token safe and starts logging every other header in the clear. Measured on the
+            // runtime this targets, not assumed: on a bare container an unconfigured client reports
+            // Authorization, X-Api-Key and Accept all redacted; after such a call only Authorization is.
+            //
+            // TheEmbeddingKeyIsRedactedFromHttpLogging pins the property that actually matters -- this
+            // client's Authorization header is redacted -- so a later narrowing that forgets it fails loudly
+            // rather than leaking into a log from a public repository.
         }
         else
         {

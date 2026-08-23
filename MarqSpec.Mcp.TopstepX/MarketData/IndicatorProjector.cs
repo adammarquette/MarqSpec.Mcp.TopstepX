@@ -96,10 +96,23 @@ public sealed class IndicatorProjector(
             {
                 // A null is the indicator saying it cannot measure yet. It is not written: an absent row and a
                 // row holding a stand-in value read back identically, and only one of them is honest.
-                if (values[i] is not { } value)
+                if (values[i] is not { } computed)
                 {
                     continue;
                 }
+
+                // ROUNDED TO THE STORED SCALE BEFORE ANYTHING ELSE.
+                //
+                // The column is numeric(18,8), so Postgres keeps 8 places; the computation carries the full
+                // decimal precision -- 38.95895082 read back against 38.958950821743... computed. Comparing
+                // those is always unequal, which made the "skip unchanged" guard below dead code: every
+                // rebuild rewrote every row and moved every RecordedAt, so the field recorded when a rebuild
+                // last ran rather than when a value last changed.
+                //
+                // AwayFromZero matches Postgres numeric rounding. Banker's rounding here would store a value
+                // the database would have rounded differently, and the comparison would fail again -- for a
+                // different reason, on a subset of rows, which is harder to notice than failing always.
+                decimal value = Math.Round(computed, TopstepXDbContext.PriceScale, MidpointRounding.AwayFromZero);
 
                 (string Name, int Period, DateTimeOffset OpenTime) key =
                     (indicator.Name, indicator.Period, bars[i].OpenTime);

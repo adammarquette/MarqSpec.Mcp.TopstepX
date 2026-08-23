@@ -21,6 +21,21 @@ public sealed class TopstepXDbContext(DbContextOptions<TopstepXDbContext> option
     /// </remarks>
     public const string PriceColumnType = "numeric(18,8)";
 
+    /// <summary>
+    /// The decimal scale of <see cref="PriceColumnType"/> — the number of places Postgres keeps.
+    /// </summary>
+    /// <remarks>
+    /// <b>Must agree with <see cref="PriceColumnType"/>.</b> They cannot be derived from one another at
+    /// compile time (const string concatenation cannot format an int), so a test asserts they match.
+    /// <para>
+    /// This exists because a value computed at full <see cref="decimal"/> precision and the same value read
+    /// back from the database are <b>not equal</b>: the column rounds to this scale and the computation does
+    /// not. Anything comparing a fresh computation against a stored row must round to this first, or the
+    /// comparison is always false and every "has it changed?" check silently answers yes.
+    /// </para>
+    /// </remarks>
+    public const int PriceScale = 8;
+
     /// <summary>The dimensionality every stored embedding uses.</summary>
     /// <remarks>
     /// A schema constant rather than configuration: the column type is <c>vector(N)</c>, so changing it is a

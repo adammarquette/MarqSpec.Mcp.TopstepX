@@ -47,9 +47,12 @@ tool and change this page in the same PR.
   arrived later, for the same fault at the other end: `2147483647` overflowed the look-back arithmetic and
   faulted, while sailing past that guard because it is positive (gh#81). Above a week a timeframe is a calendar
   month or a quarter, whose length in minutes is not fixed, so nothing above the ceiling is a bar anyone could
-  be asking for. **A large `count` is refused alongside it**: `get_latest_bars` reaches back four bar spans per
-  bar wanted, so a coarse resolution and a big count — each inside its own bound — can name a window starting
-  before the calendar does, and that is an error naming both rather than a fault.
+  be asking for. **One cross-axis pair is refused alongside it, and only one**: `get_latest_bars` reaches back
+  four bar spans per bar wanted, so a coarse resolution and a big count — each inside its own bound — can name
+  a window that **starts before the calendar does**, and that is an error naming both rather than a fault. That
+  is the whole of what the reach guard covers. A pair whose window sits inside the calendar but whose bucket
+  count is larger than one gap-detection pass will enumerate still faults below the tool boundary — `MaxRows`
+  ranges higher than that cap, so an operator can configure the two into disagreement (gh#96).
 - **Nothing is derived across a contract roll.** A series is keyed by the venue-neutral symbol and the front
   month rolls quarterly, so a long window holds **two contracts** that do not trade at the same price. Every
   bar-derived payload carries `contracts` — `span`, plus one segment per contiguous run with its

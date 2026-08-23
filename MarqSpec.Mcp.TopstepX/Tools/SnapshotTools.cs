@@ -53,7 +53,10 @@ public sealed class SnapshotTools(
     /// </summary>
     /// <param name="requested">What the caller asked for, if anything.</param>
     /// <returns>The resolutions to cover, each once, in the order given.</returns>
-    /// <exception cref="McpException">A requested resolution is not positive.</exception>
+    /// <exception cref="McpException">
+    /// A requested resolution is not positive, or is coarser than
+    /// <see cref="ToolGuards.MaxResolutionMinutes"/>.
+    /// </exception>
     /// <remarks>
     /// <para>
     /// A pure function, separated from the call so the policy can be pinned by a test that needs no store and

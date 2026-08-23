@@ -101,7 +101,9 @@ public sealed class ToolGuards(IOptions<MarketDataOptions> options)
     /// <param name="resolutionMinutes">The bar size in minutes, already validated.</param>
     /// <param name="count">How many bars are wanted, already validated.</param>
     /// <returns>The window to read.</returns>
-    /// <exception cref="McpException">The window would start before the calendar does.</exception>
+    /// <exception cref="McpException">
+    /// The window would start before the calendar does, or <paramref name="count"/> sizes no window at all.
+    /// </exception>
     /// <remarks>
     /// <para>
     /// The reach is four bar spans per bar wanted, plus four days. Sessions are shut roughly a quarter of the
@@ -115,9 +117,18 @@ public sealed class ToolGuards(IOptions<MarketDataOptions> options)
     /// <para>
     /// <b><see cref="MaxResolutionMinutes"/> does not on its own make this safe, which is why the check is
     /// here as well as there.</b> <c>MaxRows</c> is operator configuration and ranges to 1,000,000. At a
-    /// weekly bar — exactly at the ceiling, nothing out of range about it — 62,500 bars is a reach of about
-    /// 1,200 years, so the window starts before year one and the same fault returns. Both axes are inside
-    /// their own bound and the product is not; a bound on either alone is not the rule.
+    /// weekly bar — exactly at the ceiling, nothing out of range about it — 62,500 bars <i>span</i> about
+    /// 1,200 years; the reach is <b>four bar spans per bar wanted</b>, so it is about <b>4,800</b> years and
+    /// the window starts before year one. <b>The 4× is the whole point</b>: it is what carries a pair that
+    /// is legal on both axes past a calendar neither axis knows about — refusal in fact begins around 26,400
+    /// weekly bars, not 62,500. A bound on either axis alone is not the rule; the bound is on the product.
+    /// </para>
+    /// <para>
+    /// <b>The refusal is stated at both ends of the reach, because the narrowing cast back to
+    /// <see cref="long"/> is unchecked.</b> A negative <paramref name="count"/> makes the product negative, so
+    /// it sails past the upper comparison and wraps on the cast — reintroducing, inside this guard, the fault
+    /// the guard exists to remove. Reachable only directly today, since every tool validates its count first;
+    /// closed here anyway, because a public guard that trusts its caller is how gh#69 happened.
     /// </para>
     /// <para>
     /// <b>It refuses rather than clamping to the start of the calendar.</b> A clamped window answers with
@@ -129,6 +140,16 @@ public sealed class ToolGuards(IOptions<MarketDataOptions> options)
     {
         Int128 reach = ((Int128)TimeSpan.FromMinutes(resolutionMinutes).Ticks * count * 4)
             + (4 * TimeSpan.TicksPerDay);
+
+        if (reach <= 0)
+        {
+            throw new McpException(
+                "count " + count.ToString(System.Globalization.CultureInfo.InvariantCulture)
+                + " at resolutionMinutes "
+                + resolutionMinutes.ToString(System.Globalization.CultureInfo.InvariantCulture)
+                + " sizes no window to read. A look-back reaches backwards from the last closed bucket, so "
+                + "the count must be positive. Ask for at least one bar.");
+        }
 
         if (reach > end.UtcTicks)
         {
@@ -151,8 +172,8 @@ public sealed class ToolGuards(IOptions<MarketDataOptions> options)
     /// <param name="resolutionMinutes">The bar size, used to estimate the row count.</param>
     /// <returns>The validated range.</returns>
     /// <exception cref="McpException">
-    /// The resolution is not positive, or the window is inverted, is in the future, or would exceed
-    /// <see cref="MaxRows"/>.
+    /// The resolution is not positive or is coarser than <see cref="MaxResolutionMinutes"/>, the window is
+    /// empty or inverted, or it spans more buckets than <see cref="MaxRows"/>.
     /// </exception>
     /// <remarks>
     /// <b>An over-cap window refuses and reports the real count.</b> It does not truncate: a shortened series

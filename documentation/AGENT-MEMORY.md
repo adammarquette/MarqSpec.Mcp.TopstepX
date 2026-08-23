@@ -47,11 +47,15 @@ ADR, `AGENTS.md`, or the code, **put it there instead**.
 - **[2026-08-23] `dotnet test` can exit 0 having discovered ZERO tests — a silent green, and every "tests
   pass" claim made in that state is hollow.** Windows Application Control blocks assembly loads from under
   `.worktrees`, and in that state the runner does not fail: it finds no tests, reports success, and the exit
-  code is 0. This is the same shape as the `0x800711C7` note below but strictly worse, because that one at
-  least announces itself as a catastrophic failure. **Read the COUNT, not the exit code** — `Passed: N` with
-  the N you expected, never a bare "green". A run that says `Total: 0` is a run that proved nothing. Found
-  during the review of gh#73/PR #79, where the reviewer worked around it by running every gate from a
-  worktree under `C:/tmp` instead.
+  code is 0. **Read the COUNT, not the exit code** — `Total: N` present and equal to the N you expected, never
+  a bare "green". A run reporting `Total: 0`, or none at all, is a run that proved nothing.
+  - **It presents as `No test matches the given testcase filter`, not as a load error.** That string is
+    indistinguishable from a genuinely bad `--filter`, so the detection rule has to be *"`Total:` is absent
+    or below what I expected"* and can never be *"look for an error"*.
+  - **`C:/tmp` is a coin flip, not a fix.** The block tracks **freshly-produced binaries**, not the path: it
+    has been hit from `C:/tmp` as well, on a rebuild, minutes after the same directory worked. Retrying often
+    clears it. Moving is worth trying and is not a remedy to rely on.
+  - Found during the reviews of gh#73/PR #79 and gh#82/PR #83, both of which hit it from both locations.
 
 - **[2026-08-23] Docker IS up now, so the integration tier runs locally — and the Application Control block
   is INTERMITTENT, not gone.** Two corrections to the entries below, from gh#42, and they point in opposite

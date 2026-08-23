@@ -42,15 +42,17 @@ ADR, `AGENTS.md`, or the code, **put it there instead**.
   — which matches with nothing on disk**, so no `mkdir` and no mutation to answer a read-only question.
   Verified both ways: ignored on `trading-copilot`, not-ignored on an unfixed `develop`. Without it, three of
   the four siblings read as broken during the gh#40 sweep.
-- **[2026-08-23] Four gates landed in one session and three were defective before review — the evidence behind
-  the two-runs rule** in the [Coding contract](../MarqSpec.Mcp.TopstepX/AGENTS.md) (Tests). Every one had
-  already been watched failing on the bug it was written for; none had been run against the input it would
-  actually meet. `SnapshotDefaultsTests`' description check (gh#70) asserted `Contain("10")`, which matches
-  inside `100` — vacuous. `scripts/check-paced-paging.sh` (gh#43) went green on an unpaced loop because a
-  comment naming the method satisfied it. `ToolSchemaTests` (gh#82) went **red on correct text** twice, first
-  on backticks and then on `e.g. ES`. `SerializationFailureTests` (gh#73) used an interceptor that also
-  matched EF's write batches, so both firings were spent in attempt one and the retry ran unopposed. The
-  reviewer found all four, not the author (gh#87).
+- **[2026-08-23] Four gates landed in one session and all four were defective before review — the evidence
+  behind the two-runs rule** in the [Coding contract](../MarqSpec.Mcp.TopstepX/AGENTS.md) (Tests). Every one
+  had been watched failing on the bug it was written for; none against the input it would actually meet.
+  `SnapshotDefaultsTests`' whole-number boundary (gh#49) excluded every following period, so a number ending
+  a sentence never matched — it passes today only because that description writes "100 of each", so the first
+  rewording would have turned it red on correct text (`29a0d84`, gh#82). `check-paced-paging.sh` (gh#43) went
+  green on an unpaced loop that kept a comment naming the method. `ToolSchemaTests` (gh#70) keyed on four
+  description phrases, so rewording silenced it — four of eight parameters were green only because the same
+  commit reworded them — and it went **red on correct text** twice, on backticks and on `e.g. ES`.
+  `SerializationFailureTests` (gh#73)'s interceptor also matched EF's write batches, spending both firings in
+  attempt one and leaving the retry unopposed. The reviewer found all four, not the author (gh#87).
 
 ## Notes & communications
 

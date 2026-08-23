@@ -21,8 +21,22 @@ tool and change this page in the same PR.
   fetches `cap + 1` and errors with the real count, so "you asked for too much" never arrives disguised as
   "here is all there was".
 - **Times are ISO-8601 UTC**, in and out. A naive local timestamp in a request is rejected, not guessed at.
-- **A missing number is `null`, meaning *cannot measure*.** Never a substituted default. The caller is expected
-  to say so rather than proceed.
+- **A missing number means *cannot measure*.** Never a substituted default, and the caller is expected to say
+  so rather than proceed. **How that reaches the wire depends on where the value sits**, and the two forms
+  need different tests:
+
+  | Where | On the wire | Test |
+  |---|---|---|
+  | A **field** on an object — `limitPrice`, `filledPrice` | **omitted entirely**; the serializer drops nulls | `"limitPrice" in order` |
+  | A **value in a map** — the snapshot's `indicators{}` | **present, with `null`** | `indicators.rsi === null` |
+
+  Comparing an omitted field to `null` is the `undefined`-is-falsy trap that made `fromCache` unusable
+  (gh#48). Testing a map for key *presence* is the same mistake mirrored: every indicator this server computes
+  has a key, so presence says nothing about whether it could be measured.
+
+  **Entries below have not yet been brought into line** — six write `null` without saying which form they
+  mean, and all six are in fact omitted fields. Classifying and correcting them is gh#85; until then, read
+  this table rather than the individual entry.
 - **`resolutionMinutes` is caller-chosen, and any *positive* resolution is servable.** No tool enumerates
   supported timeframes, because there is no list — each resolution is an independent cached series fetched from
   the venue, never derived from a finer one
@@ -36,7 +50,7 @@ tool and change this page in the same PR.
   `contractId` and bucket range. **Read `span` before comparing anything across the window**: a high from the
   expiring contract is not a price the contract in front has ever reached. The bars themselves are still
   returned, because each is a real observation; the *derived* values are not computed across the seam, so
-  expect a run of absent indicator values just after one ([ADR-0011](adr/0011-contract-roll-boundary.md)).
+  expect a run of null indicator values just after one ([ADR-0011](adr/0011-contract-roll-boundary.md)).
 
   `span` has **three** values, not two:
 
@@ -193,8 +207,62 @@ is absent.
 
 Until gh#70 both window arguments were required on the wire while their descriptions said *"Required unless
 openOnly"*, so the documented way to ask for working orders was rejected before it reached any code.
+
+These three return the venue records directly, and this page did not state their shapes until gh#71:
+
+```
+get_positions -> [{ contractId, signedSize, averagePrice, openedAt }]
+get_orders    -> [{ orderId, contractId, side, size, filledSize, status,
+                    limitPrice, stopPrice, filledPrice, createdAt }]
+get_trades    -> [{ tradeId, orderId, contractId, side, size, price,
+                    profitAndLoss, fees, voided, filledAt }]
+```
+
 Positions carry a **signed** size — the venue reports an unsigned size plus a direction enum, and a
-directionless non-zero position is an error rather than a flat report.
+directionless non-zero position is an error rather than a flat report. Positive is long, negative short.
+
+**Closed vocabularies**, both this server's own rather than the vendor's wire values:
+
+| Field | Values |
+|---|---|
+| `side` | `Buy` · `Sell` · `Unknown` |
+| `status` | `Open` · `Filled` · `Cancelled` · `Expired` · `Rejected` · `Pending` · `Unknown` |
+
+`Unknown` is never a value the venue chose — it is the same shape as `stage` above, where a near-miss
+resolves to `Unknown` rather than to a guess. **The two differ in what else it can mean, and the difference
+runs the other way from what you would expect.**
+
+For `status` it also covers the vendor's own `None`, which is what an order deserialised with no status field
+carries — so `status: "Unknown"` can mean *the venue reported nothing here*.
+
+For `side` it cannot. Every declared wire value maps, so `Unknown` does say the server did not recognise what
+arrived — but **an omitted `side` never reaches it.** The gateway client binds `side` to an enum whose zero is
+`Bid`, a real direction, so an order the venue gave no side to arrives already indistinguishable from a buy
+and is reported as `Buy` (gh#84; the fix is upstream, and the distinction is destroyed before this server sees
+the order).
+
+So: **`status: "Unknown"` can report an absence and `side` cannot.** Neither is a state to reason from, and a
+`side` you are about to act on is worth confirming against the position rather than the order.
+
+**Four fields are optional, and an absent one is a fact rather than a zero:**
+
+| Field | Absent means |
+|---|---|
+| `limitPrice` | the order carries no limit |
+| `stopPrice` | the order carries no stop |
+| `filledPrice` | nothing has filled yet — **not** a fill at zero |
+| `profitAndLoss` | the venue attributed no realised P&L to this half of the round trip |
+
+**Absent, not `null` — test for the key, not for the value.** These fields are *omitted from the object*
+rather than serialised as `null`, so `order.limitPrice === null` is `false` for every limitless order. Reach
+for `"limitPrice" in order`, or a language's equivalent, and treat absence as the fact in the table above.
+
+`voided` is worth reading before totalling anything: a voided fill is still returned, and summing `price` or
+`fees` across trades without checking it counts something the venue has struck out.
+
+**Two fields the venue sends are deliberately absent.** An order's `customTag` is arbitrary caller-supplied
+text and an account's `name` is vendor free text, and neither crosses into a payload a language model reads
+(ADR-0008). Everything the account name usefully carried is already parsed into `stage`.
 
 > `Order/search` and `Trade/search` take `startTimestamp`/`endTimestamp` while bar retrieval takes
 > `startTime`/`endTime`. Sending the wrong pair does not error: the gateway drops the field and returns nothing.

@@ -102,8 +102,20 @@ public static class ToolPayloads
     /// <param name="ResolutionMinutes">The bar size.</param>
     /// <param name="Bars">The bars, ascending.</param>
     /// <param name="FetchedBuckets">
-    /// How many buckets came from the venue on this call. <b>Zero means served entirely from cache.</b>
-    /// Reported rather than merely logged, so the caller can see what a question cost.
+    /// How many buckets the venue supplied that this call actually <b>wrote or revised</b>. Reported rather
+    /// than merely logged, so the caller can see what a question cost. Not a count of what arrived: still
+    /// forming bars are dropped before counting, and an upsert that finds an identical row is skipped.
+    /// <para>
+    /// <b>Zero does not prove the read cost nothing.</b> A range the venue answers <i>empty</i> (<c>R-1.7</c>)
+    /// costs a request and returns no buckets, so this reads zero after a genuine round trip. The exact test
+    /// for "served entirely from the store" is <c>VenueRequests == 0</c>, and this remark claimed otherwise
+    /// until gh#71.
+    /// </para>
+    /// <para>
+    /// The error is in the direction that matters: reading this as "free" <b>undercounts</b> venue traffic,
+    /// never overcounts it. The gateway's history limit is process-wide rather than per-call (gh#64), so a
+    /// caller pacing itself on this number spends more of a shared budget than it believes it is spending.
+    /// </para>
     /// </param>
     /// <param name="VenueRequests">How many requests reached the venue.</param>
     /// <param name="Contracts">
@@ -269,7 +281,12 @@ public static class ToolPayloads
     /// <summary>One resolution's slice of a snapshot.</summary>
     /// <param name="ResolutionMinutes">The bar size.</param>
     /// <param name="Bars">The recent bars.</param>
-    /// <param name="Indicators">The latest value of each indicator, keyed by name. Absent means cannot measure.</param>
+    /// <param name="Indicators">
+    /// The latest value of each indicator, keyed by name. <b>Every indicator this server computes has a
+    /// key</b>, so presence says nothing — a <c>null</c> VALUE is what means cannot measure. The keys come
+    /// from the catalogue and are assigned unconditionally, so an absent key would mean the server does not
+    /// compute that indicator at all.
+    /// </param>
     /// <param name="Levels">
     /// The detected levels, <b>with their own coverage</b>. Levels are detected over a longer window than the
     /// bars returned here, so the two can disagree about whether a roll happened — read the level set's own

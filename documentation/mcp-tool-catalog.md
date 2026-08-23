@@ -146,7 +146,7 @@ Returns `{ value, bucketStart, contractId }`, or `{ value: null }` meaning *cann
 `contractId` is the contract the value belongs to. Two readings from different contracts are not
 comparable, and nothing in a bare number says so.
 
-### `get_key_levels(symbol, resolutionMinutes, lookbackBars)`
+### `get_key_levels(symbol, resolutionMinutes, lookbackBars?)`
 Support and resistance as **zones**, not lines.
 
 Returns `{ levels: [{ timeframeMinutes, bottom, top, midpoint, kind, significance, touchCount,
@@ -158,8 +158,9 @@ about to reach. So when the requested lookback spans a roll, `detectedOverBars` 
 lookback asked for — reported rather than implied, because silently halving the history behind a level
 changes how much weight it deserves.
 
-**One resolution per call, and `lookbackBars` is required** — this page described an array of timeframes and
-no lookback until gh#48, and neither has ever matched the code. The returned field is named
+**One resolution per call**, and `lookbackBars` defaults to 500 — its description said *"500 is a reasonable
+default"* while the schema required it, until gh#70. This page described an array of timeframes and no
+lookback at all until gh#48, and neither had ever matched the code. The returned field is named
 `timeframeMinutes` while the argument is `resolutionMinutes`; that asymmetry is real, and renaming the payload
 field is a breaking change to the tool contract rather than a typo to quietly fix here.
 
@@ -171,7 +172,7 @@ and reporting it otherwise puts a ceiling underneath the market.
 
 All read-only. Reading what already happened transmits nothing.
 
-### `list_accounts`
+### `list_accounts(onlyActive?)`
 Returns `[{ accountId, stage, canTrade, isVisible, balance }]`.
 
 `stage` is `Practice | Evaluation | Funded | Unknown`, **parsed** from the account name against anchored
@@ -181,11 +182,17 @@ patterns rather than passed through as text. A near-miss is `Unknown`, never a g
 > executes, and on a prop platform a *funded* account reports `simulated: true` while a real payout rides on it.
 > Against a real login it classifies every account, funded ones included, as practice.
 
-### `get_positions(accountId)` · `get_orders(accountId, openOnly, fromUtc, toUtc)` · `get_trades(accountId, fromUtc, toUtc)`
+### `get_positions(accountId)` · `get_orders(accountId, openOnly, fromUtc?, toUtc?)` · `get_trades(accountId, fromUtc, toUtc)`
 
-**`get_orders` takes `openOnly` first, and every argument is required.** When `openOnly` is true the
-window is ignored; when it is false, `fromUtc` and `toUtc` must both be supplied or the call errors.
-This page had the arguments in the wrong order and marked `openOnly` optional until gh#48.
+**`get_orders` takes `openOnly` first, and it is required — deliberately.** `true` and `false` ask
+*different questions* — the working book, or a historical window — and defaulting to either answers the one
+the caller did not ask. When it is true the window is ignored, so `fromUtc` and `toUtc` may be omitted; when
+it is false they must both be supplied. That is a **conditional** requirement, which a JSON schema cannot
+express, so the schema marks the window optional and the server enforces the pairing, naming which of the two
+is absent.
+
+Until gh#70 both window arguments were required on the wire while their descriptions said *"Required unless
+openOnly"*, so the documented way to ask for working orders was rejected before it reached any code.
 Positions carry a **signed** size — the venue reports an unsigned size plus a direction enum, and a
 directionless non-zero position is an error rather than a flat report.
 
@@ -250,15 +257,18 @@ worse off than one holding either alone.
 
 ## Observations
 
-### `record_observation(text, symbol, kind, tags[])` · `search_observations(query, symbol, limit)`
+### `record_observation(text, symbol?, kind?, tags[]?)` · `search_observations(query, symbol?, limit?)`
 
-**Every argument on both tools is required on the wire**, and `search_observations` takes `limit`, not
-`k`. The `?` marks this page used to carry were wrong in both directions: the argument names did not
-match, and nothing here is omittable.
+**`text` and `query` are the only required arguments**, and `search_observations` takes `limit`, not `k`.
 
-That is a defect rather than a design — the parameter descriptions promise defaults (*"Omit for a
-general observation"*, *"Defaults to 'note'"*, *"Defaults to 20"*) that the schema does not permit a
-caller to take. Tracked as gh#70; this page states what the schema does today, not what it should do.
+Until gh#70 every argument on both tools was required on the wire, while the descriptions promised otherwise
+(*"Omit for a general observation"*, *"Defaults to 'note'"*, *"Defaults to 20"*). The MCP SDK derives
+`required` from whether a C# parameter has a **default value**, not from whether its type is nullable, so a
+`string? symbol` with no `= null` was nullable and required at the same time.
+
+**`limit` is taken at face value.** Omit it for 20; state a number and it is used, or refused if it is out of
+range. It is not clamped — the previous form turned an explicit `0` into `20`, substituting a guess for a
+number the caller stated and could not see replaced.
 
 Writes to **this** database. Not the venue, and no weakening of the read-only boundary.
 

@@ -30,9 +30,9 @@ public sealed class AccountTools(IMarketDataGateway gateway, ToolGuards guards)
         + "Note the venue's own 'simulated' flag is deliberately not reported: it describes where an order "
         + "executes, and a funded prop account reports simulated=true while a real payout rides on it.")]
     public async Task<IReadOnlyList<ToolPayloads.AccountInfo>> ListAccounts(
-        [Description("Restrict to accounts the venue marks active. Defaults to true.")]
-        bool onlyActive,
-        CancellationToken cancellationToken)
+        [Description("Restrict to accounts the venue marks active. Omit for true.")]
+        bool onlyActive = true,
+        CancellationToken cancellationToken = default)
     {
         IReadOnlyList<VenueAccount> accounts =
             await Guarded(() => _gateway.GetAccountsAsync(onlyActive, cancellationToken)).ConfigureAwait(false);
@@ -70,17 +70,29 @@ public sealed class AccountTools(IMarketDataGateway gateway, ToolGuards guards)
     public async Task<IReadOnlyList<VenueOrder>> GetOrders(
         [Description("The venue account id.")] int accountId,
         [Description("Read only working orders. When true, the window is ignored.")] bool openOnly,
-        [Description("Window start, ISO-8601 UTC. Required unless openOnly.")] DateTimeOffset? fromUtc,
-        [Description("Window end, ISO-8601 UTC. Required unless openOnly.")] DateTimeOffset? toUtc,
-        CancellationToken cancellationToken)
+        [Description("Window start, ISO-8601 UTC. Omit when openOnly is true; required otherwise.")]
+        DateTimeOffset? fromUtc = null,
+        [Description("Window end, ISO-8601 UTC. Omit when openOnly is true; required otherwise.")]
+        DateTimeOffset? toUtc = null,
+        CancellationToken cancellationToken = default)
     {
         BarRange? window = null;
         if (!openOnly)
         {
             if (fromUtc is not { } from || toUtc is not { } to)
             {
+                // Name the one that is absent. "both are required" is true and unhelpful when the caller
+                // supplied one of them: it reads as though neither arrived.
+                string missing = (fromUtc, toUtc) switch
+                {
+                    (null, null) => "fromUtc and toUtc are",
+                    (null, _) => "fromUtc is",
+                    _ => "toUtc is",
+                };
+
                 throw new McpException(
-                    "fromUtc and toUtc are both required when openOnly is false.");
+                    missing + " required when openOnly is false. Pass openOnly: true to read the working "
+                    + "book instead, which ignores the window.");
             }
 
             if (to <= from)

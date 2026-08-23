@@ -46,6 +46,27 @@ public sealed class ObservationTools(
     private readonly ObservationSearchService _search = search;
     private readonly TimeProvider _clock = clock;
 
+    /// <summary>How many observations a search returns when the caller does not say.</summary>
+    /// <remarks>
+    /// Absent means this; a stated number is taken at face value. Coercing a stated zero up to this value
+    /// would substitute a guess for a request the caller made explicitly.
+    /// </remarks>
+    public const int DefaultSearchLimit = 20;
+
+    /// <summary>
+    /// Decides how many observations a search returns.
+    /// </summary>
+    /// <param name="requested">What the caller asked for, if anything.</param>
+    /// <returns><paramref name="requested"/> unchanged, or <see cref="DefaultSearchLimit"/> when absent.</returns>
+    /// <remarks>
+    /// A pure function, separated from the call so the policy can be pinned without a store. <b>It does not
+    /// clamp.</b> A stated zero or negative is returned unchanged and refused downstream by
+    /// <c>ToolGuards.ValidateCount</c>, naming the value. The form this replaced was
+    /// <c>limit &lt;= 0 ? 20 : limit</c>, which turned a caller's explicit 0 into 20 — a stated number
+    /// silently replaced by a guess (gh#70).
+    /// </remarks>
+    public static int ResolveLimit(int? requested) => requested ?? DefaultSearchLimit;
+
     /// <summary>Records an observation.</summary>
     /// <param name="text">The observation.</param>
     /// <param name="symbol">The instrument it concerns, when it concerns one.</param>
@@ -60,10 +81,13 @@ public sealed class ObservationTools(
         + "worth remembering across sessions.")]
     public async Task<ToolPayloads.ObservationInfo> RecordObservation(
         [Description("The observation itself.")] string text,
-        [Description("The instrument it concerns, e.g. ES. Omit for a general observation.")] string? symbol,
-        [Description("A short classification, e.g. setup, context, mistake. Defaults to 'note'.")] string? kind,
-        [Description("Tags for later filtering.")] string[]? tags,
-        CancellationToken cancellationToken)
+        [Description("The instrument it concerns, e.g. ES. Omit for a general observation.")]
+        string? symbol = null,
+        [Description("A short classification, e.g. setup, context, mistake. Defaults to 'note'.")]
+        string? kind = null,
+        [Description("Tags for later filtering. Omit if there are none.")]
+        string[]? tags = null,
+        CancellationToken cancellationToken = default)
     {
         _store.Value.Require();
 
@@ -127,13 +151,16 @@ public sealed class ObservationTools(
         + "unsearchableCount means some observations have no vector yet and this search could not see them.")]
     public async Task<ToolPayloads.ObservationSearchResult> SearchObservations(
         [Description("What to look for.")] string query,
-        [Description("Restrict to one instrument, e.g. ES.")] string? symbol,
-        [Description("How many to return. Defaults to 20.")] int limit,
-        CancellationToken cancellationToken)
+        [Description("Restrict to one instrument, e.g. ES. Omit to search every instrument.")]
+        string? symbol = null,
+        [Description("How many to return. Omit for 20. A number is taken at face value: zero or negative "
+            + "is refused, not rounded up to the default.")]
+        int? limit = null,
+        CancellationToken cancellationToken = default)
     {
         _store.Value.Require();
 
-        int wanted = _guards.ValidateCount(limit <= 0 ? 20 : limit);
+        int wanted = _guards.ValidateCount(ResolveLimit(limit));
 
         string? normalisedSymbol = null;
         if (!string.IsNullOrWhiteSpace(symbol))

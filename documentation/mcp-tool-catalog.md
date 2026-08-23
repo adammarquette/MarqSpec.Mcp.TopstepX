@@ -156,7 +156,7 @@ directionless non-zero position is an error rather than a flat report.
 
 ## Composed
 
-### `get_market_snapshot(symbol, resolutionMinutes[], barCount?)`
+### `get_market_snapshot(symbol, resolutionMinutes[]?, barCount?)`
 Bars, indicators, key levels and session state in one call — the common question at one round trip instead of
 five or six.
 
@@ -164,6 +164,40 @@ Returns `{ symbol, session, perResolution: [{ resolutionMinutes, bars[], indicat
 
 This should be the tool an agent reaches for first. The single-purpose tools exist for when it needs something
 specific or a longer window.
+
+**`symbol` is the only required argument.** The defaults are:
+
+| Argument | Default | Why |
+|---|---|---|
+| `resolutionMinutes` | `[5, 60]` | Setup and bias — see below |
+| `barCount` | `100` | The session's shape and every indicator's warm-up, without making a first call expensive |
+
+**Why those two timeframes.** On one timeframe alone, a pullback in an uptrend and the start of a downtrend
+are the same picture. A single-resolution snapshot therefore answers confidently from one view and says
+nothing about what it missed, which is the failure this tool exists to avoid.
+
+Both defaults are overridable, and **an explicit `resolutionMinutes` replaces the default rather than
+extending it** — a caller asking for `[15]` gets 15m and nothing else. **Null *or* an empty array means the
+default**: honouring `[]` literally would return a snapshot with no timeframes in it, indistinguishable from
+an instrument that produced no data.
+
+The default is a cost decision as much as an analytical one. Each resolution is an independent cached series
+*and* an independent indicator projection — `ADR-0010`, the timeframe record (gh#48), is where that cost is
+written down — so the set decides what a first call costs. `[5, 15, 60]`, the conventional trio, was the
+alternative; 15m refines a read the other two already settle. 1m is left out because it is where the
+projector's cost lands first, and an agent that wants timing can name it.
+
+**The tool description states all of this**, because an agent reads that and not this page. `SnapshotTools`
+carries tests asserting the description names every default it applies, matching each as a whole number so a
+value cannot hide inside a longer one.
+
+That narrows the gap rather than closing it: a default changed to a number the description already contains
+for another reason — `barCount` to `60`, say — would still pass, because the sentence says "60-minute".
+Closing it entirely needs the advertised clause built from the constants, which a `[Description]` attribute
+cannot do.
+
+`barCount` is validated on the path it feeds, not here: it reaches `ToolGuards.ValidateCount` through
+`get_latest_bars` on the first resolution, so a negative or over-cap count still refuses.
 
 ## Observations
 

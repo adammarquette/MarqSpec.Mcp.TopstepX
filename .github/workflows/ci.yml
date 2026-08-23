@@ -66,6 +66,24 @@ jobs:
       - name: No order path in product code
         run: ./scripts/check-no-order-path.sh
 
+  # gh#43. The pacer that keeps the bar paging loop inside the vendor's 50-requests-per-30-seconds allowance
+  # is unit-tested; its CONNECTION to the loop was not, and deleting the await left all 208 tests green.
+  #
+  # Its own job for the same reason no-order-path has one: a failure here means "the burst protection came
+  # unpicked", and folding it into no-order-path would report that as "the read-only boundary was crossed",
+  # which is a different and far more alarming claim. NOTE: a new job is not automatically a REQUIRED check --
+  # the develop ruleset names those, and a ruleset cannot be edited from a pull request. So this REPORTS and
+  # does not block; adding it to the ruleset is tracked as gh#72. Read a red `paced-paging` as real even
+  # though the merge box does not.
+  paced-paging:
+    name: paced-paging
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Bar paging takes a rate-limit slot per page
+        run: ./scripts/check-paced-paging.sh
+
   build-test:
     name: build & unit tests
     runs-on: ubuntu-latest

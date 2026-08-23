@@ -22,13 +22,21 @@ tool and change this page in the same PR.
 - **Times are ISO-8601 UTC**, in and out. A naive local timestamp in a request is rejected, not guessed at.
 - **A missing number is `null`, meaning *cannot measure*.** Never a substituted default. The caller is expected
   to say so rather than proceed.
+- **`resolutionMinutes` is caller-chosen, and any resolution is servable.** No tool enumerates supported
+  timeframes, because there is no list — each resolution is an independent cached series fetched from the
+  venue, never derived from a finer one
+  ([ADR-0010](adr/0010-per-call-resolutions-fetched-not-derived.md)).
 
 ## Reference and session
 
 ### `list_instruments`
 The instruments this server is configured for, with the contract arithmetic.
 
-Returns `[{ symbol, tickSize, pointValue, sessionCloseCentral, resolutionsAvailable[] }]`.
+Returns `[{ symbol, tickSize, pointValue, tickValue, sessionCloseCentral }]`.
+
+**There is no `resolutionsAvailable`.** This page described one until gh#48; no such field has ever
+existed on `ToolPayloads.InstrumentInfo`, and none is coming. Resolution is a per-call parameter and the
+supported set is *any* — [ADR-0010](adr/0010-per-call-resolutions-fetched-not-derived.md).
 
 Where `tickSize` and `pointValue` come from matters: the venue publishes money-per-**tick**, and this returns
 money-per-**point** (they differ by the tick size). A configured override replaces an entry **wholesale** — a
@@ -45,10 +53,14 @@ Returns `[{ contractId, symbol, isActive, tickSize, tickValue }]`, front month f
 > zero contracts, and the failure surfaces far away as "no contract matches ES". `ProjectX__DataTier` is
 > required and never defaulted for exactly this reason.
 
-### `get_market_session(symbol, at?)`
+### `get_market_session(symbol, atUtc?)`
 Whether the market is open, and what happens next.
 
-Returns `{ isOpen, tradeDate, sessionOpenUtc, sessionCloseUtc, minutesToClose, nextOpenUtc, isHoliday }`.
+Returns `{ symbol, isOpen, tradeDate, sessionCloseUtc, minutesToClose, nextOpenUtc, isHoliday }`.
+
+There is **no `sessionOpenUtc`**; this page carried one until gh#48 and `ToolPayloads.SessionState` has
+never had it. The running session's close is `sessionCloseUtc` and the *next* session's open is
+`nextOpenUtc` — there is no field for the open of the session already under way.
 
 Cheap, and worth calling before interpreting anything else — "the last bar is two hours old" means something
 different on a Tuesday afternoon than at 03:00 on a Sunday.
@@ -58,18 +70,23 @@ different on a Tuesday afternoon than at 03:00 on a Sunday.
 ### `get_bars(symbol, resolutionMinutes, fromUtc, toUtc)`
 The workhorse. Cache-aside: served from the store, with only genuinely missing buckets fetched.
 
-Returns `{ symbol, resolutionMinutes, bars: [{ t, o, h, l, c, v }], fromCache, fetchedBuckets }`.
+Returns `{ symbol, resolutionMinutes, bars: [{ t, o, h, l, c, v }], fetchedBuckets, venueRequests }`.
 
-`fetchedBuckets` is deliberately in the response. It is how a caller — and a test — can see whether a read cost
-a vendor round trip, and it is what makes "the second identical call fetches nothing" observable rather than a
-claim.
+`fetchedBuckets` and `venueRequests` are deliberately in the response. They are how a caller — and a test — can
+see whether a read cost a vendor round trip, and they are what make "the second identical call fetches nothing"
+observable rather than a claim.
+
+**There is no `fromCache`.** This page documented one until gh#48 and `ToolPayloads.BarSeries` has never had
+it — which mattered more than the other drifts on this page, because `fromCache` is exactly the field an agent
+would reach for to check `R-1.3`. It would have read `undefined` on every call, and `undefined` is falsy: a
+fully-cached read would have looked like an uncached one, every time. Use `venueRequests == 0`.
 
 ### `get_latest_bars(symbol, resolutionMinutes, count)`
 The recent window, which is what an agent actually asks for. Same shape as `get_bars`.
 
 Anchored on the last **closed** bucket, never a forming one.
 
-### `get_indicators(symbol, resolutionMinutes, indicator, period, fromUtc, toUtc)`
+### `get_indicators(symbol, resolutionMinutes, indicator, fromUtc, toUtc)`
 A stored indicator series.
 
 Returns `{ symbol, resolutionMinutes, indicator, period, values: [{ t, v }] }`.
@@ -82,16 +99,24 @@ MACD's fast and signal lengths (12, 9) and Bollinger's width (2σ) are **fixed**
 key carries one period, and a parameter it cannot see would make two parameterisations indistinguishable once
 stored.
 
-### `get_indicator_at(symbol, resolutionMinutes, indicator, period, asOfUtc)`
+**`period` is not an argument.** It is fixed per indicator by the catalogue and *returned* in the payload so
+the caller knows what it got. This page listed it as a parameter until gh#48; it never was one.
+
+### `get_indicator_at(symbol, resolutionMinutes, indicator, asOfUtc)`
 One value, as of a moment. Reads the value at or **before** `asOfUtc`, never after — a value from after the
 moment is information the market did not have.
 
 Returns `{ value, bucketStart }`, or `{ value: null }` meaning *cannot measure*.
 
-### `get_key_levels(symbol, timeframeMinutes[])`
+### `get_key_levels(symbol, resolutionMinutes, lookbackBars)`
 Support and resistance as **zones**, not lines.
 
 Returns `[{ timeframeMinutes, bottom, top, midpoint, kind, significance, touchCount, formedAt }]`.
+
+**One resolution per call, and `lookbackBars` is required** — this page described an array of timeframes and
+no lookback until gh#48, and neither has ever matched the code. The returned field is named
+`timeframeMinutes` while the argument is `resolutionMinutes`; that asymmetry is real, and renaming the payload
+field is a breaking change to the tool contract rather than a typo to quietly fix here.
 
 `significance` is prominence in ATR multiples, so a 2.0 on ES and a 2.0 on NQ mean the same thing. `kind` is
 assigned **relative to the current price**, not to how the level formed: a broken resistance is today's support,
@@ -111,7 +136,11 @@ patterns rather than passed through as text. A near-miss is `Unknown`, never a g
 > executes, and on a prop platform a *funded* account reports `simulated: true` while a real payout rides on it.
 > Against a real login it classifies every account, funded ones included, as practice.
 
-### `get_positions(accountId)` · `get_orders(accountId, fromUtc?, toUtc?, openOnly?)` · `get_trades(accountId, fromUtc, toUtc)`
+### `get_positions(accountId)` · `get_orders(accountId, openOnly, fromUtc, toUtc)` · `get_trades(accountId, fromUtc, toUtc)`
+
+**`get_orders` takes `openOnly` first, and every argument is required.** When `openOnly` is true the
+window is ignored; when it is false, `fromUtc` and `toUtc` must both be supplied or the call errors.
+This page had the arguments in the wrong order and marked `openOnly` optional until gh#48.
 Positions carry a **signed** size — the venue reports an unsigned size plus a direction enum, and a
 directionless non-zero position is an error rather than a flat report.
 
@@ -124,15 +153,27 @@ directionless non-zero position is an error rather than a flat report.
 Bars, indicators, key levels and session state in one call — the common question at one round trip instead of
 five or six.
 
-Returns `{ session, perResolution: [{ resolutionMinutes, bars[], indicators{}, levels[] }] }`.
+Returns `{ symbol, session, perResolution: [{ resolutionMinutes, bars[], indicators{}, levels[] }] }`.
 
 This should be the tool an agent reaches for first. The single-purpose tools exist for when it needs something
 specific or a longer window.
 
 ## Observations
 
-### `record_observation(text, symbol?, kind?, tags[]?)` · `search_observations(query, symbol?, k?)`
+### `record_observation(text, symbol, kind, tags[])` · `search_observations(query, symbol, limit)`
+
+**Every argument on both tools is required on the wire**, and `search_observations` takes `limit`, not
+`k`. The `?` marks this page used to carry were wrong in both directions: the argument names did not
+match, and nothing here is omittable.
+
+That is a defect rather than a design — the parameter descriptions promise defaults (*"Omit for a
+general observation"*, *"Defaults to 'note'"*, *"Defaults to 20"*) that the schema does not permit a
+caller to take. Tracked as gh#70; this page states what the schema does today, not what it should do.
+
 Writes to **this** database. Not the venue, and no weakening of the read-only boundary.
+
+An observation is `{ id, symbol, kind, text, tags, recordedAt, embeddingNote, similarity }`. `embeddingNote`
+says why a row has no vector when it has none; `similarity` is populated only in `Semantic` mode.
 
 `search_observations` returns `{ mode, modeReason, observations, unsearchableCount }`. **`mode` says which
 path answered** — `Semantic` for vector similarity, `Text` for substring matching — and `modeReason` says why

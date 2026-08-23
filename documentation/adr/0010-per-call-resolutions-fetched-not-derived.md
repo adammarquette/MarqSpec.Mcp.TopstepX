@@ -153,6 +153,7 @@ correct bar, and the guard's failure mode is silent.
 | Update | What changed |
 |---|---|
 | [2026-08-23](#update-2026-08-23--any-meant-any-positive-and-four-tools-did-not-enforce-it) | Read "any" above as "any positive"; the rule now has its own guard and reaches all six tools |
+| [2026-08-23](#update-2026-08-23--the-range-is-1-to-10080-and-the-ceiling-is-not-sufficient-on-its-own) | Read "any positive" as "1 to 10,080"; the range is now closed at both ends |
 
 ## Update (2026-08-23) — any meant any positive, and four tools did not enforce it
 
@@ -189,6 +190,42 @@ than returning a five-minute slice and then failing.
 the same as every other `int` being servable. A resolution near the top of the range still overflows the reach
 arithmetic on the latest-bars path and faults exactly the way a `0` used to — pre-existing, out of gh#69's
 scope, and tracked as gh#81.
+
+## Update (2026-08-23) — the range is 1 to 10,080, and the ceiling is not sufficient on its own
+
+**The decision still stands.** Resolution is a per-call parameter, there is no allow-list to configure, and a
+timeframe is still fetched rather than derived. What changes is the reading of the word *any*, for the second
+and last time: **the servable range is 1 to 10,080 minutes — one minute to one week — closed at both ends.**
+
+The update above called the floor "a floor, not an exhaustiveness claim" and left the ceiling open as gh#81.
+It is closed now, and `ToolGuards.MaxResolutionMinutes` is where it lives.
+
+**The ceiling is a bound on meaning, not on arithmetic.** It is not `int.MaxValue` divided by whatever
+survives. Timeframes run 1m through 60m, then 240m, then the day at 1,440 and the week at 10,080; above a week
+the conventional units are the calendar month and the quarter, whose length in minutes is *not fixed*. No
+integer expresses one, so there is nothing above 10,080 a caller could be asking for. This is still not a
+supported-resolutions *list* — the range is contiguous, and the reason for rejecting a list in the Decision
+above (it caps cost by capping the questions) is untouched by closing an end nobody can ask a question in.
+
+**And the ceiling alone would not have fixed the bug, which is the part worth carrying forward.** The
+look-back on `get_latest_bars` reaches **four bar spans per bar wanted**. `MaxRows` is operator configuration
+and its range is `[1, 1_000_000]`, so 62,500 weekly bars — a resolution exactly at the ceiling and a count
+exactly inside the cap — *span* about 1,200 years and therefore *reach* about **4,800**, starting the window
+before year one. Same fault, both axes legal.
+
+**The 4× is the finding, not an aside.** It is the multiplier that carries a pair legal on both axes past a
+calendar neither axis knows about, and it also places the boundary: refusal begins around **26,400** weekly
+bars, not 62,500. The bound that actually holds is therefore on the **product**, in `ToolGuards.LookbackWindow`,
+which widens the multiply to `Int128`, refuses a non-positive reach as well as an over-long one — the narrowing
+cast back to `long` is unchecked, so a negative product would otherwise wrap — and refuses rather than clamping
+the window to the start of the calendar. A clamped window answers with whatever the store happened to hold, and
+a short series is indistinguishable from a complete one.
+
+**`LookbackWindow` bounds the calendar, and only the calendar.** It says nothing about the row cap disagreeing
+with `BarGapDetector.MaxBucketsPerPass`: `MaxRows` ranges to 1,000,000 and a single detection pass enumerates
+at most 250,000 buckets, so an operator can configure a request that clears every boundary check and still
+faults one layer down as a raw `ArgumentOutOfRangeException`. That is a separate bound on a separate quantity
+and it is carded as **gh#96**.
 
 ## Follow-ups
 

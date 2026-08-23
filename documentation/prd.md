@@ -27,15 +27,18 @@ The server serves OHLCV bars for a futures instrument at a requested resolution 
   re-requested on every subsequent call.
 - **R-1.8** Bar timestamps are stored in UTC. The gateway returns timestamps with no kind; they are UTC, and
   inferring local shifts every bar by the operator's offset.
-- **R-1.9** The supported resolutions are **any positive number of minutes** — deliberately. Resolution is a
-  per-call parameter rather than configuration, so an agent is never blocked on a config change to look at a
-  timeframe nobody anticipated, and no tool advertises a resolution list because there is none. Non-positive is
-  refused at the boundary, as a *caller error the server names* rather than as a timeframe the server lacks —
-  on every tool that takes a resolution, not only the ones that also validate a window (gh#69). That is a floor,
-  not a claim that every other value is servable: an absurdly large one still overflows the latest-bars reach
-  arithmetic and faults (gh#81). A timeframe is fetched from the venue independently, never derived from a
-  finer one: a bar derived from an incomplete set of constituents is indistinguishable from a real one, which
-  R-2.3's rule forbids in the indicator path and which is no more acceptable here.
+- **R-1.9** The supported resolutions are **every whole number of minutes from 1 to 10,080 — one minute to one
+  week** — deliberately. Resolution is a per-call parameter rather than configuration, so an agent is never
+  blocked on a config change to look at a timeframe nobody anticipated, and no tool advertises a resolution list
+  because the range is contiguous. **Both ends are refused at the boundary**, as a *caller error the server
+  names* rather than as a timeframe the server lacks, and on every tool that takes a resolution rather than only
+  the ones that also validate a window (gh#69, gh#81). The ceiling is a bound on *meaning*, not on arithmetic:
+  above a week a timeframe is a calendar month or a quarter, whose length in minutes is not fixed, so no minute
+  count expresses one. It is also not by itself sufficient — the look-back reach is four bar spans per bar
+  asked for, so a resolution and a count each inside its own bound can still name a window that starts before
+  the calendar does, and that pair is refused too (gh#81). A timeframe is fetched from the venue independently,
+  never derived from a finer one: a bar derived from an incomplete set of constituents is indistinguishable
+  from a real one, which R-2.3's rule forbids in the indicator path and which is no more acceptable here.
   See [ADR-0010](adr/0010-per-call-resolutions-fetched-not-derived.md).
 - **R-1.10** Those pages are **paced** to the vendor's documented allowance for the history endpoint —
   **50 requests / 30 seconds**, one allowance shared by the whole process. A cold year of five-minute bars is

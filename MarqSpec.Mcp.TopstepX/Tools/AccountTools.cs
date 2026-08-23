@@ -30,9 +30,9 @@ public sealed class AccountTools(IMarketDataGateway gateway, ToolGuards guards)
         + "Note the venue's own 'simulated' flag is deliberately not reported: it describes where an order "
         + "executes, and a funded prop account reports simulated=true while a real payout rides on it.")]
     public async Task<IReadOnlyList<ToolPayloads.AccountInfo>> ListAccounts(
-        [Description("Restrict to accounts the venue marks active. Defaults to true.")]
-        bool onlyActive,
-        CancellationToken cancellationToken)
+        [Description("Restrict to accounts the venue marks active. Omit for true.")]
+        bool onlyActive = true,
+        CancellationToken cancellationToken = default)
     {
         IReadOnlyList<VenueAccount> accounts =
             await Guarded(() => _gateway.GetAccountsAsync(onlyActive, cancellationToken)).ConfigureAwait(false);
@@ -70,9 +70,11 @@ public sealed class AccountTools(IMarketDataGateway gateway, ToolGuards guards)
     public async Task<IReadOnlyList<VenueOrder>> GetOrders(
         [Description("The venue account id.")] int accountId,
         [Description("Read only working orders. When true, the window is ignored.")] bool openOnly,
-        [Description("Window start, ISO-8601 UTC. Required unless openOnly.")] DateTimeOffset? fromUtc,
-        [Description("Window end, ISO-8601 UTC. Required unless openOnly.")] DateTimeOffset? toUtc,
-        CancellationToken cancellationToken)
+        [Description("Window start, ISO-8601 UTC. Omit when openOnly is true; required otherwise.")]
+        DateTimeOffset? fromUtc = null,
+        [Description("Window end, ISO-8601 UTC. Omit when openOnly is true; required otherwise.")]
+        DateTimeOffset? toUtc = null,
+        CancellationToken cancellationToken = default)
     {
         BarRange? window = null;
         if (!openOnly)

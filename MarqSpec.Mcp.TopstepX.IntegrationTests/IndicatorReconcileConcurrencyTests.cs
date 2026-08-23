@@ -2,6 +2,7 @@ using System.Data;
 using FluentAssertions;
 using MarqSpec.Mcp.TopstepX.Data;
 using MarqSpec.Mcp.TopstepX.Data.Entities;
+using MarqSpec.Mcp.TopstepX.Domain;
 using MarqSpec.Mcp.TopstepX.MarketData;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Storage;
@@ -104,14 +105,20 @@ public sealed class IndicatorReconcileConcurrencyTests(SchemaFixture fixture)
         // The same straddle, through the other call site. `rebuild-indicators` is the command an operator
         // runs precisely when they are trying to REPAIR the store, and it reconciles every series in it --
         // the same defect with a wider blast radius.
+        //
+        // A PRIVATE INSTRUMENT, not just a private venue. The verb filters by instrument, so a rebuild
+        // restricted to the symbol every other test uses would walk and reconcile their series too --
+        // including the deliberately-orphaned one next door. Benign today only because the collection runs
+        // sequentially, which is a property of the runner rather than of this test.
         string venue = ConcurrencyHarness.Venue();
+        InstrumentId instrument = ConcurrencyHarness.RebuildInstrument;
 
         await using (TopstepXDbContext seed = _fixture.CreateContext())
         {
             BarCacheService baseline =
                 ConcurrencyHarness.Cache(seed, venue, ConcurrencyHarness.Bars(0, 20), Now);
             await baseline.GetBarsAsync(
-                ConcurrencyHarness.Instrument,
+                instrument,
                 ConcurrencyHarness.ResolutionMinutes,
                 ConcurrencyHarness.Window(0, 20),
                 CancellationToken.None);
@@ -125,13 +132,13 @@ public sealed class IndicatorReconcileConcurrencyTests(SchemaFixture fixture)
             BarCacheService fill =
                 ConcurrencyHarness.Cache(fillStore, venue, ConcurrencyHarness.Bars(20, 40), Now);
             await fill.GetBarsAsync(
-                ConcurrencyHarness.Instrument,
+                instrument,
                 ConcurrencyHarness.ResolutionMinutes,
                 ConcurrencyHarness.Window(20, 40),
                 CancellationToken.None);
 
-            IReadOnlyList<DateTimeOffset> all =
-                await ConcurrencyHarness.BucketsWithValuesAsync(fillStore, venue);
+            IReadOnlyList<DateTimeOffset> all = await ConcurrencyHarness.BucketsWithValuesAsync(
+                fillStore, venue, ConcurrencyHarness.RebuildSymbol);
             committedByTheFill.AddRange(all.Where(b => b >= ConcurrencyHarness.Bucket(20)));
         }
 
@@ -147,14 +154,14 @@ public sealed class IndicatorReconcileConcurrencyTests(SchemaFixture fixture)
             new FakeTimeProvider(Now),
             NullLogger<IndicatorRebuilder>.Instance);
 
-        await rebuilder.RebuildAsync(ConcurrencyHarness.Symbol, CancellationToken.None);
+        await rebuilder.RebuildAsync(ConcurrencyHarness.RebuildSymbol, CancellationToken.None);
 
         straddle.Fired.Should().BeTrue("the fill has to land between the rebuild's two reads");
         committedByTheFill.Should().NotBeEmpty("the fill has to have written values for there to be a loss");
 
         await using TopstepXDbContext reader = _fixture.CreateContext();
-        IReadOnlyList<DateTimeOffset> surviving =
-            await ConcurrencyHarness.BucketsWithValuesAsync(reader, venue);
+        IReadOnlyList<DateTimeOffset> surviving = await ConcurrencyHarness.BucketsWithValuesAsync(
+            reader, venue, ConcurrencyHarness.RebuildSymbol);
 
         surviving.Should().Contain(
             committedByTheFill,

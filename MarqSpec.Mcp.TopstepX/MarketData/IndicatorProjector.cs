@@ -184,9 +184,12 @@ public sealed class IndicatorProjector(
     /// amount.
     /// </para>
     /// <para>
-    /// The check costs one count, and only when there is something to remove — which is neither the confirming
-    /// rebuild nor the ordinary fill. It doubles as the backstop for gh#73: the two reads disagreeing is also
-    /// what a pass outside one snapshot looks like, and refusing is the safe direction to be wrong in.
+    /// <b>It cannot fire as shipped, and that is the point rather than a weakness.</b> Both counts come from
+    /// one snapshot under the same predicate, so under <see cref="SeriesUnitOfWork.Isolation"/> they cannot
+    /// disagree. It fires when someone narrows the bar query — its real purpose — or when a call site opens no
+    /// transaction, or weakens the isolation level. A regression guard, then, not a second line of defence
+    /// standing behind gh#73 in production. The check costs one count, and only when there is something to
+    /// remove, which is neither the confirming rebuild nor the ordinary fill.
     /// </para>
     /// <para>
     /// A warm-up bucket that has never had a value costs nothing here: there is no row to remove. What this

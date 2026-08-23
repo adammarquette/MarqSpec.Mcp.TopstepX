@@ -1,6 +1,7 @@
 using FluentAssertions;
 using MarqSpec.Mcp.TopstepX.Configuration;
 using MarqSpec.Mcp.TopstepX.Embeddings;
+using MarqSpec.Mcp.TopstepX.MarketData;
 using MarqSpec.Mcp.TopstepX.Tools;
 using MarqSpec.Mcp.TopstepX.Venue;
 using Microsoft.AspNetCore.Builder;
@@ -178,5 +179,23 @@ public sealed class CompositionRootTests
         resolve.Should().NotThrow(
             toolType.Name + " cannot be built from a request scope, so every call to its tools would fail "
             + "while the server reported itself healthy.");
+    }
+
+    [Fact]
+    public void TheRebuildVerbCanBeResolved()
+    {
+        // IndicatorRebuilder is reachable from NO tool, so the theory above -- which walks the tool types --
+        // does not cover it, and `GetRequiredService<IndicatorRebuilder>()` in the rebuild-indicators branch
+        // is verified by nothing else. That branch runs before the store is even migrated and exits the
+        // process, so a missing registration surfaces as an operator running a repair command and getting a
+        // container exception instead. This verb has already shipped once having never been executed
+        // anywhere (gh#37); leaving its one resolution unchecked would repeat exactly that.
+        using ServiceProvider provider =
+            Build(new Dictionary<string, string?>(), new McpOptions { Transport = McpTransport.Stdio });
+        using IServiceScope scope = provider.CreateScope();
+
+        Func<object> resolve = () => scope.ServiceProvider.GetRequiredService<IndicatorRebuilder>();
+
+        resolve.Should().NotThrow();
     }
 }

@@ -7,6 +7,7 @@ using MarqSpec.Mcp.TopstepX.MarketData;
 using MarqSpec.Mcp.TopstepX.Venue;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Diagnostics;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using Microsoft.Extensions.Time.Testing;
@@ -35,22 +36,37 @@ public sealed class InterleavingInterceptor : DbCommandInterceptor
     private readonly string _commandContains;
     private readonly string? _parameterEquals;
     private readonly bool _after;
+    private readonly int _times;
     private readonly Func<Task> _action;
 
     private InterleavingInterceptor(
         string commandContains,
         string? parameterEquals,
         bool after,
+        int times,
         Func<Task> action)
     {
         _commandContains = commandContains;
         _parameterEquals = parameterEquals;
         _after = after;
+        _times = times;
         _action = action;
     }
 
-    /// <summary>Whether the action ever ran. Assert on it — an interceptor that never fired proves nothing.</summary>
-    public bool Fired { get; private set; }
+    /// <summary>How many times the action ran. Assert on it — an interceptor that never fired proves nothing.</summary>
+    public int Firings { get; private set; }
+
+    /// <summary>Whether the action ever ran.</summary>
+    public bool Fired => Firings > 0;
+
+    /// <summary>
+    /// How many times the action may run.
+    /// </summary>
+    /// <remarks>
+    /// More than one exists to conflict with a <b>retry</b>: a bounded retry is only proven exhausted if the
+    /// second attempt meets the same conflict the first did.
+    /// </remarks>
+    public int Times => _times;
 
     /// <summary>Runs <paramref name="action"/> once, just before the first matching command executes.</summary>
     /// <param name="commandContains">A substring the command text must contain.</param>
@@ -60,8 +76,9 @@ public sealed class InterleavingInterceptor : DbCommandInterceptor
     public static InterleavingInterceptor Before(
         string commandContains,
         string? parameterEquals,
-        Func<Task> action) =>
-        new(commandContains, parameterEquals, after: false, action);
+        Func<Task> action,
+        int times = 1) =>
+        new(commandContains, parameterEquals, after: false, times, action);
 
     /// <summary>Runs <paramref name="action"/> once, just after the first matching command executes.</summary>
     /// <param name="commandContains">A substring the command text must contain.</param>
@@ -71,8 +88,9 @@ public sealed class InterleavingInterceptor : DbCommandInterceptor
     public static InterleavingInterceptor After(
         string commandContains,
         string? parameterEquals,
-        Func<Task> action) =>
-        new(commandContains, parameterEquals, after: true, action);
+        Func<Task> action,
+        int times = 1) =>
+        new(commandContains, parameterEquals, after: true, times, action);
 
     /// <inheritdoc />
     public override async ValueTask<InterceptionResult<DbDataReader>> ReaderExecutingAsync(
@@ -106,19 +124,30 @@ public sealed class InterleavingInterceptor : DbCommandInterceptor
 
     private async Task RunIfMatchAsync(DbCommand command)
     {
-        if (Fired || !Matches(command))
+        if (Firings >= _times || !Matches(command))
         {
             return;
         }
 
-        // Set before awaiting: the action opens its own context against the same database, and a re-entrant
-        // match would run the other transaction twice.
-        Fired = true;
+        // Incremented before awaiting: the action opens its own context against the same database, and a
+        // re-entrant match would run the other transaction one time too many.
+        Firings++;
         await _action().ConfigureAwait(false);
     }
 
     private bool Matches(DbCommand command)
     {
+        // READS ONLY, and this is not a detail. The point of interleaving is to place another transaction
+        // between two READS -- after this one has a snapshot and before it decides anything from it. EF's
+        // modification batches go through the same reader path and their SQL says `DELETE FROM
+        // "IndicatorValues"`, so a match on the table name alone fires on the write too. That spent both
+        // firings inside the first attempt, left the retry unopposed, and turned a test of exhaustion into a
+        // test that quietly proved the opposite.
+        if (!command.CommandText.TrimStart().StartsWith("SELECT", StringComparison.Ordinal))
+        {
+            return false;
+        }
+
         if (!command.CommandText.Contains(_commandContains, StringComparison.Ordinal))
         {
             return false;
@@ -127,6 +156,40 @@ public sealed class InterleavingInterceptor : DbCommandInterceptor
         return _parameterEquals is null
             || command.Parameters.Cast<DbParameter>()
                 .Any(p => string.Equals(p.Value as string, _parameterEquals, StringComparison.Ordinal));
+    }
+}
+
+/// <summary>
+/// A logger that keeps what it was told, so a test can assert on something that leaves no other trace.
+/// </summary>
+/// <remarks>
+/// A retry is invisible from the outside: the call simply succeeds, exactly as it would have if the conflict
+/// had never happened. Asserting only on the outcome would pass just as well against a run where nothing
+/// collided — so the retry has to say it retried, and the test has to read it.
+/// </remarks>
+/// <typeparam name="T">The category type.</typeparam>
+public sealed class CapturingLogger<T> : ILogger<T>
+{
+    /// <summary>Every message logged, formatted, in order.</summary>
+    public List<string> Messages { get; } = [];
+
+    /// <inheritdoc />
+    public IDisposable? BeginScope<TState>(TState state)
+        where TState : notnull => null;
+
+    /// <inheritdoc />
+    public bool IsEnabled(LogLevel logLevel) => true;
+
+    /// <inheritdoc />
+    public void Log<TState>(
+        LogLevel logLevel,
+        EventId eventId,
+        TState state,
+        Exception? exception,
+        Func<TState, Exception?, string> formatter)
+    {
+        ArgumentNullException.ThrowIfNull(formatter);
+        Messages.Add(formatter(state, exception));
     }
 }
 
@@ -220,11 +283,24 @@ public static class ConcurrencyHarness
     /// </remarks>
     public const string ContractId = "CON.F.US.EP.Z26";
 
-    /// <summary>The instrument symbol, as stored.</summary>
+    /// <summary>The instrument symbol these tests store under.</summary>
     public const string Symbol = "ES";
+
+    /// <summary>
+    /// A second symbol, used only by the rebuild test.
+    /// </summary>
+    /// <remarks>
+    /// <c>rebuild-indicators</c> filters by <b>instrument</b>, not by venue, so a rebuild restricted to
+    /// <see cref="Symbol"/> would walk and reconcile every other test's series in the shared container. The
+    /// per-test venue isolates the rows; only a per-test instrument isolates the rebuild's reach.
+    /// </remarks>
+    public const string RebuildSymbol = "MNQ";
 
     /// <summary>The instrument. It has to be one <see cref="InstrumentRegistry"/> serves, so it is a real one.</summary>
     public static InstrumentId Instrument => new(Symbol);
+
+    /// <summary>The rebuild test's instrument.</summary>
+    public static InstrumentId RebuildInstrument => new(RebuildSymbol);
 
     /// <summary>A Tuesday mid-session, so every bucket in every window is one the venue owes us.</summary>
     public static DateTimeOffset SessionStart =>
@@ -278,7 +354,7 @@ public static class ConcurrencyHarness
     /// <summary>The instrument registry, configured for the one instrument these tests use.</summary>
     /// <returns>The registry.</returns>
     public static InstrumentRegistry Registry() =>
-        new(Options.Create(new MarketDataOptions { Instruments = Symbol }));
+        new(Options.Create(new MarketDataOptions { Instruments = Symbol + "," + RebuildSymbol }));
 
     /// <summary>A projector over a context.</summary>
     /// <param name="database">The store.</param>
@@ -291,19 +367,21 @@ public static class ConcurrencyHarness
     /// <param name="venue">The venue id this fill writes under.</param>
     /// <param name="available">The bars the venue will serve.</param>
     /// <param name="now">The instant the fill runs at. Bars not yet closed at it are dropped.</param>
+    /// <param name="logger">A logger, when the test needs to read what the fill said it did.</param>
     /// <returns>The service.</returns>
     public static BarCacheService Cache(
         TopstepXDbContext database,
         string venue,
         IEnumerable<Bar> available,
-        DateTimeOffset now) =>
+        DateTimeOffset now,
+        ILogger<BarCacheService>? logger = null) =>
         new(
             database,
             new SeriesGateway(venue, available),
             Calendar(),
             Projector(database),
             new FakeTimeProvider(now),
-            NullLogger<BarCacheService>.Instance);
+            logger ?? NullLogger<BarCacheService>.Instance);
 
     /// <summary>The window covering a half-open bucket index range.</summary>
     /// <param name="fromIndex">The first bucket index.</param>
@@ -315,16 +393,18 @@ public static class ConcurrencyHarness
     /// <summary>The bucket starts of a series that hold at least one stored indicator value.</summary>
     /// <param name="database">The store.</param>
     /// <param name="venue">The venue id.</param>
+    /// <param name="symbol">The instrument symbol.</param>
     /// <returns>The bucket starts, ascending.</returns>
     public static async Task<IReadOnlyList<DateTimeOffset>> BucketsWithValuesAsync(
         TopstepXDbContext database,
-        string venue)
+        string venue,
+        string symbol = Symbol)
     {
         ArgumentNullException.ThrowIfNull(database);
 
         return await database.IndicatorValues
             .Where(v => v.Venue == venue
-                && v.Instrument == Symbol
+                && v.Instrument == symbol
                 && v.ResolutionMinutes == ResolutionMinutes)
             .Select(v => v.BucketStart)
             .Distinct()

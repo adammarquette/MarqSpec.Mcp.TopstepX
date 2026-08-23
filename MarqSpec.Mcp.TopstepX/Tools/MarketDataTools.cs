@@ -362,6 +362,16 @@ public sealed class MarketDataTools(
             // operator the vendor is down when they made a typo.
             throw new McpException("The venue could not answer: " + ex.Message);
         }
+        catch (StoreContentionException ex)
+        {
+            // A THIRD fact: nothing upstream failed and nothing was refused -- the store would not serialise
+            // this write against another one, and a retry has already been spent. Raw, it reaches a caller as
+            // a nested PostgresException about "concurrent delete", which says nothing about what to do; this
+            // is the gh#69 shape on the path gh#73 reshaped. Caught NARROWLY on purpose: IndicatorProjector's
+            // whole-series guard also surfaces as an InvalidOperationException, and a blanket catch would
+            // swallow an invariant violation as though it were contention.
+            throw new McpException(ex.Message);
+        }
     }
 
     private IIndicator ResolveIndicator(string name)

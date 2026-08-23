@@ -6,6 +6,8 @@ using MarqSpec.Mcp.TopstepX.Domain.MarketData;
 using MarqSpec.Mcp.TopstepX.Venue;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
+using Npgsql;
+using NpgsqlTypes;
 
 namespace MarqSpec.Mcp.TopstepX.MarketData;
 
@@ -377,7 +379,101 @@ public sealed class BarCacheService
         return fetched;
     }
 
-    private async Task<int> UpsertAsync(
+    /// <summary>
+    /// Writes one venue answer, revising the buckets already stored.
+    /// </summary>
+    /// <returns>How many buckets were written or revised.</returns>
+    /// <remarks>
+    /// Two implementations because the choice between an insert and an update is a fact about the
+    /// <b>store</b>, not about this process (gh#103) — and the in-memory provider the unit tier runs on has
+    /// no <c>ON CONFLICT</c> to leave it to.
+    /// </remarks>
+    private Task<int> UpsertAsync(
+        string venue,
+        InstrumentId instrument,
+        int resolutionMinutes,
+        IReadOnlyList<Bar> bars,
+        DateTimeOffset now,
+        CancellationToken cancellationToken) =>
+        _database.Database.IsRelational()
+            ? UpsertInStoreAsync(venue, instrument, resolutionMinutes, bars, now, cancellationToken)
+            : UpsertInMemoryAsync(venue, instrument, resolutionMinutes, bars, now, cancellationToken);
+
+    /// <summary>
+    /// The bar write, as one statement the store resolves against the row it has committed.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>The conflict target is the composite primary key</b>, which is the idempotence guard the data
+    /// dictionary names — reached here directly instead of being inferred from a read of it.
+    /// </para>
+    /// <para>
+    /// <b>The <c>WHERE</c> is the skip-unchanged rule</b>, and it is stated here rather than in C# because
+    /// this is the only place both sides of the comparison are the column's own type. <c>excluded</c> is the
+    /// row proposed for insertion, so its prices have already been coerced to <c>numeric(18,8)</c> — a
+    /// value at full <see cref="decimal"/> precision compared against a stored one is the shape that made
+    /// the projection's identical guard dead code for a whole phase (gh#37).
+    /// </para>
+    /// <para>
+    /// <b>Arrays rather than a row per bar</b>: a page is up to <see cref="VenuePageSizeBars"/> bars, and
+    /// eleven parameters each would approach the protocol's parameter limit for no benefit.
+    /// </para>
+    /// </remarks>
+    private const string UpsertBarsSql = """
+        INSERT INTO "Bars" (
+            "Venue", "Instrument", "ResolutionMinutes", "BucketStart",
+            "Open", "High", "Low", "Close", "Volume", "ContractId", "RecordedAt")
+        SELECT @venue, @instrument, @resolution, a.bucket,
+               a.open_price, a.high_price, a.low_price, a.close_price, a.volume, a.contract, @recorded
+        FROM unnest(@buckets, @opens, @highs, @lows, @closes, @volumes, @contracts)
+             AS a(bucket, open_price, high_price, low_price, close_price, volume, contract)
+        ON CONFLICT ("Venue", "Instrument", "ResolutionMinutes", "BucketStart") DO UPDATE SET
+            "Open" = excluded."Open",
+            "High" = excluded."High",
+            "Low" = excluded."Low",
+            "Close" = excluded."Close",
+            "Volume" = excluded."Volume",
+            "ContractId" = excluded."ContractId",
+            "RecordedAt" = excluded."RecordedAt"
+        WHERE ("Bars"."Open", "Bars"."High", "Bars"."Low", "Bars"."Close", "Bars"."Volume", "Bars"."ContractId")
+              IS DISTINCT FROM
+              (excluded."Open", excluded."High", excluded."Low", excluded."Close", excluded."Volume",
+               excluded."ContractId")
+        """;
+
+    /// <summary>Whether a stored row already holds exactly what the venue has just answered with.</summary>
+    /// <param name="row">The stored row.</param>
+    /// <param name="bar">The bar the venue answered with.</param>
+    /// <returns><see langword="true"/> when writing it again would change nothing.</returns>
+    private static bool Unchanged(BarRecord row, Bar bar) =>
+        row.Open == bar.Open
+        && row.High == bar.High
+        && row.Low == bar.Low
+        && row.Close == bar.Close
+        && row.Volume == bar.Volume
+        && string.Equals(row.ContractId, bar.ContractId, StringComparison.Ordinal);
+
+    /// <summary>The stored rows a venue answer overlaps.</summary>
+    /// <param name="venue">The venue.</param>
+    /// <param name="instrument">The instrument.</param>
+    /// <param name="resolutionMinutes">The bar size in minutes.</param>
+    /// <param name="first">The first bucket the answer covers.</param>
+    /// <param name="last">The last bucket the answer covers, inclusive.</param>
+    /// <returns>The query.</returns>
+    private IQueryable<BarRecord> Overlap(
+        string venue,
+        InstrumentId instrument,
+        int resolutionMinutes,
+        DateTimeOffset first,
+        DateTimeOffset last) =>
+        _database.Bars
+            .Where(b => b.Venue == venue
+                && b.Instrument == instrument.Symbol
+                && b.ResolutionMinutes == resolutionMinutes
+                && b.BucketStart >= first
+                && b.BucketStart <= last);
+
+    private async Task<int> UpsertInStoreAsync(
         string venue,
         InstrumentId instrument,
         int resolutionMinutes,
@@ -385,19 +481,107 @@ public sealed class BarCacheService
         DateTimeOffset now,
         CancellationToken cancellationToken)
     {
-        DateTimeOffset first = bars[0].OpenTime;
-        DateTimeOffset last = bars[^1].OpenTime;
+        // THE PRE-READ SURVIVES, DEMOTED FROM GUARD TO PRE-FILTER (gh#103).
+        //
+        // It used to decide insert-versus-update, and that is the one decision it cannot make: it is read
+        // from this transaction's snapshot, so a concurrent fill of an overlapping range commits a bucket
+        // this one still believes absent, both INSERT it, and the loser aborts with 23505 -- taking the
+        // coverage ledger and the projection over the same series down with it, and reaching `get_bars` as a
+        // store fault. The decision now belongs to the statement below, which makes it against the row the
+        // store has actually committed.
+        //
+        // It is kept because it still SAVES A WRITE, which is the test that decides such a read. The venue
+        // restates bars after the fact, so an answer overlapping settled history is mostly buckets that have
+        // not moved -- and one filtered out here is never sent, never index-probed and never row-locked.
+        //
+        // AsNoTracking, and that is not tidiness: these rows are written by SQL the change tracker never
+        // sees, so a tracked copy would be a stale entity the identity map hands back to the next tracking
+        // query over Bars -- which is the read that answers this very call.
+        Dictionary<DateTimeOffset, BarRecord> existing =
+            await Overlap(venue, instrument, resolutionMinutes, bars[0].OpenTime, bars[^1].OpenTime)
+                .AsNoTracking()
+                .ToDictionaryAsync(b => b.BucketStart, cancellationToken)
+                .ConfigureAwait(false);
 
-        // Load the overlap once and merge in memory rather than round-tripping per bar. The composite key is
-        // the idempotence guard, so a re-fetch can only ever update the bucket it already wrote.
-        Dictionary<DateTimeOffset, BarRecord> existing = await _database.Bars
-            .Where(b => b.Venue == venue
-                && b.Instrument == instrument.Symbol
-                && b.ResolutionMinutes == resolutionMinutes
-                && b.BucketStart >= first
-                && b.BucketStart <= last)
-            .ToDictionaryAsync(b => b.BucketStart, cancellationToken)
+        List<Bar> pending =
+        [
+            .. bars.Where(bar =>
+                !existing.TryGetValue(bar.OpenTime, out BarRecord? row) || !Unchanged(row, bar)),
+        ];
+
+        if (pending.Count == 0)
+        {
+            return 0;
+        }
+
+        // The contract moves WITH the prices, never on its own. Both come out of the same venue answer, so a
+        // row always says which contract produced the numbers standing in it -- writing one without the other
+        // would leave a row whose provenance describes a different observation from the one it holds, which
+        // is worse than no provenance at all.
+        NpgsqlParameter[] parameters =
+        [
+            new("venue", NpgsqlDbType.Varchar) { Value = venue },
+            new("instrument", NpgsqlDbType.Varchar) { Value = instrument.Symbol },
+            new("resolution", NpgsqlDbType.Integer) { Value = resolutionMinutes },
+            new("recorded", NpgsqlDbType.TimestampTz) { Value = now },
+            new("buckets", NpgsqlDbType.Array | NpgsqlDbType.TimestampTz)
+            {
+                Value = pending.Select(b => b.OpenTime).ToArray(),
+            },
+            new("opens", NpgsqlDbType.Array | NpgsqlDbType.Numeric)
+            {
+                Value = pending.Select(b => b.Open).ToArray(),
+            },
+            new("highs", NpgsqlDbType.Array | NpgsqlDbType.Numeric)
+            {
+                Value = pending.Select(b => b.High).ToArray(),
+            },
+            new("lows", NpgsqlDbType.Array | NpgsqlDbType.Numeric)
+            {
+                Value = pending.Select(b => b.Low).ToArray(),
+            },
+            new("closes", NpgsqlDbType.Array | NpgsqlDbType.Numeric)
+            {
+                Value = pending.Select(b => b.Close).ToArray(),
+            },
+            new("volumes", NpgsqlDbType.Array | NpgsqlDbType.Bigint)
+            {
+                Value = pending.Select(b => b.Volume).ToArray(),
+            },
+            new("contracts", NpgsqlDbType.Array | NpgsqlDbType.Varchar)
+            {
+                Value = pending.Select(b => b.ContractId).ToArray(),
+            },
+        ];
+
+        // The count the store reports, not the count this process predicted. They differ in exactly the case
+        // this change is about: a bucket the pre-filter believed absent, which a concurrent fill had already
+        // committed with the same numbers, is skipped by the WHERE above and is not a write.
+        return await _database.Database
+            .ExecuteSqlRawAsync(UpsertBarsSql, parameters, cancellationToken)
             .ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// The same write against a provider with no <c>ON CONFLICT</c> — the unit tier's in-memory store.
+    /// </summary>
+    /// <remarks>
+    /// It has no transactions and no snapshots either, so the race the relational path exists to survive is
+    /// not merely absent here, it is unrepresentable. This is the merge that was the only implementation
+    /// before gh#103, kept as it was.
+    /// </remarks>
+    private async Task<int> UpsertInMemoryAsync(
+        string venue,
+        InstrumentId instrument,
+        int resolutionMinutes,
+        IReadOnlyList<Bar> bars,
+        DateTimeOffset now,
+        CancellationToken cancellationToken)
+    {
+        Dictionary<DateTimeOffset, BarRecord> existing =
+            await Overlap(venue, instrument, resolutionMinutes, bars[0].OpenTime, bars[^1].OpenTime)
+                .ToDictionaryAsync(b => b.BucketStart, cancellationToken)
+                .ConfigureAwait(false);
 
         int written = 0;
 
@@ -405,23 +589,13 @@ public sealed class BarCacheService
         {
             if (existing.TryGetValue(bar.OpenTime, out BarRecord? row))
             {
-                if (row.Open == bar.Open
-                    && row.High == bar.High
-                    && row.Low == bar.Low
-                    && row.Close == bar.Close
-                    && row.Volume == bar.Volume
-                    && string.Equals(row.ContractId, bar.ContractId, StringComparison.Ordinal))
+                if (Unchanged(row, bar))
                 {
                     continue;
                 }
 
                 // A revision. The venue restates bars after the fact, which is precisely why the write is an
                 // upsert keyed on the bucket rather than an append.
-                //
-                // The contract moves WITH the prices, never on its own. Both come out of the same venue
-                // answer, so a row always says which contract produced the numbers standing in it -- writing
-                // one without the other would leave a row whose provenance describes a different observation
-                // from the one it holds, which is worse than no provenance at all.
                 row.Open = bar.Open;
                 row.High = bar.High;
                 row.Low = bar.Low;

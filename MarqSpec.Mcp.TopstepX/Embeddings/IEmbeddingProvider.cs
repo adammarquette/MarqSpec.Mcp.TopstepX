@@ -1,5 +1,30 @@
 namespace MarqSpec.Mcp.TopstepX.Embeddings;
 
+/// <summary>What a piece of text is being embedded <i>for</i>.</summary>
+/// <remarks>
+/// <para>
+/// <b>Not a hint. It changes the vector.</b> Cohere's models embed a stored document and a search query into
+/// deliberately different regions, and the API requires the caller to say which. Using one value for both
+/// returns perfectly well-formed vectors and degrades retrieval <i>measurably</i> — a plausible answer rather
+/// than an error, which is the failure mode this repository keeps meeting (ADR-0009).
+/// </para>
+/// <para>
+/// It is a required parameter rather than a defaulted one for exactly that reason: a default here would be
+/// wrong half the time and never say so.
+/// </para>
+/// </remarks>
+public enum EmbeddingPurpose
+{
+    /// <summary>Unset. Never valid — a provider refuses rather than guessing.</summary>
+    Unknown = 0,
+
+    /// <summary>Text being stored for later retrieval. Cohere's <c>search_document</c>.</summary>
+    Document = 1,
+
+    /// <summary>A query being matched against stored text. Cohere's <c>search_query</c>.</summary>
+    Query = 2,
+}
+
 /// <summary>
 /// Turns text into a vector, or explains why it did not.
 /// </summary>
@@ -36,7 +61,14 @@ public interface IEmbeddingProvider
     /// Embeds one piece of text.
     /// </summary>
     /// <param name="text">The text.</param>
+    /// <param name="purpose">
+    /// Whether this is a document being stored or a query being matched. <b>Required</b>, because it changes
+    /// the vector rather than merely describing it.
+    /// </param>
     /// <param name="cancellationToken">The caller's cancellation token.</param>
     /// <returns>The vector, or the reason there is not one.</returns>
-    Task<EmbeddingResult> EmbedAsync(string text, CancellationToken cancellationToken);
+    Task<EmbeddingResult> EmbedAsync(
+        string text,
+        EmbeddingPurpose purpose,
+        CancellationToken cancellationToken);
 }

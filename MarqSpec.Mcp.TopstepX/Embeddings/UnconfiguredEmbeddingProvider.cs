@@ -34,7 +34,10 @@ public sealed class UnconfiguredEmbeddingProvider(IOptions<EmbeddingOptions> opt
     /// Returns rather than throws, and does so without touching the network. A caller that reached here
     /// despite <see cref="EmbeddingAvailability"/> saying no should still get an answer it can act on.
     /// </remarks>
-    public Task<EmbeddingResult> EmbedAsync(string text, CancellationToken cancellationToken)
+    public Task<EmbeddingResult> EmbedAsync(
+        string text,
+        EmbeddingPurpose purpose,
+        CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
         return Task.FromResult(EmbeddingResult.NotConfigured(Model));

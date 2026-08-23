@@ -104,6 +104,7 @@ carrying the fix, rather than a dead process (ADR-0007):
 |---|---|---|
 | Database | The tool list, `list_instruments`, `get_market_session`, `search_contracts` | Anything reading bars, indicators, levels or observations |
 | Credentials | Everything served from the store, plus session and instrument reference | Contract resolution, account reads, and any cache miss |
+| Embedding key | Recording and searching observations — search matches text instead of meaning | Nothing |
 
 The reason is the transport. An MCP client launches this as a child process, so a process that exits is
 reported as a transport failure and says nothing about *why* — the operator is told the server is broken when
@@ -112,6 +113,27 @@ the truth is that Postgres is not running.
 The one thing that still fails hard is a migration that fails against a database which **did** answer. That is
 a defect here, not an environment fact, and serving reads against an unverified schema is worse than not
 starting.
+
+## The embedding write
+
+`record_observation` embeds in the **same unit of work** as the write, so a note is searchable the moment it
+lands and a partial commit cannot leave an observation whose vector points at nothing.
+
+Embedding is the only thing here that costs money per call, which shapes the path:
+
+1. **Availability is probed once at startup**, not per call — a key, a reachable store, and the `vector`
+   extension. Missing any of them skips embedding *without* a call. A key with nowhere to put the result is the
+   case worth naming: it would embed at real cost and then fail to store the answer.
+2. **Identical text reuses the stored vector.** The same text under the same model is the same vector.
+3. Otherwise the provider is called, and **the returned width is checked against the column before storing**
+   ([ADR-0009](adr/0009-cohere-embeddings.md)) — `embed-v4.0` defaults to 1536 where the column is 1024, so
+   forgetting `output_dimension` is a live mistake, and catching it at the seam says *why* where a constraint
+   violation would not.
+
+**A failure at any step is not an error.** The observation still commits, and the tool result carries a note
+saying it will match on text until re-embedded. The observation is the durable thing; the vector is an index
+over it that can be rebuilt. Every call is metered, failures included — an unmetered failure is invisible spend
+on the operator's own key.
 
 ## What is deliberately absent
 

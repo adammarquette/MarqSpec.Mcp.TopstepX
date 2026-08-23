@@ -213,13 +213,19 @@ public static class ToolPayloads
     /// <param name="Text">The observation.</param>
     /// <param name="Tags">Its tags.</param>
     /// <param name="RecordedAt">When it was recorded.</param>
+    /// <param name="EmbeddingNote">
+    /// Why this observation has no vector, or <see langword="null"/> when it has one. Reported rather than
+    /// logged: a note stored without a vector will not be found by meaning until it is re-embedded, and the
+    /// caller is the only one in a position to notice that its later search came up short.
+    /// </param>
     public sealed record ObservationInfo(
         Guid Id,
         string? Symbol,
         string Kind,
         string Text,
         IReadOnlyList<string> Tags,
-        DateTimeOffset RecordedAt);
+        DateTimeOffset RecordedAt,
+        string? EmbeddingNote = null);
 
     /// <summary>Maps a domain bar to its wire shape.</summary>
     /// <param name="bar">The bar.</param>

@@ -32,6 +32,15 @@ namespace MarqSpec.Mcp.TopstepX.Tests.Tools;
 public sealed class ToolSchemaTests
 {
     /// <summary>Phrases a description uses to tell an agent it may leave the argument out.</summary>
+    /// <summary>Phrases a description uses to tell an agent it may leave the argument out.</summary>
+    /// <remarks>
+    /// <b>These are mandatory house vocabulary, not merely a trigger.</b> The per-parameter theory only
+    /// <i>fires</i> when one is present, but the constant theory <i>fails</i> when none is — an advertising
+    /// clause is bounded by one of these phrases, so a description writing <i>"Default is 500."</i> or
+    /// <i>"If unset, 500 bars are used."</i> yields no clause and breaks the build. That is deliberate:
+    /// a default an agent has to infer from a phrasing nobody standardised is one it will get wrong. Write
+    /// "Omit for X." or "Defaults to X."
+    /// </remarks>
     private static readonly string[] _promisesOptionality = ["Omit", "omit", "Defaults to", "defaults to"];
 
     public static TheoryData<string, string> EveryToolParameter()
@@ -334,13 +343,31 @@ public sealed class ToolSchemaTests
                  at >= 0;
                  at = description.IndexOf(phrase, at + 1, StringComparison.Ordinal))
             {
-                Match end = Regex.Match(description[at..], @"\.\s+\p{Lu}");
+                Match end = Regex.Match(description[at..], SentenceEnd);
                 clauses.Add(end.Success ? description[at..(at + end.Index)] : description[at..]);
             }
         }
 
         return string.Join(" | ", clauses);
     }
+
+    /// <summary>Where a sentence ends, for the purpose of bounding an advertising clause.</summary>
+    /// <remarks>
+    /// A period, whitespace, then a capital — <b>except</b> where the period follows another period and a
+    /// lowercase letter, which is an abbreviation rather than a sentence end. That exception is not
+    /// hypothetical: <c>e.g. ES</c> is this surface's house idiom for naming a symbol and appears ten times
+    /// across the tool descriptions, so without it a clause is cut at the abbreviation and the value it
+    /// advertises falls outside — a red on correct text, in the repository's own style. <c>i.e.</c> is
+    /// covered by the same shape.
+    /// <para>
+    /// <b>When you narrow what this gate accepts, grep the existing <c>[Description]</c> strings for the
+    /// shape you just excluded.</b> Both accept-lists in this file — the quote characters, and this
+    /// terminator — were first written against the leak they were closing and not against prose already in
+    /// the repository, and both were red on correct text as a result. That is the whole lesson of gh#82: a
+    /// gate that fails closed on valid input is how gates get deleted.
+    /// </para>
+    /// </remarks>
+    private const string SentenceEnd = @"(?<!\.\p{Ll})\.\s+\p{Lu}";
 
     /// <summary>Matches a value as a whole token, so it cannot hide inside a longer one.</summary>
     /// <remarks>

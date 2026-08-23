@@ -13,7 +13,7 @@ accurate** — a size column nobody updates is worse than none, because it is tr
 |---|---:|---|
 | [`prd.md`](prd.md) | 5.5K | You need **what is required**, or you are citing an `R-#`. Ids are stable and never renumbered. |
 | [`architecture.md`](architecture.md) | 4.5K | You need **how the pieces fit** — the cache-aside path, the projection, the transports. The cheapest whole-file read here. |
-| [`mcp-tool-catalogue`](mcp-tool-catalog.md) | 4.5K | You are adding, changing or calling a tool. The tool surface is a contract; this is it. |
+| [`mcp-tool-catalogue`](mcp-tool-catalog.md) | 5K | You are adding, changing or calling a tool. The tool surface is a contract; this is it. |
 | [`data-dictionary.md`](data-dictionary.md) | 3K | You need the data model — the six tables, their keys, and why each key is shaped that way. |
 
 ## Working agreements

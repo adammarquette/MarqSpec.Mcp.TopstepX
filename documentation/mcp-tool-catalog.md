@@ -1,6 +1,6 @@
 # MCP tool catalogue
 
-**Status:** Living · **Date:** 2026-08-21 · **Relates to:** PRD `R-5` ·
+**Status:** Living · **Date:** 2026-08-23 · **Relates to:** PRD `R-5` ·
 [ADR-0002](adr/0002-read-only-venue-boundary.md) (read-only) ·
 [ADR-0008](adr/0008-numeric-only-tool-payloads.md) (numeric-only) ·
 [ADR-0007](adr/0007-dual-transport.md) (transports) ·
@@ -27,16 +27,19 @@ tool and change this page in the same PR.
 
   | Where | On the wire | Test |
   |---|---|---|
-  | A **field** on an object — `limitPrice`, `filledPrice` | **omitted entirely**; the serializer drops nulls | `"limitPrice" in order` |
+  | A **field** — `limitPrice`, `value`, `similarity` | **omitted entirely**; the serializer drops nulls | `"limitPrice" in order` |
   | A **value in a map** — the snapshot's `indicators{}` | **present, with `null`** | `indicators.rsi === null` |
 
   Comparing an omitted field to `null` is the `undefined`-is-falsy trap that made `fromCache` unusable
   (gh#48). Testing a map for key *presence* is the same mistake mirrored: every indicator this server computes
   has a key, so presence says nothing about whether it could be measured.
 
-  **Entries below have not yet been brought into line** — six write `null` without saying which form they
-  mean, and all six are in fact omitted fields. Classifying and correcting them is gh#85; until then, read
-  this table rather than the individual entry.
+  The split is not a style choice, and it is not per-field: the SDK serialises results with
+  `DefaultIgnoreCondition = WhenWritingNull`, which drops a null **property** and **does not reach inside a
+  dictionary**. So the container decides the form, and moving a value from one to the other changes the test a
+  caller must write. **Every entry below names its own form** — this page is read by lookup, and a reader who
+  lands on one entry should not have to have read this bullet. `PayloadNullWireShapeTests` pins both forms
+  against the real serializer options, so the statements here fail a build rather than drift (gh#85).
 - **`resolutionMinutes` is caller-chosen, and every resolution from `1` to `10080` — one minute to one week —
   is servable.** No tool enumerates supported timeframes, because the range is contiguous rather than a list —
   each resolution is an independent cached series fetched from the venue, never derived from a finer one
@@ -59,7 +62,9 @@ tool and change this page in the same PR.
   `contractId` and bucket range. **Read `span` before comparing anything across the window**: a high from the
   expiring contract is not a price the contract in front has ever reached. The bars themselves are still
   returned, because each is a real observation; the *derived* values are not computed across the seam, so
-  expect a run of null indicator values just after one ([ADR-0011](adr/0011-contract-roll-boundary.md)).
+  expect a run of buckets with **no indicator value** just after one — which is *absent from* `get_indicators`'
+  `values[]` and *present as `null`* in the snapshot's `indicators{}`, per the two forms above
+  ([ADR-0011](adr/0011-contract-roll-boundary.md)).
 
   `span` has **three** values, not two:
 
@@ -73,6 +78,10 @@ tool and change this page in the same PR.
   contract, and it cannot be recovered, so a window over that history may or may not contain a roll. A boolean
   could only have rendered that as `false`, which is a missing fact wearing a confident answer — the thing this
   field exists to prevent. Refetching the range records the provenance and resolves it.
+
+  A segment with no recorded contract **omits `contractId` entirely** — it is a field, so `segment.contractId
+  === null` is `false` for every one of them. Test `"contractId" in segment`, and read an absent one as
+  *unknown*, never as "the same contract as the segment beside it".
 
 ## Reference and session
 
@@ -104,6 +113,11 @@ Returns `[{ contractId, symbol, isActive, tickSize, tickValue }]`, front month f
 Whether the market is open, and what happens next.
 
 Returns `{ symbol, isOpen, tradeDate, sessionCloseUtc, minutesToClose, nextOpenUtc, isHoliday }`.
+
+Only `symbol`, `isOpen` and `isHoliday` are always there. The other four are **fields, so an inapplicable one
+is omitted** rather than `null`: a shut market carries no `sessionCloseUtc` or `minutesToClose`, and a running
+one carries no `nextOpenUtc`. Branch on `isOpen`, or test `"minutesToClose" in session` — comparing to `null`
+reports every one of them as present-and-not-null.
 
 There is **no `sessionOpenUtc`**; this page carried one until gh#48 and `ToolPayloads.SessionState` has
 never had it. The running session's close is `sessionCloseUtc` and the *next* session's open is
@@ -160,8 +174,13 @@ A stored indicator series.
 
 Returns `{ symbol, resolutionMinutes, indicator, period, values: [{ t, v }], contracts }`.
 
+**`values[]` is a list, and a bucket the indicator could not measure has no entry at all** — there is no
+`{ t, v: null }` point. So the series is not one point per bucket, and the gaps are the cannot-measure
+signal: pair each `v` with its own `t` rather than with a bar at the same index.
+
 Every value is computed inside a single contract, but the *series* can still cross a roll — read
-`contracts.span` before treating the two halves as one trend.
+`contracts.span` before treating the two halves as one trend. Expect a run of missing entries just after a
+seam, where the new contract's warm-up starts over.
 
 `indicator` is a **closed vocabulary**: `atr`, `rsi`, `sma`, `ema`, `macd`, `macd-signal`, `macd-histogram`,
 `vwap`, `bb-upper`, `bb-middle`, `bb-lower`. An unknown name errors and lists the known ones — a typo must not
@@ -178,10 +197,17 @@ the caller knows what it got. This page listed it as a parameter until gh#48; it
 One value, as of a moment. Reads the value at or **before** `asOfUtc`, never after — a value from after the
 moment is information the market did not have.
 
-Returns `{ value, bucketStart, contractId }`, or `{ value: null }` meaning *cannot measure*.
+Returns `{ value, bucketStart, contractId }`.
 
-`contractId` is the contract the value belongs to. Two readings from different contracts are not
-comparable, and nothing in a bare number says so.
+**Cannot-measure is the empty object `{}`, not `{ "value": null }`.** All three are fields, so all three are
+dropped when there is nothing to report — this page wrote `{ value: null }` until gh#85, and a caller testing
+`reading.value === null` reads `undefined === null`, which is `false`, and concludes it *did* measure. Test
+`"value" in reading`; an absent `value` means cannot measure, and a caller receiving one should refuse rather
+than substitute.
+
+`contractId` is the contract the value belongs to, and it is absent both when there is no value and when the
+bar's provenance was never recorded. Two readings from different contracts are not comparable, and nothing in
+a bare number says so.
 
 ### `get_key_levels(symbol, resolutionMinutes, lookbackBars?)`
 Support and resistance as **zones**, not lines.
@@ -299,6 +325,17 @@ five or six.
 Returns `{ symbol, session, perResolution: [{ resolutionMinutes, bars[], indicators{},
 levels: { levels[], contracts, detectedOverBars }, contracts }] }`.
 
+**`indicators{}` is the one map on this surface, and it behaves the opposite way to every field above.** It is
+the latest value of each indicator keyed by name, and **every indicator this server computes is assigned a key
+unconditionally** — so a key is always there and its **presence says nothing**. The value is `null` when that
+indicator could not be measured at this bucket, and **the `null` is the whole signal**: `indicators.rsi ===
+null` is the test, and it means *cannot measure* — refuse rather than substitute. An **absent** key would
+instead mean this server does not compute that indicator at all, which is a different statement and not one
+you should expect to see. `"rsi" in indicators` therefore answers a question nobody is asking.
+
+Expect nulls right after a roll and on a short window: warm-up restarts at the seam, and an indicator whose
+period the bars do not satisfy cannot measure.
+
 **Two windows, two coverages — check both.** The slice's `contracts` describes the `barCount` bars returned;
 `levels.contracts` describes the longer `max(barCount, 200)` bars the levels were detected over. They can
 disagree: a short bar window can sit entirely inside the current contract while the history behind the levels
@@ -366,6 +403,10 @@ Writes to **this** database. Not the venue, and no weakening of the read-only bo
 An observation is `{ id, symbol, kind, text, tags, recordedAt, embeddingNote, similarity }`. `embeddingNote`
 says why a row has no vector when it has none; `similarity` is populated only in `Semantic` mode.
 
+**Nothing on either payload is a map, so every unset value here is *omitted*, never `null`** — `similarity`,
+`embeddingNote` and `symbol` on an observation, `modeReason` and `unsearchableCount` on the result. The test is
+`"similarity" in observation`; `observation.similarity === null` is `false` on every text-path match.
+
 `search_observations` returns `{ mode, modeReason, observations, unsearchableCount }`. **`mode` says which
 path answered** — `Semantic` for vector similarity, `Text` for substring matching — and `modeReason` says why
 when it is not semantic.
@@ -379,11 +420,11 @@ an empty `Text` result is worth retrying with different wording.
 | | `Semantic` | `Text` |
 |---|---|---|
 | Ordering | **Best first**, by similarity | **Most recent first** |
-| `similarity` on each match | Cosine, in `[-1, 1]` | `null` |
+| `similarity` on each match | Cosine, in `[-1, 1]` | **absent from the match** |
 | Reaches notes with no vector | No — see `unsearchableCount` | Yes, every row |
-| `modeReason` | `null` | Names the cause |
+| `modeReason` | **absent from the result** | Names the cause |
 
-`similarity` is `null` rather than a stand-in on the text path. A `1.0` meaning "it matched" would invite
+`similarity` is absent rather than a stand-in on the text path. A `1.0` meaning "it matched" would invite
 comparison across modes as though the numbers meant the same thing. Where it *is* present it should be read:
 without a score an agent cannot tell a strong match from the least-bad of a weak set, and will act on both the
 same way.
@@ -394,7 +435,10 @@ result and a small corpus are otherwise indistinguishable. It goes non-zero when
 provider was rate-limited or down (see `embeddingNote` below), and returns to zero when those notes are
 re-embedded.
 
-**`null` there means "not asked", never "none".** On the semantic path the number is computed only when the
+**An absent `unsearchableCount` means "not asked", never "none"** — and it is a field, so it is missing from
+the object rather than `null`. `"unsearchableCount" in result` is the test; `result.unsearchableCount === null`
+is `false` whether it was asked or not, and treating a falsy read as zero is exactly the substitution this
+count exists to prevent. On the semantic path the number is computed only when the
 page came back short, because that is the only time it changes what a caller should do — a full page is not
 missing anything that was requested, and the count costs a scan of the whole corpus in scope. On the text path
 it is `0`: that path reads every row, so the question was asked and the answer really is none.
@@ -415,10 +459,11 @@ rule. The text originates with the operator's own agent rather than the vendor.
 lands rather than after some later pass. Two consequences are worth knowing before calling it:
 
 - **It returns `embeddingNote` when — and only when — no vector was stored.** A rate limit, an outage, an
-  unusable response or an unconfigured key all leave the observation stored and say so in words. The note is
-  `null` on the normal path; a caller that reads it as a status field will find nothing to report, which is the
-  intent. **The write never fails because embedding failed** — the observation is the durable thing and a
-  vector is an index over it that can be rebuilt.
+  unusable response or an unconfigured key all leave the observation stored and say so in words. It is a
+  field, so on the normal path it is **absent from the observation entirely** rather than `null`; a caller that
+  reads it as a status field finds no key and so nothing to report, which is the intent — and one testing
+  `=== null` finds nothing to report either, for the wrong reason. **The write never fails because embedding
+  failed** — the observation is the durable thing and a vector is an index over it that can be rebuilt.
 - **Identical text is embedded once.** The same text under the same model is the same vector, so a recurring
   note is matched against what is already stored and reuses it rather than buying it again. Text is matched
   **as stored** — trimmed — so surrounding whitespace does not defeat it.

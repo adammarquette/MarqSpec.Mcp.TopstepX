@@ -34,6 +34,69 @@ public static class ToolPayloads
     /// <param name="V">The value.</param>
     public sealed record IndicatorPoint(DateTimeOffset T, decimal V);
 
+    /// <summary>One contiguous run of bars from a single venue contract.</summary>
+    /// <param name="ContractId">
+    /// The contract, or <see langword="null"/> when the run's provenance was never recorded — bars stored
+    /// before this server tracked it. Null is <b>unknown</b>, not "the same as the run beside it".
+    /// </param>
+    /// <param name="FirstBucket">When the run's first bar opened.</param>
+    /// <param name="LastBucket">When the run's last bar opened.</param>
+    /// <param name="BarCount">How many bars are in the run.</param>
+    public sealed record ContractSegmentInfo(
+        string? ContractId,
+        DateTimeOffset FirstBucket,
+        DateTimeOffset LastBucket,
+        int BarCount);
+
+    /// <summary>
+    /// Whether the bars behind an answer cross a contract roll.
+    /// </summary>
+    /// <remarks>
+    /// An enum rather than a boolean because <b>a boolean cannot say "cannot tell"</b>, and that is a real
+    /// state here: bars stored before this server recorded provenance carry no contract, so a window over
+    /// them may or may not contain a roll and nothing in the store knows which. Reporting that as
+    /// <see langword="false"/> would render a missing fact as a confident negative — on the very field added
+    /// to stop a missing fact being rendered as an ordinary answer.
+    /// </remarks>
+    public enum ContractSpan
+    {
+        /// <summary>
+        /// <b>Cannot tell.</b> At least some of these bars carry no recorded contract, so whether a roll falls
+        /// inside the window is unknown — <i>not</i> known to be absent. Treat comparisons across the window
+        /// as unsafe. Refetching the range records the provenance and resolves it.
+        /// </summary>
+        Unknown = 0,
+
+        /// <summary>Every bar came from one contract. The window is safe to read as a single series.</summary>
+        SingleContract = 1,
+
+        /// <summary>
+        /// <b>The window crosses a roll.</b> The bars either side of the seam belong to different quarters,
+        /// which do not trade at the same price — the gap between them is routinely tens of points and is a
+        /// bookkeeping event, not market movement. A high from the expiring contract is not a level the
+        /// contract in front has ever reached.
+        /// </summary>
+        SpansRoll = 2,
+    }
+
+    /// <summary>
+    /// Which contracts produced the bars behind an answer, and whether a roll falls inside it.
+    /// </summary>
+    /// <param name="Span">
+    /// Whether these bars cross a roll — including <see cref="ContractSpan.Unknown"/>, which is a real answer
+    /// and means the provenance was never recorded rather than that there was no roll. <b>Read this before
+    /// comparing anything across the window.</b>
+    /// </param>
+    /// <param name="Segments">The runs, in time order. One entry means a single contract and no seam.</param>
+    /// <remarks>
+    /// Present on every payload derived from a bar series, because a series is keyed by the venue-neutral
+    /// symbol and a roll writes the new contract's bars under the same key (ADR-0011). Without this the splice
+    /// is invisible, and everything computed over it looks like an ordinary number.
+    /// </remarks>
+    public sealed record ContractCoverage(
+        ContractSpan Span,
+        IReadOnlyList<ContractSegmentInfo> Segments);
+
     /// <summary>A bar series, and what it cost to produce.</summary>
     /// <param name="Symbol">The normalised instrument.</param>
     /// <param name="ResolutionMinutes">The bar size.</param>
@@ -43,12 +106,17 @@ public static class ToolPayloads
     /// Reported rather than merely logged, so the caller can see what a question cost.
     /// </param>
     /// <param name="VenueRequests">How many requests reached the venue.</param>
+    /// <param name="Contracts">
+    /// Which contracts produced these bars. The bars are returned either way — each one is a real observation
+    /// of a real contract — but <c>span</c> says whether reading them as a single series is valid.
+    /// </param>
     public sealed record BarSeries(
         string Symbol,
         int ResolutionMinutes,
         IReadOnlyList<BarPoint> Bars,
         int FetchedBuckets,
-        int VenueRequests);
+        int VenueRequests,
+        ContractCoverage Contracts);
 
     /// <summary>An indicator series.</summary>
     /// <param name="Symbol">The normalised instrument.</param>
@@ -56,12 +124,19 @@ public static class ToolPayloads
     /// <param name="Indicator">The indicator name.</param>
     /// <param name="Period">The period it was computed at.</param>
     /// <param name="Values">The values, ascending. Buckets where the indicator could not measure are absent.</param>
+    /// <param name="Contracts">
+    /// Which contracts produced the bars these values were derived from. Every value is computed inside a
+    /// single contract — the projection never smooths across a roll — but the <i>series</i> can still cross
+    /// one, and reading the two halves as one trend is the mistake this field exists to prevent. Expect a run
+    /// of absent values immediately after a seam: the new contract's warm-up starts over there.
+    /// </param>
     public sealed record IndicatorSeries(
         string Symbol,
         int ResolutionMinutes,
         string Indicator,
         int Period,
-        IReadOnlyList<IndicatorPoint> Values);
+        IReadOnlyList<IndicatorPoint> Values,
+        ContractCoverage Contracts);
 
     /// <summary>One indicator value as of a moment.</summary>
     /// <param name="Value">
@@ -69,7 +144,15 @@ public static class ToolPayloads
     /// reading. A caller receiving null should refuse to conclude, rather than substitute.
     /// </param>
     /// <param name="BucketStart">The bucket the value came from, at or before the requested moment.</param>
-    public sealed record IndicatorReading(decimal? Value, DateTimeOffset? BucketStart);
+    /// <param name="ContractId">
+    /// The contract whose bars produced this value, or <see langword="null"/> when there is no value or the
+    /// bar's provenance was never recorded. Two readings from different contracts are not comparable — the
+    /// quarters do not trade at the same price — and nothing in a bare number says so.
+    /// </param>
+    public sealed record IndicatorReading(
+        decimal? Value,
+        DateTimeOffset? BucketStart,
+        string? ContractId = null);
 
     /// <summary>What an instrument is, in contract terms.</summary>
     /// <param name="Symbol">The normalised symbol.</param>
@@ -140,6 +223,24 @@ public static class ToolPayloads
         int TouchCount,
         DateTimeOffset FormedAt);
 
+    /// <summary>The detected levels, and how much history actually produced them.</summary>
+    /// <param name="Levels">The zones, ordered by price.</param>
+    /// <param name="Contracts">
+    /// Which contracts the requested lookback covered. A <c>span</c> of <c>SpansRoll</c> is why
+    /// <paramref name="DetectedOverBars"/> can be smaller than the lookback that was asked for.
+    /// </param>
+    /// <param name="DetectedOverBars">
+    /// How many bars detection actually ran over. <b>Detection is confined to the contract in front</b>: a
+    /// level built from the expiring quarter's bars sits at a price the current contract has never traded, and
+    /// an agent reading it cannot tell that from a level price is about to reach. When the lookback spans a
+    /// roll this is therefore fewer bars than requested, and it is reported rather than implied — silently
+    /// halving the history behind a level changes how much weight it deserves.
+    /// </param>
+    public sealed record LevelSet(
+        IReadOnlyList<LevelInfo> Levels,
+        ContractCoverage Contracts,
+        int DetectedOverBars);
+
     /// <summary>An account, as this server reports it.</summary>
     /// <param name="AccountId">The venue account id.</param>
     /// <param name="Stage">
@@ -169,12 +270,25 @@ public static class ToolPayloads
     /// <param name="ResolutionMinutes">The bar size.</param>
     /// <param name="Bars">The recent bars.</param>
     /// <param name="Indicators">The latest value of each indicator, keyed by name. Absent means cannot measure.</param>
-    /// <param name="Levels">The detected levels.</param>
+    /// <param name="Levels">
+    /// The detected levels, <b>with their own coverage</b>. Levels are detected over a longer window than the
+    /// bars returned here, so the two can disagree about whether a roll happened — read the level set's own
+    /// <c>contracts.span</c> for the levels and this slice's <c>contracts.span</c> for the bars. Carrying the
+    /// whole <see cref="LevelSet"/> rather than just its list is what keeps <c>detectedOverBars</c> from being
+    /// dropped on the one tool an agent is told to reach for first.
+    /// </param>
+    /// <param name="Contracts">
+    /// Which contracts produced <b>the bars in this slice</b> — not the longer history behind the levels.
+    /// <see cref="ContractSpan.SpansRoll"/> means the bar window crosses a quarterly roll, so the earlier bars
+    /// belong to a contract that no longer trades. The levels and the indicator readings come from the
+    /// contract in front regardless.
+    /// </param>
     public sealed record ResolutionSnapshot(
         int ResolutionMinutes,
         IReadOnlyList<BarPoint> Bars,
         IReadOnlyDictionary<string, decimal?> Indicators,
-        IReadOnlyList<LevelInfo> Levels);
+        LevelSet Levels,
+        ContractCoverage Contracts);
 
     /// <summary>How an observation search was answered.</summary>
     /// <remarks>
@@ -250,9 +364,39 @@ public static class ToolPayloads
     /// <summary>Maps a domain bar to its wire shape.</summary>
     /// <param name="bar">The bar.</param>
     /// <returns>The payload.</returns>
+    /// <remarks>
+    /// The contract id is deliberately <b>not</b> repeated on every bar. A 500-bar answer would carry it 500
+    /// times for a fact that changes at most once a quarter; <see cref="ContractCoverage"/> states it once,
+    /// with the bucket range each run covers.
+    /// </remarks>
     public static BarPoint ToPoint(Bar bar)
     {
         ArgumentNullException.ThrowIfNull(bar);
         return new BarPoint(bar.OpenTime, bar.Open, bar.High, bar.Low, bar.Close, bar.Volume);
+    }
+
+    /// <summary>Describes which contracts produced a series of bars.</summary>
+    /// <param name="bars">The bars, in ascending time order.</param>
+    /// <returns>The coverage, with one segment per contiguous single-contract run.</returns>
+    public static ContractCoverage ToCoverage(IReadOnlyList<Bar> bars)
+    {
+        IReadOnlyList<ContractSegment> segments = ContractRollDetector.Segment(bars);
+
+        // More than one run is a seam whichever way the provenance falls -- an unrecorded run beside a
+        // recorded one is still two things that must not be read as one contract. A SINGLE run is only
+        // SingleContract when its provenance is actually known; otherwise the honest answer is that nobody
+        // can tell, which is the whole reason this is not a boolean.
+        ContractSpan span = segments.Count switch
+        {
+            0 => ContractSpan.Unknown,
+            1 when segments[0].ContractId is null => ContractSpan.Unknown,
+            1 => ContractSpan.SingleContract,
+            _ => ContractSpan.SpansRoll,
+        };
+
+        return new ContractCoverage(
+            span,
+            [.. segments.Select(s => new ContractSegmentInfo(
+                s.ContractId, s.FirstBucket, s.LastBucket, s.BarCount))]);
     }
 }

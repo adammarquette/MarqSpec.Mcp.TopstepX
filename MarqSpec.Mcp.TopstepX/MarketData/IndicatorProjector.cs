@@ -22,6 +22,23 @@ namespace MarqSpec.Mcp.TopstepX.MarketData;
 /// would then disagree, and neither would be wrong in a way anyone could point at.
 /// </para>
 /// <para>
+/// <b>The one thing it will not smooth across is a contract roll</b> (ADR-0011). A symbol-keyed series holds
+/// the expiring quarter and the new one side by side, and the gap between them is a bookkeeping event rather
+/// than market movement. The series is therefore split into contiguous single-contract runs and each is
+/// projected on its own, seeded from <i>that run's</i> first bar. The warm-up restarts at the roll, so the
+/// first values after it are <b>absent</b> — which is the honest answer: the new contract has not traded
+/// enough bars to measure yet. That is a refinement of the paragraph above, not a contradiction of it: the
+/// seams are a function of the stored bars, so a rebuild still replays to the same numbers.
+/// </para>
+/// <para>
+/// <b>It reconciles rather than only upserting.</b> A pass removes every value it is configured to produce
+/// that the current bars no longer justify. Before segmenting, that could not happen: the warm-up boundary
+/// was the start of the stored series, so a bucket could only ever move from <i>not computable</i> to
+/// <i>computable</i>, and an upsert-only projection was safe. A contract seam moves the boundary in the other
+/// direction — a bucket that had a value can correctly have none — and a row nothing rewrites is a row that
+/// stays. That row is a stored number the bars cannot account for, which is the failure gh#42 is about.
+/// </para>
+/// <para>
 /// <b>The cost, stated honestly.</b> That makes a projection O(series), not O(changed). A year of 5-minute
 /// bars is on the order of 70,000 rows per instrument — comfortably fast, and bounded by how much history the
 /// operator keeps rather than by how often bars arrive. If it ever stops being comfortable, the answer is an
@@ -48,11 +65,15 @@ public sealed class IndicatorProjector(
     /// <param name="resolutionMinutes">The bar size in minutes.</param>
     /// <param name="now">The instant this pass runs at, stamped on changed rows.</param>
     /// <param name="cancellationToken">The caller's cancellation token.</param>
-    /// <returns>How many values were written or updated.</returns>
+    /// <returns>How many rows this pass changed — written, updated, or <b>removed</b>.</returns>
     /// <remarks>
     /// Does <b>not</b> call <c>SaveChanges</c>. The caller owns the unit of work, so bars and the indicators
     /// derived from them commit together — a partial commit would leave a bar whose indicators silently do
     /// not exist, which reads back as a market that produced no signal.
+    /// <para>
+    /// A confirming rebuild still produces an <b>empty diff</b>: a value the pass recomputed to the same
+    /// number counts as produced, so reconciliation removes nothing.
+    /// </para>
     /// </remarks>
     public async Task<int> ProjectAsync(
         string venue,
@@ -71,13 +92,8 @@ public sealed class IndicatorProjector(
             .ToListAsync(cancellationToken)
             .ConfigureAwait(false);
 
-        if (stored.Count == 0)
-        {
-            return 0;
-        }
-
-        List<Bar> bars = [.. stored.Select(ToBar)];
-
+        // Loaded BEFORE the empty-bars short circuit, because reconciliation applies there too: values
+        // standing over a series whose bars have all been deleted are values nothing can justify.
         Dictionary<(string Indicator, int Period, DateTimeOffset Bucket), IndicatorValueRecord> existing =
             await _database.IndicatorValues
                 .Where(v => v.Venue == venue
@@ -86,6 +102,101 @@ public sealed class IndicatorProjector(
                 .ToDictionaryAsync(v => (v.Indicator, v.Period, v.BucketStart), cancellationToken)
                 .ConfigureAwait(false);
 
+        List<Bar> bars = [.. stored.Select(ToBar)];
+
+        // Every key this pass accounted for -- written, updated, OR recomputed to the same number. The last
+        // case is why a confirming rebuild still reconciles to an empty diff.
+        HashSet<(string Indicator, int Period, DateTimeOffset Bucket)> produced = [];
+
+        int written = 0;
+
+        // One run per contract, each projected on its own. A single-contract series -- which is every series
+        // that has not yet lived through a roll -- is one segment, so this costs nothing and changes nothing
+        // for it.
+        IReadOnlyList<ContractSegment> segments = ContractRollDetector.Segment(bars);
+
+        foreach (ContractSegment segment in segments)
+        {
+            List<Bar> run = bars.GetRange(segment.StartIndex, segment.BarCount);
+            written += ProjectSegment(venue, instrument, resolutionMinutes, run, existing, produced, now);
+        }
+
+        int removed = Reconcile(existing, produced);
+
+        if (written + removed > 0)
+        {
+            _logger.LogDebug(
+                "Projected {Count} indicator values for {Instrument} {Resolution}m over {Bars} bars in "
+                + "{Segments} contract segment(s); removed {Removed} the bars no longer justify.",
+                written,
+                instrument.Symbol,
+                resolutionMinutes,
+                bars.Count,
+                segments.Count,
+                removed);
+        }
+
+        return written + removed;
+    }
+
+    /// <summary>
+    /// Removes stored values this pass was configured to produce but did not.
+    /// </summary>
+    /// <param name="existing">Every stored value for the series.</param>
+    /// <param name="produced">The keys this pass accounted for.</param>
+    /// <returns>How many rows were removed.</returns>
+    /// <remarks>
+    /// <para>
+    /// <b>Scoped to the <c>(Indicator, Period)</c> pairs this catalogue computes</b>, and that scope is the
+    /// whole safety of it. Deleting everything a pass did not write would erase a series the operator merely
+    /// configured a period away from — ATR(14) and ATR(3) are different numbers under different keys, and a
+    /// projection configured for one has no standing over the other's rows. That would be data loss wearing a
+    /// cleanup's clothes.
+    /// </para>
+    /// <para>
+    /// A warm-up bucket that has never had a value costs nothing here: there is no row to remove. What this
+    /// reaches is the row that <i>used</i> to be justified — the ATR smoothed across a splice that a later,
+    /// better-informed pass correctly declines to compute.
+    /// </para>
+    /// </remarks>
+    private int Reconcile(
+        Dictionary<(string Indicator, int Period, DateTimeOffset Bucket), IndicatorValueRecord> existing,
+        HashSet<(string Indicator, int Period, DateTimeOffset Bucket)> produced)
+    {
+        HashSet<(string Indicator, int Period)> owned =
+            [.. _catalog.All.Select(i => (i.Name, i.Period))];
+
+        int removed = 0;
+
+        foreach ((var key, IndicatorValueRecord row) in existing)
+        {
+            if (!owned.Contains((key.Indicator, key.Period)) || produced.Contains(key))
+            {
+                continue;
+            }
+
+            _database.IndicatorValues.Remove(row);
+            removed++;
+        }
+
+        return removed;
+    }
+
+    /// <summary>Projects every configured indicator over one single-contract run of bars.</summary>
+    /// <remarks>
+    /// The run is what each indicator sees, so its smoothing seeds from the run's own first bar. Handing the
+    /// whole series in would let a roll gap -- routinely tens of points between adjacent quarters -- be
+    /// smoothed forward as though it were price action, which is exactly the number nobody would question.
+    /// </remarks>
+    private int ProjectSegment(
+        string venue,
+        InstrumentId instrument,
+        int resolutionMinutes,
+        IReadOnlyList<Bar> bars,
+        Dictionary<(string Indicator, int Period, DateTimeOffset Bucket), IndicatorValueRecord> existing,
+        HashSet<(string Indicator, int Period, DateTimeOffset Bucket)> produced,
+        DateTimeOffset now)
+    {
         int written = 0;
 
         foreach (IIndicator indicator in _catalog.All)
@@ -116,6 +227,11 @@ public sealed class IndicatorProjector(
 
                 (string Name, int Period, DateTimeOffset OpenTime) key =
                     (indicator.Name, indicator.Period, bars[i].OpenTime);
+
+                // Recorded before the unchanged check, not after: a value the pass recomputed to the same
+                // number is still a value the bars justify, and reconciliation must not mistake "confirmed"
+                // for "not produced" and delete the whole series on every rebuild.
+                produced.Add(key);
 
                 if (existing.TryGetValue(key, out IndicatorValueRecord? row))
                 {
@@ -148,16 +264,6 @@ public sealed class IndicatorProjector(
             }
         }
 
-        if (written > 0)
-        {
-            _logger.LogDebug(
-                "Projected {Count} indicator values for {Instrument} {Resolution}m over {Bars} bars.",
-                written,
-                instrument.Symbol,
-                resolutionMinutes,
-                bars.Count);
-        }
-
         return written;
     }
 
@@ -173,6 +279,7 @@ public sealed class IndicatorProjector(
             record.High,
             record.Low,
             record.Close,
-            record.Volume);
+            record.Volume,
+            record.ContractId);
     }
 }

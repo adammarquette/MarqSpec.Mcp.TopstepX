@@ -201,6 +201,34 @@ public sealed class BarCacheServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task AStoredBar_RecordsTheContractThatProducedIt()
+    {
+        // gh#42. The series is keyed by the symbol and the fetch is made against one contract; without the
+        // contract on the row, the quarter a bar came from is unrecoverable the moment the front month rolls.
+        DateTimeOffset now = SessionStart.AddHours(2);
+        (BarCacheService cache, _) = Build(VenueBars(12), now);
+
+        await cache.GetBarsAsync(
+            _es, 5, new BarRange(SessionStart, SessionStart.AddHours(1)), CancellationToken.None);
+
+        _database.Bars.Should().NotBeEmpty();
+        _database.Bars.Should().AllSatisfy(b => b.ContractId.Should().Be("CON.F.US.TEST.Z26"));
+    }
+
+    [Fact]
+    public async Task AReadCarriesTheContractBackToTheCaller()
+    {
+        // The provenance has to survive the trip out of the store, or nothing above it can report the seam.
+        DateTimeOffset now = SessionStart.AddHours(2);
+        (BarCacheService cache, _) = Build(VenueBars(12), now);
+
+        BarReadResult result = await cache.GetBarsAsync(
+            _es, 5, new BarRange(SessionStart, SessionStart.AddHours(1)), CancellationToken.None);
+
+        result.Bars.Should().AllSatisfy(b => b.ContractId.Should().Be("CON.F.US.TEST.Z26"));
+    }
+
+    [Fact]
     public async Task ANonPositiveResolution_IsRefused()
     {
         (BarCacheService cache, _) = Build([], SessionStart);

@@ -216,7 +216,7 @@ public sealed class ProjectXMarketDataGateway : IMarketDataGateway
                     cancellationToken),
                 "retrieving bars for " + contractId).ConfigureAwait(false);
 
-            collected.AddRange(bars.Select(ProjectXMapping.ToBar));
+            collected.AddRange(bars.Select(b => ProjectXMapping.ToBar(b, contractId)));
         }
 
         if (pacedPages > 0)

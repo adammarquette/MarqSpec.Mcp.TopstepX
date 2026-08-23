@@ -66,11 +66,23 @@ public static partial class ProjectXMapping
 
     /// <summary>Maps a gateway bar.</summary>
     /// <param name="bar">The gateway's bar.</param>
+    /// <param name="contractId">The contract the bars were requested from.</param>
     /// <returns>The domain bar.</returns>
-    public static Bar ToBar(AggregateBar bar)
+    /// <remarks>
+    /// <b>The contract is stamped here, at the mapping, rather than by the caller.</b> A history call is made
+    /// against exactly one contract, so this is the last point at which the fact is structurally in hand — one
+    /// layer up, the series is keyed by the venue-neutral symbol and the quarter a bar came from is
+    /// unrecoverable (ADR-0011). Leaving it to the caller made forgetting <i>silent</i>: a bar with no
+    /// provenance passes <see cref="IndicatorGuard.RequireSingleContract"/>, so the omission would surface as
+    /// gh#42 all over again rather than as an error.
+    /// </remarks>
+    public static Bar ToBar(AggregateBar bar, string contractId)
     {
         ArgumentNullException.ThrowIfNull(bar);
-        return new Bar(ToUtc(bar.Timestamp), bar.Open, bar.High, bar.Low, bar.Close, bar.Volume);
+        ArgumentException.ThrowIfNullOrWhiteSpace(contractId);
+
+        return new Bar(
+            ToUtc(bar.Timestamp), bar.Open, bar.High, bar.Low, bar.Close, bar.Volume, contractId);
     }
 
     /// <summary>Maps a gateway contract.</summary>

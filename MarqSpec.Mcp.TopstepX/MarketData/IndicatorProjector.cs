@@ -92,8 +92,9 @@ public sealed class IndicatorProjector(
             .ToListAsync(cancellationToken)
             .ConfigureAwait(false);
 
-        // Loaded BEFORE the empty-bars short circuit, because reconciliation applies there too: values
-        // standing over a series whose bars have all been deleted are values nothing can justify.
+        // Loaded unconditionally, and the early return for an empty series is gone with it: reconciliation
+        // has to run even when no bars remain, because values standing over a series whose bars have all been
+        // deleted are exactly values nothing can justify.
         Dictionary<(string Indicator, int Period, DateTimeOffset Bucket), IndicatorValueRecord> existing =
             await _database.IndicatorValues
                 .Where(v => v.Venue == venue

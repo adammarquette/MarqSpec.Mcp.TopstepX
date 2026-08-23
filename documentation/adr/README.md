@@ -32,6 +32,7 @@ retrospective justification is a press release. The useful ones name the option 
 | [0006](0006-indicators-as-projections.md) | Indicators are projections — computed on write, rebuilt by replay | Accepted · extends [0004](0004-one-postgres-timescale-pgvector.md) |
 | [0007](0007-dual-transport.md) | One host, two transports — stdio and streamable HTTP | Accepted |
 | [0008](0008-numeric-only-tool-payloads.md) | Tool payloads are numeric-only | Accepted · narrows [0002](0002-read-only-venue-boundary.md) |
+| [0009](0009-cohere-embeddings.md) | Cohere `embed-v4.0`, pinned to 1024 dimensions | Accepted · fits the column [0004](0004-one-postgres-timescale-pgvector.md) chose |
 
 *Adding a record? Add its row here in the same PR, and a routing entry in [`../README.md`](../README.md) if
 the corpus shape changes.*

@@ -71,6 +71,7 @@ services:
       Indicators__BollingerPeriod: "${Indicators__BollingerPeriod:-20}"
 
       Embeddings__ApiKey: "${Embeddings__ApiKey:-}"
+      Embeddings__Model: "${Embeddings__Model:-embed-v4.0}"
 
       ASPNETCORE_ENVIRONMENT: "${ASPNETCORE_ENVIRONMENT:-Development}"
       ASPNETCORE_HTTP_PORTS: "8080"

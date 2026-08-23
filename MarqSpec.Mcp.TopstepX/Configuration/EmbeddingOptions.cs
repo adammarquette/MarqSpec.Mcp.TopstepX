@@ -22,8 +22,15 @@ public sealed class EmbeddingOptions
     /// Part of the <c>Embeddings</c> primary key, so re-embedding under a new model <b>adds</b> a vector
     /// rather than overwriting the old one. Vectors from two models are not comparable, and a table that
     /// silently mixed them would return neighbours that are near in no space at all.
+    /// <para>
+    /// <b>The width is not configurable and is deliberately not here.</b> It is pinned to
+    /// <see cref="Data.TopstepXDbContext.EmbeddingDimensions"/>, because the database column is
+    /// <c>vector(1024)</c> and a mismatch is a migration rather than a setting. Note that
+    /// <c>embed-v4.0</c> defaults to <b>1536</b>, so a call that omits the width is wrong by default
+    /// (ADR-0009).
+    /// </para>
     /// </remarks>
-    public string Model { get; init; } = "embed-english-v3.0";
+    public string Model { get; init; } = "embed-v4.0";
 
     /// <summary>Whether a key is present.</summary>
     /// <remarks>

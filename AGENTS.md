@@ -91,9 +91,13 @@ it before starting, and add dated entries only when nothing formal fits.
   PR into `main`. Name branches `<type>/<work-item-id>_<title>`. **A release is cut on `main`, and the tag is
   the version** — nothing declares a version in a file
   ([ADR-0001](documentation/adr/0001-tag-driven-versioning.md)).
-- **Work in a `git worktree`, never in the main checkout** — `git worktree add .worktrees/<branch> <branch>`.
-  Sessions run in parallel; sharing a working tree means one session's uncommitted edits land in another's
-  commit.
+- **One working tree, one session** — `git worktree add .worktrees/<branch> <branch>`, never the main
+  checkout and **never a directory another session is already in**. `git commit` stages what is *in the
+  tree*, not what you wrote, so a shared tree puts your edits into their commit under their message —
+  silently, and green. If `worktree add` refuses because the branch is checked out elsewhere, that branch is
+  **taken**: do **not** `cd` into it. Take other work, or wait for their push and branch off the pushed tip.
+  Already mixed? The recovery, tree-identity check included, is in
+  [`AGENT-MEMORY.md`](documentation/AGENT-MEMORY.md).
 - **Claim before you start — `scripts/claim.sh <issue-id>`.** The **pushed** branch is the claim; a local
   worktree is invisible to parallel sessions. A tip unmoved for 4 hours is fair game — say so on the issue
   first.

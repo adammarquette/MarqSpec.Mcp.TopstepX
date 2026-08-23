@@ -35,6 +35,25 @@ ADR, `AGENTS.md`, or the code, **put it there instead**.
   can, and *read* the `warning: adding embedded git repository` line rather than scrolling past it. Worth a
   pointer because the ignore landed as an undocumented rider on `1547714 fix(code): round indicator values
   …` (gh#39), so searching the log for it finds nothing.
+- **[2026-08-23] Two sessions in ONE worktree mixed two commits, and both were obeying the worktree rule
+  (gh#88).** `e0a8e27` on gh#73's branch said `docs: the C:/tmp escape hatch is a coin flip, not a remedy` and
+  carried a perf fix, two source files and a new test: one session ran `git commit` while the other had
+  uncommitted work in the same tree. `git commit -a` / `git add -A` cannot tell whose edits they are staging,
+  the tests still pass, and the message then lies to `git log`, to bisect and to review. Neither session was
+  in the main checkout, which is why the old wording did not bite; `AGENTS.md` now states the invariant as
+  **one working tree, one session**, and `scripts/claim.sh` refuses when the branch is already checked out.
+  **The trap is the guard-rail:** `git worktree add` refuses a branch checked out elsewhere, so the natural
+  next move is to `cd` into the existing tree — that move *is* the bug.
+  **Recovery, if it lands again** — do it on the branch, and it is step 4 that makes it safe:
+  1. Record the tree first: `BEFORE="$(git rev-parse HEAD^{tree})"`.
+  2. `git reset --soft <base>` — every change stays staged, the working tree is untouched.
+  3. Re-commit the pieces separately, **staging by path, never `-A`**, and preserve the other session's
+     subject and authorship (`git commit --author="Name <email>" -m "<their original subject>"`).
+  4. **`git rev-parse HEAD^{tree}` must equal `$BEFORE`.** Equal trees mean the rewrite moved commit
+     boundaries and changed nothing else — that check, not care, is what makes a force-push safe. Unequal
+     means you dropped or gained work: stop and fix it before pushing.
+  5. Then `git push --force-with-lease`, and say so on the issue and on any open PR: a reviewer who already
+     read the old SHAs needs to know they are gone. Done on gh#73 as `ebd4432` + `d9cdc8d`.
 - **[2026-08-23] `git check-ignore .worktrees` answers "not ignored" when the directory does not exist.** A
   directory-only pattern needs a directory to match, so on a fresh clone the check fails against a repo that
   ignores it perfectly well. **Query it with the trailing slash instead — `git check-ignore -v .worktrees/`

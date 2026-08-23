@@ -30,6 +30,17 @@ ADR, `AGENTS.md`, or the code, **put it there instead**.
 - **[2026-08-22] Don't put `--` inside an XML comment.** It is illegal, and MSBuild's failure for a malformed
   `Directory.Packages.props` is `NU1015: PackageReference items do not have a version specified` across every
   project — which reads as a Central Package Management problem and is not one. Cost about ten minutes.
+- **[2026-08-23] `git add -A` can commit another session's worktree as a gitlink.** The mechanism and the
+  reasoning are at `.gitignore:388-392`; what has no formal home is the **habit** — stage by path where you
+  can, and *read* the `warning: adding embedded git repository` line rather than scrolling past it. Worth a
+  pointer because the ignore landed as an undocumented rider on `1547714 fix(code): round indicator values
+  …` (gh#39), so searching the log for it finds nothing.
+- **[2026-08-23] `git check-ignore .worktrees` answers "not ignored" when the directory does not exist.** A
+  directory-only pattern needs a directory to match, so on a fresh clone the check fails against a repo that
+  ignores it perfectly well. **Query it with the trailing slash instead — `git check-ignore -v .worktrees/`
+  — which matches with nothing on disk**, so no `mkdir` and no mutation to answer a read-only question.
+  Verified both ways: ignored on `trading-copilot`, not-ignored on an unfixed `develop`. Without it, three of
+  the four siblings read as broken during the gh#40 sweep.
 
 ## Notes & communications
 
@@ -97,6 +108,22 @@ ADR, `AGENTS.md`, or the code, **put it there instead**.
   `v1.0.5` tag that never reached nuget.org, so from inside that repo it looks released and from outside it
   does not exist. Worth a check in its release workflow that the tag it just cut actually resolves on the feed.
   Detail: [ADR-0003](adr/0003-client-as-package.md) *Update (2026-08-22)*, gh#13.
+
+- **[2026-08-23] The `.worktrees/` sweep is swept, not landed — verify before you trust it (gh#40).** All
+  four siblings were checked; `trading-copilot` already had the entry, and the other three each got a PR.
+  **All three are still open.** They are tracked on gh#40, not here — their status changes and this file
+  has no expiry. **The template's is blocked by its own gh#12**: `{{REPO_NAME}}` is not a valid C# identifier,
+  so its build and CodeQL can never pass. That is the repo gh#40 called the real fix, since every repo
+  generated from it inherits whatever it ignores — so **before generating one, run
+  `git check-ignore -v .worktrees/` against the template's `develop` yourself; do not assume the PR merged.**
+  Durable regardless: no repo in the family has ever tracked a path under `.worktrees/`, and the only
+  gitlinks anywhere are `trading-copilot`'s four declared submodules under `external/`.
+- **[2026-08-23] Don't clone a sibling repo into the agent scratchpad on Windows — use `C:\tmp`.** The
+  scratchpad root is ~120 characters before the repo name, and cloning `MarqSpec.Client.ProjectX` or
+  `MarqSpec.Client.Tradovate` there dies part-way with `error: cannot stat '<path>': Filename too long`. It
+  **exits 128 but leaves a populated, half-checked-out tree**, so the failure reads as success until the next
+  `git checkout` fails with a wall of "untracked working tree files would be overwritten".
+  `git -c core.longpaths=true clone` into a short root is the fix.
 
 ---
 

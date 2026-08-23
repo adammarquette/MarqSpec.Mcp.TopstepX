@@ -80,15 +80,17 @@ The root contract's five apply here unchanged. Four land specifically on the pip
     loaded, and an `ENTRYPOINT` naming a DLL that does not exist passed it at exit 0 (gh#67). It now runs
     [`check-image-entrypoint.sh`](../../scripts/check-image-entrypoint.sh), which asserts the entrypoint's
     assembly sits at the path the entrypoint names, and that that entrypoint — unoverridden — starts a
-    server which answers an MCP `tools/list`. **Do not re-gate it on the exit code: the numbers invert.** A
-    correctly-built server exits **0** when stdin stays open until it answers and **139** when stdin is at
-    EOF during startup (gh#76), while an `ENTRYPOINT` naming a missing assembly exits **155** — the *dotnet
-    host's* "the command could not be loaded", i.e. what broken looks like. gh#67 recorded 155 as the healthy
-    code; a gate written to that number would have passed the broken image and failed the good one.
-    **Those three were measured on Docker Desktop for Windows, Engine 29.6.2, and never re-measured on the
-    runner** — `ubuntu-latest` reports Engine 28.0.4 in the `image` job's own Docker info group, and 139 is
-    `128 + SIGSEGV`, the most host-sensitive of them. They are why the gate ignores exit codes, not runner
-    facts to reason from. What a green `image` licenses, exactly: the Dockerfile builds, the image
+    server which answers an MCP `tools/list`. **Do not re-gate it on the exit code without measuring it on
+    the runner first.** A correctly-built server exits **0** whether stdin stays open until it answers or is
+    at EOF during startup — those were **0** and **139** until gh#76 made a shutdown requested mid-startup a
+    clean stop rather than an unhandled `TaskCanceledException` — while an `ENTRYPOINT` naming a missing
+    assembly exits **155**, the *dotnet host's* "the command could not be loaded", i.e. what broken looks
+    like. gh#67 recorded 155 as the healthy code; a gate written to that number would have passed the broken
+    image and failed the good one. So the code now discriminates where it used to invert, but the gate still
+    ignores it: **every one of these was measured on Docker Desktop for Windows, Engine 29.6.2, and none on
+    the runner** — `ubuntu-latest` reports Engine 28.0.4 in the `image` job's own Docker info group. Repeating
+    gh#67's mistake at a different number is not an improvement, and an exit code says the process ended, not
+    that the server served. What a green `image` licenses, exactly: the Dockerfile builds, the image
     loads into the daemon, and the image's own entrypoint starts a server that serves its tool list with no
     configuration. Not the venue, the store, the embedding provider or the HTTP transport — this configures
     none of them.

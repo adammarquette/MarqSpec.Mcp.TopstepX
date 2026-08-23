@@ -190,9 +190,11 @@ public sealed class MarketDataTools(
     [McpServerTool(ReadOnly = true, Idempotent = true, Title = "Get indicator as of")]
     [Description(
         "Reads one indicator value as of a moment. Returns the value at or BEFORE that moment, never after — "
-        + "a later value is information the market did not have. A null value means CANNOT MEASURE, not zero "
-        + "and not neutral: the right response to it is to refuse to conclude, not to substitute. The result "
-        + "names the contract the value belongs to; two readings from different contracts are not comparable.")]
+        + "a later value is information the market did not have. Cannot-measure DROPS the `value` KEY instead "
+        + "of sending null, so the whole reading arrives as `{}`: test whether the key is THERE, never "
+        + "whether it equals null. An ABSENT value means CANNOT MEASURE, not zero and not neutral — refuse "
+        + "to conclude rather than substitute. `contractId` names the contract the value belongs to when it "
+        + "is known; two readings from different contracts are not comparable.")]
     public async Task<ToolPayloads.IndicatorReading> GetIndicatorAt(
         [Description("The instrument symbol, e.g. ES.")] string symbol,
         [Description("The bar size in minutes.")] int resolutionMinutes,

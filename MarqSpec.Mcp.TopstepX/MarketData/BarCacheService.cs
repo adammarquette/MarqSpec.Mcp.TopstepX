@@ -299,6 +299,21 @@ public sealed class BarCacheService
                     .ConfigureAwait(false);
                 requests++;
 
+                // The gateway stamps the provenance at its mapping, because a history call is made against
+                // exactly one contract and that is where the fact is structurally in hand (ADR-0011). This
+                // does NOT re-stamp it -- silently overwriting would make a gateway that forgot look
+                // identical to one that did not, and a bar with no provenance PASSES the roll guard. So the
+                // omission is made loud here instead, at the last point before it reaches the store.
+                if (bars.Any(b => string.IsNullOrWhiteSpace(b.ContractId)))
+                {
+                    throw new VenueException(
+                        "The venue returned bars with no contract id for '" + instrument.Symbol
+                        + "'. A history call is made against one contract, so every bar it answers with must "
+                        + "carry that contract: without it a quarterly roll splices two contracts into one "
+                        + "series with nothing marking the seam. This is a defect in the gateway "
+                        + "implementation, not a venue condition.");
+                }
+
                 // Drop still-forming bars even though the request already asks the venue not to send them.
                 // A half-formed bar stored as final is indistinguishable from data and corrupts everything
                 // derived from it -- this must not depend on a venue behaving.
@@ -351,18 +366,25 @@ public sealed class BarCacheService
                     && row.High == bar.High
                     && row.Low == bar.Low
                     && row.Close == bar.Close
-                    && row.Volume == bar.Volume)
+                    && row.Volume == bar.Volume
+                    && string.Equals(row.ContractId, bar.ContractId, StringComparison.Ordinal))
                 {
                     continue;
                 }
 
                 // A revision. The venue restates bars after the fact, which is precisely why the write is an
                 // upsert keyed on the bucket rather than an append.
+                //
+                // The contract moves WITH the prices, never on its own. Both come out of the same venue
+                // answer, so a row always says which contract produced the numbers standing in it -- writing
+                // one without the other would leave a row whose provenance describes a different observation
+                // from the one it holds, which is worse than no provenance at all.
                 row.Open = bar.Open;
                 row.High = bar.High;
                 row.Low = bar.Low;
                 row.Close = bar.Close;
                 row.Volume = bar.Volume;
+                row.ContractId = bar.ContractId;
                 row.RecordedAt = now;
             }
             else
@@ -378,6 +400,7 @@ public sealed class BarCacheService
                     Low = bar.Low,
                     Close = bar.Close,
                     Volume = bar.Volume,
+                    ContractId = bar.ContractId,
                     RecordedAt = now,
                 });
             }

@@ -255,15 +255,17 @@ public sealed class ProjectXMappingTests
     [Fact]
     public void ABarMapsItsOhlcvAndTimestamp()
     {
-        Bar mapped = ProjectXMapping.ToBar(new AggregateBar
-        {
-            Timestamp = new DateTime(2026, 8, 18, 14, 30, 0, DateTimeKind.Unspecified),
-            Open = 5000m,
-            High = 5010m,
-            Low = 4990m,
-            Close = 5005m,
-            Volume = 1234,
-        });
+        Bar mapped = ProjectXMapping.ToBar(
+            new AggregateBar
+            {
+                Timestamp = new DateTime(2026, 8, 18, 14, 30, 0, DateTimeKind.Unspecified),
+                Open = 5000m,
+                High = 5010m,
+                Low = 4990m,
+                Close = 5005m,
+                Volume = 1234,
+            },
+            "CON.F.US.EP.U26");
 
         mapped.OpenTime.Should().Be(new DateTimeOffset(2026, 8, 18, 14, 30, 0, TimeSpan.Zero));
         mapped.Open.Should().Be(5000m);
@@ -271,5 +273,37 @@ public sealed class ProjectXMappingTests
         mapped.Low.Should().Be(4990m);
         mapped.Close.Should().Be(5005m);
         mapped.Volume.Should().Be(1234);
+    }
+
+    [Fact]
+    public void ABarCarriesTheContractItWasFetchedFrom()
+    {
+        // Stamped at the mapping rather than by the caller. A history call answers for exactly one contract,
+        // and this is the last point where that is structurally in hand -- above it the series is keyed by
+        // the symbol and the quarter is unrecoverable (ADR-0011).
+        Bar mapped = ProjectXMapping.ToBar(
+            new AggregateBar
+            {
+                Timestamp = new DateTime(2026, 8, 18, 14, 30, 0, DateTimeKind.Unspecified),
+                Open = 5000m,
+                High = 5010m,
+                Low = 4990m,
+                Close = 5005m,
+                Volume = 1234,
+            },
+            "CON.F.US.EP.Z26");
+
+        mapped.ContractId.Should().Be("CON.F.US.EP.Z26");
+    }
+
+    [Fact]
+    public void ABarWithNoContract_CannotBeMapped()
+    {
+        // Forgetting must be loud. A bar with no provenance PASSES the roll guard -- unknown is one run --
+        // so a silent default here would be gh#42 returning through a different door.
+        Action map = () => ProjectXMapping.ToBar(
+            new AggregateBar { Timestamp = DateTime.UtcNow, Volume = 1 }, "   ");
+
+        map.Should().Throw<ArgumentException>();
     }
 }

@@ -162,6 +162,175 @@ public sealed class IndicatorProjectorTests : IDisposable
     }
 
     [Fact]
+    public async Task IndicatorsAreProjectedPerContract_NeverAcrossARoll()
+    {
+        // gh#42. Eight contiguous 5-minute buckets under the symbol ES: four from the expiring contract at
+        // 100 with a 2-point range, four from the new one at 140 with a 4-point range. Nothing in the bucket
+        // sequence marks the roll — only the contract id does.
+        //
+        // Hand-checked, not captured. Every true range inside a segment is that segment's own H-L, so the
+        // Wilder seed at the fourth bar is the mean of three identical values: 2 on the old contract and 4 on
+        // the new one. Both are exact in decimal.
+        //
+        // Across the splice, true range at the first new-contract bar is
+        // max(142-138, |142-100|, |138-100|) = 42, so a spliced ATR(3) reads (2·2 + 42)/3 ≈ 15.33 — the roll
+        // gap reported as volatility. The assertion that there is NO row at that bucket is the assertion that
+        // it was never computed.
+        await SeedRolledBarsAsync();
+
+        await Projector().ProjectAsync(Venue, _es, 5, SessionStart, CancellationToken.None);
+        await _database.SaveChangesAsync();
+
+        Dictionary<DateTimeOffset, decimal> atr = await _database.IndicatorValues
+            .Where(v => v.Indicator == "atr")
+            .ToDictionaryAsync(v => v.BucketStart, v => v.Value);
+
+        atr.Should().ContainKey(Bucket(3)).WhoseValue.Should().Be(2m, "the expiring contract's own range");
+        atr.Should().ContainKey(Bucket(7)).WhoseValue.Should().Be(4m, "the new contract's own range");
+
+        atr.Should().NotContainKey(Bucket(4),
+            "the new contract's warm-up restarts at the roll — a value here could only have come from "
+            + "smoothing the roll gap forward");
+        atr.Should().NotContainKey(Bucket(5));
+        atr.Should().NotContainKey(Bucket(6));
+    }
+
+    [Fact]
+    public async Task AConfirmingRebuild_AcrossARoll_StillWritesNothing()
+    {
+        // Segmenting must not cost reproducibility. The segment boundaries are a function of the stored bars,
+        // so a second pass over the same rows has to produce the same numbers and an empty diff (ADR-0006).
+        await SeedRolledBarsAsync();
+        IndicatorProjector projector = Projector();
+
+        int first = await projector.ProjectAsync(Venue, _es, 5, SessionStart, CancellationToken.None);
+        await _database.SaveChangesAsync();
+
+        int second = await projector.ProjectAsync(
+            Venue, _es, 5, SessionStart.AddHours(1), CancellationToken.None);
+
+        first.Should().BeGreaterThan(0);
+        second.Should().Be(0);
+    }
+
+    [Fact]
+    public async Task AValueTheBarsNoLongerJustify_IsRemoved_NotLeftBehind()
+    {
+        // gh#42 review, finding 1. Until segmenting arrived a bucket could only move from NOT COMPUTABLE to
+        // COMPUTABLE, so an upsert-only projection was safe. Segmenting introduces the first move in the other
+        // direction, and a row nothing rewrites is a row that stays.
+        //
+        // This is the remedy ADR-0011 itself prescribes, run end to end:
+        //
+        //   1. A legacy series with no provenance on any row. ATR(3) at the seam is (2 + 2 + 42) / 3 =
+        //      15.33333333 -- the roll gap read as volatility, and the exact number the record exists to stop.
+        //   2. The operator stamps the real contract ids.
+        //   3. Re-project. The seam bucket is now the first bar of the new run, so the projection correctly
+        //      produces NOTHING there.
+        //
+        // Without reconciliation step 3 leaves the 15.33333333 in place and get_indicators keeps serving it,
+        // beside contracts.span: SpansRoll -- which ADR-0011 rejects by name as a fix.
+        await SeedRolledBarsAsync(withProvenance: false);
+        IndicatorProjector projector = Projector();
+
+        await projector.ProjectAsync(Venue, _es, 5, SessionStart, CancellationToken.None);
+        await _database.SaveChangesAsync();
+
+        (await AtrAsync()).Should().ContainKey(Bucket(4))
+            .WhoseValue.Should().Be(15.33333333m, "the legacy series really does splice across the roll");
+
+        foreach (BarRecord row in await _database.Bars.ToListAsync())
+        {
+            row.ContractId = row.BucketStart >= Bucket(4) ? "CON.F.US.EP.Z26" : "CON.F.US.EP.U26";
+        }
+
+        await _database.SaveChangesAsync();
+
+        await projector.ProjectAsync(Venue, _es, 5, SessionStart.AddHours(1), CancellationToken.None);
+        await _database.SaveChangesAsync();
+
+        Dictionary<DateTimeOffset, decimal> atr = await AtrAsync();
+
+        atr.Should().NotContainKey(Bucket(4),
+            "the current bars cannot justify a value here, so the old one must be gone rather than merely "
+            + "not rewritten");
+        atr.Should().NotContainKey(Bucket(5));
+        atr.Should().NotContainKey(Bucket(6));
+        atr.Should().ContainKey(Bucket(3)).WhoseValue.Should().Be(2m);
+        atr.Should().ContainKey(Bucket(7)).WhoseValue.Should().Be(4m);
+    }
+
+    [Fact]
+    public async Task Reconciling_LeavesAnotherPeriodsRowsAlone()
+    {
+        // The over-delete guard. The storage key is (Indicator, Period), and ATR(14) and ATR(3) are different
+        // numbers under different keys -- a projection configured for one has no standing to delete the
+        // other's rows. Deleting "everything this pass did not write" would quietly erase a series the
+        // operator changed a period away from, which is a data-loss bug wearing a cleanup's clothes.
+        await SeedRolledBarsAsync(withProvenance: true);
+
+        _database.IndicatorValues.Add(new IndicatorValueRecord
+        {
+            Venue = Venue,
+            Instrument = _es.Symbol,
+            ResolutionMinutes = 5,
+            Indicator = "atr",
+            Period = 99,                    // a period this catalogue does not compute
+            BucketStart = Bucket(4),
+            Value = 42m,
+            RecordedAt = SessionStart,
+        });
+
+        await _database.SaveChangesAsync();
+
+        await Projector().ProjectAsync(Venue, _es, 5, SessionStart, CancellationToken.None);
+        await _database.SaveChangesAsync();
+
+        IndicatorValueRecord? survivor = await _database.IndicatorValues
+            .FirstOrDefaultAsync(v => v.Indicator == "atr" && v.Period == 99);
+
+        survivor.Should().NotBeNull();
+        survivor!.Value.Should().Be(42m);
+    }
+
+    private async Task<Dictionary<DateTimeOffset, decimal>> AtrAsync() =>
+        await _database.IndicatorValues
+            .Where(v => v.Indicator == "atr" && v.Period == 3)
+            .ToDictionaryAsync(v => v.BucketStart, v => v.Value);
+
+    private static DateTimeOffset Bucket(int index) => SessionStart.AddMinutes(5 * index);
+
+    /// <summary>Four bars of the expiring contract, then four of the new one, under the same symbol.</summary>
+    /// <param name="withProvenance">
+    /// <see langword="false"/> writes the bars with no contract id at all — the state every row written before
+    /// the column existed is in, and the one a legacy store re-projects from.
+    /// </param>
+    private async Task SeedRolledBarsAsync(bool withProvenance = true)
+    {
+        for (int i = 0; i < 8; i++)
+        {
+            bool rolled = i >= 4;
+
+            _database.Bars.Add(new BarRecord
+            {
+                Venue = Venue,
+                Instrument = _es.Symbol,
+                ResolutionMinutes = 5,
+                BucketStart = Bucket(i),
+                Open = rolled ? 140m : 100m,
+                High = rolled ? 142m : 101m,
+                Low = rolled ? 138m : 99m,
+                Close = rolled ? 140m : 100m,
+                Volume = 1_000,
+                ContractId = withProvenance ? (rolled ? "CON.F.US.EP.Z26" : "CON.F.US.EP.U26") : null,
+                RecordedAt = SessionStart,
+            });
+        }
+
+        await _database.SaveChangesAsync();
+    }
+
+    [Fact]
     public void TheScaleConstantAgreesWithTheColumnType()
     {
         // They cannot be derived from one another at compile time, so this is what keeps them honest. A

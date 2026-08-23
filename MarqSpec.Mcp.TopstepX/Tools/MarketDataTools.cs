@@ -46,7 +46,10 @@ public sealed class MarketDataTools(
         + "called only for buckets genuinely missing, where 'genuinely' excludes weekends, the daily "
         + "maintenance window and holidays. The response reports fetchedBuckets, so a caller can see whether "
         + "the answer cost a vendor round trip. Never returns a truncated series: an over-cap window is "
-        + "refused with the real count.")]
+        + "refused with the real count. The response also carries `contracts`: bars are keyed by the symbol, "
+        + "so a window spanning a quarterly roll contains TWO contracts. `contracts.span` is SingleContract, "
+        + "SpansRoll, or Unknown — Unknown means the provenance was never recorded, NOT that there was no "
+        + "roll. Adjacent quarters do not trade at the same price; do not read a series across a roll as one.")]
     public async Task<ToolPayloads.BarSeries> GetBars(
         [Description("The instrument symbol, e.g. ES.")] string symbol,
         [Description("The bar size in minutes, e.g. 1, 5, 15, 60.")] int resolutionMinutes,
@@ -65,7 +68,8 @@ public sealed class MarketDataTools(
             resolutionMinutes,
             [.. result.Bars.Select(ToolPayloads.ToPoint)],
             result.FetchedBuckets,
-            result.VenueRequests);
+            result.VenueRequests,
+            ToolPayloads.ToCoverage(result.Bars));
     }
 
     /// <summary>Reads the most recent closed bars.</summary>
@@ -113,7 +117,8 @@ public sealed class MarketDataTools(
             resolutionMinutes,
             [.. tail.Select(ToolPayloads.ToPoint)],
             result.FetchedBuckets,
-            result.VenueRequests);
+            result.VenueRequests,
+            ToolPayloads.ToCoverage(tail));
     }
 
     /// <summary>Reads a stored indicator series.</summary>
@@ -129,7 +134,9 @@ public sealed class MarketDataTools(
         "Reads a pre-computed indicator series. Known indicators: atr, rsi, sma, ema, macd, macd-signal, "
         + "macd-histogram, vwap, bb-upper, bb-middle, bb-lower. An unknown name is an error listing these, "
         + "because a typo that returned no data would read as 'no signal'. Buckets where the indicator could "
-        + "not yet measure are ABSENT rather than zero.")]
+        + "not yet measure are ABSENT rather than zero. Values are never smoothed across a contract roll, so "
+        + "expect a run of absent values just after one; `contracts.span` says whether the window contains a "
+        + "roll — and Unknown there means the provenance was never recorded, not that there was none.")]
     public async Task<ToolPayloads.IndicatorSeries> GetIndicators(
         [Description("The instrument symbol, e.g. ES.")] string symbol,
         [Description("The bar size in minutes.")] int resolutionMinutes,
@@ -156,7 +163,13 @@ public sealed class MarketDataTools(
             .ConfigureAwait(false);
 
         return new ToolPayloads.IndicatorSeries(
-            instrument.Symbol, resolutionMinutes, resolved.Name, resolved.Period, values);
+            instrument.Symbol,
+            resolutionMinutes,
+            resolved.Name,
+            resolved.Period,
+            values,
+            await CoverageAsync(instrument, resolutionMinutes, window, cancellationToken)
+                .ConfigureAwait(false));
     }
 
     /// <summary>Reads one indicator value as of a moment.</summary>
@@ -170,7 +183,8 @@ public sealed class MarketDataTools(
     [Description(
         "Reads one indicator value as of a moment. Returns the value at or BEFORE that moment, never after — "
         + "a later value is information the market did not have. A null value means CANNOT MEASURE, not zero "
-        + "and not neutral: the right response to it is to refuse to conclude, not to substitute.")]
+        + "and not neutral: the right response to it is to refuse to conclude, not to substitute. The result "
+        + "names the contract the value belongs to; two readings from different contracts are not comparable.")]
     public async Task<ToolPayloads.IndicatorReading> GetIndicatorAt(
         [Description("The instrument symbol, e.g. ES.")] string symbol,
         [Description("The bar size in minutes.")] int resolutionMinutes,
@@ -194,9 +208,24 @@ public sealed class MarketDataTools(
             .FirstOrDefaultAsync(cancellationToken)
             .ConfigureAwait(false);
 
-        return row is null
-            ? new ToolPayloads.IndicatorReading(null, null)
-            : new ToolPayloads.IndicatorReading(row.Value, row.BucketStart);
+        if (row is null)
+        {
+            return new ToolPayloads.IndicatorReading(null, null);
+        }
+
+        // Which contract this reading belongs to. A value is only ever computed inside one contract, so the
+        // bar at its bucket is the answer -- and without it, two readings either side of a roll are two
+        // numbers with nothing saying they measure different instruments.
+        string? contractId = await _database.Bars
+            .Where(b => b.Venue == _gateway.VenueId
+                && b.Instrument == instrument.Symbol
+                && b.ResolutionMinutes == resolutionMinutes
+                && b.BucketStart == row.BucketStart)
+            .Select(b => b.ContractId)
+            .FirstOrDefaultAsync(cancellationToken)
+            .ConfigureAwait(false);
+
+        return new ToolPayloads.IndicatorReading(row.Value, row.BucketStart, contractId);
     }
 
     /// <summary>Detects support and resistance zones.</summary>
@@ -210,8 +239,12 @@ public sealed class MarketDataTools(
         "Detects support and resistance as ZONES rather than lines, sized in ATR multiples so a zone is "
         + "comparably wide across instruments. Significance is prominence in ATR multiples, so a 2.0 on ES "
         + "and a 2.0 on NQ mean the same thing. A zone's support/resistance label is assigned relative to the "
-        + "CURRENT price, not to how it formed — a broken resistance is today's support.")]
-    public async Task<IReadOnlyList<ToolPayloads.LevelInfo>> GetKeyLevels(
+        + "CURRENT price, not to how it formed — a broken resistance is today's support. Detection is "
+        + "confined to the contract in front: if the lookback spans a quarterly roll, `detectedOverBars` is "
+        + "smaller than the lookback asked for, because a level from the expiring contract sits at a price "
+        + "the current one has never traded. Read `detectedOverBars` — fewer bars behind a level is less "
+        + "weight for it.")]
+    public async Task<ToolPayloads.LevelSet> GetKeyLevels(
         [Description("The instrument symbol, e.g. ES.")] string symbol,
         [Description("The timeframe in minutes.")] int resolutionMinutes,
         [Description("How many bars of history to detect over. 500 is a reasonable default.")]
@@ -227,28 +260,73 @@ public sealed class MarketDataTools(
                 && b.ResolutionMinutes == resolutionMinutes)
             .OrderByDescending(b => b.BucketStart)
             .Take(wanted)
-            .Select(b => new Bar(b.BucketStart, b.Open, b.High, b.Low, b.Close, b.Volume))
+            .Select(b => new Bar(b.BucketStart, b.Open, b.High, b.Low, b.Close, b.Volume, b.ContractId))
             .ToListAsync(cancellationToken)
             .ConfigureAwait(false);
 
         if (bars.Count == 0)
         {
-            return [];
+            return new ToolPayloads.LevelSet(
+                [], new ToolPayloads.ContractCoverage(ToolPayloads.ContractSpan.Unknown, []), 0);
         }
 
+        // Reversed FIRST, then described. Coverage over a descending series would give every segment a
+        // FirstBucket later than its LastBucket -- harmless while nothing reads it, and a shape not worth
+        // leaving available to the next edit.
         bars.Reverse();
+        ToolPayloads.ContractCoverage coverage = ToolPayloads.ToCoverage(bars);
+
+        // Only the contract in front. A zone detected across a roll is built partly from a quarter that no
+        // longer trades, and it lands at a price the current contract has never been near -- which reads
+        // exactly like a level price is about to touch. The lookback is reported alongside, because silently
+        // halving the history behind a level changes how much weight it deserves (ADR-0011).
+        IReadOnlyList<Bar> detectable = ContractRollDetector.Newest(bars);
 
         // Levels are scaled and scored in ATR, so they are computed from the same bars rather than read from
         // the store: an ATR row is keyed to the configured period, and detection needs it aligned one-to-one
         // with exactly these bars.
         IIndicator atr = _catalog.Resolve("atr");
-        IReadOnlyList<decimal?> scale = atr.Compute(bars);
+        IReadOnlyList<decimal?> scale = atr.Compute(detectable);
 
         KeyLevelOptions options = new();
-        IReadOnlyList<KeyLevelZone> zones = KeyLevels.Detect(bars, scale, options);
+        IReadOnlyList<KeyLevelZone> zones = KeyLevels.Detect(detectable, scale, options);
 
-        return [.. zones.Select(z => new ToolPayloads.LevelInfo(
-            resolutionMinutes, z.Bottom, z.Top, z.Midpoint, z.Kind, z.Significance, z.TouchCount, z.FormedAtBucket))];
+        return new ToolPayloads.LevelSet(
+            [.. zones.Select(z => new ToolPayloads.LevelInfo(
+                resolutionMinutes, z.Bottom, z.Top, z.Midpoint, z.Kind, z.Significance, z.TouchCount,
+                z.FormedAtBucket))],
+            coverage,
+            detectable.Count);
+    }
+
+    /// <summary>
+    /// Reports which contracts produced the bars underneath a window, without loading the bars themselves.
+    /// </summary>
+    /// <remarks>
+    /// Two columns rather than whole rows: an indicator read is not a bar read, and it should not pay for one.
+    /// The segmentation still happens in memory rather than as a <c>GROUP BY</c>, so that every tool answers
+    /// this question with the same code and the same contiguity semantics — a grouped query would report an
+    /// interleaved series as two contracts where the shared detector reports three runs, and two tools
+    /// disagreeing about whether a roll happened is worse than either answer.
+    /// </remarks>
+    private async Task<ToolPayloads.ContractCoverage> CoverageAsync(
+        InstrumentId instrument,
+        int resolutionMinutes,
+        BarRange window,
+        CancellationToken cancellationToken)
+    {
+        List<Bar> shape = await _database.Bars
+            .Where(b => b.Venue == _gateway.VenueId
+                && b.Instrument == instrument.Symbol
+                && b.ResolutionMinutes == resolutionMinutes
+                && b.BucketStart >= window.Start
+                && b.BucketStart < window.End)
+            .OrderBy(b => b.BucketStart)
+            .Select(b => new Bar(b.BucketStart, 0m, 0m, 0m, 0m, 0L, b.ContractId))
+            .ToListAsync(cancellationToken)
+            .ConfigureAwait(false);
+
+        return ToolPayloads.ToCoverage(shape);
     }
 
     private async Task<BarReadResult> ReadAsync(

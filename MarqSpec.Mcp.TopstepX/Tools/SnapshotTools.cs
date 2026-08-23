@@ -91,7 +91,11 @@ public sealed class SnapshotTools(
         + "the setup and the bias, and they are the point — on one timeframe alone, a pullback in an uptrend "
         + "and the start of a downtrend look identical. Both defaults are overridable: pass any resolutions "
         + "you want, but each one is a separate cached series and a separate indicator projection, so ask for "
-        + "1-minute only when you actually need timing.")]
+        + "1-minute only when you actually need timing. "
+        + "Each resolution carries `contracts` for the BARS shown, and `levels.contracts` plus "
+        + "`levels.detectedOverBars` for the longer history behind the levels — the two windows differ in "
+        + "length, so check both. A `span` of SpansRoll means that window crosses a quarterly contract roll; "
+        + "Unknown means the provenance was never recorded, not that there was no roll.")]
     public async Task<ToolPayloads.MarketSnapshot> GetMarketSnapshot(
         [Description("The instrument symbol, e.g. ES.")] string symbol,
         [Description(
@@ -128,11 +132,18 @@ public sealed class SnapshotTools(
                 indicators[name] = reading.Value;
             }
 
-            IReadOnlyList<ToolPayloads.LevelInfo> levels = await _marketData
+            ToolPayloads.LevelSet levels = await _marketData
                 .GetKeyLevels(symbol, resolution, Math.Max(barCount, 200), cancellationToken)
                 .ConfigureAwait(false);
 
-            slices.Add(new ToolPayloads.ResolutionSnapshot(resolution, series.Bars, indicators, levels));
+            // The WHOLE level set travels, not just its list. Levels are detected over max(barCount, 200)
+            // bars while the slice returns barCount of them, so the two windows are different lengths and can
+            // genuinely disagree about whether a roll happened -- the bar window can say SingleContract while
+            // the levels behind it were truncated at a seam. Dropping the level set's own coverage and its
+            // detectedOverBars left the payload stating the weaker fact, on the one tool the catalogue tells
+            // an agent to reach for first (ADR-0011, PRD R-3.5).
+            slices.Add(new ToolPayloads.ResolutionSnapshot(
+                resolution, series.Bars, indicators, levels, series.Contracts));
         }
 
         return new ToolPayloads.MarketSnapshot(session.Symbol, session, slices);

@@ -61,8 +61,17 @@ public sealed class CountingGateway : IMarketDataGateway
         CancellationToken cancellationToken)
     {
         BarRequests++;
+
+        // Stamped here, as a real gateway must: a history call answers for exactly one contract, and the
+        // cache refuses bars that arrive without saying which (ADR-0011).
         IReadOnlyList<Bar> bars =
-            [.. _available.Values.Where(b => window.Contains(b.OpenTime)).OrderBy(b => b.OpenTime)];
+        [
+            .. _available.Values
+                .Where(b => window.Contains(b.OpenTime))
+                .OrderBy(b => b.OpenTime)
+                .Select(b => b with { ContractId = contractId }),
+        ];
+
         return Task.FromResult(bars);
     }
 

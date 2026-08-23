@@ -212,6 +212,12 @@ public static class Program
         if (venue.IsConfigured && venue.DataTier != ProjectXDataTier.Unspecified)
         {
             services.AddProjectXApiClient(builder.Configuration);
+
+            // SINGLETON, while the gateway consuming it is scoped. The vendor's 50-requests-per-30-seconds
+            // allowance on History/retrieveBars is counted against the CREDENTIAL, so it has to be shared
+            // across scopes -- a per-scope pacer would let every concurrent tool call burst to the cap
+            // independently and none of them would know (gh#43).
+            services.AddSingleton(sp => VenueRequestPacer.ForHistory(sp.GetRequiredService<TimeProvider>()));
             services.AddScoped<IMarketDataGateway, ProjectXMarketDataGateway>();
         }
         else

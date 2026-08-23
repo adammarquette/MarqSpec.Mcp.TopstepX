@@ -31,17 +31,23 @@ public sealed class ProjectXMarketDataGateway : IMarketDataGateway
 
     private readonly IProjectXApiClient _client;
     private readonly InstrumentRegistry _registry;
+    private readonly VenueRequestPacer _historyPacer;
     private readonly bool _live;
     private readonly ILogger<ProjectXMarketDataGateway> _logger;
 
     /// <summary>Creates the gateway.</summary>
     /// <param name="client">The vendor client.</param>
     /// <param name="registry">The served instruments, carrying the product code each contract must match.</param>
+    /// <param name="historyPacer">
+    /// The shared allowance for <c>History/retrieveBars</c>. A <b>singleton</b> while this gateway is scoped:
+    /// the vendor counts requests against the credential, not against a request scope.
+    /// </param>
     /// <param name="options">The venue options, carrying the required data tier.</param>
     /// <param name="logger">The logger.</param>
     public ProjectXMarketDataGateway(
         IProjectXApiClient client,
         InstrumentRegistry registry,
+        VenueRequestPacer historyPacer,
         IOptions<VenueOptions> options,
         ILogger<ProjectXMarketDataGateway> logger)
     {
@@ -49,6 +55,7 @@ public sealed class ProjectXMarketDataGateway : IMarketDataGateway
 
         _client = client;
         _registry = registry;
+        _historyPacer = historyPacer;
         _live = options.Value.DataTier == ProjectXDataTier.Live;
         _logger = logger;
     }
@@ -147,6 +154,8 @@ public sealed class ProjectXMarketDataGateway : IMarketDataGateway
         // complete answer, so a caller cannot detect the clipping even in principle.
         TimeSpan page = TimeSpan.FromTicks(MaxBarsPerRequest * barSize.Ticks);
         List<Bar> collected = [];
+        TimeSpan pacedTotal = TimeSpan.Zero;
+        int pacedPages = 0;
 
         for (DateTimeOffset from = window.Start; from < window.End; from += page)
         {
@@ -154,6 +163,44 @@ public sealed class ProjectXMarketDataGateway : IMarketDataGateway
             if (to > window.End)
             {
                 to = window.End;
+            }
+
+            // THIS LOOP IS THE ONLY BURST THIS SERVER ISSUES, and retrieveBars carries the vendor's TIGHTEST
+            // limit: 50 requests / 30 seconds, which is a mean spacing of 600 ms. Unpaced, the loop is spaced
+            // by nothing but vendor latency -- a cold five-minute year is 106 pages back to back, so the 51st
+            // earns a 429 inside the first window. The client's retry would recover from that; this is what
+            // stops it happening. Costs nothing until a burst approaches the cap (gh#43).
+            //
+            // scripts/check-paced-paging.sh is what keeps this call HERE -- inside the loop and ahead of the
+            // fetch. Deleting it left every unit test green, which is the whole reason that gate exists.
+            TimeSpan paced =
+                await _historyPacer.WaitForSlotAsync(cancellationToken).ConfigureAwait(false);
+
+            if (paced > TimeSpan.Zero)
+            {
+                // A minute of silence is indistinguishable from a hang, and "why did this call take a
+                // minute" is the first question this feature will ever produce. Say it ONCE at Information
+                // -- the operator needs to know pacing engaged, not to read fifty-six lines of it.
+                if (pacedPages == 0)
+                {
+                    _logger.LogInformation(
+                        "Rate pacing engaged while retrieving bars for {ContractId}: this burst has reached "
+                        + "the venue's {Capacity} requests / {WindowSeconds}s allowance, so the remaining "
+                        + "pages are spaced. The call is waiting, not hung.",
+                        contractId,
+                        _historyPacer.Capacity,
+                        _historyPacer.Window.TotalSeconds);
+                }
+                else
+                {
+                    _logger.LogDebug(
+                        "Paced a bar page for {ContractId} by {DelayMs}ms.",
+                        contractId,
+                        (long)paced.TotalMilliseconds);
+                }
+
+                pacedTotal += paced;
+                pacedPages++;
             }
 
             IEnumerable<AggregateBar> bars = await Guarded(
@@ -170,6 +217,16 @@ public sealed class ProjectXMarketDataGateway : IMarketDataGateway
                 "retrieving bars for " + contractId).ConfigureAwait(false);
 
             collected.AddRange(bars.Select(ProjectXMapping.ToBar));
+        }
+
+        if (pacedPages > 0)
+        {
+            _logger.LogInformation(
+                "Retrieved bars for {ContractId} with {PacedPages} page(s) paced, {DelayMs}ms of deliberate "
+                + "delay in total, to stay inside the venue's documented request rate.",
+                contractId,
+                pacedPages,
+                (long)pacedTotal.TotalMilliseconds);
         }
 
         // The gateway does not promise an order, and every indicator downstream is path-dependent. Sorting

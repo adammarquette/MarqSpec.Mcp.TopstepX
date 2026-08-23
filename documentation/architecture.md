@@ -35,6 +35,10 @@ makes "rebuild = replay" true — a dependency on a clock or a store there would
 
 ## The cache-aside read — the only genuinely interesting path
 
+**`resolution` is chosen by the caller, not by configuration.** There is no supported-resolution list: any
+resolution is servable, each becomes an independent cached series, and a timeframe is fetched from the venue
+rather than derived from a finer one — [ADR-0010](adr/0010-per-call-resolutions-fetched-not-derived.md).
+
 `BarCacheService.GetBarsAsync(instrument, resolution, window)`:
 
 1. **Read** stored bars for the window.

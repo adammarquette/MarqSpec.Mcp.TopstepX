@@ -27,6 +27,12 @@ The server serves OHLCV bars for a futures instrument at a requested resolution 
   re-requested on every subsequent call.
 - **R-1.8** Bar timestamps are stored in UTC. The gateway returns timestamps with no kind; they are UTC, and
   inferring local shifts every bar by the operator's offset.
+- **R-1.9** The supported resolutions are **any** — deliberately. Resolution is a per-call parameter rather
+  than configuration, so an agent is never blocked on a config change to look at a timeframe nobody
+  anticipated, and no tool advertises a resolution list because there is none. A timeframe is fetched from
+  the venue independently, never derived from a finer one: a bar derived from an incomplete set of
+  constituents is indistinguishable from a real one, which R-2.3's rule forbids in the indicator path and
+  which is no more acceptable here. See [ADR-0010](adr/0010-per-call-resolutions-fetched-not-derived.md).
 
 ## R-2 — Pre-computed indicators
 

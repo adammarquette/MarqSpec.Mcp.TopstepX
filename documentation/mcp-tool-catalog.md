@@ -32,8 +32,11 @@ tool and change this page in the same PR.
 
   Comparing an omitted field to `null` is the `undefined`-is-falsy trap that made `fromCache` unusable
   (gh#48). Testing a map for key *presence* is the same mistake mirrored: every indicator this server computes
-  has a key, so presence says nothing about whether it could be measured. Each entry below states which form
-  it uses.
+  has a key, so presence says nothing about whether it could be measured.
+
+  **Entries below have not yet been brought into line** — six write `null` without saying which form they
+  mean, and all six are in fact omitted fields. Classifying and correcting them is gh#85; until then, read
+  this table rather than the individual entry.
 - **`resolutionMinutes` is caller-chosen, and any *positive* resolution is servable.** No tool enumerates
   supported timeframes, because there is no list — each resolution is an independent cached series fetched from
   the venue, never derived from a finer one
@@ -47,7 +50,7 @@ tool and change this page in the same PR.
   `contractId` and bucket range. **Read `span` before comparing anything across the window**: a high from the
   expiring contract is not a price the contract in front has ever reached. The bars themselves are still
   returned, because each is a real observation; the *derived* values are not computed across the seam, so
-  expect a run of absent indicator values just after one ([ADR-0011](adr/0011-contract-roll-boundary.md)).
+  expect a run of null indicator values just after one ([ADR-0011](adr/0011-contract-roll-boundary.md)).
 
   `span` has **three** values, not two:
 

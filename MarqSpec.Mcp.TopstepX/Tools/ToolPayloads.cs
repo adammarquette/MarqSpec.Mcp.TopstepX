@@ -276,7 +276,12 @@ public static class ToolPayloads
     /// <summary>One resolution's slice of a snapshot.</summary>
     /// <param name="ResolutionMinutes">The bar size.</param>
     /// <param name="Bars">The recent bars.</param>
-    /// <param name="Indicators">The latest value of each indicator, keyed by name. Absent means cannot measure.</param>
+    /// <param name="Indicators">
+    /// The latest value of each indicator, keyed by name. <b>Every indicator this server computes has a
+    /// key</b>, so presence says nothing — a <c>null</c> VALUE is what means cannot measure. The keys come
+    /// from the catalogue and are assigned unconditionally, so an absent key would mean the server does not
+    /// compute that indicator at all.
+    /// </param>
     /// <param name="Levels">
     /// The detected levels, <b>with their own coverage</b>. Levels are detected over a longer window than the
     /// bars returned here, so the two can disagree about whether a roll happened — read the level set's own

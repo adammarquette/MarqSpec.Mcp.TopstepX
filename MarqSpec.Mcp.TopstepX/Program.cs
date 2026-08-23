@@ -56,12 +56,90 @@ public static class Program
             // requirement mean something at request time (ADR-0007).
             app.UseBearerTokenGate(mcp.HttpBearerToken);
             app.MapMcp("/mcp");
+        }
+
+        // Both transports run through the same call. The shutdown-during-startup race it absorbs is reachable
+        // from either -- it is a property of the host, not of stdio -- and a second `RunAsync` here is how the
+        // HTTP branch would quietly keep the old behaviour (gh#76).
+        //
+        // Stdio needs no branch of its own: the host still builds, it simply never listens.
+        return await RunHostAsync(app).ConfigureAwait(false);
+    }
+
+    /// <summary>Runs the built host, treating a shutdown asked for during startup as a shutdown.</summary>
+    /// <param name="app">The built host.</param>
+    /// <returns>The process exit code — always 0, because reaching here is a clean stop.</returns>
+    /// <remarks>
+    /// <para>
+    /// <b>The bug this closes (gh#76).</b> <c>docker run --rm &lt;image&gt;</c> without <c>-i</c> — the ordinary
+    /// way an operator checks that an image starts — hands the container an already-closed stdin. The stdio
+    /// transport reads EOF immediately, completes, and asks the host to stop; the host is still inside
+    /// <c>StartAsync</c>, which runs the remaining hosted services against a token linked to
+    /// <c>ApplicationStopping</c>. So Kestrel's <c>BindAsync</c> is cancelled and throws, nothing catches it,
+    /// and the runtime aborts: unhandled <c>TaskCanceledException</c>, exit 139 (128 + SIGSEGV), measured
+    /// three times out of three. It is a race — hold stdin open a couple of seconds and the same image starts,
+    /// answers <c>initialize</c> and <c>tools/list</c>, and exits 0.
+    /// </para>
+    /// <para>
+    /// <b>Which of gh#76's two options this is, and why it is neither.</b> The issue offered "do not start
+    /// Kestrel under stdio" or "defer the shutdown request until <c>StartAsync</c> completes". Both were
+    /// rejected, and what is here instead is narrower than either.
+    /// </para>
+    /// <para>
+    /// <i>Not starting Kestrel</i> treats the symptom's location as its cause. <see cref="WebApplication"/>
+    /// always adds <c>GenericWebHostService</c>, so avoiding it means a second host type for stdio and a
+    /// composition root that forks — against ADR-0007's one registration, one tool set, two ways in. And it
+    /// would not fix the class: <i>any</i> hosted service that starts after the transport meets the same
+    /// cancelled token. Kestrel is merely the one that is there today.
+    /// </para>
+    /// <para>
+    /// <i>Deferring the request</i> is worse on its own terms. EOF on stdin means the client is gone; there is
+    /// nothing left to serve, so finishing startup first would bind a port for a session that does not exist,
+    /// purely to reach the same stop. It also risks a hang, which
+    /// <c>scripts/check-image-entrypoint.sh</c> names as its reason for hard-bounding the run.
+    /// </para>
+    /// <para>
+    /// <b>So: honour the request, and record that honouring it is not a failure.</b> The filter is deliberately
+    /// narrow — only a cancellation raised while <b>this host has been asked to stop</b> is swallowed. A
+    /// cancellation from any other cause, and every non-cancellation startup failure (a port already in use, a
+    /// broken migration, a captive dependency), still propagates and still fails the process. Widening it to a
+    /// bare <c>catch (OperationCanceledException)</c> would turn a genuinely failed startup into a silent
+    /// exit 0, which is the one outcome worse than the crash.
+    /// </para>
+    /// </remarks>
+    public static async Task<int> RunHostAsync(WebApplication app)
+    {
+        ArgumentNullException.ThrowIfNull(app);
+
+        // BOTH OF THESE ARE RESOLVED BEFORE THE RUN, AND THAT IS NOT TIDINESS.
+        //
+        // `RunAsync` disposes the host in its own `finally`. Across an `await` the callee's finally runs
+        // BEFORE the exception is re-thrown at the await point -- the two-pass ordering that would put filters
+        // first does not survive an async boundary -- so by the time the catch below is reached, and by the
+        // time its FILTER is evaluated, the service provider is already disposed.
+        //
+        // Touching `app.Lifetime` or `app.Services` from there throws ObjectDisposedException. In the filter
+        // that is silent: an exception thrown inside an exception filter is swallowed and the filter reads as
+        // "does not match", so the fix compiles, looks right, and restores the crash exactly. Measured, not
+        // reasoned -- it is how the first version of this method failed.
+        CancellationToken stopping = app.Lifetime.ApplicationStopping;
+        ILogger logger = app.Services.GetRequiredService<ILoggerFactory>().CreateLogger("startup");
+
+        try
+        {
             await app.RunAsync().ConfigureAwait(false);
         }
-        else
+        catch (OperationCanceledException) when (stopping.IsCancellationRequested)
         {
-            // Stdio: the host still builds, it simply never listens.
-            await app.RunAsync().ConfigureAwait(false);
+            // The framework has already logged its own "Hosting failed to start" at fail level, naming
+            // Kestrel. That line is true and useless -- it names the service that noticed, not the thing that
+            // happened -- so this says what actually happened, in the terms the operator can act on.
+            logger.LogInformation(
+                "Shutdown was requested before the server finished starting, so it stopped without "
+                + "listening. On stdio this is what `docker run` WITHOUT `-i` looks like: stdin is closed "
+                + "before the handshake, so there is no client to serve. Pass `-i` (or start the server "
+                + "from an MCP client, which holds stdin open) to keep a session. This is a clean exit, "
+                + "not a fault.");
         }
 
         return 0;

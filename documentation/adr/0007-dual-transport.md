@@ -62,6 +62,7 @@ difference between the two entry points is a handful of lines.
 |---|---|
 | [2026-08-22](#update-2026-08-22--starting-is-not-the-same-as-being-ready) | A missing dependency degrades to a refusal at the point of use, rather than to a dead process |
 | [2026-08-22](#update-2026-08-22--the-token-was-required-and-never-checked) | The bearer token is now enforced in the pipeline, not merely required in configuration |
+| [2026-08-23](#update-2026-08-23--never-listens-is-not-never-starts-a-listener) | A shutdown requested while the host is still starting is a clean stop, not a crash |
 
 ## Update (2026-08-22) — starting is not the same as being ready
 
@@ -106,4 +107,37 @@ CI gate for exactly this reason. The token had the assertion and no enforcement.
 The compose stack defaults the token to `changeme-local`, the same posture as `POSTGRES_PASSWORD`, so
 `docker compose up` works out of the box on a port published to localhost. That value is in a public
 repository and must change before the stack is reachable from anywhere else.
+
+## Update (2026-08-23) — "never listens" is not "never starts a listener"
+
+This record said that on stdio the host "simply never listens". True of the outcome, misleading about the
+mechanism, and the gap was a crash (gh#76).
+
+`Microsoft.NET.Sdk.Web` does not merely build a host — `WebApplication` **always adds Kestrel as a hosted
+service and always starts it**, under both transports. That is invisible until something interrupts startup,
+and `docker run --rm <image>` without `-i` does exactly that: the container gets an already-closed stdin, the
+stdio transport reads EOF before the handshake, and it asks the host to shut down *while `StartAsync` is still
+running*. The generic host starts the remaining services against a token linked to `ApplicationStopping`, so
+Kestrel's `BindAsync` was cancelled and threw, unhandled — exit **139**, three runs out of three.
+
+So the ordinary way an operator checks an image ended in a stack trace naming Kestrel and a segfault-shaped
+exit code, neither of which points at stdin. Against this record's own rule — *an absent dependency degrades
+to a clear refusal at the point of use, never to a dead process* — an absent **client** was the one absence
+that still killed the process.
+
+**A shutdown requested before startup finishes is now honoured as a shutdown.** `Program.RunHostAsync` treats
+a cancellation raised while this host has been asked to stop as a clean exit 0, and logs one line saying that
+stdin closed before the handshake and `-i` is what keeps a session. Every other startup failure — a port in
+use, a broken migration, a captive dependency, a cancellation from any other cause — still fails the process.
+
+Two alternatives were rejected, both offered by the issue. **Not starting Kestrel under stdio** treats the
+symptom's location as its cause: it needs a second host type and a forked composition root, against this
+record's one-host decision, and it does not fix the class, since any hosted service starting after the
+transport meets the same cancelled token. **Deferring the request until `StartAsync` completes** is worse on
+its own terms — EOF means the client is gone, so finishing startup would bind a port for a session that does
+not exist, and it risks a hang that `scripts/check-image-entrypoint.sh` hard-bounds against.
+
+Measured both sides, same image build, Docker Engine 29.6.2: no stdin **139 → 0** (3 runs each); stdin held
+open until `tools/list` answers **0 → 0**, 16 tools both times. The healthy exit code is therefore no longer
+transport-dependent — but the image gate still does not read exit codes, for the reasons in its own header.
 

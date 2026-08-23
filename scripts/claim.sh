@@ -53,7 +53,37 @@ LABELS="$(gh issue view "$ID" --json labels --jq '.labels[].name')"
 info "issue #$ID: $TITLE"
 
 # ---------------------------------------------------------------------------
-# 1. Is it already claimed — here, or upstream?
+# 1. One working tree, one session — is this issue's tree already occupied? (gh#88)
+# ---------------------------------------------------------------------------
+# Checked FIRST and reported loudest, because this failure corrupts history rather than merely duplicating
+# effort: `git worktree add` refuses a branch checked out elsewhere, and the natural next move — `cd` into
+# that tree — IS the bug. `git commit` stages what is in the TREE, not what you wrote, so two sessions in one
+# tree land in one commit under one message, silently and with the tests green.
+#
+# Matched on the same /<id>_ shape as the remote check, so a differently-slugged branch for the same issue is
+# still caught. The path is read with substr, not $2, so a worktree under a path with spaces still matches.
+OCCUPIED="$(git -C "$REPO_ROOT" worktree list --porcelain \
+  | awk -v pat="^branch refs/heads/[a-z]+/${ID}_" '
+      /^worktree /  { path = substr($0, 10) }
+      $0 ~ pat      { print "  " substr($0, 8) "\n    at " path }')"
+
+if [ -n "$OCCUPIED" ]; then
+  warn "STOP: a working tree on this machine already has a branch for #$ID checked out:"
+  printf '%s\n' "$OCCUPIED" >&2
+  warn "One working tree, one session (AGENTS.md). Do NOT cd into it — your edits would be swept into that"
+  warn "session's next commit, under its message, and nothing would go red."
+  warn "Take other work, or wait for their push and branch off the pushed tip."
+  # `worktree list` still reports a tree whose directory was deleted without `git worktree remove`, so without
+  # this way out the issue would be unclaimable forever.
+  warn "If that directory is genuinely gone or abandoned, clear the registration deliberately (\`git worktree"
+  warn "prune\`, or \`git worktree remove <path>\`) and re-run; do not adopt someone else's tree."
+  if ! $CHECK_ONLY; then
+    die "refusing to claim #$ID: its branch is already checked out here."
+  fi
+fi
+
+# ---------------------------------------------------------------------------
+# 2. Is it already claimed — here, or upstream?
 # ---------------------------------------------------------------------------
 # Match on /<id>_ : the separator before the id is a SLASH. A pattern anchored on an underscore matches
 # nothing and reports every claimed issue as free — which fails in the direction that permits the collision.
@@ -99,12 +129,16 @@ if [ -n "$OPEN_PRS" ]; then
   printf '%s\n' "$OPEN_PRS"
 fi
 
-if [ -z "$CLAIMED" ]; then
+# "no claim branch pushed" is not the same as "free to take": an occupied tree (step 1) blocks it just as
+# hard, and a green UNCLAIMED printed under a STOP block is the line an agent acts on.
+if [ -z "$CLAIMED" ] && [ -z "$OCCUPIED" ]; then
   ok "issue #$ID is UNCLAIMED"
+elif [ -z "$CLAIMED" ]; then
+  warn "issue #$ID has no claim branch pushed — but its tree here is occupied (STOP above). NOT free to take."
 fi
 
 # ---------------------------------------------------------------------------
-# 2. Derive the branch name from the issue.
+# 3. Derive the branch name from the issue.
 # ---------------------------------------------------------------------------
 SLUG="$(printf '%s' "$TITLE" \
   | tr '[:upper:]' '[:lower:]' \
@@ -128,14 +162,26 @@ info "  base     : origin/${BASE_BRANCH}"
 
 if $CHECK_ONLY; then
   info ""
-  ok "--check: nothing created."
+  if [ -n "$OCCUPIED" ]; then
+    # Last word must agree with the first: a green sign-off under a STOP block reads as permission.
+    warn "--check: nothing created — and #$ID is NOT yours to take: its tree here is occupied (STOP above)."
+  else
+    ok "--check: nothing created."
+  fi
   exit 0
 fi
 
-[ -e "$WORKTREE" ] && die "worktree path already exists: $WORKTREE"
+# A leftover directory that no worktree is registered against slips past the check above, so test the path
+# too. Either way the answer is the same one: not this tree.
+if [ -e "$WORKTREE" ]; then
+  warn "worktree path already exists: $WORKTREE"
+  warn "Do NOT cd into it — one working tree, one session (AGENTS.md). If it is genuinely abandoned, remove"
+  warn "it deliberately (\`git worktree remove\`) and re-run; do not adopt someone else's tree."
+  die "refusing to claim #$ID: that path is taken."
+fi
 
 # ---------------------------------------------------------------------------
-# 3. Create the worktree, then push the branch EMPTY. The push is the claim.
+# 4. Create the worktree, then push the branch EMPTY. The push is the claim.
 # ---------------------------------------------------------------------------
 git -C "$REPO_ROOT" fetch --quiet origin "$BASE_BRANCH"
 git -C "$REPO_ROOT" worktree add "$WORKTREE" -b "$BRANCH" "origin/${BASE_BRANCH}"

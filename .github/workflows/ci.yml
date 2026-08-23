@@ -36,7 +36,7 @@ jobs:
     name: docs
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Check documentation links
         run: ./scripts/check-doc-links.sh
@@ -50,7 +50,7 @@ jobs:
     name: no-order-path
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: No order path in product code
         run: ./scripts/check-no-order-path.sh
@@ -59,7 +59,7 @@ jobs:
     name: build & unit tests
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           # MinVer derives the version from tag history. actions/checkout defaults to a shallow clone, which
           # yields 0.0.0-alpha.0 SILENTLY rather than failing — so the depth matters even here, because the
@@ -104,7 +104,7 @@ jobs:
     name: integration tests
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
@@ -209,7 +209,7 @@ jobs:
     needs: [build-test, integration-test, no-order-path]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           # MinVer reads the tag, and a shallow clone yields 0.0.0-alpha.0 SILENTLY rather than failing.
           fetch-depth: 0

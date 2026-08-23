@@ -22,7 +22,11 @@ The server serves OHLCV bars for a futures instrument at a requested resolution 
 - **R-1.5** A still-forming bar is never stored as final. A half-formed bar is indistinguishable from data once
   written, and corrupts every value derived from it.
 - **R-1.6** A re-fetch that overlaps stored data **updates** those buckets rather than duplicating them, so a
-  vendor revision lands and a missed window heals.
+  vendor revision lands and a missed window heals. **The store performs the update, not the process** — the
+  write is an `ON CONFLICT … DO UPDATE` on the composite key, so a second fill overlapping the first
+  *concurrently* updates rather than faulting on a duplicate key, and an unchanged bucket is still skipped
+  rather than rewritten (gh#103). Deciding it from a read instead makes the decision against a snapshot,
+  which another writer can invalidate before the write lands.
 - **R-1.7** A range the vendor answers **empty** is recorded as covered, so a genuine data hole is not
   re-requested on every subsequent call.
 - **R-1.8** Bar timestamps are stored in UTC. The gateway returns timestamps with no kind; they are UTC, and

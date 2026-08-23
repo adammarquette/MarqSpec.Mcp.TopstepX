@@ -1,8 +1,19 @@
 name: CI
 
 on:
+  # NO `branches:` filter, deliberately (gh#60).
+  #
+  # This once read `branches: [develop, staging, main]`, and a PR into any other base -- a stacked PR onto
+  # another feature branch -- got NO CI at all. Not a pending check, not a failing one: none. Meanwhile the
+  # required checks live on the `develop` ruleset and do not apply to a feature-branch base, so `mergeable`
+  # reported CLEAN and the merge box said ready. An unverified PR looked MORE finished than one whose checks
+  # were still running (gh#57).
+  #
+  # The filter's failure mode is silence, and silence here is indistinguishable from success. Unfiltered errs
+  # in the only safe direction: it can run more than needed, never less. An allow-list of base patterns was
+  # rejected -- branches are `<type>/<id>_<title>` over an open set of types, so any list silently misses the
+  # next type someone invents, which is this same bug wearing a different hat.
   pull_request:
-    branches: [develop, staging, main]
   push:
     branches: [develop, staging, main]
   merge_group:

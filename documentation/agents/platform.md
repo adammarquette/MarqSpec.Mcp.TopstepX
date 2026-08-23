@@ -52,6 +52,13 @@ The root contract's five apply here unchanged. Four land specifically on the pip
   `git update-index --chmod=+x <path>`.
 - **A conflicting PR gets no CI at all** — `mergeable_state: dirty` produces zero workflow runs, which reads as
   "no checks reported" rather than as a conflict. Check the state before waiting on checks.
+- **A PR into a non-integration base used to get no CI at all, and read as `CLEAN`** (gh#60). `ci.yml` and
+  `codeql.yml` filtered `pull_request` to `[develop, staging, main]`, so a stacked PR onto a feature branch
+  produced zero runs — and because the required checks hang off the `develop` ruleset, nothing was pending or
+  failing either. The merge box said ready. Both triggers are now unfiltered on `pull_request`; **do not
+  "tidy" the filter back.** Note the residue: running the checks does not make them *required* for a
+  feature-branch base, because rulesets protect named branches. Visibility is what this buys; enforcement
+  still happens at the `develop` gate.
 
 **A local check that disagrees with CI is worse than no local check.** When they diverge, fix the divergence,
 not the symptom.

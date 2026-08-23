@@ -1,0 +1,53 @@
+name: Task
+description: A unit of work an agent or contributor can pick up and finish.
+title: "<verb the outcome>"
+labels: []
+assignees: [adammarquette]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **A thin issue is a defect.** The next agent rebuilds all its context from these fields — the spec lives
+        here, never as a file under `documentation/`.
+
+        Before submitting, set the **milestone**, one **`work:*`** label, and a **`Work Estimate`** label.
+  - type: textarea
+    id: why
+    attributes:
+      label: Why
+      description: The problem or gap. What is wrong today, and what does it cost?
+      placeholder: State the observed behaviour, not the desired one — the desired one goes in Scope.
+    validations:
+      required: true
+  - type: textarea
+    id: scope
+    attributes:
+      label: Scope
+      description: What this change does. Name files, types and endpoints.
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+      description: Checkboxes that can be objectively verified. "Works correctly" is not one.
+      value: |
+        - [ ]
+        - [ ]
+    validations:
+      required: true
+  - type: textarea
+    id: out-of-scope
+    attributes:
+      label: Out of scope
+      description: What a reviewer should *not* expect to see, and where it went instead.
+    validations:
+      required: false
+  - type: input
+    id: traceability
+    attributes:
+      label: Traceability
+      description: PRD requirements, ADRs, or a trading-copilot issue this serves.
+      placeholder: "R-4, ADR-0002, adammarquette/trading-copilot#589"
+    validations:
+      required: false

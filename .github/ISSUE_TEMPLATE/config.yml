@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security vulnerability
+    url: https://github.com/adammarquette/MarqSpec.Mcp.TopstepX/security/advisories/new
+    about: Report privately. Do not open a public issue for a vulnerability — see SECURITY.md.
+  - name: Consumer-side behaviour (trading-copilot)
+    url: https://github.com/adammarquette/trading-copilot/issues
+    about: Risk, sizing, auto-flatten and execution policy live in the consumer, not in this transport client.

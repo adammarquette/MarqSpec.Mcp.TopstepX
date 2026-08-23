@@ -1,0 +1,38 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <IsPackable>false</IsPackable>
+    <IsTestProject>true</IsTestProject>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="coverlet.collector" />
+    <PackageReference Include="FluentAssertions" />
+    <PackageReference Include="Microsoft.EntityFrameworkCore.InMemory" />
+    <PackageReference Include="Microsoft.Extensions.TimeProvider.Testing" />
+    <PackageReference Include="Microsoft.NET.Test.Sdk" />
+    <PackageReference Include="xunit" />
+    <PackageReference Include="xunit.runner.visualstudio" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Using Include="Xunit" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!--
+      The host is an ASP.NET Core app, and its composition root is worth testing directly — a DI lifetime
+      mistake there is invisible to every test that constructs types by hand, and fatal at startup. Testing it
+      means building a real WebApplicationBuilder, which needs the framework reference here.
+    -->
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\MarqSpec.Mcp.TopstepX\MarqSpec.Mcp.TopstepX.csproj" />
+    <ProjectReference Include="..\MarqSpec.Mcp.TopstepX.Domain\MarqSpec.Mcp.TopstepX.Domain.csproj" />
+    <ProjectReference Include="..\MarqSpec.Mcp.TopstepX.Data\MarqSpec.Mcp.TopstepX.Data.csproj" />
+  </ItemGroup>
+
+</Project>

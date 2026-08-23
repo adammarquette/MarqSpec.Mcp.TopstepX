@@ -1,0 +1,45 @@
+name: Epic
+description: A work stream that decomposes into sub-issues.
+title: "<the outcome the stream delivers>"
+labels: [epic]
+assignees: [adammarquette]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Epics decompose **issue → issue** (GitHub sub-issues), never issue → PR. An epic carries no
+        `Work Estimate` — its children do.
+
+        **The progress bar lies.** 100% of sub-issues closed does not mean done; diff this body's checklist
+        against the sub-issue tree before closing, because uncarded scope hides in the gap.
+  - type: textarea
+    id: why
+    attributes:
+      label: Why now
+      description: What is wrong today that makes this stream worth its cost.
+    validations:
+      required: true
+  - type: textarea
+    id: gap
+    attributes:
+      label: The gap, as found
+      description: Concrete, evidenced observations — file paths, commit SHAs, API responses.
+    validations:
+      required: true
+  - type: textarea
+    id: children
+    attributes:
+      label: Sub-issues
+      description: The decomposition. Link each once it exists.
+      value: |
+        - [ ]
+        - [ ]
+    validations:
+      required: true
+  - type: textarea
+    id: done
+    attributes:
+      label: Done when
+      description: The observable end state that lets this epic close.
+    validations:
+      required: true

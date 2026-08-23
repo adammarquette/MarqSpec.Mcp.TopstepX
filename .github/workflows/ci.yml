@@ -1,0 +1,339 @@
+name: CI
+
+on:
+  # NO `branches:` filter, deliberately (gh#60).
+  #
+  # This once read `branches: [develop, staging, main]`, and a PR into any other base -- a stacked PR onto
+  # another feature branch -- got NO CI at all. Not a pending check, not a failing one: none. Meanwhile the
+  # required checks live on the `develop` ruleset and do not apply to a feature-branch base, so `mergeable`
+  # reported CLEAN and the merge box said ready. An unverified PR looked MORE finished than one whose checks
+  # were still running (gh#57).
+  #
+  # The filter's failure mode is silence, and silence here is indistinguishable from success. Unfiltered errs
+  # in the only safe direction: it can run more than needed, never less. An allow-list of base patterns was
+  # rejected -- branches are `<type>/<id>_<title>` over an open set of types, so any list silently misses the
+  # next type someone invents, which is this same bug wearing a different hat.
+  pull_request:
+  push:
+    branches: [develop, staging, main]
+  merge_group:
+
+env:
+  DOTNET_NOLOGO: true
+  DOTNET_CLI_TELEMETRY_OPTOUT: true
+
+concurrency:
+  group: ci-${{ github.ref }}
+  # cancel-in-progress is FALSE deliberately (gh#26).
+  #
+  # A cancelled run leaves its check-runs in CANCELLED on the commit, and a cancelled REQUIRED check blocks the
+  # merge -- while `gh pr checks` reports the latest run per name and shows green, so the block is invisible
+  # from the tool anyone reaches for first.
+  #
+  # It fires easily: this workflow triggers on `labeled`, so opening a PR with a label in the same call
+  # produces `opened` and `labeled` together, two pull_request events on the same ref, and one cancels the
+  # other. Which one survives is a race.
+  #
+  # Grouping on the PR number instead does NOT fix it -- that still cancels, and the cancelled run still leaves
+  # cancelled checks. Letting a superseded run finish is the cheap half of this trade.
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  # Needs no SDK, so a docs-only PR fails fast instead of waiting on a build.
+  docs:
+    name: docs
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Check documentation links
+        run: ./scripts/check-doc-links.sh
+
+  # ADR-0002's enforcement. Its own job rather than a step inside build-test, so a failure reads as "the
+  # read-only boundary was crossed" rather than as a build break -- and so it is a required check in its own
+  # right, which a step buried in another job cannot be.
+  #
+  # Needs no SDK: it is a grep over source, and it should answer in seconds.
+  no-order-path:
+    name: no-order-path
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: No order path in product code
+        run: ./scripts/check-no-order-path.sh
+
+  # gh#43. The pacer that keeps the bar paging loop inside the vendor's 50-requests-per-30-seconds allowance
+  # is unit-tested; its CONNECTION to the loop was not, and deleting the await left all 208 tests green.
+  #
+  # Its own job for the same reason no-order-path has one: a failure here means "the burst protection came
+  # unpicked", and folding it into no-order-path would report that as "the read-only boundary was crossed",
+  # which is a different and far more alarming claim. NOTE: a new job is not automatically a REQUIRED check --
+  # the develop ruleset names those, and a ruleset cannot be edited from a pull request. So this REPORTS and
+  # does not block; adding it to the ruleset is tracked as gh#72. Read a red `paced-paging` as real even
+  # though the merge box does not.
+  paced-paging:
+    name: paced-paging
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Bar paging takes a rate-limit slot per page
+        run: ./scripts/check-paced-paging.sh
+
+  build-test:
+    name: build & unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # MinVer derives the version from tag history. actions/checkout defaults to a shallow clone, which
+          # yields 0.0.0-alpha.0 SILENTLY rather than failing — so the depth matters even here, because the
+          # version is stamped into the assembly (ADR-0001).
+          fetch-depth: 0
+
+      - uses: actions/setup-dotnet@v6
+        with:
+          # net10.0 ONLY. This is an application, not the multi-targeting library the template came from —
+          # every csproj here declares a single TargetFramework. The 8.0 SDK that used to be installed here
+          # built nothing and cost a download on every job.
+          dotnet-version: 10.0.x
+
+      - name: Restore
+        run: dotnet restore MarqSpec.Mcp.TopstepX.slnx
+
+      - name: Format
+        # Absent until now, which is why formatting had never been enforced. Runs before the build so a
+        # whitespace failure does not wait on a compile.
+        run: dotnet format MarqSpec.Mcp.TopstepX.slnx --verify-no-changes --no-restore
+
+      - name: Build
+        run: dotnet build MarqSpec.Mcp.TopstepX.slnx --configuration Release --no-restore
+
+      - name: Unit tests
+        run: >-
+          dotnet test MarqSpec.Mcp.TopstepX.Tests/MarqSpec.Mcp.TopstepX.Tests.csproj
+          --configuration Release --no-build
+          --logger "trx;LogFileName=unit-tests.trx"
+          --collect:"XPlat Code Coverage"
+          --results-directory ./TestResults
+
+      - name: Upload unit test results
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: unit-test-results
+          path: ./TestResults
+          retention-days: 7
+
+  integration-test:
+    name: integration tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Restore
+        run: dotnet restore MarqSpec.Mcp.TopstepX.slnx
+
+      - name: Build
+        run: dotnet build MarqSpec.Mcp.TopstepX.slnx --configuration Release --no-restore
+
+      # No credentials — but this tier DOES need Docker. It starts a real Postgres via Testcontainers, on the
+      # same timescale/timescaledb-ha image compose runs, because the claims worth testing here are hypertables,
+      # the HNSW vector index and the CHECK constraints. An in-memory provider would pass a suite that proves
+      # nothing about any of them (ADR-0004).
+      #
+      # ubuntu-latest ships a Docker daemon, which is what lets this be a REQUIRED check rather than a manual
+      # ritual. Category!=Live keeps the opt-in real-venue tier out; it never gates a merge.
+      - name: Integration tests (Testcontainers Postgres)
+        run: >-
+          dotnet test MarqSpec.Mcp.TopstepX.IntegrationTests/MarqSpec.Mcp.TopstepX.IntegrationTests.csproj
+          --configuration Release --no-build --filter "Category!=Live"
+          --logger "trx;LogFileName=integration-tests.trx"
+          --results-directory ./TestResults
+
+      - name: Upload integration test results
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: integration-test-results
+          path: ./TestResults
+          retention-days: 7
+
+  # Coverage was collected and uploaded before this, and never evaluated. An artifact nobody reads is a report,
+  # not a gate.
+  #
+  # The floor is 43% because the unit suite MEASURES 45.7% line / 46.5% branch today. The PRD asks for 95%/90%
+  # (R-11.1) and this is nowhere near it — but a floor set at the aspiration fails every build from the first
+  # one, and a gate that is red on arrival gets disabled rather than satisfied. This one is set just under
+  # reality so it catches a regression now, and is meant to be RAISED as coverage improves. Never lower it to
+  # accommodate a drop; that converts the gate back into a report.
+  coverage:
+    name: coverage
+    needs: build-test
+    runs-on: ubuntu-latest
+    env:
+      # SET FROM A MEASUREMENT, not inherited. The template arrived carrying 43 -- the number from the repo
+      # it was extracted from -- and this repo measured 33.5% on its first CI run, so the floor was failing
+      # for a reason that had nothing to do with this code.
+      #
+      # The tool-surface suite (the closed instrument list, the read caps, the closed indicator vocabulary)
+      # brought the real figure to 43.4%. The floor sits at 40 rather than 43 deliberately: a floor set at
+      # the current number goes red on the next ordinary refactor, which teaches people that red is normal.
+      #
+      # It is a RATCHET. Raise it when coverage rises; never lower it to make a build pass. The mass still
+      # uncovered is the tool layer, which becomes end-to-end testable when the venue adapter lands (gh#13).
+      MINIMUM_LINE_COVERAGE: 40
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: unit-test-results
+          path: ./TestResults
+
+      # Parsed with an XML parser rather than grep. The first draft grepped for line-rate and exited 2 on its
+      # first run: cobertura carries line-rate on <coverage>, <package> AND <class>, so "the first match" is
+      # both fragile and not obviously the root. Parsing the document says what it means.
+      - name: Enforce the coverage floor
+        shell: python3 {0}
+        run: |
+          import glob, os, sys, xml.etree.ElementTree as ET
+
+          floor = int(os.environ["MINIMUM_LINE_COVERAGE"])
+          reports = glob.glob("TestResults/**/coverage.cobertura.xml", recursive=True)
+
+          if not reports:
+              found = "\n".join(sorted(glob.glob("TestResults/**/*", recursive=True))[:40]) or "(nothing)"
+              print("::error::No cobertura report found. The unit test job must run with "
+                    '--collect:"XPlat Code Coverage".')
+              print(f"Artifact contained:\n{found}")
+              sys.exit(1)
+
+          root = ET.parse(reports[0]).getroot()
+          line = float(root.get("line-rate", 0)) * 100
+          branch = float(root.get("branch-rate", 0)) * 100
+
+          summary = f"Line coverage {line:.1f}% (floor {floor}%) · branch {branch:.1f}%"
+          print(summary)
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as handle:
+              handle.write(f"### {summary}\n")
+
+          if line < floor:
+              print(f"::error::Line coverage {line:.1f}% is below the {floor}% floor.")
+              sys.exit(1)
+
+  # This repository ships a CONTAINER, not a NuGet package -- it is an application. The template's pack job
+  # was replaced wholesale rather than adapted, because "pack an app" is a job that succeeds and produces
+  # something nobody consumes.
+  image:
+    name: image
+    needs: [build-test, integration-test, no-order-path]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # MinVer reads the tag, and a shallow clone yields 0.0.0-alpha.0 SILENTLY rather than failing.
+          fetch-depth: 0
+
+      # DECLARED, not inherited from the runner image (gh#54). Buildx is preinstalled on GitHub-hosted
+      # runners, so this job and release.yml's `publish` both built fine without either one ever asking for
+      # it -- which made the builder a property of the runner image rather than of this repository, and left
+      # the two free to differ silently: the preinstalled `default` builder uses the `docker` driver, while
+      # this action creates a `docker-container` one. release.yml now declares the same step, so "CI builds
+      # the way the release builds" is true of the BUILDER and not only of the action.
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v4
+
+      # BUILT WITH THE ACTION THE RELEASE USES. Do NOT "simplify" this back to `docker build` (gh#54).
+      #
+      # This job and release.yml's `publish` build the same Dockerfile, and they used to do it by two
+      # different mechanisms -- `docker build` here, `docker/build-push-action` there. CI therefore could not
+      # fail for ANY regression in the publish path, and two major bumps merged green on exactly that basis:
+      # docker/login-action v3 -> v4 (gh#15) and docker/build-push-action v6 -> v7 (gh#52). Neither had run
+      # anywhere when it merged; the first execution of either would have been a real release, behind the
+      # production approval, against a tag that "can be overwritten but not un-pulled".
+      #
+      # Keep this MAJOR VERSION equal to release.yml's. Both files are in the one `github-actions` Dependabot
+      # ecosystem, so a bump arrives as a single PR touching both; a PR that moves only one is the bug.
+      #
+      # STILL UNCOVERED, deliberately: docker/login-action. Exercising it would mean granting `packages:
+      # write` to a job that must not push, on every pull request -- including forks, where GITHUB_TOKEN is
+      # read-only and the step would fail for a reason unrelated to the change. The registry-credential
+      # boundary is worth more than coverage of a three-input action.
+      #
+      # WHAT A GREEN `image` LICENSES, exactly: the Dockerfile builds, the image loads into the local daemon,
+      # and the image's OWN entrypoint starts a server that answers an MCP `tools/list` with no configuration
+      # (gh#67). THE THIRD CLAUSE IS THE NEW ONE. The old smoke step licensed the first two and only those:
+      # a Dockerfile that does not build fails the build step regardless, and `--entrypoint dotnet` against a
+      # tag never loaded into the daemon exits 125 `No such image` -- measured, and it is why a missing
+      # `load: true` was always caught. What a green `image` still does NOT license: a venue, store or
+      # embedding call, since none of the three is configured here; the HTTP transport, which this never
+      # selects; and the publish path end to end -- the login and the registry export still first execute at
+      # a real release.
+      - name: Build the image
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          # Nothing here reaches a registry, and nothing here needs a credential to build.
+          push: false
+          # LOAD-BEARING, and the whole reason this is not a one-line swap. Under Buildx, `push: false`
+          # alone leaves the result in BuildKit's cache and NOT in the local daemon -- BuildKit says so
+          # ("Build result will only remain in the build cache") in a WARNING on a build that exits 0. The
+          # smoke step below then reports "Unable to find image ... locally" and fails trying to PULL the tag
+          # from Docker Hub, which reads like a typo in the tag rather than like a missing export.
+          load: true
+          tags: marqspec-mcp-topstepx:ci
+        env:
+          # DISABLED, and stated rather than inherited (gh#54 review). `build-push-action` v6+ exports a
+          # `.dockerbuild` build record and uploads it as a downloadable workflow ARTIFACT on every run --
+          # something `docker build` never did, and a fourth surface on a PUBLIC repo whose non-negotiable is
+          # "no secret reaches a workflow, log, or image layer". It is benign as this step stands (no
+          # `build-args`, no `secrets`), but the day someone adds `build-args` for a private NuGet feed the
+          # build definition lands in that artifact and nothing would have said so.
+          #
+          # IT IS NOT FREE, and the cost lands on the worst job to pay it. The record is what `buildx
+          # history` reads, so switching it off gives up post-hoc build-RECORD forensics -- the structured
+          # view: step timings, cache hit/miss, the build graph. The run log survives and carries most of a
+          # Dockerfile build's diagnostic value; it is the structure that goes. `release.yml` sets the same
+          # two variables, where a run happens behind a `production` approval on a tag already cut and
+          # cannot be cheaply repeated. The trade is taken anyway: a leak from a public artifact is not
+          # recoverable and a missing build record is. Turn them back on for a run that needs diagnosing;
+          # that is a decision, not a two-line deletion.
+          #
+          # NOT THE SAME MECHANISM as `provenance:` in release.yml, despite the adjacent names and both being
+          # `false`. This is a WORKFLOW ARTIFACT; that is an attestation attached to the PUSHED IMAGE.
+          # Changing one says nothing about the other.
+          #
+          # ONLY THE FIRST of these closes the export surface. `DOCKER_BUILD_SUMMARY` suppresses the summary
+          # rendered on the run page, which never leaves GitHub and is not an export at all -- it is set
+          # because with the record upload off, the summary's headline affordance is a download link to an
+          # artifact that no longer exists, and because release.yml should not diverge from this job over a
+          # detail. Re-enable them as a pair.
+          DOCKER_BUILD_RECORD_UPLOAD: false
+          DOCKER_BUILD_SUMMARY: false
+
+      - name: Smoke — the image's own entrypoint starts and serves its tool list
+        # NO `--entrypoint` HERE, and that is the whole point (gh#67). The previous version of this step ran
+        # `docker run --entrypoint dotnet <image> --list-runtimes`, and `--entrypoint` REPLACES the image's
+        # own ENTRYPOINT -- so the container that ran was `dotnet --list-runtimes`, which proves the .NET
+        # runtime is installed and nothing whatever about this repository's code. Measured, not reasoned: an
+        # image built with `ENTRYPOINT ["dotnet", "MarqSpec.Mcp.TopstepX.DoesNotExist.dll"]` passed it,
+        # exit 0.
+        #
+        # The replacement asserts two things: that the assembly the ENTRYPOINT names is at the path it will
+        # be resolved from, and that the entrypoint -- unoverridden -- starts a server which answers an MCP
+        # `tools/list` with a non-empty tool list. It deliberately does NOT assert an exit code; the
+        # measurements behind that decision, and what a pass does and does not prove, are in the script's
+        # header.
+        #
+        # A SCRIPT rather than an inline block so the same check runs against a locally built image. A local
+        # check that disagrees with CI is worse than no local check.
+        run: ./scripts/check-image-entrypoint.sh marqspec-mcp-topstepx:ci

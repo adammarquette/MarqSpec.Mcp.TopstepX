@@ -384,3 +384,9 @@ FodyWeavers.xsd
 
 # Local pack output
 artifacts/
+
+# Agent worktrees. AGENTS.md REQUIRES working in `git worktree add .worktrees/<branch>`, so this directory
+# exists on any machine following the contract -- and each entry is a nested git repository. Without this,
+# one `git add -A` commits another session's worktree as an embedded repo reference, which clones as an empty
+# directory nobody can explain.
+.worktrees/

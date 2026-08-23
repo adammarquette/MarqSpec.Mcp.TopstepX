@@ -68,3 +68,33 @@ and can be pinned by fixture tests shared with `trading-copilot` — which is wh
   entirely plausible.
 - An absent value means *cannot measure*. It is never filled forward and never defaulted — a half-warmed
   indicator looks ordinary and would be acted on.
+
+## Decision log
+
+| Update | What changed |
+|---|---|
+| [2026-08-23](#update-2026-08-23--the-empty-diff-claim-was-false-in-practice) | The "confirming rebuild is an empty diff" property is now enforced by rounding to the stored scale |
+
+## Update (2026-08-23) — the empty-diff claim was false in practice
+
+This record says a rebuild that confirms the existing numbers "leaves the timestamps alone and the diff is
+empty". **The decision was right and the implementation never matched it.**
+
+`IndicatorValues.Value` is `numeric(18,8)`, so Postgres keeps eight places. The projection computed at full
+`decimal` precision and compared the result against the stored row — `38.95895082` against
+`38.958950821743…` — which is never equal. The "skip unchanged" guard was dead code: **every rebuild rewrote
+every row and moved every `RecordedAt`**, so the field recorded when a rebuild last ran rather than when a
+value last changed, which is a different fact and not the one it was added for.
+
+The projection now rounds to `TopstepXDbContext.PriceScale` before comparing and before storing, using
+away-from-zero to match Postgres numeric rounding.
+
+**How it survived.** No test ever projected twice. Every indicator test checked the numbers, and the one
+property that needed two passes to observe had none. It was found by running `rebuild-indicators` against a
+live container for the first time — a CLI verb that had shipped in Phase 2 and had never been executed, in CI
+or anywhere else.
+
+The general form, worth carrying to the next `numeric(18,8)` column: **a value computed at full precision and
+the same value read back from the database are not equal.** Anything that compares the two must round first,
+or its comparison silently always answers "changed".
+

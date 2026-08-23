@@ -49,7 +49,11 @@ The root contract's five apply here unchanged. Four land specifically on the pip
   installs only one SDK is a job that stops catching one of them. CodeQL currently does exactly this.
 - **A script authored on Windows commits as `100644`.** CI invoking `./scripts/foo.sh` then dies with exit 126
   while a local `bash scripts/foo.sh` passes. Fix it in the same commit with
-  `git update-index --chmod=+x <path>`.
+  `git update-index --chmod=+x <path>`. **And do not `git reset` afterwards** — with `core.filemode=false`,
+  which is what a Windows checkout has, resetting the index throws the bit away and the next `git add` puts
+  the file back at `100644`. `git ls-files -s` then reports `100755` right up until the reset, so the check
+  passes and the commit is still wrong. Verify with `git ls-tree HEAD <path>` *after* committing; the index is
+  not the evidence. (`check-paced-paging.sh`, gh#43, cost one red CI run.)
 - **A conflicting PR gets no CI at all** — `mergeable_state: dirty` produces zero workflow runs, which reads as
   "no checks reported" rather than as a conflict. Check the state before waiting on checks.
 - **A PR into a non-integration base used to get no CI at all, and read as `CLEAN`** (gh#60). `ci.yml` and

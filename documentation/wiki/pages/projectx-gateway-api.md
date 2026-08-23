@@ -6,7 +6,11 @@
 > https://gateway.docs.projectx.com/docs/intro
 > **Access:** vendor docs are public, no auth wall; behavioural claims below were observed against a live
 > practice login. Nothing is reproduced verbatim.
-> **Informs:** `R-1`, `R-4`, `R-5`, `R-7`, `R-8`, `Q-1`, `Q-3`
+> **Informs:** `R-1` (incl. `R-1.10`), `R-4`, `R-5`, `R-7`, `R-8`, `Q-1`, `Q-3`
+>
+> *Addition, 2026-08-23 (gh#43):* **[Rate limits](#rate-limits)** added. Read from the vendor's own
+> documentation that day and marked **documented, not observed** — no 429 has ever been provoked from this
+> repository, so those numbers are the vendor's claim and nothing more. Nothing on the page was corrected.
 
 The REST + realtime API behind prop firms on the ProjectX Gateway. **TopstepX is one firm on it**, which is why
 the two names are used interchangeably here — the gateway is the API, and the firm brands the hostname.
@@ -57,6 +61,102 @@ fails to convert fails to bind at all, so a serialisation fault presents as a mi
 
 Handled inside the client. Any new code path constructing a request must not reintroduce it.
 
+## Rate limits
+
+> **Documented, not observed.** Read from the vendor's own rate-limits page on **2026-08-23**
+> ([source](https://gateway.docs.projectx.com/docs/getting-started/rate-limits)). **No 429 has been provoked
+> from this repository**, so every number below is the vendor's claim and none of it is a measurement. The
+> distinction matters here more than usual, because what is *missing* from that page is what a limiter has to
+> assume — see *What the vendor does not say*.
+
+| Endpoint | Limit |
+|---|---|
+| `POST /api/History/retrieveBars` | **50 requests / 30 seconds** |
+| every other endpoint | **200 requests / 60 seconds** |
+
+A breach is reported as an HTTP **429 Too Many Requests**; the vendor's guidance is to slow down and retry
+after a short delay. Note that this is one of the very few things on this gateway that fails *honestly* — it
+is a real status code, not a 200 carrying `success: false`.
+
+**The endpoint this server leans on hardest is the one with the tighter allowance.** 50 in 30 seconds is a
+mean spacing of **600 ms**; everything else gets 300 ms. Bars are also the only call here that is ever issued
+in a loop.
+
+### What the vendor does not say
+
+Three things a limiter needs are absent from the page, so they are assumed in the conservative direction and
+the assumption is written down rather than buried:
+
+- **Scope.** The page attaches the limits to authenticated requests in general and never says whether the
+  counter is per API key, per user, per IP or per endpoint. **Assumed per credential** — one allowance shared
+  by everything this process does. If it turns out to be per-IP, several servers behind one address share it,
+  which is stricter still and this assumption is the safe side of.
+- **Fixed or sliding window.** Not stated. **Assumed sliding.** A schedule that never exceeds the cap in any
+  *sliding* window cannot exceed it in a fixed one either, so the stricter reading costs nothing to be wrong
+  about; the reverse does not hold — a fixed-window limiter lets 2× the cap through across a boundary.
+- **Whether the window is closed at its boundary.** Not stated, and it decides whether a request sent at
+  *exactly* `oldest + 30s` is the 51st in the window or the 1st of the next. **Assumed closed at both ends**,
+  so the pacer schedules a released request 250 ms *past* the boundary rather than on it. Half a second on a
+  106-page year, against a 429 on the one burst the pacing exists to stop. That margin also absorbs timer
+  granularity; it does **not** absorb clock skew against the vendor's own counter, which is unbounded and
+  which no fixed margin would cover.
+- **`Retry-After`.** The rate-limits page does not mention the header at all. The client
+  ([ADR-0003](../../adr/0003-client-as-package.md)) handles `Retry-After` on a 429 and backs off regardless,
+  so a breach is survivable — but nothing here should be built on the header being present.
+
+### What the pacer does not do
+
+**The allowance is documented as belonging to a credential; the pacer enforces it per _process_.** Those
+coincide only while exactly one process holds the key. This repository ships a container image and a compose
+file, so they can come apart easily: two replicas behind one API key, or the stdio transport running alongside
+the HTTP one against the same credential, each get a full 50 per 30 seconds, neither knows about the other,
+and the real rate is 2× documented while every pacer reports perfect compliance.
+
+That is an accepted limitation, not an oversight — a distributed limiter would be absurd at this scale. It is
+recorded because the next person to scale this is entitled to know the pacer does not follow them.
+
+### Pacing the paging loop — the decision, and the arithmetic behind it
+
+**Pacing was needed, and it was added** (gh#43). `ProjectXMarketDataGateway.GetBarsAsync` used to issue pages
+as fast as they completed, which meant they were spaced by nothing but vendor latency.
+
+One page is `1000 × barSize` of clock time, so a cold window costs:
+
+| Cold window | Page span | Requests, back to back |
+|---|---|---|
+| 1 year of **5-minute** bars | 5,000 min ≈ 3.5 days | **106** |
+| 90 days of **1-minute** bars | 1,000 min ≈ 16.7 h | **130** |
+| 30 days of **1-minute** bars | 1,000 min ≈ 16.7 h | **44** |
+
+Against 50 / 30 s, the loop stays legal only if each round-trip averages **600 ms or more**. A REST call
+returning at most 1000 bars does not reliably take that long, and *designing for the vendor to be slow enough
+to be your rate limiter* is not a design. On the 106-page year the 51st request breaches inside the first
+window — roughly ten seconds in, at a plausible 200 ms per page.
+
+So the answer to "is 106 back-to-back requests fine?" is **no**, by a factor of about three.
+
+What was built (`VenueRequestPacer`, awaited once per page):
+
+- A **sliding-window** allowance of 50 per 30 s, modelling the documented rule rather than flattening it to a
+  fixed delay. A fixed 600 ms gap would tax every one- or two-page read for a limit it was never near; this
+  costs **nothing at all** below the cap, which is where essentially all interactive traffic sits.
+- A **singleton**, while the gateway itself is scoped. The allowance belongs to the credential, so concurrent
+  tool calls have to draw on one of it — a per-scope pacer would let N scopes each burst to the cap and none
+  of them would know.
+- A **250 ms margin** past each window boundary, for the reason above.
+- Cost when it does engage: the cold five-minute year completes in **three bursts of 50**, adding **60 seconds
+  total** (plus two margins). That is the whole price of never seeing a 429 on that path. It is **logged** —
+  once at Information when pacing first engages on a call, and once more with the total — because a minute of
+  silence is indistinguishable from a hang.
+- A gate holds the wiring, not just the mechanism: `scripts/check-paced-paging.sh` fails when the pacer call
+  leaves `GetBarsAsync`, moves outside the page loop, or lands after the fetch. It exists because deleting the
+  call left every unit test green — the pacer was tested and its *use* was not.
+
+**Only `retrieveBars` is paced.** Nothing else here is issued in a loop — contract search, accounts,
+positions, orders and trades are one call per tool invocation — so the 200 / 60 s bucket is not reachable in
+bursts by any code path in this repository. If one is ever added, it needs its own allowance; this one does
+not cover it.
+
 ## Market data
 
 ### Retrieve bars
@@ -66,7 +166,8 @@ Takes a contract id, a start and end time, a `unit` + `unitNumber` pair, a row `
 Three things to know:
 
 1. **One call caps at 1000 bars, and the excess is silently truncated** rather than reported. A wider window
-   must be walked in pages of `1000 × barSize`, or the answer is quietly short.
+   must be walked in pages of `1000 × barSize`, or the answer is quietly short — and those pages must be
+   **paced**, because this endpoint carries the gateway's tightest limit. See [Rate limits](#rate-limits).
 2. **`includePartialBar: false` is not sufficient.** Drop still-forming bars on the client side as well
    (`OpenTime + barSize <= now`). A half-formed bar stored as final is indistinguishable from data, and
    corrupts everything derived from it.
@@ -178,8 +279,10 @@ The order endpoints — place, modify, cancel, close — exist and work. **This 
 
 ## Open items
 
-- **Rate limits.** Documented by the vendor at `/docs/getting-started/rate-limits`, not yet extracted into this
-  page (`Q-3`). Until they are, the client's `Retry-After` handling is the only real limiter.
+- **Rate limits, observed rather than documented.** The numbers above are extracted and acted on (`Q-3`
+  closed, gh#43), but they have never been *measured* — the scope of the counter and the shape of the window
+  are assumptions. Anyone who does provoke a 429 should record what came back here, and say whether a
+  `Retry-After` was on it.
 - **Contract roll.** Resolution picks the front month with no explicit roll logic, and this server keys bars by
   the venue-neutral symbol — so a roll splices two contracts into one series (`Q-1`).
 
@@ -187,6 +290,7 @@ The order endpoints — place, modify, cancel, close — exist and work. **This 
 
 - Intro — https://gateway.docs.projectx.com/docs/intro
 - Getting started (auth, connection URLs, rate limits) — https://gateway.docs.projectx.com/docs/category/getting-started
+- Rate limits — https://gateway.docs.projectx.com/docs/getting-started/rate-limits
 - API reference — https://gateway.docs.projectx.com/docs/category/api-reference
 - Retrieve bars — https://gateway.docs.projectx.com/docs/api-reference/market-data/retrieve-bars
 - Realtime overview — https://gateway.docs.projectx.com/docs/realtime

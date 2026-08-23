@@ -111,6 +111,11 @@ public static class ToolPayloads
     /// for "served entirely from the store" is <c>VenueRequests == 0</c>, and this remark claimed otherwise
     /// until gh#71.
     /// </para>
+    /// <para>
+    /// The error is in the direction that matters: reading this as "free" <b>undercounts</b> venue traffic,
+    /// never overcounts it. The gateway's history limit is process-wide rather than per-call (gh#64), so a
+    /// caller pacing itself on this number spends more of a shared budget than it believes it is spending.
+    /// </para>
     /// </param>
     /// <param name="VenueRequests">How many requests reached the venue.</param>
     /// <param name="Contracts">

@@ -42,7 +42,9 @@ Domain   ──referenced by──▶  Data  ──referenced by──▶  Host
 
 Test-first: the failing test goes in the same PR, written before the implementation.
 
-- xUnit + FakeItEasy + FluentAssertions (pinned `< 8.0.0` — v8 is commercially licensed).
+- xUnit + FluentAssertions (pinned `< 8.0.0` — v8 is commercially licensed). **No mocking library**: seams are
+  filled with real objects, `FakeTimeProvider` for the clock, and the client package's `FakeGateway` for the
+  venue. Re-adding one is a deliberate decision, not a default (gh#32).
 - Name a test for the behaviour it pins, not the method it calls. `Rsi_IsFifty_WhenTheWindowIsFlat` says what
   breaks; `RsiTest3` does not.
 - **Indicators get fixture tests with hand-checked numbers**, not round-trips through the implementation. A

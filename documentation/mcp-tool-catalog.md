@@ -81,6 +81,13 @@ it — which mattered more than the other drifts on this page, because `fromCach
 would reach for to check `R-1.3`. It would have read `undefined` on every call, and `undefined` is falsy: a
 fully-cached read would have looked like an uncached one, every time. Use `venueRequests == 0`.
 
+**A cold wide window is slow on purpose.** The venue's history allowance is **50 requests per 30 seconds and
+it belongs to the whole process**, not to one call. Once this server has issued 50 history requests inside the
+last 30 seconds, further pages wait for the window to roll — so a cold year of five-minute bars carries about a
+minute of deliberate delay on top of the round trips, and a *narrow* read pays only when a concurrent one has
+just spent the allowance (`R-1.10`). A read served from the store issues no venue request at all and so cannot
+be paced.
+
 ### `get_latest_bars(symbol, resolutionMinutes, count)`
 The recent window, which is what an agent actually asks for. Same shape as `get_bars`.
 

@@ -33,6 +33,11 @@ The server serves OHLCV bars for a futures instrument at a requested resolution 
   the venue independently, never derived from a finer one: a bar derived from an incomplete set of
   constituents is indistinguishable from a real one, which R-2.3's rule forbids in the indicator path and
   which is no more acceptable here. See [ADR-0010](adr/0010-per-call-resolutions-fetched-not-derived.md).
+- **R-1.10** Those pages are **paced** to the vendor's documented allowance for the history endpoint —
+  **50 requests / 30 seconds**, one allowance shared by the whole process. A cold year of five-minute bars is
+  106 pages back to back, which breaches inside the first window; the client's 429 retry recovers from a
+  breach but does nothing to avoid one. Pacing costs nothing below the cap
+  ([wiki — rate limits](wiki/pages/projectx-gateway-api.md#rate-limits)).
 
 ## R-2 — Pre-computed indicators
 
@@ -116,5 +121,8 @@ The server serves OHLCV bars for a futures instrument at a requested resolution 
 - **Q-2 — Embedding provider.** Cohere at `vector(1024)` matches `trading-copilot` and keeps the schema
   identical; Voyage or a local model are alternatives. Deferred — R-6.3's fallback means this is useful before
   the decision.
-- **Q-3 — Vendor rate limits.** Documented by ProjectX but never extracted into the wiki page. Until they are,
-  the client's `Retry-After` handling is the only real limiter.
+- **Q-3 — Vendor rate limits. RESOLVED (gh#43).** Extracted: **50 requests / 30 s** on
+  `History/retrieveBars`, **200 / 60 s** everywhere else, a breach reported as a 429. The paging loop needed
+  pacing and now has it (`R-1.10`). Numbers, the assumptions the vendor's page forces, and the arithmetic
+  behind the decision:
+  [wiki — rate limits](wiki/pages/projectx-gateway-api.md#rate-limits).

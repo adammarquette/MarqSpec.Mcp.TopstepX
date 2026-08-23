@@ -229,11 +229,20 @@ directionless non-zero position is an error rather than a flat report. Positive 
 | `status` | `Open` · `Filled` · `Cancelled` · `Expired` · `Rejected` · `Pending` · `Unknown` |
 
 `Unknown` is never a value the venue chose — it is the same shape as `stage` above, where a near-miss
-resolves to `Unknown` rather than to a guess. **The two differ in what else it can mean.** For `side`, every
-wire value maps, so `Unknown` says the server did not recognise what arrived. For `status` it also covers the
-vendor's own `None`, which is what an order deserialised with no status field carries — so
-`status: "Unknown"` can mean *the venue reported nothing here*, and either way it is not a state to reason
-from.
+resolves to `Unknown` rather than to a guess. **The two differ in what else it can mean, and the difference
+runs the other way from what you would expect.**
+
+For `status` it also covers the vendor's own `None`, which is what an order deserialised with no status field
+carries — so `status: "Unknown"` can mean *the venue reported nothing here*.
+
+For `side` it cannot. Every declared wire value maps, so `Unknown` does say the server did not recognise what
+arrived — but **an omitted `side` never reaches it.** The gateway client binds `side` to an enum whose zero is
+`Bid`, a real direction, so an order the venue gave no side to arrives already indistinguishable from a buy
+and is reported as `Buy` (gh#84; the fix is upstream, and the distinction is destroyed before this server sees
+the order).
+
+So: **`status: "Unknown"` can report an absence and `side` cannot.** Neither is a state to reason from, and a
+`side` you are about to act on is worth confirming against the position rather than the order.
 
 **Four fields are optional, and an absent one is a fact rather than a zero:**
 

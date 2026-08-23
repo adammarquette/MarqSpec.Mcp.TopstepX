@@ -80,10 +80,11 @@ The server serves OHLCV bars for a futures instrument at a requested resolution 
   is transactional per series. Without this, `R-2.8` deletes correct values and the loss arrives as an
   absence, which `R-2.3` makes a caller read as *cannot measure* (gh#73).
 - **R-2.10** A write the store **refuses to serialise** against a concurrent one is retried once and then
-  **reported as contention**, naming what to do. It is never a raw database error at the tool surface, and
-  never a silent loss. Snapshot isolation is what makes `R-2.9` hold; a `40001` is the cost of it, and one
-  retry is the whole budget because the transaction that won committed exactly the work the loser was
-  missing — a second collision is sustained contention rather than a race, and looping would hide it.
+  **reported as contention**, naming what to do. Snapshot isolation is what makes `R-2.9` hold; a `40001` is
+  the cost of it, and one retry is the whole budget because the transaction that won committed exactly the
+  work the loser was missing — a second collision is sustained contention rather than a race, and looping
+  would hide it. How that report reaches a caller — never as a raw database error — is `R-5.7`, which holds
+  for every store fault and every tool rather than only for this one.
 
 ## R-3 — Key levels
 
@@ -122,6 +123,21 @@ The server serves OHLCV bars for a futures instrument at a requested resolution 
 - **R-5.5** On stdio, all logging goes to stderr. Anything on stdout corrupts the protocol frame.
 - **R-5.6** One composed tool returns bars, indicators, levels and session state together, so the common
   question costs one round trip rather than five.
+- **R-5.7** **No store fault reaches a caller as a raw database error, from any tool — and none is described
+  more confidently than it is known.** Every `tools/call` passes one boundary, so this holds for the whole
+  surface rather than for the calls that happen to fill bars. What the caller is told is bounded by what a
+  boundary can observe — an exception and a SqlState, never which unit of work was open:
+  - A fault the server **answered** (it carries a SqlState) establishes that the call's transaction aborted
+    and kept nothing. It is reported as **transient** — retry — or as **this deployment's own defect** —
+    retrying will not help, fix the server — classified by SqlState class. A class the server cannot classify
+    is reported as unclassified rather than as retryable.
+  - A fault where the server **stopped answering** (no SqlState) is an **unknown outcome**, not a failure. A
+    commit can be durable and its acknowledgement lost, so the report says the outcome is unknown and that
+    reading back is how to establish it. Reporting a completed operation as not having happened is a defect,
+    never an acceptable approximation.
+  - A lost write race is **reported** — never swallowed as a success another writer achieved, and never
+    retried at the boundary, where a retry would re-run a whole tool call. A defect in *this* server — an
+    invariant violation — still propagates as itself rather than as a store condition.
 
 ## R-6 — Observations
 

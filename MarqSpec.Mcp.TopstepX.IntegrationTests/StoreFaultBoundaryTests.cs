@@ -20,11 +20,12 @@ namespace MarqSpec.Mcp.TopstepX.IntegrationTests;
 /// <remarks>
 /// <para>
 /// <b>This tier, and only this tier.</b> The claim is that a lost race produces a <c>23505</c> that arrives
-/// wrapped in a <see cref="DbUpdateException"/>, and that a store that has gone away produces an
-/// <see cref="NpgsqlException"/> carrying a SqlState. Both are claims about Postgres and the provider. The
-/// unit tier's in-memory provider has neither constraints nor SqlStates, so a test there could only assert
-/// against exceptions it fabricated itself — which would stay green on the day Npgsql started wrapping things
-/// differently.
+/// wrapped in a <see cref="DbUpdateException"/>, and that a database this deployment names but does not have
+/// produces a <see cref="PostgresException"/> carrying <c>3D000</c> — on a <c>catch</c> written for
+/// <see cref="NpgsqlException"/>, because that is the provider's base type. Both are claims about Postgres
+/// and the provider. The unit tier's in-memory provider has neither constraints nor SqlStates, so a test
+/// there could only assert against exceptions it fabricated itself — which would stay green on the day Npgsql
+/// started wrapping things differently.
 /// </para>
 /// <para>
 /// <b>What these do NOT test is the wiring</b>, which needs the composition root and belongs where it is:
@@ -99,15 +100,20 @@ public sealed class StoreFaultBoundaryTests(SchemaFixture fixture)
     }
 
     [Fact]
-    public async Task AStoreFaultOnATOOLTHATNEVERWRITES_ReachesTheCallerTheSameWay()
+    public async Task AMISCONFIGUREDStoreOnATOOLTHATNEVERWRITES_ReachesTheCallerAsAPERMANENTFault()
     {
-        // A tool other than get_bars, on purpose. `get_indicators` reads IndicatorValues straight off the
-        // context and never touches BarCacheService, so it never went near the one method that translated
+        // Two claims in one, both needing a real server to answer.
+        //
+        // FIRST, a tool other than get_bars, on purpose. `get_indicators` reads IndicatorValues straight off
+        // the context and never touches BarCacheService, so it never went near the one method that translated
         // anything -- the gh#69 lesson being that a rule enforced in three of four places is not a rule.
         //
-        // And the fault is not a duplicate key. The store was there when StoreAvailability last looked, which
-        // is at startup, and is not there now: an ordinary state, and one the catch that only knew about
-        // VenueException let past exactly as readily as the 23505.
+        // SECOND, `3D000 database does not exist` is a PERMANENT fault: this deployment points at a database
+        // that is not there, and no number of retries makes it appear. It arrives as a PostgresException,
+        // which rides in on the `catch (NpgsqlException)` because NpgsqlException is the provider's BASE
+        // type -- so a classifier keyed on the CLR type reports it as a passing condition and sends the
+        // caller round a loop it can never come out of. The classifier is the SqlState class instead, and
+        // `3D` sits with `42` (the unapplied migration answering 42P01) and `28` (bad credentials).
         NpgsqlConnectionStringBuilder gone = new(_fixture.ConnectionString)
         {
             Database = "a_database_that_does_not_exist",
@@ -128,10 +134,22 @@ public sealed class StoreFaultBoundaryTests(SchemaFixture fixture)
             ConcurrencyHarness.Bucket(20),
             token));
 
-        (await call.Should().ThrowAsync<McpException>(
+        string reported = (await call.Should().ThrowAsync<McpException>(
             "every tool that touches the store is behind this boundary, not only the two that fill bars"))
-            .WithMessage("*store*")
-            .WithMessage("*3D000*");
+            .Which.Message;
+
+        reported.Should().Contain("3D000", "the SqlState identifies the condition and is not a coordinate");
+        reported.Should().Contain(
+            "defect in this server itself",
+            "a database this deployment names but does not have is this server's own misconfiguration");
+        reported.Should().Contain(
+            "Retrying will not help",
+            "advertising a retry on a fault that can never clear is the outcome this guard exists to "
+            + "prevent, and this test used to ratify it");
+        reported.Should().NotContain(
+            "the store itself needs attention",
+            "the store answered, correctly -- what it answered is that this server asked for a database "
+            + "that does not exist");
     }
 
     [Fact]

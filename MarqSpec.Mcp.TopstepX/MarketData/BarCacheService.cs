@@ -12,11 +12,18 @@ namespace MarqSpec.Mcp.TopstepX.MarketData;
 /// <summary>The outcome of a cache-aside read.</summary>
 /// <param name="Bars">The bars, ascending.</param>
 /// <param name="FetchedBuckets">
-/// How many buckets came from the venue on this call. <b>Zero means the read was served entirely from the
-/// store</b>, which is the property this whole design exists to provide — and it is reported rather than
-/// logged so that a test, and a caller, can actually observe it.
+/// How many buckets this call wrote or revised from the venue's answer. Reported rather than logged so that
+/// a test, and a caller, can actually observe what a question cost.
+/// <para>
+/// <b>Zero no longer proves the read touched no venue.</b> It did before the serialization retry: a second
+/// attempt re-derives against the winner's committed state, so the buckets it would have written are already
+/// there and it writes none — after a real fetch. <see cref="VenueRequests"/> is the exact test for "served
+/// entirely from the store", and it stays truthful on that path.
+/// </para>
 /// </param>
-/// <param name="VenueRequests">How many requests were issued to the venue.</param>
+/// <param name="VenueRequests">
+/// How many requests were issued to the venue. Zero is the precise statement that nothing was fetched.
+/// </param>
 public sealed record BarReadResult(
     IReadOnlyList<Bar> Bars,
     int FetchedBuckets,

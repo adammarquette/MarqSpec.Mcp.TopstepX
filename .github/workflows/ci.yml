@@ -63,16 +63,15 @@ jobs:
         with:
           # MinVer derives the version from tag history. actions/checkout defaults to a shallow clone, which
           # yields 0.0.0-alpha.0 SILENTLY rather than failing — so the depth matters even here, because the
-          # version is stamped into the assembly (ADR-0006).
+          # version is stamped into the assembly (ADR-0001).
           fetch-depth: 0
 
       - uses: actions/setup-dotnet@v6
         with:
-          # Both target frameworks are first-class (ADR-0005). Installing one SDK is how a job stops catching
-          # one of them.
-          dotnet-version: |
-            8.0.x
-            10.0.x
+          # net10.0 ONLY. This is an application, not the multi-targeting library the template came from —
+          # every csproj here declares a single TargetFramework. The 8.0 SDK that used to be installed here
+          # built nothing and cost a download on every job.
+          dotnet-version: 10.0.x
 
       - name: Restore
         run: dotnet restore MarqSpec.Mcp.TopstepX.slnx
@@ -111,9 +110,7 @@ jobs:
 
       - uses: actions/setup-dotnet@v6
         with:
-          dotnet-version: |
-            8.0.x
-            10.0.x
+          dotnet-version: 10.0.x
 
       - name: Restore
         run: dotnet restore MarqSpec.Mcp.TopstepX.slnx
@@ -121,10 +118,14 @@ jobs:
       - name: Build
         run: dotnet build MarqSpec.Mcp.TopstepX.slnx --configuration Release --no-restore
 
-      # No credentials, no services, no Docker: the suite starts the fake gateway in-process on an ephemeral
-      # port (ADR-0007). That is exactly what lets this be a REQUIRED check rather than a manual ritual.
-      # Category!=Live keeps the real-venue tier out; it is opt-in and never gates a merge.
-      - name: Integration tests (fake gateway)
+      # No credentials — but this tier DOES need Docker. It starts a real Postgres via Testcontainers, on the
+      # same timescale/timescaledb-ha image compose runs, because the claims worth testing here are hypertables,
+      # the HNSW vector index and the CHECK constraints. An in-memory provider would pass a suite that proves
+      # nothing about any of them (ADR-0004).
+      #
+      # ubuntu-latest ships a Docker daemon, which is what lets this be a REQUIRED check rather than a manual
+      # ritual. Category!=Live keeps the opt-in real-venue tier out; it never gates a merge.
+      - name: Integration tests (Testcontainers Postgres)
         run: >-
           dotnet test MarqSpec.Mcp.TopstepX.IntegrationTests/MarqSpec.Mcp.TopstepX.IntegrationTests.csproj
           --configuration Release --no-build --filter "Category!=Live"

@@ -137,34 +137,54 @@ jobs:
 
           exit "$failed"
 
-  # ADVISORY — never fails. A false block on traceability trains people to ignore the whole workflow.
+  # ENFORCING, as of gh#35. It used to be advisory by construction -- continue-on-error, no `set -e`, every
+  # branch ending in `exit 0` -- so it reported success on a PR citing no issue at all. The platform contract's
+  # own rule applies: a gate that cannot fail is not a gate, and one named like enforcement while providing
+  # none is worse than none, because it is believed.
   issue-link:
     name: issue-link
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     steps:
-      - name: Check the closing reference
-        # Belt and braces on "never fails": no `set -e`, every fallible call defaulted, and an explicit exit 0
-        # at the end. This job failed on its very first run because it has no checkout, so `gh` could not infer
-        # the repository and the bare `set -euo pipefail` turned that into a red check on an advisory job.
-        continue-on-error: true
+      - name: Check the issue reference
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GH_REPO: ${{ github.repository }}
           PR: ${{ github.event.pull_request.number }}
+          AUTHOR: ${{ github.event.pull_request.user.login }}
           TITLE: ${{ github.event.pull_request.title }}
           BODY: ${{ github.event.pull_request.body }}
         run: |
-          set -uo pipefail
+          set -euo pipefail
+
+          # Dependabot opens its own PRs and cannot file an issue first, so issue-first is UNSATISFIABLE for
+          # them -- not merely inconvenient. Exempting them explicitly is honest; the alternative was a gate
+          # that had to stay toothless for everyone so that one author could pass it.
+          if [ "$AUTHOR" = "dependabot[bot]" ]; then
+            echo "::notice::Author is dependabot[bot]; issue-first does not apply to an automated bump."
+            exit 0
+          fi
 
           # closingIssuesReferences is ground truth: it reflects what GitHub actually BOUND, which is not the
           # same as what the body appears to say. A backticked `Closes #N` does not bind, and a closing keyword
           # in the TITLE is ignored entirely.
-          closes=$(gh pr view "$PR" --json closingIssuesReferences --jq '.closingIssuesReferences | length' 2>/dev/null || echo "unknown")
+          #
+          # Retried rather than defaulted. A check that cannot evaluate must not report success -- that is the
+          # exact failure this job is being fixed for -- but one transient API blip should not block a merge.
+          closes=""
+          for attempt in 1 2 3; do
+            if closes=$(gh pr view "$PR" --json closingIssuesReferences --jq '.closingIssuesReferences | length'); then
+              break
+            fi
+            echo "::warning::Could not read closing references (attempt $attempt). Retrying."
+            closes=""
+            sleep 5
+          done
 
-          if [ "$closes" = "unknown" ]; then
-            echo "::warning::Could not read the PR's closing references. Skipping the advisory check."
-            exit 0
+          if [ -z "$closes" ]; then
+            echo "::error::Could not read this PR's closing references after three attempts. Failing rather"
+            echo "::error::than passing a check that did not run."
+            exit 1
           fi
 
           if [ "$closes" -gt 0 ]; then
@@ -172,17 +192,27 @@ jobs:
             exit 0
           fi
 
-          if echo "$TITLE" | grep -qiE '(close[sd]?|fix(e[sd])?|resolve[sd]?) +#[0-9]+'; then
-            echo "::warning::The title contains a closing keyword. GitHub ignores those — move it into the body."
+          # AGENTS.md admits BOTH forms: `Closes #N` for a PR that completes an issue, `Related to #N` for one
+          # that touches it without finishing it. Only the first binds in GitHub, so the second has to be read
+          # out of the body.
+          if printf '%s' "$BODY" | grep -qiE '(related to|part of|towards) +#[0-9]+'; then
+            echo "::notice::PR cites an issue without closing it (Related to #N). That satisfies issue-first."
+            exit 0
           fi
 
-          if echo "$BODY" | grep -qE '`[^`]*(close[sd]?|fix(e[sd])?|resolve[sd]?) +#[0-9]+[^`]*`'; then
-            echo "::warning::A closing keyword appears inside backticks, which does not bind. Remove the backticks."
+          # Diagnostics before the failure, so the message says what is wrong rather than only that something is.
+          if printf '%s' "$TITLE" | grep -qiE '(close[sd]?|fix(e[sd])?|resolve[sd]?) +#[0-9]+'; then
+            echo "::error::The TITLE contains a closing keyword. GitHub ignores those - move it into the body."
           fi
 
-          if echo "$BODY" | grep -qiE '(settles|delivers|implements|completes|addresses) +#[0-9]+'; then
-            echo "::warning::Near-miss verb before an issue reference. Only close/fix/resolve bind."
+          if printf '%s' "$BODY" | grep -qE '`[^`]*(close[sd]?|fix(e[sd])?|resolve[sd]?) +#[0-9]+[^`]*`'; then
+            echo "::error::A closing keyword appears inside backticks, which does not bind. Remove the backticks."
           fi
 
-          echo "::warning::This PR closes no issue. Issue-first: add a plain 'Closes #N' to the body."
-          exit 0
+          if printf '%s' "$BODY" | grep -qiE '(settles|delivers|implements|completes|addresses) +#[0-9]+'; then
+            echo "::error::Near-miss verb before an issue reference. Only close/fix/resolve bind."
+          fi
+
+          echo "::error::This PR cites no issue. Issue-first: add a plain 'Closes #N' or 'Related to #N' to"
+          echo "::error::the body. Task specs and acceptance criteria belong in the issue, not in the PR."
+          exit 1

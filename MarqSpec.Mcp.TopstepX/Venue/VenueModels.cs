@@ -128,8 +128,16 @@ public sealed record VenuePosition(
 /// <param name="FilledPrice">The fill price, when it has filled.</param>
 /// <param name="CreatedAt">When the order was created.</param>
 /// <remarks>
+/// <para>
 /// The venue's <c>customTag</c> is deliberately absent — it is arbitrary caller-supplied text, and this surface
 /// is numeric-only (ADR-0008).
+/// </para>
+/// <para>
+/// The three optional prices are <b>properties, so a null one is omitted from the wire object</b> rather than
+/// serialised as <c>null</c> — <c>order.limitPrice === null</c> is <c>false</c> for every limitless order, and
+/// the caller's test is key presence. Absence is the fact: no limit, no stop, nothing filled yet — never a
+/// price of zero.
+/// </para>
 /// </remarks>
 public sealed record VenueOrder(
     long OrderId,
@@ -177,7 +185,11 @@ public enum VenueOrderStatus
 /// <param name="Side">Buy or sell.</param>
 /// <param name="Size">The filled size.</param>
 /// <param name="Price">The fill price.</param>
-/// <param name="ProfitAndLoss">Realised P&amp;L, when the venue attributes any to this half.</param>
+/// <param name="ProfitAndLoss">
+/// Realised P&amp;L, when the venue attributes any to this half. <b>A property, so an unattributed one is
+/// omitted from the wire object</b> rather than sent as <c>null</c> — test for the key, and read an absent one
+/// as "the venue attributed none", never as a P&amp;L of zero.
+/// </param>
 /// <param name="Fees">Fees charged.</param>
 /// <param name="Voided">Whether the venue has voided this fill.</param>
 /// <param name="FilledAt">When the fill occurred.</param>

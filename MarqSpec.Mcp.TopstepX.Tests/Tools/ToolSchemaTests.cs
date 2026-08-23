@@ -32,7 +32,6 @@ namespace MarqSpec.Mcp.TopstepX.Tests.Tools;
 public sealed class ToolSchemaTests
 {
     /// <summary>Phrases a description uses to tell an agent it may leave the argument out.</summary>
-    /// <summary>Phrases a description uses to tell an agent it may leave the argument out.</summary>
     /// <remarks>
     /// <b>These are mandatory house vocabulary, not merely a trigger.</b> The per-parameter theory only
     /// <i>fires</i> when one is present, but the constant theory <i>fails</i> when none is — an advertising

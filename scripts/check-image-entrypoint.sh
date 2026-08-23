@@ -21,24 +21,30 @@
 #      stdio with a non-empty tool list. That is a POSITIVE signal only correctly-built managed code can
 #      produce: the assembly loaded, the DI graph built, the tools registered, the transport speaks.
 #
-# WHY NOT MATCH ON THE EXIT CODE. It inverts:
+# WHY NOT MATCH ON THE EXIT CODE. It no longer inverts, and it is still not what this gate reads:
 #
 #     correctly-built server, stdin held open until it answers      exit 0
-#     correctly-built server, stdin at EOF during startup           exit 139
+#     correctly-built server, stdin at EOF during startup           exit 0     (was 139 before gh#76)
 #     ENTRYPOINT naming an assembly that is not there               exit 155
 #
-# WHERE THOSE THREE WERE TAKEN, because it is not where CI runs: Docker Desktop for Windows, Engine 29.6.2.
-# `ubuntu-latest` reports Engine 28.0.4 in the `image` job's own Docker info group, and none of the three has
-# been re-measured there. They are recorded as the reason this gate ignores exit codes, NOT as runner facts
-# to reason from -- 139 in particular is 128+SIGSEGV and is the most host-sensitive of them. Nothing below
-# depends on any of the three, which is the point.
+# WHERE THOSE WERE TAKEN, because it is not where CI runs: Docker Desktop for Windows, Engine 29.6.2. Row 1
+# was measured on gh#67 and re-measured on gh#76; row 2 was measured on gh#76 both sides of the fix, 3 runs
+# each, 139 before and 0 after; 155 has not been re-measured since gh#67. `ubuntu-latest` reports Engine
+# 28.0.4 in the `image` job's own Docker info group, and none of them has been measured there. They are
+# recorded as the reason this gate ignores exit codes, NOT as runner facts to reason from. Nothing below
+# depends on any of them, which is the point.
 #
-# So 155 is the DOTNET HOST's "the command could not be loaded" — it is what BROKEN looks like, not what
-# an unconfigured-but-working server looks like. gh#67 recorded 155 as the healthy code; a gate written to
-# that number would have passed the broken image and failed the good one. 139 is 128+SIGSEGV from an
-# unhandled TaskCanceledException when stdin reaches EOF while the host is still starting (gh#76) — an
-# artifact of the shutdown race, and a number that changes the day that is fixed. Neither is a fact about
-# configuration, so this script reads WHAT THE SERVER DID and ignores what the process exited with.
+# 155 is the DOTNET HOST's "the command could not be loaded" — it is what BROKEN looks like, not what an
+# unconfigured-but-working server looks like. gh#67 recorded 155 as the healthy code; a gate written to that
+# number would have passed the broken image and failed the good one.
+#
+# 139 was 128+SIGSEGV from an unhandled TaskCanceledException when stdin reached EOF while the host was still
+# starting. gh#76 fixed that — the shutdown request is now honoured as a shutdown — so the two healthy rows
+# have collapsed to 0 and the code IS now discriminating. THIS GATE STILL DOES NOT READ IT, deliberately:
+# those numbers come from one Windows host, gh#67's whole lesson is that a gate written to an unverified exit
+# code passes the broken image and fails the good one, and an exit code says the process ended, not that the
+# server served. Re-gating on 0 is a separate change that must first measure 0 and 155 ON THE RUNNER.
+# Until then this script reads WHAT THE SERVER DID and ignores what the process exited with.
 #
 # WHY NOT MATCH ON STDERR. The server does log its refusals — "the database is not reachable", "no
 # embedding key is configured" — and grepping for one of those would couple CI to prose that is meant to be
@@ -169,24 +175,26 @@ TOOLS_LIST='{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}'
 TOOLS_REPLY='"tools"[[:space:]]*:[[:space:]]*\[[[:space:]]*\{'
 
 # STDIN MUST STAY OPEN until the reply lands, and that is the whole reason for the loop below. `docker run`
-# without it hands the container an immediately-closed stdin; the stdio transport sees EOF, asks the host to
-# shut down, and the host is still starting -- so the server dies before it answers, and the step would fail
-# on a race rather than on the image (gh#76).
+# without it hands the container an immediately-closed stdin; the stdio transport sees EOF and asks the host
+# to shut down before it has answered anything. Since gh#76 that is a CLEAN shutdown rather than a crash, but
+# it is still a shutdown -- the server exits without serving, so this gate would fail on a race rather than
+# on the image.
 #
 # The loop also stops as soon as the CONTAINER is gone. Without that an image that cannot start at all waits
 # out the whole timeout to learn what `docker inspect` already knows, and a slow red gate is a gate people
 # start skipping. One known sharp edge, recorded so it is not diagnosed from scratch: a TRANSIENT `docker
-# inspect` failure against a live container reads as "gone" and closes stdin early, which can trip the gh#76
-# race into a false red. Judged not worth a retry counter at this probability -- but if one is ever seen,
-# that is where to look.
+# inspect` failure against a live container reads as "gone" and closes stdin early, which ends the run before
+# the reply lands and shows up as a false red. gh#76 changed what that looks like -- a clean exit and no
+# reply, rather than a stack trace -- not whether it can happen. Judged not worth a retry counter at this
+# probability, but if one is ever seen, that is where to look.
 #
 # WHAT BOUNDS THE RUN, as distinct from the wait. TIMEOUT_SECONDS bounds how long the loop holds stdin OPEN;
-# the pipeline then finishes only once `docker run` itself returns, which today it does because the server
-# terminates on stdin EOF. This gate is therefore a CONSUMER of that behaviour, and gh#76 proposes changing
-# shutdown -- one of its two options, deferring the request until StartAsync completes, could leave the run
-# hanging. `timeout` hard-bounds it, because no job in ci.yml sets `timeout-minutes` and the fallback would
-# otherwise be GitHub's six-hour job default. The assertion below is re-evaluated on the completed $OUT
-# either way, so a late-but-present reply still passes.
+# the pipeline then finishes only once `docker run` itself returns, which it does because the server
+# terminates on stdin EOF. This gate is therefore a CONSUMER of that behaviour. gh#76 kept it -- it honours
+# the shutdown request rather than deferring it until StartAsync completes, and deferring was rejected partly
+# because it could have left this run hanging -- but `timeout` hard-bounds it regardless, because no job in
+# ci.yml sets `timeout-minutes` and the fallback would otherwise be GitHub's six-hour job default. The
+# assertion below is re-evaluated on the completed $OUT either way, so a late-but-present reply still passes.
 #
 # shellcheck disable=SC2094  # Reading $OUT inside a pipeline that writes it is the mechanism, not a slip:
 # the loop is a READER only, and what it is waiting for is what the other end of the pipe has written.

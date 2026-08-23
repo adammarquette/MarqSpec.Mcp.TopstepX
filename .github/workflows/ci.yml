@@ -271,10 +271,13 @@ jobs:
       #
       # WHAT A GREEN `image` LICENSES, exactly: the Dockerfile builds, the image loads into the local daemon,
       # and the image's OWN entrypoint starts a server that answers an MCP `tools/list` with no configuration
-      # (gh#67 -- until that issue the smoke step overrode the entrypoint, and licensed none of that). What
-      # it still does NOT license: a venue, store or embedding call, since none of the three is configured
-      # here; the HTTP transport, which this never selects; and the publish path end to end -- the login and
-      # the registry export still first execute at a real release.
+      # (gh#67). THE THIRD CLAUSE IS THE NEW ONE. The old smoke step licensed the first two and only those:
+      # a Dockerfile that does not build fails the build step regardless, and `--entrypoint dotnet` against a
+      # tag never loaded into the daemon exits 125 `No such image` -- measured, and it is why a missing
+      # `load: true` was always caught. What a green `image` still does NOT license: a venue, store or
+      # embedding call, since none of the three is configured here; the HTTP transport, which this never
+      # selects; and the publish path end to end -- the login and the registry export still first execute at
+      # a real release.
       - name: Build the image
         uses: docker/build-push-action@v7
         with:

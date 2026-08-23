@@ -102,6 +102,7 @@ public sealed class MarketDataTools(
         CancellationToken cancellationToken)
     {
         InstrumentId instrument = Resolve(symbol);
+        ToolGuards.ValidateResolution(resolutionMinutes);
         int wanted = _guards.ValidateCount(count);
 
         TimeSpan barSize = TimeSpan.FromMinutes(resolutionMinutes);
@@ -201,6 +202,7 @@ public sealed class MarketDataTools(
         CancellationToken cancellationToken)
     {
         InstrumentId instrument = Resolve(symbol);
+        ToolGuards.ValidateResolution(resolutionMinutes);
         IIndicator resolved = ResolveIndicator(indicator);
         DateTimeOffset asOf = asOfUtc.ToUniversalTime();
 
@@ -260,6 +262,7 @@ public sealed class MarketDataTools(
         CancellationToken cancellationToken = default)
     {
         InstrumentId instrument = Resolve(symbol);
+        ToolGuards.ValidateResolution(resolutionMinutes);
         int wanted = _guards.ValidateCount(lookbackBars);
 
         List<Bar> bars = await _database.Bars

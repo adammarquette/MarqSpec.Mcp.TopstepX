@@ -148,6 +148,48 @@ correct bar, and the guard's failure mode is silent.
   instrument can disagree about a bucket the venue later revised at only one of them.
 - `list_instruments` does not advertise resolutions, because there is no list to advertise.
 
+## Decision log
+
+| Update | What changed |
+|---|---|
+| [2026-08-23](#update-2026-08-23--any-meant-any-positive-and-four-tools-did-not-enforce-it) | Read "any" above as "any positive"; the rule now has its own guard and reaches all six tools |
+
+## Update (2026-08-23) — any meant any positive, and four tools did not enforce it
+
+**The decision stands and nothing in it changes.** Resolution is still a per-call parameter, there is still no
+allow-list, and a timeframe is still fetched rather than derived. Two things above need reading with a
+qualifier, and one of them was not true of the code when it was written.
+
+**"Any" was always shorthand for "any positive number of minutes."** This record says so itself, higher up:
+*"Any positive integer works"* — in the Context, where a reader arriving to answer "which resolutions does this
+server support" is least likely to stop. The Decision and the Consequences use the shorter word, and taken
+alone either one states something the server has never honoured.
+
+**And it was enforced in two of six places, which is not enforcement.** `ToolGuards.ValidateWindow` refused a
+non-positive resolution from the original tool-surface commit, but the check lived *inside* the window
+validation, so only `get_bars` and `get_indicators` ever reached it. On the other four the failure took two
+shapes, and the quieter one is worse:
+
+| Tool | What a `0` did |
+|---|---|
+| `get_latest_bars`, `get_market_snapshot` | raw `ArgumentOutOfRangeException` out of `BarGapDetector.AlignDown`, across the tool boundary |
+| `get_indicator_at` | **no error** — the store query matched no row, so it answered `{ value: null }` |
+| `get_key_levels` | **no error** — no bars matched, so it answered an empty level set |
+
+`null` is this surface's word for *cannot measure* and an empty level set is its word for *none here*. Both are
+answers, and `get_indicator_at`'s own description tells an agent that a null means refuse to conclude — so the
+server was instructing a caller to trust a value it had just invented.
+
+**As of gh#69 the rule has its own home.** `ToolGuards.ValidateResolution` is independent of any window, and
+all six tools go through it; `ValidateWindow` delegates rather than keeping a copy. `get_market_snapshot`
+judges its whole set in `ResolveResolutions` before reading anything, so `[5, 0, 60]` fetches nothing rather
+than returning a five-minute slice and then failing.
+
+**This is a floor, not an exhaustiveness claim.** Non-positive is refused with a readable error; that is not
+the same as every other `int` being servable. A resolution near the top of the range still overflows the reach
+arithmetic on the latest-bars path and faults exactly the way a `0` used to — pre-existing, out of gh#69's
+scope, and tracked as gh#81.
+
 ## Follow-ups
 
 - gh#49 — `get_market_snapshot` should default its resolution set rather than making an agent guess. This

@@ -81,8 +81,18 @@ public sealed class AccountTools(IMarketDataGateway gateway, ToolGuards guards)
         {
             if (fromUtc is not { } from || toUtc is not { } to)
             {
+                // Name the one that is absent. "both are required" is true and unhelpful when the caller
+                // supplied one of them: it reads as though neither arrived.
+                string missing = (fromUtc, toUtc) switch
+                {
+                    (null, null) => "fromUtc and toUtc are",
+                    (null, _) => "fromUtc is",
+                    _ => "toUtc is",
+                };
+
                 throw new McpException(
-                    "fromUtc and toUtc are both required when openOnly is false.");
+                    missing + " required when openOnly is false. Pass openOnly: true to read the working "
+                    + "book instead, which ignores the window.");
             }
 
             if (to <= from)

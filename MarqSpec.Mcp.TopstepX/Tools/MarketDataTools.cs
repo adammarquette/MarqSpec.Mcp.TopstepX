@@ -33,6 +33,14 @@ public sealed class MarketDataTools(
     private readonly StoreAvailabilityHolder _store = store;
     private readonly TimeProvider _clock = clock;
 
+    /// <summary>How much history key-level detection covers when the caller does not say.</summary>
+    /// <remarks>
+    /// Enough for a level to have been touched more than once at most intraday resolutions. The description
+    /// on the parameter advertised this number while the schema required the argument, so an agent following
+    /// the description was rejected before its call reached any code (gh#70).
+    /// </remarks>
+    public const int DefaultLookbackBars = 500;
+
     /// <summary>Reads OHLCV bars for a window.</summary>
     /// <param name="symbol">The instrument symbol.</param>
     /// <param name="resolutionMinutes">The bar size in minutes.</param>
@@ -247,9 +255,9 @@ public sealed class MarketDataTools(
     public async Task<ToolPayloads.LevelSet> GetKeyLevels(
         [Description("The instrument symbol, e.g. ES.")] string symbol,
         [Description("The timeframe in minutes.")] int resolutionMinutes,
-        [Description("How many bars of history to detect over. 500 is a reasonable default.")]
-        int lookbackBars,
-        CancellationToken cancellationToken)
+        [Description("How many bars of history to detect over. Omit for 500.")]
+        int lookbackBars = DefaultLookbackBars,
+        CancellationToken cancellationToken = default)
     {
         InstrumentId instrument = Resolve(symbol);
         int wanted = _guards.ValidateCount(lookbackBars);

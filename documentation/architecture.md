@@ -171,12 +171,35 @@ candidates and applies remaining filters *afterwards*, so a filtered index scan 
 asked for while matching rows sit in the table — not an error, just a short list that reads exactly like "that
 is all there is". `SET LOCAL`, so it cannot outlive the transaction on a pooled connection.
 
+### That makes pgvector 0.8 a hard requirement, checked at startup
+
+`hnsw.iterative_scan` is a 0.8 GUC. On 0.7.4 the statement above raises `invalid configuration parameter name`
+— "hnsw" is a reserved prefix — **and aborts the transaction**. Measured, not assumed. Reaching that at query
+time would turn a search into an exception in a design whose entire contract is that the text path is a
+fallback and not an error path.
+
+So the startup probe reads `extversion`, not merely `extname`, and an older pgvector is reported through the
+same `EmbeddingAvailability` channel as a missing key: **search matches text, and says which version it found
+and which it needs.** The whole vector path is refused rather than run without the iterative scan — unfiltered
+search would work on 0.7, but a filtered one would quietly return fewer rows than exist, and a quietly-short
+answer is worse than an honest substring match.
+
+An unparseable version counts as too old. The safe default is the one that degrades, not the one that assumes
+the best and throws later.
+
 ### What the vector path cannot see
 
 An observation whose embedding failed at write time has no vector, and semantic search cannot reach it —
 which is in tension with what `record_observation` told its author, that the note would match on text until
 re-embedded. Rather than paper over that, the result carries `unsearchableCount`: how many observations in
 scope were invisible to this search. A gap that is reported is a gap someone can act on.
+
+**It is computed only when the page came back short.** The count is a correlated `NOT EXISTS` over every
+observation in scope, casting a `uuid` to text per row — nothing an index on `OwnerId` can serve, so at a
+hundred thousand observations it is a hundred thousand row scan to produce one integer. A caller holding a
+full page is not missing anything they asked for, so the number would not change what they do. When it is not
+computed it is **`null`, never `0`**: zero is an answer, and reporting one on the strength of never having
+looked is the same fabrication as a `1.0` similarity on the text path.
 
 ## What is deliberately absent
 

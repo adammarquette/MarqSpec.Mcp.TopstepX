@@ -61,14 +61,25 @@ public sealed class EmbeddingAvailabilityProbe(ILogger<EmbeddingAvailabilityProb
             // pg_extension, not pg_available_extensions: the question is whether it is INSTALLED in this
             // database, not whether it could be. An available-but-not-created extension is exactly the state
             // that would embed happily and then fault at the upsert.
+            // extversion, not just extname. The version is not a detail: hnsw.iterative_scan is a 0.8 GUC,
+            // and on 0.7 `SET LOCAL hnsw.iterative_scan` raises "invalid configuration parameter name" AND
+            // ABORTS THE TRANSACTION -- so a search would throw rather than fall back. Measured on 0.7.4,
+            // not inferred. Catching it here means the one environment that cannot do this degrades the same
+            // way every other missing dependency does.
             List<string> installed = await database.Database
-                .SqlQuery<string>($"SELECT extname AS \"Value\" FROM pg_extension WHERE extname = 'vector'")
+                .SqlQuery<string>(
+                    $"SELECT extversion AS \"Value\" FROM pg_extension WHERE extname = 'vector'")
                 .ToListAsync(cancellationToken)
                 .ConfigureAwait(false);
 
-            return Report(installed.Count > 0
+            if (installed.Count == 0)
+            {
+                return Report(EmbeddingAvailability.NoVectorExtension());
+            }
+
+            return Report(IsAtLeastMinimum(installed[0])
                 ? EmbeddingAvailability.Available()
-                : EmbeddingAvailability.NoVectorExtension());
+                : EmbeddingAvailability.VectorExtensionTooOld(installed[0]));
         }
         catch (Npgsql.NpgsqlException ex)
         {
@@ -77,6 +88,33 @@ public sealed class EmbeddingAvailabilityProbe(ILogger<EmbeddingAvailabilityProb
             _logger.LogWarning(ex, "Could not check for the vector extension; embeddings disabled.");
             return Report(EmbeddingAvailability.NoStore());
         }
+    }
+
+    /// <summary>Whether an <c>extversion</c> string is new enough for semantic search.</summary>
+    /// <param name="version">The version as Postgres reports it, e.g. <c>0.8.6</c>.</param>
+    /// <returns><see langword="true"/> when it meets the minimum.</returns>
+    /// <remarks>
+    /// An unparseable version is treated as <b>too old</b>, not as new enough. What this guards aborts a
+    /// transaction at query time, so the safe default is the one that degrades to text search rather than the
+    /// one that assumes the best and throws later.
+    /// </remarks>
+    public static bool IsAtLeastMinimum(string? version)
+    {
+        if (string.IsNullOrWhiteSpace(version))
+        {
+            return false;
+        }
+
+        string[] parts = version.Split('.');
+
+        if (parts.Length < 2
+            || !int.TryParse(parts[0], out int major)
+            || !int.TryParse(new string([.. parts[1].TakeWhile(char.IsDigit)]), out int minor))
+        {
+            return false;
+        }
+
+        return new Version(major, minor) >= EmbeddingAvailability.MinimumVectorVersion;
     }
 
     private EmbeddingAvailability Report(EmbeddingAvailability availability)

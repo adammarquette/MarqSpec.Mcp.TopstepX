@@ -205,15 +205,18 @@ public static class ToolPayloads
     /// interchangeable, which is another reason <c>Mode</c> has to be read.
     /// </param>
     /// <param name="UnsearchableCount">
-    /// How many observations in scope have no vector and so could not take part. Zero on the text path, which
-    /// reads every row. A non-zero value means this search saw less than the whole corpus — the number is
-    /// reported rather than logged because a short result and a small corpus are indistinguishable without it.
+    /// How many observations in scope have no vector and so could not take part — <see langword="null"/> when
+    /// the question was not asked. A non-zero value means this search saw less than the whole corpus, and it
+    /// is reported rather than logged because a short result and a small corpus are otherwise
+    /// indistinguishable. It is computed only when the page came back short, since that is the only time the
+    /// answer changes what a caller should do; <see langword="null"/> is therefore "not asked", never "none".
+    /// Zero on the text path, which genuinely reads every row.
     /// </param>
     public sealed record ObservationSearchResult(
         SearchMode Mode,
         string? ModeReason,
         IReadOnlyList<ObservationInfo> Observations,
-        int UnsearchableCount = 0);
+        int? UnsearchableCount = null);
 
     /// <summary>A recorded observation.</summary>
     /// <param name="Id">Its identity.</param>

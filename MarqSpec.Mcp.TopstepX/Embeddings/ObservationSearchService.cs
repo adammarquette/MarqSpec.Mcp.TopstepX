@@ -41,14 +41,16 @@ public sealed record ObservationMatch(ObservationRecord Observation, double? Sim
 /// <param name="Reason">Why, when it was not semantic. Null when it was.</param>
 /// <param name="Matches">The matches, best first for semantic and most recent first for text.</param>
 /// <param name="UnsearchableCount">
-/// How many observations in scope have no vector and so could not take part in a semantic search. Always zero
-/// on the text path, which reads every row.
+/// How many observations in scope have no vector and so could not take part — <see langword="null"/> when the
+/// question was not asked. It is asked only when the page came back short, because that is the only time the
+/// answer changes what the caller should do; computing it otherwise costs a full scan of the corpus for a
+/// number nobody acts on. Zero on the text path, which genuinely reads every row.
 /// </param>
 public sealed record ObservationSearchOutcome(
     ObservationSearchMode Mode,
     string? Reason,
     IReadOnlyList<ObservationMatch> Matches,
-    int UnsearchableCount);
+    int? UnsearchableCount);
 
 /// <summary>
 /// Searches observations by meaning, and by substring when it cannot.
@@ -173,19 +175,31 @@ public sealed class ObservationSearchService(
             .ToListAsync(cancellationToken)
             .ConfigureAwait(false);
 
-        // Counted, not inferred from the result length. An observation whose embedding call failed at write
-        // time is INVISIBLE to this path, and gh#46 told its author it would "match on text until
-        // re-embedded" -- a promise this query cannot keep on its own. Reporting the number is what stops a
-        // thin result being read as a thin corpus.
-        IQueryable<ObservationRecord> scope = filter ?? _database.Observations;
-        int unsearchable = await scope
-            .CountAsync(
-                o => !_database.Embeddings.Any(e =>
-                    e.OwnerKind == EmbeddingOwnerKind.Observation
-                    && e.Model == _provider.Model
-                    && e.OwnerId == o.Id.ToString()),
-                cancellationToken)
-            .ConfigureAwait(false);
+        // An observation whose embedding call failed at write time is INVISIBLE to this path, and gh#46 told
+        // its author it would "match on text until re-embedded" -- a promise this query cannot keep on its
+        // own. Reporting the number is what stops a thin result being read as a thin corpus.
+        //
+        // ONLY WHEN THE PAGE CAME BACK SHORT, though. This count is a correlated NOT EXISTS over every
+        // observation in scope, casting a uuid to text per row -- no index on OwnerId can serve it, so at
+        // 100k observations it is a 100k-row scan to produce one integer, on every search. Paying that when
+        // the caller already has a full page buys them nothing: they are not missing results they asked for.
+        //
+        // Null when it was not computed, NOT zero. Zero is an answer ("nothing is missing") and this would be
+        // a guess wearing one -- the same rule that keeps Similarity null on the text path.
+        int? unsearchable = null;
+
+        if (nearest.Count < limit)
+        {
+            IQueryable<ObservationRecord> scope = filter ?? _database.Observations;
+            unsearchable = await scope
+                .CountAsync(
+                    o => !_database.Embeddings.Any(e =>
+                        e.OwnerKind == EmbeddingOwnerKind.Observation
+                        && e.Model == _provider.Model
+                        && e.OwnerId == o.Id.ToString()),
+                    cancellationToken)
+                .ConfigureAwait(false);
+        }
 
         // Hydrated in a second round trip rather than a join, and that is the whole point: a join in the
         // ordering query makes the planner hash-join both tables and sort EVERY vector, never touching the
@@ -282,8 +296,8 @@ public sealed class ObservationSearchService(
             .ToListAsync(cancellationToken)
             .ConfigureAwait(false);
 
-        // Zero unsearchable, and that is not a shortcut: this path reads Observations directly, so every row
-        // takes part whether or not it has a vector.
+        // Zero, not null, and that is not a shortcut: this path reads Observations directly, so every row
+        // takes part whether or not it has a vector. The question was asked and the answer is none.
         return new ObservationSearchOutcome(
             ObservationSearchMode.Text,
             reason,
@@ -296,6 +310,9 @@ public sealed class ObservationSearchService(
         EmbeddingOutcome.RateLimited =>
             "The embedding provider rate-limited the query, so this result is substring matching. Retrying "
             + "shortly should get semantic matching.",
+        EmbeddingOutcome.Rejected =>
+            "The embedding provider rejected the credential, so this result is substring matching. Check "
+            + "Embeddings__ApiKey - retrying will not help.",
         EmbeddingOutcome.Malformed =>
             "The embedding provider returned an unusable response, so this result is substring matching.",
         _ =>

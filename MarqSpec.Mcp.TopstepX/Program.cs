@@ -232,6 +232,7 @@ public static class Program
             options.UseNpgsql(connection, npgsql => npgsql.UseVector()));
 
         services.AddScoped<IndicatorProjector>();
+        services.AddScoped<IndicatorRebuilder>();
         services.AddScoped<BarCacheService>();
 
         // The tool types themselves. The SDK activates a tool per call with ActivatorUtilities, which resolves
@@ -338,59 +339,15 @@ public static class Program
         using IServiceScope scope = app.Services.CreateScope();
         IServiceProvider sp = scope.ServiceProvider;
 
-        TopstepXDbContext database = sp.GetRequiredService<TopstepXDbContext>();
-        IndicatorProjector projector = sp.GetRequiredService<IndicatorProjector>();
-        IMarketDataGateway gateway = sp.GetRequiredService<IMarketDataGateway>();
-        InstrumentRegistry registry = sp.GetRequiredService<InstrumentRegistry>();
-        TimeProvider clock = sp.GetRequiredService<TimeProvider>();
-        ILogger logger = sp.GetRequiredService<ILoggerFactory>().CreateLogger("rebuild-indicators");
+        // The loop itself lives in IndicatorRebuilder rather than here, so the verb can be run by a test. A
+        // private static in the composition root cannot be, and this verb shipped in Phase 2 having never
+        // been executed anywhere.
+        string? only = args.Length > 1 ? args[1] : null;
 
-        string? only = args.Length > 1 ? args[1].Trim().ToUpperInvariant() : null;
-        DateTimeOffset now = clock.GetUtcNow();
-
-        // Every (instrument, resolution) the store actually holds, rather than every configured one: a
-        // resolution nobody has fetched has nothing to rebuild, and asking for it would be a no-op that looks
-        // like a result.
-        var series = await database.Bars
-            .Select(b => new { b.Venue, b.Instrument, b.ResolutionMinutes })
-            .Distinct()
-            .ToListAsync()
+        await sp.GetRequiredService<IndicatorRebuilder>()
+            .RebuildAsync(only, CancellationToken.None)
             .ConfigureAwait(false);
 
-        int total = 0;
-        foreach (var s in series)
-        {
-            if (only is not null && !string.Equals(s.Instrument, only, StringComparison.Ordinal))
-            {
-                continue;
-            }
-
-            if (!registry.IsServed(s.Instrument))
-            {
-                logger.LogWarning(
-                    "Skipping {Instrument}: it is in the store but not in MarketData__Instruments.",
-                    s.Instrument);
-                continue;
-            }
-
-            int written = await projector
-                .ProjectAsync(s.Venue, registry.Resolve(s.Instrument), s.ResolutionMinutes, now, default)
-                .ConfigureAwait(false);
-
-            await database.SaveChangesAsync().ConfigureAwait(false);
-            total += written;
-
-            logger.LogInformation(
-                "Rebuilt {Count} values for {Instrument} {Resolution}m.",
-                written,
-                s.Instrument,
-                s.ResolutionMinutes);
-        }
-
-        logger.LogInformation("Rebuild complete: {Total} values written across {Series} series.",
-            total, series.Count);
-
-        _ = gateway; // The rebuild is a replay over stored bars; the venue is deliberately never reached.
         return 0;
     }
 }

@@ -263,4 +263,4 @@ Neither is free of residue, and the honest statement of it is: two fills whose r
 project over their own view, so one can write values seeded from the wrong bar. Those are **stale, not lost** —
 the projection is reproducible from the bars by design ([ADR-0006](0006-indicators-as-projections.md)), so the
 next pass over the series corrects them. Closing that as well means serialising fills per series, which is a
-lock rather than an isolation level and is not decided here.
+lock rather than an isolation level and is not decided here — it is tracked as gh#80.

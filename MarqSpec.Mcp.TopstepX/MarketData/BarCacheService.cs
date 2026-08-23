@@ -179,7 +179,7 @@ public sealed class BarCacheService
             // from the wrong bar. Those are stale rather than lost, and the next pass over the series -- any
             // fill touching it, or rebuild-indicators -- recomputes them, because a projection is reproducible
             // from the bars by design (ADR-0006). Serializing fills per series would close it; that is a
-            // per-series lock, not an isolation level, and it is not this fix.
+            // per-series lock, not an isolation level, and it is tracked as gh#80 rather than done here.
             //
             // The in-memory provider used by the unit tier has no transactions, so this is conditional. What
             // is NOT conditional is the ordering below.

@@ -73,7 +73,8 @@ write sets and cannot collide, and two fills of overlapping ranges collide on th
 is a pre-existing condition of concurrent overlapping fills rather than one the isolation level introduces.
 What is *not* fixed is a fill whose snapshot misses a range another fill is filling: its values are seeded from
 the wrong bar and are stale until the next pass, which is recoverable by construction (`R-2.9`,
-[ADR-0006](adr/0006-indicators-as-projections.md)).
+[ADR-0006](adr/0006-indicators-as-projections.md)). Closing that means serialising fills per series — a lock
+rather than an isolation level, tracked as gh#80.
 
 ### Why step 2 exists
 

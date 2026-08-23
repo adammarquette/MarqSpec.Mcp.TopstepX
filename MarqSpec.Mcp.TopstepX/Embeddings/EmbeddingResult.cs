@@ -25,6 +25,16 @@ public enum EmbeddingOutcome
 
     /// <summary>The provider answered, but not with a usable vector of the expected width.</summary>
     Malformed = 5,
+
+    /// <summary>
+    /// The provider answered and refused the credential.
+    /// </summary>
+    /// <remarks>
+    /// Distinct from <see cref="Unavailable"/> because the operator's next move is different and opposite:
+    /// an outage is waited out, a rejected key is fixed. Collapsing the two produces a well-formed message
+    /// that sends someone to check the network while their key sits wrong in the environment.
+    /// </remarks>
+    Rejected = 6,
 }
 
 /// <summary>

@@ -21,21 +21,12 @@ services:
       # A named volume, not a bind mount: NuGet's cache is full of small files and a bind mount across the
       # Windows filesystem boundary makes restore crawl.
       - nuget-cache:/root/.nuget/packages
-      # The integration tier drives Testcontainers, which needs a Docker daemon. Mounting the host's socket
-      # makes the containers it starts SIBLINGS of this one rather than children -- which is why the host
-      # override below is needed: Testcontainers must reach them at an address that means something from in
-      # here, and "localhost" would mean this container. Without this the integration suite can only run in
-      # CI, and a suite that only runs in CI is one nobody runs before pushing.
-      - /var/run/docker.sock:/var/run/docker.sock
     environment:
       DOTNET_CLI_TELEMETRY_OPTOUT: "1"
       DOTNET_NOLOGO: "1"
       # The integration suite defaults to hosting the gateway in-process. Point it at the composed one instead
       # when both services are up.
       PROJECTX_FAKE_GATEWAY_URL: "${PROJECTX_FAKE_GATEWAY_URL:-}"
-      TESTCONTAINERS_HOST_OVERRIDE: "host.docker.internal"
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
     # Overridden by whatever follows `run --rm sdk`.
     entrypoint: ["dotnet"]
     command: ["--info"]

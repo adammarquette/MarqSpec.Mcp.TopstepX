@@ -1,10 +1,13 @@
 using FluentAssertions;
 using MarqSpec.Mcp.TopstepX.Configuration;
+using MarqSpec.Mcp.TopstepX.Embeddings;
 using MarqSpec.Mcp.TopstepX.Tools;
 using MarqSpec.Mcp.TopstepX.Venue;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Http;
+using Microsoft.Extensions.Options;
 
 namespace MarqSpec.Mcp.TopstepX.Tests;
 
@@ -52,6 +55,30 @@ public sealed class CompositionRootTests
             ValidateOnBuild = true,
             ValidateScopes = true,
         });
+    }
+
+    [Fact]
+    public void TheEmbeddingKeyIsRedactedFromHttpLogging()
+    {
+        // IHttpClientFactory's logging handlers write request headers at Trace, and raising
+        // System.Net.Http.HttpClient to Trace is exactly what an operator does when embeddings are not
+        // landing. THIS REPOSITORY IS PUBLIC, and the sibling ProjectX client has already leaked and rotated
+        // a real credential once.
+        //
+        // This pins the REQUIREMENT (the token is redacted), not the mechanism. The framework default already
+        // redacts every header, so the way this breaks is not by someone deleting a call -- it is by someone
+        // ADDING RedactLoggedHeaders with a narrower list, which replaces the redact-everything default with
+        // an allow-list. That is a change that reads like hardening and is not, and this test is what catches
+        // it.
+        using ServiceProvider provider = Build(
+            new Dictionary<string, string?> { ["Embeddings:ApiKey"] = "a-key-that-must-not-be-logged" },
+            new McpOptions { Transport = McpTransport.Stdio });
+
+        HttpClientFactoryOptions options = provider
+            .GetRequiredService<IOptionsMonitor<HttpClientFactoryOptions>>()
+            .Get(nameof(IEmbeddingProvider));
+
+        options.ShouldRedactHeaderValue("Authorization").Should().BeTrue();
     }
 
     [Fact]

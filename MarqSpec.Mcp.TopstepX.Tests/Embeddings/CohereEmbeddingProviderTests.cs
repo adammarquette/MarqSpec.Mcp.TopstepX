@@ -141,7 +141,10 @@ public sealed class CohereEmbeddingProviderTests
 
     [Theory]
     [InlineData(HttpStatusCode.TooManyRequests, EmbeddingOutcome.RateLimited)]
-    [InlineData(HttpStatusCode.Unauthorized, EmbeddingOutcome.Unavailable)]
+    // A refused credential is NOT Unavailable. The operator's next move is opposite -- fix the key rather
+    // than wait -- and only a distinct outcome can tell them which.
+    [InlineData(HttpStatusCode.Unauthorized, EmbeddingOutcome.Rejected)]
+    [InlineData(HttpStatusCode.Forbidden, EmbeddingOutcome.Rejected)]
     [InlineData(HttpStatusCode.InternalServerError, EmbeddingOutcome.Unavailable)]
     [InlineData(HttpStatusCode.BadGateway, EmbeddingOutcome.Unavailable)]
     public async Task AnErrorStatusBecomesAnOutcome(HttpStatusCode status, EmbeddingOutcome expected)

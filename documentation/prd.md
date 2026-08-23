@@ -80,6 +80,9 @@ The server serves OHLCV bars for a futures instrument at a requested resolution 
 - **R-6.2** These are writes to **this** database. They are not sent to the venue and do not weaken R-4.
 - **R-6.3** Semantic search degrades to text search when no embedding provider is configured. An unset key is
   never a crash, and availability means a key **and** a vector store that exists.
+- **R-6.4** Search reports **which path answered and why**, and a semantic result carries a similarity score
+  per match plus a count of observations that had no vector to compare. A caller must never have to guess
+  whether an empty list means "nothing similar" or "similarity never ran".
 
 ## R-7 — Configuration and secrets
 

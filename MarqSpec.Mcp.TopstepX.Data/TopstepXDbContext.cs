@@ -74,6 +74,12 @@ public sealed class TopstepXDbContext(DbContextOptions<TopstepXDbContext> option
 
             entity.Property(b => b.Venue).HasMaxLength(64);
             entity.Property(b => b.Instrument).HasMaxLength(32);
+
+            // Nullable on purpose, and never backfilled: rows written before this column existed have no
+            // contract, and the information was not captured. An inferred front month would be a guess, which
+            // is the failure this column exists to stop (ADR-0011).
+            entity.Property(b => b.ContractId).HasMaxLength(64);
+
             entity.Property(b => b.Open).HasColumnType(PriceColumnType);
             entity.Property(b => b.High).HasColumnType(PriceColumnType);
             entity.Property(b => b.Low).HasColumnType(PriceColumnType);

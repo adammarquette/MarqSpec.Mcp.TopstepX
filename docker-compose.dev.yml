@@ -3,6 +3,8 @@
 #   docker compose -f docker-compose.yml -f docker-compose.dev.yml run --rm sdk dotnet test
 #   docker compose -f docker-compose.yml -f docker-compose.dev.yml run --rm sdk dotnet format --verify-no-changes
 #
+# The integration tier needs the Docker socket mounted below; see the note on that volume before adopting it.
+#
 # Two reasons this exists.
 #
 # A local check that disagrees with CI is worse than no local check. CI runs on ubuntu-latest with LF line
@@ -21,12 +23,27 @@ services:
       # A named volume, not a bind mount: NuGet's cache is full of small files and a bind mount across the
       # Windows filesystem boundary makes restore crawl.
       - nuget-cache:/root/.nuget/packages
+      # The integration tier drives Testcontainers, which needs a Docker daemon. Without this the suite runs
+      # ONLY in CI -- and on Windows the host `dotnet test` path is separately blocked by Smart App Control
+      # (0x800711C7), which is why this container exists at all. A suite nobody can run before pushing is one
+      # nobody runs.
+      #
+      # BE AWARE WHAT THIS GRANTS: the host Docker socket is root-equivalent access to the daemon. Anything in
+      # this container can start a privileged container or mount the host filesystem. It is the standard
+      # Testcontainers sibling-container pattern and this file is dev-only -- never part of the image or the
+      # deployment -- but it is a deliberate trade, not a detail (gh#58).
+      - /var/run/docker.sock:/var/run/docker.sock
     environment:
       DOTNET_CLI_TELEMETRY_OPTOUT: "1"
       DOTNET_NOLOGO: "1"
       # The integration suite defaults to hosting the gateway in-process. Point it at the composed one instead
       # when both services are up.
       PROJECTX_FAKE_GATEWAY_URL: "${PROJECTX_FAKE_GATEWAY_URL:-}"
+      # Containers started through that socket are SIBLINGS of this one, not children, so Testcontainers must
+      # reach them at an address that means something from in here -- "localhost" would mean this container.
+      TESTCONTAINERS_HOST_OVERRIDE: "host.docker.internal"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     # Overridden by whatever follows `run --rm sdk`.
     entrypoint: ["dotnet"]
     command: ["--info"]

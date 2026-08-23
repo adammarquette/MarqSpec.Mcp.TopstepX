@@ -189,3 +189,14 @@ For a reproducible toolchain (and to sidestep Windows blocking freshly built uns
 ```bash
 docker compose -f docker-compose.yml -f docker-compose.dev.yml run --rm sdk dotnet test
 ```
+
+That command runs the **integration** tier too, which needs a Docker daemon for Testcontainers — so the `sdk`
+service bind-mounts the host Docker socket. **That is root-equivalent access to the daemon**, and worth
+knowing before you run it: anything in the container could start a privileged container or mount the host
+filesystem. It is the standard sibling-container pattern, the file is dev-only and never part of the image,
+and the alternative is an integration suite that only ever runs in CI. If you would rather not grant it,
+delete the `docker.sock` volume and run just the unit tier:
+
+```bash
+docker compose -f docker-compose.dev.yml run --rm sdk dotnet test MarqSpec.Mcp.TopstepX.Tests
+```

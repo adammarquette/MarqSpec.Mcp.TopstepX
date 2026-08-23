@@ -1,5 +1,6 @@
 using MarqSpec.Mcp.TopstepX.Data;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Diagnostics;
 using Testcontainers.PostgreSql;
 
 namespace MarqSpec.Mcp.TopstepX.IntegrationTests;
@@ -31,10 +32,17 @@ public sealed class SchemaFixture : IAsyncLifetime
     public string ConnectionString => _postgres.GetConnectionString();
 
     /// <summary>Opens a context against the container.</summary>
+    /// <param name="interceptors">
+    /// Interceptors to attach, for a test that needs to place another transaction's commit at a chosen point
+    /// <i>between</i> two of this context's statements. An isolation-level claim is a claim about exactly that
+    /// interleaving, and a test that merely runs two units of work concurrently observes it by luck or not at
+    /// all.
+    /// </param>
     /// <returns>The context. The caller disposes it.</returns>
-    public TopstepXDbContext CreateContext() =>
+    public TopstepXDbContext CreateContext(params IInterceptor[] interceptors) =>
         new(new DbContextOptionsBuilder<TopstepXDbContext>()
             .UseNpgsql(ConnectionString, npgsql => npgsql.UseVector())
+            .AddInterceptors(interceptors)
             .Options);
 
     /// <inheritdoc />

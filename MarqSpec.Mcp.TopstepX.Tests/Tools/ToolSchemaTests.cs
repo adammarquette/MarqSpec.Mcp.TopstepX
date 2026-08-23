@@ -1,6 +1,8 @@
 using System.ComponentModel;
+using System.Globalization;
 using System.Reflection;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using FluentAssertions;
 using MarqSpec.Mcp.TopstepX.Tools;
 using ModelContextProtocol.Server;
@@ -131,6 +133,48 @@ public sealed class ToolSchemaTests
             parameterName);
     }
 
+    [Theory]
+    [MemberData(nameof(EveryToolParameter))]
+    public void ADescriptionAdvertisingADefault_NamesTheValueTheCodeActuallyUses(
+        string tool,
+        string parameterName)
+    {
+        // gh#70 was promise-vs-SCHEMA: a description said a parameter was omittable and the wire disagreed.
+        // This is the same family one step removed — promise-vs-CONSTANT. `barCount`, `lookbackBars` and
+        // `onlyActive` each advertise their default as a literal inside the description, beside a constant
+        // holding the real value, and nothing tied the two together outside `get_market_snapshot`.
+        //
+        // Change the constant and the sentence keeps advertising the old number, which is a tool telling an
+        // agent something untrue about itself — the exact shape this whole issue is about.
+        MethodInfo method = ToolMethods().Single(m => m.DeclaringType!.Name + "." + m.Name == tool);
+        ParameterInfo parameter = method.GetParameters().Single(p => p.Name == parameterName);
+
+        if (!parameter.HasDefaultValue || parameter.DefaultValue is null)
+        {
+            return;
+        }
+
+        string description = parameter.GetCustomAttribute<DescriptionAttribute>()?.Description ?? string.Empty;
+        string advertised = parameter.DefaultValue switch
+        {
+            bool b => b ? "true" : "false",
+            IFormattable f => f.ToString(null, CultureInfo.InvariantCulture),
+            object o => o.ToString() ?? string.Empty,
+        };
+
+        description.Should().MatchRegex(
+            // No digit or decimal point before; no digit after, and no decimal point that is followed by
+            // one. A trailing sentence period must NOT disqualify a match -- "Omit for 500." is the normal
+            // way to write this, and excluding every following period made the gate fail on correct text.
+            @"(?<![\d.])" + Regex.Escape(advertised) + @"(?!\.?\d)",
+            "{0}.{1} defaults to {2}, and an agent reads the description rather than the code — so the "
+            + "description has to name that value. Current text: \"{3}\"",
+            tool,
+            parameterName,
+            advertised,
+            description);
+    }
+
     // ── The search limit, which is a stated number rather than a hint ────────────────────────────────
 
     [Fact]
@@ -163,7 +207,11 @@ public sealed class ToolSchemaTests
 
     private static bool IsNullable(ParameterInfo parameter) =>
         Nullable.GetUnderlyingType(parameter.ParameterType) is not null
-        || new NullabilityInfoContext().Create(parameter).WriteState == NullabilityState.Nullable;
+        // ReadState rather than WriteState: `[DisallowNull] string? x` has write = NotNull, so it would
+        // escape this check AND the wording check at once. No such attribute exists here today and the
+        // combination is close to self-defeating (the compiler warns at any null call site), but the wrong
+        // half of the pair is not a thing to leave in a gate.
+        || new NullabilityInfoContext().Create(parameter).ReadState == NullabilityState.Nullable;
 
     private static IEnumerable<MethodInfo> ToolMethods() =>
         typeof(ToolPayloads).Assembly

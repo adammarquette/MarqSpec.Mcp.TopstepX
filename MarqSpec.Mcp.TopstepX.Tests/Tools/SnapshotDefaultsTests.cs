@@ -122,9 +122,12 @@ public sealed class SnapshotDefaultsTests
     /// A plain substring check reads as a gate and is not one: <c>Contain("10")</c> is satisfied by the
     /// <c>100</c> already in the text, so a bar count changed from 100 to 10 would leave the description
     /// advertising the old value and the test still green. <c>\b</c> is no use here either — it does not sit
-    /// between two digits — so the boundary has to be asserted as "no digit and no decimal point either side".
-    /// The decimal point matters because this surface's prose carries tick sizes and ATR multiples, and
-    /// <c>2.5</c> would otherwise satisfy a search for <c>5</c>.
+    /// between two digits — so the boundary has to be asserted as "no digit either side, and no decimal
+    /// point that is part of a number". The decimal point matters because this surface's prose carries tick
+    /// sizes and ATR multiples, and <c>2.5</c> would otherwise satisfy a search for <c>5</c>. A <i>trailing
+    /// sentence</i> period must not disqualify a match, though — "Omit it for 100." is the ordinary way to
+    /// write this, and an earlier form excluded every following period, which would have failed the gate on
+    /// correct text the moment anyone reworded the description.
     /// <para>
     /// What this still cannot catch is a default changed to a number the description happens to contain for
     /// another reason — <c>DefaultBarCount = 60</c> would find the <c>60</c> in "60-minute". Closing that
@@ -133,7 +136,7 @@ public sealed class SnapshotDefaultsTests
     /// </para>
     /// </remarks>
     private static string WholeNumber(int value) =>
-        @"(?<![\d.])" + value.ToString(CultureInfo.InvariantCulture) + @"(?![\d.])";
+        @"(?<![\d.])" + value.ToString(CultureInfo.InvariantCulture) + @"(?!\.?\d)";
 
     private static MethodInfo SnapshotMethod() =>
         typeof(SnapshotTools).GetMethod(nameof(SnapshotTools.GetMarketSnapshot))

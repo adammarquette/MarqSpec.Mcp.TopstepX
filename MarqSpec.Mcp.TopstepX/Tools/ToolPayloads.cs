@@ -384,7 +384,10 @@ public static class ToolPayloads
 
     /// <summary>A recorded observation.</summary>
     /// <param name="Id">Its identity.</param>
-    /// <param name="Symbol">The instrument it is about, when it is about one.</param>
+    /// <param name="Symbol">
+    /// The instrument it is about, when it is about one. <b>A property, so a general observation omits the
+    /// key</b> rather than sending <c>null</c>.
+    /// </param>
     /// <param name="Kind">The caller's classification.</param>
     /// <param name="Text">The observation.</param>
     /// <param name="Tags">Its tags.</param>

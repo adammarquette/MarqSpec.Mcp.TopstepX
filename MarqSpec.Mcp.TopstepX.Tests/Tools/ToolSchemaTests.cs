@@ -239,6 +239,54 @@ public sealed class ToolSchemaTests
             value);
     }
 
+    // ── Descriptions against the shape a missing number takes on the wire ────────────────────────────
+
+    public static TheoryData<string, string> EveryToolAbsentField()
+    {
+        TheoryData<string, string> data = [];
+
+        foreach (MethodInfo method in ToolMethods())
+        {
+            foreach (string field in AbsentFields(method.ReturnType))
+            {
+                data.Add(method.DeclaringType!.Name + "." + method.Name, field);
+            }
+        }
+
+        return data;
+    }
+
+    [Theory]
+    [MemberData(nameof(EveryToolAbsentField))]
+    public void ADescription_DoesNotTellACallerToCompareAnAbsentFieldToNull(string tool, string field)
+    {
+        // The third member of the promise-vs-reality family, and the one that reaches the RESULT rather than
+        // the arguments. `get_indicator_at` said "A null value means CANNOT MEASURE" while `value` is a
+        // nullable PROPERTY, which `WhenWritingNull` drops: the reading arrives as `{}` and the caller's
+        // `reading.value === null` is `undefined === null`, which is false (gh#85). The wire shape itself is
+        // pinned by PayloadNullWireShapeTests; nothing pinned the sentence an agent actually reads.
+        //
+        // Structural on the half that can be computed — which fields the serializer drops comes from the
+        // return type by reflection, so a new payload field is covered the moment it is added — and a short,
+        // closed pattern list on the half that is prose. It is a NEGATIVE gate: it bans the comparison
+        // shapes that produce the bug, and says nothing about how a description phrases the truth. A wrong
+        // sentence in some shape not listed here escapes it, which is the honest limit of gating prose.
+        MethodInfo method = ToolMethods().Single(m => m.DeclaringType!.Name + "." + m.Name == tool);
+        string description = method.GetCustomAttribute<DescriptionAttribute>()?.Description ?? string.Empty;
+
+        foreach (string shape in _nullComparisons)
+        {
+            description.Should().NotMatchRegex(
+                shape.Replace(FieldToken, Regex.Escape(field), StringComparison.Ordinal),
+                "{0} DROPS `{1}` from the result when it has nothing to report, so an agent told to test it "
+                + "against null compares undefined to null, gets false, and concludes the server measured. "
+                + "Say the key is ABSENT instead. Current text: \"{2}\"",
+                tool,
+                field,
+                description);
+        }
+    }
+
     // ── The search limit, which is a stated number rather than a hint ────────────────────────────────
 
     [Fact]
@@ -395,6 +443,73 @@ public sealed class ToolSchemaTests
         || value is "true" or "false"
             ? @"(?<![\d.])" + Regex.Escape(value) + @"(?!\.?\d)"
             : "['\"`“‘]" + Regex.Escape(value) + "['\"`”’]";
+
+    /// <summary>Where a field name is substituted into a comparison shape.</summary>
+    private const string FieldToken = "<field>";
+
+    /// <summary>Ways a description tells a caller to compare a field to <c>null</c>.</summary>
+    /// <remarks>
+    /// Deliberately narrow, and anchored on the field's own name: the whole point is that these read as
+    /// ordinary guidance while being false for a dropped key. Nothing here bans the word <c>null</c> —
+    /// a correct description says <i>"instead of sending null"</i> and <i>"never whether it equals null"</i>,
+    /// both of which must stay green. Widen this only against the descriptions already in the repository.
+    /// </remarks>
+    private static readonly string[] _nullComparisons =
+    [
+        @"(?i)\ba null <field>\b",
+        @"(?i)\b<field>\s*(?:={2,3}|!={1,2})\s*null\b",
+        @"(?i)\b<field>\s+(?:is|are|equals)\s+null\b",
+    ];
+
+    /// <summary>The wire fields a tool's result drops entirely when they have nothing to report.</summary>
+    /// <param name="returnType">The tool method's return type.</param>
+    /// <returns>The field names, camel-cased as the wire spells them.</returns>
+    private static IEnumerable<string> AbsentFields(Type returnType)
+    {
+        HashSet<string> fields = [];
+        CollectAbsentFields(returnType, fields, []);
+        return fields.OrderBy(f => f, StringComparer.Ordinal);
+    }
+
+    /// <summary>Walks a payload graph collecting the nullable properties on it.</summary>
+    /// <param name="type">The type to walk.</param>
+    /// <param name="fields">The names collected so far.</param>
+    /// <param name="seen">Types already walked, so a cycle terminates.</param>
+    /// <remarks>
+    /// A nullable PROPERTY is dropped by <c>WhenWritingNull</c>; a null inside a dictionary is not, and a
+    /// dictionary contributes nothing here because its keys are data rather than field names. The walk stops
+    /// at the assembly boundary: framework types have no descriptions pointing at them.
+    /// </remarks>
+    private static void CollectAbsentFields(Type type, HashSet<string> fields, HashSet<Type> seen)
+    {
+        if (type.IsGenericType)
+        {
+            foreach (Type argument in type.GetGenericArguments())
+            {
+                CollectAbsentFields(argument, fields, seen);
+            }
+        }
+
+        Type bare = Nullable.GetUnderlyingType(type) ?? type;
+
+        if (bare.Assembly != typeof(ToolPayloads).Assembly || !seen.Add(bare))
+        {
+            return;
+        }
+
+        NullabilityInfoContext nullability = new();
+
+        foreach (PropertyInfo property in bare.GetProperties(BindingFlags.Public | BindingFlags.Instance))
+        {
+            if (Nullable.GetUnderlyingType(property.PropertyType) is not null
+                || nullability.Create(property).ReadState == NullabilityState.Nullable)
+            {
+                fields.Add(char.ToLowerInvariant(property.Name[0]) + property.Name[1..]);
+            }
+
+            CollectAbsentFields(property.PropertyType, fields, seen);
+        }
+    }
 
     private static bool IsNullable(ParameterInfo parameter) =>
         Nullable.GetUnderlyingType(parameter.ParameterType) is not null

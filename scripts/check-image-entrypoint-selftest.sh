@@ -71,20 +71,27 @@ docker image inspect "$IMAGE" >/dev/null 2>&1 || {
   exit 1
 }
 
-# --builder default, deliberately. `docker/setup-buildx-action` makes a `docker-container` builder current,
-# and that driver runs in its own container with NO access to the local daemon's image store -- so
-# `FROM marqspec-mcp-topstepx:ci` fails there trying to PULL a tag that only exists locally. The `default`
-# builder uses the `docker` driver, which reads the daemon's images. Fall back to plain `docker build` where
-# buildx is not installed at all.
+# COMMITTED, NOT BUILT, and that is not a shortcut -- a two-line `FROM $IMAGE` Dockerfile cannot be built
+# reliably on both hosts. `docker/setup-buildx-action` makes a `docker-container` builder current in CI, and
+# that driver runs in its own container with NO access to the local daemon's image store, so `FROM
+# marqspec-mcp-topstepx:ci` fails there trying to PULL a tag that exists only locally. Naming the `default`
+# builder fixes CI and breaks the local run: on Docker Desktop the current context is `desktop-linux`, the
+# `default` builder belongs to the `default` context, and buildx refuses with `use docker --context=default
+# buildx to switch to context "default"` -- while `docker buildx inspect default` succeeds, so the mistake
+# reads as a working detection. Measured on Docker Desktop 29.6.2, not reasoned.
+#
+# `docker commit` sidesteps the whole question: it only ever talks to the daemon that holds the image, so
+# there is no builder, no driver, no context and no registry involved, and it behaves identically on both.
+# The result is the gh#54/gh#67 fixture -- the image's own layers, WORKDIR and user, with an ENTRYPOINT
+# naming an assembly that is not there. `docker create` makes a container without starting one, so nothing
+# in the image under test is executed to produce it.
 build_fixture() {
-  local dockerfile
-  dockerfile="$(printf 'FROM %s\nENTRYPOINT ["dotnet", "%s"]\n' "$IMAGE" "$ABSENT_ASSEMBLY")"
-
-  if docker buildx inspect default >/dev/null 2>&1; then
-    printf '%s\n' "$dockerfile" | docker buildx build --builder default --load -t "$FIXTURE" - >/dev/null
-  else
-    printf '%s\n' "$dockerfile" | docker build -t "$FIXTURE" - >/dev/null
-  fi
+  local container status=0
+  container="$(docker create "$IMAGE")" || return 1
+  docker commit --change "ENTRYPOINT [\"dotnet\", \"$ABSENT_ASSEMBLY\"]" \
+    "$container" "$FIXTURE" >/dev/null || status=$?
+  docker rm -f "$container" >/dev/null 2>&1 || true
+  return "$status"
 }
 
 build_fixture || {

@@ -57,8 +57,12 @@ path (gh#69).
    symbol alone and the fact is gone ([ADR-0011](adr/0011-contract-roll-boundary.md)).
 6. **Drop still-forming bars** (`OpenTime + barSize <= now`) even though the request already sends
    `includePartialBar: false`. This does not depend on a venue behaving.
-7. **Upsert** on `(Venue, Instrument, ResolutionMinutes, BucketStart)` — load the overlap, merge in memory, one
-   save. The composite key *is* the idempotence guard.
+7. **Upsert** on `(Venue, Instrument, ResolutionMinutes, BucketStart)` — one `ON CONFLICT … DO UPDATE`, so the
+   insert-versus-update decision is made against the row the store has **committed** rather than against this
+   transaction's snapshot of it (gh#103). The composite key *is* the idempotence guard, and this is how the
+   write reaches it. A read of the overlap still runs first, but only to drop the buckets that have not moved
+   before they are sent; the rule that an unchanged bar is not rewritten is restated in the statement's own
+   `WHERE`, where both sides carry the column's `numeric(18,8)`.
 8. **Project indicators** for the affected buckets, in the same unit of work, so an indicator exists the moment
    its bar does.
 9. **Record coverage** for ranges that came back empty.
@@ -114,21 +118,24 @@ reached disk. Three consequences, and they are the contract the tool surface off
   credentials — and are reported as permanent, saying plainly that retrying will not help. Neither list is a
   default: a code in neither is reported as unclassified rather than swept into either.
 
-**A lost race is reported, not swallowed and not retried at the boundary.** Two fills of overlapping ranges
-both find a bucket absent and both insert it; the loser gets `23505`. The rows it collided on *are* in the
-store — so a duplicate key on an idempotent upsert looks like a success someone else achieved. It is not one:
+**A lost race is reported, not swallowed and not retried at the boundary.** Two callers asking for one range
+the venue answers *empty* both find no coverage row in their own snapshot and both insert one; the loser gets
+`23505`. The row it collided on *is* in the store — so a duplicate key on an idempotent upsert looks like a
+success someone else achieved. It is not one:
 the collision aborts the whole transaction, so answering "fine" would return work assembled inside a
 transaction that rolled back. Retrying at the boundary is equally wrong — it would re-run the whole tool call,
 paced page-walk included; a retry belongs in `SeriesUnitOfWork`, bounded, where the fetch already happened.
 So the caller is told that another writer committed the rows it collided on, that its own transaction kept
 nothing, and that a retry is served from what that writer committed. *What else* was in the aborted
-transaction — here, the coverage ledger and the projection over the same series — is a fact about
-`SeriesUnitOfWork`, and it is stated there rather than in a sentence handed to all fifteen tools.
+transaction — here, the bars and the projection over the same series — is a fact about `SeriesUnitOfWork`, and
+it is stated there rather than in a sentence handed to all fifteen tools.
 
-What is *not* fixed is the race itself, nor a fill whose snapshot misses a range another fill is filling: its
+**The bar write no longer reaches that boundary at all** (gh#103). It is a real upsert, so a losing insert
+updates instead of faulting, and the caller of `get_bars` is not handed a database error for asking an
+ordinary question. What is *not* fixed is a fill whose snapshot misses a range another fill is filling: its
 values are seeded from the wrong bar and are stale until the next pass, which is recoverable by construction
-(`R-2.9`, [ADR-0006](adr/0006-indicators-as-projections.md)). Closing both means serialising fills per series —
-a lock rather than an isolation level, tracked as gh#80 and still open.
+(`R-2.9`, [ADR-0006](adr/0006-indicators-as-projections.md)). Closing that means serialising fills per
+series — a lock rather than an isolation level, tracked as gh#104 and still open.
 
 ### Why step 2 exists
 

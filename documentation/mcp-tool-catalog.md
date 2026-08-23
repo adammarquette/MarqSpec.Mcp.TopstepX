@@ -21,10 +21,19 @@ tool and change this page in the same PR.
   fetches `cap + 1` and errors with the real count, so "you asked for too much" never arrives disguised as
   "here is all there was".
 - **Times are ISO-8601 UTC**, in and out. A naive local timestamp in a request is rejected, not guessed at.
-- **A missing number is *absent*, meaning *cannot measure*.** Never a substituted default, and the caller is
-  expected to say so rather than proceed. **Where this page writes `null` for such a field, the field is
-  omitted from the JSON object entirely** — the serializer drops nulls — so test for the key rather than
-  comparing to `null`. Comparing is the `undefined`-is-falsy trap that made `fromCache` unusable (gh#48).
+- **A missing number means *cannot measure*.** Never a substituted default, and the caller is expected to say
+  so rather than proceed. **How that reaches the wire depends on where the value sits**, and the two forms
+  need different tests:
+
+  | Where | On the wire | Test |
+  |---|---|---|
+  | A **field** on an object — `limitPrice`, `filledPrice` | **omitted entirely**; the serializer drops nulls | `"limitPrice" in order` |
+  | A **value in a map** — the snapshot's `indicators{}` | **present, with `null`** | `indicators.rsi === null` |
+
+  Comparing an omitted field to `null` is the `undefined`-is-falsy trap that made `fromCache` unusable
+  (gh#48). Testing a map for key *presence* is the same mistake mirrored: every indicator this server computes
+  has a key, so presence says nothing about whether it could be measured. Each entry below states which form
+  it uses.
 - **`resolutionMinutes` is caller-chosen, and any *positive* resolution is servable.** No tool enumerates
   supported timeframes, because there is no list — each resolution is an independent cached series fetched from
   the venue, never derived from a finer one

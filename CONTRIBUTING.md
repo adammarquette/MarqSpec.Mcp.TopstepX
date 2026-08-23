@@ -9,6 +9,23 @@ These practices are shared with
 this library as a submodule. Where the two differ, the difference is deliberate and noted below — this repo
 ships a **package**, not a deployment, so it has a release ladder the parent does not.
 
+## Issue-first, and the one exemption
+
+Every pull request cites an issue opened before it — `Closes #N` when it completes one, `Related to #N` when it
+touches one without finishing it. **The `issue-link` check enforces this**; it is not advisory.
+
+Two things it will tell you, because both look like they work and neither does:
+
+- A closing keyword in the **title** is ignored by GitHub. It must be in the body.
+- A backticked `` `Closes #N` `` does not bind. Remove the backticks.
+
+**Dependabot is exempt, explicitly.** It opens its own pull requests and cannot file an issue first, so
+issue-first is *unsatisfiable* for it rather than merely inconvenient. The exemption is named in the workflow
+so it is visible; the alternative was keeping the check toothless for everyone so that one author could pass it.
+
+If the check cannot read the PR's closing references, it retries and then **fails**. A check that reports
+success when it did not run is the failure this rule exists to prevent.
+
 ## Branching model
 
 **All new work branches off `develop`** and PRs back into it — `develop` is the sole integration branch. Changes

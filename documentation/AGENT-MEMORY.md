@@ -44,6 +44,15 @@ ADR, `AGENTS.md`, or the code, **put it there instead**.
 
 ## Notes & communications
 
+- **[2026-08-23] `dotnet test` can exit 0 having discovered ZERO tests — a silent green, and every "tests
+  pass" claim made in that state is hollow.** Windows Application Control blocks assembly loads from under
+  `.worktrees`, and in that state the runner does not fail: it finds no tests, reports success, and the exit
+  code is 0. This is the same shape as the `0x800711C7` note below but strictly worse, because that one at
+  least announces itself as a catastrophic failure. **Read the COUNT, not the exit code** — `Passed: N` with
+  the N you expected, never a bare "green". A run that says `Total: 0` is a run that proved nothing. Found
+  during the review of gh#73/PR #79, where the reviewer worked around it by running every gate from a
+  worktree under `C:	mp` instead.
+
 - **[2026-08-23] Docker IS up now, so the integration tier runs locally — and the Application Control block
   is INTERMITTENT, not gone.** Two corrections to the entries below, from gh#42, and they point in opposite
   directions.

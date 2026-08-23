@@ -76,6 +76,11 @@ The server serves OHLCV bars for a futures instrument at a requested resolution 
   than sweeping a range it never looked at. Both call sites read at `RepeatableRead`, and `rebuild-indicators`
   is transactional per series. Without this, `R-2.8` deletes correct values and the loss arrives as an
   absence, which `R-2.3` makes a caller read as *cannot measure* (gh#73).
+- **R-2.10** A write the store **refuses to serialise** against a concurrent one is retried once and then
+  **reported as contention**, naming what to do. It is never a raw database error at the tool surface, and
+  never a silent loss. Snapshot isolation is what makes `R-2.9` hold; a `40001` is the cost of it, and one
+  retry is the whole budget because the transaction that won committed exactly the work the loser was
+  missing — a second collision is sustained contention rather than a race, and looping would hide it.
 
 ## R-3 — Key levels
 

@@ -256,8 +256,15 @@ Two things now hold the guarantee, and `R-2.9` states them:
   now transactional per series.
 - **The removal is unscoped by bucket range**, which is sound only because a pass reads the whole series. That
   was true at both call sites and enforced by nothing, and adding a range parameter to `ProjectAsync` is the
-  moment it would break, silently, in a way that looks like a warm-up. A pass that finds it read fewer bars
-  than the store holds now **refuses** and names both counts.
+  moment it would break, silently, in a way that looks like a warm-up. A pass that finds it read a different
+  number of bars from what the store holds now **refuses** and names both counts.
+
+There is a second consequence of that same unscoped sweep, and it took a review to see it: **a whole-series
+sweep is a whole-series *write set*.** Two fills whose fetched ranges share no bucket, no bar and no coverage
+row still delete the same unjustified rows, so under snapshot isolation one of them is aborted with `40001`.
+Reasoning about the ranges a pass *fetched* says nothing about the rows it *writes* — the reconcile this record
+introduced is precisely what breaks that intuition. The fill path therefore retries once and then reports the
+contention by name; the reasoning is at `SeriesUnitOfWork`.
 
 Neither is free of residue, and the honest statement of it is: two fills whose ranges interleave still each
 project over their own view, so one can write values seeded from the wrong bar. Those are **stale, not lost** —

@@ -51,6 +51,12 @@ Test-first: the failing test goes in the same PR, written before the implementat
   test that asserts the code does what the code does passes forever and proves nothing.
 - The interesting cases are the boundaries: the bar at exactly `period`, the one before it, an empty series,
   a single bar, and a series shorter than the warm-up.
+- **A new gate — a test or `scripts/check-*.sh` written to block a class of mistake — needs two runs, not one:**
+  red on the thing it catches, **and green on the most awkward *correct* input already in the repository** (the
+  existing `[Description]` strings, the existing prose, the existing code shape). Proven only against its own
+  bug, a gate is deleted by the first person it wrongly stops, or goes quietly green once the mechanism it
+  watches stops being exercised. When you narrow one to close a leak, grep for the shape you just excluded
+  before trusting it.
 
 ## Adding an indicator
 

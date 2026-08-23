@@ -45,14 +45,19 @@ ADR, `AGENTS.md`, or the code, **put it there instead**.
   **one working tree, one session**, and `scripts/claim.sh` refuses when the branch is already checked out.
   **The trap is the guard-rail:** `git worktree add` refuses a branch checked out elsewhere, so the natural
   next move is to `cd` into the existing tree — that move *is* the bug.
-  **Recovery, if it lands again** — do it on the branch, and it is step 4 that makes it safe:
+  **Recovery, if it lands again** — do it on the branch, and it is step 4 that makes the force-push checkable:
   1. Record the tree first: `BEFORE="$(git rev-parse HEAD^{tree})"`.
-  2. `git reset --soft <base>` — every change stays staged, the working tree is untouched.
-  3. Re-commit the pieces separately, **staging by path, never `-A`**, and preserve the other session's
-     subject and authorship (`git commit --author="Name <email>" -m "<their original subject>"`).
-  4. **`git rev-parse HEAD^{tree}` must equal `$BEFORE`.** Equal trees mean the rewrite moved commit
-     boundaries and changed nothing else — that check, not care, is what makes a force-push safe. Unequal
-     means you dropped or gained work: stop and fix it before pushing.
+  2. `git reset --soft <base>`, then **`git restore --staged .`** — the reset leaves the *entire* mixture
+     staged, so empty the index or step 3 re-commits all of it as one. The working tree is untouched either
+     way.
+  3. Re-commit the pieces separately, **staging by path, never `-A`** — theirs first, preserving subject and
+     authorship: `git add <their paths> && git commit --author="Name <email>" -m "<their original subject>"`,
+     then `git add <your paths> && git commit -m "<your own subject>"`.
+  4. **`git rev-parse HEAD^{tree}` must equal `$BEFORE`.** That proves only that the rewrite was *lossless* —
+     no work gained or dropped. It is just as green if you made one commit instead of two, or filed the wrong
+     files under the wrong subject, which is the very misdescription this entry is about. So check the
+     second thing separately: **`git show --stat` each new commit and read its diff against its own
+     subject.** An unequal tree means work is missing: stop and fix it before pushing.
   5. Then `git push --force-with-lease`, and say so on the issue and on any open PR: a reviewer who already
      read the old SHAs needs to know they are gone. Done on gh#73 as `ebd4432` + `d9cdc8d`.
 - **[2026-08-23] `git check-ignore .worktrees` answers "not ignored" when the directory does not exist.** A

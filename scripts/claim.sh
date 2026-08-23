@@ -73,6 +73,10 @@ if [ -n "$OCCUPIED" ]; then
   warn "One working tree, one session (AGENTS.md). Do NOT cd into it — your edits would be swept into that"
   warn "session's next commit, under its message, and nothing would go red."
   warn "Take other work, or wait for their push and branch off the pushed tip."
+  # `worktree list` still reports a tree whose directory was deleted without `git worktree remove`, so without
+  # this way out the issue would be unclaimable forever.
+  warn "If that directory is genuinely gone or abandoned, clear the registration deliberately (\`git worktree"
+  warn "prune\`, or \`git worktree remove <path>\`) and re-run; do not adopt someone else's tree."
   if ! $CHECK_ONLY; then
     die "refusing to claim #$ID: its branch is already checked out here."
   fi
@@ -125,8 +129,12 @@ if [ -n "$OPEN_PRS" ]; then
   printf '%s\n' "$OPEN_PRS"
 fi
 
-if [ -z "$CLAIMED" ]; then
+# "no claim branch pushed" is not the same as "free to take": an occupied tree (step 1) blocks it just as
+# hard, and a green UNCLAIMED printed under a STOP block is the line an agent acts on.
+if [ -z "$CLAIMED" ] && [ -z "$OCCUPIED" ]; then
   ok "issue #$ID is UNCLAIMED"
+elif [ -z "$CLAIMED" ]; then
+  warn "issue #$ID has no claim branch pushed — but its tree here is occupied (STOP above). NOT free to take."
 fi
 
 # ---------------------------------------------------------------------------
@@ -154,7 +162,12 @@ info "  base     : origin/${BASE_BRANCH}"
 
 if $CHECK_ONLY; then
   info ""
-  ok "--check: nothing created."
+  if [ -n "$OCCUPIED" ]; then
+    # Last word must agree with the first: a green sign-off under a STOP block reads as permission.
+    warn "--check: nothing created — and #$ID is NOT yours to take: its tree here is occupied (STOP above)."
+  else
+    ok "--check: nothing created."
+  fi
   exit 0
 fi
 

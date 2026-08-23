@@ -33,6 +33,7 @@ public static class VolumeWeightedAveragePrice
         ArgumentNullException.ThrowIfNull(bars);
         ArgumentNullException.ThrowIfNull(calendar);
         IndicatorGuard.RequireStrictlyAscending(bars, nameof(bars));
+        IndicatorGuard.RequireSingleContract(bars, nameof(bars));
 
         decimal?[] values = new decimal?[bars.Count];
 

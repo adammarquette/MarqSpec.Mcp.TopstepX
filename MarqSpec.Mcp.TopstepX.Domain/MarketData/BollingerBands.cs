@@ -58,6 +58,7 @@ public static class BollingerBands
         ArgumentNullException.ThrowIfNull(bars);
         IndicatorGuard.RequirePositivePeriod(period, nameof(period));
         IndicatorGuard.RequireStrictlyAscending(bars, nameof(bars));
+        IndicatorGuard.RequireSingleContract(bars, nameof(bars));
 
         decimal?[] values = new decimal?[bars.Count];
         if (bars.Count < period)

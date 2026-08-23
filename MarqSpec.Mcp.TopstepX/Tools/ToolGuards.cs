@@ -6,11 +6,18 @@ using ModelContextProtocol;
 namespace MarqSpec.Mcp.TopstepX.Tools;
 
 /// <summary>
-/// The argument checks every windowed tool shares.
+/// The argument checks the market-data tools share.
 /// </summary>
 /// <remarks>
+/// <para>
 /// Centralised so the rules cannot drift between tools. A cap enforced in three of four places is not a cap;
 /// it is a cap plus one tool that quietly returns everything.
+/// </para>
+/// <para>
+/// <b>Each rule sits at the narrowest thing it is about</b>, which is what stops that drift being reintroduced
+/// by shape. The resolution check spent its first life inside <see cref="ValidateWindow"/> and so was reachable
+/// only by the tools that validate a window — leaving four that build their own to fall past it (gh#69).
+/// </para>
 /// </remarks>
 public sealed class ToolGuards(IOptions<MarketDataOptions> options)
 {
@@ -20,6 +27,34 @@ public sealed class ToolGuards(IOptions<MarketDataOptions> options)
     public int MaxRows => _options.MaxRows;
 
     /// <summary>
+    /// Validates a bar resolution on its own, with no window in sight.
+    /// </summary>
+    /// <param name="resolutionMinutes">The bar size in minutes.</param>
+    /// <returns>The resolution.</returns>
+    /// <exception cref="McpException"><paramref name="resolutionMinutes"/> is not positive.</exception>
+    /// <remarks>
+    /// <para>
+    /// Separate from <see cref="ValidateWindow"/> because half this surface never validates a window: the tools
+    /// that build their own from a bar count skipped the check entirely, and a <c>0</c> reached
+    /// <c>BarGapDetector.AlignDown</c> and crossed the tool boundary as an
+    /// <see cref="ArgumentOutOfRangeException"/> — an unhandled fault where a readable tool error belongs
+    /// (gh#69).
+    /// </para>
+    /// <para>
+    /// <b>Static, and deliberately so.</b> Unlike the row cap this rule depends on no configuration, so it can
+    /// be reached from a pure policy function — <see cref="SnapshotTools.ResolveResolutions"/> — without that
+    /// function acquiring a constructor, a container, and a reason not to be pinned by a test that needs
+    /// neither.
+    /// </para>
+    /// </remarks>
+    public static int ValidateResolution(int resolutionMinutes) =>
+        resolutionMinutes <= 0
+            ? throw new McpException(
+                "resolutionMinutes must be positive; got "
+                + resolutionMinutes.ToString(System.Globalization.CultureInfo.InvariantCulture) + ".")
+            : resolutionMinutes;
+
+    /// <summary>
     /// Validates a requested window and returns it as a range.
     /// </summary>
     /// <param name="fromUtc">The start, inclusive.</param>
@@ -27,7 +62,8 @@ public sealed class ToolGuards(IOptions<MarketDataOptions> options)
     /// <param name="resolutionMinutes">The bar size, used to estimate the row count.</param>
     /// <returns>The validated range.</returns>
     /// <exception cref="McpException">
-    /// The window is inverted, is in the future, or would exceed <see cref="MaxRows"/>.
+    /// The resolution is not positive, or the window is inverted, is in the future, or would exceed
+    /// <see cref="MaxRows"/>.
     /// </exception>
     /// <remarks>
     /// <b>An over-cap window refuses and reports the real count.</b> It does not truncate: a shortened series
@@ -36,12 +72,7 @@ public sealed class ToolGuards(IOptions<MarketDataOptions> options)
     /// </remarks>
     public BarRange ValidateWindow(DateTimeOffset fromUtc, DateTimeOffset toUtc, int resolutionMinutes)
     {
-        if (resolutionMinutes <= 0)
-        {
-            throw new McpException(
-                "resolutionMinutes must be positive; got "
-                + resolutionMinutes.ToString(System.Globalization.CultureInfo.InvariantCulture) + ".");
-        }
+        ValidateResolution(resolutionMinutes);
 
         if (toUtc <= fromUtc)
         {

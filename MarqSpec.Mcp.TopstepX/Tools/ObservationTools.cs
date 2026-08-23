@@ -53,6 +53,14 @@ public sealed class ObservationTools(
     /// </remarks>
     public const int DefaultSearchLimit = 20;
 
+    /// <summary>The classification an observation takes when the caller does not give one.</summary>
+    /// <remarks>
+    /// Named rather than inline so the description advertising it can be gated against it. It was a literal
+    /// in the middle of a record initialiser, which is exactly where a value drifts from the sentence that
+    /// promises it (gh#82).
+    /// </remarks>
+    public const string DefaultObservationKind = "note";
+
     /// <summary>
     /// Decides how many observations a search returns.
     /// </summary>
@@ -115,7 +123,7 @@ public sealed class ObservationTools(
         {
             Id = Guid.NewGuid(),
             Instrument = normalisedSymbol,
-            Kind = string.IsNullOrWhiteSpace(kind) ? "note" : kind.Trim().ToLowerInvariant(),
+            Kind = string.IsNullOrWhiteSpace(kind) ? DefaultObservationKind : kind.Trim().ToLowerInvariant(),
             Text = text.Trim(),
             Tags = tags ?? [],
             RecordedAt = _clock.GetUtcNow(),

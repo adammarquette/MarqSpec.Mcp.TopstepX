@@ -69,6 +69,8 @@ The recurring defect shape is a permissive default.
 - Integration tests must pass with **no credentials**. A new test that needs live credentials to pass at all
   is a finding — it will never run in CI.
 - **A skip whose condition can never become false is dead weight pretending to be coverage.**
+- **On a new gate, ask what *correct* input already in the repo it would reject** — and, where it was narrowed
+  to close a leak, what the exclusion now lets through. A red run on its own bug proves neither.
 
 ## Traceability
 

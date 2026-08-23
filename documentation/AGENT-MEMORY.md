@@ -30,7 +30,8 @@ ADR, `AGENTS.md`, or the code, **put it there instead**.
   has no order method, so a caller holding one has nothing to reach for. Keep it that way: if a task seems to
   need an order call, the task is wrong or it belongs in `trading-copilot`. `scripts/check-no-order-path.sh`
   enforces it, and **that script's own test is to add a violation and watch it go red** — a gate nobody has
-  seen fail is a gate nobody should trust.
+  seen fail is a gate nobody should trust. That red run is only the first of the two a new gate needs; the
+  second is in the [Coding contract](../MarqSpec.Mcp.TopstepX/AGENTS.md) under Tests.
 - **[2026-08-22] Every expected value in an indicator test is worked out by hand, never captured from a run.**
   A test that asserts the code does what the code does passes forever and proves nothing. Choose series where
   the arithmetic is **exact in decimal** — EMA at period 2 gives a smoothing factor of 2/3 and forces
@@ -49,6 +50,17 @@ ADR, `AGENTS.md`, or the code, **put it there instead**.
   — which matches with nothing on disk**, so no `mkdir` and no mutation to answer a read-only question.
   Verified both ways: ignored on `trading-copilot`, not-ignored on an unfixed `develop`. Without it, three of
   the four siblings read as broken during the gh#40 sweep.
+- **[2026-08-23] Four gates landed in one session and all four were defective before review — the evidence
+  behind the two-runs rule** in the [Coding contract](../MarqSpec.Mcp.TopstepX/AGENTS.md) (Tests). Every one
+  had been watched failing on the bug it was written for; none against the input it would actually meet.
+  `SnapshotDefaultsTests`' whole-number boundary (gh#49) excluded every following period, so a number ending
+  a sentence never matched — it passes today only because that description writes "100 of each", so the first
+  rewording would have turned it red on correct text (`29a0d84`, gh#82). `check-paced-paging.sh` (gh#43) went
+  green on an unpaced loop that kept a comment naming the method. `ToolSchemaTests` (gh#70) keyed on four
+  description phrases, so rewording silenced it — four of eight parameters were green only because the same
+  commit reworded them — and it went **red on correct text** twice, on backticks and on `e.g. ES`.
+  `SerializationFailureTests` (gh#73)'s interceptor also matched EF's write batches, spending both firings in
+  attempt one and leaving the retry unopposed. The reviewer found all four, not the author (gh#87).
 
 ## Notes & communications
 

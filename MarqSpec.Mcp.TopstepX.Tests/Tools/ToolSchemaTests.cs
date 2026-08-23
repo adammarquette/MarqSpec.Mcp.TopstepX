@@ -126,9 +126,9 @@ public sealed class ToolSchemaTests
 
         RequiredOf(method).Should().NotContain(
             parameterName,
-            "{0}.{1} is declared nullable, so the author has already said it may be absent — but the SDK "
-            + "reads the C# DEFAULT VALUE, not the type, so it needs an explicit '= null' to be omittable "
-            + "on the wire.",
+            "{0}.{1} is nullable in at least one direction, so it may be absent unless an attribute says "
+            + "otherwise — but the SDK reads the C# DEFAULT VALUE, not the type, so it needs an explicit "
+            + "'= null' to be omittable on the wire.",
             tool,
             parameterName);
     }
@@ -163,7 +163,7 @@ public sealed class ToolSchemaTests
         advertised.Should().NotBeEmpty(
             "{0}.{1} has a default this test cannot render, so it cannot be gated", tool, parameterName);
 
-        description.Should().MatchRegex(
+        AdvertisingClauses(description).Should().MatchRegex(
             Boundary(advertised),
             "{0}.{1} defaults to {2}, and an agent reads the description rather than the code — so the "
             + "description has to name that value. Current text: \"{3}\"",
@@ -209,7 +209,7 @@ public sealed class ToolSchemaTests
         // what actually goes wrong -- a constant edited without the sentence that promises it.
         Type type = ToolTypes().Single(t => t.Name == toolType);
 
-        string descriptions = string.Join(
+        string advertising = string.Join(
             " | ",
             type.GetMethods(
                     BindingFlags.Public | BindingFlags.Instance | BindingFlags.Static | BindingFlags.DeclaredOnly)
@@ -217,9 +217,11 @@ public sealed class ToolSchemaTests
                 .SelectMany(m => m.GetParameters()
                     .Select(parameter =>
                         parameter.GetCustomAttribute<DescriptionAttribute>()?.Description ?? string.Empty)
-                    .Append(m.GetCustomAttribute<DescriptionAttribute>()?.Description ?? string.Empty)));
+                    .Append(m.GetCustomAttribute<DescriptionAttribute>()?.Description ?? string.Empty))
+                .Select(AdvertisingClauses)
+                .Where(clause => clause.Length > 0));
 
-        descriptions.Should().MatchRegex(
+        advertising.Should().MatchRegex(
             Boundary(value),
             "{0}.{1} is {2} and it is what a caller gets by omitting an argument, so some description on "
             + "{0} has to name it. Change the constant without the sentence and an agent is told a value the "
@@ -305,7 +307,50 @@ public sealed class ToolSchemaTests
         _ => value.ToString() ?? string.Empty,
     };
 
+    /// <summary>
+    /// The clauses of a description that actually advertise a default, rather than the whole text.
+    /// </summary>
+    /// <param name="description">A description, or several joined.</param>
+    /// <returns>Each run from an optionality phrase to the end of its sentence.</returns>
+    /// <remarks>
+    /// Searching a whole description — or worse, every description on a type joined — is not discriminating.
+    /// Two proven cases: <c>DefaultObservationKind</c> set to <c>setup</c> passes if the same sentence quotes
+    /// its examples (<i>"e.g. 'setup', 'context'…"</i>), and <c>DefaultResolutionMinutes</c> set to
+    /// <c>[1, 60]</c> passes on the <c>1</c> in <i>"ask for 1-minute only when you actually need timing"</i>.
+    /// Both are ordinary prose that happens to contain the value.
+    /// <para>
+    /// A sentence ends at a period followed by a capital, so <c>e.g.</c> and a trailing <c>60].</c> do not
+    /// split it. If a description advertises a default without using one of the optionality phrases, nothing
+    /// is returned and the assertion fails — closed, not silent.
+    /// </para>
+    /// </remarks>
+    private static string AdvertisingClauses(string description)
+    {
+        List<string> clauses = [];
+
+        foreach (string phrase in _promisesOptionality)
+        {
+            for (int at = description.IndexOf(phrase, StringComparison.Ordinal);
+                 at >= 0;
+                 at = description.IndexOf(phrase, at + 1, StringComparison.Ordinal))
+            {
+                Match end = Regex.Match(description[at..], @"\.\s+\p{Lu}");
+                clauses.Add(end.Success ? description[at..(at + end.Index)] : description[at..]);
+            }
+        }
+
+        return string.Join(" | ", clauses);
+    }
+
     /// <summary>Matches a value as a whole token, so it cannot hide inside a longer one.</summary>
+    /// <remarks>
+    /// <b>Known limitation — thousands separators.</b> Nothing on this surface writes one, so this is
+    /// recorded rather than handled. An <c>int</c> constant of 1000 renders <c>"1000"</c> and would not match
+    /// prose saying <c>"1,000"</c> — a red on correct text, the direction that gets a gate deleted. A
+    /// <c>string</c> constant of <c>"1,000"</c> parses as numeric under <c>NumberStyles.Any</c> and takes the
+    /// bare branch, where it does match. The two disagree, and the fix if it ever matters is to normalise
+    /// before comparing rather than to widen the pattern.
+    /// </remarks>
     /// <remarks>
     /// A number or a boolean is matched bare: no digit or decimal point before, no digit after, and no
     /// decimal point followed by one — so <c>2.5</c> does not satisfy a search for <c>5</c> while
@@ -323,7 +368,7 @@ public sealed class ToolSchemaTests
         double.TryParse(value, NumberStyles.Any, CultureInfo.InvariantCulture, out _)
         || value is "true" or "false"
             ? @"(?<![\d.])" + Regex.Escape(value) + @"(?!\.?\d)"
-            : "['\"“‘]" + Regex.Escape(value) + "['\"”’]";
+            : "['\"`“‘]" + Regex.Escape(value) + "['\"`”’]";
 
     private static bool IsNullable(ParameterInfo parameter) =>
         Nullable.GetUnderlyingType(parameter.ParameterType) is not null

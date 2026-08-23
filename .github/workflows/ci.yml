@@ -249,6 +249,18 @@ jobs:
       # the two free to differ silently: the preinstalled `default` builder uses the `docker` driver, while
       # this action creates a `docker-container` one. release.yml now declares the same step, so "CI builds
       # the way the release builds" is true of the BUILDER and not only of the action.
+      # BUILT AGAINST THE REFERENCE THE RELEASE PUSHES, not a local stand-in (gh#115).
+      #
+      # This job used to tag `marqspec-mcp-topstepx:ci` -- hardcoded, lowercase, local -- so the registry
+      # reference lived only in release.yml and was evaluated only during a real release. v0.1.0 duly failed
+      # at the push with `invalid tag ... repository name must be lowercase`, after gh#54 and gh#63 had
+      # already aligned the action and the builder and merged green. The builder was never the problem.
+      #
+      # Nothing is pushed here. Building against the real reference is enough: buildx validates the tag
+      # before it starts, so an invalid one fails a pull request instead of a release.
+      - name: Resolve the image reference
+        run: echo "IMAGE=$(./scripts/image-reference.sh)" >> "$GITHUB_ENV"
+
       - name: Set up Buildx
         uses: docker/setup-buildx-action@v4
 
@@ -291,7 +303,7 @@ jobs:
           # smoke step below then reports "Unable to find image ... locally" and fails trying to PULL the tag
           # from Docker Hub, which reads like a typo in the tag rather than like a missing export.
           load: true
-          tags: marqspec-mcp-topstepx:ci
+          tags: ${{ env.IMAGE }}:ci
         env:
           # DISABLED, and stated rather than inherited (gh#54 review). `build-push-action` v6+ exports a
           # `.dockerbuild` build record and uploads it as a downloadable workflow ARTIFACT on every run --
@@ -340,7 +352,7 @@ jobs:
         #
         # A SCRIPT rather than an inline block so the same check runs against a locally built image. A local
         # check that disagrees with CI is worse than no local check.
-        run: ./scripts/check-image-entrypoint.sh marqspec-mcp-topstepx:ci
+        run: ./scripts/check-image-entrypoint.sh "$IMAGE:ci"
 
       # THE GATE ABOVE HAS TO BE ABLE TO FAIL (gh#98). It is the only thing standing between a broken
       # artifact and a green build, and it has a specific way of going quiet: both of its checks resolve the
@@ -356,4 +368,4 @@ jobs:
       # It runs AFTER the smoke step on purpose: if both go red, the smoke failure is the real news, and this
       # one is then a second opinion on the same image rather than the headline.
       - name: Self-test — that gate still rejects a broken entrypoint
-        run: ./scripts/check-image-entrypoint-selftest.sh marqspec-mcp-topstepx:ci
+        run: ./scripts/check-image-entrypoint-selftest.sh "$IMAGE:ci"

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # check-image-entrypoint-selftest.sh — prove check-image-entrypoint.sh can still FAIL.
 #
-#   scripts/check-image-entrypoint-selftest.sh [image-tag]     default: marqspec-mcp-topstepx:ci
+#   scripts/check-image-entrypoint-selftest.sh [image-tag]     default: $(scripts/image-reference.sh):ci
 #
 # WHY THIS EXISTS (gh#98)
 #
@@ -40,7 +40,11 @@ set -euo pipefail
 export MSYS_NO_PATHCONV=1
 export MSYS2_ARG_CONV_EXCL='*'
 
-IMAGE="${1:-marqspec-mcp-topstepx:ci}"
+# DERIVED, matching check-image-entrypoint.sh and for the same reason (gh#121 review): CI builds
+# `$(image-reference.sh):ci`, so a hardcoded default here would name a tag nothing produces and the
+# documented no-argument form would fail on a pull attempt rather than on the image.
+IMAGE="${1:-$("$(dirname "$0")/image-reference.sh"):ci}"
+# The FIXTURE stays a plain local name on purpose -- it is built here, never pushed, and never pulled.
 FIXTURE="${2:-marqspec-mcp-topstepx:entrypoint-selftest}"
 
 # The assembly the fixture's ENTRYPOINT names, and the string the assertion looks for. One definition, so the

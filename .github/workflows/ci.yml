@@ -270,10 +270,11 @@ jobs:
       # boundary is worth more than coverage of a three-input action.
       #
       # WHAT A GREEN `image` LICENSES, exactly: the Dockerfile builds, the image loads into the local daemon,
-      # and the .NET runtime inside it answers. NOT that the entrypoint works -- the smoke step below passes
-      # `--entrypoint dotnet`, which REPLACES the image's own ENTRYPOINT, so the app assembly is never loaded
-      # and an ENTRYPOINT naming a missing DLL smokes green (gh#67). And NOT that the publish path is proven
-      # end to end -- the login and the registry export still first execute at a real release.
+      # and the image's OWN entrypoint starts a server that answers an MCP `tools/list` with no configuration
+      # (gh#67 -- until that issue the smoke step overrode the entrypoint, and licensed none of that). What
+      # it still does NOT license: a venue, store or embedding call, since none of the three is configured
+      # here; the HTTP transport, which this never selects; and the publish path end to end -- the login and
+      # the registry export still first execute at a real release.
       - name: Build the image
         uses: docker/build-push-action@v7
         with:
@@ -316,9 +317,20 @@ jobs:
           DOCKER_BUILD_RECORD_UPLOAD: false
           DOCKER_BUILD_SUMMARY: false
 
-      - name: Smoke — the entrypoint starts and reports its tools
-        # A build that produces an image which cannot start is a green build and a broken artifact. This does
-        # not need a database: it asserts the process comes up far enough to fail on configuration rather
-        # than on a missing assembly.
-        run: |
-          docker run --rm --entrypoint dotnet marqspec-mcp-topstepx:ci             --list-runtimes > /dev/null
+      - name: Smoke — the image's own entrypoint starts and serves its tool list
+        # NO `--entrypoint` HERE, and that is the whole point (gh#67). The previous version of this step ran
+        # `docker run --entrypoint dotnet <image> --list-runtimes`, and `--entrypoint` REPLACES the image's
+        # own ENTRYPOINT -- so the container that ran was `dotnet --list-runtimes`, which proves the .NET
+        # runtime is installed and nothing whatever about this repository's code. Measured, not reasoned: an
+        # image built with `ENTRYPOINT ["dotnet", "MarqSpec.Mcp.TopstepX.DoesNotExist.dll"]` passed it,
+        # exit 0.
+        #
+        # The replacement asserts two things: that the assembly the ENTRYPOINT names is at the path it will
+        # be resolved from, and that the entrypoint -- unoverridden -- starts a server which answers an MCP
+        # `tools/list` with a non-empty tool list. It deliberately does NOT assert an exit code; the
+        # measurements behind that decision, and what a pass does and does not prove, are in the script's
+        # header.
+        #
+        # A SCRIPT rather than an inline block so the same check runs against a locally built image. A local
+        # check that disagrees with CI is worse than no local check.
+        run: ./scripts/check-image-entrypoint.sh marqspec-mcp-topstepx:ci

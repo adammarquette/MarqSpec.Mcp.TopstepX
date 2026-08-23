@@ -1,3 +1,4 @@
+using System.Globalization;
 using MarqSpec.Mcp.TopstepX.Data;
 using MarqSpec.Mcp.TopstepX.Data.Entities;
 using MarqSpec.Mcp.TopstepX.Domain;
@@ -74,6 +75,14 @@ public sealed class IndicatorProjector(
     /// A confirming rebuild still produces an <b>empty diff</b>: a value the pass recomputed to the same
     /// number counts as produced, so reconciliation removes nothing.
     /// </para>
+    /// <para>
+    /// <b>The caller must give this pass ONE SNAPSHOT of the store.</b> Two reads happen here — the bars, then
+    /// the values standing over them — and the second is reconciled against the first. Under
+    /// <c>READ COMMITTED</c> those are two snapshots, so a concurrent fill committing between them leaves this
+    /// pass holding values it never saw the bars for, and reconciliation deletes them (gh#73). Both call sites
+    /// therefore wrap it in a <see cref="System.Data.IsolationLevel.RepeatableRead"/> transaction, and
+    /// <see cref="ReconcileAsync"/> refuses rather than deleting if that ever stops being true.
+    /// </para>
     /// </remarks>
     public async Task<int> ProjectAsync(
         string venue,
@@ -122,7 +131,9 @@ public sealed class IndicatorProjector(
             written += ProjectSegment(venue, instrument, resolutionMinutes, run, existing, produced, now);
         }
 
-        int removed = Reconcile(existing, produced);
+        int removed = await ReconcileAsync(
+            venue, instrument, resolutionMinutes, stored.Count, existing, produced, cancellationToken)
+            .ConfigureAwait(false);
 
         if (written + removed > 0)
         {
@@ -143,16 +154,39 @@ public sealed class IndicatorProjector(
     /// <summary>
     /// Removes stored values this pass was configured to produce but did not.
     /// </summary>
+    /// <param name="venue">The venue.</param>
+    /// <param name="instrument">The instrument.</param>
+    /// <param name="resolutionMinutes">The bar size in minutes.</param>
+    /// <param name="barsRead">How many bars this pass loaded — the claim the guard below checks.</param>
     /// <param name="existing">Every stored value for the series.</param>
     /// <param name="produced">The keys this pass accounted for.</param>
+    /// <param name="cancellationToken">The caller's cancellation token.</param>
     /// <returns>How many rows were removed.</returns>
+    /// <exception cref="InvalidOperationException">
+    /// This pass read a different number of bars from what the store holds for the series, so its unscoped
+    /// removal would reach values it never read the bars for.
+    /// </exception>
     /// <remarks>
     /// <para>
-    /// <b>Scoped to the <c>(Indicator, Period)</c> pairs this catalogue computes</b>, and that scope is the
-    /// whole safety of it. Deleting everything a pass did not write would erase a series the operator merely
+    /// <b>Scoped to the <c>(Indicator, Period)</c> pairs this catalogue computes</b>, and that scope is half
+    /// the safety of it. Deleting everything a pass did not write would erase a series the operator merely
     /// configured a period away from — ATR(14) and ATR(3) are different numbers under different keys, and a
     /// projection configured for one has no standing over the other's rows. That would be data loss wearing a
     /// cleanup's clothes.
+    /// </para>
+    /// <para>
+    /// <b>It is NOT scoped by bucket range, and that is the other half.</b> A pass sweeps the whole series,
+    /// which is sound only because a pass <i>reads</i> the whole series — true at both call sites, and until
+    /// now guaranteed by nothing. A <c>ProjectAsync</c> that took a range and narrowed the bar query while
+    /// leaving this sweep alone would delete every value outside that range, silently, and the loss would look
+    /// exactly like a warm-up. So the claim is checked rather than trusted: if the bars this pass read and the
+    /// bars the store holds disagree, it refuses. Either widen the read, or narrow the removal by the same
+    /// amount.
+    /// </para>
+    /// <para>
+    /// The check costs one count, and only when there is something to remove — which is neither the confirming
+    /// rebuild nor the ordinary fill. It doubles as the backstop for gh#73: the two reads disagreeing is also
+    /// what a pass outside one snapshot looks like, and refusing is the safe direction to be wrong in.
     /// </para>
     /// <para>
     /// A warm-up bucket that has never had a value costs nothing here: there is no row to remove. What this
@@ -160,14 +194,19 @@ public sealed class IndicatorProjector(
     /// better-informed pass correctly declines to compute.
     /// </para>
     /// </remarks>
-    private int Reconcile(
+    private async Task<int> ReconcileAsync(
+        string venue,
+        InstrumentId instrument,
+        int resolutionMinutes,
+        int barsRead,
         Dictionary<(string Indicator, int Period, DateTimeOffset Bucket), IndicatorValueRecord> existing,
-        HashSet<(string Indicator, int Period, DateTimeOffset Bucket)> produced)
+        HashSet<(string Indicator, int Period, DateTimeOffset Bucket)> produced,
+        CancellationToken cancellationToken)
     {
         HashSet<(string Indicator, int Period)> owned =
             [.. _catalog.All.Select(i => (i.Name, i.Period))];
 
-        int removed = 0;
+        List<IndicatorValueRecord> unjustified = [];
 
         foreach ((var key, IndicatorValueRecord row) in existing)
         {
@@ -176,11 +215,42 @@ public sealed class IndicatorProjector(
                 continue;
             }
 
-            _database.IndicatorValues.Remove(row);
-            removed++;
+            unjustified.Add(row);
         }
 
-        return removed;
+        if (unjustified.Count == 0)
+        {
+            return 0;
+        }
+
+        // Checked BEFORE anything is removed, so a refusal costs nothing and leaves nothing half-done.
+        int storedBars = await _database.Bars
+            .CountAsync(
+                b => b.Venue == venue
+                    && b.Instrument == instrument.Symbol
+                    && b.ResolutionMinutes == resolutionMinutes,
+                cancellationToken)
+            .ConfigureAwait(false);
+
+        if (storedBars != barsRead)
+        {
+            throw new InvalidOperationException(
+                "This projection pass read " + barsRead.ToString(CultureInfo.InvariantCulture) + " bars for "
+                + instrument.Symbol + " " + resolutionMinutes.ToString(CultureInfo.InvariantCulture)
+                + "m on '" + venue + "', but the store holds "
+                + storedBars.ToString(CultureInfo.InvariantCulture)
+                + " — so it did not read the whole series. Reconciliation removes every value the pass did not "
+                + "produce and is not scoped by bucket range, so completing it would delete values whose bars "
+                + "this pass never read. Either read the whole series in one snapshot, or scope the removal to "
+                + "the bucket range that was actually read.");
+        }
+
+        foreach (IndicatorValueRecord row in unjustified)
+        {
+            _database.IndicatorValues.Remove(row);
+        }
+
+        return unjustified.Count;
     }
 
     /// <summary>Projects every configured indicator over one single-contract run of bars.</summary>

@@ -70,6 +70,12 @@ The server serves OHLCV bars for a futures instrument at a requested resolution 
   and periods it is configured to produce. Until segmenting, a bucket could only move from *not computable* to
   *computable*, so an upsert-only projection was safe; a contract seam moves the boundary the other way, and a
   value left standing is a number the bars cannot account for. A confirming rebuild still removes nothing.
+- **R-2.9** A projection removes **only** values it read the bars for. Its two reads — the bars, then the
+  values standing over them — are **one snapshot of the store**, so a pass cannot delete what a concurrent
+  write justified between them; and a pass that finds it read less than the whole series **refuses** rather
+  than sweeping a range it never looked at. Both call sites read at `RepeatableRead`, and `rebuild-indicators`
+  is transactional per series. Without this, `R-2.8` deletes correct values and the loss arrives as an
+  absence, which `R-2.3` makes a caller read as *cannot measure* (gh#73).
 
 ## R-3 — Key levels
 

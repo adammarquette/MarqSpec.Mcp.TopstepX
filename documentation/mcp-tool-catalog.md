@@ -134,8 +134,17 @@ specific or a longer window.
 ### `record_observation(text, symbol?, kind?, tags[]?)` · `search_observations(query, symbol?, k?)`
 Writes to **this** database. Not the venue, and no weakening of the read-only boundary.
 
-Search is semantic when an embedding provider is configured and **degrades to text search when it is not** —
-an unset key is never a crash, and availability means a key *and* a vector store that actually exists.
+`search_observations` returns `{ mode, modeReason, observations }`. **`mode` says which path answered** —
+`Semantic` for vector similarity, `Text` for substring matching — and `modeReason` says why when it is not
+semantic.
+
+That field exists because an empty result is ambiguous without it: an agent receiving nothing cannot otherwise
+tell "semantic search found no match" from "semantic search never ran". Those warrant different next steps, and
+an empty `Text` result is worth retrying with different wording.
+
+**Availability means a key AND somewhere to put the vector**, checked once at startup. A key with no `vector`
+extension would embed at real cost and then fail to store the result, so that combination reports unavailable
+rather than trying.
 
 `record_observation` is the one place free text enters, and it is the deliberate exception to the numeric-only
 rule. The text originates with the operator's own agent rather than the vendor.

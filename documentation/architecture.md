@@ -92,18 +92,38 @@ covered by having been registered rather than by its author remembering a `try`.
 `StoreContentionException`, a `DbUpdateException` and a bare `NpgsqlException` into an `McpException` stating
 the condition and its SqlState; it catches nothing else, so an `InvalidOperationException` — the projector's
 whole-series guard among them — still propagates as the defect it is. Before it, `MarketDataTools.ReadAsync`
-was the only translation on the surface, and the six tools that never call it had none: a `23505` from two
-overlapping fills reached a caller of `get_bars` as a raw `DbUpdateException` (gh#89).
+was the only translation on the surface, and the thirteen tools that never call it had none: a `23505` from
+two overlapping fills reached a caller of `get_bars` as a raw `DbUpdateException` (gh#89).
+
+**The boundary says only what a filter can know, which is less than any one call site knows.** It sees an
+exception type and a SqlState — not which unit of work was open, not what shared it, and not whether a write
+reached disk. Three consequences, and they are the contract the tool surface offers:
+
+- **An unknown outcome is reported as unknown.** Postgres can commit and then lose the connection before the
+  acknowledgement arrives. Npgsql raises a bare `NpgsqlException` with *no* SqlState, EF wraps it, and the
+  rows may well be on disk — so that branch claims no outcome at all. It says the call did not complete, that
+  the fate of its write is unknown, and that reading back is how to establish what landed. Reporting a
+  completed operation as not having happened is the failure this repository reviews for first.
+- **A rollback is claimed only where the server established one.** A `PostgresException` means the server was
+  alive and answered, and in Postgres an error response and an aborted transaction are the same event. No
+  SqlState means no such evidence.
+- **Transient and permanent are told apart by SqlState class, not by CLR type.** `NpgsqlException` is the
+  provider's base type, so a `PostgresException` arrives on the same `catch`. Classes `08`, `53`, `57` and
+  `40` are conditions of an environment and are reported as worth retrying; `42`, `3D` and `28` are this
+  deployment's own defect — an unapplied migration answering `42P01`, a database that is not there, bad
+  credentials — and are reported as permanent, saying plainly that retrying will not help. Neither list is a
+  default: a code in neither is reported as unclassified rather than swept into either.
 
 **A lost race is reported, not swallowed and not retried at the boundary.** Two fills of overlapping ranges
 both find a bucket absent and both insert it; the loser gets `23505`. The rows it collided on *are* in the
 store — so a duplicate key on an idempotent upsert looks like a success someone else achieved. It is not one:
-the collision aborts the whole transaction, and that transaction is also the coverage ledger and the indicator
-projection over the same series, none of which the winner wrote on this caller's behalf. Answering "fine"
-would return a series assembled inside a transaction that rolled back. Retrying at the boundary is equally
-wrong — it would re-run the whole tool call, paced page-walk included; a retry belongs in `SeriesUnitOfWork`,
-bounded, where the fetch already happened. So the caller is told plainly, and told that a retry is served from
-what the other writer committed.
+the collision aborts the whole transaction, so answering "fine" would return work assembled inside a
+transaction that rolled back. Retrying at the boundary is equally wrong — it would re-run the whole tool call,
+paced page-walk included; a retry belongs in `SeriesUnitOfWork`, bounded, where the fetch already happened.
+So the caller is told that another writer committed the rows it collided on, that its own transaction kept
+nothing, and that a retry is served from what that writer committed. *What else* was in the aborted
+transaction — here, the coverage ledger and the projection over the same series — is a fact about
+`SeriesUnitOfWork`, and it is stated there rather than in a sentence handed to all fifteen tools.
 
 What is *not* fixed is the race itself, nor a fill whose snapshot misses a range another fill is filling: its
 values are seeded from the wrong bar and are stale until the next pass, which is recoverable by construction

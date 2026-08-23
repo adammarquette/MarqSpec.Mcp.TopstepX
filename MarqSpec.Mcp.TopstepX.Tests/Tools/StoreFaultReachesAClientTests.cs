@@ -60,11 +60,11 @@ public sealed class StoreFaultReachesAClientTests
         string reported = await CallAsync(() => throw duplicate);
 
         reported.Should().Contain(
-            "Another request wrote the same rows",
+            "Another writer committed rows this call collided on",
             "the filter has to run OUTSIDE the SDK's own tool catch, or the guard never sees anything");
         reported.Should().Contain("23505");
         reported.Should().Contain(
-            "Retry", "an error a caller cannot act on is barely better than the stack it replaced");
+            "retry", "an error a caller cannot act on is barely better than the stack it replaced");
 
         // The SDK still prefixes its own "An error occurred invoking 'boom':" and then appends the message.
         // Measured, not assumed -- and it is why the assertions above are on the SENTENCE rather than on the

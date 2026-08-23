@@ -1,5 +1,6 @@
 using FluentAssertions;
 using MarqSpec.Mcp.TopstepX.Configuration;
+using MarqSpec.Mcp.TopstepX.Tools;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
@@ -91,6 +92,126 @@ public sealed class StoreFaultReportingTests
     }
 
     [Fact]
+    public async Task AWriteWhoseOutcomeIsUNKNOWN_IsNotReportedAsIfNothingWasWritten()
+    {
+        // The regression, and the rule .github/copilot-instructions.md leads with: a timeout is not a
+        // failure, it is an UNKNOWN OUTCOME, and a path that reports "did not happen" has lied.
+        //
+        // SaveChangesAsync sends COMMIT, Postgres commits it, and the connection drops -- or the command
+        // timeout elapses -- before the acknowledgement comes back. Npgsql raises an NpgsqlException with NO
+        // SqlState (an IOException or a TimeoutException inside, never a PostgresException), EF wraps it in a
+        // DbUpdateException, and the bars, the coverage row and the projection are all on disk. The boundary
+        // cannot see which of the two happened, so it must not pick one.
+        DbUpdateException lostAcknowledgement = new(
+            "An error occurred while saving the entity changes.",
+            new NpgsqlException(
+                "Exception while reading from stream", new IOException("the connection was reset")));
+
+        Func<Task> call = () => Invoke(Throws(lostAcknowledgement));
+
+        string reported = (await call.Should().ThrowAsync<McpException>()).Which.Message;
+
+        reported.Should().NotContainEquivalentOf(
+            "nothing was written",
+            "the acknowledgement was lost, not necessarily the write -- claiming a durable outcome the "
+            + "boundary cannot observe is the lie the checklist leads with");
+        reported.Should().NotContainEquivalentOf(
+            "rolled back", "a server that never answered cannot be said to have aborted anything");
+        reported.Should().ContainEquivalentOf(
+            "unknown", "what is known is that the outcome is not known, and that is what to say");
+    }
+
+    [Fact]
+    public async Task APermanentStoreFault_IsNOTAdvertisedAsRetryable()
+    {
+        // A deploy where the migration has not been applied. get_indicators hits
+        // `42P01 relation "IndicatorValues" does not exist` -- a defect in THIS deployment, not a condition
+        // of the store -- and telling the caller to retry sends it round a loop it can never come out of.
+        //
+        // NpgsqlException is the provider's BASE type, so PostgresException rides in on the same catch. The
+        // classifier a caller needs is the SqlState class, which the guard already reads.
+        Func<Task> call = () => Invoke(Throws(Answered(PostgresErrorCodes.UndefinedTable)));
+
+        string reported = (await call.Should().ThrowAsync<McpException>()).Which.Message;
+
+        reported.Should().ContainEquivalentOf(
+            "42P01", "the SqlState is the one coordinate-free fact worth echoing");
+        reported.Should().ContainEquivalentOf(
+            "will not help",
+            "a missing relation is this server's own defect; a caller told to retry it retries forever");
+        reported.Should().NotContainEquivalentOf(
+            "the store itself needs attention",
+            "the store answered correctly -- what it answered is that this server asked for something that "
+            + "does not exist");
+    }
+
+    [Theory]
+    [InlineData("42501")]
+    [InlineData("3D000")]
+    [InlineData("28P01")]
+    public async Task TheOtherPermanentClasses_AreClassifiedTheSameWay(string sqlState)
+    {
+        // 42501 insufficient privilege, 3D000 database does not exist, 28P01 bad password. None of them
+        // becomes true by being asked again.
+        Func<Task> call = () => Invoke(Throws(Answered(sqlState)));
+
+        string reported = (await call.Should().ThrowAsync<McpException>()).Which.Message;
+
+        reported.Should().ContainEquivalentOf(sqlState);
+        reported.Should().ContainEquivalentOf("will not help");
+    }
+
+    [Theory]
+    [InlineData("08006")]
+    [InlineData("53300")]
+    [InlineData("57P01")]
+    [InlineData("40001")]
+    public async Task ATransientStoreFault_IsStillAdvertisedAsRetryable(string sqlState)
+    {
+        // The other side of the same gate: narrowing "retry" must not narrow it to nothing. Connection
+        // failure, out of resources, operator intervention, serialisation failure -- all conditions of an
+        // environment, all worth asking again.
+        Func<Task> call = () => Invoke(Throws(Answered(sqlState)));
+
+        string reported = (await call.Should().ThrowAsync<McpException>()).Which.Message;
+
+        reported.Should().ContainEquivalentOf(sqlState);
+        reported.Should().ContainEquivalentOf(
+            "retry", "these are conditions of an environment, and asking again is the right advice");
+        reported.Should().NotContainEquivalentOf("will not help");
+    }
+
+    [Fact]
+    public async Task ASqlStateThisServerCannotClassify_PrefersUnknownOverAConfidentRetry()
+    {
+        // Fail closed. An unrecognised SqlState is not evidence that retrying works, and a permissive default
+        // is the recurring defect shape this repository reviews for.
+        Func<Task> call = () => Invoke(Throws(Answered("XX000")));
+
+        string reported = (await call.Should().ThrowAsync<McpException>()).Which.Message;
+
+        reported.Should().ContainEquivalentOf("XX000");
+        reported.Should().ContainEquivalentOf(
+            "unknown", "an unclassified condition is honestly unknown, not optimistically transient");
+    }
+
+    [Fact]
+    public async Task ALostRace_IsDescribedWithoutNarratingAUnitOfWorkTheBoundaryNeverSaw()
+    {
+        // The guard speaks for all fifteen tools. "The coverage ledger and the indicator projection over the
+        // same series" is a fact about SeriesUnitOfWork, and it is true today only because every unique key
+        // in the schema happens to be bars-family. Handed to the tool that adds the next one, it is a false
+        // statement wearing a boundary-shaped guarantee.
+        Func<Task> call = () => Invoke(Throws(Duplicate()));
+
+        string reported = (await call.Should().ThrowAsync<McpException>()).Which.Message;
+
+        reported.Should().NotContainEquivalentOf(
+            "coverage ledger", "a call-tool filter does not know which unit of work it was wrapping");
+        reported.Should().NotContainEquivalentOf("indicator projection");
+    }
+
+    [Fact]
     public async Task AProgrammingError_CrossesTheBoundaryUNCHANGED()
     {
         // The test that stops the catch being widened later, and the reason it is not `catch (Exception)`.
@@ -127,9 +248,35 @@ public sealed class StoreFaultReportingTests
         // stated as wiring instead of as a rule.
         using ServiceProvider provider = Build();
 
-        Filters(provider).Should().NotBeEmpty(
+        // Named, not counted. `NotBeEmpty` stayed green with StoreFaultGuard deleted from Program and any
+        // other call-tool filter registered in its place -- a test whose name claimed the wiring while its
+        // assertion checked only that SOMETHING was wired.
+        Filters(provider).Should().Contain(
+            StoreFaultGuard.Filter,
             "every tools/call goes through this pipeline; a guard anywhere else covers one tool");
     }
+
+    [Fact]
+    public async Task TheRegisteredPipeline_BEHAVESLikeTheGuard()
+    {
+        // The other half of the same claim, because reference identity alone would survive the guard being
+        // registered where it never runs: the list the composition root builds, folded into a pipeline and
+        // driven, produces THIS guard's translation of a fabricated fault.
+        DbUpdateException duplicate = Duplicate();
+
+        Func<Task> call = () => Invoke(Throws(duplicate));
+
+        (await call.Should().ThrowAsync<McpException>())
+            .Which.Message.Should().Be(
+                StoreFaultGuard.Describe(duplicate),
+                "the filter that ran is the one whose wording this repository maintains");
+    }
+
+    /// <summary>A fault the store itself answered with, arriving raw from the provider on a read.</summary>
+    /// <param name="sqlState">What Postgres answered.</param>
+    /// <returns>The fault.</returns>
+    private static PostgresException Answered(string sqlState) =>
+        new("the store answered", "ERROR", "ERROR", sqlState);
 
     private static DbUpdateException Duplicate() =>
         new(

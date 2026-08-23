@@ -27,12 +27,26 @@ tool and change this page in the same PR.
   `try` in one tool. Until gh#89, only the two bar-filling tools translated anything, and a `23505` from two
   concurrent fills arrived at `get_bars` as a raw `DbUpdateException`.
 
+  **It states what it knows and no more.** The guard sees an exception and a SqlState, not the unit of work
+  the tool had open, so the error tells you which of three things happened:
+
+  - **The store answered, and the answer is transient** — a connection failure, exhausted resources, operator
+    intervention, a serialisation refusal. The call's transaction rolled back and kept nothing. Retry.
+  - **The store answered, and the answer is a defect in this server** — an unapplied migration, a database
+    this deployment names but does not have, credentials it cannot use. The error says so and says plainly
+    that **retrying will not help**; it is fixed by fixing the deployment, not by asking again.
+  - **The store stopped answering** — no SqlState at all, which happens when a commit is acknowledged too
+    late or never. The **outcome is unknown**, and the error says so rather than claiming the write did not
+    land: read back to establish what is there. A call that records something new may record it twice if it
+    is simply repeated.
+
+  A SqlState the server cannot classify is reported as unclassified, not as "probably retry".
+
   **A lost race is an error, not a quiet success.** The rows the loser collided on are in the store — the
-  other writer committed them — but the loser's *whole* transaction rolled back, including the coverage ledger
-  and the indicator projection over the same series. So the answer is "retry", and the retry is served from
-  what the other writer committed. **A defect in this server is still a defect**: an invariant violation
-  propagates unchanged rather than being dressed up as a transient store condition an operator would retry
-  forever.
+  other writer committed them — but the loser's *whole* transaction rolled back and kept none of its own work.
+  So the answer is "retry", and the retry is served from what the other writer committed. **A defect in this
+  server is still a defect**: an invariant violation propagates unchanged rather than being dressed up as a
+  transient store condition an operator would retry forever.
 - **A missing number means *cannot measure*.** Never a substituted default, and the caller is expected to say
   so rather than proceed. **How that reaches the wire depends on where the value sits**, and the two forms
   need different tests:

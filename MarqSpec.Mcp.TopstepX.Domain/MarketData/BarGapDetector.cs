@@ -149,9 +149,15 @@ public static class BarGapDetector
     /// <param name="barSize">The bar size.</param>
     /// <returns>The aligned instant.</returns>
     /// <remarks>
-    /// Alignment is against the Unix epoch in UTC, which is the grid the venue publishes on. Aligning against
-    /// the window's own start instead would produce a different bucket grid for every caller, and two callers
-    /// asking overlapping questions would each miss the other's cached rows entirely.
+    /// Alignment is against a fixed UTC grid anchored at the .NET epoch (<c>UtcTicks</c>), not against the
+    /// window. Aligning against the window's own start would produce a different bucket grid for every caller,
+    /// and two callers asking overlapping questions would each miss the other's cached rows entirely.
+    /// <para>
+    /// The anchor is midnight, so for any bar size dividing 1440 minutes this is the same grid the venue
+    /// publishes on — which covers every resolution anyone has asked for. It is <i>not</i> the Unix epoch, as
+    /// this remark said until gh#48; the two agree for those sizes and diverge for one that divides neither an
+    /// hour nor a day, 7 minutes being the obvious example.
+    /// </para>
     /// </remarks>
     public static DateTimeOffset AlignUp(DateTimeOffset instant, TimeSpan barSize)
     {

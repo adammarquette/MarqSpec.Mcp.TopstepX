@@ -2,6 +2,7 @@ using MarqSpec.Client.ProjectX.DependencyInjection;
 using MarqSpec.Mcp.TopstepX.Configuration;
 using MarqSpec.Mcp.TopstepX.Data;
 using MarqSpec.Mcp.TopstepX.Domain.MarketData;
+using MarqSpec.Mcp.TopstepX.Embeddings;
 using MarqSpec.Mcp.TopstepX.MarketData;
 using MarqSpec.Mcp.TopstepX.Tools;
 using MarqSpec.Mcp.TopstepX.Venue;
@@ -42,6 +43,11 @@ public static class Program
         // ones that do not are unaffected.
         StoreAvailability store = await MigrateAsync(app).ConfigureAwait(false);
         app.Services.GetRequiredService<StoreAvailabilityHolder>().Set(store);
+
+        // Probed once, after the store is known, because availability means a key AND somewhere to put the
+        // vector. Doing it lazily would put a database round trip inside a tool call.
+        app.Services.GetRequiredService<EmbeddingAvailabilityHolder>()
+            .Set(await ProbeEmbeddingsAsync(app, store).ConfigureAwait(false));
 
         if (mcp.Transport == McpTransport.Http)
         {
@@ -132,6 +138,15 @@ public static class Program
         services.AddSingleton<IndicatorCatalogNames>();
         services.AddSingleton<ToolGuards>();
         services.AddSingleton<StoreAvailabilityHolder>();
+        services.AddSingleton<EmbeddingAvailabilityHolder>();
+        services.AddSingleton<EmbeddingAvailabilityProbe>();
+
+        // The embedding seam. Only the keyless default exists today (gh#45); a real provider is selected here
+        // once one is chosen (gh#44). An unset key is a supported state, so this is never a startup failure.
+        services.AddOptions<EmbeddingOptions>()
+            .Bind(builder.Configuration.GetSection(EmbeddingOptions.SectionName));
+
+        services.AddSingleton<IEmbeddingProvider, UnconfiguredEmbeddingProvider>();
 
         // The venue (gh#13). Configured means BOTH credentials present AND a data tier chosen; anything less
         // and the server still starts, serving everything that needs no venue, with the venue tools refusing
@@ -259,6 +274,22 @@ public static class Program
             logger.LogWarning("{Explanation}", unavailable.Explanation);
             return unavailable;
         }
+    }
+
+    private static async Task<EmbeddingAvailability> ProbeEmbeddingsAsync(
+        WebApplication app,
+        StoreAvailability store)
+    {
+        using IServiceScope scope = app.Services.CreateScope();
+        IServiceProvider sp = scope.ServiceProvider;
+
+        return await sp.GetRequiredService<EmbeddingAvailabilityProbe>()
+            .ProbeAsync(
+                sp.GetRequiredService<IOptions<EmbeddingOptions>>().Value,
+                store,
+                sp.GetRequiredService<TopstepXDbContext>(),
+                CancellationToken.None)
+            .ConfigureAwait(false);
     }
 
     private static async Task<int> RebuildIndicatorsAsync(WebApplication app, string[] args)

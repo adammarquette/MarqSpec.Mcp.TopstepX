@@ -33,6 +33,13 @@ ADR, `AGENTS.md`, or the code, **put it there instead**.
 
 ## Notes & communications
 
+- **[2026-08-23] A value computed at full `decimal` precision never equals the same value read back from a
+  `numeric(18,8)` column.** Round to `TopstepXDbContext.PriceScale` before comparing, or the comparison
+  silently always answers "changed". This made the indicator projection's skip-unchanged guard dead code for
+  the whole of Phase 2 (gh#37). **Applies to any future `numeric(18,8)` column compared this way.**
+- **[2026-08-23] A CLI verb with no test and no run is not delivered.** `rebuild-indicators` shipped in Phase 2
+  and had never been executed anywhere. Running it once, twice in a row, exposed gh#37 immediately.
+
 - **[2026-08-22] `dotnet test` is blocked on Adam's machine by Windows Application Control** (`0x800711C7`,
   "An Application Control policy has blocked this file"). It is not a code failure. Run the suite in the
   pinned SDK container instead, which is what `docker-compose.dev.yml` exists for:

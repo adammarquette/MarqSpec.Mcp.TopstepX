@@ -24,6 +24,10 @@ namespace MarqSpec.Mcp.TopstepX.Venue;
 /// without a kind.
 /// </para>
 /// </remarks>
+// THROWAWAY GATE MUTATION (gh#72) - DO NOT MERGE. This branch exists only to prove that the merge gate
+// really blocks. The line below names an order method in product code, which is exactly what
+// scripts/check-no-order-path.sh forbids; NO order call is added, and nothing here is reachable.
+// PlaceOrderAsync
 public sealed class ProjectXMarketDataGateway : IMarketDataGateway
 {
     /// <summary>The most bars one history call may ask for before the gateway truncates silently.</summary>
@@ -157,6 +161,9 @@ public sealed class ProjectXMarketDataGateway : IMarketDataGateway
         TimeSpan pacedTotal = TimeSpan.Zero;
         int pacedPages = 0;
 
+        TimeSpan paced =
+            await _historyPacer.WaitForSlotAsync(cancellationToken).ConfigureAwait(false);
+
         for (DateTimeOffset from = window.Start; from < window.End; from += page)
         {
             DateTimeOffset to = from + page;
@@ -173,9 +180,6 @@ public sealed class ProjectXMarketDataGateway : IMarketDataGateway
             //
             // scripts/check-paced-paging.sh is what keeps this call HERE -- inside the loop and ahead of the
             // fetch. Deleting it left every unit test green, which is the whole reason that gate exists.
-            TimeSpan paced =
-                await _historyPacer.WaitForSlotAsync(cancellationToken).ConfigureAwait(false);
-
             if (paced > TimeSpan.Zero)
             {
                 // A minute of silence is indistinguishable from a hang, and "why did this call take a

@@ -74,12 +74,21 @@ The root contract's five apply here unchanged. Four land specifically on the pip
     and never reaches the local daemon; the build still exits 0, warning only that the *result will only
     remain in the build cache*. The smoke `docker run` then fails trying to **pull** the tag from Docker Hub,
     which reads as a typo in the tag rather than as a missing export.
-  - **A green `image` does not mean the entrypoint works.** The smoke step runs
+  - **`--entrypoint` in a smoke step replaces the thing you meant to test.** The smoke step used to run
     `docker run --entrypoint dotnet … --list-runtimes`, and `--entrypoint` **replaces** the image's own
-    `ENTRYPOINT` — so the app assembly is never loaded, and an `ENTRYPOINT` naming a DLL that does not exist
-    passes the step while `docker run` on that image exits 155 (gh#67). What a green `image`
-    licenses, exactly: the Dockerfile builds, the image loads into the daemon, and the .NET runtime inside it
-    answers.
+    `ENTRYPOINT` — so the container that ran was `dotnet --list-runtimes`, the app assembly was never
+    loaded, and an `ENTRYPOINT` naming a DLL that does not exist passed it at exit 0 (gh#67). It now runs
+    [`check-image-entrypoint.sh`](../../scripts/check-image-entrypoint.sh), which asserts the entrypoint's
+    assembly sits at the path the entrypoint names, and that that entrypoint — unoverridden — starts a
+    server which answers an MCP `tools/list`. **Do not re-gate it on the exit code: the numbers invert.**
+    Measured on Docker Engine 29.6.2, a correctly-built server exits **0** when stdin stays open until it
+    answers and **139** when stdin is at EOF during startup (gh#76), while an `ENTRYPOINT` naming a missing
+    assembly exits **155** — the *dotnet host's* "the command could not be loaded", i.e. what broken looks
+    like. gh#67 recorded 155 as the healthy code; a gate written to that number would have passed the broken
+    image and failed the good one. What a green `image` licenses, exactly: the Dockerfile builds, the image
+    loads into the daemon, and the image's own entrypoint starts a server that serves its tool list with no
+    configuration. Not the venue, the store, the embedding provider or the HTTP transport — this configures
+    none of them.
   - **`docker/login-action` stays uncovered, on purpose.** Exercising it in CI would mean granting
     `packages: write` to a job that must not push, on every pull request — forks included, where
     `GITHUB_TOKEN` is read-only and the step would fail for a reason unrelated to the change. The login and

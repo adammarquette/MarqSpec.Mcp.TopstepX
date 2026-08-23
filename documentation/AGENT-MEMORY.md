@@ -22,7 +22,8 @@ ADR, `AGENTS.md`, or the code, **put it there instead**.
   has no order method, so a caller holding one has nothing to reach for. Keep it that way: if a task seems to
   need an order call, the task is wrong or it belongs in `trading-copilot`. `scripts/check-no-order-path.sh`
   enforces it, and **that script's own test is to add a violation and watch it go red** — a gate nobody has
-  seen fail is a gate nobody should trust.
+  seen fail is a gate nobody should trust. That red run is only the first of the two a new gate needs; the
+  second is in the [Coding contract](../MarqSpec.Mcp.TopstepX/AGENTS.md) under Tests.
 - **[2026-08-22] Every expected value in an indicator test is worked out by hand, never captured from a run.**
   A test that asserts the code does what the code does passes forever and proves nothing. Choose series where
   the arithmetic is **exact in decimal** — EMA at period 2 gives a smoothing factor of 2/3 and forces
@@ -41,6 +42,15 @@ ADR, `AGENTS.md`, or the code, **put it there instead**.
   — which matches with nothing on disk**, so no `mkdir` and no mutation to answer a read-only question.
   Verified both ways: ignored on `trading-copilot`, not-ignored on an unfixed `develop`. Without it, three of
   the four siblings read as broken during the gh#40 sweep.
+- **[2026-08-23] Four gates landed in one session and three were defective before review — the evidence behind
+  the two-runs rule** in the [Coding contract](../MarqSpec.Mcp.TopstepX/AGENTS.md) (Tests). Every one had
+  already been watched failing on the bug it was written for; none had been run against the input it would
+  actually meet. `SnapshotDefaultsTests`' description check (gh#70) asserted `Contain("10")`, which matches
+  inside `100` — vacuous. `scripts/check-paced-paging.sh` (gh#43) went green on an unpaced loop because a
+  comment naming the method satisfied it. `ToolSchemaTests` (gh#82) went **red on correct text** twice, first
+  on backticks and then on `e.g. ES`. `SerializationFailureTests` (gh#73) used an interceptor that also
+  matched EF's write batches, so both firings were spent in attempt one and the retry ran unopposed. The
+  reviewer found all four, not the author (gh#87).
 
 ## Notes & communications
 

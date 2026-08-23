@@ -1,0 +1,62 @@
+# TEMPORARY — gh#98 measurement scaffolding. Delete before this branch merges.
+#
+# Exists to answer one question that cannot be answered from a developer's laptop: what does the image's own
+# ENTRYPOINT actually exit with on `ubuntu-latest`? Every exit code this repository has written down was taken
+# on Docker Desktop for Windows (Engine 29.6.2), and CI reports Engine 28.0.4.
+name: measure-98
+
+on:
+  push:
+    branches: ['feature/98_**']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: measure-98-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  measure:
+    name: measure exit codes
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Provenance — runner image and docker engine
+        run: |
+          echo "runner            : $RUNNER_OS / $RUNNER_ARCH"
+          echo "ImageOS           : ${ImageOS:-unset}"
+          echo "ImageVersion      : ${ImageVersion:-unset}"
+          . /etc/os-release && echo "distro            : $PRETTY_NAME"
+          echo "docker client     : $(docker version --format '{{.Client.Version}}')"
+          echo "docker server     : $(docker version --format '{{.Server.Version}}')"
+          docker info --format 'containerd/runc  : {{.DefaultRuntime}}' || true
+          uname -a
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Build the image
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          push: false
+          load: true
+          tags: marqspec-mcp-topstepx:ci
+        env:
+          DOCKER_BUILD_RECORD_UPLOAD: false
+          DOCKER_BUILD_SUMMARY: false
+
+      - name: Build the broken-image fixture
+        run: |
+          docker buildx ls
+          printf 'FROM marqspec-mcp-topstepx:ci\nENTRYPOINT ["dotnet", "MarqSpec.Mcp.TopstepX.DoesNotExist.dll"]\n' \
+            | docker buildx build --builder default --load -t marqspec-mcp-topstepx:broken -
+          docker inspect --format 'broken ENTRYPOINT: {{json .Config.Entrypoint}}' marqspec-mcp-topstepx:broken
+
+      - name: Measure the three rows, 3 runs each
+        run: ./scripts/measure-98-exit-codes.sh

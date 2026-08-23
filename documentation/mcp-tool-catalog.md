@@ -23,10 +23,13 @@ tool and change this page in the same PR.
 - **Times are ISO-8601 UTC**, in and out. A naive local timestamp in a request is rejected, not guessed at.
 - **A missing number is `null`, meaning *cannot measure*.** Never a substituted default. The caller is expected
   to say so rather than proceed.
-- **`resolutionMinutes` is caller-chosen, and any resolution is servable.** No tool enumerates supported
-  timeframes, because there is no list — each resolution is an independent cached series fetched from the
-  venue, never derived from a finer one
-  ([ADR-0010](adr/0010-per-call-resolutions-fetched-not-derived.md)).
+- **`resolutionMinutes` is caller-chosen, and any *positive* resolution is servable.** No tool enumerates
+  supported timeframes, because there is no list — each resolution is an independent cached series fetched from
+  the venue, never derived from a finer one
+  ([ADR-0010](adr/0010-per-call-resolutions-fetched-not-derived.md)). **Zero and negative are refused**, by
+  every tool that takes a resolution and with the offending value named. They used to be refused only by the
+  tools that also validate a window; on the other four a `0` arrived as a raw `ArgumentOutOfRangeException` or,
+  worse, as an empty series — a caller's mistake wearing the shape of a quiet market (gh#69).
 - **Nothing is derived across a contract roll.** A series is keyed by the venue-neutral symbol and the front
   month rolls quarterly, so a long window holds **two contracts** that do not trade at the same price. Every
   bar-derived payload carries `contracts` — `span`, plus one segment per contiguous run with its
@@ -239,6 +242,11 @@ cannot do.
 
 `barCount` is validated on the path it feeds, not here: it reaches `ToolGuards.ValidateCount` through
 `get_latest_bars` on the first resolution, so a negative or over-cap count still refuses.
+
+**`resolutionMinutes` is not deferred that way — the set is judged whole, before anything is read.** A
+non-positive member refuses the call in `ResolveResolutions`, so `[5, 0, 60]` fetches nothing at all rather
+than returning a five-minute slice and then erroring. A caller holding half a snapshot *and* an exception is
+worse off than one holding either alone.
 
 ## Observations
 

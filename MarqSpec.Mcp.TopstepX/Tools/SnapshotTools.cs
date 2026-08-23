@@ -1,5 +1,6 @@
 using System.ComponentModel;
 using MarqSpec.Mcp.TopstepX.MarketData;
+using ModelContextProtocol;
 using ModelContextProtocol.Server;
 
 namespace MarqSpec.Mcp.TopstepX.Tools;
@@ -52,6 +53,7 @@ public sealed class SnapshotTools(
     /// </summary>
     /// <param name="requested">What the caller asked for, if anything.</param>
     /// <returns>The resolutions to cover, each once, in the order given.</returns>
+    /// <exception cref="McpException">A requested resolution is not positive.</exception>
     /// <remarks>
     /// <para>
     /// A pure function, separated from the call so the policy can be pinned by a test that needs no store and
@@ -67,11 +69,27 @@ public sealed class SnapshotTools(
     /// asked for 15m alone two further series it did not want, and it could not tell from the payload that it
     /// had paid for them.
     /// </para>
+    /// <para>
+    /// <b>The set is judged whole, here, rather than one resolution at a time as the snapshot walks it.</b>
+    /// Checking each in its turn lets <c>[5, 0, 60]</c> fetch and project an entire five-minute slice before
+    /// refusing — and a caller holding half a snapshot <i>and</i> an exception is worse off than one holding
+    /// either alone (gh#69).
+    /// </para>
     /// </remarks>
-    public static IReadOnlyList<int> ResolveResolutions(int[]? requested) =>
-        requested is null || requested.Length == 0
-            ? DefaultResolutionMinutes
-            : [.. requested.Distinct()];
+    public static IReadOnlyList<int> ResolveResolutions(int[]? requested)
+    {
+        if (requested is null || requested.Length == 0)
+        {
+            return DefaultResolutionMinutes;
+        }
+
+        foreach (int resolution in requested)
+        {
+            ToolGuards.ValidateResolution(resolution);
+        }
+
+        return [.. requested.Distinct()];
+    }
 
     /// <summary>Reads bars, indicators, levels and session state for one instrument.</summary>
     /// <param name="symbol">The instrument symbol.</param>
@@ -105,11 +123,16 @@ public sealed class SnapshotTools(
         [Description("How many recent bars per resolution. Omit it for 100.")] int barCount = DefaultBarCount,
         CancellationToken cancellationToken = default)
     {
+        // Decided -- and validated -- before anything is read. Resolving inside the loop header would leave a
+        // bad member of the set refusing only once its turn came round, by which point the earlier slices have
+        // already cost their fetch and their projection.
+        IReadOnlyList<int> resolutions = ResolveResolutions(resolutionMinutes);
+
         ToolPayloads.SessionState session = _reference.GetMarketSession(symbol);
 
         List<ToolPayloads.ResolutionSnapshot> slices = [];
 
-        foreach (int resolution in ResolveResolutions(resolutionMinutes))
+        foreach (int resolution in resolutions)
         {
             ToolPayloads.BarSeries series = await _marketData
                 .GetLatestBars(symbol, resolution, barCount, cancellationToken)

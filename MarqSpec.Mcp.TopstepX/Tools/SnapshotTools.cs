@@ -123,16 +123,15 @@ public sealed class SnapshotTools(
         [Description("How many recent bars per resolution. Omit it for 100.")] int barCount = DefaultBarCount,
         CancellationToken cancellationToken = default)
     {
-        // Decided -- and validated -- before anything is read. Resolving inside the loop header would leave a
-        // bad member of the set refusing only once its turn came round, by which point the earlier slices have
-        // already cost their fetch and their projection.
-        IReadOnlyList<int> resolutions = ResolveResolutions(resolutionMinutes);
-
         ToolPayloads.SessionState session = _reference.GetMarketSession(symbol);
 
         List<ToolPayloads.ResolutionSnapshot> slices = [];
 
-        foreach (int resolution in resolutions)
+        // A foreach evaluates its collection expression ONCE, before the first iteration, so the whole set is
+        // judged here and [5, 0, 60] refuses with nothing fetched. What must not move is the CHECK itself:
+        // pushed down into the body it would refuse on the third pass, by which point two slices have already
+        // cost their fetch and their projection.
+        foreach (int resolution in ResolveResolutions(resolutionMinutes))
         {
             ToolPayloads.BarSeries series = await _marketData
                 .GetLatestBars(symbol, resolution, barCount, cancellationToken)

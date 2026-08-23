@@ -36,6 +36,14 @@ namespace MarqSpec.Mcp.TopstepX.Tests.Tools;
 /// the guard cannot quietly fall off a tool added tomorrow — the exact failure <c>ToolGuards</c> was written
 /// to prevent, and then suffered itself.
 /// </para>
+/// <para>
+/// <b>That sweep keys on the parameter <i>name</i>, so name yours <c>resolutionMinutes</c>.</b> A rename on one
+/// of today's six trips the count floor and fails loudly; a <i>new</i> tool spelling the same concept
+/// <c>timeframeMinutes</c> or <c>barSizeMinutes</c> leaves the count at six and is silently uncovered. It is
+/// the one door left open, and the only part of this fixture that fails quietly — <c>Instance</c> and
+/// <c>Blank</c> both throw and say what to add. A marker attribute would close it properly, and costs more
+/// than it buys while the surface is six methods.
+/// </para>
 /// </remarks>
 public sealed class ResolutionGuardTests : IDisposable
 {
@@ -271,12 +279,24 @@ public sealed class ResolutionGuardTests : IDisposable
 
         foreach (MethodInfo tool in takingAResolution)
         {
+            _gateway.ResetCounters();
+
             Func<Task> call = () => Invoke(tool, Instance(tool.DeclaringType!));
 
             (await call.Should().ThrowAsync<McpException>(
                 tool.Name + " accepts a resolutionMinutes and does not refuse a non-positive one, so a "
                 + "caller mistake reaches it as a fault or as a plausible-looking empty answer."))
                 .WithMessage("*resolutionMinutes*");
+
+            // Refusing is only half of it, and the half that a per-call-site patch also satisfies. Deleting
+            // the whole-set loop from ResolveResolutions still leaves every tool throwing an McpException --
+            // GetLatestBars' own guard catches the bad member one slice late -- so the throw assertion alone
+            // cannot tell the two designs apart. These two can: a tool that reached the venue before refusing
+            // has already spent the request it was refusing to justify.
+            _gateway.BarRequests.Should().Be(
+                0, tool.Name + " read bars from the venue before refusing the resolution");
+            _gateway.ContractRequests.Should().Be(
+                0, tool.Name + " resolved a contract at the venue before refusing the resolution");
         }
     }
 
@@ -318,8 +338,11 @@ public sealed class ResolutionGuardTests : IDisposable
     /// <returns>The value to pass.</returns>
     private static object? Filler(ParameterInfo parameter) => parameter.Name switch
     {
-        // A MIXED set, not a bare [0]: a tool that checked only the resolution it happened to be working on
-        // would pass a single-element array and still be broken for the case that matters.
+        // A MIXED set, not a bare [0]. On its own that proves less than it looks: a per-slice check still
+        // throws an McpException, only one slice later, so the throw assertion cannot tell the two designs
+        // apart either way. It is the BarRequests == 0 assertion in the sweep that separates them, and the
+        // mixed set is what gives that assertion something to catch -- a bare [0] would refuse on the first
+        // member under both designs and spend nothing under either.
         "resolutionMinutes" when parameter.ParameterType == typeof(int[]) => new[] { 5, 0 },
         "resolutionMinutes" => 0,
         "indicator" => "atr",

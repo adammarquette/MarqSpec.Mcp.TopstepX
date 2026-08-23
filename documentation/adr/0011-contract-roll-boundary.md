@@ -111,6 +111,12 @@ Stated once: **bars are returned with the seam named; nothing derived from bars 
 halves are visible in the payload, which is what the criterion asks for — an agent calling any affected tool
 can tell that a roll happened.
 
+## Decision log
+
+| Update | What changed |
+|---|---|
+| [2026-08-23](#update-2026-08-23--the-reconcile-has-a-precondition-and-nothing-stated-it) | The reconcile's precondition is named and enforced: one snapshot, and the whole series ([gh#73](https://github.com/adammarquette/MarqSpec.Mcp.TopstepX/issues/73)) |
+
 ## Alternatives considered
 
 ### Key bars by contract id — genuinely the better answer, and rejected for now
@@ -223,3 +229,38 @@ most wants to look at just after a roll.
 - A **back-adjusted derived view**, if a question genuinely needs one. Derived, never stored.
 - Nothing reports the roll **event** itself: there is no "when did ES roll" tool. It is now answerable from
   this column, and it is not built.
+
+## Update (2026-08-23) — the reconcile has a precondition, and nothing stated it
+
+This record decided that a projection **removes** the values the current bars no longer justify, and argued
+that at length: an advisory flag beside a wrong number is still a wrong number, so the stale value has to go.
+That is unchanged. What this record did not say is what the removal depends on, and the omission was a defect
+(gh#73).
+
+**A pass decides what to delete by comparing two reads** — the bars, and then the values standing over them.
+Under `READ COMMITTED` those are two snapshots of the store, and another fill of the same series can commit
+between them. The pass then holds values it never saw the bars for, concludes the bars do not justify them,
+and deletes them. What is lost is correct, and it is lost as an **absence** — which `R-2.3` makes every caller
+read as *cannot measure*, on a value that was fine.
+
+**This is a defect created by a fix, which is the part worth carrying forward.** Before reconciliation the
+projection only ever upserted, so seeing another pass's values without its bars meant writing nothing: a stale
+read was a harmless no-op. Adding a delete gave the stale read teeth. *Any* change that turns a
+write-or-leave-alone step into a remove step inherits this, and should be read as a change to the isolation
+requirements of the whole path rather than to one method.
+
+Two things now hold the guarantee, and `R-2.9` states them:
+
+- **Both call sites read at `RepeatableRead`**, so the two reads are one snapshot. `rebuild-indicators` — the
+  command an operator runs precisely when they are repairing the store — had **no transaction at all**, and is
+  now transactional per series.
+- **The removal is unscoped by bucket range**, which is sound only because a pass reads the whole series. That
+  was true at both call sites and enforced by nothing, and adding a range parameter to `ProjectAsync` is the
+  moment it would break, silently, in a way that looks like a warm-up. A pass that finds it read fewer bars
+  than the store holds now **refuses** and names both counts.
+
+Neither is free of residue, and the honest statement of it is: two fills whose ranges interleave still each
+project over their own view, so one can write values seeded from the wrong bar. Those are **stale, not lost** —
+the projection is reproducible from the bars by design ([ADR-0006](0006-indicators-as-projections.md)), so the
+next pass over the series corrects them. Closing that as well means serialising fills per series, which is a
+lock rather than an isolation level and is not decided here.

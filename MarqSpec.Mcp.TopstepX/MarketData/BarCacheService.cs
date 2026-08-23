@@ -1,3 +1,4 @@
+using System.Data;
 using MarqSpec.Mcp.TopstepX.Data;
 using MarqSpec.Mcp.TopstepX.Data.Entities;
 using MarqSpec.Mcp.TopstepX.Domain;
@@ -152,10 +153,40 @@ public sealed class BarCacheService
             // committed bar whose indicators are missing reads back as a market that produced no signal,
             // which is indistinguishable from a real absence of one.
             //
+            // REPEATABLE READ, not the default. The projection reads the bars and then the values standing
+            // over them and reconciles the second against the first; under READ COMMITTED those are two
+            // snapshots, so a concurrent fill of the same series can commit BETWEEN them -- and this pass then
+            // deletes values it never saw the bars for (gh#73). One snapshot makes that unrepresentable rather
+            // than unlikely.
+            //
+            // NOT serializable. SSI would additionally catch the read-write anomaly noted below, and it would
+            // pay for it with predicate locks over a whole-series scan -- which escalates from page to relation
+            // on Bars and then aborts fills of UNRELATED instruments. The defect here is read skew between two
+            // statements, and repeatable read already forbids exactly that.
+            //
+            // NO RETRY, deliberately, because this path's serialization exposure is close to nil and can be
+            // shown rather than asserted. A fill writes: bars at buckets the gap detector reported absent
+            // (inserts), the indicator values that changed (inserts at those new buckets -- the older ones
+            // recompute to the same numbers and are skipped), and a coverage row per range answered empty. Two
+            // fills of DISJOINT ranges -- the interleaving gh#73 is about -- have disjoint write sets and
+            // cannot collide. Two fills of OVERLAPPING ranges collide on the bar primary key first, as 23505,
+            // which is a pre-existing condition of concurrent overlapping fills rather than one this isolation
+            // level introduces. An automatic retry would re-enter FillAsync against a rate-limited vendor
+            // endpoint to cover a case that mostly is not reachable.
+            //
+            // What repeatable read does NOT fix: a fill whose snapshot misses a range another fill is
+            // concurrently filling still projects over a series with a hole in it, so its values are seeded
+            // from the wrong bar. Those are stale rather than lost, and the next pass over the series -- any
+            // fill touching it, or rebuild-indicators -- recomputes them, because a projection is reproducible
+            // from the bars by design (ADR-0006). Serializing fills per series would close it; that is a
+            // per-series lock, not an isolation level, and it is not this fix.
+            //
             // The in-memory provider used by the unit tier has no transactions, so this is conditional. What
             // is NOT conditional is the ordering below.
             IDbContextTransaction? transaction = _database.Database.IsRelational()
-                ? await _database.Database.BeginTransactionAsync(cancellationToken).ConfigureAwait(false)
+                ? await _database.Database
+                    .BeginTransactionAsync(IsolationLevel.RepeatableRead, cancellationToken)
+                    .ConfigureAwait(false)
                 : null;
 
             try

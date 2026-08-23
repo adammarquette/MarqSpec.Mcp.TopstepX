@@ -63,6 +63,18 @@ path (gh#69).
    its bar does.
 9. **Record coverage** for ranges that came back empty.
 
+Steps 7–9 sit in **one transaction at `RepeatableRead`**, not at the default. The projection reads the bars and
+then the values standing over them; under `READ COMMITTED` those are two snapshots, so a concurrent fill of the
+same series can commit between them and the pass then deletes values it never saw the bars for (gh#73). Not
+`SERIALIZABLE`: SSI would take predicate locks over a whole-series scan, escalate them from page to relation on
+`Bars`, and start aborting fills of unrelated instruments — for an anomaly that is read skew between two
+statements, which `RepeatableRead` already forbids. **No retry**: two fills of disjoint ranges have disjoint
+write sets and cannot collide, and two fills of overlapping ranges collide on the bar primary key first, which
+is a pre-existing condition of concurrent overlapping fills rather than one the isolation level introduces.
+What is *not* fixed is a fill whose snapshot misses a range another fill is filling: its values are seeded from
+the wrong bar and are stale until the next pass, which is recoverable by construction (`R-2.9`,
+[ADR-0006](adr/0006-indicators-as-projections.md)).
+
 ### Why step 2 exists
 
 Without it, "the store has no bar at 03:00 on Sunday" and "the store is missing a bar the venue published" are
@@ -130,6 +142,19 @@ stays. There is **no foreign key** between `Bars` and `IndicatorValues` (a proje
 deleting bars alone would orphan their values rather than remove them; the reconciliation is what actually
 reaches them. It is scoped to the `(Indicator, Period)` pairs the catalogue computes, so a series the operator
 merely configured a period away from is left alone rather than erased.
+
+It is **not** scoped by bucket range, and that is only sound because a pass reads the whole series — true at
+both call sites, and until gh#73 guaranteed by nothing. So the claim is checked rather than trusted: a pass
+that read fewer bars than the store holds **refuses to reconcile**, naming the two counts, instead of deleting
+every value outside what it read. That is the shape a future `ProjectAsync(range)` would have, and it is also
+what a pass outside one snapshot looks like — so the same check backstops the isolation level. The check costs
+one count, and only when there is something to remove, which is neither a confirming rebuild nor an ordinary
+fill.
+
+`rebuild-indicators` runs the same projection over every stored series and is **transactional per series**, at
+the same isolation level, for the same reason. The series is the unit of work because a rebuild is idempotent
+per series; one snapshot held across the whole run would be pinned for its length and would discard everything
+on a late failure.
 
 Multi-output and multi-parameter indicators are the awkward case: the key carries *one* period, and MACD takes
 three parameters. The non-period ones are **fixed at their conventional values** rather than hidden behind a

@@ -75,6 +75,7 @@ and can be pinned by fixture tests shared with `trading-copilot` — which is wh
 |---|---|
 | [2026-08-23](#update-2026-08-23--the-empty-diff-claim-was-false-in-practice) | The "confirming rebuild is an empty diff" property is now enforced by rounding to the stored scale |
 | [2026-08-23](#update-2026-08-23--seeding-is-per-contract-not-per-series) | Seeding is per contract segment rather than per stored series ([ADR-0011](0011-contract-roll-boundary.md)) |
+| [2026-08-23](#update-2026-08-23--a-rebuild-is-a-unit-of-work-not-a-loop-of-statements) | The rebuild verb is transactional per series, and it is a class a test can run |
 
 ## Update (2026-08-23) — the empty-diff claim was false in practice
 
@@ -127,3 +128,29 @@ contract seam moves the boundary the other way. A pass therefore removes the val
 that the current bars no longer justify, scoped to the `(Indicator, Period)` pairs the catalogue computes so a
 series left behind by a period change is not swept up with it. A value recomputed to the same number counts as
 produced, so **the empty-diff property above still holds exactly**.
+
+## Update (2026-08-23) — a rebuild is a unit of work, not a loop of statements
+
+The consequences above say the rebuild is "a **CLI verb, not a standalone script**, so it cannot drift from the
+code it re-runs". True, and it left the verb doing something a script would: running each series' projection as
+a sequence of **autocommitted statements**, with no transaction anywhere.
+
+A projection is not one statement. It reads the bars, reads the values standing over them, and reconciles the
+second against the first — and since [ADR-0011](0011-contract-roll-boundary.md) the reconcile *removes*. Two
+autocommitted reads can straddle a concurrent fill's commit, and the pass then deletes values it never saw the
+bars for (gh#73). Over every series in the store, in the command an operator runs when they are trying to
+repair it.
+
+The verb is now transactional at `RepeatableRead`, **one transaction per series** — the series is the unit a
+rebuild is idempotent over, and one snapshot held across the whole run would be pinned for its length and
+would discard everything on a late failure. `R-2.9` states the requirement.
+
+The loop also moved out of the composition root into `IndicatorRebuilder`, for a reason this record has already
+paid for once: the *Update above* was found by running `rebuild-indicators` against a live container for the
+first time, because a private static in `Program` is not something a test can call. It is now a class with an
+integration test, and it takes no `IMarketDataGateway` at all — which says "the venue is never reached from
+here" better than the discarded local that used to say it.
+
+**Reproducibility is untouched.** Nothing about *what* a replay computes changed; only how many snapshots it
+computes it against. `rebuild = replay` still holds, and the confirming-rebuild tests — including the one that
+projects twice across a roll — still pass unchanged.

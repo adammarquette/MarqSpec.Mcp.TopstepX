@@ -1,5 +1,7 @@
+using System.Data;
 using MarqSpec.Mcp.TopstepX.Data;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Storage;
 using Microsoft.Extensions.Logging;
 
 namespace MarqSpec.Mcp.TopstepX.MarketData;
@@ -44,6 +46,19 @@ public sealed class IndicatorRebuilder(
     /// <param name="onlyInstrument">One symbol to restrict to, or <see langword="null"/> for all of them.</param>
     /// <param name="cancellationToken">The caller's cancellation token.</param>
     /// <returns>How many values the rebuild changed — written, updated, or removed.</returns>
+    /// <remarks>
+    /// <b>One transaction per series, at <see cref="IsolationLevel.RepeatableRead"/>.</b> A projection reads
+    /// the bars and then the values standing over them and reconciles the second against the first; the two
+    /// have to be one snapshot, or a fill committing between them leaves the pass holding values it never saw
+    /// the bars for and it deletes them (gh#73). This verb ran with <b>no transaction at all</b>, so its two
+    /// reads were two autocommitted statements — the same defect over every series in the store, in the one
+    /// command an operator reaches for when they are trying to repair it.
+    /// <para>
+    /// Per series rather than one transaction over the whole run. A rebuild is idempotent per series, so the
+    /// series is the natural unit of work; one snapshot held across every series would be pinned for the
+    /// length of the run, and a failure at the end would throw away everything before it for no gain.
+    /// </para>
+    /// </remarks>
     public async Task<int> RebuildAsync(string? onlyInstrument, CancellationToken cancellationToken)
     {
         string? only = onlyInstrument?.Trim().ToUpperInvariant();
@@ -99,11 +114,34 @@ public sealed class IndicatorRebuilder(
         DateTimeOffset now,
         CancellationToken cancellationToken)
     {
-        int changed = await _projector
-            .ProjectAsync(venue, _registry.Resolve(instrument), resolutionMinutes, now, cancellationToken)
-            .ConfigureAwait(false);
+        // Conditional for the same reason BarCacheService's is: the in-memory provider has no transactions.
+        IDbContextTransaction? transaction = _database.Database.IsRelational()
+            ? await _database.Database
+                .BeginTransactionAsync(IsolationLevel.RepeatableRead, cancellationToken)
+                .ConfigureAwait(false)
+            : null;
 
-        await _database.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
-        return changed;
+        try
+        {
+            int changed = await _projector
+                .ProjectAsync(venue, _registry.Resolve(instrument), resolutionMinutes, now, cancellationToken)
+                .ConfigureAwait(false);
+
+            await _database.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+
+            if (transaction is not null)
+            {
+                await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+            }
+
+            return changed;
+        }
+        finally
+        {
+            if (transaction is not null)
+            {
+                await transaction.DisposeAsync().ConfigureAwait(false);
+            }
+        }
     }
 }

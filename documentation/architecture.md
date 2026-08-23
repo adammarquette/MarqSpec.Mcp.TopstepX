@@ -50,7 +50,9 @@ rather than derived from a finer one — [ADR-0010](adr/0010-per-call-resolution
 5. **Fetch** each remaining range, paged at `1000 × barSize` — the gateway caps a history call at 1000 bars and
    silently truncates past it. The pages are **paced** to the vendor's 50-per-30-seconds allowance on the
    history endpoint, shared process-wide, because a cold year of five-minute bars is 106 requests back to back
-   (`R-1.10`, [wiki — rate limits](wiki/pages/projectx-gateway-api.md#rate-limits)).
+   (`R-1.10`, [wiki — rate limits](wiki/pages/projectx-gateway-api.md#rate-limits)). Every bar is **stamped
+   with the contract it was fetched from**, here and nowhere else: one layer up, the series is keyed by the
+   symbol alone and the fact is gone ([ADR-0011](adr/0011-contract-roll-boundary.md)).
 6. **Drop still-forming bars** (`OpenTime + barSize <= now`) even though the request already sends
    `includePartialBar: false`. This does not depend on a venue behaving.
 7. **Upsert** on `(Venue, Instrument, ResolutionMinutes, BucketStart)` — load the overlap, merge in memory, one
@@ -76,6 +78,29 @@ which is indistinguishable from a fetch that has not happened yet. The `BarCover
 Its TTL is asymmetric: **short near `now`** (a bucket that is empty because it has not printed yet will print
 shortly) and **long for settled history** (a hole in 2024 is not going to fill in).
 
+### The seam step 5 records, and why nothing crosses it
+
+A series is keyed by the venue-neutral symbol and contract resolution picks the front month, so a quarterly
+roll writes the *next* contract's bars under the same key, directly beside the previous one's. The buckets stay
+contiguous and nothing errors — but adjacent ES quarters differ by tens of points, and a value smoothed across
+that seam reports a bookkeeping event as market movement (gh#42).
+
+The rule, stated once: **bars are returned with the seam named; nothing derived from bars is computed across
+one.**
+
+- Bars are observations, so `get_bars` and `get_latest_bars` return them and carry a `contracts` block —
+  `span` (`SingleContract` / `SpansRoll` / **`Unknown`**, the last meaning the provenance was never
+  recorded rather than that there was no roll) plus one segment per contiguous run.
+- Derived values are claims about a *series*, so there is no honest number to return across a seam and none is.
+  `IndicatorGuard.RequireSingleContract` refuses, on the same shared path as the ordering check, so a new
+  indicator inherits the rule rather than remembering it.
+- The two callers that legitimately hold a multi-contract series segment first, using the pure
+  `ContractRollDetector`: the projector computes each run independently, and `get_key_levels` detects over the
+  newest run only and reports `detectedOverBars`.
+
+Detail, including why keying by contract id and back-adjustment were both rejected for now:
+[ADR-0011](adr/0011-contract-roll-boundary.md).
+
 ## The indicator projection
 
 Indicators are **projections** over the bar store, not facts. Every row is reproducible from `Bars`, and that
@@ -85,9 +110,24 @@ A projection seeds from the **start of the stored series**, never from a moving 
 path-dependent: seeding from a window would make a value depend on how much history happened to be loaded, so
 two runs over identical data would disagree and neither would be wrong in a way you could point at.
 
+The one thing it will not seed across is a **contract roll**: the series is split into contiguous
+single-contract runs and each seeds from its own first bar (ADR-0011). That is not the moving window the
+paragraph above rejects — a window is an accident of the caller, a roll is a fact about the stored bars — so
+recomputation is still exact and a confirming rebuild is still an empty diff. The visible consequence is that
+the warm-up restarts at every roll, so the values immediately after one are **absent**.
+
 `(Venue, Instrument, ResolutionMinutes, Indicator, Period, BucketStart)` is the key. `RecordedAt` is bumped
 only when a value actually changes, so a rebuild that confirms the existing numbers leaves the timestamps alone
 and the diff is empty.
+
+**A pass reconciles, it does not only upsert.** It removes every value it is configured to produce that the
+current bars no longer justify. Before segmenting that could not arise: the warm-up boundary was the start of
+the stored series, so a bucket could only move from *not computable* to *computable*. A contract seam moves it
+the other way — a bucket that had a value can correctly have none — and a row nothing rewrites is a row that
+stays. There is **no foreign key** between `Bars` and `IndicatorValues` (a projection is not a child row), so
+deleting bars alone would orphan their values rather than remove them; the reconciliation is what actually
+reaches them. It is scoped to the `(Indicator, Period)` pairs the catalogue computes, so a series the operator
+merely configured a period away from is left alone rather than erased.
 
 Multi-output and multi-parameter indicators are the awkward case: the key carries *one* period, and MACD takes
 three parameters. The non-period ones are **fixed at their conventional values** rather than hidden behind a

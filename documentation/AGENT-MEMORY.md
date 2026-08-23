@@ -44,6 +44,24 @@ ADR, `AGENTS.md`, or the code, **put it there instead**.
 
 ## Notes & communications
 
+- **[2026-08-23] Docker IS up now, so the integration tier runs locally — and the Application Control block
+  is INTERMITTENT, not gone.** Two corrections to the entries below, from gh#42, and they point in opposite
+  directions.
+  - **The tier runs.** Docker Engine 29.6.2 is up on Adam's machine; `dotnet test
+    MarqSpec.Mcp.TopstepX.IntegrationTests` brought up Testcontainers and passed 55 tests. **Run it before
+    pushing a migration** — the "Docker Desktop is not up" note below is what nearly shipped a migration
+    nothing had ever applied.
+  - **`0x800711C7` still bites, unpredictably.** The same host `dotnet test` passed twice and then failed on
+    the third run with *"An Application Control policy has blocked this file"* — on the freshly rebuilt
+    `MarqSpec.Mcp.TopstepX.dll`, with no code change between. **A host run succeeding once does not mean the
+    block is gone**, and the failure arrives as an xUnit *"No test is available / Catastrophic failure"*,
+    which reads like a broken test project rather than an OS policy. Look for the hex code before believing
+    the runner.
+  - **The container fallback works and is the reliable path**, now that Docker is up:
+    `docker compose -f docker-compose.yml -f docker-compose.dev.yml run --rm --no-deps sdk dotnet test
+    MarqSpec.Mcp.TopstepX.Tests`. (Expect `MINVER1001` warnings — the container does not see the git
+    directory. Harmless.)
+
 - **[2026-08-23] A value computed at full `decimal` precision never equals the same value read back from a
   `numeric(18,8)` column.** Round to `TopstepXDbContext.PriceScale` before comparing, or the comparison
   silently always answers "changed". This made the indicator projection's skip-unchanged guard dead code for

@@ -38,6 +38,12 @@ The server serves OHLCV bars for a futures instrument at a requested resolution 
   106 pages back to back, which breaches inside the first window; the client's 429 retry recovers from a
   breach but does nothing to avoid one. Pacing costs nothing below the cap
   ([wiki — rate limits](wiki/pages/projectx-gateway-api.md#rate-limits)).
+- **R-1.11** A bar records **which venue contract produced it**. A series is keyed by the venue-neutral symbol
+  and the front month rolls quarterly, so without this the two contracts splice together with no seam. A read
+  whose window spans a roll reports the boundary in its payload; the bars themselves are still returned,
+  because each one is a real observation of a real contract
+  ([ADR-0011](adr/0011-contract-roll-boundary.md)). Bars stored before this was recorded carry **no**
+  contract, and that absence is reported rather than guessed at.
 
 ## R-2 — Pre-computed indicators
 
@@ -51,6 +57,15 @@ The server serves OHLCV bars for a futures instrument at a requested resolution 
 - **R-2.6** Supported at v1: ATR, RSI, SMA, EMA, MACD (line, signal, histogram), session-anchored VWAP, and
   Bollinger bands. The set is a **closed vocabulary** at the tool boundary — an unknown name is an error that
   names the known ones.
+- **R-2.8** A projection **removes stored values the current bars no longer justify**, for the indicators
+  and periods it is configured to produce. Until segmenting, a bucket could only move from *not computable* to
+  *computable*, so an upsert-only projection was safe; a contract seam moves the boundary the other way, and a
+  value left standing is a number the bars cannot account for. A confirming rebuild still removes nothing.
+- **R-2.7** **No indicator value is computed across a contract roll.** Adjacent quarters do not trade at the
+  same price, so a value smoothed across the seam reports a bookkeeping gap as market movement. The projection
+  seeds each contract's run separately, which means the warm-up restarts at every roll and the values
+  immediately after one are **absent** — an instance of `R-2.3`, not an exception to it
+  ([ADR-0011](adr/0011-contract-roll-boundary.md)).
 
 ## R-3 — Key levels
 
@@ -62,6 +77,11 @@ The server serves OHLCV bars for a futures instrument at a requested resolution 
   formed. A broken resistance is today's support.
 - **R-3.4** Detection never uses bars after the pivot it reports — a level confirmed only by what came before it
   repaints as soon as more data arrives.
+- **R-3.5** Detection never spans a contract roll. A level built from the expiring quarter's bars sits at a
+  price the contract in front has never traded, and it is indistinguishable from a level price is about to
+  reach. When the requested lookback spans a roll, detection is confined to the contract in front and the
+  result reports how many bars it actually used
+  ([ADR-0011](adr/0011-contract-roll-boundary.md)).
 
 ## R-4 — Read-only venue boundary
 
@@ -115,9 +135,11 @@ The server serves OHLCV bars for a futures instrument at a requested resolution 
 
 ## Open questions
 
-- **Q-1 — Contract roll.** Bars are keyed by the venue-neutral symbol (`ES`), and resolution picks the front
-  month the gateway marks active. A roll therefore splices two contracts into one series with no seam. Fine for
-  intraday work, wrong for anything spanning a roll. Revisit when it bites.
+- **Q-1 — Contract roll. RESOLVED 2026-08-23** by [ADR-0011](adr/0011-contract-roll-boundary.md) (gh#42),
+  and carried forward as `R-1.11`, `R-2.7`, `R-2.8` and `R-3.5`. Bars stay keyed by the venue-neutral symbol, every bar records
+  the contract that produced it, no value is derived across a roll, and a read spanning one says so in its
+  payload. The successor question — whether to key bars by contract id outright — is left open there rather
+  than here, because it is now a migration rather than a design choice.
 - **Q-2 — Embedding provider.** Cohere at `vector(1024)` matches `trading-copilot` and keeps the schema
   identical; Voyage or a local model are alternatives. Deferred — R-6.3's fallback means this is useful before
   the decision.

@@ -74,6 +74,7 @@ and can be pinned by fixture tests shared with `trading-copilot` — which is wh
 | Update | What changed |
 |---|---|
 | [2026-08-23](#update-2026-08-23--the-empty-diff-claim-was-false-in-practice) | The "confirming rebuild is an empty diff" property is now enforced by rounding to the stored scale |
+| [2026-08-23](#update-2026-08-23--seeding-is-per-contract-not-per-series) | Seeding is per contract segment rather than per stored series ([ADR-0011](0011-contract-roll-boundary.md)) |
 
 ## Update (2026-08-23) — the empty-diff claim was false in practice
 
@@ -98,3 +99,31 @@ The general form, worth carrying to the next `numeric(18,8)` column: **a value c
 the same value read back from the database are not equal.** Anything that compares the two must round first,
 or its comparison silently always answers "changed".
 
+## Update (2026-08-23) — seeding is per contract, not per series
+
+This record says a projection "seeds from the **start of the stored series**, never from a moving window".
+**That is refined by [ADR-0011](0011-contract-roll-boundary.md), and the reason it needed refining is that
+"the stored series" was not one series.**
+
+Bars are keyed by the venue-neutral symbol, so when the front month rolls, the next contract's bars land under
+the same key beside the previous one's. Seeding from the start of *that* meant Wilder smoothing carried a
+roll gap — routinely tens of points between adjacent ES quarters — forward as though it were price action
+(gh#42).
+
+The projection now splits the stored series into contiguous single-contract runs and seeds each from **that
+run's** first bar. The warm-up restarts at every roll, so the values immediately after one are absent rather
+than wrong.
+
+**The property this record actually cares about is untouched.** The objection to a moving window was that it
+made a value depend on *how much history happened to be loaded* — an accident of the caller. A contract
+boundary is not an accident of the caller: it is a fact about the stored bars, so two runs over identical rows
+still produce identical numbers and a confirming rebuild is still an empty diff. There is now a test that
+projects twice across a roll to say so.
+
+**One thing this record did not anticipate: a projection now deletes.** Everything above assumes a bucket can
+only move from *not computable* to *computable*, which was true while the warm-up boundary was the start of the
+stored series — so "write or leave alone" was a complete set of outcomes and nothing needed removing. A
+contract seam moves the boundary the other way. A pass therefore removes the values it is configured to produce
+that the current bars no longer justify, scoped to the `(Indicator, Period)` pairs the catalogue computes so a
+series left behind by a period change is not swept up with it. A value recomputed to the same number counts as
+produced, so **the empty-diff property above still holds exactly**.

@@ -1,3 +1,4 @@
+# PROBE BRANCH FOR gh#101 — DO NOT MERGE. Exists only to observe issue-link against a promotion base.
 name: Branch policy
 
 on:

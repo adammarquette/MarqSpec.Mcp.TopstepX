@@ -3,7 +3,8 @@
 **Status:** Living · **Date:** 2026-08-21 · **Relates to:**
 [ADR-0004](adr/0004-one-postgres-timescale-pgvector.md) (one Postgres, two extensions),
 [ADR-0005](adr/0005-session-aware-gap-detection.md) (`BarCoverage`),
-[ADR-0006](adr/0006-indicators-as-projections.md) (`IndicatorValues`)
+[ADR-0006](adr/0006-indicators-as-projections.md) (`IndicatorValues`),
+[ADR-0011](adr/0011-contract-roll-boundary.md) (`Bars.ContractId`)
 
 One Postgres database, six tables. Entities live in `MarqSpec.Mcp.TopstepX.Data/Entities/`; the schema is
 whatever the migrations say, and this page is kept in lockstep with them in the same PR.
@@ -15,7 +16,8 @@ whatever the migrations say, and this page is kept in lockstep with them in the 
 - **Prices are `numeric(18,8)`.** Never a floating type. A tick size of 0.25 has no exact binary
   representation, and an indicator accumulating over thousands of bars drifts.
 - **`Instrument` is the normalised venue-neutral symbol** (`ES`), upper-cased at the boundary — not a contract
-  id. `CON.F.US.EP.U26` is one contract that quotes `ES` this quarter.
+  id. `CON.F.US.EP.U26` is one contract that quotes `ES` this quarter. The contract is recorded **beside** the
+  key, on `Bars.ContractId`, not in it ([ADR-0011](adr/0011-contract-roll-boundary.md)).
 - **`Venue` is part of every market-data key.** The same product on two venues is two series, and a future
   second venue must not silently overwrite the first.
 - **No tenancy.** `trading-copilot` scopes rows to an owner and exempts market data; here there is nothing but
@@ -31,6 +33,7 @@ whatever the migrations say, and this page is kept in lockstep with them in the 
 | `BucketStart` | `timestamptz` | PK · the hypertable's time dimension |
 | `Open` `High` `Low` `Close` | `numeric(18,8)` | |
 | `Volume` | `bigint` | |
+| `ContractId` | `varchar(64)` | **Nullable.** The venue contract that produced this bar. Null means *not recorded*, never *the same as the row beside it* |
 | `RecordedAt` | `timestamptz` | When this row was last written or revised |
 
 **The composite primary key is the idempotence guard.** An overlapping re-fetch can only UPDATE the bucket it
@@ -39,9 +42,24 @@ already wrote, so nothing needs a de-duplication pass and a vendor revision land
 `ResolutionMinutes` is in the key because a 1-minute and a 5-minute bar can open at the same instant; keyed on
 time alone they would silently overwrite each other.
 
+**`ContractId` is provenance, not key** ([ADR-0011](adr/0011-contract-roll-boundary.md)). The key stays the
+venue-neutral symbol, so a quarterly roll still writes the new contract's bars beside the old one's — but the
+seam is now recorded, and a read that would cross it says so instead of splicing silently. Adjacent ES
+quarters differ by tens of points, and everything derived from a spliced series inherits that gap as though it
+were market movement.
+
+**It is nullable, and it is never backfilled.** Every row written before the column existed carries null. The
+contract was not captured at the time and cannot be recovered from anything stored here — bucket, prices and
+volume look the same whichever quarter produced them. It could be *inferred* from the expiry month a contract
+id encodes plus a front-month convention, and that is exactly the plausible-wrong-number failure the column
+was added to stop. So **null means unknown**: an unrecorded run adjacent to a recorded one is reported as a
+roll boundary, because the two are not known to be the same contract. The only remedy is to delete those rows
+and refetch them.
+
 **Deliberately no retention policy.** This is a record, not a pipeline.
 
-Index: `(Instrument, ResolutionMinutes, BucketStart)` — the shape of every read.
+Index: `(Instrument, ResolutionMinutes, BucketStart)` — the shape of every read. `ContractId` is not indexed:
+it is read alongside rows a window already selected, never searched on.
 
 ## §2 `IndicatorValues` — a projection over §1
 
@@ -59,6 +77,19 @@ replay reaching for the ATR behind a past decision should find the number that w
 
 `Period` is `0` for indicators that take none (VWAP is anchored, not windowed), which keeps them from colliding
 with a windowed indicator of the same name.
+
+**There is no `ContractId` here, and that is deliberate.** A value is always computed inside a single contract
+run — the projection never smooths across a roll ([ADR-0011](adr/0011-contract-roll-boundary.md)) — so the
+contract is a property of the bar at `BucketStart`, and duplicating it would be a second copy of a fact that
+can disagree with the first. A read that needs it joins §1. Expect a run of **absent** rows immediately after
+a roll: the new contract's warm-up starts over there.
+
+**There is no foreign key to §1 either**, and that is a consequence worth knowing: deleting bars does not
+delete the values derived from them, it orphans them. A projection is a rebuildable view over §1 rather than a
+child row of it, so the cascade would be wrong — but the absence means *the projection itself* has to remove
+what the bars no longer justify. It does: a pass deletes every value it is configured to produce that this
+pass did not, scoped to the `(Indicator, Period)` pairs the catalogue computes so that a series left behind by
+a period change is not swept up with it.
 
 ## §3 `BarCoverage` — the negative-result ledger
 

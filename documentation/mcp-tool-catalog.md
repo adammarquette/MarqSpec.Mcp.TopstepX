@@ -3,7 +3,8 @@
 **Status:** Living · **Date:** 2026-08-21 · **Relates to:** PRD `R-5` ·
 [ADR-0002](adr/0002-read-only-venue-boundary.md) (read-only) ·
 [ADR-0008](adr/0008-numeric-only-tool-payloads.md) (numeric-only) ·
-[ADR-0007](adr/0007-dual-transport.md) (transports)
+[ADR-0007](adr/0007-dual-transport.md) (transports) ·
+[ADR-0011](adr/0011-contract-roll-boundary.md) (contract rolls)
 
 The tool surface is a contract with something that cannot read the code. This page is that contract; change a
 tool and change this page in the same PR.
@@ -26,6 +27,26 @@ tool and change this page in the same PR.
   timeframes, because there is no list — each resolution is an independent cached series fetched from the
   venue, never derived from a finer one
   ([ADR-0010](adr/0010-per-call-resolutions-fetched-not-derived.md)).
+- **Nothing is derived across a contract roll.** A series is keyed by the venue-neutral symbol and the front
+  month rolls quarterly, so a long window holds **two contracts** that do not trade at the same price. Every
+  bar-derived payload carries `contracts` — `span`, plus one segment per contiguous run with its
+  `contractId` and bucket range. **Read `span` before comparing anything across the window**: a high from the
+  expiring contract is not a price the contract in front has ever reached. The bars themselves are still
+  returned, because each is a real observation; the *derived* values are not computed across the seam, so
+  expect a run of absent indicator values just after one ([ADR-0011](adr/0011-contract-roll-boundary.md)).
+
+  `span` has **three** values, not two:
+
+  | `span` | Means |
+  |---|---|
+  | `SingleContract` | Every bar came from one contract. Safe to read as a single series. |
+  | `SpansRoll` | The window crosses a roll. Do not compare across it. |
+  | `Unknown` | **Cannot tell** — some of these bars carry no recorded contract. *Not* a statement that there was no roll. |
+
+  **`Unknown` is not a synonym for "no".** Bars stored before this server recorded provenance carry no
+  contract, and it cannot be recovered, so a window over that history may or may not contain a roll. A boolean
+  could only have rendered that as `false`, which is a missing fact wearing a confident answer — the thing this
+  field exists to prevent. Refetching the range records the provenance and resolves it.
 
 ## Reference and session
 
@@ -70,7 +91,8 @@ different on a Tuesday afternoon than at 03:00 on a Sunday.
 ### `get_bars(symbol, resolutionMinutes, fromUtc, toUtc)`
 The workhorse. Cache-aside: served from the store, with only genuinely missing buckets fetched.
 
-Returns `{ symbol, resolutionMinutes, bars: [{ t, o, h, l, c, v }], fetchedBuckets, venueRequests }`.
+Returns `{ symbol, resolutionMinutes, bars: [{ t, o, h, l, c, v }], fetchedBuckets, venueRequests,
+contracts: { span, segments: [{ contractId, firstBucket, lastBucket, barCount }] } }`.
 
 `fetchedBuckets` and `venueRequests` are deliberately in the response. They are how a caller — and a test — can
 see whether a read cost a vendor round trip, and they are what make "the second identical call fetches nothing"
@@ -96,7 +118,10 @@ Anchored on the last **closed** bucket, never a forming one.
 ### `get_indicators(symbol, resolutionMinutes, indicator, fromUtc, toUtc)`
 A stored indicator series.
 
-Returns `{ symbol, resolutionMinutes, indicator, period, values: [{ t, v }] }`.
+Returns `{ symbol, resolutionMinutes, indicator, period, values: [{ t, v }], contracts }`.
+
+Every value is computed inside a single contract, but the *series* can still cross a roll — read
+`contracts.span` before treating the two halves as one trend.
 
 `indicator` is a **closed vocabulary**: `atr`, `rsi`, `sma`, `ema`, `macd`, `macd-signal`, `macd-histogram`,
 `vwap`, `bb-upper`, `bb-middle`, `bb-lower`. An unknown name errors and lists the known ones — a typo must not
@@ -113,12 +138,22 @@ the caller knows what it got. This page listed it as a parameter until gh#48; it
 One value, as of a moment. Reads the value at or **before** `asOfUtc`, never after — a value from after the
 moment is information the market did not have.
 
-Returns `{ value, bucketStart }`, or `{ value: null }` meaning *cannot measure*.
+Returns `{ value, bucketStart, contractId }`, or `{ value: null }` meaning *cannot measure*.
+
+`contractId` is the contract the value belongs to. Two readings from different contracts are not
+comparable, and nothing in a bare number says so.
 
 ### `get_key_levels(symbol, resolutionMinutes, lookbackBars)`
 Support and resistance as **zones**, not lines.
 
-Returns `[{ timeframeMinutes, bottom, top, midpoint, kind, significance, touchCount, formedAt }]`.
+Returns `{ levels: [{ timeframeMinutes, bottom, top, midpoint, kind, significance, touchCount,
+formedAt }], contracts, detectedOverBars }`.
+
+**Detection is confined to the contract in front.** A level built from the expiring quarter's bars
+sits at a price the current contract has never traded, and it reads exactly like a level price is
+about to reach. So when the requested lookback spans a roll, `detectedOverBars` is smaller than the
+lookback asked for — reported rather than implied, because silently halving the history behind a level
+changes how much weight it deserves.
 
 **One resolution per call, and `lookbackBars` is required** — this page described an array of timeframes and
 no lookback until gh#48, and neither has ever matched the code. The returned field is named
@@ -160,7 +195,13 @@ directionless non-zero position is an error rather than a flat report.
 Bars, indicators, key levels and session state in one call — the common question at one round trip instead of
 five or six.
 
-Returns `{ symbol, session, perResolution: [{ resolutionMinutes, bars[], indicators{}, levels[] }] }`.
+Returns `{ symbol, session, perResolution: [{ resolutionMinutes, bars[], indicators{},
+levels: { levels[], contracts, detectedOverBars }, contracts }] }`.
+
+**Two windows, two coverages — check both.** The slice's `contracts` describes the `barCount` bars returned;
+`levels.contracts` describes the longer `max(barCount, 200)` bars the levels were detected over. They can
+disagree: a short bar window can sit entirely inside the current contract while the history behind the levels
+crosses a roll. `levels.detectedOverBars` says how much of that history actually survived the confinement.
 
 This should be the tool an agent reaches for first. The single-purpose tools exist for when it needs something
 specific or a longer window.

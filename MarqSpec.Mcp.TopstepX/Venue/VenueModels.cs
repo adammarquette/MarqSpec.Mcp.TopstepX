@@ -5,7 +5,31 @@ namespace MarqSpec.Mcp.TopstepX.Venue;
 /// <summary>Which side of the market an order or trade is on.</summary>
 public enum VenueSide
 {
-    /// <summary>Unset. Never a valid mapped value — an unrecognised wire value maps here and is refused.</summary>
+    /// <summary>
+    /// The side could not be determined.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>Reported, not refused.</b> An earlier version of this remark said an unrecognised value "maps here
+    /// and is refused"; nothing refused it, and describing a guard that does not exist is how a reader
+    /// concludes the case is handled and stops looking (gh#84). Refusing would also be the wrong trade for a
+    /// list read — one unparseable row would cost the caller every other order in the response — so the value
+    /// is surfaced and the caller is told not to reason about direction from it.
+    /// </para>
+    /// <para>
+    /// <b>An <i>absent</i> side never reaches here, and that is a known limitation.</b> The client's
+    /// <c>OrderSide</c> is <c>{ Bid = 0, Ask = 1 }</c> bound to a non-nullable property, so a payload that
+    /// omits the field lands on <c>Bid</c> — indistinguishable from an explicit buy, and reported as one. The
+    /// client exposes no raw body and no extension data, so the fact is destroyed before this repository sees
+    /// it. Measured against 2.1.0, not inferred; the fix belongs upstream (MarqSpec.Client.ProjectX gh#83), and
+    /// <c>VenueSideBindingTests.AnAbsentSide_IsIndistinguishableFromABuy</c> goes red when it lands.
+    /// </para>
+    /// <para>
+    /// <see cref="VenueOrderStatus.Unknown"/> and <c>PositionType.Undefined</c> do not have this problem:
+    /// their zero means unset, so an absent field lands on it correctly. <c>OrderSide</c> is the only enum
+    /// this server binds from a response whose zero is a real value.
+    /// </para>
+    /// </remarks>
     Unknown = 0,
 
     /// <summary>Buy.</summary>

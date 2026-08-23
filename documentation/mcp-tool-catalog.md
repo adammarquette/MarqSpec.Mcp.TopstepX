@@ -21,8 +21,10 @@ tool and change this page in the same PR.
   fetches `cap + 1` and errors with the real count, so "you asked for too much" never arrives disguised as
   "here is all there was".
 - **Times are ISO-8601 UTC**, in and out. A naive local timestamp in a request is rejected, not guessed at.
-- **A missing number is `null`, meaning *cannot measure*.** Never a substituted default. The caller is expected
-  to say so rather than proceed.
+- **A missing number is *absent*, meaning *cannot measure*.** Never a substituted default, and the caller is
+  expected to say so rather than proceed. **Where this page writes `null` for such a field, the field is
+  omitted from the JSON object entirely** — the serializer drops nulls — so test for the key rather than
+  comparing to `null`. Comparing is the `undefined`-is-falsy trap that made `fromCache` unusable (gh#48).
 - **`resolutionMinutes` is caller-chosen, and any *positive* resolution is servable.** No tool enumerates
   supported timeframes, because there is no list — each resolution is an independent cached series fetched from
   the venue, never derived from a finer one
@@ -214,18 +216,25 @@ directionless non-zero position is an error rather than a flat report. Positive 
 | `side` | `Buy` · `Sell` · `Unknown` |
 | `status` | `Open` · `Filled` · `Cancelled` · `Expired` · `Rejected` · `Pending` · `Unknown` |
 
-`Unknown` on either means **this server did not recognise the wire value**, not that the venue reported
-nothing. It is never a valid mapped value, and it is the same shape as `stage` above: a near-miss resolves to
-`Unknown` rather than to a guess.
+`Unknown` is never a value the venue chose — it is the same shape as `stage` above, where a near-miss
+resolves to `Unknown` rather than to a guess. **The two differ in what else it can mean.** For `side`, every
+wire value maps, so `Unknown` says the server did not recognise what arrived. For `status` it also covers the
+vendor's own `None`, which is what an order deserialised with no status field carries — so
+`status: "Unknown"` can mean *the venue reported nothing here*, and either way it is not a state to reason
+from.
 
-**Four fields are nullable, and each null is a fact rather than a zero:**
+**Four fields are optional, and an absent one is a fact rather than a zero:**
 
-| Field | `null` means |
+| Field | Absent means |
 |---|---|
 | `limitPrice` | the order carries no limit |
 | `stopPrice` | the order carries no stop |
 | `filledPrice` | nothing has filled yet — **not** a fill at zero |
 | `profitAndLoss` | the venue attributed no realised P&L to this half of the round trip |
+
+**Absent, not `null` — test for the key, not for the value.** These fields are *omitted from the object*
+rather than serialised as `null`, so `order.limitPrice === null` is `false` for every limitless order. Reach
+for `"limitPrice" in order`, or a language's equivalent, and treat absence as the fact in the table above.
 
 `voided` is worth reading before totalling anything: a voided fill is still returned, and summing `price` or
 `fees` across trades without checking it counts something the venue has struck out.

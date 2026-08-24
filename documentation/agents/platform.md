@@ -264,6 +264,23 @@ script stripped a configured gate, the new one preserved the same gate across a 
 general lesson is unchanged, and is why the fix is shaped that way: **assemble a `rules` array from what is
 there, never from what you remember being there.**
 
+**A read that decides what gets written must be fatal when it fails, and this is where that bites.** `gh api`
+exits non-zero for both an HTTP error and a connection-level failure, but **only the first puts anything on
+stdout** — so a `2>/dev/null || true` around the pre-write `GET` turns a dropped connection into an empty
+string, which is indistinguishable from "this ruleset carries no extra rules". The `PUT` behind it then deletes
+the rules the `GET` never got to report. Whether you fail open or closed is decided by where `gh` happened to
+write its bytes, which is not a decision at all. Note what does *not* justify the swallow: a jq `select`
+matching nothing is **not** a failure — `gh` exits `0` and prints nothing, the ordinary answer on a freshly
+created ruleset, and that reaches the caller as an empty string either way. `bootstrap.sh` routes every such
+read through one helper that stops and names the ruleset instead (gh#114); `die` inside a command substitution
+exits the *subshell*, so each caller propagates it explicitly rather than trusting `set -e` to notice.
+
+**Reads are fatal; a rung that requires nothing is not.** A first run against a fresh repo legitimately has no
+required checks yet. That distinction can only be drawn *before* the write — afterwards, "this rung never had
+checks" and "this rung had checks and I just deleted them" are the same state, unrecoverably. Which is also why
+that script's closing reassurance is conditional: printing a green "re-running keeps them" over a rung that
+gates nothing would be this whole hazard again in a fresh costume.
+
 ## How the pipeline is shaped
 
 `format → build (both TFMs) → unit → integration (against the fake gateway) → pack`, with promotion gated by

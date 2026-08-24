@@ -141,7 +141,9 @@ The server serves OHLCV bars for a futures instrument at a requested resolution 
   session calendar maps an evening bucket onto the next trade date. Past that the read is refused naming both
   the `toUtc` given and the last one that would have been accepted; it is **not** moved back to fit, for the
   same reason it is not truncated. That bound is on *representability*, so unlike the two size caps it binds
-  at the **default** configuration and for a window spanning zero buckets (gh#110).
+  at the **default** configuration and for a window spanning zero buckets. **A tool that takes a bare instant
+  is bounded too** — `get_market_session`'s `atUtc` against the last instant the session rules can be
+  expressed at — because a bound built around a window never reaches one (gh#110).
 - **R-5.5** On stdio, all logging goes to stderr. Anything on stdout corrupts the protocol frame.
 - **R-5.6** One composed tool returns bars, indicators, levels and session state together, so the common
   question costs one round trip rather than five.

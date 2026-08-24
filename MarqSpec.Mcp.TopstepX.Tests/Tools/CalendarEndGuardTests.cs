@@ -221,6 +221,43 @@ public sealed class CalendarEndGuardTests : IDisposable
             .WithMessage("*9999-12-14T23:59:59.9999999*", "the refusal names the bound it moved past");
     }
 
+    // ── The same axis on the instant-taking tool ─────────────────────────────────────────────────────
+
+    [Fact]
+    public void GetMarketSession_RefusesAnInstantPastTheCalendarHorizon()
+    {
+        // The third reproduction, found by sweeping rather than from the card: get_market_session takes an
+        // INSTANT, not a window, so no window guard was ever going to reach it. BarSessionCalendar reads an
+        // evening instant as belonging to the NEXT trade date, and on 9999-12-31 that DateOnly.AddDays(1)
+        // threw -- the same raw ArgumentOutOfRangeException on the same axis, one tool along.
+        ReferenceTools reference = Reference();
+
+        Action call = () => reference.GetMarketSession("ES", DateTimeOffset.MaxValue);
+
+        call.Should().Throw<McpException>()
+            .WithMessage("*9999-12-31T23:59:59.9999999*", "the refusal names the atUtc the caller passed")
+            .WithMessage("*9999-12-28T23:59:59.9999999*", "and the horizon it is past");
+    }
+
+    [Fact]
+    public void GetMarketSession_AnswersWhileTheMarketIsShutAtTheHorizon()
+    {
+        // And the servable side of it, which is a different code path: 16:30 Central is inside the
+        // maintenance window, so the market is shut and the forward scan for the next open runs. That scan
+        // is bounded at a fortnight, and `from + 14 days` overflowed on its own -- for an instant three days
+        // inside the horizon, which is an instant the session rules answer perfectly well. The fortnight is
+        // a termination guard rather than something a caller asked for, so it is clamped, not refused.
+        ReferenceTools reference = Reference();
+
+        ToolPayloads.SessionState session =
+            reference.GetMarketSession("ES", new DateTimeOffset(9999, 12, 28, 22, 30, 0, TimeSpan.Zero));
+
+        session.IsOpen.Should().BeFalse("16:30 Central is inside the daily maintenance window");
+        session.NextOpenUtc.Should().Be(
+            new DateTimeOffset(9999, 12, 28, 23, 0, 0, TimeSpan.Zero),
+            "the session reopens at 17:00 Central the same evening, which is 23:00Z at UTC-6");
+    }
+
     [Fact]
     public async Task AnOrdinaryReadStillAnswers()
     {
@@ -240,10 +277,14 @@ public sealed class CalendarEndGuardTests : IDisposable
     public async Task NoToolFaults_ForAWindowAtTheVeryEndOfTheCalendar(int resolutionMinutes)
     {
         // The criterion this card is measured against, driven rather than argued: no raw
-        // ArgumentOutOfRangeException escapes ANY tool for a window at the end of the calendar, at any
-        // servable resolution, at the DEFAULT MaxRows. Both ends of the resolution range are swept, because
-        // the bound moves with the bar size, and the surface is walked by reflection rather than named, so a
-        // tool added tomorrow is covered without anyone remembering this file.
+        // ArgumentOutOfRangeException escapes ANY tool at the end of the calendar, at any servable
+        // resolution, at the DEFAULT MaxRows. Both ends of the resolution range are swept, because the bound
+        // moves with the bar size, and the surface is walked by reflection rather than named, so a tool added
+        // tomorrow is covered without anyone remembering this file.
+        //
+        // THE FILTER IS EVERY TOOL THAT TAKES AN INSTANT, not only those that take a resolution, and that
+        // width earned itself immediately: get_market_session takes an atUtc and no window at all, and no
+        // window guard was ever going to reach it. A resolution-shaped filter would have swept past it.
         //
         // gh#69, gh#81 and gh#96 each believed this criterion met and each left one axis open. A sweep that
         // permitted "threw something" would have been green through every one of them.
@@ -251,27 +292,34 @@ public sealed class CalendarEndGuardTests : IDisposable
 
         MarketDataTools marketData = Tools();
         SnapshotTools snapshot = SnapshotFor(marketData);
+        ReferenceTools reference = Reference();
+        AccountTools accounts = new(_gateway, Guards());
 
-        List<MethodInfo> takingAResolution =
+        List<MethodInfo> takingAnInstant =
         [
             .. typeof(MarketDataTools).Assembly.GetTypes()
                 .Where(t => t.GetCustomAttribute<McpServerToolTypeAttribute>() is not null)
                 .SelectMany(t => t.GetMethods(Surface))
                 .Where(m => m.GetCustomAttribute<McpServerToolAttribute>() is not null)
-                .Where(m => m.GetParameters().Any(p => p.Name == "resolutionMinutes")),
+                .Where(m => m.GetParameters().Any(p =>
+                    p.ParameterType == typeof(DateTimeOffset)
+                    || p.ParameterType == typeof(DateTimeOffset?)
+                    || p.Name == "resolutionMinutes")),
         ];
 
-        takingAResolution.Should().HaveCountGreaterThanOrEqualTo(
-            6, "the reflection filter must actually match the surface it is guarding");
+        takingAnInstant.Should().HaveCountGreaterThanOrEqualTo(
+            9, "the reflection filter must actually match the surface it is guarding");
 
-        foreach (MethodInfo tool in takingAResolution)
+        foreach (MethodInfo tool in takingAnInstant)
         {
             _gateway.ResetCounters();
 
             object instance = tool.DeclaringType! == typeof(MarketDataTools) ? marketData
                 : tool.DeclaringType! == typeof(SnapshotTools) ? snapshot
+                : tool.DeclaringType! == typeof(ReferenceTools) ? reference
+                : tool.DeclaringType! == typeof(AccountTools) ? accounts
                 : throw new InvalidOperationException(
-                    tool.DeclaringType!.Name + " takes a resolutionMinutes and this fixture cannot build it. "
+                    tool.DeclaringType!.Name + " takes an instant and this fixture cannot build it. "
                     + "Add it here rather than narrowing the sweep -- the sweep is the point.");
 
             Exception? thrown = await Capture(() => Invoke(tool, instance, resolutionMinutes));
@@ -318,13 +366,16 @@ public sealed class CalendarEndGuardTests : IDisposable
             new StoreAvailabilityHolder(),
             _clock);
 
+    /// <summary>Builds the reference tools — the ones that take an instant and no window.</summary>
+    /// <returns>The reference tools.</returns>
+    private ReferenceTools Reference() =>
+        new(new InstrumentRegistry(Defaults()), _calendar, _gateway, Defaults(), _clock);
+
     /// <summary>Builds the composed tool over the same options.</summary>
     /// <param name="marketData">The market-data tools it composes.</param>
     /// <returns>The snapshot tool.</returns>
     private SnapshotTools SnapshotFor(MarketDataTools marketData) =>
-        new(marketData,
-            new ReferenceTools(new InstrumentRegistry(Defaults()), _calendar, _gateway, Defaults(), _clock),
-            new IndicatorCatalogNames(_catalog));
+        new(marketData, Reference(), new IndicatorCatalogNames(_catalog));
 
     /// <summary>Runs a call and hands back whatever it threw, if anything.</summary>
     /// <param name="call">The call.</param>
@@ -382,6 +433,11 @@ public sealed class CalendarEndGuardTests : IDisposable
         "fromUtc" => DateTimeOffset.MaxValue.AddTicks(-1),
         "toUtc" => DateTimeOffset.MaxValue,
         "asOfUtc" => DateTimeOffset.MaxValue,
+        "atUtc" => DateTimeOffset.MaxValue,
+
+        // FALSE, so get_orders takes its windowed branch. Left true it ignores fromUtc and toUtc entirely,
+        // and the sweep would cover that tool by not exercising it.
+        "openOnly" => false,
         _ => Blank(parameter),
     };
 

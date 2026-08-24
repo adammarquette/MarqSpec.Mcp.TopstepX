@@ -60,8 +60,45 @@ public sealed class ToolGuards(IOptions<MarketDataOptions> options)
     /// </remarks>
     public static readonly TimeSpan CalendarReachBeyondAWindow = TimeSpan.FromDays(3);
 
+    /// <summary>
+    /// The last instant this server's session calendar can reason about.
+    /// </summary>
+    /// <remarks>
+    /// Not a bar bound and not a window bound — it is where the <i>session rules</i> stop being expressible,
+    /// so it is the floor under every other instant bound here. <see cref="LastServableEnd"/> subtracts the
+    /// bucket grid's own reach from it; <see cref="ValidateInstant"/> uses it directly, for the tools that
+    /// take a moment and no window at all.
+    /// </remarks>
+    public static readonly DateTimeOffset CalendarHorizon =
+        new(DateTimeOffset.MaxValue.UtcTicks - CalendarReachBeyondAWindow.Ticks, TimeSpan.Zero);
+
     /// <summary>The row cap a single windowed read may return.</summary>
     public int MaxRows => _options.MaxRows;
+
+    /// <summary>
+    /// Refuses a bare instant the session calendar cannot reason about.
+    /// </summary>
+    /// <param name="instant">The instant.</param>
+    /// <param name="ask">The parameter name the caller can actually change.</param>
+    /// <returns>The instant.</returns>
+    /// <exception cref="McpException">The instant is past <see cref="CalendarHorizon"/>.</exception>
+    /// <remarks>
+    /// <b>A window guard was never going to reach this.</b> <c>get_market_session</c> takes a moment and no
+    /// window, so every bound built around <see cref="ValidateWindow"/> swept straight past it — and
+    /// <c>BarSessionCalendar</c> reads an evening instant as belonging to the <i>next</i> trade date, which
+    /// on 9999-12-31 is a date <see cref="DateOnly"/> cannot hold. Same axis, same raw
+    /// <see cref="ArgumentOutOfRangeException"/>, one tool along (gh#110).
+    /// </remarks>
+    public static DateTimeOffset ValidateInstant(DateTimeOffset instant, string ask) =>
+        instant > CalendarHorizon
+            ? throw new McpException(
+                ask + " " + instant.ToString("O", System.Globalization.CultureInfo.InvariantCulture)
+                + " is past the last instant this server's session calendar can reason about, "
+                + CalendarHorizon.ToString("O", System.Globalization.CultureInfo.InvariantCulture)
+                + ". An evening instant belongs to the NEXT trade date, whose close is a Central wall-clock "
+                + "time converted back to UTC, and past that horizon those are dates no calendar can hold. "
+                + "Move it back.")
+            : instant;
 
     /// <summary>
     /// The last instant a window may end at, at a given resolution.
@@ -86,9 +123,9 @@ public sealed class ToolGuards(IOptions<MarketDataOptions> options)
     /// rather than at an extreme one.
     /// </para>
     /// <para>
-    /// <b>It moves with the resolution, which is why it is a function and not a constant.</b> At one minute
-    /// the bound is two minutes plus three days before the end of the calendar; at the weekly bar
-    /// <see cref="MaxResolutionMinutes"/> allows, it is seventeen days.
+    /// <b>It moves with the resolution, which is why it is a function and not a constant.</b> It is
+    /// <see cref="CalendarHorizon"/> less those two spans: at one minute, two minutes plus three days before
+    /// the end of the calendar; at the weekly bar <see cref="MaxResolutionMinutes"/> allows, seventeen days.
     /// </para>
     /// </remarks>
     public static DateTimeOffset LastServableEnd(int resolutionMinutes)
@@ -99,9 +136,7 @@ public sealed class ToolGuards(IOptions<MarketDataOptions> options)
         // its caller is how gh#69 happened.
         long barTicks = TimeSpan.FromMinutes(ValidateResolution(resolutionMinutes)).Ticks;
 
-        return new DateTimeOffset(
-            DateTimeOffset.MaxValue.UtcTicks - (2 * barTicks) - CalendarReachBeyondAWindow.Ticks,
-            TimeSpan.Zero);
+        return new DateTimeOffset(CalendarHorizon.UtcTicks - (2 * barTicks), TimeSpan.Zero);
     }
 
     /// <summary>

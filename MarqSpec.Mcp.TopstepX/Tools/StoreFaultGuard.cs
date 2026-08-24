@@ -45,10 +45,11 @@ namespace MarqSpec.Mcp.TopstepX.Tools;
 /// because "retry unless" is the permissive shape this repository reviews against.
 /// </para>
 /// <para>
-/// <b>A lost race is reported, not retried and not reported as a success</b> (gh#89). Two fills asking for
-/// one range the venue answers <i>empty</i> both find no coverage row in their own snapshot and both
-/// <c>INSERT</c> one; the loser gets <c>23505</c>. The row it collided on really is in the store — the winner
-/// put it there — so on an idempotent upsert a duplicate key looks like a success achieved by proxy.
+/// <b>A lost race is reported, not retried and not reported as a success</b> (gh#89). Two fills of
+/// <i>disjoint</i> ranges over one series both project over the history in front of both — a pass recomputes
+/// the whole series its snapshot can see — so both <c>INSERT</c> the same indicator values, and the loser
+/// gets <c>23505</c> (gh#133). The row it collided on really is in the store — the winner put it there — so
+/// on an idempotent upsert a duplicate key looks like a success achieved by proxy.
 /// It is not one: the collision aborts the <b>whole</b> transaction, so answering "fine" would return work
 /// assembled inside a transaction that rolled back. Retrying here is equally wrong — a boundary retry re-runs
 /// the <i>whole tool call</i>, including a paced page-walk that already cost vendor requests.

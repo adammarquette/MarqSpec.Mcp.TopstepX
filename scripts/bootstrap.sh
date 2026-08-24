@@ -12,11 +12,18 @@
 # had never once been switched on, and nothing in the repository could have told you. This script exists so
 # that state is reproducible rather than re-clicked.
 #
-# Idempotent: safe to re-run. Existing branches, labels and rulesets are updated, not duplicated.
+# Idempotent for branches, labels and the ruleset RULES it declares: those are updated, not duplicated.
+#
+# NOT idempotent for required status checks, and that is a live hazard rather than a caveat (gh#114). The
+# ruleset update below is a PUT, which replaces the whole object, and the payload declares no
+# `required_status_checks` rule -- so re-running this against a repo whose merge gate has since been
+# configured DELETES that gate, on all three rungs, and reports success. Read the closing note before
+# re-running it on a live repo.
 
 set -euo pipefail
 
 die() { printf '\033[31m%s\033[0m\n' "$*" >&2; exit 1; }
+warn() { printf '\033[33m%s\033[0m\n' "$*" >&2; }
 ok() { printf '\033[32m%s\033[0m\n' "$*"; }
 info() { printf '%s\n' "$*"; }
 step() { printf '\n\033[1m%s\033[0m\n' "$*"; }
@@ -189,7 +196,17 @@ info ""
 info "Required status checks are NOT set here: GitHub will not accept a check name it has never seen."
 info "After the first CI run on a pull request, add them to each ruleset:"
 info ""
-info "  build & unit tests, integration tests, commit-hygiene, docs, coverage   (all three rungs)"
-info "  ladder                                                                  (staging and main)"
+info "  build & unit tests, integration tests, docs, coverage, no-order-path,"
+info "  paced-paging, commit-hygiene, issue-link                                 (all three rungs)"
+info "  ladder                                                                   (staging and main)"
 info ""
-info "Then confirm with:  gh api repos/$REPO/rulesets --jq '.[].name'"
+info "The name must match the job's \`name:\` EXACTLY. A context nothing reports under never runs, so it"
+info "never fails and never blocks -- and it is indistinguishable from a working one in the settings page."
+info "Confirm what you actually left behind, per rung, not just that the rulesets exist:"
+info ""
+info "  gh api repos/$REPO/rulesets/<id> --jq '.rules[]|select(.type==\"required_status_checks\").parameters.required_status_checks[].context'"
+info ""
+warn "RE-RUNNING THIS SCRIPT REMOVES THEM AGAIN (gh#114). The ruleset update above is a PUT, which REPLACES"
+warn "the whole object, and the payload it sends declares no required_status_checks rule -- so a second run"
+warn "against a repo that has required checks strips every one of them from all three rungs and then prints"
+warn "'all rulesets active', because enforcement is all it verifies. Re-add them after any re-run."

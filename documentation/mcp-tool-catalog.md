@@ -17,9 +17,12 @@ tool and change this page in the same PR.
 - **An unknown instrument is an error**, and it names what would have been valid. A wrong symbol and a quiet
   market must not be indistinguishable. A *known* instrument with no data in the window returns an empty series
   — a different statement, and a true one.
-- **Windowed reads refuse rather than truncate.** The cap is `MaxRows` (default 5000). The implementation
-  fetches `cap + 1` and errors with the real count, so "you asked for too much" never arrives disguised as
-  "here is all there was".
+- **Windowed reads refuse rather than truncate.** The cap is **the lesser of `MaxRows` (default 5000) and
+  `BarGapDetector.MaxBucketsPerPass` (250,000)** — two bounds on the same quantity, one operator-configurable
+  to 1,000,000 and one fixed, so above 250,000 the configured number stops being the binding one (gh#96). The
+  window is measured *before* anything is read and the refusal carries the real bucket count and the cap it is
+  over, so "you asked for too much" never arrives disguised as "here is all there was", and it costs no vendor
+  request to find out.
 - **Times are ISO-8601 UTC**, in and out. A naive local timestamp in a request is rejected, not guessed at.
 - **A fault in this server's own database is stated, never emitted as a stack.** A lost write race, a dropped
   connection, a constraint this repo adds later — each reaches the caller as an error naming the condition and
@@ -76,12 +79,18 @@ tool and change this page in the same PR.
   arrived later, for the same fault at the other end: `2147483647` overflowed the look-back arithmetic and
   faulted, while sailing past that guard because it is positive (gh#81). Above a week a timeframe is a calendar
   month or a quarter, whose length in minutes is not fixed, so nothing above the ceiling is a bar anyone could
-  be asking for. **One cross-axis pair is refused alongside it, and only one**: `get_latest_bars` reaches back
-  four bar spans per bar wanted, so a coarse resolution and a big count — each inside its own bound — can name
-  a window that **starts before the calendar does**, and that is an error naming both rather than a fault. That
-  is the whole of what the reach guard covers. A pair whose window sits inside the calendar but whose bucket
-  count is larger than one gap-detection pass will enumerate still faults below the tool boundary — `MaxRows`
-  ranges higher than that cap, so an operator can configure the two into disagreement (gh#96).
+  be asking for. **Two cross-axis pairs are refused alongside it.** `get_latest_bars` reaches back four bar
+  spans per bar wanted, so a coarse resolution and a big count — each inside its own bound — can name a window
+  that **starts before the calendar does**, and that is an error naming both rather than a fault (gh#81). The
+  second is the **bucket count**: `MaxRows` and `BarGapDetector.MaxBucketsPerPass` bound the same quantity from
+  two sides, so a window at 300,000 buckets, or 100,000 one-minute bars whose reach is 405,760, used to clear
+  every check here and fault one layer down. Both are now refused naming the buckets asked for and the cap they
+  are over, and **refused rather than shortened to fit** (gh#96).
+
+  **What is still not covered is the far end of the calendar itself**, which is a bound on *representability*
+  rather than on size: a `fromUtc` within one bar of year 9999 overflows the bucket-grid arithmetic below this
+  boundary and arrives as a raw `ArgumentOutOfRangeException`, at every configuration including the default.
+  Carded as gh#110.
 - **Nothing is derived across a contract roll.** A series is keyed by the venue-neutral symbol and the front
   month rolls quarterly, so a long window holds **two contracts** that do not trade at the same price. Every
   bar-derived payload carries `contracts` — `span`, plus one segment per contiguous run with its

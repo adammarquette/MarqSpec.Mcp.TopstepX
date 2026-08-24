@@ -21,30 +21,46 @@
 #      stdio with a non-empty tool list. That is a POSITIVE signal only correctly-built managed code can
 #      produce: the assembly loaded, the DI graph built, the tools registered, the transport speaks.
 #
-# WHY NOT MATCH ON THE EXIT CODE. It no longer inverts, and it is still not what this gate reads:
+#   3. That container exited 0. A SECOND signal, evaluated only once check 2 has already passed.
 #
-#     correctly-built server, stdin held open until it answers      exit 0
+# THE EXIT CODES, and where they were taken. gh#98 measured them where this gate actually runs:
+#
+#     correctly-built server, stdin held open until it answers      exit 0     (this gate's own shape)
 #     correctly-built server, stdin at EOF during startup           exit 0     (was 139 before gh#76)
-#     ENTRYPOINT naming an assembly that is not there               exit 155
+#     ENTRYPOINT naming an assembly that is not there               exit 155   (either shape)
 #
-# WHERE THOSE WERE TAKEN, because it is not where CI runs: Docker Desktop for Windows, Engine 29.6.2. Row 1
-# was measured on gh#67 and re-measured on gh#76; row 2 was measured on gh#76 both sides of the fix, 3 runs
-# each, 139 before and 0 after; 155 has not been re-measured since gh#67. `ubuntu-latest` reports Engine
-# 28.0.4 in the `image` job's own Docker info group, and none of them has been measured there. They are
-# recorded as the reason this gate ignores exit codes, NOT as runner facts to reason from. Nothing below
-# depends on any of them, which is the point.
+# WHERE, precisely, because the provenance is the entire reason gh#98 existed: `ubuntu-latest`, runner image
+# ubuntu24 20260816.277.1 (Ubuntu 24.04.4 LTS), Docker Engine 28.0.4 — three CI runs, three runs per row in
+# each, nine observations per row, every one of them agreeing. That REPLACES the Windows-only provenance that
+# stood here: Docker Desktop 29.6.2 on one developer machine, where 155 had not been re-measured since gh#67
+# and not a single number had ever been observed on the runner. Those three runs are attempts 1, 2 and 3 of
+# https://github.com/adammarquette/MarqSpec.Mcp.TopstepX/actions/runs/32669269669 — the `measure-98.yml`
+# scaffolding that produced them was added and removed inside gh#98's own PR, so that run is the only trail
+# back to these numbers. documentation/agents/platform.md carries the same reference; keep the two together.
 #
 # 155 is the DOTNET HOST's "the command could not be loaded" — it is what BROKEN looks like, not what an
-# unconfigured-but-working server looks like. gh#67 recorded 155 as the healthy code; a gate written to that
-# number would have passed the broken image and failed the good one.
+# unconfigured-but-working server looks like. gh#67 recorded 155 as the HEALTHY code, from that Windows host;
+# a gate written to that number would have passed the broken image and failed the good one. Which is exactly
+# why nothing here was allowed to read a code until one had been measured on the runner.
 #
 # 139 was 128+SIGSEGV from an unhandled TaskCanceledException when stdin reached EOF while the host was still
-# starting. gh#76 fixed that — the shutdown request is now honoured as a shutdown — so the two healthy rows
-# have collapsed to 0 and the code IS now discriminating. THIS GATE STILL DOES NOT READ IT, deliberately:
-# those numbers come from one Windows host, gh#67's whole lesson is that a gate written to an unverified exit
-# code passes the broken image and fails the good one, and an exit code says the process ended, not that the
-# server served. Re-gating on 0 is a separate change that must first measure 0 and 155 ON THE RUNNER.
-# Until then this script reads WHAT THE SERVER DID and ignores what the process exited with.
+# starting. gh#76 fixed it — a shutdown requested mid-startup is honoured as a shutdown — which collapsed the
+# two healthy rows onto 0 and left the code discriminating where it used to invert.
+#
+# THE DECISION (gh#98): READ IT, as a second signal, never as the first. Check 3 is evaluated only after
+# check 2 has passed, so a server that did not answer is failed on the missing reply and never on how it
+# ended — an exit code says the process ended, not that the server served, and it can only ever be the junior
+# of the two. What it adds is the one thing a reply cannot show: a server that answers and then dies dirty on
+# the way down, which every other assertion here is blind to. What it does NOT add, said plainly so nobody
+# re-derives it: it would NOT have caught gh#76. That crash was on the EOF-during-startup shape, which this
+# gate does not run — row 1 was 0 on both sides of that fix. Gating row 2 as well was considered and
+# DECLINED: a container that never serves anything is outside what this gate claims, and shutdown behaviour
+# is gh#76's territory rather than this one's.
+#
+# THAT THIS GATE CAN STILL FAIL is itself checked, by `check-image-entrypoint-selftest.sh`, which runs in the
+# same CI job against a fixture derived from the built image with `ENTRYPOINT ["dotnet",
+# "MarqSpec.Mcp.TopstepX.DoesNotExist.dll"]`. Change anything here and that self-test is what tells you the
+# gate still rejects a broken artifact.
 #
 # WHY NOT MATCH ON STDERR. The server does log its refusals — "the database is not reachable", "no
 # embedding key is configured" — and grepping for one of those would couple CI to prose that is meant to be
@@ -196,9 +212,20 @@ TOOLS_REPLY='"tools"[[:space:]]*:[[:space:]]*\[[[:space:]]*\{'
 # ci.yml sets `timeout-minutes` and the fallback would otherwise be GitHub's six-hour job default. The
 # assertion below is re-evaluated on the completed $OUT either way, so a late-but-present reply still passes.
 #
+# HOW THE STATUS IS CAPTURED, and why not `|| true` (gh#98). This line ended `|| true` while the exit code
+# was ignored, and that cannot simply be dropped in favour of reading `$?`: `true` is itself a command, and
+# running it RESETS `PIPESTATUS` to `(0)` — so a status read after `|| true` reads 0 on every run, and check
+# 3 below would be permanently satisfied. A gate that cannot fail is not a gate. The `if !` form runs no
+# command in between, leaving the array intact for the first line inside the branch.
+#
+# INDEX 1 is the `timeout`/`docker run` end of the pipe, which is the only end being judged. Index 0 is the
+# loop, and it can legitimately take a SIGPIPE (141) writing the handshake at a container that has already
+# exited — that is a fact about the container's death, not a second verdict on it.
+#
 # shellcheck disable=SC2094  # Reading $OUT inside a pipeline that writes it is the mechanism, not a slip:
 # the loop is a READER only, and what it is waiting for is what the other end of the pipe has written.
-{
+RUN_STATUS=0
+if ! {
   printf '%s\n' "$INITIALIZE" "$INITIALIZED" "$TOOLS_LIST"
 
   deadline=$(( SECONDS + TIMEOUT_SECONDS ))
@@ -214,7 +241,9 @@ TOOLS_REPLY='"tools"[[:space:]]*:[[:space:]]*\[[[:space:]]*\{'
     fi
     sleep 1
   done
-} | timeout "$RUN_TIMEOUT_SECONDS" docker run --rm -i --name "$CONTAINER" "$IMAGE" >"$OUT" 2>"$ERR" || true
+} | timeout "$RUN_TIMEOUT_SECONDS" docker run --rm -i --name "$CONTAINER" "$IMAGE" >"$OUT" 2>"$ERR"; then
+  RUN_STATUS="${PIPESTATUS[1]}"
+fi
 
 if ! grep -Eq "$TOOLS_REPLY" "$OUT"; then
   die "  NO REPLY  the image's own entrypoint did not answer tools/list with a non-empty tool list"
@@ -224,9 +253,42 @@ if ! grep -Eq "$TOOLS_REPLY" "$OUT"; then
   echo >&2
   printf '%s\n' "--- the container's stderr (the last 40 lines) ---" >&2
   tail -n 40 "$ERR" >&2 || true
+  printf '%s\n' "--- and the container exited $RUN_STATUS ---" >&2
   explain
   exit 1
 fi
 
 ok "  OK  the image's own entrypoint started and answered tools/list"
-ok "The container starts from its own ENTRYPOINT and serves its tool list with no configuration."
+
+# ---------------------------------------------------------------------------
+# 3. And that container ended cleanly. SECOND SIGNAL — see THE DECISION in the header.
+# ---------------------------------------------------------------------------
+# Deliberately BELOW the reply assertion, and it stays there. Reordering these two turns the primary claim
+# ("the server served") into a consequence of the junior one ("the process ended"), which is gh#67's mistake
+# in a new costume.
+#
+# 124 is `timeout` firing rather than the server exiting, and it is a real verdict here, not noise: this gate
+# holds stdin open and then relies on the server terminating at EOF, so a run that has to be killed means
+# that behaviour has come unpicked. It was previously invisible — a reply that landed before the hang passed
+# the gate.
+if [ "$RUN_STATUS" -ne 0 ]; then
+  die "  DIRTY EXIT  the server answered tools/list, then the container exited $RUN_STATUS rather than 0"
+  echo >&2
+  case "$RUN_STATUS" in
+    124) printf '%s\n' "124 is the ${RUN_TIMEOUT_SECONDS}s ceiling: the server served, then did not stop when stdin reached EOF." >&2 ;;
+    125) printf '%s\n' "125 comes from docker itself rather than from the container — the run never really happened." >&2 ;;
+    *)   printf '%s\n' "Above 128 this is 128+signal; below it, the server's own exit code." >&2 ;;
+  esac
+  echo >&2
+  printf '%s\n' "--- the container's stderr (the last 40 lines) ---" >&2
+  tail -n 40 "$ERR" >&2 || true
+  echo >&2
+  printf '%s\n' "Measured on ubuntu-latest for gh#98: a correctly-built image exits 0 here, nine runs out of" >&2
+  printf '%s\n' "nine. Serving and then failing to shut down cleanly is what this catches; nothing else here" >&2
+  printf '%s\n' "can see it, because every other assertion is satisfied the moment the reply lands." >&2
+  explain
+  exit 1
+fi
+
+ok "  OK  the container then exited 0"
+ok "The container starts from its own ENTRYPOINT, serves its tool list with no configuration, and stops cleanly."

@@ -45,6 +45,69 @@ public sealed class ToolGuards(IOptions<MarketDataOptions> options)
     public int MaxRows => _options.MaxRows;
 
     /// <summary>
+    /// Refuses a window that spans more buckets than one gap-detection pass will enumerate.
+    /// </summary>
+    /// <param name="window">The window a read is about to be issued over.</param>
+    /// <param name="resolutionMinutes">The bar size in minutes.</param>
+    /// <param name="ask">
+    /// How the caller expressed the request, so the refusal names the value they can actually change — a
+    /// window for <see cref="ValidateWindow"/>, a bar count for <see cref="LookbackWindow"/>.
+    /// </param>
+    /// <returns>The window.</returns>
+    /// <exception cref="McpException">
+    /// The window spans more than <see cref="BarGapDetector.MaxBucketsPerPass"/> buckets, or the resolution is
+    /// unservable.
+    /// </exception>
+    /// <remarks>
+    /// <para>
+    /// <b><see cref="MaxRows"/> and <see cref="BarGapDetector.MaxBucketsPerPass"/> are two independent caps on
+    /// the same quantity, and only one of them was ever an <see cref="McpException"/>.</b> The row cap is
+    /// operator configuration ranging to 1,000,000; the detection cap is a fixed 250,000. Configure the first
+    /// above the second and a request legal on every axis this boundary checked still faulted one layer down,
+    /// in <see cref="BarGapDetector.ExpectedBuckets"/>, and crossed the boundary as a raw
+    /// <see cref="ArgumentOutOfRangeException"/> (gh#96).
+    /// </para>
+    /// <para>
+    /// <b>The rule is on the bucket count, not on the configuration, because bounding the configuration would
+    /// have closed one of the two ways in and left the other open.</b> <c>get_latest_bars</c> never validates
+    /// a window — it sizes one from a count, reaching four bar spans per bar wanted plus four days — so a
+    /// <c>MaxRows</c> of 100,000, comfortably <i>inside</i> the detection cap, still names 405,760 buckets.
+    /// The quantity that reaches the detector is the window, so the window is what is bounded.
+    /// </para>
+    /// <para>
+    /// <b>It refuses rather than narrowing the window to fit.</b> A read trimmed to the cap answers with a
+    /// series that is short at one end and says so nowhere — indistinguishable from a complete one, which is
+    /// the failure <see cref="ValidateWindow"/> and <see cref="LookbackWindow"/> already refuse to commit.
+    /// </para>
+    /// <para>
+    /// <b>It validates the resolution itself rather than trusting the caller to have done it.</b> The bucket
+    /// count is a division by the bar size, so a <c>0</c> arriving here would be a <c>DivideByZeroException</c>
+    /// — the same shape of fault, in the guard written to remove it. A public guard that trusts its caller is
+    /// how gh#69 happened.
+    /// </para>
+    /// </remarks>
+    public static BarRange ValidateBucketSpan(BarRange window, int resolutionMinutes, string ask)
+    {
+        ArgumentNullException.ThrowIfNull(window);
+        ValidateResolution(resolutionMinutes);
+
+        // The SAME arithmetic ExpectedBuckets performs, deliberately: a guard that computes the count a
+        // different way is a guard that disagrees with the thing it is guarding at the boundary.
+        long buckets = (window.End - window.Start).Ticks / TimeSpan.FromMinutes(resolutionMinutes).Ticks;
+
+        return buckets > BarGapDetector.MaxBucketsPerPass
+            ? throw new McpException(
+                ask + " needs " + buckets.ToString(System.Globalization.CultureInfo.InvariantCulture)
+                + " buckets at " + resolutionMinutes.ToString(System.Globalization.CultureInfo.InvariantCulture)
+                + "-minute resolution, over the "
+                + BarGapDetector.MaxBucketsPerPass.ToString(System.Globalization.CultureInfo.InvariantCulture)
+                + " a single gap-detection pass will enumerate. Narrow the window, ask for fewer bars, or use "
+                + "a coarser resolution. The read is refused rather than shortened to fit, because a series "
+                + "cut at one end is indistinguishable from a complete one.")
+            : window;
+    }
+
+    /// <summary>
     /// Validates a bar resolution on its own, with no window in sight.
     /// </summary>
     /// <param name="resolutionMinutes">The bar size in minutes.</param>
@@ -102,7 +165,8 @@ public sealed class ToolGuards(IOptions<MarketDataOptions> options)
     /// <param name="count">How many bars are wanted, already validated.</param>
     /// <returns>The window to read.</returns>
     /// <exception cref="McpException">
-    /// The window would start before the calendar does, or <paramref name="count"/> sizes no window at all.
+    /// The window would start before the calendar does, span more buckets than one gap-detection pass will
+    /// enumerate, or <paramref name="count"/> sizes no window at all.
     /// </exception>
     /// <remarks>
     /// <para>
@@ -135,6 +199,13 @@ public sealed class ToolGuards(IOptions<MarketDataOptions> options)
     /// however many bars the store happens to hold, and a short series is indistinguishable from a complete
     /// one — the same reason <see cref="ValidateWindow"/> refuses an over-cap window instead of truncating it.
     /// </para>
+    /// <para>
+    /// <b>The calendar is not the only bound, which is the same lesson one level along.</b> A window can sit
+    /// comfortably inside the calendar and still be wider than one gap-detection pass will enumerate: 100,000
+    /// one-minute bars are inside a <c>MaxRows</c> of 100,000 and reach 405,760 buckets, past the 250,000
+    /// <see cref="BarGapDetector.MaxBucketsPerPass"/> allows. So the window this produces goes through
+    /// <see cref="ValidateBucketSpan"/> before it is returned (gh#96).
+    /// </para>
     /// </remarks>
     public static BarRange LookbackWindow(DateTimeOffset end, int resolutionMinutes, int count)
     {
@@ -161,7 +232,17 @@ public sealed class ToolGuards(IOptions<MarketDataOptions> options)
                 + "Ask for fewer bars, or a finer resolution.");
         }
 
-        return new BarRange(end - TimeSpan.FromTicks((long)reach), end);
+        // The calendar is not the only bound on this reach. A count and a resolution can both be legal, and
+        // the window they name still be wider than one gap-detection pass will enumerate -- 100,000 one-minute
+        // bars sit inside a MaxRows of 100,000 and reach 405,760 buckets, four times the count plus four days
+        // (gh#96). The reach guard above says nothing about that, so the window it produces is measured here
+        // before it is handed to a caller who will read bars over it.
+        return ValidateBucketSpan(
+            new BarRange(end - TimeSpan.FromTicks((long)reach), end),
+            resolutionMinutes,
+            "count " + count.ToString(System.Globalization.CultureInfo.InvariantCulture)
+                + " at resolutionMinutes "
+                + resolutionMinutes.ToString(System.Globalization.CultureInfo.InvariantCulture));
     }
 
     /// <summary>
@@ -173,12 +254,19 @@ public sealed class ToolGuards(IOptions<MarketDataOptions> options)
     /// <returns>The validated range.</returns>
     /// <exception cref="McpException">
     /// The resolution is not positive or is coarser than <see cref="MaxResolutionMinutes"/>, the window is
-    /// empty or inverted, or it spans more buckets than <see cref="MaxRows"/>.
+    /// empty or inverted, or it spans more buckets than <see cref="MaxRows"/> or than
+    /// <see cref="BarGapDetector.MaxBucketsPerPass"/>.
     /// </exception>
     /// <remarks>
+    /// <b>The effective ceiling is the lesser of the two caps</b>, because both bound the same quantity —
+    /// <see cref="MaxRows"/>, which an operator configures, and
+    /// <see cref="BarGapDetector.MaxBucketsPerPass"/>, which they cannot (gh#96). Configured above 250,000 the
+    /// row cap stops being the binding one, and the refusal says so rather than faulting below this boundary.
+    /// <para>
     /// <b>An over-cap window refuses and reports the real count.</b> It does not truncate: a shortened series
     /// arrives looking exactly like a complete one, and the part that was cut is the part the caller was
     /// reaching for.
+    /// </para>
     /// </remarks>
     public BarRange ValidateWindow(DateTimeOffset fromUtc, DateTimeOffset toUtc, int resolutionMinutes)
     {
@@ -206,7 +294,14 @@ public sealed class ToolGuards(IOptions<MarketDataOptions> options)
                 + "from a complete one.");
         }
 
-        return new BarRange(fromUtc.ToUniversalTime(), toUtc.ToUniversalTime());
+        // The row cap is checked FIRST, and that order is the message. Both caps bound the same quantity, so
+        // an over-wide window can be past both -- and naming the detection cap would send an operator to a
+        // constant they cannot change, past the one they configured. The tighter cap is the useful one, and
+        // below MaxRows = 250,000 the row cap is always the tighter.
+        return ValidateBucketSpan(
+            new BarRange(fromUtc.ToUniversalTime(), toUtc.ToUniversalTime()),
+            resolutionMinutes,
+            "That window");
     }
 
     /// <summary>

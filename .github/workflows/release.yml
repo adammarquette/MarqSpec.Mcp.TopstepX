@@ -128,12 +128,18 @@ jobs:
           # manifest plus a manifest list; `--provenance=false` exported only the image manifest and config;
           # the image manifest DIGEST was identical either way. The pin changes the wrapper, nothing else.
           #
-          # WHAT THIS PIN IS NOT: protection for existing consumers. NOTHING has been published from this
-          # pipeline -- no `v*` tag, no GitHub release, no run of this workflow, ever. It fixes the published
-          # shape deliberately at the one moment that is still free, instead of letting it be decided by
-          # whichever driver happens to be set up. Turning attestations ON later is a fine decision to take
-          # on its own ADR. No pull request can cover the choice either way: `ci.yml` exports with `load` and
-          # never pushes, so the published shape is never produced outside a real release.
+          # WHAT THIS PIN WAS, AND WHAT IT NOW IS. It was taken while NOTHING had been published from this
+          # pipeline -- no `v*` tag, no GitHub release, no run of this workflow -- so it protected no
+          # existing consumer and cost nothing: it fixed the published shape deliberately instead of letting
+          # it be decided by whichever driver happens to be set up.
+          #
+          # THAT WINDOW IS CLOSED (gh#125). v0.1.0 is tagged and released, and this workflow has now run
+          # twice: 32668734971 FAILED at this very step 2026-08-23T21:50Z (the gh#115 reference bug) and
+          # 32683215519 SUCCEEDED 2026-08-24T02:29Z. Flipping this to true now changes the published manifest
+          # shape under a tag consumers can already pull, so turning attestations ON is still a decision for
+          # its own ADR -- now with a consumer to consider rather than none. No pull request can cover the
+          # choice either way: `ci.yml` exports with `load` and never pushes, so the published shape is never
+          # produced outside a real release.
           provenance: false
           tags: |
             ${{ env.IMAGE }}:${{ env.VERSION }}

@@ -84,6 +84,51 @@ jobs:
       - name: Bar paging takes a rate-limit slot per page
         run: ./scripts/check-paced-paging.sh
 
+  # gh#108. release.yml's first job is called "Await release approval" and declares `environment: production`.
+  # That environment DID NOT EXIST, and GitHub auto-creates a referenced environment at run time WITH NO
+  # PROTECTION RULES -- so the job would have awaited nothing and v0.1.0 would have reached public GHCR
+  # unattended. Nothing in the repository could have said so: the workflow is version-controlled, the
+  # environment is repository SETTINGS, and no pull request, review or check can see settings.
+  #
+  # WHY IT RUNS HERE and not only in release.yml. A release is the one job that cannot be cheaply repeated --
+  # it runs on a tag already cut, against a GitHub release already published. Finding out there means finding
+  # out too late to avoid the cleanup. This costs one API call on every pull request and fails BEFORE a
+  # release is ever cut. release.yml carries the same check as well, in a job `gate` depends on, for the
+  # window between the last merge and the tag; that one is deliberately NOT gated by `production` itself,
+  # because a check on the environment that only runs after the environment has already let it through is
+  # circular.
+  #
+  # This context is NOT in the three rulesets, so it reports rather than blocks -- and it does not need to
+  # block, because the release.yml copy stops the publish by workflow topology rather than by a settings
+  # string. Making it required is a ruleset edit that must land AFTER this job exists on `develop`: a required
+  # context that no run reports leaves every open pull request BLOCKED with an empty check list and nothing
+  # red to point at (measured on a throwaway repo, gh#114).
+  #
+  # Needs no SDK and no credentials beyond the default token: gh#108 measured that GITHUB_TOKEN reads the
+  # environments API at `contents: read`, which is what this workflow already grants. It is deliberately not
+  # given more -- a check that could WRITE the setting it is checking is not a check.
+  release-gate:
+    name: release-gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: The release approval gate exists and requires a human
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: ./scripts/check-release-gate.sh
+
+      # THE GATE ABOVE HAS TO BE ABLE TO FAIL. It is a shell script full of API calls and string matching, so
+      # one loosened match -- or a `|| true` left behind after a debugging session -- turns it into a step
+      # that passes on anything while the run page stays green, which is gh#108 itself one layer down. This
+      # runs the real script against fixtures whose faults are known and requires it to reject each one, and
+      # it matches on the words naming each fault rather than on exit status: exit 1 is also what "gh is
+      # required" produces, so a self-test satisfied by status alone would go green on a runner with no gh.
+      - name: Self-test — that check still rejects an inert gate
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: ./scripts/check-release-gate-selftest.sh
+
   build-test:
     name: build & unit tests
     runs-on: ubuntu-latest

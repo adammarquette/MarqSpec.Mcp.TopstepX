@@ -14,10 +14,44 @@ permissions:
   contents: read
 
 jobs:
+  # THE JOB BELOW IS INERT WITHOUT A SETTING THIS FILE CANNOT DECLARE (gh#108). `environment: production` does
+  # not create or require anything: if the environment does not exist, GitHub CREATES IT AT RUN TIME WITH NO
+  # PROTECTION RULES and the job passes straight through. It did not exist, and was created -- requiring
+  # review by @adammarquette -- minutes before v0.1.0 was cut, having been found by reading the API rather
+  # than by anything in this repository.
+  #
+  # So the dependency is asserted here rather than assumed. This job declares NO `environment:` of its own,
+  # deliberately: a check on the approval gate that is itself gated by the approval gate can only run after
+  # the thing it is checking has already let it through, and would report green on an inert gate by
+  # construction.
+  #
+  # It is the LAST line, not the first. The same script runs in ci.yml on every pull request and is where a
+  # broken gate should normally be found -- before a tag exists. This one covers the window between the last
+  # merge and the release, and it is the one that actually stops the publish: `gate` needs it, so a red run
+  # here means nothing is built and nothing reaches GHCR.
+  verify-gate:
+    name: Verify the approval gate is real
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: The release approval gate exists and requires a human
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: ./scripts/check-release-gate.sh
+
+      # The check above is a shell script, and a release runs from a TAG -- which may carry a version of it
+      # that no pull request ever exercised. Re-proving it can still go red costs seconds here.
+      - name: Self-test — that check still rejects an inert gate
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: ./scripts/check-release-gate-selftest.sh
+
   # Pauses until the "production" environment's required reviewers approve, before anything is built or
   # pushed. A published image tag can be overwritten but not un-pulled.
   gate:
     name: Await release approval
+    needs: verify-gate
     runs-on: ubuntu-latest
     environment: production
     steps:

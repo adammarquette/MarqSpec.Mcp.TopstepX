@@ -292,9 +292,95 @@ if ! $DRY_RUN; then
 fi
 
 # ---------------------------------------------------------------------------
-# 4. Labels.
+# 4. The release approval environment.
 # ---------------------------------------------------------------------------
-step "4. Label taxonomy"
+step "4. Release approval environment"
+
+# gh#108. `release.yml`'s first job declares `environment: production` and is named "Await release approval".
+# That name is the whole of the claim: an `environment:` key CREATES NOTHING. If the environment does not
+# exist, GitHub creates it at run time WITH NO PROTECTION RULES and the job passes straight through -- no
+# warning, no annotation, no error. It did not exist here, and the first release this repository ever cut
+# would have reached public GHCR unattended had the API not been read by hand minutes beforehand.
+#
+# It belongs in this script for the reason at the top of the platform contract: configuration that exists only
+# in a provider's web console does not exist. A generated repo inherits `release.yml` from the template and
+# therefore inherits the `environment:` key, so it inherits the dependency -- and without this step it
+# inherits it unsatisfied, which is the failure mode above by default rather than by accident.
+#
+# `production` is hardcoded rather than parsed out of the workflows: this script takes a repo SLUG and may be
+# run from anywhere, with no checkout to read. Keeping the two in step is check-release-gate.sh's job -- it
+# discovers the name from the workflows and fails naming it, which is what a repo that renamed its
+# environment would see.
+ENV_NAME="production"
+
+# CREATE-ONLY, NEVER OVERWRITE. An environment that already exists is READ and reported, never written.
+#
+# MEASURED on a throwaway environment before this was written (gh#108), because the two PUTs in this script
+# have DIFFERENT semantics and guessing which is which is the whole of gh#114:
+#
+#   - a ruleset PUT REPLACES the whole object -- a rule missing from the payload is deleted;
+#   - an environment PUT MERGES -- `PUT {"wait_timer":1}` over an environment with a required reviewer left
+#     that reviewer in place, and `PUT {}` changed nothing at all. Only an EXPLICIT `"reviewers": []` cleared
+#     them (it did, immediately).
+#
+# So the hazard here is not omission, it is the payload below: it names `reviewers` explicitly, so running it
+# over a live environment would replace whatever reviewer list is there with exactly one account. On a repo
+# that had added a second maintainer, a re-run would quietly drop them. Reading first and refusing to write
+# costs one GET and removes the question.
+#
+# The read is fatal on anything except a clean 404, for the same reason the ruleset reads are: a read that did
+# not succeed is not evidence of absence, and creating on top of that guess is how the setting gets replaced.
+env_status=0
+env_read="$(gh api "repos/$REPO/environments/$ENV_NAME" 2>&1)" || env_status=$?
+
+if [ "$env_status" -eq 0 ]; then
+  reviewers="$(gh_read "repos/$REPO/environments/$ENV_NAME" \
+    --jq '[.protection_rules[]?|select(.type=="required_reviewers")|.reviewers[]?|"\(.type):\(.reviewer.login // .reviewer.slug)"]|join(", ")')" || exit 1
+  if [ -n "$reviewers" ]; then
+    info "  $ENV_NAME exists and requires: $reviewers"
+    info "  left untouched — a PUT here would REPLACE that reviewer list (gh#108)"
+  else
+    warn "  $ENV_NAME exists but requires NO reviewers — the release approval gate is inert"
+    warn "  Add a reviewer in Settings > Environments > $ENV_NAME, or delete it and re-run this script."
+  fi
+elif printf '%s' "$env_read" | grep -q 'HTTP 404'; then
+  # The account running this script is an admin of the repo, so it is the one reviewer that is certainly
+  # valid. The API takes numeric ids, not logins.
+  #
+  # `prevent_self_review` is left at its default of FALSE, deliberately (gh#108). True would mean the person
+  # who cut the release cannot approve it -- which, while one person is the entire review pool, means nobody
+  # can and the gate becomes a wall. Revisit it the day a second maintainer exists; it is a decision, not an
+  # oversight.
+  ACTOR_LOGIN="$(gh_read "user" --jq .login)" || exit 1
+  ACTOR_ID="$(gh_read "user" --jq .id)" || exit 1
+  info "  creating $ENV_NAME, required reviewer: $ACTOR_LOGIN"
+  if ! $DRY_RUN; then
+    printf '{"reviewers":[{"type":"User","id":%s}]}' "$ACTOR_ID" \
+      | gh api -X PUT "repos/$REPO/environments/$ENV_NAME" --input - >/dev/null
+    # Read back what was left behind, per the same reasoning as the ruleset verification above: "the API
+    # accepted my payload" and "the gate is now real" are different claims.
+    left="$(gh_read "repos/$REPO/environments/$ENV_NAME" \
+      --jq '[.protection_rules[]?|select(.type=="required_reviewers")|.reviewers[]?|"\(.type):\(.reviewer.login // .reviewer.slug)"]|join(", ")')" || exit 1
+    if [ -n "$left" ]; then
+      ok "  $ENV_NAME now requires: $left"
+    else
+      warn "  $ENV_NAME was created but requires NO reviewers. The release gate is inert; fix it by hand."
+    fi
+  else
+    info "  [dry-run] PUT repos/$REPO/environments/$ENV_NAME"
+  fi
+else
+  die "read failed (exit $env_status): gh api repos/$REPO/environments/$ENV_NAME
+$env_read
+
+Stopping rather than guessing. Creating the environment on top of a read that did not succeed would REPLACE
+whatever is there, reviewers included -- gh#114 at a different endpoint. Nothing further has been written."
+fi
+
+# ---------------------------------------------------------------------------
+# 5. Labels.
+# ---------------------------------------------------------------------------
+step "5. Label taxonomy"
 # Repo labels, not board-only fields, so an agent reading the raw issue through `gh` sees them.
 
 create_label() {

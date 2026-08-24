@@ -14,13 +14,14 @@ ships a **package**, not a deployment, so it has a release ladder the parent doe
 Every pull request cites an issue opened before it — `Closes #N` when it completes one, `Related to #N` when it
 touches one without finishing it. **The `issue-link` check enforces this**; it is not advisory.
 
-Four things it will tell you, because they all look like they work and none of them does:
+Four ways a citation looks like it works and does not. The check names each one when it fails:
 
 - A closing keyword in the **title** is ignored by GitHub. It must be in the body.
 - A backticked `` `Closes #N` `` does not bind. Remove the backticks.
-- A citation inside a **fenced code block** is not a citation — a pasted `git log`, a quoted commit message.
-  Promotion bodies enumerate the work they carry, so this is the easy one to trip on: the citation has to be
-  the *promotion's own*, not one quoted from a commit it is carrying.
+- **A citation inside code is not a citation** — a fenced block, a four-space-indented block, an HTML comment,
+  or backticks. `git log --pretty=medium` indents commit bodies four spaces, so a pasted log is code, and
+  promotion bodies enumerate the work they carry: the citation has to be the *promotion's own*, never one
+  quoted from a commit it is carrying.
 - A closing keyword binds **only on a PR into the default branch** (`develop`). On any other base GitHub binds
   nothing, whatever the body says.
 

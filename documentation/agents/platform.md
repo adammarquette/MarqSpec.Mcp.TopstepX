@@ -42,6 +42,28 @@ The root contract's five apply here unchanged. Four land specifically on the pip
 
 ## Constraints that bite in CI
 
+- **A read whose result decides a verdict is assigned on its own line and checked** (gh#126). Five shells'
+  worth of near-identical shapes, and they do not behave alike — measured on bash 5.2.37 (Linux) and 5.3.15
+  (Git Bash), not reasoned:
+  - `V="${1:-$(cmd)}"` — a **bare** assignment carries the last command substitution's exit status
+    (POSIX 2.9.1), so this *does* abort under `set -e`.
+  - `local V="${1:-$(cmd)}"` — does **not**. `local` is a command and its own status wins.
+  - `echo "V=$(cmd)"` — does **not**. An argument's status is discarded. This is what ci.yml's and
+    release.yml's `Resolve the image reference` steps did: a failed resolution exited **0** and exported an
+    empty `IMAGE`, and the first complaint came from buildx about a Dockerfile that was fine.
+  - `done < <(cmd)` — a **process substitution**'s status is never examined by the shell at all, so the loop
+    runs zero times and falls through to the success path. No `|| true` required to hide it.
+  - `a | b` under `pipefail` — reports the **rightmost** non-zero status, so `grep -r` exiting 2 behind a
+    `grep -v` exiting 1 arrives as **1**, the code being treated as healthy. Split the read from the filter.
+
+  Split, assign, check the status, then use it. `gh_read()` in `bootstrap.sh` is the shape.
+- **Tell "no match" from "I could not look".** For `grep`, exit 1 is the healthy answer and 2-or-above never
+  is; `|| true` and `2>/dev/null` over that distinction are how this repo's gates keep going quiet — gh#43
+  (green on an unpaced loop), gh#98 (`|| true` resetting `PIPESTATUS` to `(0)`), gh#114/#124 (a swallowed API
+  read that would have stripped the merge gate), and gh#126's sweep, which found `check-no-order-path.sh`
+  skipping a listed product project that was not on disk and reporting "no order path" when grep exited 2.
+  That gate now prints the number of files it read, so its pass carries its own evidence.
+
 - **Line endings are LF everywhere**, pinned in **both** `.gitattributes` and `.editorconfig`, which have to
   agree. Otherwise `dotnet format` defaults to the host's line ending and a Windows contributor sees violations
   CI does not — or worse, CI sees violations they cannot reproduce.

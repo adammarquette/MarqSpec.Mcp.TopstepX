@@ -101,11 +101,14 @@ The server serves OHLCV bars for a futures instrument at a requested resolution 
   for every store fault and every tool rather than only for this one.
 - **R-2.11** Fills of one series are **not serialised**, and a pass projects over the series *its own snapshot*
   holds. A fill whose snapshot does not reach the start of the series seeds from the first bar it can see, so
-  the values it writes are **stale rather than wrong for good**: every pass recomputes the whole stored series,
-  so the next one over it corrects them. Nothing refuses and nothing retries — two adjacent fills share no bar,
-  no coverage row and no indicator key, so this is write skew rather than contention and `R-2.10` cannot reach
-  it. Closing it would need a lock rather than an isolation level, and the measurements behind not taking one
-  are [ADR-0012](adr/0012-fills-are-not-serialised.md).
+  it leaves the seam unmeasured and the values after it smoothed from the wrong bar. Those values are
+  **recoverable, which is not the same as self-correcting**: every pass recomputes the whole stored series, so
+  the next pass over *that* series fixes them — but a series nothing writes to again has no next pass, and a
+  concurrent backfill of settled history therefore keeps its stale values, indefinitely and with nothing
+  reporting it, until `rebuild-indicators` is run (`R-2.5`). Nothing refuses and nothing retries — two adjacent
+  fills share no bar, no coverage row and no indicator key, so this is write skew rather than contention and
+  `R-2.10` cannot reach it. Closing it would need a lock rather than an isolation level, and the measurements
+  behind not taking one are [ADR-0012](adr/0012-fills-are-not-serialised.md).
 
 ## R-3 — Key levels
 

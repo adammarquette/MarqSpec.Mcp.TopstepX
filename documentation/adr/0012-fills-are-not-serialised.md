@@ -11,10 +11,12 @@ deferred · rests on [ADR-0006](0006-indicators-as-projections.md)'s reproducibi
 Three documents named one question as open, and it stayed open because nobody wrote down which way it went:
 **should fills of one `(Venue, Instrument, ResolutionMinutes)` be serialised at all?**
 
-Everything else that gh#80 raised is closed. Both reads of a projection pass are one snapshot
+Much of what gh#80 raised is already closed. Both reads of a projection pass are one snapshot
 (`R-2.9`, gh#73); the bar write and the coverage ledger are real upserts, so a losing insert updates rather
-than faulting (gh#103, gh#122); and a `40001` is retried once and then reported by name (`R-2.10`). What is
-left is the anomaly that snapshot isolation does not forbid.
+than faulting (gh#103, gh#122); and a `40001` is retried once and then reported by name (`R-2.10`). One thing
+under that epic is **still open and is not this record's** — the indicator projection's own read-then-insert
+`23505`, gh#133, so gh#80 does not close here. What this record decides is the other thing left: the anomaly
+that snapshot isolation does not forbid.
 
 ### What is actually wrong
 
@@ -98,6 +100,11 @@ pass covers the **whole** stored series. So any later pass over that series — 
 single bucket, or `rebuild-indicators` — recomputes every stale value from the start of the series and the
 disagreement disappears. `AdjacentFillWriteSkewTests` shows the raced series coming back **value for value**
 to what one uninterrupted fill produces.
+
+**Recoverable is the claim, not self-correcting**, and the difference is load-bearing: the next pass has to
+actually happen. For an instrument anything is polling that is the next bar; for settled history nothing asks
+for again it is `rebuild-indicators` or nothing. The exposure is stated under *Consequences* rather than
+rounded off, because a decision to accept a defect is only honest at the size the defect actually is.
 
 A wedged advisory lock has no equivalent. It is not recomputable from anything, and the operator's repair is
 to find and kill a pooled connection.
@@ -203,7 +210,8 @@ uncommitted, so a wider read still cannot see them.
   projection's read-then-insert `23505` as a side effect. It would not, because nothing is serialised: two
   passes whose snapshots each miss the other's rows still insert the same `(Indicator, Period, BucketStart)`,
   and that remains a real fault reaching a real caller. It needs its own remedy, and it is the only instance
-  of that shape left on the `get_bars` path.
+  of that shape left on the `get_bars` path. **gh#80 therefore stays open until gh#133 lands** — this record
+  settles the epic's opening question, not the epic.
 - **Nothing new is maintained.** No lock, no connection lifetime to own, no release path to get right on the
   retry, and no new way for one series to become unavailable.
 - **The claim is checkable.** A defect chosen rather than fixed is only a decision if it can be shown to behave

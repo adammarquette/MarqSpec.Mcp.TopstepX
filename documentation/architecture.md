@@ -152,8 +152,10 @@ values after it smoothed from the wrong bar. Nothing refuses — the two write s
 this is write skew rather than contention and the retry above cannot reach it. **Fills are deliberately not
 serialised** ([ADR-0012](adr/0012-fills-are-not-serialised.md), `R-2.11`): the remedy is a lock rather than an
 isolation level, and a session-level advisory lock was measured going on holding the key after its connection
-returned to the pool — an unbounded wedge traded for a staleness that the next pass over the series recomputes
-away (`R-2.9`, [ADR-0006](adr/0006-indicators-as-projections.md)).
+returned to the pool — an unbounded wedge traded for values that are **recoverable** rather than
+self-correcting. The next pass over that series recomputes them, and a series nothing writes to again has no
+next pass: that one is repaired by `rebuild-indicators` and by nothing else (`R-2.9`, `R-2.11`,
+[ADR-0006](adr/0006-indicators-as-projections.md)).
 
 ### Why step 2 exists
 

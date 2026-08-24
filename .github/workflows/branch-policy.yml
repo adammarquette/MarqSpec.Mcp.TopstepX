@@ -244,17 +244,23 @@ jobs:
           fi
 
           # EVERY citation this job reads comes from here: a body with CODE REMOVED -- HTML comments,
-          # fenced blocks, inline spans. GitHub binds a reference inside none of them, so neither may this
-          # gate. Derived ONCE and read by BOTH arms below (gh#123); neither re-derives it, because two
-          # copies of this rule are two rules, and the pair had already drifted once.
+          # fenced blocks, four-space indented blocks, inline spans. GitHub binds a reference inside none of
+          # them, so neither may this gate. Derived ONCE and read by BOTH arms below (gh#123); neither
+          # re-derives it, because two copies of this rule are two rules, and the pair had already drifted
+          # once. THREE PASSES, ONE VALUE: comments, then block-level code, then inline spans. The indented
+          # block joined the pass that already tracked fences (gh#142) rather than arriving as a fourth
+          # stage or a second variable -- both are the same question asked of a whole line, and a stripper
+          # answering it in two places is the drift this comment exists to prevent.
           #
-          # Three kinds of code, and only one of them is obvious. `sed` is line-oriented, so stripping
+          # Four kinds of code, and only one of them is obvious. `sed` is line-oriented, so stripping
           # inline spans leaves a FENCED `Closes #96` looking exactly like a real citation -- and a
           # promotion body is the one shape that reliably contains a pasted `git log`, because it
-          # enumerates the work it carries. Without the fence pass this job reads the WORK's citation as
-          # the PROMOTION's own and passes a promotion citing nothing of its own, which is the precise
-          # thing the carve-out below says it refuses to do. HTML comments drop first -- STEPPING OVER
-          # inline spans rather than into them -- then fences, then the spans themselves.
+          # enumerates the work it carries. Worse, that paste is usually NOT fenced: `git log`'s default
+          # `--pretty=medium` indents a commit body by exactly four spaces, which is an indented code block
+          # to GitHub and was ordinary prose to this gate until gh#142. Either way the job read the WORK's
+          # citation as the PROMOTION's own and passed a promotion citing nothing of its own, which is the
+          # precise thing the carve-out below says it refuses to do. HTML comments drop first -- STEPPING
+          # OVER inline spans rather than into them -- then block-level code, then the spans themselves.
           #
           # WHY THE FIRST PASS KNOWS ABOUT BACKTICKS AT ALL (gh#123, from review). It is the only pass
           # carrying state ACROSS lines, so an opener it accepts wrongly costs every line after it. A
@@ -279,11 +285,58 @@ jobs:
           # over-stripping makes the run say why and the author moves the citation into plain prose,
           # while under-stripping passes silently on a citation GitHub ignores. For a gate, take the loud
           # error. A `<!--` inside BACKTICKS is no longer one of them, and that is the whole change here.
+          # Read the next block before generalising that sentence: it is true of an unterminated MARKER and
+          # false of an indented BLOCK, and the difference is which line gets dropped.
           #
-          # KNOWN REMAINDER: a FOUR-SPACE-INDENTED block is code to GitHub and prose to this stripper --
-          # and `git log`'s default format indents commit bodies by exactly four spaces, so a paste that
-          # was never fenced still reads as a citation. gh#142 carries it; gh#123's acceptance criteria
-          # say "fenced block", so it is out of scope here rather than overlooked.
+          # THE INDENTED BLOCK IS THE ONE PLACE WHERE OVER-STRIPPING IS THE WRONG DIRECTION (gh#142), so
+          # all three of CommonMark's preconditions are checked rather than the leading four spaces alone:
+          #   1. four COLUMNS of indent, a tab advancing to the next multiple of four;
+          #   2. a blank line above it -- an indented chunk cannot interrupt a paragraph, so a wrapped
+          #      sentence that happens to start indented stays prose;
+          #   3. the indent measured from the enclosing LIST ITEM's content column, not from column zero.
+          #
+          # Rule 3 is the whole reason this is not a one-line regex, and it is the deliberate departure
+          # from `5188178` on the never-merged `bug/101_...` branch, which dropped every four-space line
+          # and argued that over-stripping is the safe direction. It is the safe direction for an
+          # unterminated marker, where the gate refuses and the author moves a citation they can still see.
+          # It is the WRONG direction here, because the line being dropped IS the citation: a continuation
+          # line inside a list item is ordinary prose that markdown asks you to indent, and refusing it
+          # blocks a legitimate pull request -- a worse failure than the phantom this change removes.
+          # Measured, not assumed: 6 of the 71 pull-request bodies open when this landed carry a line
+          # indented four or more columns outside a fence -- #14, #20, #23, #75, #92, #117, 48 lines
+          # between them, every one a nested list item or a list continuation and not one of them code.
+          # This rule drops none of the 48; the flat rule drops all 48. Be exact about what that costs:
+          # no archived body happens to carry its citation on one of those lines, so the flat rule would
+          # have refused nothing yet. That is where the citation tends to sit, not a property of the rule.
+          #
+          # (An earlier draft of this comment said 37 bodies and 173 lines. That came from a measuring
+          # script matching `^( {4}|\t)` with `grep -E`, where `\t` is the LETTER t -- so every line
+          # starting with "the" counted. Caught in review. The gate itself never had that bug: it reads
+          # the indent character by character in `indent()` below, tab as four columns, no regex.)
+          #
+          # Blockquote markers come off before the indent is measured -- `>     Closes #N` is code inside a
+          # quote -- and a trailing CR comes off with them: a body typed in GitHub's web editor arrives
+          # CRLF, and a CR-only line that does not read as blank silently disables precondition 2, which
+          # would be a gate quietly not working rather than a gate failing.
+          #
+          # KNOWN REMAINDER: precondition 2 is implemented as "the line above was BLANK", and CommonMark
+          # says "cannot interrupt a PARAGRAPH" -- so an indented chunk pressed straight up against a
+          # heading, a thematic break or a table, with NO blank line between, is code to GitHub and prose
+          # here. Checked against GitHub's renderer rather than read off the spec: `markdown/raw` returns
+          # a `pre code` for all three, and for a lazy continuation of a paragraph it returns none, which
+          # is the case this gate already agrees with. Put a blank line in and the gate strips all three
+          # correctly. Left as is deliberately: closing it means teaching this pass to recognise headings,
+          # rules and tables -- more surface for the same class of mistake -- to buy an UNDER-strip, which
+          # keeps a phantom rather than refusing an honest body. And the shape this gate exists for cannot
+          # hit it: `git log --pretty=medium` prints a blank line above the indented commit body, always.
+          #
+          # KNOWN REMAINDER: an inline span that WRAPS ACROSS A LINE BOUNDARY. `sed` pairs backticks per
+          # line, so a span opened on one line and closed on the next leaks its middle -- 9 of those 71
+          # bodies wrap a span that way, because the margin here is 110 columns. It is NOT a rider on this
+          # change: the comment pass above steps over spans using that same per-line pairing, on purpose,
+          # so teaching only the last pass to span lines re-creates exactly the two-rules drift gh#123
+          # closed -- and teaching the FIRST pass to do it re-opens the non-local failure that review round
+          # found, where one unpaired backtick discards every line after it. Its own card, gh#155.
           body_no_code="$(printf '%s' "$BODY" \
             | awk 'BEGIN{comment=0}
                    {
@@ -308,7 +361,72 @@ jobs:
                      }
                      print out
                    }' \
-            | awk 'BEGIN{fence=0} /^[[:space:]>]*(```|~~~)/ {fence=!fence; next} fence==0 {print}' \
+            | awk 'function indent(s,   i, n, c, w) {
+                     # Leading width in COLUMNS, a tab advancing to the next multiple of four.
+                     # -1 means the line is blank, which is what precondition 2 above reads.
+                     w = 0; n = length(s)
+                     for (i = 1; i <= n; i++) {
+                       c = substr(s, i, 1)
+                       if (c == " ") w = w + 1
+                       else if (c == "\t") w = w + 4 - (w % 4)
+                       else return w
+                     }
+                     return -1
+                   }
+                   function item(s,   i, n, c, w, d, k) {
+                     # Content column of a list marker, or -1 when the line is not one. That column is
+                     # what rule 3 measures from: inside `- text`, code starts at 6, not at 4.
+                     w = 0; n = length(s); i = 1
+                     while (i <= n) {
+                       c = substr(s, i, 1)
+                       if (c == " ") { w = w + 1; i = i + 1 }
+                       else if (c == "\t") { w = w + 4 - (w % 4); i = i + 1 }
+                       else break
+                     }
+                     if (i > n) return -1
+                     c = substr(s, i, 1)
+                     if (c == "-" || c == "*" || c == "+") { i = i + 1; w = w + 1 }
+                     else if (c ~ /^[0-9]$/) {
+                       k = 0
+                       while (i <= n && substr(s, i, 1) ~ /^[0-9]$/ && k < 9) {
+                         i = i + 1; w = w + 1; k = k + 1
+                       }
+                       if (i > n) return -1
+                       c = substr(s, i, 1)
+                       if (c != "." && c != ")") return -1
+                       i = i + 1; w = w + 1
+                     } else return -1
+                     if (i > n) return w + 1
+                     c = substr(s, i, 1)
+                     if (c != " " && c != "\t") return -1
+                     d = w
+                     while (i <= n) {
+                       c = substr(s, i, 1)
+                       if (c == " ") { w = w + 1; i = i + 1 }
+                       else if (c == "\t") { w = w + 4 - (w % 4); i = i + 1 }
+                       else break
+                     }
+                     if (i > n || w - d > 4) return d + 1
+                     return w
+                   }
+                   BEGIN { fence = 0; list = -1; blank = 1; code = 0 }
+                   /^[[:space:]>]*(```|~~~)/ { fence = !fence; blank = 1; code = 0; next }
+                   fence == 1 { next }
+                   {
+                     probe = $0
+                     sub(/\r$/, "", probe)
+                     while (probe ~ /^ ? ? ?>/) sub(/^ ? ? ?>[ \t]?/, "", probe)
+                     w = indent(probe)
+                     if (w < 0) { blank = 1; print; next }
+                     limit = (list < 0) ? 4 : list + 4
+                     if (w >= limit && (blank || code)) { code = 1; blank = 0; next }
+                     code = 0
+                     c = item(probe)
+                     if (c >= 0) list = c
+                     else if (blank && list >= 0 && w < list) list = -1
+                     blank = 0
+                     print
+                   }' \
             | sed 's/`[^`]*`//g')"
 
           # Herestring, not a pipe: `grep -q` exits on its first match, and under `pipefail` a SIGPIPE'd
@@ -397,8 +515,9 @@ jobs:
           # the backtick diagnostic above could not carry: that one detects a SPAN, so a keyword fenced rather
           # than span-quoted produced no diagnostic at all -- the author read `This PR cites no issue`, went
           # back to a body with the reference plainly in it, and had nowhere to go (gh#90's shape). Comparing
-          # the raw body against $body_no_code covers all three kinds of code with one test instead of one
-          # detector per kind, so the next kind added to the stripper is explained without a fourth grep.
+          # the raw body against $body_no_code covers all four kinds of code with one test instead of one
+          # detector per kind -- gh#142 added the fourth kind and needed no new grep here, only the extra
+          # noun in the message below.
           #
           # TERMINAL, so the generic "cites no issue" -- which is FALSE here -- never follows it. Nothing is
           # lost by stopping: with every citation inside code, $body_closes is necessarily false, so the
@@ -412,10 +531,12 @@ jobs:
           # does.)
           CITATION='(close[sd]?|fix(e[sd])?|resolve[sd]?|related to|part of|towards) +#[0-9]+'
           if grep -qiE "$CITATION" <<<"$BODY" && ! grep -qiE "$CITATION" <<<"$body_no_code"; then
-            echo "::error::This check read every issue reference in this body as CODE - a fenced block, an"
-            echo "::error::HTML comment, or backticks. GitHub ignores all three, and so does this check. Put"
-            echo "::error::the citation in ordinary prose. If it came from a pasted commit log, that is the"
-            echo "::error::CARRIED work's citation - this PR still needs one of its own."
+            echo "::error::This check read every issue reference in this body as CODE - a fenced block, a"
+            echo "::error::four-space indented block, an HTML comment, or backticks. GitHub ignores all four,"
+            echo "::error::and so does this check. Put the citation in ordinary prose. If it came from a"
+            echo "::error::pasted commit log, that is the CARRIED work's citation - and note that git log"
+            echo "::error::indents a commit body four spaces, so an unfenced paste is code too. This PR"
+            echo "::error::still needs a citation of its own."
             echo "::error::If the citation already IS in prose, an unterminated code fence or HTML comment"
             echo "::error::above it swallowed the rest of the body. Close that marker, or cite above it."
             exit 1

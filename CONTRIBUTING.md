@@ -17,13 +17,19 @@ touches one without finishing it. **The `issue-link` check enforces this**; it i
 Four things it will tell you, because they all look like they work and none of them does:
 
 - A closing keyword in the **title** is ignored by GitHub. It must be in the body.
-- **A citation inside code is not a citation** — a fenced block, an HTML comment, or backticks. GitHub honours
-  a reference in none of the three, so neither does the check, and that holds for `Related to #N` exactly as
-  for `Closes #N` (gh#123). Promotion bodies enumerate the work they carry, so this is the easy one to trip
-  on: a pasted `git log` carries the *other* work's citation, and the promotion still needs one of its own.
-  **Three forms, not four.** A **four-space-indented** block is code to GitHub and prose to this check — and
-  `git log`'s default format indents commit bodies by exactly four spaces, so an unfenced paste still cites.
-  That gap is open and tracked as gh#142: **fence your logs** until it closes.
+- **A citation inside code is not a citation** — a fenced block, a **four-space-indented** block, an HTML
+  comment, or backticks. GitHub honours a reference in none of the four, so neither does the check, and that
+  holds for `Related to #N` exactly as for `Closes #N` (gh#123, gh#142). Promotion bodies enumerate the work
+  they carry, so this is the easy one to trip on: a pasted `git log` carries the *other* work's citation, and
+  the promotion still needs one of its own. **Fencing the paste is not what makes it code** —
+  `git log --pretty=medium` already indents a commit body by exactly four spaces, so an unfenced paste is an
+  indented code block and reads the same way (gh#142).
+  **The four columns are counted from the enclosing list item's content column, not from the margin**, and a
+  blank line has to sit above them. So a nested item, a wrapped line and an ordinary two-space continuation
+  under `- ` are all prose. The edge worth knowing, because GitHub agrees with the check here: under `- `,
+  content starts at column 2, so a continuation paragraph indented **six** columns after a blank line **is**
+  an indented code block — to GitHub as much as to this check. Keep a citation at the margin and none of this
+  can reach it.
 - An **unterminated** code fence or `<!--` swallows the rest of the body, so a citation below it reads as code
   and the check refuses. Close the marker, or put the citation above it.
 - A closing keyword binds **only on a PR into the default branch** (`develop`). On any other base GitHub binds

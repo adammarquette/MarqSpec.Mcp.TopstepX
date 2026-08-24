@@ -21,7 +21,7 @@ accurate** — a size column nobody updates is worse than none, because it is tr
 | Document | ~tok | Read it when |
 |---|---:|---|
 | [`AGENT-MEMORY.md`](AGENT-MEMORY.md) | 0.8K | **Before starting any work.** Cheap; just read it. |
-| [`project-board-workflow.md`](project-board-workflow.md) | 2K | You are filing, grooming or moving a card. |
+| [`project-board-workflow.md`](project-board-workflow.md) | 2.5K | You are filing, grooming or moving a card. **Nothing on the board is automatic.** |
 | [`work-estimate-rubric.md`](work-estimate-rubric.md) | 1.5K | You are setting a `Work Estimate` on an issue. |
 | [`agents/`](agents/README.md) | index | You are wearing a role hat. Reviewer and Platform contracts **never auto-load** — open them yourself. |
 | [`../CONTRIBUTING.md`](../CONTRIBUTING.md) | 4K | Branching, claiming, commits, PRs, and the Definition of Done. |

@@ -79,12 +79,54 @@ set -euo pipefail
 export MSYS_NO_PATHCONV=1
 export MSYS2_ARG_CONV_EXCL='*'
 
+die() { printf '\033[31m%s\033[0m\n' "$*" >&2; }
+ok()  { printf '\033[32m%s\033[0m\n' "$*"; }
+
 # DERIVED, not spelled again. CI builds `$(image-reference.sh):ci` (gh#115), so a hardcoded
 # `marqspec-mcp-topstepx:ci` here would name a tag this repository no longer produces -- and the no-argument
 # form this script documents would fail with `Unable to find image ... locally`, then try to PULL it from
 # Docker Hub. That reads like a typo rather than like a stale default, and it is exactly the local/CI
 # disagreement this script exists to prevent (gh#121 review).
-IMAGE="${1:-$("$(dirname "$0")/image-reference.sh"):ci}"
+#
+# RESOLVED ON ITS OWN LINE AND CHECKED (gh#126), rather than `IMAGE="${1:-$(image-reference.sh):ci}"`.
+#
+# MEASURED FIRST, because the card that asked for this stated the mechanism the other way round, and the
+# correction is the part worth keeping. On bash 5.2.37 (Linux, in a container) and 5.3.15 (Git Bash), `set -e`
+# DOES fire on that one-liner: a BARE assignment carries the exit status of the last command substitution it
+# performed (POSIX 2.9.1, "Simple Commands"), so a failed resolution aborted the script rather than yielding
+# the literal `:ci`. It does NOT fire on either neighbouring shape, measured on the same two shells:
+#
+#     V="${1:-$(false):ci}"        ->  exit 1, script stops          (bare assignment: the status propagates)
+#     local V="${1:-$(false):ci}"  ->  exit 0, V is `:ci`            (`local` is a command; ITS status wins)
+#     echo "IMAGE=$(false)"        ->  exit 0, prints `IMAGE=`       (an argument's status is discarded)
+#
+# The third is not hypothetical in this repository: it is what ci.yml's and release.yml's `Resolve the image
+# reference` steps did until this same change, and those two really did walk on with an empty reference.
+#
+# So this is not a defect being fixed on this line. It is a gate's own guard being taken off a shell subtlety
+# and put on an explicit status check, one edit -- a `local`, a wrapper function -- away from the shape that
+# does not fire. What it does fix here is the DIAGNOSIS: the old form died with a bare exit 1 carrying
+# image-reference.sh's message and nothing at all about this gate or what it had failed to do.
+if [ -n "${1:-}" ]; then
+  IMAGE="$1"
+else
+  REFERENCE=""
+  REF_STATUS=0
+  REFERENCE="$("$(dirname "$0")/image-reference.sh")" || REF_STATUS=$?
+  if [ "$REF_STATUS" -ne 0 ]; then
+    die "  UNRESOLVED  scripts/image-reference.sh exited $REF_STATUS, so this project's image has no name"
+    die "NOTHING HAS BEEN CHECKED. That script's own message is above. Pass the tag explicitly to work around"
+    die "it:    scripts/check-image-entrypoint.sh <image-tag>"
+    exit 1
+  fi
+  if [ -z "$REFERENCE" ]; then
+    die "  UNRESOLVED  scripts/image-reference.sh exited 0 without printing a reference"
+    die "There is nothing to append the :ci tag to, and ':ci' on its own is not an image. NOTHING HAS BEEN"
+    die "CHECKED -- an empty reference here is what gh#126 was filed to stop walking past."
+    exit 1
+  fi
+  IMAGE="${REFERENCE}:ci"
+fi
 
 # Generous on purpose: the wait ends the moment the reply lands OR the moment the container is gone, so
 # the ceiling is only reached by a server that started and then said nothing.
@@ -94,9 +136,6 @@ STARTUP_GRACE_SECONDS=10
 # A hard ceiling on the `docker run` ITSELF, not on the wait. Comfortably above the two above, and it exists
 # only so a server that stops honouring stdin EOF cannot hang the job -- see the note above the pipeline.
 RUN_TIMEOUT_SECONDS=90
-
-die() { printf '\033[31m%s\033[0m\n' "$*" >&2; }
-ok()  { printf '\033[32m%s\033[0m\n' "$*"; }
 
 CONTAINER="mcp-entrypoint-smoke-$$"
 OUT="$(mktemp)"

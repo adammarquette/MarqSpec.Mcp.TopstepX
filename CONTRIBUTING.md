@@ -77,6 +77,30 @@ only**. A promotion is a merge commit by construction; a feature landing is not.
 fix is a *new version*, not a shortcut through the ladder. Until that route is settled, raise a hotfix on its
 issue rather than assuming one.
 
+### Falling behind — rebase, never merge
+
+Merges into `develop` are serialised, so **every** open PR falls behind after **every** merge. Catch yours up
+with a rebase:
+
+```bash
+git fetch origin && git rebase origin/develop && git push --force-with-lease
+```
+
+**Never `git merge develop` into your branch.** `develop` is rebase-merge-only and *Rebase and merge* cannot
+replay a merge commit, so one merge makes the branch unmergeable — and the pull request says so only obliquely,
+showing **"All checks have passed"** beside **"Unable to merge (rebase) — Cannot merge at this time"** while
+naming nothing. Two traps sit either side of it:
+
+- **GitHub's *Update branch* button merges by default.** Use its dropdown's *Update with rebase*, or the
+  command above. The plain button is one click, offered by the page that is telling you the branch is behind.
+- **A Dependabot branch that has been merged into is disowned** — *"this PR has been edited by someone other
+  than Dependabot"* — and stays manual forever. Leave Dependabot's branches to `@dependabot rebase`.
+
+If it has already happened, `git rebase origin/develop` drops the merge commits by itself; a conflict resolved
+*inside* one is re-resolved per commit. The `commit-hygiene` check fails a PR into `develop` that carries a
+merge commit, so the branch is refused at push time rather than at the merge button (gh#146). It does not apply
+to promotions into `staging` or `main`, which carry merge commits by construction.
+
 ## Branch naming
 
 Name every working branch:

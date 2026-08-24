@@ -71,10 +71,10 @@ jobs:
   #
   # Its own job for the same reason no-order-path has one: a failure here means "the burst protection came
   # unpicked", and folding it into no-order-path would report that as "the read-only boundary was crossed",
-  # which is a different and far more alarming claim. NOTE: a new job is not automatically a REQUIRED check --
-  # the develop ruleset names those, and a ruleset cannot be edited from a pull request. So this REPORTS and
-  # does not block; adding it to the ruleset is tracked as gh#72. Read a red `paced-paging` as real even
-  # though the merge box does not.
+  # which is a different and far more alarming claim.
+  #
+  # REQUIRED on develop, staging and main as of gh#72 -- a red run here blocks the merge. `name:` below is the
+  # status CONTEXT the rulesets name, so renaming the job silently un-requires it: change both together.
   paced-paging:
     name: paced-paging
     runs-on: ubuntu-latest

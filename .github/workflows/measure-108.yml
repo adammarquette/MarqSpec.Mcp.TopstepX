@@ -1,0 +1,41 @@
+name: measure-108
+
+# SCAFFOLDING. Added and removed inside gh#108's own PR (the gh#98 precedent). It measures one thing that
+# cannot be looked up reliably: what token permissions GITHUB_TOKEN needs to READ the environments API, which
+# decides whether the release-gate check can run in ci.yml at all.
+
+on: push
+
+permissions:
+  contents: read
+
+jobs:
+  probe-contents-read:
+    name: probe (contents read only)
+    runs-on: ubuntu-latest
+    steps:
+      - name: environments API under contents:read
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "--- list"
+          gh api "repos/${{ github.repository }}/environments" && echo "LIST_OK" || echo "LIST_FAILED=$?"
+          echo "--- get production"
+          gh api "repos/${{ github.repository }}/environments/production" && echo "GET_OK" || echo "GET_FAILED=$?"
+          echo "--- get absent"
+          gh api "repos/${{ github.repository }}/environments/gh108-absent" && echo "ABSENT_OK" || echo "ABSENT_FAILED=$?"
+
+  probe-more-permissions:
+    name: probe (deployments + actions read)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      deployments: read
+      actions: read
+    steps:
+      - name: environments API under deployments:read
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "--- get production"
+          gh api "repos/${{ github.repository }}/environments/production" && echo "GET_OK" || echo "GET_FAILED=$?"

@@ -43,6 +43,18 @@ namespace MarqSpec.Mcp.TopstepX.MarketData;
 /// rather than looping on, so it becomes a <see cref="StoreContentionException"/> naming the condition.
 /// </para>
 /// <para>
+/// <b>And not a lock either — decided, not deferred.</b> Snapshot isolation permits the write skew this
+/// retry cannot reach: two fills of <i>adjacent</i> ranges share no bar, no coverage row and no indicator key,
+/// so there is nothing for the store to refuse and the later one seeds its projection from the first bar its
+/// own snapshot can see. Serialising fills per series would need a session-level advisory lock taken
+/// <i>before</i> <c>BeginTransaction</c>, and that is not taken here: a session lock was observed
+/// still holding its key after the connection that took it had gone back to Npgsql's pool, released only when
+/// unrelated traffic happened to reuse that connection. The values the skew leaves are stale rather than lost
+/// — a projection is reproducible from the bars, so the next pass corrects them — and a wedged lock is not
+/// recomputable from anything. Reasoning, measurements and the alternatives:
+/// <c>documentation/adr/0012-fills-are-not-serialised.md</c> (gh#104), requirement <c>R-2.11</c>.
+/// </para>
+/// <para>
 /// <b>The venue is never called from inside.</b> Callers fetch first and hand in what they already hold, so a
 /// retry costs zero vendor requests and a paced page-walk — up to a minute of deliberate sleeping for a cold
 /// year — never sits inside an open snapshot pinning <c>xmin</c>.

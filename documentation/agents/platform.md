@@ -56,6 +56,22 @@ The root contract's five apply here unchanged. Four land specifically on the pip
   not the evidence. (`check-paced-paging.sh`, gh#43, cost one red CI run.)
 - **A conflicting PR gets no CI at all** — `mergeable_state: dirty` produces zero workflow runs, which reads as
   "no checks reported" rather than as a conflict. Check the state before waiting on checks.
+- **A closing keyword binds only on a PR into the DEFAULT branch** (gh#101). `closingIssuesReferences` is
+  therefore empty on every ladder promotion however the body is written, so `issue-link` — which reads it as
+  ground truth, correctly — could never pass a promotion on its primary path and fell through to
+  `This PR cites no issue` about a body whose first line was `Closes #99`. Both promotions this repo has ever
+  made (#100, #106) hit it, and both reached for the weaker `Related to #N`, which is how a gate teaches people
+  to route around it. The gate now accepts a body-read `Closes #N` **on `staging` and `main` only** — not an
+  exemption: a promotion citing nothing still fails, and the issue still does not auto-close, so the run says
+  so. Stacked PRs onto a feature branch stay excluded on purpose; `Related to #N` is the correct form there
+  (gh#57). **Generalise past this gate**: any check that reads a GitHub linkage as truth has to ask what base
+  the PR targets, because most of that machinery is default-branch-only.
+- **Run a text-matching gate before believing its diagnostics.** Proving the above by mutation turned up a
+  second defect nobody could have read off the file: `issue-link`'s backtick diagnostic was the only one of the
+  three greps without `-i`, so it matched a lowercase `` `closes #1` `` and **missed the canonical**
+  `` `Closes #N` `` that `CONTRIBUTING.md` tells everyone to write. It had been absent for the exact input it
+  exists to explain since gh#35, on the path that fires most often, and every reading of that line said it
+  worked.
 - **A PR into a non-integration base used to get no CI at all, and read as `CLEAN`** (gh#60). `ci.yml` and
   `codeql.yml` filtered `pull_request` to `[develop, staging, main]`, so a stacked PR onto a feature branch
   produced zero runs — and because the required checks hang off the `develop` ruleset, nothing was pending or
@@ -69,7 +85,7 @@ The root contract's five apply here unchanged. Four land specifically on the pip
   (`docker/login-action` v3→v4 in gh#15, `docker/build-push-action` v6→v7 in gh#52). Both jobs now declare
   `docker/setup-buildx-action` and build through `docker/build-push-action` at the **same major version**;
   Dependabot's `github-actions` ecosystem covers both files, so a bump that touches only one is the defect.
-  Five things that arrangement does **not** give you for free:
+  Six things that arrangement does **not** give you for free:
   - **`push: false` is not enough — CI needs `load: true`.** Under Buildx the result stays in BuildKit's cache
     and never reaches the local daemon; the build still exits 0, warning only that the *result will only
     remain in the build cache*. The smoke `docker run` then fails trying to **pull** the tag from Docker Hub,
@@ -79,21 +95,68 @@ The root contract's five apply here unchanged. Four land specifically on the pip
     `ENTRYPOINT` — so the container that ran was `dotnet --list-runtimes`, the app assembly was never
     loaded, and an `ENTRYPOINT` naming a DLL that does not exist passed it at exit 0 (gh#67). It now runs
     [`check-image-entrypoint.sh`](../../scripts/check-image-entrypoint.sh), which asserts the entrypoint's
-    assembly sits at the path the entrypoint names, and that that entrypoint — unoverridden — starts a
-    server which answers an MCP `tools/list`. **Do not re-gate it on the exit code without measuring it on
-    the runner first.** A correctly-built server exits **0** whether stdin stays open until it answers or is
-    at EOF during startup — those were **0** and **139** until gh#76 made a shutdown requested mid-startup a
-    clean stop rather than an unhandled `TaskCanceledException` — while an `ENTRYPOINT` naming a missing
-    assembly exits **155**, the *dotnet host's* "the command could not be loaded", i.e. what broken looks
-    like. gh#67 recorded 155 as the healthy code; a gate written to that number would have passed the broken
-    image and failed the good one. So the code now discriminates where it used to invert, but the gate still
-    ignores it: **every one of these was measured on Docker Desktop for Windows, Engine 29.6.2, and none on
-    the runner** — `ubuntu-latest` reports Engine 28.0.4 in the `image` job's own Docker info group. Repeating
-    gh#67's mistake at a different number is not an improvement, and an exit code says the process ended, not
-    that the server served. What a green `image` licenses, exactly: the Dockerfile builds, the image
-    loads into the daemon, and the image's own entrypoint starts a server that serves its tool list with no
-    configuration. Not the venue, the store, the embedding provider or the HTTP transport — this configures
-    none of them.
+    assembly sits at the path the entrypoint names, that that entrypoint — unoverridden — starts a server
+    which answers an MCP `tools/list`, and *then* that the container exited **0**.
+
+    **The exit codes, measured where the gate actually runs** (gh#98) — `ubuntu-latest`, runner image
+    `ubuntu24 20260816.277.1` (Ubuntu 24.04.4 LTS), **Docker Engine 28.0.4**; three CI runs, three runs per
+    row in each, **nine observations per row and not one disagreement**:
+
+    | Case | Exit code |
+    |---|---|
+    | correctly-built image, stdin held open until the handshake is answered — the gate's own shape | **0** |
+    | correctly-built image, stdin already at EOF during startup | **0** |
+    | `ENTRYPOINT ["dotnet", "MarqSpec.Mcp.TopstepX.DoesNotExist.dll"]`, under either shape | **155** |
+
+    **That replaces the Windows-only provenance this bullet used to carry** — Docker Desktop 29.6.2 on one
+    developer machine, where 155 had not been re-measured since gh#67 and not a single number had ever been
+    observed on the runner. Those three runs are attempts 1, 2 and 3 of
+    [run 32669269669](https://github.com/adammarquette/MarqSpec.Mcp.TopstepX/actions/runs/32669269669); the
+    `measure-98.yml` scaffolding that produced them was added and removed inside gh#98's own PR, so that run
+    is the only trail back to these numbers, and
+    [`check-image-entrypoint.sh`](../../scripts/check-image-entrypoint.sh)'s header carries the same
+    reference — keep the two together. 155 is the *dotnet host's* "the command could not be loaded", i.e.
+    what broken looks like; **gh#67 recorded it as the healthy code**, and a gate written to that number
+    would have passed the broken image and failed the good one. 139 — the old EOF-during-startup value — was
+    128+SIGSEGV from an unhandled `TaskCanceledException`, fixed by gh#76, which collapsed the two healthy
+    rows onto 0.
+
+    **The decision (gh#98): the gate reads the exit code, as a second signal and never as the first.** It is
+    asserted *after* the `tools/list` assertion, so a server that did not answer is failed on the missing
+    reply and never on how it ended — an exit code says the process ended, not that the server served. **Do
+    not reorder those two**: that makes the primary claim a consequence of the junior one, which is gh#67's
+    mistake in a new costume. What it buys is the one thing a reply cannot show — a server that answers and
+    then dies dirty on the way down, including the `timeout` ceiling firing because it stopped honouring
+    stdin EOF. What it does not buy, recorded so nobody re-derives it: **it would not have caught gh#76**,
+    whose crash was on the EOF-during-startup shape this gate does not run — row 1 was 0 on both sides of
+    that fix. Gating row 2 as well was **declined**: a container that never serves anything is outside what
+    this gate claims, and shutdown behaviour is gh#76's territory rather than this gate's.
+
+    What a green `image` licenses, exactly: the Dockerfile builds, the image loads into the daemon, the
+    image's own entrypoint starts a server that serves its tool list with no configuration, and that
+    container then stops cleanly. Not the venue, the store, the embedding provider or the HTTP transport —
+    this configures none of them.
+  - **A gate that cannot fail is not a gate, and this one is now made to fail on every run** (gh#98).
+    [`check-image-entrypoint-selftest.sh`](../../scripts/check-image-entrypoint-selftest.sh) runs in the
+    same `image` job: it derives the gh#54/gh#67 fixture from the image just built — same layers, an
+    `ENTRYPOINT` naming an assembly that is not there — and requires the gate to reject it. **Non-zero exit
+    is not sufficient and is not what it asserts**: `check-image-entrypoint.sh` also exits 1 for "docker is
+    required" and for "no local image tagged …", so a self-test satisfied by exit status alone would go green
+    on a runner that never built an image, reporting the gate as sound precisely when nothing had been
+    checked. It matches on the fixture's own missing assembly name instead. Its blind spot, stated rather
+    than papered over: the fixture is rejected by check 1, so nothing exercises the handshake or the
+    exit-code assertion behind it — that would need an image that serves and then exits dirty on purpose,
+    which cannot be built without a switch in product code whose only job is to break the server.
+
+    It derives that fixture with **`docker commit`, not a `FROM` build**, and the reason generalises to any
+    future step that builds *from* a locally loaded tag: a `docker-container` buildx builder — which
+    `docker/setup-buildx-action` makes current — runs in its own container and **cannot see the local
+    daemon's image store**, so `FROM marqspec-mcp-topstepx:ci` fails in CI trying to *pull* a tag that only
+    exists locally. Naming `--builder default` fixes CI and breaks Docker Desktop, where the current context
+    is `desktop-linux` and buildx answers `use docker --context=default buildx to switch to context
+    "default"` — while `docker buildx inspect default` **succeeds** there, so a guard written on it reads as
+    a working probe right up to the failure. `docker commit` involves no builder, driver, context or
+    registry and behaves the same on both.
   - **`docker/login-action` stays uncovered, on purpose.** Exercising it in CI would mean granting
     `packages: write` to a job that must not push, on every pull request — forks included, where
     `GITHUB_TOKEN` is read-only and the step would fail for a reason unrelated to the change. The login and
@@ -122,6 +185,66 @@ The root contract's five apply here unchanged. Four land specifically on the pip
 
 **A local check that disagrees with CI is worse than no local check.** When they diverge, fix the divergence,
 not the symptom.
+
+## What is REQUIRED, and what only reports
+
+The merge gate is the `required_status_checks` rule on three rulesets — `protect-develop` (`21182074`),
+`protect-staging` (`21182075`) and `protect-main` (`21182079`) — and it names contexts as **strings**. Nothing
+ties a string to a job. A context spelled differently from the name its job reports under never reports, so it
+never fails and never blocks, and in the settings page it looks exactly like one that works (gh#26). **Read
+this table as a claim about GitHub settings that has to be re-confirmed by mutation, not as a description of
+the workflow files.**
+
+| Context | develop | staging | main | Reported by |
+|---|---|---|---|---|
+| `build & unit tests` | required | required | required | `ci.yml` |
+| `integration tests` | required | required | required | `ci.yml` |
+| `docs` | required | required | required | `ci.yml` |
+| `coverage` | required | required | required | `ci.yml` |
+| `no-order-path` | required | required | required | `ci.yml` |
+| `paced-paging` | required | required | required | `ci.yml` — added by gh#72 |
+| `commit-hygiene` | required | required | required | `branch-policy.yml` |
+| `issue-link` | required | required | required | `branch-policy.yml` |
+| `ladder` | — | required | required | `branch-policy.yml` |
+| `image` | — | — | — | `ci.yml` — reports only, deliberately |
+| `Analyze (csharp)`, `CodeQL` | — | — | — | `codeql.yml` — reports only, deliberately |
+
+`ladder` is the one deliberate asymmetry: nothing is promoted *into* the integration branch, so requiring it on
+`develop` would gate on a rule that cannot apply there. Not a finding — recorded so nobody "fixes" it.
+
+**`paced-paging` is required on all three rungs, not only `develop`** (gh#72). The promotion argument — that
+`staging` and `main` receive nothing except commits already gated at `develop` — is exactly as true of
+`no-order-path`, which is required on all three anyway. `ladder` is what refuses a pull request opened straight
+at `main`; the rulesets are what stop that refusal depending on one job. A single content gate that stops one
+rung short is also a question every future reader has to re-derive.
+
+**`image` is deliberately NOT required, and gh#98 is the trigger to revisit it.** Two reasons, the first
+observed rather than argued:
+
+- It is a *downstream* job (`needs: [build-test, integration-test, no-order-path]`), and a job skipped because
+  a dependency failed reports **`SKIPPED`** — which GitHub counts as satisfying a required check. On gh#111,
+  the throwaway that proved this gate, `image` reported `SKIPPED` while `no-order-path` was red. A required
+  `image` would have been green *precisely because* the thing it packages was broken: a gate whose failure mode
+  is passing. Requiring it means giving it its own checkout, or accepting that.
+- gh#98 is still measuring what a green `image` means on the runner. Requiring a gate whose signal is under
+  review is the same error as leaving a real gate advisory, pointed the other way.
+
+**CodeQL is deliberately NOT required.** Two contexts exist for it — the check run `Analyze (csharp)` and the
+code-scanning status `CodeQL` — so the first thing a required string here does is pick one, and `Analyze
+(csharp)` is *matrix-expanded*: adding a language or renaming the matrix key silently changes the context, which
+is the never-reports failure above. Worse, a CodeQL run goes **green when it finds something** — findings land
+as alerts in the Security tab, not as a job failure — so requiring it would enforce "the analysis ran", never
+"the analysis was clean". What actually blocks on findings is code scanning's own merge protection, a separate
+mechanism and an ADR-sized decision.
+
+**Editing a ruleset is a `PUT`, and a `PUT` replaces.** `PATCH` is not defined on
+`/repos/{owner}/{repo}/rulesets/{id}` and answers `404`, which reads as a permissions problem and is not one.
+An edit is therefore: `GET` the whole ruleset, change the one thing, `PUT` the whole object back — and a `rules`
+array assembled by hand on the way through is how `no-order-path` gets dropped in silence, taking ADR-0002's
+boundary with it. **Re-read the full context list after every write, not just the entry you added.**
+`bootstrap.sh` has this hazard by construction: it `PUT`s a ruleset payload that declares no
+`required_status_checks` rule at all, so re-running it against this repo today would strip every required check
+from all three rungs (gh#114).
 
 ## How the pipeline is shaped
 

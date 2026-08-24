@@ -47,6 +47,17 @@ jobs:
           fi
           echo "VERSION=${TAG#v}" >> "$GITHUB_ENV"
 
+      # The reference comes from scripts/image-reference.sh, and NOT from `${{ github.repository }}`
+      # directly, because that carries the repository's DISPLAY case and an OCI repository name must be
+      # lowercase. v0.1.0 failed here with `invalid tag ... repository name must be lowercase` (gh#115).
+      #
+      # The script is shared with ci.yml's `image` job, which now builds against this same string with
+      # `push: false`. That is the part that keeps it honest: before gh#115 this expression existed only in
+      # this file and was evaluated only during a real release, so its first execution was also its first
+      # test.
+      - name: Resolve the image reference
+        run: echo "IMAGE=$(./scripts/image-reference.sh)" >> "$GITHUB_ENV"
+
       # DECLARED, not inherited from the runner image (gh#54). Buildx is preinstalled on GitHub-hosted
       # runners, so this step was never needed to make the build work -- which is the problem: the builder was
       # a property of the runner image, and the release could silently build under a different driver than CI
@@ -91,8 +102,12 @@ jobs:
           # never pushes, so the published shape is never produced outside a real release.
           provenance: false
           tags: |
-            ghcr.io/${{ github.repository }}:${{ env.VERSION }}
-            ghcr.io/${{ github.repository }}:latest
+            ${{ env.IMAGE }}:${{ env.VERSION }}
+            ${{ env.IMAGE }}:latest
+          # THE LABEL KEEPS DISPLAY CASE ON PURPOSE, and the tag does not (gh#115 scope, third box).
+          # `image.source` is a URL and GitHub's are case-insensitive in the path, so the mixed-case form
+          # resolves and is the one a reader recognises. Only the OCI *repository name* is required to be
+          # lowercase, which is why exactly one of these two was changed.
           labels: |
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
             org.opencontainers.image.version=${{ env.VERSION }}

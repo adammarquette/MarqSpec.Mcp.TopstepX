@@ -63,6 +63,7 @@ difference between the two entry points is a handful of lines.
 | [2026-08-22](#update-2026-08-22--starting-is-not-the-same-as-being-ready) | A missing dependency degrades to a refusal at the point of use, rather than to a dead process |
 | [2026-08-22](#update-2026-08-22--the-token-was-required-and-never-checked) | The bearer token is now enforced in the pipeline, not merely required in configuration |
 | [2026-08-23](#update-2026-08-23--never-listens-is-not-never-starts-a-listener) | A shutdown requested while the host is still starting is a clean stop, not a crash |
+| [2026-08-23](#update-2026-08-23--the-image-gate-does-read-the-exit-code) | The image gate reads the exit code after all — as a second signal, behind the handshake |
 
 ## Update (2026-08-22) — starting is not the same as being ready
 
@@ -150,4 +151,32 @@ not exist, and it risks a hang that `scripts/check-image-entrypoint.sh` hard-bou
 Measured both sides, same image build, Docker Engine 29.6.2: no stdin **139 → 0** (3 runs each); stdin held
 open until `tools/list` answers **0 → 0**, 16 tools both times. The healthy exit code is therefore no longer
 transport-dependent — but the image gate still does not read exit codes, for the reasons in its own header.
+
+## Update (2026-08-23) — the image gate does read the exit code
+
+The measurement in the update above stands. **Its closing clause does not** — this sentence is superseded:
+
+> …but the image gate still does not read exit codes, for the reasons in its own header.
+
+As of gh#98 it does, and the header that clause points at now records the opposite decision: *read it, as a
+second signal, never as the first.* A reader who lands here on the way to a stdio startup or shutdown question
+should take this section rather than that sentence.
+
+What moved is the provenance, not the principle. The gate refused to read a code because no number had ever
+been observed where it runs: the **139 → 0** above came from Docker Desktop 29.6.2 on one developer machine,
+and 155 — an `ENTRYPOINT` naming an assembly that is not in the image — had not been re-measured since gh#67,
+which recorded it as the *healthy* code. A gate written to that number would have passed the broken image and
+failed the good one, which is why nothing was allowed to read a code until one had been measured on the
+runner. gh#98 measured on `ubuntu-latest`, Docker Engine 28.0.4: **0** for a correctly-built server under both
+stdin shapes, **155** for the missing assembly — nine observations per row, none disagreeing.
+
+So [`scripts/check-image-entrypoint.sh`](../../scripts/check-image-entrypoint.sh) now asserts the code, and
+asserts it **second**. A container that did not answer `tools/list` is failed on the missing reply and never
+on how it ended, because an exit code says the process ended, not that the server served. That ordering is the
+decision; the numbers, the runner image, the engine version and the run URL are recorded in that script's
+header and in [`agents/platform.md`](../agents/platform.md), not here.
+
+**Nothing else on this page is revisited.** `Program.RunHostAsync`'s handling of a shutdown requested
+mid-startup is untouched. The gate holds stdin open, which is the shape that read **0** on both sides of
+gh#76 — so reading the exit code would not have caught that crash, and it is not claimed to.
 

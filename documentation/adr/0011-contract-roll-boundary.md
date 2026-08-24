@@ -270,4 +270,12 @@ Neither is free of residue, and the honest statement of it is: two fills whose r
 project over their own view, so one can write values seeded from the wrong bar. Those are **stale, not lost** —
 the projection is reproducible from the bars by design ([ADR-0006](0006-indicators-as-projections.md)), so the
 next pass over the series corrects them. Closing that as well means serialising fills per series, which is a
-lock rather than an isolation level and is not decided here — it is tracked as gh#80.
+lock rather than an isolation level and is not decided here — it is tracked as gh#104.
+
+The other residue named here was a **`23505` out of `get_bars`** when two fills of overlapping ranges both
+inserted a bucket each believed absent, and that one **is closed** (gh#103). It needed no lock: the bar write
+is now `ON CONFLICT … DO UPDATE` on the composite key, so the decision is made against the committed row and a
+losing insert updates. It matters to *this* record because a bucket's provenance moves with its prices — both
+come out of the same venue answer — and the statement writes `ContractId` in the same `SET` as the OHLCV, so a
+row can never hold one observation's numbers under another observation's contract. The remaining half of
+gh#80, the write skew above, is untouched by it.

@@ -22,7 +22,11 @@ The server serves OHLCV bars for a futures instrument at a requested resolution 
 - **R-1.5** A still-forming bar is never stored as final. A half-formed bar is indistinguishable from data once
   written, and corrupts every value derived from it.
 - **R-1.6** A re-fetch that overlaps stored data **updates** those buckets rather than duplicating them, so a
-  vendor revision lands and a missed window heals.
+  vendor revision lands and a missed window heals. **The store performs the update, not the process** — the
+  write is an `ON CONFLICT … DO UPDATE` on the composite key, so a second fill overlapping the first
+  *concurrently* updates rather than faulting on a duplicate key, and an unchanged bucket is still skipped
+  rather than rewritten (gh#103). Deciding it from a read instead makes the decision against a snapshot,
+  which another writer can invalidate before the write lands.
 - **R-1.7** A range the vendor answers **empty** is recorded as covered, so a genuine data hole is not
   re-requested on every subsequent call.
 - **R-1.8** Bar timestamps are stored in UTC. The gateway returns timestamps with no kind; they are UTC, and
@@ -36,7 +40,11 @@ The server serves OHLCV bars for a futures instrument at a requested resolution 
   above a week a timeframe is a calendar month or a quarter, whose length in minutes is not fixed, so no minute
   count expresses one. It is also not by itself sufficient — the look-back reach is four bar spans per bar
   asked for, so a resolution and a count each inside its own bound can still name a window that starts before
-  the calendar does, and that pair is refused too (gh#81). A timeframe is fetched from the venue independently,
+  the calendar does, and that pair is refused too (gh#81). **Neither is the row cap sufficient**: `MaxRows` and
+  `BarGapDetector.MaxBucketsPerPass` bound the same quantity from two sides — the first operator-configurable
+  to 1,000,000, the second fixed at 250,000 — so the ceiling on a windowed read is **the lesser of the two**,
+  and a request past it is refused naming the buckets asked for and the cap they are over rather than faulting
+  below the boundary or being shortened to fit (gh#96). A timeframe is fetched from the venue independently,
   never derived from a finer one: a bar derived from an incomplete set of constituents is indistinguishable
   from a real one, which R-2.3's rule forbids in the indicator path and which is no more acceptable here.
   See [ADR-0010](adr/0010-per-call-resolutions-fetched-not-derived.md).
@@ -118,8 +126,9 @@ The server serves OHLCV bars for a futures instrument at a requested resolution 
   the model ([ADR-0008](adr/0008-numeric-only-tool-payloads.md)).
 - **R-5.3** An **unknown instrument is an error**, never an empty series. A wrong symbol and a quiet market must
   not be indistinguishable. A *known* instrument with no data in the window returns an empty series.
-- **R-5.4** A windowed read that would exceed the row cap **refuses and says so with the count**. It never
-  silently truncates.
+- **R-5.4** A windowed read that would exceed **either** cap on its size — the configured row cap, or the
+  buckets one gap-detection pass will enumerate — **refuses and says so with the count**, naming the tighter of
+  the two. It never silently truncates, and it costs no vendor request to be told (gh#96).
 - **R-5.5** On stdio, all logging goes to stderr. Anything on stdout corrupts the protocol frame.
 - **R-5.6** One composed tool returns bars, indicators, levels and session state together, so the common
   question costs one round trip rather than five.

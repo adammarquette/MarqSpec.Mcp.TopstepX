@@ -87,7 +87,20 @@ fi
 # ---------------------------------------------------------------------------
 # Match on /<id>_ : the separator before the id is a SLASH. A pattern anchored on an underscore matches
 # nothing and reports every claimed issue as free — which fails in the direction that permits the collision.
-CLAIMED="$(git ls-remote --heads origin | grep -E "refs/heads/[a-z]+/${ID}_" || true)"
+#
+# THE READ AND THE MATCH ARE SEPARATE, AND THE READ IS CHECKED (gh#126). As one pipeline this was
+# `git ls-remote --heads origin | grep -E ... || true`, and under `pipefail` a pipeline reports the RIGHTMOST
+# non-zero status — so `git ls-remote` failing (128, no network, no credential) behind a `grep` that matched
+# nothing (1) came back as 1, and `|| true` turned that into the empty string. The empty string is what this
+# script reads as "no claim branch", and it then prints a green UNCLAIMED. A collision guard answering "free"
+# when it could not look is the one answer it must never give: the remote is where a parallel session's claim
+# lives, and nothing local can see it.
+REMOTE_HEADS=""
+LS_STATUS=0
+REMOTE_HEADS="$(git ls-remote --heads origin)" || LS_STATUS=$?
+[ "$LS_STATUS" -eq 0 ] || die "could not read origin's branches (git ls-remote exited $LS_STATUS).
+Refusing to call #$ID unclaimed on a read that did not happen. Fix the connection and re-run."
+CLAIMED="$(printf '%s\n' "$REMOTE_HEADS" | grep -E "refs/heads/[a-z]+/${ID}_" || true)"
 
 if [ -n "$CLAIMED" ]; then
   warn "issue #$ID already has a claim branch in $REPO_SLUG:"
@@ -114,8 +127,21 @@ fi
 
 # The two-repo trap: a clean main here is NOT "nobody started" — in-review work lives on a branch, so a clean
 # main reads as free precisely when someone has finished.
-UPSTREAM_CLAIM="$(git ls-remote --heads "https://github.com/${UPSTREAM_REPO}" 2>/dev/null \
-  | grep -E "refs/heads/[a-z]+/${ID}_" || true)"
+#
+# TOLERATED, BUT SAID OUT LOUD (gh#126). Unlike `origin` above, this repository may legitimately be
+# unreachable — offline, or private from this machine — so an unreadable upstream is not fatal. What it is not
+# allowed to be is INVISIBLE: swallowed, it produced the same silence as a genuinely unclaimed upstream, and
+# the operator could not tell "nobody has claimed it there" from "I never looked".
+UPSTREAM_CLAIM=""
+UPSTREAM_HEADS=""
+UPSTREAM_STATUS=0
+UPSTREAM_HEADS="$(git ls-remote --heads "https://github.com/${UPSTREAM_REPO}" 2>/dev/null)" || UPSTREAM_STATUS=$?
+if [ "$UPSTREAM_STATUS" -ne 0 ]; then
+  warn "could not read ${UPSTREAM_REPO} (git ls-remote exited $UPSTREAM_STATUS) — the cross-repo claim check"
+  warn "did NOT run. Not fatal, but #$ID may be claimed there and this cannot tell you."
+else
+  UPSTREAM_CLAIM="$(printf '%s\n' "$UPSTREAM_HEADS" | grep -E "refs/heads/[a-z]+/${ID}_" || true)"
+fi
 if [ -n "$UPSTREAM_CLAIM" ]; then
   warn "a branch for #$ID also exists in ${UPSTREAM_REPO} — this may be the same card, claimed there:"
   printf '%s\n' "$UPSTREAM_CLAIM" >&2

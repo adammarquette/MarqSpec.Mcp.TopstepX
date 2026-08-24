@@ -345,7 +345,15 @@ rather than papered over: the fixtures cannot produce an environment that *exist
 exact gh#108 state — because that needs a real environment on a real repo, and creating one from CI would
 mean granting the job `administration: write`, i.e. a check able to create the gate it is verifying. That
 case was proven once by hand instead, on a throwaway environment `gh108-unprotected-throwaway`, deleted
-immediately afterwards; `production` was never weakened. Evidence is on gh#108's pull request.
+immediately afterwards; `production` was never weakened.
+
+**The evidence that both go red is one run, and one run only.**
+[Run 32693404446](https://github.com/adammarquette/MarqSpec.Mcp.TopstepX/actions/runs/32693404446), from
+scaffolding added and removed inside gh#108's own PR. Two jobs, both red on purpose: the real check pointed at
+`gh108-unprotected-throwaway` reported `UNPROTECTED … carries NO protection rules at all` and exited 1; and
+`check-release-gate.sh` replaced by `exit 0` had all four self-test cases report `SELF-TEST FAILED`. Keep that
+link with this paragraph — delete one and the other becomes an assertion, which is the thing this whole
+section exists to stop.
 
 **`prevent_self_review` stays `false`, as a decision rather than a default.** `true` would mean the person
 who cut the release cannot approve it — and while one person is the entire review pool, that means nobody

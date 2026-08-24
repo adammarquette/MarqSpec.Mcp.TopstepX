@@ -75,8 +75,8 @@ That is precisely the failure the issue named as *worse than no lock at all*. Th
 finished. Nothing is running that could release it. And "when does the series unwedge?" has no answer anyone
 can state, because it depends on how many spare connections the pool holds and on traffic to an unrelated
 instrument. A missed release on any exception path — and `SeriesUnitOfWork` **retries**, so "the end of the
-body" is not one place — turns a bounded, self-healing staleness into every fill of that series blocking
-indefinitely.
+body" is not one place — trades a staleness that a later pass can recompute away for every fill of that series
+blocking indefinitely, which nothing can.
 
 Measured by `AdvisoryLockLifetimeTests`; the method is under *What was observed* below.
 
@@ -115,8 +115,9 @@ Serialising per series makes the second caller on one instrument wait for the fi
 already outside the transaction, so a cold year of vendor requests is not in the critical section — but the
 **projection is**, and it is O(series) rather than O(changed) by deliberate design. A year of five-minute bars
 is on the order of 70,000 rows, so the section a second caller queues behind is real work rather than a
-formality. That is a latency regression on every concurrent read of a busy instrument, traded for staleness
-that heals itself on the next bar.
+formality. That is a latency regression on every concurrent read of a busy instrument — and a busy instrument
+is precisely the case where the staleness it buys off is gone by the next bar, so the trade is worst exactly
+where the contention is.
 
 ### `SERIALIZABLE` is not reopened
 

@@ -41,8 +41,68 @@ public sealed class ToolGuards(IOptions<MarketDataOptions> options)
     /// </remarks>
     public const int MaxResolutionMinutes = 7 * 24 * 60;
 
+    /// <summary>
+    /// How far past a window's end the session calendar reasons, on top of the bucket grid's own reach.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>Three days, and it is a calendar fact rather than a margin.</b>
+    /// <see cref="BarSessionCalendar"/> maps an evening bucket onto the <b>next</b> trade date, and then
+    /// expresses that trade date's close as a Central wall-clock time converted back to UTC — a chain that
+    /// reaches up to two days and six hours past the bucket it started from, and whose last step is a
+    /// <c>DateOnly.AddDays(1)</c> that throws on 9999-12-31.
+    /// </para>
+    /// <para>
+    /// Rounded <i>up</i> to whole days rather than tuned to the hour. Six hours of headroom at the end of
+    /// year 9999 buys nothing, and a bound derived to the hour is one the next session-rule change
+    /// invalidates in silence.
+    /// </para>
+    /// </remarks>
+    public static readonly TimeSpan CalendarReachBeyondAWindow = TimeSpan.FromDays(3);
+
     /// <summary>The row cap a single windowed read may return.</summary>
     public int MaxRows => _options.MaxRows;
+
+    /// <summary>
+    /// The last instant a window may end at, at a given resolution.
+    /// </summary>
+    /// <param name="resolutionMinutes">The bar size in minutes.</param>
+    /// <returns>The last servable end, inclusive.</returns>
+    /// <exception cref="McpException">The resolution is unservable.</exception>
+    /// <remarks>
+    /// <para>
+    /// <b>Two bar spans, not one.</b> The bucket grid is aligned <i>up</i> from the window's start
+    /// (<see cref="BarGapDetector.AlignUp"/>), so a window narrower than one bucket names a first bucket up
+    /// to a full span past its own <i>end</i> — and the enumerator then tests one span beyond that one. A
+    /// window a single tick wide at the end of year 9999 spans <b>zero</b> buckets, so it clears
+    /// <see cref="MaxRows"/> at its default of 5,000 and clears
+    /// <see cref="BarGapDetector.MaxBucketsPerPass"/> too, and <c>AlignUp</c> still built a
+    /// <see cref="DateTimeOffset"/> past <see cref="DateTimeOffset.MaxValue"/> (gh#110).
+    /// </para>
+    /// <para>
+    /// <b>This is a bound on representability, not on size, which is why gh#69, gh#81 and gh#96 all left it
+    /// open.</b> Each of those bounded how <i>much</i> a caller may ask for — a resolution, a count, a bucket
+    /// span. None of them bounded <i>where</i>, and the failure fires at the <b>default</b> configuration
+    /// rather than at an extreme one.
+    /// </para>
+    /// <para>
+    /// <b>It moves with the resolution, which is why it is a function and not a constant.</b> At one minute
+    /// the bound is two minutes plus three days before the end of the calendar; at the weekly bar
+    /// <see cref="MaxResolutionMinutes"/> allows, it is seventeen days.
+    /// </para>
+    /// </remarks>
+    public static DateTimeOffset LastServableEnd(int resolutionMinutes)
+    {
+        // In ticks, next to the validation that bounds them. The subtraction is safe only because
+        // MaxResolutionMinutes bounds the bar span, so the two facts are kept in one place rather than one
+        // layer apart -- and the resolution is validated HERE as well, because a public guard that trusts
+        // its caller is how gh#69 happened.
+        long barTicks = TimeSpan.FromMinutes(ValidateResolution(resolutionMinutes)).Ticks;
+
+        return new DateTimeOffset(
+            DateTimeOffset.MaxValue.UtcTicks - (2 * barTicks) - CalendarReachBeyondAWindow.Ticks,
+            TimeSpan.Zero);
+    }
 
     /// <summary>
     /// Refuses a window that spans more buckets than one gap-detection pass will enumerate.
@@ -55,8 +115,8 @@ public sealed class ToolGuards(IOptions<MarketDataOptions> options)
     /// </param>
     /// <returns>The window.</returns>
     /// <exception cref="McpException">
-    /// The window spans more than <see cref="BarGapDetector.MaxBucketsPerPass"/> buckets, or the resolution is
-    /// unservable.
+    /// The window spans more than <see cref="BarGapDetector.MaxBucketsPerPass"/> buckets, ends past
+    /// <see cref="LastServableEnd"/>, or the resolution is unservable.
     /// </exception>
     /// <remarks>
     /// <para>
@@ -85,11 +145,35 @@ public sealed class ToolGuards(IOptions<MarketDataOptions> options)
     /// — the same shape of fault, in the guard written to remove it. A public guard that trusts its caller is
     /// how gh#69 happened.
     /// </para>
+    /// <para>
+    /// <b>It also refuses a window the calendar cannot represent, and that check comes first.</b> Size and
+    /// representability are different faults, and the size refusal's advice does not fix the other one:
+    /// narrowing a window moves its <i>start</i>, and it is the <i>end</i> that has left the calendar
+    /// (gh#110).
+    /// </para>
     /// </remarks>
     public static BarRange ValidateBucketSpan(BarRange window, int resolutionMinutes, string ask)
     {
         ArgumentNullException.ThrowIfNull(window);
         ValidateResolution(resolutionMinutes);
+
+        // Representability BEFORE size. A window one tick wide at the end of year 9999 spans zero buckets, so
+        // every cap below is satisfied and the read went on to fault in BarGapDetector.AlignUp (gh#110).
+        DateTimeOffset lastServable = LastServableEnd(resolutionMinutes);
+        if (window.End > lastServable)
+        {
+            throw new McpException(
+                ask + " ends at " + window.End.ToString("O", System.Globalization.CultureInfo.InvariantCulture)
+                + ", past the last instant this server can serve at "
+                + resolutionMinutes.ToString(System.Globalization.CultureInfo.InvariantCulture)
+                + "-minute resolution, "
+                + lastServable.ToString("O", System.Globalization.CultureInfo.InvariantCulture)
+                + ". Serving a window reaches PAST its end: the bucket grid is aligned up from the start, the "
+                + "gap detector tests one bucket beyond the last it yields, and the session calendar maps an "
+                + "evening bucket onto the next trade date. Past that instant those are times no calendar "
+                + "can express. Move the end back. The read is refused rather than moved back for you, "
+                + "because a series short at one end is indistinguishable from a complete one.");
+        }
 
         // The SAME arithmetic ExpectedBuckets performs, deliberately: a guard that computes the count a
         // different way is a guard that disagrees with the thing it is guarding at the boundary.
@@ -165,8 +249,9 @@ public sealed class ToolGuards(IOptions<MarketDataOptions> options)
     /// <param name="count">How many bars are wanted, already validated.</param>
     /// <returns>The window to read.</returns>
     /// <exception cref="McpException">
-    /// The window would start before the calendar does, span more buckets than one gap-detection pass will
-    /// enumerate, or <paramref name="count"/> sizes no window at all.
+    /// The window would start before the calendar does, end past <see cref="LastServableEnd"/>, span more
+    /// buckets than one gap-detection pass will enumerate, or <paramref name="count"/> sizes no window at
+    /// all.
     /// </exception>
     /// <remarks>
     /// <para>
@@ -254,8 +339,8 @@ public sealed class ToolGuards(IOptions<MarketDataOptions> options)
     /// <returns>The validated range.</returns>
     /// <exception cref="McpException">
     /// The resolution is not positive or is coarser than <see cref="MaxResolutionMinutes"/>, the window is
-    /// empty or inverted, or it spans more buckets than <see cref="MaxRows"/> or than
-    /// <see cref="BarGapDetector.MaxBucketsPerPass"/>.
+    /// empty or inverted, it ends past <see cref="LastServableEnd"/>, or it spans more buckets than
+    /// <see cref="MaxRows"/> or than <see cref="BarGapDetector.MaxBucketsPerPass"/>.
     /// </exception>
     /// <remarks>
     /// <b>The effective ceiling is the lesser of the two caps</b>, because both bound the same quantity —

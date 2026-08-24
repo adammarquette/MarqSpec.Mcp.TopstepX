@@ -54,7 +54,7 @@ public sealed class CalendarEndGuardTests : IDisposable
     /// is <c>9999-12-31T23:59:59.9999999Z</c>; less three days for the calendar's reach is
     /// <c>9999-12-28T23:59:59.9999999Z</c>; less two one-minute spans is <c>23:57:59.9999999</c> on that day.
     /// </remarks>
-    private static readonly DateTimeOffset LastServableEndAtOneMinute =
+    private static readonly DateTimeOffset _lastServableEndAtOneMinute =
         new DateTimeOffset(9999, 12, 28, 23, 57, 59, TimeSpan.Zero).AddTicks(9_999_999);
 
     private readonly TopstepXDbContext _database;
@@ -174,7 +174,7 @@ public sealed class CalendarEndGuardTests : IDisposable
         DateTimeOffset from = new(9999, 12, 28, 20, 0, 0, TimeSpan.Zero);
 
         ToolPayloads.BarSeries series =
-            await tools.GetBars("ES", 1, from, LastServableEndAtOneMinute, CancellationToken.None);
+            await tools.GetBars("ES", 1, from, _lastServableEndAtOneMinute, CancellationToken.None);
 
         _gateway.BarRequests.Should().BeGreaterThan(
             0, "the window holds expected buckets, so the read reaches the venue for them");
@@ -188,7 +188,7 @@ public sealed class CalendarEndGuardTests : IDisposable
         DateTimeOffset from = new(9999, 12, 28, 20, 0, 0, TimeSpan.Zero);
 
         Func<Task> call = () => tools.GetBars(
-            "ES", 1, from, LastServableEndAtOneMinute.AddTicks(1), CancellationToken.None);
+            "ES", 1, from, _lastServableEndAtOneMinute.AddTicks(1), CancellationToken.None);
 
         (await call.Should().ThrowAsync<McpException>())
             .WithMessage("*9999-12-28T23:58:00.0000000*", "the refusal names the toUtc that was asked for")

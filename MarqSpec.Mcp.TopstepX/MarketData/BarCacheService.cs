@@ -324,14 +324,15 @@ public sealed class BarCacheService
             // pages rather than asking for the whole thing and trusting the answer.
             TimeSpan page = TimeSpan.FromTicks(VenuePageSizeBars * barSize.Ticks);
 
-            for (DateTimeOffset from = range.Start; from < range.End; from += page)
+            // CLAMPED BEFORE THE ADD, and stepped by the clamped end rather than by a whole page. Computing
+            // `from + page` first and trimming it afterwards overflows for a range that ends within one page
+            // of the end of the calendar -- a page is 1,000 bar spans, so at 60-minute bars it is forty-two
+            // days -- and left the tool boundary as a raw ArgumentOutOfRangeException for a range four hours
+            // long (gh#110). `from = to` closes the same overflow on the increment. The subtraction is total:
+            // the difference between two DateTimeOffsets always fits a TimeSpan.
+            for (DateTimeOffset from = range.Start; from < range.End;)
             {
-                DateTimeOffset to = from + page;
-                if (to > range.End)
-                {
-                    to = range.End;
-                }
-
+                DateTimeOffset to = range.End - from <= page ? range.End : from + page;
                 BarRange slice = new(from, to);
                 IReadOnlyList<Bar> bars = await _gateway
                     .GetBarsAsync(contract.ContractId, slice, barSize, cancellationToken)
@@ -355,8 +356,11 @@ public sealed class BarCacheService
 
                 // Drop still-forming bars even though the request already asks the venue not to send them.
                 // A half-formed bar stored as final is indistinguishable from data and corrupts everything
-                // derived from it -- this must not depend on a venue behaving.
-                slices.Add(new FetchedSlice(slice, [.. bars.Where(b => b.OpenTime + barSize <= now)]));
+                // derived from it -- this must not depend on a venue behaving. Written as a subtraction
+                // rather than `b.OpenTime + barSize <= now` for the same reason the page walk above is:
+                // exactly equivalent, and total for a bar the venue placed at the end of the calendar.
+                slices.Add(new FetchedSlice(slice, [.. bars.Where(b => now - b.OpenTime >= barSize)]));
+                from = to;
             }
         }
 

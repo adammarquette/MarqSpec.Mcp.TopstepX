@@ -209,7 +209,17 @@ public sealed class BarCacheService
                 cancellationToken).ConfigureAwait(false);
         }
 
+        // AsNoTracking for the same reason the overlap pre-read is, and this is the read that comment names.
+        // The bars are written by SQL the change tracker never sees, so a tracked row here is a copy the
+        // identity map will hand back to the NEXT call in this scope in preference to the row it just read --
+        // and both this service and the context are scoped, with get_market_snapshot deliberately making two
+        // overlapping bar reads per resolution. The write went through the tracker under the in-memory merge,
+        // which is why this was safe before and is not now.
+        //
+        // Safe to drop tracking: nothing mutates a BarRecord downstream -- ToBar is a pure mapping -- and
+        // IndicatorProjector's read of the same table already does exactly this.
         List<BarRecord> rows = await _database.Bars
+            .AsNoTracking()
             .Where(b => b.Venue == venue
                 && b.Instrument == instrument.Symbol
                 && b.ResolutionMinutes == resolutionMinutes

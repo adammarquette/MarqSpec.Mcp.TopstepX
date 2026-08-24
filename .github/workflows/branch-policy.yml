@@ -88,6 +88,44 @@ jobs:
         with:
           fetch-depth: 0
 
+      # gh#146. Runs BEFORE the subject check, and that order is deliberate: a merge commit makes the branch
+      # unmergeable outright, so it is the finding the author has to act on first — and the rebase that fixes
+      # it carries every subject through unchanged, so nothing is lost by reporting it alone. Note that the
+      # subject check below passes `--no-merges`, so a merge commit is invisible to it; without this step the
+      # job's name promises hygiene it does not check.
+      #
+      # Scoped to a pull request into `develop`, which is the only rung that is rebase-merge-only
+      # (`protect-develop`, allowed_merge_methods ["rebase"]). `staging` and `main` are the opposite —
+      # merge-commit-only — and a promotion into them legitimately carries merge commits: PR #129's real
+      # range (5d56e7a..2eb2c42) contained one, so an unguarded version of this step would have failed a
+      # promotion that was correct. Do not widen the guard.
+      #
+      # `merge_group` is left out on purpose: no merge queue is enabled on this repo, and the shape of a
+      # queue branch under a rebase-only method has never been observed here. The mistake is made on the
+      # branch, and this catches it there.
+      - name: Refuse a merge commit on a PR into develop
+        if: github.event_name == 'pull_request' && github.base_ref == 'develop'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          RANGE="${BASE_SHA}..${HEAD_SHA}"
+
+          if [ -z "$(git rev-list --merges "$RANGE")" ]; then
+            echo "ok  no merge commit in $RANGE."
+            exit 0
+          fi
+
+          git log --merges --format='::error::merge commit %h %s' "$RANGE"
+          echo "::error::'develop' accepts REBASE-MERGE ONLY, and GitHub's 'Rebase and merge' cannot replay a"
+          echo "::error::merge commit. Left as is, this PR will show 'All checks have passed' beside 'Unable to"
+          echo "::error::merge (rebase) — Cannot merge at this time', naming nothing. That is this failure."
+          echo "::error::Fix: git fetch origin && git rebase origin/develop && git push --force-with-lease"
+          echo "::error::A plain rebase drops the merge commits; conflicts resolved inside one are re-resolved."
+          echo "::error::The 'Update branch' button MERGES by default — use its dropdown's 'Update with rebase'."
+          exit 1
+
       - name: Check commit subjects
         env:
           EVENT: ${{ github.event_name }}

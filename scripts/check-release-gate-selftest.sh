@@ -24,8 +24,14 @@
 # it needs a real environment on a real repository. Creating one from CI would mean handing this job
 # `administration: write`: a check able to CREATE the gate it is verifying, on every pull request, which is a
 # worse hole than the one being closed. It was instead proven once by hand, against a throwaway environment
-# named `gh108-unprotected-throwaway` that was deleted immediately afterwards; the evidence is on gh#108's
-# pull request and the finding is recorded in documentation/agents/platform.md.
+# named `gh108-unprotected-throwaway` that was deleted immediately afterwards -- `production` was never
+# weakened. That proof, and the proof that THIS file can fail (the gate replaced by `exit 0`, all four cases
+# red), are run 32693404446:
+#
+#   https://github.com/adammarquette/MarqSpec.Mcp.TopstepX/actions/runs/32693404446
+#
+# The scaffolding that produced it was added and removed inside gh#108's own PR, so that run is the only trail
+# back. documentation/agents/platform.md carries the same reference; keep the two together.
 
 set -euo pipefail
 

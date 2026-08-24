@@ -1,6 +1,8 @@
 <!--
   Open against `develop`. Populate every field — assignee, milestone, one work:* label, a Work Estimate label.
-  Reference the issue with a PLAIN `Closes #N` below; a backticked keyword does not bind and will not auto-close.
+  Reference the issue with a PLAIN `Closes #N` below, in ordinary prose. A citation inside code binds nothing
+  and issue-link refuses it — backticks, a fenced block, or an HTML comment alike. Fence a pasted git log and
+  cite outside it: the log carries the OTHER work's issue, never this PR's.
 -->
 
 Closes #

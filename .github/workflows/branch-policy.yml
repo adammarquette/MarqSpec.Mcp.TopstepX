@@ -194,23 +194,71 @@ jobs:
             exit 0
           fi
 
-          # Read once, from a body with CODE REMOVED, so a keyword GitHub ignores cannot be mistaken for
-          # a citation. Both branches below consult this; neither re-derives it.
+          # EVERY citation this job reads comes from here: a body with CODE REMOVED -- HTML comments,
+          # fenced blocks, inline spans. GitHub binds a reference inside none of them, so neither may this
+          # gate. Derived ONCE and read by BOTH arms below (gh#123); neither re-derives it, because two
+          # copies of this rule are two rules, and the pair had already drifted once.
           #
-          # Two kinds of code, and only one of them is obvious. `sed` is line-oriented, so stripping
+          # Three kinds of code, and only one of them is obvious. `sed` is line-oriented, so stripping
           # inline spans leaves a FENCED `Closes #96` looking exactly like a real citation -- and a
           # promotion body is the one shape that reliably contains a pasted `git log`, because it
           # enumerates the work it carries. Without the fence pass this job reads the WORK's citation as
           # the PROMOTION's own and passes a promotion citing nothing of its own, which is the precise
-          # thing the carve-out below says it refuses to do. Fences drop first, then inline spans.
+          # thing the carve-out below says it refuses to do. HTML comments drop first -- STEPPING OVER
+          # inline spans rather than into them -- then fences, then the spans themselves.
           #
-          # An UNCLOSED fence swallows the rest of the body, so the gate refuses rather than accepts.
-          # Deliberate: that is the safe direction for a gate.
+          # WHY THE FIRST PASS KNOWS ABOUT BACKTICKS AT ALL (gh#123, from review). It is the only pass
+          # carrying state ACROSS lines, so an opener it accepts wrongly costs every line after it. A
+          # `<!--` written as INLINE CODE is exactly that -- prose ABOUT the marker, not a marker -- and
+          # this repository's platform pull requests discuss it constantly, gh#123's own body included:
+          # 7 `<!--` against 4 `-->`, two thirds of the body discarded before either arm read a word.
+          # The fifth diagnostic below then told the author their PROSE citation was inside code, which
+          # is gh#90's shape rebuilt by the message written to retire it.
           #
-          # The `Related to` grep further down still reads the RAW body, so a fenced `Related to #N`
-          # passes. That predates this (gh#35), and fixing it changes a verdict on a PR into the default
-          # branch -- a separate decision, tracked as gh#123 rather than smuggled in here.
+          # Reordering the passes was the other candidate, and was rejected on both orders: spans cannot
+          # run before fences, because `sed 's/`[^`]*`//g'` eats two of the three backticks in a ```
+          # marker and the fence pass then matches nothing; and fences cannot run before comments without
+          # silently re-deciding the `<!--`-inside-a-FENCE case, which is pinned deliberately below. So
+          # the comment pass SKIPS a span instead: emitted UNTOUCHED, so the fence pass still sees its
+          # markers and the `sed` still removes it, paired backtick to paired backtick exactly as that
+          # `sed` pairs them. An UNPAIRED backtick is literal text -- emitted, scanning continues, and a
+          # `<!--` after one still opens a comment, unchanged.
+          #
+          # UNTERMINATED MARKERS SWALLOW THE REST OF THE BODY -- an unclosed fence, an unclosed `<!--`,
+          # and (inside a fence) an `<!--` whose `-->` the fence pass would otherwise have removed. The
+          # gate then REFUSES rather than accepts. Deliberate, and the same direction in all three cases:
+          # over-stripping makes the run say why and the author moves the citation into plain prose,
+          # while under-stripping passes silently on a citation GitHub ignores. For a gate, take the loud
+          # error. A `<!--` inside BACKTICKS is no longer one of them, and that is the whole change here.
+          #
+          # KNOWN REMAINDER: a FOUR-SPACE-INDENTED block is code to GitHub and prose to this stripper --
+          # and `git log`'s default format indents commit bodies by exactly four spaces, so a paste that
+          # was never fenced still reads as a citation. gh#142 carries it; gh#123's acceptance criteria
+          # say "fenced block", so it is out of scope here rather than overlooked.
           body_no_code="$(printf '%s' "$BODY" \
+            | awk 'BEGIN{comment=0}
+                   {
+                     line = $0; out = ""
+                     while (length(line) > 0) {
+                       if (comment) {
+                         p = index(line, "-->")
+                         if (p == 0) { line = ""; break }
+                         line = substr(line, p + 3); comment = 0
+                       } else {
+                         p = index(line, "<!--")
+                         t = index(line, "`")
+                         if (t > 0 && (p == 0 || t < p)) {
+                           q = index(substr(line, t + 1), "`")
+                           if (q == 0) { out = out substr(line, 1, t); line = substr(line, t + 1) }
+                           else { out = out substr(line, 1, t + q); line = substr(line, t + q + 1) }
+                           continue
+                         }
+                         if (p == 0) { out = out line; line = ""; break }
+                         out = out substr(line, 1, p - 1); line = substr(line, p + 4); comment = 1
+                       }
+                     }
+                     print out
+                   }' \
             | awk 'BEGIN{fence=0} /^[[:space:]>]*(```|~~~)/ {fence=!fence; next} fence==0 {print}' \
             | sed 's/`[^`]*`//g')"
 
@@ -255,12 +303,30 @@ jobs:
           # AGENTS.md admits BOTH forms: `Closes #N` for a PR that completes an issue, `Related to #N` for one
           # that touches it without finishing it. Only the first binds in GitHub, so the second has to be read
           # out of the body.
-          if printf '%s' "$BODY" | grep -qiE '(related to|part of|towards) +#[0-9]+'; then
+          #
+          # Reads $body_no_code, NOT $BODY (gh#123). From gh#35 until now this arm read the raw body, so a
+          # `Related to #N` quoted inside a pasted commit log satisfied it -- reopening by the WEAKER form the
+          # exact hole the carve-out above closes for the stronger one, and doing it on the path a promotion
+          # actually walks: #100 and #106, the only two promotions this repo has made, both cited this way.
+          # A gate that accepts the CARRIED work's citation as the PROMOTION's own is not checking anything.
+          #
+          # This STRENGTHENS the check on every base, `develop` included -- the one deliberate difference
+          # from gh#101/#117, which could truthfully say it moved no verdict on the default branch. The only
+          # bodies whose verdict moves are those whose sole citation was already inside code; every PR body
+          # in this repository's history still passes.
+          #
+          # Herestring for the same reason as $body_closes above: no SIGPIPE under `pipefail`.
+          if grep -qiE '(related to|part of|towards) +#[0-9]+' <<<"$body_no_code"; then
             echo "::notice::PR cites an issue without closing it (Related to #N). That satisfies issue-first."
             exit 0
           fi
 
           # Diagnostics before the failure, so the message says what is wrong rather than only that something is.
+          #
+          # EVERY GREP BELOW READS THE RAW TEXT, AND THAT IS DELIBERATE (gh#123). No verdict is decided down
+          # here -- the two arms above already made it, both from $body_no_code. A diagnostic exists to name
+          # what the author WROTE, so it has to look at what they wrote: a backtick diagnostic reading a body
+          # with backticks removed could never fire at all.
           if printf '%s' "$TITLE" | grep -qiE '(close[sd]?|fix(e[sd])?|resolve[sd]?) +#[0-9]+'; then
             echo "::error::The TITLE contains a closing keyword. GitHub ignores those - move it into the body."
           fi
@@ -275,6 +341,35 @@ jobs:
 
           if printf '%s' "$BODY" | grep -qiE '(settles|delivers|implements|completes|addresses) +#[0-9]+'; then
             echo "::error::Near-miss verb before an issue reference. Only close/fix/resolve bind."
+          fi
+
+          # FIFTH DIAGNOSTIC (gh#123). The body DOES cite an issue and every occurrence of it is inside code,
+          # so the citation the author can see is one neither GitHub nor this gate can. This is the message
+          # the backtick diagnostic above could not carry: that one detects a SPAN, so a keyword fenced rather
+          # than span-quoted produced no diagnostic at all -- the author read `This PR cites no issue`, went
+          # back to a body with the reference plainly in it, and had nowhere to go (gh#90's shape). Comparing
+          # the raw body against $body_no_code covers all three kinds of code with one test instead of one
+          # detector per kind, so the next kind added to the stripper is explained without a fourth grep.
+          #
+          # TERMINAL, so the generic "cites no issue" -- which is FALSE here -- never follows it. Nothing is
+          # lost by stopping: with every citation inside code, $body_closes is necessarily false, so the
+          # fourth diagnostic below cannot fire either.
+          #
+          # It says what the STRIPPER concluded, not what the body IS -- and the two can still come
+          # apart, because an unterminated marker over-strips on purpose and this branch is the only
+          # place an author ever meets that decision. Asserting the body is wrong when the stripper
+          # merely stopped early sends them to stare at a citation that is already fine, instead of at
+          # the marker above it that is not. (A `<!--` inside backticks used to land here; it no longer
+          # does.)
+          CITATION='(close[sd]?|fix(e[sd])?|resolve[sd]?|related to|part of|towards) +#[0-9]+'
+          if grep -qiE "$CITATION" <<<"$BODY" && ! grep -qiE "$CITATION" <<<"$body_no_code"; then
+            echo "::error::This check read every issue reference in this body as CODE - a fenced block, an"
+            echo "::error::HTML comment, or backticks. GitHub ignores all three, and so does this check. Put"
+            echo "::error::the citation in ordinary prose. If it came from a pasted commit log, that is the"
+            echo "::error::CARRIED work's citation - this PR still needs one of its own."
+            echo "::error::If the citation already IS in prose, an unterminated code fence or HTML comment"
+            echo "::error::above it swallowed the rest of the body. Close that marker, or cite above it."
+            exit 1
           fi
 
           # FOURTH DIAGNOSTIC (gh#101, merged from gh#102). Without it, a body whose first line is

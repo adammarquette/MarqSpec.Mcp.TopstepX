@@ -103,6 +103,11 @@ jobs:
       # `merge_group` is left out on purpose: no merge queue is enabled on this repo, and the shape of a
       # queue branch under a rebase-only method has never been observed here. The mistake is made on the
       # branch, and this catches it there.
+      #
+      # Watched fail and watched pass, both on the shape that ships: runs 32762584560 (base `develop`, red on
+      # a real merge commit) and 32762704728 (the SAME head sha, base `staging`, step skipped and the job
+      # green), plus 32765717336 — this step's own PR, where it ran against a linear branch and passed. The
+      # throwaways behind the first two are deleted, so those ids are the only trail back to them.
       - name: Refuse a merge commit on a PR into develop
         if: github.event_name == 'pull_request' && github.base_ref == 'develop'
         env:
@@ -112,7 +117,13 @@ jobs:
           set -euo pipefail
           RANGE="${BASE_SHA}..${HEAD_SHA}"
 
-          if [ -z "$(git rev-list --merges "$RANGE")" ]; then
+          # Assigned on its own line, NOT inlined into the `if`. A command substitution inside an `if`
+          # condition is exempt from `set -e`, so `if [ -z "$(git rev-list ... )" ]` reports "ok" when git
+          # FAILED to resolve the range -- a gate reporting clean precisely when it checked nothing. As a
+          # plain assignment the exit status is git's, and the step dies instead.
+          merges="$(git rev-list --merges "$RANGE")"
+
+          if [ -z "$merges" ]; then
             echo "ok  no merge commit in $RANGE."
             exit 0
           fi

@@ -326,7 +326,21 @@ base:
 
 `ladder` was red on the second row, as it must be — a promotion into `staging` comes from `develop` — and is
 not what that row proves. Both pull requests were closed and all three throwaway branches deleted the same
-hour; these two run ids are the only trail back, so keep them with the step.
+hour; these two run ids are the only trail back, so keep them with the step — the step's own comment carries
+them too.
+
+That is the red half. The **green-on-the-input-it-will-actually-meet** half — the second of the two runs the
+[Coding contract](../../MarqSpec.Mcp.TopstepX/AGENTS.md) requires, and the one all four gates in gh#87 were
+missing — is [run 32765717336](https://github.com/adammarquette/MarqSpec.Mcp.TopstepX/actions/runs/32765717336),
+this step's own pull request: base `develop`, so the step *ran* rather than being skipped, against a linear
+branch, and passed.
+
+One correction the review caught before merge, worth keeping because the shape recurs: the check first read
+`if [ -z "$(git rev-list --merges "$RANGE")" ]`, and **a command substitution inside an `if` condition is
+exempt from `set -e`**. Measured on an unresolvable range, that shape printed `ok  no merge commit in …` and
+exited **0** — a gate reporting clean exactly when it had checked nothing — where the plain assignment it was
+changed to dies on git's **128**. Any gate that decides on the output of a command is one inlining away from
+this.
 
 **A wrinkle, before anyone re-runs this:** both pull requests shared one head SHA, so GitHub hangs both runs'
 check-runs on that commit and `gh pr view --json statusCheckRollup` answers with **two** `commit-hygiene`

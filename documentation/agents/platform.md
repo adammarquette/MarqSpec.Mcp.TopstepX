@@ -123,6 +123,66 @@ The root contract's five apply here unchanged. Four land specifically on the pip
 **A local check that disagrees with CI is worse than no local check.** When they diverge, fix the divergence,
 not the symptom.
 
+## What is REQUIRED, and what only reports
+
+The merge gate is the `required_status_checks` rule on three rulesets — `protect-develop` (`21182074`),
+`protect-staging` (`21182075`) and `protect-main` (`21182079`) — and it names contexts as **strings**. Nothing
+ties a string to a job. A context spelled differently from the name its job reports under never reports, so it
+never fails and never blocks, and in the settings page it looks exactly like one that works (gh#26). **Read
+this table as a claim about GitHub settings that has to be re-confirmed by mutation, not as a description of
+the workflow files.**
+
+| Context | develop | staging | main | Reported by |
+|---|---|---|---|---|
+| `build & unit tests` | required | required | required | `ci.yml` |
+| `integration tests` | required | required | required | `ci.yml` |
+| `docs` | required | required | required | `ci.yml` |
+| `coverage` | required | required | required | `ci.yml` |
+| `no-order-path` | required | required | required | `ci.yml` |
+| `paced-paging` | required | required | required | `ci.yml` — added by gh#72 |
+| `commit-hygiene` | required | required | required | `branch-policy.yml` |
+| `issue-link` | required | required | required | `branch-policy.yml` |
+| `ladder` | — | required | required | `branch-policy.yml` |
+| `image` | — | — | — | `ci.yml` — reports only, deliberately |
+| `Analyze (csharp)`, `CodeQL` | — | — | — | `codeql.yml` — reports only, deliberately |
+
+`ladder` is the one deliberate asymmetry: nothing is promoted *into* the integration branch, so requiring it on
+`develop` would gate on a rule that cannot apply there. Not a finding — recorded so nobody "fixes" it.
+
+**`paced-paging` is required on all three rungs, not only `develop`** (gh#72). The promotion argument — that
+`staging` and `main` receive nothing except commits already gated at `develop` — is exactly as true of
+`no-order-path`, which is required on all three anyway. `ladder` is what refuses a pull request opened straight
+at `main`; the rulesets are what stop that refusal depending on one job. A single content gate that stops one
+rung short is also a question every future reader has to re-derive.
+
+**`image` is deliberately NOT required, and gh#98 is the trigger to revisit it.** Two reasons, the first
+observed rather than argued:
+
+- It is a *downstream* job (`needs: [build-test, integration-test, no-order-path]`), and a job skipped because
+  a dependency failed reports **`SKIPPED`** — which GitHub counts as satisfying a required check. On gh#111,
+  the throwaway that proved this gate, `image` reported `SKIPPED` while `no-order-path` was red. A required
+  `image` would have been green *precisely because* the thing it packages was broken: a gate whose failure mode
+  is passing. Requiring it means giving it its own checkout, or accepting that.
+- gh#98 is still measuring what a green `image` means on the runner. Requiring a gate whose signal is under
+  review is the same error as leaving a real gate advisory, pointed the other way.
+
+**CodeQL is deliberately NOT required.** Two contexts exist for it — the check run `Analyze (csharp)` and the
+code-scanning status `CodeQL` — so the first thing a required string here does is pick one, and `Analyze
+(csharp)` is *matrix-expanded*: adding a language or renaming the matrix key silently changes the context, which
+is the never-reports failure above. Worse, a CodeQL run goes **green when it finds something** — findings land
+as alerts in the Security tab, not as a job failure — so requiring it would enforce "the analysis ran", never
+"the analysis was clean". What actually blocks on findings is code scanning's own merge protection, a separate
+mechanism and an ADR-sized decision.
+
+**Editing a ruleset is a `PUT`, and a `PUT` replaces.** `PATCH` is not defined on
+`/repos/{owner}/{repo}/rulesets/{id}` and answers `404`, which reads as a permissions problem and is not one.
+An edit is therefore: `GET` the whole ruleset, change the one thing, `PUT` the whole object back — and a `rules`
+array assembled by hand on the way through is how `no-order-path` gets dropped in silence, taking ADR-0002's
+boundary with it. **Re-read the full context list after every write, not just the entry you added.**
+`bootstrap.sh` has this hazard by construction: it `PUT`s a ruleset payload that declares no
+`required_status_checks` rule at all, so re-running it against this repo today would strip every required check
+from all three rungs (gh#114).
+
 ## How the pipeline is shaped
 
 `format → build (both TFMs) → unit → integration (against the fake gateway) → pack`, with promotion gated by

@@ -66,6 +66,27 @@ The root contract's five apply here unchanged. Four land specifically on the pip
   so. Stacked PRs onto a feature branch stay excluded on purpose; `Related to #N` is the correct form there
   (gh#57). **Generalise past this gate**: any check that reads a GitHub linkage as truth has to ask what base
   the PR targets, because most of that machinery is default-branch-only.
+- **A gate that models what GitHub binds must read the text GitHub reads** (gh#123). `issue-link` had two
+  arms deciding the same question — `Closes #N` and the weaker `Related to #N` — and only the first stripped
+  code, so a citation quoted from a pasted `git log` satisfied the second. The strong form is the one people
+  reach for *last*, so the unfixed arm was the one every promotion actually walked. Both arms now read one
+  shared code-stripped body: **derive that kind of value once and let every arm consult it**, because two
+  copies of a rule are two rules and these had already drifted. Note the shape of the fix — the stripper
+  over-strips on an unterminated fence or `<!--`, swallowing the rest of the body, and that is the direction
+  to choose: over-stripping makes the run say why, under-stripping passes silently on text GitHub ignores.
+  **Read that heading as the target, not as a report.** Three of the four forms GitHub ignores are stripped;
+  a **four-space-indented** block is not, and `git log`'s default format produces exactly one — so an unfenced
+  paste still cites for the promotion carrying it. Tracked as gh#142; `5188178` on
+  `bug/101_ci-platform-issue-link-can-never-pass-a-ladder-p` already carries a `python3` stripper that handles
+  it and sits on no open pull request.
+- **A stripper is a parser: its passes have an order, and the order is a decision** (gh#123, from review). The
+  HTML-comment pass ran first and blind, so a `<!--` written as *inline code* — prose **about** the marker,
+  which platform pull requests are full of — opened a comment nothing closed and discarded every line after
+  it. gh#123's own body lost two thirds of itself that way, and the diagnostic then told the author their
+  **prose** citation was inside code. **The pass that carries state across lines has to know about the
+  delimiters the later passes remove**, because its mistakes are not local: it now steps over an inline span
+  rather than into one. Reordering instead was rejected and why is recorded in the workflow — spans cannot
+  precede fences, and fences cannot precede comments without silently re-deciding a pinned case.
 - **Run a text-matching gate before believing its diagnostics.** Proving the above by mutation turned up a
   second defect nobody could have read off the file: `issue-link`'s backtick diagnostic was the only one of the
   three greps without `-i`, so it matched a lowercase `` `closes #1` `` and **missed the canonical**

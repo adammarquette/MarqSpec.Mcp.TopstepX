@@ -15,9 +15,10 @@ Check it against the code.
 contract; QA test creation is performed blind to the implementation per the
 [QA contract](../../MarqSpec.Mcp.TopstepX.IntegrationTests/AGENTS.md).
 
-**Traceability to verify on every PR:** an explicit, **plain** `Closes #N` / `Related to #N` — a backticked
-keyword does not bind and the issue will not close — and the affected `R-#`, ADR, or library README section
-updated in the same PR.
+**Traceability to verify on every PR:** an explicit, **plain** `Closes #N` / `Related to #N` **in ordinary
+prose** — a citation inside code binds nothing and `issue-link` reads none of it, whether the code is
+backticks, a fenced block or an HTML comment (gh#123; a four-space-indented block is the form it still reads,
+gh#142) — and the affected `R-#`, ADR, or library README section updated in the same PR.
 
 ## What to look for
 

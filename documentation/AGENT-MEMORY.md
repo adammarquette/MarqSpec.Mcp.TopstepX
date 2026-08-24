@@ -85,6 +85,33 @@ ADR, `AGENTS.md`, or the code, **put it there instead**.
   commit reworded them — and it went **red on correct text** twice, on backticks and on `e.g. ES`.
   `SerializationFailureTests` (gh#73)'s interceptor also matched EF's write batches, spending both firings in
   attempt one and leaving the retry unopposed. The reviewer found all four, not the author (gh#87).
+- **[2026-08-24] Never `git merge develop` into your branch — one merge commit makes the branch unmergeable,
+  permanently (gh#146).** `protect-develop` allows **`rebase` only**, and *Rebase and merge* cannot replay a
+  merge commit. The pull request then sits at **"All checks have passed"** beside **"Unable to merge
+  (rebase) — Cannot merge at this time"** and names nothing. **Those two strings together are the symptom** —
+  they are here so you can search for them after the fact. Catch up with a rebase instead, which you will do
+  often: merges into `develop` are serialised, so *every* open PR falls behind after *every* merge.
+  ```bash
+  git fetch origin && git rebase origin/develop && git push --force-with-lease
+  ```
+  - **GitHub's own *Update branch* button merges by default** — the same mistake in one click, offered from
+    the very page telling you the branch is behind. Its dropdown's *Update with rebase* is the safe half.
+  - **A Dependabot branch merged into is disowned forever:** *"Looks like this PR has been edited by someone
+    other than Dependabot. That means Dependabot can't rebase it."* Every later `@dependabot rebase` is
+    refused, and the branch is manual from then on. That is #143.
+  - **Already merged?** A plain `git rebase origin/develop` drops the merge commits by itself. What it cannot
+    carry is a conflict you resolved *inside* one, so expect to re-resolve per commit — do that rather than
+    collapsing the branch with `reset --soft` + a single commit, which is how **#131 lost five curated
+    commits** to a squash whose message just lists their five subjects.
+  - **It is self-reinforcing, which is why four PRs did it at once.** The merge genuinely brings the branch up
+    to date and the checks genuinely go green, so the agent that did it has every reason to think it was
+    right; the bill arrives hours later at the merge button. On 2026-08-24 #131, #139, #141 and #143 were all
+    approved, all green and all unmergeable simultaneously.
+  - **This is `develop` only.** `staging` and `main` are the opposite — **`merge` only** — so the ladder's
+    promotions *are* merge commits by construction. Do not "fix" one of those.
+  - **Enforced since gh#146, not merely documented:** `commit-hygiene` fails a PR into `develop` whose range
+    contains a merge commit, and prints the remedy above. Why enforcement was chosen, and how the check is
+    kept off the promotion rungs, is in the [platform contract](agents/platform.md).
 
 ## Notes & communications
 

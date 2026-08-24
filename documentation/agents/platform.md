@@ -419,6 +419,13 @@ ruleset edit that must land *after* the job exists on `develop` — a required c
 leaves every open pull request `BLOCKED` with an empty check list and nothing red to point at (measured on a
 throwaway repo, gh#114).
 
+**What a green `release-gate` licenses, exactly: the SETTING, not the WIRING.** Delete `needs: gate` from
+`publish` and this check still passes — `production` is untouched and still requires a reviewer; the publish
+simply no longer waits for it. The boundary is deliberate. The wiring lives in a file, so a pull request, a
+review and a diff can each see it; the setting is the half none of them can, which is the half that went
+wrong. A check that also parsed the `needs:` graph would re-assert what review already covers and would go
+stale against the next legitimate reshuffle of the jobs.
+
 **It cannot pass vacuously.** `gh` missing, `gh` unauthenticated, the API read failing for any reason,
 discovery finding *no* `environment:` key anywhere, a name given as a `${{ }}` expression, or a successful
 read with an empty reviewer list — every one of those is a failure, none is a skip. The 404 case matters
@@ -427,20 +434,36 @@ output" reads a missing environment as a healthy one. The check keys on the exit
 
 **And it is made to fail on every run.**
 [`check-release-gate-selftest.sh`](../../scripts/check-release-gate-selftest.sh) runs in the same job,
-feeding the real script four fixtures with known faults and requiring it to reject each one — **matching on
+feeding the real script five fixtures with known faults and requiring it to reject each one — **matching on
 the words that name each fault, never on exit status**, since exit 1 is also what "gh is required" produces
-and a self-test satisfied by status alone goes green on a runner with no `gh` on it. Its blind spot, stated
-rather than papered over: the fixtures cannot produce an environment that *exists but has no reviewer* — the
-exact gh#108 state — because that needs a real environment on a real repo, and creating one from CI would
-mean granting the job `administration: write`, i.e. a check able to create the gate it is verifying. That
-case was proven once by hand instead, on a throwaway environment `gh108-unprotected-throwaway`, deleted
-immediately afterwards; `production` was never weakened.
+and a self-test satisfied by status alone goes green on a runner with no `gh` on it. **And a sixth fixture
+that is genuinely sound, which it must accept**: five rejections would all be satisfied by `exit 1`, and a
+gate that says no to everything is exactly as useless as one that says yes to everything, and rather harder
+to notice. That case uses the mapping spelling of `environment:`, which no workflow here uses today, so
+nothing else would notice if it stopped being understood.
+
+One of the five earns its place from a defect gh#108 shipped and gh#140 fixed: an `environment:` mapping with
+no `name:` under it stayed pending into the *next* file and bound itself to that file's top-level `name:`,
+reporting a workflow's own name as an environment — red, but for the wrong reason, naming a setting nobody
+ever asked for, and sending the reader to look for it. On a gate whose whole job is to be believed about
+settings, a confident wrong answer is worse than a vague one. `pending` is now bounded at the file boundary —
+reset **first**, so no rule above can jump it with `next`, which was the bug — and at the block boundary by
+indent.
+
+Its blind spot, stated rather than papered over: the fixtures cannot produce an environment that *exists but
+has no reviewer* — the exact gh#108 state — because that needs a real environment on a real repo, and
+creating one from CI would mean granting the job `administration: write`, i.e. a check able to create the
+gate it is verifying. That case was proven once by hand instead, on a throwaway environment
+`gh108-unprotected-throwaway`, deleted immediately afterwards; `production` was never weakened.
 
 **The evidence that both go red is one run, and one run only.**
-[Run 32693404446](https://github.com/adammarquette/MarqSpec.Mcp.TopstepX/actions/runs/32693404446), from
-scaffolding added and removed inside gh#108's own PR. Two jobs, both red on purpose: the real check pointed at
+[Run 32698052717](https://github.com/adammarquette/MarqSpec.Mcp.TopstepX/actions/runs/32698052717), from
+scaffolding added and removed inside gh#108's own PR, re-run against the code gh#140 shipped. Two jobs,
+both red on purpose: the real check pointed at
 `gh108-unprotected-throwaway` reported `UNPROTECTED … carries NO protection rules at all` and exited 1; and
-`check-release-gate.sh` replaced by `exit 0` had all four self-test cases report `SELF-TEST FAILED`. Keep that
+`check-release-gate.sh` replaced by `exit 0` had all six self-test cases report `SELF-TEST FAILED`,
+the positive one included — it exits 0 but reports nothing, so "passed for some other reason" is what
+catches it. Keep that
 link with this paragraph — delete one and the other becomes an assertion, which is the thing this whole
 section exists to stop.
 

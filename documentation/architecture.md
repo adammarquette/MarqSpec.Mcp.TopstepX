@@ -62,7 +62,10 @@ path (gh#69).
    transaction's snapshot of it (gh#103). The composite key *is* the idempotence guard, and this is how the
    write reaches it. A read of the overlap still runs first, but only to drop the buckets that have not moved
    before they are sent; the rule that an unchanged bar is not rewritten is restated in the statement's own
-   `WHERE`, where both sides carry the column's `numeric(18,8)`.
+   `WHERE`, where both sides carry the column's `numeric(18,8)`. **The write bypasses the change tracker, so
+   every read of `Bars` is `AsNoTracking`** — a tracked row is a copy the identity map would hand back to the
+   next call in the same scope in preference to the row it just read, and both the context and the cache
+   service are scoped (gh#103).
 8. **Project indicators** for the affected buckets, in the same unit of work, so an indicator exists the moment
    its bar does.
 9. **Record coverage** for ranges that came back empty.

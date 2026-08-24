@@ -210,10 +210,16 @@ public sealed class CapturingLogger<T> : ILogger<T>
 /// <b>different</b> contract is how a roll — or a row whose provenance stopped matching its numbers — is
 /// reachable at all.
 /// </param>
+/// <param name="answersBeyondTheSlice">
+/// When set, the gateway answers with every bar it holds rather than only those inside the requested slice.
+/// Real venues do this — a page boundary, or a vendor rounding the range outward — and
+/// <c>BarCacheService.FetchAsync</c> drops only still-forming bars, so whatever comes back is written.
+/// </param>
 public sealed class SeriesGateway(
     string venueId,
     IEnumerable<Bar> available,
-    string contractId = ConcurrencyHarness.ContractId) : IMarketDataGateway
+    string contractId = ConcurrencyHarness.ContractId,
+    bool answersBeyondTheSlice = false) : IMarketDataGateway
 {
     private readonly Dictionary<DateTimeOffset, Bar> _available = available.ToDictionary(b => b.OpenTime);
 
@@ -242,7 +248,7 @@ public sealed class SeriesGateway(
         IReadOnlyList<Bar> bars =
         [
             .. _available.Values
-                .Where(b => window.Contains(b.OpenTime))
+                .Where(b => answersBeyondTheSlice || window.Contains(b.OpenTime))
                 .OrderBy(b => b.OpenTime)
                 .Select(b => b with { ContractId = contractId }),
         ];
@@ -387,6 +393,7 @@ public static class ConcurrencyHarness
     /// <param name="now">The instant the fill runs at. Bars not yet closed at it are dropped.</param>
     /// <param name="logger">A logger, when the test needs to read what the fill said it did.</param>
     /// <param name="contractId">The contract this fill resolves to. Defaults to <see cref="ContractId"/>.</param>
+    /// <param name="answersBeyondTheSlice">Whether the venue answers with bars outside the slice asked for.</param>
     /// <returns>The service.</returns>
     public static BarCacheService Cache(
         TopstepXDbContext database,
@@ -394,10 +401,11 @@ public static class ConcurrencyHarness
         IEnumerable<Bar> available,
         DateTimeOffset now,
         ILogger<BarCacheService>? logger = null,
-        string contractId = ContractId) =>
+        string contractId = ContractId,
+        bool answersBeyondTheSlice = false) =>
         new(
             database,
-            new SeriesGateway(venue, available, contractId),
+            new SeriesGateway(venue, available, contractId, answersBeyondTheSlice),
             Calendar(),
             Projector(database),
             new FakeTimeProvider(now),

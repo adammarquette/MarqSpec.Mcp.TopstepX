@@ -67,12 +67,37 @@ a title and a sentence means that agent guesses, and the guess is only discovere
 Task specs live in the issue, never as files under `documentation/`. A parallel spec duplicates the tracker and
 drifts from it — and the tracker is the one that gets updated.
 
-## Automation
+## Automation — what the board was watched doing
 
-Project workflows are configured in the GitHub Projects web UI and are **not** exposed by the API, so they
-cannot be scripted the way `scripts/bootstrap.sh` handles the rest. Recorded here so the intended state is
-visible:
+Project workflows are configured in the GitHub Projects web UI and are **not** exposed by the API:
+`scripts/bootstrap.sh` cannot set them, and nothing can read them back. So this section records what the board
+was **observed** doing, never what a settings page is assumed to say. Measured on **2026-08-24** (gh#107) by
+filing a throwaway issue, carding it, closing it, and reading the card at each step.
 
-- Item added to project → **Backlog**
-- Issue closed → **Done**
-- PR merged → **Done**
+**Nothing on this board moves on its own — every step below is done by hand.**
+
+- **A new issue is not added to the project.** The probe was still off the board six minutes after it was
+  filed, and on the same day sixteen of this repo's issues had never been carded at all.
+  **You card it, when you file it:** `gh project item-add 4 --owner adammarquette --url <issue-url>`.
+- **Adding an item does not set it to Backlog.** The probe landed with *no Status at all* — not Backlog, no
+  column — and was still uncolumned three minutes later; gh#110 was sitting on the board in exactly that state.
+  **Set `Status` yourself**, in the same breath as adding the card.
+- **Closing an issue does not move its card to Done.** The probe was closed out of *Current ToDo* and was still
+  in *Current ToDo* twelve minutes later. Watched again on real work the same day: gh#118's card was put in
+  *Review* by hand, PR #152 merged at 20:38:03Z and closed it a second later, and the card was **still in
+  *Review* 72 minutes on**. **Move the card to Done when you close the issue.**
+- **"PR merged → Done" has nothing to act on.** Only issues are cards here, so no pull request has ever been an
+  item on this board — gh#118 above is the same merge seen from the other side. The closing keyword closes the
+  **issue** and never touches the board, so **the issue's card is moved to Done by hand after the merge.**
+
+**A card's column is therefore a claim somebody made by hand, and it decays.** At **2026-08-24 18:50:49Z** the
+board carried **9 closed issues parked in working columns** — seven in *Current ToDo*, one in *Review*, one
+with no column at all — on top of the **44** swept to Done by hand earlier the same day. That is a snapshot,
+and between sweeps it only grows — gh#118 became the tenth that evening. **A card in *Review* does not mean
+anyone is watching that PR**: read the issue's state before you believe the column.
+
+**Outstanding, tracked on gh#163:** these workflows can only be enabled from the Projects settings page, which
+no agent can reach — so that card is the maintainer's, and it also carries the sweep of the drift above. When
+any of them is turned on, **re-measure the same way** and rewrite this section from what the board does.
+Reading it off the settings screen is how the previous version came to record three automations, none of which
+ran.

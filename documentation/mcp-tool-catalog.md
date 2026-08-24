@@ -87,10 +87,17 @@ tool and change this page in the same PR.
   every check here and fault one layer down. Both are now refused naming the buckets asked for and the cap they
   are over, and **refused rather than shortened to fit** (gh#96).
 
-  **What is still not covered is the far end of the calendar itself**, which is a bound on *representability*
-  rather than on size: a `fromUtc` within one bar of year 9999 overflows the bucket-grid arithmetic below this
-  boundary and arrives as a raw `ArgumentOutOfRangeException`, at every configuration including the default.
-  Carded as gh#110.
+  **The far end of the calendar is a third refusal, and it is a bound on *representability* rather than on
+  size.** A window within a bar or two of the end of year 9999 spans **zero** buckets, so it cleared both caps
+  above at every configuration including the default — and the bucket-grid arithmetic below this boundary
+  still overflowed and arrived as a raw `ArgumentOutOfRangeException` (gh#110). A window must now end far
+  enough before `9999-12-31T23:59:59.9999999Z` for the machinery serving it to reason about its last bucket:
+  **two bar spans plus three days**, because the grid is aligned *up* from the window's start, the gap
+  detector tests one bucket beyond the last it yields, and the session calendar maps an evening bucket onto
+  the *next* trade date. So the last servable `toUtc` is `9999-12-28T23:57:59.9999999Z` at one-minute bars and
+  `9999-12-14T23:59:59.9999999Z` at the weekly ceiling. The refusal names **both** the `toUtc` passed and the
+  last one that would have been accepted, and — like every other bound here — it **refuses rather than moving
+  the end back for you**, because a series short at one end is indistinguishable from a complete one.
 - **Nothing is derived across a contract roll.** A series is keyed by the venue-neutral symbol and the front
   month rolls quarterly, so a long window holds **two contracts** that do not trade at the same price. Every
   bar-derived payload carries `contracts` — `span`, plus one segment per contiguous run with its

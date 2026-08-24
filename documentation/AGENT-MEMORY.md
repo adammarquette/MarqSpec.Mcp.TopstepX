@@ -96,6 +96,8 @@ ADR, `AGENTS.md`, or the code, **put it there instead**.
   ```
   - **GitHub's own *Update branch* button merges by default** — the same mistake in one click, offered from
     the very page telling you the branch is behind. Its dropdown's *Update with rebase* is the safe half.
+    It was pressed on **this entry's own pull request** while that PR sat approved and green, merging
+    `develop` in as `a60f8bc`; the check below caught it and the rebase below undid it, tree unchanged.
   - **A Dependabot branch merged into is disowned forever:** *"Looks like this PR has been edited by someone
     other than Dependabot. That means Dependabot can't rebase it."* Every later `@dependabot rebase` is
     refused, and the branch is manual from then on. That is #143.

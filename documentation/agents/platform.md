@@ -335,6 +335,15 @@ missing — is [run 32765717336](https://github.com/adammarquette/MarqSpec.Mcp.T
 this step's own pull request: base `develop`, so the step *ran* rather than being skipped, against a linear
 branch, and passed.
 
+**And then it fired on the real thing, unprompted, before this ever merged.** With #153 approved and green,
+GitHub's *Update branch* button was pressed on it — the one-click default this whole section is about — and
+merged `develop` in as `a60f8bc`. `commit-hygiene` went red naming that commit, `mergeStateStatus` went
+`BLOCKED`, and the branch was recovered by the remedy the step itself prints: `git rebase origin/develop` plus
+`--force-with-lease`, tree `25d02bb` identical on both sides, so nothing was gained or lost. **That is the
+observation the synthetic pair cannot buy** — the button was pressed by a human on a PR that looked finished,
+which is exactly the population this gate has to catch, and before the gate existed that click cost nothing
+visible until the merge button hours later.
+
 One correction the review caught before merge, worth keeping because the shape recurs: the check first read
 `if [ -z "$(git rev-list --merges "$RANGE")" ]`, and **a command substitution inside an `if` condition is
 exempt from `set -e`**. Measured on an unresolvable range, that shape printed `ok  no merge commit in …` and

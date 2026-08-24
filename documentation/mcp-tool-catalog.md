@@ -168,6 +168,13 @@ never had it. The running session's close is `sessionCloseUtc` and the *next* se
 Cheap, and worth calling before interpreting anything else — "the last bar is two hours old" means something
 different on a Tuesday afternoon than at 03:00 on a Sunday.
 
+**`atUtc` is bounded at the far end of the calendar**, and by a *different* bound from the windowed reads
+because this tool takes a moment and no window: it must be at or before `9999-12-28T23:59:59.9999999Z`, the
+last instant the session rules can be expressed at. An evening instant belongs to the **next** trade date,
+whose close is a Central wall-clock time converted back to UTC, and past that horizon those are dates no
+calendar can hold — so a later `atUtc` is refused naming both it and the horizon, rather than faulting below
+the boundary (gh#110).
+
 ## Market data
 
 ### `get_bars(symbol, resolutionMinutes, fromUtc, toUtc)`

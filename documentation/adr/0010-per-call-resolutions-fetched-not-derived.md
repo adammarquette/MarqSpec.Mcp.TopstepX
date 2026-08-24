@@ -296,13 +296,27 @@ So the last servable `toUtc` is `9999-12-28T23:57:59.9999999Z` at one-minute bar
 that would have been accepted, and it **refuses rather than moving the end back** — the same rule every other
 bound here follows, and for the same reason.
 
-**One of the two reproductions was not a boundary problem at all, and was not fixed like one.** The page walk
+**A third reproduction was found by sweeping, not from the card, and it is the reason the sweep is shaped the
+way it is.** `get_market_session` takes an `atUtc` and **no window**, so every bound built around
+`ValidateWindow` — every bound in this record until now — swept straight past it, and
+`BarSessionCalendar.TradeDateFor` threw the same raw `ArgumentOutOfRangeException` on the same axis. It is
+bounded by `ToolGuards.ValidateInstant` against `CalendarHorizon` directly, with no bar grid in the way.
+**The gate that catches this class therefore filters on tools taking an *instant*, not on tools taking a
+resolution** — a resolution-shaped filter is exactly what missed it.
+
+**One of the three reproductions was not a boundary problem at all, and was not fixed like one.** The page walk
 in `BarCacheService.FetchAsync` computed `to = from + page` *before* clamping to the range's end, and a page
 is 1,000 bar spans — forty-two days at 60-minute bars. A window nine days from the end of the calendar is
 comfortably inside the bound above and genuinely servable, so refusing it would have been wrong: the walk
 clamps before the add instead, and `ProjectXMarketDataGateway` carried the identical loop and got the
 identical form. **Refusing everything near the end of the calendar would have been the easier fix and the
 worse one.**
+
+`ReferenceTools.NextOpen`'s fortnight scan is the same judgement a third time: `from + 14 days` threw for an
+instant three days inside the horizon, and that fortnight is a **termination guard** rather than a window
+anyone asked for — so it is clamped to the horizon. A scan reaching the horizon without finding an open
+answers `null`, which is the absence it already answers for a calendar that never opens; it never answers a
+substituted time.
 
 **`Domain` gained no code.** `AlignUp` cannot round up past the end of the calendar and must not clamp — a
 clamped boundary is not on the grid, which is a wrong answer wearing an ordinary face — so it keeps throwing,

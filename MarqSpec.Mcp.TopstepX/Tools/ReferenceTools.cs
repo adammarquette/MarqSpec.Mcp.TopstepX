@@ -112,7 +112,13 @@ public sealed class ReferenceTools(
         [Description("The instant to evaluate, ISO-8601 UTC. Defaults to now.")] DateTimeOffset? atUtc = null)
     {
         InstrumentId instrument = Resolve(symbol);
-        DateTimeOffset at = (atUtc ?? _clock.GetUtcNow()).ToUniversalTime();
+
+        // The instant is bounded before the calendar is asked about it. This tool takes a MOMENT and no
+        // window, so every bound built around ValidateWindow swept past it -- and an evening instant belongs
+        // to the NEXT trade date, which on 9999-12-31 is a date DateOnly cannot hold, so TradeDateFor left
+        // this boundary as a raw ArgumentOutOfRangeException (gh#110).
+        DateTimeOffset at =
+            ToolGuards.ValidateInstant((atUtc ?? _clock.GetUtcNow()).ToUniversalTime(), "atUtc");
 
         DateOnly? tradeDate = _calendar.TradeDateFor(at);
         DateOnly marketDate = MarketClock.MarketDate(at);
@@ -160,13 +166,24 @@ public sealed class ReferenceTools(
     /// which is wrong in exactly the way an agent would act on without noticing.
     /// </para>
     /// <para>
-    /// Bounded at a fortnight so a misconfigured calendar that never opens returns null rather than spinning.
+    /// Bounded at a fortnight so a misconfigured calendar that never opens returns null rather than spinning,
+    /// and that fortnight is clamped to <see cref="ToolGuards.CalendarHorizon"/> so the scan cannot walk off
+    /// the end of the calendar (gh#110).
     /// </para>
     /// </remarks>
     private DateTimeOffset? NextOpen(DateTimeOffset from)
     {
         TimeSpan step = TimeSpan.FromMinutes(15);
-        DateTimeOffset limit = from + TimeSpan.FromDays(14);
+
+        // CLAMPED to the calendar horizon rather than refused, and that difference is the point. The
+        // fortnight is a TERMINATION guard, not a window anyone asked for: `from + 14 days` threw for an
+        // instant three days inside the horizon -- one the session rules answer perfectly well -- so
+        // refusing it would have refused a fortnight of legitimate questions to protect an addition (gh#110).
+        // A scan that reaches the horizon without finding an open returns null, which is the same absence it
+        // already returns for a calendar that never opens. Never a substituted time.
+        DateTimeOffset limit = ToolGuards.CalendarHorizon - from < TimeSpan.FromDays(14)
+            ? ToolGuards.CalendarHorizon
+            : from + TimeSpan.FromDays(14);
 
         for (DateTimeOffset probe = from; probe <= limit; probe += step)
         {

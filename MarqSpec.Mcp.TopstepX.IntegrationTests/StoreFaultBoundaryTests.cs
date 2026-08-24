@@ -20,13 +20,13 @@ namespace MarqSpec.Mcp.TopstepX.IntegrationTests;
 /// </summary>
 /// <remarks>
 /// <para>
-/// <b>This tier, and only this tier.</b> The claim is that a lost race produces a <c>23505</c> that arrives
-/// wrapped in a <see cref="DbUpdateException"/>, and that a database this deployment names but does not have
-/// produces a <see cref="PostgresException"/> carrying <c>3D000</c> — on a <c>catch</c> written for
-/// <see cref="NpgsqlException"/>, because that is the provider's base type. Both are claims about Postgres
-/// and the provider. The unit tier's in-memory provider has neither constraints nor SqlStates, so a test
-/// there could only assert against exceptions it fabricated itself — which would stay green on the day Npgsql
-/// started wrapping things differently.
+/// <b>This tier, and only this tier.</b> The claims are that a race the bounded retry cannot get past arrives
+/// as a <see cref="StoreContentionException"/> over a real <c>40001</c>, and that a database this deployment
+/// names but does not have produces a <see cref="PostgresException"/> carrying <c>3D000</c> — on a
+/// <c>catch</c> written for <see cref="NpgsqlException"/>, because that is the provider's base type. Both are
+/// claims about Postgres and the provider. The unit tier's in-memory provider has neither constraints nor
+/// SqlStates, so a test there could only assert against exceptions it fabricated itself — which would stay
+/// green on the day Npgsql started wrapping things differently.
 /// </para>
 /// <para>
 /// <b>What these do NOT test is the wiring</b>, which needs the composition root and belongs where it is:
@@ -39,33 +39,37 @@ namespace MarqSpec.Mcp.TopstepX.IntegrationTests;
 /// of gh#80 closed by <i>deciding</i> against a lock rather than by building one
 /// (<see href="../documentation/adr/0012-fills-are-not-serialised.md">ADR-0012</see>, which records the
 /// measurements and does <i>not</i> foreclose revisiting them). The second fill still loses the race; what
-/// changed is what the loser is told. That is also why the stimulus below is still available: serialising
-/// would have removed it as a side effect, and the decision not to serialise is what leaves gh#133 a real
-/// defect with its own remedy rather than a note. <b>gh#80 itself stays open until gh#133 does land.</b>
+/// changed is what the loser is told — and, since gh#133, <b>what it is told is no longer a duplicate key.</b>
 /// </para>
 /// <para>
-/// <b>The <c>23505</c> is driven off the indicator projection, and that is a consequence rather than a
-/// preference.</b> It has now moved twice, each time because the race it was riding on was closed. It was the
-/// <b>bar key</b> until gh#103 made the bar write <c>ON CONFLICT … DO UPDATE</c>; it was then the
-/// <b>coverage ledger</b> until gh#122 did the same to <c>RecordEmptyAsync</c>, which is where the previous
-/// version of this comment expected it to end up and said so. Both of those were read-then-insert against a
-/// composite key, and both now let the store decide.
+/// <b>The stimulus has now moved three times, and this is the third move.</b> It rode a real <c>23505</c> on
+/// the <b>bar key</b> until gh#103 made the bar write <c>ON CONFLICT … DO UPDATE</c>; on the <b>coverage
+/// ledger</b> until gh#122 did the same to <c>RecordEmptyAsync</c>; and on the <b>indicator projection</b>
+/// until gh#133 did the same to <c>IndicatorProjector</c>. Each move happened because the read-then-insert it
+/// was riding on was closed, and the previous version of this comment predicted this one and asked for it.
 /// </para>
 /// <para>
-/// <b>Where it went, and why there.</b> <c>IndicatorProjector</c> is the third instance of that same shape
-/// and the only one left on this path: it reads the values standing over a series into a dictionary and
-/// <c>Add</c>s the keys that dictionary lacks, so two passes whose snapshots each miss the other's rows both
-/// insert the same <c>(Indicator, Period, BucketStart)</c>. It is <b>not</b> a fourth thing to fix in passing
-/// — a projection pass is a reconcile, not an upsert, and the removal half is why it cannot simply become one
-/// statement. It is carded as gh#133.
+/// <b>Where it went, and why there — and this move is different from the two before it.</b> The first two
+/// each had another instance of the same shape to fall to. This one does not: gh#133 was the <i>last</i>
+/// read-then-insert against a composite key on the <c>get_bars</c> path, and closing it closed epic gh#80. So
+/// <b>no production race can produce a <c>23505</c> here any more</b>, and driving one would mean fabricating
+/// a collision no call site can reach — which is the same thing as fabricating the exception, and is exactly
+/// what this test exists in this tier to avoid. The stimulus is therefore the fault a real race <i>does</i>
+/// still produce: <c>40001</c>, met twice, past the one retry <c>R-2.10</c> budgets, arriving as a
+/// <see cref="StoreContentionException"/> over a genuine <see cref="PostgresException"/>.
 /// </para>
 /// <para>
-/// <b>So this test will go stale a third time, and the instruction is the same one.</b> When gh#133 lands,
-/// its stimulus disappears again and this goes red on an expectation that has gone out of date rather than on
-/// code that is wrong. <b>Re-home it onto a race that still produces a real store fault; do not delete it to
-/// make the suite green.</b> The claim it makes is gh#89's — that a real Postgres error reaches a caller as a
-/// sentence — and it outlives every stimulus that has carried it. A fabricated exception would not, which is
-/// the only reason this test is in this tier at all.
+/// <b>What that leaves uncovered here, stated rather than glossed.</b> <c>StoreFaultGuard</c>'s duplicate-key
+/// branch still exists — the schema has unique keys and a future writer can still hit one — and it is now
+/// pinned only by <c>StoreFaultReportingTests</c> in the unit tier, against a fabricated exception. That is a
+/// consequence of the defect being gone rather than a gap that can be closed by testing harder, and the right
+/// response if a real one becomes reachable again is to drive <i>that</i> one from here.
+/// </para>
+/// <para>
+/// <b>The instruction for the next agent is unchanged.</b> If this goes red because its stimulus was closed
+/// rather than because the boundary is wrong, <b>re-home it onto a race that still produces a real store
+/// fault; do not delete it to make the suite green.</b> The claim it makes is gh#89's — that a real Postgres
+/// error reaches a caller as a sentence — and it outlives every stimulus that has carried it.
 /// </para>
 /// </remarks>
 /// <param name="fixture">The shared container.</param>
@@ -78,97 +82,155 @@ public sealed class StoreFaultBoundaryTests(SchemaFixture fixture)
     private static DateTimeOffset Now => ConcurrencyHarness.Bucket(60);
 
     [Fact]
-    public async Task ALostRaceOnTheIndicatorKey_ReachesTheCallerAsAStatedCondition_NotAsADbUpdateException()
+    public async Task ARaceTheRetryCannotGetPast_ReachesTheCallerAsAStatedCondition_NotAsAPostgresStack()
     {
-        // THE regression, driven rather than stubbed. Two callers fill DISJOINT ranges of one series -- 20..25
-        // and 25..30 -- so neither writes a bar or a coverage row the other writes. They collide anyway: a
-        // projection pass recomputes the WHOLE series its snapshot can see, so both produce values for the
-        // history sitting in front of both ranges. The loser's snapshot was taken before the winner committed,
-        // so its lookup of the values standing over the series still says those keys are absent and it INSERTs
-        // over rows that now exist. That is 23505, and no isolation level prevents it -- the remedy is an
-        // upsert or a lock, and for the projection it is neither yet (gh#133).
+        // A REAL Postgres fault, driven rather than stubbed, and it is a race rather than a contrivance: the
+        // reconcile is unscoped by bucket range, so a whole-series sweep is a whole-series WRITE SET and two
+        // passes that share no bar delete the same unjustified rows. The loser is aborted with 40001.
         //
-        // IT HAS MOVED TWICE, each time because the race it rode on was closed -- the bar key until gh#103,
-        // the coverage ledger until gh#122. Both were read-then-insert against a composite key and both now
-        // let the store decide. See the class remarks for what that means for this test's next stimulus.
+        // TWO strays, one taken per round. One retry is the whole budget (R-2.10), so a single stray would
+        // let the second attempt succeed and this would test the retry rather than the boundary. With two,
+        // each attempt's snapshot still holds a row a concurrent transaction deletes before it commits, and
+        // the call has to fail -- as a named condition a caller can act on.
         //
-        // THE SEEDED SERIES HAS NO VALUES OVER IT, and that is what puts the shared history in play rather
-        // than an exotic contrivance: values are removed whenever the configured period changes -- ATR(14) and
-        // ATR(3) are different keys, so a pass configured for one produces nothing under the other -- and
-        // rebuild-indicators over a store whose bars arrived first reaches the same state.
-        //
-        // The interleaving is placed AFTER the bar write's overlap read, which is the fill transaction's first
-        // statement and so where its snapshot is taken. `"Volume"` is the discriminator for the reason
-        // BarUpsertConcurrencyTests gives: the read that opens GetBarsAsync projects to the bucket alone.
+        // WHY 40001 AND NOT 23505, which this test drove for three cards: gh#133 closed the last
+        // read-then-insert on this path, so a duplicate key is no longer reachable from any call site. The
+        // class remarks say what that leaves and where it went.
         string venue = ConcurrencyHarness.Venue();
-        await SeedBarsThatNothingHasProjectedOverAsync(venue);
+        await SeedSeriesWithAnUnjustifiedTailAsync(venue);
+        await SeedTwoValuesNothingJustifiesAsync(venue);
 
-        await using TopstepXDbContext winnerStore = _fixture.CreateContext();
+        int round = 0;
 
-        async Task TheOtherCallerProjectsOverTheSameHistory()
+        async Task DeleteOneStrayFromAnotherConnectionAsync()
         {
-            BarCacheService winner =
-                ConcurrencyHarness.Cache(winnerStore, venue, ConcurrencyHarness.Bars(20, 25), Now);
-            await winner.GetBarsAsync(
-                ConcurrencyHarness.Instrument,
-                ConcurrencyHarness.ResolutionMinutes,
-                ConcurrencyHarness.Window(20, 25),
-                CancellationToken.None);
+            DateTimeOffset bucket = ConcurrencyHarness.Bucket(StrayBucket + round);
+            round++;
+
+            await using TopstepXDbContext other = _fixture.CreateContext();
+
+            List<IndicatorValueRecord> doomed = await other.IndicatorValues
+                .Where(v => v.Venue == venue && v.BucketStart == bucket)
+                .ToListAsync();
+
+            other.IndicatorValues.RemoveRange(doomed);
+            await other.SaveChangesAsync();
         }
 
-        InterleavingInterceptor straddle = InterleavingInterceptor.After(
-            "\"Volume\"", venue, TheOtherCallerProjectsOverTheSameHistory);
+        // Before the value read, so the losing pass has already taken its snapshot and still believes the
+        // stray is there to delete.
+        InterleavingInterceptor straddle = InterleavingInterceptor.Before(
+            "FROM \"IndicatorValues\"", venue, DeleteOneStrayFromAnotherConnectionAsync, times: 2);
 
         await using TopstepXDbContext loserStore = _fixture.CreateContext(straddle);
-        MarketDataTools tools = Tools(loserStore, venue, ConcurrencyHarness.Bars(25, 30));
+        MarketDataTools tools = Tools(loserStore, venue, ConcurrencyHarness.Bars(50, 60));
 
         Func<Task> call = () => ThroughTheBoundary(token => tools.GetBars(
             ConcurrencyHarness.Symbol,
             ConcurrencyHarness.ResolutionMinutes,
-            ConcurrencyHarness.Bucket(25),
-            ConcurrencyHarness.Bucket(30),
+            ConcurrencyHarness.Bucket(50),
+            ConcurrencyHarness.Bucket(60),
             token));
 
-        (await call.Should().ThrowAsync<McpException>(
+        McpException reported = (await call.Should().ThrowAsync<McpException>(
             "a caller of a READ tool is owed a statement of what happened, not a nested Postgres stack"))
-            .WithMessage("*23505*")
-            .WithMessage("*rolled back*")
-            .WithMessage("*retry*");
+            .Which;
 
-        straddle.Fired.Should().BeTrue(
-            "the collision is the test -- if the other caller never ran inside this one's transaction, this "
-            + "passed by exercising nothing");
+        reported.Message.Should().Match("*refused to serialise*").And.Match("*ES 5m*").And.Match("*retry*");
+
+        straddle.Firings.Should().Be(
+            2,
+            "the collision is the test, and BOTH attempts have to have met one -- a run where the second was "
+            + "unopposed would have succeeded, and a run where neither collided would prove nothing at all");
+
+        reported.InnerException.Should().BeOfType<StoreContentionException>(
+            "the sentence is written where the fact is known, and the boundary passes it through");
+
+        PostgresException? underneath = Underneath(reported);
+        underneath.Should().NotBeNull(
+            "a fabricated exception would be green on the day Npgsql started wrapping things differently, "
+            + "which is the only reason this test is in this tier rather than the unit one");
+        underneath!.SqlState.Should().Be(
+            "40001", "the store, not the test, is what decided this call could not be serialised");
+    }
+
+    /// <summary>The first of the two buckets holding a value nothing justifies.</summary>
+    private const int StrayBucket = 90;
+
+    /// <summary>The provider's own exception, at any depth, or null if nothing in the chain is one.</summary>
+    /// <param name="fault">The exception.</param>
+    /// <returns>The Postgres exception.</returns>
+    private static PostgresException? Underneath(Exception fault)
+    {
+        for (Exception? current = fault; current is not null; current = current.InnerException)
+        {
+            if (current is PostgresException postgres)
+            {
+                return postgres;
+            }
+        }
+
+        return null;
     }
 
     /// <summary>
-    /// Fills a series and then removes the values standing over it.
+    /// Fills forty buckets, then deletes the last ten bars, so the values over them are unjustified.
     /// </summary>
     /// <param name="venue">The private venue id for this test.</param>
     /// <returns>The task.</returns>
     /// <remarks>
-    /// The removal is what gives two otherwise-disjoint fills a shared write set: each projects the whole
-    /// series it can see, so both produce the keys over this history. Leaving the values in place would let
-    /// both passes recognise them as already produced, and nothing would be inserted twice.
+    /// This is what gives two otherwise-disjoint passes a shared write set: both reconcile the whole series,
+    /// so both delete this same tail.
     /// </remarks>
-    private async Task SeedBarsThatNothingHasProjectedOverAsync(string venue)
+    private async Task SeedSeriesWithAnUnjustifiedTailAsync(string venue)
     {
         await using TopstepXDbContext seed = _fixture.CreateContext();
 
-        BarCacheService cache =
-            ConcurrencyHarness.Cache(seed, venue, ConcurrencyHarness.Bars(0, 20), Now);
-
+        BarCacheService cache = ConcurrencyHarness.Cache(seed, venue, ConcurrencyHarness.Bars(0, 40), Now);
         await cache.GetBarsAsync(
             ConcurrencyHarness.Instrument,
             ConcurrencyHarness.ResolutionMinutes,
-            ConcurrencyHarness.Window(0, 20),
+            ConcurrencyHarness.Window(0, 40),
             CancellationToken.None);
 
-        List<IndicatorValueRecord> values = await seed.IndicatorValues
-            .Where(v => v.Venue == venue)
+        List<BarRecord> tail = await seed.Bars
+            .Where(b => b.Venue == venue
+                && b.Instrument == ConcurrencyHarness.Symbol
+                && b.ResolutionMinutes == ConcurrencyHarness.ResolutionMinutes
+                && b.BucketStart >= ConcurrencyHarness.Bucket(30))
             .ToListAsync();
 
-        seed.IndicatorValues.RemoveRange(values);
+        seed.Bars.RemoveRange(tail);
         await seed.SaveChangesAsync();
+    }
+
+    /// <summary>Adds two values under keys the catalogue owns but no bar stands behind.</summary>
+    /// <param name="venue">The private venue id for this test.</param>
+    /// <returns>The task.</returns>
+    /// <remarks>
+    /// One per round. A single stray would be deleted by the first attempt's opponent and gone by the second,
+    /// which would leave the retry unopposed and quietly turn a test of the boundary into a test of the retry.
+    /// </remarks>
+    private async Task SeedTwoValuesNothingJustifiesAsync(string venue)
+    {
+        await using TopstepXDbContext strays = _fixture.CreateContext();
+
+        foreach (int bucket in (int[])[StrayBucket, StrayBucket + 1])
+        {
+            strays.IndicatorValues.Add(new IndicatorValueRecord
+            {
+                Venue = venue,
+                Instrument = ConcurrencyHarness.Symbol,
+                ResolutionMinutes = ConcurrencyHarness.ResolutionMinutes,
+                Indicator = "atr",
+                Period = 3,
+                BucketStart = ConcurrencyHarness.Bucket(bucket),
+                Value = 1.5m,
+                RecordedAt = Now,
+            });
+        }
+
+        await strays.SaveChangesAsync();
     }
 
     [Fact]

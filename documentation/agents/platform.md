@@ -9,7 +9,7 @@ root [`AGENTS.md`](../../AGENTS.md) still applies. It owns the artifacts below *
 | CI, branch-policy, CodeQL, release workflows | [`.github/workflows/`](../../.github/workflows/) |
 | The published image | [`Dockerfile`](../../Dockerfile) — built by `ci.yml`'s `image` job, pushed to GHCR only by `release.yml` |
 | Local stack | [`docker-compose.dev.yml`](../../docker-compose.dev.yml) |
-| Build and packaging properties | `Directory.Build.props`, `Directory.Packages.props`, `global.json` |
+| Build and dependency properties | `Directory.Build.props`, `Directory.Packages.props` (Central Package Management — package *versions*, since nothing here is packaged), `global.json` |
 | Repo governance that lives in GitHub settings | [ADR-0001](../adr/0001-tag-driven-versioning.md), reproduced by `bootstrap.sh` |
 | Platform decisions | [ADR-0001](../adr/0001-tag-driven-versioning.md) |
 
@@ -48,11 +48,17 @@ The root contract's five apply here unchanged. Four land specifically on the pip
 - **MinVer needs tag history.** `actions/checkout` defaults to a shallow clone, which yields `0.0.0-alpha.0`
   instead of the tagged version — and it does so *silently*, stamping a wrong version rather than failing.
   **Nothing here packs**, so read the rule as *every job that builds*, not *every job that packs*: the version
-  goes into the assembly regardless (ADR-0001). `build-test`, `integration-test` and `image` in `ci.yml`,
-  `publish` in `release.yml`, and `analyze` in `codeql.yml` all declare `fetch-depth: 0` — CodeQL's for build
-  *parity* rather than need, so that the one job analysing this code does not analyse a differently-stamped
-  build. The SDK-less jobs (`docs`, `no-order-path`, `paced-paging`, `release-gate`) do not declare it and do
-  not need to.
+  goes into the assembly regardless (ADR-0001). That is `build-test`, `integration-test` and `image` in
+  `ci.yml`, `publish` in `release.yml`, and `analyze` in `codeql.yml` — the last for build *parity* rather
+  than need, so the one job analysing this code does not analyse a differently-stamped build.
+
+  **Six jobs declare `fetch-depth: 0`, and the sixth is not about MinVer at all.** `commit-hygiene`
+  (`branch-policy.yml`) installs no SDK, builds nothing, and needs full history anyway: it walks the pull
+  request's commit range with `git log --no-merges --format=%s <base>..<head>`, which a shallow clone cannot
+  resolve. The failure is silent — `mapfile` swallows the exit status past `set -euo pipefail`, so the job
+  reports *"No non-merge commits to check"* and **exits 0**, a gate required on all three rungs passing
+  vacuously on every pull request. So the question is **"does this job read git history?"**, never "does it
+  build" and never "does it install an SDK". Deciding it by SDK is how the sixth one gets trimmed.
 - **One target framework, and the SDK a job installs must match what the projects declare.** All five projects
   declare `net10.0` **alone** — this is an application, not the multi-targeting library the template came
   from — and `global.json` pins the SDK to `10.0.300`. `ci.yml` and `codeql.yml` therefore each install

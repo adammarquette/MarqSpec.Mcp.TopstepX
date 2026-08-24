@@ -66,6 +66,14 @@ The root contract's five apply here unchanged. Four land specifically on the pip
   so. Stacked PRs onto a feature branch stay excluded on purpose; `Related to #N` is the correct form there
   (gh#57). **Generalise past this gate**: any check that reads a GitHub linkage as truth has to ask what base
   the PR targets, because most of that machinery is default-branch-only.
+- **A gate that models what GitHub binds must read the text GitHub reads** (gh#123). `issue-link` had two
+  arms deciding the same question — `Closes #N` and the weaker `Related to #N` — and only the first stripped
+  code, so a citation quoted from a pasted `git log` satisfied the second. The strong form is the one people
+  reach for *last*, so the unfixed arm was the one every promotion actually walked. Both arms now read one
+  shared code-stripped body: **derive that kind of value once and let every arm consult it**, because two
+  copies of a rule are two rules and these had already drifted. Note the shape of the fix — the stripper
+  over-strips on an unterminated fence or `<!--`, swallowing the rest of the body, and that is the direction
+  to choose: over-stripping makes the run say why, under-stripping passes silently on text GitHub ignores.
 - **Run a text-matching gate before believing its diagnostics.** Proving the above by mutation turned up a
   second defect nobody could have read off the file: `issue-link`'s backtick diagnostic was the only one of the
   three greps without `-i`, so it matched a lowercase `` `closes #1` `` and **missed the canonical**

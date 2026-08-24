@@ -17,10 +17,12 @@ touches one without finishing it. **The `issue-link` check enforces this**; it i
 Four things it will tell you, because they all look like they work and none of them does:
 
 - A closing keyword in the **title** is ignored by GitHub. It must be in the body.
-- A backticked `` `Closes #N` `` does not bind. Remove the backticks.
-- A citation inside a **fenced code block** is not a citation — a pasted `git log`, a quoted commit message.
-  Promotion bodies enumerate the work they carry, so this is the easy one to trip on: the citation has to be
-  the *promotion's own*, not one quoted from a commit it is carrying.
+- **A citation inside code is not a citation** — a fenced block, an HTML comment, or backticks. GitHub honours
+  a reference in none of the three, so neither does the check, and that holds for `Related to #N` exactly as
+  for `Closes #N` (gh#123). Promotion bodies enumerate the work they carry, so this is the easy one to trip
+  on: a pasted `git log` carries the *other* work's citation, and the promotion still needs one of its own.
+- An **unterminated** code fence or `<!--` swallows the rest of the body, so a citation below it reads as code
+  and the check refuses. Close the marker, or put the citation above it.
 - A closing keyword binds **only on a PR into the default branch** (`develop`). On any other base GitHub binds
   nothing, whatever the body says.
 

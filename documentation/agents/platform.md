@@ -1,12 +1,13 @@
 # Platform Agent (CI/CD + local environment + release)
 
-Governs the pipeline, the local test environment, and the path a package takes to nuget.org; the root
-[`AGENTS.md`](../../AGENTS.md) still applies. It owns the artifacts below **wherever they live**.
+Governs the pipeline, the local test environment, and the path the **container image** takes to GHCR — this
+repository ships an application, not a NuGet package, and nothing here is packed or pushed to nuget.org; the
+root [`AGENTS.md`](../../AGENTS.md) still applies. It owns the artifacts below **wherever they live**.
 
 | Artifact | Where |
 | --- | --- |
 | CI, branch-policy, CodeQL, release workflows | [`.github/workflows/`](../../.github/workflows/) |
-| The fake gateway image | the fake used by the integration tier, if this repo needs one |
+| The published image | [`Dockerfile`](../../Dockerfile) — built by `ci.yml`'s `image` job, pushed to GHCR only by `release.yml` |
 | Local stack | [`docker-compose.dev.yml`](../../docker-compose.dev.yml) |
 | Build and packaging properties | `Directory.Build.props`, `Directory.Packages.props`, `global.json` |
 | Repo governance that lives in GitHub settings | [ADR-0001](../adr/0001-tag-driven-versioning.md), reproduced by `bootstrap.sh` |
@@ -15,7 +16,7 @@ Governs the pipeline, the local test environment, and the path a package takes t
 ## Role
 
 Keep the pipeline and the local loop boring, reproducible, and honest about what they are doing. You do not
-write library code or tests; if the pipeline reveals a product defect, file it for the Coding Agent.
+write product code or tests; if the pipeline reveals a product defect, file it for the Coding Agent.
 
 **Configuration that exists only in a provider's web console does not exist.** Record it — in an ADR, and in
 `bootstrap.sh` so the next repo gets it without anyone re-clicking. This repo is the cautionary tale: its one
@@ -33,7 +34,9 @@ The root contract's five apply here unchanged. Four land specifically on the pip
   unfiltered `dotnet test`. That integration tests mostly did not execute was an accident of hardcoded skip
   strings, not a design. Live-credentialed runs are opt-in, tagged, and never on the release path.
 - **The integration tier must run with no credentials.** That is what makes it a required check rather than a
-  ritual (the local test environment ADR you will write). A test tier that only a human can run has no place in a merge gate.
+  ritual, and it *is* one today: `ci.yml`'s `integration tests` job runs `--filter "Category!=Live"` against a
+  Testcontainers Postgres it starts on the runner's own Docker daemon, and the context is required on all
+  three rungs. A test tier that only a human can run has no place in a merge gate.
 - **No secrets in source** extends to workflow files, compose files, image layers, and logs. This is a **public**
   repository whose history already contains a rotated real-credential commit.
 
@@ -43,10 +46,23 @@ The root contract's five apply here unchanged. Four land specifically on the pip
   agree. Otherwise `dotnet format` defaults to the host's line ending and a Windows contributor sees violations
   CI does not — or worse, CI sees violations they cannot reproduce.
 - **MinVer needs tag history.** `actions/checkout` defaults to a shallow clone, which yields `0.0.0-alpha.0`
-  instead of the tagged version — and it does so *silently*, producing a package rather than an error. Any job
-  that packs needs `fetch-depth: 0` (ADR-0001).
-- **Both target frameworks, everywhere.** `net8.0` and `net10.0` are both first-class (your multi-targeting ADR); a job that
-  installs only one SDK is a job that stops catching one of them. CodeQL currently does exactly this.
+  instead of the tagged version — and it does so *silently*, stamping a wrong version rather than failing.
+  **Nothing here packs**, so read the rule as *every job that builds*, not *every job that packs*: the version
+  goes into the assembly regardless (ADR-0001). `build-test`, `integration-test` and `image` in `ci.yml`,
+  `publish` in `release.yml`, and `analyze` in `codeql.yml` all declare `fetch-depth: 0` — CodeQL's for build
+  *parity* rather than need, so that the one job analysing this code does not analyse a differently-stamped
+  build. The SDK-less jobs (`docs`, `no-order-path`, `paced-paging`, `release-gate`) do not declare it and do
+  not need to.
+- **One target framework, and the SDK a job installs must match what the projects declare.** All five projects
+  declare `net10.0` **alone** — this is an application, not the multi-targeting library the template came
+  from — and `global.json` pins the SDK to `10.0.300`. `ci.yml` and `codeql.yml` therefore each install
+  `10.0.x` and nothing else, which is **correct, not a gap**. This bullet used to say the opposite — that
+  `net8.0` and `net10.0` were both first-class, citing a multi-targeting ADR that has never existed, and
+  reading CodeQL's single SDK as a defect. Both workflows now carry a comment correcting it; the 8.0 SDK that
+  was installed for a while built nothing and cost a download on every job. The hazard is real and points the
+  other way: **an SDK list that drifts from the `TargetFramework`s**. If a project ever declares a second one,
+  every `setup-dotnet` in both workflows and this bullet change in the same PR — and that change is what would
+  need an ADR.
 - **A script authored on Windows commits as `100644`.** CI invoking `./scripts/foo.sh` then dies with exit 126
   while a local `bash scripts/foo.sh` passes. Fix it in the same commit with
   `git update-index --chmod=+x <path>`. **And do not `git reset` afterwards** — with `core.filemode=false`,
@@ -181,8 +197,10 @@ The root contract's five apply here unchanged. Four land specifically on the pip
   - **`docker/login-action` stays uncovered, on purpose.** Exercising it in CI would mean granting
     `packages: write` to a job that must not push, on every pull request — forks included, where
     `GITHUB_TOKEN` is read-only and the step would fail for a reason unrelated to the change. The login and
-    the registry export therefore still first execute at a real release; the publish path is not proven end
-    to end by any green check.
+    the registry export therefore first execute at a **real release** — and now have: run `32683215519`
+    pushed `v0.1.0` to GHCR on 2026-08-24T02:29Z. That closes nothing. No green check exercises either step,
+    so the publish path is still not proven end to end by CI, and the *next* change to it will again first
+    run at a release.
   - **Declaring the builder changes what the release publishes, unless you pin it.** Under the
     `docker-container` driver, buildx attaches a provenance attestation **by default** when pushing, and the
     published tag becomes an image index carrying an `unknown/unknown` attestation manifest rather than a
@@ -484,18 +502,24 @@ exists**; it reports what an existing one requires and warns when that is nothin
 
 ## How the pipeline is shaped
 
-`format → build (both TFMs) → unit → integration (against the fake gateway) → pack`, with promotion gated by
-the ladder in [`CONTRIBUTING.md`](../../CONTRIBUTING.md) and release gated by a `production` environment
-approval — an approval that is only real because a setting outside this repository says so, which is why
-`release-gate` exists (above).
+`format → build (net10.0, the only framework) → unit → integration (Testcontainers Postgres, Category!=Live) →
+image`, with promotion gated by the ladder in [`CONTRIBUTING.md`](../../CONTRIBUTING.md) and release gated by
+a `production` environment approval — an approval that is only real because a setting outside this repository
+says so, which is why `release-gate` exists (above).
 
-Branches map to intent rather than to environments — there is no deployment here, only a package:
+**There is no `pack` step and no fake gateway**, and both used to be named here. The template this came from
+packed a NuGet package; `ci.yml` builds a container image instead and pushes nothing, and `release.yml` is the
+only thing that pushes. The integration tier has never had a fake to run against — it starts a real
+`timescale/timescaledb-ha` Postgres itself, because hypertables, the HNSW index and the CHECK constraints are
+the claims worth testing and an in-memory provider proves none of them ([ADR-0004](../adr/0004-one-postgres-timescale-pgvector.md)).
+
+Branches map to intent rather than to environments — there is no deployment here, only a published image:
 `develop` integrates, `staging` holds what is promoted but unreleased, `main` is what has shipped, and a `v*`
 tag on `main` is what triggers a release.
 
 ## Definition of done
 
-Pipeline green on both target frameworks · the integration tier passes with no credentials · no secret reaches a
-workflow, log, or image layer · every settings-only configuration recorded in an ADR **and** reproduced in
-`bootstrap.sh` · the affected doc section updated in the same PR · platform decisions captured as ADRs,
-superseded rather than rewritten.
+Pipeline green on `net10.0`, the one framework every project declares · the integration tier passes with no
+credentials · no secret reaches a workflow, log, or image layer · every settings-only configuration recorded in
+an ADR **and** reproduced in `bootstrap.sh` · the affected doc section updated in the same PR · platform
+decisions captured as ADRs, superseded rather than rewritten.

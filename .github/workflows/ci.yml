@@ -303,8 +303,24 @@ jobs:
       #
       # Nothing is pushed here. Building against the real reference is enough: buildx validates the tag
       # before it starts, so an invalid one fails a pull request instead of a release.
+      #
+      # ASSIGNED ON ITS OWN LINE, THEN CHECKED (gh#126). This was one line --
+      # `echo "IMAGE=$(./scripts/image-reference.sh)" >> "$GITHUB_ENV"` -- and a command substitution used as
+      # an ARGUMENT has its exit status DISCARDED: `echo` succeeded, the step exited 0 and went green, and
+      # `IMAGE` was exported EMPTY. Measured under `bash -e`, which is the default shell for a `run:` step:
+      # `echo "IMAGE=$(false)"` prints `IMAGE=` and exits 0. A bare assignment does not -- it carries the
+      # substitution's status (POSIX 2.9.1) -- which is the whole difference between this step and the
+      # scripts' own `${1:-...}` default, and why gh#126 found the real instance HERE rather than there.
+      #
+      # What used to follow a silent empty resolution: `tags: :ci` on the build, `:ci` handed to the smoke
+      # step as an explicit argument, and the first complaint coming from buildx about a Dockerfile that was
+      # fine. Red eventually, and pointed at the wrong file. The same shape sits in release.yml, where the
+      # first complaint would land after the `production` approval on an already-cut tag.
       - name: Resolve the image reference
-        run: echo "IMAGE=$(./scripts/image-reference.sh)" >> "$GITHUB_ENV"
+        run: |
+          ref="$(./scripts/image-reference.sh)"
+          [ -n "$ref" ] || { echo "::error::image-reference.sh exited 0 without naming a reference"; exit 1; }
+          echo "IMAGE=$ref" >> "$GITHUB_ENV"
 
       - name: Set up Buildx
         uses: docker/setup-buildx-action@v4

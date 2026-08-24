@@ -40,22 +40,47 @@ set -euo pipefail
 export MSYS_NO_PATHCONV=1
 export MSYS2_ARG_CONV_EXCL='*'
 
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+GATE="$HERE/check-image-entrypoint.sh"
+
+die() { printf '\033[31m%s\033[0m\n' "$*" >&2; }
+ok()  { printf '\033[32m%s\033[0m\n' "$*"; }
+
 # DERIVED, matching check-image-entrypoint.sh and for the same reason (gh#121 review): CI builds
 # `$(image-reference.sh):ci`, so a hardcoded default here would name a tag nothing produces and the
 # documented no-argument form would fail on a pull attempt rather than on the image.
-IMAGE="${1:-$("$(dirname "$0")/image-reference.sh"):ci}"
+#
+# RESOLVED ON ITS OWN LINE AND CHECKED, matching the gate line for line (gh#126). The reasoning, the measured
+# shell behaviour and what it is and is not fixing are in check-image-entrypoint.sh's header; the two defaults
+# stay identical on purpose, because a self-test that resolves its image differently from the gate it is
+# testing is a self-test reporting on a different run.
+if [ -n "${1:-}" ]; then
+  IMAGE="$1"
+else
+  REFERENCE=""
+  REF_STATUS=0
+  REFERENCE="$("$(dirname "$0")/image-reference.sh")" || REF_STATUS=$?
+  if [ "$REF_STATUS" -ne 0 ]; then
+    die "  UNRESOLVED  scripts/image-reference.sh exited $REF_STATUS, so this project's image has no name"
+    die "NOTHING HAS BEEN CHECKED, and in particular the GATE has not been proven able to fail. That script's"
+    die "own message is above. Pass the tag explicitly to work around it:"
+    die "    scripts/check-image-entrypoint-selftest.sh <image-tag>"
+    exit 1
+  fi
+  if [ -z "$REFERENCE" ]; then
+    die "  UNRESOLVED  scripts/image-reference.sh exited 0 without printing a reference"
+    die "There is nothing to append the :ci tag to, and ':ci' on its own is not an image. NOTHING HAS BEEN"
+    die "CHECKED, and the gate has not been proven able to fail."
+    exit 1
+  fi
+  IMAGE="${REFERENCE}:ci"
+fi
 # The FIXTURE stays a plain local name on purpose -- it is built here, never pushed, and never pulled.
 FIXTURE="${2:-marqspec-mcp-topstepx:entrypoint-selftest}"
 
 # The assembly the fixture's ENTRYPOINT names, and the string the assertion looks for. One definition, so the
 # fixture and the assertion cannot drift apart into a self-test that always passes.
 ABSENT_ASSEMBLY="MarqSpec.Mcp.TopstepX.DoesNotExist.dll"
-
-HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-GATE="$HERE/check-image-entrypoint.sh"
-
-die() { printf '\033[31m%s\033[0m\n' "$*" >&2; }
-ok()  { printf '\033[32m%s\033[0m\n' "$*"; }
 
 OUTPUT="$(mktemp)"
 cleanup() {

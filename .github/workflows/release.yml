@@ -89,8 +89,20 @@ jobs:
       # `push: false`. That is the part that keeps it honest: before gh#115 this expression existed only in
       # this file and was evaluated only during a real release, so its first execution was also its first
       # test.
+      #
+      # ASSIGNED ON ITS OWN LINE, THEN CHECKED (gh#126), and this is the copy that mattered. As one line --
+      # `echo "IMAGE=$(./scripts/image-reference.sh)" >> "$GITHUB_ENV"` -- a failed resolution exited 0 and
+      # exported an EMPTY `IMAGE`, because a command substitution used as an ARGUMENT has its status
+      # discarded; measured under `bash -e`, `echo "IMAGE=$(false)"` prints `IMAGE=` and exits 0. The push
+      # below would then have been handed `:$VERSION` and `:latest`, and the first thing to object would be
+      # buildx -- after the `production` approval, on a tag already cut, on the one job in this repository
+      # that cannot cheaply be repeated. ci.yml's `image` job carries the identical step; keep the two
+      # together.
       - name: Resolve the image reference
-        run: echo "IMAGE=$(./scripts/image-reference.sh)" >> "$GITHUB_ENV"
+        run: |
+          ref="$(./scripts/image-reference.sh)"
+          [ -n "$ref" ] || { echo "::error::image-reference.sh exited 0 without naming a reference"; exit 1; }
+          echo "IMAGE=$ref" >> "$GITHUB_ENV"
 
       # DECLARED, not inherited from the runner image (gh#54). Buildx is preinstalled on GitHub-hosted
       # runners, so this step was never needed to make the build work -- which is the problem: the builder was

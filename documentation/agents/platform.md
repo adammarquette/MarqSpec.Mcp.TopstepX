@@ -94,11 +94,16 @@ The root contract's five apply here unchanged. Four land specifically on the pip
 
     **That replaces the Windows-only provenance this bullet used to carry** — Docker Desktop 29.6.2 on one
     developer machine, where 155 had not been re-measured since gh#67 and not a single number had ever been
-    observed on the runner. Run URLs are on gh#98 and its pull request. 155 is the *dotnet host's* "the
-    command could not be loaded", i.e. what broken looks like; **gh#67 recorded it as the healthy code**, and
-    a gate written to that number would have passed the broken image and failed the good one. 139 — the old
-    EOF-during-startup value — was 128+SIGSEGV from an unhandled `TaskCanceledException`, fixed by gh#76,
-    which collapsed the two healthy rows onto 0.
+    observed on the runner. Those three runs are attempts 1, 2 and 3 of
+    [run 32669269669](https://github.com/adammarquette/MarqSpec.Mcp.TopstepX/actions/runs/32669269669); the
+    `measure-98.yml` scaffolding that produced them was added and removed inside gh#98's own PR, so that run
+    is the only trail back to these numbers, and
+    [`check-image-entrypoint.sh`](../../scripts/check-image-entrypoint.sh)'s header carries the same
+    reference — keep the two together. 155 is the *dotnet host's* "the command could not be loaded", i.e.
+    what broken looks like; **gh#67 recorded it as the healthy code**, and a gate written to that number
+    would have passed the broken image and failed the good one. 139 — the old EOF-during-startup value — was
+    128+SIGSEGV from an unhandled `TaskCanceledException`, fixed by gh#76, which collapsed the two healthy
+    rows onto 0.
 
     **The decision (gh#98): the gate reads the exit code, as a second signal and never as the first.** It is
     asserted *after* the `tools/list` assertion, so a server that did not answer is failed on the missing

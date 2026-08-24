@@ -33,7 +33,10 @@
 # ubuntu24 20260816.277.1 (Ubuntu 24.04.4 LTS), Docker Engine 28.0.4 — three CI runs, three runs per row in
 # each, nine observations per row, every one of them agreeing. That REPLACES the Windows-only provenance that
 # stood here: Docker Desktop 29.6.2 on one developer machine, where 155 had not been re-measured since gh#67
-# and not a single number had ever been observed on the runner. Run URLs are on gh#98 and its pull request.
+# and not a single number had ever been observed on the runner. Those three runs are attempts 1, 2 and 3 of
+# https://github.com/adammarquette/MarqSpec.Mcp.TopstepX/actions/runs/32669269669 — the `measure-98.yml`
+# scaffolding that produced them was added and removed inside gh#98's own PR, so that run is the only trail
+# back to these numbers. documentation/agents/platform.md carries the same reference; keep the two together.
 #
 # 155 is the DOTNET HOST's "the command could not be loaded" — it is what BROKEN looks like, not what an
 # unconfigured-but-working server looks like. gh#67 recorded 155 as the HEALTHY code, from that Windows host;

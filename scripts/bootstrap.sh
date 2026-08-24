@@ -12,9 +12,10 @@
 # had never once been switched on, and nothing in the repository could have told you. This script exists so
 # that state is reproducible rather than re-clicked.
 #
-# Idempotent: safe to re-run. Branches, labels and rulesets are updated, not duplicated -- and a ruleset
-# update carries through every rule this script does not itself declare, `required_status_checks` first
-# among them.
+# Idempotent: safe to re-run -- because every ruleset it edits, it reads first. Branches, labels and rulesets
+# are updated, not duplicated, and a ruleset update carries through every rule this script does not itself
+# declare, `required_status_checks` first among them. When a read does not succeed, the script stops there
+# rather than writing a payload assembled out of state it never observed.
 #
 # That carry-through is the whole of gh#114, and it is not a nicety. A ruleset edit is a PUT and a PUT
 # REPLACES the whole object, so the payload below IS the ruleset: any rule missing from it is deleted. Until
@@ -22,7 +23,7 @@
 # whose merge gate had since been configured stripped every required check off all three rungs -- including
 # `no-order-path`, which is how ADR-0002's read-only boundary is enforced -- and printed "all rulesets active"
 # underneath, because enforcement was all it verified. Step 3 now reads each live ruleset before writing it,
-# and reads the contexts back per rung afterwards.
+# treats a read that does not succeed as fatal, and reads the contexts back per rung afterwards.
 #
 # (PATCH is not defined on /repos/{owner}/{repo}/rulesets/{id} and answers 404, which reads as a permissions
 # problem and is not one. PUT is the update verb; read-modify-write is the only shape available.)
@@ -107,23 +108,66 @@ step "3. Branch protection rulesets"
 # carries is read back and spliced into the payload untouched, so a PUT cannot delete a rule this script never
 # had an opinion about. KEEP THIS FILTER IN STEP WITH ruleset_payload() BELOW: a type named in neither place is
 # a type the next run silently deletes, which is exactly the fault gh#114 records.
-UNDECLARED_RULES='.rules[] | select(.type != "deletion" and .type != "non_fast_forward" and .type != "pull_request")'
+#
+# Each match comes back as `<type><TAB><that rule, compact JSON>`, so the "carrying through:" line printed to
+# the operator and the rules spliced into the PUT are two projections of ONE response and cannot disagree.
+# Reading the object twice -- once for the rules, once for the types -- could: the first GET failing and the
+# second succeeding printed the truth about the ruleset while the payload carried nothing.
+UNDECLARED_RULES='.rules[]
+  | select(.type != "deletion" and .type != "non_fast_forward" and .type != "pull_request")
+  | "\(.type)\t\(tojson)"'
 
-# One compact JSON object per line, or nothing at all -- the normal answer on a freshly created ruleset. gh
-# ships its own jq, so this needs no external dependency (same reasoning as claim.sh).
-undeclared_rules() { gh api "repos/$REPO/rulesets/$1" --jq "$UNDECLARED_RULES" 2>/dev/null || true; }
-undeclared_types() { gh api "repos/$REPO/rulesets/$1" --jq "[$UNDECLARED_RULES | .type] | join(\", \")" 2>/dev/null || true; }
+# Every read below decides what gets written, so none of them may fail quietly. `gh api` exits non-zero on both
+# an HTTP error and a connection-level failure, but only the first puts anything on STDOUT -- so a swallowed
+# failure of the second was indistinguishable from "this ruleset carries no extra rules", and the PUT that
+# followed deleted the rules the GET never got to report, `required_status_checks` among them. Which of those
+# two you got was decided by where gh happened to write its bytes, not by any choice made here.
+#
+# Note what is NOT the reason to swallow: a filter that MATCHES NOTHING is not a failure. gh exits 0 and prints
+# nothing -- the normal answer on a freshly created ruleset -- and that reaches the caller as an empty string
+# with or without `|| true`. The swallow bought that case nothing and hid the other one.
+#
+# gh ships its own jq, so this needs no external dependency (same reasoning as claim.sh).
+gh_read() {
+  local out status
+  out=$(gh api "$@") && status=0 || status=$?
+  [ "$status" -eq 0 ] || die "read failed (exit $status): gh api $1   (gh's own message is above)
+Stopping rather than guessing: a ruleset edit is a whole-object PUT, so a payload assembled from state this
+script did not observe deletes the rules it could not see -- gh#114 exactly. Nothing further has been written.
+Re-run once the API is reachable; every step here is idempotent."
+  printf '%s' "$out"
+}
+
+# `die` inside a command substitution exits the SUBSHELL, not this script, so every caller propagates it with
+# an explicit `|| exit 1` rather than leaning on `set -e` to notice. The message is already on stderr, which
+# the substitution does not capture.
+undeclared_rules() { gh_read "repos/$REPO/rulesets/$1" --jq "$UNDECLARED_RULES"; }
+
+# The types of exactly the rules above, in order, for the operator -- derived from those same lines rather than
+# from a second GET, so the line that reassures is the value that acts.
+carried_types_of() {
+  local line types=""
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    types="${types:+$types, }${line%%$'\t'*}"
+  done <<TYPES
+$1
+TYPES
+  printf '%s' "$types"
+}
 
 ruleset_payload() {
   local branch="$1" merge_method="$2" carried="${3:-}"
 
-  # Splice the carried rules in as further elements of the "rules" array. The loop shares this shell, so
+  # Splice the carried rules in as further elements of the "rules" array. Each line arrived as
+  # `<type><TAB><rule>`: the label is what was printed to the operator, and the JSON after the first tab is
+  # what gets written -- the same line, so they cannot describe different rules. The loop shares this shell, so
   # $carried_json survives it; an empty $carried yields a single empty line, which is skipped.
   local carried_json="" rule
   while IFS= read -r rule; do
     [ -n "$rule" ] || continue
     carried_json="$carried_json,
-    $rule"
+    ${rule#*$'\t'}"
   done <<CARRIED
 $carried
 CARRIED
@@ -159,13 +203,16 @@ JSON
 for pair in "develop:rebase" "staging:merge" "main:merge"; do
   branch="${pair%%:*}"
   method="${pair##*:}"
-  existing=$(gh api "repos/$REPO/rulesets" --jq ".[] | select(.name==\"protect-$branch\") | .id" 2>/dev/null || true)
+  # Swallowing this one does not lose the gate, but it POSTs a duplicate protect-$branch instead of updating
+  # the real one, and the next run then finds two ids and builds a URL out of both.
+  existing=$(gh_read "repos/$REPO/rulesets" --jq ".[] | select(.name==\"protect-$branch\") | .id") || exit 1
 
   if [ -n "$existing" ]; then
-    # Read before write. Both calls are GETs, so --dry-run runs them too and reports what a real run WOULD
-    # carry -- the point of a dry run against a live repo is to see the merge gate named before trusting it.
-    carried=$(undeclared_rules "$existing")
-    carried_types=$(undeclared_types "$existing")
+    # Read before write, and write only what the read returned. It is a GET, so --dry-run makes it too and
+    # reports what a real run WOULD carry -- the point of a dry run against a live repo is to see the merge
+    # gate named before trusting it.
+    carried=$(undeclared_rules "$existing") || exit 1
+    carried_types=$(carried_types_of "$carried")
     info "  updating protect-$branch (merge: $method)"
     if [ -n "$carried_types" ]; then
       info "    carrying through: $carried_types"
@@ -196,19 +243,24 @@ done
 # Enforcement alone catches only the first, which is why "all rulesets active" printed underneath a stripped
 # merge gate. Print the contexts themselves rather than a count: a context spelled differently from the job
 # that reports it is indistinguishable from a working one anywhere except in this list.
+#
+# A rung that requires nothing is NOT fatal here -- a legitimate first run against a fresh repo has none yet,
+# and the closing note is what tells you to add them. It is only the reads that are fatal, and they are fatal
+# BEFORE the write, which is the only place this is catchable: after the fact, "this rung never had checks" and
+# "this rung had checks and I just deleted them" are the same state.
+ungated=false
 if ! $DRY_RUN; then
   info ""
   info "  what each rung now requires:"
-  ungated=false
   for branch in develop staging main; do
-    id=$(gh api "repos/$REPO/rulesets" --jq ".[] | select(.name==\"protect-$branch\") | .id" 2>/dev/null || true)
+    id=$(gh_read "repos/$REPO/rulesets" --jq ".[] | select(.name==\"protect-$branch\") | .id") || exit 1
     if [ -z "$id" ]; then
       warn "    protect-$branch: MISSING"
       ungated=true
       continue
     fi
     # One GET, two fields: enforcement and the required contexts, tab-separated.
-    line=$(gh api "repos/$REPO/rulesets/$id" --jq '"\(.enforcement)\t\([.rules[] | select(.type == "required_status_checks") | .parameters.required_status_checks[].context] | join(", "))"')
+    line=$(gh_read "repos/$REPO/rulesets/$id" --jq '"\(.enforcement)\t\([.rules[] | select(.type == "required_status_checks") | .parameters.required_status_checks[].context] | join(", "))"') || exit 1
     enforcement="${line%%$'\t'*}"
     contexts="${line#*$'\t'}"
 
@@ -227,7 +279,7 @@ if ! $DRY_RUN; then
   # The loop above walks the three rungs by name. The check it replaced swept EVERY ruleset in the repo for
   # enforcement, so keep that reach for the ones this script does not manage -- a fourth ruleset sitting
   # disabled is the original cautionary tale, and it would otherwise stop being reported here.
-  others=$(gh api "repos/$REPO/rulesets" --jq '.[] | select(.enforcement != "active") | select(.name != "protect-develop" and .name != "protect-staging" and .name != "protect-main") | .name' || true)
+  others=$(gh_read "repos/$REPO/rulesets" --jq '.[] | select(.enforcement != "active") | select(.name != "protect-develop" and .name != "protect-staging" and .name != "protect-main") | .name') || exit 1
   if [ -n "$others" ]; then
     warn "  other ruleset(s) in this repo are not active: $(printf '%s' "$others" | tr '\n' ' ')"
   fi
@@ -301,6 +353,17 @@ info "working one in the settings page. Confirm what you actually left behind, p
 info ""
 info "  gh api repos/$REPO/rulesets/<id> --jq '.rules[]|select(.type==\"required_status_checks\").parameters.required_status_checks[].context'"
 info ""
-ok "Re-running this script KEEPS them (gh#114). Step 3 reads each live ruleset first and carries every rule it"
-ok "does not itself declare through the PUT, then reads the contexts back per rung — printed above. Read that"
-ok "list rather than the word 'active': an enforced ruleset that requires nothing is not a merge gate."
+# What re-running preserves is whatever is there — which is a promise about this script, not about the repo.
+# Saying "KEEPS them" in green underneath a rung that requires nothing would be gh#114's own failure mode in a
+# fresh costume: a reassuring line printed over an ungated rung.
+if $ungated; then
+  warn "Re-running this script keeps whatever each rung requires (gh#114) — which is exactly why the warning"
+  warn "above matters: a rung that requires nothing stays that way across every re-run. Step 3 reads each live"
+  warn "ruleset first, stops rather than writing if that read fails, and carries every rule it does not itself"
+  warn "declare through the PUT — but it cannot add a check nobody has named. Add them, then re-run."
+else
+  ok "Re-running this script KEEPS them (gh#114). Step 3 reads each live ruleset first — and stops rather than"
+  ok "writing if that read does not succeed — then carries every rule it does not itself declare through the"
+  ok "PUT, and reads the contexts back per rung — printed above. Read that list rather than the word 'active':"
+  ok "an enforced ruleset that requires nothing is not a merge gate."
+fi

@@ -47,7 +47,10 @@ The server serves OHLCV bars for a futures instrument at a requested resolution 
   `BarGapDetector.MaxBucketsPerPass` bound the same quantity from two sides — the first operator-configurable
   to 1,000,000, the second fixed at 250,000 — so the ceiling on a windowed read is **the lesser of the two**,
   and a request past it is refused naming the buckets asked for and the cap they are over rather than faulting
-  below the boundary or being shortened to fit (gh#96). A timeframe is fetched from the venue independently,
+  below the boundary or being shortened to fit (gh#96). **Nor is any bound on *size* sufficient**, which is
+  the same lesson a third time: a window at the far end of the calendar spans *zero* buckets, clears every cap
+  above at the default configuration, and still overflowed the bucket-grid arithmetic below the boundary — so
+  the window's **end** is bounded too, by R-5.4 (gh#110). A timeframe is fetched from the venue independently,
   never derived from a finer one: a bar derived from an incomplete set of constituents is indistinguishable
   from a real one, which R-2.3's rule forbids in the indicator path and which is no more acceptable here.
   See [ADR-0010](adr/0010-per-call-resolutions-fetched-not-derived.md).
@@ -131,7 +134,16 @@ The server serves OHLCV bars for a futures instrument at a requested resolution 
   not be indistinguishable. A *known* instrument with no data in the window returns an empty series.
 - **R-5.4** A windowed read that would exceed **either** cap on its size — the configured row cap, or the
   buckets one gap-detection pass will enumerate — **refuses and says so with the count**, naming the tighter of
-  the two. It never silently truncates, and it costs no vendor request to be told (gh#96).
+  the two. It never silently truncates, and it costs no vendor request to be told (gh#96). **Size is not the
+  only bound**: a window must also **end** far enough before the end of the representable calendar for the
+  machinery serving it to reason about its last bucket — two bar spans plus three days, because the bucket
+  grid is aligned *up* from the window's start, the gap detector tests one bucket beyond the last, and the
+  session calendar maps an evening bucket onto the next trade date. Past that the read is refused naming both
+  the `toUtc` given and the last one that would have been accepted; it is **not** moved back to fit, for the
+  same reason it is not truncated. That bound is on *representability*, so unlike the two size caps it binds
+  at the **default** configuration and for a window spanning zero buckets. **A tool that takes a bare instant
+  is bounded too** — `get_market_session`'s `atUtc` against the last instant the session rules can be
+  expressed at — because a bound built around a window never reaches one (gh#110).
 - **R-5.5** On stdio, all logging goes to stderr. Anything on stdout corrupts the protocol frame.
 - **R-5.6** One composed tool returns bars, indicators, levels and session state together, so the common
   question costs one round trip rather than five.

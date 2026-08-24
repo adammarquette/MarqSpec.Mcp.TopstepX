@@ -268,10 +268,63 @@ bucket-grid arithmetic regardless of either cap — a bound on *representability
 `ArgumentOutOfRangeException` at every configuration including the default. Out of gh#96's scope, on a
 different quantity, and carded as **gh#110**.
 
+## Update (2026-08-24) — the far end of the calendar is bounded too, and it is not a bound on size
+
+**The decision still stands; this closes the follow-up the update above opened.** gh#110 is that follow-up.
+
+**Every bound this record had accumulated was a bound on *how much*.** A resolution (gh#69, gh#81), a
+look-back reach (gh#81), a bucket count against two caps (gh#96). None of them bounded *where*, and the two
+are genuinely different: a window one tick wide at the end of year 9999 spans **zero** buckets, so it is
+inside `MaxRows` at its default of 5,000 and inside `MaxBucketsPerPass` — and `BarGapDetector.AlignUp` still
+rounded its start up to a bucket boundary past `DateTimeOffset.MaxValue`. **It fired at the default
+configuration**, which is what separates it from gh#96: that one needed `MaxRows` configured above 250,000,
+this one needs nothing.
+
+**The bound is on the window's END, and it moves with the resolution** —
+`ToolGuards.LastServableEnd(resolutionMinutes)`, reached from `ValidateBucketSpan`, so `ValidateWindow` and
+`LookbackWindow` both inherit it exactly as they inherit the bucket cap. The headroom is **two bar spans plus
+three days**, and each term is a real reach past the window's end:
+
+| Term | Why |
+|---|---|
+| one bar span | the grid is aligned **up** from the window's *start*, so a sub-bucket window names a first bucket up to a span past its own end |
+| a second bar span | the enumerator tests one span beyond the last bucket it yields |
+| three days | `BarSessionCalendar` maps an evening bucket onto the **next** trade date, then expresses that date's close as a Central wall-clock time converted back to UTC — up to two days and six hours, rounded up to whole days |
+
+So the last servable `toUtc` is `9999-12-28T23:57:59.9999999Z` at one-minute bars and
+`9999-12-14T23:59:59.9999999Z` at the weekly ceiling. The refusal names both the value passed and the last one
+that would have been accepted, and it **refuses rather than moving the end back** — the same rule every other
+bound here follows, and for the same reason.
+
+**A third reproduction was found by sweeping, not from the card, and it is the reason the sweep is shaped the
+way it is.** `get_market_session` takes an `atUtc` and **no window**, so every bound built around
+`ValidateWindow` — every bound in this record until now — swept straight past it, and
+`BarSessionCalendar.TradeDateFor` threw the same raw `ArgumentOutOfRangeException` on the same axis. It is
+bounded by `ToolGuards.ValidateInstant` against `CalendarHorizon` directly, with no bar grid in the way.
+**The gate that catches this class therefore filters on tools taking an *instant*, not on tools taking a
+resolution** — a resolution-shaped filter is exactly what missed it.
+
+**One of the three reproductions was not a boundary problem at all, and was not fixed like one.** The page walk
+in `BarCacheService.FetchAsync` computed `to = from + page` *before* clamping to the range's end, and a page
+is 1,000 bar spans — forty-two days at 60-minute bars. A window nine days from the end of the calendar is
+comfortably inside the bound above and genuinely servable, so refusing it would have been wrong: the walk
+clamps before the add instead, and `ProjectXMarketDataGateway` carried the identical loop and got the
+identical form. **Refusing everything near the end of the calendar would have been the easier fix and the
+worse one.**
+
+`ReferenceTools.NextOpen`'s fortnight scan is the same judgement a third time: `from + 14 days` threw for an
+instant three days inside the horizon, and that fortnight is a **termination guard** rather than a window
+anyone asked for — so it is clamped to the horizon. A scan reaching the horizon without finding an open
+answers `null`, which is the absence it already answers for a calendar that never opens; it never answers a
+substituted time.
+
+**`Domain` gained no code.** `AlignUp` cannot round up past the end of the calendar and must not clamp — a
+clamped boundary is not on the grid, which is a wrong answer wearing an ordinary face — so it keeps throwing,
+and the tool boundary refuses first. The rule needs the *session calendar's* day arithmetic to state it, which
+`BarGapDetector` cannot see, so a second copy of it there would have been a partial copy.
+
 ## Follow-ups
 
-- gh#110 — a window at the end of the calendar still faults below the tool boundary. The last raw
-  `ArgumentOutOfRangeException` on this surface, and the one neither cap above bounds.
 - gh#49 — `get_market_snapshot` should default its resolution set rather than making an agent guess. This
   record supplies the cost side of that judgement.
 - gh#43 — extract the gateway's documented rate limits. That is the evidence that would move point 3 above.

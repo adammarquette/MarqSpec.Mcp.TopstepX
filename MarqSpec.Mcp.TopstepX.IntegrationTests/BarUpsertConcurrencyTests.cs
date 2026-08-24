@@ -36,6 +36,14 @@ public sealed class BarUpsertConcurrencyTests(SchemaFixture fixture)
     /// <summary>How far a restated bar moves, so which fill wrote a row can be read off the row.</summary>
     private const decimal Restatement = 7.5m;
 
+    /// <summary>A price difference the stored column cannot represent, so it is not a difference.</summary>
+    /// <remarks>
+    /// <c>numeric(18,8)</c> holds eight decimal places and this sits in the ninth, so it rounds away on the
+    /// way in. <see cref="decimal"/> holds it — which is the whole point: the C# pre-filter compares at full
+    /// precision and calls it a change, and only the statement's <c>WHERE</c> knows better.
+    /// </remarks>
+    private const decimal BelowTheStoredScale = 0.000000001m;
+
     private readonly SchemaFixture _fixture = fixture;
 
     /// <summary>Far enough past every bucket these tests use that none of them is still forming.</summary>
@@ -172,6 +180,190 @@ public sealed class BarUpsertConcurrencyTests(SchemaFixture fixture)
         }
     }
 
+    [Fact]
+    public async Task ARestatementBelowTheStoredScale_IsNotAWrite_ButOneAboveItIs()
+    {
+        // The statement's WHERE ... IS DISTINCT FROM and its "RecordedAt" SET line -- two clauses nothing
+        // else in either suite reaches, pinned here by the contrast between two buckets in ONE statement.
+        //
+        // AnOverlapTheTwoFillsAgreeOn_IsNotRewritten proves the C# pre-filter skips, and stops there: on the
+        // retry its fresh snapshot sees the other fill's rows, Unchanged() drops the overlap in memory, and
+        // buckets 10..19 never reach the SQL at all. Deleting the WHERE leaves that test green.
+        //
+        // A difference BELOW the column's scale is what separates the two guards. `decimal` carries the ninth
+        // decimal place, so the pre-filter compares 4990.900000001 against 4990.90000000, says "changed", and
+        // sends the bucket. By the time the WHERE reads `excluded."Open"` it is already numeric(18,8), both
+        // sides are the column's own type, and the store correctly sees nothing to do -- a difference the
+        // column cannot represent did not happen.
+        //
+        // THIS TIER, AND ONLY THIS TIER. The claim is about a numeric(18,8) column's own type. The unit
+        // suite's in-memory provider has no column types and takes UpsertInMemoryAsync, so it never executes
+        // this SQL -- a test of it there would be green on the day the clause was deleted.
+        //
+        // And a collision rather than a plain second fetch, because BarGapDetector.FindMissing breaks its
+        // runs at every stored bucket: a sequential re-fetch never re-answers a bucket the store already
+        // holds, so the concurrent overlap is the only route to the statement.
+        string venue = ConcurrencyHarness.Venue();
+        DateTimeOffset later = Now.AddMinutes(1);
+
+        await using TopstepXDbContext otherStore = _fixture.CreateContext();
+
+        async Task FillTheOverlappingRangeAndCommit()
+        {
+            BarCacheService other =
+                ConcurrencyHarness.Cache(otherStore, venue, ConcurrencyHarness.Bars(0, 20), Now);
+            await other.GetBarsAsync(
+                ConcurrencyHarness.Instrument,
+                ConcurrencyHarness.ResolutionMinutes,
+                ConcurrencyHarness.Window(0, 20),
+                CancellationToken.None);
+        }
+
+        InterleavingInterceptor straddle = Straddle(venue, FillTheOverlappingRangeAndCommit);
+        CapturingLogger<BarCacheService> log = new();
+        await using TopstepXDbContext store = _fixture.CreateContext(straddle);
+
+        // Buckets 10..18 differ from the other fill's rows only BELOW the column's scale. Bucket 19 differs
+        // ABOVE it, and is the control: it rides in the same statement, through the same SET list, over a row
+        // committed by the same fill -- so the only thing separating "left alone" from "written again" is
+        // whether numeric(18,8) can represent the difference. 20..29 are new, and catch a guard that has
+        // swallowed the buckets nothing was holding back.
+        IReadOnlyList<Bar> answer =
+        [
+            .. MovedBy(BelowTheStoredScale, 10, 19),
+            .. MovedBy(Restatement, 19, 20),
+            .. ConcurrencyHarness.Bars(20, 30),
+        ];
+        BarCacheService fill = ConcurrencyHarness.Cache(store, venue, answer, later, log);
+
+        Func<Task> read = () => fill.GetBarsAsync(
+            ConcurrencyHarness.Instrument,
+            ConcurrencyHarness.ResolutionMinutes,
+            ConcurrencyHarness.Window(10, 30),
+            CancellationToken.None);
+
+        await read.Should().NotThrowAsync();
+        AssertTheFillsActuallyCollided(straddle, log);
+
+        IReadOnlyList<BarRecord> stored = await StoredSeriesAsync(venue);
+
+        for (int index = 0; index < 19; index++)
+        {
+            stored.Single(b => b.BucketStart == ConcurrencyHarness.Bucket(index)).RecordedAt.Should().Be(
+                Now,
+                "bucket {0} differs from what the second fill answered with only below the scale "
+                + "numeric(18,8) can hold, so the store had nothing to write -- moving RecordedAt would "
+                + "restate the answer to \"when was this last revised\" for a revision that did not happen, "
+                + "and would send the whole series back through the projection for nothing",
+                index);
+        }
+
+        BarRecord revised = stored.Single(b => b.BucketStart == ConcurrencyHarness.Bucket(19));
+
+        revised.Close.Should().Be(
+            ConcurrencyHarness.Bars(19, 20)[0].Close + Restatement,
+            "bucket 19 differs above the column's scale, so it is a real revision and the later fill's "
+            + "values stand");
+
+        revised.RecordedAt.Should().Be(
+            later,
+            "bucket 19 WAS written, so it carries the clock of the fill that wrote it -- RecordedAt is only "
+            + "an answer to \"when was this last revised\" if a revision moves it, and the buckets above "
+            + "prove only that it stays put");
+
+        for (int index = 20; index < 30; index++)
+        {
+            stored.Single(b => b.BucketStart == ConcurrencyHarness.Bucket(index)).RecordedAt.Should().Be(
+                later,
+                "bucket {0} was new to the store, so the second fill wrote it -- the guard must not have "
+                + "swallowed the buckets that genuinely changed",
+                index);
+        }
+    }
+
+    [Fact]
+    public async Task ARevisedBucket_CarriesTheContractThatProducedItsNumbers()
+    {
+        // The "ContractId" = excluded."ContractId" line of the SET list, which the suite otherwise leaves
+        // free: deleting it keeps every other test green.
+        //
+        // ADR-0011's claim is that a bucket's provenance moves WITH its prices -- both come out of one venue
+        // answer -- so a row can never hold one observation's numbers under another observation's contract.
+        // The failure that claim exists to prevent is silent: a bucket stored under this quarter, restated by
+        // a fetch made against the next one, keeping the old id under the new prices. ContractRollDetector
+        // segments by contract, so a stale id does not merely mislabel the row -- it makes a real roll
+        // INVISIBLE, splicing two contracts into one series with nothing marking the seam. A wrong contract
+        // is worse than an absent one: FetchAsync rejects an absent one outright (VenueException), and
+        // nothing at all reports a wrong one.
+        //
+        // The two assertions are one claim and have to be read together. Prices alone would pass with the
+        // provenance line deleted; provenance alone would pass with the price lines deleted. Together they
+        // say the row describes a single observation.
+        string venue = ConcurrencyHarness.Venue();
+        DateTimeOffset later = Now.AddMinutes(1);
+
+        await using TopstepXDbContext otherStore = _fixture.CreateContext();
+
+        async Task FillTheOverlappingRangeAndCommit()
+        {
+            BarCacheService other =
+                ConcurrencyHarness.Cache(otherStore, venue, ConcurrencyHarness.Bars(0, 20), Now);
+            await other.GetBarsAsync(
+                ConcurrencyHarness.Instrument,
+                ConcurrencyHarness.ResolutionMinutes,
+                ConcurrencyHarness.Window(0, 20),
+                CancellationToken.None);
+        }
+
+        InterleavingInterceptor straddle = Straddle(venue, FillTheOverlappingRangeAndCommit);
+        CapturingLogger<BarCacheService> log = new();
+        await using TopstepXDbContext store = _fixture.CreateContext(straddle);
+
+        // The SAME overlap, answered under the NEXT contract at restated prices -- which is what a fill
+        // running across a roll actually looks like.
+        BarCacheService fill = ConcurrencyHarness.Cache(
+            store, venue, Restated(10, 30), later, log, ConcurrencyHarness.NextContractId);
+
+        Func<Task> read = () => fill.GetBarsAsync(
+            ConcurrencyHarness.Instrument,
+            ConcurrencyHarness.ResolutionMinutes,
+            ConcurrencyHarness.Window(10, 30),
+            CancellationToken.None);
+
+        await read.Should().NotThrowAsync();
+        AssertTheFillsActuallyCollided(straddle, log);
+
+        IReadOnlyList<BarRecord> stored = await StoredSeriesAsync(venue);
+
+        for (int index = 10; index < 20; index++)
+        {
+            BarRecord row = stored.Single(b => b.BucketStart == ConcurrencyHarness.Bucket(index));
+
+            row.Close.Should().Be(
+                Restated(index, index + 1)[0].Close,
+                "bucket {0} was revised by the second fill, so it holds that fill's numbers",
+                index);
+
+            row.ContractId.Should().Be(
+                ConcurrencyHarness.NextContractId,
+                "bucket {0} holds the second fill's numbers, so it must hold the contract those numbers came "
+                + "from -- a row carrying this quarter's id under next quarter's prices hides the roll from "
+                + "ContractRollDetector entirely, and nothing downstream can tell that it did",
+                index);
+        }
+
+        for (int index = 0; index < 10; index++)
+        {
+            BarRecord row = stored.Single(b => b.BucketStart == ConcurrencyHarness.Bucket(index));
+
+            row.ContractId.Should().Be(
+                ConcurrencyHarness.ContractId,
+                "bucket {0} is outside the second fill's range, so nothing restated it and the contract that "
+                + "produced its numbers still stands -- the write must not have reached past what it answered",
+                index);
+        }
+    }
+
     /// <summary>
     /// Places another fill's whole transaction between this one's snapshot and its write.
     /// </summary>
@@ -254,6 +446,29 @@ public sealed class BarUpsertConcurrencyTests(SchemaFixture fixture)
             Low = b.Low + Restatement,
             Close = b.Close + Restatement,
             Volume = b.Volume + 1,
+        }),
+    ];
+
+    /// <summary>
+    /// The harness's bars with every price moved by one amount, and nothing else touched.
+    /// </summary>
+    /// <param name="delta">How far to move each price.</param>
+    /// <param name="fromIndex">The first bucket index.</param>
+    /// <param name="toIndexExclusive">One past the last bucket index.</param>
+    /// <returns>The bars.</returns>
+    /// <remarks>
+    /// <b>Prices only.</b> <c>Volume</c> is <c>bigint</c> and <c>ContractId</c> is <c>varchar</c> — neither
+    /// rounds, so moving either would be a difference the store really does see whatever the delta, and the
+    /// sub-scale and above-scale cases would stop differing in only the one respect that is the test.
+    /// </remarks>
+    private static IReadOnlyList<Bar> MovedBy(decimal delta, int fromIndex, int toIndexExclusive) =>
+    [
+        .. ConcurrencyHarness.Bars(fromIndex, toIndexExclusive).Select(b => b with
+        {
+            Open = b.Open + delta,
+            High = b.High + delta,
+            Low = b.Low + delta,
+            Close = b.Close + delta,
         }),
     ];
 }

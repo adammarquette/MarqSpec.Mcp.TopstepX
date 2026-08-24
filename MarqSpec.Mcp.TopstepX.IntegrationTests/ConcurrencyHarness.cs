@@ -204,7 +204,16 @@ public sealed class CapturingLogger<T> : ILogger<T>
 /// </remarks>
 /// <param name="venueId">The venue id every row this fill writes is keyed under.</param>
 /// <param name="available">The bars the venue is willing to serve.</param>
-public sealed class SeriesGateway(string venueId, IEnumerable<Bar> available) : IMarketDataGateway
+/// <param name="contractId">
+/// The contract this fill resolves to. Defaults to <see cref="ConcurrencyHarness.ContractId"/>, so a fill
+/// that does not care carries the same provenance every other test does; a fill that answers under a
+/// <b>different</b> contract is how a roll — or a row whose provenance stopped matching its numbers — is
+/// reachable at all.
+/// </param>
+public sealed class SeriesGateway(
+    string venueId,
+    IEnumerable<Bar> available,
+    string contractId = ConcurrencyHarness.ContractId) : IMarketDataGateway
 {
     private readonly Dictionary<DateTimeOffset, Bar> _available = available.ToDictionary(b => b.OpenTime);
 
@@ -217,7 +226,7 @@ public sealed class SeriesGateway(string venueId, IEnumerable<Bar> available) : 
         CancellationToken cancellationToken)
     {
         IReadOnlyList<VenueContract> contracts =
-            [new VenueContract(ConcurrencyHarness.ContractId, instrument, true, 0.25m, 12.50m)];
+            [new VenueContract(contractId, instrument, true, 0.25m, 12.50m)];
         return Task.FromResult(contracts);
     }
 
@@ -282,6 +291,15 @@ public static class ConcurrencyHarness
     /// which is a different claim (ADR-0011) and would obscure this one.
     /// </remarks>
     public const string ContractId = "CON.F.US.EP.Z26";
+
+    /// <summary>
+    /// A second contract, for the one test that needs two.
+    /// </summary>
+    /// <remarks>
+    /// The quarter after <see cref="ContractId"/>, because a roll is what actually puts two contracts on one
+    /// series — an arbitrary string would test the same SQL while describing something that cannot happen.
+    /// </remarks>
+    public const string NextContractId = "CON.F.US.EP.H27";
 
     /// <summary>The instrument symbol these tests store under.</summary>
     public const string Symbol = "ES";
@@ -368,16 +386,18 @@ public static class ConcurrencyHarness
     /// <param name="available">The bars the venue will serve.</param>
     /// <param name="now">The instant the fill runs at. Bars not yet closed at it are dropped.</param>
     /// <param name="logger">A logger, when the test needs to read what the fill said it did.</param>
+    /// <param name="contractId">The contract this fill resolves to. Defaults to <see cref="ContractId"/>.</param>
     /// <returns>The service.</returns>
     public static BarCacheService Cache(
         TopstepXDbContext database,
         string venue,
         IEnumerable<Bar> available,
         DateTimeOffset now,
-        ILogger<BarCacheService>? logger = null) =>
+        ILogger<BarCacheService>? logger = null,
+        string contractId = ContractId) =>
         new(
             database,
-            new SeriesGateway(venue, available),
+            new SeriesGateway(venue, available, contractId),
             Calendar(),
             Projector(database),
             new FakeTimeProvider(now),

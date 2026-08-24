@@ -172,7 +172,28 @@ docker image inspect "$IMAGE" >/dev/null 2>&1 || {
 # ---------------------------------------------------------------------------
 # Read from the image rather than from the Dockerfile: what ships is what the daemon recorded, and a
 # multi-stage build has more than one place to get that wrong.
-mapfile -t ENTRY < <(docker inspect --format '{{range .Config.Entrypoint}}{{println .}}{{end}}' "$IMAGE")
+#
+# THE INSPECT IS CHECKED BEFORE IT IS SPLIT (gh#126). This was
+# `mapfile -t ENTRY < <(docker inspect ...)`, and a process substitution's exit status is never examined by
+# the shell -- so a failed inspect left ENTRY empty and the check below reported `ENTRYPOINT is []`, sending
+# the reader to the Dockerfile over what was a docker failure. It failed closed, which is why it is a
+# diagnosis bug rather than a hole, but it is the one shape from this same sweep that was still inside this
+# gate.
+ENTRY_RAW=""
+INSPECT_STATUS=0
+ENTRY_RAW="$(docker inspect --format '{{range .Config.Entrypoint}}{{println .}}{{end}}' "$IMAGE")" \
+  || INSPECT_STATUS=$?
+if [ "$INSPECT_STATUS" -ne 0 ]; then
+  die "  CANNOT INSPECT  docker inspect exited $INSPECT_STATUS for $IMAGE"
+  die "That is a docker or daemon failure rather than a verdict on the image, and nothing has been checked."
+  exit 1
+fi
+mapfile -t ENTRY <<ENTRYPOINT
+$ENTRY_RAW
+ENTRYPOINT
+
+# A bare assignment, so `set -e` carries the substitution's status and stops here -- the one shape from the
+# table in this script's header that does fire. Left as one line for that reason.
 WORKDIR="$(docker inspect --format '{{.Config.WorkingDir}}' "$IMAGE")"
 
 if [ "${#ENTRY[@]}" -lt 2 ] || [ "${ENTRY[0]}" != "dotnet" ] || [[ "${ENTRY[1]}" != *.dll ]]; then

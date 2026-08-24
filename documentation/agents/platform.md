@@ -187,12 +187,17 @@ The root contract's five apply here unchanged. Four land specifically on the pip
     `docker-container` driver, buildx attaches a provenance attestation **by default** when pushing, and the
     published tag becomes an image index carrying an `unknown/unknown` attestation manifest rather than a
     plain manifest — measured against a local registry, where the image manifest digest came out identical
-    either way, so the pin changes the wrapper and nothing else. `release.yml` pins `provenance: false`. Be
-    clear what that pin is *not*: **nothing has ever been published from this pipeline** — no `v*` tag, no
-    release, no run of `release.yml` — so it protects no existing consumer. It fixes the published shape
-    deliberately while doing so is still free, rather than inheriting whichever default the builder brings.
-    Turning attestations on later is an ADR, not a drift. No green check can cover the choice: CI exports
-    with `load` and never pushes, so the published shape is only ever produced by a real release.
+    either way, so the pin changes the wrapper and nothing else. `release.yml` pins `provenance: false`,
+    fixing the published shape deliberately rather than inheriting whichever default the builder brings.
+    That choice was made while nothing had yet been published from this pipeline, so it protected no
+    existing consumer and cost nothing to make. **That window is closed**: `v0.1.0` is tagged and released
+    — *"v0.1.0 — first release"*, published 2026-08-24T02:29Z — and `release.yml` has run twice:
+    `32668734971` **failing** at its `Build and push` step on 2026-08-23T21:50Z, which is gh#115, and
+    `32683215519` **succeeding** on 2026-08-24T02:29Z. Flipping the pin now changes the published manifest
+    shape under a tag that already exists and that someone may already be pulling. Turning attestations on
+    was an ADR rather than a drift while it was free, and it still is one, now with a consumer to consider.
+    No green check can cover the choice: CI exports with `load` and never pushes, so the published shape is
+    only ever produced by a real release.
   - **The same action uploads a `.dockerbuild` build record as a workflow artifact by default** — on a public
     repo, from fork PRs included, which `docker build` never did. Both jobs turn it off
     (`DOCKER_BUILD_RECORD_UPLOAD`, `DOCKER_BUILD_SUMMARY`) rather than leave a fourth export surface on by
@@ -230,9 +235,26 @@ by mutation, not as a description of the workflow files.**
 | `commit-hygiene` | required | required | required | `branch-policy.yml` |
 | `issue-link` | required | required | required | `branch-policy.yml` |
 | `ladder` | — | required | required | `branch-policy.yml` |
-| `image` | — | — | — | `ci.yml` — reports only, deliberately |
+| `image` | required | required | required | `ci.yml` — made required by gh#115 (#121); recorded by gh#125 |
 | `release-gate` | — | — | — | `ci.yml` — added by gh#108; reports only, see below |
 | `Analyze (csharp)`, `CodeQL` | — | — | — | `codeql.yml` — reports only, deliberately |
+
+**Every cell above was read from the rulesets API, never from the settings page** — one call per rung, over
+ids `21182074`, `21182075` and `21182079`:
+
+```console
+$ gh api repos/adammarquette/MarqSpec.Mcp.TopstepX/rulesets/<id> --jq \
+    '[.rules[]|select(.type=="required_status_checks")|.parameters.required_status_checks[].context]'
+```
+
+Last reconciled 2026-08-24 (gh#125) — the card that exists because `image` was made required and this table
+was not told. That read settles which **strings** are required and nothing more; what shows a string is
+spelled the way its job reports is GitHub's own per-context `isRequired`, taken on a real pull request. That
+field is **GraphQL-only** — `isRequired(pullRequestNumber:)` on the `statusCheckRollup` contexts — and `gh pr
+view --json statusCheckRollup` returns it as `null` for every context, which reads as "nothing is required"
+rather than as "this field was not asked for". Asked properly on PR #130 (base `staging`) it answered `true`
+for all ten contexts required on that rung, `image` included, and `false` for both `Analyze (csharp)` and
+`CodeQL`.
 
 `ladder` is the one deliberate asymmetry: nothing is promoted *into* the integration branch, so requiring it on
 `develop` would gate on a rule that cannot apply there. Not a finding — recorded so nobody "fixes" it.
@@ -243,18 +265,64 @@ by mutation, not as a description of the workflow files.**
 at `main`; the rulesets are what stop that refusal depending on one job. A single content gate that stops one
 rung short is also a question every future reader has to re-derive.
 
-**`image` is deliberately NOT required, and gh#98 is the trigger to revisit it.** Two reasons, the first
-observed rather than argued:
+**`image` IS required, on all three rungs — gh#115 made it required and said so; this table was not told.**
+The change is #121 (`Closes #115`) — `4f2c31f` on its branch, which the rebase merge landed on `develop` as
+`3bcb5fa`, so that is the SHA to `git show` here. Its message opens on exactly this: *"`image` was not a
+required check on any of the three rulesets, so the gate this PR adds reports and does not enforce."* It
+recorded the requirement where the checks are enumerated — `bootstrap.sh`'s required-check list names
+`image` and says why — and it named the settings half as a separate step: *"The ruleset itself is
+repository settings rather than a diff and is applied separately."* **The settings half landed inside the
+window in which that commit was being written** — not before it and not after it. Every figure below is
+labelled author or commit deliberately, because this paragraph was written wrong twice for conflating them,
+and `git show` prints the **author** date while a rebase merge rewrites only the **commit** date:
 
-- It is a *downstream* job (`needs: [build-test, integration-test, no-order-path]`), and a job skipped because
-  a dependency failed reports **`SKIPPED`** — which GitHub counts as satisfying a required check. On gh#111,
-  the throwaway that proved this gate, `image` reported `SKIPPED` while `no-order-path` was red. A required
-  `image` would have been green *precisely because* the thing it packages was broken: a gate whose failure mode
-  is passing. Requiring it means giving it its own checkout, or accepting that.
-- gh#98 is still measuring what a green `image` means on the runner. Requiring a gate whose signal is under
-  review is the same error as leaving a real gate advisory, pointed the other way.
+| 2026-08-23 CDT | What |
+|---|---|
+| 19:30:26 | gh#98's #113 merged (`mergedAt`) — 25 minutes before the first ruleset edit, and not its cause |
+| **19:49:47** | `4f2c31f` **author** date; `3bcb5fa` carries the same one, which is what `git show` prints |
+| **19:55:50 / 19:56:01 / 19:56:13** | the ruleset edits — versions `47403790` (develop), `47403796` (staging), `47403801` (main), each immediately after the version that added `paced-paging` |
+| **20:01:54** | `4f2c31f` **commit** date |
+| 20:59:17 / 20:59:18 | `3bcb5fa`'s **commit** date, and #121's `mergedAt` |
 
-**CodeQL is deliberately NOT required.** Two contexts exist for it — the check run `Analyze (csharp)` and the
+So the three edits and the commit describing them were one piece of work in progress at the same moment,
+and all three were made while #121 was open — which is why no diff on `develop` changes at the instant
+enforcement did. **What was missing is this row (gh#125), not the record.** gh#98's part is the revisit
+trigger below, not the cause.
+
+**The reason to require it is gh#115's, and it is the one to weigh if this is ever revisited:** `image` is
+the **only** job that evaluates the registry reference the release pushes. Left advisory, an invalid
+reference goes red on a pull request, merges anyway, promotes twice and fails the release — which is
+precisely how `v0.1.0` failed, with the CI evidence sitting unread the whole way. `bootstrap.sh` carries
+that same reason next to the context list; keep the two together. Both of gh#72's reasons for leaving it
+advisory were re-examined rather than assumed away:
+
+- **"gh#98 is still measuring what a green `image` means on the runner"** — expired. gh#98 landed: the exit
+  codes above are measured where the gate runs, the gate reads one as a second signal, and
+  [`check-image-entrypoint-selftest.sh`](../../scripts/check-image-entrypoint-selftest.sh) fails that same
+  job if the gate stops rejecting a broken entrypoint. It is no longer a gate that can pass vacuously,
+  which is what "requiring a gate whose signal is under review" was guarding against.
+- **"a skipped required check counts as satisfied"** — still true of GitHub, and **not a hole here**;
+  checked against the live context list rather than assumed in either direction. `image` is a *downstream*
+  job (`needs: [build-test, integration-test, no-order-path]`), so it reports **`SKIPPED`** when one of
+  those fails. That is a hole only if `image` can be skipped while everything blocking is green, and it
+  cannot: all three of its `needs` report contexts that are **themselves required on all three rungs** —
+  `build & unit tests`, `integration tests` and `no-order-path` — and none of the three carries an `if:` or
+  a `needs:` of its own, so none of them can be skipped either. A skipped `image` therefore always sits
+  behind a required check that is red or cancelled, and a cancelled required check blocks too (gh#26).
+  This is exactly the argument gh#72's reviewer accepted for `coverage` (`needs: build-test`, itself
+  required). gh#111 is the same shape read the other way round: `image` reported `SKIPPED` **because**
+  `no-order-path` was red, `no-order-path` is required, and that pull request came back
+  `mergeStateStatus: BLOCKED` with an attempted merge refused. The skip rescued nothing — the red
+  underneath it was already blocking.
+
+**What would open that hole is adding a job to `image`'s `needs` that is not itself a required context.** A
+skip would then have nothing red beneath it, and `image` would go green on an image nobody built. The same
+holds for `coverage`. The argument is a property of the `needs:` list rather than of the job, so a change
+to either list re-runs it in this section, in the same PR.
+
+**CodeQL is deliberately NOT required, and that row was re-read rather than carried forward** — neither
+string appears in any of the three rulesets, and GitHub answered `isRequired: false` for both of them on
+PR #130 (gh#125). Two contexts exist for it — the check run `Analyze (csharp)` and the
 code-scanning status `CodeQL` — so the first thing a required string here does is pick one, and `Analyze
 (csharp)` is *matrix-expanded*: adding a language or renaming the matrix key silently changes the context, which
 is the never-reports failure above. Worse, a CodeQL run goes **green when it finds something** — findings land
@@ -314,7 +382,7 @@ found.
 | Setting | What depends on it | What observes it | Found off |
 |---|---|---|---|
 | `production` environment carries a `required_reviewers` rule | `release.yml`'s `gate` job — the only thing between a merge and a public GHCR tag | [`check-release-gate.sh`](../../scripts/check-release-gate.sh), in `ci.yml` and in `release.yml` | gh#108 |
-| `required_status_checks` on `protect-develop` / `-staging` / `-main` | every merge gate in the table above; `no-order-path` carries ADR-0002 | `bootstrap.sh` step 3, which reads the contexts back per rung | gh#26, gh#72, gh#114 |
+| `required_status_checks` on `protect-develop` / `-staging` / `-main` | every merge gate in the table above; `no-order-path` carries ADR-0002 | `bootstrap.sh` step 3, which reads the contexts back per rung | gh#26, gh#72, gh#114; and gh#125, the one that went the other way — set correctly and recorded in `bootstrap.sh`, but not in the table above |
 | ruleset `enforcement: active` | all of the above | `bootstrap.sh` step 3 | `MarqSpec.Client.ProjectX`, disabled from creation |
 
 ### The release approval gate (gh#108)

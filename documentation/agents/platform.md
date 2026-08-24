@@ -190,10 +190,13 @@ not the symptom.
 
 The merge gate is the `required_status_checks` rule on three rulesets — `protect-develop` (`21182074`),
 `protect-staging` (`21182075`) and `protect-main` (`21182079`) — and it names contexts as **strings**. Nothing
-ties a string to a job. A context spelled differently from the name its job reports under never reports, so it
-never fails and never blocks, and in the settings page it looks exactly like one that works (gh#26). **Read
-this table as a claim about GitHub settings that has to be re-confirmed by mutation, not as a description of
-the workflow files.**
+ties a string to a job. A context spelled differently from the name its job reports under never reports, and in
+the settings page it looks exactly like one that works (gh#26). What it does **not** do is pass quietly:
+measured on a throwaway during gh#114, a pull request gated on a context nothing had ever reported came back
+`mergeStateStatus: BLOCKED` with an **empty** check list — permanently unmergeable, with nothing red to point
+at. That is the failure to expect from a typo here, and it is why `bootstrap.sh` declines to seed a guessed
+context list onto a fresh repo. **Read this table as a claim about GitHub settings that has to be re-confirmed
+by mutation, not as a description of the workflow files.**
 
 | Context | develop | staging | main | Reported by |
 |---|---|---|---|---|
@@ -237,14 +240,29 @@ as alerts in the Security tab, not as a job failure — so requiring it would en
 "the analysis was clean". What actually blocks on findings is code scanning's own merge protection, a separate
 mechanism and an ADR-sized decision.
 
+**A required context does NOT have to have been seen before.** "GitHub will not accept a check name it has
+never seen" was `bootstrap.sh`'s stated reason for declaring none, and it is false — inherited folklore from
+the legacy branch-protection API, which turns out not to enforce it either. Measured on a repo with zero
+workflow runs, zero check runs and zero commit statuses: a ruleset `POST` naming three contexts that had never
+reported anywhere was accepted, `201`, and stored all three verbatim (gh#114). It is the settings **page** that
+only offers checks it has seen recently; the API has no such rule. So a context *can* be required before the
+job reporting it exists — which is the paragraph above's reason to do that deliberately, not eagerly.
+
 **Editing a ruleset is a `PUT`, and a `PUT` replaces.** `PATCH` is not defined on
 `/repos/{owner}/{repo}/rulesets/{id}` and answers `404`, which reads as a permissions problem and is not one.
 An edit is therefore: `GET` the whole ruleset, change the one thing, `PUT` the whole object back — and a `rules`
 array assembled by hand on the way through is how `no-order-path` gets dropped in silence, taking ADR-0002's
 boundary with it. **Re-read the full context list after every write, not just the entry you added.**
-`bootstrap.sh` has this hazard by construction: it `PUT`s a ruleset payload that declares no
-`required_status_checks` rule at all, so re-running it against this repo today would strip every required check
-from all three rungs (gh#114).
+
+`bootstrap.sh` **had** this hazard by construction and no longer does (gh#114). It used to `PUT` a payload
+declaring no `required_status_checks` rule at all, so a second run against a configured repo stripped every
+required check off all three rungs and printed "all rulesets active" underneath, enforcement being all it
+verified. It now reads each live ruleset before writing it and carries through every rule it does not itself
+declare, then reads the contexts back **per rung** and prints them — so a rung that is active and gates nothing
+is reported as such instead of counted as a success. Both halves were demonstrated on a throwaway repo: the old
+script stripped a configured gate, the new one preserved the same gate across a second and third run. The
+general lesson is unchanged, and is why the fix is shaped that way: **assemble a `rules` array from what is
+there, never from what you remember being there.**
 
 ## How the pipeline is shaped
 

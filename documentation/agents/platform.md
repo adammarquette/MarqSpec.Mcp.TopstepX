@@ -289,6 +289,50 @@ for all ten contexts required on that rung, `image` included, and `false` for bo
 at `main`; the rulesets are what stop that refusal depending on one job. A single content gate that stops one
 rung short is also a question every future reader has to re-derive.
 
+**`commit-hygiene` also refuses a merge commit, on a pull request into `develop` and nowhere else** (gh#146).
+`protect-develop` is `allowed_merge_methods: ["rebase"]` and carries
+`strict_required_status_checks_policy: true`; *Rebase and merge* cannot replay a merge commit, so a branch
+that has ever had `git merge develop` run into it is unmergeable for good — and the pull request says so only
+as **"All checks have passed"** beside **"Unable to merge (rebase) — Cannot merge at this time"**, naming
+nothing. On 2026-08-24, #131, #139, #141 and #143 were approved, green and unmergeable at once; #131 lost five
+curated commits to a squash, and Dependabot disowned #143 for having been edited.
+
+*Enforced, not merely documented, and the reason is that the reader is not reading.* The entries in
+[`AGENT-MEMORY.md`](../AGENT-MEMORY.md) and [`CONTRIBUTING.md`](../../CONTRIBUTING.md) landed in the same PR
+and are the floor — but the mistake is one click on GitHub's *Update branch* button, whose **default is a
+merge**, taken by someone looking at a page rather than at a document, and it *looks* right: the branch does
+come up to date and the checks do go green. Only a check answers at push time. It costs one
+`git rev-list --merges` inside a job that already resolves the range, its detection rule is exact, and it
+needs **no ruleset write** — `commit-hygiene` is already a required context on all three rungs, so nothing in
+[the table above](#what-is-required-and-what-only-reports) changes.
+
+*The scope guard is the whole risk, and the danger is not hypothetical.* `staging` and `main` are the opposite
+rung — `allowed_merge_methods: ["merge"]` — so a promotion carries merge commits **by construction**: PR
+#129's real range, `5d56e7a..2eb2c42`, contained `2eb2c42` itself. An unguarded step would have failed a
+correct promotion, and **a gate that blocks the ladder is worse than the defect it catches**. The step is
+therefore `if: github.event_name == 'pull_request' && github.base_ref == 'develop'`. Do not widen it.
+`merge_group` is excluded for the adjacent reason: no merge queue is enabled on this repo, so the shape of a
+queue branch under a rebase-only method has never been observed here, and a gate is not written against a
+guess.
+
+*Proven red by mutation, and proven unable to fire on a promotion* — one throwaway branch carrying a genuine
+merge commit, opened against both rungs at once, so the only difference between the two observations is the
+base:
+
+| Base, for the same merge commit `bcbeca8` | `commit-hygiene` | the step itself |
+|---|---|---|
+| `develop` — #149, [run 32762584560](https://github.com/adammarquette/MarqSpec.Mcp.TopstepX/actions/runs/32762584560) | **failure** | failed, naming `bcbeca8` and printing the rebase remedy |
+| `staging` — #150, [run 32762704728](https://github.com/adammarquette/MarqSpec.Mcp.TopstepX/actions/runs/32762704728) | **success** | **skipped** by the base guard; the subject check then ran and passed |
+
+`ladder` was red on the second row, as it must be — a promotion into `staging` comes from `develop` — and is
+not what that row proves. Both pull requests were closed and all three throwaway branches deleted the same
+hour; these two run ids are the only trail back, so keep them with the step.
+
+**A wrinkle, before anyone re-runs this:** both pull requests shared one head SHA, so GitHub hangs both runs'
+check-runs on that commit and `gh pr view --json statusCheckRollup` answers with **two** `commit-hygiene`
+entries — one `FAILURE`, one `SUCCESS` — on *each* pull request. The per-PR verdict is simply not readable
+from the rollup in that arrangement; read the workflow runs, or give the second base its own head commit.
+
 **`image` IS required, on all three rungs — gh#115 made it required and said so; this table was not told.**
 The change is #121 (`Closes #115`) — `4f2c31f` on its branch, which the rebase merge landed on `develop` as
 `3bcb5fa`, so that is the SHA to `git show` here. Its message opens on exactly this: *"`image` was not a

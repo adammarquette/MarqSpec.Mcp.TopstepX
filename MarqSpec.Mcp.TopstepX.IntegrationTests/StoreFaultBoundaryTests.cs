@@ -73,7 +73,7 @@ public sealed class StoreFaultBoundaryTests(SchemaFixture fixture)
     private static DateTimeOffset Now => ConcurrencyHarness.Bucket(60);
 
     [Fact]
-    public async Task ALostRaceOnTheIndicatorValueKey_ReachesTheCallerAsAStatedCondition_NotAsADbUpdateException()
+    public async Task ALostRaceOnTheIndicatorKey_ReachesTheCallerAsAStatedCondition_NotAsADbUpdateException()
     {
         // THE regression, driven rather than stubbed. Two callers fill DISJOINT ranges of one series -- 20..25
         // and 25..30 -- so neither writes a bar or a coverage row the other writes. They collide anyway: a

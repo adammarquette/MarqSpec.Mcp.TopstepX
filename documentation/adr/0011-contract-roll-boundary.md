@@ -279,3 +279,11 @@ losing insert updates. It matters to *this* record because a bucket's provenance
 come out of the same venue answer — and the statement writes `ContractId` in the same `SET` as the OHLCV, so a
 row can never hold one observation's numbers under another observation's contract. The remaining half of
 gh#80, the write skew above, is untouched by it.
+
+**Update (2026-08-24, gh#122).** The same shape was one table over, on the negative-result ledger, and is
+closed the same way: `RecordEmptyAsync` now records an empty range with `ON CONFLICT … DO UPDATE` rather than
+reading the row and deciding, so two callers polling one quiet range both land. It is noted here only to keep
+the paragraph above from over-claiming — a `23505` out of `get_bars` remains reachable, on the **indicator
+projection**, which is a reconcile rather than an upsert and so is not one statement. That is the last
+instance of the shape on this path and is tracked as gh#133; it does not touch a bucket's provenance, and the
+write skew above is still gh#104's.

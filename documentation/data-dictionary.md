@@ -114,7 +114,16 @@ has no data for — before the contract listed, a cancelled session — is expec
 the store, which is indistinguishable from "not fetched yet", and is re-requested on every call.
 
 `ExpiresAt` is asymmetric: short near `now` (a bucket empty only because it has not printed yet will print), and
-null for settled history (a hole in 2024 will not fill in).
+null for settled history (a hole in 2024 will not fill in). **Null means *never*, not *not recorded*** — so the
+write assigns it unconditionally rather than preserving whatever is stored, or a range that has settled since
+it was first asked about would keep the expiry it was given while it was still recent and be re-fetched
+forever.
+
+**The write reaches the composite key with `ON CONFLICT … DO UPDATE`**, not by reading the row and deciding
+(gh#122) — so two callers recording the same empty range concurrently both land, instead of the loser faulting
+on the key. There is no pre-read and no skip-unchanged rule: the ledger holds the **latest answer** for a
+range rather than a history of asking, so `RecordedAt` moves on every ask and there is no unchanged write to
+skip.
 
 ## §4 `PriceLevels` — detected support and resistance
 

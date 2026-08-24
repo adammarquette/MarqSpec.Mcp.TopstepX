@@ -30,7 +30,8 @@ namespace MarqSpec.Mcp.TopstepX.MarketData;
 /// rare: <see cref="IndicatorProjector"/>'s reconcile is <i>unscoped by bucket range</i>, so a whole-series
 /// sweep is a whole-series <b>write set</b>. Two fills whose fetched ranges share no bucket still delete the
 /// same unjustified rows. <see cref="BarCacheService"/>'s coverage ledger reaches it with no bars at all: two
-/// callers asking for the same range the venue answers empty both <i>refresh</i> one row. Reasoning about the
+/// callers asking for the same range the venue answers empty both <i>write</i> one row — and since gh#122 that
+/// is one statement whether the row was already there or not. Reasoning about the
 /// ranges a fill fetched says nothing about the rows it writes.
 /// </para>
 /// <para>

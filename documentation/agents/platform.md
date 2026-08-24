@@ -210,6 +210,7 @@ by mutation, not as a description of the workflow files.**
 | `issue-link` | required | required | required | `branch-policy.yml` |
 | `ladder` | — | required | required | `branch-policy.yml` |
 | `image` | — | — | — | `ci.yml` — reports only, deliberately |
+| `release-gate` | — | — | — | `ci.yml` — added by gh#108; reports only, see below |
 | `Analyze (csharp)`, `CodeQL` | — | — | — | `codeql.yml` — reports only, deliberately |
 
 `ladder` is the one deliberate asymmetry: nothing is promoted *into* the integration branch, so requiring it on
@@ -281,11 +282,92 @@ checks" and "this rung had checks and I just deleted them" are the same state, u
 that script's closing reassurance is conditional: printing a green "re-running keeps them" over a rung that
 gates nothing would be this whole hazard again in a fresh costume.
 
+## Settings that are load-bearing and unversioned
+
+**This list is the only place these are written down together.** Each control below is enforced by GitHub
+*settings*, not by any file a pull request can read; each looks identical in review whether it is on or off;
+and each has already been found off at least once. When you add a dependency on a setting, add a row — the
+alternative is discovering the next one at the moment it matters, which is how both of the entries here were
+found.
+
+| Setting | What depends on it | What observes it | Found off |
+|---|---|---|---|
+| `production` environment carries a `required_reviewers` rule | `release.yml`'s `gate` job — the only thing between a merge and a public GHCR tag | [`check-release-gate.sh`](../../scripts/check-release-gate.sh), in `ci.yml` and in `release.yml` | gh#108 |
+| `required_status_checks` on `protect-develop` / `-staging` / `-main` | every merge gate in the table above; `no-order-path` carries ADR-0002 | `bootstrap.sh` step 3, which reads the contexts back per rung | gh#26, gh#72, gh#114 |
+| ruleset `enforcement: active` | all of the above | `bootstrap.sh` step 3 | `MarqSpec.Client.ProjectX`, disabled from creation |
+
+### The release approval gate (gh#108)
+
+`release.yml`'s first job is named *"Await release approval"* and declares `environment: production`. **The
+`production` environment did not exist.** An `environment:` key creates nothing and requires nothing: GitHub
+**auto-creates a referenced environment at run time with no protection rules**, silently — no warning, no
+annotation, no error. The job would have awaited nothing, `publish` would have run straight after it, and
+`v0.1.0` would have reached public GHCR unattended. It was caught by reading the API by hand minutes before
+the tag was cut. Nothing in the repository could have caught it, and that is the point: the workflow is
+version-controlled and the environment is repository settings.
+
+**What is checked.** For every environment any workflow under `.github/workflows/` names — discovered, not
+hardcoded, so `environment: staging` added next year is covered by wiring rather than by its author
+remembering the script — the environment must exist, must carry a `required_reviewers` rule, and that rule
+must name at least one reviewer. A `wait_timer` delays the publish and a `branch_policy` filters which ref may
+start it; neither puts a human in front of it, so neither is accepted in its place.
+
+**Where it runs, and why there.**
+
+- **`ci.yml`, job `release-gate`, on every pull request.** One API call, no SDK, and it fails *before a
+  release is ever cut*. A release is the run that can least cheaply be repeated — it fires on a tag already
+  pushed against a GitHub release already published — so finding the gate inert there is finding out after
+  the cleanup starts.
+- **`release.yml`, job `verify-gate`, which `gate` depends on.** This covers the window between the last
+  merge and the tag, and it is what actually *stops* the publish: red here means nothing is built and nothing
+  reaches the registry. **It declares no `environment:` of its own, deliberately** — a check on the approval
+  gate that is itself gated by the approval gate runs only after the thing it is checking has already let it
+  through, and reports green on an inert gate by construction.
+
+`release-gate` is a **reporting** context, not a required one, and does not need to be required: the
+`release.yml` copy blocks by workflow topology rather than by a ruleset string. Promoting it to required is a
+ruleset edit that must land *after* the job exists on `develop` — a required context that no run reports
+leaves every open pull request `BLOCKED` with an empty check list and nothing red to point at (measured on a
+throwaway repo, gh#114).
+
+**It cannot pass vacuously.** `gh` missing, `gh` unauthenticated, the API read failing for any reason,
+discovery finding *no* `environment:` key anywhere, a name given as a `${{ }}` expression, or a successful
+read with an empty reviewer list — every one of those is a failure, none is a skip. The 404 case matters
+particularly: `gh api` exits non-zero **and still prints a JSON body**, so a caller keying on "did I get
+output" reads a missing environment as a healthy one. The check keys on the exit status.
+
+**And it is made to fail on every run.**
+[`check-release-gate-selftest.sh`](../../scripts/check-release-gate-selftest.sh) runs in the same job,
+feeding the real script four fixtures with known faults and requiring it to reject each one — **matching on
+the words that name each fault, never on exit status**, since exit 1 is also what "gh is required" produces
+and a self-test satisfied by status alone goes green on a runner with no `gh` on it. Its blind spot, stated
+rather than papered over: the fixtures cannot produce an environment that *exists but has no reviewer* — the
+exact gh#108 state — because that needs a real environment on a real repo, and creating one from CI would
+mean granting the job `administration: write`, i.e. a check able to create the gate it is verifying. That
+case was proven once by hand instead, on a throwaway environment `gh108-unprotected-throwaway`, deleted
+immediately afterwards; `production` was never weakened. Evidence is on gh#108's pull request.
+
+**`prevent_self_review` stays `false`, as a decision rather than a default.** `true` would mean the person
+who cut the release cannot approve it — and while one person is the entire review pool, that means nobody
+can and the gate becomes a wall. Revisit it the day a second maintainer exists. `can_admins_bypass` is
+likewise moot while the admin and the reviewer are the same account. The check **prints both and asserts
+neither**, so the choice stays visible instead of decaying into a default nobody re-reads.
+
+**The two `PUT`s in `bootstrap.sh` do not mean the same thing — measured, because guessing is gh#114.**
+A ruleset `PUT` **replaces**: a rule missing from the payload is deleted. An environment `PUT` **merges**:
+`PUT {"wait_timer":1}` over an environment holding a required reviewer left that reviewer in place, and
+`PUT {}` changed nothing at all; only an explicit `"reviewers": []` cleared it, which it did immediately. So
+the hazard at the environment endpoint is not omission but the payload — `bootstrap.sh`'s create payload
+names `reviewers` explicitly, and running it over a live environment would replace whatever list is there
+with one account. Step 4 therefore **creates only, and never writes over an environment that already
+exists**; it reports what an existing one requires and warns when that is nothing.
+
 ## How the pipeline is shaped
 
 `format → build (both TFMs) → unit → integration (against the fake gateway) → pack`, with promotion gated by
 the ladder in [`CONTRIBUTING.md`](../../CONTRIBUTING.md) and release gated by a `production` environment
-approval.
+approval — an approval that is only real because a setting outside this repository says so, which is why
+`release-gate` exists (above).
 
 Branches map to intent rather than to environments — there is no deployment here, only a package:
 `develop` integrates, `staging` holds what is promoted but unreleased, `main` is what has shipped, and a `v*`

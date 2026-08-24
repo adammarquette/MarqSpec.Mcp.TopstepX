@@ -28,7 +28,10 @@ The server serves OHLCV bars for a futures instrument at a requested resolution 
   rather than rewritten (gh#103). Deciding it from a read instead makes the decision against a snapshot,
   which another writer can invalidate before the write lands.
 - **R-1.7** A range the vendor answers **empty** is recorded as covered, so a genuine data hole is not
-  re-requested on every subsequent call.
+  re-requested on every subsequent call. **The store performs that write too** — an `ON CONFLICT … DO UPDATE`
+  on the ledger's composite key, so two callers asking about one quiet range at the same time both land rather
+  than the loser faulting on a duplicate key (gh#122). The ledger holds the **latest answer** for a range, not
+  a history of asking, so a second recording is an update by design and not a way to dodge the error.
 - **R-1.8** Bar timestamps are stored in UTC. The gateway returns timestamps with no kind; they are UTC, and
   inferring local shifts every bar by the operator's offset.
 - **R-1.9** The supported resolutions are **every whole number of minutes from 1 to 10,080 — one minute to one

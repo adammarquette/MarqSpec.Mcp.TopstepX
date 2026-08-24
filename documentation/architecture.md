@@ -68,7 +68,12 @@ path (gh#69).
    service are scoped (gh#103).
 8. **Project indicators** for the affected buckets, in the same unit of work, so an indicator exists the moment
    its bar does.
-9. **Record coverage** for ranges that came back empty.
+9. **Record coverage** for ranges that came back empty — one `ON CONFLICT … DO UPDATE` on
+   `(Venue, Instrument, ResolutionMinutes, RangeStart, RangeEnd)`, for the same reason step 7 is (gh#122).
+   There is **no pre-read here at all**: the ledger holds the latest answer for a range rather than a history
+   of asking, so `RecordedAt` moves on every ask and there is no unchanged write to save. `ExpiresAt` is
+   assigned unconditionally, `null` included — `null` means *never*, not *not recorded*, so preserving a
+   stored expiry would leave a permanent claim wearing the TTL it was given while the range was still recent.
 
 **Step 5 sits outside the transaction; steps 7–9 sit inside one, at `RepeatableRead`.** The projection reads
 the bars and then the values standing over them; under `READ COMMITTED` those are two snapshots, so a
@@ -87,7 +92,8 @@ written afterwards.
 into a `40001`, and that is reachable from the tool surface: the reconcile is unscoped by bucket range, so a
 whole-series sweep is a whole-series *write set* — two fills whose fetched ranges share no bucket still delete
 the same unjustified rows — and the coverage ledger reaches it with no bars at all, because two callers asking
-for one empty range both *refresh* one row. The retry is not a gamble: in every shape of this conflict the
+for one empty range both *write* one row, whether that row already existed or not (gh#122). The retry is not a
+gamble: in every shape of this conflict the
 transaction that won committed exactly the work the loser was missing, so the second attempt runs over a
 better-informed store, and because the fetch already happened it costs no vendor requests. A second collision
 is sustained contention rather than a race, so it becomes a `StoreContentionException`, which the **store-fault
@@ -121,24 +127,28 @@ reached disk. Three consequences, and they are the contract the tool surface off
   credentials — and are reported as permanent, saying plainly that retrying will not help. Neither list is a
   default: a code in neither is reported as unclassified rather than swept into either.
 
-**A lost race is reported, not swallowed and not retried at the boundary.** Two callers asking for one range
-the venue answers *empty* both find no coverage row in their own snapshot and both insert one; the loser gets
-`23505`. The row it collided on *is* in the store — so a duplicate key on an idempotent upsert looks like a
-success someone else achieved. It is not one:
+**A lost race is reported, not swallowed and not retried at the boundary.** Two fills of *disjoint* ranges
+over one series both project over the history in front of both — a pass recomputes the whole series its
+snapshot can see — so both insert the same indicator values, and the loser gets `23505`. The rows it collided
+on *are* in the store — so a duplicate key on an idempotent write looks like a success someone else achieved.
+It is not one:
 the collision aborts the whole transaction, so answering "fine" would return work assembled inside a
 transaction that rolled back. Retrying at the boundary is equally wrong — it would re-run the whole tool call,
 paced page-walk included; a retry belongs in `SeriesUnitOfWork`, bounded, where the fetch already happened.
 So the caller is told that another writer committed the rows it collided on, that its own transaction kept
 nothing, and that a retry is served from what that writer committed. *What else* was in the aborted
-transaction — here, the bars and the projection over the same series — is a fact about `SeriesUnitOfWork`, and
-it is stated there rather than in a sentence handed to all fifteen tools.
+transaction — here, the bars and the coverage ledger over the same series — is a fact about
+`SeriesUnitOfWork`, and it is stated there rather than in a sentence handed to all fifteen tools.
 
-**The bar write no longer reaches that boundary at all** (gh#103). It is a real upsert, so a losing insert
-updates instead of faulting, and the caller of `get_bars` is not handed a database error for asking an
-ordinary question. What is *not* fixed is a fill whose snapshot misses a range another fill is filling: its
-values are seeded from the wrong bar and are stale until the next pass, which is recoverable by construction
-(`R-2.9`, [ADR-0006](adr/0006-indicators-as-projections.md)). Closing that means serialising fills per
-series — a lock rather than an isolation level, tracked as gh#104 and still open.
+**Neither the bar write nor the coverage ledger reaches that boundary any more** (gh#103, gh#122). Both are
+real upserts, so a losing insert updates instead of faulting, and the caller of `get_bars` is not handed a
+database error for asking an ordinary question. Two things are *not* fixed. The **indicator projection** is
+the third instance of that same read-then-insert and the only one left on this path — it is a reconcile
+rather than an upsert, so the remedy is not one statement, and it is tracked as gh#133. And a fill whose
+snapshot misses a range another fill is filling still seeds its values from the wrong bar; those are stale
+until the next pass, which is recoverable by construction (`R-2.9`,
+[ADR-0006](adr/0006-indicators-as-projections.md)). Closing that means serialising fills per series — a lock
+rather than an isolation level, tracked as gh#104 and still open.
 
 ### Why step 2 exists
 

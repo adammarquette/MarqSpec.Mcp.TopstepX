@@ -314,7 +314,7 @@ public sealed class CoverageLedgerConcurrencyTests(SchemaFixture fixture)
             CancellationToken.None);
     }
 
-    /// <summary>The single coverage row the venue holds, failing the test if there is not exactly one.</summary>
+    /// <summary>The one coverage row the venue holds, failing if there is not exactly one.</summary>
     /// <param name="venue">The private venue id for the test.</param>
     /// <returns>The row.</returns>
     private async Task<BarCoverageRecord> TheOnlyCoverageRowAsync(string venue)

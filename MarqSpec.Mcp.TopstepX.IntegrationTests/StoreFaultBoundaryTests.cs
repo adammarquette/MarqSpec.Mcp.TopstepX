@@ -1,6 +1,7 @@
 using FluentAssertions;
 using MarqSpec.Mcp.TopstepX.Configuration;
 using MarqSpec.Mcp.TopstepX.Data;
+using MarqSpec.Mcp.TopstepX.Data.Entities;
 using MarqSpec.Mcp.TopstepX.Domain.MarketData;
 using MarqSpec.Mcp.TopstepX.MarketData;
 using MarqSpec.Mcp.TopstepX.Tools;
@@ -38,20 +39,28 @@ namespace MarqSpec.Mcp.TopstepX.IntegrationTests;
 /// still loses the race. What changed is what the loser is told.
 /// </para>
 /// <para>
-/// <b>The <c>23505</c> is driven off the coverage ledger, not the bar key, and that is a consequence of
-/// gh#103 rather than a preference.</b> The bar write is now <c>ON CONFLICT … DO UPDATE</c>, so a losing
-/// insert there updates and no duplicate key survives that path to drive. The ledger's read-then-insert is
-/// the shape the bar write used to have and is untouched — so the boundary's claim is still tested against a
-/// real Postgres error rather than a fabricated one, which is the only reason this test is in this tier.
+/// <b>The <c>23505</c> is driven off the indicator projection, and that is a consequence rather than a
+/// preference.</b> It has now moved twice, each time because the race it was riding on was closed. It was the
+/// <b>bar key</b> until gh#103 made the bar write <c>ON CONFLICT … DO UPDATE</c>; it was then the
+/// <b>coverage ledger</b> until gh#122 did the same to <c>RecordEmptyAsync</c>, which is where the previous
+/// version of this comment expected it to end up and said so. Both of those were read-then-insert against a
+/// composite key, and both now let the store decide.
 /// </para>
 /// <para>
-/// <b>Which means this test now depends on gh#122 staying unfixed, and gh#122 is the card that fixes it.</b>
-/// The ledger's race is <c>RecordEmptyAsync</c>'s read-then-insert against the <c>BarCoverage</c> composite
-/// key, and gh#122 closes it exactly as gh#103 closed the bar write. <b>When gh#122 lands, this test's
-/// stimulus disappears</b> — no <c>23505</c> is reachable from that path either, and this test goes red a
-/// second time on an expectation that has gone stale rather than on code that is wrong. <b>Re-home it onto a
-/// race that still produces a real store fault; do not delete it to make the suite green.</b> The claim it
-/// makes is gh#89's, and it outlives every stimulus that has carried it.
+/// <b>Where it went, and why there.</b> <c>IndicatorProjector</c> is the third instance of that same shape
+/// and the only one left on this path: it reads the values standing over a series into a dictionary and
+/// <c>Add</c>s the keys that dictionary lacks, so two passes whose snapshots each miss the other's rows both
+/// insert the same <c>(Indicator, Period, BucketStart)</c>. It is <b>not</b> a fourth thing to fix in passing
+/// — a projection pass is a reconcile, not an upsert, and the removal half is why it cannot simply become one
+/// statement. It is carded as gh#133.
+/// </para>
+/// <para>
+/// <b>So this test will go stale a third time, and the instruction is the same one.</b> When gh#133 lands,
+/// its stimulus disappears again and this goes red on an expectation that has gone out of date rather than on
+/// code that is wrong. <b>Re-home it onto a race that still produces a real store fault; do not delete it to
+/// make the suite green.</b> The claim it makes is gh#89's — that a real Postgres error reaches a caller as a
+/// sentence — and it outlives every stimulus that has carried it. A fabricated exception would not, which is
+/// the only reason this test is in this tier at all.
 /// </para>
 /// </remarks>
 /// <param name="fixture">The shared container.</param>
@@ -64,49 +73,55 @@ public sealed class StoreFaultBoundaryTests(SchemaFixture fixture)
     private static DateTimeOffset Now => ConcurrencyHarness.Bucket(60);
 
     [Fact]
-    public async Task ALostRaceOnTheCoverageKey_ReachesTheCallerAsAStatedCondition_NotAsADbUpdateException()
+    public async Task ALostRaceOnTheIndicatorValueKey_ReachesTheCallerAsAStatedCondition_NotAsADbUpdateException()
     {
-        // THE regression, driven rather than stubbed. Two callers ask for one range the venue answers EMPTY,
-        // which both record in the coverage ledger. The loser's snapshot is taken before the winner commits,
-        // so its ledger lookup still says no row exists for the range and it INSERTs one over the row that
-        // now does. That is 23505, and no isolation level prevents it -- the remedy is an upsert or a lock,
-        // and for the ledger it is neither yet.
+        // THE regression, driven rather than stubbed. Two callers fill DISJOINT ranges of one series -- 20..25
+        // and 25..30 -- so neither writes a bar or a coverage row the other writes. They collide anyway: a
+        // projection pass recomputes the WHOLE series its snapshot can see, so both produce values for the
+        // history sitting in front of both ranges. The loser's snapshot was taken before the winner committed,
+        // so its lookup of the values standing over the series still says those keys are absent and it INSERTs
+        // over rows that now exist. That is 23505, and no isolation level prevents it -- the remedy is an
+        // upsert or a lock, and for the projection it is neither yet (gh#133).
         //
-        // IT WAS THE BAR KEY UNTIL gh#103, and it moved because that race is closed rather than because this
-        // one is more convenient: the bar write is now `ON CONFLICT ... DO UPDATE`, so a losing insert
-        // updates and there is no duplicate key left on that path to drive. The ledger's read-then-insert is
-        // the same shape the bar write used to have, is untouched by gh#103, and is the ordinary case rather
-        // than an exotic one -- two agents polling one instrument reach it with no bars involved at all.
+        // IT HAS MOVED TWICE, each time because the race it rode on was closed -- the bar key until gh#103,
+        // the coverage ledger until gh#122. Both were read-then-insert against a composite key and both now
+        // let the store decide. See the class remarks for what that means for this test's next stimulus.
         //
-        // The interleaving is placed on the ledger lookup INSIDE the transaction. `ExcludeCoveredAsync` also
-        // reads BarCoverage but runs BEFORE the transaction opens, and firing there would let the winner
-        // commit before the loser has a snapshot at all -- the loser would see the row, refresh it, and there
-        // would be no race. `"RangeStart" = ` appears only in `RecordEmptyAsync`'s lookup.
+        // THE SEEDED SERIES HAS NO VALUES OVER IT, and that is what puts the shared history in play rather
+        // than an exotic contrivance: values are removed whenever the configured period changes -- ATR(14) and
+        // ATR(3) are different keys, so a pass configured for one produces nothing under the other -- and
+        // rebuild-indicators over a store whose bars arrived first reaches the same state.
+        //
+        // The interleaving is placed AFTER the bar write's overlap read, which is the fill transaction's first
+        // statement and so where its snapshot is taken. `"Volume"` is the discriminator for the reason
+        // BarUpsertConcurrencyTests gives: the read that opens GetBarsAsync projects to the bucket alone.
         string venue = ConcurrencyHarness.Venue();
+        await SeedBarsThatNothingHasProjectedOverAsync(venue);
 
         await using TopstepXDbContext winnerStore = _fixture.CreateContext();
 
-        async Task TheOtherCallerCommitsTheSameCoverageRow()
+        async Task TheOtherCallerProjectsOverTheSameHistory()
         {
-            BarCacheService winner = ConcurrencyHarness.Cache(winnerStore, venue, [], Now);
+            BarCacheService winner =
+                ConcurrencyHarness.Cache(winnerStore, venue, ConcurrencyHarness.Bars(20, 25), Now);
             await winner.GetBarsAsync(
                 ConcurrencyHarness.Instrument,
                 ConcurrencyHarness.ResolutionMinutes,
-                ConcurrencyHarness.Window(0, 20),
+                ConcurrencyHarness.Window(20, 25),
                 CancellationToken.None);
         }
 
         InterleavingInterceptor straddle = InterleavingInterceptor.After(
-            "\"RangeStart\" = ", venue, TheOtherCallerCommitsTheSameCoverageRow);
+            "\"Volume\"", venue, TheOtherCallerProjectsOverTheSameHistory);
 
         await using TopstepXDbContext loserStore = _fixture.CreateContext(straddle);
-        MarketDataTools tools = Tools(loserStore, venue, []);
+        MarketDataTools tools = Tools(loserStore, venue, ConcurrencyHarness.Bars(25, 30));
 
         Func<Task> call = () => ThroughTheBoundary(token => tools.GetBars(
             ConcurrencyHarness.Symbol,
             ConcurrencyHarness.ResolutionMinutes,
-            ConcurrencyHarness.Bucket(0),
-            ConcurrencyHarness.Bucket(20),
+            ConcurrencyHarness.Bucket(25),
+            ConcurrencyHarness.Bucket(30),
             token));
 
         (await call.Should().ThrowAsync<McpException>(
@@ -118,6 +133,37 @@ public sealed class StoreFaultBoundaryTests(SchemaFixture fixture)
         straddle.Fired.Should().BeTrue(
             "the collision is the test -- if the other caller never ran inside this one's transaction, this "
             + "passed by exercising nothing");
+    }
+
+    /// <summary>
+    /// Fills a series and then removes the values standing over it.
+    /// </summary>
+    /// <param name="venue">The private venue id for this test.</param>
+    /// <returns>The task.</returns>
+    /// <remarks>
+    /// The removal is what gives two otherwise-disjoint fills a shared write set: each projects the whole
+    /// series it can see, so both produce the keys over this history. Leaving the values in place would let
+    /// both passes recognise them as already produced, and nothing would be inserted twice.
+    /// </remarks>
+    private async Task SeedBarsThatNothingHasProjectedOverAsync(string venue)
+    {
+        await using TopstepXDbContext seed = _fixture.CreateContext();
+
+        BarCacheService cache =
+            ConcurrencyHarness.Cache(seed, venue, ConcurrencyHarness.Bars(0, 20), Now);
+
+        await cache.GetBarsAsync(
+            ConcurrencyHarness.Instrument,
+            ConcurrencyHarness.ResolutionMinutes,
+            ConcurrencyHarness.Window(0, 20),
+            CancellationToken.None);
+
+        List<IndicatorValueRecord> values = await seed.IndicatorValues
+            .Where(v => v.Venue == venue)
+            .ToListAsync();
+
+        seed.IndicatorValues.RemoveRange(values);
+        await seed.SaveChangesAsync();
     }
 
     [Fact]

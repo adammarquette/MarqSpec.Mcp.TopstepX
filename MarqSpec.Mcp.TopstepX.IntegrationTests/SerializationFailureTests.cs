@@ -92,23 +92,48 @@ public sealed class SerializationFailureTests(SchemaFixture fixture)
     }
 
     [Fact]
-    public async Task TwoFillsRefreshingTheSameEmptyRange_BothSucceed_WithNoBarsInvolved()
+    public async Task TwoFillsRefreshingTheSameEmptyRange_BothSucceed()
     {
-        // The other branch, and the ordinary one: two agents polling the same instrument. Nothing is fetched
-        // and no bar is written -- the collision is on the coverage ledger's REFRESH of an existing row,
-        // which `RecordEmptyAsync` does rather than only inserting. A dichotomy over bar ranges does not
-        // reach this at all.
+        // The other branch, and the ordinary one: two agents polling the same instrument. The collision is on
+        // the coverage ledger's REFRESH of a row that already exists, which is what `RecordEmptyAsync` does
+        // rather than only inserting -- a dichotomy over bar RANGES does not reach it at all, because neither
+        // fill's outstanding range need contain a bucket the other's does.
+        //
+        // IT USED TO SAY "WithNoBarsInvolved", AND THAT CLAIM MOVED RATHER THAN BEING DROPPED (gh#122). In
+        // production the ledger still reaches this with no bars: two callers polling one quiet range is all
+        // it takes. What changed is where the interleaving can be PLACED. The ledger write is now one
+        // `ON CONFLICT ... DO UPDATE` statement with no read in front of it, so a fill that writes nothing
+        // else takes its snapshot AT that statement -- and a snapshot taken at the write can never be stale
+        // by the time the write runs. Placing the other pass before it would simply make its row visible, and
+        // the test would go green having exercised nothing. So this fill answers one range with bars and the
+        // other empty: the bar write's overlap read is where the snapshot is taken, and the ledger write that
+        // follows it in the same transaction is the one holding the stale view.
         string venue = ConcurrencyHarness.Venue();
-
-        // A first pass over a range the venue answers empty, near enough to the present that the row expires.
         DateTimeOffset early = ConcurrencyHarness.Bucket(80);
+
+        // One stored bucket in the middle of the window, so `BarGapDetector.FindMissing` breaks it into
+        // [60,65) -- which the venue answers with bars -- and [66,70), which it answers empty. A window with
+        // a hole in it is what an earlier partial fill leaves behind.
+        await using (TopstepXDbContext seed = _fixture.CreateContext())
+        {
+            BarCacheService partial =
+                ConcurrencyHarness.Cache(seed, venue, ConcurrencyHarness.Bars(65, 66), early);
+            await partial.GetBarsAsync(
+                ConcurrencyHarness.Instrument,
+                ConcurrencyHarness.ResolutionMinutes,
+                ConcurrencyHarness.Window(65, 66),
+                CancellationToken.None);
+        }
+
+        // A first pass over the range the venue answers empty, near enough to the present that the row
+        // expires -- so there is a row for the two passes below to REFRESH rather than insert.
         await using (TopstepXDbContext seed = _fixture.CreateContext())
         {
             BarCacheService cold = ConcurrencyHarness.Cache(seed, venue, [], early);
             await cold.GetBarsAsync(
                 ConcurrencyHarness.Instrument,
                 ConcurrencyHarness.ResolutionMinutes,
-                ConcurrencyHarness.Window(60, 70),
+                ConcurrencyHarness.Window(66, 70),
                 CancellationToken.None);
         }
 
@@ -124,20 +149,21 @@ public sealed class SerializationFailureTests(SchemaFixture fixture)
             await other.GetBarsAsync(
                 ConcurrencyHarness.Instrument,
                 ConcurrencyHarness.ResolutionMinutes,
-                ConcurrencyHarness.Window(60, 70),
+                ConcurrencyHarness.Window(66, 70),
                 CancellationToken.None);
         }
 
-        // AFTER, and matched on the ledger REFRESH's own predicate. `ExcludeCoveredAsync` also reads
-        // BarCoverage, but it runs BEFORE the transaction opens -- firing there would let the other pass
-        // commit before this one has a snapshot, and the conflict would never arise. `"RangeStart" =` appears
-        // only in `RecordEmptyAsync`'s lookup, which is this transaction's first statement.
+        // AFTER the bar write's overlap read, which is this transaction's first statement and so where its
+        // snapshot is taken. Anything `GetBarsAsync` runs before the transaction opens -- the stored-bucket
+        // read, or `ExcludeCoveredAsync`'s own read of BarCoverage -- would let the other pass commit before
+        // this one has a snapshot, and the conflict would never arise.
         InterleavingInterceptor straddle = InterleavingInterceptor.After(
-            "\"RangeStart\" = ", venue, AskTheSameRangeAndCommit);
+            "\"Volume\"", venue, AskTheSameRangeAndCommit);
 
         CapturingLogger<BarCacheService> log = new();
         await using TopstepXDbContext store = _fixture.CreateContext(straddle);
-        BarCacheService fill = ConcurrencyHarness.Cache(store, venue, [], later, log);
+        BarCacheService fill =
+            ConcurrencyHarness.Cache(store, venue, ConcurrencyHarness.Bars(60, 65), later, log);
 
         Func<Task> read = () => fill.GetBarsAsync(
             ConcurrencyHarness.Instrument,
@@ -147,6 +173,10 @@ public sealed class SerializationFailureTests(SchemaFixture fixture)
 
         await read.Should().NotThrowAsync("two agents polling one instrument is the ordinary case, not a fault");
         straddle.Fired.Should().BeTrue();
+        log.Messages.Should().ContainMatch(
+            "*serialization failure*",
+            "the refresh has to have met the other pass's row, not merely followed it -- a retry leaves no "
+            + "other trace, and the outcome alone is what a run where nothing collided also produces");
 
         await using TopstepXDbContext reader = _fixture.CreateContext();
         int coverage = await reader.BarCoverage.CountAsync(c => c.Venue == venue);

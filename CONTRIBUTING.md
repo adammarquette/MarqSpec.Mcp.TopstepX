@@ -9,19 +9,35 @@ These practices are shared with
 this library as a submodule. Where the two differ, the difference is deliberate and noted below — this repo
 ships a **package**, not a deployment, so it has a release ladder the parent does not.
 
-## Issue-first, and the one exemption
+## Issue-first, its one exemption, and the promotion carve-out
 
 Every pull request cites an issue opened before it — `Closes #N` when it completes one, `Related to #N` when it
 touches one without finishing it. **The `issue-link` check enforces this**; it is not advisory.
 
-Two things it will tell you, because both look like they work and neither does:
+Four things it will tell you, because they all look like they work and none of them does:
 
 - A closing keyword in the **title** is ignored by GitHub. It must be in the body.
 - A backticked `` `Closes #N` `` does not bind. Remove the backticks.
+- A citation inside a **fenced code block** is not a citation — a pasted `git log`, a quoted commit message.
+  Promotion bodies enumerate the work they carry, so this is the easy one to trip on: the citation has to be
+  the *promotion's own*, not one quoted from a commit it is carrying.
+- A closing keyword binds **only on a PR into the default branch** (`develop`). On any other base GitHub binds
+  nothing, whatever the body says.
 
 **Dependabot is exempt, explicitly.** It opens its own pull requests and cannot file an issue first, so
 issue-first is *unsatisfiable* for it rather than merely inconvenient. The exemption is named in the workflow
 so it is visible; the alternative was keeping the check toothless for everyone so that one author could pass it.
+
+**A promotion is not exempt — its citation is read out of the body.** `staging` and `main` are never the
+default branch, so a promotion could never satisfy the primary path: the binding is unavailable for a reason
+that has nothing to do with the author, and both promotions this repo has made hit it (gh#101). On those two
+bases only, `issue-link` accepts a plain `Closes #N` read from the body. That is a different *evidence path*,
+not an exemption — **a promotion citing no issue still fails.** Two consequences worth knowing before you
+promote: the closing keyword is the right form to write, and **the issue will not auto-close on merge**, so
+close it by hand. The run says both.
+
+**Stacked PRs onto a feature branch are deliberately not covered.** They cannot bind either, but there
+`Related to #N` is the *correct* form — the PR really does not close the issue when it merges into its parent.
 
 If the check cannot read the PR's closing references, it retries and then **fails**. A check that reports
 success when it did not run is the failure this rule exists to prevent.

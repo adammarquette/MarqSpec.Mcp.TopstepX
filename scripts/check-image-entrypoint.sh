@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # check-image-entrypoint.sh — prove the built image's OWN entrypoint starts this server.
 #
-#   scripts/check-image-entrypoint.sh [image-tag]     default: marqspec-mcp-topstepx:ci
+#   scripts/check-image-entrypoint.sh [image-tag]     default: $(scripts/image-reference.sh):ci
 #
 # WHY THIS EXISTS (gh#67)
 #
@@ -79,7 +79,12 @@ set -euo pipefail
 export MSYS_NO_PATHCONV=1
 export MSYS2_ARG_CONV_EXCL='*'
 
-IMAGE="${1:-marqspec-mcp-topstepx:ci}"
+# DERIVED, not spelled again. CI builds `$(image-reference.sh):ci` (gh#115), so a hardcoded
+# `marqspec-mcp-topstepx:ci` here would name a tag this repository no longer produces -- and the no-argument
+# form this script documents would fail with `Unable to find image ... locally`, then try to PULL it from
+# Docker Hub. That reads like a typo rather than like a stale default, and it is exactly the local/CI
+# disagreement this script exists to prevent (gh#121 review).
+IMAGE="${1:-$("$(dirname "$0")/image-reference.sh"):ci}"
 
 # Generous on purpose: the wait ends the moment the reply lands OR the moment the container is gone, so
 # the ceiling is only reached by a server that started and then said nothing.

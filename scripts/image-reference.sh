@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # image-reference.sh — print the GHCR repository this project publishes to.
 #
-#   scripts/image-reference.sh [owner/repo]     default: $GITHUB_REPOSITORY
+#   scripts/image-reference.sh [owner/repo]     default: $GITHUB_REPOSITORY, else the git remote
 #
 # WHY THIS EXISTS (gh#115)
 #
@@ -31,9 +31,24 @@ set -euo pipefail
 
 REPO="${1:-${GITHUB_REPOSITORY:-}}"
 
+# Falls back to the git remote so this answers OFF a runner too. That is not a convenience:
+# check-image-entrypoint.sh defaults to this script's output, and a default that only resolves inside
+# Actions would leave a maintainer running the documented no-argument form against a tag nothing builds
+# (gh#121 review). One source of truth is only one if it can be reached from both places.
+if [ -z "$REPO" ] && command -v git >/dev/null 2>&1; then
+  ORIGIN="$(git config --get remote.origin.url 2>/dev/null || true)"
+  case "$ORIGIN" in
+    *github.com[:/]*)
+      REPO="${ORIGIN#*github.com}"
+      REPO="${REPO#[:/]}"
+      REPO="${REPO%.git}"
+      ;;
+  esac
+fi
+
 if [ -z "$REPO" ]; then
   printf '\033[31m%s\033[0m\n' \
-    "usage: scripts/image-reference.sh <owner/repo>   (or set GITHUB_REPOSITORY)" >&2
+    "usage: scripts/image-reference.sh <owner/repo>   (or set GITHUB_REPOSITORY, or run inside the repo)" >&2
   exit 1
 fi
 

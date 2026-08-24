@@ -104,6 +104,10 @@ jobs:
           tags: |
             ${{ env.IMAGE }}:${{ env.VERSION }}
             ${{ env.IMAGE }}:latest
+          # THE LABEL KEEPS DISPLAY CASE ON PURPOSE, and the tag does not (gh#115 scope, third box).
+          # `image.source` is a URL and GitHub's are case-insensitive in the path, so the mixed-case form
+          # resolves and is the one a reader recognises. Only the OCI *repository name* is required to be
+          # lowercase, which is why exactly one of these two was changed.
           labels: |
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
             org.opencontainers.image.version=${{ env.VERSION }}

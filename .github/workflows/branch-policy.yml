@@ -154,6 +154,8 @@ jobs:
           AUTHOR: ${{ github.event.pull_request.user.login }}
           TITLE: ${{ github.event.pull_request.title }}
           BODY: ${{ github.event.pull_request.body }}
+          BASE: ${{ github.base_ref }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
         run: |
           set -euo pipefail
 
@@ -192,6 +194,64 @@ jobs:
             exit 0
           fi
 
+          # Read once, from a body with CODE REMOVED, so a keyword GitHub ignores cannot be mistaken for
+          # a citation. Both branches below consult this; neither re-derives it.
+          #
+          # Two kinds of code, and only one of them is obvious. `sed` is line-oriented, so stripping
+          # inline spans leaves a FENCED `Closes #96` looking exactly like a real citation -- and a
+          # promotion body is the one shape that reliably contains a pasted `git log`, because it
+          # enumerates the work it carries. Without the fence pass this job reads the WORK's citation as
+          # the PROMOTION's own and passes a promotion citing nothing of its own, which is the precise
+          # thing the carve-out below says it refuses to do. Fences drop first, then inline spans.
+          #
+          # An UNCLOSED fence swallows the rest of the body, so the gate refuses rather than accepts.
+          # Deliberate: that is the safe direction for a gate.
+          #
+          # The `Related to` grep further down still reads the RAW body, so a fenced `Related to #N`
+          # passes. That predates this (gh#35), and fixing it changes a verdict on a PR into the default
+          # branch -- a separate decision, tracked as gh#123 rather than smuggled in here.
+          body_no_code="$(printf '%s' "$BODY" \
+            | awk 'BEGIN{fence=0} /^[[:space:]>]*(```|~~~)/ {fence=!fence; next} fence==0 {print}' \
+            | sed 's/`[^`]*`//g')"
+
+          # Herestring, not a pipe: `grep -q` exits on its first match, and under `pipefail` a SIGPIPE'd
+          # upstream would make the pipeline non-zero on a body that DID match -- reading as no citation.
+          body_closes=false
+          if grep -qiE '(close[sd]?|fix(e[sd])?|resolve[sd]?) +#[0-9]+' <<<"$body_no_code"; then
+            body_closes=true
+          fi
+
+          # THE PROMOTION CARVE-OUT (gh#101). GitHub BINDS a closing keyword only on a PR into the DEFAULT
+          # branch, which here is `develop`. A ladder promotion targets `staging` or `main`, so
+          # closingIssuesReferences is empty on every promotion that has run or ever will -- not because the
+          # author wrote it wrong, but because the binding is structurally unavailable to them. #100 and #106,
+          # the only two promotions this repo has ever made, both hit it and both reached for `Related to #N`:
+          # the weaker form, which explicitly means DOES NOT CLOSE THIS. A gate that makes an honest PR
+          # understate its own relationship to its issue is teaching people to route around it.
+          #
+          # THE DECISION: a promotion is NOT exempt the way dependabot is -- it must still cite an issue --
+          # but on a promotion base the citation is read out of the BODY, because that is the only evidence
+          # that can exist there. Outright exemption was rejected: it would pass a promotion citing nothing at
+          # all, and issue-first is perfectly satisfiable for a promotion. Only the BINDING is not.
+          #
+          # Scoped to `staging` and `main` deliberately, NOT to "any base that is not the default". A stacked
+          # PR onto a feature branch cannot bind either, and there `Related to #N` is the CORRECT answer
+          # (gh#57) -- it really does not close the issue when it merges into its parent. Widening this would
+          # hand that case a pass it has not earned.
+          #
+          # The DEFAULT_BRANCH guard is not redundant. It makes this branch unreachable if `staging` or `main`
+          # ever becomes the default, where a body read would stand in for a binding that WAS available and
+          # simply did not happen.
+          if [ "$BASE" = "staging" ] || [ "$BASE" = "main" ]; then
+            if [ "$BASE" != "$DEFAULT_BRANCH" ] && [ "$body_closes" = true ]; then
+              echo "::notice::Base is '$BASE', a ladder promotion. GitHub binds a closing keyword only on a"
+              echo "::notice::PR into '$DEFAULT_BRANCH', so the body is the only evidence available - and it"
+              echo "::notice::cites an issue. That satisfies issue-first."
+              echo "::warning::The issue will NOT auto-close on merge, for the same reason. Close it by hand."
+              exit 0
+            fi
+          fi
+
           # AGENTS.md admits BOTH forms: `Closes #N` for a PR that completes an issue, `Related to #N` for one
           # that touches it without finishing it. Only the first binds in GitHub, so the second has to be read
           # out of the body.
@@ -205,12 +265,35 @@ jobs:
             echo "::error::The TITLE contains a closing keyword. GitHub ignores those - move it into the body."
           fi
 
-          if printf '%s' "$BODY" | grep -qE '`[^`]*(close[sd]?|fix(e[sd])?|resolve[sd]?) +#[0-9]+[^`]*`'; then
+          # -i, and it matters (gh#101). This grep was the only one of the three without it, so it matched a
+          # lowercase `closes #1` and MISSED the canonical `Closes #1` that CONTRIBUTING.md tells people to
+          # write -- the diagnostic was absent for the exact form it exists to explain. Message-only: this
+          # branch has no exit, so nothing about the verdict changes. Found by running the gate, not reading it.
+          if printf '%s' "$BODY" | grep -qiE '`[^`]*(close[sd]?|fix(e[sd])?|resolve[sd]?) +#[0-9]+[^`]*`'; then
             echo "::error::A closing keyword appears inside backticks, which does not bind. Remove the backticks."
           fi
 
           if printf '%s' "$BODY" | grep -qiE '(settles|delivers|implements|completes|addresses) +#[0-9]+'; then
             echo "::error::Near-miss verb before an issue reference. Only close/fix/resolve bind."
+          fi
+
+          # FOURTH DIAGNOSTIC (gh#101, merged from gh#102). Without it, a body whose first line is
+          # `Closes #99` falls all the way through to "This PR cites no issue" -- a message that is FALSE, not
+          # merely unhelpful. The reader acts on it, and the natural response is to add a second `Closes #99`,
+          # which fails identically for the same invisible reason (gh#90's shape). This branch only ever
+          # changes the MESSAGE on a failing run; every verdict above it is unchanged.
+          if [ "$body_closes" = true ]; then
+            echo "::error::The body carries a plain closing keyword, but GitHub bound nothing."
+            if [ "$BASE" != "$DEFAULT_BRANCH" ]; then
+              echo "::error::This PR targets '$BASE', not the default branch '$DEFAULT_BRANCH', and a closing"
+              echo "::error::keyword binds only on a PR into the default branch. A second 'Closes #N' fails"
+              echo "::error::identically. Use 'Related to #N' - a stacked PR does not close its issue when it"
+              echo "::error::merges into its parent. (A promotion into staging/main passes above, not here.)"
+            else
+              echo "::error::The base IS the default branch, so the binding was available and did not happen."
+              echo "::error::The referenced number most likely does not resolve to an issue in this repository."
+            fi
+            exit 1
           fi
 
           echo "::error::This PR cites no issue. Issue-first: add a plain 'Closes #N' or 'Related to #N' to"

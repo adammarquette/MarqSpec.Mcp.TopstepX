@@ -37,7 +37,9 @@ whatever the migrations say, and this page is kept in lockstep with them in the 
 | `RecordedAt` | `timestamptz` | When this row was last written or revised |
 
 **The composite primary key is the idempotence guard.** An overlapping re-fetch can only UPDATE the bucket it
-already wrote, so nothing needs a de-duplication pass and a vendor revision lands as an update.
+already wrote, so nothing needs a de-duplication pass and a vendor revision lands as an update. The write
+reaches that guard with `ON CONFLICT … DO UPDATE` rather than by reading the overlap and deciding — so a
+*concurrent* overlapping fill updates too, instead of losing on the key (gh#103).
 
 `ResolutionMinutes` is in the key because a 1-minute and a 5-minute bar can open at the same instant; keyed on
 time alone they would silently overwrite each other.

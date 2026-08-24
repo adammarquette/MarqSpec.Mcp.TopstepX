@@ -154,6 +154,7 @@ correct bar, and the guard's failure mode is silent.
 |---|---|
 | [2026-08-23](#update-2026-08-23--any-meant-any-positive-and-four-tools-did-not-enforce-it) | Read "any" above as "any positive"; the rule now has its own guard and reaches all six tools |
 | [2026-08-23](#update-2026-08-23--the-range-is-1-to-10080-and-the-ceiling-is-not-sufficient-on-its-own) | Read "any positive" as "1 to 10,080"; the range is now closed at both ends |
+| [2026-08-23](#update-2026-08-23--maxbucketsperpass-is-a-second-cap-on-the-same-quantity-and-it-is-now-stated-at-the-boundary) | The cost bound named in *Alternatives* is now a **tool error**, not a fault one layer down |
 
 ## Update (2026-08-23) — any meant any positive, and four tools did not enforce it
 
@@ -227,8 +228,50 @@ at most 250,000 buckets, so an operator can configure a request that clears ever
 faults one layer down as a raw `ArgumentOutOfRangeException`. That is a separate bound on a separate quantity
 and it is carded as **gh#96**.
 
+## Update (2026-08-23) — `MaxBucketsPerPass` is a second cap on the same quantity, and it is now stated at the boundary
+
+**The decision still stands, and this update changes no bound — it changes where one is *said*.** The update
+above closed with the disagreement between `MaxRows` and `BarGapDetector.MaxBucketsPerPass` and carded it as
+gh#96. It is closed now.
+
+**The reason this record owns it is in the *Alternatives* above.** Rejecting a configured
+supported-resolution list, this ADR points at `MaxBucketsPerPass` as the place the cost is *actually* bounded —
+"which already refuses an absurd window rather than spending a minute discovering it." That sentence was true
+about the refusing and wrong about the shape of it: the refusal was an `ArgumentOutOfRangeException` thrown
+inside `Domain`, two layers below the tool surface, and it crossed the boundary as a stack. A cost bound this
+record leans on has to be a bound a *caller* can read.
+
+**Two caps on one quantity, and only one of them was ever an error.** `MaxRows` is operator configuration with
+a declared range of `[1, 1_000_000]`; `MaxBucketsPerPass` is a fixed 250,000. Configure the first above the
+second and a request legal on every axis the tool boundary checked still faulted below it.
+
+**Bounding the *configuration* would have closed one of the two ways in and left the other open**, which is why
+`ToolGuards.ValidateBucketSpan` bounds the **window** instead. `get_latest_bars` never validates a window: it
+sizes one from a count, reaching four bar spans per bar wanted plus four days. So a `MaxRows` of 100,000 —
+comfortably *inside* the detection cap, nothing out of range about it on any axis — still names **405,760**
+buckets. Refusing to start above 250,000 would have said nothing about that call, and would additionally have
+refused to serve a `get_bars`-only deployment that is perfectly serviceable.
+
+| Configuration | Call | Buckets needed |
+|---|---|---:|
+| `MaxRows = 300_000` | `get_bars`, a 300,000-bucket window | 300,000 |
+| `MaxRows = 100_000` | `get_latest_bars("ES", 1, 100_000)` | 405,760 |
+
+**The effective ceiling on a windowed read is therefore the lesser of the two caps**, the refusal names the
+tighter one — sending an operator to a constant they cannot change, past the one they configured, is the
+unhelpful half of the pair — and it **refuses rather than shortening the read to fit**. A series cut at one end
+arrives looking exactly like a complete one, which is the failure `ValidateWindow` and `LookbackWindow` already
+refuse to commit. Nothing reaches the venue on the way to being refused.
+
+**This is a bound on size, and it is not the last one.** A window at the far end of the calendar overflows the
+bucket-grid arithmetic regardless of either cap — a bound on *representability* — and still arrives as a raw
+`ArgumentOutOfRangeException` at every configuration including the default. Out of gh#96's scope, on a
+different quantity, and carded as **gh#110**.
+
 ## Follow-ups
 
+- gh#110 — a window at the end of the calendar still faults below the tool boundary. The last raw
+  `ArgumentOutOfRangeException` on this surface, and the one neither cap above bounds.
 - gh#49 — `get_market_snapshot` should default its resolution set rather than making an agent guess. This
   record supplies the cost side of that judgement.
 - gh#43 — extract the gateway's documented rate limits. That is the evidence that would move point 3 above.

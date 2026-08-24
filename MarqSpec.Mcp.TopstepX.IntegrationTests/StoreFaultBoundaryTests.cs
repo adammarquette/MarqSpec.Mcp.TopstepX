@@ -37,6 +37,22 @@ namespace MarqSpec.Mcp.TopstepX.IntegrationTests;
 /// gh#80 remains open and is untouched by these. Nothing here serialises two fills of one series; the second
 /// still loses the race. What changed is what the loser is told.
 /// </para>
+/// <para>
+/// <b>The <c>23505</c> is driven off the coverage ledger, not the bar key, and that is a consequence of
+/// gh#103 rather than a preference.</b> The bar write is now <c>ON CONFLICT … DO UPDATE</c>, so a losing
+/// insert there updates and no duplicate key survives that path to drive. The ledger's read-then-insert is
+/// the shape the bar write used to have and is untouched — so the boundary's claim is still tested against a
+/// real Postgres error rather than a fabricated one, which is the only reason this test is in this tier.
+/// </para>
+/// <para>
+/// <b>Which means this test now depends on gh#122 staying unfixed, and gh#122 is the card that fixes it.</b>
+/// The ledger's race is <c>RecordEmptyAsync</c>'s read-then-insert against the <c>BarCoverage</c> composite
+/// key, and gh#122 closes it exactly as gh#103 closed the bar write. <b>When gh#122 lands, this test's
+/// stimulus disappears</b> — no <c>23505</c> is reachable from that path either, and this test goes red a
+/// second time on an expectation that has gone stale rather than on code that is wrong. <b>Re-home it onto a
+/// race that still produces a real store fault; do not delete it to make the suite green.</b> The claim it
+/// makes is gh#89's, and it outlives every stimulus that has carried it.
+/// </para>
 /// </remarks>
 /// <param name="fixture">The shared container.</param>
 [Collection(SchemaCollection.Name)]
@@ -48,24 +64,31 @@ public sealed class StoreFaultBoundaryTests(SchemaFixture fixture)
     private static DateTimeOffset Now => ConcurrencyHarness.Bucket(60);
 
     [Fact]
-    public async Task ALostRaceOnTheBarKey_ReachesTheCallerAsAStatedCondition_NotAsADbUpdateException()
+    public async Task ALostRaceOnTheCoverageKey_ReachesTheCallerAsAStatedCondition_NotAsADbUpdateException()
     {
-        // THE regression, driven rather than stubbed. Two fills of OVERLAPPING ranges: the loser's snapshot
-        // is taken before the winner commits, so its overlap read still says the buckets are absent and it
-        // INSERTs them into rows that now exist. That is 23505, and no isolation level prevents it -- the
-        // remedy would be a lock, which is gh#80 and deliberately not here.
+        // THE regression, driven rather than stubbed. Two callers ask for one range the venue answers EMPTY,
+        // which both record in the coverage ledger. The loser's snapshot is taken before the winner commits,
+        // so its ledger lookup still says no row exists for the range and it INSERTs one over the row that
+        // now does. That is 23505, and no isolation level prevents it -- the remedy is an upsert or a lock,
+        // and for the ledger it is neither yet.
         //
-        // The interleaving is placed on the overlap read INSIDE the transaction, not on the storedBuckets
-        // read outside it. Placed outside, the winner commits before the loser's snapshot exists, the loser
-        // sees the rows and takes the update path -- a perfectly ordinary upsert, and no race at all.
+        // IT WAS THE BAR KEY UNTIL gh#103, and it moved because that race is closed rather than because this
+        // one is more convenient: the bar write is now `ON CONFLICT ... DO UPDATE`, so a losing insert
+        // updates and there is no duplicate key left on that path to drive. The ledger's read-then-insert is
+        // the same shape the bar write used to have, is untouched by gh#103, and is the ordinary case rather
+        // than an exotic one -- two agents polling one instrument reach it with no bars involved at all.
+        //
+        // The interleaving is placed on the ledger lookup INSIDE the transaction. `ExcludeCoveredAsync` also
+        // reads BarCoverage but runs BEFORE the transaction opens, and firing there would let the winner
+        // commit before the loser has a snapshot at all -- the loser would see the row, refresh it, and there
+        // would be no race. `"RangeStart" = ` appears only in `RecordEmptyAsync`'s lookup.
         string venue = ConcurrencyHarness.Venue();
 
         await using TopstepXDbContext winnerStore = _fixture.CreateContext();
 
-        async Task TheOtherFillCommitsTheSameBuckets()
+        async Task TheOtherCallerCommitsTheSameCoverageRow()
         {
-            BarCacheService winner =
-                ConcurrencyHarness.Cache(winnerStore, venue, ConcurrencyHarness.Bars(0, 20), Now);
+            BarCacheService winner = ConcurrencyHarness.Cache(winnerStore, venue, [], Now);
             await winner.GetBarsAsync(
                 ConcurrencyHarness.Instrument,
                 ConcurrencyHarness.ResolutionMinutes,
@@ -73,13 +96,11 @@ public sealed class StoreFaultBoundaryTests(SchemaFixture fixture)
                 CancellationToken.None);
         }
 
-        // `"BucketStart" <=` is what tells the two Bars reads apart: the window read outside the transaction
-        // is half-open and emits `<`, while the upsert's overlap read is inclusive of the last bucket.
         InterleavingInterceptor straddle = InterleavingInterceptor.After(
-            "\"BucketStart\" <=", venue, TheOtherFillCommitsTheSameBuckets);
+            "\"RangeStart\" = ", venue, TheOtherCallerCommitsTheSameCoverageRow);
 
         await using TopstepXDbContext loserStore = _fixture.CreateContext(straddle);
-        MarketDataTools tools = Tools(loserStore, venue, ConcurrencyHarness.Bars(0, 20));
+        MarketDataTools tools = Tools(loserStore, venue, []);
 
         Func<Task> call = () => ThroughTheBoundary(token => tools.GetBars(
             ConcurrencyHarness.Symbol,
@@ -95,7 +116,7 @@ public sealed class StoreFaultBoundaryTests(SchemaFixture fixture)
             .WithMessage("*retry*");
 
         straddle.Fired.Should().BeTrue(
-            "the collision is the test -- if the other fill never ran inside this one's transaction, this "
+            "the collision is the test -- if the other caller never ran inside this one's transaction, this "
             + "passed by exercising nothing");
     }
 

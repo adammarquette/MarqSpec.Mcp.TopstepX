@@ -71,10 +71,10 @@ jobs:
   #
   # Its own job for the same reason no-order-path has one: a failure here means "the burst protection came
   # unpicked", and folding it into no-order-path would report that as "the read-only boundary was crossed",
-  # which is a different and far more alarming claim. NOTE: a new job is not automatically a REQUIRED check --
-  # the develop ruleset names those, and a ruleset cannot be edited from a pull request. So this REPORTS and
-  # does not block; adding it to the ruleset is tracked as gh#72. Read a red `paced-paging` as real even
-  # though the merge box does not.
+  # which is a different and far more alarming claim.
+  #
+  # REQUIRED on develop, staging and main as of gh#72 -- a red run here blocks the merge. `name:` below is the
+  # status CONTEXT the rulesets name, so renaming the job silently un-requires it: change both together.
   paced-paging:
     name: paced-paging
     runs-on: ubuntu-latest
@@ -249,6 +249,18 @@ jobs:
       # the two free to differ silently: the preinstalled `default` builder uses the `docker` driver, while
       # this action creates a `docker-container` one. release.yml now declares the same step, so "CI builds
       # the way the release builds" is true of the BUILDER and not only of the action.
+      # BUILT AGAINST THE REFERENCE THE RELEASE PUSHES, not a local stand-in (gh#115).
+      #
+      # This job used to tag `marqspec-mcp-topstepx:ci` -- hardcoded, lowercase, local -- so the registry
+      # reference lived only in release.yml and was evaluated only during a real release. v0.1.0 duly failed
+      # at the push with `invalid tag ... repository name must be lowercase`, after gh#54 and gh#63 had
+      # already aligned the action and the builder and merged green. The builder was never the problem.
+      #
+      # Nothing is pushed here. Building against the real reference is enough: buildx validates the tag
+      # before it starts, so an invalid one fails a pull request instead of a release.
+      - name: Resolve the image reference
+        run: echo "IMAGE=$(./scripts/image-reference.sh)" >> "$GITHUB_ENV"
+
       - name: Set up Buildx
         uses: docker/setup-buildx-action@v4
 
@@ -270,14 +282,15 @@ jobs:
       # boundary is worth more than coverage of a three-input action.
       #
       # WHAT A GREEN `image` LICENSES, exactly: the Dockerfile builds, the image loads into the local daemon,
-      # and the image's OWN entrypoint starts a server that answers an MCP `tools/list` with no configuration
-      # (gh#67). THE THIRD CLAUSE IS THE NEW ONE. The old smoke step licensed the first two and only those:
-      # a Dockerfile that does not build fails the build step regardless, and `--entrypoint dotnet` against a
-      # tag never loaded into the daemon exits 125 `No such image` -- measured, and it is why a missing
-      # `load: true` was always caught. What a green `image` still does NOT license: a venue, store or
-      # embedding call, since none of the three is configured here; the HTTP transport, which this never
-      # selects; and the publish path end to end -- the login and the registry export still first execute at
-      # a real release.
+      # the image's OWN entrypoint starts a server that answers an MCP `tools/list` with no configuration
+      # (gh#67), that container then exits 0 (gh#98), and the gate saying all this can still FAIL, because
+      # the broken-entrypoint fixture is run against it in this same job (gh#98). The old smoke step licensed
+      # the first two and only those: a Dockerfile that does not build fails the build step regardless, and
+      # `--entrypoint dotnet` against a tag never loaded into the daemon exits 125 `No such image` --
+      # measured, and it is why a missing `load: true` was always caught. What a green `image` still does NOT
+      # license: a venue, store or embedding call, since none of the three is configured here; the HTTP
+      # transport, which this never selects; and the publish path end to end -- the login and the registry
+      # export still first execute at a real release.
       - name: Build the image
         uses: docker/build-push-action@v7
         with:
@@ -290,7 +303,7 @@ jobs:
           # smoke step below then reports "Unable to find image ... locally" and fails trying to PULL the tag
           # from Docker Hub, which reads like a typo in the tag rather than like a missing export.
           load: true
-          tags: marqspec-mcp-topstepx:ci
+          tags: ${{ env.IMAGE }}:ci
         env:
           # DISABLED, and stated rather than inherited (gh#54 review). `build-push-action` v6+ exports a
           # `.dockerbuild` build record and uploads it as a downloadable workflow ARTIFACT on every run --
@@ -328,12 +341,31 @@ jobs:
         # image built with `ENTRYPOINT ["dotnet", "MarqSpec.Mcp.TopstepX.DoesNotExist.dll"]` passed it,
         # exit 0.
         #
-        # The replacement asserts two things: that the assembly the ENTRYPOINT names is at the path it will
-        # be resolved from, and that the entrypoint -- unoverridden -- starts a server which answers an MCP
-        # `tools/list` with a non-empty tool list. It deliberately does NOT assert an exit code; the
-        # measurements behind that decision, and what a pass does and does not prove, are in the script's
-        # header.
+        # The replacement asserts three things, in that order of importance: that the assembly the ENTRYPOINT
+        # names is at the path it will be resolved from; that the entrypoint -- unoverridden -- starts a
+        # server which answers an MCP `tools/list` with a non-empty tool list; and, only once that reply has
+        # landed, that the container then exited 0. The exit code is a SECOND signal and gh#98 measured it on
+        # this runner before the gate was allowed to read it -- 0 healthy, 155 broken, nine observations per
+        # row on Engine 28.0.4. gh#67 had recorded 155 as the HEALTHY number from a Windows host, and a gate
+        # written to that would have passed the broken image and failed the good one. The numbers, their
+        # provenance, and what reading them does and does not buy are in the script's header.
         #
         # A SCRIPT rather than an inline block so the same check runs against a locally built image. A local
         # check that disagrees with CI is worse than no local check.
-        run: ./scripts/check-image-entrypoint.sh marqspec-mcp-topstepx:ci
+        run: ./scripts/check-image-entrypoint.sh "$IMAGE:ci"
+
+      # THE GATE ABOVE HAS TO BE ABLE TO FAIL (gh#98). It is the only thing standing between a broken
+      # artifact and a green build, and it has a specific way of going quiet: both of its checks resolve the
+      # assembly from the image's own entrypoint, so one loosened match -- or a `|| true` left behind after a
+      # debugging session -- turns it into a step that passes on anything while the run page stays green.
+      # That is not hypothetical; it is precisely the state gh#54 and gh#67 were filed for.
+      #
+      # This step derives the gh#54/gh#67 fixture from the image just built -- same layers, an ENTRYPOINT
+      # naming an assembly that is not there -- runs the real gate against it, and requires BOTH a non-zero
+      # exit AND that the failure names the missing assembly. Exit status alone would be satisfied by "docker
+      # is required" or "no local image tagged ...", i.e. by a runner that never built anything.
+      #
+      # It runs AFTER the smoke step on purpose: if both go red, the smoke failure is the real news, and this
+      # one is then a second opinion on the same image rather than the headline.
+      - name: Self-test — that gate still rejects a broken entrypoint
+        run: ./scripts/check-image-entrypoint-selftest.sh "$IMAGE:ci"

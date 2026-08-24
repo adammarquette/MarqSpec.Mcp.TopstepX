@@ -241,7 +241,8 @@ public sealed class ToolSchemaTests
             toolType,
             member,
             value,
-            string.Join(" | ", namingItOutsideAClause));
+            string.Join(" | ", namingItOutsideAClause),
+            AsAClauseMustWriteIt(value));
     }
 
     // ── Descriptions against the shape a missing number takes on the wire ────────────────────────────
@@ -364,11 +365,17 @@ public sealed class ToolSchemaTests
     /// The original message, unchanged in what it diagnoses, plus the phrasing the new sentence has to take.
     /// A contributor who adds one and picks their own wording lands straight on
     /// <see cref="NamedButNotAdvertised"/>, so the remedy is only useful if it arrives here too.
+    /// <para>
+    /// The sentence it prescribes carries <c>{4}</c>, never the bare <c>{2}</c>: a string default satisfies
+    /// this gate only in quotes, so prescribing the bare word hands the reader a remedy the gate rejects.
+    /// See <see cref="AsAClauseMustWriteIt"/>. For a number the two render identically, and this message is
+    /// byte-for-byte what it was.
+    /// </para>
     /// </remarks>
     private const string NamedNowhere =
         "{0}.{1} is {2} and it is what a caller gets by omitting an argument, so some description on "
         + "{0} has to name it. Change the constant without the sentence and an agent is told a value the "
-        + "server does not use. Write that sentence as \"Omit for {2}.\" or \"Defaults to {2}.\": those "
+        + "server does not use. Write that sentence as \"Omit for {4}.\" or \"Defaults to {4}.\": those "
         + "phrases are mandatory house vocabulary, and no other wording opens an advertising clause.";
 
     /// <summary>The constant gate's failure when the value is written down but not in an advertising clause.</summary>
@@ -383,13 +390,20 @@ public sealed class ToolSchemaTests
     /// <see cref="AdvertisingClauses"/> narrows the search to exclude. Quoting the text lets the reader tell
     /// the two apart, and the remedy is the same either way.
     /// </para>
+    /// <para>
+    /// Every sentence it writes out — the two rejected phrasings as much as the remedy — carries <c>{4}</c>
+    /// rather than the bare <c>{2}</c>. The rejected pair sits directly beside the reader's own text in
+    /// <c>{3}</c>, so a bare rendering there shows them <i>"Default is memo."</i> next to their
+    /// <i>"Default is 'memo'."</i> and reads as though the quotes were the fault. See
+    /// <see cref="AsAClauseMustWriteIt"/>.
+    /// </para>
     /// </remarks>
     private const string NamedButNotAdvertised =
         "{0}.{1} is {2} and the description text below already contains it, but no ADVERTISING CLAUSE does, "
         + "so a second sentence in the same style fails here identically. A clause runs from \"Omit\" or "
-        + "\"Defaults to\" to the end of its sentence and nothing else opens one, so \"Default is {2}.\" and "
-        + "\"If unset, {2} is used.\" yield no clause at all and their text never reaches this assertion. "
-        + "Write \"Omit for {2}.\" or \"Defaults to {2}.\" Text already containing it: \"{3}\"";
+        + "\"Defaults to\" to the end of its sentence and nothing else opens one, so \"Default is {4}.\" and "
+        + "\"If unset, {4} is used.\" yield no clause at all and their text never reaches this assertion. "
+        + "Write \"Omit for {4}.\" or \"Defaults to {4}.\" Text already containing it: \"{3}\"";
 
     private static IEnumerable<string> AdvertisedValues(MemberInfo member)
     {
@@ -497,6 +511,26 @@ public sealed class ToolSchemaTests
         || value is "true" or "false"
             ? @"(?<![\d.])" + Regex.Escape(value) + @"(?!\.?\d)"
             : "['\"`“‘]" + Regex.Escape(value) + "['\"`”’]";
+
+    /// <summary>The value spelled the way an advertising clause has to spell it.</summary>
+    /// <param name="value">The rendered constant, exactly as <see cref="Boundary"/> receives it.</param>
+    /// <returns>Bare where <see cref="Boundary"/> already matches it bare; quoted where it does not.</returns>
+    /// <remarks>
+    /// <b>A remedy that prescribes a form the gate rejects is worse than no remedy.</b> The contributor
+    /// writes the sentence they were told to write, stays red, and reads the same message again — with that
+    /// very sentence now listed among the text that <i>does not match</i>. That is precisely the loop gh#90
+    /// exists to break, so a message must not reopen it: <see cref="Boundary"/> matches a number bare but a
+    /// string <b>only in quotes</b>, and a remedy that ignores the branch is wrong for every string default.
+    /// <para>
+    /// It cannot drift from <see cref="Boundary"/> because it asks <see cref="Boundary"/> rather than
+    /// restating its condition: the bare form is offered only when it has just been shown to satisfy the
+    /// pattern the assertion uses. The straight quote is this surface's house form — <i>"Defaults to
+    /// 'note'."</i> is live text — so a quote set that stopped accepting <c>'</c> would fail this gate on
+    /// correct descriptions long before it could mislead anyone here.
+    /// </para>
+    /// </remarks>
+    private static string AsAClauseMustWriteIt(string value) =>
+        Regex.IsMatch(value, Boundary(value)) ? value : "'" + value + "'";
 
     /// <summary>Where a field name is substituted into a comparison shape.</summary>
     private const string FieldToken = "<field>";

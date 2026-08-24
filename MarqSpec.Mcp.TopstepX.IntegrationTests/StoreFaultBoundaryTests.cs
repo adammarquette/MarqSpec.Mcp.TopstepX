@@ -44,6 +44,15 @@ namespace MarqSpec.Mcp.TopstepX.IntegrationTests;
 /// the shape the bar write used to have and is untouched — so the boundary's claim is still tested against a
 /// real Postgres error rather than a fabricated one, which is the only reason this test is in this tier.
 /// </para>
+/// <para>
+/// <b>Which means this test now depends on gh#122 staying unfixed, and gh#122 is the card that fixes it.</b>
+/// The ledger's race is <c>RecordEmptyAsync</c>'s read-then-insert against the <c>BarCoverage</c> composite
+/// key, and gh#122 closes it exactly as gh#103 closed the bar write. <b>When gh#122 lands, this test's
+/// stimulus disappears</b> — no <c>23505</c> is reachable from that path either, and this test goes red a
+/// second time on an expectation that has gone stale rather than on code that is wrong. <b>Re-home it onto a
+/// race that still produces a real store fault; do not delete it to make the suite green.</b> The claim it
+/// makes is gh#89's, and it outlives every stimulus that has carried it.
+/// </para>
 /// </remarks>
 /// <param name="fixture">The shared container.</param>
 [Collection(SchemaCollection.Name)]

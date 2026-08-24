@@ -157,13 +157,13 @@ public sealed class ProjectXMarketDataGateway : IMarketDataGateway
         TimeSpan pacedTotal = TimeSpan.Zero;
         int pacedPages = 0;
 
-        for (DateTimeOffset from = window.Start; from < window.End; from += page)
+        // CLAMPED BEFORE THE ADD, and stepped by the clamped end rather than by a whole page -- the same
+        // total form BarCacheService.FetchAsync uses, for the same reason. `from + page` computed first
+        // overflows for a window ending within one page of the end of the calendar, and a page here is 1,000
+        // bar spans (gh#110). The subtraction is total: two DateTimeOffsets always differ by a TimeSpan.
+        for (DateTimeOffset from = window.Start; from < window.End;)
         {
-            DateTimeOffset to = from + page;
-            if (to > window.End)
-            {
-                to = window.End;
-            }
+            DateTimeOffset to = window.End - from <= page ? window.End : from + page;
 
             // THIS LOOP IS THE ONLY BURST THIS SERVER ISSUES, and retrieveBars carries the vendor's TIGHTEST
             // limit: 50 requests / 30 seconds, which is a mean spacing of 600 ms. Unpaced, the loop is spaced
@@ -217,6 +217,7 @@ public sealed class ProjectXMarketDataGateway : IMarketDataGateway
                 "retrieving bars for " + contractId).ConfigureAwait(false);
 
             collected.AddRange(bars.Select(b => ProjectXMapping.ToBar(b, contractId)));
+            from = to;
         }
 
         if (pacedPages > 0)

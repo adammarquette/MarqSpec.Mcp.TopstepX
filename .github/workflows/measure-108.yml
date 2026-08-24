@@ -1,0 +1,52 @@
+name: measure-108
+
+# SCAFFOLDING for gh#108, added and removed inside its own PR (the gh#98 precedent).
+#
+# BOTH JOBS BELOW ARE EXPECTED TO GO RED. That is the evidence: "a gate nobody has seen fail is a gate nobody
+# should trust", and reading the settings page is exactly how the original hole survived.
+#
+#   1. mutation-unprotected      -- the real check, pointed at an environment that EXISTS with NO protection
+#                                   rules: the precise state GitHub leaves an auto-created one in, and so the
+#                                   precise state release.yml's gate was in before gh#108. The environment
+#                                   `gh108-unprotected-throwaway` was created for this and is deleted after.
+#                                   `production` is not touched.
+#   2. mutation-selftest-neutered -- check-release-gate.sh replaced by `exit 0`, i.e. the `|| true` failure
+#                                   this card is about, one layer down. The self-test must catch it.
+
+on: push
+
+permissions:
+  contents: read
+
+jobs:
+  mutation-unprotected:
+    name: MUTATION (expected red) — an environment with no reviewers
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Point the real check at an unprotected environment
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          mkdir -p /tmp/fixture
+          cat > /tmp/fixture/release.yml <<'EOF'
+          jobs:
+            gate:
+              name: Await release approval
+              runs-on: ubuntu-latest
+              environment: gh108-unprotected-throwaway
+          EOF
+          ./scripts/check-release-gate.sh /tmp/fixture
+
+  mutation-selftest-neutered:
+    name: MUTATION (expected red) — the check neutered to exit 0
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Replace the check with `exit 0` and run the self-test against it
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          printf '#!/usr/bin/env bash\nexit 0\n' > scripts/check-release-gate.sh
+          chmod +x scripts/check-release-gate.sh
+          ./scripts/check-release-gate-selftest.sh

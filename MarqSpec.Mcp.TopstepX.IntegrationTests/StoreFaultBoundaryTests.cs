@@ -35,12 +35,13 @@ namespace MarqSpec.Mcp.TopstepX.IntegrationTests;
 /// what is under test is what it does to an exception a real database produced.
 /// </para>
 /// <para>
-/// <b>Nothing here serialises two fills of one series, and nothing ever will</b> — gh#80 closed by
-/// <i>deciding</i> that rather than by building a lock (gh#104,
-/// <see href="../documentation/adr/0012-fills-are-not-serialised.md">ADR-0012</see>). The second fill still
-/// loses the race; what changed is what the loser is told. That is why the stimulus below is still available:
-/// serialising would have removed it as a side effect, and the decision not to serialise is what leaves gh#133
-/// a real defect with its own remedy rather than a note.
+/// <b>Nothing here serialises two fills of one series, and as of gh#104 nothing is expected to</b> — that half
+/// of gh#80 closed by <i>deciding</i> against a lock rather than by building one
+/// (<see href="../documentation/adr/0012-fills-are-not-serialised.md">ADR-0012</see>, which records the
+/// measurements and does <i>not</i> foreclose revisiting them). The second fill still loses the race; what
+/// changed is what the loser is told. That is also why the stimulus below is still available: serialising
+/// would have removed it as a side effect, and the decision not to serialise is what leaves gh#133 a real
+/// defect with its own remedy rather than a note. <b>gh#80 itself stays open until gh#133 does land.</b>
 /// </para>
 /// <para>
 /// <b>The <c>23505</c> is driven off the indicator projection, and that is a consequence rather than a

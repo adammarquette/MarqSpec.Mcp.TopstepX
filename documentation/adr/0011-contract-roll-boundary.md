@@ -270,7 +270,9 @@ Neither is free of residue, and the honest statement of it is: two fills whose r
 project over their own view, so one can write values seeded from the wrong bar. Those are **stale, not lost** —
 the projection is reproducible from the bars by design ([ADR-0006](0006-indicators-as-projections.md)), so the
 next pass over the series corrects them. Closing that as well means serialising fills per series, which is a
-lock rather than an isolation level and is not decided here — it is tracked as gh#104.
+lock rather than an isolation level and is not decided here — it is tracked as gh#104. **That deferral has
+since been discharged: gh#104 decided not to serialise, and the residue described in this paragraph is
+therefore accepted rather than pending. See the gh#104 update at the end of this section.**
 
 The other residue named here was a **`23505` out of `get_bars`** when two fills of overlapping ranges both
 inserted a bucket each believed absent, and that one **is closed** (gh#103). It needed no lock: the bar write
@@ -294,5 +296,10 @@ therefore **accepted rather than closed**, and it was measured before it was dec
 lock was observed still holding its key after the connection that took it had gone back to Npgsql's pool, so
 the remedy trades a staleness the next pass recomputes away for a series wedged until unrelated traffic happens
 to reuse that connection. Both halves — the skew, and the heal — are now driven by a test rather than argued,
-so *"stale, not lost"* is checkable here rather than asserted. Nothing about the segmentation or the reconcile
-this record decided changes; what changes is that the sentence deferring the question no longer defers it.
+so *"stale, not lost"* is checkable here rather than asserted — with one condition this section did not state
+and gh#104 found: the next pass has to *happen*. A series nothing writes to again keeps the stale values until
+`rebuild-indicators` is run over it.
+
+Nothing about the segmentation or the reconcile this record decided changes. The two sentences that read as
+pending are marked in place rather than rewritten — the deferral above, and the gh#122 paragraph's closing
+clause — so the trail still shows what was true when each was written.

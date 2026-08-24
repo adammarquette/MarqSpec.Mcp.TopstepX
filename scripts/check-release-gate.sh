@@ -33,6 +33,14 @@
 #   - an environment name that is not a literal (a `${{ }}` expression), which must not be silently dropped;
 #   - a successful read whose reviewer list comes back empty.
 #
+# WHAT IT DOES NOT ASSERT, so nobody reads more into a green run than is there: it checks the SETTING, not
+# the WIRING. Delete `needs: gate` from release.yml's `publish` job and this still passes -- `production` is
+# untouched and still requires a reviewer; the publish simply no longer waits for it. That boundary is
+# deliberate rather than an oversight. The wiring lives in a file, so a pull request, a review and a diff can
+# all see it; the setting is the half that none of them can, which is the half that went wrong in gh#108 and
+# the half worth spending an API call on. A check that also parsed the `needs:` graph would be re-asserting
+# what review already covers, and would go stale against the next legitimate reshuffle of the jobs.
+#
 # MEASURED, not assumed (gh#108, run 32690544841 on ubuntu-24.04, runner image 20260816.277.1): a
 # GITHUB_TOKEN holding ONLY `contents: read` + `metadata: read` reads both `GET /environments` and
 # `GET /environments/{name}` on this repository, protection rules and reviewer logins included; an absent
@@ -91,27 +99,50 @@ done
 [ "${#workflow_files[@]}" -gt 0 ] || die "no workflow files (*.yml, *.yaml) under $WORKFLOWS_DIR.
 There is nothing here that could declare a release gate, so this cannot report one sound."
 
+#
+# THE `pending` STATE IS BOUNDED IN BOTH DIRECTIONS, and it was not in the first draft. An unresolved mapping
+# in one file walked into the NEXT file and bound itself to that file's top-level `name:`, reporting a
+# workflow's own name as an environment: fixtures `a.yml` holding `environment:` with only a `url:` under it
+# and `b.yml` opening `name: PhantomWorkflowName` produced `PhantomWorkflowName` as a discovered environment,
+# then failed with "the environment PhantomWorkflowName does not exist". Red for the wrong reason and naming
+# the wrong thing, which sends the reader to look for a setting nobody ever asked for. Two bounds now:
+#
+#   - the file boundary, reset FIRST so it cannot be jumped by a `next` in a rule above it. That ordering is
+#     the whole bug: the reset used to sit last, so a following file whose first line was a comment -- or was
+#     itself `name:` -- reached those rules before the reset ever ran;
+#   - the block boundary, by INDENT. `name:` counts only while it is indented deeper than the `environment:`
+#     that opened the mapping; the first line at or left of that column closes it unresolved.
+#
+# Unresolved is reported, never dropped: it reaches the caller as `<unresolved-mapping>` and fails there, for
+# the same reason a `${{ }}` name does.
 discovered="$(
   awk '
+    function indent_of(s,   t) { t = s; sub(/[^ \t].*$/, "", t); return length(t) }
+    function close_pending() { print pendingfile "\t<unresolved-mapping>"; pending = 0 }
+
+    FNR == 1 && pending { close_pending() }
     /^[[:space:]]*#/ { next }
     match($0, /^[[:space:]]*environment:[[:space:]]*/) {
+      if (pending) close_pending()
       rest = substr($0, RSTART + RLENGTH)
       sub(/[[:space:]]*#.*$/, "", rest)
       gsub(/^["'"'"']|["'"'"']$/, "", rest)
-      if (rest != "") { print FILENAME "\t" rest; pending = 0; next }
+      if (rest != "") { print FILENAME "\t" rest; next }
       pending = 1
+      pendingindent = indent_of($0)
+      pendingfile = FILENAME
       next
     }
-    pending && match($0, /^[[:space:]]*name:[[:space:]]*/) {
+    pending && match($0, /^[[:space:]]*name:[[:space:]]*/) && indent_of($0) > pendingindent {
       rest = substr($0, RSTART + RLENGTH)
       sub(/[[:space:]]*#.*$/, "", rest)
       gsub(/^["'"'"']|["'"'"']$/, "", rest)
-      print FILENAME "\t" rest
+      print pendingfile "\t" rest
       pending = 0
       next
     }
-    FNR == 1 { pending = 0 }
-    END { if (pending) print FILENAME "\t<unresolved-mapping>" }
+    pending && $0 ~ /[^[:space:]]/ && indent_of($0) <= pendingindent { close_pending() }
+    END { if (pending) close_pending() }
   ' "${workflow_files[@]}" | sort -u
 )"
 
@@ -151,7 +182,14 @@ while IFS= read -r name; do
   checked=$((checked + 1))
 
   case "$name" in
-    *'${{'* | '<unresolved-mapping>')
+    '<unresolved-mapping>')
+      printf '\033[31mUNCHECKABLE\033[0m  an `environment:` mapping with no `name:` under it\n' >&2
+      printf '  Found in: %s\n' "$(printf '%s\n' "$discovered" | grep -F "$name" | cut -f1 | paste -sd' ' -)" >&2
+      printf '  The block opens but never says which environment it means, so nothing here can be looked up.\n' >&2
+      failed=$((failed + 1))
+      continue
+      ;;
+    *'${{'*)
       printf '\033[31mUNCHECKABLE\033[0m  %s\n' "$name" >&2
       printf '  The environment name is not a literal, so no API call can confirm what it resolves to.\n' >&2
       printf '  Write the name out, or this cannot vouch for the job that depends on it.\n' >&2

@@ -286,4 +286,13 @@ reading the row and deciding, so two callers polling one quiet range both land. 
 the paragraph above from over-claiming — a `23505` out of `get_bars` remains reachable, on the **indicator
 projection**, which is a reconcile rather than an upsert and so is not one statement. That is the last
 instance of the shape on this path and is tracked as gh#133; it does not touch a bucket's provenance, and the
-write skew above is still gh#104's.
+write skew above is gh#104's, settled immediately below.
+
+**Update (2026-08-24, gh#104).** The question this section left open — whether to serialise fills per series —
+**is settled, and the answer is no** ([ADR-0012](0012-fills-are-not-serialised.md)). The residue named above is
+therefore **accepted rather than closed**, and it was measured before it was declined: a session-level advisory
+lock was observed still holding its key after the connection that took it had gone back to Npgsql's pool, so
+the remedy trades a staleness the next pass recomputes away for a series wedged until unrelated traffic happens
+to reuse that connection. Both halves — the skew, and the heal — are now driven by a test rather than argued,
+so *"stale, not lost"* is checkable here rather than asserted. Nothing about the segmentation or the reconcile
+this record decided changes; what changes is that the sentence deferring the question no longer defers it.

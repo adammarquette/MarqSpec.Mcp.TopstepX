@@ -142,13 +142,18 @@ transaction — here, the bars and the coverage ledger over the same series — 
 
 **Neither the bar write nor the coverage ledger reaches that boundary any more** (gh#103, gh#122). Both are
 real upserts, so a losing insert updates instead of faulting, and the caller of `get_bars` is not handed a
-database error for asking an ordinary question. Two things are *not* fixed. The **indicator projection** is
-the third instance of that same read-then-insert and the only one left on this path — it is a reconcile
-rather than an upsert, so the remedy is not one statement, and it is tracked as gh#133. And a fill whose
-snapshot misses a range another fill is filling still seeds its values from the wrong bar; those are stale
-until the next pass, which is recoverable by construction (`R-2.9`,
-[ADR-0006](adr/0006-indicators-as-projections.md)). Closing that means serialising fills per series — a lock
-rather than an isolation level, tracked as gh#104 and still open.
+database error for asking an ordinary question. One is *not* fixed and is still open: the **indicator
+projection** is the third instance of that same read-then-insert and the only one left on this path — it is a
+reconcile rather than an upsert, so the remedy is not one statement, and it is tracked as gh#133.
+
+**And one is decided rather than fixed.** A fill whose snapshot does not reach the start of the series seeds
+its values from the first bar it *can* see, so two fills of adjacent ranges leave the seam unmeasured and the
+values after it smoothed from the wrong bar. Nothing refuses — the two write sets are genuinely disjoint — so
+this is write skew rather than contention and the retry above cannot reach it. **Fills are deliberately not
+serialised** ([ADR-0012](adr/0012-fills-are-not-serialised.md), `R-2.11`): the remedy is a lock rather than an
+isolation level, and a session-level advisory lock was measured going on holding the key after its connection
+returned to the pool — an unbounded wedge traded for a staleness that the next pass over the series recomputes
+away (`R-2.9`, [ADR-0006](adr/0006-indicators-as-projections.md)).
 
 ### Why step 2 exists
 

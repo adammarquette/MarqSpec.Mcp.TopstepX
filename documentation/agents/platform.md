@@ -74,11 +74,25 @@ The root contract's five apply here unchanged. Four land specifically on the pip
   copies of a rule are two rules and these had already drifted. Note the shape of the fix — the stripper
   over-strips on an unterminated fence or `<!--`, swallowing the rest of the body, and that is the direction
   to choose: over-stripping makes the run say why, under-stripping passes silently on text GitHub ignores.
-  **Read that heading as the target, not as a report.** Three of the four forms GitHub ignores are stripped;
-  a **four-space-indented** block is not, and `git log`'s default format produces exactly one — so an unfenced
-  paste still cites for the promotion carrying it. Tracked as gh#142; `5188178` on
-  `bug/101_ci-platform-issue-link-can-never-pass-a-ladder-p` already carries a `python3` stripper that handles
-  it and sits on no open pull request.
+  All four forms are stripped as of gh#142 — the last was the **four-space-indented** block, which
+  `git log --pretty=medium` produces on every unfenced paste, so a promotion was citing the work it carried.
+- **"Over-stripping is the safe direction" is a claim about *which line* gets dropped, not a general rule**
+  (gh#142). It holds for an unterminated fence or `<!--`: the gate refuses, the run says why, and the author
+  moves a citation they can still see. It inverts for the indented block, where the dropped line **is** the
+  citation — a four-space continuation inside a list item is ordinary markdown, and refusing it blocks a
+  legitimate pull request, which is worse than the phantom being removed. So the stripper implements all
+  three of CommonMark's preconditions (four **columns**, a blank line above, measured from the enclosing list
+  item's content column) rather than matching four leading spaces. The cheap version was already written and
+  is why this is worth recording: `5188178`, on the never-merged `bug/101_…` branch, dropped every four-space
+  line, and 37 of this repository's 71 pull-request bodies carry such a line outside a fence — 173 lines, all
+  of them prose. **Ask which direction over-stripping fails in for the specific construct**, every time; and
+  when a gate's stripper grows a rule, extend the pass that already owns that class of line rather than
+  adding a stage, or "one rule in one place" survives only until the next card.
+- **A dependency a gate does not need is a decision, not an inheritance** (gh#142). `5188178` replaced the
+  stripper with `python3`; `issue-link` runs on `awk`, `sed`, `grep`, and the port kept it that way. The
+  reason it could: the added program needs no ERE interval expressions, so it behaves identically on the
+  `mawk 1.3.4` that `/usr/bin/awk` resolves to on Ubuntu 24.04 and on `gawk`. Verified in a container on both,
+  not assumed from the runner image's package list.
 - **A stripper is a parser: its passes have an order, and the order is a decision** (gh#123, from review). The
   HTML-comment pass ran first and blind, so a `<!--` written as *inline code* — prose **about** the marker,
   which platform pull requests are full of — opened a comment nothing closed and discarded every line after

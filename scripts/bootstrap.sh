@@ -12,13 +12,20 @@
 # had never once been switched on, and nothing in the repository could have told you. This script exists so
 # that state is reproducible rather than re-clicked.
 #
-# Idempotent for branches, labels and the ruleset RULES it declares: those are updated, not duplicated.
+# Idempotent: safe to re-run. Branches, labels and rulesets are updated, not duplicated -- and a ruleset
+# update carries through every rule this script does not itself declare, `required_status_checks` first
+# among them.
 #
-# NOT idempotent for required status checks, and that is a live hazard rather than a caveat (gh#114). The
-# ruleset update below is a PUT, which replaces the whole object, and the payload declares no
-# `required_status_checks` rule -- so re-running this against a repo whose merge gate has since been
-# configured DELETES that gate, on all three rungs, and reports success. Read the closing note before
-# re-running it on a live repo.
+# That carry-through is the whole of gh#114, and it is not a nicety. A ruleset edit is a PUT and a PUT
+# REPLACES the whole object, so the payload below IS the ruleset: any rule missing from it is deleted. Until
+# gh#114 the payload declared only deletion, non_fast_forward and pull_request, so a second run against a repo
+# whose merge gate had since been configured stripped every required check off all three rungs -- including
+# `no-order-path`, which is how ADR-0002's read-only boundary is enforced -- and printed "all rulesets active"
+# underneath, because enforcement was all it verified. Step 3 now reads each live ruleset before writing it,
+# and reads the contexts back per rung afterwards.
+#
+# (PATCH is not defined on /repos/{owner}/{repo}/rulesets/{id} and answers 404, which reads as a permissions
+# problem and is not one. PUT is the update verb; read-modify-write is the only shape available.)
 
 set -euo pipefail
 
@@ -96,8 +103,31 @@ run gh api -X PATCH "repos/$REPO" -F delete_branch_on_merge=true >/dev/null
 # ---------------------------------------------------------------------------
 step "3. Branch protection rulesets"
 
+# The rules this script declares are the rules it is entitled to overwrite. Everything else a live ruleset
+# carries is read back and spliced into the payload untouched, so a PUT cannot delete a rule this script never
+# had an opinion about. KEEP THIS FILTER IN STEP WITH ruleset_payload() BELOW: a type named in neither place is
+# a type the next run silently deletes, which is exactly the fault gh#114 records.
+UNDECLARED_RULES='.rules[] | select(.type != "deletion" and .type != "non_fast_forward" and .type != "pull_request")'
+
+# One compact JSON object per line, or nothing at all -- the normal answer on a freshly created ruleset. gh
+# ships its own jq, so this needs no external dependency (same reasoning as claim.sh).
+undeclared_rules() { gh api "repos/$REPO/rulesets/$1" --jq "$UNDECLARED_RULES" 2>/dev/null || true; }
+undeclared_types() { gh api "repos/$REPO/rulesets/$1" --jq "[$UNDECLARED_RULES | .type] | join(\", \")" 2>/dev/null || true; }
+
 ruleset_payload() {
-  local branch="$1" merge_method="$2"
+  local branch="$1" merge_method="$2" carried="${3:-}"
+
+  # Splice the carried rules in as further elements of the "rules" array. The loop shares this shell, so
+  # $carried_json survives it; an empty $carried yields a single empty line, which is skipped.
+  local carried_json="" rule
+  while IFS= read -r rule; do
+    [ -n "$rule" ] || continue
+    carried_json="$carried_json,
+    $rule"
+  done <<CARRIED
+$carried
+CARRIED
+
   cat <<JSON
 {
   "name": "protect-$branch",
@@ -118,7 +148,7 @@ ruleset_payload() {
         "required_review_thread_resolution": false,
         "allowed_merge_methods": ["$merge_method"]
       }
-    }
+    }$carried_json
   ]
 }
 JSON
@@ -132,9 +162,18 @@ for pair in "develop:rebase" "staging:merge" "main:merge"; do
   existing=$(gh api "repos/$REPO/rulesets" --jq ".[] | select(.name==\"protect-$branch\") | .id" 2>/dev/null || true)
 
   if [ -n "$existing" ]; then
+    # Read before write. Both calls are GETs, so --dry-run runs them too and reports what a real run WOULD
+    # carry -- the point of a dry run against a live repo is to see the merge gate named before trusting it.
+    carried=$(undeclared_rules "$existing")
+    carried_types=$(undeclared_types "$existing")
     info "  updating protect-$branch (merge: $method)"
+    if [ -n "$carried_types" ]; then
+      info "    carrying through: $carried_types"
+    else
+      info "    carrying through: nothing — this ruleset holds no rules beyond the ones declared here"
+    fi
     if ! $DRY_RUN; then
-      ruleset_payload "$branch" "$method" | gh api -X PUT "repos/$REPO/rulesets/$existing" --input - >/dev/null
+      ruleset_payload "$branch" "$method" "$carried" | gh api -X PUT "repos/$REPO/rulesets/$existing" --input - >/dev/null
     else
       info "  [dry-run] PUT rulesets/$existing"
     fi
@@ -148,14 +187,55 @@ for pair in "develop:rebase" "staging:merge" "main:merge"; do
   fi
 done
 
-# Verify enforcement actually took. A ruleset that exists but is disabled is the failure this script exists to
-# prevent, and it is invisible unless you look.
+# Verify what was actually left behind, per rung. There are two ways for this script to leave a repo ungated,
+# and neither is visible unless you look for it by name:
+#
+#   - a ruleset that exists but is DISABLED  (the MarqSpec.Client.ProjectX story at the top of this file), and
+#   - a ruleset that is active and REQUIRES NOTHING (gh#114) -- the same failure wearing the other hat.
+#
+# Enforcement alone catches only the first, which is why "all rulesets active" printed underneath a stripped
+# merge gate. Print the contexts themselves rather than a count: a context spelled differently from the job
+# that reports it is indistinguishable from a working one anywhere except in this list.
 if ! $DRY_RUN; then
-  disabled=$(gh api "repos/$REPO/rulesets" --jq '.[] | select(.enforcement != "active") | .name' || true)
-  if [ -n "$disabled" ]; then
-    printf '\033[33m  WARNING: ruleset(s) not active: %s\033[0m\n' "$disabled" >&2
+  info ""
+  info "  what each rung now requires:"
+  ungated=false
+  for branch in develop staging main; do
+    id=$(gh api "repos/$REPO/rulesets" --jq ".[] | select(.name==\"protect-$branch\") | .id" 2>/dev/null || true)
+    if [ -z "$id" ]; then
+      warn "    protect-$branch: MISSING"
+      ungated=true
+      continue
+    fi
+    # One GET, two fields: enforcement and the required contexts, tab-separated.
+    line=$(gh api "repos/$REPO/rulesets/$id" --jq '"\(.enforcement)\t\([.rules[] | select(.type == "required_status_checks") | .parameters.required_status_checks[].context] | join(", "))"')
+    enforcement="${line%%$'\t'*}"
+    contexts="${line#*$'\t'}"
+
+    if [ "$enforcement" != "active" ]; then
+      warn "    protect-$branch: enforcement is '$enforcement', not active"
+      ungated=true
+    fi
+    if [ -n "$contexts" ]; then
+      info "    protect-$branch ($enforcement, id $id): $contexts"
+    else
+      warn "    protect-$branch ($enforcement, id $id): NO required status checks — this rung gates nothing"
+      ungated=true
+    fi
+  done
+
+  # The loop above walks the three rungs by name. The check it replaced swept EVERY ruleset in the repo for
+  # enforcement, so keep that reach for the ones this script does not manage -- a fourth ruleset sitting
+  # disabled is the original cautionary tale, and it would otherwise stop being reported here.
+  others=$(gh api "repos/$REPO/rulesets" --jq '.[] | select(.enforcement != "active") | select(.name != "protect-develop" and .name != "protect-staging" and .name != "protect-main") | .name' || true)
+  if [ -n "$others" ]; then
+    warn "  other ruleset(s) in this repo are not active: $(printf '%s' "$others" | tr '\n' ' ')"
+  fi
+
+  if $ungated; then
+    warn "  A ruleset that is active and requires nothing is not a merge gate. See the closing note."
   else
-    ok "  all rulesets active"
+    ok "  all rulesets active, and every rung names the checks it requires"
   fi
 fi
 
@@ -193,8 +273,19 @@ create_label 'Work Estimate: 5' 'd93f0b' 'Critical/deep - top model tier, max ef
 step "Done"
 ok "$REPO bootstrapped."
 info ""
-info "Required status checks are NOT set here: GitHub will not accept a check name it has never seen."
-info "After the first CI run on a pull request, add them to each ruleset:"
+info "Required status checks are still not DECLARED here, but not for the reason this note used to give."
+info "'GitHub will not accept a check name it has never seen' is false, and was measured false on a throwaway"
+info "repo with zero workflow runs, zero check runs and zero commit statuses (gh#114): a ruleset POST naming"
+info "three contexts that had never reported anywhere was accepted, 201, and stored all three verbatim. The"
+info "legacy branch-protection API took the same never-seen name too. It is the settings PAGE that only offers"
+info "checks it has seen recently; the API has no such rule. The real reasons are:"
+info ""
+info "  - The list is per-repo. These names are this family's; another repo's jobs are called something else."
+info "  - A required context that nothing ever reports leaves every pull request BLOCKED with an empty check"
+info "    list and nothing red to point at — measured on the same throwaway, mergeStateStatus BLOCKED. So"
+info "    seeding a guessed list onto a fresh repo does not gate its first pull request, it stops it."
+info ""
+info "So: after the first CI run on a pull request, add them to each ruleset:"
 info ""
 info "  build & unit tests, integration tests, docs, coverage, no-order-path,"
 info "  paced-paging, image, commit-hygiene, issue-link                          (all three rungs)"
@@ -205,13 +296,11 @@ info "  request, merges anyway, promotes twice, and fails the release -- which i
 info "  failed, with the CI evidence sitting unread the whole way." 
 info "  ladder                                                                   (staging and main)"
 info ""
-info "The name must match the job's \`name:\` EXACTLY. A context nothing reports under never runs, so it"
-info "never fails and never blocks -- and it is indistinguishable from a working one in the settings page."
-info "Confirm what you actually left behind, per rung, not just that the rulesets exist:"
+info "The name must match the job's \`name:\` EXACTLY, and a context spelled wrong is indistinguishable from a"
+info "working one in the settings page. Confirm what you actually left behind, per rung:"
 info ""
 info "  gh api repos/$REPO/rulesets/<id> --jq '.rules[]|select(.type==\"required_status_checks\").parameters.required_status_checks[].context'"
 info ""
-warn "RE-RUNNING THIS SCRIPT REMOVES THEM AGAIN (gh#114). The ruleset update above is a PUT, which REPLACES"
-warn "the whole object, and the payload it sends declares no required_status_checks rule -- so a second run"
-warn "against a repo that has required checks strips every one of them from all three rungs and then prints"
-warn "'all rulesets active', because enforcement is all it verifies. Re-add them after any re-run."
+ok "Re-running this script KEEPS them (gh#114). Step 3 reads each live ruleset first and carries every rule it"
+ok "does not itself declare through the PUT, then reads the contexts back per rung — printed above. Read that"
+ok "list rather than the word 'active': an enforced ruleset that requires nothing is not a merge gate."

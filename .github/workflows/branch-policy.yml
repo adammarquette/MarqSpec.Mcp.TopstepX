@@ -194,25 +194,59 @@ jobs:
             exit 0
           fi
 
-          # Read once, from a body with CODE REMOVED, so a keyword GitHub ignores cannot be mistaken for
-          # a citation. Both branches below consult this; neither re-derives it.
+          # EVERY citation is read from a body with CODE REMOVED -- HTML comments, fenced blocks,
+          # four-space indented blocks, inline spans. GitHub binds no reference inside any of them, so
+          # neither may this gate. It matters most on `staging` and `main`, where the carve-out below makes
+          # the body the *only* evidence: without this, a citation quoted from a commit the promotion is
+          # merely CARRYING is indistinguishable from the promotion's own, and the gate passes a promotion
+          # citing nothing of its own -- the exact thing the carve-out says it refuses to do.
           #
-          # Two kinds of code, and only one of them is obvious. `sed` is line-oriented, so stripping
-          # inline spans leaves a FENCED `Closes #96` looking exactly like a real citation -- and a
-          # promotion body is the one shape that reliably contains a pasted `git log`, because it
-          # enumerates the work it carries. Without the fence pass this job reads the WORK's citation as
-          # the PROMOTION's own and passes a promotion citing nothing of its own, which is the precise
-          # thing the carve-out below says it refuses to do. Fences drop first, then inline spans.
+          # WHY PYTHON RATHER THAN sed OR awk. Three review rounds on this job were one defect wearing
+          # different hats: a line-oriented regex cannot model markdown. `sed` is per-line and never saw a
+          # fenced block at all. An `awk` toggle ignored CommonMark's rule that a closing fence repeats the
+          # opening CHARACTER and is at least as LONG, so a four-backtick fence containing a three-backtick
+          # line inverted its phase and leaked the contents. Neither noticed that `git log --pretty=medium`
+          # indents a commit body exactly four spaces -- which is the paste a promotion body actually
+          # contains. `python3` is preinstalled on the runner, and its `re` needs no bet on whether this
+          # image's `awk` is a mawk built with interval expressions.
           #
-          # An UNCLOSED fence swallows the rest of the body, so the gate refuses rather than accepts.
-          # Deliberate: that is the safe direction for a gate.
-          #
-          # The `Related to` grep further down still reads the RAW body, so a fenced `Related to #N`
-          # passes. That predates this (gh#35), and fixing it changes a verdict on a PR into the default
-          # branch -- a separate decision, tracked as gh#123 rather than smuggled in here.
-          body_no_code="$(printf '%s' "$BODY" \
-            | awk 'BEGIN{fence=0} /^[[:space:]>]*(```|~~~)/ {fence=!fence; next} fence==0 {print}' \
-            | sed 's/`[^`]*`//g')"
+          # STRICTER THAN COMMONMARK in one place, deliberately: a four-space-indented line is dropped even
+          # where it is list continuation rather than code. Over-stripping makes the gate REFUSE and say
+          # why, and the author moves the citation to column zero. Under-stripping makes it PASS, silently,
+          # on a citation GitHub ignores. For a gate, take the loud error.
+          STRIP="${RUNNER_TEMP:-/tmp}/issue-link-strip-code.py"
+          cat > "$STRIP" <<'PY'
+          import re, sys
+
+          def strip_code(body):
+              body = re.sub(r'<!--.*?-->', '', body, flags=re.S)
+              body = body.replace('\r\n', '\n').replace('\r', '\n')
+              kept, fence_char, fence_len = [], None, 0
+              for line in body.split('\n'):
+                  probe = line
+                  while True:
+                      quoted = re.match(r'^[ \t]{0,3}>[ \t]?', probe)
+                      if not quoted:
+                          break
+                      probe = probe[quoted.end():]
+                  marker = re.match(r'^ {0,3}(`{3,}|~{3,})', probe)
+                  if marker:
+                      char, length = marker.group(1)[0], len(marker.group(1))
+                      if fence_char is None:
+                          fence_char, fence_len = char, length
+                          continue
+                      if char == fence_char and length >= fence_len:
+                          fence_char, fence_len = None, 0
+                          continue
+                      # A shorter or different marker inside a fence is content, not a delimiter.
+                  if fence_char is not None or re.match(r'^(?: {4}|\t)', probe):
+                      continue
+                  kept.append(probe)
+              return re.sub(r'`[^`\n]*`', '', '\n'.join(kept))
+
+          sys.stdout.write(strip_code(sys.stdin.read()))
+          PY
+          body_no_code="$(printf '%s' "$BODY" | python3 "$STRIP")"
 
           # Herestring, not a pipe: `grep -q` exits on its first match, and under `pipefail` a SIGPIPE'd
           # upstream would make the pipeline non-zero on a body that DID match -- reading as no citation.
@@ -255,7 +289,13 @@ jobs:
           # AGENTS.md admits BOTH forms: `Closes #N` for a PR that completes an issue, `Related to #N` for one
           # that touches it without finishing it. Only the first binds in GitHub, so the second has to be read
           # out of the body.
-          if printf '%s' "$BODY" | grep -qiE '(related to|part of|towards) +#[0-9]+'; then
+          #
+          # Reads $body_no_code, not $BODY (gh#101, review round 3). This arm read the raw body from gh#35
+          # onward, so a `Related to #N` quoted inside a pasted commit log satisfied it -- reopening by the
+          # weaker form the exact hole the carve-out above closes for the stronger one. A STRENGTHENING on
+          # every base: the only bodies whose verdict moves are those whose sole citation was already inside
+          # code, and every PR body in this repository's history still passes.
+          if grep -qiE '(related to|part of|towards) +#[0-9]+' <<<"$body_no_code"; then
             echo "::notice::PR cites an issue without closing it (Related to #N). That satisfies issue-first."
             exit 0
           fi
@@ -275,6 +315,18 @@ jobs:
 
           if printf '%s' "$BODY" | grep -qiE '(settles|delivers|implements|completes|addresses) +#[0-9]+'; then
             echo "::error::Near-miss verb before an issue reference. Only close/fix/resolve bind."
+          fi
+
+          # FIFTH DIAGNOSTIC (gh#101, review round 3). The body DOES cite an issue, and every occurrence is
+          # inside code -- so the citation the author can see is one neither GitHub nor this gate can. Without
+          # it the run says only "cites no issue", which is the misdirection gh#90 names: the author re-reads
+          # the body, finds the reference exactly where they left it, and has nowhere to go.
+          CITATION='(close[sd]?|fix(e[sd])?|resolve[sd]?|related to|part of|towards) +#[0-9]+'
+          if grep -qiE "$CITATION" <<<"$BODY" && ! grep -qiE "$CITATION" <<<"$body_no_code"; then
+            echo "::error::Every issue reference in this body is inside CODE - a fenced block, a four-space"
+            echo "::error::indented block, an HTML comment, or backticks. GitHub ignores all four, and so does"
+            echo "::error::this check. Put the citation in ordinary prose. If it came from a pasted commit"
+            echo "::error::log, that is the CARRIED work's citation - this PR still needs one of its own."
           fi
 
           # FOURTH DIAGNOSTIC (gh#101, merged from gh#102). Without it, a body whose first line is

@@ -218,7 +218,18 @@ public sealed class BucketSpanGuardTests : IDisposable
 
         Action validate = () => guards.ValidateWindow(from, from.AddMinutes(300_000), 1);
 
-        validate.Should().Throw<McpException>().WithMessage("*5000*");
+        // The assertion is on wording only the row cap produces, AND on the absence of the other message.
+        // A bare "*5000*" does not pin the ordering: WithMessage is a containment match, and the detection
+        // cap's own refusal names 250000 -- which contains "5000" at characters 2 through 5. Reorder the two
+        // checks in ValidateWindow and that pattern still matches, leaving the only test that holds the
+        // ordering green through the exact regression it exists to catch.
+        McpException refusal = validate.Should().Throw<McpException>()
+            .WithMessage("*cap of 5000*", "the refusal is the row cap's, naming the knob the operator set")
+            .Which;
+
+        refusal.Message.Should().NotContain(
+            "gap-detection pass",
+            "naming the fixed cap would send them past the knob they configured");
     }
 
     [Fact]

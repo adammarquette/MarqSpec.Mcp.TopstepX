@@ -35,9 +35,15 @@
 # catch. Line comments only; a marker hidden inside a /* block */ or in dead code still fools this, and only
 # real parsing would close that. Judged not worth it: the realistic failure is a commented-out call.
 #
-# NOT YET ENFORCING. A new CI job is not automatically a REQUIRED check -- the develop ruleset names those,
-# and a ruleset cannot be edited from a pull request. Tracked as gh#72. Until that lands this job reports and
-# does not block, so read a red `paced-paging` as real even though the merge box does not.
+# ENFORCING, as of gh#72. `paced-paging` is a REQUIRED status check on all three rungs -- develop, staging and
+# main -- so a red run here blocks the merge instead of merely reporting it. That was never automatic: a new CI
+# job reports and nothing more until its name is added to each ruleset, and a name spelled differently from the
+# one the job reports under never reports at all, which is a required check that can never fail (gh#26).
+#
+# Confirmed by MUTATION on a throwaway pull request (gh#111), not by reading the settings page: the pacer call
+# was hoisted above the loop, this job went red, GitHub refused the merge, and reverting the hoist cleared it.
+# If you move this gate's job name, change the required context in the same change -- the ruleset does not
+# follow a rename, and the failure mode is silence.
 
 set -euo pipefail
 

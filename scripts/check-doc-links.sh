@@ -27,8 +27,19 @@ scanned=0
 #
 # --others --exclude-standard so a not-yet-committed document is checked too. Without it a local run scans
 # only tracked files and reports clean on exactly the new corpus you are about to commit.
+#
+# THE READ IS SPLIT FROM THE SORT. As one pipeline the bare assignment does carry `pipefail`'s status, so a
+# failed `git ls-files` stopped the script -- but silently, with no line saying what could not be listed,
+# which is the wrong failure for the right reason. Checked explicitly instead.
 files=""
-files="$(git ls-files --cached --others --exclude-standard '*.md' | sort -u)"
+ls_status=0
+files="$(git ls-files --cached --others --exclude-standard '*.md')" || ls_status=$?
+if [ "$ls_status" -ne 0 ]; then
+  printf '\033[31mCANNOT LIST\033[0m  git ls-files exited %s under %s\n' "$ls_status" "$REPO_ROOT" >&2
+  printf 'No document has been read, so this cannot report the corpus clean.\n' >&2
+  exit 1
+fi
+files="$(printf '%s\n' "$files" | sort -u)"
 if [ -z "$files" ]; then
   printf '\033[31mNOTHING TO CHECK\033[0m  git ls-files returned no markdown files under %s\n' "$REPO_ROOT" >&2
   printf 'The corpus is not empty, so this is a broken invocation rather than a clean repository.\n' >&2

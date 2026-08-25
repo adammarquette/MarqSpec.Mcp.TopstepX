@@ -129,7 +129,8 @@ stays auditable.
 **Three are on:**
 
 - **A new issue lands on the board by itself**, within seconds — do not `item-add` a new issue, you would be
-  adding a card that is already there.
+  adding a card that is already there. **Pull requests are auto-added too**, which #4 never did; see
+  [Cards and links](#cards-and-links).
 - **An added item is set to `Todo`**, including on a hand `item-add` (row 5). On #4 a hand-added item landed
   with no Status at all, so this is the step that most changes what an agent does.
 - **Closing an issue moves its card to `Done`** in about two seconds, **overwriting whatever column it was
@@ -169,7 +170,20 @@ because this document told them to.
 
 ## Cards and links
 
-Only **issues** are cards. Two relationships hang off them, using different mechanisms:
+**The lifecycle above is about issues.** They are the schedule, and every column in it is a claim about an
+issue.
+
+**Pull requests sit on the board too, and that is new.** #5 auto-adds them: PR #189 and PR #190 both landed as
+`PullRequest` items in `Todo` within seconds of being opened (read `2026-08-25 19:28:47Z`), where gh#107
+measured that no pull request had ever been an item on #4. **They are not lifecycle cards — do not move one,
+and do not read a `PullRequest` row's column as a claim about the work.** The issue beside it carries that.
+
+*Not measured, and flagged rather than guessed:* whether a `PullRequest` item leaves `Todo` when its PR closes
+or merges. Closing moves an **issue** card to `Done` in two seconds, but that was never observed on a pull
+request, so do not assume the same arrow. If `Todo` starts filling with stale `PullRequest` rows, that is the
+answer arriving.
+
+Two relationships hang off an issue, using different mechanisms:
 
 - **A PR is an issue's implementation, not a card.** It links with a closing keyword — `Closes #N` — which
   auto-closes the issue on merge and surfaces the PR in the board's *Linked pull requests* field. GitHub binds

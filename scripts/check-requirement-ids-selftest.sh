@@ -14,19 +14,20 @@
 #
 # So the REAL gate is run against fixtures whose faults are known, on every CI run, and is required to reject
 # each one — AND against the awkward CORRECT shapes this repository actually contains, which it must accept.
+# Rejections alone would all be satisfied by `exit 1`, i.e. by a gate that says no to everything, which is
+# exactly as useless as one that says yes to everything and rather harder to notice.
 #
-# FIVE OF THE SEVENTEEN CASES ARE HERE BECAUSE MUTATION FOUND THEM MISSING, and that is the point of the
+# SIX OF THE EIGHTEEN CASES ARE HERE BECAUSE MUTATION FOUND THEM MISSING, and that is the point of the
 # paragraph rather than a confession. The author's own battery found one — swallowing grep's exit 2, the
 # same hole gh#43, gh#98 and gh#126 each shipped. The PR #195 review found four more: a definition inside a
 # fenced block and one inside an HTML comment (the gate's ONLY fail-open, and it went green on the real tree
-# with a citation of an invented id), a nested repository turning a correct tree red, and three separate
-# ways of destroying the reported LINE NUMBER that every case survived because the needle was the filename,
-# of which the location is a superset.
+# with a citation of an invented id); a nested repository turning a correct tree red; frozen definition
+# counters that nothing asserted; and three separate ways of destroying the reported LINE NUMBER, which every
+# case survived because the needle was the FILENAME and the location is a superset of it. The sixth came out
+# of mutating the fix: a fence whose closer carries trailing whitespace.
 #
 # So: mutate the subject before believing its self-test, every time. A self-test is a text-matching gate
 # too, and the ones that pass on a broken subject are the ones nobody ever ran against one.
-# Rejections alone would all be satisfied by `exit 1`, i.e. by a gate that says no to everything, which is
-# exactly as useless as one that says yes to everything and rather harder to notice.
 #
 # NON-ZERO EXIT IS NOT SUFFICIENT AND IS NOT WHAT THIS ASSERTS. check-requirement-ids.sh also exits 1 for "no
 # such root" and for a missing PRD, so a self-test satisfied by status alone would go green on a runner where
@@ -34,10 +35,10 @@
 # Each case below matches the words that name ITS OWN fault, and every dangling case additionally matches the
 # ID ITSELF, so a gate that has stopped printing which symbol failed cannot satisfy it either.
 #
-# AND THE ACCEPTANCE IS NOT SATISFIED BY EXIT 0 EITHER. Every green case matches the COUNTS the gate prints,
-# so a gate that resolved nothing cannot pass one. Two of them — the ADR near-miss and the `R-#` placeholder
-# — assert a count IDENTICAL to what the same fixture reports with those lines absent, which is how they
-# prove those lines contributed no citations rather than merely failing to break anything.
+# AND THE ACCEPTANCE IS NOT SATISFIED BY EXIT 0 EITHER. All six green assertions match the COUNTS the gate
+# prints, so a gate that resolved nothing cannot pass one. Two of them — the ADR near-miss and the `R-#`
+# placeholder — assert a count IDENTICAL to what the same fixture reports with those lines absent, which is
+# how they prove those lines contributed no citations rather than merely failing to break anything.
 #
 # THE FIXTURE IDS ARE ASSEMBLED AT RUN TIME, from a prefix and a number, so this file's own bytes contain no
 # citation that does not resolve. That is deliberate: check-requirement-ids.sh has NO exclusion list and
@@ -89,7 +90,7 @@ OVER_DEEP="${R}1.2.3"            # first two parts DO resolve; the whole id must
 # Builds one fixture repository.
 #
 #   $1 dir          fixture root
-#   $2 prd_kind     sound | absent | flat-headings | no-bullets | shadowed | fenced | commented
+#   $2 prd_kind     sound | absent | flat-headings | no-bullets | shadowed | fenced | commented | fenced-closed
 #   $3 notes        the body of documentation/notes.md — the file whose citations are under test
 #   $4 extra_kind   none | rich | ignore-prd | unreadable | nested
 #
@@ -137,6 +138,14 @@ make_fixture() {
       fi
       if [ "$prd_kind" = "commented" ]; then
         printf '\n<!--\n- **%s** Retired, kept for the record.\n-->\n' "$DANGLING_REQUIREMENT"
+      fi
+      # A fence that CLOSES, with trailing whitespace on the closer — ordinary, legal, and the shape that
+      # breaks a naive closer test, since the marker is no longer the whole line. If the fence never closes,
+      # the requirement below it is inert and the counts say so; if it never opens, the heading inside it is
+      # counted as a section and the counts say that instead. Both directions land on one needle.
+      if [ "$prd_kind" = "fenced-closed" ]; then
+        printf '\n## Appendix\n\n```markdown\n## R-1 — An inert example heading\n```   \n\n'
+        printf -- '- **R-1.3** Defined after the fence closes.\n'
       fi
     } > "$dir/documentation/prd.md"
   fi
@@ -378,6 +387,14 @@ expect_green "the definition counts the gate reports" "$FIXTURES/sound" \
 make_fixture "$FIXTURES/nested" sound "$SOUND_NOTES" nested
 expect_green "a nested repository, counted and not read" "$FIXTURES/nested" \
   "Not read: 1 nested repositories"
+
+# 14. A FENCE THAT CLOSES, with trailing whitespace on the closer, and a requirement defined after it. The
+#     two red cases above prove a fence SUPPRESSES definitions; this proves it stops doing so at the right
+#     line, which they cannot — a fence that never closes satisfies both of them just as well. Two sections
+#     and four requirements: three if the closer is missed, three sections if the opener is.
+make_fixture "$FIXTURES/fenced-closed" fenced-closed 'Governed by `R-1.3`.' none
+expect_green "a fence closed with trailing whitespace" "$FIXTURES/fenced-closed" \
+  "(2 sections, 4 requirements, 1 open questions"
 
 info ""
 if [ "$failures" -gt 0 ]; then

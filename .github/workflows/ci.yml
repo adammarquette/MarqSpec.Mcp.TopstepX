@@ -92,7 +92,7 @@ jobs:
       # which contain a citation-shaped substring, and the literal `R-#` placeholder, which was on thirteen
       # lines across ten files on `develop` at 8a2302d.
       #
-      # FIVE OF ITS SEVENTEEN CASES EXIST BECAUSE MUTATION FOUND THEM MISSING, four of those in review. Run
+      # SIX OF ITS EIGHTEEN CASES EXIST BECAUSE MUTATION FOUND THEM MISSING, four of those in review. Run
       # the gate against a broken copy of itself before believing this step is worth anything.
       - name: Prove the requirement-id gate can still fail
         run: ./scripts/check-requirement-ids-selftest.sh

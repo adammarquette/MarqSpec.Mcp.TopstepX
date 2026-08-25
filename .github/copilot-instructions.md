@@ -78,5 +78,5 @@ Every PR cites its issue **in ordinary prose** — a plain `Closes #N`, or `Rela
 issue without finishing it. **A citation inside code binds nothing and `issue-link` refuses it**: backticks, a
 fenced block, or an HTML comment alike (gh#123). A four-space-indented block is the one form the check still
 reads as prose, so a pasted `git log` needs fencing (gh#142). Behavior, API or configuration changes update
-the matching `R-#`, the architecture doc, the relevant ADR, and the packaged README, **in the same PR**. Stale
+the matching `R-#`, the architecture doc, the relevant ADR, and the MCP tool catalogue, **in the same PR**. Stale
 documentation is a finding.

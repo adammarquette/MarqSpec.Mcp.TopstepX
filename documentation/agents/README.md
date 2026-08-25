@@ -18,7 +18,7 @@ edited, so directory proximity delivers them exactly when needed and costs nothi
 
 The Reviewer and Platform contracts are **role**-scoped: they follow *what you are doing*, not where a file
 sits. Reviewing happens across the whole diff, and platform work touches the workflows, the compose files, the
-`FakeGateway` Dockerfile and the release path — artifacts scattered across the tree. Putting either one where it
+`Dockerfile` and the release path — artifacts scattered across the tree. Putting either one where it
 would auto-load would load it for everyone who happens to touch the directory, which is how a contract becomes
 noise.
 

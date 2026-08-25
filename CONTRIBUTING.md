@@ -7,7 +7,8 @@ How we work in this repo. This is the contributor front door; the agent contract
 These practices are shared with
 [trading-copilot](https://github.com/adammarquette/trading-copilot/blob/develop/CONTRIBUTING.md), which consumes
 this library as a submodule. Where the two differ, the difference is deliberate and noted below — this repo
-ships a **package**, not a deployment, so it has a release ladder the parent does not.
+publishes a versioned artifact of its own, a **container image on GHCR**, so it has a release ladder the parent
+does not.
 
 ## Issue-first, its one exemption, and the promotion carve-out
 
@@ -72,16 +73,16 @@ excuses a **branch** deviation into `staging`, never a foreign repository, and d
 for `main`**.
 
 **Never** branch off `main`, and never PR into it from anything but `staging` — release history stays
-single-source, so every published package traces back through `staging`. Note the asymmetry: `staging` has an
+single-source, so every published image traces back through `staging`. Note the asymmetry: `staging` has an
 escape hatch; `main` does not.
 
 The rulesets enforce the merge *method* per rung, which is how the commit-history rules below stop being a
 matter of discipline: **`develop` accepts rebase-merge only**, and **`staging` and `main` accept merge commits
 only**. A promotion is a merge commit by construction; a feature landing is not.
 
-**`hotfix` is deliberately absent from the table.** A published package cannot be unpublished, so an emergency
-fix is a *new version*, not a shortcut through the ladder. Until that route is settled, raise a hotfix on its
-issue rather than assuming one.
+**`hotfix` is deliberately absent from the table.** A published image tag can be overwritten but not un-pulled,
+so an emergency fix is a *new version*, not a shortcut through the ladder. Until that route is settled, raise a
+hotfix on its issue rather than assuming one.
 
 ### Falling behind — rebase, never merge
 
@@ -184,9 +185,10 @@ tracker and drifts from it.
 
   Both, every time. The single-trailer and model-id-parenthetical variants that appear in the sibling repos are
   drift, not alternatives.
-- **Docs move with the code — the same-PR rule:** any change whose behavior, API or configuration a doc
-  describes updates **the affected section of that doc, in the same PR** — the PRD's `R-#`, the architecture
-  doc, the ADRs, and the library README that ships inside the NuGet package. A PR that drifts is **not done**.
+- **Docs move with the code — the same-PR rule:** any change whose behavior, tool surface or configuration a
+  doc describes updates **the affected section of that doc, in the same PR** — the PRD's `R-#`, the
+  architecture doc, the ADRs, and the [tool catalogue](documentation/mcp-tool-catalog.md). A PR that drifts is
+  **not done**.
 
 ## Pull requests
 
@@ -217,8 +219,10 @@ possible rather than merely discouraged.
 
 1. Promote `develop → staging`, verify, then `staging → main`.
 2. Tag `main` as **`vMAJOR.MINOR.PATCH`** — always the `v` prefix.
-3. Publish a GitHub release from that tag. The release workflow packs, signs the version from the tag, pushes
-   the `.nupkg` and its `.snupkg` to nuget.org, and waits on the `production` environment approval first.
+3. Publish a GitHub release from that tag. The release workflow waits on the `production` environment approval
+   first, then builds the container image and pushes it to GHCR as
+   `ghcr.io/adammarquette/marqspec.mcp.topstepx:MAJOR.MINOR.PATCH` and `:latest`. **Nothing is packed and
+   nothing reaches nuget.org** — this is an application.
 4. Update `CHANGELOG.md` in the promotion PR, not afterwards — a release with no changelog entry is the
    condition that produced the current 1.0.3–1.0.5 gap.
 
@@ -228,13 +232,16 @@ this assembly directly.
 ## Local development
 
 ```bash
-docker compose up -d fake-gateway     # a local stand-in for the ProjectX venue
-dotnet test                            # unit + integration, no credentials required
+dotnet test              # unit + integration; needs a Docker daemon, no credentials
+docker compose up -d     # the local stack: Postgres, and the server on :8080
 ```
 
-The `FakeGateway` service serves the REST surface and both SignalR hubs, so the integration suite runs offline
-and in CI. Live-credentialed tests are opt-in and separately tagged; see the
-[QA contract](MarqSpec.Mcp.TopstepX.IntegrationTests/AGENTS.md).
+**There is no fake gateway here, and there never has been.** The integration tier starts its own
+`timescale/timescaledb-ha` Postgres through Testcontainers
+([ADR-0004](documentation/adr/0004-one-postgres-timescale-pgvector.md)), so what it needs is a Docker daemon
+rather than a credential, and the venue seam is filled by hand-written `IMarketDataGateway` doubles that live
+in the test projects. Live-credentialed tests are opt-in, tagged `Category=Live` and excluded by default
+(`--filter "Category!=Live"`); see the [QA contract](MarqSpec.Mcp.TopstepX.IntegrationTests/AGENTS.md).
 
 For a reproducible toolchain (and to sidestep Windows blocking freshly built unsigned assemblies):
 

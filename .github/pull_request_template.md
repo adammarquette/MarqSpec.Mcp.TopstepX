@@ -16,15 +16,15 @@ Closes #
 <!-- What you ran, and what it proved. "Tests pass" is not a verification; say which tests and what they cover. -->
 
 - [ ] `dotnet format --verify-no-changes` clean
-- [ ] `dotnet build -c Release` clean on **both** target frameworks, warnings-as-errors on
+- [ ] `dotnet build -c Release` clean on `net10.0` — the one framework every project declares — warnings-as-errors on
 - [ ] Unit tests green
-- [ ] Integration tests green against the fake gateway (no credentials required)
+- [ ] Integration tests green — Testcontainers Postgres, `--filter "Category!=Live"`, no credentials required
 
 ## Checklist
 
 - [ ] **Test-first** — the new test failed before the implementation; a bug fix reproduces the bug first
-- [ ] **Docs in lockstep** — the affected section of the PRD (`R-#`), architecture doc, ADR, or the library
-      README that ships in the package is updated *in this PR*
+- [ ] **Docs in lockstep** — the affected section of the PRD (`R-#`), architecture doc, ADR, or the MCP tool
+      catalogue is updated *in this PR*
 - [ ] **No secrets** — nothing logged, nothing tracked, no credential-shaped value in a committed file
 - [ ] **Commits** are Conventional and carry both `Assisted-by:` and `Co-Authored-By:` trailers if AI-authored
 - [ ] History is curated into units of work (this repo rebase-merges; squash is disabled)

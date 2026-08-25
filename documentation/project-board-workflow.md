@@ -111,10 +111,13 @@ self-review, so `gh` cannot file a formal one. A reviewer's first line is exactl
 
 ### 6. Is anything automatic?
 
-**Yes: three built-in workflows are on, and between them they cover two of the seven transitions.** Auto-add
-and `Todo`-on-add both land a card in `Todo` — the first transition; closing an issue moves it to `Done` — the
+**Yes: three automations fire, and between them they cover two of the seven transitions.** Auto-add and
+`Todo`-on-add both land a card in `Todo` — the first transition; closing an issue moves it to `Done` — the
 last. The other five are somebody's deliberate act, `Ready to Merge` included. Reopening is the gap: it moves
 nothing.
+
+*Three behaviours, counted from what fired.* Which named workflows on the settings page produce them is not
+something this can say — that page is exactly what cannot be read back (below).
 
 That was false of #4, where nothing moved on its own. It is measured rather than read off a screen, with
 actors and timestamps, in the section below.
@@ -136,21 +139,24 @@ stays auditable.
 | card removed, re-added by hand while OPEN | `19:18:32Z` | `Todo` | `19:18:45Z` |
 | issue closed again | `19:19:10Z` | **`Done`** | `19:19:12Z` (+2s) |
 
-**Three workflows are on**, covering two of the seven transitions between them:
+**Three automations fire**, covering two of the seven transitions between them:
 
 - **A new issue lands on the board by itself**, within seconds — do not `item-add` a new issue, you would be
-  adding a card that is already there. **Pull requests are auto-added too**, which #4 never did; see
-  [Cards and links](#cards-and-links).
+  adding a card that is already there. Doing it anyway is a **silent no-op**: `gh` exits 0, says nothing, and
+  the existing card keeps its column, so this misleads rather than corrupts. **Pull requests are auto-added
+  too**, which #4 never did; see [Cards and links](#cards-and-links).
 - **An added item is set to `Todo`**, including on a hand `item-add` (row 5). On #4 a hand-added item landed
   with no Status at all, so this is the step that most changes what an agent does.
-- **Closing an issue moves its card to `Done`** in about two seconds, **overwriting whatever column it was
-  in** — observed twice, rows 3 and 6. That is the one place a manual move and an automation fight: a
-  `Blocked` issue closed as "will not do" lands beside shipped work, which is why [case 2](#2-an-issue-closed-with-no-pr)
-  puts the reason in the closing comment.
+- **Closing an issue moves its card to `Done`**, **overwriting whatever column it was in** — observed twice
+  here (rows 3 and 6) and again on gh#194, a second throwaway filed independently to replicate this whole
+  sequence. **The arrow is certain; the constant is not** — post-close reads across the two runs land between
+  +2s and +5s, so read it as "within a few seconds" and do not build on a number. This is the one place a
+  manual move and an automation fight: a `Blocked` issue closed as "will not do" lands beside shipped work,
+  which is why [case 2](#2-an-issue-closed-with-no-pr) puts the reason in the closing comment.
 
 **GitHub's own timeline is the better evidence, and it names the actor.**
-`gh api repos/adammarquette/MarqSpec.Mcp.TopstepX/issues/188/timeline` attributes five events to
-**`github-project-automation[bot]`** and none of them to a person:
+`gh api repos/adammarquette/MarqSpec.Mcp.TopstepX/issues/188/timeline` attributes exactly five events to
+**`github-project-automation[bot]`**:
 
 | Timeline event | UTC | Follows |
 |---|---|---|
@@ -160,18 +166,26 @@ stays auditable.
 | `project_v2_item_status_changed` | `19:18:37Z` | a **hand** `item-add` at `19:18:36Z` |
 | `project_v2_item_status_changed` | `19:19:14Z` | `closed` at `19:19:13Z` |
 
-**After `reopened` at `19:15:03Z` there is no bot event at all** — which is what makes the reopen gap a fact
-about the board rather than about how soon anyone looked. Read the timeline for ordering and actor; the
-read-back table for what an agent actually sees. Their clocks differ by 1-3s because the read-backs come from
-a separate polling loop, so do not line the two up column by column.
+**No bot event follows the reopen** — which is what makes the reopen gap a fact about the board rather than
+about how soon anyone looked. Two bot events come *later* in the timeline, at `19:18:37Z` and `19:19:14Z`, and
+each follows a hand action of its own; none follows `reopened` at `19:15:03Z`. Read the timeline for ordering
+and actor, the read-back table for what an agent sees. Their clocks differ by 1-3s because the read-backs come
+from a separate polling loop, so do not line the two up column by column.
+
+**And it is not only visible on probes.** gh#186 — ordinary work, filed `18:34:33Z`, nearly an hour before any
+of this was measured — carries `added_to_project_v2` by **`github-project-automation[bot]` at `18:34:35Z`**,
+two seconds after it was filed. The auto-add was already running on real issues; the probe found it rather
+than provoked it.
 
 **One is off, and it is the trap: reopening does not undo `Done`.** gh#188 was reopened at `19:15:00Z` and was
 still in `Done` three minutes later with the issue `OPEN`. **Reopen an issue and move its card back yourself**,
 or the board shows finished work that is live again.
 
 Five of the seven transitions are still a claim somebody made by hand, so a column still decays — read the
-issue's state before you believe it. What cannot accumulate now is the drift gh#107 measured on #4, where nine
-closed issues sat parked in working columns.
+issue's state before you believe it. The specific drift gh#107 measured on #4 — nine closed issues parked in
+working columns — cannot accumulate now, because closing moves the card. **Two new ones took its place**: a
+reopened issue sits in `Done` until somebody moves it, and `PullRequest` items pile up in `Todo` where no
+lifecycle transition covers them. Automation moved the drift; it did not end it.
 
 **If the workflows change, re-measure this way and rewrite this section from what the board does.** The
 version of this document that described #4 recorded three automations off a settings screen, and not one of
@@ -181,9 +195,14 @@ them had ever run.
 
 [Project #4](https://github.com/users/adammarquette/projects/4) — the old *TopstepX MCP Server* board — was
 **closed** on 2026-08-25, retitled *"TopstepX MCP Server (RETIRED - use project #5)"*, and given a README
-pointing here. Its **73 items were kept**: closing deletes nothing, and that history is why it was closed
-rather than removed. Its columns were *Backlog / Planning / Current ToDo / In Progress / Review / Done*, none
-of which exist on #5 — so one of those names in a document is itself the signal that the document is stale.
+pointing here. Its **73 items were kept**: closing deletes nothing, and that record is why it was closed
+rather than removed. **It is not purely history — seven of those items are live work**, carded on both boards:
+gh#155, gh#163, gh#171, gh#176, gh#178, gh#182 and gh#186 are all open, six of them sitting in #4's `Backlog`
+and gh#163 in its `Current ToDo`. Reconciling that is out of scope here (gh#187), so what matters when you
+follow the link: **a column on #4 claims nothing about anything.** Read the issue, or #5.
+
+Its columns were *Backlog / Planning / Current ToDo / In Progress / Review / Done*, none of which exist on #5
+— so one of those names in a document is itself the signal that the document is stale.
 
 **Closing does not stop anyone carding work there, and that was measured rather than assumed.**
 `gh project item-add` against an already-closed project succeeded — exit 0, silently, and the item landed
@@ -195,8 +214,12 @@ refuse a card on #4. This document and the retitle are the entire guard, which i
 its number and its id at the top of this file: **when you run a `gh project` command here, the argument is
 `5`.**
 
-gh#178, gh#182 and gh#186 were all carded onto #4 within an hour of #5 existing, by two different sessions,
-because this document told them to.
+**gh#178 and gh#186 were carded onto #4 after #5 already existed** — at `18:41:30Z` and `18:41:49Z`, ten and
+eleven minutes past #5's `createdAt` of `18:30:55Z` — because this document told them to. Two is the count.
+gh#187 said three, naming gh#182 as well; gh#182's card on #4 was created at `17:19:24Z`, **71 minutes before
+#5 existed**, when #4 *was* the board and this document was right. It is an instance of the document working,
+and carrying it as harm would be this file making exactly the kind of unchecked claim it was rewritten to
+stop. All three read from each issue's own timeline (`added_to_project_v2`), not from the board.
 
 ## Cards and links
 

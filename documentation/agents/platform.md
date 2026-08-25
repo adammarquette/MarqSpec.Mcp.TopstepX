@@ -302,7 +302,7 @@ by mutation, not as a description of the workflow files.**
 |---|---|---|---|---|
 | `build & unit tests` | required | required | required | `ci.yml` |
 | `integration tests` | required | required | required | `ci.yml` |
-| `docs` | required | required | required | `ci.yml` |
+| `docs` | required | required | required | `ci.yml` — three steps since gh#160, see below |
 | `coverage` | required | required | required | `ci.yml` |
 | `no-order-path` | required | required | required | `ci.yml` |
 | `paced-paging` | required | required | required | `ci.yml` — added by gh#72 |
@@ -338,6 +338,18 @@ for all ten contexts required on that rung, `image` included, and `false` for bo
 `no-order-path`, which is required on all three anyway. `ladder` is what refuses a pull request opened straight
 at `main`; the rulesets are what stop that refusal depending on one job. A single content gate that stops one
 rung short is also a question every future reader has to re-derive.
+
+**`docs` reports three checks, not one, so a red `docs` is not necessarily a broken link** (gh#160). Beside
+[`check-doc-links.sh`](../../scripts/check-doc-links.sh) it now runs
+[`check-doc-sizes.sh`](../../scripts/check-doc-sizes.sh), which re-measures every row of
+[the routing map](../README.md)'s `~tok` column (`wc -c` bytes ÷ 4, 25% tolerance) and fails a row that no
+longer describes its file — and [`check-doc-sizes-selftest.sh`](../../scripts/check-doc-sizes-selftest.sh),
+which requires that gate to reject eight known faults by name and accept two sound fixtures — the second
+sitting just inside the tolerance, so the tolerance cannot be quietly set to zero. All three ride in the
+one job **because `docs` is already required on all three rungs**, so none of this needed a ruleset write and
+[the table above](#what-is-required-and-what-only-reports) does not change — the same argument as
+`commit-hygiene`'s merge-commit refusal below. Two new jobs would have meant two new required contexts added
+by hand, and a context nobody adds is a check that only ever reports (gh#26).
 
 **`commit-hygiene` also refuses a merge commit, on a pull request into `develop` and nowhere else** (gh#146).
 `protect-develop` is `allowed_merge_methods: ["rebase"]` and carries

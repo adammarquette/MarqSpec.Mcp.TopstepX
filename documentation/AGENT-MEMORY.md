@@ -26,8 +26,11 @@ ADR, `AGENTS.md`, or the code, **put it there instead**.
   staged the still-conflicted file, `rebase --continue` accepted it, and the rebase reported success with
   `<<<<<<<` markers committed into `documentation/README.md`. **This is every dead gate in this repository in
   a new costume — a step whose failure nothing checked** — and it was caught only by verifying the tree
-  afterwards (`grep -rlE '^<<<<<<<'`, priced-row count) instead of trusting the clean exit. Recovery was free
-  because the pre-rebase tip was still pushed; `git reset --hard <tip>` and redo.
+  afterwards (`grep -rlE '^<<<<<<<'`, priced-row count) instead of trusting the clean exit. **Recovery came
+  from the local reflog, and the remote would NOT have been enough** — the pre-rebase tip had never been
+  pushed (`git branch -r --contains <tip>` came back empty) and `origin` was one commit behind it, so a reset
+  to `origin/<branch>` would have silently dropped that commit. `git reset --hard ORIG_HEAD` and redo — and
+  **check what the remote actually holds before treating it as the backstop.**
   - **Write scripts to a Windows-visible path** (the agent scratchpad, `C:/...`), not `/tmp`, whenever a
     Windows-native interpreter will read them. With `MSYS_NO_PATHCONV=1` set — which you need for
     `git show rev:path` — `cd /c/tmp/...` also fails, so prefer `git -C <dir>` and absolute `C:/` paths.
@@ -39,7 +42,7 @@ ADR, `AGENTS.md`, or the code, **put it there instead**.
   (gh#187, gh#196).** `scripts/check-doc-sizes.sh` re-measures every routed document on every pull request, so
   a `~tok` that drifted because *somebody else's* merge grew a file is caught — provided the drift exceeds
   25%. **Nothing whatsoever watches the prose.** Both halves fired at the same instant, out of one merge —
-  they were noticed twenty minutes apart, which is the whole problem: #189 grew `CONTRIBUTING.md`, leaving its
+  they were noticed twenty-six minutes apart, which is the whole problem: #189 grew `CONTRIBUTING.md`, leaving its
   row at 3.8K against a measured 4.1K — about 7% out,
   inside the band, green and invisible — and the same merge's `Closes #171` **closed gh#171**, falsifying
   *"these seven items are all open"* in the very document being rewritten, **five minutes before that
@@ -50,8 +53,15 @@ ADR, `AGENTS.md`, or the code, **put it there instead**.
   - **The same shape, one level up:** a sweep finds stale **identifiers** because grep finds strings. The
     sentences that break are the ones your own **measurement** just falsified, and they contain no stale
     identifier at all — so nothing points at them. gh#187 produced four count errors this way, each caught by
-    a reviewer rather than by the author: three transitions that were two, three harms that were two, seven
-    open items that were six, one non-author actor that was two.
+    a reviewer rather than by the author: three transitions that were two, three harms that were two, **two
+    new drifts that were one**, an open-item count that rotted three times before being deleted outright, and
+    one non-author actor that was two. **The list is itself the most-attacked artifact in the change, and
+    both attacks on it failed identically** — one reviewer matched "three harms" to the *drift* sentence
+    (which went two → one) rather than the *harm* sentence (which went three → two); another read gh#107's 44
+    against PR #154's 9 as one number contradicting itself. Neither figure was wrong in either case.
+    **Reconciling two numbers without first asking what each one counts is the same error the list records**,
+    which is why the drift entry above is now in it: that reviewer had found a real omission by looking at
+    the wrong sentence.
   - **AND THE LARGER HALF IS NOT DRIFT AT ALL — it is the citation nobody ever reopened.** Everything above
     is about a claim that *became* false. On gh#187 four more findings were claims that were **never true**,
     and no rebase touched any of them: gh#107 has said 44 since `2026-08-23` while the text beside it said
@@ -63,6 +73,18 @@ ADR, `AGENTS.md`, or the code, **put it there instead**.
     each number *counts* before reconciling two of them: the nine and the 44 are both correct and are
     different measurements on different days, and a reviewer who conflated them proposed replacing a right
     number with a wrong one.
+  - **THREE CLASSES, AND THE WEAKEST ONE HAS NO GATE.** Sorted by what actually failed, the errors in this
+    batch fall into three kinds that do not fail equally. **Measurements** — a byte count, an exit code, a
+    timestamp — are the most robust, and are the only class this repository gates. **Citations** fail by
+    never being reopened (above). **Causal and provenance claims** — *why* something happened, *where* a
+    number came from, *what* a fact implies — fail most often, read the most confidently, and are checked by
+    nothing at all. gh#187's worst single error was one of these: *"recovery was free because the tip was
+    still pushed"*, false, and it would have cost a commit. The pattern is not local to one card — gh#176's
+    `0.0.0-alpha.0` stamp held while the account of *why* did not; gh#171's `git grep` exit status held while
+    *"trading-copilot consumes this repo"* did not; gh#160's byte counts held while *"the cheapest whole-file
+    read here"* did not; and a reviewer on gh#187 read 44 against 9 with both figures correct, breaking on
+    what each one **counted**. **When a sentence says *because*, *from*, or *therefore*, it is in the weakest
+    class — check it like a number, because nothing else will.**
   - **Correcting the instance does not close it.** gh#187 fixed that `CONTRIBUTING.md` row only because it
     happened to be editing that table already; otherwise it would simply have stayed wrong. gh#196 carries
     the structural half.

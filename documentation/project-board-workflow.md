@@ -237,9 +237,15 @@ gh#171 merged, then five when gh#176 did — each time inside the hour, each tim
 than by re-reading. **A document cannot hold a live count.** What it can hold is the invariant, which no merge
 changes: **a column on #4 claims nothing about anything.** Read the issue, or #5.
 
-**#4's inertness, demonstrated rather than asserted:** when gh#171 closed at `20:02:23Z` the bot moved its
-**#5** card one second later and its **#4** card did not move at all. That is the same measurement as gh#107's,
-taken on real work, and it is why a column there cannot be believed even when it looks current.
+**#4's inertness, proved without counting anything:** the latest `updatedAt` on any Status value across all
+73 of its items is **`2026-08-25T18:41:59Z`** — thirty-eight minutes *before* #4 was closed at `19:20:13Z`.
+Nothing there has moved since it was retired, and that is a maximum over a closed set rather than a tally, so
+no later merge can change it.
+
+Watched twice on real work, both times the same: gh#171 closed at `20:02:23Z` and gh#176 after it, the bot
+moved each one's **#5** card within a second, and on **#4** neither moved — both still sit in `Backlog`, last
+touched `15:27:20Z` and `16:23:20Z`. **A closed issue can sit in a working column on #4 indefinitely**, which
+is why a column there cannot be believed even when it looks current.
 
 Its columns were *Backlog / Planning / Current ToDo / In Progress / Review / Done*. **Four of those six do
 not exist on #5** — `Backlog`, `Planning`, `Current ToDo` and `Review` — so one of *those four* in a document
@@ -283,8 +289,9 @@ issue.
 
 **Pull requests sit on the board too, and that is new.** #5 auto-adds them: PR #189 and PR #190 both landed as
 `PullRequest` items in `Todo` within seconds of being opened (read `2026-08-25 19:28:47Z`), where gh#107
-**#4 has never held one** — its 73 items are every one of them an issue, read from the board rather than
-from gh#107, which does not measure this. **They are not lifecycle cards — do not move one,
+**#4 holds none** — all 73 of its items are issues, read from the board today rather than from gh#107, which
+does not measure this. (What an item list cannot show is whether one was ever there and removed, so this is
+"none now", not "never".) **They are not lifecycle cards — do not move one,
 and do not read a `PullRequest` row's column as a claim about the work.** The issue beside it carries that.
 
 **A `PullRequest` item does not sit in `Todo` for ever — the close automation reaches it too, and it fires on

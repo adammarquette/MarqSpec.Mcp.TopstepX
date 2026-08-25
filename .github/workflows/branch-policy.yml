@@ -162,7 +162,24 @@ jobs:
       # an unresolvable range -- it assigns `git rev-list` plainly, so `set -e` carries git's 128 -- and
       # merge_group already refused zero subjects. So the vacuous pass was reachable on exactly the PROMOTION
       # rungs, `staging` and `main`, where that step is skipped by its base guard. That is why the mutation
-      # probes are based on `staging`: a `develop` base cannot show this defect at all.
+      # probes below are based on `staging`: a `develop` base cannot show this defect at all (run 32857116130,
+      # a linear head at depth 1 into `develop`, dies at the step above with this one SKIPPED).
+      #
+      # PROVEN BY MUTATION, not argued -- a check that could pass having read nothing is not repaired by an
+      # argument. Six throwaway runs, all now closed with their branches deleted, so these ids are the only
+      # trail back; the same table with its printed output is in the platform contract beside this job:
+      #
+      #   32854350754  unfixed, depth 1, base staging  -> commit-hygiene SUCCESS. "No non-merge commits ..."
+      #   32854980822  fixed,   depth 1, base staging  -> failure. "git log exited 128 for '<range>'"
+      #   32855346012  fixed, a merge-ONLY range       -> success. "No non-merge commits to check."
+      #   32856056077  fixed, EVENT pinned merge_group -> failure. "Refusing to pass vacuously."
+      #   32855936278  fixed, a real merge commit      -> failure at the step ABOVE, naming it (gh#146)
+      #   32857116130  fixed, linear, depth 1, develop -> failure at the step ABOVE, on git's 128
+      #
+      # The first two differ ONLY in this file, which is what makes the pair a measurement. Rows three and
+      # four are the two halves of the asymmetry, each on the input it exists for. No merge queue is enabled
+      # here, so a real merge_group event cannot be produced: row four pins EVENT in the throwaway instead,
+      # which proves the arm's code on its own input and not the event that would deliver it.
       - name: Check commit subjects
         env:
           EVENT: ${{ github.event_name }}

@@ -45,17 +45,23 @@ namespace MarqSpec.Mcp.TopstepX.Tools;
 /// because "retry unless" is the permissive shape this repository reviews against.
 /// </para>
 /// <para>
-/// <b>A lost race is reported, not retried and not reported as a success</b> (gh#89). Two fills of
-/// <i>disjoint</i> ranges over one series both project over the history in front of both — a pass recomputes
-/// the whole series its snapshot can see — so both <c>INSERT</c> the same indicator values, and the loser
-/// gets <c>23505</c> (gh#133). The row it collided on really is in the store — the winner put it there — so
-/// on an idempotent upsert a duplicate key looks like a success achieved by proxy.
-/// It is not one: the collision aborts the <b>whole</b> transaction, so answering "fine" would return work
-/// assembled inside a transaction that rolled back. Retrying here is equally wrong — a boundary retry re-runs
-/// the <i>whole tool call</i>, including a paced page-walk that already cost vendor requests.
-/// <see cref="SeriesUnitOfWork"/> is where a retry belongs and it is bounded there on purpose. So the caller
-/// is told plainly what happened and that a retry is served from what the other writer committed — which is
-/// true, and cheap, and is a decision the caller is entitled to make.
+/// <b>A lost race is reported, not retried and not reported as a success</b> (gh#89). The row a duplicate key
+/// collided on really is in the store — the other writer put it there — so on an idempotent upsert it looks
+/// like a success achieved by proxy. It is not one: the collision aborts the <b>whole</b> transaction, so
+/// answering "fine" would return work assembled inside a transaction that rolled back. Retrying here is
+/// equally wrong — a boundary retry re-runs the <i>whole tool call</i>, including a paced page-walk that
+/// already cost vendor requests. <see cref="SeriesUnitOfWork"/> is where a retry belongs and it is bounded
+/// there on purpose. So the caller is told plainly what happened and that a retry is served from what the
+/// other writer committed — which is true, and cheap, and is a decision the caller is entitled to make.
+/// </para>
+/// <para>
+/// <b>Nothing on the fill path can currently produce that <c>23505</c>, and the branch stays anyway.</b> The
+/// three writes that could — the bars, the coverage ledger, the indicator projection — are all
+/// <c>ON CONFLICT … DO UPDATE</c> now (gh#103, gh#122, gh#133; epic gh#80). The schema still has unique keys
+/// and a writer added later can still hit one, and this filter is served on behalf of every tool rather than
+/// of the fill path, so deleting the branch would be narrowing a general guard to today's call sites. What it
+/// does mean is that the branch is pinned by <c>StoreFaultReportingTests</c> against a fabricated exception
+/// rather than by a real race, which is stated in <c>StoreFaultBoundaryTests</c> rather than glossed.
 /// </para>
 /// <para>
 /// <b>Narrow catches, never <c>catch (Exception)</c>.</b> A store fault is a transient condition of an

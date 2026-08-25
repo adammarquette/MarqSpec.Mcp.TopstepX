@@ -13,7 +13,7 @@ two (gh#178).
 | [Coding — `MarqSpec.Mcp.TopstepX/AGENTS.md`](../../MarqSpec.Mcp.TopstepX/AGENTS.md) | 1.3K | by **directory proximity** — on your first read of a file in the library |
 | [QA — `MarqSpec.Mcp.TopstepX.IntegrationTests/AGENTS.md`](../../MarqSpec.Mcp.TopstepX.IntegrationTests/AGENTS.md) | 0.9K | by **directory proximity** — on your first read in that project |
 | [Code Reviewer — `code-reviewer.md`](code-reviewer.md) | 1.3K | **never automatically — open it yourself** |
-| [Platform — `platform.md`](platform.md) | 17.4K | **never automatically — open it yourself** |
+| [Platform — `platform.md`](platform.md) | 17.5K | **never automatically — open it yourself** |
 
 **The prices are here rather than in the routing map, and that is the decision gh#178 made.** The map's
 `agents/` row prices *this file*; the route it serves ends at one of the four rows above, so the number a

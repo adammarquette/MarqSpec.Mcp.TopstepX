@@ -524,7 +524,13 @@ for file in "${FILES[@]}"; do
   # reddens as NO SECTION only if a priced heading happens to sit below it, and passes silently otherwise.
   # Every fence in the corpus was closed when this was added, so it could not fire on correct input, and an
   # unclosed fence is a rendering defect in its own right.
-  if [ "$FENCED" -eq 1 ]; then
+  #
+  # A QUOTED FENCE IS EXEMPT, because the rule above has two halves and only one was implemented (PR #193
+  # review round 4). "A fence opened under a `>` ends at the first line carrying none" -- and a blockquote
+  # also ends at END OF FILE. So a quoted fence still open here was closed by its container, and the report
+  # is not merely noisy but false: it says "a price table under it would be unseen" where there is nothing
+  # under it at all. Half a rule is the shape that produces a confident wrong diagnostic.
+  if [ "$FENCED" -eq 1 ] && [ "$FENCE_QUOTED" -eq 0 ]; then
     die "  UNTERMINATED FENCE  $file opens a code fence that is never closed"
     die "Every line below it was skipped, so this file has NOT been fully read and a price table under it"
     die "would be unseen. Close the fence."
@@ -605,9 +611,10 @@ for candidate in **/*.md .github/**/*.md; do
     fi
   done
 
-  # The same fail-open, in a file this gate only sweeps. `break` above leaves FENCED wherever it was, so
-  # this is checked only when the loop ran to the end -- which is the only case where it means anything.
-  if [ "$FENCED" -eq 1 ]; then
+  # The same fail-open, in a file this gate only sweeps -- and the same blockquote-at-EOF exemption. `break`
+  # above leaves FENCED wherever it was, so this is checked only when the loop ran to the end, which is the
+  # only case where it means anything.
+  if [ "$FENCED" -eq 1 ] && [ "$FENCE_QUOTED" -eq 0 ]; then
     die "  UNTERMINATED FENCE  $candidate opens a code fence that is never closed"
     die "The sweep stopped reading there, so a price table below it would be unseen. Close the fence."
     failures=$(( failures + 1 ))

@@ -1,6 +1,7 @@
 # Project board & workflow
 
-> **Board:** [TopstepX MCP Server, project #4](https://github.com/users/adammarquette/projects/4).
+> **Board:** [TopstepX MCP, project #5](https://github.com/users/adammarquette/projects/5) · `PVT_kwHOANxPB84BhdQh`.
+> **Project #4 is not the board** — it is retired; see [below](#project-4-is-retired).
 > **Relates to:** [`CONTRIBUTING.md`](../CONTRIBUTING.md) (branching, Definition of Done), root
 > [`AGENTS.md`](../AGENTS.md), and the [Work Estimate rubric](work-estimate-rubric.md).
 
@@ -8,24 +9,163 @@ The board is the **schedule**; the promotion ladder (`develop → staging → ma
 This document governs the board. It complements, never overrides, the issue-first rule and the Definition of
 Done.
 
-## The six columns
+## The six columns, and the ids that move a card
 
-| Column | Meaning | Who moves an item out |
+Status field `PVTSSF_lAHOANxPB84BhdQhzhgY7fs`. **Take the ids from here rather than from the screen** — the
+Projects UI never shows them, and `item-edit` accepts nothing else.
+
+| Column | Option id | Meaning |
 |---|---|---|
-| **Backlog** | Valid direction, not yet being prepared — the intake reservoir | Maintainer |
-| **Planning** | Being prepared — needs breakdown, acceptance criteria, or a design decision | Maintainer |
-| **Current ToDo** | Ready and tagged — anyone may pick it up | Whoever picks it up |
-| **In Progress** | Actively being worked | The worker |
-| **Review** | PR open and linked — the author is paused here, monitoring it | The author, until approved |
-| **Done** | Approved, checks green, merged | — (terminal) |
+| **`Blocked`** | `e0c55290` | Cannot be worked yet. The *why* goes on the issue — [case 3](#3-blocked-needs-a-reason-and-no-column-can-hold-it) |
+| **`Todo`** | `f75ad846` | Filed and workable — anyone may pick it up |
+| **`In Progress`** | `47fc9ee4` | Claimed and being worked |
+| **`In Review`** | `175e6c63` | PR open and linked. The author owns the card while it sits here |
+| **`Ready to Merge`** | `d7d0dbdd` | Every reviewer approved, checks green. **The reviewer sets this — not the author** |
+| **`Done`** | `98236657` | Closed, *however* it closed — [case 2](#2-an-issue-closed-with-no-pr) |
 
-Flow is left to right, with **one sanctioned backward move**: an item kicks back to **Planning** when it turns
-out to be underspecified. That is not a failure — discovering an issue is thinner than it looked is exactly what
-the funnel is for, and working it anyway produces a PR nobody can review against anything.
+```bash
+# The item id is per-board and is not the issue number.
+gh project item-list 5 --owner adammarquette --format json --limit 200
+gh project item-edit --id <item-id> --project-id PVT_kwHOANxPB84BhdQh \
+  --field-id PVTSSF_lAHOANxPB84BhdQhzhgY7fs --single-select-option-id <option-id>
+```
 
-**Review is not a parking space.** The agent that opened the PR owns the card while it sits there. The card
-leaves for Done only when the PR is approved *and* green. A merged PR whose issue still has scope goes back to a
-working column, not to Done.
+Under Git Bash `gh` emits CRLF, so pipe a captured id through `tr -d '\r\n'`; otherwise the id goes out with a
+carriage return in it and is rejected for a reason the error does not name.
+
+## The lifecycle
+
+Seven transitions, and **three happen without you** — new, measured
+([below](#automation--what-the-board-was-watched-doing)), and the reverse of what this document said while it
+described #4.
+
+| When | Card lands in | Moved by |
+|---|---|---|
+| Issue filed and workable | `Todo` | **the board** |
+| Cannot be worked yet | `Blocked` | you |
+| An agent starts work | `In Progress` | you, as you claim it |
+| The PR is opened | `In Review` | you |
+| Every review approves | `Ready to Merge` | the reviewer |
+| Changes requested | `Todo`, then `In Review` again when fixed | you |
+| The PR merges | `Done` | **the board** |
+
+**`Ready to Merge` and `Done` are not an implementing agent's to set.** You stop at `In Review`. Approved and
+green is not permission to merge — only the maintainer merges (root [`AGENTS.md`](../AGENTS.md)).
+
+The merge arrow is automatic only because `Closes #N` closes the issue and **closing is what moves the card**.
+That keyword binds only on a PR into the **default branch**, `develop` here (gh#101), so a ladder promotion
+into `staging` or `main` closes nothing and moves nothing — move and close its card by hand.
+
+## The six cases the lifecycle does not name
+
+### 1. A PR closed without merging
+
+The issue is still real, so the card goes back to **`Todo`**, by hand — nothing fires, because the issue never
+closed. `Todo` rather than `In Progress`: the branch may be gone and the next agent has to re-read the issue,
+which is what `Todo` means. Seven throwaway probe PRs were opened and closed in one day to measure CI
+behaviour (#168, #169, #170, #177, #179, #180, #181 — all `ci(probe): THROWAWAY` for gh#164), and a superseded
+approach ends the same way.
+
+### 2. An issue closed with no PR
+
+**`Done` means "closed, however" — shipped, declined, answered, or thrown away.** It is not a claim that
+anything was delivered. gh#104 was resolved by a *decision* recorded as
+[ADR-0012](adr/0012-fills-are-not-serialised.md); gh#148 was a throwaway probe. Both are `Done`, and both are
+right.
+
+Which kind of ending it was belongs in the **closing comment**, where a reader can act on it, not in a column
+with one value for every ending. You do not move these — closing moves them, including out of `Blocked`.
+
+### 3. Blocked needs a reason, and no column can hold it
+
+Comment on the issue the moment you set `Blocked`, naming what it waits on and citing it as `gh#N` so the
+timeline cross-links. "Blocked" alone is unactionable: the next agent cannot tell whether to wait, escalate or
+take it. Two kinds, which clear differently — so say which:
+
+- **Waiting on a human.** gh#163 needs the Projects settings page, which no agent can reach. Nothing an agent
+  does moves it.
+- **Waiting on a change to land.** gh#155 waited on gh#173 because both edit `branch-policy.yml`. It clears on
+  a merge, and whoever merges the blocker says so on the blocked issue.
+
+### 4. An agent stalls or dies mid-work
+
+A card in `In Progress` looks identical whether the work is live or the session died. **The column is not the
+signal — the branch tip is**, and the threshold is already set: root [`AGENTS.md`](../AGENTS.md) makes a tip
+unmoved for **4 hours** fair game, and `scripts/claim.sh` reads exactly that. Do not invent a second threshold
+for the board. **Say so on the issue first**, naming the branch — announcing is what makes a wrong call
+recoverable.
+
+### 5. Two reviewers, split verdict
+
+**Any unresolved finding wins.** `Ready to Merge` requires *every* reviewer approving — not the most recent
+one, and not a majority. PR #175 carried two independent verdicts (16:03:25Z and 16:11:02Z on 2026-08-25),
+which is the arrangement this rule exists for.
+
+Verdicts arrive as **comments, not GitHub reviews**: agents authenticate as the maintainer and GitHub blocks
+self-review, so `gh` cannot file a formal one. A reviewer's first line is exactly `**Verdict: Approve**` or
+`**Verdict: Request changes**`, so the verdict is greppable.
+
+### 6. Is anything automatic?
+
+Yes — three things, which was false of #4. Measured rather than read off a screen:
+
+## Automation — what the board was watched doing
+
+Project workflows are configured in the GitHub Projects web UI and are **not** exposed by the API:
+`scripts/bootstrap.sh` cannot set them and nothing can read them back. So this records what the board was
+**observed** doing. Measured **2026-08-25 (gh#187)** with throwaway issue **gh#188** — filed, carded, moved,
+closed, reopened — reading the card back from the API at each step. It is closed and **not deleted**, so this
+stays auditable.
+
+| Action | UTC | Card read back as | Read at |
+|---|---|---|---|
+| gh#188 filed | `19:14:01Z` | already on the board, `Todo` | `19:14:09Z` (+8s) |
+| `Status` set to `In Progress` by hand | `19:14:31Z` | `In Progress` | `19:14:32Z` |
+| issue closed | `19:14:44Z` | **`Done`** | `19:14:46Z` (+2s) |
+| issue **reopened** | `19:15:00Z` | **still `Done`** | `19:15:02Z`, again `19:18:02Z` |
+| card removed, re-added by hand while OPEN | `19:18:32Z` | `Todo` | `19:18:45Z` |
+| issue closed again | `19:19:10Z` | **`Done`** | `19:19:12Z` (+2s) |
+
+**Three are on:**
+
+- **A new issue lands on the board by itself**, within seconds — do not `item-add` a new issue, you would be
+  adding a card that is already there.
+- **An added item is set to `Todo`**, including on a hand `item-add` (row 5). On #4 a hand-added item landed
+  with no Status at all, so this is the step that most changes what an agent does.
+- **Closing an issue moves its card to `Done`** in about two seconds, **overwriting whatever column it was
+  in** — observed twice, rows 3 and 6. That is the one place a manual move and an automation fight: a
+  `Blocked` issue closed as "will not do" lands beside shipped work, which is why [case 2](#2-an-issue-closed-with-no-pr)
+  puts the reason in the closing comment.
+
+**One is off, and it is the trap: reopening does not undo `Done`.** gh#188 was reopened at `19:15:00Z` and was
+still in `Done` three minutes later with the issue `OPEN`. **Reopen an issue and move its card back yourself**,
+or the board shows finished work that is live again.
+
+Five of the seven transitions are still a claim somebody made by hand, so a column still decays — read the
+issue's state before you believe it. What cannot accumulate now is the drift gh#107 measured on #4, where nine
+closed issues sat parked in working columns.
+
+**If the workflows change, re-measure this way and rewrite this section from what the board does.** The
+version of this document that described #4 recorded three automations off a settings screen, and not one of
+them had ever run.
+
+## Project #4 is retired
+
+[Project #4](https://github.com/users/adammarquette/projects/4) — the old *TopstepX MCP Server* board — was
+**closed** on 2026-08-25, retitled *"TopstepX MCP Server (RETIRED - use project #5)"*, and given a README
+pointing here. Its **73 items were kept**: closing deletes nothing, and that history is why it was closed
+rather than removed. Its columns were *Backlog / Planning / Current ToDo / In Progress / Review / Done*, none
+of which exist on #5 — so one of those names in a document is itself the signal that the document is stale.
+
+**Closing does not stop anyone carding work there, and that was measured rather than assumed.**
+`gh project item-add` against an already-closed project succeeded — exit 0, silently, and the item landed
+(tested 2026-08-25 against the closed project #1; the test item was removed afterwards). No mechanism will
+refuse a card on #4. This document and the retitle are the entire guard, which is why the board is named with
+its number and its id at the top of this file: **when you run a `gh project` command here, the argument is
+`5`.**
+
+gh#178, gh#182 and gh#186 were all carded onto #4 within an hour of #5 existing, by two different sessions,
+because this document told them to.
 
 ## Cards and links
 
@@ -56,48 +196,18 @@ Repo labels, not board-only fields, so an agent reading the raw issue through `g
 | `ladder-exception` | A justified deviation from the `develop → staging` rule, reason stated in the PR |
 | `Work Estimate: 1–5` | Capability the work demands. See the [rubric](work-estimate-rubric.md) |
 
+`backlog` is a **label, not a column** — #5 has none. A deferred issue sits in `Todo` carrying the label, or in
+`Blocked` if something concrete has to happen first.
+
 ## What makes an issue ready
 
-An issue leaves Planning when it has **Why**, **Scope**, and **Acceptance criteria** — and, where the answer is
-non-obvious, **Out of scope**.
+An issue is workable — `Todo` rather than `Blocked` — when it has **Why**, **Scope** and **Acceptance
+criteria**, plus **Out of scope** where the answer is non-obvious.
 
 **A thin issue is a defect.** The next agent rebuilds its entire context from the issue body and its metadata;
-a title and a sentence means that agent guesses, and the guess is only discovered at review.
+a title and a sentence means that agent guesses, and the guess is only discovered at review. One that turns out
+to be underspecified goes back to `Todo` with a comment saying what is missing, and gets **re-scored** — scope
+that grew changes the [Work Estimate](work-estimate-rubric.md).
 
 Task specs live in the issue, never as files under `documentation/`. A parallel spec duplicates the tracker and
 drifts from it — and the tracker is the one that gets updated.
-
-## Automation — what the board was watched doing
-
-Project workflows are configured in the GitHub Projects web UI and are **not** exposed by the API:
-`scripts/bootstrap.sh` cannot set them, and nothing can read them back. So this section records what the board
-was **observed** doing, never what a settings page is assumed to say. Measured on **2026-08-24** (gh#107) by
-filing a throwaway issue, carding it, closing it, and reading the card at each step.
-
-**Nothing on this board moves on its own — every step below is done by hand.**
-
-- **A new issue is not added to the project.** The probe was still off the board six minutes after it was
-  filed, and on the same day sixteen of this repo's issues had never been carded at all.
-  **You card it, when you file it:** `gh project item-add 4 --owner adammarquette --url <issue-url>`.
-- **Adding an item does not set it to Backlog.** The probe landed with *no Status at all* — not Backlog, no
-  column — and was still uncolumned three minutes later; gh#110 was sitting on the board in exactly that state.
-  **Set `Status` yourself**, in the same breath as adding the card.
-- **Closing an issue does not move its card to Done.** The probe was closed out of *Current ToDo* and was still
-  in *Current ToDo* twelve minutes later. Watched again on real work the same day: gh#118's card was put in
-  *Review* by hand, PR #152 merged at 20:38:03Z and closed it a second later, and the card was **still in
-  *Review* 72 minutes on**. **Move the card to Done when you close the issue.**
-- **"PR merged → Done" has nothing to act on.** Only issues are cards here, so no pull request has ever been an
-  item on this board — gh#118 above is the same merge seen from the other side. The closing keyword closes the
-  **issue** and never touches the board, so **the issue's card is moved to Done by hand after the merge.**
-
-**A card's column is therefore a claim somebody made by hand, and it decays.** At **2026-08-24 18:50:49Z** the
-board carried **9 closed issues parked in working columns** — seven in *Current ToDo*, one in *Review*, one
-with no column at all — on top of the **44** swept to Done by hand earlier the same day. That is a snapshot,
-and between sweeps it only grows — gh#118 became the tenth that evening. **A card in *Review* does not mean
-anyone is watching that PR**: read the issue's state before you believe the column.
-
-**Outstanding, tracked on gh#163:** these workflows can only be enabled from the Projects settings page, which
-no agent can reach — so that card is the maintainer's, and it also carries the sweep of the drift above. When
-any of them is turned on, **re-measure the same way** and rewrite this section from what the board does.
-Reading it off the settings screen is how the previous version came to record three automations, none of which
-ran.

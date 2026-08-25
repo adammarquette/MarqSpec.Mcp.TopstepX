@@ -17,14 +17,15 @@
 # Rejections alone would all be satisfied by `exit 1`, i.e. by a gate that says no to everything, which is
 # exactly as useless as one that says yes to everything and rather harder to notice.
 #
-# SIX OF THE EIGHTEEN CASES ARE HERE BECAUSE MUTATION FOUND THEM MISSING, and that is the point of the
+# SEVEN OF THE NINETEEN CASES ARE HERE BECAUSE MUTATION FOUND THEM MISSING, and that is the point of the
 # paragraph rather than a confession. The author's own battery found one — swallowing grep's exit 2, the
 # same hole gh#43, gh#98 and gh#126 each shipped. The PR #195 review found four more: a definition inside a
 # fenced block and one inside an HTML comment (the gate's ONLY fail-open, and it went green on the real tree
 # with a citation of an invented id); a nested repository turning a correct tree red; frozen definition
 # counters that nothing asserted; and three separate ways of destroying the reported LINE NUMBER, which every
-# case survived because the needle was the FILENAME and the location is a superset of it. The sixth came out
-# of mutating the fix: a fence whose closer carries trailing whitespace.
+# case survived because the needle was the FILENAME and the location is a superset of it. The last two came
+# out of mutating the FIX for those — a fence whose closer carries trailing whitespace, and each of the two
+# constructs nested inside the other.
 #
 # So: mutate the subject before believing its self-test, every time. A self-test is a text-matching gate
 # too, and the ones that pass on a broken subject are the ones nobody ever ran against one.
@@ -35,7 +36,7 @@
 # Each case below matches the words that name ITS OWN fault, and every dangling case additionally matches the
 # ID ITSELF, so a gate that has stopped printing which symbol failed cannot satisfy it either.
 #
-# AND THE ACCEPTANCE IS NOT SATISFIED BY EXIT 0 EITHER. All six green assertions match the COUNTS the gate
+# AND THE ACCEPTANCE IS NOT SATISFIED BY EXIT 0 EITHER. All seven green assertions match the COUNTS the gate
 # prints, so a gate that resolved nothing cannot pass one. Two of them — the ADR near-miss and the `R-#`
 # placeholder — assert a count IDENTICAL to what the same fixture reports with those lines absent, which is
 # how they prove those lines contributed no citations rather than merely failing to break anything.
@@ -90,7 +91,7 @@ OVER_DEEP="${R}1.2.3"            # first two parts DO resolve; the whole id must
 # Builds one fixture repository.
 #
 #   $1 dir          fixture root
-#   $2 prd_kind     sound | absent | flat-headings | no-bullets | shadowed | fenced | commented | fenced-closed
+#   $2 prd_kind     sound | absent | flat-headings | no-bullets | shadowed | fenced | commented | fenced-closed | nested-constructs
 #   $3 notes        the body of documentation/notes.md — the file whose citations are under test
 #   $4 extra_kind   none | rich | ignore-prd | unreadable | nested
 #
@@ -146,6 +147,16 @@ make_fixture() {
       if [ "$prd_kind" = "fenced-closed" ]; then
         printf '\n## Appendix\n\n```markdown\n## R-1 — An inert example heading\n```   \n\n'
         printf -- '- **R-1.3** Defined after the fence closes.\n'
+      fi
+      # EACH CONSTRUCT INSIDE THE OTHER. The two states have to be mutually exclusive: inside a comment a
+      # fence marker is text, and inside a fence `<!--` is text. Checking for a fence first and
+      # unconditionally passes every other case here and still gets this wrong — a commented-out block
+      # containing a code fence opens one, the fence swallows the `-->`, and the gate dies naming an
+      # unterminated comment that is closed three lines up. A confident wrong answer about a file the reader
+      # then goes and stares at, which is gh#123's complaint about its own diagnostic.
+      if [ "$prd_kind" = "nested-constructs" ]; then
+        printf '\n<!--\n```\n-->\n\n```markdown\n<!-- shown inside a fence, opening nothing -->\n```\n\n'
+        printf -- '- **R-1.3** Defined after both.\n'
       fi
     } > "$dir/documentation/prd.md"
   fi
@@ -394,6 +405,14 @@ expect_green "a nested repository, counted and not read" "$FIXTURES/nested" \
 #     and four requirements: three if the closer is missed, three sections if the opener is.
 make_fixture "$FIXTURES/fenced-closed" fenced-closed 'Governed by `R-1.3`.' none
 expect_green "a fence closed with trailing whitespace" "$FIXTURES/fenced-closed" \
+  "(2 sections, 4 requirements, 1 open questions"
+
+# 15. EACH CONSTRUCT INSIDE THE OTHER, which is where the two states stop being independent. A fence checked
+#     for first and unconditionally passes every case above and still dies here, on an `UNTERMINATED COMMENT`
+#     about a comment that closed three lines earlier. Same counts as the case above, and for the same
+#     reason: if either construct leaks, the requirement below both of them stops being defined.
+make_fixture "$FIXTURES/nested-constructs" nested-constructs 'Governed by `R-1.3`.' none
+expect_green "a fence inside a comment, and a comment inside a fence" "$FIXTURES/nested-constructs" \
   "(2 sections, 4 requirements, 1 open questions"
 
 info ""

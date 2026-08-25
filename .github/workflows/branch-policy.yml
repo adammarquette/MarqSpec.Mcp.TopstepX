@@ -158,6 +158,10 @@ jobs:
       # five shapes are tabulated and measured on two bash versions in gh#126's PR #156, and in the platform
       # contract's "Constraints that bite in CI". Cite that table rather than re-deriving it.
       #
+      # And the green half, on the input this actually meets: 32878612262, gh#164's own pull request at
+      # 3bad637, base `develop` and linear, where BOTH steps ran rather than being skipped and both passed --
+      # the merge check printing `ok  no merge commit in ...` and this one naming all five subjects.
+      #
       # WHERE IT WAS REACHABLE. On a pull request into `develop` the merge-commit step above already dies on
       # an unresolvable range -- it assigns `git rev-list` plainly, so `set -e` carries git's 128 -- and
       # merge_group already refused zero subjects. So the vacuous pass was reachable on exactly the PROMOTION

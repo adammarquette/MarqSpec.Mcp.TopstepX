@@ -444,8 +444,10 @@ ids are the only trail back:
 | linear, `fetch-depth: 1` — [32857116130](https://github.com/adammarquette/MarqSpec.Mcp.TopstepX/actions/runs/32857116130) | `develop` | **failure** | gh#146's step, on git's 128 |
 
 The green half, which the [Coding contract](../../MarqSpec.Mcp.TopstepX/AGENTS.md) requires beside the red
-one, is [32859513254](https://github.com/adammarquette/MarqSpec.Mcp.TopstepX/actions/runs/32859513254) — gh#164's own pull request, base `develop` and linear, where both
-steps *ran* rather than being skipped and both passed, the two subjects read out by name.
+one, is [32878612262](https://github.com/adammarquette/MarqSpec.Mcp.TopstepX/actions/runs/32878612262) —
+gh#164's own pull request at `3bad637`, base `develop` and linear, where **both** steps *ran* rather than
+being skipped and both passed: the merge check printing `ok  no merge commit in …` and this one naming all
+five subjects.
 
 Rows 1/2 and rows 5/6 are two before-and-after **pairs**, each differing only in the head's copy of this
 workflow, which is what makes them measurements rather than descriptions. Rows 3 and 4 are the two halves of

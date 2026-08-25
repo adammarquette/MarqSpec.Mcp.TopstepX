@@ -357,16 +357,42 @@ rung short is also a question every future reader has to re-derive.
 **`docs` is one status context running three steps, so a red `docs` is not necessarily a broken link**
 (gh#160) — the required-context count is unchanged, and the row above says so. Beside
 [`check-doc-links.sh`](../../scripts/check-doc-links.sh) it now runs
-[`check-doc-sizes.sh`](../../scripts/check-doc-sizes.sh), which re-measures every row of
-[the routing map](../README.md)'s `~tok` column (`wc -c` bytes ÷ 4, 25% tolerance) and fails a row that no
-longer describes its file — and [`check-doc-sizes-selftest.sh`](../../scripts/check-doc-sizes-selftest.sh),
-which requires that gate to reject twelve known faults by name and to accept three correct maps — one at the
-tolerance boundary, so the tolerance cannot be quietly set to zero, and one whose prose contains "no longer",
-so the size-claim vocabulary cannot creep back onto ordinary English. All three ride in the
+[`check-doc-sizes.sh`](../../scripts/check-doc-sizes.sh), which re-measures every row of every `~tok` table
+it is pointed at (`wc -c` bytes ÷ 4, 25% tolerance) and fails a row that no longer describes its file — and
+[`check-doc-sizes-selftest.sh`](../../scripts/check-doc-sizes-selftest.sh), which requires that gate to
+reject sixteen known faults by name and to accept three correct inputs — one at the tolerance boundary, so
+the tolerance cannot be quietly set to zero, and one whose prose contains "no longer", so the size-claim
+vocabulary cannot creep back onto ordinary English. All three ride in the
 one job **because `docs` is already required on all three rungs**, so none of this needed a ruleset write and
 [the table above](#what-is-required-and-what-only-reports) does not change — the same argument as
 `commit-hygiene`'s merge-commit refusal below. Two new jobs would have meant two new required contexts added
 by hand, and a context nobody adds is a check that only ever reports (gh#26).
+
+**What it is pointed at is a list of (file, heading) pairs, and both halves of that list fail closed**
+(gh#178). It was one file and a fixed pair of headings until the role contracts needed pricing: the routing
+map's `agents/` row prices [the index](README.md), while the route it serves ends at one of the four
+contracts the index names — **this file among them**, and it is the one that grows. The numbers went into the
+index's own table rather than into four more rows of the map, so the four contracts are listed once rather
+than twice, and the gate learned to read a second file. Three consequences worth keeping:
+
+- **Every link resolves against the file that names it**, not against the routing map's directory. Three of
+  the four rows in the index climb two directories out with `../../`; a port that kept one directory measures
+  a different file and reports a confident number for it. The self-test's sound fixture is built to catch
+  exactly that — its second file prices a document that also exists, at a different size, where a
+  map-relative resolution would look — so the assertion is a measurement rather than a comment.
+- **A `~tok` table under an unlisted heading was already refused; a `~tok` table in an unlisted FILE now is
+  too.** The PR #175 review closed the first at the heading level. Making "which file" a list re-opened the
+  same fail-open one level up, and the sweep that closes it uses `shopt -s globstar` rather than `find` —
+  zero forks, and `**` skips dot-directories, so a developer's `.worktrees/` full of sibling checkouts is not
+  read. That blind spot is stated in the script: a price table under `.github/` would not be swept.
+- **A priced file that is not on disk stops the run** rather than being skipped. `check-doc-links.sh` says
+  nothing about it — nothing links to a *table* — so moving the index without telling `PRICED` would
+  otherwise stop pricing four contracts with every check still green.
+
+**Appending to this file moves its own row.** Its price lives in [`README.md`](README.md) beside it, `docs`
+re-measures that row on every pull request, and the 25% band is about four thousand tokens at this size — so a
+long section lands red on the next PR, not on yours. Correct the row in the same pull request; the gate
+prints the value to paste.
 
 **`commit-hygiene` also refuses a merge commit, on a pull request into `develop` and nowhere else** (gh#146).
 `protect-develop` is `allowed_merge_methods: ["rebase"]` and carries

@@ -91,7 +91,7 @@ jobs:
           # resolve a commit RANGE, which a shallow clone cannot do: at depth 1 the pull request's base SHA is
           # simply not in the clone. Trimming this line used to be silent (gh#164); it is now a red run that
           # names the range, so read the failure rather than restoring the depth blind.
-          fetch-depth: 0
+          fetch-depth: 1
 
       # gh#146. Runs BEFORE the subject check, and that order is deliberate: a merge commit makes the branch
       # unmergeable outright, so it is the finding the author has to act on first — and the rebase that fixes

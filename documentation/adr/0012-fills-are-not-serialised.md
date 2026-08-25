@@ -18,6 +18,10 @@ under that epic is **still open and is not this record's** — the indicator pro
 `23505`, gh#133, so gh#80 does not close here. What this record decides is the other thing left: the anomaly
 that snapshot isolation does not forbid.
 
+> **Since written (gh#133).** That last sub-issue landed: the projection's write is now `ON CONFLICT … DO
+> UPDATE` too, and gh#80 is closed. Nothing this record decides changes — it is the *skew* that is accepted,
+> and the skew is what remains after every one of those upserts.
+
 ### What is actually wrong
 
 Two fills of one series over **adjacent** ranges. A fills buckets 0–19; B fills 20–39. B's transaction fixes
@@ -207,12 +211,12 @@ uncommitted, so a wider read still cannot see them.
   is a property of a series still being written to.
 - **`rebuild-indicators` is the deliberate repair**, and it already exists for exactly this class of thing —
   transactional per series, replaying to the same numbers ([ADR-0006](0006-indicators-as-projections.md)).
-- **gh#133 does not reduce to writing this down.** It was open whether serialising fills would close the
+- **gh#133 did not reduce to writing this down.** It was open whether serialising fills would close the
   projection's read-then-insert `23505` as a side effect. It would not, because nothing is serialised: two
   passes whose snapshots each miss the other's rows still insert the same `(Indicator, Period, BucketStart)`,
-  and that remains a real fault reaching a real caller. It needs its own remedy, and it is the only instance
-  of that shape left on the `get_bars` path. **gh#80 therefore stays open until gh#133 lands** — this record
-  settles the epic's opening question, not the epic.
+  and that was a real fault reaching a real caller. It needed its own remedy — it got the same
+  `ON CONFLICT … DO UPDATE` its two siblings got — and **gh#80 closed when it landed.** This record settles
+  the epic's opening question, not the epic.
 - **Nothing new is maintained.** No lock, no connection lifetime to own, no release path to get right on the
   retry, and no new way for one series to become unavailable.
 - **The claim is checkable.** A defect chosen rather than fixed is only a decision if it can be shown to behave
@@ -227,4 +231,5 @@ uncommitted, so a wider read still cannot see them.
 - **Nothing measures how often this happens**, and by the argument above nothing inside a fill can: the pass
   that suffers it cannot see that it did. If the residue ever starts mattering, the cheap first move is to make
   the heal deliberate — a scheduled `rebuild-indicators` — rather than to make it unnecessary with a lock.
-- **The projection's own read-then-insert race** is gh#133, and it is untouched by this record.
+- **The projection's own read-then-insert race** was gh#133, untouched by this record and closed separately by
+  the same `ON CONFLICT … DO UPDATE` remedy its two siblings got. With it, epic gh#80 closed.

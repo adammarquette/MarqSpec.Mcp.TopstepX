@@ -285,10 +285,18 @@ gh#80, the write skew above, is untouched by it.
 **Update (2026-08-24, gh#122).** The same shape was one table over, on the negative-result ledger, and is
 closed the same way: `RecordEmptyAsync` now records an empty range with `ON CONFLICT … DO UPDATE` rather than
 reading the row and deciding, so two callers polling one quiet range both land. It is noted here only to keep
-the paragraph above from over-claiming — a `23505` out of `get_bars` remains reachable, on the **indicator
-projection**, which is a reconcile rather than an upsert and so is not one statement. That is the last
-instance of the shape on this path and is tracked as gh#133; it does not touch a bucket's provenance, and the
-write skew above is gh#104's, settled immediately below.
+the paragraph above from over-claiming — a `23505` out of `get_bars` remained reachable at that point, on the
+**indicator projection**, which is a reconcile rather than an upsert and so was not one statement. That was
+the last instance of the shape on this path; it was tracked as gh#133 and is closed immediately below.
+
+**Update (2026-08-24, gh#133).** The projection's write is now `ON CONFLICT … DO UPDATE` on
+`(Venue, Instrument, ResolutionMinutes, Indicator, Period, BucketStart)`, and **no `23505` out of `get_bars`
+remains reachable at all** — that closes epic gh#80. It matters to *this* record only in what it does **not**
+change: a value is still computed inside a single contract run, the seams are still a function of the stored
+bars, and the statement writes no `ContractId`, because §2 holds none — the contract is a property of the bar
+at `BucketStart` and duplicating it would be a second copy of a fact that can disagree with the first. The
+removal half — the thing this record introduced, and the reason the remedy was not one statement — keeps its
+`(Indicator, Period)` scope and its whole-series guard untouched.
 
 **Update (2026-08-24, gh#104).** The question this section left open — whether to serialise fills per series —
 **is settled, and the answer is no** ([ADR-0012](0012-fills-are-not-serialised.md)). The residue named above is

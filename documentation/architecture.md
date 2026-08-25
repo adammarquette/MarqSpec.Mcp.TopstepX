@@ -67,7 +67,14 @@ path (gh#69).
    next call in the same scope in preference to the row it just read, and both the context and the cache
    service are scoped (gh#103).
 8. **Project indicators** for the affected buckets, in the same unit of work, so an indicator exists the moment
-   its bar does.
+   its bar does. The values are written with one `ON CONFLICT … DO UPDATE` on
+   `(Venue, Instrument, ResolutionMinutes, Indicator, Period, BucketStart)`, for the same reason step 7 is
+   (gh#133) — a pass recomputes the whole series *its own snapshot* can see, so two fills of ranges sharing no
+   bucket still both produce the history in front of both. There is **no skip-unchanged `WHERE` here**, unlike
+   step 7: the rule is stated once, in C#, because the value is rounded to the column's own scale before it is
+   compared and the stored side came out of that column, so both sides already carry `numeric(18,8)` (gh#37).
+   The removals still go through the change tracker, so this step needs a **transaction** around it rather than
+   merely one snapshot, and refuses without one.
 9. **Record coverage** for ranges that came back empty — one `ON CONFLICT … DO UPDATE` on
    `(Venue, Instrument, ResolutionMinutes, RangeStart, RangeEnd)`, for the same reason step 7 is (gh#122).
    There is **no pre-read here at all**: the ledger holds the latest answer for a range rather than a history
@@ -127,11 +134,8 @@ reached disk. Three consequences, and they are the contract the tool surface off
   credentials — and are reported as permanent, saying plainly that retrying will not help. Neither list is a
   default: a code in neither is reported as unclassified rather than swept into either.
 
-**A lost race is reported, not swallowed and not retried at the boundary.** Two fills of *disjoint* ranges
-over one series both project over the history in front of both — a pass recomputes the whole series its
-snapshot can see — so both insert the same indicator values, and the loser gets `23505`. The rows it collided
-on *are* in the store — so a duplicate key on an idempotent write looks like a success someone else achieved.
-It is not one:
+**A lost race is reported, not swallowed and not retried at the boundary.** A duplicate key on an idempotent
+write looks like a success someone else achieved — the rows it collided on *are* in the store. It is not one:
 the collision aborts the whole transaction, so answering "fine" would return work assembled inside a
 transaction that rolled back. Retrying at the boundary is equally wrong — it would re-run the whole tool call,
 paced page-walk included; a retry belongs in `SeriesUnitOfWork`, bounded, where the fetch already happened.
@@ -140,11 +144,13 @@ nothing, and that a retry is served from what that writer committed. *What else*
 transaction — here, the bars and the coverage ledger over the same series — is a fact about
 `SeriesUnitOfWork`, and it is stated there rather than in a sentence handed to all fifteen tools.
 
-**Neither the bar write nor the coverage ledger reaches that boundary any more** (gh#103, gh#122). Both are
-real upserts, so a losing insert updates instead of faulting, and the caller of `get_bars` is not handed a
-database error for asking an ordinary question. One is *not* fixed and is still open: the **indicator
-projection** is the third instance of that same read-then-insert and the only one left on this path — it is a
-reconcile rather than an upsert, so the remedy is not one statement, and it is tracked as gh#133.
+**No write on this path reaches that boundary with a `23505` any more** (gh#103, gh#122, gh#133 — epic gh#80).
+The bar write, the coverage ledger and the indicator projection were the three instances of one shape: read the
+key from this transaction's snapshot, then decide insert-versus-update from what that read said. All three are
+now real upserts, so a losing insert updates instead of faulting and the caller of `get_bars` is not handed a
+database error for asking an ordinary question. The duplicate-key branch above stays — the schema has unique
+keys and a writer added later can still hit one — but nothing in the fill path can reach it, and the
+store-fault boundary's own integration test therefore drives a `40001` past the retry instead.
 
 **And one is decided rather than fixed.** A fill whose snapshot does not reach the start of the series seeds
 its values from the first bar it *can* see, so two fills of adjacent ranges leave the seam unmeasured and the

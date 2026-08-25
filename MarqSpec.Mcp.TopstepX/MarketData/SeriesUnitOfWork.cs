@@ -32,7 +32,10 @@ namespace MarqSpec.Mcp.TopstepX.MarketData;
 /// same unjustified rows. <see cref="BarCacheService"/>'s coverage ledger reaches it with no bars at all: two
 /// callers asking for the same range the venue answers empty both <i>write</i> one row — and since gh#122 that
 /// is one statement whether the row was already there or not. Reasoning about the
-/// ranges a fill fetched says nothing about the rows it writes.
+/// ranges a fill fetched says nothing about the rows it writes. And since gh#133 the projection's
+/// <i>value</i> write is one statement too, so a pass whose snapshot missed another pass's rows meets a
+/// <c>40001</c> there rather than a <c>23505</c> — the same trade the bar write and the ledger made, and the
+/// reason the retry below is what absorbs all three.
 /// </para>
 /// <para>
 /// <b>So it retries — once, and the bound is the argument.</b> A retry here is not a gamble. In every shape of

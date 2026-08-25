@@ -68,7 +68,13 @@ The server serves OHLCV bars for a futures instrument at a requested resolution 
 
 ## R-2 — Pre-computed indicators
 
-- **R-2.1** Indicator values are computed when bars are written, not when they are read.
+- **R-2.1** Indicator values are computed when bars are written, not when they are read. **The store performs
+  the write** — an `ON CONFLICT … DO UPDATE` on `(Venue, Instrument, ResolutionMinutes, Indicator, Period,
+  BucketStart)` — so two passes over one series whose snapshots each miss the other's rows both land instead of
+  the loser faulting on a duplicate key (gh#133). A pass recomputes the whole series *its own snapshot* can
+  see (`R-2.2`), so ranges that share no bucket still share a write set, and deciding insert-versus-update from
+  a read makes that decision against a snapshot another writer can invalidate before the write lands. A value
+  recomputed to the number already stored is still not rewritten (`R-2.8`).
 - **R-2.2** A recomputation over the same stored bars produces identical values. Nothing in the calculation may
   depend on when it ran ([ADR-0006](adr/0006-indicators-as-projections.md)).
 - **R-2.3** A value that the period does not yet support is **absent**, never a partial or substituted number.
@@ -92,7 +98,10 @@ The server serves OHLCV bars for a futures instrument at a requested resolution 
   write justified between them; and a pass that finds it read less than the whole series **refuses** rather
   than sweeping a range it never looked at. Both call sites read at `RepeatableRead`, and `rebuild-indicators`
   is transactional per series. Without this, `R-2.8` deletes correct values and the loss arrives as an
-  absence, which `R-2.3` makes a caller read as *cannot measure* (gh#73).
+  absence, which `R-2.3` makes a caller read as *cannot measure* (gh#73). **A snapshot is not sufficient on
+  its own: it must be a transaction**, because the write of `R-2.1` is a statement the store runs when it is
+  sent while the removal waits for the caller's unit of work — outside one the first commits alone, leaving
+  values standing that the same pass decided to remove. A pass with no transaction open **refuses**.
 - **R-2.10** A write the store **refuses to serialise** against a concurrent one is retried once and then
   **reported as contention**, naming what to do. Snapshot isolation is what makes `R-2.9` hold; a `40001` is
   the cost of it, and one retry is the whole budget because the transaction that won committed exactly the

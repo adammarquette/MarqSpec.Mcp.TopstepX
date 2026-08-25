@@ -117,6 +117,20 @@ ADR, `AGENTS.md`, or the code, **put it there instead**.
 
 ## Notes & communications
 
+- **[2026-08-24] A `WHERE` on `ON CONFLICT … DO UPDATE` cannot suppress the `40001`, and a skip-unchanged
+  `WHERE` is only worth adding where the C# comparison is *not* already at the column's scale (gh#133).** Two
+  facts, both learned building the third of these upserts and neither with a home outside a code comment.
+  - Under `REPEATABLE READ`, Postgres checks the conflicting row's visibility **before** it evaluates the
+    `DO UPDATE … WHERE` (`ExecCheckTupleVisible`, and its source comment says so explicitly: the `WHERE`
+    "may prevent us from reaching that"). So a conflict with a row committed after the snapshot raises
+    `40001` whatever the `WHERE` says — the clause cannot make a losing pass succeed on its first attempt,
+    and only `R-2.10`'s retry gets past it. Do not reach for a `WHERE` expecting it to.
+  - `Bars` states its skip-unchanged rule in SQL because it compares six venue prices at full `decimal`
+    precision (gh#103); `IndicatorValues` does **not**, because gh#37 already rounds to
+    `TopstepXDbContext.PriceScale` before comparing and the stored side came out of the column — so both
+    sides are `numeric(18,8)` and a SQL copy would be a clause no input can reach and no test can pin.
+    **Before adding one, check which of those two the write is.**
+
 - **[2026-08-23] `dotnet test` can exit 0 having discovered ZERO tests — a silent green, and every "tests
   pass" claim made in that state is hollow.** Windows Application Control blocks assembly loads from under
   `.worktrees`, and in that state the runner does not fail: it finds no tests, reports success, and the exit

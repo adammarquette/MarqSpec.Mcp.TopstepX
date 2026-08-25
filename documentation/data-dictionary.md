@@ -97,6 +97,19 @@ That sweep is **not** scoped by bucket range, so a pass has to read the whole se
 snapshot** — otherwise it removes values a concurrent write justified between its two reads, and the loss
 arrives as an absence (`R-2.9`, gh#73). A pass that finds the two disagree refuses rather than deleting.
 
+**The write half reaches the composite key with `ON CONFLICT … DO UPDATE`**, not by reading the values into a
+dictionary and deciding (gh#133) — a pass recomputes the whole series *its own snapshot* can see, so two fills
+of ranges sharing no bucket both produce the history in front of both, and the loser would otherwise fault on
+the key. **There is no skip-unchanged `WHERE` in that statement, unlike §1's**: the rule is stated once, in
+C#, and it can be, because the value is rounded to `numeric(18,8)`'s own scale before it is compared against
+a stored value that came out of that column (gh#37). A bar price is compared straight off the venue answer at
+full `decimal` precision, which is why §1 has to restate its rule in SQL and this does not.
+
+**The two halves need a transaction, not merely one snapshot.** The write is a statement the store runs when
+it is sent; the removals wait for the caller's `SaveChanges`. Outside a transaction the first would commit
+alone, leaving values standing that the same pass decided to remove — so a pass with no transaction open
+refuses.
+
 ## §3 `BarCoverage` — the negative-result ledger
 
 | Column | Type | Note |

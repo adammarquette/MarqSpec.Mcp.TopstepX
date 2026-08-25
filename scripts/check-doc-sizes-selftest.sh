@@ -91,6 +91,9 @@ mkfile() {
 # `~tok` table where the gate must refuse it — under an unlisted heading, or in a file `PRICED` does not name
 # at all. `fenced` puts the same table inside a ```markdown fence, where the gate must IGNORE it: a document
 # explaining a price table shows one, and reddening a required check on that is how a gate gets deleted.
+# `unterminated` opens that fence and never closes it, which must be REPORTED rather than allowed to
+# swallow the rest of the file in silence. `quoted` puts the fenced example inside a blockquote, which must
+# be ignored exactly as the unquoted one is -- the construct that got past `fence_step` in round 2.
 # `second_file` set to `absent` deletes the second priced file outright — a priced file that has moved must
 # be reported, not skipped.
 #
@@ -119,14 +122,16 @@ make_fixture() {
       printf '| [`beta.md`](../beta.md) | 2.0K | Open it yourself. |\n'
     } > "$dir/documentation/agents/README.md"
   fi
-  if [ "$stray_kind" = "priced" ] || [ "$stray_kind" = "fenced" ]; then
+  if [ "$stray_kind" != "none" ]; then
     {
       printf '# a document PRICED does not name\n\n'
-      if [ "$stray_kind" = "fenced" ]; then printf '```markdown\n'; fi
-      printf '| Document | ~tok | Read it when |\n'
-      printf '|---|---:|---|\n'
-      printf '| [`delta.md`](delta.md) | 99K | A price table in a file the gate never opens. |\n'
-      if [ "$stray_kind" = "fenced" ]; then printf '```\n'; fi
+      q=""
+      [ "$stray_kind" != "quoted" ] || q="> "
+      if [ "$stray_kind" != "priced" ]; then printf '%s```markdown\n' "$q"; fi
+      printf '%s| Document | ~tok | Read it when |\n' "$q"
+      printf '%s|---|---:|---|\n' "$q"
+      printf '%s| [`delta.md`](delta.md) | 99K | A price table in a file the gate never opens. |\n' "$q"
+      if [ "$stray_kind" != "unterminated" ]; then printf '%s```\n' "$q"; fi
     } > "$dir/documentation/stray.md"
   fi
   {
@@ -151,6 +156,18 @@ make_fixture() {
       printf '|---|---:|---|\n'
       printf '| [`delta.md`](delta.md) | 99K | An EXAMPLE of a price table, shown not declared. |\n'
       printf '```\n'
+    elif [ "$reference_kind" = "quoted" ]; then
+      printf '> Quoting the map, which is what a document explaining this column does:\n\n'
+      printf '> ```markdown\n'
+      printf '> | Document | ~tok | Read it when |\n'
+      printf '> |---|---:|---|\n'
+      printf '> | [`delta.md`](delta.md) | 99K | Quoted AND fenced, which must still be ignored. |\n'
+      printf '> ```\n'
+    elif [ "$reference_kind" = "unterminated" ]; then
+      printf '```markdown\n'
+      printf '| Document | ~tok | Read it when |\n'
+      printf '|---|---:|---|\n'
+      printf '| [`delta.md`](delta.md) | 99K | A fence nobody closed swallows every line below it. |\n'
     else
       printf '| Document | Notes |\n'
       printf '|---|---|\n'
@@ -345,7 +362,30 @@ expect_green "a fenced ~tok example under an unlisted heading" "$FIXTURES/fenced
 make_fixture "$FIXTURES/fenced-file" "1.0K" "$SOUND_GAMMA" "$SOUND_HEADING" "plain"   "$SOUND_CONTRACT" "$SOUND_CONTRACTS_HEADING" "fenced"
 expect_green "a fenced ~tok example in an unswept-for-pricing file" "$FIXTURES/fenced-file" "5 priced rows"
 
-# 18. The sound fixture. Five priced rows across three sections in two files, plus an ordinary table with no
+# 18. A FENCE LEFT OPEN AT END OF FILE -- the one fail-open case 17's fence tracking introduces. Every line
+#     below an unclosed ``` is skipped, so a price table under it is unseen. In a PRICED file that reddens as
+#     NO SECTION only when a priced heading happens to sit below the fence, and passes silently otherwise; in
+#     a SWEPT file it is silent always. Both are named instead. Every fence in the corpus was closed when
+#     this was added -- several of the openers indented inside a list item -- so it could not fire on
+#     correct input, and an unclosed fence is a rendering defect anyway.
+make_fixture "$FIXTURES/unterminated-section" "1.0K" "$SOUND_GAMMA" "$SOUND_HEADING" "unterminated"
+expect_red "a fence left open in a priced file" "$FIXTURES/unterminated-section" "UNTERMINATED FENCE"
+
+make_fixture "$FIXTURES/unterminated-file" "1.0K" "$SOUND_GAMMA" "$SOUND_HEADING" "plain"   "$SOUND_CONTRACT" "$SOUND_CONTRACTS_HEADING" "unterminated"
+expect_red "a fence left open in a swept file" "$FIXTURES/unterminated-file" "UNTERMINATED FENCE"
+
+# 19. THE SAME FENCED EXAMPLE, INSIDE A BLOCKQUOTE (PR #193 review round 2). `fence_step` was handed a line
+#     the trim had cleaned of indentation but not of `> `, so a quoted fence opened nothing while the rows
+#     inside it still carried `~tok` and two pipes -- and the diagnostic then told the author to put it in a
+#     fence, which is what they had done. Case 17 one construct out, and gh#123's rule met a third time: the
+#     stateful pass has to know the delimiters the later passes remove. Both code paths again.
+make_fixture "$FIXTURES/quoted-section" "1.0K" "$SOUND_GAMMA" "$SOUND_HEADING" "quoted"
+expect_green "a quoted, fenced ~tok example under an unlisted heading" "$FIXTURES/quoted-section" "5 priced rows"
+
+make_fixture "$FIXTURES/quoted-file" "1.0K" "$SOUND_GAMMA" "$SOUND_HEADING" "plain"   "$SOUND_CONTRACT" "$SOUND_CONTRACTS_HEADING" "quoted"
+expect_green "a quoted, fenced ~tok example in a swept file" "$FIXTURES/quoted-file" "5 priced rows"
+
+# 20. The sound fixture. Five priced rows across three sections in two files, plus an ordinary table with no
 #     price column under a third heading -- so this also asserts the gate leaves un-priced tables alone,
 #     which is what nearly every table in the corpus is.
 #
@@ -370,4 +410,4 @@ if [ "$cases" -eq 0 ]; then
   exit 1
 fi
 
-ok "ok  $cases self-test cases across two priced files — check-doc-sizes.sh rejects each known fault BY NAME, and accepts correct input: one at the tolerance boundary, one whose prose says \"no longer\", two showing a price table inside a fence, and one wholly sound."
+ok "ok  $cases self-test cases across two priced files — check-doc-sizes.sh rejects each known fault BY NAME, and accepts correct input: one at the tolerance boundary, one whose prose says \"no longer\", four showing a price table inside a fence -- two of them quoted -- and one wholly sound."

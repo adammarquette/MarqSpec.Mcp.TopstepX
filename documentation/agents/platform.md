@@ -360,10 +360,10 @@ rung short is also a question every future reader has to re-derive.
 [`check-doc-sizes.sh`](../../scripts/check-doc-sizes.sh), which re-measures every row of every `~tok` table
 it is pointed at (`wc -c` bytes ÷ 4, 25% tolerance) and fails a row that no longer describes its file — and
 [`check-doc-sizes-selftest.sh`](../../scripts/check-doc-sizes-selftest.sh), which requires that gate to
-reject sixteen known faults by name and to accept five correct inputs — one at the tolerance boundary, so
+reject eighteen known faults by name and to accept seven correct inputs — one at the tolerance boundary, so
 the tolerance cannot be quietly set to zero, one whose prose contains "no longer", so the size-claim
-vocabulary cannot creep back onto ordinary English, and two that print a price table inside a fence, so a
-document explaining the column is not accused of adding one. All three ride in the
+vocabulary cannot creep back onto ordinary English, and four that print a price table inside a fence — two
+of them inside a blockquote as well — so a document explaining the column is not accused of adding one. All three ride in the
 one job **because `docs` is already required on all three rungs**, so none of this needed a ruleset write and
 [the table above](#what-is-required-and-what-only-reports) does not change — the same argument as
 `commit-hygiene`'s merge-commit refusal below. Two new jobs would have meant two new required contexts added
@@ -387,9 +387,11 @@ than twice, and the gate learned to read a second file. Three consequences worth
   zero forks, and `**` skips dot-directories, so a developer's `.worktrees/` full of sibling checkouts is not
   read. `.github/` is named as a second root explicitly, because `**` would have skipped that too and
   `copilot-instructions.md` is the checklist [the reviewer contract](code-reviewer.md) routes every review
-  to. The two patterns reach all 42 tracked markdown files — `git ls-files '*.md' | wc -l` is how to check
-  that is still true, and the count rides on the gate's green line. Blind spot that remains, stated in the
-  script: markdown under any *other* dot-directory is not swept.
+  to. Between them the two patterns reach every tracked markdown file. **The count is deliberately written
+  down nowhere** — the gate prints it and nothing asserts it, because a number in prose that no run measures
+  is the drift this gate exists to stop, one layer up; check the reach with `git ls-files '*.md' | wc -l`
+  against that printed count. Blind spot that remains, stated in the script: markdown under any *other*
+  dot-directory is not swept.
 - **Neither rule reads fenced code, and that is not a leak** (PR #193 review). A document that *explains* a
   price table shows one; a gate matching `~tok` plus two pipes then blocks a merge on correct prose, on a
   context required on all three rungs, which is how a gate gets deleted by the first person it wrongly stops.
@@ -397,7 +399,13 @@ than twice, and the gate learned to read a second file. Three consequences worth
   nobody. The fence state is applied to every line rather than to the `~tok` test alone, because a `##` or a
   `| row |` inside a fence is not one either; four-space indented blocks are deliberately not tracked, which
   is gh#142's rabbit hole. This is not hypothetical: the same pull request added two `~tok` sentences to
-  *this file*, each one `|` short of reddening its own build.
+  *this file*, each one `|` short of reddening its own build. A fence left **open** at end of file is the one
+  fail-open the tracking introduces — everything below it is skipped — so both loops report it by name;
+  every fence in the corpus was closed when that was added, three of the openers indented inside a list
+  item, so it could not fire on correct input. **A `>` is stripped along with the indentation**, because
+  `fence_step` was reading a line the row reader had already promised to read past a blockquote marker —
+  gh#123's rule that the stateful pass must know the delimiters the later passes remove, met a third
+  time.
 - **A priced file that is not on disk stops the run** rather than being skipped. `check-doc-links.sh` says
   nothing about it — nothing links to a *table* — so moving the index without telling `PRICED` would
   otherwise stop pricing four contracts with every check still green.

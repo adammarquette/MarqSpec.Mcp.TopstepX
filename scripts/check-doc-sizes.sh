@@ -222,8 +222,13 @@ as_k() {
 # either, and a parser that believes half of a fence is the shape gh#123's stripper had.
 #
 # CommonMark: an opening fence is three or more backticks or tildes, optionally followed by an info string;
-# the closing fence is the same character, at least as long, and carries nothing else. Indented (four-space)
-# code blocks are NOT tracked — that is gh#142's rabbit hole, and every example in this corpus is fenced.
+# the closing fence is the same character, at least as long, and carries nothing else. Leading whitespace is
+# trimmed first, so a fence indented inside a list item is read, as several in this corpus are, and a
+# blockquote marker comes off with it. Indented (four-space) code blocks are NOT tracked — that is gh#142's rabbit hole, and every example in
+# this corpus is fenced.
+#
+# A fence left OPEN at end of file is the one fail-open this introduces, and it is reported by name at the
+# end of both loops rather than left to be discovered.
 FENCED=0
 FENCE_CHAR=""
 FENCE_LEN=0
@@ -246,6 +251,28 @@ fence_step() {
   elif [ "$ch" = "$FENCE_CHAR" ] && [ "${#run}" -ge "$FENCE_LEN" ] && [ "${#run}" -eq "${#t}" ]; then
     fence_reset
   fi
+}
+
+# ONE NORMALISATION, USED BY EVERY PASS BELOW: leading indentation off, then any blockquote markers, then
+# trailing space. `TRIMMED` is a global for the same reason `stated_tokens` assigns one — a command
+# substitution here would be a fork per line.
+#
+# THE BLOCKQUOTE STRIP IS THE POINT, NOT TIDINESS (PR #193 review round 2). The row reader has always
+# claimed to read "a row indented under a list or a blockquote the same as one flush against the margin",
+# and it did — but `fence_step` was handed that same line and cannot interpret a `>`, so `> ```markdown`
+# opened no fence while the rows inside it still matched `~tok` plus two pipes. A quoted example was
+# refused, and the diagnostic told its author to put it in a fence, which is what they had done. That is
+# gh#123's lesson verbatim: **the pass that carries state across lines has to know about the delimiters the
+# later passes remove.** Two halves of one parser disagreeing about one construct is the bug, so there is
+# now one function and both halves call it.
+TRIMMED=""
+normalize_line() {
+  local t="${1#"${1%%[![:space:]]*}"}"
+  while [ "${t:0:1}" = ">" ]; do
+    t="${t#>}"
+    t="${t#"${t%%[![:space:]]*}"}"
+  done
+  TRIMMED="${t%"${t##*[![:space:]]}"}"
 }
 
 # `PRICED` is pairs; walking it needs the files in order, once each. The membership test is a substring of a
@@ -314,20 +341,20 @@ for file in "${FILES[@]}"; do
   in_table=0
   fence_reset
   for line in "${lines[@]}"; do
-    # Trim once, up front: everything below decides on the trimmed line, so a row indented under a list or a
-    # blockquote is read the same as one flush against the margin.
-    trimmed="${line#"${line%%[![:space:]]*}"}"; trimmed="${trimmed%"${trimmed##*[![:space:]]}"}"
+    normalize_line "$line"; trimmed="$TRIMMED"
 
     # Fence first, and the delimiters themselves are skipped along with what they hold.
     was_fenced="$FENCED"
     fence_step "$trimmed"
     if [ "$FENCED" -eq 1 ] || [ "$was_fenced" -eq 1 ]; then continue; fi
 
-    if [[ "$line" == '## '* ]]; then
+    # Headings are matched on the normalised line too, so every pass reads the same text. Every heading in
+    # the corpus is flush-left, so this changes nothing today and removes a way for the passes to diverge.
+    if [[ "$trimmed" == '## '* ]]; then
       current=-1
       in_table=0
       for i in "${!headings[@]}"; do
-        if [ "$line" = "${headings[$i]}" ]; then
+        if [ "$trimmed" = "${headings[$i]}" ]; then
           current="$i"
           pair_seen[${heading_pair[$i]}]=1
           break
@@ -469,6 +496,18 @@ for file in "${FILES[@]}"; do
       failures=$(( failures + 1 ))
     fi
   done
+
+  # AN UNTERMINATED FENCE IS THE ONE FAIL-OPEN THE FENCE TRACKER INTRODUCES, so it is named rather than
+  # left implicit (PR #193 review round 2). Everything after an unclosed ``` is skipped: in this file that
+  # reddens as NO SECTION only if a priced heading happens to sit below it, and passes silently otherwise.
+  # Every fence in the corpus was closed when this was added, so it could not fire on correct input, and an
+  # unclosed fence is a rendering defect in its own right.
+  if [ "$FENCED" -eq 1 ]; then
+    die "  UNTERMINATED FENCE  $file opens a code fence that is never closed"
+    die "Every line below it was skipped, so this file has NOT been fully read and a price table under it"
+    die "would be unseen. Close the fence."
+    failures=$(( failures + 1 ))
+  fi
 done
 
 for i in "${!PRICED[@]}"; do
@@ -500,9 +539,10 @@ done
 # sessions; sweeping those would report a parallel session's half-finished table as this pull request's
 # fault. It also silently excluded `.github/`, whose five markdown files include
 # `copilot-instructions.md`, the checklist `documentation/agents/code-reviewer.md` routes every review to —
-# so that root is named explicitly (PR #193 review). The two patterns together
-# reach all 42 tracked markdown files; `git ls-files '*.md' | wc -l` is the way to check that this is still
-# true, and the count is printed on the green line.
+# so that root is named explicitly (PR #193 review). Between them the two patterns reach every tracked
+# markdown file. THE COUNT IS NOT WRITTEN DOWN ANYWHERE — it is printed on the green line and nothing else
+# asserts it, because a number stated in prose that no run measures is the defect this whole script is
+# about. To check the reach is still total: `git ls-files '*.md' | wc -l` against that printed count.
 #
 # The blind spot that remains, stated rather than papered over: markdown under any OTHER dot-directory is
 # not swept. Adding one means adding its root here.
@@ -524,7 +564,7 @@ for candidate in **/*.md .github/**/*.md; do
 
   fence_reset
   for line in "${candidate_lines[@]}"; do
-    trimmed="${line#"${line%%[![:space:]]*}"}"; trimmed="${trimmed%"${trimmed##*[![:space:]]}"}"
+    normalize_line "$line"; trimmed="$TRIMMED"
     was_fenced="$FENCED"
     fence_step "$trimmed"
     if [ "$FENCED" -eq 1 ] || [ "$was_fenced" -eq 1 ]; then continue; fi
@@ -541,6 +581,14 @@ for candidate in **/*.md .github/**/*.md; do
       break
     fi
   done
+
+  # The same fail-open, in a file this gate only sweeps. `break` above leaves FENCED wherever it was, so
+  # this is checked only when the loop ran to the end -- which is the only case where it means anything.
+  if [ "$FENCED" -eq 1 ]; then
+    die "  UNTERMINATED FENCE  $candidate opens a code fence that is never closed"
+    die "The sweep stopped reading there, so a price table below it would be unseen. Close the fence."
+    failures=$(( failures + 1 ))
+  fi
 done
 
 if [ "$swept" -eq 0 ]; then

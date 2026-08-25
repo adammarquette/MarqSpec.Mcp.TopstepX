@@ -14,10 +14,14 @@ the cheapest read in its table while being the second most expensive row in it (
 to hold, because `AGENT-MEMORY.md` is under standing orders to grow and no ordinary pull request looks at the
 row that prices it.
 
+**The 25% band is a floor, not the standard.** It stops this column reversing its own advice; ordinary
+drift passes it untouched. A row you moved by less than that is still yours to correct in the pull request
+that moved it, and **nothing will remind you** — two correct pull requests can leave a row wrong between
+them with `docs` green, which is gh#196.
+
 **One priced table is not below**: [`agents/README.md`](agents/README.md)'s, which is where the four role
 contracts carry their own numbers (gh#178). The same gate measures it, on the same terms. A `~tok` table
-under any other heading, or in any of the 42 tracked markdown files it sweeps, is refused rather than
-skipped — so a new price list joins that gate's list deliberately, or not at all. **Showing an example of
+under any other heading, or in any tracked markdown file it sweeps, is refused rather than skipped — so a new price list joins that gate's list deliberately, or not at all. **Showing an example of
 one is fine**: fenced code is skipped, so a document explaining the column can print a table without being
 accused of adding one.
 

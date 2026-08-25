@@ -50,10 +50,12 @@
 # which do resolve, and the citation would pass while naming a requirement that does not exist. Verified to
 # extract the same id set as `?` on this tree, so the stricter form costs nothing here.
 #
-# `R-#` IS CORRECT INPUT, NOT A CITATION — thirteen lines across ten files use it as the literal placeholder
-# for "the requirement id", AGENTS.md, CONTRIBUTING.md, README.md, documentation/README.md, the pull request
-# template and wiki/SCHEMA.md among them. `#` is not a digit, so the pattern above excludes it; a pattern
-# written any looser does not, and would redden six of this repository's most-read files.
+# `R-#` IS CORRECT INPUT, NOT A CITATION — thirteen lines across ten files used it as the literal placeholder
+# for "the requirement id" on `develop` at `8a2302d`: AGENTS.md, CONTRIBUTING.md, README.md,
+# documentation/README.md, the pull request template and wiki/SCHEMA.md among them. (Pinned to a commit
+# because this file and its self-test add more of them, so an unpinned count is wrong the moment it is
+# written — PR #195 review.) `#` is not a digit, so the pattern above excludes it; a pattern written any
+# looser does not, and would redden this repository's most-read files.
 #
 # BOTH ID CLASSES ARE COVERED, deliberately. `Q-#` is the PRD's open-question class — three today, cited from
 # two ADRs and three wiki pages — and it is the same symbol table with the same failure mode. Covering it
@@ -67,18 +69,33 @@
 #   `- **R-<n>.<m>**`   a requirement.
 #   `- **Q-<n>` …       an open question.
 #
-# Column 0 only: an indented `- **R-…**` is a citation inside some other bullet, not a definition, and
-# reading it as one would let a stray mention define an id. If that makes a real definition invisible the
-# gate goes red on every citation of it — the safe direction — and the failure carries a hint saying the PRD
-# mentions the id in a form this script does not read as a definition.
+# Column 0, and OUTSIDE any fenced block or HTML comment. An indented `- **R-…**` is a citation inside some
+# other bullet; a fenced one is an example of the PRD's own format; a commented-out one is a retired
+# requirement. None of the three is a definition, and reading any of them as one INVENTS a symbol — which is
+# this gate's only fail-open direction, since a citation of the invented id then passes. If the rule makes a
+# real definition invisible instead, the gate goes red on every citation of it, which is the safe direction,
+# and the failure carries a hint saying the PRD mentions the id in a form this script does not read as a
+# definition. The fence and comment halves were added by the PR #195 review, which broke the gate with a
+# four-line fenced example appended to the real PRD.
 #
 # THERE IS NO EXCLUSION LIST, and that is why this file spells no id that does not resolve. The gate reads
 # its own source and its own self-test like every other file in the corpus. An exclusion list is also how a
 # gate stops seeing the file that matters, and the two files most likely to acquire a stale id are these two.
 # The self-test assembles its dangling fixtures at run time from a prefix and a number for the same reason.
 #
-# BLIND SPOTS, stated rather than papered over:
-#   - Binary files are skipped (`grep -I`). A citation inside one is invisible; none of this corpus is.
+# BLIND SPOTS, stated rather than papered over. Every one of these is a citation the gate does NOT see, so
+# each is a way a dangling id could survive — they are listed because a green line that hides its own edges
+# is the thing this repository keeps having to un-learn:
+#   - **Case.** `R-` and `Q-` are matched case-sensitively. The documented form is upper case, there are
+#     zero lower-case citations in the tree, and `-i` would start matching a bare `r-2` in prose — an
+#     r-squared, a variant label. Widening a pattern until it reddens correct English is how a required
+#     gate gets deleted, so this stays narrow deliberately (PR #195 review measured the miss).
+#   - **Non-ASCII look-alikes.** A non-breaking hyphen, an en dash, a minus sign or a full-width R renders
+#     like a citation and is not one. Nothing here produces them, and matching them would mean deciding
+#     which of several code points *is* the id separator.
+#   - **A space after the hyphen** — `R- 4` is not the documented form and is not matched.
+#   - **Binary files are skipped** (`grep -I`). This corpus has none; a citation inside one is invisible.
+#   - **Nested repositories are not read** — they are a different repository. The count is printed.
 #   - The issue and pull request bodies are not files, so nothing here reads them.
 #   - Correctness of the quotation, as above.
 #
@@ -106,6 +123,10 @@ DEF_SECTION='^##[[:space:]]+(R-[0-9]+)([^0-9.]|$)'
 DEF_REQUIREMENT='^-[[:space:]]+\*\*(R-[0-9]+\.[0-9]+)\*\*'
 DEF_QUESTION='^-[[:space:]]+\*\*(Q-[0-9]+)([^0-9.]|$)'
 
+# A fenced block opens on three or more backticks or tildes and closes on the same character (CommonMark
+# allows up to three columns of indent, which is why the line is trimmed before this is applied).
+FENCE='^(`{3,}|~{3,})'
+
 explain() {
   cat >&2 <<'EXPLAIN'
 
@@ -122,7 +143,11 @@ Three ways to clear one, and the choice is per line (gh#172, gh#182):
   3. DROP THE CITATION and let the comment stand on its own reasoning. A comment that explains itself is
      worth more than one that defers to a requirement nobody can find.
 
-Do not add the id to an exclusion list. There is no exclusion list.
+And one that is not a way to clear one, because it comes up: if you need to WRITE ABOUT an id that does not
+resolve here — a sibling repository's, or one this repository has already cleared — describe it rather than
+spelling it ("the id .gitignore used to carry"). There is no exclusion list and there is deliberately no way
+to add one, so a tracked file that spells such an id turns this gate red. That is the price of a gate with no
+blind spot in it, and it is the price this script and its self-test both pay in their own headers.
 EXPLAIN
 }
 
@@ -152,8 +177,75 @@ declare -A DEFINED=()
 sections=0
 requirements=0
 questions=0
+inert=0
+
+# A DEFINITION INSIDE A FENCED BLOCK OR AN HTML COMMENT IS NOT A DEFINITION, and this is the one place in
+# this script where a mistake fails OPEN (PR #195 review). Every other misreading here makes a real id look
+# undefined, which reddens its citations loudly; misreading an EXAMPLE as a definition instead invents a
+# symbol, and a citation of it then passes. Demonstrated on the real tree before this existed: a markdown
+# fence appended to the PRD showing what a requirement looks like, plus a citation of the id inside it,
+# produced `ok … every one resolves` and exit 0.
+#
+# Neither construct is in documentation/prd.md today (`grep -nE '^\s*```|<!--' documentation/prd.md` is
+# empty). Both are one ordinary edit away: a fenced example of the PRD's own format, or a requirement
+# retired by commenting it out rather than deleting it.
+#
+# THE FENCE PASS RUNS FIRST AND THE COMMENT PASS ONLY OUTSIDE FENCES, so a `<!--` shown inside a code block
+# does not open a comment. That ordering is gh#123's lesson: the pass that carries state across lines has to
+# know about the delimiters the other passes care about, because its mistakes are not local.
+#
+# INLINE CODE SPANS ARE **NOT** STEPPED OVER, and the direction is the whole reason. gh#123 stripped spans
+# before hunting a citation, where over-stripping merely loses a citation; here, failing to notice a `<!--`
+# means a commented-out definition COUNTS — fail-open, the one outcome this gate exists to prevent. So a
+# `<!--` written as prose about the marker, even inside backticks, opens a comment and hides every
+# definition after it. That fails CLOSED and it is loud rather than confusing: an unterminated comment is
+# named below by its own error, and a comment that closes takes its definitions with it, which reddens their
+# citations. gh#142's rule, applied rather than inherited — ask which direction over-detection fails in, for
+# this specific construct.
+in_fence=0
+fence_marker=""
+in_comment=0
 
 for line in "${prd_lines[@]}"; do
+  trimmed="${line#"${line%%[![:space:]]*}"}"
+
+  if [ "$in_fence" -eq 1 ]; then
+    inert=$(( inert + 1 ))
+    if [[ "$trimmed" == "$fence_marker"* ]] && [[ "${trimmed//[\`~]/}" == "" ]]; then
+      in_fence=0
+      fence_marker=""
+    fi
+    continue
+  fi
+  if [[ "$trimmed" =~ $FENCE ]]; then
+    in_fence=1
+    fence_marker="${BASH_REMATCH[1]}"
+    inert=$(( inert + 1 ))
+    continue
+  fi
+
+  # Whether this line's COLUMN 0 sits inside a comment is all that matters, because a definition must start
+  # there. The state is then advanced by whichever delimiter comes last on the line.
+  starts_in_comment="$in_comment"
+  rest="$line"
+  while [ -n "$rest" ]; do
+    if [ "$in_comment" -eq 0 ]; then
+      case "$rest" in
+        *'<!--'*) in_comment=1; rest="${rest#*<!--}" ;;
+        *) rest="" ;;
+      esac
+    else
+      case "$rest" in
+        *'-->'*) in_comment=0; rest="${rest#*-->}" ;;
+        *) rest="" ;;
+      esac
+    fi
+  done
+  if [ "$starts_in_comment" -eq 1 ]; then
+    inert=$(( inert + 1 ))
+    continue
+  fi
+
   if [[ "$line" =~ $DEF_SECTION ]]; then
     DEFINED["${BASH_REMATCH[1]}"]=1
     sections=$(( sections + 1 ))
@@ -169,6 +261,17 @@ for line in "${prd_lines[@]}"; do
     questions=$(( questions + 1 ))
   fi
 done
+
+# An unterminated fence is legal CommonMark — it closes at the end of the document — so it is counted, not
+# refused. An unterminated COMMENT is not: it is malformed, and everything after it has just been skipped,
+# so the symbol table this gate is about to resolve against is short by an unknown amount.
+if [ "$in_comment" -eq 1 ]; then
+  die "  UNTERMINATED COMMENT  $PRD opens an HTML comment that nothing closes"
+  die "Every line after it has been skipped, so the symbol table is incomplete by an unknown amount and no"
+  die "verdict below would mean anything. Close the comment. Note that a '<!--' written as prose — inside"
+  die "backticks included — opens one here on purpose: see the block comment above this check."
+  exit 1
+fi
 
 # BOTH REQUIREMENT FORMS MUST HAVE PARSED. A renamed heading level or a reformatted bullet list would
 # otherwise leave this gate resolving citations against a half-empty symbol table — reporting every id of the
@@ -197,9 +300,15 @@ fi
 # is written but not yet committed is checked too; without it a local run scans only tracked files and
 # reports clean on exactly the new text you are about to commit. The same list is both what is searched and
 # what the green line below claims to have read, so that number is not an estimate.
+#
+# `core.quotepath=false` because the DEFAULT IS true, and under it git C-quotes any path with a byte above
+# 0x7f — `"documentation/caf\303\251.md"`. grep is then handed a filename that does not exist, exits 2, and
+# this gate reports UNREADABLE about a file that is sitting right there (PR #195 review). A path git quotes
+# for the OTHER reasons — an embedded quote, backslash or control character — still arrives quoted, and is
+# refused below by name rather than mis-read.
 file_list=""
 ls_status=0
-file_list="$(git ls-files --cached --others --exclude-standard)" || ls_status=$?
+file_list="$(git -c core.quotepath=false ls-files --cached --others --exclude-standard)" || ls_status=$?
 if [ "$ls_status" -ne 0 ]; then
   die "  CANNOT LIST  git ls-files exited $ls_status under $REPO_ROOT"
   die "No file has been read, so this cannot report the tree's citations clean."
@@ -211,8 +320,44 @@ if [ -z "$file_list" ]; then
   exit 1
 fi
 
+# A TRAILING SLASH MEANS A NESTED REPOSITORY, NOT A FILE (PR #195 review). `git ls-files --others` will not
+# descend into another repository's working tree, so it names the directory instead — and a directory handed
+# to grep makes it exit 2, which this gate correctly refuses to treat as "no citations" and therefore
+# reported as UNREADABLE. That fired on the maintainer's own checkout, where fourteen agent worktrees sit
+# under a path .gitignore does not cover: a required gate red on a correct tree, which is how a gate gets
+# deleted by the first person it wrongly stops.
+#
+# Excluding them is not a fudge. A nested repository is a DIFFERENT repository; its files are not this
+# tree's, `git ls-files` is saying exactly that, and nothing in it can be a citation this project owns. It
+# is counted and printed rather than dropped in silence, so the pass still says what it did not read.
+#
+# Note what is NOT filtered: a path that is absent from the working tree but present in the index — a file
+# staged and then deleted. That one MUST still reach grep and produce UNREADABLE, because it is a real hole
+# in the corpus rather than a different repository. A `[ -f ]` test here would swallow it.
 files=()
-mapfile -t files <<< "$file_list"
+nested=0
+while IFS= read -r entry; do
+  [ -n "$entry" ] || continue
+  case "$entry" in
+    */) nested=$(( nested + 1 )); continue ;;
+    '"'*)
+      die "  UNQUOTABLE PATH  git ls-files returned $entry"
+      die "That path contains a quote, a backslash or a control character, so git escaped it and the name"
+      die "above is not the name on disk. Reading it as one would search the wrong file and report the"
+      die "result as this repository's; this gate refuses instead."
+      exit 1
+      ;;
+  esac
+  files+=("$entry")
+done <<FILELIST
+$file_list
+FILELIST
+
+if [ "${#files[@]}" -eq 0 ]; then
+  die "  NOTHING TO CHECK  every entry git ls-files returned was a nested repository ($nested of them)"
+  die "This tree is not empty, so this is a broken invocation rather than a clean repository."
+  exit 1
+fi
 
 # ---------------------------------------------------------------------------
 # 3. The citation side.
@@ -277,8 +422,10 @@ done
 
 for id in "${!DANGLING_IN_PRD[@]}"; do
   die "  HINT  $PRD mentions $id but not in a form this gate reads as a definition."
-  die "        A definition sits at column 0 as '## $id — …' or '- **$id** …'. An indented or reworded one"
-  die "        is read as a citation, which is what has just been reported dangling."
+  die "        A definition sits at COLUMN 0 and OUTSIDE any fenced block or HTML comment — '## $id — …'"
+  die "        for a section, '- **$id** …' for a requirement or an open question. One that is indented,"
+  die "        fenced or commented out is an example or a retired line, not a definition, so it is read as"
+  die "        a citation — which is what has just been reported dangling."
 done
 
 if [ "$citations" -eq 0 ]; then
@@ -297,4 +444,4 @@ fi
 # The pass carries its own evidence, the way check-no-order-path.sh prints the number of files it read: a
 # green line naming zero of anything is the shape every dead gate in this repository has had. Each number
 # below is independently re-derivable from one command, which is the point of printing them.
-ok "ok  $citations citations of ${#SEEN_ID[@]} distinct ids across ${#files[@]} files — every one resolves to a $PRD definition ($sections sections, $requirements requirements, $questions open questions). This proves each id EXISTS, not that the citation quotes it correctly."
+ok "ok  $citations citations of ${#SEEN_ID[@]} distinct ids across ${#files[@]} files — every one resolves to a $PRD definition ($sections sections, $requirements requirements, $questions open questions; $inert of its lines inert inside fences or comments). Not read: $nested nested repositories. This proves each id EXISTS, not that the citation quotes it correctly."

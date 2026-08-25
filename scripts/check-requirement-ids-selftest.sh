@@ -14,6 +14,12 @@
 #
 # So the REAL gate is run against fixtures whose faults are known, on every CI run, and is required to reject
 # each one — AND against the awkward CORRECT shapes this repository actually contains, which it must accept.
+#
+# ONE OF THE TEN CASES IS HERE BECAUSE THE MUTATION BATTERY FOUND IT MISSING. Swallowing grep's exit 2 was
+# the one change to the gate that this file did not notice, on the first pass — which is the same hole
+# gh#43, gh#98 and gh#126 each shipped. Mutate the gate before believing its self-test, every time: a
+# self-test is a text-matching gate too, and the ones that pass on a broken subject are the ones nobody
+# ever ran against one.
 # Rejections alone would all be satisfied by `exit 1`, i.e. by a gate that says no to everything, which is
 # exactly as useless as one that says yes to everything and rather harder to notice.
 #
@@ -77,7 +83,7 @@ OVER_DEEP="${R}1.2.3"            # first two parts DO resolve; the whole id must
 #   $1 dir          fixture root
 #   $2 prd_kind     sound | absent | flat-headings | no-bullets | shadowed
 #   $3 notes        the body of documentation/notes.md — the file whose citations are under test
-#   $4 extra_kind   none | rich | ignore-prd
+#   $4 extra_kind   none | rich | ignore-prd | unreadable
 #
 # Every case is a one-perturbation change from the sound fixture. A fixture that differs in more than the
 # fault under test proves nothing about which fault the gate detected.
@@ -133,6 +139,20 @@ make_fixture() {
       # nothing, and without the NO CITATIONS guard the gate would report a clean tree having resolved zero
       # symbols — the exact vacuous green every dead guard in this repository printed.
       printf 'documentation/prd.md\n' > "$dir/.gitignore"
+      ;;
+    unreadable)
+      # A file the corpus LISTS and grep cannot OPEN: staged in the index, then removed from the working
+      # tree, so `git ls-files --cached` still names it. That makes grep exit 2 while other files match, and
+      # 2 is the code this whole family of gates keeps flattening into "no match" (gh#43, gh#98, gh#126).
+      #
+      # Staged-then-deleted rather than `chmod 000` or a broken symlink on purpose: the runner's job runs as
+      # a user root-like enough to read a mode-000 file, which would make the fixture INERT in CI while
+      # passing locally, and Git Bash does not make real symlinks without a non-default MSYS setting.
+      printf 'A note citing R-1.1.\n' > "$dir/documentation/gone.md"
+      # -c core.autocrlf=false so a Windows checkout does not print a line-ending warning into the
+      # middle of this self-test's output. The fixture has no .gitattributes to pin it.
+      git -C "$dir" -c core.autocrlf=false add documentation/gone.md
+      rm "$dir/documentation/gone.md"
       ;;
   esac
 }
@@ -197,6 +217,11 @@ expect_green() {
 # contributed nothing rather than merely observed not to have broken anything.
 BASELINE='7 citations of 6 distinct ids'
 
+# Correct citations of all four shapes: a bare section id, a requirement, an open question, and (in the
+# fixture PRD itself) a cross-reference. Used by the sound case and by the unreadable one, which has to
+# have real citations resolving beside the file grep could not open.
+SOUND_NOTES='Bare section id: `R-1`. A requirement: `R-1.1`. Another: `R-2.1`. An open question: `Q-1`.'
+
 info "check-requirement-ids.sh self-test — the gate is run against fixtures with known faults."
 info ""
 
@@ -252,11 +277,19 @@ expect_red "requirement bullets the gate can no longer read" "$FIXTURES/no-bulle
 make_fixture "$FIXTURES/no-citations" sound "This note cites nothing at all." ignore-prd
 expect_red "a corpus in which nothing was found" "$FIXTURES/no-citations" "NO CITATIONS"
 
+# 10. "I COULD NOT LOOK", which must never read as "I looked and found nothing". grep exits 2 when it cannot
+#     open a file it was given, and every other citation in the fixture still matches — so the run has a full
+#     set of resolved symbols sitting beside a file it never read. This case was ADDED because the mutation
+#     battery found it missing: swallowing the 2 was the one change to the gate that its self-test did not
+#     notice, which is exactly the hole gh#43, gh#98 and gh#126 each shipped.
+make_fixture "$FIXTURES/unreadable" sound "$SOUND_NOTES" unreadable
+expect_red "a file the corpus lists and grep cannot open" "$FIXTURES/unreadable" "UNREADABLE"
+
 # ---------------------------------------------------------------------------
 # GREEN — correct input this repository really contains, which the gate must not redden.
 # ---------------------------------------------------------------------------
 
-# 10. THE ADR NEAR-MISS. An ADR number contains a citation-shaped substring, so a pattern without the left
+# 11. THE ADR NEAR-MISS. An ADR number contains a citation-shaped substring, so a pattern without the left
 #     word boundary extracts one phantom id per ADR — twelve of them on the real tree today, every one from
 #     a correct reference, and every one dangling. The count asserted is the fixture PRD's own, unchanged:
 #     these twelve lines must contribute exactly zero citations.
@@ -267,7 +300,7 @@ done
 make_fixture "$FIXTURES/adr-near-miss" sound "$adr_notes" none
 expect_green "twelve ADR references and no citations" "$FIXTURES/adr-near-miss" "$BASELINE"
 
-# 11. THE LITERAL PLACEHOLDER, on thirteen lines across ten of this repository's most-read files — AGENTS.md,
+# 12. THE LITERAL PLACEHOLDER, on thirteen lines across ten of this repository's most-read files — AGENTS.md,
 #     CONTRIBUTING.md, README.md, documentation/README.md, the pull request template, wiki/SCHEMA.md. A
 #     pattern one character looser reddens all of them, which is a required check on all three rungs
 #     blocking every pull request over text that is exactly right.
@@ -277,11 +310,10 @@ placeholder_notes='Docs in lockstep — the affected section of the PRD (`R-#`),
 make_fixture "$FIXTURES/placeholder" sound "$placeholder_notes" none
 expect_green "the literal placeholder, which is not a citation" "$FIXTURES/placeholder" "$BASELINE"
 
-# 12. THE SOUND CORPUS: a bare section id, a requirement, an open question, a cross-reference inside the PRD
+# 13. THE SOUND CORPUS: a bare section id, a requirement, an open question, a cross-reference inside the PRD
 #     itself, a citation in a NON-MARKDOWN file, and a binary file that must be stepped over rather than
 #     erred on. Four notes citations plus one in the yaml, on top of the baseline's seven.
-sound_notes='Bare section id: `R-1`. A requirement: `R-1.1`. Another: `R-2.1`. An open question: `Q-1`.'
-make_fixture "$FIXTURES/sound" sound "$sound_notes" rich
+make_fixture "$FIXTURES/sound" sound "$SOUND_NOTES" rich
 expect_green "a sound corpus, yaml and binary included" "$FIXTURES/sound" "12 citations of 6 distinct ids"
 
 info ""

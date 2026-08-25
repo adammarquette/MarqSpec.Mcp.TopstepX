@@ -490,7 +490,7 @@ this count together whenever a step is added**; the count is the only thing tell
 - [`check-requirement-ids.sh`](../../scripts/check-requirement-ids.sh), which resolves **every `R-#` and
   `Q-#` cited anywhere in the tree** against [the PRD](../prd.md)'s own definitions and fails naming file,
   line and symbol — and [`check-requirement-ids-selftest.sh`](../../scripts/check-requirement-ids-selftest.sh),
-  which requires that gate to reject nine known faults **by name and by symbol** and to accept the three
+  which requires that gate to reject ten known faults **by name and by symbol** and to accept the three
   awkward correct shapes this repository actually contains. `check-doc-links.sh` proves a relative *link*
   resolves; nothing proved an *id* did, and gh#172 found two citations naming another repository's PRD
   entirely. **The left word boundary is the whole trick**: an ADR number contains a citation-shaped

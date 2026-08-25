@@ -21,8 +21,9 @@ ADR, `AGENTS.md`, or the code, **put it there instead**.
 - **[2026-08-25] A rebase re-prices your rows AND invalidates your sentences — only the first half has a gate
   (gh#187, gh#196).** `scripts/check-doc-sizes.sh` re-measures every routed document on every pull request, so
   a `~tok` that drifted because *somebody else's* merge grew a file is caught — provided the drift exceeds
-  25%. **Nothing whatsoever watches the prose.** Both halves fired in one session, twenty minutes apart, out
-  of the same merge: #189 grew `CONTRIBUTING.md`, leaving its row at 3.8K against a measured 4.1K — 7% out,
+  25%. **Nothing whatsoever watches the prose.** Both halves fired at the same instant, out of one merge —
+  they were noticed twenty minutes apart, which is the whole problem: #189 grew `CONTRIBUTING.md`, leaving its
+  row at 3.8K against a measured 4.1K — about 7% out,
   inside the band, green and invisible — and the same merge's `Closes #171` **closed gh#171**, falsifying
   *"these seven items are all open"* in the very document being rewritten, **five minutes before that
   sentence was committed**. Two independent reviewers found the sentence; no gate could have.

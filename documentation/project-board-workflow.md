@@ -20,7 +20,7 @@ Projects UI never shows them, and `item-edit` accepts nothing else.
 | **`Todo`** | `f75ad846` | Filed and workable — anyone may pick it up |
 | **`In Progress`** | `47fc9ee4` | Claimed and being worked |
 | **`In Review`** | `175e6c63` | PR open and linked. The author owns the card while it sits here |
-| **`Ready to Merge`** | `d7d0dbdd` | Every reviewer approved, checks green. **The reviewer sets this — not the author** |
+| **`Ready to Merge`** | `d7d0dbdd` | Every reviewer approved, checks green. Who moves it: [the lifecycle](#the-lifecycle) |
 | **`Done`** | `98236657` | Closed, *however* it closed — [case 2](#2-an-issue-closed-with-no-pr) |
 
 ```bash
@@ -62,10 +62,11 @@ and a changes-requested sends it back to `Todo` — but nothing moves it, so an 
 `In Review` until a person acts. That is the drift gh#107 measured on #4, arriving through the two columns no
 automation covers.
 
-**A kicked-back card re-walks the path it already has** — `Todo`, then `In Progress` while you fix, then
-`In Review` when you push. There is no eighth transition for the return, and no automation for it either: the
-card sits in `Todo` claiming the work is unstarted for exactly as long as it takes you to move it back. **Move
-it when you push the fix, not when the next review answers.**
+**A kicked-back card re-walks the path it already has** — `Todo` (put there by the coordinator, following the
+verdict), then `In Progress` while you fix, then `In Review` when you push. There is no eighth transition for
+the return, and no automation for it either: the card sits in `Todo` claiming the work is unstarted for
+exactly as long as it takes you to move it back. **Move it when you push the fix, not when the next review
+answers.**
 
 **Why the reviewer's two rows are somebody else's.** A card write needs the Projects **GraphQL** API, and that
 quota was exhausted for hours on the day this was written — the reviewer who raised the point could not have
@@ -207,7 +208,7 @@ issue's state before you believe it. The specific drift gh#107 measured on #4 �
 working columns — cannot accumulate now, because closing moves the card. **One new one took its place:** a
 reopened issue sits in `Done` until somebody moves it, and nothing will ever move it back. `PullRequest` items
 are *not* a second: they sit in `Todo` while the pull request is open and the close automation collects them
-on merge ([below](#cards-and-links)) — noise in that column, not accumulating drift. Automation moved the
+on close ([below](#cards-and-links)) — noise in that column, not accumulating drift. Automation moved the
 drift; it did not end it.
 
 **If the workflows change, re-measure this way and rewrite this section from what the board does.** The
@@ -219,17 +220,19 @@ them had ever run.
 [Project #4](https://github.com/users/adammarquette/projects/4) — the old *TopstepX MCP Server* board — was
 **closed** on 2026-08-25, retitled *"TopstepX MCP Server (RETIRED - use project #5)"*, and given a README
 pointing here. Its **73 items were kept**: closing deletes nothing, and that record is why it was closed
-rather than removed. **It is not purely history — #4 still holds cards for live issues**, so both boards carry
-a copy: seven such cards, six in `Backlog` and gh#163 in `Current ToDo` (gh#155, gh#163, gh#171, gh#176,
-gh#178, gh#182, gh#186). Reconciling the duplicates is out of scope here (gh#187).
+rather than removed. **It is not purely history — #4 holds seven cards for issues that were live when it was
+retired** (gh#155, gh#163, gh#171, gh#176, gh#178, gh#182, gh#186), six in `Backlog` and gh#163 in
+`Current ToDo`, so both boards carry a copy. Reconciling the duplicates is out of scope here (gh#187).
 
-**Six of those seven issues are open, not seven** — gh#171 closed at `20:02:23Z`, and **its card on #4 did not
-move**, while the bot moved its #5 card one second later. That is #4's inertness demonstrated on real work
-rather than asserted, and it is why the rule below survives the arithmetic: **a column on #4 claims nothing
-about anything.** Read the issue, or #5.
+**How many of those seven are still open is deliberately not stated here, and that is the finding.** The
+sentence that used to state it went stale three times while this pull request was open — seven, then six when
+gh#171 merged, then five when gh#176 did — each time inside the hour, each time caught by a reviewer rather
+than by re-reading. **A document cannot hold a live count.** What it can hold is the invariant, which no merge
+changes: **a column on #4 claims nothing about anything.** Read the issue, or #5.
 
-*That list decays and nothing recomputes it* — gh#171 closed **five minutes before** the commit that first
-wrote this paragraph, in a file that same commit was rewriting. Treat it as a snapshot, not a register.
+**#4's inertness, demonstrated rather than asserted:** when gh#171 closed at `20:02:23Z` the bot moved its
+**#5** card one second later and its **#4** card did not move at all. That is the same measurement as gh#107's,
+taken on real work, and it is why a column there cannot be believed even when it looks current.
 
 Its columns were *Backlog / Planning / Current ToDo / In Progress / Review / Done*, none of which exist on #5
 — so one of those names in a document is itself the signal that the document is stale.
@@ -254,13 +257,11 @@ gh#187 said three, naming gh#182 as well; gh#182's card on #4 was created at `17
 and carrying it as harm would be this file making exactly the kind of unchecked claim it was rewritten to
 stop.
 
-**How those three were read, and what is inference.** All the timestamps come from each issue's own
-`added_to_project_v2` events, not from either board — but **that payload carries no project identifier**, so
-which board an add landed on has to be argued. gh#182's leg is forced and needs no argument: its `17:19:24Z`
-add predates #5's existence, so it can only have been #4. gh#178 and gh#186 are **inferred**: each already had
-its #5 card by the time of the later add — gh#178 carded by hand at `18:31:22Z`, gh#186 auto-added at
-`18:34:35Z` — so the `18:41:30Z` and `18:41:49Z` adds are #4's, and both issues do sit on #4 today. Sound, but
-inference; read it as such, and settle it from #4's item list if it ever matters.
+**All three are read from #4's own item list**, whose `ProjectV2Item.createdAt` names the board by
+construction: gh#182 `17:19:24Z`, gh#178 `18:41:30Z`, gh#186 `18:41:49Z`. They match each issue's
+`added_to_project_v2` timeline exactly — which is worth knowing, because that timeline payload carries **no
+project identifier**, so read alone it could not have said which board an add landed on. Ask the board, not
+the issue, when the question is *which board*.
 
 **The timeline settles it more cleanly than the clock does.** gh#182, filed `17:17:25Z`, received **no bot add
 at all** — three project adds, every one by a person. gh#186, filed `18:34:33Z`, was auto-added by the bot in
@@ -277,12 +278,15 @@ issue.
 measured that no pull request had ever been an item on #4. **They are not lifecycle cards — do not move one,
 and do not read a `PullRequest` row's column as a claim about the work.** The issue beside it carries that.
 
-**A `PullRequest` item does not sit in `Todo` for ever — the close automation reaches it too.** PR #189 was
-auto-added at `19:28:09Z` and set to `Todo` a second later; it merged at `20:02:22Z`, and
-`github-project-automation[bot]` changed its status at **`20:02:24Z`**, two seconds after — and that item now
-reads **`Done`**, so this is the value read back, not an arrow inferred from a timeline. The same automation
-that moves a closed issue moves a merged pull request. It was an open question here until #189 merged and
-answered it for free.
+**A `PullRequest` item does not sit in `Todo` for ever — the close automation reaches it too, and it fires on
+CLOSE, not on merge.** PR #189 was auto-added at `19:28:09Z` and set to `Todo` a second later; it merged at
+`20:02:22Z`, `github-project-automation[bot]` changed its status at **`20:02:24Z`**, and that item reads
+**`Done`** — the value read back, not an arrow inferred from a timeline.
+
+**Merging is not the trigger; closing is.** #197, #198, #199, #200 and #201 were every one of them closed
+**without merging**, and every one reads `Done`. So a throwaway probe PR lands in `Done` exactly like shipped
+work — the same conflation [case 2](#2-an-issue-closed-with-no-pr) describes for issues, and the reason not to
+read that column as a claim that anything was delivered.
 
 Two relationships hang off an issue, using different mechanisms:
 

@@ -118,13 +118,16 @@ ADR, `AGENTS.md`, or the code, **put it there instead**.
 ## Notes & communications
 
 - **[2026-08-24] When a test's stimulus moves, grep for what points AT the test, not only for what the test
-  points at (gh#133 review).** `StoreFaultBoundaryTests` has been re-homed three times — bar key (gh#103),
-  coverage key (gh#122), indicator key (gh#133) — and **every one of the three left a stale inbound
-  cross-reference behind**, because each author corrected the moved test and the documents it cites. The one
-  missed this time was `StoreFaultReportingTests`, whose remarks said its fabricated `23505` "is pinned
-  against a real one in `StoreFaultBoundaryTests`" — no longer true, and the two files then contradicted each
-  other with nothing failing. **Two greps, not one:** the symbol you changed, *and* the name of the thing you
-  changed it in.
+  points at — and the move that breaks an inbound reference is the one that changes the FAULT, not the key
+  (gh#133 review).** `StoreFaultBoundaryTests` has been re-homed three times: bar key (gh#103), coverage key
+  (gh#122), indicator key (gh#133). The first two moved which row collided and left every inbound reference
+  true, because the fault was still a real `23505`. The third had to change the fault itself — no call site
+  can reach a duplicate key any more — and that is what silently falsified
+  `StoreFaultReportingTests`, whose remarks had said since gh#89 that its fabricated `23505` "is pinned
+  against a real one in `StoreFaultBoundaryTests`". Two files then contradicted each other with nothing
+  failing. Checked, not assumed: `git log -S` shows that sentence untouched from gh#89 until gh#133.
+  **So: two greps, not one** — the symbol you changed, *and* the name of the thing you changed it in — and
+  reach for the second one hardest when what changed is the KIND of thing the test observes.
 
 - **[2026-08-24] A `WHERE` on `ON CONFLICT … DO UPDATE` cannot suppress the `40001`, and a skip-unchanged
   `WHERE` is only worth adding where the C# comparison is *not* already at the column's scale (gh#133).** Two
@@ -170,6 +173,30 @@ ADR, `AGENTS.md`, or the code, **put it there instead**.
     `docker compose -f docker-compose.yml -f docker-compose.dev.yml run --rm --no-deps sdk dotnet test
     MarqSpec.Mcp.TopstepX.Tests`. (Expect `MINVER1001` warnings — the container does not see the git
     directory. Harmless.)
+  - **[2026-08-24] …but that compose form fails on a busy machine, and the correction is a plain `docker
+    run`.** `compose … run` creates a network, so with enough stacks up it dies on *"all predefined address
+    pools have been fully subnetted"* — the documented remedy for the Application Control block leading
+    straight into a second failure. A plain `docker run` creates no network and works. Found by gh#133's
+    reviewer, who hit `0x800711C7` on the host in **both Debug and Release** and had to containerise to get a
+    count at all; gh#133 then hit the block on the integration tier from the host twice in a row.
+    **For the UNIT tier, a bare `docker run` is enough.** For the **integration** tier, carry over the three
+    things `docker-compose.dev.yml` sets, or Testcontainers starts its containers and then cannot reach them —
+    the run hangs rather than failing, which is worse:
+    ```
+    MSYS_NO_PATHCONV=1 docker run --rm -v "$(pwd -W):/repo" -v "//var/run/docker.sock:/var/run/docker.sock" \
+      -w /repo -e TESTCONTAINERS_HOST_OVERRIDE=host.docker.internal \
+      --add-host host.docker.internal:host-gateway \
+      mcr.microsoft.com/dotnet/sdk:10.0 dotnet test <project>
+    ```
+    Containers started through that socket are **siblings** of the SDK container, not children, so
+    `localhost` from inside means the SDK container itself. Read the compose service before hand-rolling a
+    `docker run` from it — that is how these were missed the first time.
+  - **[2026-08-24] Under Git Bash, prefix `MSYS_NO_PATHCONV=1` — the failure is SILENT and has three faces.**
+    MSYS rewrites anything that looks like a POSIX path, and the result is a wrong answer rather than an
+    error: a `-v C:/repo:/src` mount silently becomes `C:/Program Files/Git/repo`, so the container runs
+    against the wrong tree; and `git show "origin/develop:path"` returns **empty**, because the `rev:path`
+    colon is rewritten to `origin\develop;.github\…`. An empty `git show` reads as "the file is not there"
+    and has produced a wrong conclusion twice in one session. `MSYS_NO_PATHCONV=1` fixes all of them.
 
 - **[2026-08-23] A value computed at full `decimal` precision never equals the same value read back from a
   `numeric(18,8)` column.** Round to `TopstepXDbContext.PriceScale` before comparing, or the comparison

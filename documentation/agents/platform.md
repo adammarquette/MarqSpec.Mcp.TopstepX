@@ -57,6 +57,14 @@ The root contract's five apply here unchanged. Four land specifically on the pip
     `grep -v` exiting 1 arrives as **1**, the code being treated as healthy. Split the read from the filter.
 
   Split, assign, check the status, then use it. `gh_read()` in `bootstrap.sh` is the shape.
+- **A capture is not a faithful copy, so checking its status is not enough** (gh#164, from review). `V="$(cmd)"`
+  strips **trailing newlines**, so a line-oriented payload whose *last* line may be empty comes back a line
+  short — and `git log --format=%s` prints newest-first, which puts the **oldest** commit in the range on
+  exactly that line. `commit-hygiene`'s first fix checked the status correctly and still lost an empty subject
+  that way, passing on the one subject shape it exists to reject. When the value will be read back as lines,
+  redirect to a file and `mapfile <"$file"`: the copy is byte for byte, the redirection still belongs to the
+  command whose status you check, and an unopenable file fails the builtin rather than running the loop zero
+  times. **Ask what the shell does to the bytes, not only to the status.**
 - **Tell "no match" from "I could not look".** For `grep`, exit 1 is the healthy answer and 2-or-above never
   is; `|| true` and `2>/dev/null` over that distinction are how this repo's gates keep going quiet — gh#43
   (green on an unpaced loop), gh#98 (`|| true` resetting `PIPESTATUS` to `(0)`), gh#114/#124 (a swallowed API
@@ -426,22 +434,33 @@ ids are the only trail back:
 
 | Head | Base | `commit-hygiene` | What the step printed |
 |---|---|---|---|
-| **unfixed**, `fetch-depth: 1` — [32854350754](https://github.com/adammarquette/MarqSpec.Mcp.TopstepX/actions/runs/32854350754) | `staging` | **success** | `fatal: Invalid revision range …` then `No non-merge commits to check.` |
-| **fixed**, `fetch-depth: 1` — [32854980822](https://github.com/adammarquette/MarqSpec.Mcp.TopstepX/actions/runs/32854980822) | `staging` | **failure** | `git log exited 128 for '…'` |
-| fixed, a merge-only range — [32855346012](https://github.com/adammarquette/MarqSpec.Mcp.TopstepX/actions/runs/32855346012) | probe branch | success | `No non-merge commits to check.` |
-| fixed, `EVENT` pinned to `merge_group`, range `X..X` — [32856056077](https://github.com/adammarquette/MarqSpec.Mcp.TopstepX/actions/runs/32856056077) | `staging` | **failure** | `Resolved zero commits … Refusing to pass vacuously.` |
-| fixed, a real merge commit — [32855936278](https://github.com/adammarquette/MarqSpec.Mcp.TopstepX/actions/runs/32855936278) | `develop` | **failure** | gh#146's step, naming `c9dae55` |
-| fixed, linear, `fetch-depth: 1` — [32857116130](https://github.com/adammarquette/MarqSpec.Mcp.TopstepX/actions/runs/32857116130) | `develop` | **failure** | gh#146's step, on git's 128 — the masking above |
+| **`mapfile < <(...)`**, `fetch-depth: 1` — [32854350754](https://github.com/adammarquette/MarqSpec.Mcp.TopstepX/actions/runs/32854350754) | `staging` | **success** | `fatal: Invalid revision range …` then `No non-merge commits to check.` |
+| **the read that ships**, `fetch-depth: 1` — [32874228812](https://github.com/adammarquette/MarqSpec.Mcp.TopstepX/actions/runs/32874228812) | `staging` | **failure** | `git log exited 128 for '…'` |
+| ships, a merge-only range — [32876371775](https://github.com/adammarquette/MarqSpec.Mcp.TopstepX/actions/runs/32876371775) | probe branch | success | `No non-merge commits to check.` |
+| ships, `EVENT` pinned to `merge_group`, range `X..X` — [32876613013](https://github.com/adammarquette/MarqSpec.Mcp.TopstepX/actions/runs/32876613013) | `staging` | **failure** | `Resolved zero commits … Refusing to pass vacuously.` |
+| **a capture**, oldest subject empty — [32876328853](https://github.com/adammarquette/MarqSpec.Mcp.TopstepX/actions/runs/32876328853) | probe branch | **success** | one subject checked; the empty one never seen |
+| ships, the same fixture — [32876350211](https://github.com/adammarquette/MarqSpec.Mcp.TopstepX/actions/runs/32876350211) | probe branch | **failure** | `Not a Conventional Commit subject: ''` |
+| a real merge commit — [32855936278](https://github.com/adammarquette/MarqSpec.Mcp.TopstepX/actions/runs/32855936278) | `develop` | **failure** | gh#146's step, naming `c9dae55` |
+| linear, `fetch-depth: 1` — [32857116130](https://github.com/adammarquette/MarqSpec.Mcp.TopstepX/actions/runs/32857116130) | `develop` | **failure** | gh#146's step, on git's 128 |
 
 The green half, which the [Coding contract](../../MarqSpec.Mcp.TopstepX/AGENTS.md) requires beside the red
 one, is [32859513254](https://github.com/adammarquette/MarqSpec.Mcp.TopstepX/actions/runs/32859513254) — gh#164's own pull request, base `develop` and linear, where both
 steps *ran* rather than being skipped and both passed, the two subjects read out by name.
 
-Rows 1 and 2 differ **only** in the head's copy of this workflow, which is what makes the pair a measurement
-rather than a description. Rows 3 and 4 are the two halves of the asymmetry, each on the input it exists for.
-Row 5 is gh#146 unregressed — and on rows 1, 2 and 4 that same step reports **skipped**, which is the other
-half of its base guard. Row 6 is why rows 1 and 2 are based at `staging`: a `develop` base cannot show this
-defect.
+Rows 1/2 and rows 5/6 are two before-and-after **pairs**, each differing only in the head's copy of this
+workflow, which is what makes them measurements rather than descriptions. Rows 3 and 4 are the two halves of
+the asymmetry, each on the input it exists for. Rows 7 and 8 decide at gh#146's step instead — unregressed,
+and on every `staging`-based row above it reports **skipped**, which is the other half of its base guard.
+Row 8 is also why rows 1 and 2 are based at `staging`: a `develop` base cannot show this defect at all,
+because that step dies on the same unresolvable range first.
+
+**Rows 5 and 6 are a defect this card wrote and review caught before it shipped, kept here because the shape
+generalises.** The first fix captured the log in a variable — `log="$(git log …)"` — and guarded the split
+with `[ -n "$log" ]`. A command substitution strips **trailing newlines**, `git log` prints newest-first, so
+an **empty subject on the oldest commit in the range** was gone before the guard looked; when it was the only
+commit, the step reached the zero-subject arm and passed, on the least conventional subject there is. Reading
+into a file and `mapfile <file` removes the question rather than answering it: the split is byte-identical to
+the process substitution's, so no guard is needed and no remainder is left.
 
 **No merge queue is enabled on this repository, so a real `merge_group` event cannot be produced here.** Row 4
 pins `EVENT` in the throwaway instead. That is the honest description of what it proves: the arm's own code

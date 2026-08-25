@@ -143,10 +143,12 @@ The root contract's five apply here unchanged. Four land specifically on the pip
   when a gate's stripper grows a rule, extend the pass that already owns that class of line rather than
   adding a stage, or "one rule in one place" survives only until the next card.
 - **A dependency a gate does not need is a decision, not an inheritance** (gh#142). `5188178` replaced the
-  stripper with `python3`; `issue-link` runs on `awk`, `sed`, `grep`, and the port kept it that way. The
+  stripper with `python3`; `issue-link` ran on `awk`, `sed`, `grep`, and the port kept it that way. The
   reason it could: the added program needs no ERE interval expressions, so it behaves identically on the
   `mawk 1.3.4` that `/usr/bin/awk` resolves to on Ubuntu 24.04 and on `gawk`. Verified in a container on both,
-  not assumed from the runner image's package list.
+  not assumed from the runner image's package list. **`sed` left the pipeline at gh#155** and the three
+  phases are one `awk` program — one fewer tool, for the reason in the next bullet but one, and the mawk
+  constraint carried over to the new program unchanged.
 - **A stripper is a parser: its passes have an order, and the order is a decision** (gh#123, from review). The
   HTML-comment pass ran first and blind, so a `<!--` written as *inline code* — prose **about** the marker,
   which platform pull requests are full of — opened a comment nothing closed and discarded every line after
@@ -155,6 +157,29 @@ The root contract's five apply here unchanged. Four land specifically on the pip
   delimiters the later passes remove**, because its mistakes are not local: it now steps over an inline span
   rather than into one. Reordering instead was rejected and why is recorded in the workflow — spans cannot
   precede fences, and fences cannot precede comments without silently re-deciding a pinned case.
+- **Two passes that need the same notion have to be one program, or they are two notions** (gh#155). The
+  bullet above left the comment pass and the span strip agreeing only by *coincidence*: both paired backticks
+  **per line**, one in `awk` and one in `sed 's/`[^`]*`//g'`. A code span that opens on one line and closes on
+  the next is still a span to CommonMark and to GitHub, so both leaked its middle into the text the gate
+  searched — at a 110-column margin that is not exotic, and **44 of this repository's 96 pull-request bodies
+  strip differently once it is fixed**. Neither pass could be taught alone: teaching only the strip re-creates
+  gh#123's two-rules drift, and teaching only the comment pass re-opens the non-local failure that review
+  round rejected. So the three phases became one `awk` program with **one** `build_spans()` that both call.
+  Three things about it worth carrying past this gate:
+  - **A cross-line span is only safe because an unpaired run stays literal.** CommonMark closes a backtick
+    run on a run of the *same length*, and a run with no such closer is ordinary text — so a stray backtick
+    opens nothing and can swallow nothing. That property, not the ordering, is what answers gh#123's
+    objection; adopt the rule that makes state-carrying safe rather than refusing to carry state.
+  - **Bound the state.** The search for a closer stops at a blank line and at a fence marker — the two
+    leaf-block boundaries CommonMark gives — so a mistake costs one paragraph, never the rest of the body.
+  - **A phase that deletes lines must blank them instead when a later phase reads across them.** Deleting a
+    fenced block butts the paragraph above it against the one below, and a run in one then pairs with a run in
+    the other. Blanking keeps the boundary and keeps the line numbering identical through all three phases.
+
+  **The differential: 96 bodies, 44 whose stripped text changes, 0 whose verdict moves** — and the second
+  number is what makes the third one evidence rather than an empty comparison. Measured by extracting the
+  `body_no_code` derivation out of `branch-policy.yml` itself, at `origin/develop` and at the fix, so what
+  ran was the shipped text and not a copy of it.
 - **Run a text-matching gate before believing its diagnostics.** Proving the above by mutation turned up a
   second defect nobody could have read off the file: `issue-link`'s backtick diagnostic was the only one of the
   three greps without `-i`, so it matched a lowercase `` `closes #1` `` and **missed the canonical**

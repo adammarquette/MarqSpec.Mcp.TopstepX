@@ -490,13 +490,26 @@ this count together whenever a step is added**; the count is the only thing tell
 - [`check-requirement-ids.sh`](../../scripts/check-requirement-ids.sh), which resolves **every `R-#` and
   `Q-#` cited anywhere in the tree** against [the PRD](../prd.md)'s own definitions and fails naming file,
   line and symbol — and [`check-requirement-ids-selftest.sh`](../../scripts/check-requirement-ids-selftest.sh),
-  which requires that gate to reject ten known faults **by name and by symbol** and to accept the three
-  awkward correct shapes this repository actually contains. `check-doc-links.sh` proves a relative *link*
-  resolves; nothing proved an *id* did, and gh#172 found two citations naming another repository's PRD
-  entirely. **The left word boundary is the whole trick**: an ADR number contains a citation-shaped
-  substring, so without it the gate reddens every line that names an ADR — twelve phantom ids on this tree.
+  which requires that gate to reject twelve known faults **by name, by symbol and by location** and makes
+  five assertions on correct input it must accept. `check-doc-links.sh` proves a relative *link* resolves;
+  nothing proved an *id* did, and gh#172 found two citations naming another repository's PRD entirely.
+  Three things in it are worth carrying forward, because each was a defect first:
+  - **The left word boundary.** An ADR number contains a citation-shaped substring, so without it the gate
+    reddens every line that names an ADR — twelve phantom ids on this tree.
+  - **The definition side is the only fail-open half, and it needs fence and comment awareness.** Every
+    other misreading makes a real id look undefined, which is loud; reading a *fenced example* or a
+    *commented-out* requirement as a definition invents a symbol, and a citation of it then passes. Shipped
+    that way and caught in review (#195) by appending a four-line fenced example to the real PRD.
+  - **`git ls-files` names a nested repository as a directory**, and a directory makes `grep` exit 2 — which
+    this gate rightly refuses to read as "no citations", and therefore reported as unreadable on the
+    maintainer's own checkout, where agent worktrees sit outside `.gitignore`'s reach. Nested repositories
+    are counted and skipped; `core.quotepath=false` is set for the same class of reason, since the default
+    C-quotes any non-ASCII path into a filename that does not exist.
+
   It has **no exclusion list**, so it reads its own source and its own self-test like every other file, and
-  the self-test assembles its dangling fixtures at run time rather than spelling them.
+  the self-test assembles its dangling fixtures at run time rather than spelling them. The price, stated
+  because it is real: no tracked file may *spell* an id that does not resolve here, so writing about a
+  sibling repository's id means describing it instead.
 
 All of it rides in the one job **because `docs` is already required on all three rungs**, so none of it
 needed a ruleset write and [the table above](#what-is-required-and-what-only-reports) does not change — the

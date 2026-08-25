@@ -87,9 +87,13 @@ jobs:
 
       # Same argument as the size gate's self-test above, and the same shape: a text-matching gate is one
       # demoted heading away from resolving zero citations and printing a green line saying so. This runs it
-      # against fixtures whose faults are known and requires it to reject each BY NAME AND BY SYMBOL, and to
-      # accept the awkward correct shapes this repository really contains -- ADR numbers, which contain a
-      # citation-shaped substring, and the literal `R-#` placeholder on thirteen lines across ten files.
+      # against fixtures whose faults are known and requires it to reject each BY NAME, BY SYMBOL AND BY
+      # LOCATION, and to accept the awkward correct shapes this repository really contains -- ADR numbers,
+      # which contain a citation-shaped substring, and the literal `R-#` placeholder, which was on thirteen
+      # lines across ten files on `develop` at 8a2302d.
+      #
+      # FIVE OF ITS SEVENTEEN CASES EXIST BECAUSE MUTATION FOUND THEM MISSING, four of those in review. Run
+      # the gate against a broken copy of itself before believing this step is worth anything.
       - name: Prove the requirement-id gate can still fail
         run: ./scripts/check-requirement-ids-selftest.sh
 

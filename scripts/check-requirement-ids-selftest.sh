@@ -15,11 +15,16 @@
 # So the REAL gate is run against fixtures whose faults are known, on every CI run, and is required to reject
 # each one — AND against the awkward CORRECT shapes this repository actually contains, which it must accept.
 #
-# ONE OF THE TEN CASES IS HERE BECAUSE THE MUTATION BATTERY FOUND IT MISSING. Swallowing grep's exit 2 was
-# the one change to the gate that this file did not notice, on the first pass — which is the same hole
-# gh#43, gh#98 and gh#126 each shipped. Mutate the gate before believing its self-test, every time: a
-# self-test is a text-matching gate too, and the ones that pass on a broken subject are the ones nobody
-# ever ran against one.
+# FIVE OF THE SEVENTEEN CASES ARE HERE BECAUSE MUTATION FOUND THEM MISSING, and that is the point of the
+# paragraph rather than a confession. The author's own battery found one — swallowing grep's exit 2, the
+# same hole gh#43, gh#98 and gh#126 each shipped. The PR #195 review found four more: a definition inside a
+# fenced block and one inside an HTML comment (the gate's ONLY fail-open, and it went green on the real tree
+# with a citation of an invented id), a nested repository turning a correct tree red, and three separate
+# ways of destroying the reported LINE NUMBER that every case survived because the needle was the filename,
+# of which the location is a superset.
+#
+# So: mutate the subject before believing its self-test, every time. A self-test is a text-matching gate
+# too, and the ones that pass on a broken subject are the ones nobody ever ran against one.
 # Rejections alone would all be satisfied by `exit 1`, i.e. by a gate that says no to everything, which is
 # exactly as useless as one that says yes to everything and rather harder to notice.
 #
@@ -69,8 +74,11 @@ trap 'rm -rf "$FIXTURES"' EXIT
 failures=0
 cases=0
 
-# Assembled, never spelled — see the header. Neither `R-` nor `Q-` is followed by a digit anywhere in this
-# file's own bytes, so the gate reads this file and finds nothing to resolve.
+# Assembled, never spelled — see the header. The fixture PRD below DOES spell ids, deliberately: every one
+# of them is an id the REAL PRD also defines, so those literals are correct input when the gate reads this
+# file. What is never spelled is an id that does NOT resolve, which is the whole reason these four are built
+# at run time. (The earlier wording here claimed no `R-` or `Q-` was followed by a digit anywhere in this
+# file, which was simply false — PR #195 review counted twelve.)
 R='R-'
 Q='Q-'
 DANGLING_REQUIREMENT="${R}9.3"   # gh#172's class exactly: MarqSpec.Client.ProjectX's id for the secrets rule
@@ -81,9 +89,9 @@ OVER_DEEP="${R}1.2.3"            # first two parts DO resolve; the whole id must
 # Builds one fixture repository.
 #
 #   $1 dir          fixture root
-#   $2 prd_kind     sound | absent | flat-headings | no-bullets | shadowed
+#   $2 prd_kind     sound | absent | flat-headings | no-bullets | shadowed | fenced | commented
 #   $3 notes        the body of documentation/notes.md — the file whose citations are under test
-#   $4 extra_kind   none | rich | ignore-prd | unreadable
+#   $4 extra_kind   none | rich | ignore-prd | unreadable | nested
 #
 # Every case is a one-perturbation change from the sound fixture. A fixture that differs in more than the
 # fault under test proves nothing about which fault the gate detected.
@@ -119,6 +127,17 @@ make_fixture() {
       if [ "$prd_kind" != "no-bullets" ]; then
         printf -- '- **Q-1 — A question.** Its text.\n'
       fi
+      # An EXAMPLE of the PRD's own format, and a requirement RETIRED by commenting it out. Both look
+      # exactly like definitions to a line-at-a-time parser and neither is one, and this is the ONLY place
+      # in the gate where a misreading fails OPEN: it would invent the symbol and then resolve a citation of
+      # it. Found by the PR #195 review, on the real tree, with a green `ok … every one resolves`.
+      if [ "$prd_kind" = "fenced" ]; then
+        printf '\n## Appendix\n\n```markdown\n## %s — Example\n\n- **%s** Example.\n```\n' \
+          "$DANGLING_SECTION" "$DANGLING_REQUIREMENT"
+      fi
+      if [ "$prd_kind" = "commented" ]; then
+        printf '\n<!--\n- **%s** Retired, kept for the record.\n-->\n' "$DANGLING_REQUIREMENT"
+      fi
     } > "$dir/documentation/prd.md"
   fi
 
@@ -139,6 +158,20 @@ make_fixture() {
       # nothing, and without the NO CITATIONS guard the gate would report a clean tree having resolved zero
       # symbols — the exact vacuous green every dead guard in this repository printed.
       printf 'documentation/prd.md\n' > "$dir/.gitignore"
+      ;;
+    nested)
+      # ANOTHER REPOSITORY inside this one. `git ls-files --others` will not descend into it, so it names
+      # the DIRECTORY with a trailing slash — and a directory handed to grep makes it exit 2, which this
+      # gate correctly refuses to read as "no citations". Before the PR #195 review it therefore reported
+      # UNREADABLE on the maintainer's own checkout, where fourteen agent worktrees sit under a path
+      # .gitignore does not cover: a required gate red on a correct tree, which is how a gate gets deleted
+      # by the first person it wrongly stops. It must be counted, skipped, and the run must still be green.
+      #
+      # The nested repository carries a citation that does NOT resolve, so this case also proves the skip is
+      # real rather than the directory happening to contain nothing.
+      mkdir -p "$dir/nested"
+      git -c init.defaultBranch=main init -q "$dir/nested"
+      printf 'A note in another repository citing %s99.9.\n' "$R" > "$dir/nested/notes.md"
       ;;
     unreadable)
       # A file the corpus LISTS and grep cannot OPEN: staged in the index, then removed from the working
@@ -230,9 +263,14 @@ info ""
 # ---------------------------------------------------------------------------
 
 # 1. The fault gh#182 was filed for, in the class gh#172 found by hand: another repository's requirement id.
+#
+#    THE NEEDLE IS THE FULL `file:line`, NOT THE FILENAME (PR #195 review). `documentation/notes.md` is a
+#    substring of `documentation/notes.md:1`, so a gate that had stopped reporting the line — `-n` dropped
+#    from its grep, or the field split reversed — satisfied this case with a location an author cannot act
+#    on. Three separate mutations escaped all thirteen cases on exactly that.
 make_fixture "$FIXTURES/dangling-req" sound "The rule is stated as $DANGLING_REQUIREMENT." none
 expect_red "a dangling requirement id" "$FIXTURES/dangling-req" \
-  "DANGLING" "documentation/notes.md" "$DANGLING_REQUIREMENT"
+  "DANGLING" "documentation/notes.md:1" "$DANGLING_REQUIREMENT"
 
 # 2. A bare SECTION id that does not resolve. Bare ids are cited on fourteen lines of this repository, so
 #    they have to be resolved rather than skipped — and skipping them is the cheapest way to make this gate
@@ -285,6 +323,19 @@ expect_red "a corpus in which nothing was found" "$FIXTURES/no-citations" "NO CI
 make_fixture "$FIXTURES/unreadable" sound "$SOUND_NOTES" unreadable
 expect_red "a file the corpus lists and grep cannot open" "$FIXTURES/unreadable" "UNREADABLE"
 
+# 11. A DEFINITION INSIDE A FENCED BLOCK — an example of the PRD's own format. The only fail-OPEN this gate
+#     has: the parser read it as a definition, invented the symbol, and then resolved a citation of it. Found
+#     by the PR #195 review against the real tree, which returned `ok … every one resolves` and exit 0.
+make_fixture "$FIXTURES/fenced" fenced "Governed by $DANGLING_REQUIREMENT and section $DANGLING_SECTION." none
+expect_red "a definition inside a fenced block" "$FIXTURES/fenced" \
+  "DANGLING" "documentation/notes.md:1" "$DANGLING_REQUIREMENT" "$DANGLING_SECTION" "HINT"
+
+# 12. THE SAME FAIL-OPEN THROUGH THE OTHER CONSTRUCT: a requirement retired by commenting it out rather than
+#     deleting it, which is the likelier of the two to be written by hand.
+make_fixture "$FIXTURES/commented" commented "Governed by $DANGLING_REQUIREMENT." none
+expect_red "a definition inside an HTML comment" "$FIXTURES/commented" \
+  "DANGLING" "$DANGLING_REQUIREMENT" "HINT"
+
 # ---------------------------------------------------------------------------
 # GREEN — correct input this repository really contains, which the gate must not redden.
 # ---------------------------------------------------------------------------
@@ -316,6 +367,18 @@ expect_green "the literal placeholder, which is not a citation" "$FIXTURES/place
 make_fixture "$FIXTURES/sound" sound "$SOUND_NOTES" rich
 expect_green "a sound corpus, yaml and binary included" "$FIXTURES/sound" "12 citations of 6 distinct ids"
 
+#     …and the DEFINITION side's own counters, which nothing else asserts. Frozen at 1 each, every case
+#     above still passed: the green needle stopped short of this tuple and the red cases never reach it
+#     (PR #195 review). The fixture PRD has two headings, three requirement bullets and one open question.
+expect_green "the definition counts the gate reports" "$FIXTURES/sound" \
+  "(2 sections, 3 requirements, 1 open questions"
+
+#     A NESTED REPOSITORY, which must be skipped and SAID, not errored on. It carries a citation that does
+#     not resolve, so a gate that read into it would go red rather than merely counting differently.
+make_fixture "$FIXTURES/nested" sound "$SOUND_NOTES" nested
+expect_green "a nested repository, counted and not read" "$FIXTURES/nested" \
+  "Not read: 1 nested repositories"
+
 info ""
 if [ "$failures" -gt 0 ]; then
   red "$failures of $cases self-test case(s) failed."
@@ -330,4 +393,4 @@ if [ "$cases" -eq 0 ]; then
   exit 1
 fi
 
-ok "ok  $cases self-test cases — check-requirement-ids.sh rejects each known fault BY NAME and BY SYMBOL, and accepts the awkward correct shapes this repository contains: ADR numbers, the literal placeholder, bare section ids, a yaml citation and a binary file."
+ok "ok  $cases self-test cases — check-requirement-ids.sh rejects each known fault BY NAME, BY SYMBOL and BY LOCATION, and accepts the awkward correct shapes this repository contains: ADR numbers, the literal placeholder, bare section ids, a yaml citation, a binary file and a nested repository."

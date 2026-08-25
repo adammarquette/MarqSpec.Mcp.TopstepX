@@ -70,9 +70,23 @@ cd "$REPO_ROOT" || { die "  NO SUCH ROOT  $REPO_ROOT"; exit 1; }
 MAP="documentation/README.md"
 MAP_DIR="$(dirname "$MAP")"
 
-# How far a row may sit from its measured value before it is called wrong. Wide enough that an ordinary
-# append does not fail an unrelated pull request; narrow enough that it would have caught every drift gh#160
-# found, including the 26%-over `architecture.md` row that carried the inverted recommendation.
+# How far a row may sit from its measured value before it is called wrong, as a percentage of the MEASURED
+# value.
+#
+# IT IS A BAND THAT CATCHES INVERSIONS AND MISSES ORDINARY DRIFT, and saying otherwise would be the same
+# mistake this script exists to stop. Run against the pre-gh#160 map (`f7bdcae:documentation/README.md`) it
+# flags 6 of the 10 rows and lets 4 through:
+#
+#   flagged   AGENT-MEMORY.md 88% · work-estimate-rubric.md 56% · project-board-workflow.md 44%
+#             mcp-tool-catalog.md 43% · architecture.md 35% (the row carrying the inverted recommendation)
+#             agents/README.md -- as NOT A SIZE, it was priced `index`
+#   tolerated prd.md 14% · data-dictionary.md 10% · CONTRIBUTING.md 7% · AGENTS.md 2%
+#
+# So four of the values gh#160 corrected would never have been demanded by this gate, `prd.md` among them.
+# That is the intended trade: tightening far enough to catch a 14% row means firing on rounding and on a
+# paragraph added to a short document, and a gate that reddens a required check on noise is deleted by the
+# first person it wrongly stops. The gate is the floor -- it stops the column from reversing its own advice
+# -- and the same-PR docs rule is the standard.
 TOLERANCE_PCT=25
 BYTES_PER_TOKEN=4
 
@@ -82,11 +96,40 @@ SECTIONS=("## Start here" "## Working agreements")
 
 # Rule 2's closed vocabulary, word-anchored so "largest" does not fire inside "enlargement". Matched against
 # a lowercased cell, so the pattern itself needs no case folding.
-SIZE_CLAIM='(^|[^[:alnum:]])(cheap(est|er)?|small(est|er)?|larg(est|er)|big(gest|ger)|fast(est|er)|slow(est|er)|short(est|er)|long(est|er)|tiniest|lightest|heaviest)([^[:alnum:]]|$)'
+#
+# SUPERLATIVES, PLUS THE COST WORDS. The two groups are deliberate and were arrived at by measurement, not by
+# listing adjectives (PR #175 review):
+#
+#   - Superlatives ranking one document against the others: `cheapest`, `smallest`, `quickest`. gh#160's
+#     acceptance criterion names exactly this shape — "cheapest, smallest or fastest".
+#   - Bare cost words — `cheap`, `cheaper`, `pricey`, `costly`. These claim a price in every use, and `cheap`
+#     is the word gh#160 actually met: "Cheap; just read it", beside a 0.8K that measured 6.8K.
+#
+# THE BARE `-er` COMPARATIVES OF DIMENSION WORDS ARE DELIBERATELY ABSENT — `longer`, `larger`, `smaller`,
+# `shorter`, `bigger`, `faster`, `slower`. They were in the first draft and they fire on ordinary English:
+# **`no longer` appears twelve times in `documentation/` today**, and a row reading "an estimate no longer
+# matches the card" was reddened with `SIZE CLAIM … says 'longer'`. `docs` is required on all three rungs, so
+# that is a blocked merge accusing an author of a claim they did not make — which is how a gate gets deleted
+# by the first person it wrongly stops (the Coding contract's second run: green on the most awkward CORRECT
+# input already in the repository). Under-matching is the right direction here; the map states the rule, and
+# the gate catches the shape that actually inverted the column.
+SIZE_CLAIM='(^|[^[:alnum:]])(cheap|cheaper|cheapest|pricey|priciest|costly|costliest|smallest|largest|biggest|longest|shortest|fastest|quickest|slowest|tiniest|lightest|heaviest)([^[:alnum:]]|$)'
 
-# The two table lines that carry no price. Anything else under a priced heading must parse.
-SEPARATOR_ROW='^\|[-:| ]+\|$'
-HEADER_ROW='^\| *Document *\|'
+# A row is anything between a table's alignment row and the blank line that ends the table. That is the
+# GFM rule, and it is used here INSTEAD OF "the line starts with a pipe" (PR #175 review). GFM makes the
+# leading and trailing pipes optional and tolerates up to three spaces of indentation, so
+#
+#     [`AGENT-MEMORY.md`](AGENT-MEMORY.md) | 0.8K | Before starting any work.
+#
+# renders as an ordinary row and was silently SKIPPED by the pipe test -- restoring the exact gh#160 defect
+# under a green `ok 9 routed rows`. A gate whose coverage shrinks when someone reformats a table is the
+# fail-open this script's own header says it does not have. Between the alignment row and the blank line,
+# every non-blank line is a data row and must parse.
+#
+# Detecting the alignment row also removes the need to recognise the HEADER row by its wording: the header
+# is whatever sits before the alignment row, so renaming the `Document` column can no longer make a header
+# parse as data or make a data row parse as a header.
+ALIGNMENT_ROW='^[-:|[:space:]]+$'
 SIZE_CELL='^[0-9]+(\.[0-9]+)?K$'
 
 failures=0
@@ -163,9 +206,11 @@ for _ in "${SECTIONS[@]}"; do
 done
 
 current=-1
+in_table=0
 for line in "${lines[@]}"; do
   if [[ "$line" == '## '* ]]; then
     current=-1
+    in_table=0
     for i in "${!SECTIONS[@]}"; do
       if [ "$line" = "${SECTIONS[$i]}" ]; then
         current="$i"
@@ -176,15 +221,52 @@ for line in "${lines[@]}"; do
     continue
   fi
 
-  [ "$current" -ge 0 ] || continue
-  [[ "$line" == '|'* ]] || continue
-  # Spelled as `if`, not `[[ ... ]] && continue`: an AND-OR list whose left side fails is exempt from
-  # `set -e` only where it is not the last command of the list, and that exemption is exactly the kind of
-  # positional subtlety claim.sh already got bitten by. An `if` has no such caveat.
-  if [[ "$line" =~ $SEPARATOR_ROW ]]; then continue; fi
-  if [[ "$line" =~ $HEADER_ROW ]]; then continue; fi
+  # Trim once, up front: everything below decides on the trimmed line, so a row indented under a list or a
+  # blockquote is read the same as one flush against the margin.
+  trimmed="${line#"${line%%[![:space:]]*}"}"; trimmed="${trimmed%"${trimmed##*[![:space:]]}"}"
 
-  rest="${line#|}"
+  # A PRICED TABLE UNDER AN UNLISTED HEADING IS A FAILURE, NOT AN EXEMPTION (PR #175 review). `SECTIONS` is a
+  # fixed pair, so before this the parser fail-CLOSED on removal -- delete a section and you get `NO SECTION`,
+  # empty one and you get `NO ROWS` -- and fail-OPEN on addition: add one and you got silence. A new
+  # `## Operations` table pricing `agents/platform.md` (56,054 B, 14.0K) at 0.2K, with the word "cheap" in its
+  # prose, drew `ok 10 routed rows ... every ~tok within 25% and no size claims in prose` and exit 0. That
+  # sentence was false about the file it had just read, and the map's own promise -- "re-measures every row
+  # below" -- was false with it.
+  #
+  # Detected on the HEADER row rather than by pricing every table, because most tables in this corpus have no
+  # price column and pricing them would be nonsense. A `~tok` header is an unambiguous statement that the
+  # table below it is a price list, so the author has to add the heading to `SECTIONS` deliberately. Two pipes
+  # are required as well, so a sentence of prose mentioning `~tok` is not mistaken for a table.
+  if [ "$current" -lt 0 ]; then
+    pipes="${trimmed//[^|]/}"
+    if [[ "$trimmed" == *'~tok'* ]] && [ "${#pipes}" -ge 2 ]; then
+      die "  UNLISTED TABLE  a ~tok table appears under a heading this gate does not price:"
+      die "                  $trimmed"
+      die "Its rows are measured by nothing, while the green line below would claim every ~tok was checked."
+      die "Add that heading to SECTIONS in this script, in the same pull request that adds the table."
+      failures=$(( failures + 1 ))
+    fi
+    continue
+  fi
+
+  # A blank line closes the table. Spelled as `if`, not `[[ ... ]] && continue`: an AND-OR list whose left
+  # side fails is exempt from `set -e` only where it is not the last command of the list, and that
+  # exemption is exactly the kind of positional subtlety claim.sh already got bitten by.
+  if [ -z "$trimmed" ]; then in_table=0; continue; fi
+
+  if [ "$in_table" -eq 0 ]; then
+    # The alignment row opens the table. Requiring a pipe as well as a dash keeps a thematic break (`---`)
+    # from opening one.
+    if [[ "$trimmed" =~ $ALIGNMENT_ROW && "$trimmed" == *-* && "$trimmed" == *"|"* ]]; then
+      in_table=1
+    fi
+    continue
+  fi
+
+  # Past this point the line IS a data row of a priced table, whatever it looks like. Optional outer pipes
+  # come off; whatever remains must split into cells and parse, or be reported.
+  rest="${trimmed#|}"
+  rest="${rest%|}"
   cell_doc="${rest%%|*}"
   rest="${rest#*|}"
   cell_tok="${rest%%|*}"
@@ -197,7 +279,7 @@ for line in "${lines[@]}"; do
   section_rows[$current]=$(( section_rows[current] + 1 ))
   rows_checked=$(( rows_checked + 1 ))
 
-  if [[ "$cell_doc" != *'](['* && "$cell_doc" != *']('* ]]; then
+  if [[ "$cell_doc" != *']('* ]]; then
     die "  NO LINK  ${SECTIONS[$current]}: row '$cell_doc' has no [text](target) in its first cell"
     die "Nothing can be measured for it, so its price is unverifiable. If the table gained a column or its"
     die "header was renamed, update this script in the same pull request."
@@ -296,4 +378,8 @@ if [ "$failures" -gt 0 ]; then
   exit 1
 fi
 
-ok "ok  $rows_checked routed rows in $MAP, every ~tok within ${TOLERANCE_PCT}% and no size claims in prose."
+# The claim names the scope it actually covered. It used to say "every ~tok" unqualified while a price table
+# under an unlisted heading went unread; that is now a failure above, so the sentence is true -- but it still
+# says how many rows and which sections, because a green line a reader cannot check is the thing this whole
+# script is about.
+ok "ok  $rows_checked routed rows under ${#SECTIONS[@]} priced headings in $MAP — every ~tok within ${TOLERANCE_PCT}% of \`wc -c\`÷$BYTES_PER_TOKEN, no size claims in row prose, no unlisted price tables."

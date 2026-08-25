@@ -9,12 +9,15 @@ the way a compiler does, rather than loading every source file.
 
 **It is checked, not remembered.** `scripts/check-doc-sizes.sh` re-measures every row below on every pull
 request, in `docs`, and fails one that is more than **25%** out — printing the value to paste. Left to memory
-this column inverted: `AGENT-MEMORY.md` sat at 0.8K while measuring 6.8K, and the largest row called itself
-the cheapest read in its table (gh#160). It was never going to hold, because `AGENT-MEMORY.md` is under
-standing orders to grow and no ordinary pull request looks at the row that prices it.
+this column inverted: `AGENT-MEMORY.md` sat at 0.8K while measuring 6.8K, and `architecture.md` called itself
+the cheapest read in its table while being the second most expensive row in it (gh#160). It was never going
+to hold, because `AGENT-MEMORY.md` is under standing orders to grow and no ordinary pull request looks at the
+row that prices it.
 
-**This column is the only place a size claim lives.** Prose calling a document cheap, small or quickest is the
-same fact written twice, and only the number ever gets corrected — so the check fails that too.
+**This column is the only place a size claim lives.** A row whose prose calls a document `cheap`, or the
+`smallest` or `quickest` read here, states the number's own fact a second time — and only the number ever gets
+corrected. The check refuses those words in a row; it does not try to read paraphrase, so keep the claim out
+rather than reword it.
 
 ## Start here
 
@@ -32,7 +35,7 @@ same fact written twice, and only the number ever gets corrected — so the chec
 | [`AGENT-MEMORY.md`](AGENT-MEMORY.md) | 6.8K | **Before starting any work.** It grows by design — *append, don't overwrite* — so this is the row that goes stale first. |
 | [`project-board-workflow.md`](project-board-workflow.md) | 1.7K | You are filing, grooming or moving a card. **Nothing on the board is automatic.** |
 | [`work-estimate-rubric.md`](work-estimate-rubric.md) | 1.0K | You are setting a `Work Estimate` on an issue. |
-| [`agents/`](agents/README.md) | 0.6K | The index only — each contract is its own read. You are wearing a role hat. Reviewer and Platform contracts **never auto-load** — open them yourself. |
+| [`agents/README.md`](agents/README.md) | 0.6K | You are wearing a role hat. **This row prices the index, not the route it serves** — every contract behind it is a separate read this number does not cover, and none of them is priced yet (gh#178). Reviewer and Platform contracts **never auto-load**; open them yourself. |
 | [`../CONTRIBUTING.md`](../CONTRIBUTING.md) | 3.7K | Branching, claiming, commits, PRs, and the Definition of Done. |
 | [`../AGENTS.md`](../AGENTS.md) | 2.0K | Loads automatically. The non-negotiables and the role routing table. |
 

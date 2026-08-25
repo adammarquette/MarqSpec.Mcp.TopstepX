@@ -23,7 +23,7 @@ open and should have published one. A weekend is not a gap.
 > **Status: pre-release.** Phase 0 is merged and the ProjectX adapter has landed on
 > `MarqSpec.Client.ProjectX` 2.1.0, so the venue is live. The documentation layer is the source of truth
 > and the code is written against it. See the
-> [project board](https://github.com/users/adammarquette/projects/4) for what is next.
+> [project board](https://github.com/users/adammarquette/projects/5) for what is next.
 
 ---
 
@@ -136,7 +136,7 @@ same observation, and the cache asks the vendor for the weekend forever.
 ## Contributing
 
 [`CONTRIBUTING.md`](CONTRIBUTING.md) — branching, claiming, commits, and the Definition of Done. Work is
-issue-first and tracked on the [project board](https://github.com/users/adammarquette/projects/4).
+issue-first and tracked on the [project board](https://github.com/users/adammarquette/projects/5).
 
 ## License
 

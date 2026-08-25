@@ -95,7 +95,8 @@ mkfile() {
 # swallow the rest of the file in silence. `quoted` puts the fenced example inside a blockquote, which must
 # be ignored exactly as the unquoted one is -- the construct that got past `fence_step` in round 2.
 # `quote-closed` withholds the closing fence and ends the blockquote instead, which closes it in CommonMark
-# and must not be read as unterminated.
+# and must not be read as unterminated. `quote-eof` ends the FILE instead, which closes the quote and the
+# fence with it.
 # `second_file` set to `absent` deletes the second priced file outright — a priced file that has moved must
 # be reported, not skipped.
 #
@@ -128,14 +129,15 @@ make_fixture() {
     {
       printf '# a document PRICED does not name\n\n'
       q=""
-      case "$stray_kind" in quoted|quote-closed) q="> " ;; esac
+      case "$stray_kind" in quoted|quote-closed|quote-eof) q="> " ;; esac
       if [ "$stray_kind" != "priced" ]; then printf '%s```markdown\n' "$q"; fi
       printf '%s| Document | ~tok | Read it when |\n' "$q"
       printf '%s|---|---:|---|\n' "$q"
       printf '%s| [`delta.md`](delta.md) | 99K | A price table in a file the gate never opens. |\n' "$q"
-      if [ "$stray_kind" != "unterminated" ] && [ "$stray_kind" != "quote-closed" ]; then
-        printf '%s```\n' "$q"
-      fi
+      case "$stray_kind" in
+        unterminated|quote-closed|quote-eof) ;;
+        *) printf '%s```\n' "$q" ;;
+      esac
       if [ "$stray_kind" = "quote-closed" ]; then printf '\nOrdinary prose, outside the quote.\n'; fi
     } > "$dir/documentation/stray.md"
   fi
@@ -189,6 +191,11 @@ make_fixture() {
     printf '| Document | Notes |\n'
     printf '|---|---|\n'
     printf '| [`delta.md`](delta.md) | The SECOND priced file uses this heading; here it is unpriced. |\n'
+    if [ "$reference_kind" = "quote-eof" ]; then
+      printf '\n> Quoted, and then the file simply ends:\n\n'
+      printf '> ```markdown\n'
+      printf '> | Document | ~tok | Read it when |\n'
+    fi
   } > "$dir/documentation/README.md"
 }
 
@@ -411,7 +418,19 @@ expect_green "a quoted fence closed by the end of its blockquote" "$FIXTURES/quo
 make_fixture "$FIXTURES/quote-closed-file" "1.0K" "$SOUND_GAMMA" "$SOUND_HEADING" "plain"   "$SOUND_CONTRACT" "$SOUND_CONTRACTS_HEADING" "quote-closed"
 expect_green "the same, in a swept file" "$FIXTURES/quote-closed-file" "5 priced rows"
 
-# 21. The sound fixture. Five priced rows across three sections in two files, plus an ordinary table with no
+# 21. A QUOTED FENCE STILL OPEN AT END OF FILE (PR #193 review round 4). Case 20's rule has two halves --
+#     "a fence opened under a `>` ends at the first line carrying none" AND a blockquote also ends at EOF --
+#     and only the first was implemented, so this reddened `UNTERMINATED FENCE` on correct markdown. Worse
+#     than noisy: that message says "a price table under it would be unseen" where there is nothing under it
+#     at all, which is a confident wrong diagnostic of exactly the kind gh#108/gh#140 is about. Half a rule
+#     is the shape that produces one.
+make_fixture "$FIXTURES/quote-eof-section" "1.0K" "$SOUND_GAMMA" "$SOUND_HEADING" "quote-eof"
+expect_green "a quoted fence still open at end of a priced file" "$FIXTURES/quote-eof-section" "5 priced rows"
+
+make_fixture "$FIXTURES/quote-eof-file" "1.0K" "$SOUND_GAMMA" "$SOUND_HEADING" "plain"   "$SOUND_CONTRACT" "$SOUND_CONTRACTS_HEADING" "quote-eof"
+expect_green "the same, at the end of a swept file" "$FIXTURES/quote-eof-file" "5 priced rows"
+
+# 22. The sound fixture. Five priced rows across three sections in two files, plus an ordinary table with no
 #     price column under a third heading -- so this also asserts the gate leaves un-priced tables alone,
 #     which is what nearly every table in the corpus is.
 #
@@ -436,4 +455,4 @@ if [ "$cases" -eq 0 ]; then
   exit 1
 fi
 
-ok "ok  $cases self-test cases across two priced files — check-doc-sizes.sh rejects each known fault BY NAME, and accepts correct input: one at the tolerance boundary, one whose prose says \"no longer\", six showing a price table inside a fence -- four of them quoted, two of those closed by the end of the blockquote rather than by a fence -- and one wholly sound."
+ok "ok  $cases self-test cases across two priced files — check-doc-sizes.sh rejects each known fault BY NAME, and accepts correct input: one at the tolerance boundary, one whose prose says \"no longer\", eight showing a price table inside a fence -- six of them quoted, and four of those closed by the end of the blockquote or of the file rather than by a fence -- and one wholly sound."

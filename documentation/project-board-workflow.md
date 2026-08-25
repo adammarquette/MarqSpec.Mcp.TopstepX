@@ -240,7 +240,10 @@ changes: **a column on #4 claims nothing about anything.** Read the issue, or #5
 **#4's inertness, proved without counting anything:** the latest `updatedAt` on any Status value across all
 73 of its items is **`2026-08-25T18:41:59Z`** — thirty-eight minutes *before* #4 was closed at `19:20:13Z`.
 Nothing there has moved since it was retired, and that is a maximum over a closed set rather than a tally, so
-no later merge can change it.
+no later merge can change it. **Adding a card cannot change it either** — a hand `item-add` on #4 lands with
+Status `<none>` ([above](#project-4-is-retired)), and an item with no Status value contributes no `updatedAt`.
+What *would* move it is somebody deliberately editing a column there, which is exactly the act this section
+tells you not to perform.
 
 Watched twice on real work, both times the same: gh#171 closed at `20:02:23Z` and gh#176 after it, the bot
 moved each one's **#5** card within a second, and on **#4** neither moved — both still sit in `Backlog`, last
@@ -290,8 +293,9 @@ issue.
 
 **Pull requests sit on the board too, and that is new.** #5 auto-adds them: PR #189 and PR #190 both landed as
 `PullRequest` items in `Todo` within seconds of being opened (read `2026-08-25 19:28:47Z`). **#4 holds
-none** — all 73 of its items are issues, read straight off the board, which agrees with what gh#107's
-measurement already recorded. (An item list shows what is there *now*, so this is "none today", not
+none** — all 73 of its items are issues, read straight off the board, which agrees with what **PR #154**
+recorded when it closed gh#107 (`d34db8c`). Cite it there, for the same reason the nine above is cited
+there: gh#107's body carries neither fact. (An item list shows what is there *now*, so this is "none today", not
 "never".) **They are not lifecycle cards — do not move one,
 and do not read a `PullRequest` row's column as a claim about the work.** The issue beside it carries that.
 

@@ -125,9 +125,16 @@ ADR, `AGENTS.md`, or the code, **put it there instead**.
   can reach a duplicate key any more — and that is what silently falsified
   `StoreFaultReportingTests`, whose remarks had said since gh#89 that its fabricated `23505` "is pinned
   against a real one in `StoreFaultBoundaryTests`". Two files then contradicted each other with nothing
-  failing. Checked, not assumed: `git log -S` shows that sentence untouched from gh#89 until gh#133.
+  failing. Checked, not assumed: `git log --oneline -- <that file>` lists **three** commits ever — gh#89,
+  gh#87 and gh#133 — so gh#103 and gh#122 never touched it, because they never needed to.
   **So: two greps, not one** — the symbol you changed, *and* the name of the thing you changed it in — and
   reach for the second one hardest when what changed is the KIND of thing the test observes.
+  - **`git log -S` is the WRONG tool for this and answers "untouched" on the very edit you are hunting.**
+    `-S` counts *occurrences* of the string; gh#133 rewrote the lines carrying that sentence but both the
+    removed and the added line still contain the phrase, so the count went 1 → 1 and `-S` stayed silent.
+    Verified: `-S` returns gh#89 alone, `-G` (which matches the diff text rather than counting) returns
+    gh#89 **and** gh#133. Reach for `-G`, or just `git log -- <file>` when the file is small enough to read
+    every commit against. This entry cited `-S` in its first version, which is the same defect one level up.
 
 - **[2026-08-24] A `WHERE` on `ON CONFLICT … DO UPDATE` cannot suppress the `40001`, and a skip-unchanged
   `WHERE` is only worth adding where the C# comparison is *not* already at the column's scale (gh#133).** Two
@@ -191,12 +198,27 @@ ADR, `AGENTS.md`, or the code, **put it there instead**.
     Containers started through that socket are **siblings** of the SDK container, not children, so
     `localhost` from inside means the SDK container itself. Read the compose service before hand-rolling a
     `docker run` from it — that is how these were missed the first time.
-  - **[2026-08-24] Under Git Bash, prefix `MSYS_NO_PATHCONV=1` — the failure is SILENT and has three faces.**
-    MSYS rewrites anything that looks like a POSIX path, and the result is a wrong answer rather than an
-    error: a `-v C:/repo:/src` mount silently becomes `C:/Program Files/Git/repo`, so the container runs
-    against the wrong tree; and `git show "origin/develop:path"` returns **empty**, because the `rev:path`
-    colon is rewritten to `origin\develop;.github\…`. An empty `git show` reads as "the file is not there"
-    and has produced a wrong conclusion twice in one session. `MSYS_NO_PATHCONV=1` fixes all of them.
+  - **[2026-08-24] Under Git Bash, MSYS rewrites POSIX-looking arguments before the program sees them.**
+    It fires on an argument that *starts* with `/`, and on the part after a `:` — and what it produces is a
+    Windows path with `;` for the colon. Measured with `cmd //c echo`, not recalled:
+
+    | You type | The program receives |
+    |---|---|
+    | `-v C:/repo:/src` | `-v C:/repo:/src` — **unchanged**, because it starts with `C`, not `/` |
+    | `-v /c/repo:/src` | `-v "C:\repo;C:\Program Files\Git\src"` |
+    | `-v /var/run/docker.sock:/var/run/docker.sock` | `-v "C:\Program Files\Git\var\run\docker.sock;…"` |
+    | `-v //var/run/docker.sock:/var/run/docker.sock` | unchanged — the leading `//` is the escape |
+
+    So the `docker run` above is already defused, and **that is why it is written the way it is**:
+    `$(pwd -W)` gives the Windows-style source, and the socket's leading `//` protects it. Hand-edit either
+    into its natural POSIX form and the mount points somewhere else.
+  - **[2026-08-24] The same rewriting hits `git show "rev:path"`, and THAT one is silent if you read only
+    stdout.** `git show "origin/develop:.github/copilot-instructions.md"` fails with **exit 128** and
+    `fatal: ambiguous argument 'origin\develop;.github\copilot-instructions.md'` — but the fatal goes to
+    **stderr** and stdout is empty, so a pipeline, a `$(…)` capture or a `2>/dev/null` sees nothing and reads
+    it as *"the file is not there"*. That produced a wrong conclusion twice in one session. It does **not**
+    fire when the path has no `/` — `git show "origin/develop:AGENTS.md"` works bare, which is exactly the
+    kind of inconsistency that makes it feel like the file's fault. `MSYS_NO_PATHCONV=1` fixes it.
 
 - **[2026-08-23] A value computed at full `decimal` precision never equals the same value read back from a
   `numeric(18,8)` column.** Round to `TopstepXDbContext.PriceScale` before comparing, or the comparison

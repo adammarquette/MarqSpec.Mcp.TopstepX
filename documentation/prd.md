@@ -11,7 +11,10 @@ are the [platform contract](agents/platform.md)'s, and a build setting is justif
 reasoning. **An id this file does not define is not a requirement of this project**, however confidently it
 is cited. This repository's scaffolding was extracted from `MarqSpec.Client.ProjectX`, whose PRD numbers
 further and differently, so a citation that does not resolve below is residue from it rather than a
-requirement (gh#172).
+requirement (gh#172). **That sentence is enforced, not merely asserted:**
+[`scripts/check-requirement-ids.sh`](../scripts/check-requirement-ids.sh) resolves every `R-#` and `Q-#`
+cited anywhere in the tree against this file and fails CI on one that does not, naming file, line and symbol
+(gh#182). It proves an id *exists*; whether the citation quotes it correctly is still a reader's job.
 
 ## R-1 — Cached historical bars
 

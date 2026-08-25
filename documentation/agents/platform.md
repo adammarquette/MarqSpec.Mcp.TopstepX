@@ -434,7 +434,7 @@ by mutation, not as a description of the workflow files.**
 |---|---|---|---|---|
 | `build & unit tests` | required | required | required | `ci.yml` |
 | `integration tests` | required | required | required | `ci.yml` |
-| `docs` | required | required | required | `ci.yml` — three steps since gh#160, see below |
+| `docs` | required | required | required | `ci.yml` — five steps since gh#182, see below |
 | `coverage` | required | required | required | `ci.yml` |
 | `no-order-path` | required | required | required | `ci.yml` |
 | `paced-paging` | required | required | required | `ci.yml` — added by gh#72 |
@@ -471,21 +471,34 @@ for all ten contexts required on that rung, `image` included, and `false` for bo
 at `main`; the rulesets are what stop that refusal depending on one job. A single content gate that stops one
 rung short is also a question every future reader has to re-derive.
 
-**`docs` is one status context running three steps, so a red `docs` is not necessarily a broken link**
-(gh#160) — the required-context count is unchanged, and the row above says so. Beside
-[`check-doc-links.sh`](../../scripts/check-doc-links.sh) it now runs
-[`check-doc-sizes.sh`](../../scripts/check-doc-sizes.sh), which re-measures every row of every `~tok` table
-it is pointed at (`wc -c` bytes ÷ 4, 25% tolerance) and fails a row that no longer describes its file — and
-[`check-doc-sizes-selftest.sh`](../../scripts/check-doc-sizes-selftest.sh), which requires that gate to
-reject twenty-six known faults by name and to accept seventeen correct inputs — one at the tolerance boundary, so
-the tolerance cannot be quietly set to zero, one whose prose contains "no longer", so the size-claim
-vocabulary cannot creep back onto ordinary English, and twelve that print a price table inside a fence —
-six quoted, four of those closed by the end of the blockquote or of the file, and four leaning on one
-opener/closer rule each — so a document explaining the column is not accused of adding one. All three ride in the
-one job **because `docs` is already required on all three rungs**, so none of this needed a ruleset write and
-[the table above](#what-is-required-and-what-only-reports) does not change — the same argument as
-`commit-hygiene`'s merge-commit refusal below. Two new jobs would have meant two new required contexts added
-by hand, and a context nobody adds is a check that only ever reports (gh#26).
+**`docs` is one status context running five steps, so a red `docs` is not necessarily a broken link**
+(gh#160, gh#182) — the required-context count is unchanged, and the row above says so. **Update that row and
+this count together whenever a step is added**; the count is the only thing telling a reader that a red
+`docs` has five possible causes. Beside [`check-doc-links.sh`](../../scripts/check-doc-links.sh) it runs:
+
+- [`check-doc-sizes.sh`](../../scripts/check-doc-sizes.sh), which re-measures every row of every `~tok` table
+  it is pointed at (`wc -c` bytes ÷ 4, 25% tolerance) and fails a row that no longer describes its file — and
+  [`check-doc-sizes-selftest.sh`](../../scripts/check-doc-sizes-selftest.sh), which requires that gate to
+  reject twenty-six known faults by name and to accept seventeen correct inputs — one at the tolerance
+  boundary, so the tolerance cannot be quietly set to zero, one whose prose contains "no longer", so the
+  size-claim vocabulary cannot creep back onto ordinary English, and twelve that print a price table inside a
+  fence — six quoted, four of those closed by the end of the blockquote or of the file, and four leaning on
+  one opener/closer rule each — so a document explaining the column is not accused of adding one.
+- [`check-requirement-ids.sh`](../../scripts/check-requirement-ids.sh), which resolves **every `R-#` and
+  `Q-#` cited anywhere in the tree** against [the PRD](../prd.md)'s own definitions and fails naming file,
+  line and symbol — and [`check-requirement-ids-selftest.sh`](../../scripts/check-requirement-ids-selftest.sh),
+  which requires that gate to reject nine known faults **by name and by symbol** and to accept the three
+  awkward correct shapes this repository actually contains. `check-doc-links.sh` proves a relative *link*
+  resolves; nothing proved an *id* did, and gh#172 found two citations naming another repository's PRD
+  entirely. **The left word boundary is the whole trick**: an ADR number contains a citation-shaped
+  substring, so without it the gate reddens every line that names an ADR — twelve phantom ids on this tree.
+  It has **no exclusion list**, so it reads its own source and its own self-test like every other file, and
+  the self-test assembles its dangling fixtures at run time rather than spelling them.
+
+All of it rides in the one job **because `docs` is already required on all three rungs**, so none of it
+needed a ruleset write and [the table above](#what-is-required-and-what-only-reports) does not change — the
+same argument as `commit-hygiene`'s merge-commit refusal below. Four new jobs would have meant four new
+required contexts added by hand, and a context nobody adds is a check that only ever reports (gh#26).
 
 **What it is pointed at is a list of (file, heading) pairs, and both halves of that list fail closed**
 (gh#178). It was one file and a fixed pair of headings until the role contracts needed pricing: the routing

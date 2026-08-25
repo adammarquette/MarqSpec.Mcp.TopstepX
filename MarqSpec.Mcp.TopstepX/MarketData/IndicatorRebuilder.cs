@@ -92,13 +92,19 @@ public sealed class IndicatorRebuilder(
             int changed = await ReplaySeriesAsync(s.Venue, s.Instrument, s.ResolutionMinutes, now, cancellationToken)
                 .ConfigureAwait(false);
 
-            // The series is committed and this context will never look at it again, so let it go. Without
-            // this the run accumulates every series' IndicatorValues for its whole length, and each later
-            // series pays for the earlier ones on every SaveChanges. It is the REPAIR verb over the WHOLE
-            // store, so it degrades worst exactly where the store is largest (gh#73 review).
+            // The series is committed and this context will never look at it again, so let it go.
             //
-            // Safe here and nowhere else in this class: RunAsync has committed, `series` holds projections
-            // rather than entities, and nothing below reads a tracked object.
+            // THE COST THIS USED TO NAME IS GONE, and saying so is the point of keeping the comment. It used
+            // to be that the run accumulated every series' IndicatorValues for its whole length and each
+            // later series paid for the earlier ones on every SaveChanges (gh#73 review) -- the REPAIR verb
+            // over the WHOLE store, degrading worst exactly where the store is largest. Since gh#133 the
+            // projection reads its values untracked and writes them with SQL, so after a series the tracker
+            // holds nothing but the reconcile's deletions, which SaveChanges has already detached.
+            //
+            // It stays because it is a cheap statement of the invariant rather than a cure for a measured
+            // cost: nothing below reads a tracked object, and a later change that starts tracking again would
+            // otherwise re-acquire the old behaviour silently. Safe here and nowhere else in this class:
+            // RunAsync has committed, and `series` holds projections rather than entities.
             _database.ChangeTracker.Clear();
 
             total += changed;

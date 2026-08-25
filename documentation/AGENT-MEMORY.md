@@ -117,6 +117,15 @@ ADR, `AGENTS.md`, or the code, **put it there instead**.
 
 ## Notes & communications
 
+- **[2026-08-24] When a test's stimulus moves, grep for what points AT the test, not only for what the test
+  points at (gh#133 review).** `StoreFaultBoundaryTests` has been re-homed three times — bar key (gh#103),
+  coverage key (gh#122), indicator key (gh#133) — and **every one of the three left a stale inbound
+  cross-reference behind**, because each author corrected the moved test and the documents it cites. The one
+  missed this time was `StoreFaultReportingTests`, whose remarks said its fabricated `23505` "is pinned
+  against a real one in `StoreFaultBoundaryTests`" — no longer true, and the two files then contradicted each
+  other with nothing failing. **Two greps, not one:** the symbol you changed, *and* the name of the thing you
+  changed it in.
+
 - **[2026-08-24] A `WHERE` on `ON CONFLICT … DO UPDATE` cannot suppress the `40001`, and a skip-unchanged
   `WHERE` is only worth adding where the C# comparison is *not* already at the column's scale (gh#133).** Two
   facts, both learned building the third of these upserts and neither with a home outside a code comment.

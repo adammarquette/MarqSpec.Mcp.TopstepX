@@ -18,6 +18,23 @@ ADR, `AGENTS.md`, or the code, **put it there instead**.
 
 ## Practices to follow
 
+- **[2026-08-25] A conflict resolver that never ran let `git rebase` commit conflict markers, silently
+  (gh#187).** Resolving a nine-commit rebase with a script, the script was written to `/tmp/fix.py` from Git
+  Bash and invoked as `python /tmp/fix.py`. **The `python` on PATH is Windows-native and cannot see MSYS's
+  `/tmp`** — a different mechanism from the MSYS argument-rewriting below, and it fails the other way: loud
+  on stderr, invisible to a loop that does not check. Each iteration printed `can't open file`, `git add`
+  staged the still-conflicted file, `rebase --continue` accepted it, and the rebase reported success with
+  `<<<<<<<` markers committed into `documentation/README.md`. **This is every dead gate in this repository in
+  a new costume — a step whose failure nothing checked** — and it was caught only by verifying the tree
+  afterwards (`grep -rlE '^<<<<<<<'`, priced-row count) instead of trusting the clean exit. Recovery was free
+  because the pre-rebase tip was still pushed; `git reset --hard <tip>` and redo.
+  - **Write scripts to a Windows-visible path** (the agent scratchpad, `C:/...`), not `/tmp`, whenever a
+    Windows-native interpreter will read them. With `MSYS_NO_PATHCONV=1` set — which you need for
+    `git show rev:path` — `cd /c/tmp/...` also fails, so prefer `git -C <dir>` and absolute `C:/` paths.
+  - **Assert the resolver's effect, never its exit code**: markers gone AND the row count still right. The
+    first script *did* run and still corrupted the file, duplicating rows across successive conflicts, so
+    "it ran" is not the property you need.
+
 - **[2026-08-25] A rebase re-prices your rows AND invalidates your sentences — only the first half has a gate
   (gh#187, gh#196).** `scripts/check-doc-sizes.sh` re-measures every routed document on every pull request, so
   a `~tok` that drifted because *somebody else's* merge grew a file is caught — provided the drift exceeds
@@ -33,8 +50,19 @@ ADR, `AGENTS.md`, or the code, **put it there instead**.
   - **The same shape, one level up:** a sweep finds stale **identifiers** because grep finds strings. The
     sentences that break are the ones your own **measurement** just falsified, and they contain no stale
     identifier at all — so nothing points at them. gh#187 produced four count errors this way, each caught by
-    a reviewer rather than by the author: three automations that were two, three harms that were two, seven
+    a reviewer rather than by the author: three transitions that were two, three harms that were two, seven
     open items that were six, one non-author actor that was two.
+  - **AND THE LARGER HALF IS NOT DRIFT AT ALL — it is the citation nobody ever reopened.** Everything above
+    is about a claim that *became* false. On gh#187 four more findings were claims that were **never true**,
+    and no rebase touched any of them: gh#107 has said 44 since `2026-08-23` while the text beside it said
+    nine; #4 and #5 have always shared `In Progress` and `Done` while the text said the columns were
+    disjoint; gh#148's card was gone before the branch existed; and gh#107 was cited for a pull-request
+    measurement it does not contain. **A citation sitting beside measured claims inherits their
+    credibility** — the reader checks the numbers that look like numbers and takes the `gh#N` on trust.
+    **So reopen every citation you carry forward, especially the ones you did not write**, and check what
+    each number *counts* before reconciling two of them: the nine and the 44 are both correct and are
+    different measurements on different days, and a reviewer who conflated them proposed replacing a right
+    number with a wrong one.
   - **Correcting the instance does not close it.** gh#187 fixed that `CONTRIBUTING.md` row only because it
     happened to be editing that table already; otherwise it would simply have stayed wrong. gh#196 carries
     the structural half.

@@ -59,8 +59,10 @@ green is not permission to merge — only the maintainer merges (root [`AGENTS.m
 
 **The card follows the verdict, and no automation carries it.** Approval sends the card to `Ready to Merge`
 and a changes-requested sends it back to `Todo` — but nothing moves it, so an approved card parks in
-`In Review` until a person acts. That is the drift gh#107 measured on #4, arriving through the two columns no
-automation covers.
+`In Review` until a person acts. It arrives through the two **transitions** no automation covers — not two
+columns: automation writes `Todo` and `Done`, so `Ready to Merge` is the only *column* of that pair it never
+touches. **Four columns are never automation-written at all**: `Blocked`, `In Progress`, `In Review` and
+`Ready to Merge`.
 
 **A kicked-back card re-walks the path it already has** — `Todo` (put there by the coordinator, following the
 verdict), then `In Progress` while you fix, then `In Review` when you push. There is no eighth transition for
@@ -96,8 +98,10 @@ approach ends the same way.
 
 **`Done` means "closed, however" — shipped, declined, answered, or thrown away.** It is not a claim that
 anything was delivered. gh#104 was resolved by a *decision* recorded as
-[ADR-0012](adr/0012-fills-are-not-serialised.md); gh#148 was a throwaway probe. Both are `Done`, and both are
-right.
+[ADR-0012](adr/0012-fills-are-not-serialised.md); gh#148 was a throwaway probe. Both endings are legitimate
+and neither is readable off #5: gh#104's only card is on the retired #4, and gh#148's was removed from the
+board altogether at `2026-08-24T18:48:53Z`. **The column is not where an ending is recorded** — which is the
+point.
 
 Which kind of ending it was belongs in the **closing comment**, where a reader can act on it, not in a column
 with one value for every ending. You do not move these — closing moves them, including out of `Blocked`.
@@ -204,8 +208,11 @@ still in `Done` three minutes later with the issue `OPEN`. **Reopen an issue and
 or the board shows finished work that is live again.
 
 Five of the seven transitions are still a claim somebody made by hand, so a column still decays — read the
-issue's state before you believe it. The specific drift gh#107 measured on #4 — nine closed issues parked in
-working columns — cannot accumulate now, because closing moves the card. **One new one took its place:** a
+issue's state before you believe it. The drift #4 showed cannot accumulate now, because closing moves the
+card. **Two measurements, two days, and they are easy to conflate:** gh#107's body records **44** closed
+issues sitting in working columns at grooming on `2026-08-23`; **nine more** had collected by
+`2026-08-24 18:50:49Z`, counted in PR #154 while closing gh#107. Cite the nine to PR #154, not to gh#107 —
+following gh#107 for it lands a reader on 44 with nothing to reconcile. **One new one took its place:** a
 reopened issue sits in `Done` until somebody moves it, and nothing will ever move it back. `PullRequest` items
 are *not* a second: they sit in `Todo` while the pull request is open and the close automation collects them
 on close ([below](#cards-and-links)) — noise in that column, not accumulating drift. Automation moved the
@@ -234,8 +241,9 @@ changes: **a column on #4 claims nothing about anything.** Read the issue, or #5
 **#5** card one second later and its **#4** card did not move at all. That is the same measurement as gh#107's,
 taken on real work, and it is why a column there cannot be believed even when it looks current.
 
-Its columns were *Backlog / Planning / Current ToDo / In Progress / Review / Done*, none of which exist on #5
-— so one of those names in a document is itself the signal that the document is stale.
+Its columns were *Backlog / Planning / Current ToDo / In Progress / Review / Done*. **Four of those six do
+not exist on #5** — `Backlog`, `Planning`, `Current ToDo` and `Review` — so one of *those four* in a document
+is the signal that it is stale. `In Progress` and `Done` are on both boards and distinguish nothing.
 
 **Closing does not stop anyone carding work there — measured against #4 itself, not a proxy.** At `19:46:45Z`
 on 2026-08-25, `gh project item-add 4 --owner adammarquette --url <issue>` against the closed, retired board
@@ -275,7 +283,8 @@ issue.
 
 **Pull requests sit on the board too, and that is new.** #5 auto-adds them: PR #189 and PR #190 both landed as
 `PullRequest` items in `Todo` within seconds of being opened (read `2026-08-25 19:28:47Z`), where gh#107
-measured that no pull request had ever been an item on #4. **They are not lifecycle cards — do not move one,
+**#4 has never held one** — its 73 items are every one of them an issue, read from the board rather than
+from gh#107, which does not measure this. **They are not lifecycle cards — do not move one,
 and do not read a `PullRequest` row's column as a claim about the work.** The issue beside it carries that.
 
 **A `PullRequest` item does not sit in `Todo` for ever — the close automation reaches it too, and it fires on

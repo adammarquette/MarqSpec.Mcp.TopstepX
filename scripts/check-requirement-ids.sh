@@ -92,7 +92,6 @@ set -euo pipefail
 
 die()  { printf '\033[31m%s\033[0m\n' "$*" >&2; }
 ok()   { printf '\033[32m%s\033[0m\n' "$*"; }
-info() { printf '%s\n' "$*"; }
 
 REPO_ROOT="${1:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 cd "$REPO_ROOT" || { die "  NO SUCH ROOT  $REPO_ROOT"; exit 1; }
@@ -225,15 +224,24 @@ mapfile -t files <<< "$file_list"
 # THE STATUS IS READ, AND 1 IS TOLD FROM 2 (the platform contract). grep exits 1 for "nothing matched", which
 # is handled below as its own failure, and 2-or-above for "I could not read one of these files" — which must
 # never be flattened into "no citations found". `|| true` over that distinction is gh#98.
-raw=""
+#
+# THE OUTPUT GOES TO A FILE, NOT THROUGH `$( )` (gh#164). A command substitution strips trailing newlines, so
+# a line-oriented payload whose last line may be empty comes back a line short — and the status being checked
+# correctly is no defence, because what is lost is bytes rather than an exit code. The redirection still
+# belongs to the command whose status is read, and `mapfile` from a plain file fails the script if the file
+# cannot be opened.
+hits_file="$(mktemp)"
+trap 'rm -f "$hits_file"' EXIT
 grep_status=0
-raw="$(grep -I -H -n -o -E "$CITATION" -- "${files[@]}")" || grep_status=$?
+grep -I -H -n -o -E "$CITATION" -- "${files[@]}" > "$hits_file" || grep_status=$?
 if [ "$grep_status" -gt 1 ]; then
   die "  UNREADABLE  grep exited $grep_status over ${#files[@]} files under $REPO_ROOT"
   die "At least one file was not read, so this cannot report the tree's citations clean."
   exit 1
 fi
-if [ "$grep_status" -eq 1 ] || [ -z "$raw" ]; then
+hits=()
+mapfile -t hits < "$hits_file"
+if [ "$grep_status" -eq 1 ] || [ "${#hits[@]}" -eq 0 ]; then
   die "  NO CITATIONS  not one requirement id was found in ${#files[@]} files under $REPO_ROOT"
   die "$PRD alone defines $(( sections + requirements + questions )) of them and is normally in this list, so"
   die "a corpus citing none of them means the search did not happen — an ignored PRD, a broken pattern, a"
@@ -246,7 +254,7 @@ dangling=0
 declare -A SEEN_ID=()
 declare -A DANGLING_IN_PRD=()
 
-while IFS= read -r hit; do
+for hit in "${hits[@]}"; do
   [ -n "$hit" ] || continue
   # Parsed from the RIGHT: `file:line:id`. A path containing a colon would break a left-to-right split and
   # would do it silently, by mis-reporting the location of a real failure.
@@ -265,9 +273,7 @@ while IFS= read -r hit; do
       DANGLING_IN_PRD["$id"]=1
     fi
   fi
-done <<HITS
-$raw
-HITS
+done
 
 for id in "${!DANGLING_IN_PRD[@]}"; do
   die "  HINT  $PRD mentions $id but not in a form this gate reads as a definition."

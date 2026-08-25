@@ -307,7 +307,17 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
-          # MinVer reads the tag, and a shallow clone yields 0.0.0-alpha.0 SILENTLY rather than failing.
+          # NOT FOR MINVER, and this comment used to say it was (gh#176). Nothing is built on the runner
+          # here: the context goes to buildx and the assembly is produced inside the container, which never
+          # sees .git because .dockerignore excludes it. Read off the published image rather than off a build
+          # log -- MarqSpec.Mcp.TopstepX.dll inside ghcr.io/adammarquette/marqspec.mcp.topstepx:0.1.0 carries
+          # AssemblyInformationalVersion 0.0.0-alpha.0, at this very depth. The image TAG is the version
+          # (ADR-0001's decision log).
+          #
+          # KEPT ANYWAY, deliberately. This job exists to build by the mechanism the release uses (gh#54),
+          # the checkout is an input to that build, and release.yml's `publish` declares the same depth --
+          # so trimming one of the two would introduce the very divergence this job exists to remove, for no
+          # gain. Correct the claim, not the setting.
           fetch-depth: 0
 
       # DECLARED, not inherited from the runner image (gh#54). Buildx is preinstalled on GitHub-hosted

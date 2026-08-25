@@ -78,11 +78,24 @@ The root contract's five apply here unchanged. Four land specifically on the pip
 - **MinVer needs tag history.** `actions/checkout` defaults to a shallow clone, which yields `0.0.0-alpha.0`
   instead of the tagged version — and it does so *silently*, stamping a wrong version rather than failing.
   **Nothing here packs**, so read the rule as *every job that builds*, not *every job that packs*: the version
-  goes into the assembly regardless (ADR-0001). That is `build-test`, `integration-test` and `image` in
-  `ci.yml`, `publish` in `release.yml`, and `analyze` in `codeql.yml` — the last for build *parity* rather
-  than need, so the one job analysing this code does not analyse a differently-stamped build.
+  goes into the assembly regardless (ADR-0001). **But it has to be a job that builds ON THE RUNNER.** Three
+  do: `build-test` and `integration-test` in `ci.yml`, and `analyze` in `codeql.yml` — the last for build
+  *parity* rather than need, so the one job analysing this code does not analyse a differently-stamped build.
 
-  **Six jobs declare `fetch-depth: 0`, and the sixth is not about MinVer at all.** `commit-hygiene`
+  **`image` and `publish` are NOT among them, and this bullet used to say they were** (gh#176). Neither
+  installs an SDK: both hand the context to buildx, and the assembly they produce is built inside the
+  container, which never sees `.git` because `.dockerignore` excludes it. Read off the published artifact
+  rather than off a log: `MarqSpec.Mcp.TopstepX.dll` inside
+  `ghcr.io/adammarquette/marqspec.mcp.topstepx:0.1.0` carries `AssemblyInformationalVersion`
+  **`0.0.0-alpha.0`** and `AssemblyVersion` `0.0.0.0`, at `fetch-depth: 0`. What carries the release number
+  on the published artifact is the image **tag** and the `org.opencontainers.image.version` label, and that
+  is [ADR-0001](../adr/0001-tag-driven-versioning.md)'s decision rather than an accident — with the cost
+  named there. **The depth on those two stays**: they read no history for anything else either
+  (`image-reference.sh` reads `remote.origin.url` from git *config*, the tag check reads `GITHUB_REF_NAME`),
+  but `image` exists to build by the mechanism the release uses (gh#54), the checkout is an input to that
+  build, and trimming the release path buys nothing. **Correct the claim, not the setting.**
+
+  **Six jobs declare `fetch-depth: 0`, and only the three above are MinVer's.** `commit-hygiene`
   (`branch-policy.yml`) installs no SDK, builds nothing, and needs full history anyway: it walks the pull
   request's commit range with `git log --no-merges --format=%s <base>..<head>`, which a shallow clone cannot
   resolve. That failure used to be **silent** — `mapfile` swallowed the exit status past `set -euo pipefail`,
@@ -90,7 +103,8 @@ The root contract's five apply here unchanged. Four land specifically on the pip
   passing vacuously. Since gh#164 the read is checked before it is split and the job goes **red** naming the
   range and this line, so trimming it now costs a failed run instead of a silent hole. So the question is
   **"does this job read git history?"**, never "does it build" and never "does it install an SDK". Deciding
-  it by SDK is how the sixth one gets trimmed.
+  it by SDK is how `commit-hygiene` gets trimmed; deciding it by "does it build" is how `image` and `publish`
+  came to be listed under MinVer for a stamp they never produce.
 - **One target framework, and the SDK a job installs must match what the projects declare.** All five projects
   declare `net10.0` **alone** — this is an application, not the multi-targeting library the template came
   from — and `global.json` pins the SDK to `10.0.300`. `ci.yml` and `codeql.yml` therefore each install

@@ -45,8 +45,13 @@
     MinVer needs tag history: a shallow clone yields 0.0.0-alpha.0 SILENTLY rather than failing.
     NOTHING HERE PACKS, so the rule is that every CI job which BUILDS ON THE RUNNER needs
     `fetch-depth: 0`. It does not reach the CONTAINER build, which never sees .git (see
-    .dockerignore) and stamps 0.0.0-alpha.0 every time, at any depth. What that means for the
-    published image is gh#176.
+    .dockerignore) and stamps 0.0.0-alpha.0 every time, at any depth.
+
+    THAT IS READ OFF THE ARTIFACT, not inferred from a build log (gh#176): inside the published
+    ghcr.io/adammarquette/marqspec.mcp.topstepx:0.1.0 image, MarqSpec.Mcp.TopstepX.dll carries
+    AssemblyInformationalVersion 0.0.0-alpha.0 and AssemblyVersion 0.0.0.0. The release number is
+    carried by the image TAG and by org.opencontainers.image.version instead, and the assembly's
+    own stamp is decorative BY DECISION. ADR-0001's decision log has the reasoning and the cost.
   -->
   <PropertyGroup>
     <MinVerTagPrefix>v</MinVerTagPrefix>

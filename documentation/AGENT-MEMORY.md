@@ -182,7 +182,11 @@ ADR, `AGENTS.md`, or the code, **put it there instead**.
   - **The container fallback works and is the reliable path**, now that Docker is up:
     `docker compose -f docker-compose.yml -f docker-compose.dev.yml run --rm --no-deps sdk dotnet test
     MarqSpec.Mcp.TopstepX.Tests`. (Expect `MINVER1001` warnings — the container does not see the git
-    directory. Harmless.)
+    directory. Harmless **for a local test run** — nothing cares what a test assembly is stamped with.
+    **[2026-08-25] Same warning, same cause, in the container build that SHIPS, and NOT harmless there:**
+    the released assembly carries `0.0.0-alpha.0` at any `fetch-depth`. gh#176, read off the published DLL
+    and decided in [ADR-0001](adr/0001-tag-driven-versioning.md)'s decision log. This entry is the first hit
+    anyone greps for `MINVER1001`, so do not carry its "harmless" past this scope.)
   - **[2026-08-24] …but that compose form fails on a busy machine, and the correction is a plain `docker
     run`.** `compose … run` creates a network, so with enough stacks up it dies on *"all predefined address
     pools have been fully subnetted"* — the documented remedy for the Application Control block leading

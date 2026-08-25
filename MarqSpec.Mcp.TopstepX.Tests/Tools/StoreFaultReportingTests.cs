@@ -30,9 +30,20 @@ namespace MarqSpec.Mcp.TopstepX.Tests.Tools;
 /// <para>
 /// <b>The exceptions here are fabricated, and that is a deliberate division of labour.</b> What these pin is
 /// the boundary's <i>policy</i> — which exception types are translated, which are not, and that a healthy call
-/// is untouched. That a real lost race actually produces one of these types, carrying the SqlState this
-/// assumes, is a claim about Postgres and is pinned against a real one in
-/// <c>MarqSpec.Mcp.TopstepX.IntegrationTests.StoreFaultBoundaryTests</c>.
+/// is untouched. That a real fault actually produces one of these types, carrying the SqlState this assumes,
+/// is a claim about Postgres and is pinned against a real one in
+/// <c>MarqSpec.Mcp.TopstepX.IntegrationTests.StoreFaultBoundaryTests</c> — <b>for two of the three, not for
+/// all of them.</b> That tier drives a real <c>40001</c> past the retry and a real <c>3D000</c>.
+/// </para>
+/// <para>
+/// <b>The duplicate key is the exception: since gh#133 it is fabricated <i>only</i>.</b> The three writes that
+/// could produce one — the bars, the coverage ledger, the indicator projection — are all
+/// <c>ON CONFLICT … DO UPDATE</c> now (gh#103, gh#122, gh#133; epic gh#80), so no call site can reach a
+/// <c>23505</c> and the integration tier declined to fabricate a collision in order to keep driving one. This
+/// test therefore stands alone for that branch, which is why the branch is still worth having: the schema has
+/// unique keys, this filter is served on behalf of every tool rather than of the fill path, and the next
+/// writer added can hit one. If a real one becomes reachable again, drive <i>that</i> one from the
+/// integration tier and correct this paragraph — it has now been wrong once for exactly that reason.
 /// </para>
 /// </remarks>
 public sealed class StoreFaultReportingTests

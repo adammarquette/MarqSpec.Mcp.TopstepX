@@ -60,6 +60,12 @@ regardless of how clean the rest reads.
 - **When GitHub blocks self-review** — agents here authenticate as the maintainer who authored the PR — fall
   back to a comment whose **first line is the verdict**: `**Verdict: Request changes**` or `**Verdict: Approve**`.
   An ambiguous review state is worse than a bluntly-stated one.
+- **A verdict is also a board move, and `Ready to Merge` is yours.** No automation covers that column — it is
+  the maintainer's "what may I merge" signal, so approving and stopping leaves finished work parked in
+  `In Review` until somebody reads the pull request list by hand. Requesting changes sends the card to `Todo`
+  instead, where the author can pick it up. Option ids and the `item-edit` invocation are in the
+  [board workflow](../project-board-workflow.md); they live there rather than here so there is one copy to
+  correct when the board changes.
 
 ## What you do not do
 
@@ -75,4 +81,5 @@ regardless of how clean the rest reads.
 
 Every finding names a concrete failure · ranked by blast radius · repeated patterns called out as patterns · no
 formatting noise · PR-body claims verified against the diff · the order-duplication question explicitly answered
-when it applies · a formal verdict submitted · nothing merged, closed, or pushed.
+when it applies · a formal verdict submitted · **the card moved** — `Ready to Merge` on approval, `Todo` on
+changes requested · nothing merged, closed, or pushed.

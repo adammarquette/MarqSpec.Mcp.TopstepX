@@ -104,7 +104,8 @@ The root contract's five apply here unchanged. Four land specifically on the pip
   range and this line, so trimming it now costs a failed run instead of a silent hole. So the question is
   **"does this job read git history?"**, never "does it build" and never "does it install an SDK". Deciding
   it by SDK is how `commit-hygiene` gets trimmed; deciding it by "does it build" is how `image` and `publish`
-  came to be listed under MinVer for a stamp they never produce.
+  came to be listed under MinVer for a stamp their checkout depth cannot change. They do produce one — it is
+  just `0.0.0-alpha.0` at every depth.
 - **One target framework, and the SDK a job installs must match what the projects declare.** All five projects
   declare `net10.0` **alone** — this is an application, not the multi-targeting library the template came
   from — and `global.json` pins the SDK to `10.0.300`. `ci.yml` and `codeql.yml` therefore each install

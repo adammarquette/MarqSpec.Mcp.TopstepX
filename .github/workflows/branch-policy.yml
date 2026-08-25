@@ -86,6 +86,11 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
+          # fetch-depth: 0 is LOAD-BEARING here, and this is the one job in the repository whose need for full
+          # history has nothing to do with MinVer -- it installs no SDK and builds nothing. Both steps below
+          # resolve a commit RANGE, which a shallow clone cannot do: at depth 1 the pull request's base SHA is
+          # simply not in the clone. Trimming this line used to be silent (gh#164); it is now a red run that
+          # names the range, so read the failure rather than restoring the depth blind.
           fetch-depth: 0
 
       # gh#146. Runs BEFORE the subject check, and that order is deliberate: a merge commit makes the branch
@@ -137,6 +142,27 @@ jobs:
           echo "::error::The 'Update branch' button MERGES by default — use its dropdown's 'Update with rebase'."
           exit 1
 
+      # gh#164. THE RANGE IS READ AND CHECKED BEFORE IT IS SPLIT, and the zero-subject asymmetry below is
+      # deliberately left alone. Two different questions, and conflating them is what this card is about:
+      #
+      #   "I could not read this range"          -> fatal on BOTH arms. Nothing was checked.
+      #   "I read it and it has no commits"      -> merge_group refuses, pull_request accepts. Unchanged.
+      #
+      # The second line is a RECORDED PRIOR DECISION, not an oversight: a pull request legitimately can carry
+      # no non-merge commit, a merge group cannot. Do not collapse the two arms onto one verdict.
+      #
+      # What was wrong: `mapfile -t subjects < <(git log ...)`. A process substitution's exit status is never
+      # examined by the shell, so a failed `git log` left `subjects` empty, `set -euo pipefail` never fired,
+      # and the pull_request arm printed "No non-merge commits to check." and exited 0 -- a context required
+      # on all three rungs reporting green having read nothing. Fourth instance of one mechanism here; the
+      # five shapes are tabulated and measured on two bash versions in gh#126's PR #156, and in the platform
+      # contract's "Constraints that bite in CI". Cite that table rather than re-deriving it.
+      #
+      # WHERE IT WAS REACHABLE. On a pull request into `develop` the merge-commit step above already dies on
+      # an unresolvable range -- it assigns `git rev-list` plainly, so `set -e` carries git's 128 -- and
+      # merge_group already refused zero subjects. So the vacuous pass was reachable on exactly the PROMOTION
+      # rungs, `staging` and `main`, where that step is skipped by its base guard. That is why the mutation
+      # probes are based on `staging`: a `develop` base cannot show this defect at all.
       - name: Check commit subjects
         env:
           EVENT: ${{ github.event_name }}
@@ -155,8 +181,25 @@ jobs:
           fi
 
           # --no-merges: a merge commit's subject is GitHub's, not the author's.
-          mapfile -t subjects < <(git log --no-merges --format=%s "$RANGE")
+          log=""
+          log_status=0
+          log="$(git log --no-merges --format=%s "$RANGE")" || log_status=$?
+          if [ "$log_status" -ne 0 ]; then
+            echo "::error::git log exited $log_status for '$RANGE'. No commit was read, so this check has no"
+            echo "::error::verdict to give - failing rather than reporting on a range it could not open."
+            echo "::error::The usual cause is a shallow clone: this job needs fetch-depth: 0, being the ONE"
+            echo "::error::job here that needs full history for something other than MinVer."
+            exit 1
+          fi
 
+          # Split only after the read succeeded. A herestring on an empty string still yields ONE empty line,
+          # so an empty read has to skip the split entirely or a clean empty range arrives as one bad subject.
+          subjects=()
+          if [ -n "$log" ]; then
+            mapfile -t subjects <<<"$log"
+          fi
+
+          # Below this line is UNCHANGED and stays unchanged: a read that SUCCEEDED and found nothing.
           if [ "${#subjects[@]}" -eq 0 ]; then
             if [ "$EVENT" = "merge_group" ]; then
               echo "::error::Resolved zero commits for '$RANGE'. Refusing to pass vacuously."

@@ -27,9 +27,12 @@ told you.
 
 The root contract's five apply here unchanged. Four land specifically on the pipeline:
 
-- **A gate that cannot fail is not a gate.** Coverage artifacts were uploaded by CI and never evaluated, against
-  a stated 95% / 90% target. An artifact nobody reads is a report, not a gate — either wire the threshold or
-  stop claiming the target.
+- **A gate that cannot fail is not a gate.** Coverage artifacts were uploaded by CI and never evaluated. An
+  artifact nobody reads is a report, not a gate — either wire the threshold or stop claiming the target. This
+  bullet used to say they were evaluated against "a stated 95% / 90% target": **no document here has ever
+  stated one.** That figure and the requirement id `ci.yml` cited for it both came in with the scaffolding
+  from `MarqSpec.Client.ProjectX`, the same route as the inherited coverage floor of `43`, and neither
+  resolved here (gh#182). The floor `ci.yml` enforces is a measurement of this suite, ratcheted upward.
 - **No live credentials in a test run that does not need them.** `release.yml` passed real API secrets into an
   unfiltered `dotnet test`. That integration tests mostly did not execute was an accident of hardcoded skip
   strings, not a design. Live-credentialed runs are opt-in, tagged, and never on the release path.

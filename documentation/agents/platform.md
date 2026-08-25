@@ -300,6 +300,13 @@ The root contract's five apply here unchanged. Four land specifically on the pip
   `^( {4}|\t)` under `grep -E`, where `\t` is the **letter t** — so every line beginning "the" counted, and
   the number landed in this contract six times too large. Evidence for a decision has to be re-derived by a
   second route before it is written down; `grep -P '^( {4}|\t)'` or a character scan, never ERE's `\t`.
+  **And a self-test's needle is a text match too, so a needle that is a PREFIX of the right answer is
+  satisfied by an answer missing the rest of it** (gh#182). `check-requirement-ids-selftest.sh` asserted the
+  gate named `documentation/notes.md`; the gate prints `documentation/notes.md:1`, and the filename is a
+  substring of the location — so three separate ways of destroying the line number passed every case, and a
+  failure an author cannot act on read as a pass. Assert the **whole** field the reader will use, and mutate
+  the subject before believing the self-test: five of that file's seventeen cases exist because a mutation
+  walked past the ones already there, four of them found in review.
 - **A PR into a non-integration base used to get no CI at all, and read as `CLEAN`** (gh#60). `ci.yml` and
   `codeql.yml` filtered `pull_request` to `[develop, staging, main]`, so a stacked PR onto a feature branch
   produced zero runs — and because the required checks hang off the `develop` ruleset, nothing was pending or

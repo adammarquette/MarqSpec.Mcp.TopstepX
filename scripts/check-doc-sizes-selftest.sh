@@ -94,6 +94,8 @@ mkfile() {
 # `unterminated` opens that fence and never closes it, which must be REPORTED rather than allowed to
 # swallow the rest of the file in silence. `quoted` puts the fenced example inside a blockquote, which must
 # be ignored exactly as the unquoted one is -- the construct that got past `fence_step` in round 2.
+# `quote-closed` withholds the closing fence and ends the blockquote instead, which closes it in CommonMark
+# and must not be read as unterminated.
 # `second_file` set to `absent` deletes the second priced file outright — a priced file that has moved must
 # be reported, not skipped.
 #
@@ -126,12 +128,15 @@ make_fixture() {
     {
       printf '# a document PRICED does not name\n\n'
       q=""
-      [ "$stray_kind" != "quoted" ] || q="> "
+      case "$stray_kind" in quoted|quote-closed) q="> " ;; esac
       if [ "$stray_kind" != "priced" ]; then printf '%s```markdown\n' "$q"; fi
       printf '%s| Document | ~tok | Read it when |\n' "$q"
       printf '%s|---|---:|---|\n' "$q"
       printf '%s| [`delta.md`](delta.md) | 99K | A price table in a file the gate never opens. |\n' "$q"
-      if [ "$stray_kind" != "unterminated" ]; then printf '%s```\n' "$q"; fi
+      if [ "$stray_kind" != "unterminated" ] && [ "$stray_kind" != "quote-closed" ]; then
+        printf '%s```\n' "$q"
+      fi
+      if [ "$stray_kind" = "quote-closed" ]; then printf '\nOrdinary prose, outside the quote.\n'; fi
     } > "$dir/documentation/stray.md"
   fi
   {
@@ -156,6 +161,13 @@ make_fixture() {
       printf '|---|---:|---|\n'
       printf '| [`delta.md`](delta.md) | 99K | An EXAMPLE of a price table, shown not declared. |\n'
       printf '```\n'
+    elif [ "$reference_kind" = "quote-closed" ]; then
+      printf '> Shown as the map writes it:\n\n'
+      printf '> ```markdown\n'
+      printf '> | Document | ~tok | Read it when |\n'
+      printf '> |---|---:|---|\n'
+      printf '> | [`delta.md`](delta.md) | 99K | Closed by the end of the quote, not by a fence. |\n'
+      printf '\nOrdinary prose, outside the quote.\n'
     elif [ "$reference_kind" = "quoted" ]; then
       printf '> Quoting the map, which is what a document explaining this column does:\n\n'
       printf '> ```markdown\n'
@@ -385,7 +397,21 @@ expect_green "a quoted, fenced ~tok example under an unlisted heading" "$FIXTURE
 make_fixture "$FIXTURES/quoted-file" "1.0K" "$SOUND_GAMMA" "$SOUND_HEADING" "plain"   "$SOUND_CONTRACT" "$SOUND_CONTRACTS_HEADING" "quoted"
 expect_green "a quoted, fenced ~tok example in a swept file" "$FIXTURES/quoted-file" "5 priced rows"
 
-# 20. The sound fixture. Five priced rows across three sections in two files, plus an ordinary table with no
+# 20. A QUOTED FENCE CLOSED BY THE END OF ITS BLOCKQUOTE, with no closing ``` anywhere -- valid CommonMark,
+#     because the container closes and the fence closes with it (PR #193 review round 3, the residual). This
+#     is the INTERACTION of two round-2/3 fixes, neither wrong alone: stripping `>` so `fence_step` can see
+#     a quoted fence let the fence state walk out of the quote into ordinary prose, and the unterminated-
+#     fence report then reddened correct markdown. One case pins all three mechanisms, because it goes red
+#     three different ways: UNLISTED FILE / UNLISTED TABLE if the `>` strip goes (the fence never opens),
+#     UNTERMINATED FENCE if the container close goes (the fence never closes), and green only when both are
+#     right.
+make_fixture "$FIXTURES/quote-closed-section" "1.0K" "$SOUND_GAMMA" "$SOUND_HEADING" "quote-closed"
+expect_green "a quoted fence closed by the end of its blockquote" "$FIXTURES/quote-closed-section" "5 priced rows"
+
+make_fixture "$FIXTURES/quote-closed-file" "1.0K" "$SOUND_GAMMA" "$SOUND_HEADING" "plain"   "$SOUND_CONTRACT" "$SOUND_CONTRACTS_HEADING" "quote-closed"
+expect_green "the same, in a swept file" "$FIXTURES/quote-closed-file" "5 priced rows"
+
+# 21. The sound fixture. Five priced rows across three sections in two files, plus an ordinary table with no
 #     price column under a third heading -- so this also asserts the gate leaves un-priced tables alone,
 #     which is what nearly every table in the corpus is.
 #
@@ -410,4 +436,4 @@ if [ "$cases" -eq 0 ]; then
   exit 1
 fi
 
-ok "ok  $cases self-test cases across two priced files — check-doc-sizes.sh rejects each known fault BY NAME, and accepts correct input: one at the tolerance boundary, one whose prose says \"no longer\", four showing a price table inside a fence -- two of them quoted -- and one wholly sound."
+ok "ok  $cases self-test cases across two priced files — check-doc-sizes.sh rejects each known fault BY NAME, and accepts correct input: one at the tolerance boundary, one whose prose says \"no longer\", six showing a price table inside a fence -- four of them quoted, two of those closed by the end of the blockquote rather than by a fence -- and one wholly sound."

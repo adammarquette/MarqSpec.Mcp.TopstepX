@@ -360,10 +360,11 @@ rung short is also a question every future reader has to re-derive.
 [`check-doc-sizes.sh`](../../scripts/check-doc-sizes.sh), which re-measures every row of every `~tok` table
 it is pointed at (`wc -c` bytes ÷ 4, 25% tolerance) and fails a row that no longer describes its file — and
 [`check-doc-sizes-selftest.sh`](../../scripts/check-doc-sizes-selftest.sh), which requires that gate to
-reject eighteen known faults by name and to accept seven correct inputs — one at the tolerance boundary, so
+reject eighteen known faults by name and to accept nine correct inputs — one at the tolerance boundary, so
 the tolerance cannot be quietly set to zero, one whose prose contains "no longer", so the size-claim
-vocabulary cannot creep back onto ordinary English, and four that print a price table inside a fence — two
-of them inside a blockquote as well — so a document explaining the column is not accused of adding one. All three ride in the
+vocabulary cannot creep back onto ordinary English, and six that print a price table inside a fence — four
+of them quoted, two of those closed by the end of the blockquote rather than by a fence — so a document
+explaining the column is not accused of adding one. All three ride in the
 one job **because `docs` is already required on all three rungs**, so none of this needed a ruleset write and
 [the table above](#what-is-required-and-what-only-reports) does not change — the same argument as
 `commit-hygiene`'s merge-commit refusal below. Two new jobs would have meant two new required contexts added
@@ -405,7 +406,12 @@ than twice, and the gate learned to read a second file. Three consequences worth
   item, so it could not fire on correct input. **A `>` is stripped along with the indentation**, because
   `fence_step` was reading a line the row reader had already promised to read past a blockquote marker —
   gh#123's rule that the stateful pass must know the delimiters the later passes remove, met a third
-  time.
+  time. **That strip then produced a false positive of its own, which is the shape to expect after a parser
+  fix:** a fence opened inside a blockquote and closed by the **end of that blockquote** — valid CommonMark,
+  with no closing fence anywhere — carried its state out of the quote and died `UNTERMINATED FENCE` on
+  correct markdown. The container owns the fence, so one opened under a `>` now ends at the first line
+  carrying none. Two fixes, neither wrong alone and wrong together; what caught it was a reviewer reading
+  the *interaction* rather than either change, on the third pass over the same file.
 - **A priced file that is not on disk stops the run** rather than being skipped. `check-doc-links.sh` says
   nothing about it — nothing links to a *table* — so moving the index without telling `PRICED` would
   otherwise stop pricing four contracts with every check still green.

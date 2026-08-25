@@ -44,11 +44,13 @@ permissions:
 jobs:
   # Needs no SDK, so a docs-only PR fails fast instead of waiting on a build.
   #
-  # THIS JOB REPORTS THREE CHECKS, so a red `docs` is not necessarily a broken link -- read which step failed.
-  # They ride in the one job on purpose: `docs` is already a required context on all three rungs, so nothing
-  # here needed a ruleset write to become enforcing. Same argument as `commit-hygiene`'s merge-commit refusal
-  # (gh#146). Splitting them into jobs of their own would mean adding two required contexts by hand, and a
-  # context nobody adds is a check that only reports (gh#26).
+  # ONE STATUS CONTEXT, THREE STEPS, so a red `docs` is not necessarily a broken link -- read which step
+  # failed. `docs` is still exactly one required context; nothing was added to any ruleset.
+  #
+  # They ride in the one job on purpose: `docs` is already required on all three rungs, so these became
+  # enforcing by wiring rather than by a settings change. Same argument as `commit-hygiene`'s merge-commit
+  # refusal (gh#146). Splitting them into jobs of their own would mean adding two required contexts by hand,
+  # and a context nobody adds is a check that only ever reports (gh#26).
   docs:
     name: docs
     runs-on: ubuntu-latest

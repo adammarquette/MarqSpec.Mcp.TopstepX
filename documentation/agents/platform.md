@@ -339,13 +339,15 @@ for all ten contexts required on that rung, `image` included, and `false` for bo
 at `main`; the rulesets are what stop that refusal depending on one job. A single content gate that stops one
 rung short is also a question every future reader has to re-derive.
 
-**`docs` reports three checks, not one, so a red `docs` is not necessarily a broken link** (gh#160). Beside
+**`docs` is one status context running three steps, so a red `docs` is not necessarily a broken link**
+(gh#160) — the required-context count is unchanged, and the row above says so. Beside
 [`check-doc-links.sh`](../../scripts/check-doc-links.sh) it now runs
 [`check-doc-sizes.sh`](../../scripts/check-doc-sizes.sh), which re-measures every row of
 [the routing map](../README.md)'s `~tok` column (`wc -c` bytes ÷ 4, 25% tolerance) and fails a row that no
 longer describes its file — and [`check-doc-sizes-selftest.sh`](../../scripts/check-doc-sizes-selftest.sh),
-which requires that gate to reject eight known faults by name and accept two sound fixtures — the second
-sitting just inside the tolerance, so the tolerance cannot be quietly set to zero. All three ride in the
+which requires that gate to reject twelve known faults by name and to accept three correct maps — one at the
+tolerance boundary, so the tolerance cannot be quietly set to zero, and one whose prose contains "no longer",
+so the size-claim vocabulary cannot creep back onto ordinary English. All three ride in the
 one job **because `docs` is already required on all three rungs**, so none of this needed a ruleset write and
 [the table above](#what-is-required-and-what-only-reports) does not change — the same argument as
 `commit-hygiene`'s merge-commit refusal below. Two new jobs would have meant two new required contexts added

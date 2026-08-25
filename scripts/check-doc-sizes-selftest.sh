@@ -96,7 +96,8 @@ mkfile() {
 # be ignored exactly as the unquoted one is -- the construct that got past `fence_step` in round 2.
 # `quote-closed` withholds the closing fence and ends the blockquote instead, which closes it in CommonMark
 # and must not be read as unterminated. `quote-eof` ends the FILE instead, which closes the quote and the
-# fence with it.
+# fence with it. `quote-then-table` puts a REAL price table after the quote -- the only shape that can tell
+# "the fence closed with its container" from "the fence ran to EOF and was forgiven there".
 # `second_file` set to `absent` deletes the second priced file outright — a priced file that has moved must
 # be reported, not skipped.
 #
@@ -129,15 +130,21 @@ make_fixture() {
     {
       printf '# a document PRICED does not name\n\n'
       q=""
-      case "$stray_kind" in quoted|quote-closed|quote-eof) q="> " ;; esac
+      case "$stray_kind" in quoted|quote-closed|quote-eof|quote-then-table) q="> " ;; esac
       if [ "$stray_kind" != "priced" ]; then printf '%s```markdown\n' "$q"; fi
       printf '%s| Document | ~tok | Read it when |\n' "$q"
       printf '%s|---|---:|---|\n' "$q"
       printf '%s| [`delta.md`](delta.md) | 99K | A price table in a file the gate never opens. |\n' "$q"
       case "$stray_kind" in
-        unterminated|quote-closed|quote-eof) ;;
+        unterminated|quote-closed|quote-eof|quote-then-table) ;;
         *) printf '%s```\n' "$q" ;;
       esac
+      if [ "$stray_kind" = "quote-then-table" ]; then
+        printf '\nThen a REAL price table, outside the quote and outside the fence:\n\n'
+        printf '| Document | ~tok | Read it when |\n'
+        printf '|---|---:|---|\n'
+        printf '| [`delta.md`](delta.md) | 99K | This one is not an example. |\n'
+      fi
       if [ "$stray_kind" = "quote-closed" ]; then printf '\nOrdinary prose, outside the quote.\n'; fi
     } > "$dir/documentation/stray.md"
   fi
@@ -163,6 +170,14 @@ make_fixture() {
       printf '|---|---:|---|\n'
       printf '| [`delta.md`](delta.md) | 99K | An EXAMPLE of a price table, shown not declared. |\n'
       printf '```\n'
+    elif [ "$reference_kind" = "quote-then-table" ]; then
+      printf '> An example, in a quote, with no closing fence:\n\n'
+      printf '> ```markdown\n'
+      printf '> | Document | ~tok | Read it when |\n'
+      printf '\nThen a REAL price table, outside the quote and outside the fence:\n\n'
+      printf '| Document | ~tok | Read it when |\n'
+      printf '|---|---:|---|\n'
+      printf '| [`delta.md`](delta.md) | 99K | This one is not an example. |\n'
     elif [ "$reference_kind" = "quote-closed" ]; then
       printf '> Shown as the map writes it:\n\n'
       printf '> ```markdown\n'
@@ -430,7 +445,23 @@ expect_green "a quoted fence still open at end of a priced file" "$FIXTURES/quot
 make_fixture "$FIXTURES/quote-eof-file" "1.0K" "$SOUND_GAMMA" "$SOUND_HEADING" "plain"   "$SOUND_CONTRACT" "$SOUND_CONTRACTS_HEADING" "quote-eof"
 expect_green "the same, at the end of a swept file" "$FIXTURES/quote-eof-file" "5 priced rows"
 
-# 22. The sound fixture. Five priced rows across three sections in two files, plus an ordinary table with no
+# 22. THE CASE THAT PINS `close_fence_if_quote_ended`, and it exists because case 21 stopped pinning it.
+#     Adding the quoted-at-EOF exemption MASKED the container rule: with `close_fence_if_quote_ended`
+#     deleted outright, a quoted fence simply stayed open to EOF, where the new exemption then forgave it --
+#     so all 29 cases went green on a gate that had lost the feature four of them were written for. Found by
+#     a mutation disagreeing with the model, not by reading the file.
+#
+#     What discriminates is a REAL price table BELOW the quote. If the container rule works, the fence
+#     closed with the blockquote and that table is read -- red, by its own name. If it does not, the table
+#     sits inside a fence that runs to EOF and is forgiven there -- green, wrongly. No other fixture can
+#     tell those apart, which is exactly why the gap was invisible.
+make_fixture "$FIXTURES/quote-then-table-section" "1.0K" "$SOUND_GAMMA" "$SOUND_HEADING" "quote-then-table"
+expect_red "a real price table below a quoted fence" "$FIXTURES/quote-then-table-section" "UNLISTED TABLE"
+
+make_fixture "$FIXTURES/quote-then-table-file" "1.0K" "$SOUND_GAMMA" "$SOUND_HEADING" "plain"   "$SOUND_CONTRACT" "$SOUND_CONTRACTS_HEADING" "quote-then-table"
+expect_red "the same, in a swept file" "$FIXTURES/quote-then-table-file" "UNLISTED FILE"
+
+# 23. The sound fixture. Five priced rows across three sections in two files, plus an ordinary table with no
 #     price column under a third heading -- so this also asserts the gate leaves un-priced tables alone,
 #     which is what nearly every table in the corpus is.
 #

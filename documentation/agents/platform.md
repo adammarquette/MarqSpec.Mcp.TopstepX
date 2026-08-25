@@ -360,7 +360,7 @@ rung short is also a question every future reader has to re-derive.
 [`check-doc-sizes.sh`](../../scripts/check-doc-sizes.sh), which re-measures every row of every `~tok` table
 it is pointed at (`wc -c` bytes ÷ 4, 25% tolerance) and fails a row that no longer describes its file — and
 [`check-doc-sizes-selftest.sh`](../../scripts/check-doc-sizes-selftest.sh), which requires that gate to
-reject eighteen known faults by name and to accept eleven correct inputs — one at the tolerance boundary, so
+reject twenty known faults by name and to accept eleven correct inputs — one at the tolerance boundary, so
 the tolerance cannot be quietly set to zero, one whose prose contains "no longer", so the size-claim
 vocabulary cannot creep back onto ordinary English, and eight that print a price table inside a fence —
 six of them quoted, four of those closed by the end of the blockquote or of the file rather than by a fence
@@ -416,6 +416,14 @@ than twice, and the gate learned to read a second file. Three consequences worth
   implemented, so a quoted fence open at EOF still reported `UNTERMINATED FENCE` saying "a price table under
   it would be unseen" with nothing under it at all. Half a rule is what produces a confident wrong
   diagnostic, which is gh#140's lesson on a different gate.
+- **An exemption added to silence a false positive can silence the rule it exempts, and the self-test will
+  not notice.** Forgiving a quoted fence at EOF made the four cases covering the blockquote-container rule
+  pass *without that rule*: delete `close_fence_if_quote_ended` outright and the fence simply ran to end of
+  file, where the new exemption forgave it — 29 of 29 green on a gate that had lost the feature they were
+  written for. Nothing in the suite could tell "closed by its container" from "ran to EOF and was forgiven".
+  What tells them apart is a real price table **below** the quote, and that is now a case. **Whenever a
+  tolerance, exemption or skip is added, re-run the mutation that pins the rule it touches** — the suite
+  going green afterwards is exactly what it does when coverage has been deleted instead.
 - **A priced file that is not on disk stops the run** rather than being skipped. `check-doc-links.sh` says
   nothing about it — nothing links to a *table* — so moving the index without telling `PRICED` would
   otherwise stop pricing four contracts with every check still green.

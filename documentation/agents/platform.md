@@ -170,14 +170,39 @@ The root contract's five apply here unchanged. Four land specifically on the pip
     run on a run of the *same length*, and a run with no such closer is ordinary text — so a stray backtick
     opens nothing and can swallow nothing. That property, not the ordering, is what answers gh#123's
     objection; adopt the rule that makes state-carrying safe rather than refusing to carry state.
-  - **Bound the state.** The search for a closer stops at a blank line and at a fence marker — the two
-    leaf-block boundaries CommonMark gives — so a mistake costs one paragraph, never the rest of the body.
+  - **Bound the state to a leaf block, and a MISSED boundary is a fail-open.** This is the finding the
+    review caught, and it was a regression this change introduced. The first version bounded a region at a
+    blank line and a fence marker only, and shipped with a note calling every other seam a harmless
+    over-strip. Backwards: a stray run on a heading pairs with the *opening* run of the real span below it,
+    every pairing after it shifts by one, and the span's contents reach the greps **as prose** — a required
+    gate passing a pull request that cites nothing. A missed boundary does not invent a span, it destroys
+    one, and a destroyed span is a phantom citation. Eight seams reproduce it (heading, table row, thematic
+    break, setext underline, list item, HTML block, blockquote, comment tail). **Starting a block is not the
+    same as having no inline content**, and conflating the two was the second bug in the same fix: a heading
+    is a region of *exactly itself*, while a list item starts one that continues.
+  - **An approximation is fine for where a block starts and NOT for what a block is.** Erring toward more
+    boundaries is the cheaper mistake — it loses only a span that wraps across that one line, which is the
+    per-line behaviour the gate already had. But the cheap version of the HTML rule, *the line starts with
+    `<`*, is wrong on real bodies: #59 wraps a span onto a line beginning `<IntegrationTests>`, which is no
+    HTML block at all. The gate silently stopped stripping a span GitHub strips, and the only thing that
+    caught it was the differential's non-blank count dropping from 13 to 12. The tag list is quoted from
+    CommonMark rather than guessed.
+  - **An HTML block is inline-free and citation-live at the same time.** Measured on two throwaway pull
+    requests: a body of `<!-- a block-level comment --> Closes #155` binds, and so does `<div>` followed by
+    a **backticked** `` `Closes #155` `` — a block carries no inline parsing, so the backticks are literal
+    and the reference is live. CommonMark says type 2 consumes the whole line carrying `-->`, which makes
+    blanking that tail look correct; it would delete a citation that works. **The spec says what GitHub
+    parses, not what GitHub binds, and only the second one decides what a gate may throw away.**
   - **A phase that deletes lines must blank them instead when a later phase reads across them.** Deleting a
     fenced block butts the paragraph above it against the one below, and a run in one then pairs with a run in
     the other. Blanking keeps the boundary and keeps the line numbering identical through all three phases.
 
-  **The differential: 96 bodies, 44 whose stripped text changes, 0 whose verdict moves** — and the second
-  number is what makes the third one evidence rather than an empty comparison. Measured by extracting the
+  **The differential: 96 bodies, 44 whose stripped text changes, 13 of those in NON-BLANK content, 0 whose
+  verdict moves.** The middle numbers are what make the last one evidence rather than an empty comparison —
+  and **44 is the wrong one to lean on**: 31 of those bodies differ only in blank lines, and `grep` is
+  line-oriented, so a blank line cannot move a verdict by construction. The claim *the new rule bites on
+  real bodies* is carried by 13. The first version of this bullet said 44, a 3.4x overstatement, in the same
+  file as the "37 bodies / 173 lines" correction four bullets above. Measured by extracting the
   `body_no_code` derivation out of `branch-policy.yml` itself, at `origin/develop` and at the fix, so what
   ran was the shipped text and not a copy of it.
 

@@ -40,8 +40,10 @@
     v-prefixed tag. This is why <Version> is absent from every .csproj.
 
     MinVer needs tag history: a shallow clone yields 0.0.0-alpha.0 SILENTLY rather than failing.
-    NOTHING HERE PACKS. This repository ships a container image, so the rule is that every CI job
-    which BUILDS needs `fetch-depth: 0`: the version goes into the assembly regardless.
+    NOTHING HERE PACKS, so the rule is that every CI job which BUILDS ON THE RUNNER needs
+    `fetch-depth: 0`. It does not reach the CONTAINER build, which never sees .git (see
+    .dockerignore) and stamps 0.0.0-alpha.0 every time, at any depth. What that means for the
+    published image is gh#176.
   -->
   <PropertyGroup>
     <MinVerTagPrefix>v</MinVerTagPrefix>

@@ -49,8 +49,10 @@ which is the thing being removed.
 - The version cannot drift, because there is nothing to drift from.
 - **A shallow clone breaks version inference.** MinVer needs tag history, and `actions/checkout` defaults to
   depth 1 — which yields `0.0.0-alpha.0` **silently** rather than failing. **Nothing here packs**, so the rule
-  is *every job that builds*, not *every job that packs*: the version goes into the assembly regardless.
-  Forgetting it means shipping an assembly stamped `0.0.0-alpha.0`, with nothing to notice.
+  is *every job that builds*, not *every job that packs*: the version is stamped into an assembly rather than
+  into a package. **Which artifacts that stamp actually reaches is gh#176** — `.dockerignore` excludes
+  `.git/`, so the container build is not one of them, and it stamps `0.0.0-alpha.0` however deep the runner's
+  clone is. Read this bullet as a rule about the checkout, never as a claim about the published image.
 - A local build with no tags nearby yields a pre-release version. Correct, and occasionally surprising.
 - Cutting a release is: promote, tag, publish. No file edit is part of it.
 

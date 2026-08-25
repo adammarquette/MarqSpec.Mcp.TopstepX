@@ -176,6 +176,9 @@ jobs:
       #   32855936278  fixed, a real merge commit      -> failure at the step ABOVE, naming it (gh#146)
       #   32857116130  fixed, linear, depth 1, develop -> failure at the step ABOVE, on git's 128
       #
+      # And the green half, on the input this actually meets: 32859513254, gh#164's own pull request, base
+      # `develop` and linear, where both steps RAN and both passed with the two subjects read out and named.
+      #
       # The first two differ ONLY in this file, which is what makes the pair a measurement. Rows three and
       # four are the two halves of the asymmetry, each on the input it exists for. No merge queue is enabled
       # here, so a real merge_group event cannot be produced: row four pins EVENT in the throwaway instead,

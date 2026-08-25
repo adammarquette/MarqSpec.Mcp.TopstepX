@@ -166,23 +166,25 @@ jobs:
       # a linear head at depth 1 into `develop`, dies at the step above with this one SKIPPED).
       #
       # PROVEN BY MUTATION, not argued -- a check that could pass having read nothing is not repaired by an
-      # argument. Six throwaway runs, all now closed with their branches deleted, so these ids are the only
-      # trail back; the same table with its printed output is in the platform contract beside this job:
+      # argument. Throwaway runs, all now closed with their branches deleted, so these ids are the only trail
+      # back; the same table with its printed output is in the platform contract beside this job:
       #
-      #   32854350754  unfixed, depth 1, base staging  -> commit-hygiene SUCCESS. "No non-merge commits ..."
-      #   32854980822  fixed,   depth 1, base staging  -> failure. "git log exited 128 for '<range>'"
-      #   32855346012  fixed, a merge-ONLY range       -> success. "No non-merge commits to check."
-      #   32856056077  fixed, EVENT pinned merge_group -> failure. "Refusing to pass vacuously."
-      #   32855936278  fixed, a real merge commit      -> failure at the step ABOVE, naming it (gh#146)
-      #   32857116130  fixed, linear, depth 1, develop -> failure at the step ABOVE, on git's 128
+      #   32854350754  `mapfile < <(...)`, depth 1     -> commit-hygiene SUCCESS. "No non-merge commits ..."
+      #   32874228812  this read, depth 1              -> failure. "git log exited 128 for '<range>'"
+      #   32876371775  this read, a merge-ONLY range   -> success. "No non-merge commits to check."
+      #   32876613013  this read, EVENT pinned m_group -> failure. "Refusing to pass vacuously."
+      #   32876328853  a CAPTURE, oldest subject empty -> SUCCESS, one subject checked and the empty one
+      #                                                   never seen. The review finding, measured.
+      #   32876350211  this read, the same fixture     -> failure. "Not a Conventional Commit subject: ''"
+      #   32855936278  a real merge commit, develop    -> failure at the step ABOVE, naming it (gh#146)
+      #   32857116130  linear, depth 1, develop        -> failure at the step ABOVE, on git's 128
       #
-      # And the green half, on the input this actually meets: 32859513254, gh#164's own pull request, base
-      # `develop` and linear, where both steps RAN and both passed with the two subjects read out and named.
-      #
-      # The first two differ ONLY in this file, which is what makes the pair a measurement. Rows three and
-      # four are the two halves of the asymmetry, each on the input it exists for. No merge queue is enabled
-      # here, so a real merge_group event cannot be produced: row four pins EVENT in the throwaway instead,
-      # which proves the arm's code on its own input and not the event that would deliver it.
+      # Rows 1/2 and rows 5/6 are two before-and-after pairs, each differing ONLY in this file, which is what
+      # makes them measurements rather than descriptions. Rows 3 and 4 are the two halves of the asymmetry,
+      # each on the input it exists for. The last two decide at the step above, which this card never
+      # touched. No merge queue is enabled here, so a real merge_group event cannot be produced: row 4 pins
+      # EVENT in the throwaway instead, which proves the arm's code on its own input and not the event that
+      # would deliver it.
       - name: Check commit subjects
         env:
           EVENT: ${{ github.event_name }}

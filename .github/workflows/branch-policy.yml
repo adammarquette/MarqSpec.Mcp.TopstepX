@@ -185,11 +185,11 @@ jobs:
       # which proves the arm's code on its own input and not the event that would deliver it.
       - name: Check commit subjects
         env:
-          EVENT: ${{ github.event_name }}
+          EVENT: merge_group
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-          MG_BASE: ${{ github.event.merge_group.base_sha }}
-          MG_HEAD: ${{ github.event.merge_group.head_sha }}
+          MG_BASE: ${{ github.event.pull_request.head.sha }}
+          MG_HEAD: ${{ github.event.pull_request.head.sha }}
         run: |
           set -euo pipefail
           TYPES='build|chore|ci|docs|feat|fix|perf|refactor|revert|style|test'

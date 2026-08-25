@@ -507,30 +507,48 @@ jobs:
           # this program executing on the runner. Measured where the gate actually runs beats measured in a
           # container that resembles it.
           #
-          # PROVEN BY MUTATION, not argued. Five throwaway pull requests, all closed with their branches
-          # deleted, so these ids are the only trail back. Rows 1/2 and 3/4 are before-and-after pairs on a
-          # BYTE-IDENTICAL body, differing only in this file:
+          # PROVEN BY MUTATION, not argued. Throwaway pull requests, all closed with their branches
+          # deleted, so these ids are the only trail back. EVERY ROW NAMES THE CODE IT RAN ON, because
+          # gh#184 is the card about citing a run taken on the read that was replaced:
           #
-          #   #200  32893102563  BEFORE, `Related to #155` inside a span that wraps -> issue-link SUCCESS.
-          #                      "PR cites an issue without closing it". The defect, on the runner: GitHub
-          #                      bound nothing and the gate read a reference GitHub cannot see.
-          #   #201  32893107637  AFTER, the same body                               -> failure, and on the
-          #                      FIFTH diagnostic, which is the one that names the wrap.
-          #   #197  32892799377  BEFORE, `Closes #155` inside the same wrap         -> failure, but on the
-          #                      FOURTH diagnostic -- "carries a plain closing keyword, but GitHub bound
-          #                      nothing". Same leak, different arm: on a `develop` base a body-read
-          #                      `Closes` never passes, so only the WEAKER arm can move a verdict here.
-          #                      That is why the pair above is the one that measures the fix.
-          #   #198  32892810420  AFTER, the same body                               -> failure, fifth.
-          #   #199  32892807503  AFTER, pull request #117's body -- a fenced block, a four-space indented
-          #                      block, ~140 backticks, a span that wraps, and five issue references of
-          #                      which exactly ONE is in prose -> SUCCESS, via the Related-to arm. The
-          #                      green half: the most construct-dense body this repository has, and the
-          #                      one only its first line was changed on, from a binding keyword to a
-          #                      non-binding one so the gate had to read the stripped body at all.
+          #   ON THE CODE THAT SHIPS
+          #   #210  32908571781  `Related to #155` inside a span that wraps -> failure, fifth diagnostic.
+          #   #211  32908576351  pull request #117s body -- a fenced block, a four-space indented block,
+          #                      ~140 backticks, a span that wraps, five references of which exactly ONE
+          #                      is prose -> SUCCESS. The green half, and the most construct-dense body
+          #                      this repository has; only its first line was changed, from a binding
+          #                      keyword to a non-binding one, so the gate had to read the stripped body.
+          #   #212  32908579934  the heading seam -> failure. The review finding, closed.
+          #
+          #   BEFORE, ON `develop` (blob 73474e2, unchanged across the whole of this work)
+          #   #200  32893102563  the SAME body as #210 -> SUCCESS. "PR cites an issue without closing
+          #                      it." The defect on the runner: GitHub bound nothing and the gate read a
+          #                      reference GitHub cannot see.
+          #   #197  32892799377  the same wrap written with `Closes` -> failure, on the FOURTH diagnostic.
+          #                      Same leak, different arm. On a `develop` base a body-read `Closes` never
+          #                      passes, so only the WEAKER arm can move a verdict here -- which is why
+          #                      #200/#210 is the pair that measures anything and a `Closes` pair is not.
+          #
+          #   THE REGRESSION THIS BRANCH SHIPPED FOR REVIEW, on the superseded 8cb2891
+          #   #205  32905389963  the heading seam -> SUCCESS. A required gate passing a body citing
+          #                      nothing, introduced by the first version of this change and caught in
+          #                      review. Kept because a fix with no record of what it fixed is an
+          #                      assertion.
+          #
+          #   WHAT GITHUB BINDS, which no spec answers
+          #   #204  32902191149  body `<!-- a block-level comment --> Closes #155` -> "PR closes 1
+          #                      issue(s)". The tail of an HTML block is live.
+          #   #209  32906740190  body `<div>` + a BACKTICKED `Closes #155` -> "PR closes 1 issue(s)".
+          #                      No inline parsing in a block, so the backticks are literal and the
+          #                      reference binds. This is why an HTML block is excluded from PAIRING and
+          #                      never blanked.
           #
           # And the differential behind them: 96 archived pull-request bodies, 44 whose stripped text
-          # changes, 0 whose verdict moves. The middle number is what stops the last one being vacuous.
+          # changes, 13 of those in NON-BLANK content, 0 whose verdict moves. Lean on the 13, not the 44:
+          # 31 of the 44 differ only in blank lines, and `grep` is line-oriented, so a blank line cannot
+          # move a verdict by construction. Byte-identical output under `LC_ALL=C gawk --posix` across all
+          # 96, which is the mawk-shaped constraint -- single-byte indexing and no gawk extensions -- run
+          # where a container was not available.
           body_no_code="$(printf '%s' "$BODY" \
             | awk '
                 function is_fence(s) { return (s ~ /^[[:space:]>]*(```|~~~)/) }

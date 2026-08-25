@@ -190,9 +190,12 @@ inert=0
 # empty). Both are one ordinary edit away: a fenced example of the PRD's own format, or a requirement
 # retired by commenting it out rather than deleting it.
 #
-# THE FENCE PASS RUNS FIRST AND THE COMMENT PASS ONLY OUTSIDE FENCES, so a `<!--` shown inside a code block
-# does not open a comment. That ordering is gh#123's lesson: the pass that carries state across lines has to
-# know about the delimiters the other passes care about, because its mistakes are not local.
+# THE TWO STATES ARE MUTUALLY EXCLUSIVE. Inside a comment a fence marker is text; inside a fence `<!--` is
+# text. That is gh#123's lesson in both directions — the pass that carries state across lines has to know
+# about the delimiters the other one cares about, because its mistakes are not local. Checking for a fence
+# first and unconditionally is not enough and was the first draft's bug: a commented-out block CONTAINING a
+# code fence opened one, the fence swallowed the `-->`, and the gate died naming an unterminated comment
+# that was in fact closed.
 #
 # INLINE CODE SPANS ARE **NOT** STEPPED OVER, and the direction is the whole reason. gh#123 stripped spans
 # before hunting a citation, where over-stripping merely loses a citation; here, failing to notice a `<!--`
@@ -206,6 +209,26 @@ in_fence=0
 fence_marker=""
 in_comment=0
 
+# Advances `in_comment` across one line, left to right, so a line carrying both delimiters ends in the right
+# state. Assigns a global and takes no substitution, for the reason check-doc-sizes.sh gives: a fork costs
+# microseconds on the runner and milliseconds on a Windows checkout, and this runs once per line of the PRD.
+scan_comment_delimiters() {
+  local rest="$1"
+  while [ -n "$rest" ]; do
+    if [ "$in_comment" -eq 0 ]; then
+      case "$rest" in
+        *'<!--'*) in_comment=1; rest="${rest#*<!--}" ;;
+        *) rest="" ;;
+      esac
+    else
+      case "$rest" in
+        *'-->'*) in_comment=0; rest="${rest#*-->}" ;;
+        *) rest="" ;;
+      esac
+    fi
+  done
+}
+
 for line in "${prd_lines[@]}"; do
   # BOTH ENDS are trimmed. A closing fence written with trailing whitespace is ordinary and legal, and
   # leaving it untrimmed means the fence never closes, every definition after it disappears, and their
@@ -214,6 +237,18 @@ for line in "${prd_lines[@]}"; do
   # read as an indented code block instead: over-detection, which costs skipped lines rather than invented
   # symbols.
   trimmed="${line#"${line%%[![:space:]]*}"}"; trimmed="${trimmed%"${trimmed##*[![:space:]]}"}"
+
+  # THE TWO STATES ARE MUTUALLY EXCLUSIVE, and getting that wrong is a real defect rather than a nicety.
+  # Inside a comment, a fence marker is text; inside a fence, `<!--` is text. Checking for a fence first and
+  # unconditionally meant a commented-out block CONTAINING a code fence opened one, the fence then swallowed
+  # the `-->`, and the run died on UNTERMINATED COMMENT about a comment that was closed — a confident wrong
+  # answer sending the reader to fix something that is not broken, which is exactly gh#123's complaint about
+  # its own diagnostic. Found by probing this loop rather than by reading it.
+  if [ "$in_comment" -eq 1 ]; then
+    inert=$(( inert + 1 ))
+    scan_comment_delimiters "$line"
+    continue
+  fi
 
   if [ "$in_fence" -eq 1 ]; then
     inert=$(( inert + 1 ))
@@ -230,27 +265,10 @@ for line in "${prd_lines[@]}"; do
     continue
   fi
 
-  # Whether this line's COLUMN 0 sits inside a comment is all that matters, because a definition must start
-  # there. The state is then advanced by whichever delimiter comes last on the line.
-  starts_in_comment="$in_comment"
-  rest="$line"
-  while [ -n "$rest" ]; do
-    if [ "$in_comment" -eq 0 ]; then
-      case "$rest" in
-        *'<!--'*) in_comment=1; rest="${rest#*<!--}" ;;
-        *) rest="" ;;
-      esac
-    else
-      case "$rest" in
-        *'-->'*) in_comment=0; rest="${rest#*-->}" ;;
-        *) rest="" ;;
-      esac
-    fi
-  done
-  if [ "$starts_in_comment" -eq 1 ]; then
-    inert=$(( inert + 1 ))
-    continue
-  fi
+  # Outside both, so this line's COLUMN 0 is outside a comment by construction — which is all that matters,
+  # because a definition must start there. A `<!--` later on this same line opens the comment for the NEXT
+  # line and leaves this one's definition intact, which is correct: the bullet was written before the marker.
+  scan_comment_delimiters "$line"
 
   if [[ "$line" =~ $DEF_SECTION ]]; then
     DEFINED["${BASH_REMATCH[1]}"]=1

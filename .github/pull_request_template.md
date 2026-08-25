@@ -24,7 +24,8 @@ Closes #
 
 - [ ] **Test-first** — the new test failed before the implementation; a bug fix reproduces the bug first
 - [ ] **Docs in lockstep** — the affected section of the PRD (`R-#`), architecture doc, ADR, or the MCP tool
-      catalogue is updated *in this PR*
+      catalogue is updated *in this PR*, and a **breaking** change to the tools that catalogue documents carries
+      an ADR of its own
 - [ ] **No secrets** — nothing logged, nothing tracked, no credential-shaped value in a committed file
 - [ ] **Commits** are Conventional and carry both `Assisted-by:` and `Co-Authored-By:` trailers if AI-authored
 - [ ] History is curated into units of work (this repo rebase-merges; squash is disabled)

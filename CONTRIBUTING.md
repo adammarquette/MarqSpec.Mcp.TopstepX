@@ -6,10 +6,11 @@ How we work in this repo. This is the contributor front door; the agent contract
 
 These practices are shared with
 [trading-copilot](https://github.com/adammarquette/trading-copilot/blob/develop/CONTRIBUTING.md), which is a
-**sibling and not a parent**: this repository is not one of its four submodules, nothing in it references this
-one, and it does not speak MCP at all — its agent reaches its tools through an in-process seam rather than the
-wire protocol (gh#171). Where the two differ, the difference is deliberate and noted below — this repo cuts
-**versioned releases**: a `v*` tag on `main`, and a **container image on GHCR** built from it.
+**sibling and not a parent**: this repository is not one of its four submodules, and nothing in it references
+this one. Its agent reaches its own tools through an in-process seam rather than the MCP wire protocol, so this
+server's tool surface is not a contract it consumes either (gh#171). Where the two differ, the difference is
+deliberate and noted below — this repo cuts **versioned releases**: a `v*` tag on `main`, and a **container
+image on GHCR** built from it.
 
 ## Issue-first, its one exemption, and the promotion carve-out
 
@@ -232,8 +233,9 @@ possible rather than merely discouraged.
 **The public surface is the [MCP tool surface](documentation/mcp-tool-catalog.md), not an assembly.** Nothing
 compiles against these projects: `trading-copilot` is a sibling that does not reference this repository, and
 neither does anything else (gh#171). A breaking change is therefore a breaking change to the **tools** the
-published image serves — that needs a major bump **and** an ADR. A changed C# signature is not one, and the pull
-request template no longer asks about a "public API", because the consumer it named has never existed.
+published image serves — that needs a major bump **and** an ADR. A changed C# signature is not one. The pull
+request template asks about the **catalogue** rather than about a "public API", because the compile-time consumer
+that phrase named has never existed.
 
 ## Local development
 

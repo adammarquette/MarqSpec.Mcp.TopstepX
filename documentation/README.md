@@ -33,10 +33,10 @@ rather than reword it.
 | Document | ~tok | Read it when |
 |---|---:|---|
 | [`AGENT-MEMORY.md`](AGENT-MEMORY.md) | 6.8K | **Before starting any work.** It grows by design — *append, don't overwrite* — so this is the row that goes stale first. |
-| [`project-board-workflow.md`](project-board-workflow.md) | 3.4K | You are filing, grooming or moving a card. **The board is project #5; #4 is retired.** Three of the seven transitions now move themselves — the rest are yours. |
+| [`project-board-workflow.md`](project-board-workflow.md) | 4.0K | You are filing, grooming or moving a card. **The board is project #5; #4 is retired.** The board makes two of the seven transitions by itself; the other five are somebody's deliberate act. |
 | [`work-estimate-rubric.md`](work-estimate-rubric.md) | 1.0K | You are setting a `Work Estimate` on an issue. |
 | [`agents/README.md`](agents/README.md) | 0.6K | You are wearing a role hat. **This row prices the index, not the route it serves** — every contract behind it is a separate read this number does not cover, and none of them is priced yet (gh#178). Reviewer and Platform contracts **never auto-load**; open them yourself. |
-| [`../CONTRIBUTING.md`](../CONTRIBUTING.md) | 3.8K | Branching, claiming, commits, PRs, and the Definition of Done. |
+| [`../CONTRIBUTING.md`](../CONTRIBUTING.md) | 3.9K | Branching, claiming, commits, PRs, and the Definition of Done. |
 | [`../AGENTS.md`](../AGENTS.md) | 2.0K | Loads automatically. The non-negotiables and the role routing table. |
 
 ## Decisions — [`adr/`](adr/README.md)

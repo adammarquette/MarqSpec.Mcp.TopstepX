@@ -81,7 +81,8 @@ it before starting, and add dated entries only when nothing formal fits.
   cite issues as `gh#N`. **Task specs and acceptance criteria belong in the issue**, never as files under
   `documentation/` — a parallel spec duplicates the tracker and drifts from it.
 - **Maximal metadata on every issue and PR:** assignee, milestone, `work:*` and `Work Estimate` labels. Issues
-  are the board cards; a PR is not carded. Epics decompose into sub-issues. A thin issue is a defect — the next
+  are the board cards; the board auto-adds pull requests too, but a PR item is **not** a card — never move
+  one. Epics decompose into sub-issues. A thin issue is a defect — the next
   agent rebuilds context from these fields.
   Detail: [board workflow](documentation/project-board-workflow.md).
 - **Commits:** Conventional Commits, plus **both** an `Assisted-by:` and a `Co-Authored-By:` trailer on

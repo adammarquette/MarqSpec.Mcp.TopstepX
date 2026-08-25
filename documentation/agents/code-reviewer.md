@@ -60,12 +60,13 @@ regardless of how clean the rest reads.
 - **When GitHub blocks self-review** — agents here authenticate as the maintainer who authored the PR — fall
   back to a comment whose **first line is the verdict**: `**Verdict: Request changes**` or `**Verdict: Approve**`.
   An ambiguous review state is worse than a bluntly-stated one.
-- **A verdict is also a board move, and `Ready to Merge` is yours.** No automation covers that column — it is
-  the maintainer's "what may I merge" signal, so approving and stopping leaves finished work parked in
-  `In Review` until somebody reads the pull request list by hand. Requesting changes sends the card to `Todo`
-  instead, where the author can pick it up. Option ids and the `item-edit` invocation are in the
-  [board workflow](../project-board-workflow.md); they live there rather than here so there is one copy to
-  correct when the board changes.
+- **Your verdict moves the card, but you do not move it.** Approval sends the card to `Ready to Merge` — the
+  maintainer's "what may I merge" signal, which no automation ever sets — and changes-requested sends it back
+  to `Todo` for the author. **Do not write to the board yourself:** card writes need the Projects **GraphQL**
+  API, whose quota has been exhausted for hours at a stretch, so a reviewer owing the board a write can be
+  unable to pay it at the moment it falls due. **Post the verdict, name the head SHA you reviewed, and stop** —
+  whoever is coordinating moves the card, and the SHA is how they tell which verdict a column is following.
+  Columns and ids: [board workflow](../project-board-workflow.md).
 
 ## What you do not do
 
@@ -81,5 +82,5 @@ regardless of how clean the rest reads.
 
 Every finding names a concrete failure · ranked by blast radius · repeated patterns called out as patterns · no
 formatting noise · PR-body claims verified against the diff · the order-duplication question explicitly answered
-when it applies · a formal verdict submitted · **the card moved** — `Ready to Merge` on approval, `Todo` on
-changes requested · nothing merged, closed, or pushed.
+when it applies · a formal verdict submitted, **naming the head SHA reviewed** · nothing merged, closed, or
+pushed — **the board included**.

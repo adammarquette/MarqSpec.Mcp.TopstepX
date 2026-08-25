@@ -18,6 +18,29 @@ ADR, `AGENTS.md`, or the code, **put it there instead**.
 
 ## Practices to follow
 
+- **[2026-08-25] A rebase re-prices your rows AND invalidates your sentences — only the first half has a gate
+  (gh#187, gh#196).** `scripts/check-doc-sizes.sh` re-measures every routed document on every pull request, so
+  a `~tok` that drifted because *somebody else's* merge grew a file is caught — provided the drift exceeds
+  25%. **Nothing whatsoever watches the prose.** Both halves fired in one session, twenty minutes apart, out
+  of the same merge: #189 grew `CONTRIBUTING.md`, leaving its row at 3.8K against a measured 4.1K — 7% out,
+  inside the band, green and invisible — and the same merge's `Closes #171` **closed gh#171**, falsifying
+  *"these seven items are all open"* in the very document being rewritten, **five minutes before that
+  sentence was committed**. Two independent reviewers found the sentence; no gate could have.
+  **So after every rebase, re-derive every claim about external state** — issue states, item counts, who is
+  open, what has merged — not only the sizes. The tell is that such a claim reads as *background* rather than
+  as the finding, which is exactly why the author's own sweep skips back over it.
+  - **The same shape, one level up:** a sweep finds stale **identifiers** because grep finds strings. The
+    sentences that break are the ones your own **measurement** just falsified, and they contain no stale
+    identifier at all — so nothing points at them. gh#187 produced four count errors this way, each caught by
+    a reviewer rather than by the author: three automations that were two, three harms that were two, seven
+    open items that were six, one non-author actor that was two.
+  - **Correcting the instance does not close it.** gh#187 fixed that `CONTRIBUTING.md` row only because it
+    happened to be editing that table already; otherwise it would simply have stayed wrong. gh#196 carries
+    the structural half.
+  - **A brand-new row can be stale on the day it lands.** PR #193 prices `agents/code-reviewer.md` from
+    `develop` while gh#187 grows that same file on a parallel branch — about 10% out the moment both land,
+    inside the band, green.
+
 - **[2026-08-23] A cross-cutting tool rule belongs in an MCP *filter*, not in each tool.** The SDK (2.2.0)
   has a request-filter pipeline — `AddMcpServer().WithRequestFilters(f => f.AddCallToolFilter(...))` — and
   every `tools/call` goes through it, so a tool added tomorrow is covered by wiring rather than by its author

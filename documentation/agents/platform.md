@@ -77,10 +77,12 @@ The root contract's five apply here unchanged. Four land specifically on the pip
   **Six jobs declare `fetch-depth: 0`, and the sixth is not about MinVer at all.** `commit-hygiene`
   (`branch-policy.yml`) installs no SDK, builds nothing, and needs full history anyway: it walks the pull
   request's commit range with `git log --no-merges --format=%s <base>..<head>`, which a shallow clone cannot
-  resolve. The failure is silent — `mapfile` swallows the exit status past `set -euo pipefail`, so the job
-  reports *"No non-merge commits to check"* and **exits 0**, a gate required on all three rungs passing
-  vacuously on every pull request. So the question is **"does this job read git history?"**, never "does it
-  build" and never "does it install an SDK". Deciding it by SDK is how the sixth one gets trimmed.
+  resolve. That failure used to be **silent** — `mapfile` swallowed the exit status past `set -euo pipefail`,
+  so the job reported *"No non-merge commits to check"* and **exited 0**, a gate required on all three rungs
+  passing vacuously. Since gh#164 the read is checked before it is split and the job goes **red** naming the
+  range and this line, so trimming it now costs a failed run instead of a silent hole. So the question is
+  **"does this job read git history?"**, never "does it build" and never "does it install an SDK". Deciding
+  it by SDK is how the sixth one gets trimmed.
 - **One target framework, and the SDK a job installs must match what the projects declare.** All five projects
   declare `net10.0` **alone** — this is an application, not the multi-targeting library the template came
   from — and `global.json` pins the SDK to `10.0.300`. `ci.yml` and `codeql.yml` therefore each install
@@ -395,6 +397,51 @@ this.
 check-runs on that commit and `gh pr view --json statusCheckRollup` answers with **two** `commit-hygiene`
 entries — one `FAILURE`, one `SUCCESS` — on *each* pull request. The per-PR verdict is simply not readable
 from the rollup in that arrangement; read the workflow runs, or give the second base its own head commit.
+
+**And it now reads its range before it splits it — the read is fatal, the empty range is not (gh#164).**
+`commit-hygiene` walked its subjects with `mapfile -t subjects < <(git log --no-merges --format=%s "$RANGE")`,
+and **a process substitution's exit status is never examined by the shell**: a `git log` that could not
+resolve the range left `subjects` empty, `set -euo pipefail` never fired, and the `pull_request` arm printed
+*"No non-merge commits to check."* and **exited 0**. Fourth instance of the family tabulated under
+[Constraints that bite in CI](#constraints-that-bite-in-ci) — cite that table rather than re-deriving it. The
+read is now assigned on its own line and its status checked before anything is split.
+
+*The asymmetry underneath it was deliberately left alone, and that is the decision this card made.* Zero
+subjects means two different things, and the two arms answer them differently on purpose: `merge_group`
+**refuses**, `pull_request` **accepts**, because a pull request legitimately can carry no non-merge commit and
+a merge group cannot. Only the **read** became fatal — a *successful* read of zero commits behaves on both
+arms exactly as it did. Collapsing the two would reverse a recorded choice, which is why #153 declined to do
+it as a rider.
+
+*Where the vacuous pass was actually reachable is not where you would guess.* On a pull request into
+`develop` the merge-commit step **above** already dies on an unresolvable range — it assigns `git rev-list`
+plainly, so `set -e` carries git's 128 — and `merge_group` already refused zero subjects. So the hole was on
+exactly the **promotion** rungs, `staging` and `main`, where that step is skipped by its own base guard. The
+trigger is deleting `fetch-depth: 0` from this job, and gh#118's first draft — which misfiled it among the
+jobs that "do not declare it and do not need it" — is the near miss that would have done it.
+
+*Proven by mutation on real runs, because a gate that could pass having checked nothing is not repaired by an
+argument.* Every row is one throwaway pull request, all now closed with their branches deleted, so these run
+ids are the only trail back:
+
+| Head | Base | `commit-hygiene` | What the step printed |
+|---|---|---|---|
+| **unfixed**, `fetch-depth: 1` — [32854350754](https://github.com/adammarquette/MarqSpec.Mcp.TopstepX/actions/runs/32854350754) | `staging` | **success** | `fatal: Invalid revision range …` then `No non-merge commits to check.` |
+| **fixed**, `fetch-depth: 1` — [32854980822](https://github.com/adammarquette/MarqSpec.Mcp.TopstepX/actions/runs/32854980822) | `staging` | **failure** | `git log exited 128 for '…'` |
+| fixed, a merge-only range — [32855346012](https://github.com/adammarquette/MarqSpec.Mcp.TopstepX/actions/runs/32855346012) | probe branch | success | `No non-merge commits to check.` |
+| fixed, `EVENT` pinned to `merge_group`, range `X..X` — [32856056077](https://github.com/adammarquette/MarqSpec.Mcp.TopstepX/actions/runs/32856056077) | `staging` | **failure** | `Resolved zero commits … Refusing to pass vacuously.` |
+| fixed, a real merge commit — [32855936278](https://github.com/adammarquette/MarqSpec.Mcp.TopstepX/actions/runs/32855936278) | `develop` | **failure** | gh#146's step, naming `c9dae55` |
+| fixed, linear, `fetch-depth: 1` — [32857116130](https://github.com/adammarquette/MarqSpec.Mcp.TopstepX/actions/runs/32857116130) | `develop` | **failure** | gh#146's step, on git's 128 — the masking above |
+
+Rows 1 and 2 differ **only** in the head's copy of this workflow, which is what makes the pair a measurement
+rather than a description. Rows 3 and 4 are the two halves of the asymmetry, each on the input it exists for.
+Row 5 is gh#146 unregressed — and on rows 1, 2 and 4 that same step reports **skipped**, which is the other
+half of its base guard. Row 6 is why rows 1 and 2 are based at `staging`: a `develop` base cannot show this
+defect.
+
+**No merge queue is enabled on this repository, so a real `merge_group` event cannot be produced here.** Row 4
+pins `EVENT` in the throwaway instead. That is the honest description of what it proves: the arm's own code
+on the input it exists for, not the event delivering it.
 
 **`image` IS required, on all three rungs — gh#115 made it required and said so; this table was not told.**
 The change is #121 (`Closes #115`) — `4f2c31f` on its branch, which the rebase merge landed on `develop` as

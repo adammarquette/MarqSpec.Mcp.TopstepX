@@ -6,13 +6,6 @@ What this server must do, as numbered requirements. **`R-#` ids are stable and n
 cited from C# XML docs, from issues, and from the ADRs, so a renumber silently redirects every reference.
 A requirement that turns out to be wrong is superseded by a new one and marked, never overwritten.
 
-**Scope — what the SERVER must do.** Build hygiene, the pipeline and the release path carry no `R-#`: they
-are the [platform contract](agents/platform.md)'s, and a build setting is justified there or on its own
-reasoning. **An id this file does not define is not a requirement of this project**, however confidently it
-is cited. This repository's scaffolding was extracted from `MarqSpec.Client.ProjectX`, whose PRD numbers
-further and differently, so a citation that does not resolve below is residue from it rather than a
-requirement (gh#172).
-
 ## R-1 — Cached historical bars
 
 The server serves OHLCV bars for a futures instrument at a requested resolution and time window.

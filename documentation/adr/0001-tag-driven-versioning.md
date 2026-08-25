@@ -112,8 +112,14 @@ reasons, in the order they weighed:
    Dockerfile from the same context on **every pull request**, and the `initialize` handshake
    [`check-image-entrypoint.sh`](../../scripts/check-image-entrypoint.sh) already performs against that
    image returns a `serverInfo.version` the SDK derives from the entry assembly, since the composition root
-   sets no `McpServerOptions.ServerInfo`. That gate asserts on the tool list and not on `serverInfo` today,
-   so the stamp is **one assertion away from covered**, not unreachable — which is gh#115's lesson, written
+   sets no `McpServerOptions.ServerInfo`. **That was observed on the wire, not read off the package** —
+   this record's own thesis is that those are not the same claim. A throwaway host on SDK 2.2.0, setting no
+   `ServerInfo`, entry assembly stamped `7.7.7-probe`, answered `initialize` with
+   `{"name":"mcpprobe","version":"7.7.7.0"}`: the SDK takes **`AssemblyVersion`**, not
+   `AssemblyInformationalVersion`. So the in-band number on the shipped image is `0.0.0.0` rather than
+   `0.0.0-alpha.0` — which is what whoever writes that one assertion will need. That gate asserts on the
+   tool list and not on `serverInfo` today, so the stamp is **one assertion away from covered**, not
+   unreachable — which is gh#115's lesson, written
    into this very job: *"Building against the real reference is enough … so an invalid one fails a pull
    request instead of a release."* The `build-args:` line in `release.yml` is the half nothing can reach,
    for the reason that file already records about the push exporter: it first executes at a real release,
@@ -135,8 +141,7 @@ this job read git history?* — rather than *does it build*: `build-test` and `i
 `analyze` (`codeql.yml`) run `dotnet` on the runner and do stamp an assembly from tag history. The first two
 need the depth; `analyze`'s is build **parity** rather than need, as that contract and `codeql.yml`'s own
 comment both say. `image` and `publish` install no SDK; they hand the context to buildx, and the assembly
-they produce
-is built inside the container. Neither reads history for anything else either — `image-reference.sh` reads
+they produce is built inside the container. Neither reads history for anything else — `image-reference.sh` reads
 `remote.origin.url` from git *config*, and the tag check reads `GITHUB_REF_NAME`. The depth is kept anyway,
 deliberately: `image` exists to build by the mechanism the release uses (gh#54), the checkout is an input to
 that build, and `publish` is the run that can least cheaply be repeated. Trimming it would change the release

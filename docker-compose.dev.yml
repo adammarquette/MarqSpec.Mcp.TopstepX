@@ -44,9 +44,6 @@ services:
     environment:
       DOTNET_CLI_TELEMETRY_OPTOUT: "1"
       DOTNET_NOLOGO: "1"
-      # The integration suite defaults to hosting the gateway in-process. Point it at the composed one instead
-      # when both services are up.
-      PROJECTX_FAKE_GATEWAY_URL: "${PROJECTX_FAKE_GATEWAY_URL:-}"
       # Containers started through that socket are SIBLINGS of this one, not children, so Testcontainers must
       # reach them at an address that means something from in here -- "localhost" would mean this container.
       TESTCONTAINERS_HOST_OVERRIDE: "host.docker.internal"

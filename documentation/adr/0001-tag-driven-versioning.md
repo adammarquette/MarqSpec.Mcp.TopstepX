@@ -29,9 +29,8 @@ forces you to update.
 
 - `<Version>` is absent from every csproj. `Directory.Build.props` sets `MinVerTagPrefix=v`.
 - Tags are **`vMAJOR.MINOR.PATCH`**, always prefixed, cut on `main` only after promotion through the ladder.
-- Between tags MinVer produces a pre-release version, so a package built from `develop` is visibly not a
-  release.
-- The release workflow passes no `-p:PackageVersion`; there is nothing left to override.
+- Between tags MinVer produces a pre-release version, so a build from `develop` is visibly not a release.
+- The release workflow overrides no version property; there is nothing left to override.
 - **The changelog entry lands in the promotion PR**, not after the release.
 
 ## Alternatives considered
@@ -49,9 +48,9 @@ which is the thing being removed.
 
 - The version cannot drift, because there is nothing to drift from.
 - **A shallow clone breaks version inference.** MinVer needs tag history, and `actions/checkout` defaults to
-  depth 1 — which yields `0.0.0-alpha.0` **silently** rather than failing. Every job that builds or packs
-  needs `fetch-depth: 0`. On a release job, forgetting it means publishing `0.0.0-alpha.0` to nuget.org with
-  nothing to notice.
+  depth 1 — which yields `0.0.0-alpha.0` **silently** rather than failing. **Nothing here packs**, so the rule
+  is *every job that builds*, not *every job that packs*: the version goes into the assembly regardless.
+  Forgetting it means shipping an assembly stamped `0.0.0-alpha.0`, with nothing to notice.
 - A local build with no tags nearby yields a pre-release version. Correct, and occasionally surprising.
 - Cutting a release is: promote, tag, publish. No file edit is part of it.
 

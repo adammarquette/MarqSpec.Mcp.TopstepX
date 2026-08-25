@@ -1,8 +1,7 @@
 <Project>
 
   <!--
-    Applies to every project in the repository. Project-specific settings (target frameworks,
-    packaging metadata) stay in the .csproj.
+    Applies to every project in the repository. Project-specific settings stay in the .csproj.
   -->
 
   <PropertyGroup>
@@ -40,8 +39,9 @@
     ADR-0001 — the git tag is the version. No file declares one; MinVer derives it from the nearest
     v-prefixed tag. This is why <Version> is absent from every .csproj.
 
-    MinVer needs tag history: a shallow clone yields 0.0.0-alpha.0 SILENTLY rather than failing, so
-    any CI job that packs needs `fetch-depth: 0`.
+    MinVer needs tag history: a shallow clone yields 0.0.0-alpha.0 SILENTLY rather than failing.
+    NOTHING HERE PACKS. This repository ships a container image, so the rule is that every CI job
+    which BUILDS needs `fetch-depth: 0`: the version goes into the assembly regardless.
   -->
   <PropertyGroup>
     <MinVerTagPrefix>v</MinVerTagPrefix>

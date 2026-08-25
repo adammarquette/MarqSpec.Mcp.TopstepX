@@ -207,7 +207,13 @@ fence_marker=""
 in_comment=0
 
 for line in "${prd_lines[@]}"; do
-  trimmed="${line#"${line%%[![:space:]]*}"}"
+  # BOTH ENDS are trimmed. A closing fence written with trailing whitespace is ordinary and legal, and
+  # leaving it untrimmed means the fence never closes, every definition after it disappears, and their
+  # citations go red — the safe direction, but red on correct markdown all the same. Leading whitespace is
+  # trimmed without a three-column limit, so a deeply indented fence marker opens a block CommonMark would
+  # read as an indented code block instead: over-detection, which costs skipped lines rather than invented
+  # symbols.
+  trimmed="${line#"${line%%[![:space:]]*}"}"; trimmed="${trimmed%"${trimmed##*[![:space:]]}"}"
 
   if [ "$in_fence" -eq 1 ]; then
     inert=$(( inert + 1 ))

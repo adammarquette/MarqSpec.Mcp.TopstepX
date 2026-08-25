@@ -44,7 +44,7 @@ described #4. The other five are somebody's deliberate act, and two of those fiv
 | Issue filed and workable | `Todo` | **the board** |
 | Cannot be worked yet | `Blocked` | you |
 | An agent starts work | `In Progress` | you, as you claim it |
-| The PR is opened | `In Review` | you |
+| The PR is opened, or pushed again after a kickback | `In Review` | you |
 | Every review approves | `Ready to Merge` | whoever is coordinating, following the verdict |
 | Changes requested | `Todo` | whoever is coordinating, following the verdict |
 | The PR merges | `Done` | **the board** |
@@ -56,6 +56,11 @@ green is not permission to merge — only the maintainer merges (root [`AGENTS.m
 and a changes-requested sends it back to `Todo` — but nothing moves it, so an approved card parks in
 `In Review` until a person acts. That is the drift gh#107 measured on #4, arriving through the two columns no
 automation covers.
+
+**A kicked-back card re-walks the path it already has** — `Todo`, then `In Progress` while you fix, then
+`In Review` when you push. There is no eighth transition for the return, and no automation for it either: the
+card sits in `Todo` claiming the work is unstarted for exactly as long as it takes you to move it back. **Move
+it when you push the fix, not when the next review answers.**
 
 **The reviewer posts the verdict and stops; whoever is coordinating moves the card.** Deliberately not the
 reviewer — their contract bars board writes — and deliberately not the author, who may be finished, stalled or

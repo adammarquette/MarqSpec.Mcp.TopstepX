@@ -106,24 +106,36 @@ reasons, in the order they weighed:
 1. **Nothing consumes the assembly's version.** Nothing here packs, no tool in the
    [catalogue](../mcp-tool-catalog.md) reports one, no gate or script reads one, and the composition root
    sets no `McpServerOptions.ServerInfo`. It is decorative inside the image today.
-2. **Making it true is paid by the one job that cannot be rehearsed.** It means a `--build-arg` fed from
-   `release.yml`'s already-resolved `VERSION` and carried through to `dotnet publish`. No pull request can
-   exercise that: `ci.yml`'s `image` job exports with `load` and never pushes, so the change would first
-   execute at a real release, behind the `production` approval, on a tag already cut.
+2. **Half of it could never be rehearsed** — the half, and no more. It takes an `ARG` in the `Dockerfile`
+   carried into `dotnet publish`, *and* a `build-args:` line in `release.yml` feeding it the already-resolved
+   `VERSION`. The first half is exercisable and would be exercised: `ci.yml`'s `image` job builds the same
+   Dockerfile from the same context on **every pull request**, and the `initialize` handshake
+   [`check-image-entrypoint.sh`](../../scripts/check-image-entrypoint.sh) already performs against that
+   image returns a `serverInfo.version` the SDK derives from the entry assembly, since the composition root
+   sets no `McpServerOptions.ServerInfo`. That gate asserts on the tool list and not on `serverInfo` today,
+   so the stamp is **one assertion away from covered**, not unreachable — which is gh#115's lesson, written
+   into this very job: *"Building against the real reference is enough … so an invalid one fails a pull
+   request instead of a release."* The `build-args:` line in `release.yml` is the half nothing can reach,
+   for the reason that file already records about the push exporter: it first executes at a real release,
+   behind the `production` approval, on a tag already cut. **A cost, then, not an impossibility** — reason 1
+   is what carries the decision.
 3. **The other way in is worse.** Admitting `.git` to the context reverses `.dockerignore:5`, puts the whole
    history into every build context, and still needs the tags fetched to be worth anything.
 
 **What that costs, said here rather than discovered later.** The release number lives only on the image, and
 both carriers are read from *outside* it with `docker inspect`. Nothing within the container knows it: any
 reader of the assembly's own version — a log line, or the `serverInfo` the MCP SDK fills in because nothing
-here sets it — reports a number that is not the release. An operator holding a running container has no
-in-band answer to *"which release is this"*.
+here sets it — reports a number that is not the release. An operator holding a running container therefore
+has no in-band answer to *"which release is this"*, and is worse off than with none: the number they get
+looks like one.
 
 **The `fetch-depth: 0` on `ci.yml`'s `image` and `release.yml`'s `publish` stays, and not for MinVer.**
 Re-derived per job against the question the [platform contract](../agents/platform.md) says to ask — *does
 this job read git history?* — rather than *does it build*: `build-test` and `integration-test` (`ci.yml`) and
-`analyze` (`codeql.yml`) run `dotnet` on the runner and do stamp an assembly from tag history, so those three
-need it. `image` and `publish` install no SDK; they hand the context to buildx, and the assembly they produce
+`analyze` (`codeql.yml`) run `dotnet` on the runner and do stamp an assembly from tag history. The first two
+need the depth; `analyze`'s is build **parity** rather than need, as that contract and `codeql.yml`'s own
+comment both say. `image` and `publish` install no SDK; they hand the context to buildx, and the assembly
+they produce
 is built inside the container. Neither reads history for anything else either — `image-reference.sh` reads
 `remote.origin.url` from git *config*, and the tag check reads `GITHUB_REF_NAME`. The depth is kept anyway,
 deliberately: `image` exists to build by the mechanism the release uses (gh#54), the checkout is an input to

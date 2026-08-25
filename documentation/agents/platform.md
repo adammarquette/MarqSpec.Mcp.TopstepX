@@ -180,6 +180,22 @@ The root contract's five apply here unchanged. Four land specifically on the pip
   number is what makes the third one evidence rather than an empty comparison. Measured by extracting the
   `body_no_code` derivation out of `branch-policy.yml` itself, at `origin/develop` and at the fix, so what
   ran was the shipped text and not a copy of it.
+
+  *Proven red and green by mutation, on the runner.* Five throwaway pull requests, closed with their branches
+  deleted, so the run ids in the workflow beside the program are the only trail back. The pair that measures
+  the fix is **#200 → #201** on a byte-identical body — `Related to #155` inside a span that wraps —
+  `issue-link` **SUCCESS** before ([32893102563]) and **failure** after ([32893107637]).
+  **The strong arm cannot show it**: on a `develop` base a body-read `Closes #N` never passes, so the same
+  body written with `Closes` fails before *and* after, moving only from the fourth diagnostic to the fifth
+  (#197, #198). **A before/after pair that fails on both sides measures nothing** — pick the arm whose
+  verdict can actually move. The green half is #199, PR #117's body, this repository's most
+  construct-dense, passing ([32892807503]). Those runs also settle the mawk question this time: Docker was
+  down on the machine this was written on, and a program executing on the runner is better evidence than a
+  container resembling it.
+
+  [32893102563]: https://github.com/adammarquette/MarqSpec.Mcp.TopstepX/actions/runs/32893102563
+  [32893107637]: https://github.com/adammarquette/MarqSpec.Mcp.TopstepX/actions/runs/32893107637
+  [32892807503]: https://github.com/adammarquette/MarqSpec.Mcp.TopstepX/actions/runs/32892807503
 - **Run a text-matching gate before believing its diagnostics.** Proving the above by mutation turned up a
   second defect nobody could have read off the file: `issue-link`'s backtick diagnostic was the only one of the
   three greps without `-i`, so it matched a lowercase `` `closes #1` `` and **missed the canonical**

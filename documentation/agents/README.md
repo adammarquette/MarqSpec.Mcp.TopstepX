@@ -13,7 +13,7 @@ two (gh#178).
 | [Coding — `MarqSpec.Mcp.TopstepX/AGENTS.md`](../../MarqSpec.Mcp.TopstepX/AGENTS.md) | 1.3K | by **directory proximity** — on your first read of a file in the library |
 | [QA — `MarqSpec.Mcp.TopstepX.IntegrationTests/AGENTS.md`](../../MarqSpec.Mcp.TopstepX.IntegrationTests/AGENTS.md) | 0.9K | by **directory proximity** — on your first read in that project |
 | [Code Reviewer — `code-reviewer.md`](code-reviewer.md) | 1.3K | **never automatically — open it yourself** |
-| [Platform — `platform.md`](platform.md) | 16.7K | **never automatically — open it yourself** |
+| [Platform — `platform.md`](platform.md) | 16.9K | **never automatically — open it yourself** |
 
 **The prices are here rather than in the routing map, and that is the decision gh#178 made.** The map's
 `agents/` row prices *this file*; the route it serves ends at one of the four rows above, so the number a
@@ -21,6 +21,10 @@ reader budgeted from was never the number they paid. Four priced rows in the map
 the same four contracts a second time, beside this table listing them unpriced — one fact in two places, with
 only one copy ever corrected, which is the shape the size gate already refuses inside a row. So the list
 stayed here and gained the column, and the gate learned to read a second file.
+
+These four rows are exposed to sub-band drift exactly as the map's are: the gate catches an inversion, not
+a paragraph (gh#196). Correct the row in the pull request that moves the file — appending to a contract is
+what moves it, and `platform.md` is the one that grows.
 
 **The number is here to be budgeted, not to be avoided.** A contract that does not arrive on its own is also
 the one whose absence nothing catches — no check fails, no reviewer sees a diff, the work is simply done

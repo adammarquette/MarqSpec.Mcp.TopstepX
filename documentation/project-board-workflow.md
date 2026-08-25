@@ -39,14 +39,19 @@ Seven transitions. **The board makes two of them by itself** — the first and t
 ([below](#automation--what-the-board-was-watched-doing)) and the reverse of what this document said while it
 described #4. The other five are somebody's deliberate act, and two of those five are not the author's.
 
+**One principle sets every actor below: whoever performs the action moves the card** — except the reviewer,
+who is barred from card writes, so the coordinator covers the two transitions a reviewer's verdict triggers.
+The column is therefore **not symmetrical, and should not be made to look it**: you move it when you act, the
+coordinator moves it when a reviewer acts, and the board moves it when nobody does.
+
 | When | Card lands in | Moved by |
 |---|---|---|
 | Issue filed and workable | `Todo` | **the board** |
 | Cannot be worked yet | `Blocked` | you |
-| An agent starts work | `In Progress` | you, as you claim it |
+| An agent starts work | `In Progress` | you |
 | The PR is opened, or pushed again after a kickback | `In Review` | you |
-| Every review approves | `Ready to Merge` | whoever is coordinating, following the verdict |
-| Changes requested | `Todo` | whoever is coordinating, following the verdict |
+| Every review approves | `Ready to Merge` | the coordinator |
+| Changes requested | `Todo` | the coordinator |
 | The PR merges | `Done` | **the board** |
 
 **`Ready to Merge` and `Done` are not an implementing agent's to set.** You stop at `In Review`. Approved and
@@ -62,12 +67,15 @@ automation covers.
 card sits in `Todo` claiming the work is unstarted for exactly as long as it takes you to move it back. **Move
 it when you push the fix, not when the next review answers.**
 
-**The reviewer posts the verdict and stops; whoever is coordinating moves the card.** Deliberately not the
-reviewer — their contract bars board writes — and deliberately not the author, who may be finished, stalled or
-rate-limited when the verdict lands. A card write needs the Projects **GraphQL** API, and that quota was
-exhausted for hours on the day this was written, so an obligation placed on either of them is one they can be
-unable to discharge at the moment it falls due. A verdict names the head SHA it reviewed, so the coordinator
-can tell which verdict a column is following.
+**Why the reviewer's two rows are somebody else's.** A card write needs the Projects **GraphQL** API, and that
+quota was exhausted for hours on the day this was written — the reviewer who raised the point could not have
+made a card write on that very review. **An obligation you can be barred from discharging at the moment it
+falls due is not a rule**, so the reviewer posts the verdict and stops, and the coordinator moves the card. A
+verdict names the head SHA it reviewed, which is how the coordinator tells which verdict a column is
+following.
+
+Note what that argument does *not* license: it is about the **reviewer**, not about convenience. The author's
+own rows stay the author's, return leg included.
 
 The merge arrow is automatic only because `Closes #N` closes the issue and **closing is what moves the card**.
 That keyword binds only on a PR into the **default branch**, `develop` here (gh#101), so a ladder promotion
@@ -271,8 +279,9 @@ and do not read a `PullRequest` row's column as a claim about the work.** The is
 
 **A `PullRequest` item does not sit in `Todo` for ever — the close automation reaches it too.** PR #189 was
 auto-added at `19:28:09Z` and set to `Todo` a second later; it merged at `20:02:22Z`, and
-`github-project-automation[bot]` changed its status at **`20:02:24Z`**, two seconds after. So the same arrow
-that moves a closed issue moves a merged pull request. This was an open question here until #189 merged and
+`github-project-automation[bot]` changed its status at **`20:02:24Z`**, two seconds after — and that item now
+reads **`Done`**, so this is the value read back, not an arrow inferred from a timeline. The same automation
+that moves a closed issue moves a merged pull request. It was an open question here until #189 merged and
 answered it for free.
 
 Two relationships hang off an issue, using different mechanisms:

@@ -17,17 +17,18 @@
 # `exit 1`, i.e. by a gate that says no to everything, which is exactly as useless as one that says yes.
 #
 # NON-ZERO EXIT IS NOT SUFFICIENT AND IS NOT WHAT THIS ASSERTS. `check-doc-sizes.sh` also exits 1 for "no such
-# root" and for a missing map, so a self-test satisfied by status alone would go green on a runner where the
-# fixtures never got written — reporting the gate sound at precisely the moment nothing had been checked. Each
-# case below matches the words that name ITS OWN fault.
+# root" and for a priced file that is not on disk, so a self-test satisfied by status alone would go green on a
+# runner where the fixtures never got written — reporting the gate sound at precisely the moment nothing had
+# been checked. Each case below matches the words that name ITS OWN fault.
 #
 # AND THE ACCEPTANCE IS NOT SATISFIED BY EXIT 0 EITHER. The sound case additionally requires the gate to say
 # how many rows it priced, because "green having measured nothing" is the exact failure every guard above had.
 #
 # TWO RUNS, NOT ONE (the Coding contract, Tests). This file is the first: red on the faults the gate exists to
-# catch. The second is `ci.yml`'s `docs` job running the gate against this repository's REAL
-# `documentation/README.md` — the most awkward correct input there is, with ten rows across two tables, a
-# relative `../` target, prose full of em-dashes, and three later sections carrying no table at all.
+# catch. The second is `ci.yml`'s `docs` job running the gate against this repository's REAL priced tables —
+# the most awkward correct input there is, with fourteen rows across three tables in two files, targets that
+# climb two directories out of the file that names them, prose full of em-dashes, and several sections in
+# both files carrying no table at all.
 #
 # LOCAL RUNTIME. Each case forks a shell and a `wc` per row. That is milliseconds on the CI runner and can be
 # a couple of minutes on a Windows checkout, where process creation is pathologically slow; the fixtures
@@ -62,8 +63,9 @@ mkfile() {
   printf '%s' "${pad// /x}" > "$path"
 }
 
-# Builds one fixture root. The three priced documents are sized so their correct prices are exact:
+# Builds one fixture root. The priced documents are sized so their correct prices are exact:
 #   alpha.md 4000 B -> 1000 tok -> 1.0K, beta.md 8000 B -> 2000 tok -> 2.0K, gamma.md 2000 B -> 500 tok -> 0.5K
+#   agents/epsilon.md 6000 B -> 1500 tok -> 1.5K
 #
 # `delta.md` sits under a THIRD heading the gate does not price. Which table it gets is the fifth argument:
 #
@@ -73,16 +75,56 @@ mkfile() {
 #           was the `plain` case's opposite in name only: an unlisted priced table was silently unread, and
 #           the fixture asserted that it should be.
 #
-# The other four arguments are the map's editable parts, so every case is a one-line perturbation of a map
-# that is otherwise known good. A fixture that differs from the sound one in more than the fault under test
-# proves nothing about which fault the gate detected.
+# THE SECOND PRICED FILE IS THE gh#178 HALF, and it is present in every fixture because the real `PRICED`
+# names it: a `documentation/agents/README.md` with a `~tok` table of its own, standing in for the role
+# contracts. Two things about it are load-bearing and neither is decoration:
+#
+#   - `documentation/epsilon.md` is a 400 B SHADOW of `documentation/agents/epsilon.md`. The second file's
+#     row prices `epsilon.md` at 1.5K, which is right relative to `documentation/agents/` and 15x wrong
+#     relative to `documentation/`. So a gate that kept ONE map-relative directory — the obvious way to
+#     port this script and the way that silently measures a different file — turns the SOUND case red. The
+#     green case is the measurement; nothing else has to assert it.
+#   - the `../beta.md` row climbs out of the nested file, which is the shape three of the four real rows
+#     have (`../../MarqSpec.Mcp.TopstepX/AGENTS.md`).
+#
+# `stray_kind` is the file-level twin of `reference_kind`: `priced` drops a `~tok` table into a markdown file
+# `PRICED` does not name at all, which the gate must refuse rather than never open. `second_file` set to
+# `absent` deletes the second priced file outright — a priced file that has moved must be reported, not
+# skipped.
+#
+# Every argument is one editable part of an otherwise known-good pair of files, so every case is a one-line
+# perturbation. A fixture that differs from the sound one in more than the fault under test proves nothing
+# about which fault the gate detected. The last four default to the sound values, so the twelve calls that
+# predate gh#178 are unchanged.
 make_fixture() {
   local dir="$1" alpha_tok="$2" gamma_row="$3" agreements_heading="$4" reference_kind="$5"
-  mkdir -p "$dir/documentation"
+  local contract_row="${6:-$SOUND_CONTRACT}" contracts_heading="${7:-$SOUND_CONTRACTS_HEADING}"
+  local stray_kind="${8:-none}" second_file="${9:-present}"
+  mkdir -p "$dir/documentation/agents"
   mkfile "$dir/documentation/alpha.md" 4000
   mkfile "$dir/documentation/beta.md" 8000
   mkfile "$dir/documentation/gamma.md" 2000
   mkfile "$dir/documentation/delta.md" 400
+  mkfile "$dir/documentation/agents/epsilon.md" 6000
+  mkfile "$dir/documentation/epsilon.md" 400
+  if [ "$second_file" = "present" ]; then
+    {
+      printf '# fixture role contracts\n\n'
+      printf '%s\n\n' "$contracts_heading"
+      printf '| Contract | ~tok | Loads |\n'
+      printf '|---|---:|---|\n'
+      printf '%s\n' "$contract_row"
+      printf '| [`beta.md`](../beta.md) | 2.0K | Open it yourself. |\n'
+    } > "$dir/documentation/agents/README.md"
+  fi
+  if [ "$stray_kind" = "priced" ]; then
+    {
+      printf '# a document PRICED does not name\n\n'
+      printf '| Document | ~tok | Read it when |\n'
+      printf '|---|---:|---|\n'
+      printf '| [`delta.md`](delta.md) | 99K | A price table in a file the gate never opens. |\n'
+    } > "$dir/documentation/stray.md"
+  fi
   {
     printf '# fixture routing map\n\n'
     printf '## Start here\n\n'
@@ -109,6 +151,8 @@ make_fixture() {
 
 SOUND_GAMMA='| [`gamma.md`](gamma.md) | 0.5K | Before starting any work. |'
 SOUND_HEADING='## Working agreements'
+SOUND_CONTRACT='| [`epsilon.md`](epsilon.md) | 1.5K | Open it yourself. |'
+SOUND_CONTRACTS_HEADING='## The contracts'
 
 # Runs the REAL gate against a fixture and requires it to REJECT it, saying why in its own words.
 expect_red() {
@@ -171,7 +215,7 @@ expect_red "a drifted ~tok value (5.0K on a 1.0K file)" "$FIXTURES/drifted" "OUT
 # 2. The boundary, both sides. 1.2K on a 1.0K file is 20% out and must be tolerated; 1.3K is 30% and must not.
 #    Without the accepted half, TOLERANCE_PCT could be quietly set to 0 and every case above would still pass.
 make_fixture "$FIXTURES/within" "1.2K" "$SOUND_GAMMA" "$SOUND_HEADING" "plain"
-expect_green "20% out, inside the 25% tolerance" "$FIXTURES/within" "3 routed rows"
+expect_green "20% out, inside the 25% tolerance" "$FIXTURES/within" "5 priced rows"
 
 make_fixture "$FIXTURES/outside" "1.3K" "$SOUND_GAMMA" "$SOUND_HEADING" "plain"
 expect_red "30% out, past the 25% tolerance" "$FIXTURES/outside" "OUT OF DATE"
@@ -208,7 +252,7 @@ expect_red "prose claiming the quickest read" "$FIXTURES/quickest" "SIZE CLAIM"
 #    the first person it wrongly stops, so this case is what keeps the comparatives out of the vocabulary.
 make_fixture "$FIXTURES/nolonger" "1.0K" \
   '| [`gamma.md`](gamma.md) | 0.5K | Read it when an estimate no longer matches the card. |' "$SOUND_HEADING" "plain"
-expect_green "ordinary prose containing 'no longer'" "$FIXTURES/nolonger" "3 routed rows"
+expect_green "ordinary prose containing 'no longer'" "$FIXTURES/nolonger" "5 priced rows"
 
 # 7. A row pointing at a file that is not there. It cannot be measured, so the gate must not call it priced.
 make_fixture "$FIXTURES/missing" "1.0K" \
@@ -241,11 +285,46 @@ expect_red "a renamed section heading" "$FIXTURES/renamed" "NO SECTION"
 make_fixture "$FIXTURES/unlisted" "1.0K" "$SOUND_GAMMA" "$SOUND_HEADING" "priced"
 expect_red "a price table under an unlisted heading" "$FIXTURES/unlisted" "UNLISTED TABLE"
 
-# 13. The sound fixture. Three priced rows across two sections, plus an ordinary table with no price column
-#     under a third heading -- so this also asserts the gate leaves un-priced tables alone, which is what
-#     nearly every table in the corpus is.
+# 13. THE SECOND PRICED FILE IS ACTUALLY READ (gh#178). Everything above perturbs the routing map, so every
+#     one of them would still pass on a gate that had been pointed at a second file and never opened it --
+#     which is the whole failure mode this card was filed about, in the gate rather than in the map. The
+#     drift is put in the second file's OWN row, so only a gate that read it can report this.
+make_fixture "$FIXTURES/contract-drift" "1.0K" "$SOUND_GAMMA" "$SOUND_HEADING" "plain" \
+  '| [`epsilon.md`](epsilon.md) | 5.0K | Open it yourself. |'
+expect_red "a drifted row in the second priced file" "$FIXTURES/contract-drift" "OUT OF DATE"
+
+# 14. The same renamed-heading fault as case 11, in the second file. `PRICED` is a list of PAIRS, so a
+#     heading is priced in one file and not in another; a gate keeping one flat list of headings would find
+#     `## The contracts` in the map's file, mark it seen, and report this fixture clean.
+make_fixture "$FIXTURES/contract-renamed" "1.0K" "$SOUND_GAMMA" "$SOUND_HEADING" "plain" \
+  "$SOUND_CONTRACT" "## Contracts"
+expect_red "a renamed heading in the second priced file" "$FIXTURES/contract-renamed" "NO SECTION"
+
+# 15. A ~tok table in a FILE `PRICED` does not name. Case 12 is this fault at the heading level and was the
+#     PR #175 review's finding; gh#178 opened it again one level up by making "which files" a list at all.
+#     Without this the next author adds a fifth priced document, nothing reads it, and the green line below
+#     still names a row count -- so it still reads as proof.
+make_fixture "$FIXTURES/stray" "1.0K" "$SOUND_GAMMA" "$SOUND_HEADING" "plain" \
+  "$SOUND_CONTRACT" "$SOUND_CONTRACTS_HEADING" "priced"
+expect_red "a price table in a file the gate does not read" "$FIXTURES/stray" "UNLISTED FILE"
+
+# 16. A priced file that is not on disk. `check-doc-links.sh` says nothing about it -- nothing links to a
+#     table, only to documents -- so if this gate skipped it instead, moving `documentation/agents/README.md`
+#     would silently stop pricing four contracts with every other check still green.
+make_fixture "$FIXTURES/nofile" "1.0K" "$SOUND_GAMMA" "$SOUND_HEADING" "plain" \
+  "$SOUND_CONTRACT" "$SOUND_CONTRACTS_HEADING" "none" "absent"
+expect_red "a priced file that is not on disk" "$FIXTURES/nofile" "NO SUCH FILE"
+
+# 17. The sound fixture. Five priced rows across three sections in two files, plus an ordinary table with no
+#     price column under a third heading -- so this also asserts the gate leaves un-priced tables alone,
+#     which is what nearly every table in the corpus is.
+#
+#     It is ALSO the only assertion that link targets resolve against the file that names them: the second
+#     file prices `epsilon.md` at 1.5K, and `documentation/epsilon.md` is 400 B sitting where a map-relative
+#     resolution would look. Green here means the gate measured `documentation/agents/epsilon.md`; a gate
+#     that kept one directory for every file goes red on this case with `OUT OF DATE`.
 make_fixture "$FIXTURES/sound" "1.0K" "$SOUND_GAMMA" "$SOUND_HEADING" "plain"
-expect_green "a sound map" "$FIXTURES/sound" "3 routed rows"
+expect_green "a sound pair of priced files" "$FIXTURES/sound" "5 priced rows"
 
 info ""
 if [ "$failures" -gt 0 ]; then
@@ -261,4 +340,4 @@ if [ "$cases" -eq 0 ]; then
   exit 1
 fi
 
-ok "ok  $cases self-test cases — check-doc-sizes.sh rejects each known fault BY NAME, and accepts correct maps: one at the tolerance boundary, one whose prose says \"no longer\", and one wholly sound."
+ok "ok  $cases self-test cases across two priced files — check-doc-sizes.sh rejects each known fault BY NAME, and accepts correct input: one at the tolerance boundary, one whose prose says \"no longer\", and one wholly sound."

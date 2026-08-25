@@ -14,6 +14,11 @@ the cheapest read in its table while being the second most expensive row in it (
 to hold, because `AGENT-MEMORY.md` is under standing orders to grow and no ordinary pull request looks at the
 row that prices it.
 
+**One priced table is not below**: [`agents/README.md`](agents/README.md)'s, which is where the four role
+contracts carry their own numbers (gh#178). The same gate measures it, on the same terms. A `~tok` table
+under any other heading, or in any other file, is refused rather than skipped — so a new price list is added
+to that gate's list deliberately, or not at all.
+
 **This column is the only place a size claim lives.** A row whose prose calls a document `cheap`, or the
 `smallest` or `quickest` read here, states the number's own fact a second time — and only the number ever gets
 corrected. The check refuses those words in a row; it does not try to read paraphrase, so keep the claim out
@@ -35,7 +40,7 @@ rather than reword it.
 | [`AGENT-MEMORY.md`](AGENT-MEMORY.md) | 8.3K | **Before starting any work.** It grows by design — *append, don't overwrite* — so this is the row that goes stale first. |
 | [`project-board-workflow.md`](project-board-workflow.md) | 6.0K | You are filing, grooming or moving a card. **The board is project #5; #4 is retired.** The board makes two of the seven transitions by itself; the other five are somebody's deliberate act. |
 | [`work-estimate-rubric.md`](work-estimate-rubric.md) | 1.0K | You are setting a `Work Estimate` on an issue. |
-| [`agents/README.md`](agents/README.md) | 0.6K | You are wearing a role hat. **This row prices the index, not the route it serves** — every contract behind it is a separate read this number does not cover, and none of them is priced yet (gh#178). Reviewer and Platform contracts **never auto-load**; open them yourself. |
+| [`agents/README.md`](agents/README.md) | 0.9K | You are wearing a role hat. **This row prices the index, not the route it serves** — each contract behind it is a separate read, and the index prices all four in its own gated `~tok` column (gh#178). Reviewer and Platform contracts **never auto-load**; open them yourself. |
 | [`../CONTRIBUTING.md`](../CONTRIBUTING.md) | 4.1K | Branching, claiming, commits, PRs, and the Definition of Done. |
 | [`../AGENTS.md`](../AGENTS.md) | 2.0K | Loads automatically. The non-negotiables and the role routing table. |
 

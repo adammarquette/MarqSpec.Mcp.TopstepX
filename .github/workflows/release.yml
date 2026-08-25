@@ -68,8 +68,19 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
-          # MinVer derives the version from the nearest v-prefixed tag, and a shallow clone yields
-          # 0.0.0-alpha.0 SILENTLY rather than failing. Every job that builds or stamps a version needs this.
+          # NOT FOR MINVER, and this comment used to say it was (gh#176). This job installs no SDK and builds
+          # nothing on the runner: it hands the context to buildx, and the assembly is produced inside the
+          # container, which never sees .git because .dockerignore excludes it. The proof is the artifact this
+          # job itself published -- MarqSpec.Mcp.TopstepX.dll inside
+          # ghcr.io/adammarquette/marqspec.mcp.topstepx:0.1.0 carries AssemblyInformationalVersion
+          # 0.0.0-alpha.0, from a run that had this depth set. What carries the release number is the image
+          # TAG and the org.opencontainers.image.version label below, by decision (ADR-0001's decision log).
+          #
+          # Nothing else in this job reads history either: image-reference.sh reads remote.origin.url from
+          # git CONFIG, and the tag check below reads GITHUB_REF_NAME. KEPT ANYWAY, deliberately -- this is
+          # the run that can least cheaply be repeated, it must stay identical to ci.yml's `image` checkout
+          # (gh#54), and trimming it would change the release path to buy nothing. Correct the claim, not the
+          # setting.
           fetch-depth: 0
 
       - name: Verify the tag looks like a version

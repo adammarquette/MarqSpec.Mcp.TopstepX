@@ -277,10 +277,11 @@ construction: gh#182 `17:19:24Z`, gh#178 `18:41:30Z`, gh#186 `18:41:49Z`. They m
 project identifier**, so read alone it could not have said which board an add landed on. Ask the board, not
 the issue, when the question is *which board*.
 
-**The timeline settles it more cleanly than the clock does.** gh#182, filed `17:17:25Z`, received **no bot add
-at all** — three project adds, every one by a person. gh#186, filed `18:34:33Z`, was auto-added by the bot in
-two seconds. So #5's auto-add was **off at the first and on by the second**, which places gh#182 before the
-automation existed and not merely before the board did.
+**The clock already settles gh#182, and the bot data answers a different question.** gh#182 was filed
+`17:17:25Z` and #5 did not exist until `18:30:55Z`, so "before the board" is entailed — gh#182 received no bot
+add because there was no board to add it to, which is not independent evidence. What the bot data *does*
+establish belongs to the automation record above: gh#186, filed `18:34:33Z`, was auto-added in two seconds, so
+the auto-add was live within four minutes of the board being created.
 
 ## Cards and links
 
@@ -288,10 +289,10 @@ automation existed and not merely before the board did.
 issue.
 
 **Pull requests sit on the board too, and that is new.** #5 auto-adds them: PR #189 and PR #190 both landed as
-`PullRequest` items in `Todo` within seconds of being opened (read `2026-08-25 19:28:47Z`), where gh#107
-**#4 holds none** — all 73 of its items are issues, read from the board today rather than from gh#107, which
-does not measure this. (What an item list cannot show is whether one was ever there and removed, so this is
-"none now", not "never".) **They are not lifecycle cards — do not move one,
+`PullRequest` items in `Todo` within seconds of being opened (read `2026-08-25 19:28:47Z`). **#4 holds
+none** — all 73 of its items are issues, read straight off the board, which agrees with what gh#107's
+measurement already recorded. (An item list shows what is there *now*, so this is "none today", not
+"never".) **They are not lifecycle cards — do not move one,
 and do not read a `PullRequest` row's column as a claim about the work.** The issue beside it carries that.
 
 **A `PullRequest` item does not sit in `Todo` for ever — the close automation reaches it too, and it fires on

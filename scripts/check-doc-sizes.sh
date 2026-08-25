@@ -232,7 +232,8 @@ as_k() {
 FENCED=0
 FENCE_CHAR=""
 FENCE_LEN=0
-fence_reset() { FENCED=0; FENCE_CHAR=""; FENCE_LEN=0; }
+FENCE_QUOTED=0
+fence_reset() { FENCED=0; FENCE_CHAR=""; FENCE_LEN=0; FENCE_QUOTED=0; }
 
 # Returns nothing; updates FENCED. Call once per line, on the TRIMMED line.
 fence_step() {
@@ -248,6 +249,7 @@ fence_step() {
     FENCED=1
     FENCE_CHAR="$ch"
     FENCE_LEN="${#run}"
+    FENCE_QUOTED="$QUOTED"
   elif [ "$ch" = "$FENCE_CHAR" ] && [ "${#run}" -ge "$FENCE_LEN" ] && [ "${#run}" -eq "${#t}" ]; then
     fence_reset
   fi
@@ -266,13 +268,32 @@ fence_step() {
 # later passes remove.** Two halves of one parser disagreeing about one construct is the bug, so there is
 # now one function and both halves call it.
 TRIMMED=""
+QUOTED=0
 normalize_line() {
   local t="${1#"${1%%[![:space:]]*}"}"
+  QUOTED=0
   while [ "${t:0:1}" = ">" ]; do
+    QUOTED=1
     t="${t#>}"
     t="${t#"${t%%[![:space:]]*}"}"
   done
   TRIMMED="${t%"${t##*[![:space:]]}"}"
+}
+
+# A FENCE OPENED INSIDE A BLOCKQUOTE IS CLOSED BY THE END OF THE BLOCKQUOTE, and that is valid CommonMark
+# with no closing ``` anywhere (PR #193 review round 3). The container closes; the fence closes with it.
+# Stripping `>` for `fence_step` — round 2's fix — is what created this: with the marker gone, the fence
+# state walked straight out of the quote and into ordinary prose, and the run then died `UNTERMINATED
+# FENCE` on correct markdown. A false positive on correct input, which is the failure that gets a gate
+# deleted, and it arrived as the interaction of two fixes neither of which was wrong alone.
+#
+# The rule is the container's, not the fence's: a fence opened under a `>` ends at the first line carrying
+# no `>`. Content lines of a fenced block inside a quote must themselves be prefixed, so a bare line
+# genuinely has left the quote — this is CommonMark's rule and not an approximation of it.
+close_fence_if_quote_ended() {
+  if [ "$FENCED" -eq 1 ] && [ "$FENCE_QUOTED" -eq 1 ] && [ "$QUOTED" -eq 0 ]; then
+    fence_reset
+  fi
 }
 
 # `PRICED` is pairs; walking it needs the files in order, once each. The membership test is a substring of a
@@ -342,6 +363,7 @@ for file in "${FILES[@]}"; do
   fence_reset
   for line in "${lines[@]}"; do
     normalize_line "$line"; trimmed="$TRIMMED"
+    close_fence_if_quote_ended
 
     # Fence first, and the delimiters themselves are skipped along with what they hold.
     was_fenced="$FENCED"
@@ -565,6 +587,7 @@ for candidate in **/*.md .github/**/*.md; do
   fence_reset
   for line in "${candidate_lines[@]}"; do
     normalize_line "$line"; trimmed="$TRIMMED"
+    close_fence_if_quote_ended
     was_fenced="$FENCED"
     fence_step "$trimmed"
     if [ "$FENCED" -eq 1 ] || [ "$was_fenced" -eq 1 ]; then continue; fi

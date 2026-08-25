@@ -258,11 +258,17 @@ jobs:
   # Coverage was collected and uploaded before this, and never evaluated. An artifact nobody reads is a report,
   # not a gate.
   #
-  # The floor is 43% because the unit suite MEASURES 45.7% line / 46.5% branch today. The PRD asks for 95%/90%
-  # (R-11.1) and this is nowhere near it — but a floor set at the aspiration fails every build from the first
-  # one, and a gate that is red on arrival gets disabled rather than satisfied. This one is set just under
+  # The floor is 43% because the unit suite MEASURES 45.7% line / 46.5% branch today. It is set just under
   # reality so it catches a regression now, and is meant to be RAISED as coverage improves. Never lower it to
   # accommodate a drop; that converts the gate back into a report.
+  #
+  # NOTHING IN THIS REPOSITORY ASKS FOR MORE THAN THAT, and this comment used to say otherwise. It claimed
+  # the PRD asked for 95%/90% and cited a requirement id for it; the id was MarqSpec.Client.ProjectX's and
+  # resolved against nothing here (gh#182), by the same route as the inherited `43` the next comment block
+  # records. The citation is gone rather than replaced: documentation/prd.md's Scope paragraph puts build
+  # hygiene, the pipeline and the release path OUTSIDE the numbered requirements deliberately, so there is no
+  # id here to point at and adding one would contradict it. A floor set at an aspiration fails every build
+  # from the first one and gets disabled rather than satisfied, which is reason enough on its own.
   coverage:
     name: coverage
     needs: build-test

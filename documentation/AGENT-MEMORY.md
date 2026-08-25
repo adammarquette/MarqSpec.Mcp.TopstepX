@@ -125,8 +125,11 @@ ADR, `AGENTS.md`, or the code, **put it there instead**.
   can reach a duplicate key any more — and that is what silently falsified
   `StoreFaultReportingTests`, whose remarks had said since gh#89 that its fabricated `23505` "is pinned
   against a real one in `StoreFaultBoundaryTests`". Two files then contradicted each other with nothing
-  failing. Checked, not assumed: `git log --oneline -- <that file>` lists **three** commits ever — gh#89,
-  gh#87 and gh#133 — so gh#103 and gh#122 never touched it, because they never needed to.
+  failing. Checked, not assumed — and cited as **shas**, because `--oneline` prints shas and subjects and no
+  issue numbers, so a claim about gh#N beside it is not checkable from its own output:
+  `git log --oneline -- <that file>` lists **three** commits ever, `aca6a90`, `3be29c9` and `edd10e5` (the
+  first two both gh#89, the third gh#133). gh#103 and gh#122 are not among them, because they never needed
+  to be.
   **So: two greps, not one** — the symbol you changed, *and* the name of the thing you changed it in — and
   reach for the second one hardest when what changed is the KIND of thing the test observes.
   - **`git log -S` is the WRONG tool for this and answers "untouched" on the very edit you are hunting.**

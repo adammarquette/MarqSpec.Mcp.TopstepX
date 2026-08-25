@@ -15,6 +15,9 @@ Role- and subtree-specific rules live in their own contracts, so they cost conte
 The subtree contracts load by directory proximity — **lazily, when you first read a file there, not at session
 start**. The role contracts follow *what you are doing* rather than where a file sits, and never auto-load.
 **Wearing one of those hats without opening its contract is the most common way agents get a repo wrong.**
+They also differ sharply in what they cost to read, and the links above do not say so: each carries a
+measured `~tok` in [`agents/README.md`](documentation/agents/README.md). Check it before you open one
+(gh#178).
 
 > Each `AGENTS.md` has a one-line `CLAUDE.md` beside it holding `@AGENTS.md`. **Those shims are load-bearing** —
 > Claude Code reads `CLAUDE.md`, not `AGENTS.md`. Deleting one as "redundant" silently unloads that contract.

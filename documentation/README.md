@@ -16,8 +16,10 @@ row that prices it.
 
 **One priced table is not below**: [`agents/README.md`](agents/README.md)'s, which is where the four role
 contracts carry their own numbers (gh#178). The same gate measures it, on the same terms. A `~tok` table
-under any other heading, or in any other file, is refused rather than skipped — so a new price list is added
-to that gate's list deliberately, or not at all.
+under any other heading, or in any of the 42 tracked markdown files it sweeps, is refused rather than
+skipped — so a new price list joins that gate's list deliberately, or not at all. **Showing an example of
+one is fine**: fenced code is skipped, so a document explaining the column can print a table without being
+accused of adding one.
 
 **This column is the only place a size claim lives.** A row whose prose calls a document `cheap`, or the
 `smallest` or `quickest` read here, states the number's own fact a second time — and only the number ever gets

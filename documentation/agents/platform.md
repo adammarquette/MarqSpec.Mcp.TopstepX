@@ -360,9 +360,10 @@ rung short is also a question every future reader has to re-derive.
 [`check-doc-sizes.sh`](../../scripts/check-doc-sizes.sh), which re-measures every row of every `~tok` table
 it is pointed at (`wc -c` bytes ÷ 4, 25% tolerance) and fails a row that no longer describes its file — and
 [`check-doc-sizes-selftest.sh`](../../scripts/check-doc-sizes-selftest.sh), which requires that gate to
-reject sixteen known faults by name and to accept three correct inputs — one at the tolerance boundary, so
-the tolerance cannot be quietly set to zero, and one whose prose contains "no longer", so the size-claim
-vocabulary cannot creep back onto ordinary English. All three ride in the
+reject sixteen known faults by name and to accept five correct inputs — one at the tolerance boundary, so
+the tolerance cannot be quietly set to zero, one whose prose contains "no longer", so the size-claim
+vocabulary cannot creep back onto ordinary English, and two that print a price table inside a fence, so a
+document explaining the column is not accused of adding one. All three ride in the
 one job **because `docs` is already required on all three rungs**, so none of this needed a ruleset write and
 [the table above](#what-is-required-and-what-only-reports) does not change — the same argument as
 `commit-hygiene`'s merge-commit refusal below. Two new jobs would have meant two new required contexts added
@@ -384,7 +385,19 @@ than twice, and the gate learned to read a second file. Three consequences worth
   too.** The PR #175 review closed the first at the heading level. Making "which file" a list re-opened the
   same fail-open one level up, and the sweep that closes it uses `shopt -s globstar` rather than `find` —
   zero forks, and `**` skips dot-directories, so a developer's `.worktrees/` full of sibling checkouts is not
-  read. That blind spot is stated in the script: a price table under `.github/` would not be swept.
+  read. `.github/` is named as a second root explicitly, because `**` would have skipped that too and
+  `copilot-instructions.md` is the checklist [the reviewer contract](code-reviewer.md) routes every review
+  to. The two patterns reach all 42 tracked markdown files — `git ls-files '*.md' | wc -l` is how to check
+  that is still true, and the count rides on the gate's green line. Blind spot that remains, stated in the
+  script: markdown under any *other* dot-directory is not swept.
+- **Neither rule reads fenced code, and that is not a leak** (PR #193 review). A document that *explains* a
+  price table shows one; a gate matching `~tok` plus two pipes then blocks a merge on correct prose, on a
+  context required on all three rungs, which is how a gate gets deleted by the first person it wrongly stops.
+  The direction is not even a trade — a table inside a fence renders as text, prices nothing and routes
+  nobody. The fence state is applied to every line rather than to the `~tok` test alone, because a `##` or a
+  `| row |` inside a fence is not one either; four-space indented blocks are deliberately not tracked, which
+  is gh#142's rabbit hole. This is not hypothetical: the same pull request added two `~tok` sentences to
+  *this file*, each one `|` short of reddening its own build.
 - **A priced file that is not on disk stops the run** rather than being skipped. `check-doc-links.sh` says
   nothing about it — nothing links to a *table* — so moving the index without telling `PRICED` would
   otherwise stop pricing four contracts with every check still green.

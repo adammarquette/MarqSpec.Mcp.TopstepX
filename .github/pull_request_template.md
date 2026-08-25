@@ -37,8 +37,3 @@ Closes #
 - [ ] A timeout or cancellation is treated as an **unknown** outcome, not a failure — no path reports
       "not placed" for a request that may be live.
 - [ ] New wire enum values are handled exhaustively; no zero-value default is permissive.
-
-## Public surface
-
-- [ ] No breaking change to the public API — **or** a major version bump and an ADR accompany it, because
-      trading-copilot compiles against this assembly directly.

@@ -87,10 +87,12 @@ mkfile() {
 #   - the `../beta.md` row climbs out of the nested file, which is the shape three of the four real rows
 #     have (`../../MarqSpec.Mcp.TopstepX/AGENTS.md`).
 #
-# `stray_kind` is the file-level twin of `reference_kind`: `priced` drops a `~tok` table into a markdown file
-# `PRICED` does not name at all, which the gate must refuse rather than never open. `second_file` set to
-# `absent` deletes the second priced file outright — a priced file that has moved must be reported, not
-# skipped.
+# `stray_kind` is the file-level twin of `reference_kind`, and both take a third value. `priced` drops a
+# `~tok` table where the gate must refuse it — under an unlisted heading, or in a file `PRICED` does not name
+# at all. `fenced` puts the same table inside a ```markdown fence, where the gate must IGNORE it: a document
+# explaining a price table shows one, and reddening a required check on that is how a gate gets deleted.
+# `second_file` set to `absent` deletes the second priced file outright — a priced file that has moved must
+# be reported, not skipped.
 #
 # Every argument is one editable part of an otherwise known-good pair of files, so every case is a one-line
 # perturbation. A fixture that differs from the sound one in more than the fault under test proves nothing
@@ -117,12 +119,14 @@ make_fixture() {
       printf '| [`beta.md`](../beta.md) | 2.0K | Open it yourself. |\n'
     } > "$dir/documentation/agents/README.md"
   fi
-  if [ "$stray_kind" = "priced" ]; then
+  if [ "$stray_kind" = "priced" ] || [ "$stray_kind" = "fenced" ]; then
     {
       printf '# a document PRICED does not name\n\n'
+      if [ "$stray_kind" = "fenced" ]; then printf '```markdown\n'; fi
       printf '| Document | ~tok | Read it when |\n'
       printf '|---|---:|---|\n'
       printf '| [`delta.md`](delta.md) | 99K | A price table in a file the gate never opens. |\n'
+      if [ "$stray_kind" = "fenced" ]; then printf '```\n'; fi
     } > "$dir/documentation/stray.md"
   fi
   {
@@ -141,11 +145,21 @@ make_fixture() {
       printf '| Document | ~tok | Read it when |\n'
       printf '|---|---:|---|\n'
       printf '| [`delta.md`](delta.md) | 99K | A price table under a heading the gate does not know. |\n'
+    elif [ "$reference_kind" = "fenced" ]; then
+      printf '```markdown\n'
+      printf '| Document | ~tok | Read it when |\n'
+      printf '|---|---:|---|\n'
+      printf '| [`delta.md`](delta.md) | 99K | An EXAMPLE of a price table, shown not declared. |\n'
+      printf '```\n'
     else
       printf '| Document | Notes |\n'
       printf '|---|---|\n'
       printf '| [`delta.md`](delta.md) | No price column, so the gate must leave all of it alone. |\n'
     fi
+    printf '\n## The contracts\n\n'
+    printf '| Document | Notes |\n'
+    printf '|---|---|\n'
+    printf '| [`delta.md`](delta.md) | The SECOND priced file uses this heading; here it is unpriced. |\n'
   } > "$dir/documentation/README.md"
 }
 
@@ -293,9 +307,10 @@ make_fixture "$FIXTURES/contract-drift" "1.0K" "$SOUND_GAMMA" "$SOUND_HEADING" "
   '| [`epsilon.md`](epsilon.md) | 5.0K | Open it yourself. |'
 expect_red "a drifted row in the second priced file" "$FIXTURES/contract-drift" "OUT OF DATE"
 
-# 14. The same renamed-heading fault as case 11, in the second file. `PRICED` is a list of PAIRS, so a
-#     heading is priced in one file and not in another; a gate keeping one flat list of headings would find
-#     `## The contracts` in the map's file, mark it seen, and report this fixture clean.
+# 14. The same renamed-heading fault as case 11, in the second file -- and the one case that asserts `PRICED`
+#     is keyed on PAIRS rather than on heading text. The map fixture carries a `## The contracts` heading of
+#     its own, deliberately and unpriced, so a gate keeping one flat list of headings finds that occurrence,
+#     marks the section seen, and never says `NO SECTION` about the file whose heading actually moved.
 make_fixture "$FIXTURES/contract-renamed" "1.0K" "$SOUND_GAMMA" "$SOUND_HEADING" "plain" \
   "$SOUND_CONTRACT" "## Contracts"
 expect_red "a renamed heading in the second priced file" "$FIXTURES/contract-renamed" "NO SECTION"
@@ -315,7 +330,22 @@ make_fixture "$FIXTURES/nofile" "1.0K" "$SOUND_GAMMA" "$SOUND_HEADING" "plain" \
   "$SOUND_CONTRACT" "$SOUND_CONTRACTS_HEADING" "none" "absent"
 expect_red "a priced file that is not on disk" "$FIXTURES/nofile" "NO SUCH FILE"
 
-# 17. The sound fixture. Five priced rows across three sections in two files, plus an ordinary table with no
+# 17. FENCED EXAMPLES ARE NOT PRICE TABLES, and both halves of that must be green (PR #193 review). A
+#     document that EXPLAINS a `~tok` table shows one, and a gate matching `~tok` plus two pipes then blocks
+#     a merge on correct prose -- `docs` is required on all three rungs, so that is the shape a gate gets
+#     deleted for. It very nearly landed: this card's own `platform.md` edit added two `~tok` sentences to a
+#     swept file, each one `|` short of tripping it.
+#
+#     Two cases because the two rules are separate code paths: the fence must be honoured in a file the gate
+#     WALKS (rule 3, below a heading it does not price) and in one it merely SWEEPS (rule 4). The unfenced
+#     twins are cases 12 and 15, which stay red.
+make_fixture "$FIXTURES/fenced-section" "1.0K" "$SOUND_GAMMA" "$SOUND_HEADING" "fenced"
+expect_green "a fenced ~tok example under an unlisted heading" "$FIXTURES/fenced-section" "5 priced rows"
+
+make_fixture "$FIXTURES/fenced-file" "1.0K" "$SOUND_GAMMA" "$SOUND_HEADING" "plain"   "$SOUND_CONTRACT" "$SOUND_CONTRACTS_HEADING" "fenced"
+expect_green "a fenced ~tok example in an unswept-for-pricing file" "$FIXTURES/fenced-file" "5 priced rows"
+
+# 18. The sound fixture. Five priced rows across three sections in two files, plus an ordinary table with no
 #     price column under a third heading -- so this also asserts the gate leaves un-priced tables alone,
 #     which is what nearly every table in the corpus is.
 #
@@ -340,4 +370,4 @@ if [ "$cases" -eq 0 ]; then
   exit 1
 fi
 
-ok "ok  $cases self-test cases across two priced files — check-doc-sizes.sh rejects each known fault BY NAME, and accepts correct input: one at the tolerance boundary, one whose prose says \"no longer\", and one wholly sound."
+ok "ok  $cases self-test cases across two priced files — check-doc-sizes.sh rejects each known fault BY NAME, and accepts correct input: one at the tolerance boundary, one whose prose says \"no longer\", two showing a price table inside a fence, and one wholly sound."

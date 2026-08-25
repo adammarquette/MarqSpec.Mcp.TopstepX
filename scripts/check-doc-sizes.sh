@@ -38,8 +38,9 @@
 #
 # tokens = bytes / 4, bytes from `wc -c` on the working tree. It is the ordinary English-text approximation,
 # it is one command anybody can re-run, and being reproducible matters more here than being exact: the
-# column's job is to separate an index from a contract an order of magnitude past it, not 6.8K from 6.9K. `wc -c` is spelled out below rather than
-# replaced by a cheaper `stat` so that the gate runs the same command the map tells a reader to run.
+# column's job is to separate an index from a contract an order of magnitude past it, not 6.8K from 6.9K.
+# `wc -c` is spelled out below rather than replaced by a cheaper `stat` so that the gate runs the same command
+# the map tells a reader to run.
 #
 # `wc -c` and `git cat-file -s` disagree wherever a checkout carries CRLF. They cannot here — `.gitattributes`
 # pins `* text=auto eol=lf`, so the working tree is LF on Windows too, and the two agree byte for byte across
@@ -63,6 +64,9 @@
 # and exit 0. Rule 4 is that hole one level up, and gh#178 is what opened it: the moment a second FILE could
 # be priced, "which files are priced" became a list too, and a third file with a `~tok` table would have been
 # unread exactly as an unlisted heading once was. Adding either has to be as deliberate as the list makes it.
+#
+# NEITHER OF THEM READS FENCED CODE, and that is what keeps them from firing on documents that EXPLAIN a
+# price table by showing one (PR #193 review). See `fence_step` below for why the direction is not a trade.
 #
 # Rule 2 matches a closed vocabulary of size adjectives, so rewording WITHIN that vocabulary cannot silence
 # it. Rewording out of it can: "costs less than the others" makes the same claim and passes. Only real
@@ -206,6 +210,44 @@ as_k() {
   SUGGESTED="$(( tenths / 10 )).$(( tenths % 10 ))K"
 }
 
+# FENCED CODE IS NOT MARKDOWN STRUCTURE, AND THIS GATE IS A PARSER (PR #193 review; the lesson is gh#123's
+# and gh#142's on `issue-link`). A document that EXPLAINS a price table shows one, and the natural way to show
+# one is a fenced example — at which point a gate matching `~tok` plus two pipes accuses the author of adding
+# an unlisted price table they did not add, on a context required on all three rungs. That is a blocked merge
+# on correct prose, which is how a gate gets deleted by the first person it wrongly stops. The direction is
+# not a trade here: a table inside a fence renders as text, prices nothing and routes nobody, so skipping it
+# loses no coverage at all.
+#
+# Applied to EVERY line, not only to the `~tok` test: a `## Heading` or a `| row |` inside a fence is not one
+# either, and a parser that believes half of a fence is the shape gh#123's stripper had.
+#
+# CommonMark: an opening fence is three or more backticks or tildes, optionally followed by an info string;
+# the closing fence is the same character, at least as long, and carries nothing else. Indented (four-space)
+# code blocks are NOT tracked — that is gh#142's rabbit hole, and every example in this corpus is fenced.
+FENCED=0
+FENCE_CHAR=""
+FENCE_LEN=0
+fence_reset() { FENCED=0; FENCE_CHAR=""; FENCE_LEN=0; }
+
+# Returns nothing; updates FENCED. Call once per line, on the TRIMMED line.
+fence_step() {
+  local t="$1" ch run pat
+  case "$t" in
+    '```'*) ch='`' ;;
+    '~~~'*) ch='~' ;;
+    *) return 0 ;;
+  esac
+  pat="[!$ch]*"
+  run="${t%%$pat}"
+  if [ "$FENCED" -eq 0 ]; then
+    FENCED=1
+    FENCE_CHAR="$ch"
+    FENCE_LEN="${#run}"
+  elif [ "$ch" = "$FENCE_CHAR" ] && [ "${#run}" -ge "$FENCE_LEN" ] && [ "${#run}" -eq "${#t}" ]; then
+    fence_reset
+  fi
+}
+
 # `PRICED` is pairs; walking it needs the files in order, once each. The membership test is a substring of a
 # space-delimited string rather than a nested loop, so nothing expands a possibly-empty array under `set -u`
 # and the whole thing stays fork-free.
@@ -270,7 +312,17 @@ for file in "${FILES[@]}"; do
 
   current=-1
   in_table=0
+  fence_reset
   for line in "${lines[@]}"; do
+    # Trim once, up front: everything below decides on the trimmed line, so a row indented under a list or a
+    # blockquote is read the same as one flush against the margin.
+    trimmed="${line#"${line%%[![:space:]]*}"}"; trimmed="${trimmed%"${trimmed##*[![:space:]]}"}"
+
+    # Fence first, and the delimiters themselves are skipped along with what they hold.
+    was_fenced="$FENCED"
+    fence_step "$trimmed"
+    if [ "$FENCED" -eq 1 ] || [ "$was_fenced" -eq 1 ]; then continue; fi
+
     if [[ "$line" == '## '* ]]; then
       current=-1
       in_table=0
@@ -283,10 +335,6 @@ for file in "${FILES[@]}"; do
       done
       continue
     fi
-
-    # Trim once, up front: everything below decides on the trimmed line, so a row indented under a list or a
-    # blockquote is read the same as one flush against the margin.
-    trimmed="${line#"${line%%[![:space:]]*}"}"; trimmed="${trimmed%"${trimmed##*[![:space:]]}"}"
 
     # A PRICED TABLE UNDER AN UNLISTED HEADING IS A FAILURE, NOT AN EXEMPTION (PR #175 review). `SECTIONS`
     # was a fixed pair, so before this the parser fail-CLOSED on removal -- delete a section and you get
@@ -306,7 +354,9 @@ for file in "${FILES[@]}"; do
         die "  UNLISTED TABLE  $file: a ~tok table appears under a heading this gate does not price:"
         die "                  $trimmed"
         die "Its rows are measured by nothing, while the green line below would claim every ~tok was checked."
-        die "Add that (file, heading) pair to PRICED in this script, in the same pull request as the table."
+        die "If it is a real price list, add that (file, heading) pair to PRICED in this script, in the same"
+        die "pull request as the table. If it is an EXAMPLE of one, put it in a fenced code block — this gate"
+        die "skips fenced content, and an unfenced example is a table a reader can follow."
         failures=$(( failures + 1 ))
       fi
       continue
@@ -443,15 +493,22 @@ done
 # document with a price table of its own and, without this sweep, nothing would read it while the green line
 # below still named a row count and so still read as proof.
 #
-# GLOBSTAR, NOT `find`: zero forks, and on a Windows checkout a fork costs seconds. `**` does not match
-# dot-directories unless `dotglob` is set, so `.git/` and — the one that matters locally — `.worktrees/`,
-# which holds full copies of this repository for other sessions, are skipped without naming them. The blind
-# spot that buys is stated rather than papered over: a `~tok` table under a dot-directory (`.github/`) is not
-# swept. Nothing there prices anything today, and the alternative is a sweep that reads three sibling
-# worktrees and reports another session's half-finished table as this pull request's fault.
+# GLOBSTAR, NOT `find`: zero forks, and on a Windows checkout a fork costs seconds.
+#
+# `**` does not match dot-directories unless `dotglob` is set, which is the behaviour wanted for `.git/` and
+# — the one that matters locally — `.worktrees/`, which holds full checkouts of this repository for other
+# sessions; sweeping those would report a parallel session's half-finished table as this pull request's
+# fault. It also silently excluded `.github/`, whose five markdown files include
+# `copilot-instructions.md`, the checklist `documentation/agents/code-reviewer.md` routes every review to —
+# so that root is named explicitly (PR #193 review). The two patterns together
+# reach all 42 tracked markdown files; `git ls-files '*.md' | wc -l` is the way to check that this is still
+# true, and the count is printed on the green line.
+#
+# The blind spot that remains, stated rather than papered over: markdown under any OTHER dot-directory is
+# not swept. Adding one means adding its root here.
 shopt -s globstar nullglob
 swept=0
-for candidate in **/*.md; do
+for candidate in **/*.md .github/**/*.md; do
   swept=$(( swept + 1 ))
 
   is_priced=0
@@ -465,15 +522,21 @@ for candidate in **/*.md; do
   mapfile -t candidate_lines < "$candidate"
   if [ "${#candidate_lines[@]}" -eq 0 ]; then continue; fi
 
+  fence_reset
   for line in "${candidate_lines[@]}"; do
-    case "$line" in *'~tok'*) ;; *) continue ;; esac
     trimmed="${line#"${line%%[![:space:]]*}"}"; trimmed="${trimmed%"${trimmed##*[![:space:]]}"}"
+    was_fenced="$FENCED"
+    fence_step "$trimmed"
+    if [ "$FENCED" -eq 1 ] || [ "$was_fenced" -eq 1 ]; then continue; fi
+
+    case "$trimmed" in *'~tok'*) ;; *) continue ;; esac
     pipes="${trimmed//[^|]/}"
     if [ "${#pipes}" -ge 2 ]; then
       die "  UNLISTED FILE  $candidate carries a ~tok table this gate does not read:"
       die "                 $trimmed"
-      die "Its rows are measured by nothing. Add the (file, heading) pair to PRICED in this script, in the"
-      die "same pull request as the table — or drop the ~tok column, if the table is not a price list."
+      die "Its rows are measured by nothing. If it is a real price list, add the (file, heading) pair to"
+      die "PRICED in this script, in the same pull request as the table. If it is an EXAMPLE of one, put it"
+      die "in a fenced code block — this gate skips fenced content."
       failures=$(( failures + 1 ))
       break
     fi

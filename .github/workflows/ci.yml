@@ -43,6 +43,12 @@ permissions:
 
 jobs:
   # Needs no SDK, so a docs-only PR fails fast instead of waiting on a build.
+  #
+  # THIS JOB REPORTS THREE CHECKS, so a red `docs` is not necessarily a broken link -- read which step failed.
+  # They ride in the one job on purpose: `docs` is already a required context on all three rungs, so nothing
+  # here needed a ruleset write to become enforcing. Same argument as `commit-hygiene`'s merge-commit refusal
+  # (gh#146). Splitting them into jobs of their own would mean adding two required contexts by hand, and a
+  # context nobody adds is a check that only reports (gh#26).
   docs:
     name: docs
     runs-on: ubuntu-latest
@@ -51,6 +57,20 @@ jobs:
 
       - name: Check documentation links
         run: ./scripts/check-doc-links.sh
+
+      # gh#160. documentation/README.md prices every document it routes to so a reader can see the cost before
+      # paying it, and the column had drifted until it INVERTED its own advice -- AGENT-MEMORY.md priced at
+      # 0.8K beside "cheap; just read it" while measuring 6.8K. The drift is produced by obeying another rule
+      # ("append, don't overwrite"), so it recurs by construction and cannot be left to memory.
+      - name: Check the routing map's size column
+        run: ./scripts/check-doc-sizes.sh
+
+      # The gate above parses a table it does not own, which is the shape of all five guards in this repo that
+      # could not fire (gh#43, gh#98, gh#114, gh#126, gh#164). This runs it against fixtures whose faults are
+      # known and requires it to reject each BY NAME, and to accept a sound one -- so "the size column is
+      # clean" keeps meaning something. Ordered after it so a genuinely drifted row is reported first.
+      - name: Prove the size gate can still fail
+        run: ./scripts/check-doc-sizes-selftest.sh
 
   # ADR-0002's enforcement. Its own job rather than a step inside build-test, so a failure reads as "the
   # read-only boundary was crossed" rather than as a build break -- and so it is a required check in its own

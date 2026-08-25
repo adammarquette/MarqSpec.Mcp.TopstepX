@@ -4,28 +4,37 @@
 section you need**, and stop. `R-#`, ADR numbers and `gh#N` are the symbol table — resolve symbols on demand,
 the way a compiler does, rather than loading every source file.
 
-Sizes are approximate tokens, so a reader can see what a read costs before paying for it. **Keep them roughly
-accurate** — a size column nobody updates is worse than none, because it is trusted.
+`~tok` is what a read costs, so you can see the price before paying it. **It is `wc -c` bytes ÷ 4, rounded to
+0.1K** — re-derivable in one command, which matters more here than being exact.
+
+**It is checked, not remembered.** `scripts/check-doc-sizes.sh` re-measures every row below on every pull
+request, in `docs`, and fails one that is more than **25%** out — printing the value to paste. Left to memory
+this column inverted: `AGENT-MEMORY.md` sat at 0.8K while measuring 6.8K, and the largest row called itself
+the cheapest read in its table (gh#160). It was never going to hold, because `AGENT-MEMORY.md` is under
+standing orders to grow and no ordinary pull request looks at the row that prices it.
+
+**This column is the only place a size claim lives.** Prose calling a document cheap, small or quickest is the
+same fact written twice, and only the number ever gets corrected — so the check fails that too.
 
 ## Start here
 
 | Document | ~tok | Read it when |
 |---|---:|---|
-| [`prd.md`](prd.md) | 5.5K | You need **what is required**, or you are citing an `R-#`. Ids are stable and never renumbered. |
-| [`architecture.md`](architecture.md) | 4.5K | You need **how the pieces fit** — the cache-aside path, the projection, the transports. The cheapest whole-file read here. |
-| [`mcp-tool-catalogue`](mcp-tool-catalog.md) | 5K | You are adding, changing or calling a tool. The tool surface is a contract; this is it. |
-| [`data-dictionary.md`](data-dictionary.md) | 3K | You need the data model — the six tables, their keys, and why each key is shaped that way. |
+| [`prd.md`](prd.md) | 4.8K | You need **what is required**, or you are citing an `R-#`. Ids are stable and never renumbered. |
+| [`architecture.md`](architecture.md) | 7.0K | You need **how the pieces fit** — the cache-aside path, the projection, the transports. |
+| [`mcp-tool-catalogue`](mcp-tool-catalog.md) | 8.9K | You are adding, changing or calling a tool. The tool surface is a contract; this is it. |
+| [`data-dictionary.md`](data-dictionary.md) | 3.3K | You need the data model — the six tables, their keys, and why each key is shaped that way. |
 
 ## Working agreements
 
 | Document | ~tok | Read it when |
 |---|---:|---|
-| [`AGENT-MEMORY.md`](AGENT-MEMORY.md) | 0.8K | **Before starting any work.** Cheap; just read it. |
-| [`project-board-workflow.md`](project-board-workflow.md) | 2.5K | You are filing, grooming or moving a card. **Nothing on the board is automatic.** |
-| [`work-estimate-rubric.md`](work-estimate-rubric.md) | 1.5K | You are setting a `Work Estimate` on an issue. |
-| [`agents/`](agents/README.md) | index | You are wearing a role hat. Reviewer and Platform contracts **never auto-load** — open them yourself. |
-| [`../CONTRIBUTING.md`](../CONTRIBUTING.md) | 4K | Branching, claiming, commits, PRs, and the Definition of Done. |
-| [`../AGENTS.md`](../AGENTS.md) | 2K | Loads automatically. The non-negotiables and the role routing table. |
+| [`AGENT-MEMORY.md`](AGENT-MEMORY.md) | 6.8K | **Before starting any work.** It grows by design — *append, don't overwrite* — so this is the row that goes stale first. |
+| [`project-board-workflow.md`](project-board-workflow.md) | 1.7K | You are filing, grooming or moving a card. **Nothing on the board is automatic.** |
+| [`work-estimate-rubric.md`](work-estimate-rubric.md) | 1.0K | You are setting a `Work Estimate` on an issue. |
+| [`agents/`](agents/README.md) | 0.6K | The index only — each contract is its own read. You are wearing a role hat. Reviewer and Platform contracts **never auto-load** — open them yourself. |
+| [`../CONTRIBUTING.md`](../CONTRIBUTING.md) | 3.7K | Branching, claiming, commits, PRs, and the Definition of Done. |
+| [`../AGENTS.md`](../AGENTS.md) | 2.0K | Loads automatically. The non-negotiables and the role routing table. |
 
 ## Decisions — [`adr/`](adr/README.md)
 
@@ -56,4 +65,5 @@ real debugging time to find and none of which are guessable from the API's shape
   carry their own rationale, and they cannot drift from the code they sit on.
 
 ---
-*Adding a document? Add its row here in the same PR — a document nothing routes to is a document nobody opens.*
+*Adding a document? Add its row here in the same PR, with its `~tok` — a document nothing routes to is a
+document nobody opens, and a row with no price is one `docs` refuses.*

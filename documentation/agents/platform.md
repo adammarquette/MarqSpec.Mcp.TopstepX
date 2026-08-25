@@ -433,6 +433,10 @@ ids are the only trail back:
 | fixed, a real merge commit — [32855936278](https://github.com/adammarquette/MarqSpec.Mcp.TopstepX/actions/runs/32855936278) | `develop` | **failure** | gh#146's step, naming `c9dae55` |
 | fixed, linear, `fetch-depth: 1` — [32857116130](https://github.com/adammarquette/MarqSpec.Mcp.TopstepX/actions/runs/32857116130) | `develop` | **failure** | gh#146's step, on git's 128 — the masking above |
 
+The green half, which the [Coding contract](../../MarqSpec.Mcp.TopstepX/AGENTS.md) requires beside the red
+one, is [32859513254](https://github.com/adammarquette/MarqSpec.Mcp.TopstepX/actions/runs/32859513254) — gh#164's own pull request, base `develop` and linear, where both
+steps *ran* rather than being skipped and both passed, the two subjects read out by name.
+
 Rows 1 and 2 differ **only** in the head's copy of this workflow, which is what makes the pair a measurement
 rather than a description. Rows 3 and 4 are the two halves of the asymmetry, each on the input it exists for.
 Row 5 is gh#146 unregressed — and on rows 1, 2 and 4 that same step reports **skipped**, which is the other

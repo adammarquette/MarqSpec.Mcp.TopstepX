@@ -59,15 +59,24 @@ ADR, `AGENTS.md`, or the code, **put it there instead**.
     both attacks on it failed identically** — one reviewer matched "three harms" to the *drift* sentence
     (which went two → one) rather than the *harm* sentence (which went three → two); another read gh#107's 44
     against PR #154's 9 as one number contradicting itself. Neither figure was wrong in either case.
+    **A grep hit on a wrapped line is a fragment, not a claim** — the second reviewer grepped `nine|44` where
+    the file spells it `9` on the preceding source line, got back the tail of a wrapped line, and read the
+    fragment as a whole sentence. Widen to the paragraph and read it before concluding; twice on this card an
+    empty or partial grep result was taken as evidence.
     **Reconciling two numbers without first asking what each one counts is the same error the list records**,
     which is why the drift entry above is now in it: that reviewer had found a real omission by looking at
     the wrong sentence.
-  - **AND THE LARGER HALF IS NOT DRIFT AT ALL — it is the citation nobody ever reopened.** Everything above
-    is about a claim that *became* false. On gh#187 four more findings were claims that were **never true**,
-    and no rebase touched any of them: gh#107 has said 44 since `2026-08-23` while the text beside it said
-    nine; #4 and #5 have always shared `In Progress` and `Done` while the text said the columns were
-    disjoint; gh#148's card was gone before the branch existed; and gh#107 was cited for a pull-request
-    measurement it does not contain. **A citation sitting beside measured claims inherits their
+  - **AND THE LARGER HALF IS NOT DRIFT AT ALL — it is the claim nobody ever reopened.** Everything above is
+    about a claim that *became* false. On gh#187 four more findings concerned claims no rebase had touched —
+    and **sorting them correctly took two reviewers and one retraction.** Only two were false from the start:
+    #4 and #5 have always shared `In Progress` and `Done` while the text called the columns disjoint, and
+    gh#148's card was gone before the branch existed. **The other two were TRUE FACTS ATTACHED TO THE WRONG
+    ARTEFACT** — the nine closed issues are real but were sourced to gh#107 instead of PR #154; and #4's zero
+    pull-request items are real *and* were already recorded in gh#107's own measurement, so citing gh#107 was
+    right by this repo's `gh#N` convention. That distinction is not pedantry: I "corrected" the second and
+    introduced a **new** false claim doing it — *"gh#107 does not measure this"* — worse than what it
+    replaced. **Reopening a citation tells you whether the fact is true. It does not tell you the citation is
+    wrong.** **A citation sitting beside measured claims inherits their
     credibility** — the reader checks the numbers that look like numbers and takes the `gh#N` on trust.
     **So reopen every citation you carry forward, especially the ones you did not write**, and check what
     each number *counts* before reconciling two of them: the nine and the 44 are both correct and are

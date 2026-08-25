@@ -21,8 +21,9 @@
 
     <!--
       Deterministic, source-linked builds. SourceLink ships in the SDK since .NET 8, so no
-      PackageReference is needed — this library's dependency surface is part of its public contract
-      and is kept small on purpose.
+      PackageReference is needed. Nothing compiles against this application's assemblies, so its
+      dependency surface is not a public contract (gh#171); it is kept small because every package
+      it takes ships inside the published image.
     -->
     <Deterministic>true</Deterministic>
     <ContinuousIntegrationBuild Condition="'$(GITHUB_ACTIONS)' == 'true'">true</ContinuousIntegrationBuild>

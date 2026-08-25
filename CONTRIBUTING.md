@@ -5,10 +5,11 @@ How we work in this repo. This is the contributor front door; the agent contract
 [`documentation/adr/`](documentation/adr/).
 
 These practices are shared with
-[trading-copilot](https://github.com/adammarquette/trading-copilot/blob/develop/CONTRIBUTING.md), which consumes
-this library as a submodule. Where the two differ, the difference is deliberate and noted below — this repo
-publishes a versioned artifact of its own, a **container image on GHCR**, so it has a release ladder the parent
-does not.
+[trading-copilot](https://github.com/adammarquette/trading-copilot/blob/develop/CONTRIBUTING.md), which is a
+**sibling and not a parent**: this repository is not one of its four submodules, nothing in it references this
+one, and it does not speak MCP at all — its agent reaches its tools through an in-process seam rather than the
+wire protocol (gh#171). Where the two differ, the difference is deliberate and noted below — this repo cuts
+**versioned releases**: a `v*` tag on `main`, and a **container image on GHCR** built from it.
 
 ## Issue-first, its one exemption, and the promotion carve-out
 
@@ -145,13 +146,15 @@ one over, say so on the issue**, naming the branch.
 
 ### This repo is one half of a two-repo card
 
-Work here is frequently driven by an issue in **trading-copilot** — the code lands here and the parent only moves
-its submodule pin. So the claim and the work can sit in different repositories, and checking one gives false
-comfort. Before starting a venue-client card, check **both**:
+Work here is sometimes tracked by an issue in **trading-copilot** — that repo is where execution lives, and much
+of this server's domain layer was distilled from it. Nothing over there builds or pins this repository (gh#171);
+what is shared is the *board*, so a claim and its work can sit in different repositories and checking one gives
+false comfort. [`scripts/claim.sh`](scripts/claim.sh) reads **both** remotes for you. By hand it is:
 
 ```bash
 gh pr list --repo adammarquette/MarqSpec.Mcp.TopstepX --state open
 git ls-remote --heads https://github.com/adammarquette/MarqSpec.Mcp.TopstepX
+git ls-remote --heads https://github.com/adammarquette/trading-copilot
 ```
 
 **A clean `main` here is not "nobody started"** — work in review is on a branch, so a clean `main` reads as free
@@ -210,9 +213,9 @@ tracker and drifts from it.
 
 ## Releases
 
-This is the part that has no analogue in the parent repo, and the part that has drifted here before — the csproj
-declared `1.0.4` while the published release was `v1.0.5`, and tags are inconsistently named (`1.0.2` unprefixed,
-a release titled `1.0.0a`).
+This is the part that drifts, and the cautionary tale is the sibling client rather than this repo — in
+`MarqSpec.Client.ProjectX` the csproj declared `1.0.4` while the published release was `v1.0.5`, and its tags are
+inconsistently named (`1.0.2` unprefixed, a release titled `1.0.0a`).
 
 **The tag is the version.** No file declares one; `MinVer` derives it from the nearest tag, so drift is not
 possible rather than merely discouraged.
@@ -224,10 +227,13 @@ possible rather than merely discouraged.
    `ghcr.io/adammarquette/marqspec.mcp.topstepx:MAJOR.MINOR.PATCH` and `:latest`. **Nothing is packed and
    nothing reaches nuget.org** — this is an application.
 4. Update `CHANGELOG.md` in the promotion PR, not afterwards — a release with no changelog entry is the
-   condition that produced the current 1.0.3–1.0.5 gap.
+   condition that produced that repo's 1.0.3–1.0.5 gap.
 
-Breaking changes to the public surface need a major bump **and** an ADR, because the parent repo compiles against
-this assembly directly.
+**The public surface is the [MCP tool surface](documentation/mcp-tool-catalog.md), not an assembly.** Nothing
+compiles against these projects: `trading-copilot` is a sibling that does not reference this repository, and
+neither does anything else (gh#171). A breaking change is therefore a breaking change to the **tools** the
+published image serves — that needs a major bump **and** an ADR. A changed C# signature is not one, and the pull
+request template no longer asks about a "public API", because the consumer it named has never existed.
 
 ## Local development
 

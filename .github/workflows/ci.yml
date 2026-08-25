@@ -44,12 +44,12 @@ permissions:
 jobs:
   # Needs no SDK, so a docs-only PR fails fast instead of waiting on a build.
   #
-  # ONE STATUS CONTEXT, THREE STEPS, so a red `docs` is not necessarily a broken link -- read which step
+  # ONE STATUS CONTEXT, FIVE STEPS, so a red `docs` is not necessarily a broken link -- read which step
   # failed. `docs` is still exactly one required context; nothing was added to any ruleset.
   #
   # They ride in the one job on purpose: `docs` is already required on all three rungs, so these became
   # enforcing by wiring rather than by a settings change. Same argument as `commit-hygiene`'s merge-commit
-  # refusal (gh#146). Splitting them into jobs of their own would mean adding two required contexts by hand,
+  # refusal (gh#146). Splitting them into jobs of their own would mean adding four required contexts by hand,
   # and a context nobody adds is a check that only ever reports (gh#26).
   docs:
     name: docs
@@ -73,6 +73,25 @@ jobs:
       # clean" keeps meaning something. Ordered after it so a genuinely drifted row is reported first.
       - name: Prove the size gate can still fail
         run: ./scripts/check-doc-sizes-selftest.sh
+
+      # gh#182. `R-#` is half this repo's symbol table (AGENTS.md), and check-doc-links.sh proves only that a
+      # relative LINK resolves -- nothing proved an ID did. gh#172 found two citations naming another
+      # repository's PRD entirely, sitting in Directory.Build.props since the scaffolding commit and missed by
+      # every review and by the gh#151 sweep that walked that same file; two more of the same class were still
+      # in the tree. Two by hand, twice, is the argument for a gate rather than a third sweep.
+      #
+      # RUNS THE WHOLE TREE, not just documentation/: the four found so far were in a .props file, a
+      # .gitignore banner and this workflow's own coverage comment.
+      - name: Check requirement ids resolve
+        run: ./scripts/check-requirement-ids.sh
+
+      # Same argument as the size gate's self-test above, and the same shape: a text-matching gate is one
+      # demoted heading away from resolving zero citations and printing a green line saying so. This runs it
+      # against fixtures whose faults are known and requires it to reject each BY NAME AND BY SYMBOL, and to
+      # accept the awkward correct shapes this repository really contains -- ADR numbers, which contain a
+      # citation-shaped substring, and the literal `R-#` placeholder on thirteen lines across ten files.
+      - name: Prove the requirement-id gate can still fail
+        run: ./scripts/check-requirement-ids-selftest.sh
 
   # ADR-0002's enforcement. Its own job rather than a step inside build-test, so a failure reads as "the
   # read-only boundary was crossed" rather than as a build break -- and so it is a required check in its own

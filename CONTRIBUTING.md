@@ -170,7 +170,7 @@ actively claimed indefinitely, and the late commit is orphaned onto no PR. This 
 
 Every change starts from a **tracking issue** opened *before* the branch/PR; the PR references it (`Closes #N` /
 `Related to #N`). Populate every field — assignee, milestone, `work:*` and `Work Estimate` labels. Issues are the
-cards; a PR is not carded.
+cards; the board auto-adds pull requests too, but a PR item is **not** a card — never move one.
 
 **The spec belongs in the issue**, never as a file under `documentation/` — a parallel spec duplicates the
 tracker and drifts from it.

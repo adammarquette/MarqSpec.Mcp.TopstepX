@@ -17,8 +17,8 @@
 # Rejections alone would all be satisfied by `exit 1`, i.e. by a gate that says no to everything, which is
 # exactly as useless as one that says yes to everything and rather harder to notice.
 #
-# HALF OF THE TWENTY-FOUR CASES ARE HERE BECAUSE MUTATION FOUND THEM MISSING, and that is the point of the
-# paragraph rather than a confession. Twelve cases, from four rounds, in the order they were found:
+# SIXTEEN OF THE TWENTY-EIGHT CASES ARE HERE BECAUSE A RULE THIS GATE'S COMMENTS ASSERT WAS HELD BY
+# NOTHING, and that is the point of the paragraph rather than a confession. Five rounds:
 #
 #   the author's battery      swallowing grep's exit 2 — the hole gh#43, gh#98 and gh#126 each shipped.
 #   review round 1            a definition inside a fenced block, and one inside an HTML comment (the gate's
@@ -33,6 +33,12 @@
 #                             over-indented, behind a tab, mixing the two fence characters; the
 #                             UNTERMINATED COMMENT check, which nothing exercised; and `core.quotepath`,
 #                             likewise.
+#   review round 3            the OPENER's two rules — its three-column cap and its three-marker minimum —
+#                             and the CLOSER's length rule, which is rule 3 of the three the gate's own
+#                             comment enumerates while rules 1 and 2 had just gained cases. Plus, from
+#                             sweeping that same question across every rule the comments assert: an
+#                             unterminated FENCE is legal and must be counted rather than refused, and
+#                             `grep -I` was held by a binary fixture carrying no id.
 #
 # Read the shape rather than the list: EVERY ROUND FOUND SOMETHING, including the round that was auditing
 # the previous round's fix, and the two fail-opens both lived in the newest code. So: mutate the subject
@@ -45,7 +51,7 @@
 # Each case below matches the words that name ITS OWN fault, and every dangling case additionally matches the
 # ID ITSELF, so a gate that has stopped printing which symbol failed cannot satisfy it either.
 #
-# AND THE ACCEPTANCE IS NOT SATISFIED BY EXIT 0 EITHER. All eleven green assertions match the COUNTS the gate
+# AND THE ACCEPTANCE IS NOT SATISFIED BY EXIT 0 EITHER. All fifteen green assertions match the COUNTS the gate
 # prints, so a gate that resolved nothing cannot pass one. Two of them — the ADR near-miss and the `R-#`
 # placeholder — assert a count IDENTICAL to what the same fixture reports with those lines absent, which is
 # how they prove those lines contributed no citations rather than merely failing to break anything.
@@ -102,9 +108,11 @@ OVER_DEEP="${R}1.2.3"            # first two parts DO resolve; the whole id must
 # Builds one fixture repository.
 #
 #   $1 dir          fixture root
-#   $2 prd_kind     sound | absent | flat-headings | no-bullets | shadowed | fenced | commented | fenced-closed | nested-constructs | fence-bad-closer | unterminated-comment
+#   $2 prd_kind     sound | absent | flat-headings | no-bullets | shadowed | fenced | commented | fenced-closed | nested-constructs | fence-bad-closer | unterminated-comment | inline-code-line | unterminated-fence | opener-overindented
 #   $3 notes        the body of documentation/notes.md — the file whose citations are under test
 #   $4 extra_kind   none | rich | ignore-prd | unreadable | nested | non-ascii
+#   $5 bad_closer   fence-bad-closer only: the marker line that must NOT close the fence
+#   $6 opener       fence-bad-closer only: the opening marker, so its LENGTH can be varied
 #
 # Every case is a one-perturbation change from the sound fixture. A fixture that differs in more than the
 # fault under test proves nothing about which fault the gate detected.
@@ -113,7 +121,12 @@ OVER_DEEP="${R}1.2.3"            # first two parts DO resolve; the whole id must
 # real gate when it reads this file. Its own citation count is fixed and is what the green cases assert:
 # two section headings, three requirement bullets, one open question, and one cross-reference in prose.
 make_fixture() {
-  local dir="$1" prd_kind="$2" notes="$3" extra_kind="$4" bad_closer="${5:-}"
+  local dir="$1" prd_kind="$2" notes="$3" extra_kind="$4" bad_closer="${5:-}" opener="${6:-}"
+  # Spelled out rather than defaulted inline: a backtick inside ${6:-...} is command substitution,
+  # and bash dies on the unterminated one before this file ever runs.
+  if [ -z "$opener" ]; then
+    opener='```markdown'
+  fi
   mkdir -p "$dir/documentation"
   git -c init.defaultBranch=main init -q "$dir"
 
@@ -177,10 +190,14 @@ make_fixture() {
       # reads inside fences, so a fenced bullet is a citation whatever the definition pass decides, and an
       # id only defined inside the example would dangle in BOTH outcomes and prove nothing about either.
       if [ "$prd_kind" = "fence-bad-closer" ]; then
-        printf '\n## Appendix\n\n```markdown\n%s\n' "$bad_closer"
+        # The real closer is the opener's MARKER RUN with any info string stripped off: an info string is
+        # legal on an opener and forbidden on a closer, so the opener cannot serve as its own closer.
+        # Deriving it keeps a case that varies the opener's LENGTH terminating at the right line.
+        local real_closer="${opener//[^\`~]/}"
+        printf '\n## Appendix\n\n%s\n%s\n' "$opener" "$bad_closer"
         printf -- '- **R-1.1** Inert: still inside the example.\n'
         printf -- '- **R-1.2** Inert: still inside the example.\n'
-        printf '```\n\n'
+        printf '%s\n\n' "$real_closer"
         printf -- '- **R-1.3** Defined after the real closer.\n'
       fi
       # A comment nothing closes. Everything after it is skipped, so the symbol table is short by an unknown
@@ -190,6 +207,29 @@ make_fixture() {
       if [ "$prd_kind" = "unterminated-comment" ]; then
         printf '\n<!--\n'
         printf -- '- **R-1.4** Retired, and the comment is never closed.\n'
+      fi
+      # A LINE THAT OPENS WITH AN INLINE CODE SPAN. A fence needs THREE or more markers; with that minimum
+      # dropped to one, this ordinary sentence opens a fence and every definition below it disappears. The
+      # PRD is full of prose naming a backticked id, and a wrapped line puts one at column 0.
+      if [ "$prd_kind" = "inline-code-line" ]; then
+        printf '\n`R-1.1` is the first requirement, referred to in prose.\n\n'
+        printf -- '- **R-1.3** Defined after that line.\n'
+      fi
+      # A FENCE THE DOCUMENT NEVER CLOSES. Legal CommonMark -- it closes at end of document -- so it must
+      # be COUNTED, not refused. Nothing held that, and an author who made it a hard failure would redden
+      # a correct PRD: every other fence case here closes.
+      # THE OPENER'S INDENT CAP, and the shape that proved the old 'an over-detected opener only costs
+      # inert lines' argument false. The mechanism is PARITY: an over-indented marker opens a fence, so
+      # THE NEXT REAL OPENER IS EATEN AS A CLOSER and the heading below it is read as live text. Two
+      # sections if the cap holds, three if it does not -- the heading inside the fence becoming real.
+      if [ "$prd_kind" = "opener-overindented" ]; then
+        printf '\n## Appendix\n\n    ```\n'
+        printf '```\n'
+        printf '## R-2 - inert: CommonMark has this inside a fence that never closes\n'
+      fi
+      if [ "$prd_kind" = "unterminated-fence" ]; then
+        printf '\n## Appendix\n\n```markdown\n'
+        printf '## R-2 - inert, and this fence is never closed\n'
       fi
       if [ "$prd_kind" = "nested-constructs" ]; then
         printf '\n<!--\n```\n-->\n\n```markdown\n<!-- shown inside a fence, opening nothing -->\n```\n\n'
@@ -208,7 +248,10 @@ make_fixture() {
       printf '      placeholder: "R-2, ADR-0002, adammarquette/trading-copilot#589"\n' \
         > "$dir/.github/ISSUE_TEMPLATE/task.yml"
       mkdir -p "$dir/assets"
-      printf 'PK\003\004binary\000payload\000' > "$dir/assets/blob.bin"
+      # THE BINARY CARRIES A DANGLING ID ON PURPOSE. With `grep -I` it is skipped and the count is
+      # unchanged; without it the id is found, resolves against nothing, and the run goes red. The blob
+      # used to hold no id at all, so dropping `-I` changed nothing and the flag was held by nothing.
+      printf 'PK\003\004binary %s99.9 payload\000' "$R" > "$dir/assets/blob.bin"
       ;;
     ignore-prd)
       # The PRD exists and parses, but nothing in the corpus can see it. Definitions load, the search finds
@@ -492,6 +535,33 @@ expect_red "an HTML comment the PRD never closes" "$FIXTURES/unterminated" "UNTE
 make_fixture "$FIXTURES/non-ascii" sound "$SOUND_NOTES" non-ascii
 expect_green "a filename git would escape" "$FIXTURES/non-ascii" \
   "12 citations of 6 distinct ids"
+
+# 21. THE CLOSER'S LENGTH RULE, which is rule 3 of the three this gate's own comment enumerates. Rules 1 and
+#     2 got a case each last round; this one had none, and dropping it went green on all twenty-four
+#     (PR #195 round 3). A marker SHORTER than the opener is content, so the example runs on.
+make_fixture "$FIXTURES/closer-short" fence-bad-closer 'Governed by `R-1.3`.' none '```' '`````'
+expect_green "a closing marker shorter than its opener" "$FIXTURES/closer-short"   "(2 sections, 4 requirements, 1 open questions"
+
+# 22. THE OPENER'S MINIMUM LENGTH, the other escape. A fence needs three or more markers; at one, an
+#     ordinary sentence beginning with a backticked id opens a fence and every definition below it is lost.
+#     This PRD is full of such prose, and a wrapped line puts one at column 0 — so the measured cost of that
+#     mutation is dozens of correct citations reddening on the real tree.
+make_fixture "$FIXTURES/inline-code" inline-code-line 'Governed by `R-1.3`.' none
+expect_green "prose opening with an inline code span" "$FIXTURES/inline-code"   "(2 sections, 4 requirements, 1 open questions"
+
+# 23. A FENCE THE DOCUMENT NEVER CLOSES — legal CommonMark, which closes it at end of document. It must be
+#     COUNTED, not refused: every other fence case here closes, so nothing would have noticed an author
+#     turning this into a hard failure and reddening a correct PRD. The inert count is asserted with the
+#     definition counts, because that is what says the fence opened at all.
+make_fixture "$FIXTURES/unterminated-fence" unterminated-fence 'Governed by `R-1.1`.' none
+expect_green "a fence the document never closes" "$FIXTURES/unterminated-fence"   "(2 sections, 3 requirements, 1 open questions; 2 of its lines inert"
+
+# 24. THE OPENER'S INDENT CAP -- the rule whose absence made the header's own direction argument false
+#     (PR #195 round 3). An over-indented marker opened a fence, so the next REAL opener was eaten as a
+#     closer and the heading below it became a definition: `every one resolves`, exit 0, over an id
+#     CommonMark has inside a fence that never closes. Two sections if the cap holds, three if it does not.
+make_fixture "$FIXTURES/opener-overindented" opener-overindented 'Governed by `R-1.1`.' none
+expect_green "an over-indented opener, which must not open" "$FIXTURES/opener-overindented"   "(2 sections, 3 requirements, 1 open questions"
 
 info ""
 if [ "$failures" -gt 0 ]; then

@@ -96,6 +96,20 @@
 #   - **A space after the hyphen** — `R- 4` is not the documented form and is not matched.
 #   - **Binary files are skipped** (`grep -I`). This corpus has none; a citation inside one is invisible.
 #   - **Nested repositories are not read** — they are a different repository. The count is printed.
+#   - **Indent is measured from column 0, not from a container's content column.** CommonMark measures a
+#     fence's three-column allowance relative to the list item or blockquote containing it, and doing that
+#     properly means parsing containers, which is a markdown parser rather than a gate. What it costs was
+#     measured on fixtures rather than reasoned about (PR #195 round 3):
+#       - a fence a list has pushed to four or more columns is not recognised as a fence at all. Its
+#         contents are then read as ordinary text, which is harmless for DEFINITIONS -- those must sit at
+#         column 0 and so cannot be inside such a block -- and the ids CITED in it are reported unresolved
+#         exactly as they would be inside any other example. Definitions written at column 0 AFTER the
+#         list are read normally: CHECKED, because the version before the opener carried a cap could not
+#         close such a fence and swallowed every one of them.
+#       - the one shape that still fails open needs a COLUMN-0 definition INSIDE a fence a container has
+#         indented past three columns -- a requirement written flush left inside a nested list's code
+#         block. documentation/prd.md contains no fenced block at all, and the green line prints the
+#         inert-line count, so a fence this gate does recognise is visible on every run.
 #   - **The `UNQUOTABLE PATH` branch is unexercised, here and by the self-test.** It fires on a path git
 #     escapes for a reason `core.quotepath=false` does not suppress — an embedded quote, backslash or
 #     control character — and NTFS refuses all three in a filename, so no fixture on this platform can
@@ -240,17 +254,25 @@ for line in "${prd_lines[@]}"; do
   # leaving it untrimmed means the fence never closes, every definition after it disappears, and their
   # citations go red — the safe direction, but red on correct markdown all the same.
   #
-  # THE OPENER AND THE CLOSER FAIL IN OPPOSITE DIRECTIONS, and this comment used to give the opener's
-  # analysis as if it governed both (PR #195 review). Over-detecting an OPENER starts a skipped region
-  # early: it costs inert lines, and a definition that goes missing reddens its citations. Over-detecting a
-  # CLOSER ends a fenced EXAMPLE early, and every line of the example after it becomes a real definition —
-  # the fail-open this whole section exists to prevent. So the two are deliberately not symmetrical:
-  #   - the OPENER's indent is unbounded, on purpose. CommonMark would read a four-column marker as an
-  #     indented code block, whose contents are inert too, so treating it as a fence lands on the same
-  #     answer for definitions and errs toward more inert lines either way.
-  #   - the CLOSER checks all three of CommonMark's conditions, below.
-  # Ask the question per construct, not per section — which is gh#142's rule, and one statement of it was
-  # covering two constructs that answer it differently.
+  # BOTH MARKERS FAIL OPEN WHEN OVER-DETECTED, and this comment has now been wrong about that twice, in
+  # opposite halves, which is the part worth carrying away rather than the rule.
+  #
+  #   - The CLOSER was obvious once measured: end a fenced EXAMPLE early and every line of the example
+  #     after it becomes a real definition.
+  #   - The OPENER was argued to be safe and is not (PR #195 round 3). The mechanism is PARITY, not
+  #     inertness: an over-detected opener flips the state, so THE NEXT REAL OPENER IS EATEN AS A CLOSER
+  #     and everything after it is read as live text. Three appended lines — a marker at four columns, a
+  #     marker at column 0, then a heading — defined that heading and reported `every one resolves`, exit
+  #     0, where CommonMark has the heading inside a fence that never closes.
+  #
+  # So both ends now implement CommonMark's rule: at most three columns of indent, a tab advancing to the
+  # next four-column stop. The old reasoning — "CommonMark reads a four-column marker as an indented code
+  # block, whose contents are inert too" — was true of the marker's own block and said nothing about what
+  # the state flip does to the REST of the file, which is where the symbol was invented.
+  #
+  # A FAILURE DIRECTION IS A MEASUREMENT, NOT A DEDUCTION. gh#142's rule is to ask which way a construct
+  # fails; the mistake both times was answering it by reasoning instead of by building the input and
+  # running it. Every direction claim in this file has now been probed rather than argued.
   trimmed="${line#"${line%%[![:space:]]*}"}"; trimmed="${trimmed%"${trimmed##*[![:space:]]}"}"
 
   # The leading indent in COLUMNS, which the closer test below caps at three. A tab advances to the next
@@ -299,7 +321,9 @@ for line in "${prd_lines[@]}"; do
     fi
     continue
   fi
-  if [[ "$trimmed" =~ $FENCE ]]; then
+  # THE OPENER IS CAPPED AT THREE COLUMNS TOO, which is CommonMark's actual rule and which this script
+  # used to leave off deliberately, on a direction argument that was wrong (PR #195 round 3).
+  if [ "$fence_indent" -le 3 ] && [[ "$trimmed" =~ $FENCE ]]; then
     in_fence=1
     fence_char="${BASH_REMATCH[1]:0:1}"
     fence_len="${#BASH_REMATCH[1]}"

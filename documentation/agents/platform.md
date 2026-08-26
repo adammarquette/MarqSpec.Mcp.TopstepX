@@ -360,7 +360,7 @@ rung short is also a question every future reader has to re-derive.
 [`check-doc-sizes.sh`](../../scripts/check-doc-sizes.sh), which re-measures every row of every `~tok` table
 it is pointed at (`wc -c` bytes ÷ 4, 25% tolerance) and fails a row that no longer describes its file — and
 [`check-doc-sizes-selftest.sh`](../../scripts/check-doc-sizes-selftest.sh), which requires that gate to
-reject twenty-three known faults by name and to accept seventeen correct inputs — one at the tolerance boundary, so
+reject twenty-six known faults by name and to accept seventeen correct inputs — one at the tolerance boundary, so
 the tolerance cannot be quietly set to zero, one whose prose contains "no longer", so the size-claim
 vocabulary cannot creep back onto ordinary English, and twelve that print a price table inside a fence —
 six quoted, four of those closed by the end of the blockquote or of the file, and four leaning on one
@@ -448,6 +448,21 @@ than twice, and the gate learned to read a second file. Three consequences worth
   distinction between *mutated* and merely *exercised*, which is where the unpinned rules were hiding.
   Reach for this the third time a reviewer finds the same shape; PR #195 arrived at it independently on
   `issue-link`, which is the second gate in this repository to need it.
+- **A ledger is a claim too, and it lies in two specific ways — audit it against the script, do not re-read
+  it.** Both happened on the first one written, and a reviewer found both by walking the code rather than
+  the table. **A grade can promise more than its evidence:** a row marked as individually mutated named one
+  case where six actually fail — the decision was pinned, the row was not true, so a marker that promises
+  *exactly these cases* has to be re-run before it is written down. **A decision can be pinned by
+  accident:** a fixture sitting at directory depth 1 reddened when `globstar` was removed, so the table read
+  as covering `globstar` when the case had been written for something else entirely. Coverage owed to a
+  fixture's incidental *shape* rather than its intent is coverage the table cannot see it lacks. One case,
+  one decision.
+- **"Unreachable, and here is why" is the weakest row in any such table, because nothing executes it.** Of
+  seven such entries, two were reachable — and the worst was wrong in *both* halves: it claimed another
+  check reported first, when that check is in a later loop the branch exits before ever reaching. Both are
+  now ordinary cases, and each was one fixture argument away the whole time. **Re-derive every one by trying
+  to reach it** — truncate the file, empty the table, mutate the branch — and record the attempt, not the
+  argument. Three of the five that survived now carry a measurement rather than a deduction.
 - **A priced file that is not on disk stops the run** rather than being skipped. `check-doc-links.sh` says
   nothing about it — nothing links to a *table* — so moving the index without telling `PRICED` would
   otherwise stop pricing four contracts with every check still green.

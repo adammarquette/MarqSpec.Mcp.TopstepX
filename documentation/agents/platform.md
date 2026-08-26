@@ -177,7 +177,8 @@ The root contract's five apply here unchanged. Four land specifically on the pip
   **per line**, one in `awk` and one in `sed 's/`[^`]*`//g'`. A code span that opens on one line and closes on
   the next is still a span to CommonMark and to GitHub, so both leaked its middle into the text the gate
   searched — at a 110-column margin that is not exotic, and **44 of this repository's 96 pull-request bodies
-  strip differently once it is fixed**. Neither pass could be taught alone: teaching only the strip re-creates
+  strip differently once it is fixed, 13 of them in text a grep can read**. Neither pass could be taught
+  alone: teaching only the strip re-creates
   gh#123's two-rules drift, and teaching only the comment pass re-opens the non-local failure that review
   round rejected. So the three phases became one `awk` program with **one** `build_spans()` that both call.
   Three things about it worth carrying past this gate:
@@ -218,6 +219,20 @@ The root contract's five apply here unchanged. Four land specifically on the pip
     through whose citation GitHub puts inside `<code>` — fail-open — and omitting `source` refused one it
     binds. **Name the revision you are implementing, and sweep the list against the renderer**; this is the
     second time a correct reading of the current spec has been wrong about what GitHub runs.
+  - **A remainder's DIRECTION is a measurement, not a deduction — and a remainder with the wrong direction
+    is worse than no note.** It tells the next reader the hole is safe. This note was written wrong twice
+    before it was written right, both times by correct-sounding reasoning about a construct nobody had run:
+    the seam remainder said a missed boundary could only *invent* a span when it **destroys** one, and the
+    boundary remainder said both errors were fail-open when over-bounding **refuses honest bodies** (a
+    blockquote lazy continuation is one paragraph to GitHub). Run the construct, then write the direction.
+  - **A correct fix that widens a state's lifetime inherits every gap in that state's other guards.**
+    `mark_html_blocks()` had no fence awareness and did not need it while its state died at the next blank
+    line. Giving `pre` a closing-tag terminator — right on its own terms — turned it into *runs to end of
+    body*, so a line-initial `<script>` or `<pre>` written **inside a fenced example** took the rest of the
+    body with it: inert (fail-open, the span below never pairs) or deleted (fail-closed, a body GitHub binds
+    is refused). Both regressions against `develop`, both invisible to the differential, because **0 of the
+    96 archived bodies carry a line-initial type-1 tag**. When you extend how long a state lives, re-audit
+    every guard that state never had.
   - **A phase that deletes lines must blank them instead when a later phase reads across them.** Deleting a
     fenced block butts the paragraph above it against the one below, and a run in one then pairs with a run in
     the other. Blanking keeps the boundary and keeps the line numbering identical through all three phases.

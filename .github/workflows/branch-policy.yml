@@ -494,6 +494,15 @@ jobs:
           # A KNOWN REMAINDER carrying the wrong direction is worse than no note: it tells the next reader
           # the hole is safe. Run the construct.
           #
+          # AND ITS SIBLING, from round three: A CORRECT FIX THAT WIDENS A STATE-S LIFETIME INHERITS EVERY
+          # GAP IN THAT STATE-S OTHER GUARDS. `mark_html_blocks()` never had fence awareness and never
+          # needed it while its state died at the next blank line. Giving `pre` a closing-tag terminator --
+          # right on its own terms -- turned that into RUNS TO END OF BODY, and a line-initial `<script>`
+          # or `<pre>` inside a fenced EXAMPLE then took the rest of the body with it, in both directions.
+          # Neither the fixtures nor the differential could see it: 0 of the 96 archived bodies carry a
+          # line-initial type-1 tag. When you extend how long a state lives, re-audit every guard that
+          # state never had.
+          #
           # Still approximate, each with the direction MEASURED against `POST /markdown`: an ordered list
           # item interrupts on any number rather than only `1.`; a heading or table row inside a blockquote
           # is not recognised through the `>`; a lazy continuation splits a region it should not (above);
@@ -706,7 +715,7 @@ jobs:
                   return 0
                 }
 
-                function mark_html_blocks(   i, probe, open, j, t1, closer, opendel) {
+                function mark_html_blocks(   i, probe, open, j, t1, closer, opendel, fence) {
                   # An HTML block carries NO inline parsing, so nothing in it opens or closes a code span.
                   # Whether its TEXT is still live for a citation is a SEPARATE question with a separate
                   # answer, and only a measurement gives it. Two kinds, and the second has exactly one
@@ -726,7 +735,7 @@ jobs:
                   #
                   # Computed ONCE over the raw body and consulted by both build_spans() calls. That is sound
                   # only because the block phase blanks rather than deletes, so line numbers never move.
-                  open = 0; closer = ""; opendel = 0
+                  open = 0; closer = ""; opendel = 0; fence = 0
                   for (i = 1; i <= n; i++) {
                     probe = buf[i]
                     sub(/\r$/, "", probe)
@@ -746,6 +755,17 @@ jobs:
                       continue
                     }
                     inert[i] = 0
+                    # FENCE STATE, and it is load-bearing (review, round three). A fenced code block and an
+                    # HTML block are both leaf blocks, so whichever OPENS FIRST wins: while an HTML block is
+                    # open the three arms above run and a fence marker is just content; while a FENCE is
+                    # open nothing here may open an HTML block, because its lines are code. Without this,
+                    # a line-initial `<script>` or `<pre>` written INSIDE a fence opened a real HTML block
+                    # -- and once type 1 arrived it ran to its own closing tag or to END OF BODY, so the
+                    # whole rest of the body went inert (fail-open: a span below is never paired and its
+                    # citation reaches the greps) or deleted (fail-closed: a body GitHub binds is refused).
+                    # Both measured against `POST /markdown`, both regressions against `develop`.
+                    if (is_fence(probe)) { fence = !fence; continue }
+                    if (fence) continue
                     j = lead(probe)
                     if (j > 0 && LEADW <= 3 && substr(probe, j, 1) == "<") {
                       if (substr(probe, j, 4) == "<!--") {

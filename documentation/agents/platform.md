@@ -231,6 +231,16 @@ The root contract's five apply here unchanged. Four land specifically on the pip
   `body_no_code` derivation out of `branch-policy.yml` itself, at `origin/develop` and at the fix, so what
   ran was the shipped text and not a copy of it.
 
+  **On mawk, narrowed to what was actually run.** Docker was down on the machine this was written on, so
+  gh#142's container check was unavailable and **no probe has ever printed an awk version** — these runs
+  settle that the program works on the runner, not *which* awk ran it. `gawk` is absent from the
+  `ubuntu-24.04` image, which makes mawk near-certain and is precisely the package-list inference the
+  gh#142 bullet refuses to make, so it is not claimed. What was measured instead: **byte-identical output
+  under `LC_ALL=C gawk --posix` across all 96 archived bodies**, 95 of them carrying non-ASCII — POSIX mode
+  plus single-byte indexing being the mawk-shaped constraint. **Keep this in step with the same paragraph
+  in `branch-policy.yml`**: the narrowing was applied here at round one and to the workflow only at round
+  four, and for three rounds the two files disagreed about it.
+
   *Proven red and green by mutation, on the runner, and every run cited against the code it ran on* — which
   is gh#184's whole point, and it bit three times here because the shipping SHA moved three times under
   review. On the code that ships: the red half **#233** ([32922261154]), the green half **#234**

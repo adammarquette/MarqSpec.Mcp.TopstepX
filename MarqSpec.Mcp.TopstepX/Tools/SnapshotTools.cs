@@ -17,11 +17,13 @@ namespace MarqSpec.Mcp.TopstepX.Tools;
 public sealed class SnapshotTools(
     MarketDataTools marketData,
     ReferenceTools reference,
-    IndicatorCatalogNames names)
+    IndicatorCatalogNames names,
+    TimeProvider clock)
 {
     private readonly MarketDataTools _marketData = marketData;
     private readonly ReferenceTools _reference = reference;
     private readonly IndicatorCatalogNames _names = names;
+    private readonly TimeProvider _clock = clock;
 
     /// <summary>The resolutions a snapshot covers when the caller does not name any.</summary>
     /// <remarks>
@@ -141,9 +143,15 @@ public sealed class SnapshotTools(
                 .GetLatestBars(symbol, resolution, barCount, cancellationToken)
                 .ConfigureAwait(false);
 
+            // The moment every indicator below is read as of. With bars that is a property of the data; with
+            // none it is "now", and now comes from the INJECTED clock. DateTimeOffset.UtcNow made this the
+            // one path on the tool surface no test could pin, and the state where it is observable is a real
+            // one rather than a contrived one: an instrument that has stopped updating still has indicator
+            // rows behind a look-back window that now reaches past them, and the anchor decides whether the
+            // last stored reading comes back or a null does (gh#268).
             DateTimeOffset asOf = series.Bars.Count > 0
                 ? series.Bars[^1].T
-                : DateTimeOffset.UtcNow;
+                : _clock.GetUtcNow();
 
             Dictionary<string, decimal?> indicators = [];
             foreach (string name in _names.Names)

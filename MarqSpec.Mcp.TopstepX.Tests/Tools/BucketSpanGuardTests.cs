@@ -377,7 +377,8 @@ public sealed class BucketSpanGuardTests : IDisposable
         return new SnapshotTools(
             marketData,
             new ReferenceTools(new InstrumentRegistry(capped), _calendar, _gateway, capped, _clock),
-            new IndicatorCatalogNames(_catalog));
+            new IndicatorCatalogNames(_catalog),
+            _clock);
     }
 
     /// <summary>Runs a call and hands back whatever it threw, if anything.</summary>

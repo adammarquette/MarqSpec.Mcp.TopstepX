@@ -70,6 +70,25 @@ ADR, `AGENTS.md`, or the code, **put it there instead**.
     identifier for a grep to find — gh#187 produced five such count errors, four of them found by a reviewer
     rather than by the author. Two reading rules, both earned by *wrong* findings filed against that list:
     - **A grep hit on a wrapped line is a fragment, not a claim.** Widen to the paragraph before concluding.
+    - **[2026-08-26] The same wrapping makes a phrase INVISIBLE to a grep for it, and that direction is
+      worse.** `PriceLevelRecord.cs` said in the present tense that the table "is written by a geometric
+      detection pass". Nothing has ever written it, and the sentence survived because
+      `grep "geometric detection pass"` cannot match a phrase split across two comment lines. One cause for
+      both directions — `grep` is line-oriented and this repository hard-wraps — but a fragment is a wrong
+      answer you can see, while a miss is **silence, and silence reads as clean**. Plausibly the other half
+      of why gh#118, gh#151 and gh#171 each swept for template residue and all three missed `NOTICE`: a
+      sweep can be thorough and still come back empty. Inferred, not measured, unlike the wrap itself.
+      **Remedy: match the least-wrappable fragment — one distinctive word, not the phrase** — **and prove
+      the pattern on a known positive before you trust an empty result.** That second half is not advice; it
+      is how the first half got corrected. The obvious fix, a whitespace-normalised `grep -Pzo
+      'geometric\s+detection'`, **also returns nothing here**, because the continuation line carries the
+      comment marker: the text is `geometric` NEWLINE `/// detection`, and `\s` does not match `///`. So
+      normalising whitespace is not enough wherever a wrapped line is prefixed — `///`, `#`, `*`, a
+      markdown list indent. Measured on `origin/develop`'s copy of the file, all four on the same input:
+      `grep "geometric detection pass"` → **0**; `grep -Pzo 'geometric\s+detection'` → **0**;
+      `grep -Pzo 'geometric[\s/]+detection'` → 1; `grep "geometric"` → 1. The single word is the one that
+      needed no thought to get right. Found correcting that sentence under gh#243; the table's status is
+      gh#247.
     - **Check what each number counts before reconciling two of them.** Two figures that disagree need not
       conflict — they may count different things on different days, and both be right.
   - **AND THE LARGER HALF IS NOT DRIFT AT ALL — it is the claim nobody ever reopened.** Everything above is

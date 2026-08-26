@@ -317,6 +317,12 @@ The root contract's five apply here unchanged. Four land specifically on the pip
   the subject before believing the self-test: **most of that file's cases exist because a decision it makes
   was held by nothing**, and the later ones came from auditing its own ledger rather than from a reviewer
   pointing at a rule. That gate's closer states three CommonMark conditions and shipped with cases for two.
+  **And needles have a ceiling no further needle raises: they assert output that IS there** (gh#239). A stray
+  line in that gate's header printed `command not found` before every invocation with all forty-two cases
+  green — it matched no needle, and matching no needle is precisely what a needle cannot detect. The
+  assertion that catches it is about the *stream*, not the text: split stdout from stderr and require a green
+  run to write nothing to the second. **Measure the stream before asserting it is empty**, per gate — the
+  other two gates in this job have their own stderr behaviour and are deliberately not covered.
 - **A PR into a non-integration base used to get no CI at all, and read as `CLEAN`** (gh#60). `ci.yml` and
   `codeql.yml` filtered `pull_request` to `[develop, staging, main]`, so a stacked PR onto a feature branch
   produced zero runs — and because the required checks hang off the `develop` ruleset, nothing was pending or
@@ -508,8 +514,15 @@ this count together whenever a step is added**; the count is the only thing tell
   `Q-#` cited anywhere in the tree** against [the PRD](../prd.md)'s own definitions and fails naming file,
   line and symbol — and [`check-requirement-ids-selftest.sh`](../../scripts/check-requirement-ids-selftest.sh),
   which requires that gate to reject each known fault **by name, by symbol and by location**, asserts the
-  gate's own printed counts on every correct input, and carries a **decision ledger** — the third gate here
-  to need one. `check-doc-links.sh` proves a relative *link* resolves;
+  gate's own printed counts on every correct input, requires a green run to write **nothing at all to
+  stderr**, and carries a **decision ledger** — the third gate here to need one. That last assertion is
+  gh#239: a stray non-fatal line in the gate's header printed `command not found` before every invocation
+  and **all forty-two cases still passed**, because it sits above the gate's own `set -euo pipefail`, so the
+  exit status was unchanged and stdout stayed byte-identical. Splitting the streams and requiring stderr to
+  be empty is cheap **because it was measured rather than argued** — a green run writes exactly zero bytes
+  there, on the real tree and on the nested-repository fixture alike. **The red cases are exempt and say so
+  beside the code**: `die` reports through stderr, so there it is the answer rather than stray output.
+  `check-doc-links.sh` proves a relative *link* resolves;
   nothing proved an *id* did, and gh#172 found two citations naming another repository's PRD entirely.
   Three things in it are worth carrying forward, because each was a defect first:
   - **The left word boundary.** An ADR number contains a citation-shaped substring, so without it the gate

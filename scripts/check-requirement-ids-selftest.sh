@@ -77,16 +77,30 @@
 # few seconds on a Windows checkout, where process creation is pathologically slow. Run it before pushing a
 # change to either script, not on every save.
 
-# WHAT THIS SUITE CANNOT SEE, found by breaking the gate accidentally while writing the line above (PR #195
+# WHAT THIS SUITE COULD NOT SEE, found by breaking the gate accidentally while writing the line above (PR #195
 # round 8). A stray carriage return split a comment in the gate's HEADER, leaving a bare word that ran as a
 # command and printed `command not found` before every invocation. ALL FORTY-TWO CASES STILL PASSED: the
 # broken line sits above the gate's own `set -euo pipefail`, so command-not-found was non-fatal, the exit
 # code was unchanged, and every needle still matched. CI would have gone green on it too.
 #
-# Every assertion here is on EXIT STATUS and on NAMED SUBSTRINGS of the output. Neither notices output that
-# should not be there at all. Asserting the absence of unexpected stderr is a different claim from the ones
-# below and is not made -- recorded rather than fixed, because a remainder this file cannot see is exactly
-# what the ledger exists to hold. What caught it was reading the gate's actual output by hand.
+# Exit status and named substrings are both assertions about output that IS there. Neither can notice output
+# that should not be there at all, and no number of further needles would have: the stray line matched none of
+# them. So expect_green makes the one assertion that does (gh#239) -- it SPLITS the gate's streams instead of
+# merging them with `2>&1`, and requires stderr to be EMPTY.
+#
+# THAT IS A MEASUREMENT, NOT A PREFERENCE, and it was re-taken on `796b14c` rather than carried over from the
+# card that asked for it. A green run of this gate writes exactly ZERO bytes to stderr: 324 B stdout / 0 B
+# stderr against the real repository, and 318-319 B / 0 B across all nineteen green fixtures -- the
+# nested-repository one, the likeliest to leak because the gate SKIPS a nested repo where `grep` would
+# otherwise complain about a directory, at 319 B. Only the stderr half is asserted; the stdout figure is
+# quoted as a RANGE because it tracks the digits in the counts the gate prints, and gh#239 recorded a single
+# 318 B for a fixture measuring 319 B here. It is the same KIND of claim the cases below already make, not a
+# new one -- and it would have caught the carriage return on all nineteen green cases.
+#
+# THE RED CASES ARE EXEMPT, DELIBERATELY: the gate reports their faults through `die`, which writes to stderr,
+# so there stderr is the answer rather than stray output. The reason is recorded again beside expect_red,
+# because the asymmetry looks like an oversight and the fix for a supposed oversight is deleting the
+# assertion.
 
 set -euo pipefail
 
@@ -223,6 +237,18 @@ set -euo pipefail
 #                                                    } `[ -n ]` guard, i.e. grep emitted only blank lines)
 #   dangling>0 exits 1 ....................... case  every red case
 #   the green line's counts .................. mut   frozen definition counters; frozen section counter
+# THE OUTPUT STREAM ITSELF -- not a decision the gate MAKES, which is why it had no row for eight rounds
+#   a green run says nothing on STDERR ....... mut   ALL NINETEEN green cases, and the mutation is gh#239's
+#                                                    own defect put back: a bare word above the gate's `set
+#                                                    -euo pipefail`. Non-fatal, so the exit status is
+#                                                    unchanged and EVERY BYTE OF STDOUT is unchanged with it
+#                                                    -- which is why status and needles both missed it and
+#                                                    all forty-two cases passed. Measured 19 green cases red
+#                                                    / 23 red cases still green, so the red half is pinned as
+#                                                    EXEMPT rather than merely left untouched.
+#                                                    THE GRADE IS THE WHOLE POINT HERE: this row could only
+#                                                    ever have been written `mut`, because the assertion's
+#                                                    entire claim is about a defect no case could see.
 # ---------------------------------------------------------------------------
 
 red()  { printf '\033[31m%s\033[0m\n' "$*" >&2; }
@@ -559,6 +585,12 @@ GATE_ENV_VAL=""
 # the one nothing here exercised: every case passes an explicit root, so the default REPO_ROOT derivation
 # could be broken with all thirty-eight green while the real invocation died (PR #195 round 6).
 GATE_SELF_HOSTED=""
+# THE GATE'S STDERR IS CAPTURED SEPARATELY RATHER THAN MERGED WITH `2>&1` (gh#239), so expect_green can
+# assert it is EMPTY. Merged, output that should not be there at all is indistinguishable from output that
+# should: a stray line printed before every invocation left all forty-two cases green -- see the header.
+# It lives under $FIXTURES so the EXIT trap already removes it, and directly under it rather than inside any
+# fixture, since every root the gate is pointed at is $FIXTURES/<name> and it must not read this file.
+GATE_STDERR="$FIXTURES/.gate-stderr"
 run_gate() {
   local cmd
   if [ -n "$GATE_SELF_HOSTED" ]; then
@@ -566,19 +598,34 @@ run_gate() {
   else
     cmd=(bash "$GATE" "$1")
   fi
+  # Truncated per call, not appended: each case asserts what ITS OWN run wrote, and a leftover byte from the
+  # previous case would redden the next one and name the wrong culprit.
+  : > "$GATE_STDERR"
   if [ -n "$GATE_ENV_VAR" ]; then
-    env "$GATE_ENV_VAR=$GATE_ENV_VAL" "${cmd[@]}" 2>&1
+    env "$GATE_ENV_VAR=$GATE_ENV_VAL" "${cmd[@]}" 2>"$GATE_STDERR"
   else
-    "${cmd[@]}" 2>&1
+    "${cmd[@]}" 2>"$GATE_STDERR"
   fi
 }
 
+# Both streams as one string, for the callers that must read the gate's own words wherever it chose to put
+# them -- `die` writes to stderr, `ok` to stdout. Ordering between the two is lost, which costs nothing: every
+# needle in this file is a substring of a single line.
+gate_output() { printf '%s\n%s' "$1" "$(cat "$GATE_STDERR")"; }
+
+# THE RED CASES DELIBERATELY DO NOT TAKE expect_green's EMPTY-STDERR ASSERTION, AND THIS IS THE ONLY PLACE
+# THAT SAYS WHY (gh#239). The gate reports every one of these faults through `die`, which writes to stderr --
+# so on a red case stderr is not stray output, it is THE ANSWER, and the needles below are matched against it.
+# "Stderr must be empty" is therefore a claim about a GREEN run only: the gate resolved everything and had
+# nothing to say. The asymmetry between the two helpers is the finding, not an oversight in one of them; do
+# not tidy it away by pushing the assertion up into run_gate, which would redden all twenty-three cases here.
 expect_red() {
   local label="$1" dir="$2"; shift 2
   local out status=0 needle
   cases=$(( cases + 1 ))
 
   out="$(run_gate "$dir")" || status=$?
+  out="$(gate_output "$out")"
 
   if [ "$status" -eq 0 ]; then
     red "SELF-TEST FAILED  $label"
@@ -600,18 +647,22 @@ expect_red() {
   ok "  red as required  $label  ($*)"
 }
 
-# Runs the REAL gate against a CORRECT fixture and requires it to ACCEPT it — and to say what it resolved.
+# Runs the REAL gate against a CORRECT fixture and requires it to ACCEPT it — to say what it resolved, and to
+# say NOTHING ELSE ANYWHERE. The third assertion is the one gh#239 added, and it is the only one here that
+# looks at output the case did not ask for.
 expect_green() {
-  local label="$1" dir="$2" needle="$3" out status=0
+  local label="$1" dir="$2" needle="$3" out err status=0 stray
   cases=$(( cases + 1 ))
 
   out="$(run_gate "$dir")" || status=$?
+  err="$(cat "$GATE_STDERR")"
 
   if [ "$status" -ne 0 ]; then
     red "SELF-TEST FAILED  $label"
     red "  The gate REJECTED correct input (exit $status). It would fail correct pull requests, and the"
     red "  first person it wrongly stops will delete it."
-    info "$out"
+    # Both streams: the gate says WHY it rejected through `die`, i.e. on stderr, which $out no longer carries.
+    info "$(gate_output "$out")"
     failures=$(( failures + 1 ))
     return
   fi
@@ -619,11 +670,27 @@ expect_green() {
     red "SELF-TEST FAILED  $label"
     red "  The gate passed without saying '$needle'. Exit 0 having resolved NOTHING — or having quietly"
     red "  resolved MORE than the fixture contains — is the shape of every dead guard in this repository."
-    info "$out"
+    info "$(gate_output "$out")"
     failures=$(( failures + 1 ))
     return
   fi
-  ok "  green as required  $label  ($needle)"
+  # A GREEN RUN WRITES EXACTLY ZERO BYTES TO STDERR -- measured on all nineteen green fixtures, not assumed
+  # from the two the card measured. See the header for the numbers and for why only the stderr half is
+  # asserted.
+  #
+  # Byte count rather than `[ -n ]`: a lone newline is stray output too, and the number is what an author
+  # needs to see. `wc -c` pads on some platforms, hence the strip.
+  stray="$(wc -c < "$GATE_STDERR" | tr -d '[:space:]')"
+  if [ "$stray" -ne 0 ]; then
+    red "SELF-TEST FAILED  $label"
+    red "  The gate went green, said '$needle', and still wrote $stray bytes to STDERR. Exit status and"
+    red "  needles both survive a gate that is ALSO doing something else — a stray line above its own"
+    red "  \`set -euo pipefail\` is non-fatal, changes no exit code and matches every needle (gh#239)."
+    info "$err"
+    failures=$(( failures + 1 ))
+    return
+  fi
+  ok "  green as required  $label  ($needle; stderr empty)"
 }
 
 # The fixture PRD alone carries seven citations across six distinct ids. Every green case below is measured

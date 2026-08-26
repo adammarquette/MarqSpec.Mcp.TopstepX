@@ -360,11 +360,11 @@ rung short is also a question every future reader has to re-derive.
 [`check-doc-sizes.sh`](../../scripts/check-doc-sizes.sh), which re-measures every row of every `~tok` table
 it is pointed at (`wc -c` bytes ÷ 4, 25% tolerance) and fails a row that no longer describes its file — and
 [`check-doc-sizes-selftest.sh`](../../scripts/check-doc-sizes-selftest.sh), which requires that gate to
-reject twenty known faults by name and to accept eleven correct inputs — one at the tolerance boundary, so
+reject twenty-one known faults by name and to accept fifteen correct inputs — one at the tolerance boundary, so
 the tolerance cannot be quietly set to zero, one whose prose contains "no longer", so the size-claim
-vocabulary cannot creep back onto ordinary English, and eight that print a price table inside a fence —
-six of them quoted, four of those closed by the end of the blockquote or of the file rather than by a fence
-— so a document explaining the column is not accused of adding one. All three ride in the
+vocabulary cannot creep back onto ordinary English, and twelve that print a price table inside a fence —
+six quoted, four of those closed by the end of the blockquote or of the file, and four leaning on one
+opener/closer rule each — so a document explaining the column is not accused of adding one. All three ride in the
 one job **because `docs` is already required on all three rungs**, so none of this needed a ruleset write and
 [the table above](#what-is-required-and-what-only-reports) does not change — the same argument as
 `commit-hygiene`'s merge-commit refusal below. Two new jobs would have meant two new required contexts added
@@ -424,6 +424,19 @@ than twice, and the gate learned to read a second file. Three consequences worth
   What tells them apart is a real price table **below** the quote, and that is now a case. **Whenever a
   tolerance, exemption or skip is added, re-run the mutation that pins the rule it touches** — the suite
   going green afterwards is exactly what it does when coverage has been deleted instead.
+- **Mutate every decision the code makes, not only the one the change touched — and a rule stated in a
+  header comment is the likeliest to have no test at all.** `fence_step`'s header names four opener/closer
+  rules in prose; all four could be deleted with every case still green, and none was an equivalent mutant
+  — each reddened `docs` on ordinary markdown (a document showing fence syntax, or one fenced with tildes),
+  which is the false positive four review rounds had just been spent removing. **Prose is not a fixture.**
+  That is precisely the gap `check-doc-sizes.sh` exists to close for the `~tok` column — a claim nothing
+  re-measures — reappearing inside the script that closes it.
+- **A mutation that reddens for the WRONG reason reads as caught.** The fifth of those five was a fail-open:
+  the sweep's per-file `fence_reset`. Delete it and fence state leaks between files, so a real undeclared
+  price table in the *next* file is swallowed — its report vanishes under a cascade of `UNTERMINATED FENCE`
+  noise about innocent files, and **the run still exits 1**. A mutation harness that asks only *"did the
+  suite go red"* passes that. Assert *which* cases fail, by name: this repository's own "non-zero exit is
+  not sufficient" rule (gh#108, gh#98), applied one level up to the harness rather than to the gate.
 - **A priced file that is not on disk stops the run** rather than being skipped. `check-doc-links.sh` says
   nothing about it — nothing links to a *table* — so moving the index without telling `PRICED` would
   otherwise stop pricing four contracts with every check still green.

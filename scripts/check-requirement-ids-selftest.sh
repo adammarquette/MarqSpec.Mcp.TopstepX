@@ -17,18 +17,27 @@
 # Rejections alone would all be satisfied by `exit 1`, i.e. by a gate that says no to everything, which is
 # exactly as useless as one that says yes to everything and rather harder to notice.
 #
-# SEVEN OF THE NINETEEN CASES ARE HERE BECAUSE MUTATION FOUND THEM MISSING, and that is the point of the
-# paragraph rather than a confession. The author's own battery found one — swallowing grep's exit 2, the
-# same hole gh#43, gh#98 and gh#126 each shipped. The PR #195 review found four more: a definition inside a
-# fenced block and one inside an HTML comment (the gate's ONLY fail-open, and it went green on the real tree
-# with a citation of an invented id); a nested repository turning a correct tree red; frozen definition
-# counters that nothing asserted; and three separate ways of destroying the reported LINE NUMBER, which every
-# case survived because the needle was the FILENAME and the location is a superset of it. The last two came
-# out of mutating the FIX for those — a fence whose closer carries trailing whitespace, and each of the two
-# constructs nested inside the other.
+# HALF OF THE TWENTY-FOUR CASES ARE HERE BECAUSE MUTATION FOUND THEM MISSING, and that is the point of the
+# paragraph rather than a confession. Twelve cases, from four rounds, in the order they were found:
 #
-# So: mutate the subject before believing its self-test, every time. A self-test is a text-matching gate
-# too, and the ones that pass on a broken subject are the ones nobody ever ran against one.
+#   the author's battery      swallowing grep's exit 2 — the hole gh#43, gh#98 and gh#126 each shipped.
+#   review round 1            a definition inside a fenced block, and one inside an HTML comment (the gate's
+#                             ONLY fail-open: it went green on the real tree over a citation of an invented
+#                             id); a nested repository turning a correct tree red; frozen definition
+#                             counters; and three ways of destroying the reported LINE NUMBER, all of which
+#                             every case survived because the needle was the FILENAME, of which the location
+#                             is a superset.
+#   mutating that fix         a fence whose closer carries trailing whitespace, and each of the two
+#                             constructs nested inside the other.
+#   review round 2            three marker lines that are CONTENT to CommonMark and were closing a fence —
+#                             over-indented, behind a tab, mixing the two fence characters; the
+#                             UNTERMINATED COMMENT check, which nothing exercised; and `core.quotepath`,
+#                             likewise.
+#
+# Read the shape rather than the list: EVERY ROUND FOUND SOMETHING, including the round that was auditing
+# the previous round's fix, and the two fail-opens both lived in the newest code. So: mutate the subject
+# before believing its self-test, every time. A self-test is a text-matching gate too, and the ones that
+# pass on a broken subject are the ones nobody ever ran against one.
 #
 # NON-ZERO EXIT IS NOT SUFFICIENT AND IS NOT WHAT THIS ASSERTS. check-requirement-ids.sh also exits 1 for "no
 # such root" and for a missing PRD, so a self-test satisfied by status alone would go green on a runner where
@@ -36,7 +45,7 @@
 # Each case below matches the words that name ITS OWN fault, and every dangling case additionally matches the
 # ID ITSELF, so a gate that has stopped printing which symbol failed cannot satisfy it either.
 #
-# AND THE ACCEPTANCE IS NOT SATISFIED BY EXIT 0 EITHER. All seven green assertions match the COUNTS the gate
+# AND THE ACCEPTANCE IS NOT SATISFIED BY EXIT 0 EITHER. All eleven green assertions match the COUNTS the gate
 # prints, so a gate that resolved nothing cannot pass one. Two of them — the ADR near-miss and the `R-#`
 # placeholder — assert a count IDENTICAL to what the same fixture reports with those lines absent, which is
 # how they prove those lines contributed no citations rather than merely failing to break anything.
@@ -49,8 +58,10 @@
 # TWO RUNS, NOT ONE (the Coding contract, Tests). This file is the first: red on the faults the gate exists
 # to catch. The second is ci.yml's `docs` job running the gate against this repository's REAL tree — the most
 # awkward correct input there is, with twelve ADR numbers that contain a citation-shaped substring, fourteen
-# lines citing bare section ids, thirteen lines using the literal placeholder across ten files, an
-# issue-template placeholder string, and a PRD that cites its own ids.
+# lines citing bare section ids, an issue-template placeholder string, a PRD that cites its own ids, and the
+# literal placeholder on thirteen lines across ten files as of `develop` at `8a2302d` — pinned to a commit
+# because this file and its gate keep adding more of them, and an unpinned count is wrong the next time
+# either is edited.
 #
 # LOCAL RUNTIME. Each case forks `git init` and a shell. That is milliseconds on the CI runner and can be a
 # few seconds on a Windows checkout, where process creation is pathologically slow. Run it before pushing a
@@ -91,9 +102,9 @@ OVER_DEEP="${R}1.2.3"            # first two parts DO resolve; the whole id must
 # Builds one fixture repository.
 #
 #   $1 dir          fixture root
-#   $2 prd_kind     sound | absent | flat-headings | no-bullets | shadowed | fenced | commented | fenced-closed | nested-constructs
+#   $2 prd_kind     sound | absent | flat-headings | no-bullets | shadowed | fenced | commented | fenced-closed | nested-constructs | fence-bad-closer | unterminated-comment
 #   $3 notes        the body of documentation/notes.md — the file whose citations are under test
-#   $4 extra_kind   none | rich | ignore-prd | unreadable | nested
+#   $4 extra_kind   none | rich | ignore-prd | unreadable | nested | non-ascii
 #
 # Every case is a one-perturbation change from the sound fixture. A fixture that differs in more than the
 # fault under test proves nothing about which fault the gate detected.
@@ -102,7 +113,7 @@ OVER_DEEP="${R}1.2.3"            # first two parts DO resolve; the whole id must
 # real gate when it reads this file. Its own citation count is fixed and is what the green cases assert:
 # two section headings, three requirement bullets, one open question, and one cross-reference in prose.
 make_fixture() {
-  local dir="$1" prd_kind="$2" notes="$3" extra_kind="$4"
+  local dir="$1" prd_kind="$2" notes="$3" extra_kind="$4" bad_closer="${5:-}"
   mkdir -p "$dir/documentation"
   git -c init.defaultBranch=main init -q "$dir"
 
@@ -154,6 +165,32 @@ make_fixture() {
       # containing a code fence opens one, the fence swallows the `-->`, and the gate dies naming an
       # unterminated comment that is closed three lines up. A confident wrong answer about a file the reader
       # then goes and stares at, which is gh#123's complaint about its own diagnostic.
+      # A MARKER LINE THAT MUST NOT CLOSE THE FENCE. This is the half where over-detection INVENTS symbols:
+      # a closer accepted too early ends a fenced EXAMPLE, and the rest of the example becomes definitions.
+      # Six shapes closed a fence CommonMark keeps open until the PR #195 review measured them — an indent
+      # of four or eight columns or a tab, and a marker mixing the two fence characters.
+      #
+      # TWO inert bullets, not one, and the assertion is on the COUNTS. With one, the two outcomes collide:
+      # a wrongly-closed fence would count that bullet and then re-open on the real closer, hiding the
+      # requirement below it, and four would come out as four either way.
+      # The two inert bullets RE-STATE ids the fixture PRD already defines. They have to: the corpus grep
+      # reads inside fences, so a fenced bullet is a citation whatever the definition pass decides, and an
+      # id only defined inside the example would dangle in BOTH outcomes and prove nothing about either.
+      if [ "$prd_kind" = "fence-bad-closer" ]; then
+        printf '\n## Appendix\n\n```markdown\n%s\n' "$bad_closer"
+        printf -- '- **R-1.1** Inert: still inside the example.\n'
+        printf -- '- **R-1.2** Inert: still inside the example.\n'
+        printf '```\n\n'
+        printf -- '- **R-1.3** Defined after the real closer.\n'
+      fi
+      # A comment nothing closes. Everything after it is skipped, so the symbol table is short by an unknown
+      # amount and no verdict would mean anything -- a named hard failure. NOTHING EXERCISED IT until the
+      # PR #195 review deleted the check and watched all nineteen cases stay green: three of the PRD's own
+      # requirements then reported dangling, a confident wrong answer at the wrong lines.
+      if [ "$prd_kind" = "unterminated-comment" ]; then
+        printf '\n<!--\n'
+        printf -- '- **R-1.4** Retired, and the comment is never closed.\n'
+      fi
       if [ "$prd_kind" = "nested-constructs" ]; then
         printf '\n<!--\n```\n-->\n\n```markdown\n<!-- shown inside a fence, opening nothing -->\n```\n\n'
         printf -- '- **R-1.3** Defined after both.\n'
@@ -178,6 +215,15 @@ make_fixture() {
       # nothing, and without the NO CITATIONS guard the gate would report a clean tree having resolved zero
       # symbols — the exact vacuous green every dead guard in this repository printed.
       printf 'documentation/prd.md\n' > "$dir/.gitignore"
+      ;;
+    non-ascii)
+      # A FILENAME WITH A BYTE ABOVE 0x7F. `core.quotepath` DEFAULTS TO TRUE, and under it git returns
+      # `"documentation/caf\303\251.md"` — a name that is not the name on disk. The gate sets the option
+      # false so the path arrives raw; without it this file is refused as an UNQUOTABLE PATH and a correct
+      # tree goes red. Nothing held that option until the PR #195 review deleted it and all nineteen cases
+      # stayed green.
+      printf 'A note citing R-1.1, under a name git would escape.\n' \
+        > "$dir/documentation/caf$(printf '\303\251').md"
       ;;
     nested)
       # ANOTHER REPOSITORY inside this one. `git ls-files --others` will not descend into it, so it names
@@ -414,6 +460,38 @@ expect_green "a fence closed with trailing whitespace" "$FIXTURES/fenced-closed"
 make_fixture "$FIXTURES/nested-constructs" nested-constructs 'Governed by `R-1.3`.' none
 expect_green "a fence inside a comment, and a comment inside a fence" "$FIXTURES/nested-constructs" \
   "(2 sections, 4 requirements, 1 open questions"
+
+# 16-18. THE CLOSER'S THREE CONDITIONS, one case each, because the closer is the half where over-detection
+#     invents symbols rather than skipping lines. Every one of these marker lines is CONTENT to CommonMark
+#     and closed the fence until the PR #195 review: an over-indented marker, a marker behind a tab, and a
+#     marker mixing the two fence characters. Same counts as case 14 and for the same reason — if the marker
+#     closes, the two bullets inside the example become definitions and the requirement below is hidden.
+make_fixture "$FIXTURES/closer-indent" fence-bad-closer 'Governed by `R-1.3`.' none '    ```'
+expect_green "a closing marker indented four columns" "$FIXTURES/closer-indent" \
+  "(2 sections, 4 requirements, 1 open questions"
+
+make_fixture "$FIXTURES/closer-tab" fence-bad-closer 'Governed by `R-1.3`.' none "$(printf '\t```')"
+expect_green "a closing marker behind a tab" "$FIXTURES/closer-tab" \
+  "(2 sections, 4 requirements, 1 open questions"
+
+#     The third is the guard for the fail-open half specifically: with it dropped, an info string or a
+#     mixed run closes the fence, and NOTHING ELSE in this file would notice. The review dropped that one
+#     condition and all nineteen cases stayed green.
+make_fixture "$FIXTURES/closer-mixed" fence-bad-closer 'Governed by `R-1.3`.' none '```~'
+expect_green "a closing marker mixing fence characters" "$FIXTURES/closer-mixed" \
+  "(2 sections, 4 requirements, 1 open questions"
+
+# 19. A COMMENT NOTHING CLOSES. A named hard failure the header advertises, and nothing exercised it: the
+#     review replaced the check with `if false` and every case here stayed green, while three of the
+#     fixture PRD's own requirements reported dangling at lines their author had not touched.
+make_fixture "$FIXTURES/unterminated" unterminated-comment 'Governed by `R-1.1`.' none
+expect_red "an HTML comment the PRD never closes" "$FIXTURES/unterminated" "UNTERMINATED COMMENT"
+
+# 20. A NON-ASCII FILENAME, which git escapes under its own default. The gate turns that default off; with
+#     the option removed the file is refused by name and a correct tree goes red. Also unheld until review.
+make_fixture "$FIXTURES/non-ascii" sound "$SOUND_NOTES" non-ascii
+expect_green "a filename git would escape" "$FIXTURES/non-ascii" \
+  "12 citations of 6 distinct ids"
 
 info ""
 if [ "$failures" -gt 0 ]; then

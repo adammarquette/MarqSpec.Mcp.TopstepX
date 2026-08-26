@@ -269,6 +269,7 @@ public static class Program
         services.AddSingleton<InstrumentRegistry>();
         services.AddSingleton<IndicatorCatalog>();
         services.AddSingleton<IndicatorCatalogNames>();
+        services.AddSingleton<LevelMethodCatalog>();
         services.AddSingleton<ToolGuards>();
         services.AddSingleton<StoreAvailabilityHolder>();
         services.AddSingleton<EmbeddingAvailabilityHolder>();

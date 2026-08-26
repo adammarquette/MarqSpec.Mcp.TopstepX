@@ -427,3 +427,32 @@ public static class KeyLevels
         }
     }
 }
+
+/// <summary>The <see cref="ILevelMethod"/> face of <see cref="KeyLevels"/> — swing pivots.</summary>
+/// <remarks>
+/// <para>
+/// A face, not a second implementation. <see cref="Detect"/> hands its arguments straight to
+/// <see cref="KeyLevels.Detect(IReadOnlyList{Bar}, IReadOnlyList{decimal?}, KeyLevelOptions)"/>, so the
+/// numbers this returns are the numbers the pipeline has always returned and the hand-checked fixtures that
+/// pin the four stages keep pinning them unchanged.
+/// </para>
+/// <para>
+/// The roll refusal <c>ILevelMethod</c> requires is reached through
+/// <see cref="KeyLevels.FindPivots"/>, which calls <see cref="IndicatorGuard.RequireSingleContract"/> before
+/// it looks at a single price. Deliberately not repeated here: a second call would change which of two
+/// refusals a caller sees when a series is both spliced and handed a misaligned ATR, and the property that
+/// matters — that a spliced series is refused — is swept over the whole catalogue rather than assumed of any
+/// one method.
+/// </para>
+/// </remarks>
+public sealed class SwingLevelMethod : ILevelMethod
+{
+    /// <summary>The method name, <c>swing</c>.</summary>
+    public string Name => "swing";
+
+    /// <inheritdoc />
+    public IReadOnlyList<KeyLevelZone> Detect(
+        IReadOnlyList<Bar> bars,
+        IReadOnlyList<decimal?> atr,
+        KeyLevelOptions options) => KeyLevels.Detect(bars, atr, options);
+}

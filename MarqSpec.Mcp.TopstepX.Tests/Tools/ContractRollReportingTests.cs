@@ -256,7 +256,7 @@ public sealed class ContractRollReportingTests : IDisposable
         ReferenceTools reference = new(
             new InstrumentRegistry(_wrapped!), _calendar!, _gateway!, _wrapped!, _clock!);
 
-        return new SnapshotTools(marketData, reference, new IndicatorCatalogNames(_catalog!));
+        return new SnapshotTools(marketData, reference, new IndicatorCatalogNames(_catalog!), _clock!);
     }
 
     private IOptions<MarketDataOptions>? _wrapped;

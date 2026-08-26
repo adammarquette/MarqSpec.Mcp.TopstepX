@@ -126,7 +126,8 @@ public sealed class ResolutionGuardTests : IDisposable
         _snapshot = new SnapshotTools(
             _marketData,
             new ReferenceTools(new InstrumentRegistry(options), calendar, _gateway, options, _clock),
-            new IndicatorCatalogNames(_catalog));
+            new IndicatorCatalogNames(_catalog),
+            _clock);
     }
 
     public void Dispose() => _database.Dispose();

@@ -383,7 +383,7 @@ public sealed class CalendarEndGuardTests : IDisposable
     /// <param name="marketData">The market-data tools it composes.</param>
     /// <returns>The snapshot tool.</returns>
     private SnapshotTools SnapshotFor(MarketDataTools marketData) =>
-        new(marketData, Reference(), new IndicatorCatalogNames(_catalog));
+        new(marketData, Reference(), new IndicatorCatalogNames(_catalog), _clock);
 
     /// <summary>Runs a call and hands back whatever it threw, if anything.</summary>
     /// <param name="call">The call.</param>

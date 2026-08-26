@@ -98,18 +98,23 @@
 #   - **Nested repositories are not read** — they are a different repository. The count is printed.
 #   - **Indent is measured from column 0, not from a container's content column.** CommonMark measures a
 #     fence's three-column allowance relative to the list item or blockquote containing it, and doing that
-#     properly means parsing containers, which is a markdown parser rather than a gate. What it costs was
-#     measured on fixtures rather than reasoned about (PR #195 round 3):
-#       - a fence a list has pushed to four or more columns is not recognised as a fence at all. Its
-#         contents are then read as ordinary text, which is harmless for DEFINITIONS -- those must sit at
-#         column 0 and so cannot be inside such a block -- and the ids CITED in it are reported unresolved
-#         exactly as they would be inside any other example. Definitions written at column 0 AFTER the
-#         list are read normally: CHECKED, because the version before the opener carried a cap could not
-#         close such a fence and swallowed every one of them.
-#       - the one shape that still fails open needs a COLUMN-0 definition INSIDE a fence a container has
-#         indented past three columns -- a requirement written flush left inside a nested list's code
-#         block. documentation/prd.md contains no fenced block at all, and the green line prints the
-#         inert-line count, so a fence this gate does recognise is visible on every run.
+#     properly means parsing containers, which is a markdown parser rather than a gate. What that costs was
+#     measured rather than argued, and the entry it replaces is worth keeping as the warning: it named a
+#     shape -- a column-0 definition inside a container-indented fence -- and asserted it was a fail-open
+#     WITHOUT BUILDING IT. The reviewer built it and the gate agrees with CommonMark, because a column-0
+#     line ends the list item, the fence ends with the item, and the heading is top level to both. **An
+#     overstated blind spot is the same unmeasured-claim class as a direction argument; it merely fails in
+#     the harmless direction.** What is actually true:
+#       - a fence a container has pushed past three columns is not recognised as a fence. Its contents are
+#         read as ordinary text -- which cannot invent a definition, since those must sit at column 0 and a
+#         column-0 line has already left the container. Ids CITED inside such an example are reported
+#         unresolved, exactly as they are inside any fence this gate does recognise.
+#       - definitions written at column 0 AFTER such a block are read normally. Checked, because the
+#         version before the opener carried an indent cap could not close that fence and swallowed them.
+#       - **no fail-open of this shape is known.** Neither the author nor the reviewer could construct one:
+#         for a column-0 line to stay inside a fence, the fence must be at top level with at most three
+#         columns of indent, which this gate opens. That is a failed search, not a proof -- the two
+#         fail-opens this machinery has already had were both found by someone building the input.
 #   - **The `UNQUOTABLE PATH` branch is unexercised, here and by the self-test.** It fires on a path git
 #     escapes for a reason `core.quotepath=false` does not suppress — an embedded quote, backslash or
 #     control character — and NTFS refuses all three in a filename, so no fixture on this platform can
@@ -321,12 +326,28 @@ for line in "${prd_lines[@]}"; do
     fi
     continue
   fi
-  # THE OPENER IS CAPPED AT THREE COLUMNS TOO, which is CommonMark's actual rule and which this script
-  # used to leave off deliberately, on a direction argument that was wrong (PR #195 round 3).
+  # THE OPENER CARRIES BOTH OF COMMONMARK'S RESTRICTIONS, and this script shipped without each of them in
+  # turn -- the indent cap in round 3, the info-string rule in round 4, and both times the consequence was
+  # the same PARITY fail-open: a marker that is not an opener opens one, the next real opener is eaten as a
+  # closer, and everything after it is read live.
+  #
+  #   1. at most three columns of indent, a tab advancing to the next four-column stop;
+  #   2. a BACKTICK fence's info string may not contain a backtick. The spec gives this gate's exact hazard
+  #      as its own reason -- otherwise 'some inline code is incorrectly read as the beginning of a fenced
+  #      code block' -- and a PRD is prose full of backticked ids. A TILDE fence has no such restriction and
+  #      deliberately does not get one here: `~~~a`b` really is an opener, checked in both directions.
+  opens_fence=0
   if [ "$fence_indent" -le 3 ] && [[ "$trimmed" =~ $FENCE ]]; then
+    marker="${BASH_REMATCH[1]}"
+    info="${trimmed:${#marker}}"
+    if [ "${marker:0:1}" != '`' ] || [[ "$info" != *'`'* ]]; then
+      opens_fence=1
+    fi
+  fi
+  if [ "$opens_fence" -eq 1 ]; then
     in_fence=1
-    fence_char="${BASH_REMATCH[1]:0:1}"
-    fence_len="${#BASH_REMATCH[1]}"
+    fence_char="${marker:0:1}"
+    fence_len="${#marker}"
     inert=$(( inert + 1 ))
     continue
   fi

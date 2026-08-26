@@ -17,8 +17,9 @@
 # Rejections alone would all be satisfied by `exit 1`, i.e. by a gate that says no to everything, which is
 # exactly as useless as one that says yes to everything and rather harder to notice.
 #
-# SIXTEEN OF THE TWENTY-EIGHT CASES ARE HERE BECAUSE A RULE THIS GATE'S COMMENTS ASSERT WAS HELD BY
-# NOTHING, and that is the point of the paragraph rather than a confession. Five rounds:
+# TWENTY-ONE OF THE THIRTY-THREE CASES ARE HERE BECAUSE A RULE THIS GATE'S COMMENTS ASSERT WAS HELD BY
+# NOTHING, and that is the point of the paragraph rather than a confession. Six rounds -- and the ledger
+# above is what finally made the question finite, after five of them found rules one at a time:
 #
 #   the author's battery      swallowing grep's exit 2 — the hole gh#43, gh#98 and gh#126 each shipped.
 #   review round 1            a definition inside a fenced block, and one inside an HTML comment (the gate's
@@ -51,7 +52,7 @@
 # Each case below matches the words that name ITS OWN fault, and every dangling case additionally matches the
 # ID ITSELF, so a gate that has stopped printing which symbol failed cannot satisfy it either.
 #
-# AND THE ACCEPTANCE IS NOT SATISFIED BY EXIT 0 EITHER. All fifteen green assertions match the COUNTS the gate
+# AND THE ACCEPTANCE IS NOT SATISFIED BY EXIT 0 EITHER. All seventeen green assertions match the COUNTS the gate
 # prints, so a gate that resolved nothing cannot pass one. Two of them — the ADR near-miss and the `R-#`
 # placeholder — assert a count IDENTICAL to what the same fixture reports with those lines absent, which is
 # how they prove those lines contributed no citations rather than merely failing to break anything.
@@ -74,6 +75,87 @@
 # change to either script, not on every save.
 
 set -euo pipefail
+
+# ---------------------------------------------------------------------------
+# THE DECISION LEDGER
+# ---------------------------------------------------------------------------
+# Every decision check-requirement-ids.sh makes, against the case that kills it. Written after FIVE review
+# rounds each turned up a rule nothing pinned -- the diagnosis was not any one rule but the method: this file
+# pinned what a reviewer had pointed at, not what the script decides. #193 reached the same conclusion on
+# `check-doc-sizes.sh` and #202 on `issue-link`; the platform contract carries the rule, and this is the
+# third gate to need it. Adding a decision without adding a row is then the same visible omission.
+#
+# GRADES, and the distinction is the whole point (#193: a ledger is a claim too):
+#   mut   individually mutated in the script, and the NAMED cases went red. Re-run before writing the row --
+#         a grade that promises more than its evidence is how the first ledger in this repo lied.
+#   rev   mutated by the reviewer rather than the author, with the same evidence.
+#   case  exercised by the case named, NOT individually mutated. Weaker, and said so.
+#   none  no fixture reaches it. Every one of these was re-derived by TRYING, not by arguing -- two of the
+#         first draft's `none` rows were reachable and are now cases 28 and 29.
+#
+# CITATION SIDE
+#    left word boundary .................... mut   adr-near-miss, sound corpus
+#   [RQ] covers both id classes .............. mut   dangling open question; both count assertions
+#   [0-9] excludes the `#` placeholder ....... mut   the literal placeholder
+#   (\.[0-9]+)* repeats ...................... mut   an id with a third part
+#   grep -I skips binaries ................... mut   sound corpus, definition counts
+#   grep -n reports the line ................. rev   every dangling case, on the file:line needle
+#   grep exit 2 is not "no match" ............ mut   a file the corpus lists and grep cannot open
+#   grep exit 1 / no hits is NO CITATIONS .... mut   a corpus in which nothing was found
+#   hits parsed from the RIGHT ............... rev   dangling cases (line_no split from the left)
+#   output to a file, not $( ) ............... none  guards an empty LAST line, which `grep -o` cannot emit:
+#                                                    every hit is file:line:id and id is non-empty. Kept as
+#                                                    the house remedy rather than as a live guard.
+# CORPUS
+#   core.quotepath=false ..................... mut   a filename git would escape
+#   trailing-slash entries are nested repos .. mut   a nested repository, counted and not read
+#   staged-then-deleted still reaches grep ... case  the unreadable case (no `[ -f ]` shortcut to mutate)
+#   empty file list is NOTHING TO CHECK ...... mut   case 29, every file ignored
+#   UNQUOTABLE PATH .......................... none  needs a path git escapes for a reason quotepath does not
+#                                                    suppress -- a quote, backslash or control character --
+#                                                    and NTFS refuses all three in a filename.
+#   ls-files failure is CANNOT LIST .......... none  UNREACHABLE ON THIS MACHINE FOR AN ODD REASON, recorded
+#                                                    because it is measured: a stray `C:\.git` makes the drive
+#                                                    root a work tree, so `git ls-files` never fails for
+#                                                    "not a repository" anywhere on C:. On the CI runner it is
+#                                                    reachable and untested.
+# DEFINITION SIDE
+#   the PRD exists ........................... mut   a missing PRD
+#   the PRD has lines ........................ mut   case 28, a PRD that exists and is empty
+#   DEF_SECTION matches `## R-N` ............. mut   headings the gate can no longer read
+#   DEF_SECTION's right boundary ............. mut   a mis-levelled heading defining a bare section id
+#   DEF_REQUIREMENT matches `- **R-N.M**` .... mut   bullets the gate can no longer read
+#   DEF_REQUIREMENT's closing `**` ........... rev   bullets the gate can no longer read
+#   DEF_QUESTION matches `- **Q-N`............ case  dangling open question; the count assertions
+#   definitions sit at column 0 .............. case  an id the PRD mentions but does not define
+#   fence opener: indent cap ................. mut   an over-indented opener
+#   fence opener: three-marker minimum ....... mut   prose opening with an inline code span
+#   fence opener: backtick info-string rule .. mut   a backtick fence whose info string has a backtick
+#   ...and that rule is backtick-ONLY ........ mut   a tilde fence whose info string has a backtick
+#   fence closer: indent cap ................. mut   over-indented closer; closer behind a tab
+#   fence closer: the opener's own character . mut   a closing marker mixing fence characters
+#   fence closer: at least the opener's length mut   a closing marker shorter than its opener
+#   comment state is read BEFORE fence state . mut   a fence inside a comment, and a comment inside a fence
+#   inline code spans are NOT stepped over ... none  a deliberate fail-CLOSED choice, so its "failure" is the
+#                                                    documented behaviour: a `<!--` in backticks hides the
+#                                                    definitions after it and reddens their citations. A case
+#                                                    would assert the blind spot, not the rule.
+#   sections==0 is NO SECTION IDS ............ mut   headings the gate can no longer read
+#   requirements==0 is NO REQUIREMENT IDS .... mut   bullets the gate can no longer read
+#   open questions are NOT required .......... none  asserts an ABSENCE -- retiring every open question is
+#                                                    legal, so there is no input that must make this fire.
+#   an unterminated COMMENT is fatal ......... mut   an HTML comment the PRD never closes
+#   an unterminated FENCE is tolerated ....... case  a fence the document never closes
+#   the inert counter ........................ rev   a fence the document never closes
+# VERDICT
+#   DEFINED membership test .................. mut   all seven dangling cases
+#   the HINT when the id is in the PRD ....... mut   shadowed, fenced, commented
+#   citations==0 is NOTHING CHECKED .......... none  unreachable behind NO CITATIONS, which fires first on
+#                                                    the same condition. Re-derived by trying: any input
+#                                                    that empties the parse also empties the search.
+#   dangling>0 exits 1 ....................... case  every red case
+#   the green line's counts .................. mut   frozen definition counters; frozen section counter
+# ---------------------------------------------------------------------------
 
 red()  { printf '\033[31m%s\033[0m\n' "$*" >&2; }
 ok()   { printf '\033[32m%s\033[0m\n' "$*"; }
@@ -108,9 +190,9 @@ OVER_DEEP="${R}1.2.3"            # first two parts DO resolve; the whole id must
 # Builds one fixture repository.
 #
 #   $1 dir          fixture root
-#   $2 prd_kind     sound | absent | flat-headings | no-bullets | shadowed | fenced | commented | fenced-closed | nested-constructs | fence-bad-closer | unterminated-comment | inline-code-line | unterminated-fence | opener-overindented
+#   $2 prd_kind     sound | absent | flat-headings | no-bullets | shadowed | fenced | commented | fenced-closed | nested-constructs | fence-bad-closer | unterminated-comment | inline-code-line | unterminated-fence | opener-overindented | backtick-info | tilde-info | misleveled-heading | empty-prd
 #   $3 notes        the body of documentation/notes.md — the file whose citations are under test
-#   $4 extra_kind   none | rich | ignore-prd | unreadable | nested | non-ascii
+#   $4 extra_kind   none | rich | ignore-prd | unreadable | nested | non-ascii | all-ignored
 #   $5 bad_closer   fence-bad-closer only: the marker line that must NOT close the fence
 #   $6 opener       fence-bad-closer only: the opening marker, so its LENGTH can be varied
 #
@@ -130,7 +212,13 @@ make_fixture() {
   mkdir -p "$dir/documentation"
   git -c init.defaultBranch=main init -q "$dir"
 
-  if [ "$prd_kind" != "absent" ]; then
+  # A ZERO-BYTE PRD, distinct from an absent one: the file is there, so the MISSING check passes and the
+  # read returns nothing. Graded unreachable in the first draft of the ledger below and reached on the
+  # first try -- which is the ledger rule that says to try rather than argue.
+  if [ "$prd_kind" = "empty-prd" ]; then
+    : > "$dir/documentation/prd.md"
+  fi
+  if [ "$prd_kind" != "absent" ] && [ "$prd_kind" != "empty-prd" ]; then
     local heading='##'
     [ "$prd_kind" != "flat-headings" ] || heading='###'
     {
@@ -222,6 +310,32 @@ make_fixture() {
       # inert lines' argument false. The mechanism is PARITY: an over-indented marker opens a fence, so
       # THE NEXT REAL OPENER IS EATEN AS A CLOSER and the heading below it is read as live text. Two
       # sections if the cap holds, three if it does not -- the heading inside the fence becoming real.
+      # A BACKTICK FENCE WHOSE INFO STRING CONTAINS A BACKTICK IS NOT AN OPENER (CommonMark, which gives
+      # this gate's own hazard as the reason: otherwise some inline code reads as the start of a fence).
+      # Without the rule the first line opens, the second is eaten as its closer, and the heading below is
+      # read live -- the same parity fail-open as the indent cap, through a different door.
+      if [ "$prd_kind" = "backtick-info" ]; then
+        printf '\n## Appendix\n\n```a`b\n'
+        printf '```\n'
+        printf '## R-2 - inert: CommonMark has this inside a fence that never closes\n'
+      fi
+      # THE CONTROL, and the reason the rule is written for backticks ALONE: a TILDE fence's info string
+      # may contain a backtick, so this IS an opener and the requirement below the closer is real. A rule
+      # applied to both characters passes every case above and reddens this one.
+      if [ "$prd_kind" = "tilde-info" ]; then
+        printf '\n## Appendix\n\n~~~a`b\n'
+        printf '## R-2 - inert: this one really is inside a fence\n'
+        printf '~~~\n\n'
+        printf -- '- **R-1.3** Defined after the tilde fence closes.\n'
+      fi
+      # A MIS-LEVELLED HEADING MUST NOT DEFINE THE BARE SECTION ID. DEF_SECTION's trailing boundary group is
+      # what stops `## R-N.M` from capturing `R-N`, and nothing held it: dropping it passed all 28 cases
+      # while a PRD carrying `## R-3.1` and no `## R-3` silently resolved every citation of `R-3`.
+      if [ "$prd_kind" = "misleveled-heading" ]; then
+        printf '\n'
+        printf -- '- **R-3.1** A requirement whose heading below is mis-levelled.\n'
+        printf '\n## R-3.1 - a heading that must NOT define the bare section id\n'
+      fi
       if [ "$prd_kind" = "opener-overindented" ]; then
         printf '\n## Appendix\n\n    ```\n'
         printf '```\n'
@@ -252,6 +366,12 @@ make_fixture() {
       # unchanged; without it the id is found, resolves against nothing, and the run goes red. The blob
       # used to hold no id at all, so dropping `-I` changed nothing and the flag was held by nothing.
       printf 'PK\003\004binary %s99.9 payload\000' "$R" > "$dir/assets/blob.bin"
+      ;;
+    all-ignored)
+      # EVERY file ignored, so the corpus is empty while the PRD is still on disk and still parses.
+      # Also graded unreachable at first, also reached on the first try.
+      printf '*
+' > "$dir/.gitignore"
       ;;
     ignore-prd)
       # The PRD exists and parses, but nothing in the corpus can see it. Definitions load, the search finds
@@ -562,6 +682,34 @@ expect_green "a fence the document never closes" "$FIXTURES/unterminated-fence" 
 #     CommonMark has inside a fence that never closes. Two sections if the cap holds, three if it does not.
 make_fixture "$FIXTURES/opener-overindented" opener-overindented 'Governed by `R-1.1`.' none
 expect_green "an over-indented opener, which must not open" "$FIXTURES/opener-overindented"   "(2 sections, 3 requirements, 1 open questions"
+
+# 25. THE OPENER'S OTHER COMMONMARK RESTRICTION: a BACKTICK fence's info string may not contain a backtick.
+#     The spec gives this gate's own hazard as the reason -- otherwise some inline code reads as the start of
+#     a fenced block -- and without it the parity fail-open is back through a different door. Two sections if
+#     the rule holds, three if the heading below escapes the fence (PR #195 round 4).
+make_fixture "$FIXTURES/backtick-info" backtick-info 'Governed by `R-1.1`.' none
+expect_green "a backtick fence whose info string has a backtick" "$FIXTURES/backtick-info"   "(2 sections, 3 requirements, 1 open questions"
+
+# 26. THE CONTROL FOR IT, and the reason the rule names backticks alone: a TILDE fence's info string MAY
+#     contain one, so that line really is an opener. A rule applied to both characters passes case 25 and
+#     reddens this -- which is what makes 25 evidence about the spec rather than about a string match.
+make_fixture "$FIXTURES/tilde-info" tilde-info 'Governed by `R-1.3`.' none
+expect_green "a tilde fence whose info string has a backtick" "$FIXTURES/tilde-info"   "(2 sections, 4 requirements, 1 open questions"
+
+# 27. DEF_SECTION'S RIGHT BOUNDARY -- the trailing group that stops `## R-N.M` from defining bare `R-N`.
+#     Dropping it passed all twenty-eight cases (PR #195 round 4), and a mis-levelled heading then invents a
+#     section id: the fail-open direction, on a rule the gate's own header enumerates.
+make_fixture "$FIXTURES/misleveled" misleveled-heading 'Governed by `R-3`.' none
+expect_red "a mis-levelled heading defining a bare section id" "$FIXTURES/misleveled"   "DANGLING" "documentation/notes.md:1" "R-3"
+
+# 28-29. TWO ROWS THE LEDGER BELOW FIRST GRADED UNREACHABLE, AND BOTH WERE REACHED ON THE FIRST TRY. That is
+#     #193's rule applied rather than quoted: "unreachable, and here is why" is the weakest row in any such
+#     table, because nothing executes it. Re-derive every one by TRYING to reach it.
+make_fixture "$FIXTURES/empty-prd" empty-prd 'A note citing `R-1.1`.' none
+expect_red "a PRD that exists and is empty" "$FIXTURES/empty-prd" "EMPTY"
+
+make_fixture "$FIXTURES/all-ignored" sound 'A note citing `R-1.1`.' all-ignored
+expect_red "a corpus in which every file is ignored" "$FIXTURES/all-ignored" "NOTHING TO CHECK"
 
 info ""
 if [ "$failures" -gt 0 ]; then

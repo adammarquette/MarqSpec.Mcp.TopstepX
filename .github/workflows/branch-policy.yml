@@ -512,6 +512,15 @@ jobs:
           # those is fail-CLOSED and every one matches `develop`, so none is a regression and none blocks a
           # body this repository has written.
           #
+          # AND ONE THAT IS TWO COPIES OF A RULE, which is the defect this whole comment block exists to
+          # prevent, recorded rather than fixed. `strip_blocks()` still runs its OWN fence model: a ``` is
+          # a fence toggle to it even inside an HTML block the marker pass has correctly decided is open.
+          # Measured on `<div>` / ``` / text / blank / a prose citation -- GitHub binds the citation and
+          # the gate deletes it. Fail-CLOSED and byte-identical to `develop`, so not a regression; left
+          # alone deliberately because moving the block phase onto the shared model is a second rewrite
+          # with a differential of its own, and this change is already four review rounds long. The next
+          # person to touch either pass inherits this line rather than rediscovering it.
+          #
           # WHAT IS NOT ALLOWED TO BE APPROXIMATE IS THE TAG LIST, and it took two rounds to get right.
           #   The first attempt bounded on "the line starts with `<`" -- cheap, errs toward more
           #   boundaries, and WRONG on a real body: #59 wraps a span onto a line beginning
@@ -533,10 +542,22 @@ jobs:
           # Portable to `mawk 1.3.4`, which is what /usr/bin/awk resolves to on ubuntu-24.04, as well as to
           # `gawk`: no ERE interval expressions, no gensub, no length(array), no delete of a whole array
           # (gh#142 chose awk over python3 for this gate; that choice is unchanged and this program keeps
-          # it payable). Docker was down on the machine this was written on, so the container check gh#142
-          # ran was not available -- the mawk half is settled by rows 2, 4 and 5 below instead, which are
-          # this program executing on the runner. Measured where the gate actually runs beats measured in a
-          # container that resembles it.
+          # it payable).
+          #
+          # WHAT THE RUNS BELOW DO AND DO NOT SETTLE. Docker was down on the machine this was written on,
+          # so the container check gh#142 ran was unavailable, and NO probe has ever printed an awk
+          # version. They settle that this program works ON THE RUNNER -- not which awk ran it. `gawk` is
+          # absent from the ubuntu-24.04 image, which makes mawk near-certain and is exactly the
+          # package-list inference the gh#142 bullet refuses to make, so it is not claimed here either.
+          # What WAS measured stands in its place: byte-identical output under `LC_ALL=C gawk --posix`
+          # across all 96 archived bodies, 95 of them carrying non-ASCII -- POSIX mode plus single-byte
+          # indexing being the mawk-shaped constraint.
+          #
+          # This paragraph and the matching one in the platform contract have to say the same thing. An
+          # earlier round narrowed the claim in the CONTRACT ONLY and left the word "settled" standing
+          # here, pointing at a five-row table that had since been replaced three times -- two copies of
+          # one claim, drifted, inside the comment block that argues against exactly that. A retraction
+          # that goes missing is the same shape as a regression nothing can see.
           #
           # PROVEN BY MUTATION, not argued. Throwaway pull requests, all closed with their branches
           # deleted, so these ids are the only trail back. EVERY ROW NAMES THE CODE IT RAN ON, because

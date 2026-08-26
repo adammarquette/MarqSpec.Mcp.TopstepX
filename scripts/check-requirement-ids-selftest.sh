@@ -77,6 +77,17 @@
 # few seconds on a Windows checkout, where process creation is pathologically slow. Run it before pushing a
 # change to either script, not on every save.
 
+# WHAT THIS SUITE CANNOT SEE, found by breaking the gate accidentally while writing the line above (PR #195
+# round 8). A stray carriage return split a comment in the gate's HEADER, leaving a bare word that ran as a
+# command and printed `command not found` before every invocation. ALL FORTY-TWO CASES STILL PASSED: the
+# broken line sits above the gate's own `set -euo pipefail`, so command-not-found was non-fatal, the exit
+# code was unchanged, and every needle still matched. CI would have gone green on it too.
+#
+# Every assertion here is on EXIT STATUS and on NAMED SUBSTRINGS of the output. Neither notices output that
+# should not be there at all. Asserting the absence of unexpected stderr is a different claim from the ones
+# below and is not made -- recorded rather than fixed, because a remainder this file cannot see is exactly
+# what the ledger exists to hold. What caught it was reading the gate's actual output by hand.
+
 set -euo pipefail
 
 # ---------------------------------------------------------------------------
@@ -114,8 +125,8 @@ set -euo pipefail
 #   [0-9] excludes the `#` placeholder ....... mut   the literal placeholder
 #   (\.[0-9]+)* repeats ...................... mut   an id with a third part
 #   grep -I skips binaries ................... mut   sound corpus, definition counts
-#   grep -o prints only the match ............ case  every dangling case (17 of them assert an id, which is
-#                                                    what the flag produces; not individually mutated)
+#   grep -o prints only the match ............ case  the dangling cases, whose needles are ids -- which is
+#                                                    what the flag produces. Not individually mutated.
 #   grep -H prints the filename .............. mut   case 34, a corpus of exactly ONE file. Grep prints the
 #                                                    name unasked once it has two, so every other case here
 #                                                    passes without it -- measured, not assumed.
@@ -138,14 +149,16 @@ set -euo pipefail
 #   core.quotepath=false ..................... mut   a filename git would escape
 #   ls-files --cached ........................ mut   a file the corpus lists and grep cannot open
 #   ls-files --others ........................ mut   case 30, a written-but-uncommitted file -- AND THE ROW
-#                                                    IT REPLACES IS THE REASON THIS COLUMN HAS A LEGEND.
-#                                                    Dropping the flag reddens 28 of the 38, which reads as
-#                                                    heavy pinning and is incidental: every OTHER fixture is
-#                                                    an uncommitted `git init` tree, so removing it empties
-#                                                    the sweep whatever the decision means. Case 30 is the
-#                                                    only one ABOUT the decision, and the only one that
-#                                                    would still redden if every fixture were committed.
-#                                                    Compare `--cached`, pinned at exactly one case.
+#                                                    IT REPLACES IS WHY THIS COLUMN HAS A LEGEND. Dropping
+#                                                    the flag reddens most of the suite, which reads as heavy
+#                                                    pinning and is INCIDENTAL: every other fixture is an
+#                                                    uncommitted `git init` tree, so removing it empties the
+#                                                    sweep whatever the decision means. Case 30 is the only
+#                                                    one ABOUT the decision, and the only one that would
+#                                                    still redden if every fixture were committed. That
+#                                                    distinction is the row's whole point and it holds at any
+#                                                    suite size; the ratio did not. Compare `--cached`,
+#                                                    pinned at exactly one case.
 #   ls-files --exclude-standard .............. case  case 29 (every file ignored) and the ignore-prd case
 #   the `--` separator before the file list .. mut   case 33, a root file whose name begins with a dash
 #   trailing-slash entries are nested repos .. mut   a nested repository, counted and not read
@@ -200,7 +213,10 @@ set -euo pipefail
 #   an unterminated FENCE is tolerated ....... case  a fence the document never closes
 #   the inert counter ........................ rev   a fence the document never closes
 # VERDICT
-#   DEFINED membership test .................. mut   all eight dangling cases
+#   DEFINED membership test .................. mut   every dangling case. NO COUNT HERE: this row said seven,
+#                                                    then eight, and measured twelve -- three wrong values in
+#                                                    three rounds, on the row with the most cases to drift
+#                                                    under it. The legend's rule, one level down.
 #   the HINT when the id is in the PRD ....... mut   shadowed, fenced, commented
 #   citations==0 is NOTHING CHECKED .......... none  } (the other half of the pair above -- it fires only if
 #                                                    } the hits array is non-empty and every entry fails the

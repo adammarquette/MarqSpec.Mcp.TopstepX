@@ -115,13 +115,25 @@
 #         for a column-0 line to stay inside a fence, the fence must be at top level with at most three
 #         columns of indent, which this gate opens. That is a failed search, not a proof -- the two
 #         fail-opens this machinery has already had were both found by someone building the input.
-#   - **The `UNQUOTABLE PATH` branch is unexercised, here and by the self-test.** It fires on a path git
-#     escapes for a reason `core.quotepath=false` does not suppress — an embedded quote, backslash or
-#     control character — and NTFS refuses all three in a filename, so no fixture on this platform can
-#     produce one (PR #195 review). The logic is read, not run. The `core.quotepath` half IS covered, by a
-#     fixture with a non-ASCII filename.
+#   - **A CONFLICTED INDEX MAKES THE EVIDENCE LINE OVERCOUNT.** `git ls-files --cached` lists a path once
+#     PER STAGE, so during an unresolved merge a three-file tree is reported as five files and its
+#     citations counted twice. Measured, not reasoned (PR #195 round 8). The verdict is unaffected — every
+#     stage is the same path and resolves the same way — and CI never runs mid-merge, so this cannot reach
+#     the merge gate. It is listed because it is **the only number this gate prints that can fail to be true
+#     of what it read**, and a green line a reader cannot trust is what this whole script is about.
+#   - **The `UNQUOTABLE PATH` branch fires for a REASON no fixture can produce on NTFS** — an embedded
+#     quote, backslash or control character in a filename. The branch itself is pinned: a path staged into
+#     the INDEX with `update-index --cacheinfo` needs no file on disk, which is how the self-test reaches
+#     it. What stays unexercised is the filesystem route, and this entry used to claim the whole branch was
+#     unreachable on exactly the wrong grounds — `git ls-files` reads the index, not the disk.
 #   - The issue and pull request bodies are not files, so nothing here reads them.
 #   - Correctness of the quotation, as above.
+#
+# WHAT IS **NOT** A BLIND SPOT, because it was measured rather than assumed: **CRLF input.** A PRD written
+# with CRLF line endings throughout — a fenced example whose closer carries trailing spaces AND a CR, an HTML comment,
+# definitions after both — parses identically: the fence opens and closes, the comment opens and closes, and
+# only the ids written INSIDE them come back unresolved (PR #195 round 8). `.gitattributes` pins the working
+# tree to LF, so this is defence in depth rather than a path CI takes.
 #
 # ITS OWN ABILITY TO FAIL IS TESTED: scripts/check-requirement-ids-selftest.sh runs this script against
 # fixtures whose faults are known and requires it to reject each one BY NAME, and to accept the awkward

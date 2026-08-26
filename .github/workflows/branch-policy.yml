@@ -534,22 +534,37 @@ jobs:
           # gh#184 is the card about citing a run taken on the read that was replaced:
           #
           #   ON THE CODE THAT SHIPS
-          #   #210  32908571781  `Related to #155` inside a span that wraps -> failure, fifth diagnostic.
-          #   #211  32908576351  pull request #117s body -- a fenced block, a four-space indented block,
+          #   #225  32916669238  `Related to #155` inside a span that wraps -> failure, fifth diagnostic.
+          #   #226  32916671753  pull request #117s body -- a fenced block, a four-space indented block,
           #                      ~140 backticks, a span that wraps, five references of which exactly ONE
           #                      is prose -> SUCCESS. The green half, and the most construct-dense body
           #                      this repository has; only its first line was changed, from a binding
           #                      keyword to a non-binding one, so the gate had to read the stripped body.
-          #   #212  32908579934  the heading seam -> failure. The review finding, closed.
+          #   #227  32916673468  the heading seam -> failure.
+          #   #228  32916676204  `Related to #155` inside a `<pre>` block -> failure.
+          #   #230  32916681114  the `<search>` swallow -> failure.
+          #
+          #   THE TWO FAIL-OPENS THE SECOND REVIEW ROUND CAUGHT, on the superseded 3127b3a. Each is the
+          #   byte-identical body of the row above it, so the pair differs only in this file:
+          #   #229  32916678861  the `<pre>` body -> SUCCESS. `pre` was inerted rather than deleted, and
+          #                      GitHub does not autolink inside one, so the gate read a reference the
+          #                      platform cannot see.
+          #   #231  32916682980  the `<search>` body -> SUCCESS. `search` was listed as an HTML block on
+          #                      the strength of CommonMark 0.31; cmark-gfm is 0.29/0.30 and puts that
+          #                      citation inside `<code>`.
+          #
+          #   SUPERSEDED, kept only so the trail is continuous: #210/#211/#212 (32908571781, 32908576351,
+          #   32908579934) are the same three shipping-code rows taken on 3127b3a, which the two rows
+          #   above then replaced.
           #
           #   BEFORE, ON `develop` (blob 73474e2, unchanged across the whole of this work)
-          #   #200  32893102563  the SAME body as #210 -> SUCCESS. "PR cites an issue without closing
+          #   #200  32893102563  the SAME body as #225 -> SUCCESS. "PR cites an issue without closing
           #                      it." The defect on the runner: GitHub bound nothing and the gate read a
           #                      reference GitHub cannot see.
           #   #197  32892799377  the same wrap written with `Closes` -> failure, on the FOURTH diagnostic.
           #                      Same leak, different arm. On a `develop` base a body-read `Closes` never
           #                      passes, so only the WEAKER arm can move a verdict here -- which is why
-          #                      #200/#210 is the pair that measures anything and a `Closes` pair is not.
+          #                      #200/#225 is the pair that measures anything and a `Closes` pair is not.
           #
           #   THE REGRESSION THIS BRANCH SHIPPED FOR REVIEW, on the superseded 8cb2891
           #   #205  32905389963  the heading seam -> SUCCESS. A required gate passing a body citing
@@ -564,6 +579,13 @@ jobs:
           #                      No inline parsing in a block, so the backticks are literal and the
           #                      reference binds. This is why an HTML block is excluded from PAIRING and
           #                      never blanked.
+          #   #223  32914548521  body `<pre>` + `Closes #155` + `</pre>` -> "GitHub bound nothing". The
+          #                      one HTML block whose text is NOT live, which is why `pre` is deleted
+          #                      rather than inerted. Four rows here, and exactly one inverts.
+          #   #224  32914552168  body `<search>` + a BACKTICKED `Closes #155` -> "PR closes 1 issue(s)".
+          #                      A type-7 block at block position, which this gate does not implement --
+          #                      so it strips that citation where GitHub binds it. Fail-CLOSED, matching
+          #                      `develop`, and listed in the remainder above with that direction.
           #
           # And the differential behind them: 96 archived pull-request bodies, 44 whose stripped text
           # changes, 13 of those in NON-BLANK content, 0 whose verdict moves. Lean on the 13, not the 44:

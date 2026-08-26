@@ -16,8 +16,14 @@ namespace MarqSpec.Mcp.TopstepX.Data.Entities;
 /// pass has ever stored one, which is the opposite of the indicator decision in ADR-0006. The CHECK
 /// constraints live in the <b>database</b> anyway, not only in code: the bugs a geometric detection pass
 /// produces are inverted zones, and a row where the top is below the bottom reads as entirely plausible
-/// everywhere except at the constraint. Whether the table should exist at all is an open question rather
-/// than an oversight: gh#247 forces the choice between dropping it and caching into it.
+/// everywhere except at the constraint.
+/// </para>
+/// <para>
+/// <b>That is settled rather than open.</b> ADR-0013 measured detection — roughly 0.2 ms over the tool's
+/// default 500-bar window, against a bar query no cache can avoid — and decided against caching, which is
+/// what keeps per-call detection parameters free. So this table is <b>unused with no pending purpose</b>;
+/// dropping it is a follow-up on that record, left undone here only because the migration also touches
+/// <c>TopstepXDbContext</c> and the schema tests.
 /// </para>
 /// </remarks>
 public sealed class PriceLevelRecord

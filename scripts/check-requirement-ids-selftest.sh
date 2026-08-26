@@ -17,11 +17,11 @@
 # Rejections alone would all be satisfied by `exit 1`, i.e. by a gate that says no to everything, which is
 # exactly as useless as one that says yes to everything and rather harder to notice.
 #
-# TWENTY-SIX OF THE THIRTY-EIGHT CASES ARE HERE BECAUSE A DECISION THIS GATE MAKES WAS HELD BY NOTHING,
-# and that is the point of the paragraph rather than a confession. Seven rounds -- and the ledger above is
-# what finally made the question finite, after five of them found rules one at a time. THE LAST FIVE CAME
-# FROM AUDITING THE LEDGER ITSELF against the script, which is the step its own legend prescribes and
-# which its author did not run:
+# TWENTY-NINE OF THE FORTY-ONE CASES ARE HERE BECAUSE A DECISION THIS GATE MAKES WAS HELD BY NOTHING, and
+# that is the point of the paragraph rather than a confession. Eight rounds -- and the ledger above is what
+# finally made the question finite, after five of them found rules one at a time. THE LAST EIGHT CAME FROM
+# AUDITING THE LEDGER ITSELF against the script, which is the step its own legend prescribes and which its
+# author did not run:
 #
 #   the author's battery      swallowing grep's exit 2 — the hole gh#43, gh#98 and gh#126 each shipped.
 #   review round 1            a definition inside a fenced block, and one inside an HTML comment (the gate's
@@ -54,7 +54,7 @@
 # Each case below matches the words that name ITS OWN fault, and every dangling case additionally matches the
 # ID ITSELF, so a gate that has stopped printing which symbol failed cannot satisfy it either.
 #
-# AND THE ACCEPTANCE IS NOT SATISFIED BY EXIT 0 EITHER. All seventeen green assertions match the COUNTS the gate
+# AND THE ACCEPTANCE IS NOT SATISFIED BY EXIT 0 EITHER. All nineteen green assertions match the COUNTS the gate
 # prints, so a gate that resolved nothing cannot pass one. Two of them — the ADR near-miss and the `R-#`
 # placeholder — assert a count IDENTICAL to what the same fixture reports with those lines absent, which is
 # how they prove those lines contributed no citations rather than merely failing to break anything.
@@ -92,8 +92,12 @@ set -euo pipefail
 #         a grade that promises more than its evidence is how the first ledger in this repo lied.
 #   rev   mutated by the reviewer rather than the author, with the same evidence.
 #   case  exercised by the case named, NOT individually mutated. Weaker, and said so.
-#   none  no fixture reaches it. Every one of these was re-derived by TRYING, not by arguing -- two of the
-#         first draft's `none` rows were reachable and are now cases 28 and 29.
+#   none  no fixture reaches it -- and this column has been WRONG FOUR TIMES OUT OF SEVEN. Cases 28, 29,
+#         31 and 35 all began as `none` rows, and THREE of the four reasons were a true fact about a
+#         different layer than the one the code consults (NTFS vs the git index; a stray `C:\.git` vs
+#         `GIT_CEILING_DIRECTORIES`; "asserts an absence" vs a green case, which pins one fine). So the
+#         question for a surviving row is not "is this hard to build" but **"is my reason about the thing
+#         the code actually consults?"** The three below have been re-derived on that question.
 #
 # CITATION SIDE
 #    left word boundary .................... mut   adr-near-miss, sound corpus
@@ -101,6 +105,8 @@ set -euo pipefail
 #   [0-9] excludes the `#` placeholder ....... mut   the literal placeholder
 #   (\.[0-9]+)* repeats ...................... mut   an id with a third part
 #   grep -I skips binaries ................... mut   sound corpus, definition counts
+#   grep -o prints only the match ............ case  every dangling case (17 of them assert an id, which is
+#                                                    what the flag produces; not individually mutated)
 #   grep -H prints the filename .............. mut   case 34, a corpus of exactly ONE file. Grep prints the
 #                                                    name unasked once it has two, so every other case here
 #                                                    passes without it -- measured, not assumed.
@@ -108,10 +114,18 @@ set -euo pipefail
 #   grep exit 2 is not "no match" ............ mut   a file the corpus lists and grep cannot open
 #   grep exit 1 / no hits is NO CITATIONS .... mut   a corpus in which nothing was found
 #   hits parsed from the RIGHT ............... rev   dangling cases (line_no split from the left)
-#   output to a file, not $( ) ............... none  guards an empty LAST line, which `grep -o` cannot emit:
-#                                                    every hit is file:line:id and id is non-empty. Kept as
-#                                                    the house remedy rather than as a live guard.
+#   output to a file, not $( ) ............... none  RE-DERIVED, and the reason is now about this code
+#                                                    rather than about shells in general: `$( )` strips a
+#                                                    trailing newline, so the hazard needs an empty LAST
+#                                                    line, and every line this gate reads is grep's
+#                                                    `file:line:id` with a non-empty id. The reader cannot
+#                                                    be handed the input that would bite. Kept as the
+#                                                    house remedy, not as a live guard.
 # CORPUS
+#   the default REPO_ROOT (no argument) ...... mut   case 37, the gate copied in and run with no argument.
+#                                                    THE ONLY INVOCATION ci.yml USES, and every other case
+#                                                    passes an explicit root -- so this derivation could be
+#                                                    broken with all 38 green while the real run died.
 #   core.quotepath=false ..................... mut   a filename git would escape
 #   ls-files --cached ........................ mut   a file the corpus lists and grep cannot open
 #   ls-files --others ........................ mut   case 30, a written-but-uncommitted file -- AND THE ROW
@@ -128,9 +142,11 @@ set -euo pipefail
 #   trailing-slash entries are nested repos .. mut   a nested repository, counted and not read
 #   staged-then-deleted still reaches grep ... case  the unreadable case (no `[ -f ]` shortcut to mutate)
 #   empty file list is NOTHING TO CHECK ...... mut   case 29, every file ignored
-#   UNQUOTABLE PATH .......................... none  needs a path git escapes for a reason quotepath does not
-#                                                    suppress -- a quote, backslash or control character --
-#                                                    and NTFS refuses all three in a filename.
+#   UNQUOTABLE PATH .......................... mut   case 35, a quote-bearing path staged into the index.
+#                                                    GRADED `none` BECAUSE NTFS REFUSES A QUOTE IN A
+#                                                    FILENAME -- true, and about the wrong layer entirely:
+#                                                    `git ls-files` reads THE INDEX, and
+#                                                    `update-index --cacheinfo` needs no file on disk.
 #   ls-files failure is CANNOT LIST .......... mut   case 31. GRADED `none` HERE ON A REASON THAT WAS TRUE
 #                                                    AND IRRELEVANT: a stray `C:\.git` does make the drive root
 #                                                    a work tree, and `GIT_CEILING_DIRECTORIES` stops the
@@ -162,17 +178,26 @@ set -euo pipefail
 #                                                    would assert the blind spot, not the rule.
 #   sections==0 is NO SECTION IDS ............ mut   headings the gate can no longer read
 #   requirements==0 is NO REQUIREMENT IDS .... mut   bullets the gate can no longer read
-#   open questions are NOT required .......... none  asserts an ABSENCE -- retiring every open question is
-#                                                    legal, so there is no input that must make this fire.
+#   open questions are NOT required .......... mut   case 36, a PRD that retires every open question -- AND
+#                                                    ALSO the no-bullets case, because that fixture has no
+#                                                    questions either. Said here rather than claimed as one:
+#                                                    a grade that names fewer cases than actually fail is the
+#                                                    same defect as one that names more. THE ROW SAID THIS
+#                                                    COULD NOT BE PINNED BECAUSE IT ASSERTS AN ABSENCE; a
+#                                                    green case pins an absence, and every other fixture
+#                                                    merely happened to carry the Q-1 bullet.
 #   an unterminated COMMENT is fatal ......... mut   an HTML comment the PRD never closes
 #   an unterminated FENCE is tolerated ....... case  a fence the document never closes
 #   the inert counter ........................ rev   a fence the document never closes
 # VERDICT
 #   DEFINED membership test .................. mut   all eight dangling cases
 #   the HINT when the id is in the PRD ....... mut   shadowed, fenced, commented
-#   citations==0 is NOTHING CHECKED .......... none  unreachable behind NO CITATIONS, which fires first on
-#                                                    the same condition. Re-derived by trying: any input
-#                                                    that empties the parse also empties the search.
+#   citations==0 is NOTHING CHECKED .......... none  RE-DERIVED against what the code consults: it fires
+#                                                    only if the hits array is non-empty AND every entry
+#                                                    fails the `[ -n ]` guard, i.e. grep emitted nothing but
+#                                                    blank lines. `grep -o` cannot emit one. Unreachable
+#                                                    through this gate's own reader rather than merely
+#                                                    hard to arrange.
 #   dangling>0 exits 1 ....................... case  every red case
 #   the green line's counts .................. mut   frozen definition counters; frozen section counter
 # ---------------------------------------------------------------------------
@@ -211,10 +236,10 @@ DANGLING_REQUIREMENT_99="${R}9.9"
 # Builds one fixture repository.
 #
 #   $1 dir          fixture root
-#   $2 prd_kind     sound | absent | flat-headings | no-bullets | shadowed | fenced | commented | fenced-closed | nested-constructs | fence-bad-closer | unterminated-comment | inline-code-line | unterminated-fence | opener-overindented | backtick-info | tilde-info | misleveled-heading | empty-prd
+#   $2 prd_kind     sound | absent | flat-headings | no-bullets | shadowed | fenced | commented | fenced-closed | nested-constructs | fence-bad-closer | unterminated-comment | inline-code-line | unterminated-fence | opener-overindented | backtick-info | tilde-info | misleveled-heading | empty-prd | no-questions
 #   $3 notes        the body of documentation/notes.md — the file whose citations are under test
 #   $4 extra_kind   none | rich | ignore-prd | unreadable | nested | non-ascii | all-ignored
-#                   | committed | dash-file | single-file
+#                   | committed | dash-file | single-file | quoted-path | self-hosted
 #   $5 bad_closer   fence-bad-closer only: the marker line that must NOT close the fence
 #   $6 opener       fence-bad-closer only: the opening marker, so its LENGTH can be varied
 #
@@ -259,9 +284,15 @@ make_fixture() {
         [ "$prd_kind" != "shadowed" ] || printf -- '  - **%s** an indented sub-bullet, which defines nothing.\n' "$DANGLING_REQUIREMENT"
         printf '\n'
       fi
-      printf '## Open questions\n\n'
-      if [ "$prd_kind" != "no-bullets" ]; then
-        printf -- '- **Q-1 — A question.** Its text.\n'
+      # A PRD MAY RETIRE EVERY OPEN QUESTION. The gate does not require any, and the ledger claimed that
+      # could not be pinned because it "asserts an absence" -- which is false: a GREEN case pins an absence.
+      # Every fixture carried the Q-1 bullet, so adding the guard the row said was unpinnable left all
+      # thirty-eight cases green (PR #195 round 6).
+      if [ "$prd_kind" != "no-questions" ]; then
+        printf '## Open questions\n\n'
+        if [ "$prd_kind" != "no-bullets" ]; then
+          printf -- '- **Q-1 — A question.** Its text.\n'
+        fi
       fi
       # An EXAMPLE of the PRD's own format, and a requirement RETIRED by commenting it out. Both look
       # exactly like definitions to a line-at-a-time parser and neither is one, and this is the ONLY place
@@ -389,6 +420,23 @@ make_fixture() {
       # used to hold no id at all, so dropping `-I` changed nothing and the flag was held by nothing.
       printf 'PK\003\004binary %s99.9 payload\000' "$R" > "$dir/assets/blob.bin"
       ;;
+    quoted-path)
+      # A PATH GIT ESCAPES FOR A REASON `core.quotepath=false` DOES NOT SUPPRESS. The ledger graded this
+      # unreachable because NTFS refuses a quote in a filename -- true, and IRRELEVANT: `git ls-files` reads
+      # THE INDEX, not the filesystem, so staging one with `update-index --cacheinfo` needs no file on disk.
+      # Fourth `none` row of seven to fall, and the third whose reason was a true fact about another layer.
+      local blob
+      blob="$(printf 'A note citing %s9.9.\n' "$R" | git -C "$dir" hash-object -w --stdin)"
+      git -C "$dir" -c core.protectNTFS=false update-index --add --cacheinfo 100644 "$blob" \
+        'documentation/we\"ird.md'
+      ;;
+    self-hosted)
+      # THE GATE, COPIED IN, so it can be run with NO ARGUMENT the way ci.yml runs it. `scripts/` is ignored
+      # so the copy is not part of the corpus -- the ids in its own header resolve against the REAL PRD.
+      mkdir -p "$dir/scripts"
+      cp "$GATE" "$dir/scripts/check-requirement-ids.sh"
+      printf 'scripts/\n' > "$dir/.gitignore"
+      ;;
     committed)
       # EVERYTHING COMMITTED EXCEPT ONE FILE. `--others` is what puts an uncommitted file in the corpus, and
       # until this case it was pinned only by ACCIDENT: every other fixture is an uncommitted `git init`
@@ -473,11 +521,21 @@ make_fixture() {
 # rather than a prefix string so nothing has to be re-split or re-quoted at the call.
 GATE_ENV_VAR=""
 GATE_ENV_VAL=""
+# When set, the gate is invoked BY THIS PATH WITH NO ARGUMENT -- the only way ci.yml ever invokes it, and
+# the one nothing here exercised: every case passes an explicit root, so the default REPO_ROOT derivation
+# could be broken with all thirty-eight green while the real invocation died (PR #195 round 6).
+GATE_SELF_HOSTED=""
 run_gate() {
-  if [ -n "$GATE_ENV_VAR" ]; then
-    env "$GATE_ENV_VAR=$GATE_ENV_VAL" bash "$GATE" "$1" 2>&1
+  local cmd
+  if [ -n "$GATE_SELF_HOSTED" ]; then
+    cmd=(bash "$GATE_SELF_HOSTED")
   else
-    bash "$GATE" "$1" 2>&1
+    cmd=(bash "$GATE" "$1")
+  fi
+  if [ -n "$GATE_ENV_VAR" ]; then
+    env "$GATE_ENV_VAR=$GATE_ENV_VAL" "${cmd[@]}" 2>&1
+  else
+    "${cmd[@]}" 2>&1
   fi
 }
 
@@ -809,6 +867,32 @@ expect_red "a root file whose name begins with a dash" "$FIXTURES/dash-file"   "
 #      it, and without it the location becomes `<line>:<line>` and the file disappears from the report.
 make_fixture "$FIXTURES/single-file" shadowed 'This note cites nothing.' single-file
 expect_red "a corpus of exactly one file" "$FIXTURES/single-file"   "DANGLING" "documentation/prd.md:" "$DANGLING_REQUIREMENT"
+
+# 35-37. THREE MORE, and the pattern in them is the finding rather than the rules (PR #195 round 6).
+
+#  35. UNQUOTABLE PATH. Graded `none` because NTFS refuses a quote in a filename -- TRUE, AND IRRELEVANT:
+#      `git ls-files` reads THE INDEX, not the filesystem. `update-index --cacheinfo` stages one with no
+#      file on disk, and git quotes it even under `core.quotepath=false`. That is the FOURTH of seven
+#      `none` rows to fall and the THIRD whose stated reason was a true fact about a different layer, so
+#      the question to ask a surviving row is not "is this hard to build" but **"is my reason about the
+#      thing the code actually consults?"**
+make_fixture "$FIXTURES/quoted-path" sound 'A note citing `R-1.1`.' quoted-path
+expect_red "a path git escapes for a reason quotepath does not suppress" "$FIXTURES/quoted-path"   "UNQUOTABLE PATH"
+
+#  36. A PRD THAT RETIRES EVERY OPEN QUESTION. The row said this could not be pinned because it "asserts an
+#      absence" -- and a GREEN case pins an absence perfectly well. Adding the guard the row said was
+#      unpinnable left all thirty-eight green, because every fixture carried the Q-1 bullet.
+make_fixture "$FIXTURES/no-questions" no-questions 'A note citing `R-1.1`.' none
+expect_green "a PRD with no open questions at all" "$FIXTURES/no-questions"   "(2 sections, 3 requirements, 0 open questions"
+
+#  37. THE DEFAULT `REPO_ROOT` -- no row, no case, and the ONLY invocation ci.yml uses. Every other case
+#      passes an explicit root, so the derivation could be broken with all thirty-eight green while the
+#      gate, run the way CI runs it, died on NO SUCH ROOT. Not a merge-gate hole, because CI fails loudly;
+#      it is the self-test reporting all clear on the one invocation it never exercised.
+make_fixture "$FIXTURES/self-hosted" sound "$SOUND_NOTES" self-hosted
+GATE_SELF_HOSTED="$FIXTURES/self-hosted/scripts/check-requirement-ids.sh"
+expect_green "the gate invoked with no argument, as ci.yml invokes it" "$FIXTURES/self-hosted"   "11 citations of 6 distinct ids"
+GATE_SELF_HOSTED=""
 
 info ""
 if [ "$failures" -gt 0 ]; then

@@ -25,7 +25,7 @@ Three assemblies, layered so the pure part stays pure:
 
 | Project | Depends on | Holds |
 |---|---|---|
-| `…​.Domain` | **nothing** | `Bar`, `InstrumentId`, `InstrumentSpec`, `IIndicator` + implementations, `BarSessionCalendar`, `BarGapDetector`, `KeyLevels` |
+| `…​.Domain` | **nothing** | `Bar`, `InstrumentId`, `InstrumentSpec`, `IIndicator` and `ILevelMethod` + implementations, `BarSessionCalendar`, `BarGapDetector`, `KeyLevels` |
 | `…​.Data` | Domain | Entities, `DbContext`, migrations |
 | `MarqSpec.Mcp.TopstepX` | Domain, Data, the venue client | Tools, transports, cache-aside services, the ProjectX adapter, composition root |
 
@@ -196,6 +196,11 @@ one.**
 - Derived values are claims about a *series*, so there is no honest number to return across a seam and none is.
   `IndicatorGuard.RequireSingleContract` refuses, on the same shared path as the ordering check, so a new
   indicator inherits the rule rather than remembering it.
+  **A level method does not inherit it.** Each `ILevelMethod` detects its own way — swing pivots, session
+  extremes, arithmetic on a prior bar — so there is no shared compute path to hang the check on, and every
+  implementation calls the guard itself. `LevelMethodCatalogRollTests` sweeps `LevelMethodCatalog.All` to
+  prove that rather than trusting it, because a method that skipped the guard would not fail: it would answer
+  with an ordinary-looking zone built across the seam.
 - The two callers that legitimately hold a multi-contract series segment first, using the pure
   `ContractRollDetector`: the projector computes each run independently, and `get_key_levels` detects over the
   newest run only and reports `detectedOverBars`.

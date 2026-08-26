@@ -54,7 +54,7 @@ and when to open it. Resolve the section you need through it; **never load the c
 [`AGENT-MEMORY.md`](documentation/AGENT-MEMORY.md) is the catch-all for practices with no formal home — check
 it before starting, and add dated entries only when nothing formal fits.
 
-## The five that are never traded away
+## The six that are never traded away
 
 - **No order path exists in this repository.** The gateway client this depends on has a complete order
   surface — `PlaceOrderAsync`, `ModifyOrderAsync`, `CancelOrderAsync`, `ClosePositionAsync`. **None of it may
@@ -72,7 +72,16 @@ it before starting, and add dated entries only when nothing formal fits.
   yield the same numbers ([ADR-0006](documentation/adr/0006-indicators-as-projections.md)). Nothing in `Domain`
   may read a clock, a store or a config singleton, or a value silently starts depending on *when* it ran.
 - **Test-first, and done means an approved PR.** No new public method without a failing test written first.
-  Your task ends when the PR you opened is approved and green — not when you push.
+  Your task ends when the PR you opened is approved and green — later than pushing, and **earlier than
+  merging**.
+- **You open the pull request; you never merge it.** Merging stays the maintainer's — on `develop` and on
+  the promotions alike, not when every check is green, not when a reviewer approved it, not when you wrote
+  it yourself. Drive it to approved and green, then **stop**. Closing stays the maintainer's on the same
+  terms, the one exception being a throwaway probe you opened yourself: close that, and delete its branch.
+  **It cannot be made a gate** — every agent authenticates as the maintainer, so GitHub cannot tell agent
+  from human, and requiring an approval would deadlock every pull request on the self-review GitHub blocks,
+  which is why `required_approving_review_count` is `0`. Three PRs were self-merged in one afternoon, only
+  one of them approved (gh#186).
 
 ## Working rules
 

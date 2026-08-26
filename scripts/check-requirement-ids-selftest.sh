@@ -97,6 +97,12 @@
 # 318 B for a fixture measuring 319 B here. It is the same KIND of claim the cases below already make, not a
 # new one -- and it would have caught the carriage return on all nineteen green cases.
 #
+# AND THE MEASUREMENT AGREES WITH THE CODE, which is what makes it safe to assert on a runner nobody measured
+# on. The gate has exactly three writers to stderr -- `die`, `explain`, and one bare `echo >&2` -- and every
+# one of them sits on a path that ends `exit 1`. There is no green-path writer to stderr at all, so "green
+# implies silent" is structural here rather than a property nineteen fixtures happened to have. Re-derive it
+# with `grep -n '>&2' scripts/check-requirement-ids.sh` if that stops being true.
+#
 # THE RED CASES ARE EXEMPT, DELIBERATELY: the gate reports their faults through `die`, which writes to stderr,
 # so there stderr is the answer rather than stray output. The reason is recorded again beside expect_red,
 # because the asymmetry looks like an oversight and the fix for a supposed oversight is deleting the

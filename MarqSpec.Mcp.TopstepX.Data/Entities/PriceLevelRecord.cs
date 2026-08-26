@@ -12,9 +12,12 @@ namespace MarqSpec.Mcp.TopstepX.Data.Entities;
 /// would mean every update was an insert.
 /// </para>
 /// <para>
-/// The CHECK constraints live in the <b>database</b>, not only in code. This table is written by a geometric
-/// detection pass, and an inverted zone is precisely the shape its bugs take — a row where the top is below
-/// the bottom reads as entirely plausible everywhere except at the constraint.
+/// <b>Nothing writes this table.</b> Levels are computed on read by <c>get_key_levels</c> and returned; no
+/// pass has ever stored one, which is the opposite of the indicator decision in ADR-0006. The CHECK
+/// constraints live in the <b>database</b> anyway, not only in code: the bugs a geometric detection pass
+/// produces are inverted zones, and a row where the top is below the bottom reads as entirely plausible
+/// everywhere except at the constraint. Whether the table should exist at all is an open question rather
+/// than an oversight: gh#247 forces the choice between dropping it and caching into it.
 /// </para>
 /// </remarks>
 public sealed class PriceLevelRecord

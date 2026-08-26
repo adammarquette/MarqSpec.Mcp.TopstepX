@@ -153,8 +153,14 @@ skip.
 | `Active` | `boolean` | |
 | `UpdatedAt` | `timestamptz` | |
 
-The CHECK constraints are in the database rather than only in code because this table is written by a detection
-pass whose bugs are geometric — an inverted zone is the shape a mistake takes, and it reads as plausible.
+**Nothing writes this table.** Levels are computed on read by `get_key_levels` and returned; no pass has ever
+stored one. That is the opposite of the indicator decision in
+[ADR-0006](adr/0006-indicators-as-projections.md), and it is what makes per-request detection parameters safe
+— there is no storage key for one to fall out of. The CHECK constraints are in the database rather than only
+in code because the bugs a detection pass produces are geometric: an inverted zone is the shape a mistake
+takes, and it reads as plausible everywhere except at the constraint. **Whether the table should exist at all
+is an open question, not an oversight** — gh#247 forces the choice between dropping it and caching into it,
+and caching would put every parameter that changed a computation into its key.
 
 ## §5 `Observations` — the only original data here
 

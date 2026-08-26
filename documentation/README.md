@@ -43,7 +43,7 @@ rather than reword it.
 
 | Document | ~tok | Read it when |
 |---|---:|---|
-| [`AGENT-MEMORY.md`](AGENT-MEMORY.md) | 8.7K | **Before starting any work.** It grows by design — *append, don't overwrite* — so this is the row that goes stale first. |
+| [`AGENT-MEMORY.md`](AGENT-MEMORY.md) | 9.2K | **Before starting any work.** It grows by design — *append, don't overwrite* — so this is the row that goes stale first. |
 | [`project-board-workflow.md`](project-board-workflow.md) | 6.0K | You are filing, grooming or moving a card. **The board is project #5; #4 is retired.** The board makes two of the seven transitions by itself; the other five are somebody's deliberate act. |
 | [`work-estimate-rubric.md`](work-estimate-rubric.md) | 1.0K | You are setting a `Work Estimate` on an issue. |
 | [`agents/README.md`](agents/README.md) | 0.9K | You are wearing a role hat. **This row prices the index, not the route it serves** — each contract behind it is a separate read, and the index prices all four in its own gated `~tok` column (gh#178). Reviewer and Platform contracts **never auto-load**; open them yourself. |

@@ -66,7 +66,8 @@
 # unread exactly as an unlisted heading once was. Adding either has to be as deliberate as the list makes it.
 #
 # NEITHER OF THEM READS FENCED CODE, and that is what keeps them from firing on documents that EXPLAIN a
-# price table by showing one (PR #193 review). See `fence_step` below for why the direction is not a trade.
+# price table by showing one (PR #193 review). See `fence_step` below for the direction this fails in, and
+# for the first, wrong version of that claim.
 #
 # Rule 2 matches a closed vocabulary of size adjectives, so rewording WITHIN that vocabulary cannot silence
 # it. Rewording out of it can: "costs less than the others" makes the same claim and passes. Only real
@@ -214,9 +215,18 @@ as_k() {
 # and gh#142's on `issue-link`). A document that EXPLAINS a price table shows one, and the natural way to show
 # one is a fenced example — at which point a gate matching `~tok` plus two pipes accuses the author of adding
 # an unlisted price table they did not add, on a context required on all three rungs. That is a blocked merge
-# on correct prose, which is how a gate gets deleted by the first person it wrongly stops. The direction is
-# not a trade here: a table inside a fence renders as text, prices nothing and routes nobody, so skipping it
-# loses no coverage at all.
+# on correct prose, which is how a gate gets deleted by the first person it wrongly stops.
+#
+# THE FIRST VERSION OF THIS PARAGRAPH ARGUED THE DIRECTION WAS FREE -- "a table inside a fence renders as
+# text, prices nothing and routes nobody, so skipping it loses no coverage at all". That argument is true
+# and INCOMPLETE, and the incompleteness is the whole hazard: it holds only while the fence CLOSES. An
+# unterminated fence skips real content to end of file, which is exactly the coverage loss the paragraph
+# denied, and it is a fail-open. That was found by mutating the code, not by re-reading this paragraph --
+# which was read and left standing across three review rounds. Both loops now report an unclosed fence by
+# name, and the exemptions to that report are enumerated below rather than reasoned about here.
+#
+# **A failure direction is a measurement, not a deduction.** Same conclusion PR #195 reached independently
+# and recorded in the platform contract, from two wrong directional claims of its own.
 #
 # Applied to EVERY line, not only to the `~tok` test: a `## Heading` or a `| row |` inside a fence is not one
 # either, and a parser that believes half of a fence is the shape gh#123's stripper had.

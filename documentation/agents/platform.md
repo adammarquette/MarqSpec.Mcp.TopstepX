@@ -360,7 +360,7 @@ rung short is also a question every future reader has to re-derive.
 [`check-doc-sizes.sh`](../../scripts/check-doc-sizes.sh), which re-measures every row of every `~tok` table
 it is pointed at (`wc -c` bytes ÷ 4, 25% tolerance) and fails a row that no longer describes its file — and
 [`check-doc-sizes-selftest.sh`](../../scripts/check-doc-sizes-selftest.sh), which requires that gate to
-reject twenty-one known faults by name and to accept fifteen correct inputs — one at the tolerance boundary, so
+reject twenty-three known faults by name and to accept seventeen correct inputs — one at the tolerance boundary, so
 the tolerance cannot be quietly set to zero, one whose prose contains "no longer", so the size-claim
 vocabulary cannot creep back onto ordinary English, and twelve that print a price table inside a fence —
 six quoted, four of those closed by the end of the blockquote or of the file, and four leaning on one
@@ -437,6 +437,17 @@ than twice, and the gate learned to read a second file. Three consequences worth
   noise about innocent files, and **the run still exits 1**. A mutation harness that asks only *"did the
   suite go red"* passes that. Assert *which* cases fail, by name: this repository's own "non-zero exit is
   not sufficient" rule (gh#108, gh#98), applied one level up to the harness rather than to the gate.
+- **When a review keeps finding what the last round did not think to look for, stop guessing and enumerate.**
+  Seven rounds on one gate, each turning up a rule nothing pinned; the diagnosis was not any one rule but the
+  method — **the suite pinned what a reviewer pointed at, not what the script decides.** The reviewer's own
+  mutation sweep stopped with eight decision points unmeasured, and said so. What ended it was a **decision
+  ledger** in [`check-doc-sizes-selftest.sh`](../../scripts/check-doc-sizes-selftest.sh): every decision the
+  gate makes — each condition, sweep root, regex and early return — listed beside the case that kills it,
+  with a recorded reason for the handful that are unreachable from a fixture. Adding a decision without
+  adding a row is then the same visible omission the ledger exists to catch. It also forces the honest
+  distinction between *mutated* and merely *exercised*, which is where the unpinned rules were hiding.
+  Reach for this the third time a reviewer finds the same shape; PR #195 arrived at it independently on
+  `issue-link`, which is the second gate in this repository to need it.
 - **A priced file that is not on disk stops the run** rather than being skipped. `check-doc-links.sh` says
   nothing about it — nothing links to a *table* — so moving the index without telling `PRICED` would
   otherwise stop pricing four contracts with every check still green.

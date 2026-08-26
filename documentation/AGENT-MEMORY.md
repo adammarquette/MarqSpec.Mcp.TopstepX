@@ -84,7 +84,9 @@ ADR, `AGENTS.md`, or the code, **put it there instead**.
       'geometric\s+detection'`, **also returns nothing here**, because the continuation line carries the
       comment marker: the text is `geometric` NEWLINE `/// detection`, and `\s` does not match `///`. So
       normalising whitespace is not enough wherever a wrapped line is prefixed — `///`, `#`, `*`, a
-      markdown list indent. Measured on `origin/develop`'s copy of the file, all four on the same input:
+      markdown list indent. Measured at **`796b14c`** — a sha, not a branch: `9bfcd07` has since unwrapped
+      that very sentence, so at any later tip all four read 1 and the demonstration inverts. All four on the
+      same input, `git show 796b14c:MarqSpec.Mcp.TopstepX.Data/Entities/PriceLevelRecord.cs`:
       `grep "geometric detection pass"` → **0**; `grep -Pzo 'geometric\s+detection'` → **0**;
       `grep -Pzo 'geometric[\s/]+detection'` → 1; `grep "geometric"` → 1. The single word is the one that
       needed no thought to get right. Found correcting that sentence under gh#243; the table's status is

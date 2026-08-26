@@ -487,7 +487,7 @@ public sealed class KeyLevelsTests
         //                                            Prominence 100 - 98 = 2. Support.
         //    i=5  high 104 ties bar 6's 104 -> no.   low 100 ties bar 6's 100 -> no.
         //    i=6  high 104 ties bar 5's 104 -> no.   low 100 ties bar 5's 100 -> no.
-        //    i=7  high 106 under bar 8's 112 -> no.  low 102 over bar 4's 98 -> no.
+        //    i=7  high 106 under bar 8's 112 -> no.  low 102 over bar 5's 100 -> no.
         //    i=8  high 112 vs {104,106,106,104} -> dominates. Prominence 6. Resistance.
         //
         // So the answer that comes back is not a mangled one a caller could spot -- it is fixture A's three

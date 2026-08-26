@@ -187,12 +187,22 @@ The root contract's five apply here unchanged. Four land specifically on the pip
     HTML block at all. The gate silently stopped stripping a span GitHub strips, and the only thing that
     caught it was the differential's non-blank count dropping from 13 to 12. The tag list is quoted from
     CommonMark rather than guessed.
-  - **An HTML block is inline-free and citation-live at the same time.** Measured on two throwaway pull
-    requests: a body of `<!-- a block-level comment --> Closes #155` binds, and so does `<div>` followed by
-    a **backticked** `` `Closes #155` `` — a block carries no inline parsing, so the backticks are literal
-    and the reference is live. CommonMark says type 2 consumes the whole line carrying `-->`, which makes
+  - **Inline-free and citation-live are two questions, and no spec answers the second.** Three throwaway
+    pull requests, each body one construct: `<!-- a block-level comment --> Closes #155` **binds**; `<div>`
+    followed by a **backticked** `` `Closes #155` `` **binds** (a block carries no inline parsing, so the
+    backticks are literal); `<pre>` wrapping the same citation **does not** — it survives sanitising as a
+    real element and GitHub does not autolink inside one. So an HTML block loses its pairing and keeps its
+    text, *except* `pre`, whose content is deleted like a fence. `script`, `style` and `textarea` are
+    sanitised away and come back as linkified text, so they keep theirs. **One of the four inverts and the
+    tag name predicts nothing.** CommonMark says type 2 consumes the whole line carrying `-->`, which makes
     blanking that tail look correct; it would delete a citation that works. **The spec says what GitHub
-    parses, not what GitHub binds, and only the second one decides what a gate may throw away.**
+    parses, not what GitHub binds, and only the second decides what a gate may throw away.**
+  - **The right spec is still not the implementation.** The tag list was then quoted from CommonMark 0.31.
+    GitHub runs cmark-gfm, which tracks 0.29/0.30, and the two revisions differ on exactly the two names
+    that reach this gate: 0.31 dropped `source` and added `search`. Listing `search` as a block let a body
+    through whose citation GitHub puts inside `<code>` — fail-open — and omitting `source` refused one it
+    binds. **Name the revision you are implementing, and sweep the list against the renderer**; this is the
+    second time a correct reading of the current spec has been wrong about what GitHub runs.
   - **A phase that deletes lines must blank them instead when a later phase reads across them.** Deleting a
     fenced block butts the paragraph above it against the one below, and a run in one then pairs with a run in
     the other. Blanking keeps the boundary and keeps the line numbering identical through all three phases.

@@ -24,6 +24,16 @@ public sealed class IndicatorTests
     private static IReadOnlyList<Bar> Closes(params decimal[] closes) =>
         [.. closes.Select((c, i) => Bar(i, c, c, c))];
 
+    /// <summary>The same series with two bars exchanged — same bars, same prices, one pair out of order.</summary>
+    /// <remarks>
+    /// Each refusal below transposes the fixture from the hand-checked case beside it rather than inventing a
+    /// new one. That is what makes the green half of the two-run rule free: the very same bars, in order, are
+    /// pinned against worked-out numbers a few lines up, so the guard is shown to refuse the disorder and
+    /// nothing else.
+    /// </remarks>
+    private static IReadOnlyList<Bar> Transposed(IReadOnlyList<Bar> bars, int first, int second) =>
+        [.. bars.Select((bar, i) => i == first ? bars[second] : i == second ? bars[first] : bar)];
+
     // ── ATR ──────────────────────────────────────────────────────────────────────────────────────────
 
     [Fact]
@@ -131,6 +141,17 @@ public sealed class IndicatorTests
         rsi[1].Should().BeNull();
     }
 
+    [Fact]
+    public void Rsi_RefusesATransposedSeries()
+    {
+        // Rsi_SmoothsGainsAndLossesAfterTheSeed's four closes, with two bars exchanged. RSI reads changes
+        // pairwise and then smooths them, so a transposition flips the sign of one change and Wilder carries
+        // the consequence to the end of the series.
+        Action compute = () => RelativeStrengthIndex.Compute(Transposed(Closes(10m, 11m, 12m, 11m), 1, 2), 2);
+
+        compute.Should().Throw<ArgumentException>().WithMessage("*ascending*");
+    }
+
     // ── Moving averages ──────────────────────────────────────────────────────────────────────────────
 
     [Fact]
@@ -162,6 +183,29 @@ public sealed class IndicatorTests
     {
         MovingAverages.Simple(Closes(1m, 2m), 5).Should().AllSatisfy(v => v.Should().BeNull());
         MovingAverages.Exponential(Closes(1m, 2m), 5).Should().AllSatisfy(v => v.Should().BeNull());
+    }
+
+    [Fact]
+    public void Sma_RefusesATransposedSeries()
+    {
+        // Sma_AveragesTheWindow's series, two bars exchanged. The simple average is where an out-of-order
+        // series hides best: a window holding BOTH exchanged bars sums the same multiset and returns the
+        // identical number, so the disorder is invisible at that index and shows only in the windows
+        // straddling the pair. A spot-check of the wrong bar agrees, which is why the guard is not optional.
+        Action compute = () => MovingAverages.Simple(Transposed(Closes(1m, 2m, 3m, 4m), 1, 2), 2);
+
+        compute.Should().Throw<ArgumentException>().WithMessage("*ascending*");
+    }
+
+    [Fact]
+    public void Ema_RefusesATransposedSeries()
+    {
+        // Ema_SeedsFromTheSimpleAverageOfTheFirstWindow's series, two bars exchanged across the seed window's
+        // edge. Unlike the simple average this never re-converges: the seed itself differs, and every value
+        // the series carries is wrong from the first one onward.
+        Action compute = () => MovingAverages.Exponential(Transposed(Closes(1m, 2m, 3m, 4m, 5m), 2, 3), 3);
+
+        compute.Should().Throw<ArgumentException>().WithMessage("*ascending*");
     }
 
     // ── MACD ─────────────────────────────────────────────────────────────────────────────────────────
@@ -211,6 +255,20 @@ public sealed class IndicatorTests
         BollingerBands.StandardDeviation(bars, 2)[1].Should().Be(0.5m);
         BollingerBands.Upper(bars, 2)[1].Should().Be(2.5m);
         BollingerBands.Lower(bars, 2)[1].Should().Be(0.5m);
+    }
+
+    [Fact]
+    public void BollingerStandardDeviation_RefusesATransposedSeries()
+    {
+        // BollingerBands_SitTwoPopulationDeviationsEitherSide's two closes, exchanged.
+        //
+        // Called on StandardDeviation DIRECTLY, and that is the point rather than a shortcut: Upper and Lower
+        // go through Band, which computes Middle first — and Middle is MovingAverages.Simple. A case entered
+        // through a band would therefore be reddened by the moving average's guard and would leave the
+        // deviation's own call site exactly as unpinned as it is today.
+        Action compute = () => BollingerBands.StandardDeviation(Transposed(Closes(1m, 2m), 0, 1), 2);
+
+        compute.Should().Throw<ArgumentException>().WithMessage("*ascending*");
     }
 
     // ── VWAP ─────────────────────────────────────────────────────────────────────────────────────────
@@ -265,6 +323,26 @@ public sealed class IndicatorTests
             VolumeWeightedAveragePrice.Compute([new(saturday, 100m, 100m, 100m, 100m, 10)], calendar);
 
         vwap[0].Should().BeNull();
+    }
+
+    [Fact]
+    public void Vwap_RefusesATransposedSeries()
+    {
+        // Vwap_AccumulatesAcrossTheSession's two bars, exchanged. VWAP is a running accumulation and the
+        // session anchor is read in series order, so disorder does not merely reorder the output: it can
+        // attribute a bar's volume to the wrong session entirely and reset the day's average early.
+        BarSessionCalendar calendar = BarSessionCalendar.Parse("16:00", []);
+        DateTimeOffset open = MarketClock.FromMarket(new DateOnly(2026, 8, 18), new TimeOnly(9, 0));
+
+        IReadOnlyList<Bar> bars =
+        [
+            new(open, 10m, 12m, 9m, 12m, 10),
+            new(open.AddMinutes(5), 12m, 15m, 12m, 15m, 10),
+        ];
+
+        Action compute = () => VolumeWeightedAveragePrice.Compute(Transposed(bars, 0, 1), calendar);
+
+        compute.Should().Throw<ArgumentException>().WithMessage("*ascending*");
     }
 
     // ── Decimal maths ────────────────────────────────────────────────────────────────────────────────

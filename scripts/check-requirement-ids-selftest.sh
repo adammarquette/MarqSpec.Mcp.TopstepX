@@ -17,9 +17,11 @@
 # Rejections alone would all be satisfied by `exit 1`, i.e. by a gate that says no to everything, which is
 # exactly as useless as one that says yes to everything and rather harder to notice.
 #
-# TWENTY-ONE OF THE THIRTY-THREE CASES ARE HERE BECAUSE A RULE THIS GATE'S COMMENTS ASSERT WAS HELD BY
-# NOTHING, and that is the point of the paragraph rather than a confession. Six rounds -- and the ledger
-# above is what finally made the question finite, after five of them found rules one at a time:
+# TWENTY-SIX OF THE THIRTY-EIGHT CASES ARE HERE BECAUSE A DECISION THIS GATE MAKES WAS HELD BY NOTHING,
+# and that is the point of the paragraph rather than a confession. Seven rounds -- and the ledger above is
+# what finally made the question finite, after five of them found rules one at a time. THE LAST FIVE CAME
+# FROM AUDITING THE LEDGER ITSELF against the script, which is the step its own legend prescribes and
+# which its author did not run:
 #
 #   the author's battery      swallowing grep's exit 2 — the hole gh#43, gh#98 and gh#126 each shipped.
 #   review round 1            a definition inside a fenced block, and one inside an HTML comment (the gate's
@@ -99,6 +101,9 @@ set -euo pipefail
 #   [0-9] excludes the `#` placeholder ....... mut   the literal placeholder
 #   (\.[0-9]+)* repeats ...................... mut   an id with a third part
 #   grep -I skips binaries ................... mut   sound corpus, definition counts
+#   grep -H prints the filename .............. mut   case 34, a corpus of exactly ONE file. Grep prints the
+#                                                    name unasked once it has two, so every other case here
+#                                                    passes without it -- measured, not assumed.
 #   grep -n reports the line ................. rev   every dangling case, on the file:line needle
 #   grep exit 2 is not "no match" ............ mut   a file the corpus lists and grep cannot open
 #   grep exit 1 / no hits is NO CITATIONS .... mut   a corpus in which nothing was found
@@ -108,17 +113,31 @@ set -euo pipefail
 #                                                    the house remedy rather than as a live guard.
 # CORPUS
 #   core.quotepath=false ..................... mut   a filename git would escape
+#   ls-files --cached ........................ mut   a file the corpus lists and grep cannot open
+#   ls-files --others ........................ mut   case 30, a written-but-uncommitted file -- AND THE ROW
+#                                                    IT REPLACES IS THE REASON THIS COLUMN HAS A LEGEND.
+#                                                    Dropping the flag reddens 28 of the 38, which reads as
+#                                                    heavy pinning and is incidental: every OTHER fixture is
+#                                                    an uncommitted `git init` tree, so removing it empties
+#                                                    the sweep whatever the decision means. Case 30 is the
+#                                                    only one ABOUT the decision, and the only one that
+#                                                    would still redden if every fixture were committed.
+#                                                    Compare `--cached`, pinned at exactly one case.
+#   ls-files --exclude-standard .............. case  case 29 (every file ignored) and the ignore-prd case
+#   the `--` separator before the file list .. mut   case 33, a root file whose name begins with a dash
 #   trailing-slash entries are nested repos .. mut   a nested repository, counted and not read
 #   staged-then-deleted still reaches grep ... case  the unreadable case (no `[ -f ]` shortcut to mutate)
 #   empty file list is NOTHING TO CHECK ...... mut   case 29, every file ignored
 #   UNQUOTABLE PATH .......................... none  needs a path git escapes for a reason quotepath does not
 #                                                    suppress -- a quote, backslash or control character --
 #                                                    and NTFS refuses all three in a filename.
-#   ls-files failure is CANNOT LIST .......... none  UNREACHABLE ON THIS MACHINE FOR AN ODD REASON, recorded
-#                                                    because it is measured: a stray `C:\.git` makes the drive
-#                                                    root a work tree, so `git ls-files` never fails for
-#                                                    "not a repository" anywhere on C:. On the CI runner it is
-#                                                    reachable and untested.
+#   ls-files failure is CANNOT LIST .......... mut   case 31. GRADED `none` HERE ON A REASON THAT WAS TRUE
+#                                                    AND IRRELEVANT: a stray `C:\.git` does make the drive root
+#                                                    a work tree, and `GIT_CEILING_DIRECTORIES` stops the
+#                                                    upward discovery anyway. Reachable, portable, same on
+#                                                    the runner -- the failure-direction mistake one level up.
+#   NO SUCH ROOT ............................. mut   case 32, a root that does not exist. Its own die, its
+#                                                    own exit, one command to reach, and no row at all.
 # DEFINITION SIDE
 #   the PRD exists ........................... mut   a missing PRD
 #   the PRD has lines ........................ mut   case 28, a PRD that exists and is empty
@@ -135,6 +154,7 @@ set -euo pipefail
 #   fence closer: indent cap ................. mut   over-indented closer; closer behind a tab
 #   fence closer: the opener's own character . mut   a closing marker mixing fence characters
 #   fence closer: at least the opener's length mut   a closing marker shorter than its opener
+#   fence closer: trailing whitespace is ok .. case  a fence closed with trailing whitespace
 #   comment state is read BEFORE fence state . mut   a fence inside a comment, and a comment inside a fence
 #   inline code spans are NOT stepped over ... none  a deliberate fail-CLOSED choice, so its "failure" is the
 #                                                    documented behaviour: a `<!--` in backticks hides the
@@ -148,7 +168,7 @@ set -euo pipefail
 #   an unterminated FENCE is tolerated ....... case  a fence the document never closes
 #   the inert counter ........................ rev   a fence the document never closes
 # VERDICT
-#   DEFINED membership test .................. mut   all seven dangling cases
+#   DEFINED membership test .................. mut   all eight dangling cases
 #   the HINT when the id is in the PRD ....... mut   shadowed, fenced, commented
 #   citations==0 is NOTHING CHECKED .......... none  unreachable behind NO CITATIONS, which fires first on
 #                                                    the same condition. Re-derived by trying: any input
@@ -186,6 +206,7 @@ DANGLING_REQUIREMENT="${R}9.3"   # gh#172's class exactly: MarqSpec.Client.Proje
 DANGLING_SECTION="${R}42"
 DANGLING_QUESTION="${Q}9"
 OVER_DEEP="${R}1.2.3"            # first two parts DO resolve; the whole id must not
+DANGLING_REQUIREMENT_99="${R}9.9"
 
 # Builds one fixture repository.
 #
@@ -193,6 +214,7 @@ OVER_DEEP="${R}1.2.3"            # first two parts DO resolve; the whole id must
 #   $2 prd_kind     sound | absent | flat-headings | no-bullets | shadowed | fenced | commented | fenced-closed | nested-constructs | fence-bad-closer | unterminated-comment | inline-code-line | unterminated-fence | opener-overindented | backtick-info | tilde-info | misleveled-heading | empty-prd
 #   $3 notes        the body of documentation/notes.md — the file whose citations are under test
 #   $4 extra_kind   none | rich | ignore-prd | unreadable | nested | non-ascii | all-ignored
+#                   | committed | dash-file | single-file
 #   $5 bad_closer   fence-bad-closer only: the marker line that must NOT close the fence
 #   $6 opener       fence-bad-closer only: the opening marker, so its LENGTH can be varied
 #
@@ -367,6 +389,32 @@ make_fixture() {
       # used to hold no id at all, so dropping `-I` changed nothing and the flag was held by nothing.
       printf 'PK\003\004binary %s99.9 payload\000' "$R" > "$dir/assets/blob.bin"
       ;;
+    committed)
+      # EVERYTHING COMMITTED EXCEPT ONE FILE. `--others` is what puts an uncommitted file in the corpus, and
+      # until this case it was pinned only by ACCIDENT: every other fixture is an uncommitted `git init`
+      # tree, so dropping the flag emptied the sweep and reddened twenty-odd cases at once. Heavy pinning
+      # that is owed to a fixture's incidental SHAPE rather than its intent is coverage the ledger cannot
+      # see it lacks -- the legend's own warning, found in this table by the same method (PR #195 round 5).
+      git -C "$dir" -c core.autocrlf=false add documentation/prd.md documentation/notes.md
+      git -C "$dir" -c user.name=fixture -c user.email=fixture@example.invalid -c commit.gpgsign=false         commit -q -m 'fixture baseline'
+      printf 'A note that is written but not yet committed, citing %s9.9.
+' "$R" > "$dir/documentation/new.md"
+      ;;
+    dash-file)
+      # A ROOT-LEVEL FILE WHOSE NAME BEGINS WITH A DASH, which is the only thing the `--` separator before
+      # the file list is for. Without it grep reads the name as an option -- measured: `invalid argument
+      # 'ash.md' for '--directories'`, exit 2, so the run dies as UNREADABLE instead of naming the id.
+      printf 'A note citing %s9.9 from a file whose name looks like an option.
+' "$R" > "$dir/-dash.md"
+      ;;
+    single-file)
+      # A CORPUS OF EXACTLY ONE FILE, which is the only shape in which `grep -H` matters: grep prints the
+      # filename unasked once it has two or more files, so every other case here would pass without it.
+      # `.git/info/exclude` rather than `.gitignore`, because a `.gitignore` would itself be a second file.
+      printf '*
+' > "$dir/.git/info/exclude"
+      git -C "$dir" -c core.autocrlf=false add -f documentation/prd.md
+      ;;
     all-ignored)
       # EVERY file ignored, so the corpus is empty while the PRD is still on disk and still parses.
       # Also graded unreachable at first, also reached on the first try.
@@ -421,12 +469,24 @@ make_fixture() {
 
 # Runs the REAL gate against a fixture and requires it to REJECT it, saying why in its own words. Every
 # needle must appear; a gate that rejects for some other reason fails this.
+# Set around a single call when a case needs the gate to run with one variable set. Spelled as two globals
+# rather than a prefix string so nothing has to be re-split or re-quoted at the call.
+GATE_ENV_VAR=""
+GATE_ENV_VAL=""
+run_gate() {
+  if [ -n "$GATE_ENV_VAR" ]; then
+    env "$GATE_ENV_VAR=$GATE_ENV_VAL" bash "$GATE" "$1" 2>&1
+  else
+    bash "$GATE" "$1" 2>&1
+  fi
+}
+
 expect_red() {
   local label="$1" dir="$2"; shift 2
   local out status=0 needle
   cases=$(( cases + 1 ))
 
-  out="$(bash "$GATE" "$dir" 2>&1)" || status=$?
+  out="$(run_gate "$dir")" || status=$?
 
   if [ "$status" -eq 0 ]; then
     red "SELF-TEST FAILED  $label"
@@ -453,7 +513,7 @@ expect_green() {
   local label="$1" dir="$2" needle="$3" out status=0
   cases=$(( cases + 1 ))
 
-  out="$(bash "$GATE" "$dir" 2>&1)" || status=$?
+  out="$(run_gate "$dir")" || status=$?
 
   if [ "$status" -ne 0 ]; then
     red "SELF-TEST FAILED  $label"
@@ -710,6 +770,45 @@ expect_red "a PRD that exists and is empty" "$FIXTURES/empty-prd" "EMPTY"
 
 make_fixture "$FIXTURES/all-ignored" sound 'A note citing `R-1.1`.' all-ignored
 expect_red "a corpus in which every file is ignored" "$FIXTURES/all-ignored" "NOTHING TO CHECK"
+
+# 30-34. FIVE DECISIONS THE LEDGER HAD NO ROW FOR, or a row pinned by accident. Every one was found by
+#     auditing the table against the script rather than reading it (PR #195 round 5), which is the audit
+#     #193's ledger entry says to run and which I did not run on my own.
+
+#  30. `--others`, pinned for its OWN reason. Everything committed except one file: with the flag that file
+#      is in the corpus and its dangling id is named, without it the run is clean. Until this case the flag
+#      was "pinned" by twenty-odd cases that all happen to be uncommitted trees -- the legend's own
+#      incidental-shape warning, in the legend's own table.
+make_fixture "$FIXTURES/uncommitted" sound 'This note cites nothing.' committed
+expect_red "a written-but-uncommitted file" "$FIXTURES/uncommitted"   "DANGLING" "documentation/new.md:1" "$DANGLING_REQUIREMENT_99"
+
+#  31. `CANNOT LIST`, which this ledger graded unreachable on the reported grounds that a stray `C:\.git`
+#      makes the whole drive a work tree. That is true and it is NOT the reason: `GIT_CEILING_DIRECTORIES`
+#      stops the upward discovery, so `git ls-files` fails with 128 here exactly as it would on the runner.
+#      Portable, and the third `none` row of six to turn out reachable.
+make_fixture "$FIXTURES/no-repo" sound 'A note citing `R-1.1`.' none
+rm -rf "$FIXTURES/no-repo/.git"
+GATE_ENV_VAR="GIT_CEILING_DIRECTORIES"
+GATE_ENV_VAL="$FIXTURES"
+expect_red "a root that is not a git repository" "$FIXTURES/no-repo" "CANNOT LIST"
+GATE_ENV_VAR=""
+GATE_ENV_VAL=""
+
+#  32. `NO SUCH ROOT` -- its own `die`, its own `exit 1`, reachable in one command, and it had neither a row
+#      nor a case. The cheapest possible fixture is the one nobody wrote.
+expect_red "a root that does not exist" "$FIXTURES/was-never-created" "NO SUCH ROOT"
+
+#  33. The `--` separator before the file list. Only a ROOT-level name beginning with a dash reaches it: grep
+#      reads the name as an option and dies with `invalid argument 'ash.md' for '--directories'`, so the run
+#      reports UNREADABLE instead of the id. The needle is the ID, which is what tells the two apart.
+make_fixture "$FIXTURES/dash-file" sound 'This note cites nothing.' dash-file
+expect_red "a root file whose name begins with a dash" "$FIXTURES/dash-file"   "DANGLING" "-dash.md:1" "$DANGLING_REQUIREMENT_99"
+
+#  34. `grep -H`. Grep prints the filename unasked once it has two files, so every other case here passes
+#      without the flag -- measured, not assumed. A corpus of exactly ONE file is the only shape that needs
+#      it, and without it the location becomes `<line>:<line>` and the file disappears from the report.
+make_fixture "$FIXTURES/single-file" shadowed 'This note cites nothing.' single-file
+expect_red "a corpus of exactly one file" "$FIXTURES/single-file"   "DANGLING" "documentation/prd.md:" "$DANGLING_REQUIREMENT"
 
 info ""
 if [ "$failures" -gt 0 ]; then

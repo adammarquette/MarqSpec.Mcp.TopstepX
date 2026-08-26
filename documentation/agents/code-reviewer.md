@@ -24,15 +24,16 @@ same PR.
 ## What to look for
 
 The substantive checklist is [`.github/copilot-instructions.md`](../../.github/copilot-instructions.md) — **that
-file owns it; do not restate it here.** It covers fail-closed defaults, the decides-nothing boundary, secrets
-in a public repository, money and time, the conventions that look odd and are load-bearing, tests, and the
-same-PR documentation rule. It keeps its Copilot-specific name and stays in `.github/` because GitHub's
-reviewer reads that exact path; the content is tool-neutral.
+file owns it; do not restate it here.** It leads with the question below, then covers the reproducibility of
+the stored series, unknown outcomes at the store and venue boundaries, fail-closed defaults, secrets in a
+public repository, money and time, the conventions that look odd and are load-bearing, tests, and the same-PR
+documentation rule. It keeps its Copilot-specific name and stays in `.github/` because GitHub's reviewer reads
+that exact path; the content is tool-neutral.
 
-**Read its lead section as inherited, not as this repo's.** It opens on idempotency at an order boundary
-because that is the worst failure in the *reference implementation* — which that file hedges at every mention
-and flags for rewrite in its own banner. No order boundary exists here, so rank by the question below instead.
-That rewrite is gh#249.
+**Its lead is this repository's own, and it opens on the top of the blast-radius ranking under *How to
+report*** (gh#249). It used to open on idempotency at an order boundary — the *reference implementation's*
+worst failure, none of which can fire here. Read the lead as the first thing a diff has to answer, not as
+background.
 
 ## The question this repo's reviews exist to ask
 
@@ -46,6 +47,10 @@ A zero ATR, a 50 RSI stood in for one that could not be measured, an empty serie
 wrong — each looks exactly like a real answer and is acted on as one (root [`AGENTS.md`](../../AGENTS.md)), and
 what this server reports is traded on by whoever reads it. Everything else in the checklist is downstream of
 that. A change that cannot answer it clearly is not ready, regardless of how clean the rest reads.
+
+The [checklist](../../.github/copilot-instructions.md) leads with this same question and carries the
+diff-level evidence for it — where it hides, and the two times it has already landed. **One statement in two
+places: change either and change both.**
 
 ## How to report
 

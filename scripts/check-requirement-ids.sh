@@ -96,6 +96,11 @@
 #   - **A space after the hyphen** — `R- 4` is not the documented form and is not matched.
 #   - **Binary files are skipped** (`grep -I`). This corpus has none; a citation inside one is invisible.
 #   - **Nested repositories are not read** — they are a different repository. The count is printed.
+#   - **The `UNQUOTABLE PATH` branch is unexercised, here and by the self-test.** It fires on a path git
+#     escapes for a reason `core.quotepath=false` does not suppress — an embedded quote, backslash or
+#     control character — and NTFS refuses all three in a filename, so no fixture on this platform can
+#     produce one (PR #195 review). The logic is read, not run. The `core.quotepath` half IS covered, by a
+#     fixture with a non-ASCII filename.
 #   - The issue and pull request bodies are not files, so nothing here reads them.
 #   - Correctness of the quotation, as above.
 #
@@ -206,7 +211,8 @@ inert=0
 # citations. gh#142's rule, applied rather than inherited — ask which direction over-detection fails in, for
 # this specific construct.
 in_fence=0
-fence_marker=""
+fence_char=""
+fence_len=0
 in_comment=0
 
 # Advances `in_comment` across one line, left to right, so a line carrying both delimiters ends in the right
@@ -232,11 +238,35 @@ scan_comment_delimiters() {
 for line in "${prd_lines[@]}"; do
   # BOTH ENDS are trimmed. A closing fence written with trailing whitespace is ordinary and legal, and
   # leaving it untrimmed means the fence never closes, every definition after it disappears, and their
-  # citations go red — the safe direction, but red on correct markdown all the same. Leading whitespace is
-  # trimmed without a three-column limit, so a deeply indented fence marker opens a block CommonMark would
-  # read as an indented code block instead: over-detection, which costs skipped lines rather than invented
-  # symbols.
+  # citations go red — the safe direction, but red on correct markdown all the same.
+  #
+  # THE OPENER AND THE CLOSER FAIL IN OPPOSITE DIRECTIONS, and this comment used to give the opener's
+  # analysis as if it governed both (PR #195 review). Over-detecting an OPENER starts a skipped region
+  # early: it costs inert lines, and a definition that goes missing reddens its citations. Over-detecting a
+  # CLOSER ends a fenced EXAMPLE early, and every line of the example after it becomes a real definition —
+  # the fail-open this whole section exists to prevent. So the two are deliberately not symmetrical:
+  #   - the OPENER's indent is unbounded, on purpose. CommonMark would read a four-column marker as an
+  #     indented code block, whose contents are inert too, so treating it as a fence lands on the same
+  #     answer for definitions and errs toward more inert lines either way.
+  #   - the CLOSER checks all three of CommonMark's conditions, below.
+  # Ask the question per construct, not per section — which is gh#142's rule, and one statement of it was
+  # covering two constructs that answer it differently.
   trimmed="${line#"${line%%[![:space:]]*}"}"; trimmed="${trimmed%"${trimmed##*[![:space:]]}"}"
+
+  # The leading indent in COLUMNS, which the closer test below caps at three. A tab advances to the next
+  # four-column stop, which is why it cannot be counted as one character: a single leading tab is four
+  # columns and therefore content, not a closer. Only the leading whitespace is walked, so this is a handful
+  # of iterations per line rather than a scan of it.
+  fence_indent=0
+  idx=0
+  while [ "$idx" -lt "${#line}" ]; do
+    case "${line:$idx:1}" in
+      ' ')  fence_indent=$(( fence_indent + 1 )) ;;
+      $'\t') fence_indent=$(( fence_indent + 4 - (fence_indent % 4) )) ;;
+      *) break ;;
+    esac
+    idx=$(( idx + 1 ))
+  done
 
   # THE TWO STATES ARE MUTUALLY EXCLUSIVE, and getting that wrong is a real defect rather than a nicety.
   # Inside a comment, a fence marker is text; inside a fence, `<!--` is text. Checking for a fence first and
@@ -252,15 +282,27 @@ for line in "${prd_lines[@]}"; do
 
   if [ "$in_fence" -eq 1 ]; then
     inert=$(( inert + 1 ))
-    if [[ "$trimmed" == "$fence_marker"* ]] && [[ "${trimmed//[\`~]/}" == "" ]]; then
+    # THE CLOSER IS THE HALF WHERE OVER-DETECTION INVENTS SYMBOLS, so all three of CommonMark's conditions
+    # are checked. The first version checked a marker PREFIX and "every character is a backtick or a tilde",
+    # which let six shapes close a fence CommonMark keeps open — a marker indented four or eight columns or
+    # behind a tab, and a marker mixing the two characters (```` ```~ ````, ``` ~~~` ```). Each of those ends
+    # a fenced EXAMPLE early and turns the rest of it into definitions (PR #195 review, sixteen probes).
+    #   1. at most three columns of indent, a tab counting as four;
+    #   2. the opener's OWN character, not merely one of the two;
+    #   3. at least as long as the opener, and nothing else on the line.
+    stripped="${trimmed//"$fence_char"/}"
+    if [ "$fence_indent" -le 3 ] && [ -n "$trimmed" ] && [ -z "$stripped" ] \
+       && [ "${#trimmed}" -ge "$fence_len" ]; then
       in_fence=0
-      fence_marker=""
+      fence_char=""
+      fence_len=0
     fi
     continue
   fi
   if [[ "$trimmed" =~ $FENCE ]]; then
     in_fence=1
-    fence_marker="${BASH_REMATCH[1]}"
+    fence_char="${BASH_REMATCH[1]:0:1}"
+    fence_len="${#BASH_REMATCH[1]}"
     inert=$(( inert + 1 ))
     continue
   fi

@@ -369,6 +369,11 @@ public static class Program
         services.AddScoped<IndicatorRebuilder>();
         services.AddScoped<BarCacheService>();
 
+        // Scoped, and the lifetime is load-bearing rather than conventional: this service memoises which
+        // series it has already found complete, and the scope is one request. A singleton would remember the
+        // answer past the fill that invalidated it (gh#246).
+        services.AddScoped<IndicatorCacheService>();
+
         // The tool types themselves. The SDK activates a tool per call with ActivatorUtilities, which resolves
         // constructor parameters from DI but does NOT recursively activate unregistered types -- so a tool that
         // composes another tool (SnapshotTools takes MarketDataTools and ReferenceTools) fails at CALL time

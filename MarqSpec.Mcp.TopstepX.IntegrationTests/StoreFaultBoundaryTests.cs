@@ -346,6 +346,7 @@ public sealed class StoreFaultBoundaryTests(SchemaFixture fixture)
             store,
             ConcurrencyHarness.Registry(),
             ConcurrencyHarness.Catalog(),
+            ConcurrencyHarness.Indicators(store),
             new LevelMethodCatalog(),
             new SeriesGateway(venue, available),
             new ToolGuards(Options.Create(new MarketDataOptions

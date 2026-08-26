@@ -386,6 +386,22 @@ public static class ConcurrencyHarness
     public static IndicatorProjector Projector(TopstepXDbContext database) =>
         new(database, Catalog(), NullLogger<IndicatorProjector>.Instance);
 
+    /// <summary>The read-time indicator projection over a context.</summary>
+    /// <param name="database">The store.</param>
+    /// <param name="now">The instant a projection this triggers stamps on the rows it changes.</param>
+    /// <param name="logger">A logger, when the test needs to read what the read said it did.</param>
+    /// <returns>The service.</returns>
+    public static IndicatorCacheService Indicators(
+        TopstepXDbContext database,
+        DateTimeOffset? now = null,
+        ILogger<IndicatorCacheService>? logger = null) =>
+        new(
+            database,
+            Catalog(),
+            Projector(database),
+            new FakeTimeProvider(now ?? SessionStart),
+            logger ?? NullLogger<IndicatorCacheService>.Instance);
+
     /// <summary>A cache-aside service over a context, serving one venue's bars.</summary>
     /// <param name="database">The store.</param>
     /// <param name="venue">The venue id this fill writes under.</param>

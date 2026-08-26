@@ -550,8 +550,17 @@ jobs:
           # absent from the ubuntu-24.04 image, which makes mawk near-certain and is exactly the
           # package-list inference the gh#142 bullet refuses to make, so it is not claimed here either.
           # What WAS measured stands in its place: byte-identical output under `LC_ALL=C gawk --posix`
-          # across all 96 archived bodies, 95 of them carrying non-ASCII -- POSIX mode plus single-byte
+          # across all 96 archived bodies, 88 of them carrying non-ASCII -- POSIX mode plus single-byte
           # indexing being the mawk-shaped constraint.
+          #
+          # THE DENOMINATOR IS PINNED at the 96 bodies every measurement on this branch ran over, not at
+          # whatever `gh pr list` returns today: that population only grows, and this change-s own
+          # throwaway probes pushed it past 130. An earlier draft of this line said 88 was 95, which is the
+          # same count taken over a longer list -- right number, wrong denominator, and re-derivable in one
+          # command. Third wrong measured figure in this file, after `37 bodies / 173 lines` and a `44`
+          # where the claim was carried by 13, and this one sits three paragraphs from the note about the
+          # first. Two routes, each proved on a known positive AND a known negative before either was
+          # believed, both answer 88 of 96.
           #
           # This paragraph and the matching one in the platform contract have to say the same thing. An
           # earlier round narrowed the claim in the CONTRACT ONLY and left the word "settled" standing

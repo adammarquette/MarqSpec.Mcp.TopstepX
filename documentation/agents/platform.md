@@ -236,8 +236,12 @@ The root contract's five apply here unchanged. Four land specifically on the pip
   settle that the program works on the runner, not *which* awk ran it. `gawk` is absent from the
   `ubuntu-24.04` image, which makes mawk near-certain and is precisely the package-list inference the
   gh#142 bullet refuses to make, so it is not claimed. What was measured instead: **byte-identical output
-  under `LC_ALL=C gawk --posix` across all 96 archived bodies**, 95 of them carrying non-ASCII — POSIX mode
-  plus single-byte indexing being the mawk-shaped constraint. **Keep this in step with the same paragraph
+  under `LC_ALL=C gawk --posix` across all 96 archived bodies**, 88 of them carrying non-ASCII — POSIX mode
+  plus single-byte indexing being the mawk-shaped constraint. **The denominator is pinned** at the 96 bodies
+  every measurement here ran over, not at whatever `gh pr list` returns today — that population only grows,
+  and this change-s own throwaway probes pushed it past 130. An earlier draft said 88 was 95: the same count
+  over a longer list, right number and wrong denominator, and the third wrong measured figure in this file.
+  **Keep this in step with the same paragraph
   in `branch-policy.yml`**: the narrowing was applied here at round one and to the workflow only at round
   four, and for three rounds the two files disagreed about it.
 

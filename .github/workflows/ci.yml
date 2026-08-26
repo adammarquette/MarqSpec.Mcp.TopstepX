@@ -92,11 +92,11 @@ jobs:
       # which contain a citation-shaped substring, and the literal `R-#` placeholder, which was on thirteen
       # lines across ten files on `develop` at 8a2302d.
       #
-      # TWENTY-NINE OF ITS FORTY-ONE CASES EXIST BECAUSE A DECISION THE GATE MAKES WAS HELD BY NOTHING, over
-      # eight rounds. It carries a DECISION LEDGER for that reason: every decision, against the case that
-      # kills it, graded mutated / exercised / unreachable. AUDIT THAT TABLE AGAINST THE SCRIPT, do not
-      # re-read it -- the last eight cases came from doing so, one row was pinned only by every fixture
-      # happening to share a shape, and FOUR OF SEVEN `unreachable` rows turned out reachable.
+      # MOST OF ITS CASES EXIST BECAUSE A DECISION THE GATE MAKES WAS HELD BY NOTHING, found over nine review
+      # rounds. It carries a DECISION LEDGER for that reason: every decision, against the case that kills it,
+      # graded mutated / exercised / unreachable. AUDIT THAT TABLE AGAINST THE SCRIPT, do not re-read it --
+      # that is where the later cases came from, one row was pinned only by every fixture happening to share
+      # a shape, and the `unreachable` rows have been the least reliable in the table.
       - name: Prove the requirement-id gate can still fail
         run: ./scripts/check-requirement-ids-selftest.sh
 

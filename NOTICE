@@ -8,14 +8,14 @@ and documentation was authored by AI coding agents working under human direction
 review, and acceptance; comparatively little was hand-written.
 
 NO WARRANTY. This is an MCP server: it reports market data, computed indicators
-and account reads over a read-only connection to a futures brokerage gateway. It
-has no order path and places no trades. Its risk is in what it reports rather
-than in what it does, because a figure that is subtly wrong looks exactly like
-one that is right and is acted on by whoever reads it. It is provided on an
-"AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND. Nothing in this
-project is financial advice. Anyone running it is solely responsible for their
-own trading decisions, outcomes, and losses, and for complying with their
-broker's and prop firm's terms.
+and account reads from a futures brokerage gateway. It has no order path and
+places no trades. Its risk is in what it reports rather than in what it does,
+because a figure that is subtly wrong looks exactly like one that is right and is
+acted on by whoever reads it. It is provided on an "AS IS" BASIS, WITHOUT
+WARRANTIES OR CONDITIONS OF ANY KIND. Nothing in this project is financial
+advice. Anyone running it is solely responsible for their own trading decisions,
+outcomes, and losses, and for complying with their broker's and prop firm's
+terms.
 
 This project is not affiliated with, endorsed by, or sponsored by ProjectX,
 TopstepX, or any of their operators. API names and endpoints appear only as

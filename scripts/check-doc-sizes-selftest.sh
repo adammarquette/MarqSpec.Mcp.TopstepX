@@ -30,20 +30,29 @@
 # climb two directories out of the file that names them, prose full of em-dashes, and several sections in
 # both files carrying no table at all.
 #
-# THE DECISION LEDGER (PR #193 review round 6). Seven review rounds each found something the round before
-# it had not thought to look for, and the reviewer's diagnosis was structural rather than about any one
-# rule: **the suite pinned what a reviewer pointed at, not what the script decides.** Round 5 found five
-# unpinned rules inside `fence_step`; round 6 found two more one layer out; the reviewer's own sweep
-# stopped with eight decision points unmeasured. An eighth round of guessing was the alternative to this.
+# THE DECISION LEDGER (PR #193 rounds 6-7). Seven review rounds each found something the round before it
+# had not thought to look for, and the diagnosis was structural rather than about any one rule: **the
+# suite pinned what a reviewer pointed at, not what the script decides.** So every decision
+# check-doc-sizes.sh makes is listed here beside the case that kills it, and a decision with no case
+# carries the reason it needs none. **Adding a decision to that script without adding a row here is the
+# same omission this ledger exists to catch.**
 #
-# So every decision `check-doc-sizes.sh` makes is listed here beside the case that kills it, and a
-# decision with no case carries the reason it needs none. **Adding a decision to that script without
-# adding a row here is the same omission this ledger exists to catch** -- it is what produced the
-# findings in rounds 1, 5 and 6.
-#
-# EVIDENCE:  mut  = the decision was individually mutated and exactly the named case failed.
+# EVIDENCE:  mut  = individually mutated, and exactly the cases named here failed.
 #            rev  = same, measured by the reviewer rather than here (PR #193 round 5).
 #            case = exercised by the named case, but not separately mutated. Weaker, and marked so.
+#
+# TWO WAYS THIS TABLE LIES. Both happened in round 6, and both were caught by AUDITING it against the
+# script rather than by re-reading it:
+#
+#   A GRADE CAN CLAIM MORE THAN ITS EVIDENCE. FENCE_QUOTED was marked rev against one named case;
+#   re-measured, six fail. The decision was pinned; the row was not true. A marker that promises
+#   "exactly these cases" has to be re-run before it is written down.
+#
+#   A DECISION CAN BE PINNED BY ACCIDENT. The .github fixture sat at depth 1, where ** degrading to *
+#   also misses it -- so removing globstar reddened that case and this table read as though globstar
+#   were covered. It was not: that case was written for the ROOT. A decision pinned by the incidental
+#   SHAPE of a fixture rather than by its intent is coverage this table cannot see it lacks. The
+#   fixture now sits at depth 2 and globstar has a case of its own. One case, one decision.
 #
 #   DECISION in check-doc-sizes.sh               PINNED BY (case label)                             EV
 #   -------------------------------------------  -------------------------------------------------  ----
@@ -52,12 +61,13 @@
 #   PRICED pair 3 (agents / The contracts)       a drifted row in the second priced file            case
 #   TOLERANCE_PCT = 25                           20% inside / 30% outside, both sides               case
 #   BYTES_PER_TOKEN = 4                          every sized fixture (sizes exact at 4)             case
-#   SIZE_CLAIM vocabulary                        size claim; quickest; 'no longer' green            case
+#   SIZE_CLAIM vocabulary                        size claim; quickest; no-longer green              case
 #   ALIGNMENT_ROW regex                          a sound pair of priced files                       case
 #   SIZE_CELL regex                              a placeholder instead of a size                    case
 #   stated_tokens fraction handling              20% inside / 30% outside                           case
 #   FILES de-duplication                         a sound pair (two pairs, one file)                 case
 #   NO SUCH FILE (priced file absent)            a priced file that is not on disk                  case
+#   EMPTY (priced file has no lines)             a priced file that exists and has no lines         mut
 #   per-file heading list (pair keying)          a renamed heading in the second priced file        mut
 #   heading match on the normalised line         a renamed section heading                          case
 #   UNLISTED TABLE (unlisted heading)            a price table under an unlisted heading            case
@@ -65,13 +75,15 @@
 #   alignment row must contain a PIPE            a thematic break under a priced heading            mut
 #   NO LINK                                      a row with no link in its first cell               case
 #   #fragment stripped from the target           a row whose link carries a #fragment               mut
-#   resolved against the PRICED file's dir       a sound pair (epsilon shadowed one level up)       mut
+#   resolved against the PRICED file dir         a sound pair (epsilon shadowed one level up)       mut
 #   NOT A SIZE                                   a placeholder instead of a size                    case
 #   MISSING (target absent)                      a row whose target is absent                       case
 #   measured <= 0 (zero-byte target)             a row pointing at a zero-byte document             mut
 #   tolerance comparison                         20% inside / 30% outside                           case
-#   SIZE CLAIM in row prose                      prose making a size claim; 'no longer'             case
+#   SIZE CLAIM in row prose                      prose making a size claim; no-longer green         case
 #   NO SECTION / NO ROWS, per pair               renamed heading; priced section with no rows       case
+#   shopt globstar                               a price table three directories down               mut
+#   shopt nullglob                               18 cases (every fixture with no .github dir)       mut
 #   sweep root  **/*.md                          a price table in a file the gate does not read     case
 #   sweep root  .github/**/*.md                  a price table under .github/                       mut
 #   sweep skips priced files                     a sound pair (else they self-report)               case
@@ -82,7 +94,7 @@
 #   closer character must match opener           a ~~~ line inside a backtick fence closes nothing  mut
 #   closer at least as long as opener            a shorter fence run closes nothing                 mut
 #   closer carries nothing but fence chars       a fence run with an info string closes nothing     mut
-#   FENCE_QUOTED recorded at open                a quoted fence still open at end of file           rev
+#   FENCE_QUOTED recorded at open                six quoted cases                                   mut
 #   normalize_line leading/trailing trim         a drifted row indented under the table             case
 #   normalize_line  >  strip                     six quoted cases                                   mut
 #   QUOTED reset per line                        quoted cases (sticky QUOTED breaks two)            rev
@@ -90,23 +102,26 @@
 #   per-file fence_reset (sweep)                 a real table in the file AFTER one mid-fence       mut
 #   UNTERMINATED FENCE report (both loops)       a fence left open in a priced / swept file         mut
 #   quoted-fence-at-EOF exemption (both)         a quoted fence still open at end of file           mut
+#   NOTHING CHECKED (rows_checked == 0)          every priced table empty                           mut
 #   failures > 0  ->  exit 1                     every red case                                     case
-#   green line names rows / pairs / files        every green case (needle "N priced rows")          case
+#   green line names rows / pairs / files        every green case (needle N priced rows)            case
 #
-# NO CASE, AND WHY. Each of these is unreachable from a fixture, not merely untested:
+# NO CASE, AND WHY. Every one RE-DERIVED by trying to reach it (round 7), after two of the original
+# seven turned out to be reachable -- EMPTY and NOTHING CHECKED, both now cases above. The EMPTY entry
+# had been wrong in BOTH halves: its stated reason was that NO SECTION reports first, and NO SECTION
+# never reports at all, because the EMPTY branch exits from inside the per-file loop.
 #
-#   NOTHING PRICED (PRICED empty)     PRICED is a literal array in the script; a fixture cannot empty it.
-#   file_dir "." fallback             no priced file sits at the repository root, and none can while the
-#                                     routing map lives under documentation/.
-#   EMPTY (priced file has no lines)  reachable only by truncating a priced file to zero bytes, which
-#                                     NO SECTION reports first and more usefully. Fail-closed either way.
-#   UNREADABLE (wc exited non-zero)   needs a file that exists and cannot be read; not portably creatable
-#                                     on this platform. Fail-closed either way.
-#   empty candidate skipped (sweep)   an equivalent mutant on bash >= 4.4: removing it leaves the loop
-#                                     iterating an empty array, which is a no-op rather than an error.
-#   NOTHING SWEPT / NOTHING CHECKED   unreachable while any priced file exists -- a priced file is itself
-#                                     markdown, and its own rows are counted. They guard a broken gate
-#                                     rather than a bad map; NO ROWS covers the adjacent reachable state.
+#   NOTHING PRICED (PRICED empty)    structural: PRICED is a literal array, so no fixture can empty it.
+#                                    Reachable only by mutating the script itself.
+#   file_dir . fallback              structural: needs a PRICED entry with no slash, again a literal;
+#                                    and no priced file sits at the repository root.
+#   UNREADABLE (wc non-zero)         MEASURED, not assumed: chmod 000 still reads back on this platform,
+#                                    and a directory named *.md fails the -f test first, so MISSING
+#                                    reports instead. Fail-closed either way.
+#   empty candidate skipped (sweep)  MEASURED equivalent mutant: removing it fails 0 of 43 cases. On
+#                                    bash >= 4.4 the loop iterates an empty array, which is a no-op.
+#   NOTHING SWEPT (swept == 0)       structural: a priced file is itself markdown at a path both globs
+#                                    reach, and if it is absent the run has already exited NO SUCH FILE.
 #
 # LOCAL RUNTIME. Each case forks a shell and a `wc` per row. That is milliseconds on the CI runner and can be
 # a couple of minutes on a Windows checkout, where process creation is pathologically slow; the fixtures
@@ -198,7 +213,9 @@ make_fixture() {
   mkfile "$dir/documentation/agents/epsilon.md" 6000
   mkfile "$dir/documentation/epsilon.md" 400
   mkfile "$dir/documentation/zero.md" 0
-  if [ "$second_file" = "present" ]; then
+  if [ "$second_file" = "empty" ]; then
+    : > "$dir/documentation/agents/README.md"
+  elif [ "$second_file" = "present" ]; then
     {
       printf '# fixture role contracts\n\n'
       printf '%s\n\n' "$contracts_heading"
@@ -212,14 +229,31 @@ make_fixture() {
   # in the suite could tell them apart -- `.github/**/*.md` could be deleted from the glob with all 36 cases
   # green, and a price list in `copilot-instructions.md` would simply stop being read. That root was added
   # because a reviewer found it missing; this is what proves it is load-bearing.
+  # AT DEPTH 2 DELIBERATELY. At depth 1 this file also pinned `globstar` by accident -- `.github/**/*.md`
+  # with globstar off degrades to `.github/*/*.md`, which misses depth 1 and finds depth 2 -- so removing
+  # globstar reddened this case and the ledger read as though globstar were covered. One case, one decision:
+  # this one pins the ROOT, and `stray_kind=deep` below pins globstar. Two of the five real markdown files
+  # under that root live at this depth (.github/workflows/), three at depth 1.
   if [ "$stray_kind" = "github-root" ]; then
-    mkdir -p "$dir/.github"
+    mkdir -p "$dir/.github/workflows"
     {
       printf '# a checklist under a DOT-directory\n\n'
       printf '| Document | ~tok | Read it when |\n'
       printf '|---|---:|---|\n'
       printf '| [`delta.md`](../documentation/delta.md) | 99K | Priced by nothing, in the second root. |\n'
-    } > "$dir/.github/copilot-instructions.md"
+    } > "$dir/.github/workflows/notes.md"
+  fi
+
+  # GLOBSTAR, PINNED BY INTENT. Three levels down from the repository root, which `**/*.md` reaches only
+  # while globstar is on: with it off the pattern degrades to `*/*.md` and stops at depth 2, so this table
+  # is never swept and the run goes green on a price list nothing read.
+  if [ "$stray_kind" = "deep" ]; then
+    {
+      printf '# a document three levels down\n\n'
+      printf '| Document | ~tok | Read it when |\n'
+      printf '|---|---:|---|\n'
+      printf '| [`epsilon.md`](epsilon.md) | 99K | Only globstar reaches this depth. |\n'
+    } > "$dir/documentation/agents/deep.md"
   fi
 
   case "$stray_kind" in closer-char|closer-len|closer-info|tilde|reset-leak) fk_kind=yes ;; esac
@@ -292,6 +326,13 @@ make_fixture() {
     # A `---` THEMATIC BREAK, with prose on the very next line so no blank line can close the table the
     # mutant opens. The alignment-row test requires a pipe as well as a dash precisely so this does not open
     # a table; drop that requirement and this prose parses as a row and reddens with NO LINK.
+    #
+    # ITS POSITION IS LOAD-BEARING, and nothing else in this file says so (PR #193 round 7, a near-miss the
+    # reviewer disclosed rather than filed). It sits INSIDE a priced section -- between the agreements table
+    # and `## Reference`. Move it below the unpriced `## The contracts` heading and `current` is -1 there,
+    # the table logic never runs at all, and the case passes green under the very mutation it exists to
+    # catch. A fixture that stops establishing its precondition reports exactly as a rule that is not
+    # needed, so do not relocate this block without re-running the mutation.
     if [ "$map_tail" = "thematic-break" ]; then
       printf '\n---\nOrdinary prose directly under a thematic break.\n'
     fi
@@ -350,6 +391,30 @@ make_fixture() {
   } > "$dir/documentation/README.md"
 }
 
+# Every priced heading present, every priced table EMPTY. Its own builder rather than five more positional
+# arguments on make_fixture, because it varies nothing else: this is the one shape in which `rows_checked`
+# reaches zero, and it is the fixture that proved NOTHING CHECKED reachable after the ledger had recorded
+# it as unreachable (PR #193 round 7).
+make_empty_fixture() {
+  local dir="$1"
+  mkdir -p "$dir/documentation/agents"
+  mkfile "$dir/documentation/alpha.md" 4000
+  {
+    printf '# fixture routing map\n\n'
+    printf '## Start here\n\n'
+    printf '| Document | ~tok | Read it when |\n'
+    printf '|---|---:|---|\n\n'
+    printf '## Working agreements\n\n'
+    printf '| Document | ~tok | Read it when |\n'
+    printf '|---|---:|---|\n\n'
+  } > "$dir/documentation/README.md"
+  {
+    printf '# fixture role contracts\n\n'
+    printf '## The contracts\n\n'
+    printf '| Contract | ~tok | Loads |\n'
+    printf '|---|---:|---|\n\n'
+  } > "$dir/documentation/agents/README.md"
+}
 SOUND_GAMMA='| [`gamma.md`](gamma.md) | 0.5K | Before starting any work. |'
 SOUND_HEADING='## Working agreements'
 SOUND_CONTRACT='| [`epsilon.md`](epsilon.md) | 1.5K | Open it yourself. |'
@@ -675,7 +740,30 @@ make_fixture "$FIXTURES/zero-byte" "1.0K" \
   '| [`zero.md`](zero.md) | 0.5K | Before starting any work. |' "$SOUND_HEADING" "plain"
 expect_red "a row pointing at a zero-byte document" "$FIXTURES/zero-byte" "EMPTY"
 
-# 29. The sound fixture. Five priced rows across three sections in two files, plus an ordinary table with no
+# 29. GLOBSTAR, PINNED BY INTENT rather than by a fixture's incidental depth (PR #193 round 7). `**/*.md`
+#     degrades to `*/*.md` without it and stops at depth 2, so a price table three levels down is never
+#     swept and the run goes green. The .github case above USED to pin this by accident, which is worse
+#     than not pinning it at all: the ledger then read as covered.
+make_fixture "$FIXTURES/globstar" "1.0K" "$SOUND_GAMMA" "$SOUND_HEADING" "plain" \
+  "$SOUND_CONTRACT" "$SOUND_CONTRACTS_HEADING" "deep"
+expect_red "a price table three directories down" "$FIXTURES/globstar" "UNLISTED FILE"
+
+# 30. A PRICED FILE THAT EXISTS AND HAS NO LINES. The ledger recorded this branch as unreachable because
+#     "NO SECTION reports first" -- BOTH HALVES WERE FALSE. The EMPTY branch sits inside the per-file loop
+#     and exits long before the NO SECTION loop is reached, so NO SECTION never reports at all; and the
+#     case was one argument away, since `mkfile ... 0` already existed in the builder. An
+#     unreachable-with-a-reason row is a claim, and this is the one that was wrong in both halves.
+make_fixture "$FIXTURES/empty-priced" "1.0K" "$SOUND_GAMMA" "$SOUND_HEADING" "plain" \
+  "$SOUND_CONTRACT" "$SOUND_CONTRACTS_HEADING" "none" "empty"
+expect_red "a priced file that exists and has no lines" "$FIXTURES/empty-priced" "has no lines"
+
+# 31. NOTHING CHECKED, also recorded as unreachable and also reachable: every priced heading present and
+#     every priced table empty. NO ROWS fires three times AND `rows_checked` reaches zero, and the
+#     NOTHING CHECKED branch sits before the `failures > 0` check, so it is what actually ends the run.
+make_empty_fixture "$FIXTURES/nothing-checked"
+expect_red "every priced table empty" "$FIXTURES/nothing-checked" "NOTHING CHECKED"
+
+# 32. The sound fixture. Five priced rows across three sections in two files, plus an ordinary table with no
 #     price column under a third heading -- so this also asserts the gate leaves un-priced tables alone,
 #     which is what nearly every table in the corpus is.
 #

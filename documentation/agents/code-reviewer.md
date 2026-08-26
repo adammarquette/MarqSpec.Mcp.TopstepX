@@ -18,32 +18,42 @@ contract; QA test creation is performed blind to the implementation per the
 **Traceability to verify on every PR:** an explicit, **plain** `Closes #N` / `Related to #N` **in ordinary
 prose** — a citation inside code binds nothing and `issue-link` reads none of it, whether the code is
 backticks, a fenced block or an HTML comment (gh#123; a four-space-indented block is the form it still reads,
-gh#142) — and the affected `R-#`, ADR, or library README section updated in the same PR.
+gh#142) — and the affected `R-#`, ADR, architecture, data-dictionary or tool-catalogue section updated in the
+same PR.
 
 ## What to look for
 
 The substantive checklist is [`.github/copilot-instructions.md`](../../.github/copilot-instructions.md) — **that
-file owns it; do not restate it here.** It leads with idempotency at the order boundary because that is the
-failure with the worst blast radius in this repo, then covers fail-closed defaults, the decides-nothing
-boundary, secrets in a public repository, money and time, the conventions that look odd and are load-bearing,
-tests, and the same-PR documentation rule. It keeps its Copilot-specific name and stays in `.github/` because
-GitHub's reviewer reads that exact path; the content is tool-neutral.
+file owns it; do not restate it here.** It covers fail-closed defaults, the decides-nothing boundary, secrets
+in a public repository, money and time, the conventions that look odd and are load-bearing, tests, and the
+same-PR documentation rule. It keeps its Copilot-specific name and stays in `.github/` because GitHub's
+reviewer reads that exact path; the content is tool-neutral.
+
+**Read its lead section as inherited, not as this repo's.** It opens on idempotency at an order boundary
+because that is the worst failure in the *reference implementation* — which that file hedges at every mention
+and flags for rewrite in its own banner. No order boundary exists here, so rank by the question below instead.
+That rewrite is gh#249.
 
 ## The question this repo's reviews exist to ask
 
-Before anything else, on any diff touching transport, resilience, or orders:
+**No order path exists here** ([ADR-0002](../adr/0002-read-only-venue-boundary.md)), so the reference
+implementation's order-duplication question cannot fire on any diff in this repository. This repository's worst
+failure is quieter, and it is the one to ask about first on any diff touching a number a caller will read:
 
-> **Can this change cause an order to be placed twice, or cause a live order to be reported as not placed?**
+> **Can this change cause a wrong, stale or absent number to be reported as an ordinary answer?**
 
-Everything else in the checklist is downstream of that. A change that cannot answer it clearly is not ready,
-regardless of how clean the rest reads.
+A zero ATR, a 50 RSI stood in for one that could not be measured, an empty series where the symbol was simply
+wrong — each looks exactly like a real answer and is acted on as one (root [`AGENTS.md`](../../AGENTS.md)), and
+what this server reports is traded on by whoever reads it. Everything else in the checklist is downstream of
+that. A change that cannot answer it clearly is not ready, regardless of how clean the rest reads.
 
 ## How to report
 
 - **One finding, one concrete failure scenario** — "inputs X in state Y produce wrong output Z." A finding you
   cannot make fail is a question; ask it as one.
-- **Rank by blast radius:** order duplication or loss → wrong data returned to the consumer → fail-open and
-  unchecked input → missing tests on transport paths → stale or overclaiming documentation → everything else.
+- **Rank by blast radius:** a wrong or silently-defaulted number reaching a caller → an unreproducible stored
+  series → fail-open and unchecked input → missing tests on the venue and projection paths → stale or
+  overclaiming documentation → everything else.
 - **Name the pattern, not just the instance.** One fail-open switch is a bug; the third in a series is a habit,
   and saying so is what stops the fourth.
 - **Few, well-evidenced.** Padding real findings with style notes trains the author to skim. Formatting is
@@ -82,6 +92,6 @@ regardless of how clean the rest reads.
 ## Definition of done
 
 Every finding names a concrete failure · ranked by blast radius · repeated patterns called out as patterns · no
-formatting noise · PR-body claims verified against the diff · the order-duplication question explicitly answered
+formatting noise · PR-body claims verified against the diff · the wrong-number question explicitly answered
 when it applies · a formal verdict submitted, **naming the head SHA reviewed** · nothing merged, closed, or
 pushed — **the board included**.

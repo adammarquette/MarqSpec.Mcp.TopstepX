@@ -5,26 +5,35 @@ using MarqSpec.Mcp.TopstepX.MarketData;
 namespace MarqSpec.Mcp.TopstepX.Tests.MarketData;
 
 /// <summary>
-/// Every level method this server detects with refuses a spliced series — swept, not listed, and the sweep
-/// itself is shown to fail on a method that bypasses the guard.
+/// Every level method this server detects with refuses a spliced series and still finds levels in a clean
+/// one — swept, not listed, with both sweeps watched failing on a method that breaks them.
 /// </summary>
 /// <remarks>
 /// <para>
 /// An indicator <b>inherits</b> the roll guard: every implementation goes through the same shared compute
 /// path, so <see cref="IndicatorCatalogRollTests"/> can sweep the catalogue and trust that a twelfth
 /// indicator will be covered by construction. <b>A level method does not.</b> Each one detects its own way —
-/// swing pivots, session extremes, arithmetic on a prior bar — so
-/// <see cref="IndicatorGuard.RequireSingleContract"/> is a rule each must satisfy rather than a step each
-/// inherits. That is trap 4 of gh#232: a method reached by a different path loses <c>R-3.5</c>
-/// <i>without failing</i>, and a level computed across a roll looks exactly like an ordinary level.
+/// swing pivots, session extremes, arithmetic on a prior bar — so refusing a spliced series is a rule each
+/// must satisfy rather than a step each inherits. That is trap 4 of gh#232: a method reached by a different
+/// path loses <c>R-3.5</c> <i>without failing</i>, and a level computed across a roll looks exactly like an
+/// ordinary level.
 /// </para>
 /// <para>
-/// So the sweep below is the only thing enforcing it, which means the sweep needs two runs rather than one
-/// (Coding contract, Tests). <see cref="EveryRegisteredMethod_RefusesASplicedSeries"/> is the green half,
-/// run against the real registered method rather than a stand-in.
-/// <see cref="TheSweepGoesRed_WhenAMethodBypassesTheGuard"/> is the red half: the same check, applied to a
-/// method that deliberately skips the guard, answers <see langword="false"/>. Without that second test this
-/// file would prove only that today's one method happens to call the guard.
+/// So these sweeps are the only thing enforcing it, which means each needs two runs rather than one (Coding
+/// contract, Tests). Both are built the same way: a private predicate, asserted <see langword="true"/> for
+/// every registered method, and asserted <see langword="false"/> for a deliberately broken one that is
+/// registered nowhere. The red half is what makes the green half worth reading — a sweep proven only against
+/// the code that already passes it is a sweep nobody has watched fail.
+/// </para>
+/// <para>
+/// <b>The second sweep is not decoration.</b> A guard that refused everything would pass the first sweep and
+/// break the tool, and so would a method whose <c>Detect</c> body is <c>return [];</c> —
+/// <c>get_key_levels</c> would answer "no levels" for it on every instrument, forever, green. That is
+/// exactly the failure <see cref="LevelMethodCatalog"/> names in its own XML: a name that returns nothing is
+/// indistinguishable from a market that has produced no structure, and the second reads as a conclusion.
+/// Today it is caught only because <c>SwingLevelMethodTests</c> pins <c>swing</c> against hand-derived
+/// numbers; the hole opens the moment a sweep is the only thing covering a method, which is the whole reason
+/// this card built one.
 /// </para>
 /// </remarks>
 public sealed class LevelMethodCatalogRollTests
@@ -32,34 +41,53 @@ public sealed class LevelMethodCatalogRollTests
     private static DateTimeOffset SessionStart =>
         MarketClock.FromMarket(new DateOnly(2026, 8, 18), new TimeOnly(9, 0)).ToUniversalTime();
 
+    /// <summary>Bars per contiguous single-contract run.</summary>
+    /// <remarks>
+    /// Twenty-one is comfortably past the default lookback's <c>2 * 5 + 1</c> minimum, so the middle bar has
+    /// a full window either side of it and the run is a series a method can actually work on.
+    /// </remarks>
+    private const int RunLength = 21;
+
+    /// <summary>The index, within a run, of the one bar that stands clear of everything around it.</summary>
+    private const int PeakIndex = 10;
+
+    private static DateTimeOffset At(int index) => SessionStart.AddMinutes(5 * index);
+
     /// <summary>
-    /// Sixty bars under one symbol, the back half from a different contract forty points higher.
+    /// One contiguous run of one contract: flat, with a single unmistakable high in the middle of it.
     /// </summary>
     /// <remarks>
-    /// The same fixture shape as the indicator sweep, and long enough that the default lookback of 5 is
-    /// satisfied on both sides of the seam. A series too short to produce a pivot would return nothing and
-    /// pass this test without the guard ever being reached, which is a green test that proves nothing.
+    /// Flat bars tie with each other and a tie is not a pivot, so the peak is the only thing a swing-style
+    /// method can find, and it is far enough above its neighbours to dominate the window under any of the
+    /// three <see cref="PivotSource"/> readings rather than only the one the defaults happen to use.
+    /// <b>Deliberately not a sawtooth.</b> A short repeating price cycle never lets a bar strictly dominate
+    /// its lookback, so it yields no pivots at all — which is what made the earlier version of the second
+    /// sweep here vacuous (PR #252 review, finding 2).
+    /// </remarks>
+    private static IEnumerable<Bar> Run(string contractId, decimal baseline, int startIndex) =>
+        Enumerable.Range(0, RunLength).Select(i => i == PeakIndex
+            ? new Bar(At(startIndex + i), baseline, baseline + 100m, baseline - 1m, baseline + 18m, 1_000, contractId)
+            : new Bar(At(startIndex + i), baseline, baseline + 1m, baseline - 1m, baseline, 1_000, contractId));
+
+    /// <summary>Two runs under one symbol, the second from a different contract forty points higher.</summary>
+    /// <remarks>
+    /// The first run <b>is</b> <see cref="SingleContract"/>, bar for bar. That matters: the refusal proven
+    /// below cannot be an artefact of a series nothing could detect in, because those same bars are proven
+    /// productive by the second sweep. <c>FindPivots</c> does reach the roll guard before its own length
+    /// check, so the refusal would fire either way — but "would fire either way" is a claim about today's
+    /// call order, and resting a fixture on it is how the second sweep here came to prove nothing.
     /// </remarks>
     private static IReadOnlyList<Bar> Spliced() =>
-        [.. Enumerable.Range(0, 60).Select(i =>
-        {
-            bool rolled = i >= 30;
-            decimal close = (rolled ? 140m : 100m) + (i % 5);
-            return new Bar(
-                SessionStart.AddMinutes(5 * i),
-                close,
-                close + 1m,
-                close - 1m,
-                close,
-                1_000,
-                rolled ? "CON.F.US.EP.Z26" : "CON.F.US.EP.U26");
-        })];
+        [.. Run("CON.F.US.EP.U26", 100m, 0), .. Run("CON.F.US.EP.Z26", 140m, RunLength)];
+
+    /// <summary>One run, one contract — the clean series a method must still answer.</summary>
+    private static IReadOnlyList<Bar> SingleContract() => [.. Run("CON.F.US.EP.U26", 100m, 0)];
 
     /// <summary>An ATR of 2 at every bar, aligned one-to-one with the series.</summary>
     /// <remarks>
     /// Supplied so that a refusal is the roll guard's and nothing else's: an ATR series of the wrong length
     /// is refused too, with a different message, and a sweep that accepted either would be satisfied by the
-    /// wrong failure.
+    /// wrong failure. Two is small against the peak, so significance clears the floor comfortably.
     /// </remarks>
     private static IReadOnlyList<decimal?> FlatAtr(int count) => [.. Enumerable.Repeat((decimal?)2m, count)];
 
@@ -69,7 +97,7 @@ public sealed class LevelMethodCatalogRollTests
     /// <param name="method">The method under test.</param>
     /// <returns><see langword="true"/> when it refused the splice.</returns>
     /// <remarks>
-    /// Written as a predicate rather than as an assertion so that both halves of the two-run rule can call
+    /// Written as a predicate rather than as an assertion so that both halves of the two-run rule call
     /// <b>the same code</b>. Any exception other than the roll refusal propagates and fails the caller: a
     /// method that threw for some unrelated reason has not been shown to carry the guard.
     /// </remarks>
@@ -89,6 +117,17 @@ public sealed class LevelMethodCatalogRollTests
         return false;
     }
 
+    /// <summary>
+    /// Whether a method finds anything at all in a clean single-contract series.
+    /// </summary>
+    /// <param name="method">The method under test.</param>
+    /// <returns><see langword="true"/> when it returned at least one zone.</returns>
+    private static bool DetectsOverASingleContractSeries(ILevelMethod method)
+    {
+        IReadOnlyList<Bar> clean = SingleContract();
+        return method.Detect(clean, FlatAtr(clean.Count), new KeyLevelOptions()).Count > 0;
+    }
+
     [Fact]
     public void EveryRegisteredMethod_RefusesASplicedSeries()
     {
@@ -105,7 +144,7 @@ public sealed class LevelMethodCatalogRollTests
     }
 
     [Fact]
-    public void TheSweepGoesRed_WhenAMethodBypassesTheGuard()
+    public void TheRollSweepGoesRed_WhenAMethodBypassesTheGuard()
     {
         GuardlessLevelMethod bypassing = new();
         IReadOnlyList<Bar> spliced = Spliced();
@@ -123,24 +162,34 @@ public sealed class LevelMethodCatalogRollTests
     [Fact]
     public void EveryRegisteredMethod_StillDetectsOverASingleContractSeries()
     {
-        // The other half of the guard. A method that refused everything would pass the sweep above and break
-        // the tool, and the two failures look nothing alike from outside.
-        IReadOnlyList<Bar> singleContract = [.. Spliced().Take(30)];
-
+        // The other half of the guard, and it asserts a RESULT rather than the absence of an exception. A
+        // method that refused everything would pass the sweep above and break the tool; so would one that
+        // quietly returned nothing, and those two failures look nothing alike from outside.
         foreach (ILevelMethod method in new LevelMethodCatalog().All)
         {
-            Action detect = () => method.Detect(
-                singleContract, FlatAtr(singleContract.Count), new KeyLevelOptions());
-
-            detect.Should().NotThrow(method.Name + " refuses an ordinary single-contract series");
+            DetectsOverASingleContractSeries(method).Should().BeTrue(
+                method.Name + " found nothing in a clean series built around one unmistakable peak. Either "
+                + "it is broken, or it needs structure this fixture does not carry — extend the fixture so "
+                + "it has something to find, because a method that can find nothing here has not been shown "
+                + "to detect at all.");
         }
+    }
+
+    [Fact]
+    public void TheDetectionSweepGoesRed_WhenAMethodFindsNothing()
+    {
+        // The red half of the sweep above. Without it, a fixture that yields no pivots lets both sweeps pass
+        // a method whose Detect body is `return [];` -- which is how `get_key_levels` comes to answer
+        // "no levels" forever, green, for a name that is simply broken.
+        DetectsOverASingleContractSeries(new SilentLevelMethod()).Should().BeFalse(
+            "the sweep must go RED on a method that answers a perfectly ordinary series with nothing");
     }
 
     /// <summary>
     /// A deliberately defective method: it detects without asking whether the series spans a roll.
     /// </summary>
     /// <remarks>
-    /// It is never registered anywhere. It exists so the sweep above can be watched failing, which is the
+    /// It is never registered anywhere. It exists so the roll sweep can be watched failing, which is the
     /// difference between a gate that is proven and a gate that is merely present.
     /// </remarks>
     private sealed class GuardlessLevelMethod : ILevelMethod
@@ -158,5 +207,22 @@ public sealed class LevelMethodCatalogRollTests
             decimal bottom = bars.Min(b => b.Low);
             return [new KeyLevelZone(bottom, top, KeyLevelKind.Resistance, bars[0].OpenTime, bars.Count, 1m)];
         }
+    }
+
+    /// <summary>
+    /// A deliberately defective method: it never finds anything, and never says why.
+    /// </summary>
+    /// <remarks>
+    /// Registered nowhere either. It is the failure the detection sweep exists to catch, and the reason that
+    /// sweep asserts a result rather than the absence of a throw.
+    /// </remarks>
+    private sealed class SilentLevelMethod : ILevelMethod
+    {
+        public string Name => "silent";
+
+        public IReadOnlyList<KeyLevelZone> Detect(
+            IReadOnlyList<Bar> bars,
+            IReadOnlyList<decimal?> atr,
+            KeyLevelOptions options) => [];
     }
 }

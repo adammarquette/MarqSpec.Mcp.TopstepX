@@ -25,7 +25,9 @@ namespace MarqSpec.Mcp.TopstepX.Tests.Domain;
 /// <term><c>FindPivots</c></term>
 /// <description>
 /// <see cref="FindPivots_FindsOnlyBarsThatDominateBothSidesOfTheLookback"/> — a pass-through that returned
-/// every bar gives seven pivots, not three; one that returned nothing gives zero.
+/// every bar gives seven pivots, not three; one that returned nothing gives zero. The window's own width is
+/// pinned separately by <see cref="FindPivots_WeighsBothOutermostBarsOfTheLookbackWindow"/>, because a
+/// symmetric fixture survives an off-by-one at either end of it unchanged.
 /// </description>
 /// </item>
 /// <item>
@@ -56,10 +58,9 @@ namespace MarqSpec.Mcp.TopstepX.Tests.Domain;
 /// </remarks>
 public sealed class KeyLevelsTests
 {
-    private static readonly DateTimeOffset Origin = new(2026, 8, 18, 9, 0, 0, TimeSpan.Zero);
-
     /// <summary>The open time of bar <paramref name="index"/> — five-minute buckets from a fixed origin.</summary>
-    private static DateTimeOffset At(int index) => Origin.AddMinutes(5 * index);
+    private static DateTimeOffset At(int index) =>
+        new DateTimeOffset(2026, 8, 18, 9, 0, 0, TimeSpan.Zero).AddMinutes(5 * index);
 
     /// <summary>
     /// A bar written as just its high and its low, opening at the low and closing at the high.
@@ -275,6 +276,55 @@ public sealed class KeyLevelsTests
 
         KeyLevels.FindPivots(peakPastTheEdge, HighLowOptions).Should().BeEmpty();
         peakPastTheEdge.Max(b => b.High).Should().Be(110m, "the bar that yields nothing is the series' highest");
+    }
+
+    [Fact]
+    public void FindPivots_WeighsBothOutermostBarsOfTheLookbackWindow()
+    {
+        // The window is [i - lookback, i + lookback] inclusive at BOTH ends, and a fixture that does not
+        // put a decisive rival on each outermost bar cannot tell a correct window from one that is a bar
+        // short. Two series, each with exactly one rival and it sitting on an edge.
+        //
+        // Right edge. Bar 2's high of 105 is beaten only by bar 4's 106 — exactly lookback bars later:
+        //   high: 100  101  105  102  106  101  100
+        //   low:   96   97   99   98   95   97   96
+        // Eligible indices are 2, 3, 4. Bar 2 loses its high to bar 4 and its low to bar 4's 95; bar 3 loses
+        // both to bar 2 and bar 4; bar 4's 106 beats {105, 102, 101, 100}, best rival 105, so prominence 1.
+        // One pivot. A window that stopped at i + lookback - 1 would not see bar 4 from bar 2 and would
+        // report a second, spurious pivot at 105.
+        IReadOnlyList<Bar> rivalOnTheRightEdge =
+        [
+            HighLowBar(0, high: 100, low: 96),
+            HighLowBar(1, high: 101, low: 97),
+            HighLowBar(2, high: 105, low: 99),
+            HighLowBar(3, high: 102, low: 98),
+            HighLowBar(4, high: 106, low: 95),
+            HighLowBar(5, high: 101, low: 97),
+            HighLowBar(6, high: 100, low: 96),
+        ];
+
+        // Left edge, mirrored. Bar 2's high of 105 is beaten only by bar 0's 106 — exactly lookback bars
+        // earlier — and nothing else in the series dominates anything:
+        //   high: 106  101  105  102  100   99   98
+        //   low:   95   97   99   98   96   94   93
+        // Bar 3's 102 loses to bar 2's 105 and bar 4's 100 loses to it too; every low is beaten by bar 5's
+        // 94 or bar 0's 95. No pivots at all. A window that started at i - lookback + 1 would not see bar 0
+        // from bar 2 and would report one.
+        IReadOnlyList<Bar> rivalOnTheLeftEdge =
+        [
+            HighLowBar(0, high: 106, low: 95),
+            HighLowBar(1, high: 101, low: 97),
+            HighLowBar(2, high: 105, low: 99),
+            HighLowBar(3, high: 102, low: 98),
+            HighLowBar(4, high: 100, low: 96),
+            HighLowBar(5, high: 99, low: 94),
+            HighLowBar(6, high: 98, low: 93),
+        ];
+
+        KeyLevels.FindPivots(rivalOnTheRightEdge, HighLowOptions).Should().Equal(
+            new SwingPivot(4, At(4), 106m, KeyLevelKind.Resistance, 1m));
+
+        KeyLevels.FindPivots(rivalOnTheLeftEdge, HighLowOptions).Should().BeEmpty();
     }
 
     [Fact]

@@ -10,7 +10,7 @@ two (gh#178).
 
 | Contract | ~tok | Loads |
 |---|---:|---|
-| [Coding — `MarqSpec.Mcp.TopstepX/AGENTS.md`](../../MarqSpec.Mcp.TopstepX/AGENTS.md) | 1.3K | by **directory proximity** — on your first read of a file in the library |
+| [Coding — `MarqSpec.Mcp.TopstepX/AGENTS.md`](../../MarqSpec.Mcp.TopstepX/AGENTS.md) | 1.3K | by **directory proximity** — on your first read of a file in the host project |
 | [QA — `MarqSpec.Mcp.TopstepX.IntegrationTests/AGENTS.md`](../../MarqSpec.Mcp.TopstepX.IntegrationTests/AGENTS.md) | 0.9K | by **directory proximity** — on your first read in that project |
 | [Code Reviewer — `code-reviewer.md`](code-reviewer.md) | 1.5K | **never automatically — open it yourself** |
 | [Platform — `platform.md`](platform.md) | 22.9K | **never automatically — open it yourself** |

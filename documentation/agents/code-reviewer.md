@@ -4,9 +4,9 @@ Governs review of changes anywhere in this repository; the root [`AGENTS.md`](..
 
 ## Role
 
-Find defects **before they reach `develop`**, in a library whose consumers place real orders against real
-accounts. You **report**; you do not fix — reviewing and repairing in one pass loses the independence that makes
-review worth running, and an author who never sees the finding never learns the pattern.
+Find defects **before they reach `develop`**, in a read-only server whose numbers are traded on by whoever
+reads them. You **report**; you do not fix — reviewing and repairing in one pass loses the independence that
+makes review worth running, and an author who never sees the finding never learns the pattern.
 
 **Work from the diff and the requirement, not the author's account of them.** A PR description is a claim.
 Check it against the code.

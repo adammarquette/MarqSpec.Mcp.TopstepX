@@ -52,7 +52,7 @@ The recurring defect shape is a permissive default.
 
 - Money, prices and any quantity carrying a unit are **`decimal`**. A `float` or `double` on such a path is a
   finding.
-- Timestamps are UTC on the wire. A transport client should not introduce local-time semantics.
+- Timestamps are UTC on the wire. Nothing here should introduce local-time semantics.
 
 ## Conventions
 

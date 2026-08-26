@@ -19,6 +19,7 @@ public sealed class MarketDataTools(
     TopstepXDbContext database,
     InstrumentRegistry registry,
     IndicatorCatalog catalog,
+    IndicatorCacheService indicators,
     LevelMethodCatalog levelMethods,
     IMarketDataGateway gateway,
     ToolGuards guards,
@@ -29,6 +30,7 @@ public sealed class MarketDataTools(
     private readonly TopstepXDbContext _database = database;
     private readonly InstrumentRegistry _registry = registry;
     private readonly IndicatorCatalog _catalog = catalog;
+    private readonly IndicatorCacheService _indicators = indicators;
     private readonly LevelMethodCatalog _levelMethods = levelMethods;
     private readonly IMarketDataGateway _gateway = gateway;
     private readonly ToolGuards _guards = guards;
@@ -168,6 +170,11 @@ public sealed class MarketDataTools(
         BarRange window = _guards.ValidateWindow(fromUtc, toUtc, resolutionMinutes);
         IIndicator resolved = ResolveIndicator(indicator);
 
+        // Cache-aside, the way bars already are: a value the catalogue computes and the store does not hold
+        // is projected from the bars already cached before the read runs. No vendor traffic either way --
+        // the bars are local (gh#246). A warm series pays two aggregates and nothing else.
+        await EnsureProjectedAsync(instrument, resolutionMinutes, cancellationToken).ConfigureAwait(false);
+
         List<ToolPayloads.IndicatorPoint> values = await _database.IndicatorValues
             .Where(v => v.Venue == _gateway.VenueId
                 && v.Instrument == instrument.Symbol
@@ -217,6 +224,11 @@ public sealed class MarketDataTools(
         ToolGuards.ValidateResolution(resolutionMinutes);
         IIndicator resolved = ResolveIndicator(indicator);
         DateTimeOffset asOf = asOfUtc.ToUniversalTime();
+
+        // The same cache-aside trigger get_indicators is on (gh#246). This is the read get_market_snapshot
+        // composes, eleven times per resolution, so it is the one that would have gone on reporting
+        // cannot-measure over bars that measure perfectly well.
+        await EnsureProjectedAsync(instrument, resolutionMinutes, cancellationToken).ConfigureAwait(false);
 
         var row = await _database.IndicatorValues
             .Where(v => v.Venue == _gateway.VenueId
@@ -383,6 +395,25 @@ public sealed class MarketDataTools(
         // record_observation exactly as exposed as they were -- which is the shape this repository has now
         // been bitten by three times.
     }
+
+    /// <summary>
+    /// Brings the stored indicators for a series up to what the catalogue computes, before reading them.
+    /// </summary>
+    /// <param name="instrument">The instrument.</param>
+    /// <param name="resolutionMinutes">The bar size in minutes.</param>
+    /// <param name="cancellationToken">The caller's cancellation token.</param>
+    /// <remarks>
+    /// <b>No catch here, deliberately</b>, for the reason <see cref="ReadAsync"/> states: a
+    /// <c>StoreContentionException</c> is a fact about this server's database and is translated once for the
+    /// whole tool surface by <see cref="StoreFaultGuard"/>. It cannot raise a <c>VenueException</c> at all —
+    /// <see cref="IndicatorCacheService"/> holds no gateway.
+    /// </remarks>
+    private Task EnsureProjectedAsync(
+        InstrumentId instrument,
+        int resolutionMinutes,
+        CancellationToken cancellationToken) =>
+        _indicators.EnsureProjectedAsync(
+            _gateway.VenueId, instrument, resolutionMinutes, cancellationToken);
 
     private IIndicator ResolveIndicator(string name)
     {

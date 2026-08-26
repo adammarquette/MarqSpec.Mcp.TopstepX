@@ -297,6 +297,8 @@ public sealed class ContractRollReportingTests : IDisposable
             _database,
             new InstrumentRegistry(wrapped),
             catalog,
+            new IndicatorCacheService(
+                _database, catalog, projector, clock, NullLogger<IndicatorCacheService>.Instance),
             new LevelMethodCatalog(),
             gateway,
             new ToolGuards(wrapped),

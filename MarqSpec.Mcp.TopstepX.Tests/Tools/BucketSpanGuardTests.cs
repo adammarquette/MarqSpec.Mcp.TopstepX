@@ -347,6 +347,12 @@ public sealed class BucketSpanGuardTests : IDisposable
             _database,
             new InstrumentRegistry(capped),
             _catalog,
+            new IndicatorCacheService(
+                _database,
+                _catalog,
+                new IndicatorProjector(_database, _catalog, NullLogger<IndicatorProjector>.Instance),
+                _clock,
+                NullLogger<IndicatorCacheService>.Instance),
             new LevelMethodCatalog(),
             _gateway,
             new ToolGuards(capped),

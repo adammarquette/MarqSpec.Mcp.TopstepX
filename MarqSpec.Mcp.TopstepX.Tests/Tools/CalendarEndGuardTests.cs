@@ -361,6 +361,12 @@ public sealed class CalendarEndGuardTests : IDisposable
             _database,
             new InstrumentRegistry(Defaults()),
             _catalog,
+            new IndicatorCacheService(
+                _database,
+                _catalog,
+                new IndicatorProjector(_database, _catalog, NullLogger<IndicatorProjector>.Instance),
+                _clock,
+                NullLogger<IndicatorCacheService>.Instance),
             new LevelMethodCatalog(),
             _gateway,
             Guards(),

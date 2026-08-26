@@ -197,10 +197,13 @@ one.**
   `IndicatorGuard.RequireSingleContract` refuses, on the same shared path as the ordering check, so a new
   indicator inherits the rule rather than remembering it.
   **A level method does not inherit it.** Each `ILevelMethod` detects its own way — swing pivots, session
-  extremes, arithmetic on a prior bar — so there is no shared compute path to hang the check on, and every
-  implementation calls the guard itself. `LevelMethodCatalogRollTests` sweeps `LevelMethodCatalog.All` to
-  prove that rather than trusting it, because a method that skipped the guard would not fail: it would answer
-  with an ordinary-looking zone built across the seam.
+  extremes, arithmetic on a prior bar — so there is no shared compute path to hang the check on. Every
+  implementation must therefore **refuse** a spliced series, reaching the guard directly *or through whatever
+  it delegates detection to*: `swing` delegates to `KeyLevels.FindPivots`, which already calls it, and adding
+  a second call there would only change which of two refusals a caller sees when a series is both spliced and
+  handed a misaligned ATR. So `LevelMethodCatalogRollTests` sweeps `LevelMethodCatalog.All` for **the
+  refusal**, not for the call — a method that skipped it would not fail, it would answer with an
+  ordinary-looking zone built across the seam.
 - The two callers that legitimately hold a multi-contract series segment first, using the pure
   `ContractRollDetector`: the projector computes each run independently, and `get_key_levels` detects over the
   newest run only and reports `detectedOverBars`.

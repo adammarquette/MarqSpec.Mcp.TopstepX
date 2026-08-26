@@ -232,15 +232,19 @@ The root contract's five apply here unchanged. Four land specifically on the pip
   ran was the shipped text and not a copy of it.
 
   *Proven red and green by mutation, on the runner, and every run cited against the code it ran on* — which
-  is gh#184's whole point. On the code that ships: the red half **#210** ([32908571781]), the green half
-  **#211** ([32908576351]) on PR #117's body, and the seam **#212** ([32908579934]). Against `develop`,
-  whose gate blob never moved: **#200** ([32893102563]) passes the byte-identical red body — that pair is
-  the measurement. **The strong arm cannot show it**: on a `develop` base a body-read `Closes #N` never
-  passes, so the same body written with `Closes` fails before *and* after, moving only from the fourth
-  diagnostic to the fifth (#197). **A before/after pair that fails on both sides measures nothing** — pick
-  the arm whose verdict can actually move. **#205** ([32905389963]) is kept deliberately: it is the
-  regression this branch shipped for review, a required gate passing a body citing nothing, and a fix with
-  no record of what it fixed is an assertion.
+  is gh#184's whole point, and it bit twice here because the shipping SHA moved twice under review. On the
+  code that ships: the red half **#225** ([32916669238]), the green half **#226** ([32916671753]) on PR
+  #117's body, and the seam **#227** ([32916673468]). Against `develop`, whose gate blob never moved:
+  **#200** ([32893102563]) passes the byte-identical red body — that pair is the measurement. **The strong
+  arm cannot show it**: on a `develop` base a body-read `Closes #N` never passes, so the same body written
+  with `Closes` fails before *and* after, moving only from the fourth diagnostic to the fifth (#197). **A
+  before/after pair that fails on both sides measures nothing** — pick the arm whose verdict can actually
+  move.
+
+  **Three regressions this branch shipped for review are kept as rows, not summarised away**, because a fix
+  with no record of what it fixed is an assertion: the heading seam **#205** ([32905389963]), the `<pre>`
+  block **#229** ([32916678861]), and the `<search>` swallow **#231** ([32916682980]) — each a required gate
+  passing a body citing nothing, each paired against the byte-identical body on the shipping code.
 
   On mawk: Docker was down on the machine this was written on, so gh#142's container check was unavailable
   and **these runs settle only that the program works on the runner** — `gawk` is absent from the
@@ -249,11 +253,13 @@ The root contract's five apply here unchanged. Four land specifically on the pip
   96 archived bodies, 95 of which contain non-ASCII — POSIX mode plus single-byte indexing is the
   mawk-shaped constraint, and it is a measurement rather than a package list.
 
-  [32908571781]: https://github.com/adammarquette/MarqSpec.Mcp.TopstepX/actions/runs/32908571781
-  [32908576351]: https://github.com/adammarquette/MarqSpec.Mcp.TopstepX/actions/runs/32908576351
-  [32908579934]: https://github.com/adammarquette/MarqSpec.Mcp.TopstepX/actions/runs/32908579934
+  [32916669238]: https://github.com/adammarquette/MarqSpec.Mcp.TopstepX/actions/runs/32916669238
+  [32916671753]: https://github.com/adammarquette/MarqSpec.Mcp.TopstepX/actions/runs/32916671753
+  [32916673468]: https://github.com/adammarquette/MarqSpec.Mcp.TopstepX/actions/runs/32916673468
   [32893102563]: https://github.com/adammarquette/MarqSpec.Mcp.TopstepX/actions/runs/32893102563
   [32905389963]: https://github.com/adammarquette/MarqSpec.Mcp.TopstepX/actions/runs/32905389963
+  [32916678861]: https://github.com/adammarquette/MarqSpec.Mcp.TopstepX/actions/runs/32916678861
+  [32916682980]: https://github.com/adammarquette/MarqSpec.Mcp.TopstepX/actions/runs/32916682980
 - **Run a text-matching gate before believing its diagnostics.** Proving the above by mutation turned up a
   second defect nobody could have read off the file: `issue-link`'s backtick diagnostic was the only one of the
   three greps without `-i`, so it matched a lowercase `` `closes #1` `` and **missed the canonical**

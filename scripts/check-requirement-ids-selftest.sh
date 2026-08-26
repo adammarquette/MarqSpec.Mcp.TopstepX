@@ -17,11 +17,12 @@
 # Rejections alone would all be satisfied by `exit 1`, i.e. by a gate that says no to everything, which is
 # exactly as useless as one that says yes to everything and rather harder to notice.
 #
-# TWENTY-NINE OF THE FORTY-ONE CASES ARE HERE BECAUSE A DECISION THIS GATE MAKES WAS HELD BY NOTHING, and
-# that is the point of the paragraph rather than a confession. Eight rounds -- and the ledger above is what
-# finally made the question finite, after five of them found rules one at a time. THE LAST EIGHT CAME FROM
-# AUDITING THE LEDGER ITSELF against the script, which is the step its own legend prescribes and which its
-# author did not run:
+# MOST OF THESE CASES ARE HERE BECAUSE A DECISION THIS GATE MAKES WAS HELD BY NOTHING, and that is the
+# point of the paragraph rather than a confession. Nine review rounds -- and the ledger above is what
+# finally made the question finite, after five of them found rules one at a time; the ones after that came
+# from AUDITING THE LEDGER ITSELF against the script, which is the step its own legend prescribes and which
+# its author had not run. No count here either, and for the legend's reason: it is a live tally over a set
+# that keeps changing, and the three versions of it that stood in this file were each wrong within a round.
 #
 #   the author's battery      swallowing grep's exit 2 — the hole gh#43, gh#98 and gh#126 each shipped.
 #   review round 1            a definition inside a fenced block, and one inside an HTML comment (the gate's
@@ -54,7 +55,7 @@
 # Each case below matches the words that name ITS OWN fault, and every dangling case additionally matches the
 # ID ITSELF, so a gate that has stopped printing which symbol failed cannot satisfy it either.
 #
-# AND THE ACCEPTANCE IS NOT SATISFIED BY EXIT 0 EITHER. All nineteen green assertions match the COUNTS the gate
+# AND THE ACCEPTANCE IS NOT SATISFIED BY EXIT 0 EITHER. Every green assertion matches the COUNTS the gate
 # prints, so a gate that resolved nothing cannot pass one. Two of them — the ADR near-miss and the `R-#`
 # placeholder — assert a count IDENTICAL to what the same fixture reports with those lines absent, which is
 # how they prove those lines contributed no citations rather than merely failing to break anything.
@@ -92,12 +93,20 @@ set -euo pipefail
 #         a grade that promises more than its evidence is how the first ledger in this repo lied.
 #   rev   mutated by the reviewer rather than the author, with the same evidence.
 #   case  exercised by the case named, NOT individually mutated. Weaker, and said so.
-#   none  no fixture reaches it -- and this column has been WRONG FOUR TIMES OUT OF SEVEN. Cases 28, 29,
-#         31 and 35 all began as `none` rows, and THREE of the four reasons were a true fact about a
-#         different layer than the one the code consults (NTFS vs the git index; a stray `C:\.git` vs
-#         `GIT_CEILING_DIRECTORIES`; "asserts an absence" vs a green case, which pins one fine). So the
-#         question for a surviving row is not "is this hard to build" but **"is my reason about the thing
-#         the code actually consults?"** The three below have been re-derived on that question.
+#   none  no fixture reaches it. **AUDIT THESE ROWS FIRST.** They have been wrong more often than any other
+#         row in this table, and in almost every case the stated reason was A TRUE FACT ABOUT A LAYER THE
+#         CODE DOES NOT CONSULT: NTFS refuses a quote in a filename, while `git ls-files` reads the index;
+#         a stray `C:\.git` makes the drive a work tree, while `GIT_CEILING_DIRECTORIES` stops discovery
+#         anyway; "it asserts an absence", while a green case pins an absence perfectly well; "a case would
+#         assert the blind spot, not the rule", while a case is simply one fixture. So ask not "is this hard
+#         to build" but **"is my reason about the thing the code actually consults?"**
+#
+#         THERE IS DELIBERATELY NO COUNT HERE. One stood in this legend for three rounds and was wrong in
+#         all three, because it is a live tally over a set this file keeps changing -- correcting it is what
+#         produced the next wrong version. #190 hit the same thing with its open-item count (seven, six,
+#         five, in two hours), deleted the number and kept the invariant; the invariant above stays true
+#         however many rows fall next.
+
 #
 # CITATION SIDE
 #    left word boundary .................... mut   adr-near-miss, sound corpus
@@ -114,13 +123,13 @@ set -euo pipefail
 #   grep exit 2 is not "no match" ............ mut   a file the corpus lists and grep cannot open
 #   grep exit 1 / no hits is NO CITATIONS .... mut   a corpus in which nothing was found
 #   hits parsed from the RIGHT ............... rev   dangling cases (line_no split from the left)
-#   output to a file, not $( ) ............... none  RE-DERIVED, and the reason is now about this code
-#                                                    rather than about shells in general: `$( )` strips a
-#                                                    trailing newline, so the hazard needs an empty LAST
-#                                                    line, and every line this gate reads is grep's
-#                                                    `file:line:id` with a non-empty id. The reader cannot
-#                                                    be handed the input that would bite. Kept as the
-#                                                    house remedy, not as a live guard.
+#   output to a file, not $( ) ............... none  } THESE TWO ARE NOT INDEPENDENT, and saying so is the
+#                                                    } point: both need an EMPTY LAST LINE out of grep, and
+#                                                    } the only thing that would produce one -- a match with
+#                                                    } an empty id -- is refused two decisions earlier by
+#                                                    } `[0-9]+` in CITATION. So they are SAFER than two
+#                                                    } independent rows would suggest, and they fall
+#                                                    } together if that pattern ever admits an empty match.
 # CORPUS
 #   the default REPO_ROOT (no argument) ...... mut   case 37, the gate copied in and run with no argument.
 #                                                    THE ONLY INVOCATION ci.yml USES, and every other case
@@ -172,32 +181,30 @@ set -euo pipefail
 #   fence closer: at least the opener's length mut   a closing marker shorter than its opener
 #   fence closer: trailing whitespace is ok .. case  a fence closed with trailing whitespace
 #   comment state is read BEFORE fence state . mut   a fence inside a comment, and a comment inside a fence
-#   inline code spans are NOT stepped over ... none  a deliberate fail-CLOSED choice, so its "failure" is the
-#                                                    documented behaviour: a `<!--` in backticks hides the
-#                                                    definitions after it and reddens their citations. A case
-#                                                    would assert the blind spot, not the rule.
+#   inline code spans are NOT stepped over ... mut   case 38, a `<!--` written as inline code. Called
+#                                                    unpinnable because "a case would assert the blind spot,
+#                                                    not the rule" -- a case is one fixture, and this one
+#                                                    flips the moment a scanner steps over spans.
 #   sections==0 is NO SECTION IDS ............ mut   headings the gate can no longer read
 #   requirements==0 is NO REQUIREMENT IDS .... mut   bullets the gate can no longer read
-#   open questions are NOT required .......... mut   case 36, a PRD that retires every open question -- AND
-#                                                    ALSO the no-bullets case, because that fixture has no
-#                                                    questions either. Said here rather than claimed as one:
-#                                                    a grade that names fewer cases than actually fail is the
-#                                                    same defect as one that names more. THE ROW SAID THIS
-#                                                    COULD NOT BE PINNED BECAUSE IT ASSERTS AN ABSENCE; a
-#                                                    green case pins an absence, and every other fixture
-#                                                    merely happened to carry the Q-1 bullet.
+#   open questions are NOT required .......... mut   case 36. THE MUTATION'S PLACEMENT IS PART OF THE GRADE:
+#                                                    a `questions -eq 0` guard inserted AFTER the
+#                                                    `requirements -eq 0` check reddens case 36 alone,
+#                                                    because the no-bullets fixture dies earlier on NO
+#                                                    REQUIREMENT IDS. Inserted BEFORE it, both redden.
+#                                                    Unstated, the grade is unreproducible. The row said
+#                                                    this could not be pinned because it asserts an absence;
+#                                                    a green case pins one, and every other fixture merely
+#                                                    happened to carry the Q-1 bullet.
 #   an unterminated COMMENT is fatal ......... mut   an HTML comment the PRD never closes
 #   an unterminated FENCE is tolerated ....... case  a fence the document never closes
 #   the inert counter ........................ rev   a fence the document never closes
 # VERDICT
 #   DEFINED membership test .................. mut   all eight dangling cases
 #   the HINT when the id is in the PRD ....... mut   shadowed, fenced, commented
-#   citations==0 is NOTHING CHECKED .......... none  RE-DERIVED against what the code consults: it fires
-#                                                    only if the hits array is non-empty AND every entry
-#                                                    fails the `[ -n ]` guard, i.e. grep emitted nothing but
-#                                                    blank lines. `grep -o` cannot emit one. Unreachable
-#                                                    through this gate's own reader rather than merely
-#                                                    hard to arrange.
+#   citations==0 is NOTHING CHECKED .......... none  } (the other half of the pair above -- it fires only if
+#                                                    } the hits array is non-empty and every entry fails the
+#                                                    } `[ -n ]` guard, i.e. grep emitted only blank lines)
 #   dangling>0 exits 1 ....................... case  every red case
 #   the green line's counts .................. mut   frozen definition counters; frozen section counter
 # ---------------------------------------------------------------------------
@@ -236,7 +243,7 @@ DANGLING_REQUIREMENT_99="${R}9.9"
 # Builds one fixture repository.
 #
 #   $1 dir          fixture root
-#   $2 prd_kind     sound | absent | flat-headings | no-bullets | shadowed | fenced | commented | fenced-closed | nested-constructs | fence-bad-closer | unterminated-comment | inline-code-line | unterminated-fence | opener-overindented | backtick-info | tilde-info | misleveled-heading | empty-prd | no-questions
+#   $2 prd_kind     sound | absent | flat-headings | no-bullets | shadowed | fenced | commented | fenced-closed | nested-constructs | fence-bad-closer | unterminated-comment | inline-code-line | unterminated-fence | opener-overindented | backtick-info | tilde-info | misleveled-heading | empty-prd | no-questions | span-comment
 #   $3 notes        the body of documentation/notes.md — the file whose citations are under test
 #   $4 extra_kind   none | rich | ignore-prd | unreadable | nested | non-ascii | all-ignored
 #                   | committed | dash-file | single-file | quoted-path | self-hosted
@@ -345,6 +352,17 @@ make_fixture() {
       # amount and no verdict would mean anything -- a named hard failure. NOTHING EXERCISED IT until the
       # PR #195 review deleted the check and watched all nineteen cases stay green: three of the PRD's own
       # requirements then reported dangling, a confident wrong answer at the wrong lines.
+      # A `<!--` WRITTEN AS INLINE CODE. This gate deliberately does NOT step over inline spans when it
+      # hunts comment delimiters: MISSING one fails open, over-detecting one fails closed, so prose ABOUT
+      # the marker opens a comment and the definitions under it go inert. The ledger called that unpinnable
+      # because "a case would assert the blind spot, not the rule" -- the same structural move as "asserts
+      # an absence", and wrong for the same reason. A case is one fixture, and this one flips the moment a
+      # scanner starts stepping over spans (PR #195 round 7, where the mutant ran the real repo green).
+      if [ "$prd_kind" = "span-comment" ]; then
+        printf '\nProse about the `<!--` marker, which opens one here on purpose.\n\n'
+        printf -- '- **R-1.4** Inert: the line above opened a comment.\n\n'
+        printf -- '--> and this closes it again.\n'
+      fi
       if [ "$prd_kind" = "unterminated-comment" ]; then
         printf '\n<!--\n'
         printf -- '- **R-1.4** Retired, and the comment is never closed.\n'
@@ -884,6 +902,17 @@ expect_red "a path git escapes for a reason quotepath does not suppress" "$FIXTU
 #      unpinnable left all thirty-eight green, because every fixture carried the Q-1 bullet.
 make_fixture "$FIXTURES/no-questions" no-questions 'A note citing `R-1.1`.' none
 expect_green "a PRD with no open questions at all" "$FIXTURES/no-questions"   "(2 sections, 3 requirements, 0 open questions"
+
+# 38. THE INLINE-CODE-SPAN DECISION, which the ledger called unpinnable because "a case would assert the
+#     blind spot, not the rule". That is the same structural move as "asserts an absence" and wrong the same
+#     way: a case is one fixture, and this one flips the moment the scanner steps over spans. The round-7
+#     reviewer built exactly that mutant -- fork-free, demonstrably sane, running the real repository green
+#     with the same 233 citations -- and ZERO of the forty-one cases noticed.
+#
+#     The requirement below the inline `<!--` is INERT, so its citation dangles. Step over the span and it
+#     becomes a real definition, the citation resolves, and this case goes green.
+make_fixture "$FIXTURES/span-comment" span-comment 'Governed by `R-1.4`.' none
+expect_red "a comment marker written as inline code" "$FIXTURES/span-comment"   "DANGLING" "documentation/notes.md:1" "R-1.4"
 
 #  37. THE DEFAULT `REPO_ROOT` -- no row, no case, and the ONLY invocation ci.yml uses. Every other case
 #      passes an explicit root, so the derivation could be broken with all thirty-eight green while the

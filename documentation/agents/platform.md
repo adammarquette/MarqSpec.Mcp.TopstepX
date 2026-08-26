@@ -314,9 +314,9 @@ The root contract's five apply here unchanged. Four land specifically on the pip
   gate named `documentation/notes.md`; the gate prints `documentation/notes.md:1`, and the filename is a
   substring of the location — so three separate ways of destroying the line number passed every case, and a
   failure an author cannot act on read as a pass. Assert the **whole** field the reader will use, and mutate
-  the subject before believing the self-test: **twenty-nine of that file's forty-one cases exist because a
-  decision it makes was held by nothing**, over eight rounds, and **eight of them came from auditing its
-  own ledger**. That gate's closer states three CommonMark conditions and shipped with cases for two.
+  the subject before believing the self-test: **most of that file's cases exist because a decision it makes
+  was held by nothing**, and the later ones came from auditing its own ledger rather than from a reviewer
+  pointing at a rule. That gate's closer states three CommonMark conditions and shipped with cases for two.
 - **A PR into a non-integration base used to get no CI at all, and read as `CLEAN`** (gh#60). `ci.yml` and
   `codeql.yml` filtered `pull_request` to `[develop, staging, main]`, so a stacked PR onto a feature branch
   produced zero runs — and because the required checks hang off the `develop` ruleset, nothing was pending or
@@ -507,9 +507,9 @@ this count together whenever a step is added**; the count is the only thing tell
 - [`check-requirement-ids.sh`](../../scripts/check-requirement-ids.sh), which resolves **every `R-#` and
   `Q-#` cited anywhere in the tree** against [the PRD](../prd.md)'s own definitions and fails naming file,
   line and symbol — and [`check-requirement-ids-selftest.sh`](../../scripts/check-requirement-ids-selftest.sh),
-  which requires that gate to reject twenty-two known faults **by name, by symbol and by location**, makes
-  nineteen assertions on correct input it must accept, and carries a **decision ledger** — the third gate
-  here to need one. `check-doc-links.sh` proves a relative *link* resolves;
+  which requires that gate to reject each known fault **by name, by symbol and by location**, asserts the
+  gate's own printed counts on every correct input, and carries a **decision ledger** — the third gate here
+  to need one. `check-doc-links.sh` proves a relative *link* resolves;
   nothing proved an *id* did, and gh#172 found two citations naming another repository's PRD entirely.
   Three things in it are worth carrying forward, because each was a defect first:
   - **The left word boundary.** An ADR number contains a citation-shaped substring, so without it the gate

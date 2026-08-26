@@ -543,15 +543,26 @@ jobs:
           # gh#184 is the card about citing a run taken on the read that was replaced:
           #
           #   ON THE CODE THAT SHIPS
-          #   #225  32916669238  `Related to #155` inside a span that wraps -> failure, fifth diagnostic.
-          #   #226  32916671753  pull request #117s body -- a fenced block, a four-space indented block,
+          #   #233  32922261154  `Related to #155` inside a span that wraps -> failure, fifth diagnostic.
+          #   #234  32922267562  pull request #117s body -- a fenced block, a four-space indented block,
           #                      ~140 backticks, a span that wraps, five references of which exactly ONE
           #                      is prose -> SUCCESS. The green half, and the most construct-dense body
           #                      this repository has; only its first line was changed, from a binding
           #                      keyword to a non-binding one, so the gate had to read the stripped body.
-          #   #227  32916673468  the heading seam -> failure.
-          #   #228  32916676204  `Related to #155` inside a `<pre>` block -> failure.
-          #   #230  32916681114  the `<search>` swallow -> failure.
+          #   #235  32922270640  a `<script>` inside a FENCE, citation in a wrapped span below -> failure.
+          #   #237  32922278067  a `<pre>` inside a FENCE, citation in prose below -> SUCCESS.
+          #
+          #   THE FENCE PAIR THE THIRD REVIEW ROUND CAUGHT, on the superseded 55c27fd. Byte-identical
+          #   bodies to the two rows above, one regression in EACH direction:
+          #   #236  32922275222  the `<script>` body -> SUCCESS. Fail-open: the marker pass opened a real
+          #                      HTML block from inside a fenced example and inerted every line to EOF, so
+          #                      the span below never paired and its citation reached the greps.
+          #   #238  32922281889  the `<pre>` body -> failure. Fail-closed: the same block was DELETED to
+          #                      EOF, and the stripped body was five empty lines where GitHub linkifies.
+          #
+          #   SUPERSEDED, kept only so the trail is continuous: #225/#226/#227 (32916669238, 32916671753,
+          #   32916673468) are the same red/green/seam rows on 55c27fd, and #228/#230 (32916676204,
+          #   32916681114) the `<pre>` and `<search>` rows there, each paired against #229/#231 below.
           #
           #   THE TWO FAIL-OPENS THE SECOND REVIEW ROUND CAUGHT, on the superseded 3127b3a. Each is the
           #   byte-identical body of the row above it, so the pair differs only in this file:
@@ -567,13 +578,13 @@ jobs:
           #   above then replaced.
           #
           #   BEFORE, ON `develop` (blob 73474e2, unchanged across the whole of this work)
-          #   #200  32893102563  the SAME body as #225 -> SUCCESS. "PR cites an issue without closing
+          #   #200  32893102563  the SAME body as #233 -> SUCCESS. "PR cites an issue without closing
           #                      it." The defect on the runner: GitHub bound nothing and the gate read a
           #                      reference GitHub cannot see.
           #   #197  32892799377  the same wrap written with `Closes` -> failure, on the FOURTH diagnostic.
           #                      Same leak, different arm. On a `develop` base a body-read `Closes` never
           #                      passes, so only the WEAKER arm can move a verdict here -- which is why
-          #                      #200/#225 is the pair that measures anything and a `Closes` pair is not.
+          #                      #200/#233 is the pair that measures anything and a `Closes` pair is not.
           #
           #   THE REGRESSION THIS BRANCH SHIPPED FOR REVIEW, on the superseded 8cb2891
           #   #205  32905389963  the heading seam -> SUCCESS. A required gate passing a body citing

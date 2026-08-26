@@ -247,30 +247,28 @@ The root contract's five apply here unchanged. Four land specifically on the pip
   ran was the shipped text and not a copy of it.
 
   *Proven red and green by mutation, on the runner, and every run cited against the code it ran on* — which
-  is gh#184's whole point, and it bit twice here because the shipping SHA moved twice under review. On the
-  code that ships: the red half **#225** ([32916669238]), the green half **#226** ([32916671753]) on PR
-  #117's body, and the seam **#227** ([32916673468]). Against `develop`, whose gate blob never moved:
-  **#200** ([32893102563]) passes the byte-identical red body — that pair is the measurement. **The strong
-  arm cannot show it**: on a `develop` base a body-read `Closes #N` never passes, so the same body written
-  with `Closes` fails before *and* after, moving only from the fourth diagnostic to the fifth (#197). **A
-  before/after pair that fails on both sides measures nothing** — pick the arm whose verdict can actually
-  move.
+  is gh#184's whole point, and it bit three times here because the shipping SHA moved three times under
+  review. On the code that ships: the red half **#233** ([32922261154]), the green half **#234**
+  ([32922267562]) on PR #117's body, and the two fence rows **#235** ([32922270640]) and **#237**
+  ([32922278067]). Against `develop`, whose gate blob never moved: **#200** ([32893102563]) passes the
+  byte-identical red body — that pair is the measurement. **The strong arm cannot show it**: on a `develop`
+  base a body-read `Closes #N` never passes, so the same body written with `Closes` fails before *and*
+  after, moving only from the fourth diagnostic to the fifth (#197). **A before/after pair that fails on
+  both sides measures nothing** — pick the arm whose verdict can actually move.
 
-  **Three regressions this branch shipped for review are kept as rows, not summarised away**, because a fix
-  with no record of what it fixed is an assertion: the heading seam **#205** ([32905389963]), the `<pre>`
-  block **#229** ([32916678861]), and the `<search>` swallow **#231** ([32916682980]) — each a required gate
-  passing a body citing nothing, each paired against the byte-identical body on the shipping code.
+  **Five regressions this branch shipped for review are kept as rows, not summarised away**, because a fix
+  with no record of what it fixed is an assertion — and because four of the five were invisible to every
+  automated signal the change carries. The heading seam **#205** ([32905389963]), the `<pre>` block **#229**
+  ([32916678861]), the `<search>` swallow **#231** ([32916682980]), and the fence pair **#236**
+  ([32922275222], fail-open) and **#238** ([32922281889], fail-closed). Each is paired against the
+  byte-identical body on the shipping code.
 
-  On mawk: Docker was down on the machine this was written on, so gh#142's container check was unavailable
-  and **these runs settle only that the program works on the runner** — `gawk` is absent from the
-  `ubuntu-24.04` image, which makes mawk near-certain but is the package-list inference the bullet above
-  refuses to make. What was measured instead: byte-identical output under `LC_ALL=C gawk --posix` across all
-  96 archived bodies, 95 of which contain non-ASCII — POSIX mode plus single-byte indexing is the
-  mawk-shaped constraint, and it is a measurement rather than a package list.
-
-  [32916669238]: https://github.com/adammarquette/MarqSpec.Mcp.TopstepX/actions/runs/32916669238
-  [32916671753]: https://github.com/adammarquette/MarqSpec.Mcp.TopstepX/actions/runs/32916671753
-  [32916673468]: https://github.com/adammarquette/MarqSpec.Mcp.TopstepX/actions/runs/32916673468
+  [32922261154]: https://github.com/adammarquette/MarqSpec.Mcp.TopstepX/actions/runs/32922261154
+  [32922267562]: https://github.com/adammarquette/MarqSpec.Mcp.TopstepX/actions/runs/32922267562
+  [32922270640]: https://github.com/adammarquette/MarqSpec.Mcp.TopstepX/actions/runs/32922270640
+  [32922278067]: https://github.com/adammarquette/MarqSpec.Mcp.TopstepX/actions/runs/32922278067
+  [32922275222]: https://github.com/adammarquette/MarqSpec.Mcp.TopstepX/actions/runs/32922275222
+  [32922281889]: https://github.com/adammarquette/MarqSpec.Mcp.TopstepX/actions/runs/32922281889
   [32893102563]: https://github.com/adammarquette/MarqSpec.Mcp.TopstepX/actions/runs/32893102563
   [32905389963]: https://github.com/adammarquette/MarqSpec.Mcp.TopstepX/actions/runs/32905389963
   [32916678861]: https://github.com/adammarquette/MarqSpec.Mcp.TopstepX/actions/runs/32916678861

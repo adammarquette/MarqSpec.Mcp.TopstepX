@@ -92,7 +92,9 @@ mkfile() {
 # at all. `fenced` puts the same table inside a ```markdown fence, where the gate must IGNORE it: a document
 # explaining a price table shows one, and reddening a required check on that is how a gate gets deleted.
 # `unterminated` opens that fence and never closes it, which must be REPORTED rather than allowed to
-# swallow the rest of the file in silence. `quoted` puts the fenced example inside a blockquote, which must
+# swallow the rest of the file in silence. `closer-char`, `closer-len`, `closer-info` and `tilde` each lean
+# on one of `fence_step`'s four opener/closer rules, and `reset-leak` on the per-file reset -- the one of the
+# five that fails OPEN. `quoted` puts the fenced example inside a blockquote, which must
 # be ignored exactly as the unquoted one is -- the construct that got past `fence_step` in round 2.
 # `quote-closed` withholds the closing fence and ends the blockquote instead, which closes it in CommonMark
 # and must not be read as unterminated. `quote-eof` ends the FILE instead, which closes the quote and the
@@ -109,6 +111,7 @@ make_fixture() {
   local dir="$1" alpha_tok="$2" gamma_row="$3" agreements_heading="$4" reference_kind="$5"
   local contract_row="${6:-$SOUND_CONTRACT}" contracts_heading="${7:-$SOUND_CONTRACTS_HEADING}"
   local stray_kind="${8:-none}" second_file="${9:-present}"
+  local fk_kind=no fk_open="" fk_inner="" fk_close=""
   mkdir -p "$dir/documentation/agents"
   mkfile "$dir/documentation/alpha.md" 4000
   mkfile "$dir/documentation/beta.md" 8000
@@ -126,7 +129,41 @@ make_fixture() {
       printf '| [`beta.md`](../beta.md) | 2.0K | Open it yourself. |\n'
     } > "$dir/documentation/agents/README.md"
   fi
-  if [ "$stray_kind" != "none" ]; then
+  case "$stray_kind" in closer-char|closer-len|closer-info|tilde|reset-leak) fk_kind=yes ;; esac
+  if [ "$fk_kind" = yes ]; then
+    # ONE PRICE TABLE, INSIDE ONE FENCE, and the only thing that varies is which of `fence_step`'s four
+    # opener/closer rules the fixture leans on. Each `fk_inner` line is a NEAR-closer that the shipped gate
+    # must NOT treat as a closer; drop the corresponding rule and it closes early, the table falls outside
+    # the fence, and the run reddens. So each of these is green here and red under exactly one mutation.
+    case "$stray_kind" in
+      closer-char) fk_open='```markdown' ; fk_inner='~~~'         ; fk_close='```'  ;;
+      closer-len)  fk_open='````'        ; fk_inner='```'         ; fk_close='````' ;;
+      closer-info) fk_open='```text'     ; fk_inner='```markdown' ; fk_close='```'  ;;
+      tilde)       fk_open='~~~markdown' ; fk_inner=''            ; fk_close='~~~'  ;;
+      reset-leak)  fk_open='```markdown' ; fk_inner=''            ; fk_close=''     ;;
+    esac
+    {
+      printf '# a document PRICED does not name\n\n'
+      printf '%s\n' "$fk_open"
+      [ -z "$fk_inner" ] || printf '%s\n' "$fk_inner"
+      printf '| Document | ~tok | Read it when |\n'
+      printf '|---|---:|---|\n'
+      printf '| [`delta.md`](delta.md) | 99K | Inside the fence, so the gate must not read it. |\n'
+      [ -z "$fk_close" ] || printf '%s\n' "$fk_close"
+    } > "$dir/documentation/stray.md"
+    # `stray2.md` sorts immediately after `stray.md` in the sweep's glob order, with nothing between them to
+    # reset the fence -- and THAT ADJACENCY IS THE PRECONDITION, not decoration. A fixture whose files are
+    # not adjacent lets an intervening fence clear the leak, and then the mutation looks like a no-op: a
+    # fixture that fails to establish its condition reports exactly as a rule that is not needed.
+    if [ "$stray_kind" = "reset-leak" ]; then
+      {
+        printf '# a SECOND unlisted document, carrying a REAL price table\n\n'
+        printf '| Document | ~tok | Read it when |\n'
+        printf '|---|---:|---|\n'
+        printf '| [`delta.md`](delta.md) | 99K | Not an example. The sweep must still reach this. |\n'
+      } > "$dir/documentation/stray2.md"
+    fi
+  elif [ "$stray_kind" != "none" ]; then
     {
       printf '# a document PRICED does not name\n\n'
       q=""
@@ -461,7 +498,38 @@ expect_red "a real price table below a quoted fence" "$FIXTURES/quote-then-table
 make_fixture "$FIXTURES/quote-then-table-file" "1.0K" "$SOUND_GAMMA" "$SOUND_HEADING" "plain"   "$SOUND_CONTRACT" "$SOUND_CONTRACTS_HEADING" "quote-then-table"
 expect_red "the same, in a swept file" "$FIXTURES/quote-then-table-file" "UNLISTED FILE"
 
-# 23. The sound fixture. Five priced rows across three sections in two files, plus an ordinary table with no
+# 23. THE FOUR OPENER/CLOSER RULES `fence_step`'s header STATES IN PROSE, and which nothing tested (PR #193
+#     review round 5). Every one could be deleted with all 31 cases green, and not one is an equivalent
+#     mutant: each makes the gate redden on ordinary markdown -- a document that shows fence syntax, or one
+#     that fences with tildes. That is the same false positive rounds 1 through 4 were spent removing.
+#
+#     Prose is not a fixture. This is precisely the gap `check-doc-sizes.sh` exists to close for the `~tok`
+#     column -- a claim nothing re-measures -- reappearing inside the script that closes it.
+make_fixture "$FIXTURES/closer-char" "1.0K" "$SOUND_GAMMA" "$SOUND_HEADING" "plain"   "$SOUND_CONTRACT" "$SOUND_CONTRACTS_HEADING" "closer-char"
+expect_green "a ~~~ line inside a backtick fence closes nothing" "$FIXTURES/closer-char" "5 priced rows"
+
+make_fixture "$FIXTURES/closer-len" "1.0K" "$SOUND_GAMMA" "$SOUND_HEADING" "plain"   "$SOUND_CONTRACT" "$SOUND_CONTRACTS_HEADING" "closer-len"
+expect_green "a shorter fence run closes nothing" "$FIXTURES/closer-len" "5 priced rows"
+
+make_fixture "$FIXTURES/closer-info" "1.0K" "$SOUND_GAMMA" "$SOUND_HEADING" "plain"   "$SOUND_CONTRACT" "$SOUND_CONTRACTS_HEADING" "closer-info"
+expect_green "a fence run with an info string closes nothing" "$FIXTURES/closer-info" "5 priced rows"
+
+make_fixture "$FIXTURES/tilde" "1.0K" "$SOUND_GAMMA" "$SOUND_HEADING" "plain"   "$SOUND_CONTRACT" "$SOUND_CONTRACTS_HEADING" "tilde"
+expect_green "a ~~~-fenced price table is still fenced" "$FIXTURES/tilde" "5 priced rows"
+
+# 24. THE FAIL-OPEN OF THE FIVE, and the sharpest defect in this batch. `fence_reset` runs once per file in
+#     the sweep; remove it and fence state LEAKS from one file into the next. Two adjacent files -- the
+#     first ending mid-fence, the second opening with a real undeclared price table -- and the second
+#     file's table is swallowed. The report for it simply disappears, buried under a cascade of
+#     UNTERMINATED FENCE noise about innocent files.
+#
+#     THE MUTANT STILL EXITS 1, which is why this case matches on `UNLISTED FILE` and not on redness. A
+#     harness asking only "did the suite go red" passes a gate that has stopped reporting the very thing
+#     rule 4 exists for -- this file's own "non-zero exit is not sufficient" rule, one level up.
+make_fixture "$FIXTURES/reset-leak" "1.0K" "$SOUND_GAMMA" "$SOUND_HEADING" "plain"   "$SOUND_CONTRACT" "$SOUND_CONTRACTS_HEADING" "reset-leak"
+expect_red "a real table in the file AFTER one ending mid-fence" "$FIXTURES/reset-leak" "UNLISTED FILE"
+
+# 25. The sound fixture. Five priced rows across three sections in two files, plus an ordinary table with no
 #     price column under a third heading -- so this also asserts the gate leaves un-priced tables alone,
 #     which is what nearly every table in the corpus is.
 #
@@ -486,4 +554,4 @@ if [ "$cases" -eq 0 ]; then
   exit 1
 fi
 
-ok "ok  $cases self-test cases across two priced files — check-doc-sizes.sh rejects each known fault BY NAME, and accepts correct input: one at the tolerance boundary, one whose prose says \"no longer\", eight showing a price table inside a fence -- six of them quoted, and four of those closed by the end of the blockquote or of the file rather than by a fence -- and one wholly sound."
+ok "ok  $cases self-test cases across two priced files — check-doc-sizes.sh rejects each known fault BY NAME, and accepts correct input: one at the tolerance boundary, one whose prose says \"no longer\", twelve showing a price table inside a fence -- six quoted, four of those closed by the end of the blockquote or of the file, and four leaning on one opener/closer rule each -- and one wholly sound."

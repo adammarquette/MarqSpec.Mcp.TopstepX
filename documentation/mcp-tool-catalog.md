@@ -9,6 +9,13 @@
 The tool surface is a contract with something that cannot read the code. This page is that contract; change a
 tool and change this page in the same PR.
 
+**What belongs here, and what does not.** The `[Description]` attribute and the generated parameter schema are
+what the *model* sees at runtime; this page is what a human or agent **planning** a change reads. Anything an
+attribute already states in full is deliberately **not repeated here** — a fact written twice has one copy
+that gets corrected. What this page carries is what an attribute cannot: the *why*, the refusal semantics, and
+the rules that span tools. `ToolSchemaTests` gates the descriptions against the schema; **nothing gates this
+page against either**, so check it against the code, never against another document (gh#255).
+
 ## Rules that apply to every tool
 
 - **Read-only against the venue.** Nothing here transmits an order. Not behind a flag.
@@ -132,10 +139,6 @@ The instruments this server is configured for, with the contract arithmetic.
 
 Returns `[{ symbol, tickSize, pointValue, tickValue, sessionCloseCentral }]`.
 
-**There is no `resolutionsAvailable`.** This page described one until gh#48; no such field has ever
-existed on `ToolPayloads.InstrumentInfo`, and none is coming. Resolution is a per-call parameter and the
-supported set is *any* — [ADR-0010](adr/0010-per-call-resolutions-fetched-not-derived.md).
-
 Where `tickSize` and `pointValue` come from matters: the venue publishes money-per-**tick**, and this returns
 money-per-**point** (they differ by the tick size). A configured override replaces an entry **wholesale** — a
 new tick size against a stale point value is a silently wrong contract, and every number derived from it is
@@ -144,12 +147,15 @@ wrong by a plausible-looking constant factor.
 ### `search_contracts(symbol)`
 Resolves a symbol to the venue contracts quoting it.
 
-Returns `[{ contractId, symbol, isActive, tickSize, tickValue }]`, front month first.
+Returns `[{ contractId, symbol, isActive, tickSize, tickValue }]`, the **active** contract first — normally
+the front month, but `isActive` is the field that says so, not the position in the list.
 
 > **The `live` tier is the trap here.** The gateway takes a tier flag on every contract and bar call, and the
 > **wrong tier returns an empty result, not an error**. Practice credentials asking for the live universe see
-> zero contracts, and the failure surfaces far away as "no contract matches ES". `ProjectX__DataTier` is
-> required and never defaulted for exactly this reason.
+> zero contracts — so **this tool refuses rather than passing `[]` on**, naming `ProjectX__DataTier` and the
+> tier each credential kind needs. The instrument is on the served list, so "the venue knows no contracts for
+> it" is a misconfiguration and not a quiet market, and the two must not arrive looking the same (`R-5.3`).
+> That is why the setting is required and never defaulted.
 
 ### `get_market_session(symbol, atUtc?)`
 Whether the market is open, and what happens next.
@@ -161,12 +167,8 @@ is omitted** rather than `null`: a shut market carries no `sessionCloseUtc` or `
 one carries no `nextOpenUtc`. Branch on `isOpen`, or test `"minutesToClose" in session` — comparing to `null`
 reports every one of them as present-and-not-null.
 
-There is **no `sessionOpenUtc`**; this page carried one until gh#48 and `ToolPayloads.SessionState` has
-never had it. The running session's close is `sessionCloseUtc` and the *next* session's open is
-`nextOpenUtc` — there is no field for the open of the session already under way.
-
-Cheap, and worth calling before interpreting anything else — "the last bar is two hours old" means something
-different on a Tuesday afternoon than at 03:00 on a Sunday.
+`sessionCloseUtc` closes the **running** session and `nextOpenUtc` opens the **next** one. There is no field
+for the open of the session already under way, and no `sessionOpenUtc`.
 
 **`atUtc` is bounded at the far end of the calendar**, and by a *different* bound from the windowed reads
 because this tool takes a moment and no window: it must be at or before `9999-12-28T23:59:59.9999999Z`, the
@@ -183,8 +185,8 @@ The workhorse. Cache-aside: served from the store, with only genuinely missing b
 Returns `{ symbol, resolutionMinutes, bars: [{ t, o, h, l, c, v }], fetchedBuckets, venueRequests,
 contracts: { span, segments: [{ contractId, firstBucket, lastBucket, barCount }] } }`.
 
-`fetchedBuckets` and `venueRequests` are deliberately in the response, and **they answer different questions.**
-This page paired them as equivalent evidence until gh#73; only one of them is evidence of a round trip.
+`fetchedBuckets` and `venueRequests` are both in the response, and **they answer different questions.** Only
+one of them is evidence of a round trip.
 
 | Field | Answers | Zero means |
 |---|---|---|
@@ -199,12 +201,8 @@ the whole process rather than to one call, so a caller pacing itself on this num
 budget than it believes.
 
 `venueRequests == 0` is what makes "the second identical call fetches nothing" observable rather than a
-claim.
-
-**There is no `fromCache`.** This page documented one until gh#48 and `ToolPayloads.BarSeries` has never had
-it — which mattered more than the other drifts on this page, because `fromCache` is exactly the field an agent
-would reach for to check `R-1.3`. It would have read `undefined` on every call, and `undefined` is falsy: a
-fully-cached read would have looked like an uncached one, every time. Use `venueRequests == 0`.
+claim, and it is the check for `R-1.3`. **There is no `fromCache`** — see the retractions at the foot of this
+page.
 
 **A cold wide window is slow on purpose.** The venue's history allowance is **50 requests per 30 seconds and
 it belongs to the whole process**, not to one call. Once this server has issued 50 history requests inside the
@@ -214,9 +212,9 @@ just spent the allowance (`R-1.10`). A read served from the store issues no venu
 be paced.
 
 ### `get_latest_bars(symbol, resolutionMinutes, count)`
-The recent window, which is what an agent actually asks for. Same shape as `get_bars`.
-
-Anchored on the last **closed** bucket, never a forming one.
+The recent window, which is what an agent actually asks for. Same shape as `get_bars`, anchored on the last
+**closed** bucket. `count` is bounded by `MaxRows`, and a coarse resolution with a large `count` is refused
+for reaching back past the start of the calendar — one of the cross-axis pairs above.
 
 ### `get_indicators(symbol, resolutionMinutes, indicator, fromUtc, toUtc)`
 A stored indicator series.
@@ -227,36 +225,29 @@ Returns `{ symbol, resolutionMinutes, indicator, period, values: [{ t, v }], con
 `{ t, v: null }` point. So the series is not one point per bucket, and the gaps are the cannot-measure
 signal: pair each `v` with its own `t` rather than with a bar at the same index.
 
-Every value is computed inside a single contract, but the *series* can still cross a roll — read
-`contracts.span` before treating the two halves as one trend. Expect a run of missing entries just after a
-seam, where the new contract's warm-up starts over.
-
-`indicator` is a **closed vocabulary**: `atr`, `rsi`, `sma`, `ema`, `macd`, `macd-signal`, `macd-histogram`,
-`vwap`, `bb-upper`, `bb-middle`, `bb-lower`. An unknown name errors and lists the known ones — a typo must not
-read as "no data".
+`indicator` is a **closed vocabulary**, held in `IndicatorCatalog` and named in full by the tool's own
+description. An unknown name **errors and lists the known ones** rather than returning an empty series — a
+typo must not read as "no data".
 
 MACD's fast and signal lengths (12, 9) and Bollinger's width (2σ) are **fixed**, not configurable. The storage
 key carries one period, and a parameter it cannot see would make two parameterisations indistinguishable once
 stored.
 
 **`period` is not an argument.** It is fixed per indicator by the catalogue and *returned* in the payload so
-the caller knows what it got. This page listed it as a parameter until gh#48; it never was one.
+the caller knows what it got.
 
 ### `get_indicator_at(symbol, resolutionMinutes, indicator, asOfUtc)`
-One value, as of a moment. Reads the value at or **before** `asOfUtc`, never after — a value from after the
-moment is information the market did not have.
+One value, as of a moment — at or **before** it, never after.
 
 Returns `{ value, bucketStart, contractId }`.
 
 **Cannot-measure is the empty object `{}`, not `{ "value": null }`.** All three are fields, so all three are
-dropped when there is nothing to report — this page wrote `{ value: null }` until gh#85, and a caller testing
-`reading.value === null` reads `undefined === null`, which is `false`, and concludes it *did* measure. Test
-`"value" in reading`; an absent `value` means cannot measure, and a caller receiving one should refuse rather
-than substitute.
+dropped when there is nothing to report, and a caller testing `reading.value === null` reads
+`undefined === null`, which is `false`, and concludes it *did* measure. Test `"value" in reading`; an absent
+`value` means cannot measure, and a caller receiving one should refuse rather than substitute.
 
-`contractId` is the contract the value belongs to, and it is absent both when there is no value and when the
-bar's provenance was never recorded. Two readings from different contracts are not comparable, and nothing in
-a bare number says so.
+`contractId` is absent for **two** different reasons — there was no value, or the bar's provenance was never
+recorded — so an absent one is never evidence that two readings share a contract.
 
 ### `get_key_levels(symbol, resolutionMinutes, lookbackBars?)`
 Support and resistance as **zones**, not lines.
@@ -290,23 +281,20 @@ Returns `[{ accountId, stage, canTrade, isVisible, balance }]`.
 `stage` is `Practice | Evaluation | Funded | Unknown`, **parsed** from the account name against anchored
 patterns rather than passed through as text. A near-miss is `Unknown`, never a guess.
 
-> The venue's `simulated` flag is **not** reported as an economic-stake signal. It describes where an order
-> executes, and on a prop platform a *funded* account reports `simulated: true` while a real payout rides on it.
-> Against a real login it classifies every account, funded ones included, as practice.
+> The venue's `simulated` flag is **not** reported, and the tool's description says why. What it does not say
+> is the measured consequence: against a real login, reading that flag classifies **every** account, funded
+> ones included, as practice.
 
 ### `get_positions(accountId)` · `get_orders(accountId, openOnly, fromUtc?, toUtc?)` · `get_trades(accountId, fromUtc, toUtc)`
 
-**`get_orders` takes `openOnly` first, and it is required — deliberately.** `true` and `false` ask
+**`get_orders` takes `openOnly` ahead of its window, and it is required — deliberately.** `true` and `false` ask
 *different questions* — the working book, or a historical window — and defaulting to either answers the one
 the caller did not ask. When it is true the window is ignored, so `fromUtc` and `toUtc` may be omitted; when
 it is false they must both be supplied. That is a **conditional** requirement, which a JSON schema cannot
 express, so the schema marks the window optional and the server enforces the pairing, naming which of the two
 is absent.
 
-Until gh#70 both window arguments were required on the wire while their descriptions said *"Required unless
-openOnly"*, so the documented way to ask for working orders was rejected before it reached any code.
-
-These three return the venue records directly, and this page did not state their shapes until gh#71:
+These three return the venue records directly:
 
 ```
 get_positions -> [{ contractId, signedSize, averagePrice, openedAt }]
@@ -315,9 +303,6 @@ get_orders    -> [{ orderId, contractId, side, size, filledSize, status,
 get_trades    -> [{ tradeId, orderId, contractId, side, size, price,
                     profitAndLoss, fees, voided, filledAt }]
 ```
-
-Positions carry a **signed** size — the venue reports an unsigned size plus a direction enum, and a
-directionless non-zero position is an error rather than a flat report. Positive is long, negative short.
 
 **Closed vocabularies**, both this server's own rather than the vendor's wire values:
 
@@ -351,16 +336,15 @@ So: **`status: "Unknown"` can report an absence and `side` cannot.** Neither is 
 | `filledPrice` | nothing has filled yet — **not** a fill at zero |
 | `profitAndLoss` | the venue attributed no realised P&L to this half of the round trip |
 
-**Absent, not `null` — test for the key, not for the value.** These fields are *omitted from the object*
-rather than serialised as `null`, so `order.limitPrice === null` is `false` for every limitless order. Reach
-for `"limitPrice" in order`, or a language's equivalent, and treat absence as the fact in the table above.
+All four are **fields**, so they take the omitted form — the first row of the null table above — and absence
+is the fact in this one, never a zero.
 
 `voided` is worth reading before totalling anything: a voided fill is still returned, and summing `price` or
 `fees` across trades without checking it counts something the venue has struck out.
 
-**Two fields the venue sends are deliberately absent.** An order's `customTag` is arbitrary caller-supplied
-text and an account's `name` is vendor free text, and neither crosses into a payload a language model reads
-(ADR-0008). Everything the account name usefully carried is already parsed into `stage`.
+**Two fields the venue sends are deliberately absent** — an order's `customTag` and an account's `name`, both
+free text and neither crossing into a payload a language model reads (ADR-0008). Everything the account name
+usefully carried is already parsed into `stage`.
 
 > `Order/search` and `Trade/search` take `startTimestamp`/`endTimestamp` while bar retrieval takes
 > `startTime`/`endTime`. Sending the wrong pair does not error: the gateway drops the field and returns nothing.
@@ -374,13 +358,11 @@ five or six.
 Returns `{ symbol, session, perResolution: [{ resolutionMinutes, bars[], indicators{},
 levels: { levels[], contracts, detectedOverBars }, contracts }] }`.
 
-**`indicators{}` is the one map on this surface, and it behaves the opposite way to every field above.** It is
-the latest value of each indicator keyed by name, and **every indicator this server computes is assigned a key
-unconditionally** — so a key is always there and its **presence says nothing**. The value is `null` when that
-indicator could not be measured at this bucket, and **the `null` is the whole signal**: `indicators.rsi ===
-null` is the test, and it means *cannot measure* — refuse rather than substitute. An **absent** key would
-instead mean this server does not compute that indicator at all, which is a different statement and not one
-you should expect to see. `"rsi" in indicators` therefore answers a question nobody is asking.
+**`indicators{}` is the one map on this surface** — the map row of the null table above, and the only place on
+it where a `null` reaches the wire spelled `null`. Every indicator this server computes is assigned a key
+**unconditionally**, so `"rsi" in indicators` answers a question nobody is asking; `indicators.rsi === null`
+is the test, and it means *cannot measure*. An **absent** key would mean this server does not compute that
+indicator at all — a different statement, and not one you should expect to see.
 
 Expect nulls right after a roll and on a short window: warm-up restarts at the seam, and an indicator whose
 period the bars do not satisfy cannot measure.
@@ -390,9 +372,6 @@ period the bars do not satisfy cannot measure.
 disagree: a short bar window can sit entirely inside the current contract while the history behind the levels
 crosses a roll. `levels.detectedOverBars` says how much of that history actually survived the confinement.
 
-This should be the tool an agent reaches for first. The single-purpose tools exist for when it needs something
-specific or a longer window.
-
 **`symbol` is the only required argument.** The defaults are:
 
 | Argument | Default | Why |
@@ -400,29 +379,23 @@ specific or a longer window.
 | `resolutionMinutes` | `[5, 60]` | Setup and bias — see below |
 | `barCount` | `100` | The session's shape and every indicator's warm-up, without making a first call expensive |
 
-**Why those two timeframes.** On one timeframe alone, a pullback in an uptrend and the start of a downtrend
-are the same picture. A single-resolution snapshot therefore answers confidently from one view and says
-nothing about what it missed, which is the failure this tool exists to avoid.
+Both defaults, and the rule that an explicit `resolutionMinutes` **replaces** the set rather than extending
+it, are stated in the tool's own description — and `SnapshotTools` has tests asserting it names every default
+it applies, matching each as a whole number so a value cannot hide inside a longer one. **That narrows the
+gap rather than closing it**: a default changed to a number the description already contains for another
+reason — `barCount` to `60`, say — still passes, because the sentence says "60-minute". Closing it needs the
+advertised clause built from the constants, which a `[Description]` attribute cannot do.
 
-Both defaults are overridable, and **an explicit `resolutionMinutes` replaces the default rather than
-extending it** — a caller asking for `[15]` gets 15m and nothing else. **Null *or* an empty array means the
-default**: honouring `[]` literally would return a snapshot with no timeframes in it, indistinguishable from
-an instrument that produced no data.
+What no attribute can carry is why the set is *these two*, and why `[]` is not honoured:
 
-The default is a cost decision as much as an analytical one. Each resolution is an independent cached series
-*and* an independent indicator projection — `ADR-0010`, the timeframe record (gh#48), is where that cost is
-written down — so the set decides what a first call costs. `[5, 15, 60]`, the conventional trio, was the
-alternative; 15m refines a read the other two already settle. 1m is left out because it is where the
-projector's cost lands first, and an agent that wants timing can name it.
-
-**The tool description states all of this**, because an agent reads that and not this page. `SnapshotTools`
-carries tests asserting the description names every default it applies, matching each as a whole number so a
-value cannot hide inside a longer one.
-
-That narrows the gap rather than closing it: a default changed to a number the description already contains
-for another reason — `barCount` to `60`, say — would still pass, because the sentence says "60-minute".
-Closing it entirely needs the advertised clause built from the constants, which a `[Description]` attribute
-cannot do.
+- **`[5, 15, 60]`, the conventional trio, was the alternative.** 15m refines a read the other two already
+  settle, at a third more cost. 1m is left out because it is where the projector's per-write cost lands first
+  — five times the rows of 5m, sixty times the rows of 60m — and an agent that wants timing can name it.
+  Each resolution is an independent cached series *and* an independent indicator projection, so the default
+  set is what a first call costs (`ADR-0010`, the timeframe record — gh#48).
+- **An empty array is treated as unspecified, not as a request for nothing.** Honouring `[]` literally
+  returns a snapshot with no timeframes in it — a plausible-looking payload indistinguishable from an
+  instrument that produced no data.
 
 `barCount` is validated on the path it feeds, not here: it reaches `ToolGuards.ValidateCount` through
 `get_latest_bars` on the first resolution, so a negative or over-cap count still refuses.
@@ -438,31 +411,25 @@ worse off than one holding either alone.
 
 **`text` and `query` are the only required arguments**, and `search_observations` takes `limit`, not `k`.
 
-Until gh#70 every argument on both tools was required on the wire, while the descriptions promised otherwise
-(*"Omit for a general observation"*, *"Defaults to 'note'"*, *"Defaults to 20"*). The MCP SDK derives
-`required` from whether a C# parameter has a **default value**, not from whether its type is nullable, so a
-`string? symbol` with no `= null` was nullable and required at the same time.
-
-**`limit` is taken at face value.** Omit it for 20; state a number and it is used, or refused if it is out of
-range. It is not clamped — the previous form turned an explicit `0` into `20`, substituting a guess for a
-number the caller stated and could not see replaced.
+**`limit` is not clamped**, and its description says so. What the description cannot say is why that is
+worth a sentence: the previous form turned an explicit `0` into `20`, substituting a guess for a number the
+caller stated and could not see replaced. **Absent** means 20; a **stated** number is honoured or refused,
+never rounded up to it.
 
 Writes to **this** database. Not the venue, and no weakening of the read-only boundary.
 
 An observation is `{ id, symbol, kind, text, tags, recordedAt, embeddingNote, similarity }`. `embeddingNote`
 says why a row has no vector when it has none; `similarity` is populated only in `Semantic` mode.
 
-**Nothing on either payload is a map, so every unset value here is *omitted*, never `null`** — `similarity`,
-`embeddingNote` and `symbol` on an observation, `modeReason` and `unsearchableCount` on the result. The test is
-`"similarity" in observation`; `observation.similarity === null` is `false` on every text-path match.
+**Nothing on either payload is a map**, so all five nullable members take the omitted form — `symbol`,
+`embeddingNote` and `similarity` on an observation, `modeReason` and `unsearchableCount` on the result.
 
 `search_observations` returns `{ mode, modeReason, observations, unsearchableCount }`. **`mode` says which
 path answered** — `Semantic` for vector similarity, `Text` for substring matching — and `modeReason` says why
 when it is not semantic.
 
 That field exists because an empty result is ambiguous without it: an agent receiving nothing cannot otherwise
-tell "semantic search found no match" from "semantic search never ran". Those warrant different next steps, and
-an empty `Text` result is worth retrying with different wording.
+tell "semantic search found no match" from "semantic search never ran", and those warrant different next steps.
 
 **The two modes are not the same list in a different order.**
 
@@ -473,10 +440,9 @@ an empty `Text` result is worth retrying with different wording.
 | Reaches notes with no vector | No — see `unsearchableCount` | Yes, every row |
 | `modeReason` | **absent from the result** | Names the cause |
 
-`similarity` is absent rather than a stand-in on the text path. A `1.0` meaning "it matched" would invite
-comparison across modes as though the numbers meant the same thing. Where it *is* present it should be read:
-without a score an agent cannot tell a strong match from the least-bad of a weak set, and will act on both the
-same way.
+`similarity` is absent rather than a stand-in on the text path: a `1.0` meaning "it matched" would invite
+comparison across modes as though the numbers meant the same thing. Where it *is* present it should be read —
+without a score an agent cannot tell a strong match from the least-bad of a weak set.
 
 **`unsearchableCount` is how many observations in scope have no vector**, and so could not take part. A
 non-zero value means this search saw less than the whole corpus — reported rather than logged, because a short
@@ -484,13 +450,11 @@ result and a small corpus are otherwise indistinguishable. It goes non-zero when
 provider was rate-limited or down (see `embeddingNote` below), and returns to zero when those notes are
 re-embedded.
 
-**An absent `unsearchableCount` means "not asked", never "none"** — and it is a field, so it is missing from
-the object rather than `null`. `"unsearchableCount" in result` is the test; `result.unsearchableCount === null`
-is `false` whether it was asked or not, and treating a falsy read as zero is exactly the substitution this
-count exists to prevent. On the semantic path the number is computed only when the
-page came back short, because that is the only time it changes what a caller should do — a full page is not
-missing anything that was requested, and the count costs a scan of the whole corpus in scope. On the text path
-it is `0`: that path reads every row, so the question was asked and the answer really is none.
+**An absent `unsearchableCount` means "not asked", never "none"** — and treating a falsy read as zero is
+exactly the substitution this count exists to prevent. On the semantic path it is computed only when the page
+came back short, because that is the only time it changes what a caller should do, and the count costs a scan
+of the whole corpus in scope. On the text path it is `0`: that path reads every row, so the question was asked
+and the answer really is none.
 
 **Semantic search requires pgvector 0.8 or newer.** On anything older the server reports embeddings
 unavailable at startup and search matches text, naming the installed version and the required one. That is a
@@ -519,6 +483,26 @@ lands rather than after some later pass. Two consequences are worth knowing befo
 
 Every call is metered, failures included, because an unmetered failure is invisible spend on the operator's own
 key.
+
+## Retractions
+
+What this page has had to take back — one table, because the value is in **not reintroducing them** and that
+is a lookup, not a narrative. Four `gh#48` rows are fields this page invented and the code never had. The
+`gh#70` rows share one cause: the SDK derives `required` from whether a C# parameter has a **default value**,
+not from whether its type is nullable, so `string? symbol` with no `= null` is nullable and required at once.
+
+| Tool | Claimed | Actually | |
+|---|---|---|---|
+| `list_instruments` | a `resolutionsAvailable` field | never on `InstrumentInfo` | gh#48 |
+| `get_market_session` | a `sessionOpenUtc` field | never on `SessionState` | gh#48 |
+| `get_bars` | a `fromCache` field | never on `BarSeries` — and the one an agent would reach for, reading falsy `undefined` every call | gh#48 |
+| `get_bars` | `fetchedBuckets` ≡ `venueRequests` as evidence | only `venueRequests == 0` proves the store served it | gh#73 |
+| `get_indicators` | `period` is a parameter | never was; fixed per indicator, and returned | gh#48 |
+| `get_indicator_at` | cannot-measure is `{ value: null }` | it is `{}` | gh#85 |
+| `get_orders` | `fromUtc`/`toUtc` optional, as described | required on the wire — the documented way to read the working book was refused before reaching any code | gh#70 |
+| `record_observation` · `search_observations` | `symbol`, `kind`, `tags`, `limit` optional, as described | required on the wire | gh#70 |
+| `search_contracts` | a wrong tier surfaces far away as "no contract matches ES" | the tool refuses, naming `ProjectX__DataTier` | gh#255 |
+| `search_contracts` | front month first | **active** first; `isActive` says so | gh#255 |
 
 ---
 *Adding or changing a tool? Update this page and the PRD's `R-5` in the same PR. A catalogue that lags the

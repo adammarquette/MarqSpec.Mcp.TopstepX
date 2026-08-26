@@ -55,6 +55,16 @@ namespace MarqSpec.Mcp.TopstepX.Tests.Domain;
 /// </description>
 /// </item>
 /// </list>
+/// <para>
+/// <b>And which case pins the shared preconditions.</b> <c>FindPivots</c> opens with both of
+/// <c>IndicatorGuard</c>'s series checks, and the two are pinned from opposite directions. The roll check is
+/// reached from <c>ContractRollTests.KeyLevels_AreNotDetectedAcrossASplice</c>; the ordering check was
+/// reached by nothing at all, so deleting its call left the whole suite green (gh#251). That is what
+/// <see cref="FindPivots_Refuses_WhenTwoBarsAreTransposed"/> and
+/// <see cref="Detect_Refuses_WhenTwoBarsAreTransposed"/> close, and the counterweight is every case above
+/// them: the same fixture <i>in order</i> still computes, so the guard is pinned as refusing the disorder
+/// and nothing else.
+/// </para>
 /// </remarks>
 public sealed class KeyLevelsTests
 {
@@ -174,6 +184,22 @@ public sealed class KeyLevelsTests
         Ohlc(3, open: 104, high: 105, low: 101, close: 103),
         Ohlc(4, open: 103, high: 104, low: 100, close: 102),
     ];
+
+    /// <summary>Fixture A with the bars at <paramref name="i"/> and <paramref name="j"/> exchanged.</summary>
+    /// <param name="i">One position in the series.</param>
+    /// <param name="j">The other.</param>
+    /// <returns>The same eleven bars, two of them out of time order.</returns>
+    /// <remarks>
+    /// Not one price is touched, and that is the point: this series is exactly as computable as fixture A
+    /// and differs from it only in the order the bars arrive. Disorder that changed the numbers would be
+    /// caught by the arithmetic; disorder that does not is what needs a guard.
+    /// </remarks>
+    private static IReadOnlyList<Bar> FixtureATransposed(int i, int j)
+    {
+        List<Bar> bars = [.. FixtureA];
+        (bars[i], bars[j]) = (bars[j], bars[i]);
+        return bars;
+    }
 
     // ═══ FindPivots ═══════════════════════════════════════════════════════════════════════════════════
 
@@ -441,6 +467,39 @@ public sealed class KeyLevelsTests
         Action find = () => KeyLevels.FindPivots(FixtureA, HighLowOptions with { Lookback = 0 });
 
         find.Should().Throw<ArgumentOutOfRangeException>().WithMessage("*lookback*");
+    }
+
+    [Fact]
+    public void FindPivots_Refuses_WhenTwoBarsAreTransposed()
+    {
+        // Fixture A with bars 4 and 5 exchanged, so the bar at index 5 opens BEFORE the one at index 4.
+        // Unguarded, PivotPrices builds the highs and lows in whatever order it was handed and the
+        // dominance scan compares each bar against neighbours that are not its neighbours.
+        //
+        //    i:      0     1     2     3     4     5     6     7     8     9    10
+        //    high: 104   106   110   106   102   104   104   106   112   106   104
+        //    low:  100   102   106   102    98   100   100   102   108   102   100
+        //    time:  t0    t1    t2    t3    t5    t4    t6    t7    t8    t9   t10
+        //
+        //    i=2  high 110 vs {104,106,106,102} -> dominates. Prominence 4. Resistance.
+        //    i=3  high 106 ties bar 1's 106 -> no.   low 102 ties bar 1's 102 -> no.
+        //    i=4  high 102 under bar 2's 110 -> no.  low  98 vs {106,102,100,100} -> dominates.
+        //                                            Prominence 100 - 98 = 2. Support.
+        //    i=5  high 104 ties bar 6's 104 -> no.   low 100 ties bar 6's 100 -> no.
+        //    i=6  high 104 ties bar 5's 104 -> no.   low 100 ties bar 5's 100 -> no.
+        //    i=7  high 106 under bar 8's 112 -> no.  low 102 over bar 4's 98 -> no.
+        //    i=8  high 112 vs {104,106,106,104} -> dominates. Prominence 6. Resistance.
+        //
+        // So the answer that comes back is not a mangled one a caller could spot -- it is fixture A's three
+        // pivots at fixture A's prices, prominences, kinds and OpenTimes, with ONE field moved: the support
+        // is reported at BarIndex 4 rather than 5. Detect reads `atr[pivot.BarIndex]`, so that pivot is then
+        // sized and scored from the ATR of a bar it did not form on. A flat ATR hides it completely; a real
+        // one gives a different half-band and a different significance, and neither says so.
+        Action find = () => KeyLevels.FindPivots(FixtureATransposed(4, 5), HighLowOptions);
+
+        find.Should().Throw<ArgumentException>()
+            .WithMessage("*strictly ascending*")
+            .WithParameterName("bars");
     }
 
     // ═══ ZoneFor ══════════════════════════════════════════════════════════════════════════════════════
@@ -803,6 +862,24 @@ public sealed class KeyLevelsTests
         Action detect = () => KeyLevels.Detect(FixtureA, FlatAtr(4m, 10), HighLowOptions);
 
         detect.Should().Throw<ArgumentException>().WithMessage("*align*");
+    }
+
+    [Fact]
+    public void Detect_Refuses_WhenTwoBarsAreTransposed()
+    {
+        // Detect reaches the ordering guard only through FindPivots, and Detect is the entry point the tool
+        // calls -- so the refusal is pinned at the surface a caller actually holds, not just at the stage
+        // that happens to check today.
+        //
+        // Pinned separately rather than assumed from the FindPivots case, because Detect does its own work
+        // before delegating: it validates the ATR alignment and short-circuits an empty series first. Either
+        // of those growing a path that answers before FindPivots is reached would drop the refusal here
+        // while leaving the FindPivots case green.
+        Action detect = () => KeyLevels.Detect(FixtureATransposed(4, 5), FlatAtr(4m, 11), HighLowOptions);
+
+        detect.Should().Throw<ArgumentException>()
+            .WithMessage("*strictly ascending*")
+            .WithParameterName("bars");
     }
 
     [Fact]

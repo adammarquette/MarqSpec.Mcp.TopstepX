@@ -70,9 +70,10 @@ regardless of how clean the rest reads.
 
 ## What you do not do
 
-- **Merge or close.** Those stay the maintainer's. **Approving or requesting changes is *not* on this list** —
-  that verdict is your job. An approval says the diff is ready, not that it ships, and you approve a diff you
-  *reviewed*, never one you *authored*.
+- **Merge or close** — see the [root contract](../../AGENTS.md); it binds every agent, and wearing this hat is
+  no exception. **Approving or requesting changes is *not* on this list** — that verdict is your job. An
+  approval says the diff is ready, not that it ships, and you approve a diff you *reviewed*, never one you
+  *authored*.
 - **Push commits to the branch under review**, unless asked to apply your own findings.
 - **Resolve your own threads.** The author resolves them once addressed.
 - **Redesign.** Review what was built against what it claims to do. If a different design would be better, ask —

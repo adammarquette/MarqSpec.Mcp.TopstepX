@@ -92,10 +92,11 @@ jobs:
       # which contain a citation-shaped substring, and the literal `R-#` placeholder, which was on thirteen
       # lines across ten files on `develop` at 8a2302d.
       #
-      # SIXTEEN OF ITS TWENTY-EIGHT CASES EXIST BECAUSE A RULE THE GATE'S COMMENTS ASSERT WAS HELD BY NOTHING,
-      # over five rounds, and every round found something -- including the ones auditing the previous round's
-      # fix. Run the gate against a broken copy of itself before believing this step is worth anything, and
-      # sweep the rules its comments enumerate rather than only the ones you just changed.
+      # TWENTY-ONE OF ITS THIRTY-THREE CASES EXIST BECAUSE A RULE THE GATE'S COMMENTS ASSERT WAS HELD BY
+      # NOTHING, over six rounds, every round finding something -- including the ones auditing the previous
+      # round's fix. It carries a DECISION LEDGER for that reason: every decision the gate makes, against the
+      # case that kills it, graded mutated / exercised / unreachable. Run the gate against a broken copy of
+      # itself before believing this step is worth anything.
       - name: Prove the requirement-id gate can still fail
         run: ./scripts/check-requirement-ids-selftest.sh
 

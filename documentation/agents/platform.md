@@ -314,11 +314,10 @@ The root contract's five apply here unchanged. Four land specifically on the pip
   gate named `documentation/notes.md`; the gate prints `documentation/notes.md:1`, and the filename is a
   substring of the location — so three separate ways of destroying the line number passed every case, and a
   failure an author cannot act on read as a pass. Assert the **whole** field the reader will use, and mutate
-  the subject before believing the self-test: **sixteen of that file's twenty-eight cases exist because a
-  rule its own comments assert was held by nothing**, over five rounds, and every round found something —
-  including the rounds auditing the previous round's fix. **Sweep the rules a comment enumerates**, not
-  only the one just changed: that gate's closer states three CommonMark conditions and shipped with cases
-  for two of them.
+  the subject before believing the self-test: **twenty-one of that file's thirty-three cases exist because
+  a rule its own comments assert was held by nothing**, over six rounds, and every round found something —
+  including the rounds auditing the previous round's fix. That gate's closer states three CommonMark
+  conditions and shipped with cases for two of them.
 - **A PR into a non-integration base used to get no CI at all, and read as `CLEAN`** (gh#60). `ci.yml` and
   `codeql.yml` filtered `pull_request` to `[develop, staging, main]`, so a stacked PR onto a feature branch
   produced zero runs — and because the required checks hang off the `develop` ruleset, nothing was pending or
@@ -509,16 +508,19 @@ this count together whenever a step is added**; the count is the only thing tell
 - [`check-requirement-ids.sh`](../../scripts/check-requirement-ids.sh), which resolves **every `R-#` and
   `Q-#` cited anywhere in the tree** against [the PRD](../prd.md)'s own definitions and fails naming file,
   line and symbol — and [`check-requirement-ids-selftest.sh`](../../scripts/check-requirement-ids-selftest.sh),
-  which requires that gate to reject thirteen known faults **by name, by symbol and by location** and makes
-  fifteen assertions on correct input it must accept. `check-doc-links.sh` proves a relative *link* resolves;
+  which requires that gate to reject sixteen known faults **by name, by symbol and by location**, makes
+  seventeen assertions on correct input it must accept, and carries a **decision ledger** — the third gate
+  here to need one. `check-doc-links.sh` proves a relative *link* resolves;
   nothing proved an *id* did, and gh#172 found two citations naming another repository's PRD entirely.
   Three things in it are worth carrying forward, because each was a defect first:
   - **The left word boundary.** An ADR number contains a citation-shaped substring, so without it the gate
     reddens every line that names an ADR — twelve phantom ids on this tree.
-  - **The definition side is the only fail-open half, and it needs fence and comment awareness.** Every
-    other misreading makes a real id look undefined, which is loud; reading a *fenced example* or a
-    *commented-out* requirement as a definition invents a symbol, and a citation of it then passes. Shipped
-    that way and caught in review (#195) by appending a four-line fenced example to the real PRD.
+  - **The definition side is where it fails OPEN, and it needs fence and comment awareness.** Elsewhere a
+    misreading makes a real id look undefined, which is loud; reading a *fenced example* or a
+    *commented-out* requirement as a definition invents a symbol, and a citation of it then passes.
+    Shipped that way and caught in review by appending a four-line fenced example to the real PRD. This
+    line said *the only* fail-open half until a later round found a second one inside it — see the
+    failure-direction rule above.
   - **`git ls-files` names a nested repository as a directory**, and a directory makes `grep` exit 2 — which
     this gate rightly refuses to read as "no citations", and therefore reported as unreadable on the
     maintainer's own checkout, where agent worktrees sit outside `.gitignore`'s reach. Nested repositories
@@ -611,8 +613,12 @@ than twice, and the gate learned to read a second file. Three consequences worth
   with a recorded reason for the handful that are unreachable from a fixture. Adding a decision without
   adding a row is then the same visible omission the ledger exists to catch. It also forces the honest
   distinction between *mutated* and merely *exercised*, which is where the unpinned rules were hiding.
-  Reach for this the third time a reviewer finds the same shape; PR #195 arrived at it independently on
-  `issue-link`, which is the second gate in this repository to need it.
+  Reach for this the third time a reviewer finds the same shape. **#202 arrived at it independently on
+  `issue-link`** — the second gate here to need one — and #195 wrote a third for
+  `check-requirement-ids.sh` after five review rounds had found six unpinned rules one at a time. (This
+  sentence named #195 as the `issue-link` one until #195 corrected it: the two landed within ninety
+  seconds of each other, which is exactly when a cross-PR claim is least checkable and most likely to be
+  written from memory.)
 - **A ledger is a claim too, and it lies in two specific ways — audit it against the script, do not re-read
   it.** Both happened on the first one written, and a reviewer found both by walking the code rather than
   the table. **A grade can promise more than its evidence:** a row marked as individually mutated named one

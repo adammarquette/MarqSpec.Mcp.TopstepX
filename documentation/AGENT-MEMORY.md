@@ -18,6 +18,23 @@ ADR, `AGENTS.md`, or the code, **put it there instead**.
 
 ## Practices to follow
 
+- **[2026-08-26] `dotnet test` on this Windows box can report NO failures because it ran NO tests — Smart
+  App Control blocks the freshly built test assembly (gh#242).** The run prints
+  `An Application Control policy has blocked this file. (0x800711C7)`, then
+  `No test is available in …Tests.dll`, and a script that greps for failing test names comes back empty —
+  which reads as "nothing broke". It is the `Total:` line the Coding contract already tells you to read, and
+  this is the failure it is there for: **`Total: 554` is the result; the absence of a `Failed` line is not.**
+  A mutation-testing loop is where this bites hardest, because "no test reddened" is the answer you are
+  actually looking for.
+  - **The verdict is cached per file hash, and builds here are deterministic** (`Directory.Build.props`), so
+    the same sources rebuild to the same bytes and stay blocked however many times you clean and retry.
+    Editing the test file at all gives a new hash and a fresh verdict, which is why it looks intermittent.
+    Mutating *product* code does not help: it changes `Domain.dll`, not the test assembly being blocked.
+  - **Do not turn the policy off** — it is a machine security setting, and `VerifiedAndReputablePolicyState`
+    under `HKLM:\SYSTEM\CurrentControlSet\Control\CI\Policy` is not an agent's to edit. Confirm the diagnosis
+    from `Microsoft-Windows-CodeIntegrity/Operational` (events 3033/3077 name the blocked file) and, if it
+    will not clear, fall back to CI — the unit job on `ubuntu-latest` is the gate that counts anyway.
+
 - **[2026-08-25] A conflict resolver that never ran let `git rebase` commit conflict markers, silently
   (gh#187).** The script sat at `/tmp/fix.py`; **the `python` on PATH is Windows-native and cannot see MSYS's
   `/tmp`**. Every iteration printed `can't open file` to stderr, the loop staged the still-conflicted file

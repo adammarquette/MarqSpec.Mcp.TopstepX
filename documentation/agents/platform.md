@@ -300,14 +300,25 @@ The root contract's five apply here unchanged. Four land specifically on the pip
   `^( {4}|\t)` under `grep -E`, where `\t` is the **letter t** — so every line beginning "the" counted, and
   the number landed in this contract six times too large. Evidence for a decision has to be re-derived by a
   second route before it is written down; `grep -P '^( {4}|\t)'` or a character scan, never ERE's `\t`.
+  **A FAILURE DIRECTION IS A MEASUREMENT, NOT A DEDUCTION** (gh#182). The rule above — ask which way
+  over-stripping fails for the specific construct — is worth nothing if the answer is reasoned instead of
+  run. `check-requirement-ids.sh` argued twice that a construct's over-detection was harmless and was wrong
+  both times, in opposite halves of the same parser: over-detecting a fence CLOSER ends an example early and
+  turns the rest of it into definitions, and over-detecting an OPENER — argued safe, on the true observation
+  that CommonMark reads a four-column marker as an inert code block — flips the fence state, so the next
+  real opener is eaten as a closer and everything after it is read live. Both were found by building the
+  input and running it; neither was visible from the file. **Build the shape and run it, and treat a
+  direction claim standing next to a deliberate design choice as the load-bearing part of that choice.**
   **And a self-test's needle is a text match too, so a needle that is a PREFIX of the right answer is
   satisfied by an answer missing the rest of it** (gh#182). `check-requirement-ids-selftest.sh` asserted the
   gate named `documentation/notes.md`; the gate prints `documentation/notes.md:1`, and the filename is a
   substring of the location — so three separate ways of destroying the line number passed every case, and a
   failure an author cannot act on read as a pass. Assert the **whole** field the reader will use, and mutate
-  the subject before believing the self-test: **half of that file's twenty-four cases exist because a
-  mutation walked past the ones already there**, over four rounds, and every round found something —
-  including the rounds auditing the previous round's fix.
+  the subject before believing the self-test: **sixteen of that file's twenty-eight cases exist because a
+  rule its own comments assert was held by nothing**, over five rounds, and every round found something —
+  including the rounds auditing the previous round's fix. **Sweep the rules a comment enumerates**, not
+  only the one just changed: that gate's closer states three CommonMark conditions and shipped with cases
+  for two of them.
 - **A PR into a non-integration base used to get no CI at all, and read as `CLEAN`** (gh#60). `ci.yml` and
   `codeql.yml` filtered `pull_request` to `[develop, staging, main]`, so a stacked PR onto a feature branch
   produced zero runs — and because the required checks hang off the `develop` ruleset, nothing was pending or
@@ -499,7 +510,7 @@ this count together whenever a step is added**; the count is the only thing tell
   `Q-#` cited anywhere in the tree** against [the PRD](../prd.md)'s own definitions and fails naming file,
   line and symbol — and [`check-requirement-ids-selftest.sh`](../../scripts/check-requirement-ids-selftest.sh),
   which requires that gate to reject thirteen known faults **by name, by symbol and by location** and makes
-  eleven assertions on correct input it must accept. `check-doc-links.sh` proves a relative *link* resolves;
+  fifteen assertions on correct input it must accept. `check-doc-links.sh` proves a relative *link* resolves;
   nothing proved an *id* did, and gh#172 found two citations naming another repository's PRD entirely.
   Three things in it are worth carrying forward, because each was a defect first:
   - **The left word boundary.** An ADR number contains a citation-shaped substring, so without it the gate

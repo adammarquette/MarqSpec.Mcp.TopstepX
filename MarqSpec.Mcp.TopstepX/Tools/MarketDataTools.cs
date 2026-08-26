@@ -19,6 +19,7 @@ public sealed class MarketDataTools(
     TopstepXDbContext database,
     InstrumentRegistry registry,
     IndicatorCatalog catalog,
+    LevelMethodCatalog levelMethods,
     IMarketDataGateway gateway,
     ToolGuards guards,
     StoreAvailabilityHolder store,
@@ -28,6 +29,7 @@ public sealed class MarketDataTools(
     private readonly TopstepXDbContext _database = database;
     private readonly InstrumentRegistry _registry = registry;
     private readonly IndicatorCatalog _catalog = catalog;
+    private readonly LevelMethodCatalog _levelMethods = levelMethods;
     private readonly IMarketDataGateway _gateway = gateway;
     private readonly ToolGuards _guards = guards;
     private readonly StoreAvailabilityHolder _store = store;
@@ -40,6 +42,15 @@ public sealed class MarketDataTools(
     /// the description was rejected before its call reached any code (gh#70).
     /// </remarks>
     public const int DefaultLookbackBars = 500;
+
+    /// <summary>The level method <c>get_key_levels</c> detects with.</summary>
+    /// <remarks>
+    /// Resolved through <see cref="LevelMethodCatalog"/> rather than called directly, so the path that serves
+    /// levels today is the path every later method arrives on (gh#243). The tool surface carries no method
+    /// argument yet — selecting one per call is a later card on gh#232 — so this is the whole vocabulary in
+    /// use, and what the tool returns is unchanged either way.
+    /// </remarks>
+    private const string SwingLevelMethodName = "swing";
 
     /// <summary>Reads OHLCV bars for a window.</summary>
     /// <param name="symbol">The instrument symbol.</param>
@@ -301,7 +312,8 @@ public sealed class MarketDataTools(
         IReadOnlyList<decimal?> scale = atr.Compute(detectable);
 
         KeyLevelOptions options = new();
-        IReadOnlyList<KeyLevelZone> zones = KeyLevels.Detect(detectable, scale, options);
+        IReadOnlyList<KeyLevelZone> zones =
+            _levelMethods.Resolve(SwingLevelMethodName).Detect(detectable, scale, options);
 
         return new ToolPayloads.LevelSet(
             [.. zones.Select(z => new ToolPayloads.LevelInfo(

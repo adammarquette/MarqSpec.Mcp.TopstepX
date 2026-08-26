@@ -361,6 +361,7 @@ public sealed class CalendarEndGuardTests : IDisposable
             _database,
             new InstrumentRegistry(Defaults()),
             _catalog,
+            new LevelMethodCatalog(),
             _gateway,
             Guards(),
             new StoreAvailabilityHolder(),

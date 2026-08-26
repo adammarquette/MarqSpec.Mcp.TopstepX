@@ -347,6 +347,7 @@ public sealed class BucketSpanGuardTests : IDisposable
             _database,
             new InstrumentRegistry(capped),
             _catalog,
+            new LevelMethodCatalog(),
             _gateway,
             new ToolGuards(capped),
             new StoreAvailabilityHolder(),

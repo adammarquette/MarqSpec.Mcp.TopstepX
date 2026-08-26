@@ -297,6 +297,7 @@ public sealed class ContractRollReportingTests : IDisposable
             _database,
             new InstrumentRegistry(wrapped),
             catalog,
+            new LevelMethodCatalog(),
             gateway,
             new ToolGuards(wrapped),
             new StoreAvailabilityHolder(),

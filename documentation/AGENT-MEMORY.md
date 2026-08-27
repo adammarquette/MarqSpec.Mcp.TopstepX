@@ -8,11 +8,35 @@ home yet in the PRD, an ADR, or the code.
 ADR, `AGENTS.md`, or the code, **put it there instead**.
 
 **How to use it**
-- **Read it before starting work.** Cheap; just read it.
+- **Read it before starting work.** [`README.md`](README.md) prices it; budget that before you open it.
+  There is no index into it, so the read is the whole file — which is why the rule below exists.
 - **Append, don't overwrite.** Date entries `YYYY-MM-DD` so the history stays legible.
-- **Promote when it grows up.** If a note here becomes stable enough for a formal document, move it and leave
-  a one-line pointer behind.
+- **Promote when it grows up.** If a note here becomes stable enough for a formal document, move it there —
+  and then retire it here, under the rule below.
 - Keep entries terse and concrete. This is shared working memory, not an essay.
+
+**When an entry leaves — the retirement rule (gh#254).** Appending is half a lifecycle. Without the other
+half, this file is charged to every agent on every task and never gives anything back. An entry earns its
+place by being the **only** copy of a practice, and it leaves when it stops being one. The test is never its
+age — it is **what fails without it**:
+
+- **Enforced** — a gate, a test, an `.editorconfig` stanza or a workflow now fails on the mistake *and names
+  the remedy in its own output*. The machine is the copy that cannot go stale. If the failure does not name
+  the remedy, fix the gate rather than keep the entry.
+- **Contracted** — `AGENTS.md`, a role or subtree contract, an ADR or `CONTRIBUTING.md` states it where the
+  work happens. This file is overflow, not a second copy, and the second copy is the one nobody corrects.
+- **Superseded** — a later entry corrects it, or the ground it described moved. Not *old*: **contradicted**.
+  The correction stays; the corrected text goes, because a reader meeting the stale half first acts on it.
+- **Tracker state** — how many PRs are open, which sibling is fixed, what is still pending. That is a card's
+  job. This file has no expiry and cannot keep it true.
+
+**When only half of an entry found a home, retire that half** — what is left is what had none. **Nothing
+leaves for being long, narrow or unglamorous:** a hard-won practice with nowhere else to live stays, and so
+does the worked evidence under it — *provided that evidence is pinned to a sha and not to a branch, a date or
+"the current tree"*. An entry's own pull request can move `origin/develop` out from under it (gh#262), so the
+risk here is a mutable reference, not age. **Record every removal in the retiring pull request, with where
+the lesson went**, so `git log -- documentation/AGENT-MEMORY.md` is the ledger and this file does not become
+one.
 
 ---
 
@@ -113,24 +137,15 @@ ADR, `AGENTS.md`, or the code, **put it there instead**.
     `develop` while gh#187 grows that same file on a parallel branch — about 10% out the moment both land,
     inside the band, green.
 
-- **[2026-08-23] A cross-cutting tool rule belongs in an MCP *filter*, not in each tool.** The SDK (2.2.0)
-  has a request-filter pipeline — `AddMcpServer().WithRequestFilters(f => f.AddCallToolFilter(...))` — and
-  every `tools/call` goes through it, so a tool added tomorrow is covered by wiring rather than by its author
-  remembering a `try`. `StoreFaultGuard` is the first user (gh#89). **A filter can throw `McpException`** and
-  it reaches the caller as a tool error exactly as one thrown inside a tool does. Reach for this the next time
-  a rule would otherwise be repeated per tool — that repetition is what gh#69, gh#81 and gh#89 each were.
-  A filter is resolvable in a test from `IOptions<McpServerOptions>.Value.Filters.Request.CallToolFilters`,
-  so *"the composition root registers it"* is a unit test rather than a hope.
-- **[2026-08-22] The venue seam is the safety boundary, not just a testing convenience.** `IMarketDataGateway`
-  has no order method, so a caller holding one has nothing to reach for. Keep it that way: if a task seems to
-  need an order call, the task is wrong or it belongs in `trading-copilot`. `scripts/check-no-order-path.sh`
-  enforces it, and **that script's own test is to add a violation and watch it go red** — a gate nobody has
-  seen fail is a gate nobody should trust. That red run is only the first of the two a new gate needs; the
-  second is in the [Coding contract](../MarqSpec.Mcp.TopstepX/AGENTS.md) under Tests.
-- **[2026-08-22] Every expected value in an indicator test is worked out by hand, never captured from a run.**
-  A test that asserts the code does what the code does passes forever and proves nothing. Choose series where
-  the arithmetic is **exact in decimal** — EMA at period 2 gives a smoothing factor of 2/3 and forces
-  approximate comparisons that hide real drift; period 3 gives 0.5 and does not.
+- **[2026-08-23] How to build the MCP *filter* the architecture doc's store-fault boundary describes.** The
+  SDK (2.2.0) pipeline is `AddMcpServer().WithRequestFilters(f => f.AddCallToolFilter(...))`. **A filter can
+  throw `McpException`** and it reaches the caller as a tool error exactly as one thrown inside a tool does,
+  and it is resolvable in a test from `IOptions<McpServerOptions>.Value.Filters.Request.CallToolFilters`, so
+  *"the composition root registers it"* is a unit test rather than a hope. Reach for one the next time a rule
+  would otherwise be repeated per tool — that repetition is what gh#69, gh#81 and gh#89 each were.
+- **[2026-08-22] Choosing the series is the half of *hand-checked numbers* the Coding contract does not
+  state.** Pick one whose arithmetic is **exact in decimal** — EMA at period 2 gives a smoothing factor of
+  2/3 and forces approximate comparisons that hide real drift; period 3 gives 0.5 and does not.
 - **[2026-08-22] Don't put `--` inside an XML comment.** It is illegal, and MSBuild's failure for a malformed
   `Directory.Packages.props` is `NU1015: PackageReference items do not have a version specified` across every
   project — which reads as a Central Package Management problem and is not one. Cost about ten minutes.
@@ -173,42 +188,13 @@ ADR, `AGENTS.md`, or the code, **put it there instead**.
   behind the two-runs rule** in the [Coding contract](../MarqSpec.Mcp.TopstepX/AGENTS.md) (Tests). Every one
   had been watched failing on the bug it was written for; none against the input it would actually meet.
   `SnapshotDefaultsTests`' whole-number boundary (gh#49) excluded every following period, so a number ending
-  a sentence never matched — it passes today only because that description writes "100 of each", so the first
-  rewording would have turned it red on correct text (`29a0d84`, gh#82). `check-paced-paging.sh` (gh#43) went
+  a sentence never matched — at **`fecc463`** it passes only because that description still writes "100 of
+  each" (`SnapshotTools.cs:114`), so the first rewording would have turned it red on correct text (`29a0d84`, gh#82). `check-paced-paging.sh` (gh#43) went
   green on an unpaced loop that kept a comment naming the method. `ToolSchemaTests` (gh#70) keyed on four
   description phrases, so rewording silenced it — four of eight parameters were green only because the same
   commit reworded them — and it went **red on correct text** twice, on backticks and on `e.g. ES`.
   `SerializationFailureTests` (gh#73)'s interceptor also matched EF's write batches, spending both firings in
   attempt one and leaving the retry unopposed. The reviewer found all four, not the author (gh#87).
-- **[2026-08-24] Never `git merge develop` into your branch — one merge commit makes the branch unmergeable,
-  permanently (gh#146).** `protect-develop` allows **`rebase` only**, and *Rebase and merge* cannot replay a
-  merge commit. The pull request then sits at **"All checks have passed"** beside **"Unable to merge
-  (rebase) — Cannot merge at this time"** and names nothing. **Those two strings together are the symptom** —
-  they are here so you can search for them after the fact. Catch up with a rebase instead, which you will do
-  often: merges into `develop` are serialised, so *every* open PR falls behind after *every* merge.
-  ```bash
-  git fetch origin && git rebase origin/develop && git push --force-with-lease
-  ```
-  - **GitHub's own *Update branch* button merges by default** — the same mistake in one click, offered from
-    the very page telling you the branch is behind. Its dropdown's *Update with rebase* is the safe half.
-    It was pressed on **this entry's own pull request** while that PR sat approved and green, merging
-    `develop` in as `a60f8bc`; the check below caught it and the rebase below undid it, tree unchanged.
-  - **A Dependabot branch merged into is disowned forever:** *"Looks like this PR has been edited by someone
-    other than Dependabot. That means Dependabot can't rebase it."* Every later `@dependabot rebase` is
-    refused, and the branch is manual from then on. That is #143.
-  - **Already merged?** A plain `git rebase origin/develop` drops the merge commits by itself. What it cannot
-    carry is a conflict you resolved *inside* one, so expect to re-resolve per commit — do that rather than
-    collapsing the branch with `reset --soft` + a single commit, which is how **#131 lost five curated
-    commits** to a squash whose message just lists their five subjects.
-  - **It is self-reinforcing, which is why four PRs did it at once.** The merge genuinely brings the branch up
-    to date and the checks genuinely go green, so the agent that did it has every reason to think it was
-    right; the bill arrives hours later at the merge button. On 2026-08-24 #131, #139, #141 and #143 were all
-    approved, all green and all unmergeable simultaneously.
-  - **This is `develop` only.** `staging` and `main` are the opposite — **`merge` only** — so the ladder's
-    promotions *are* merge commits by construction. Do not "fix" one of those.
-  - **Enforced since gh#146, not merely documented:** `commit-hygiene` fails a PR into `develop` whose range
-    contains a merge commit, and prints the remedy above. Why enforcement was chosen, and how the check is
-    kept off the promotion rungs, is in the [platform contract](agents/platform.md).
 
 ## Notes & communications
 
@@ -262,12 +248,13 @@ ADR, `AGENTS.md`, or the code, **put it there instead**.
   - Found during the reviews of gh#73/PR #79 and gh#82/PR #83, both of which hit it from both locations.
 
 - **[2026-08-23] Docker IS up now, so the integration tier runs locally — and the Application Control block
-  is INTERMITTENT, not gone.** Two corrections to the entries below, from gh#42, and they point in opposite
-  directions.
+  is INTERMITTENT, not gone.** Two corrections from gh#42 to what this file said on 2026-08-22, pointing in
+  opposite directions. Both corrected entries were retired under gh#254; the compose command and the Smart
+  App Control rationale they carried are in `docker-compose.dev.yml`'s header.
   - **The tier runs.** Docker Engine 29.6.2 is up on Adam's machine; `dotnet test
     MarqSpec.Mcp.TopstepX.IntegrationTests` brought up Testcontainers and passed 55 tests. **Run it before
-    pushing a migration** — the "Docker Desktop is not up" note below is what nearly shipped a migration
-    nothing had ever applied.
+    pushing a migration** — the retired note said the tier could not run here at all, which is what nearly
+    shipped a migration nothing had ever applied.
   - **`0x800711C7` still bites, unpredictably.** The same host `dotnet test` passed twice and then failed on
     the third run with *"An Application Control policy has blocked this file"* — on the freshly rebuilt
     `MarqSpec.Mcp.TopstepX.dll`, with no code change between. **A host run succeeding once does not mean the
@@ -322,12 +309,9 @@ ADR, `AGENTS.md`, or the code, **put it there instead**.
     fire when the path has no `/` — `git show "origin/develop:AGENTS.md"` works bare, which is exactly the
     kind of inconsistency that makes it feel like the file's fault. `MSYS_NO_PATHCONV=1` fixes it.
 
-- **[2026-08-23] A value computed at full `decimal` precision never equals the same value read back from a
-  `numeric(18,8)` column.** Round to `TopstepXDbContext.PriceScale` before comparing, or the comparison
-  silently always answers "changed". This made the indicator projection's skip-unchanged guard dead code for
-  the whole of Phase 2 (gh#37). **Applies to any future `numeric(18,8)` column compared this way.**
-- **[2026-08-26] Same shape as that `numeric(18,8)` trap, one type over: a `ValueTuple` projected inside a
-  LINQ `Select` translates, then throws on materialisation — and the unit tier cannot see it (gh#282).**
+- **[2026-08-26] Same shape as the `numeric(18,8)` trap ADR-0006 states as its *general form*, one type over:
+  a `ValueTuple` projected inside a LINQ `Select` translates, then throws on materialisation — and the unit
+  tier cannot see it (gh#282).**
   `.Select(v => ValueTuple.Create(v.Indicator, v.Period))` compiles to a Postgres **row constructor**,
   `SELECT (i0."Indicator", i0."Period") FROM (SELECT DISTINCT …)`, whose column type is `record`. Npgsql
   refuses to read one as a tuple: `InvalidCastException` — *"is not supported for fields having
@@ -340,70 +324,27 @@ ADR, `AGENTS.md`, or the code, **put it there instead**.
 - **[2026-08-23] A CLI verb with no test and no run is not delivered.** `rebuild-indicators` shipped in Phase 2
   and had never been executed anywhere. Running it once, twice in a row, exposed gh#37 immediately.
 
-- **[2026-08-22] `dotnet test` is blocked on Adam's machine by Windows Application Control** (`0x800711C7`,
-  "An Application Control policy has blocked this file"). It is not a code failure. Run the suite in the
-  pinned SDK container instead, which is what `docker-compose.dev.yml` exists for:
-  `docker compose -f docker-compose.yml -f docker-compose.dev.yml run --rm --no-deps sdk test <project>`.
-  The same applies to `dotnet format`.
-- **[2026-08-22] Test the COMPOSITION ROOT, not just the types.** Every unit test here builds its subject by
-  hand, so none of them touched DI — and a captive-dependency bug (singleton gateway consuming the scoped
-  vendor client) killed the container at `builder.Build()` with everything green. `CompositionRootTests` now
-  builds the real container with `ValidateOnBuild` + `ValidateScopes`. **Cover the configured AND unconfigured
-  venue paths**: the fault only existed on the configured one, which is the path no local run without a
-  `.env` ever reaches.
-- **[2026-08-22] Register the MCP tool types explicitly.** The SDK activates a tool per call and resolves its
-  constructor parameters from DI *without* recursively activating unregistered types. `SnapshotTools` composes
-  `MarketDataTools`, so leaving them unregistered failed at call time on one tool while startup and
-  `tools/list` both looked healthy.
-
-- **[2026-08-22] Absent dependencies must degrade, not crash — this is now a general rule (ADR-0007).** An MCP
-  client launches this server as a child process, so a process that exits is reported as a **transport
-  failure** with no mention of the cause. Both the store and the venue therefore refuse *at the point of use*
-  with a message naming the fix, and the server always starts. If you add a third dependency, follow the same
-  shape. The one exception is a migration failing against a database that **did** answer: that is a defect
-  here, not an environment fact, and it still fails the process.
-- **[2026-08-22] `gh pr checks` HIDES a cancelled required check.** It reports the latest run per name, so a
-  merge blocked by a cancelled required context shows as all-green there. Diagnose with
-  `gh pr view N --json statusCheckRollup` instead, and unblock with `gh run rerun <cancelled-run-id>`. Cost a
-  real diagnosis on gh#25 before the cause was clear; the workflows now set `cancel-in-progress: false`
-  (gh#26), so it should not recur.
 - **[2026-08-22] `dotnet run` is safe for the stdio transport** — checked, not assumed. MSBuild writes its
   build output to stderr, and this server's logging is stderr-only, so the first line on stdout is clean
   JSON-RPC. That is why the README can tell an operator to register `dotnet run --project ...` directly
   instead of publishing first.
 
-- **[2026-08-22] The integration tier does not run locally on Adam's machine — Docker Desktop is not up.**
-  `dotnet test` on `MarqSpec.Mcp.TopstepX.IntegrationTests` fails at container start with
-  `DockerUnavailableException`, and **that is not a code failure**. The tier runs in CI on `ubuntu-latest`,
-  where it passed on gh#14 — so hypertables, the HNSW index, the CHECK constraints and upsert idempotence
-  are proven, just not from here. Start Docker Desktop before running it locally, and do not read a local
-  Docker failure as a broken schema.
-- **[2026-08-22] `dotnet ef` fights the style rules, and the fix is scoped exemptions.** Generated migrations
-  use block-scoped namespaces and a UTF-8 BOM. `.editorconfig` exempts `**/Migrations/*.cs` from IDE0161,
-  IDE0055 and the charset rule rather than reformatting generated files by hand after every
-  `migrations add` — which nobody keeps up, and which turns the next migration into a red build.
 - **[2026-08-22] Order matters in `BarCacheService`: save the bars BEFORE projecting indicators.** The
   projector reads the series back with a query, and **a query does not see rows that are only tracked**.
   Projecting first produced zero indicator values, silently, with no error anywhere — caught only because a
   test asserted the indicators existed. Both saves sit inside one transaction where the provider has them.
-- **[2026-08-22] The venue client is `MarqSpec.Client.ProjectX` 2.1.0, and its API was read from the
-  PACKAGE, not from the source branch.** The jump was 1.0.4 → 2.0.0 → 2.1.0, a major bump, so the published
-  surface was extracted from the nupkg's XML docs before writing the adapter. That caught one real difference:
-  `ProjectXApiException` exposes `StatusCode`, not the `ErrorCode` the older source carried. **Do this again on
-  the next bump** — a major version is a statement that something changed, and guessing which part is how a
-  wrong error code ends up in a log nobody questions.
-- **[2026-08-22] A published version is not the same claim as a released one.** ADR-0001 killed csproj-versus-tag
-  drift; this repo immediately hit the next one along — **tag versus feed**. `MarqSpec.Client.ProjectX` has a
-  `v1.0.5` tag that never reached nuget.org, so from inside that repo it looks released and from outside it
-  does not exist. Worth a check in its release workflow that the tag it just cut actually resolves on the feed.
-  Detail: [ADR-0003](adr/0003-client-as-package.md) *Update (2026-08-22)*, gh#13.
+- **[2026-08-22] On the next `MarqSpec.Client.ProjectX` bump, extract the surface from the nupkg's XML docs
+  before writing against it**, not from the client repo's source branch — the two have disagreed before, and
+  a major version is a statement that something changed. Guessing which part is how a wrong error code ends
+  up in a log nobody questions. What the 1.0.4 → 2.1.0 jump caught is in
+  [ADR-0003](adr/0003-client-as-package.md) *Update (2026-08-22)*.
 
 - **[2026-08-23] The `.worktrees/` sweep is swept, not landed — verify before you trust it (gh#40).** All
-  four siblings were checked; `trading-copilot` already had the entry, and the other three each got a PR.
-  **All three are still open.** They are tracked on gh#40, not here — their status changes and this file
-  has no expiry. **The template's is blocked by its own gh#12**: `{{REPO_NAME}}` is not a valid C# identifier,
-  so its build and CodeQL can never pass. That is the repo gh#40 called the real fix, since every repo
-  generated from it inherits whatever it ignores — so **before generating one, run
+  four siblings were checked; `trading-copilot` already had the entry, and the other three each got a PR
+  whose state is the sibling repository's to report and not this file's. **The template's is blocked by its
+  own gh#12**: `{{REPO_NAME}}` is not a valid C# identifier, so its build and CodeQL can never pass. That is
+  the repo gh#40 called the real fix, since every repo generated from it inherits whatever it ignores — so
+  **before generating one, run
   `git check-ignore -v .worktrees/` against the template's `develop` yourself; do not assume the PR merged.**
   Durable regardless: no repo in the family has ever tracked a path under `.worktrees/`, and the only
   gitlinks anywhere are `trading-copilot`'s four declared submodules under `external/`.

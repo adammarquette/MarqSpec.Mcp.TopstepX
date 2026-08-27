@@ -158,8 +158,12 @@ The server serves OHLCV bars for a futures instrument at a requested resolution 
   differs.
 - **R-3.3** A zone's support/resistance label is assigned **relative to the current price**, not to how it
   formed. A broken resistance is today's support.
-- **R-3.4** Detection never uses bars after the pivot it reports — a level confirmed only by what came before it
-  repaints as soon as more data arrives.
+- **R-3.4** Detection never reports a pivot that later bars have not confirmed — a level confirmed only by
+  what came before it repaints as soon as more data arrives. The confirmation window is `PivotRightLookback`,
+  so the newest bars of any series can never produce a level and that lag is the price of the rule.
+  *(The head clause read "never uses bars after the pivot it reports" until gh#245, which is the opposite of
+  what the trailing clause and the detection have always done: the bars after a pivot are exactly what
+  confirms it. The requirement is unchanged; the sentence now says it.)*
 - **R-3.5** Detection never spans a contract roll. A level built from the expiring quarter's bars sits at a
   price the contract in front has never traded, and it is indistinguishable from a level price is about to
   reach. When the requested lookback spans a roll, detection is confined to the contract in front and the
@@ -172,6 +176,15 @@ The server serves OHLCV bars for a futures instrument at a requested resolution 
 - **R-3.7** A session boundary comes from the **calendar**, never from gaps in the series, and a period the
   loaded window does not reach the opening of is **absent** rather than taken from the part of it the window
   holds. A prior "day" that did not trade is not a prior day, and a range still forming is not a level.
+- **R-3.8** Overlapping zones merge **whichever side of price each of them formed on**, and the merged zone
+  takes its kind from its strongest constituent. A price defended from below and rejected from above is one
+  level traded twice, not two levels touched once, and `touchCount` is the field that says so
+  ([ADR-0015](adr/0015-levels-merge-across-support-and-resistance.md)).
+- **R-3.9** A level the detection cannot report is **absent**. A zone wider than `MaxZoneWidthPercent` of its
+  own price is dropped rather than narrowed to the cap, and a level beyond `MaxLevels` is dropped rather than
+  folded into the survivor beside it — either would report a band at a price nothing was measured at. The
+  parameters detection ran under are reported with every answer, so a list that stopped at the cap can be
+  told from a market that produced that many levels.
 
 ## R-4 — Read-only venue boundary
 

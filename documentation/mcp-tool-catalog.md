@@ -266,12 +266,20 @@ dropped when there is nothing to report, and a caller testing `reading.value ===
 `contractId` is absent for **two** different reasons — there was no value, or the bar's provenance was never
 recorded — so an absent one is never evidence that two readings share a contract.
 
-### `get_key_levels(symbol, resolutionMinutes, lookbackBars?, pivotSource?, pivotLookback?)`
+### `get_key_levels(symbol, resolutionMinutes, lookbackBars?, pivotSource?, pivotLookback?, pivotRightLookback?)`
 Support and resistance as **zones**, not lines.
 
 Returns `{ levels: [{ timeframeMinutes, bottom, top, midpoint, kind, significance, touchCount,
 formedAt }], contracts, detectedOverBars, detection: { source, pivotLookback, zoneAtrMultiple,
-minSignificance } }`.
+minSignificance, pivotRightLookback, maxZoneWidthPercent, maxLevels } }`.
+
+**gh#245 changed what this returns, deliberately, and it is the kind of change no compiler reports.**
+Overlapping zones now merge **whichever side of price each of them formed on** — so where a support and a
+resistance held the same prices you used to get two zones with one touch each, you now get one wider zone
+with two. Fewer levels, wider bounds, higher `touchCount`, and the reasoning with the before/after output is
+[ADR-0015](adr/0015-levels-merge-across-support-and-resistance.md). The pivot window also became
+**asymmetric** — 20 bars of left dominance, 15 of right confirmation, where it was 5 either side — so an
+omitted `pivotLookback` asks for a very different detection than it used to.
 
 **Detection is confined to the contract in front.** A level built from the expiring quarter's bars
 sits at a price the current contract has never traded, and it reads exactly like a level price is
@@ -304,22 +312,41 @@ not a prior day, and a range still forming is not a level. At 500 five-minute ba
 forty hours, so prior-week levels will normally be absent and prior-day levels often will be — ask for more
 `lookbackBars` rather than reading the absence as a market without structure.
 
-**Detection has four parameters. Two are per call, two are the operator's only, and the split is deliberate
-rather than partial.** `pivotSource` and `pivotLookback` say *what is being asked* — which price a pivot is
-measured from, and how structural a level has to be — so a caller can compare two readings of the same bars
-in one session. The zone width (`KeyLevels__ZoneAtrMultiple`) and the significance floor
-(`KeyLevels__MinSignificance`) are configuration only, because they are the calibration that makes two of
-this server's answers comparable at all: gh#232's confluence score weighs zones from several methods against
-each other, and a width that moved per request would make two scores incomparable without either being wrong.
+**The pivot window is asymmetric, and both edges are per call.** `pivotLookback` is how many bars to the
+**left** a pivot must dominate; `pivotRightLookback` is how many to the **right**, which is the confirmation
+and therefore also the lag — the last `pivotRightLookback` bars of any series can never produce a level, so
+the newest structure is always missing. Detection needs `pivotLookback + pivotRightLookback + 1` bars to find
+even one pivot. Neither may be below 1: a pivot judged only by the bars before it repaints as soon as the
+next one arrives (`R-3.4`).
+
+**Naming one edge leaves the other at the configured value**, which is the trap in an asymmetric window and
+the reason both are reported back. Asking for `pivotLookback: 2` against the shipped configuration gives a
+window of 2 and **15**, not 2 and 2. Read `detection.pivotLookback` beside `detection.pivotRightLookback`.
+
+**Detection has seven parameters. Three are per call, four are the operator's only, and the split is
+deliberate rather than partial.** `pivotSource`, `pivotLookback` and `pivotRightLookback` say *what is being
+asked* — which price a pivot is measured from, and how structural a level has to be — so a caller can compare
+two readings of the same bars in one session. The zone width (`KeyLevels__ZoneAtrMultiple`), the significance
+floor (`KeyLevels__MinSignificance`), the width cap (`KeyLevels__MaxZoneWidthPercent`) and the level cap
+(`KeyLevels__MaxLevels`) are configuration only, because they are the calibration that makes two of this
+server's answers comparable at all: gh#232's confluence score weighs zones from several methods against each
+other, and a width that moved per request would make two scores incomparable without either being wrong.
 The floor is the sharper case — turned up it empties the level set, and an empty level set reads as *this
 market has no structure*, which is a conclusion rather than a request artefact.
 
-**Omitting a per-call argument asks for the configured value; it does not name one.** Neither carries a
-default in the schema, unlike `lookbackBars`, whose 500 is this server's own constant. The shipped
-configuration is `HeikinAshiBody` — it smooths single-bar noise into structure — with a pivot lookback of 5,
-a zone width of 0.5 ATR and a floor of 0.5; `.env.example` carries the section. A source outside
-`HeikinAshiBody | Body | HighLow` is an error listing the three, from a call **and** from configuration,
-where `Unknown` is what an unset or mistyped value binds to.
+**Both caps DROP; neither adjusts.** A zone wider than `maxZoneWidthPercent` of its own midpoint is gone, not
+narrowed to the cap. Beyond `maxLevels`, the most significant survive and the rest are gone, not folded into
+the ones you can see — so a survivor's `touchCount` and bounds are never inflated by a level you cannot see
+(`R-3.9`). **`levels.length == detection.maxLevels` is the only signal that a list was cut**, which is why
+the cap is in the payload.
+
+**Omitting a per-call argument asks for the configured value; it does not name one.** None of the three
+carries a default in the schema, unlike `lookbackBars`, whose 500 is this server's own constant. The shipped
+configuration is `HeikinAshiBody` — it smooths single-bar noise into structure — with a pivot window of 20
+left and 15 right, a zone width of 0.5 ATR, a floor of 0.5, a width cap of 2.5% and a level cap of 12;
+`.env.example` carries the section. Those are Bjorgum's *Key Levels* calibration, adopted whole by gh#232 and
+implemented by gh#245. A source outside `HeikinAshiBody | Body | HighLow` is an error listing the three, from
+a call **and** from configuration, where `Unknown` is what an unset or mistyped value binds to.
 
 **Per-call detection parameters are sound here only because nothing stores a level** — `ADR-0013`. ADR-0006
 forbids the same freedom for indicators, whose storage key is `(Indicator, Period)`: a parameter the key
@@ -329,19 +356,22 @@ gh#276 — and `ADR-0013` names the one condition that reverses this, which is t
 level.
 
 **An empty `levels` is answered, never refused, and `detection` is what makes it readable.** It reports all
-four parameters that produced the answer, for the same reason `get_indicators` reports the `period` it
+seven parameters that produced the answer, for the same reason `get_indicators` reports the `period` it
 computed at: a caller that omitted an argument does not otherwise know what ran. Read it beside
-`detectedOverBars` — those two together separate the four ways a level set comes back empty.
+`detectedOverBars` — those two together separate the five ways a level set comes back empty.
 
-- **Too few bars.** Detection needs `2 × pivotLookback + 1` bars to find even one pivot, and it runs over
-  what the **store** holds cut back to the contract in front — which can be far less than `lookbackBars`
-  asked for. `detectedOverBars` is that number.
+- **Too few bars.** Detection needs `pivotLookback + pivotRightLookback + 1` bars to find even one pivot, and
+  it runs over what the **store** holds cut back to the contract in front — which can be far less than
+  `lookbackBars` asked for. `detectedOverBars` is that number.
 - **A roll inside the window**, which is the same case arriving a different way; `contracts.span` names it.
 - **`Body` legitimately finding nothing.** On a continuous intraday series a bar opens at the previous close,
   so a body high ties with its neighbour's on every bar and no candidate dominates its window (measured on
   gh#247). A property of the source, not of the market.
 - **The significance floor filtering every zone**, which `detectedOverBars` alone cannot show at all: the
   history is plentiful and the answer is still empty.
+- **The width cap dropping every merged zone**, the same shape one stage later. It is loose enough that it
+  should not fire on ordinary structure — 2.5% of ES at 5,000 is a 125-point band — so an empty answer with
+  plentiful history and a low floor points here.
 
 **Only facts about the request are refused** — a source outside the vocabulary, a `pivotLookback` below one.
 Whether a lookback is *satisfiable* is not one of those: it depends on what the store happens to hold, and
@@ -451,10 +481,13 @@ disagree: a short bar window can sit entirely inside the current contract while 
 crosses a roll. `levels.detectedOverBars` says how much of that history actually survived the confinement.
 
 **The levels here are detected at this server's configured defaults**, always. This tool takes no
-`pivotSource` or `pivotLookback` — one snapshot answers the common question, and a detection argument on it
-would tune one of the four things it returns. It reaches `get_key_levels` with a **fixed**
-`max(barCount, 200)` window, so a caller here cannot widen the history behind the levels beyond raising
-`barCount`; `levels.detection` reports what ran, and no configured value can make this call fail.
+`pivotSource`, `pivotLookback` or `pivotRightLookback` — one snapshot answers the common question, and a
+detection argument on it would tune one of the four things it returns. It reaches `get_key_levels` with a
+**fixed** `max(barCount, 200)` window, so a caller here cannot widen the history behind the levels beyond
+raising `barCount`; `levels.detection` reports what ran, and no configured value can make this call fail.
+**It inherits gh#245's breaking change whole and has no way to opt out** — the levels in a snapshot merge
+across support and resistance like everything else
+([ADR-0015](adr/0015-levels-merge-across-support-and-resistance.md)).
 
 **`symbol` is the only required argument.** The defaults are:
 

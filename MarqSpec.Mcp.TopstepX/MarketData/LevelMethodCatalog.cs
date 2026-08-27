@@ -31,9 +31,13 @@ public sealed class LevelMethodCatalog
 
     /// <summary>Builds the catalogue.</summary>
     /// <remarks>
-    /// No configuration yet. Detection options are per-call values rather than stored ones — there is no
-    /// storage key for a parameter to fall out of — so the constructor stays empty until gh#232 plumbs the
-    /// defaults through.
+    /// <b>No configuration, and now by decision rather than by deferral (gh#244).</b>
+    /// <see cref="ILevelMethod.Detect"/> takes its options <i>per call</i>, so a catalogue holding the
+    /// configured defaults would hold a value it never reads. They live at the tool boundary instead —
+    /// <c>MarketDataTools.ResolveDetection</c> — which is where "the caller did not say" becomes "the
+    /// operator's configured value". That the options can be per-call at all is ADR-0013: levels are
+    /// computed on read and nothing writes <c>PriceLevels</c>, so there is no storage key for a parameter to
+    /// fall out of.
     /// </remarks>
     public LevelMethodCatalog()
     {

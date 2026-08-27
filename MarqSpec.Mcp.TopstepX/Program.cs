@@ -248,6 +248,15 @@ public static class Program
             .ValidateDataAnnotations()
             .ValidateOnStart();
 
+        // The detection defaults get_key_levels falls back to. Validated on start, and the Unknown check is
+        // an IValidatableObject on the type rather than a lambda here -- Unknown = 0 is what a mistyped or
+        // absent value binds to, and a server that boots on one answers every level call from a source
+        // nobody chose.
+        services.AddOptions<KeyLevelDetectionOptions>()
+            .Bind(builder.Configuration.GetSection(KeyLevelDetectionOptions.SectionName))
+            .ValidateDataAnnotations()
+            .ValidateOnStart();
+
         services.AddOptions<McpOptions>()
             .Bind(builder.Configuration.GetSection(McpOptions.SectionName))
             .Validate(

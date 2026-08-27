@@ -120,7 +120,8 @@ public sealed class ResolutionGuardTests : IDisposable
             _gateway,
             new ToolGuards(options),
             new StoreAvailabilityHolder(),
-            _clock);
+            _clock,
+            Options.Create(new KeyLevelDetectionOptions()));
 
         _snapshot = new SnapshotTools(
             _marketData,
@@ -211,7 +212,7 @@ public sealed class ResolutionGuardTests : IDisposable
         // The same silence in a different shape: no bars matched, so it returned an empty level set. Nothing
         // in "no levels here" tells the caller the timeframe it asked for cannot exist.
         Func<Task> call = () =>
-            _marketData.GetKeyLevels("ES", resolutionMinutes, 100, CancellationToken.None);
+            _marketData.GetKeyLevels("ES", resolutionMinutes, 100, cancellationToken: CancellationToken.None);
 
         (await call.Should().ThrowAsync<McpException>()).WithMessage("*resolutionMinutes*");
     }
@@ -389,7 +390,8 @@ public sealed class ResolutionGuardTests : IDisposable
             _gateway,
             new ToolGuards(capped),
             new StoreAvailabilityHolder(),
-            _clock);
+            _clock,
+            Options.Create(new KeyLevelDetectionOptions()));
     }
 
     // ── The drift guard ──────────────────────────────────────────────────────────────────────────────

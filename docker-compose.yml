@@ -70,6 +70,14 @@ services:
       Indicators__MacdSlowPeriod: "${Indicators__MacdSlowPeriod:-26}"
       Indicators__BollingerPeriod: "${Indicators__BollingerPeriod:-20}"
 
+      # Detection defaults for get_key_levels. Source and PivotLookback are also per-call arguments on the
+      # tool; the width and the floor are settable only here, so every level this server reports is sized
+      # and filtered alike (ADR-0013). An unset Source binds to Unknown and FAILS STARTUP.
+      KeyLevels__Source: "${KeyLevels__Source:-HeikinAshiBody}"
+      KeyLevels__PivotLookback: "${KeyLevels__PivotLookback:-5}"
+      KeyLevels__ZoneAtrMultiple: "${KeyLevels__ZoneAtrMultiple:-0.5}"
+      KeyLevels__MinSignificance: "${KeyLevels__MinSignificance:-0.5}"
+
       Embeddings__ApiKey: "${Embeddings__ApiKey:-}"
       Embeddings__Model: "${Embeddings__Model:-embed-v4.0}"
 

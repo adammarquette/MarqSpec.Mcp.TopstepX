@@ -159,7 +159,7 @@ public sealed class SnapshotTools(
             }
 
             ToolPayloads.LevelSet levels = await _marketData
-                .GetKeyLevels(symbol, resolution, Math.Max(barCount, 200), cancellationToken)
+                .GetKeyLevels(symbol, resolution, Math.Max(barCount, 200), cancellationToken: cancellationToken)
                 .ConfigureAwait(false);
 
             // The WHOLE level set travels, not just its list. Levels are detected over max(barCount, 200)

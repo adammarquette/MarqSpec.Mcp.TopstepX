@@ -130,16 +130,7 @@ public static class KeyLevels
     {
         ArgumentNullException.ThrowIfNull(bars);
         ArgumentNullException.ThrowIfNull(options);
-
-        if (options.Lookback < 1)
-        {
-            throw new ArgumentOutOfRangeException(nameof(options), options.Lookback, "The lookback must be at least 1.");
-        }
-
-        if (options.Source == PivotSource.Unknown)
-        {
-            throw new ArgumentOutOfRangeException(nameof(options), options.Source, "The pivot source must be set explicitly.");
-        }
+        RequireUsableOptions(options);
 
         IndicatorGuard.RequireStrictlyAscending(bars, nameof(bars));
         IndicatorGuard.RequireSingleContract(bars, nameof(bars));
@@ -334,6 +325,14 @@ public static class KeyLevels
     /// <param name="options">Detection options.</param>
     /// <returns>The levels, ordered by price.</returns>
     /// <exception cref="ArgumentException">The ATR series is not aligned with the bars.</exception>
+    /// <exception cref="ArgumentOutOfRangeException">The lookback is less than one, or the source is unset.</exception>
+    /// <remarks>
+    /// <b>The options are checked here as well as in <see cref="FindPivots"/>, and before the empty-series
+    /// exit rather than after it.</b> An empty store is exactly when a bad source is invisible: the pipeline
+    /// returns no levels, which is what an empty store looks like anyway, and the configuration that would
+    /// have measured pivots from a price nobody chose is never mentioned. A refusal that only fires once
+    /// somebody has bars is a refusal that fires after the mistake has been in place for a while.
+    /// </remarks>
     public static IReadOnlyList<KeyLevelZone> Detect(
         IReadOnlyList<Bar> bars,
         IReadOnlyList<decimal?> atr,
@@ -341,6 +340,8 @@ public static class KeyLevels
     {
         ArgumentNullException.ThrowIfNull(bars);
         ArgumentNullException.ThrowIfNull(atr);
+        ArgumentNullException.ThrowIfNull(options);
+        RequireUsableOptions(options);
 
         if (atr.Count != bars.Count)
         {
@@ -373,6 +374,42 @@ public static class KeyLevels
         }
 
         return ApplyClose(MergeOverlapping(zones), bars[^1].Close);
+    }
+
+    /// <summary>
+    /// Refuses a set of options no pipeline stage could honour.
+    /// </summary>
+    /// <param name="options">The options.</param>
+    /// <exception cref="ArgumentOutOfRangeException">
+    /// The lookback is less than one, or the source is unset or outside the vocabulary.
+    /// </exception>
+    /// <remarks>
+    /// <b>The source check is on the vocabulary, not on <see cref="PivotSource.Unknown"/> alone.</b>
+    /// <see cref="PivotPrices"/> selects High/Low and Body explicitly and treats <i>everything else</i> as
+    /// Heikin-Ashi, so a cast integer outside the enum reads a real price series and returns a level set that
+    /// looks like any other — measured from a source nobody named. <c>Unknown</c> was refused from the start
+    /// because a zero default picks a source by accident; the same sentence is true of
+    /// <c>(PivotSource)99</c>, which had been arriving as a silent Heikin-Ashi.
+    /// </remarks>
+    private static void RequireUsableOptions(KeyLevelOptions options)
+    {
+        if (options.Lookback < 1)
+        {
+            throw new ArgumentOutOfRangeException(nameof(options), options.Lookback, "The lookback must be at least 1.");
+        }
+
+        if (options.Source == PivotSource.Unknown)
+        {
+            throw new ArgumentOutOfRangeException(nameof(options), options.Source, "The pivot source must be set explicitly.");
+        }
+
+        if (!PivotSources.IsServable(options.Source))
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(options),
+                options.Source,
+                "The pivot source must be one of " + PivotSources.KnownNames + ".");
+        }
     }
 
     private static (decimal[] Highs, decimal[] Lows) PivotPrices(IReadOnlyList<Bar> bars, PivotSource source)

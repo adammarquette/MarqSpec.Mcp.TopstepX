@@ -113,7 +113,7 @@ public sealed class ContractRollReportingTests : IDisposable
         // how much history supports the levels.
         MarketDataTools tools = await BuildSwingingAsync(rollAt: 20, total: 40);
 
-        ToolPayloads.LevelSet levels = await tools.GetKeyLevels("ES", 5, 40, CancellationToken.None);
+        ToolPayloads.LevelSet levels = await tools.GetKeyLevels("ES", 5, 40, cancellationToken: CancellationToken.None);
 
         levels.Contracts.Span.Should().Be(ToolPayloads.ContractSpan.SpansRoll);
         levels.DetectedOverBars.Should().Be(20, "only the bars of the contract in front are eligible");
@@ -303,6 +303,7 @@ public sealed class ContractRollReportingTests : IDisposable
             gateway,
             new ToolGuards(wrapped),
             new StoreAvailabilityHolder(),
-            clock);
+            clock,
+            Options.Create(new KeyLevelDetectionOptions()));
     }
 }

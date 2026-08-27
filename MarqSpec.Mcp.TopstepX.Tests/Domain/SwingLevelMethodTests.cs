@@ -30,14 +30,19 @@ public sealed class SwingLevelMethodTests
 
     /// <summary>The options the fixture below is derived under.</summary>
     /// <remarks>
-    /// Lookback 2 keeps the dominance window five bars wide. The zone multiple and the significance floor are
-    /// the production defaults, so the numbers below are the numbers the tool serves.
+    /// A lookback of 2 either side keeps the dominance window five bars wide. The zone multiple and the
+    /// significance floor are the production defaults. The two caps are stated rather than inherited, for
+    /// the reason <c>KeyLevelsTests</c> states beside its own: this fixture's ATR is a large fraction of its
+    /// price, so a cap calibrated for a real instrument would fire on it.
     /// </remarks>
     private static KeyLevelOptions Options => new(
         Lookback: 2,
         Source: PivotSource.HighLow,
         ZoneAtrMultiple: 0.5m,
-        MinSignificance: 0.5m);
+        MinSignificance: 0.5m,
+        RightLookback: 2,
+        MaxZoneWidthPercent: 100m,
+        MaxLevels: 1_000);
 
     // ──────────────────────────────────────────────────────────────────────────────────────────────────
     //  THE WORKED FIXTURE — five bars, read High/Low, lookback 2, ATR 2 at every bar.

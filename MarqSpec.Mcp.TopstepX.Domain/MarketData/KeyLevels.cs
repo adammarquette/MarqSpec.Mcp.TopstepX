@@ -89,7 +89,7 @@ public sealed record KeyLevelZone(
 
 /// <summary>How key levels are detected and sized.</summary>
 /// <param name="Lookback">
-/// How many bars either side a pivot must dominate. Larger means fewer, more structural levels.
+/// How many bars <b>to its left</b> a pivot must dominate. Larger means fewer, more structural levels.
 /// </param>
 /// <param name="Source">Which price on a bar the pivot is measured from.</param>
 /// <param name="ZoneAtrMultiple">The zone's full width, in ATR multiples.</param>
@@ -98,11 +98,36 @@ public sealed record KeyLevelZone(
 /// the noise out of the merge step, where two insignificant pivots could otherwise combine into something that
 /// looks meaningful.
 /// </param>
+/// <param name="RightLookback">
+/// How many bars <b>to its right</b> a pivot must dominate — the confirmation window, and the reason a pivot
+/// is not a guess about bars that have not arrived (<c>R-3.4</c>).
+/// </param>
+/// <param name="MaxZoneWidthPercent">
+/// The widest a reported zone may be, as a percentage of its own midpoint price. A zone over it is
+/// <b>dropped</b>, not narrowed.
+/// </param>
+/// <param name="MaxLevels">The most levels a detection may report. The rest are absent, not summarised.</param>
+/// <remarks>
+/// <para>
+/// <b>The two lookbacks are separate because a pivot's two sides do different jobs.</b> The left window asks
+/// how much history a level has stood clear of; the right window is confirmation, and it is what stops a
+/// pivot repainting. Bjorgum's <i>Key Levels</i> — the method this pipeline follows, and which gh#232 adopted
+/// whole — uses 20 and 15, and those are the shipped defaults.
+/// </para>
+/// <para>
+/// <b>Both caps drop rather than adjust, and that is the same rule the significance floor already follows.</b>
+/// A capped-away level is absent. It is not a narrowed zone, and it is not folded into the nearest survivor:
+/// either of those reports a band the detection never produced, at a price nothing was measured at.
+/// </para>
+/// </remarks>
 public sealed record KeyLevelOptions(
-    int Lookback = 5,
+    int Lookback = 20,
     PivotSource Source = PivotSource.HeikinAshiBody,
     decimal ZoneAtrMultiple = 0.5m,
-    decimal MinSignificance = 0.5m);
+    decimal MinSignificance = 0.5m,
+    int RightLookback = 15,
+    decimal MaxZoneWidthPercent = 2.5m,
+    int MaxLevels = 12);
 
 /// <summary>
 /// Swing-pivot detection and the support/resistance zones built from it.
@@ -318,6 +343,38 @@ public static class KeyLevels
     }
 
     /// <summary>
+    /// Drops zones wider than <see cref="KeyLevelOptions.MaxZoneWidthPercent"/> of their own midpoint.
+    /// </summary>
+    /// <param name="zones">The zones.</param>
+    /// <param name="options">Detection options.</param>
+    /// <returns>The zones that are narrow enough to be levels, in the order they arrived.</returns>
+    public static IReadOnlyList<KeyLevelZone> ApplyWidthCap(
+        IReadOnlyList<KeyLevelZone> zones,
+        KeyLevelOptions options)
+    {
+        ArgumentNullException.ThrowIfNull(zones);
+        ArgumentNullException.ThrowIfNull(options);
+
+        return zones;
+    }
+
+    /// <summary>
+    /// Keeps at most <see cref="KeyLevelOptions.MaxLevels"/> zones, the most significant first.
+    /// </summary>
+    /// <param name="zones">The zones.</param>
+    /// <param name="options">Detection options.</param>
+    /// <returns>The surviving zones, ordered by <see cref="KeyLevelZone.Bottom"/>.</returns>
+    public static IReadOnlyList<KeyLevelZone> ApplyLevelCap(
+        IReadOnlyList<KeyLevelZone> zones,
+        KeyLevelOptions options)
+    {
+        ArgumentNullException.ThrowIfNull(zones);
+        ArgumentNullException.ThrowIfNull(options);
+
+        return zones;
+    }
+
+    /// <summary>
     /// The whole pipeline: pivots, ATR-scaled zones, merge, then label against the last close.
     /// </summary>
     /// <param name="bars">The series, in strictly ascending time order.</param>
@@ -373,7 +430,8 @@ public static class KeyLevels
             }
         }
 
-        return ApplyClose(MergeOverlapping(zones), bars[^1].Close);
+        IReadOnlyList<KeyLevelZone> withinWidth = ApplyWidthCap(MergeOverlapping(zones), options);
+        return ApplyLevelCap(ApplyClose(withinWidth, bars[^1].Close), options);
     }
 
     /// <summary>

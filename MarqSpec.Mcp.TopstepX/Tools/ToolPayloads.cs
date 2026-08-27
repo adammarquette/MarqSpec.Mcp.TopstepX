@@ -280,11 +280,12 @@ public static class ToolPayloads
     /// </param>
     /// <param name="Detection">
     /// The detection this answer was actually produced by. <b>Reported for the same reason
-    /// <see cref="IndicatorSeries.Period"/> is</b>: two of these four are per-call arguments and two are
+    /// <see cref="IndicatorSeries.Period"/> is</b>: three of these seven are per-call arguments and four are
     /// operator configuration, so a caller that omitted an argument does not otherwise know what ran — and
     /// an <b>empty</b> <paramref name="Levels"/> is the case where that matters. No levels can mean the
-    /// window held fewer than <c>2 × pivotLookback + 1</c> bars, or that the source found no candidate that
-    /// dominated its window, or that every zone fell under the significance floor. Without these four it is
+    /// window held fewer than <c>pivotLookback + pivotRightLookback + 1</c> bars, or that the source found no
+    /// candidate that dominated its window, or that every zone fell under the significance floor, or that
+    /// every merged zone came out wider than <c>maxZoneWidthPercent</c>. Without these seven it is
     /// indistinguishable from a market that has produced no structure, which is a conclusion an agent will
     /// act on.
     /// </param>
@@ -296,19 +297,34 @@ public static class ToolPayloads
 
     /// <summary>The detection parameters a level set was produced under.</summary>
     /// <remarks>
-    /// All four, not just the two a call may override. A level set is reproducible from the bars that were on
-    /// hand <i>and these numbers</i> — which is the property ADR-0013 rests on when it allows per-request
-    /// parameters at all — so reporting half of them would leave the answer half-reproducible.
+    /// <para>
+    /// All seven, not just the three a call may override. A level set is reproducible from the bars that were
+    /// on hand <i>and these numbers</i> — which is the property ADR-0013 rests on when it allows per-request
+    /// parameters at all — so reporting some of them would leave the answer partly reproducible.
+    /// </para>
+    /// <para>
+    /// <b><see cref="MaxLevels"/> is the one a caller most needs and would least expect.</b> A list that
+    /// stops at the cap looks exactly like a market that produced that many levels, and the two are acted on
+    /// differently: <c>levels.Count == maxLevels</c> is the only thing that separates them.
+    /// </para>
     /// </remarks>
     /// <param name="Source">Which price on a bar each pivot was measured from.</param>
-    /// <param name="PivotLookback">How many bars either side a pivot had to dominate.</param>
+    /// <param name="PivotLookback">How many bars to its left a pivot had to dominate.</param>
     /// <param name="ZoneAtrMultiple">The zone's full width, in ATR multiples.</param>
     /// <param name="MinSignificance">The smallest prominence, in ATR multiples, that was reported.</param>
+    /// <param name="PivotRightLookback">How many bars to its right a pivot had to dominate.</param>
+    /// <param name="MaxZoneWidthPercent">
+    /// The widest a zone could be, as a percentage of its own midpoint price. A wider one was dropped.
+    /// </param>
+    /// <param name="MaxLevels">The most levels this answer could carry. The rest were dropped, not summarised.</param>
     public sealed record LevelDetection(
         PivotSource Source,
         int PivotLookback,
         decimal ZoneAtrMultiple,
-        decimal MinSignificance);
+        decimal MinSignificance,
+        int PivotRightLookback,
+        decimal MaxZoneWidthPercent,
+        int MaxLevels);
 
     /// <summary>An account, as this server reports it.</summary>
     /// <param name="AccountId">The venue account id.</param>

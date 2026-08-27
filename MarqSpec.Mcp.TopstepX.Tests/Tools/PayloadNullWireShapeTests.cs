@@ -177,7 +177,7 @@ public sealed class PayloadNullWireShapeTests
 
     /// <summary>The shipped detection defaults — filler, since this fixture is about the indicator map.</summary>
     private static ToolPayloads.LevelDetection ShippedDetection =>
-        new(PivotSource.HeikinAshiBody, 5, 0.5m, 0.5m);
+        new(PivotSource.HeikinAshiBody, 20, 0.5m, 0.5m, 15, 2.5m, 12);
 
     /// <summary>Serialises a payload exactly as the server would, and reads it back.</summary>
     /// <typeparam name="T">The payload type.</typeparam>

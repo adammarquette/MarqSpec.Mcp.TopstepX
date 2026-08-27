@@ -61,13 +61,18 @@ public sealed class LevelMethodCatalogOrderingTests
 {
     /// <summary>Bars in the run.</summary>
     /// <remarks>
-    /// Twenty-one, the same as <see cref="LevelMethodCatalogRollTests"/>'s: comfortably past the default
-    /// lookback's <c>2 * 5 + 1</c> minimum, so the middle bar has a full window either side of it.
+    /// Forty-one, the same as <see cref="LevelMethodCatalogRollTests"/>'s, and it moved with that one when
+    /// the shipped lookback became asymmetric (gh#245): 20 bars of left dominance and 15 of right
+    /// confirmation need <c>20 + 15 + 1 = 36</c> before a series can hold a pivot at all. The refusal this
+    /// file sweeps for fires either way — <see cref="IndicatorGuard.RequireStrictlyAscending"/> runs before
+    /// the length check, and a series too short returns empty rather than throwing — but a fixture nothing
+    /// could detect in is what made the sweep next door vacuous once already, so the two runs stay the same
+    /// series.
     /// </remarks>
-    private const int RunLength = 21;
+    private const int RunLength = 41;
 
     /// <summary>The index, in the ordered run, of the one bar that stands clear of everything around it.</summary>
-    private const int PeakIndex = 10;
+    private const int PeakIndex = 20;
 
     private const string ContractId = "CON.F.US.EP.U26";
 

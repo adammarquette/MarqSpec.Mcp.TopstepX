@@ -8,16 +8,20 @@ the way a compiler does, rather than loading every source file.
 0.1K** — re-derivable in one command, which matters more here than being exact.
 
 **It is checked, not remembered.** `scripts/check-doc-sizes.sh` re-measures every row below on every pull
-request, in `docs`, and fails one that is more than **25%** out — printing the value to paste. Left to memory
-this column inverted: `AGENT-MEMORY.md` sat at 0.8K while measuring 6.8K, and `architecture.md` called itself
-the cheapest read in its table while being the second most expensive row in it (gh#160). It was never going
-to hold, because `AGENT-MEMORY.md` is under standing orders to grow and no ordinary pull request looks at the
-row that prices it.
+request, in `docs`, and fails any row that does not state what its file measures — printing the value to
+paste. Left to memory this column inverted: `AGENT-MEMORY.md` sat at 0.8K while measuring 6.8K, and
+`architecture.md` called itself the cheapest read in its table while being the second most expensive row in
+it (gh#160). It was never going to hold, because `AGENT-MEMORY.md` is under standing orders to grow and no
+ordinary pull request looks at the row that prices it.
 
-**The 25% band is a floor, not the standard.** It stops this column reversing its own advice; ordinary
-drift passes it untouched. A row you moved by less than that is still yours to correct in the pull request
-that moved it, and **nothing will remind you** — two correct pull requests can leave a row wrong between
-them with `docs` green, which is gh#196.
+**There is no percentage band** (gh#196). There was one — 25% — and it was the wrong *shape* rather than the
+wrong width: a proportional band is widest on the documents that grow most, so drift accumulated inside it
+while the ceiling receded. A row now has to equal the measurement **rounded to 0.1K**, which is what the
+gate prints, so the only slack left is the half-step this column cannot express — and unlike a percentage it
+does not grow with the file, so it cannot compound. **A row you did not move can still be wrong**: somebody
+else's merge grows a priced file and your rebase inherits the stale row. Correcting it is one character, and
+the pull request in front of you is the one that has to do it, because no later one will have a reason to
+look.
 
 **One priced table is not below**: [`agents/README.md`](agents/README.md)'s, which is where the four role
 contracts carry their own numbers (gh#178). The same gate measures it, on the same terms. A `~tok` table
@@ -46,7 +50,7 @@ rather than reword it.
 | [`AGENT-MEMORY.md`](AGENT-MEMORY.md) | 8.5K | **Before starting any work.** It grows by *append, don't overwrite* and shrinks by the retirement rule in its own header (gh#254), so this row moves in both directions — correct it in the pull request that moves the file. |
 | [`project-board-workflow.md`](project-board-workflow.md) | 6.0K | You are filing, grooming or moving a card. **The board is project #5; #4 is retired.** The board makes two of the seven transitions by itself; the other five are somebody's deliberate act. |
 | [`work-estimate-rubric.md`](work-estimate-rubric.md) | 1.0K | You are setting a `Work Estimate` on an issue. |
-| [`agents/README.md`](agents/README.md) | 0.9K | You are wearing a role hat. **This row prices the index, not the route it serves** — each contract behind it is a separate read, and the index prices all four in its own gated `~tok` column (gh#178). Reviewer and Platform contracts **never auto-load**; open them yourself. |
+| [`agents/README.md`](agents/README.md) | 1.0K | You are wearing a role hat. **This row prices the index, not the route it serves** — each contract behind it is a separate read, and the index prices all four in its own gated `~tok` column (gh#178). Reviewer and Platform contracts **never auto-load**; open them yourself. |
 | [`../CONTRIBUTING.md`](../CONTRIBUTING.md) | 4.1K | Branching, claiming, commits, PRs, and the Definition of Done. |
 | [`../AGENTS.md`](../AGENTS.md) | 2.2K | Loads automatically. The non-negotiables and the role routing table. |
 

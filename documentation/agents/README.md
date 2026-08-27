@@ -13,7 +13,7 @@ two (gh#178).
 | [Coding — `MarqSpec.Mcp.TopstepX/AGENTS.md`](../../MarqSpec.Mcp.TopstepX/AGENTS.md) | 1.3K | by **directory proximity** — on your first read of a file in the host project |
 | [QA — `MarqSpec.Mcp.TopstepX.IntegrationTests/AGENTS.md`](../../MarqSpec.Mcp.TopstepX.IntegrationTests/AGENTS.md) | 0.9K | by **directory proximity** — on your first read in that project |
 | [Code Reviewer — `code-reviewer.md`](code-reviewer.md) | 1.8K | **never automatically — open it yourself** |
-| [Platform — `platform.md`](platform.md) | 23.6K | **never automatically — open it yourself** |
+| [Platform — `platform.md`](platform.md) | 23.7K | **never automatically — open it yourself** |
 
 **The prices are here rather than in the routing map, and that is the decision gh#178 made.** The map's
 `agents/` row prices *this file*; the route it serves ends at one of the four rows above, so the number a
@@ -22,9 +22,11 @@ the same four contracts a second time, beside this table listing them unpriced �
 only one copy ever corrected, which is the shape the size gate already refuses inside a row. So the list
 stayed here and gained the column, and the gate learned to read a second file.
 
-These four rows are exposed to sub-band drift exactly as the map's are: the gate catches an inversion, not
-a paragraph (gh#196). Correct the row in the pull request that moves the file — appending to a contract is
-what moves it, and `platform.md` is the one that grows.
+These four rows are re-measured on exactly the map's terms, and since gh#196 those terms are tight: the row
+must state what the file rounds to at 0.1K, so a paragraph is now enough to move one. Correct the row in the
+pull request that moves the file — appending to a contract is what moves it, and `platform.md` is the one
+that grows. **It may also be a file you did not touch**, grown by somebody else's merge and inherited by
+your rebase; that is the case gh#196 was filed for, and this pull request is the one that has to fix it.
 
 **The number is here to be budgeted, not to be avoided.** A contract that does not arrive on its own is also
 the one whose absence nothing catches — no check fails, no reviewer sees a diff, the work is simply done

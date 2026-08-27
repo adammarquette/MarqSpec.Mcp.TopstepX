@@ -270,7 +270,8 @@ recorded — so an absent one is never evidence that two readings share a contra
 Support and resistance as **zones**, not lines.
 
 Returns `{ levels: [{ timeframeMinutes, bottom, top, midpoint, kind, significance, touchCount,
-formedAt }], contracts, detectedOverBars }`.
+formedAt }], contracts, detectedOverBars, detection: { source, pivotLookback, zoneAtrMultiple,
+minSignificance } }`.
 
 **Detection is confined to the contract in front.** A level built from the expiring quarter's bars
 sits at a price the current contract has never traded, and it reads exactly like a level price is
@@ -311,10 +312,26 @@ cannot see leaves two parameterisations indistinguishable once written, spliced 
 visible anywhere. `PriceLevels` has never had a row, so there is no key for a parameter to fall out of — and
 `ADR-0013` names the one condition that reverses this, which is the moment anything writes that table.
 
-**`Body` can legitimately find nothing, and that is not a bug to report.** On a continuous intraday series a
-bar opens at the previous close, so a body high ties with its neighbour's on every bar, no candidate
-dominates its window, and the level set comes back empty (measured on gh#247). It is a property of the
-source, not of the market.
+**An empty `levels` is answered, never refused, and `detection` is what makes it readable.** It reports all
+four parameters that produced the answer, for the same reason `get_indicators` reports the `period` it
+computed at: a caller that omitted an argument does not otherwise know what ran. Read it beside
+`detectedOverBars` — those two together separate the four ways a level set comes back empty.
+
+- **Too few bars.** Detection needs `2 × pivotLookback + 1` bars to find even one pivot, and it runs over
+  what the **store** holds cut back to the contract in front — which can be far less than `lookbackBars`
+  asked for. `detectedOverBars` is that number.
+- **A roll inside the window**, which is the same case arriving a different way; `contracts.span` names it.
+- **`Body` legitimately finding nothing.** On a continuous intraday series a bar opens at the previous close,
+  so a body high ties with its neighbour's on every bar and no candidate dominates its window (measured on
+  gh#247). A property of the source, not of the market.
+- **The significance floor filtering every zone**, which `detectedOverBars` alone cannot show at all: the
+  history is plentiful and the answer is still empty.
+
+**Only facts about the request are refused** — a source outside the vocabulary, a `pivotLookback` below one.
+Whether a lookback is *satisfiable* is not one of those: it depends on what the store happens to hold, and
+`get_market_snapshot` reaches this tool with a fixed `max(barCount, 200)` window and neither detection
+argument, so a refusal on that axis would be an error naming knobs its caller does not have. That is an
+outage, not a refusal.
 
 ## Account reads
 
@@ -419,7 +436,9 @@ crosses a roll. `levels.detectedOverBars` says how much of that history actually
 
 **The levels here are detected at this server's configured defaults**, always. This tool takes no
 `pivotSource` or `pivotLookback` — one snapshot answers the common question, and a detection argument on it
-would tune one of the four things it returns.
+would tune one of the four things it returns. It reaches `get_key_levels` with a **fixed**
+`max(barCount, 200)` window, so a caller here cannot widen the history behind the levels beyond raising
+`barCount`; `levels.detection` reports what ran, and no configured value can make this call fail.
 
 **`symbol` is the only required argument.** The defaults are:
 

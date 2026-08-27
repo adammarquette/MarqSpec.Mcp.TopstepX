@@ -298,7 +298,9 @@ public sealed class MarketDataTools(
         + "this server's configured defaults apply. They carry no default of their own, because the default "
         + "is an operator setting rather than a constant — omitting one asks for the configured value, it "
         + "does not name a particular one. Zone width and the significance floor are operator settings only, "
-        + "so every level this server reports is sized and filtered alike and two of them can be compared.")]
+        + "so every level this server reports is sized and filtered alike and two of them can be compared. "
+        + "The response reports the detection it actually ran under as `detection`, so an empty `levels` can "
+        + "be told from a market with no structure — read it with `detectedOverBars`.")]
     public async Task<ToolPayloads.LevelSet> GetKeyLevels(
         [Description("The instrument symbol, e.g. ES.")] string symbol,
         [Description("The timeframe in minutes.")] int resolutionMinutes,
@@ -315,9 +317,12 @@ public sealed class MarketDataTools(
         string? pivotSource = null,
         [Description(
             "How many bars either side a pivot must dominate; larger means fewer, more structural levels. "
-            + "Omit to use this server's configured lookback. A window needs 2 × this + 1 bars before a "
-            + "single pivot can form, and a value `lookbackBars` cannot satisfy is refused rather than "
-            + "answered with an empty level set.")]
+            + "Omit to use this server's configured lookback. A pivot dominates this many bars on BOTH "
+            + "sides, so detection needs 2 × this + 1 bars to find even one — and the window it runs over "
+            + "is whatever the store holds, cut back to the contract in front, which can be far less than "
+            + "`lookbackBars` asked for. When that happens the answer is an EMPTY level set, not an error: "
+            + "compare `detection.pivotLookback` against `detectedOverBars` to tell that from a market with "
+            + "no structure.")]
         int? pivotLookback = null,
         CancellationToken cancellationToken = default)
     {
@@ -328,7 +333,7 @@ public sealed class MarketDataTools(
         // Before the read, not after it. Every check below is a fact about the REQUEST, and a store with no
         // bars returns early -- so validating after the read is how an Unknown source arriving from
         // configuration would be answered with an empty level set instead of a refusal.
-        KeyLevelOptions detection = ResolveDetection(pivotSource, pivotLookback, wanted);
+        KeyLevelOptions detection = ResolveDetection(pivotSource, pivotLookback);
 
         List<Bar> bars = await _database.Bars
             .Where(b => b.Venue == _gateway.VenueId
@@ -343,7 +348,8 @@ public sealed class MarketDataTools(
         if (bars.Count == 0)
         {
             return new ToolPayloads.LevelSet(
-                [], new ToolPayloads.ContractCoverage(ToolPayloads.ContractSpan.Unknown, []), 0);
+                [], new ToolPayloads.ContractCoverage(ToolPayloads.ContractSpan.Unknown, []), 0,
+                Reported(detection));
         }
 
         // Reversed FIRST, then described. Coverage over a descending series would give every segment a
@@ -372,7 +378,8 @@ public sealed class MarketDataTools(
                 resolutionMinutes, z.Bottom, z.Top, z.Midpoint, z.Kind, z.Significance, z.TouchCount,
                 z.FormedAtBucket))],
             coverage,
-            detectable.Count);
+            detectable.Count,
+            Reported(detection));
     }
 
     /// <summary>
@@ -460,11 +467,10 @@ public sealed class MarketDataTools(
     /// </summary>
     /// <param name="pivotSource">The requested source name, or null to take the configured one.</param>
     /// <param name="pivotLookback">The requested lookback, or null to take the configured one.</param>
-    /// <param name="lookbackBars">The already-validated history the caller asked to detect over.</param>
     /// <returns>The options detection will run under.</returns>
     /// <exception cref="McpException">
     /// The named source is not in the vocabulary, the configured source is not either, or the lookback is
-    /// one no window this wide could ever produce a pivot for.
+    /// below one.
     /// </exception>
     /// <remarks>
     /// <para>
@@ -476,15 +482,28 @@ public sealed class MarketDataTools(
     /// an ordinary-looking level set measured from a source nobody chose.
     /// </para>
     /// <para>
-    /// <b>The lookback is refused against the requested window rather than clamped into it.</b> A pivot must
-    /// dominate <c>pivotLookback</c> bars on both sides, so fewer than <c>2 × it + 1</c> bars can hold none
-    /// at all — and an empty level set reads as "this market has no structure", which is a conclusion, where
-    /// the truth is a request that could not be answered. The comparison is written against the halved bar
-    /// count rather than as <c>2 × lookback + 1</c> so that a large lookback cannot overflow the check meant
-    /// to catch it.
+    /// <b>Everything refused here is a fact about the REQUEST, decidable before a single bar is read, and
+    /// that is now the rule rather than an accident.</b> A lookback below one is not a lookback under any
+    /// data. Whether a lookback is <i>satisfiable</i> is a different kind of question and this is the wrong
+    /// place for it: it depends on <c>detectable.Count</c> — what the store actually holds, cut back to the
+    /// contract in front — which is not known until after the read, and is not something every caller can
+    /// change. An earlier revision bounded the lookback against <c>lookbackBars</c> instead, and bounding
+    /// the requested window rather than the detected one is wrong twice over. It refused calls that would
+    /// have succeeded, because a caller may ask for 500 bars over a store holding 40; and it refused calls
+    /// nobody could fix, because <c>get_market_snapshot</c> passes a fixed <c>max(barCount, 200)</c> and
+    /// exposes neither knob — a configured <c>PivotLookback</c> of 100, legal on its own range, made every
+    /// snapshot call fail with advice to change two arguments that tool does not have.
+    /// </para>
+    /// <para>
+    /// <b>An unsatisfiable lookback is therefore answered, not refused — and the answer says so.</b>
+    /// <see cref="ToolPayloads.LevelSet.Detection"/> reports all four parameters beside
+    /// <c>detectedOverBars</c>, so an empty level set carries its own explanation. That covers strictly more
+    /// than the refusal did: too few bars, a roll that cut the window down, a source whose candidates all
+    /// tie, and a significance floor that filtered every zone all arrive explicable, where the bound reached
+    /// only the first and only when the caller had asked for exactly what was stored.
     /// </para>
     /// </remarks>
-    private KeyLevelOptions ResolveDetection(string? pivotSource, int? pivotLookback, int lookbackBars)
+    private KeyLevelOptions ResolveDetection(string? pivotSource, int? pivotLookback)
     {
         KeyLevelOptions defaults = _detection.Defaults();
 
@@ -513,27 +532,27 @@ public sealed class MarketDataTools(
 
         int lookback = pivotLookback ?? defaults.Lookback;
 
-        if (lookback < 1)
-        {
-            throw new McpException(
+        return lookback < 1
+            ? throw new McpException(
                 "pivotLookback must be at least 1; got "
                 + lookback.ToString(System.Globalization.CultureInfo.InvariantCulture)
                 + ". A pivot dominates that many bars on each side, so there is no such thing as a pivot "
-                + "confirmed by none.");
-        }
-
-        return lookback > (lookbackBars - 1) / 2
-            ? throw new McpException(
-                "pivotLookback " + lookback.ToString(System.Globalization.CultureInfo.InvariantCulture)
-                + " needs at least "
-                + (((long)lookback * 2) + 1).ToString(System.Globalization.CultureInfo.InvariantCulture)
-                + " bars before one pivot can form, and lookbackBars is "
-                + lookbackBars.ToString(System.Globalization.CultureInfo.InvariantCulture)
-                + ". A pivot must dominate the lookback on BOTH sides. The request is refused rather than "
-                + "answered with an empty level set, because no levels reads as 'this market has no "
-                + "structure'. Ask for more bars, or a smaller pivotLookback.")
+                + "confirmed by none.")
             : defaults with { Source = source, Lookback = lookback };
     }
+
+    /// <summary>
+    /// The detection options as the payload reports them.
+    /// </summary>
+    /// <param name="options">The options detection ran under.</param>
+    /// <returns>The reported detection.</returns>
+    /// <remarks>
+    /// Projected from the same record detection was handed, never rebuilt from configuration. Read back from
+    /// <see cref="_detection"/> instead, this would report the operator's defaults on a call that overrode
+    /// them — a payload describing a detection that did not happen, which is worse than reporting nothing.
+    /// </remarks>
+    private static ToolPayloads.LevelDetection Reported(KeyLevelOptions options) =>
+        new(options.Source, options.Lookback, options.ZoneAtrMultiple, options.MinSignificance);
 
     private IIndicator ResolveIndicator(string name)
     {

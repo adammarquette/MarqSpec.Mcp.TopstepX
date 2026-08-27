@@ -48,8 +48,10 @@ public sealed class PivotSourceVocabularyTests
     public void TheVocabularyIsEverySourceExceptUnknown()
     {
         // Derived from the enum rather than written out, so a fourth source is servable the moment it exists.
-        // Pinned in DECLARATION order because that order is what the error messages print, and the default
-        // being first is what tells a reader what they would otherwise have got.
+        // `Enum.GetValues` orders by UNDERLYING VALUE, which coincides with declaration order here only
+        // because PivotSource's values ascend -- so this pins the order the error messages actually print,
+        // and a source numbered out of sequence reddens here rather than silently reordering the advice a
+        // caller is given. What matters is that the DEFAULT is named first.
         PivotSources.Servable.Should().Equal(
             PivotSource.HeikinAshiBody, PivotSource.Body, PivotSource.HighLow);
 

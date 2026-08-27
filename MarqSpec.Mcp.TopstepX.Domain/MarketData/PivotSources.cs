@@ -15,8 +15,13 @@ namespace MarqSpec.Mcp.TopstepX.Domain.MarketData;
 /// <para>
 /// <b>Derived from the enum rather than written out</b>, so a fourth source added to
 /// <see cref="PivotSource"/> is servable the moment it exists rather than the moment somebody remembers this
-/// file. The order is declaration order — <see cref="PivotSource.HeikinAshiBody"/> first, because it is the
-/// default and an error message that lists it first is telling the reader what they would have got.
+/// file. <c>Enum.GetValues</c> orders by <b>underlying value</b>, which coincides with declaration order here
+/// only because <see cref="PivotSource"/>'s values ascend — a fourth source numbered out of sequence would
+/// sort by its number instead. That is tolerable because the order carries no meaning beyond the error
+/// messages, where the useful property is that <see cref="PivotSource.HeikinAshiBody"/> comes first: it is
+/// the default, and listing it first tells the reader what they would otherwise have got.
+/// <c>PivotSourceVocabularyTests</c> pins the order, so a renumbering that moved it reddens rather than
+/// quietly reshuffling the advice a caller is given.
 /// </para>
 /// <para>
 /// It lives in <c>Domain</c> beside the enum and stays pure — no clock, no store, no configuration. The host

@@ -278,10 +278,37 @@ public static class ToolPayloads
     /// roll this is therefore fewer bars than requested, and it is reported rather than implied — silently
     /// halving the history behind a level changes how much weight it deserves.
     /// </param>
+    /// <param name="Detection">
+    /// The detection this answer was actually produced by. <b>Reported for the same reason
+    /// <see cref="IndicatorSeries.Period"/> is</b>: two of these four are per-call arguments and two are
+    /// operator configuration, so a caller that omitted an argument does not otherwise know what ran — and
+    /// an <b>empty</b> <paramref name="Levels"/> is the case where that matters. No levels can mean the
+    /// window held fewer than <c>2 × pivotLookback + 1</c> bars, or that the source found no candidate that
+    /// dominated its window, or that every zone fell under the significance floor. Without these four it is
+    /// indistinguishable from a market that has produced no structure, which is a conclusion an agent will
+    /// act on.
+    /// </param>
     public sealed record LevelSet(
         IReadOnlyList<LevelInfo> Levels,
         ContractCoverage Contracts,
-        int DetectedOverBars);
+        int DetectedOverBars,
+        LevelDetection Detection);
+
+    /// <summary>The detection parameters a level set was produced under.</summary>
+    /// <remarks>
+    /// All four, not just the two a call may override. A level set is reproducible from the bars that were on
+    /// hand <i>and these numbers</i> — which is the property ADR-0013 rests on when it allows per-request
+    /// parameters at all — so reporting half of them would leave the answer half-reproducible.
+    /// </remarks>
+    /// <param name="Source">Which price on a bar each pivot was measured from.</param>
+    /// <param name="PivotLookback">How many bars either side a pivot had to dominate.</param>
+    /// <param name="ZoneAtrMultiple">The zone's full width, in ATR multiples.</param>
+    /// <param name="MinSignificance">The smallest prominence, in ATR multiples, that was reported.</param>
+    public sealed record LevelDetection(
+        PivotSource Source,
+        int PivotLookback,
+        decimal ZoneAtrMultiple,
+        decimal MinSignificance);
 
     /// <summary>An account, as this server reports it.</summary>
     /// <param name="AccountId">The venue account id.</param>

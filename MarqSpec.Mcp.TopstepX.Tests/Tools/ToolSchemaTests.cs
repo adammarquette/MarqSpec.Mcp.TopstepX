@@ -293,6 +293,63 @@ public sealed class ToolSchemaTests
         }
     }
 
+    // ── Descriptions against what the payload they name actually proves ──────────────────────────────
+
+    /// <summary>The bar-series counter that reads zero after a genuine fetch.</summary>
+    private const string AmbiguousCounter = "fetchedBuckets";
+
+    /// <summary>The bar-series counter whose zero is the exact statement that nothing was fetched.</summary>
+    private const string ExactTest = "venueRequests";
+
+    public static TheoryData<string> EveryTool()
+    {
+        TheoryData<string> data = [];
+
+        foreach (MethodInfo method in ToolMethods())
+        {
+            data.Add(method.DeclaringType!.Name + "." + method.Name);
+        }
+
+        return data;
+    }
+
+    [Theory]
+    [MemberData(nameof(EveryTool))]
+    public void ADescriptionNamingFetchedBuckets_NamesVenueRequestsBesideIt(string tool)
+    {
+        // gh#71 retracted "zero fetched buckets proves the read touched no venue" from the tool catalogue,
+        // from BarReadResult and from ToolPayloads.BarSeries. It missed get_bars's [Description], which is
+        // the one sentence a model actually reads, and that copy went on offering fetchedBuckets as the
+        // round-trip signal until gh#261.
+        //
+        // The reflection gate gh#261 floated -- every field a description names must exist on the payload
+        // record -- would have passed the wrong text unchanged, because fetchedBuckets IS a field on
+        // BarSeries. The defect is naming it as the evidence without the field that is the evidence, so the
+        // rule here is that the ambiguous counter may not appear alone.
+        //
+        // The general class stays UNGATED, and deliberately: whether a sentence describes what its payload
+        // means is not reachable by reflection, and the absent-field gate above says the same about its own
+        // prose half. This pins one retraction across all fifteen descriptions so it cannot drift back.
+        MethodInfo method = ToolMethods().Single(m => m.DeclaringType!.Name + "." + m.Name == tool);
+        string description = method.GetCustomAttribute<DescriptionAttribute>()?.Description ?? string.Empty;
+
+        if (!description.Contains(AmbiguousCounter, StringComparison.OrdinalIgnoreCase))
+        {
+            return;
+        }
+
+        description.Should().ContainEquivalentOf(
+            ExactTest,
+            "{0} names `{1}`, which reads ZERO after a genuine fetch -- a range the venue answers empty "
+            + "(R-1.7), and a write that loses a serialization race (gh#73). Offered alone it undercounts "
+            + "venue traffic and never overcounts it. Name `{2}` beside it: `{2} == 0` is the exact test "
+            + "for an answer served entirely from the store. Current text: \"{3}\"",
+            tool,
+            AmbiguousCounter,
+            ExactTest,
+            description);
+    }
+
     // ── The search limit, which is a stated number rather than a hint ────────────────────────────────
 
     [Fact]

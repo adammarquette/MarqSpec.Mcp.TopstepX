@@ -102,10 +102,17 @@ public sealed class IndicatorCacheService(
     /// <exception cref="StoreContentionException">Every attempt lost to a concurrent writer.</exception>
     /// <remarks>
     /// <para>
-    /// <b>The probe is two aggregates, and it decides the whole cost of a warm read.</b> One count of the
-    /// series' bars, and one <c>DISTINCT (Indicator, Period)</c> over its values — at most as many rows as
-    /// the catalogue has members, both served by the composite indexes those tables are keyed on. A warm
-    /// series pays exactly that and opens no transaction.
+    /// <b>The probe is two aggregates, and it decides the whole cost of a warm read.</b> A bar count capped
+    /// at the largest warm-up, and one <c>DISTINCT (Indicator, Period)</c> over the series' values — which
+    /// returns at most as many rows as the catalogue has members. A warm series pays exactly that and opens
+    /// no transaction. Measured on gh#246 at <b>4.1 ms</b> over 2,000 bars and <b>18 ms</b> over 70,000
+    /// before the cap; the cap makes the first half flat and the remaining growth is the <c>DISTINCT</c>,
+    /// which scans the whole key range because Postgres 17 has no index skip scan.
+    /// </para>
+    /// <para>
+    /// <b>Eleven <c>EXISTS</c> seeks were the obvious alternative and are measurably worse</b> — about 20 ms
+    /// at every series size, because eleven round trips cost more than one scan. Measured rather than
+    /// assumed, in the same run.
     /// </para>
     /// <para>
     /// <b>A pair is only <i>missing</i> when the stored bars could have produced it.</b>
@@ -139,12 +146,21 @@ public sealed class IndicatorCacheService(
 
         Probes++;
 
+        // CAPPED AT THE LARGEST WARM-UP, and the cap is what keeps this query flat. The only thing the count
+        // decides is `WarmupBars <= bars` for each catalogue member, so any number at or above the largest
+        // warm-up answers every one of those comparisons identically -- min(actual, cap) preserves each of
+        // them exactly, because a warm-up that fails the comparison is below the cap by definition. Uncapped
+        // it is a count of the whole series and grows with it: measured on gh#246 at 2.24 ms over 500 bars
+        // and 7.85 ms over 70,000, against 1.98 ms and 2.99 ms for the LIMIT form, on the same store in the
+        // same run.
+        int cap = _catalog.All.Max(i => i.WarmupBars);
+
         int bars = await _database.Bars
-            .CountAsync(
-                b => b.Venue == venue
-                    && b.Instrument == instrument.Symbol
-                    && b.ResolutionMinutes == resolutionMinutes,
-                cancellationToken)
+            .Where(b => b.Venue == venue
+                && b.Instrument == instrument.Symbol
+                && b.ResolutionMinutes == resolutionMinutes)
+            .Take(cap)
+            .CountAsync(cancellationToken)
             .ConfigureAwait(false);
 
         // No bars, nothing to project from. Checked before the second query rather than after it: an unknown
@@ -188,11 +204,10 @@ public sealed class IndicatorCacheService(
         string what = instrument.Symbol + " " + resolutionMinutes.ToString(CultureInfo.InvariantCulture) + "m";
 
         _logger.LogInformation(
-            "The catalogue computes {Missing} the store holds no value for on {Series} ({Bars} bars): "
-            + "{Names}. Replaying the series to serve this read.",
+            "The catalogue computes {Missing} the store holds no value for on {Series}: "
+            + "{Names}. Replaying the whole series to serve this read.",
             missing.Count,
             what,
-            bars,
             string.Join(", ", missing.Select(i => i.Name + "(" + i.Period.ToString(CultureInfo.InvariantCulture) + ")")));
 
         DateTimeOffset now = _clock.GetUtcNow();

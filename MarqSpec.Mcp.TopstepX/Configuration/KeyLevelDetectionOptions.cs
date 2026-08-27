@@ -8,11 +8,17 @@ namespace MarqSpec.Mcp.TopstepX.Configuration;
 /// </summary>
 /// <remarks>
 /// <para>
-/// <b>These are defaults, not the whole story: two of the four are also per-call arguments on
-/// <c>get_key_levels</c>.</b> The tool's <c>pivotSource</c> and <c>pivotLookback</c> override what is set
-/// here for one request; <see cref="ZoneAtrMultiple"/> and <see cref="MinSignificance"/> are settable only
-/// here, so every level this server reports is sized and filtered the same way and two of them can be
-/// compared.
+/// <b>These are defaults, not the whole story: three of the seven are also per-call arguments on
+/// <c>get_key_levels</c>.</b> The tool's <c>pivotSource</c>, <c>pivotLookback</c> and
+/// <c>pivotRightLookback</c> override what is set here for one request; <see cref="ZoneAtrMultiple"/>,
+/// <see cref="MinSignificance"/>, <see cref="MaxZoneWidthPercent"/> and <see cref="MaxLevels"/> are settable
+/// only here, so every level this server reports is sized, filtered and capped the same way and two of them
+/// can be compared.
+/// </para>
+/// <para>
+/// <b>The two lookbacks move together because they describe one window.</b> Exposing the left edge per call
+/// and not the right would let a caller narrow the history a pivot must clear while still, invisibly,
+/// requiring the shipped fifteen bars of confirmation — control the argument appears to give and does not.
 /// </para>
 /// <para>
 /// <b>Per-call detection parameters are safe here, and the reason is a recorded decision rather than a
@@ -31,15 +37,35 @@ public sealed class KeyLevelDetectionOptions : IValidatableObject
     public const string SectionName = "KeyLevels";
 
     /// <summary>
-    /// How many bars either side a pivot must dominate. Larger means fewer, more structural levels.
+    /// How many bars <b>to its left</b> a pivot must dominate. Larger means fewer, more structural levels.
     /// </summary>
     /// <remarks>
-    /// Five by default. A pivot must dominate this many bars on <b>both</b> sides, so a window needs
-    /// <c>2 × this + 1</c> bars before it can hold a single one, and the last few bars of any series can
-    /// never produce one — a pivot confirmed only by the bars before it repaints as soon as the next arrives.
+    /// Twenty by default, and it was five until gh#245 adopted Bjorgum's <i>Key Levels</i> calibration whole.
+    /// A window needs <c>this + <see cref="PivotRightLookback"/> + 1</c> bars before it can hold a single
+    /// pivot.
     /// </remarks>
     [Range(1, 1_000)]
-    public int PivotLookback { get; init; } = 5;
+    public int PivotLookback { get; init; } = 20;
+
+    /// <summary>
+    /// How many bars <b>to its right</b> a pivot must dominate — the confirmation window.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Fifteen by default: shorter than the left window, because the two sides are asked different
+    /// questions. The left window asks how much history a level has stood clear of. The right window only
+    /// has to establish that the extreme held, and every bar it waits for is a bar the level is reported
+    /// late by — the last <see cref="PivotRightLookback"/> bars of any series can never produce a pivot.
+    /// </para>
+    /// <para>
+    /// <b>Zero is refused rather than allowed as "no confirmation".</b> <c>R-3.4</c> is that detection never
+    /// reports a pivot the later bars have not confirmed: a candidate judged only against what came before
+    /// it repaints the moment the next bar arrives, and it repaints into a level an agent has already been
+    /// shown. The floor is one, enforced by the range below and again in <c>Domain</c>.
+    /// </para>
+    /// </remarks>
+    [Range(1, 1_000)]
+    public int PivotRightLookback { get; init; } = 15;
 
     /// <summary>
     /// Which price on a bar a pivot is measured from.
@@ -85,11 +111,69 @@ public sealed class KeyLevelDetectionOptions : IValidatableObject
     public decimal MinSignificance { get; init; } = 0.5m;
 
     /// <summary>
+    /// The widest a reported zone may be, as a percentage of its own midpoint price. 2.5 by default.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>A backstop on the merge, not a calibration knob — and it exists because gh#245 made merging
+    /// cross-kind.</b> Before that, a support could only ever absorb another support: the two kinds were
+    /// merged in separate groups, so an overlapping support and resistance ended the chain by construction.
+    /// They no longer do, and a chain that used to stop at a polarity change now continues through it. Every
+    /// other stage bounds a zone's width — a pre-merge zone is exactly <see cref="ZoneAtrMultiple"/> × ATR
+    /// wide — so the merge is the only stage that can widen one without limit, and this is the only cap
+    /// downstream of it.
+    /// </para>
+    /// <para>
+    /// <b>Deliberately loose.</b> 2.5% of ES at 5,000 is a 125-point band, which is wider than most whole
+    /// sessions: a zone that wide is a merge that has swallowed the range rather than a level anyone can
+    /// trade against. It is set where it catches that and nothing else, because a cap that fires on ordinary
+    /// structure deletes levels silently — the same failure <see cref="MinSignificance"/> has, and an empty
+    /// level set reads as a market with no structure. An operator who wants it to bite tightens it.
+    /// </para>
+    /// </remarks>
+    [Range(typeof(decimal), "0.01", "100", ParseLimitsInInvariantCulture = true, ConvertValueInInvariantCulture = true)]
+    public decimal MaxZoneWidthPercent { get; init; } = 2.5m;
+
+    /// <summary>
+    /// The most levels one detection may report. Twelve by default.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>The cap is on the answer, not on the work</b> — detection runs over every bar either way, which
+    /// ADR-0013 priced at about a quarter of a millisecond for the tool's default window. What it bounds is
+    /// how much an agent is handed: the same record measured <b>56 zones</b> over 10,000 bars at the shipped
+    /// parameters and <b>44</b> at a lookback of 20, and a wall of forty-four levels is a list nobody ranks
+    /// before acting on it.
+    /// </para>
+    /// <para>
+    /// <b>The levels kept are the most significant ones, and the rest are absent rather than summarised.</b>
+    /// Significance is prominence in ATR multiples, which is the one score this server already treats as
+    /// comparable across instruments and regimes (<c>R-3.2</c>), so it is the ranking that means the same thing
+    /// on ES and on NQ. <c>maxLevels</c> is reported beside the answer, so a caller holding exactly this
+    /// many levels can tell a capped list from a complete one.
+    /// </para>
+    /// <para>
+    /// <b>Zero is refused.</b> A cap of zero empties every level set the server can produce, and an empty
+    /// level set is indistinguishable from a market that has produced no structure — a conclusion an agent
+    /// acts on. The floor is one, here and again in <c>Domain</c>.
+    /// </para>
+    /// </remarks>
+    [Range(1, 1_000)]
+    public int MaxLevels { get; init; } = 12;
+
+    /// <summary>
     /// These options as the detection record <c>Domain</c> takes.
     /// </summary>
     /// <returns>The configured defaults.</returns>
     public KeyLevelOptions Defaults() =>
-        new(PivotLookback, Source, ZoneAtrMultiple, MinSignificance);
+        new(
+            PivotLookback,
+            Source,
+            ZoneAtrMultiple,
+            MinSignificance,
+            PivotRightLookback,
+            MaxZoneWidthPercent,
+            MaxLevels);
 
     /// <summary>
     /// Refuses a source outside the vocabulary — including the <c>Unknown</c> an unset value binds to.

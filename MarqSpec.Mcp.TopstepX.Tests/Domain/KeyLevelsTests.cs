@@ -90,14 +90,26 @@ public sealed class KeyLevelsTests
 
     /// <summary>The options the worked fixtures are derived under.</summary>
     /// <remarks>
-    /// Lookback 2 keeps the dominance window five bars wide, which a reader can check at a glance. The zone
-    /// multiple and significance floor are the production defaults.
+    /// <para>
+    /// A lookback of 2 on <b>both</b> sides keeps the dominance window five bars wide, which a reader can
+    /// check at a glance. The zone multiple and significance floor are the production defaults.
+    /// </para>
+    /// <para>
+    /// <b>Every field is stated, including the two caps, and the shipped defaults are deliberately not
+    /// inherited here.</b> These fixtures run an ATR of 4 against a price near 110 — 3.6% of price, where a
+    /// real five-minute future is nearer 0.1% — so a width cap calibrated for an instrument would delete
+    /// zones this file exists to pin. The caps are pinned on their own fixtures instead, in
+    /// <see cref="KeyLevelBjorgumBehaviourTests"/>, where the numbers are chosen to make them fire.
+    /// </para>
     /// </remarks>
     private static KeyLevelOptions HighLowOptions => new(
         Lookback: 2,
         Source: PivotSource.HighLow,
         ZoneAtrMultiple: 0.5m,
-        MinSignificance: 0.5m);
+        MinSignificance: 0.5m,
+        RightLookback: 2,
+        MaxZoneWidthPercent: 100m,
+        MaxLevels: 1_000);
 
     // ──────────────────────────────────────────────────────────────────────────────────────────────────
     //  FIXTURE A — the worked series. Eleven bars, read High/Low, lookback 2.

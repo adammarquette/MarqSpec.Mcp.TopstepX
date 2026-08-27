@@ -67,13 +67,23 @@ public sealed class LevelMethodCatalogRollTests
 
     /// <summary>Bars per contiguous single-contract run.</summary>
     /// <remarks>
-    /// Twenty-one is comfortably past the default lookback's <c>2 * 5 + 1</c> minimum, so the middle bar has
-    /// a full window either side of it and the run is a series a method can actually work on.
+    /// <b>Forty-one, and it was twenty-one until the shipped lookback became asymmetric (gh#245).</b> The
+    /// defaults are 20 bars of left dominance and 15 of right confirmation, so a series needs
+    /// <c>20 + 15 + 1 = 36</c> bars before it can hold a single pivot and the eligible indices are
+    /// <c>[20, 41 - 15)</c>. Twenty-one bars held none, and
+    /// <see cref="EveryRegisteredMethod_StillDetectsOverASingleContractSeries"/> went red saying so — the
+    /// same failure, and the same repair its own message prescribes, that registering <c>session</c> paid
+    /// for before it. The run is extended rather than the sweep relaxed: a sweep that passed smaller options
+    /// than the server ships would stop exercising what the server ships.
     /// </remarks>
-    private const int RunLength = 21;
+    private const int RunLength = 41;
 
     /// <summary>The index, within a run, of the one bar that stands clear of everything around it.</summary>
-    private const int PeakIndex = 10;
+    /// <remarks>
+    /// Twenty — the first index the asymmetric window admits, and the middle of the run. It has 20 bars to
+    /// its left and 20 to its right, which is at least the 15 the right window needs.
+    /// </remarks>
+    private const int PeakIndex = 20;
 
     private static DateTimeOffset At(int index) => SessionStart.AddMinutes(5 * index);
 

@@ -92,23 +92,41 @@ public sealed class KeyLevelDetectionPlumbingTests : IDisposable
     /// <param name="zoneAtrMultiple">The configured zone width, in ATR multiples.</param>
     /// <param name="minSignificance">The configured significance floor, in ATR multiples.</param>
     /// <returns>The options.</returns>
+    /// <param name="pivotRightLookback">The configured right-hand confirmation window.</param>
+    /// <param name="maxZoneWidthPercent">The configured width cap, as a percentage of a zone's midpoint.</param>
+    /// <param name="maxLevels">The configured level cap.</param>
     /// <remarks>
+    /// <para>
     /// <b><see cref="KeyLevelDetectionOptions.MinSignificance"/> is zero here, deliberately.</b> Every pivot
     /// in the fixture scores exactly 0.4 — a prominence of four against an ATR of ten — so the shipped floor
     /// of 0.5 would filter all of them and every case below would be asserting about an empty list. The
     /// floor's own plumbing is pinned separately, by the pair that turns it up and watches the levels go.
+    /// </para>
+    /// <para>
+    /// <b>The two caps are effectively off here for the same reason, and the right lookback matches the
+    /// left.</b> The fixture is twenty-one bars around a price of 100 with an ATR of ten — a tenth of price,
+    /// where a real five-minute future is nearer a thousandth — so the shipped 2.5% width cap would delete
+    /// every zone in it, and the shipped 20/15 window would not fit the series at all. Each of the three has
+    /// its own case below that sets it deliberately and watches it bite.
+    /// </para>
     /// </remarks>
     private static KeyLevelDetectionOptions Detection(
         PivotSource source = PivotSource.HighLow,
         int pivotLookback = 5,
         decimal zoneAtrMultiple = 0.5m,
-        decimal minSignificance = 0m) =>
+        decimal minSignificance = 0m,
+        int pivotRightLookback = 5,
+        decimal maxZoneWidthPercent = 100m,
+        int maxLevels = 1_000) =>
         new()
         {
             Source = source,
             PivotLookback = pivotLookback,
             ZoneAtrMultiple = zoneAtrMultiple,
             MinSignificance = minSignificance,
+            PivotRightLookback = pivotRightLookback,
+            MaxZoneWidthPercent = maxZoneWidthPercent,
+            MaxLevels = maxLevels,
         };
 
     // ── The configured defaults are what an omitted argument falls back to ───────────────────────────
@@ -350,12 +368,14 @@ public sealed class KeyLevelDetectionPlumbingTests : IDisposable
         // report the operator's defaults on a call that overrode them -- a payload describing a detection
         // that did not happen, which is worse than reporting nothing.
         ToolPayloads.LevelSet levels = await Tools(Detection(
-                source: PivotSource.HeikinAshiBody, pivotLookback: 5, zoneAtrMultiple: 1.5m, minSignificance: 0m))
+                source: PivotSource.HeikinAshiBody, pivotLookback: 5, zoneAtrMultiple: 1.5m, minSignificance: 0m,
+                pivotRightLookback: 5, maxZoneWidthPercent: 100m, maxLevels: 1_000))
             .GetKeyLevels(
-                "ES", 5, Bars, pivotSource: "HighLow", pivotLookback: 2,
+                "ES", 5, Bars, pivotSource: "HighLow", pivotLookback: 2, pivotRightLookback: 2,
                 cancellationToken: CancellationToken.None);
 
-        levels.Detection.Should().Be(new ToolPayloads.LevelDetection(PivotSource.HighLow, 2, 1.5m, 0m));
+        levels.Detection.Should().Be(
+            new ToolPayloads.LevelDetection(PivotSource.HighLow, 2, 1.5m, 0m, 2, 100m, 1_000));
         // And the levels are the ones that detection produces, not the configured one's -- the report and the
         // answer have to come from the same options or the report is decoration.
         levels.Levels.Select(l => l.Midpoint).Should().Equal(107m, 125m, 145m);

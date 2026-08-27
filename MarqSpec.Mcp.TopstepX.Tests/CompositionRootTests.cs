@@ -211,6 +211,9 @@ public sealed class CompositionRootTests
             ["KeyLevels:PivotLookback"] = "9",
             ["KeyLevels:ZoneAtrMultiple"] = "1.25",
             ["KeyLevels:MinSignificance"] = "0.75",
+            ["KeyLevels:PivotRightLookback"] = "4",
+            ["KeyLevels:MaxZoneWidthPercent"] = "1.75",
+            ["KeyLevels:MaxLevels"] = "6",
         };
 
         using ServiceProvider provider = Build(configured, new McpOptions { Transport = McpTransport.Stdio });
@@ -218,7 +221,11 @@ public sealed class CompositionRootTests
         KeyLevelDetectionOptions options =
             provider.GetRequiredService<IOptions<KeyLevelDetectionOptions>>().Value;
 
-        options.Defaults().Should().Be(new KeyLevelOptions(9, PivotSource.HighLow, 1.25m, 0.75m));
+        // Every one of the seven is a DIFFERENT value from its shipped default, so a field the projection
+        // forgot to carry reads back as the default and this goes red naming it. Four of them agreeing with
+        // the defaults would have hidden a dropped field in the three that did not.
+        options.Defaults().Should().Be(
+            new KeyLevelOptions(9, PivotSource.HighLow, 1.25m, 0.75m, 4, 1.75m, 6));
     }
 
     [Fact]
@@ -226,12 +233,14 @@ public sealed class CompositionRootTests
     {
         // An absent section binds the property initialisers, and those are the numbers `.env.example`,
         // compose and the tool catalogue all state. Heikin-Ashi stays the default: it smooths single-bar
-        // noise into structure, which is the reason it has carried since the pipeline existed.
+        // noise into structure, which is the reason it has carried since the pipeline existed. The window is
+        // 20 left and 15 right, and the caps 2.5% and 12 -- Bjorgum's calibration, adopted whole by gh#245,
+        // which moved the lookback off 5 and is a BREAKING change to what an omitted argument produces.
         using ServiceProvider provider =
             Build(new Dictionary<string, string?>(), new McpOptions { Transport = McpTransport.Stdio });
 
         provider.GetRequiredService<IOptions<KeyLevelDetectionOptions>>().Value.Defaults()
-            .Should().Be(new KeyLevelOptions(5, PivotSource.HeikinAshiBody, 0.5m, 0.5m));
+            .Should().Be(new KeyLevelOptions(20, PivotSource.HeikinAshiBody, 0.5m, 0.5m, 15, 2.5m, 12));
     }
 
     [Theory]

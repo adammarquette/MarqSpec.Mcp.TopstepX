@@ -40,7 +40,8 @@ public sealed class PivotSourceVocabularyTests
         new(At(4), Open: 100m, High: 104m, Low: 98m, Close: 102m, Volume: 100),
     ];
 
-    private static KeyLevelOptions With(PivotSource source) => new(Lookback: 2, Source: source);
+    private static KeyLevelOptions With(PivotSource source) =>
+        new(Lookback: 2, Source: source, RightLookback: 2);
 
     // ── The vocabulary ───────────────────────────────────────────────────────────────────────────────
 

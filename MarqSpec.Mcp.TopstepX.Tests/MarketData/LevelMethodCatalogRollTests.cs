@@ -98,16 +98,30 @@ public sealed class LevelMethodCatalogRollTests
     /// <b>Deliberately not a sawtooth.</b> A short repeating price cycle never lets a bar strictly dominate
     /// its lookback, so it yields no pivots at all — which is what made the earlier version of the second
     /// sweep here vacuous (PR #252 review, finding 2).
+    /// <b>Re-measured on gh#245's branch after the run was extended to forty-one bars</b>, because a fixture
+    /// that changed is a claim that has to be re-run: all three sources still find exactly one pivot and one
+    /// zone — Heikin-Ashi <c>128.75</c>–<c>129.75</c> at significance <c>7.3125</c>, Body
+    /// <c>117.5</c>–<c>118.5</c> at <c>9</c>, High/Low <c>199.5</c>–<c>200.5</c> at <c>49.5</c> — and each is
+    /// 0.5% to 0.85% of its own midpoint, comfortably inside the shipped 2.5% width cap.
     /// </para>
     /// <para>
-    /// <b>The same twenty-one bars carry structure for a session method too, and that is what
-    /// <see cref="SessionStart"/> buys.</b> Beginning at the reopen puts the first <b>twelve</b> — 22:00Z to
-    /// 22:55Z — inside Tuesday's initial balance, and <c>session</c> answers this run with exactly two
-    /// zones: <c>98.5</c>–<c>99.5</c> support and <c>199.5</c>–<c>200.5</c> resistance, both significance
-    /// <c>50.5</c>, the balance's low and its high. Its prior day, prior week and overnight leg are all
-    /// absent, correctly: every bar carries the one trade date, nothing before the reopen is loaded, and the
-    /// evening leg has not closed. Measured on gh#257's branch. A method is asked here whether it can detect
-    /// at all, not whether it can detect everything.
+    /// <b>The same bars carry structure for a session method too, and that is what <see cref="SessionStart"/>
+    /// buys.</b> Beginning at the reopen puts the first <b>twelve</b> — 22:00Z to 22:55Z — inside Tuesday's
+    /// initial balance, and <c>session</c> answers this run with exactly two zones, the balance's low and its
+    /// high. Its prior day, prior week and overnight leg are all absent, correctly: every bar carries the one
+    /// trade date, nothing before the reopen is loaded, and the evening leg has not closed. A method is asked
+    /// here whether it can detect at all, not whether it can detect everything.
+    /// </para>
+    /// <para>
+    /// <b>Those two zones are <c>98.5</c>–<c>99.5</c> support and <c>100.5</c>–<c>101.5</c> resistance, both
+    /// significance <c>1</c> — and until gh#245 they were <c>98.5</c>–<c>99.5</c> and
+    /// <c>199.5</c>–<c>200.5</c>, both <c>50.5</c>.</b> Nothing about <c>session</c> changed. The run grew
+    /// from twenty-one bars to forty-one so the shipped 20/15 pivot window could hold a pivot at all, which
+    /// moved <see cref="PeakIndex"/> from the tenth bucket to the twentieth — <i>out</i> of the initial
+    /// balance — so the balance's high is now an ordinary bar's <c>101</c> rather than the peak's <c>200</c>.
+    /// Both readings were measured; the second replaced the first here rather than being left to a reader to
+    /// notice, because a number measured against a fixture that has since moved is the shape of prose this
+    /// repository treats as a build break.
     /// </para>
     /// </remarks>
     private static IEnumerable<Bar> Run(string contractId, decimal baseline, int startIndex) =>

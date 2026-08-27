@@ -32,8 +32,20 @@ namespace MarqSpec.Mcp.TopstepX.Tests.MarketData;
 /// <para>
 /// The green half of the two-run rule is <see cref="IndicatorCatalogRollTests"/>'s
 /// <c>EveryConfiguredIndicator_StillComputesASingleContractSeries</c> — the same catalogue over an ordinary
-/// ascending series, asserting values come back rather than the absence of an exception. It is not
+/// ascending series, asserting <c>NotThrow</c>. That is the absence of an exception, and it is the right
+/// assertion for what this half exists to catch: a guard that refused <i>everything</i> would pass the sweep
+/// above and still break the server, and the two failures look nothing alike from outside. It is not
 /// duplicated here, because a second copy would prove the same thing twice and drift separately.
+/// </para>
+/// <para>
+/// <b>What it does not assert — and on its fixture could not — is that values come back.</b>
+/// <c>Spliced().Take(30)</c> is thirty bars, and two of the catalogue's eleven members warm up in 35 —
+/// <c>macd-signal</c> and <c>macd-histogram</c>, both <c>MacdSlowPeriod + Macd.SignalPeriod</c> = 26 + 9.
+/// Both return 0 non-null values out of 30 over that fixture, so a loop rewritten to require a value fails
+/// naming them. So <b>nothing in this tier pins a catalogue-wide “values come back”</b>. That matters when
+/// adding a twelfth indicator: one whose warm-up arithmetic is wrong returns all-nulls forever and passes
+/// every sweep there is — it does refuse a splice and it does refuse a shuffle — leaving
+/// <c>get_indicator</c> answering with an empty series, green, on every instrument.
 /// </para>
 /// </remarks>
 public sealed class IndicatorCatalogOrderingTests

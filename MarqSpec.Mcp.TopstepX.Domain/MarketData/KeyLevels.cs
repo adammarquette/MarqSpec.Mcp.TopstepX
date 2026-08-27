@@ -453,7 +453,10 @@ public static class KeyLevels
     /// </summary>
     /// <param name="zones">The zones.</param>
     /// <param name="options">Detection options.</param>
-    /// <returns>The survivors, ordered by <see cref="KeyLevelZone.Bottom"/>.</returns>
+    /// <returns>
+    /// The survivors, ordered by <see cref="KeyLevelZone.Bottom"/>; or the zones exactly as they arrived,
+    /// when there are no more of them than the cap.
+    /// </returns>
     /// <exception cref="ArgumentOutOfRangeException">The level cap is less than one.</exception>
     /// <remarks>
     /// <para>
@@ -464,9 +467,23 @@ public static class KeyLevels
     /// </para>
     /// <para>
     /// <b>The survivors come back in price order</b>, because that is the order the tool has always reported
-    /// and the cap is a filter rather than a re-ordering. Selecting is a total order to the last step, so the
-    /// same zones handed in a different order give the same answer; a cap that fell back on enumeration order
-    /// would let two identical requests differ, which is the reproducibility ADR-0013 rests on.
+    /// and the cap is a filter rather than a re-ordering. Under the cap nothing is selected at all: the zones
+    /// come back exactly as they arrived, which is what
+    /// <c>ApplyLevelCap_ChangesNothing_WhenThereAreFewerZonesThanTheCap</c> holds it to.
+    /// </para>
+    /// <para>
+    /// <b>The ranking compares every component of a <see cref="KeyLevelZone"/></b> — significance, then
+    /// touches, then both prices, then formation time, then kind. Two zones it cannot separate are therefore
+    /// the same zone, so the same zones handed in a different order select the same survivors; a cap that
+    /// fell back on enumeration order would let two identical requests differ, which is the reproducibility
+    /// ADR-0013 rests on. It stopped at the prices until gh#245's review, which left a cross-kind tie
+    /// deciding on arrival order. The last two steps settle the way <c>Stronger</c> settles the same ties for
+    /// the merge — the earlier formation, then <see cref="KeyLevelKind.Support"/> before
+    /// <see cref="KeyLevelKind.Resistance"/> — and each is handed in both orders by
+    /// <c>ApplyLevelCap_SettlesATieOnFormationTime_TakingTheOlderLevel</c> and
+    /// <c>ApplyLevelCap_SettlesATieOnKind_SoTwoIdenticalRequestsCannotDisagree</c>. Putting the survivors
+    /// back into price order cannot reintroduce a difference: <c>OrderBy</c> is a stable sort, and the
+    /// sequence it re-sorts is already totally ordered.
     /// </para>
     /// <para>
     /// <b>What it removes is gone, not summarised.</b> No survivor grows to cover a dropped neighbour's
@@ -489,6 +506,8 @@ public static class KeyLevels
                 .ThenByDescending(zone => zone.TouchCount)
                 .ThenBy(zone => zone.Bottom)
                 .ThenBy(zone => zone.Top)
+                .ThenBy(zone => zone.FormedAtBucket)
+                .ThenBy(zone => zone.Kind)
                 .Take(options.MaxLevels)
                 .OrderBy(zone => zone.Bottom)
                 .ThenBy(zone => zone.Top)];

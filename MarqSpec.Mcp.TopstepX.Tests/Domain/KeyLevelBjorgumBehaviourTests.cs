@@ -450,6 +450,33 @@ public sealed class KeyLevelBjorgumBehaviourTests
             new KeyLevelZone(99m, 104m, KeyLevelKind.Resistance, At(1), TouchCount: 3, Significance: 1.75m));
     }
 
+    [Fact]
+    public void Detect_Refuses_WhenTheZoneWidthCapIsNotPositive()
+    {
+        // The level cap's twin, and it is refused at the same place and for the same reason. At or below
+        // zero percent no zone can be reported at all: the comparison is width x 100 <= cap x midpoint, so
+        // with a cap of zero the right-hand side is zero for every positive price, every zone is dropped
+        // and Detect answers []. An empty level set is what a market with NO STRUCTURE looks like, so a
+        // misconfigured cap would arrive as a conclusion rather than as an error.
+        //
+        // Checked on an empty series too, because the guard runs before the empty-series exit: an operator
+        // who sets it finds out at the first call rather than at the first call that had bars.
+        //
+        // Defence in depth rather than a reachable path, and worth saying so: the configuration layer
+        // carries [Range(typeof(decimal), "0.01", "100")] on KeyLevelDetectionOptions.MaxZoneWidthPercent
+        // and registers it with ValidateDataAnnotations().ValidateOnStart(), and the cap is configuration
+        // only, so nothing a caller can send delivers a zero. Domain is the layer a later ILevelMethod
+        // calls directly, and there this guard is the only one there is.
+        ((Action)(() => KeyLevels.Detect(FixtureW, FlatAtr(4m, 7), WidthCap(0m))))
+            .Should().Throw<ArgumentOutOfRangeException>().WithMessage("*width cap*");
+
+        ((Action)(() => KeyLevels.Detect([], [], WidthCap(0m))))
+            .Should().Throw<ArgumentOutOfRangeException>().WithMessage("*width cap*");
+
+        ((Action)(() => KeyLevels.Detect(FixtureW, FlatAtr(4m, 7), WidthCap(-2.5m))))
+            .Should().Throw<ArgumentOutOfRangeException>().WithMessage("*width cap*");
+    }
+
     // ═══ 4 · THE LEVEL CAP ════════════════════════════════════════════════════════════════════════════
     //
     //  At most MaxLevels come back, and the ones kept are the most significant. Significance is prominence
@@ -520,6 +547,42 @@ public sealed class KeyLevelBjorgumBehaviourTests
 
         KeyLevels.ApplyLevelCap([low, high, thin], LevelCap(2)).Should().Equal(low, high);
         KeyLevels.ApplyLevelCap([thin, high, low], LevelCap(2)).Should().Equal(low, high);
+    }
+
+    [Fact]
+    public void ApplyLevelCap_SettlesATieOnFormationTime_TakingTheOlderLevel()
+    {
+        // The ranking has to separate any two zones that are not the same zone, or the survivor is decided
+        // by the order they happened to arrive in. Significance, touches and both prices tie here, so
+        // formation time is the step that answers, and it answers the way the merge does: a level dates
+        // from when it was FIRST respected, so the older one is the one that stands.
+        KeyLevelZone older = Zone(bottom: 100, top: 102, formedAt: 0, touches: 3, significance: 2.0m);
+        KeyLevelZone newer = Zone(bottom: 100, top: 102, formedAt: 4, touches: 3, significance: 2.0m);
+
+        KeyLevels.ApplyLevelCap([older, newer], LevelCap(1)).Should().Equal(older);
+        KeyLevels.ApplyLevelCap([newer, older], LevelCap(1)).Should().Equal(older);
+    }
+
+    [Fact]
+    public void ApplyLevelCap_SettlesATieOnKind_SoTwoIdenticalRequestsCannotDisagree()
+    {
+        // The last field of the record, and the one the ranking used to stop short of: two zones on the
+        // same prices, formed in the same bucket, with the same touches and the same significance,
+        // differing only in kind. Ranked without it, [support, resistance] answered SUPPORT and
+        // [resistance, support] answered RESISTANCE — two identical requests, two different answers, and a
+        // KeyLevelZone records no provenance to say which reading a caller was handed.
+        //
+        // The tie goes to Support, which is how `Stronger` already settles the same one for the merge:
+        // KeyLevelKind.Support is 1 and Resistance is 2, so Support sorts first in both places.
+        //
+        // Detect cannot reach this today — MergeOverlapping runs first and coincident bounds overlap, so
+        // these two merge before the cap ever sees them. ApplyLevelCap is public, and gh#259 composes zones
+        // from several methods into one list, which is the shape that hands a cap two zones no merge saw.
+        KeyLevelZone support = Zone(bottom: 100, top: 102, formedAt: 0, touches: 3, significance: 2.0m);
+        KeyLevelZone resistance = support with { Kind = KeyLevelKind.Resistance };
+
+        KeyLevels.ApplyLevelCap([support, resistance], LevelCap(1)).Should().Equal(support);
+        KeyLevels.ApplyLevelCap([resistance, support], LevelCap(1)).Should().Equal(support);
     }
 
     [Fact]

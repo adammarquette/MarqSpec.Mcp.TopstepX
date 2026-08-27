@@ -12,11 +12,13 @@ flowchart LR
   AGENT["MCP client (Claude Cowork / Claude Code)"]
   AGENT -->|stdio or streamable HTTP| TOOLS[Tool surface]
   TOOLS --> CACHE["BarCacheService — the read-through"]
+  TOOLS --> IND["IndicatorCacheService — the indicator read-through"]
   TOOLS --> READS["Account reads — pass-through, no cache"]
   CACHE --> STORE[("Postgres · TimescaleDB + pgvector")]
   CACHE -->|only what is missing| VENUE["MarqSpec.Client.ProjectX → api.topstepx.com"]
   READS --> VENUE
   CACHE --> PROJ["IndicatorProjector — same transaction"]
+  IND -->|only what the store lacks| PROJ
   PROJ --> STORE
   STORE --> TOOLS
 ```
@@ -211,10 +213,47 @@ one.**
 Detail, including why keying by contract id and back-adjustment were both rejected for now:
 [ADR-0011](adr/0011-contract-roll-boundary.md).
 
+## The indicator read — cache-aside on the same terms, and never against the vendor
+
+`get_indicators` and `get_indicator_at` read stored values. Since gh#246 they also **fill what is missing
+before they read**, which is what makes them cache-aside rather than merely cached
+([ADR-0014](adr/0014-indicators-are-projected-on-read-too.md)).
+
+`IndicatorCacheService.EnsureProjectedAsync(venue, instrument, resolution)`:
+
+1. **Probe** — a bar count **capped at the largest warm-up in the catalogue**, and one
+   `DISTINCT (Indicator, Period)` over the series' stored values. Two aggregates, and they are the whole cost
+   of a warm read: **4.3 ms** at 2,000 bars, **11.2 ms** at 70,000. The cap is why the first half does not
+   grow with the series — the only thing that count decides is `WarmupBars <= bars` for each catalogue member,
+   and any number at or above the largest warm-up answers every one of those identically.
+2. **Diff against the catalogue.** A pair is *missing* only when the stored bars reach its
+   `IIndicator.WarmupBars`. A pair the bars cannot yet satisfy is **not yet measurable**, which is a fact
+   (`R-2.3`) rather than a gap — and treating the two alike would replay a short series on every read forever
+   while never writing a value.
+3. **Nothing missing ⇒ return.** No transaction is opened. The answer is memoised for the life of the request
+   scope, so `get_market_snapshot`'s eleven `get_indicator_at` calls per resolution cost **one** probe.
+4. **Otherwise replay the whole series** through the same `IndicatorProjector` inside the same
+   `SeriesUnitOfWork` the fill path uses — never a window around what was asked for (`R-2.13`).
+
+**The venue is unreachable from here by construction**: the service takes no `IMarketDataGateway` at all, the
+same statement `IndicatorRebuilder` makes. Every bar a projection needs is already stored.
+
+**The first read of a cold series pays for the replay, once** — about **8.3 s** for a year of five-minute
+bars, measured, against **106 paced venue pages and roughly a minute of sleeping** for the `get_bars` call
+that put those bars there. It is not capped: a cap would hand the caller back the operator step this path
+exists to remove, and only on the largest series. The tool descriptions say so.
+
+**A `40001` is now reachable from a read.** Two simultaneous cold reads of one series both replay, the loser's
+write meets the winner's committed rows, and `R-2.10`'s single retry re-derives against them and writes
+nothing — so one projection lands. Nothing is serialised and no lock is taken
+([ADR-0012](adr/0012-fills-are-not-serialised.md) measured both shapes and rejected both).
+
 ## The indicator projection
 
 Indicators are **projections** over the bar store, not facts. Every row is reproducible from `Bars`, and that
-is the point ([ADR-0006](adr/0006-indicators-as-projections.md)).
+is the point ([ADR-0006](adr/0006-indicators-as-projections.md)). They are computed **when bars are written,
+and on the first read that finds the catalogue has outrun the store** (`R-2.1`) — two triggers over one
+replay.
 
 A projection seeds from the **start of the stored series**, never from a moving window. Wilder smoothing is
 path-dependent: seeding from a window would make a value depend on how much history happened to be loaded, so
@@ -255,6 +294,11 @@ series regardless of which range it fetched. That is the substance of the retry 
 the same isolation level, for the same reason. The series is the unit of work because a rebuild is idempotent
 per series; one snapshot held across the whole run would be pinned for its length and would discard everything
 on a late failure.
+
+Its job is now **correction rather than repair** (`R-2.5`). A read self-heals only what the probe can see — a
+`(Indicator, Period)` pair with no rows — so **correcting an indicator's arithmetic leaves every pair present
+and no read will ever recompute it.** That forced replay, the accepted write skew of `R-2.11`, and warming a
+series ahead of its first caller are what the verb is for.
 
 Multi-output and multi-parameter indicators are the awkward case: the key carries *one* period, and MACD takes
 three parameters. The non-period ones are **fixed at their conventional values** rather than hidden behind a

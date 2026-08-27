@@ -76,6 +76,7 @@ and can be pinned by fixture tests shared with `trading-copilot` — which is wh
 | [2026-08-23](#update-2026-08-23--the-empty-diff-claim-was-false-in-practice) | The "confirming rebuild is an empty diff" property is now enforced by rounding to the stored scale |
 | [2026-08-23](#update-2026-08-23--seeding-is-per-contract-not-per-series) | Seeding is per contract segment rather than per stored series ([ADR-0011](0011-contract-roll-boundary.md)) |
 | [2026-08-23](#update-2026-08-23--a-rebuild-is-a-unit-of-work-not-a-loop-of-statements) | The rebuild verb is transactional per series, and it is a class a test can run |
+| [2026-08-26](#update-2026-08-26--a-read-is-a-trigger-too-and-the-key-is-untouched) | A read projects what the catalogue has outrun ([ADR-0014](0014-indicators-are-projected-on-read-too.md)) |
 
 ## Update (2026-08-23) — the empty-diff claim was false in practice
 
@@ -154,3 +155,29 @@ here" better than the discarded local that used to say it.
 **Reproducibility is untouched.** Nothing about *what* a replay computes changed; only how many snapshots it
 computes it against. `rebuild = replay` still holds, and the confirming-rebuild tests — including the one that
 projects twice across a roll — still pass unchanged.
+
+## Update (2026-08-26) — a read is a trigger too, and the key is untouched
+
+This record's title says indicators are **computed on write**, and its consequences say *"adding an indicator
+means rebuilding it over existing bars — `rebuild-indicators`, no vendor traffic"*. Both were true, and the
+second was the whole problem: **the rebuild was a manual verb**, so an indicator added to the catalogue had no
+values for any already-cached bar until an operator ran a command against the container (gh#246). The absence
+reported correctly and was read as *cannot measure* — but it was an artefact of *when* computation happened
+rather than a fact about the market.
+
+`get_indicators` and `get_indicator_at` now project what the catalogue computes and the store does not hold,
+from bars that are already local, before they read. The decision, the four questions it had to settle and the
+measurements behind them are [ADR-0014](0014-indicators-are-projected-on-read-too.md).
+
+**Everything this record protects is untouched, and one thing is worth stating twice.** The replay is reused
+verbatim — whole series, seeded per contract run, inside the same unit of work — so recomputation is still
+exact and a confirming rebuild is still an empty diff. And **a per-call period is still forbidden**: the
+period is part of a value's identity, the storage key carries one, and ADR-0014 changes the *trigger*, not the
+key. Nothing there should be read as reopening the parameterisation section above. If a configurable fast
+length is ever wanted, the answer is still that it goes in the **name** and this record is superseded rather
+than reinterpreted.
+
+**`rebuild-indicators` keeps its place, with a narrower job.** A read self-heals only what the probe can see —
+a `(Indicator, Period)` pair with no rows. **Correcting an indicator's arithmetic leaves every pair present**,
+so no read will ever recompute it, and the verb is now how a *forced* replay happens. That, ADR-0012's
+accepted write skew, and warming ahead of the first caller are what it is for.

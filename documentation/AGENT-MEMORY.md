@@ -38,9 +38,20 @@ age — it is **what fails without it**:
 leaves for being long, narrow or unglamorous:** a hard-won practice with nowhere else to live stays, and so
 does the worked evidence under it — *provided that evidence is pinned to a sha and not to a branch, a date or
 "the current tree"*. An entry's own pull request can move `origin/develop` out from under it (gh#262), so the
-risk here is a mutable reference, not age. **Record every removal in the retiring pull request, with where
-the lesson went**, so `git log -- documentation/AGENT-MEMORY.md` is the ledger and this file does not become
-one.
+risk here is a mutable reference, not age.
+
+**Before you remove, sweep what points *at* the entry.** The exits ask where the lesson went; none asks what
+referred to it. Entries cite their neighbours — *"the entries below"*, *"same shape as that trap"* — and
+`AGENTS.md`, an ADR or a compose file cite entries too. Orphaning one breaks nothing: the sentence still
+parses, every gate stays green, and only a reader chasing the antecedent finds the hole. Grep the entry's
+distinguishing phrase across `documentation/`, `AGENTS.md`, `CONTRIBUTING.md` and the workflows, **prove the
+pattern on a known positive before trusting an empty result** — case and line-wrapping each hide a hit — and
+repair the pointer in the same pull request. **Re-run the sweep after a rebase:** an inbound reference can
+arrive from a branch that merged *after* the removal was reviewed, which is how gh#282's entry came to point
+at one this rule's own pull request retires.
+
+**Record every removal in the retiring pull request, with where the lesson went**, so
+`git log -- documentation/AGENT-MEMORY.md` is the ledger and this file does not become one.
 
 ---
 

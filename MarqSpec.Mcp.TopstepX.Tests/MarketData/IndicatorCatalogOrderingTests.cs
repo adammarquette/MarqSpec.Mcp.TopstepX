@@ -45,7 +45,7 @@ namespace MarqSpec.Mcp.TopstepX.Tests.MarketData;
 /// naming them. So <b>nothing in this tier pins a catalogue-wide “values come back”</b>. That matters when
 /// adding a twelfth indicator: one whose warm-up arithmetic is wrong returns all-nulls forever and passes
 /// every sweep there is — it does refuse a splice and it does refuse a shuffle — leaving
-/// <c>get_indicator</c> answering with an empty series, green, on every instrument.
+/// <c>get_indicators</c> answering with an empty series, green, on every instrument.
 /// </para>
 /// </remarks>
 public sealed class IndicatorCatalogOrderingTests

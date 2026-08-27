@@ -328,12 +328,18 @@ public sealed class IndicatorTests
     [Fact]
     public void Vwap_RefusesATransposedSeries()
     {
-        // Vwap_AccumulatesAcrossTheSession's two bars, exchanged. VWAP is a running accumulation and the
-        // session anchor is read in series order, so disorder does not merely reorder the output: it restarts
-        // the day's average early, and every value after the disorder is computed from a partial session.
-        // It cannot carry volume across sessions — TradeDateFor is a pure per-bar function and the accumulator
-        // resets on every change of session — so no permutation adds a bar to a total labelled with another
-        // trade date. Measured, not reasoned from the shape of the loop.
+        // Vwap_AccumulatesAcrossTheSession's two bars, exchanged. VWAP is a running accumulation, so disorder
+        // changes what it reports: with this guard deleted the two give [11, 12.5] in order and [14, 12.5]
+        // transposed. Both bars sit in one session, and that is the whole of what this fixture shows. The
+        // accumulator resets only when TradeDateFor returns a different date, so a single-session series is
+        // never restarted and its last value is the complete session either way.
+        //
+        // Crossing a boundary is where disorder costs a reading: [day1a, day2, day1b] gives [11, 101, 14],
+        // the 14 being day1b computed from a restarted, partial day. What no arrangement can do is move
+        // volume between sessions — TradeDateFor reads the bar's own timestamp, never its position, and the
+        // accumulator resets on every change of label, which is why 101 stays 101 above. Every number here
+        // was read off a run with the guard deleted; the no-crossing claim is the source argument plus those
+        // runs, not an exhaustive search.
         BarSessionCalendar calendar = BarSessionCalendar.Parse("16:00", []);
         DateTimeOffset open = MarketClock.FromMarket(new DateOnly(2026, 8, 18), new TimeOnly(9, 0));
 

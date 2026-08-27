@@ -27,13 +27,22 @@ Three assemblies, layered so the pure part stays pure:
 
 | Project | Depends on | Holds |
 |---|---|---|
-| `…​.Domain` | **nothing** | `Bar`, `InstrumentId`, `InstrumentSpec`, `IIndicator` and `ILevelMethod` + implementations, `BarSessionCalendar`, `BarGapDetector`, `KeyLevels` |
+| `…​.Domain` | **nothing** | `Bar`, `InstrumentId`, `InstrumentSpec`, `IIndicator` and `ILevelMethod` + implementations, `BarSessionCalendar`, `BarGapDetector`, `KeyLevels`, `SessionLevels` |
 | `…​.Data` | Domain | Entities, `DbContext`, migrations |
 | `MarqSpec.Mcp.TopstepX` | Domain, Data, the venue client | Tools, transports, cache-aside services, the ProjectX adapter, composition root |
 
 `Domain`'s emptiness is load-bearing. An indicator is a pure function of the bars handed in, and that is what
 makes "rebuild = replay" true — a dependency on a clock or a store there would make a recomputation depend on
 *when* it ran, and no test would notice.
+
+**A session boundary is the one thing bars cannot supply, and it arrives by construction rather than by
+widening a signature.** `vwap` and `session` both need to know where a session begins; neither
+`IIndicator.Compute` nor `ILevelMethod.Detect` carries a calendar, and neither gained one. `IndicatorCatalog`
+and `LevelMethodCatalog` each take the single `BarSessionCalendar` the composition root parses once from
+`MarketData__SessionCloseCentral` and `MarketData__Holidays`, and hand it to the one member that needs it.
+That is a **value**, not a source — deterministic in its configuration, fixed for the process — so a method
+holding one is still a pure function of what it was built and handed, and every other method keeps a
+signature free of a parameter it would never read (gh#257).
 
 ## The cache-aside read — the only genuinely interesting path
 
@@ -203,9 +212,10 @@ one.**
   implementation must therefore **refuse** a spliced series, reaching the guard directly *or through whatever
   it delegates detection to*: `swing` delegates to `KeyLevels.FindPivots`, which already calls it, and adding
   a second call there would only change which of two refusals a caller sees when a series is both spliced and
-  handed a misaligned ATR. So `LevelMethodCatalogRollTests` sweeps `LevelMethodCatalog.All` for **the
-  refusal**, not for the call — a method that skipped it would not fail, it would answer with an
-  ordinary-looking zone built across the seam.
+  handed a misaligned ATR. `session` has nothing to delegate to — it reads a finished session's extremes
+  rather than running the pivot pipeline — so it calls both guards itself. So `LevelMethodCatalogRollTests`
+  sweeps `LevelMethodCatalog.All` for **the refusal**, not for the call — a method that skipped it would not
+  fail, it would answer with an ordinary-looking zone built across the seam.
 - The two callers that legitimately hold a multi-contract series segment first, using the pure
   `ContractRollDetector`: the projector computes each run independently, and `get_key_levels` detects over the
   newest run only and reports `detectedOverBars`.

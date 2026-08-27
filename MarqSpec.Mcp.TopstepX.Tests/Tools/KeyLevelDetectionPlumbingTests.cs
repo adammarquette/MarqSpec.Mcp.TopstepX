@@ -450,7 +450,7 @@ public sealed class KeyLevelDetectionPlumbingTests : IDisposable
             // snapshot composed below DOES read indicators through it.
             new IndicatorCacheService(
                 _database, indicators, projector, clock, NullLogger<IndicatorCacheService>.Instance),
-            new LevelMethodCatalog(),
+            new LevelMethodCatalog(calendar),
             gateway,
             new ToolGuards(market),
             new StoreAvailabilityHolder(),

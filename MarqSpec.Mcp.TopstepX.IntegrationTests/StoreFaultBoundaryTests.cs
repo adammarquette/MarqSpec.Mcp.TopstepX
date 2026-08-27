@@ -347,7 +347,7 @@ public sealed class StoreFaultBoundaryTests(SchemaFixture fixture)
             ConcurrencyHarness.Registry(),
             ConcurrencyHarness.Catalog(),
             ConcurrencyHarness.Indicators(store),
-            new LevelMethodCatalog(),
+            new LevelMethodCatalog(BarSessionCalendar.Parse("16:00", [])),
             new SeriesGateway(venue, available),
             new ToolGuards(Options.Create(new MarketDataOptions
             {

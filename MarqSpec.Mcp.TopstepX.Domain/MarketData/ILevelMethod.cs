@@ -30,6 +30,32 @@ namespace MarqSpec.Mcp.TopstepX.Domain.MarketData;
 /// reproducible from the bars that were on hand, or two people comparing notes are comparing different
 /// numbers without either being wrong.
 /// </para>
+/// <para>
+/// <b>If your method needs a session boundary, take it in your constructor. Do not widen
+/// <see cref="Detect"/>.</b> This was settled on gh#257, when <c>session</c> became the first method whose
+/// answer depends on something the bars cannot supply, and <c>pivot-*</c> inherits it whole — "the prior
+/// period" is the same boundary. <see cref="BarSessionCalendar"/> is a <i>value</i>: one instance for the
+/// whole server, parsed once at startup from <c>MarketData__SessionCloseCentral</c> and
+/// <c>MarketData__Holidays</c>, deterministic in its configuration and fixed for the life of the process.
+/// Holding one is therefore not the "configuration singleton" the paragraph above forbids — it is the same
+/// arrangement <see cref="VwapIndicator"/> has lived under since VWAP existed, where
+/// <see cref="IIndicator.Compute"/> also takes no calendar and <c>IndicatorCatalog</c> supplies one at
+/// construction.
+/// </para>
+/// <para>
+/// The three alternatives were weighed and are recorded here so they are not re-opened by guess.
+/// <b>Widening this interface</b> costs every implementation a parameter only one of them reads, and — since
+/// a parameter list and its call sites live in different files — an arity change merges clean and breaks the
+/// build. <b>Widening <c>KeyLevelOptions</c></b> to carry session boundaries as values turns "detection
+/// tuning" into an assembly job every caller of every method performs for one method's benefit, and puts a
+/// second definition of a session next to <see cref="BarSessionCalendar"/>. <b>Deriving boundaries from the
+/// bars</b> infers a session close from gaps, which produces a plausible boundary from a thin overnight —
+/// a well-formed number no trade produced (gh#213). Constructor injection costs one parameter on the
+/// catalogue and nothing on this interface, and <b>keeps every method inside
+/// <c>LevelMethodCatalog.All</c></b>, which is what the roll and ordering sweeps iterate: a method that
+/// could not be constructed without an instrument would leave those sweeps and lose <c>R-3.5</c> without
+/// failing.
+/// </para>
 /// </remarks>
 public interface ILevelMethod
 {

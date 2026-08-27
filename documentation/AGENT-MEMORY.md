@@ -326,6 +326,17 @@ ADR, `AGENTS.md`, or the code, **put it there instead**.
   `numeric(18,8)` column.** Round to `TopstepXDbContext.PriceScale` before comparing, or the comparison
   silently always answers "changed". This made the indicator projection's skip-unchanged guard dead code for
   the whole of Phase 2 (gh#37). **Applies to any future `numeric(18,8)` column compared this way.**
+- **[2026-08-26] Same shape as that `numeric(18,8)` trap, one type over: a `ValueTuple` projected inside a
+  LINQ `Select` translates, then throws on materialisation — and the unit tier cannot see it (gh#282).**
+  `.Select(v => ValueTuple.Create(v.Indicator, v.Period))` compiles to a Postgres **row constructor**,
+  `SELECT (i0."Indicator", i0."Period") FROM (SELECT DISTINCT …)`, whose column type is `record`. Npgsql
+  refuses to read one as a tuple: `InvalidCastException` — *"is not supported for fields having
+  DataTypeName 'record'"* — wrapping a `NotSupportedException` that names the opt-in,
+  `EnableRecordsAsTuples`. **The EF in-memory provider materialises it happily**, so `…Tests` stays green
+  and only `…IntegrationTests` against real Postgres ever reddens; that is what made it cost a debugging
+  cycle on PR #279 (`f590630`). **Fix: project an anonymous type and build the tuple after
+  materialisation**, which is what `MarketData/IndicatorCacheService.cs` does. Reproduced on both tiers
+  under gh#282 rather than quoted from the commit that hit it.
 - **[2026-08-23] A CLI verb with no test and no run is not delivered.** `rebuild-indicators` shipped in Phase 2
   and had never been executed anywhere. Running it once, twice in a row, exposed gh#37 immediately.
 

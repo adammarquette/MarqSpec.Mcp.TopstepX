@@ -58,8 +58,9 @@ they still do. `TheReadTriggeredProjection_ProducesWhatARebuildWouldHave` and
 as pulling opposite ways. They do not, because the numbers are not comparable: level detection costs
 **about 0.2 ms** at the tool's default window, against a bar query no cache removes, so caching it would
 save a fraction of a millisecond and buy a staleness problem. A projection over a year of five-minute bars
-costs **8.3 s**, and the rows it writes are then served by an indexed key lookup inside a probe measured at
-11 ms. One is worth storing and one is not, and both answers came from measuring first.
+costs **8.3 s**, and every warm read of the rows it writes pays a probe measured at 11 ms *before* an
+indexed key lookup serves the answer. One is worth storing and one is not, and both answers came from
+measuring first.
 
 *The level figure is given to one digit on purpose.* It is quoted from a record on an unmerged branch, and
 that branch moved it from 0.20 ms to 0.21 ms during this record's own review. One digit is what a citation
@@ -187,8 +188,8 @@ series, and the loss reads as a warm-up.
 ### Compute on read and do not store, the way levels are
 
 ADR-0013's answer, and wrong here by a factor of about **750**: 8.3 s of
-arithmetic per call against the 11 ms probe that serves the stored answer. It would also delete ADR-0006's
-whole premise — the stored series is what makes a read a lookup.
+arithmetic per call against the 11 ms probe every warm read pays before its lookup. It would also delete
+ADR-0006's whole premise — the stored series is what makes a read a lookup.
 
 ### Probe with eleven `EXISTS` seeks instead of one `DISTINCT`
 

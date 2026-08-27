@@ -227,6 +227,37 @@ so it costs nothing at runtime, and removing it is a migration that also touches
   approaches the cost of the bar query it cannot avoid — the volume-derived methods over the trade tape
   (#213) are the only candidates in sight, and they have not been written.
 
+## Update — 2026-08-27: the default lookback this record priced against is no longer the shipped one (gh#245)
+
+**Nothing decided above changes, and no measurement in it is withdrawn.** This section exists because one
+number in *Consequences* is now attached to a configuration that no longer ships, and a reader arriving from
+`KeyLevels__PivotLookback` would otherwise compare a quoted figure against a different parameterisation.
+
+gh#245 adopted Bjorgum's calibration whole: the pivot window is **20 bars left and 15 right**, where this
+record was measured with a symmetric **5**. So of the two figures already in the tables above, it is the
+*second* that now describes the shipped default:
+
+| | measured here | shipped when this record was written | shipped after gh#245 |
+|---|---|---:|---:|
+| `Detect`, 500 bars | §The measurement | 0.21 ms (`Lookback = 5`) | **0.51 ms** (`Lookback = 20`) |
+| `Detect`, 250,000 bars | §The measurement | ~120–190 ms | **~280–305 ms** |
+| zones over 10,000 bars | §2's table | 56 | **44** |
+
+**Every one of those numbers is already in this record** — the `Lookback = 20` paragraph beneath the headline
+table, and §2's parameterisation table. Nothing was re-measured for this update and nothing should be read as
+if it had been; the asymmetric 15-bar right window is narrower than the 20 those figures assume, so if
+anything the shipped cost is a little under the 0.51 ms quoted rather than over it. **That last clause is a
+direction, not a measurement, and it is stated as one.**
+
+The decision is untouched: the saving a cache could offer is still bounded by the compute figures here, still
+three orders of magnitude below the cap, and still smaller than the bar query it cannot avoid. The revisit
+condition is unchanged.
+
+gh#245 also made `get_key_levels` merge zones across support and resistance
+([ADR-0015](0015-levels-merge-across-support-and-resistance.md)) and added two caps. None of that reopens
+this record — nothing stores a level, the caps reach `Detect` as arguments, and the condition that *would*
+reopen it is still exact and still unmet.
+
 ## Follow-ups
 
 - **Drop the `PriceLevels` table — gh#276.** With this record the table has no pending purpose, and an empty

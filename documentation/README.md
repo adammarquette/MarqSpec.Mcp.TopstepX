@@ -34,9 +34,9 @@ rather than reword it.
 
 | Document | ~tok | Read it when |
 |---|---:|---|
-| [`prd.md`](prd.md) | 5.0K | You need **what is required**, or you are citing an `R-#`. Ids are stable and never renumbered, and a citation that does not resolve here fails CI. |
-| [`architecture.md`](architecture.md) | 7.2K | You need **how the pieces fit** — the cache-aside path, the projection, the transports. |
-| [`mcp-tool-catalogue`](mcp-tool-catalog.md) | 8.7K | You are adding, changing or calling a tool. The tool surface is a contract; this is it. |
+| [`prd.md`](prd.md) | 5.5K | You need **what is required**, or you are citing an `R-#`. Ids are stable and never renumbered, and a citation that does not resolve here fails CI. |
+| [`architecture.md`](architecture.md) | 8.0K | You need **how the pieces fit** — the cache-aside path, the projection, the transports. |
+| [`mcp-tool-catalogue`](mcp-tool-catalog.md) | 9.1K | You are adding, changing or calling a tool. The tool surface is a contract; this is it. |
 | [`data-dictionary.md`](data-dictionary.md) | 3.5K | You need the data model — the six tables, their keys, and why each key is shaped that way. |
 
 ## Working agreements

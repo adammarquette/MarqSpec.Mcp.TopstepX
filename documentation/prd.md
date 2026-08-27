@@ -78,7 +78,12 @@ The server serves OHLCV bars for a futures instrument at a requested resolution 
 
 ## R-2 — Pre-computed indicators
 
-- **R-2.1** Indicator values are computed when bars are written, not when they are read. **The store performs
+- **R-2.1** Indicator values are computed **when bars are written, and on the first read that finds the
+  catalogue has outrun the store** — a `(Indicator, Period)` pair the catalogue computes, the stored bars
+  justify, and `IndicatorValues` holds no row for. A read never reaches the vendor: every bar a projection
+  needs is already local, so adding an indicator or moving a period is live on the next read with no operator
+  action ([ADR-0014](adr/0014-indicators-are-projected-on-read-too.md), gh#246). **The trigger is what
+  changed; the key is not** — a period is still never a per-call argument (`R-2.12`). **The store performs
   the write** — an `ON CONFLICT … DO UPDATE` on `(Venue, Instrument, ResolutionMinutes, Indicator, Period,
   BucketStart)` — so two passes over one series whose snapshots each miss the other's rows both land instead of
   the loser faulting on a duplicate key (gh#133). A pass recomputes the whole series *its own snapshot* can
@@ -90,7 +95,10 @@ The server serves OHLCV bars for a futures instrument at a requested resolution 
 - **R-2.3** A value that the period does not yet support is **absent**, never a partial or substituted number.
 - **R-2.4** An indicator read as of a moment returns the value at or **before** that moment, never after.
 - **R-2.5** The full stored series can be rebuilt from the bars by a single command, without re-fetching from
-  the vendor.
+  the vendor. Since `R-2.1` made a read a trigger too, that command's job is a **forced** replay rather than
+  the only one: correcting an indicator's arithmetic leaves every `(Indicator, Period)` pair present, so no
+  read will recompute it. It also repairs `R-2.11`'s accepted skew, and warms a series ahead of its first
+  caller.
 - **R-2.6** Supported at v1: ATR, RSI, SMA, EMA, MACD (line, signal, histogram), session-anchored VWAP, and
   Bollinger bands. The set is a **closed vocabulary** at the tool boundary — an unknown name is an error that
   names the known ones.
@@ -128,6 +136,17 @@ The server serves OHLCV bars for a futures instrument at a requested resolution 
   fills share no bar, no coverage row and no indicator key, so this is write skew rather than contention and
   `R-2.10` cannot reach it. Closing it would need a lock rather than an isolation level, and the measurements
   behind not taking one are [ADR-0012](adr/0012-fills-are-not-serialised.md).
+- **R-2.12** A period is **never a per-call argument**. It is part of a value's identity and the storage key
+  carries one, so a value computed under a period the key cannot see would be served for another. `R-2.1`'s
+  read trigger does not reopen this: a read asks for exactly the period the catalogue is configured for and
+  gets that or an honest absence (`R-2.3`). A configurable non-period parameter goes in the indicator's
+  **name**, and [ADR-0006](adr/0006-indicators-as-projections.md) is superseded rather than reinterpreted.
+- **R-2.13** A read that finds a series cold **replays the whole stored series**, never a window around what
+  was asked for. A moving seed window makes a value depend on how much history happened to be loaded, which
+  `R-2.2` forbids, and a narrowed read under `R-2.8`'s unscoped removal would delete every value outside the
+  range. The first such read is therefore slow in proportion to the history kept — about **8.3 seconds** for a
+  year of five-minute bars, measured — and every read after it pays only the probe. That cost is stated in the
+  tool's own description rather than being a surprise.
 
 ## R-3 — Key levels
 

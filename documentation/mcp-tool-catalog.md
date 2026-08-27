@@ -217,7 +217,22 @@ The recent window, which is what an agent actually asks for. Same shape as `get_
 for reaching back past the start of the calendar — one of the cross-axis pairs above.
 
 ### `get_indicators(symbol, resolutionMinutes, indicator, fromUtc, toUtc)`
-A stored indicator series.
+A stored indicator series, **filled on demand from bars this server already holds**.
+
+**Cache-aside, and the vendor is never called.** A value is computed when its bar is written *and* on the
+first read that finds the catalogue computing a `(indicator, period)` pair the store has no row for — which
+is what an added indicator, or a changed period, looks like once stored. So a new indicator is live on the
+next read, with no operator running anything (gh#246,
+[ADR-0014](adr/0014-indicators-are-projected-on-read-too.md), `R-2.1`).
+
+**That first read replays the whole stored series and is slow in proportion to the history kept** — about
+**8.3 seconds** for a year of five-minute bars, measured; every read after it pays a probe of a few
+milliseconds. It is **not** capped, because capping it would return the operator step this removes. For scale:
+the `get_bars` call that fetched that year spent about a *minute* on paced vendor pages. An operator who would
+rather pay it at deploy time runs `rebuild-indicators`.
+
+A read can therefore report **contention** like `get_bars` can: two simultaneous cold reads of one series both
+replay, and the loser is retried once and then reported by name. One projection lands, not two.
 
 Returns `{ symbol, resolutionMinutes, indicator, period, values: [{ t, v }], contracts }`.
 
@@ -237,7 +252,9 @@ stored.
 the caller knows what it got.
 
 ### `get_indicator_at(symbol, resolutionMinutes, indicator, asOfUtc)`
-One value, as of a moment — at or **before** it, never after.
+One value, as of a moment — at or **before** it, never after. **Cache-aside on exactly the terms
+`get_indicators` states above**, including the first-read cost: this is the read `get_market_snapshot`
+composes, and the probe behind it is memoised per request, so eleven indicator reads over one series cost one.
 
 Returns `{ value, bucketStart, contractId }`.
 

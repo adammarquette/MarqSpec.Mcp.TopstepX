@@ -289,6 +289,28 @@ public sealed class SessionLevelMethodTests
     }
 
     [Fact]
+    public void ACalendarWhoseReopenLandsAfterMidnight_ProducesNothingRatherThanABoundaryItDisowns()
+    {
+        // Every period here is anchored to the instant its session opened, and that instant is looked for at
+        // the calendar's reopen time on the PREVIOUS evening. A 23:30 close with the default one-hour window
+        // reopens at 00:30, which is not an evening — it is the small hours of the trade date itself, so the
+        // previous evening is the wrong place to look and the boundary found there is not this session's.
+        //
+        // Measured: with close 23:30 the candidate instant is 2026-08-17 00:30 Central, and the calendar
+        // reads it as trade date 08-17, not the 08-18 it was asked about, because 00:30 is before that day's
+        // 23:30 close. So the candidate is refused and every period goes absent. With the shipped 16:00
+        // close the same lookup for 08-18 lands on 2026-08-17 17:00 and the calendar agrees.
+        //
+        // The point is that the boundary is not RECONSTRUCTED from the close and the window — it is handed
+        // back to the calendar and kept only if the calendar agrees. A rule that assumed "the evening before"
+        // would have answered here with a full set of levels measured from the wrong day.
+        BarSessionCalendar afterMidnightReopen = new(new TimeOnly(23, 30), []);
+
+        new SessionLevelMethod(afterMidnightReopen).Detect(Fixture, FlatAtr(Fixture.Count), Options)
+            .Should().BeEmpty();
+    }
+
+    [Fact]
     public void AMissingAtrAtTheBarThatFormedALevel_DropsThatLevelAndLeavesTheOthersAlone()
     {
         // A zone is sized and scored in ATR multiples, so with no ATR at the bar that made the level there

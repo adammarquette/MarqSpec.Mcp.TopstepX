@@ -160,18 +160,21 @@ public sealed class IndicatorCacheService(
         // change tracker never sees, so a tracked copy is a stale entity the identity map would hand back to
         // the next read in the same scope (gh#103). Projected to two columns because that is the whole
         // question -- WHICH pairs exist, never how many rows or what they hold.
-        List<(string Indicator, int Period)> held = await _database.IndicatorValues
+        // The tuple is BUILT AFTER MATERIALISATION, not projected into. Npgsql reads a ValueTuple as a
+        // Postgres composite `record`, so `.Select(v => ValueTuple.Create(…))` translates and then throws on
+        // the read -- and the in-memory provider the unit tier runs on materialises it happily, so the fault
+        // is only reachable from the integration tier.
+        var held = await _database.IndicatorValues
             .AsNoTracking()
             .Where(v => v.Venue == venue
                 && v.Instrument == instrument.Symbol
                 && v.ResolutionMinutes == resolutionMinutes)
             .Select(v => new { v.Indicator, v.Period })
             .Distinct()
-            .Select(v => ValueTuple.Create(v.Indicator, v.Period))
             .ToListAsync(cancellationToken)
             .ConfigureAwait(false);
 
-        HashSet<(string Indicator, int Period)> stored = [.. held];
+        HashSet<(string Indicator, int Period)> stored = [.. held.Select(v => (v.Indicator, v.Period))];
 
         List<IIndicator> missing =
             [.. _catalog.All.Where(i => i.WarmupBars <= bars && !stored.Contains((i.Name, i.Period)))];

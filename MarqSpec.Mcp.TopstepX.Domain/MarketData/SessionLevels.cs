@@ -45,11 +45,22 @@ public static class SessionLevels
     /// How much of a session's opening the initial balance covers.
     /// </summary>
     /// <remarks>
-    /// One hour, fixed at the conventional value rather than exposed as a knob — the same reasoning the
-    /// Coding contract applies to an indicator's non-period parameters. It is measured from the session's
-    /// own reopen, which for this server's calendar is <see cref="BarSessionCalendar.SessionOpen"/> on the
-    /// previous evening, and it is not the cash open: nothing in this repository's configuration names one,
-    /// and inventing one would be a boundary no trade produced.
+    /// <para>
+    /// One hour, fixed at the conventional value rather than exposed as a knob. <b>The reason is the one
+    /// <see cref="KeyLevelOptions.ZoneAtrMultiple"/> is not per-call, not ADR-0006's</b> — nothing stores a
+    /// level, so no key can lose a parameter (ADR-0013); what a movable length would cost is
+    /// <i>comparability</i>. gh#232's confluence weighs levels from several methods against each other, and
+    /// an initial balance measured over a length the caller chose is not the same level two readers think
+    /// they are both looking at.
+    /// </para>
+    /// <para>
+    /// It is measured from the session's own reopen, which for this server's calendar is
+    /// <see cref="BarSessionCalendar.SessionOpen"/> on the previous evening. <b>That is not the cash
+    /// open</b>, and the difference is stated rather than glossed: a pit-session initial balance runs from
+    /// the equity open, and nothing in this repository's configuration names one — there is a
+    /// <c>SessionCloseCentral</c> and a maintenance window and nothing else. Inventing a cash open here
+    /// would be a boundary no configuration set and no trade produced.
+    /// </para>
     /// </remarks>
     public static readonly TimeSpan InitialBalanceLength = TimeSpan.FromHours(1);
 
@@ -155,8 +166,11 @@ public static class SessionLevels
     /// evening — Sunday evening for a Monday, and the evening before a holiday for the day after it. Rather
     /// than restate that rule, the candidate instant is handed back to
     /// <see cref="BarSessionCalendar.TradeDateFor"/> and kept only if the calendar agrees it belongs to this
-    /// trade date. A close late enough that the reopen lands after midnight would make the previous evening
-    /// the wrong place to look, and this returns null there instead of a boundary the calendar disowns.
+    /// trade date. A close late enough that the reopen lands after midnight makes the previous evening the
+    /// wrong place to look, and this returns null there instead of a boundary the calendar disowns —
+    /// measured at a <c>23:30</c> close, where the candidate for Tuesday the 18th is Monday the 17th at
+    /// <c>00:30</c> and the calendar reads it as the 17th, so every period goes absent
+    /// (<c>SessionLevelMethodTests</c> pins it).
     /// </remarks>
     private static DateTimeOffset? SessionOpenFor(BarSessionCalendar calendar, DateOnly tradeDate)
     {

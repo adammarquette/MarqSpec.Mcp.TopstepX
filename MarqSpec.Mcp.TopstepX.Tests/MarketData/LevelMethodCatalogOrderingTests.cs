@@ -116,10 +116,14 @@ public sealed class LevelMethodCatalogOrderingTests
     /// <b>The disorder does not show in the answer, and that is the whole point.</b> With
     /// <see cref="IndicatorGuard.RequireStrictlyAscending"/> deleted from <see cref="KeyLevels.FindPivots"/>,
     /// <c>swing</c> answered this series with one zone — <c>128.75</c>–<c>129.75</c>, resistance, formed at
-    /// <c>22:50Z</c>, significance <c>7.3125</c> — the same zone, to the tick, that it returns for these
-    /// same bars sorted into order. Both measured in one run; re-measured on gh#257's branch after
-    /// <see cref="SessionStart"/> moved to the reopen, which changed the formation time from <c>14:50Z</c>
-    /// and nothing else, because a price does not depend on when the bar carrying it opened. A
+    /// <c>23:40Z</c>, significance <c>7.3125</c> — the same zone, to the tick, that it returns for these
+    /// same bars sorted into order. <b>Measured three times, and the time is the only thing that has ever
+    /// moved.</b> First on gh#283's branch, where the run began at 09:00 Central and the answer was
+    /// <c>14:50Z</c>. Then on gh#257's, which moved <see cref="SessionStart"/> to the reopen so
+    /// <c>session</c> had an initial balance to find, giving <c>22:50Z</c>. Then on gh#245's, which extended
+    /// the run to forty-one bars for the asymmetric window and moved <see cref="PeakIndex"/> from the tenth
+    /// bucket to the twentieth. The zone and the score are identical in all three, because a price does not
+    /// depend on when the bar carrying it opened or on which index carries it. A
     /// <see cref="KeyLevelZone"/> records no provenance, so it cannot say which series it was computed
     /// from: a method that answers a disordered one hands back something that reads exactly like a level.
     /// </para>

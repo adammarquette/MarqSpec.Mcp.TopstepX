@@ -309,8 +309,9 @@ where `Unknown` is what an unset or mistyped value binds to.
 **Per-call detection parameters are sound here only because nothing stores a level** — `ADR-0013`. ADR-0006
 forbids the same freedom for indicators, whose storage key is `(Indicator, Period)`: a parameter the key
 cannot see leaves two parameterisations indistinguishable once written, spliced into one series with no seam
-visible anywhere. `PriceLevels` has never had a row, so there is no key for a parameter to fall out of — and
-`ADR-0013` names the one condition that reverses this, which is the moment anything writes that table.
+visible anywhere. There is no level store to key at all — the table that never held a row was dropped under
+gh#276 — and `ADR-0013` names the one condition that reverses this, which is the moment anything stores a
+level.
 
 **An empty `levels` is answered, never refused, and `detection` is what makes it readable.** It reports all
 four parameters that produced the answer, for the same reason `get_indicators` reports the `period` it

@@ -1,7 +1,6 @@
 using FluentAssertions;
 using MarqSpec.Mcp.TopstepX.Data;
 using MarqSpec.Mcp.TopstepX.Data.Entities;
-using MarqSpec.Mcp.TopstepX.Domain.MarketData;
 using Microsoft.EntityFrameworkCore;
 using Npgsql;
 
@@ -107,58 +106,6 @@ public sealed class SchemaTests(SchemaFixture fixture)
     }
 
     [Fact]
-    public async Task AnInvertedPriceLevelZone_IsRejectedByTheDatabase()
-    {
-        // The detection pass's bugs are geometric, and an inverted zone reads as entirely plausible
-        // everywhere except at this constraint.
-        await using TopstepXDbContext database = _fixture.CreateContext();
-
-        database.PriceLevels.Add(new PriceLevelRecord
-        {
-            Id = Guid.NewGuid(),
-            Venue = "test",
-            Instrument = "ES",
-            TimeframeMinutes = 5,
-            Bottom = 100m,
-            Top = 90m, // inverted
-            Kind = KeyLevelKind.Support,
-            Significance = 1m,
-            FormedAtBucket = DateTimeOffset.UtcNow,
-            TouchCount = 1,
-            Active = true,
-            UpdatedAt = DateTimeOffset.UtcNow,
-        });
-
-        Func<Task> save = () => database.SaveChangesAsync();
-        await save.Should().ThrowAsync<DbUpdateException>();
-    }
-
-    [Fact]
-    public async Task APriceLevelWithAnUnsetKind_IsRejectedByTheDatabase()
-    {
-        await using TopstepXDbContext database = _fixture.CreateContext();
-
-        database.PriceLevels.Add(new PriceLevelRecord
-        {
-            Id = Guid.NewGuid(),
-            Venue = "test",
-            Instrument = "ES",
-            TimeframeMinutes = 5,
-            Bottom = 90m,
-            Top = 100m,
-            Kind = KeyLevelKind.Unknown, // an unlabelled band in front of a reader
-            Significance = 1m,
-            FormedAtBucket = DateTimeOffset.UtcNow,
-            TouchCount = 1,
-            Active = true,
-            UpdatedAt = DateTimeOffset.UtcNow,
-        });
-
-        Func<Task> save = () => database.SaveChangesAsync();
-        await save.Should().ThrowAsync<DbUpdateException>();
-    }
-
-    [Fact]
     public async Task ABarsContractId_IsNullableSoUnknownProvenanceIsRepresentable()
     {
         // gh#42 / ADR-0011. Bars stored before this column existed carry no contract and it cannot be
@@ -229,6 +176,24 @@ public sealed class SchemaTests(SchemaFixture fixture)
             + "WHERE proc_name = 'policy_retention';");
 
         count.Should().Be(0);
+    }
+
+    [Fact]
+    public async Task PriceLevels_IsGoneFromTheSchema()
+    {
+        // gh#276 / ADR-0013. Levels are computed on read and no pass ever wrote this table, so it was
+        // dropped rather than kept as an empty promise. This replaces the two tests that inserted into it to
+        // prove its CHECK constraints rejected inverted zones — coverage of a table's rules cannot outlive
+        // the table.
+        //
+        // Asserted against the database rather than against the model: a DbSet deleted without a migration
+        // leaves the relation standing in every already-migrated database, and nothing else here would
+        // notice.
+        long relations = await ScalarAsync(
+            "SELECT count(*) FROM information_schema.tables "
+            + "WHERE table_schema = 'public' AND table_name = 'PriceLevels';");
+
+        relations.Should().Be(0);
     }
 
     private static BarRecord NewBar(string instrument, DateTimeOffset bucket, decimal close) => new()

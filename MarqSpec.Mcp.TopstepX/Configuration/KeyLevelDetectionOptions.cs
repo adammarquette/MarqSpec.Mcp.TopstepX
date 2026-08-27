@@ -16,13 +16,13 @@ namespace MarqSpec.Mcp.TopstepX.Configuration;
 /// </para>
 /// <para>
 /// <b>Per-call detection parameters are safe here, and the reason is a recorded decision rather than a
-/// property of this class.</b> Levels are computed on read and nothing writes <c>PriceLevels</c>
-/// (ADR-0013), so there is no storage key for a parameter to fall out of. The reason
-/// <see cref="IndicatorOptions"/> refuses the same freedom — ADR-0006, where the storage key is
-/// <c>(Indicator, Period)</c> and a parameter the key cannot see makes two parameterisations
-/// indistinguishable once written — does not reach this class, and ADR-0013 says so explicitly. It also
-/// names the condition that would bring it back: the moment anything writes <c>PriceLevels</c>, every field
-/// below becomes part of a level's identity.
+/// property of this class.</b> Levels are computed on read and nothing stores one (ADR-0013), so there is no
+/// storage key for a parameter to fall out of — and since gh#276 there is no level table either, the empty
+/// one having been dropped. The reason <see cref="IndicatorOptions"/> refuses the same freedom — ADR-0006,
+/// where the storage key is <c>(Indicator, Period)</c> and a parameter the key cannot see makes two
+/// parameterisations indistinguishable once written — does not reach this class, and ADR-0013 says so
+/// explicitly. It also names the condition that would bring it back: the moment anything stores a level,
+/// every field below becomes part of that level's identity.
 /// </para>
 /// </remarks>
 public sealed class KeyLevelDetectionOptions : IValidatableObject

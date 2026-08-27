@@ -9,10 +9,10 @@ namespace MarqSpec.Mcp.TopstepX.Domain.MarketData;
 /// <b>The name is identity, exactly as <see cref="IIndicator.Name"/> is</b> — a caller asks for a method by
 /// it, and a score built from several methods names its constituents by it. The mechanism differs and it is
 /// worth being exact about: an indicator's name is a <i>storage</i> key, so renaming one orphans rows.
-/// Levels are computed on read and nothing writes the <c>PriceLevels</c> table — measured and decided in
-/// ADR-0013, not merely the way it happens to be — so renaming one of these orphans no rows: it silently
-/// changes what an existing request means, and what a recorded score was a score of. Stable, lowercase, for
-/// the same reason arrived at down a different road.
+/// Levels are computed on read and nothing stores one — measured and decided in ADR-0013, not merely the way
+/// it happens to be, and since gh#276 there is no level table left to store into — so renaming one of these
+/// orphans no rows: it silently changes what an existing request means, and what a recorded score was a score
+/// of. Stable, lowercase, for the same reason arrived at down a different road.
 /// </para>
 /// <para>
 /// <b>Every implementation must refuse a series that spans a contract roll</b>, by calling

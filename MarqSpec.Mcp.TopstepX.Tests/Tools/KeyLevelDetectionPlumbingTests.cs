@@ -292,25 +292,103 @@ public sealed class KeyLevelDetectionPlumbingTests : IDisposable
             .Should().Contain("pivotLookback");
     }
 
-    [Fact]
-    public async Task APivotLookbackNoWindowThisWideCanSatisfy_IsRefused_RatherThanAnsweredWithNoLevels()
+    // ── A lookback the DETECTED window cannot satisfy is answered, and the answer says so ──────────
+
+    [Theory]
+    [InlineData(21)]
+    [InlineData(500)]
+    public async Task ALookbackTheStoredBarsCannotSatisfy_IsAnsweredWithTheDetectionStated(int lookbackBars)
     {
-        // 21 bars can hold a pivot at a lookback of 10 and cannot at 11: a pivot dominates the lookback on
-        // BOTH sides, so it needs 2n + 1 bars. Refused rather than answered, because an empty level set is
-        // the same shape as "this market has no structure" and only one of the two is a conclusion.
-        Func<Task> impossible = () => Tools(Detection())
-            .GetKeyLevels("ES", 5, Bars, pivotLookback: 11, cancellationToken: CancellationToken.None);
+        // THE REVIEW FINDING, AS A TEST. An earlier revision refused this against `lookbackBars`, which is
+        // the wrong quantity twice over: the store holds 21 bars whatever the caller asks for, so at 21 the
+        // request was refused and at 500 -- the tool's OWN default -- the identical detection came back
+        // empty and silent. Both rows now give the same answer, because the answer depends on what was
+        // detected over and not on what was asked for.
+        //
+        // Not refused, because the honest refusal would have to name `detectedOverBars`, which no caller
+        // controls: 21 is what the store holds. Explicable instead -- 2 x 11 + 1 = 23 needed, 21 detected
+        // over, and both numbers are in the payload.
+        ToolPayloads.LevelSet levels = await Tools(Detection())
+            .GetKeyLevels("ES", 5, lookbackBars, pivotLookback: 11, cancellationToken: CancellationToken.None);
 
-        (await impossible.Should().ThrowAsync<McpException>()).Which.Message
-            .Should().Contain("23", "the refusal states how many bars that lookback would need")
-            .And.Contain("21", "and how many were asked for");
+        levels.Levels.Should().BeEmpty();
+        levels.DetectedOverBars.Should().Be(Bars);
+        levels.Detection.PivotLookback.Should().Be(
+            11, "an empty level set is only distinguishable from no structure if the lookback is stated");
+    }
 
-        // The counterweight: the largest lookback this window CAN satisfy is not refused. A bound that
-        // rejected the boundary case would be a bound nobody could work out from its own message.
-        Func<Task> possible = () => Tools(Detection())
-            .GetKeyLevels("ES", 5, Bars, pivotLookback: 10, cancellationToken: CancellationToken.None);
+    [Fact]
+    public async Task AConfiguredLookbackTheSnapshotsFixedWindowCannotSatisfy_DoesNotBreakTheSnapshot()
+    {
+        // THE BLOCKING REVIEW FINDING. `get_market_snapshot` detects over a fixed `max(barCount, 200)` and
+        // exposes NEITHER `pivotLookback` NOR `lookbackBars`. A configured lookback of 100 is legal on its
+        // own range -- `[Range(1, 1_000)]`, and options validation passes it -- so bounding the lookback
+        // against the requested window made the server boot clean and then fail EVERY snapshot call, with
+        // advice to change two arguments this tool does not have.
+        //
+        // A refusal a caller cannot act on is an outage, not a refusal. So the snapshot answers, and the
+        // level set explains itself.
+        (_, SnapshotTools snapshot) = Compose(Detection(pivotLookback: 100));
 
-        await possible.Should().NotThrowAsync();
+        ToolPayloads.MarketSnapshot result =
+            await snapshot.GetMarketSnapshot("ES", [5], 100, CancellationToken.None);
+
+        ToolPayloads.LevelSet levels = result.PerResolution.Should().ContainSingle().Subject.Levels;
+
+        levels.Levels.Should().BeEmpty();
+        levels.DetectedOverBars.Should().Be(Bars);
+        levels.Detection.PivotLookback.Should().Be(100);
+    }
+
+    // ── The answer reports the detection it actually ran under ───────────────────────────────────
+
+    [Fact]
+    public async Task TheReportedDetection_IsWhatRan_NotWhatWasConfigured()
+    {
+        // Rebuilt from configuration rather than projected from the options detection was handed, this would
+        // report the operator's defaults on a call that overrode them -- a payload describing a detection
+        // that did not happen, which is worse than reporting nothing.
+        ToolPayloads.LevelSet levels = await Tools(Detection(
+                source: PivotSource.HeikinAshiBody, pivotLookback: 5, zoneAtrMultiple: 1.5m, minSignificance: 0m))
+            .GetKeyLevels(
+                "ES", 5, Bars, pivotSource: "HighLow", pivotLookback: 2,
+                cancellationToken: CancellationToken.None);
+
+        levels.Detection.Should().Be(new ToolPayloads.LevelDetection(PivotSource.HighLow, 2, 1.5m, 0m));
+        // And the levels are the ones that detection produces, not the configured one's -- the report and the
+        // answer have to come from the same options or the report is decoration.
+        levels.Levels.Select(l => l.Midpoint).Should().Equal(107m, 125m, 145m);
+        levels.Levels.Select(l => l.Top - l.Bottom).Should().AllBeEquivalentTo(15m);
+    }
+
+    [Fact]
+    public async Task TheReportedDetection_IsStatedEvenWhenTheStoreHoldsNoBars()
+    {
+        // The empty-store exit returns before detection runs, and it used to return before the parameters
+        // were even resolved. A caller reading `levels: []` there needs the same four numbers as anywhere
+        // else -- more so, since `detectedOverBars` is 0 and every other explanation is still open.
+        ToolPayloads.LevelSet levels = await Tools(Detection(source: PivotSource.Body, pivotLookback: 7))
+            .GetKeyLevels("NQ", 5, Bars, cancellationToken: CancellationToken.None);
+
+        levels.Levels.Should().BeEmpty();
+        levels.DetectedOverBars.Should().Be(0);
+        levels.Detection.Source.Should().Be(PivotSource.Body);
+        levels.Detection.PivotLookback.Should().Be(7);
+    }
+
+    [Fact]
+    public async Task TheReportedDetection_ExplainsAnEmptyAnswerThatIsNotAboutTheWindowAtAll()
+    {
+        // gh#247's trap from the other side. These 21 bars hold a pivot at every source, so an empty answer
+        // here is the significance floor and nothing else -- and `detection.minSignificance` is the only
+        // thing in the payload that says so. `detectedOverBars` is a full 21, which on its own reads as
+        // "plenty of history, no structure".
+        ToolPayloads.LevelSet levels = await Tools(Detection(minSignificance: 0.5m))
+            .GetKeyLevels("ES", 5, Bars, cancellationToken: CancellationToken.None);
+
+        levels.Levels.Should().BeEmpty();
+        levels.DetectedOverBars.Should().Be(Bars);
+        levels.Detection.MinSignificance.Should().Be(0.5m);
     }
 
     // ── Composition ─────────────────────────────────────────────────────────────────────────────────
@@ -318,7 +396,20 @@ public sealed class KeyLevelDetectionPlumbingTests : IDisposable
     /// <summary>Builds the market-data tools over the seeded fixture, at a given detection configuration.</summary>
     /// <param name="detection">The detection defaults to build against.</param>
     /// <returns>The tools.</returns>
-    private MarketDataTools Tools(KeyLevelDetectionOptions detection)
+    private MarketDataTools Tools(KeyLevelDetectionOptions detection) => Compose(detection).MarketData;
+
+    /// <summary>
+    /// Builds the market-data tools <b>and the composed snapshot over the same store</b>.
+    /// </summary>
+    /// <param name="detection">The detection defaults to build against.</param>
+    /// <returns>Both tools.</returns>
+    /// <remarks>
+    /// The snapshot is composed here rather than in its own fixture because it is the tool that reaches
+    /// <c>GetKeyLevels</c> with a window <i>it</i> chose — a fixed <c>max(barCount, 200)</c> — and with
+    /// neither detection argument. A bound on the requested window is invisible from
+    /// <c>get_key_levels</c>'s own tests and fatal here, which is how the earlier revision got through.
+    /// </remarks>
+    private (MarketDataTools MarketData, SnapshotTools Snapshot) Compose(KeyLevelDetectionOptions detection)
     {
         if (!_database.Bars.Any())
         {
@@ -351,7 +442,7 @@ public sealed class KeyLevelDetectionPlumbingTests : IDisposable
             clock,
             NullLogger<BarCacheService>.Instance);
 
-        return new MarketDataTools(
+        MarketDataTools marketData = new(
             cache,
             _database,
             new InstrumentRegistry(market),
@@ -362,6 +453,13 @@ public sealed class KeyLevelDetectionPlumbingTests : IDisposable
             new StoreAvailabilityHolder(),
             clock,
             Options.Create(detection));
+
+        SnapshotTools snapshot = new(
+            marketData,
+            new ReferenceTools(new InstrumentRegistry(market), calendar, gateway, market, clock),
+            new IndicatorCatalogNames(indicators));
+
+        return (marketData, snapshot);
     }
 
     private void Seed()

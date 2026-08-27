@@ -1,5 +1,6 @@
 using System.Text.Json;
 using FluentAssertions;
+using MarqSpec.Mcp.TopstepX.Domain.MarketData;
 using MarqSpec.Mcp.TopstepX.Tools;
 using MarqSpec.Mcp.TopstepX.Venue;
 using ModelContextProtocol;
@@ -158,7 +159,7 @@ public sealed class PayloadNullWireShapeTests
             ResolutionMinutes: 5,
             Bars: [],
             Indicators: new Dictionary<string, decimal?> { ["rsi"] = null, ["atr"] = 12.5m },
-            Levels: new ToolPayloads.LevelSet([], EmptyCoverage, 0),
+            Levels: new ToolPayloads.LevelSet([], EmptyCoverage, 0, ShippedDetection),
             Contracts: EmptyCoverage));
 
         JsonElement indicators = slice.GetProperty("indicators");
@@ -173,6 +174,10 @@ public sealed class PayloadNullWireShapeTests
 
     private static ToolPayloads.ContractCoverage EmptyCoverage =>
         new(ToolPayloads.ContractSpan.Unknown, []);
+
+    /// <summary>The shipped detection defaults — filler, since this fixture is about the indicator map.</summary>
+    private static ToolPayloads.LevelDetection ShippedDetection =>
+        new(PivotSource.HeikinAshiBody, 5, 0.5m, 0.5m);
 
     /// <summary>Serialises a payload exactly as the server would, and reads it back.</summary>
     /// <typeparam name="T">The payload type.</typeparam>

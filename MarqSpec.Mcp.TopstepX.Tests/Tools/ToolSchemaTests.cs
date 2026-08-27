@@ -295,7 +295,7 @@ public sealed class ToolSchemaTests
 
     // ── Descriptions against what the payload they name actually proves ──────────────────────────────
 
-    /// <summary>The bar-series counter that reads zero after a genuine fetch.</summary>
+    /// <summary>The bar-series counter that can read zero even after a genuine fetch.</summary>
     private const string AmbiguousCounter = "fetchedBuckets";
 
     /// <summary>The bar-series counter whose zero is the exact statement that nothing was fetched.</summary>
@@ -340,10 +340,10 @@ public sealed class ToolSchemaTests
 
         description.Should().ContainEquivalentOf(
             ExactTest,
-            "{0} names `{1}`, which reads ZERO after a genuine fetch -- a range the venue answers empty "
-            + "(R-1.7), and a write that loses a serialization race (gh#73). Offered alone it undercounts "
-            + "venue traffic and never overcounts it. Name `{2}` beside it: `{2} == 0` is the exact test "
-            + "for an answer served entirely from the store. Current text: \"{3}\"",
+            "{0} names `{1}`, which can read ZERO even after a genuine fetch -- a range the venue answers "
+            + "empty (R-1.7), and a write that loses a serialization race (gh#73). Offered alone it "
+            + "undercounts venue traffic and never overcounts it. Name `{2}` beside it: `{2} == 0` is the "
+            + "exact test for an answer served entirely from the store. Current text: \"{3}\"",
             tool,
             AmbiguousCounter,
             ExactTest,

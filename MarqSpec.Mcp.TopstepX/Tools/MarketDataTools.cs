@@ -77,12 +77,12 @@ public sealed class MarketDataTools(
         + "maintenance window and holidays. The response reports `venueRequests` and `fetchedBuckets`, and "
         + "only the first is evidence of a vendor round trip: `venueRequests == 0` is the exact test for "
         + "an answer served entirely from the store, while `fetchedBuckets` counts how much the answer "
-        + "changed the store and reads zero after a genuine fetch. Never returns a truncated series: an "
-        + "over-cap window is refused with the real count. The response also carries `contracts`: bars are "
-        + "keyed by the symbol, so a window spanning a quarterly roll contains TWO contracts. "
-        + "`contracts.span` is SingleContract, SpansRoll, or Unknown — Unknown means the provenance was "
-        + "never recorded, NOT that there was no roll. Adjacent quarters do not trade at the same price; "
-        + "do not read a series across a roll as one.")]
+        + "changed the store and can read zero even after a genuine fetch. Never returns a truncated "
+        + "series: an over-cap window is refused with the real count. The response also carries "
+        + "`contracts`: bars are keyed by the symbol, so a window spanning a quarterly roll contains TWO "
+        + "contracts. `contracts.span` is SingleContract, SpansRoll, or Unknown — Unknown means the "
+        + "provenance was never recorded, NOT that there was no roll. Adjacent quarters do not trade at "
+        + "the same price; do not read a series across a roll as one.")]
     public async Task<ToolPayloads.BarSeries> GetBars(
         [Description("The instrument symbol, e.g. ES.")] string symbol,
         [Description("The bar size in minutes, e.g. 1, 5, 15, 60.")] int resolutionMinutes,

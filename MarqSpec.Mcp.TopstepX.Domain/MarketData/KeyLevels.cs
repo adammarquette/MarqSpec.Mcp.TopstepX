@@ -147,9 +147,19 @@ public static class KeyLevels
     /// <exception cref="ArgumentException">The bars are not in strictly ascending time order.</exception>
     /// <exception cref="ArgumentOutOfRangeException">The lookback is less than one, or the source is unset.</exception>
     /// <remarks>
-    /// A pivot must dominate <paramref name="options"/>'s lookback on <b>both</b> sides, which means the last
-    /// <c>Lookback</c> bars can never produce one. That is deliberate: a "pivot" confirmed only by the bars
-    /// before it is a guess about the bars after it, and it repaints as soon as they arrive.
+    /// <para>
+    /// A pivot must dominate <see cref="KeyLevelOptions.Lookback"/> bars to its <b>left</b> and
+    /// <see cref="KeyLevelOptions.RightLookback"/> to its <b>right</b>, so a series shorter than
+    /// <c>Lookback + RightLookback + 1</c> can hold none and the last <c>RightLookback</c> bars can never
+    /// produce one. That trailing blindness is deliberate: a "pivot" confirmed only by the bars before it is
+    /// a guess about the bars after it, and it repaints as soon as they arrive.
+    /// </para>
+    /// <para>
+    /// <b>The two windows are separate because they are asked different questions</b> — the left is how much
+    /// history the extreme stood clear of, the right is only whether it held — and the right one is also the
+    /// lag, since every bar it waits for is a bar the level is reported late by. Symmetry was never a
+    /// property of the method; it was what a single knob could express.
+    /// </para>
     /// </remarks>
     public static IReadOnlyList<SwingPivot> FindPivots(IReadOnlyList<Bar> bars, KeyLevelOptions options)
     {
@@ -160,7 +170,10 @@ public static class KeyLevels
         IndicatorGuard.RequireStrictlyAscending(bars, nameof(bars));
         IndicatorGuard.RequireSingleContract(bars, nameof(bars));
 
-        if (bars.Count < (2 * options.Lookback) + 1)
+        int left = options.Lookback;
+        int right = options.RightLookback;
+
+        if (bars.Count < left + right + 1)
         {
             return [];
         }
@@ -168,9 +181,8 @@ public static class KeyLevels
         (decimal[] highs, decimal[] lows) = PivotPrices(bars, options.Source);
 
         List<SwingPivot> pivots = [];
-        int lookback = options.Lookback;
 
-        for (int i = lookback; i < bars.Count - lookback; i++)
+        for (int i = left; i < bars.Count - right; i++)
         {
             decimal high = highs[i];
             decimal low = lows[i];
@@ -180,7 +192,7 @@ public static class KeyLevels
             decimal highestOther = decimal.MinValue;
             decimal lowestOther = decimal.MaxValue;
 
-            for (int j = i - lookback; j <= i + lookback; j++)
+            for (int j = i - left; j <= i + right; j++)
             {
                 if (j == i)
                 {
@@ -260,58 +272,113 @@ public static class KeyLevels
     }
 
     /// <summary>
-    /// Merges overlapping zones of the same kind.
+    /// Merges overlapping zones, whichever side of price each of them formed on.
     /// </summary>
     /// <param name="zones">The zones.</param>
     /// <returns>The merged zones, ordered by <see cref="KeyLevelZone.Bottom"/>.</returns>
     /// <remarks>
+    /// <para>
     /// A merge keeps the <b>earliest</b> formation time — the level dates from when it was first respected, not
     /// from the most recent retest — the <b>strongest</b> significance, and the <b>sum</b> of touches. Taking
     /// the latest time instead would make every old level look new every time price came back to it.
+    /// </para>
+    /// <para>
+    /// <b>It merges ACROSS kinds, and until gh#245 it did not.</b> A support and a resistance occupying the
+    /// same prices are one piece of structure that has been traded from both sides, and reporting them as two
+    /// zones stacked on each other said the opposite: two ordinary levels with one touch each, where the
+    /// prices had in fact been respected twice.
+    /// </para>
+    /// <para>
+    /// <b>The merged zone takes its kind from its strongest constituent</b>, ties going to the earlier
+    /// formation and then to price, so the answer does not depend on the order the zones arrived in. That
+    /// matters in exactly one place and it is not a corner: <see cref="ApplyClose"/> relabels every zone
+    /// against the close <i>except</i> one the close sits inside, where it keeps the formation's own reading
+    /// — and a merged cross-kind zone is precisely the shape price tends to be inside.
+    /// </para>
+    /// <para>
+    /// The result is in <see cref="KeyLevelZone.Bottom"/> order because the sweep runs in that order and each
+    /// merged zone reports the lowest bottom in its chain; there is no second sort. That is pinned rather
+    /// than argued — the cases in <c>KeyLevelsTests</c> hand the zones in deliberately out of order.
+    /// </para>
     /// </remarks>
     public static IReadOnlyList<KeyLevelZone> MergeOverlapping(IReadOnlyList<KeyLevelZone> zones)
     {
         ArgumentNullException.ThrowIfNull(zones);
 
         List<KeyLevelZone> merged = [];
+        KeyLevelZone? open = null;
 
-        foreach (IGrouping<KeyLevelKind, KeyLevelZone> group in zones.GroupBy(z => z.Kind))
+        // The kind carrier is one of the ORIGINAL zones, never the running merge: the running merge already
+        // carries a decided kind, so comparing against it would let an early pair fix the answer for a chain
+        // whose strongest member has not arrived yet.
+        KeyLevelZone? strongest = null;
+
+        foreach (KeyLevelZone zone in zones.OrderBy(z => z.Bottom).ThenBy(z => z.Top))
         {
-            List<KeyLevelZone> ordered = [.. group.OrderBy(z => z.Bottom)];
-            KeyLevelZone? open = null;
-
-            foreach (KeyLevelZone zone in ordered)
+            if (open is null)
             {
-                if (open is null)
-                {
-                    open = zone;
-                    continue;
-                }
-
-                if (open.Overlaps(zone))
-                {
-                    open = new KeyLevelZone(
-                        Bottom: Math.Min(open.Bottom, zone.Bottom),
-                        Top: Math.Max(open.Top, zone.Top),
-                        Kind: open.Kind,
-                        FormedAtBucket: open.FormedAtBucket <= zone.FormedAtBucket ? open.FormedAtBucket : zone.FormedAtBucket,
-                        TouchCount: open.TouchCount + zone.TouchCount,
-                        Significance: Math.Max(open.Significance, zone.Significance));
-                }
-                else
-                {
-                    merged.Add(open);
-                    open = zone;
-                }
+                (open, strongest) = (zone, zone);
+                continue;
             }
 
-            if (open is not null)
+            if (open.Overlaps(zone))
+            {
+                strongest = Stronger(strongest!, zone);
+                open = new KeyLevelZone(
+                    Bottom: Math.Min(open.Bottom, zone.Bottom),
+                    Top: Math.Max(open.Top, zone.Top),
+                    Kind: strongest.Kind,
+                    FormedAtBucket: open.FormedAtBucket <= zone.FormedAtBucket ? open.FormedAtBucket : zone.FormedAtBucket,
+                    TouchCount: open.TouchCount + zone.TouchCount,
+                    Significance: Math.Max(open.Significance, zone.Significance));
+            }
+            else
             {
                 merged.Add(open);
+                (open, strongest) = (zone, zone);
             }
         }
 
-        return [.. merged.OrderBy(z => z.Bottom)];
+        if (open is not null)
+        {
+            merged.Add(open);
+        }
+
+        return merged;
+    }
+
+    /// <summary>
+    /// Which of two zones a merge takes its kind from.
+    /// </summary>
+    /// <param name="left">One zone.</param>
+    /// <param name="right">The other.</param>
+    /// <returns>The zone whose kind the merge carries.</returns>
+    /// <remarks>
+    /// Significance first, because it is the one score comparable across instruments (<c>R-3.2</c>) and it is
+    /// already what a merge keeps. Every later step exists only to make the answer total: without them two
+    /// equally significant zones would be separated by enumeration order, and two identical requests could
+    /// disagree about a level's polarity with nothing to say which was right.
+    /// </remarks>
+    private static KeyLevelZone Stronger(KeyLevelZone left, KeyLevelZone right)
+    {
+        if (left.Significance != right.Significance)
+        {
+            return left.Significance > right.Significance ? left : right;
+        }
+
+        if (left.FormedAtBucket != right.FormedAtBucket)
+        {
+            return left.FormedAtBucket < right.FormedAtBucket ? left : right;
+        }
+
+        if (left.Bottom != right.Bottom)
+        {
+            return left.Bottom < right.Bottom ? left : right;
+        }
+
+        return left.Top != right.Top
+            ? left.Top < right.Top ? left : right
+            : left.Kind <= right.Kind ? left : right;
     }
 
     /// <summary>
@@ -347,31 +414,84 @@ public static class KeyLevels
     /// </summary>
     /// <param name="zones">The zones.</param>
     /// <param name="options">Detection options.</param>
-    /// <returns>The zones that are narrow enough to be levels, in the order they arrived.</returns>
+    /// <returns>The zones narrow enough to be levels, in the order they arrived.</returns>
+    /// <exception cref="ArgumentOutOfRangeException">The width cap is not positive.</exception>
+    /// <remarks>
+    /// <para>
+    /// <b>Belongs after <see cref="MergeOverlapping"/>, and the reason is measurable rather than stylistic.</b>
+    /// Every zone reaching the merge is exactly <c>ZoneAtrMultiple × ATR</c> wide, so the merge is the only
+    /// stage that can widen one without limit. <c>ApplyWidthCap_FiresOnWhatTheMergeProduced_NotOnWhatWentIntoIt</c>
+    /// is that claim as a run: on its fixture the three pre-merge zones all clear the shipped 2.5% cap and
+    /// the single zone they chain into does not.
+    /// </para>
+    /// <para>
+    /// <b>Measured as a percentage of the zone's own price</b>, so "too wide" means the same thing on ES and
+    /// on NQ, on the same reasoning that sizes the zone in ATR multiples in the first place. The comparison
+    /// is written as a multiplication rather than a division so that it is exact in
+    /// <see langword="decimal"/> — a percentage of most prices is not.
+    /// </para>
+    /// <para>
+    /// <b>An over-wide zone is dropped, not narrowed to the cap.</b> A narrowed one would report edges no
+    /// pivot produced, centred on a midpoint chosen by arithmetic rather than by the market — the same
+    /// substitution a filled-in indicator makes, and just as unreadable from outside.
+    /// </para>
+    /// </remarks>
     public static IReadOnlyList<KeyLevelZone> ApplyWidthCap(
         IReadOnlyList<KeyLevelZone> zones,
         KeyLevelOptions options)
     {
         ArgumentNullException.ThrowIfNull(zones);
         ArgumentNullException.ThrowIfNull(options);
+        RequireUsableOptions(options);
 
-        return zones;
+        return [.. zones.Where(zone =>
+            (zone.Top - zone.Bottom) * 100m <= options.MaxZoneWidthPercent * zone.Midpoint)];
     }
 
     /// <summary>
-    /// Keeps at most <see cref="KeyLevelOptions.MaxLevels"/> zones, the most significant first.
+    /// Keeps at most <see cref="KeyLevelOptions.MaxLevels"/> zones — the most significant ones.
     /// </summary>
     /// <param name="zones">The zones.</param>
     /// <param name="options">Detection options.</param>
-    /// <returns>The surviving zones, ordered by <see cref="KeyLevelZone.Bottom"/>.</returns>
+    /// <returns>The survivors, ordered by <see cref="KeyLevelZone.Bottom"/>.</returns>
+    /// <exception cref="ArgumentOutOfRangeException">The level cap is less than one.</exception>
+    /// <remarks>
+    /// <para>
+    /// <b>Ranked by significance, which is prominence in ATR multiples (<c>R-3.2</c>)</b> — the one score
+    /// this server already treats as comparable across instruments and volatility regimes. Ranking by
+    /// distance from the close was the alternative and it was rejected: it drops the strongest structure in
+    /// the series whenever price happens to be far from it, which is exactly when a reader wants to see it.
+    /// </para>
+    /// <para>
+    /// <b>The survivors come back in price order</b>, because that is the order the tool has always reported
+    /// and the cap is a filter rather than a re-ordering. Selecting is a total order to the last step, so the
+    /// same zones handed in a different order give the same answer; a cap that fell back on enumeration order
+    /// would let two identical requests differ, which is the reproducibility ADR-0013 rests on.
+    /// </para>
+    /// <para>
+    /// <b>What it removes is gone, not summarised.</b> No survivor grows to cover a dropped neighbour's
+    /// prices and none inherits its touches — <c>maxLevels</c> is reported beside the answer instead, so a
+    /// caller holding exactly that many levels can tell a capped list from a complete one.
+    /// </para>
+    /// </remarks>
     public static IReadOnlyList<KeyLevelZone> ApplyLevelCap(
         IReadOnlyList<KeyLevelZone> zones,
         KeyLevelOptions options)
     {
         ArgumentNullException.ThrowIfNull(zones);
         ArgumentNullException.ThrowIfNull(options);
+        RequireUsableOptions(options);
 
-        return zones;
+        return zones.Count <= options.MaxLevels
+            ? zones
+            : [.. zones
+                .OrderByDescending(zone => zone.Significance)
+                .ThenByDescending(zone => zone.TouchCount)
+                .ThenBy(zone => zone.Bottom)
+                .ThenBy(zone => zone.Top)
+                .Take(options.MaxLevels)
+                .OrderBy(zone => zone.Bottom)
+                .ThenBy(zone => zone.Top)];
     }
 
     /// <summary>
@@ -439,7 +559,8 @@ public static class KeyLevels
     /// </summary>
     /// <param name="options">The options.</param>
     /// <exception cref="ArgumentOutOfRangeException">
-    /// The lookback is less than one, or the source is unset or outside the vocabulary.
+    /// Either lookback is less than one, the source is unset or outside the vocabulary, the width cap is not
+    /// positive, or the level cap is less than one.
     /// </exception>
     /// <remarks>
     /// <b>The source check is on the vocabulary, not on <see cref="PivotSource.Unknown"/> alone.</b>
@@ -454,6 +575,33 @@ public static class KeyLevels
         if (options.Lookback < 1)
         {
             throw new ArgumentOutOfRangeException(nameof(options), options.Lookback, "The lookback must be at least 1.");
+        }
+
+        if (options.RightLookback < 1)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(options),
+                options.RightLookback,
+                "The right lookback must be at least 1. It is the confirmation window, so a pivot with none "
+                + "is a guess about the bars that have not arrived (R-3.4).");
+        }
+
+        if (options.MaxZoneWidthPercent <= 0m)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(options),
+                options.MaxZoneWidthPercent,
+                "The zone width cap must be greater than 0 percent. At or below zero no zone can be reported "
+                + "at all, and an empty level set reads as a market with no structure.");
+        }
+
+        if (options.MaxLevels < 1)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(options),
+                options.MaxLevels,
+                "The level cap must be at least 1. A cap of zero empties every level set this server can "
+                + "produce, and an empty one is indistinguishable from a market that has produced none.");
         }
 
         if (options.Source == PivotSource.Unknown)

@@ -687,15 +687,24 @@ public sealed class KeyLevelsTests
     }
 
     [Fact]
-    public void MergeOverlapping_NeverMergesAcrossKinds_AndOrdersTheResultGloballyByBottom()
+    public void MergeOverlapping_MergesAcrossKindsToo_AndOrdersTheResultGloballyByBottom()
     {
-        // A support [100,104] and a resistance [102,106] intersect and still come out as two zones, because
-        // the merge groups by kind first. (The epic gh#232 plans to change this deliberately; until then
-        // this is the tool's contract, and a change to it is a breaking change.)
+        // THE EXPECTATION THAT MOVED, AND THE DERIVATION REDONE FROM THE DEFINITION RATHER THAN FROM THE NEW
+        // OUTPUT. Until gh#245 this case asserted that a support [100,104] and a resistance [102,106]
+        // intersect and still come out as TWO zones, because the merge grouped by kind first. gh#232 planned
+        // to change that deliberately and gh#245 did; the same three inputs now give two zones, and the
+        // arithmetic is the merge's ordinary arithmetic with the kind barrier gone:
         //
-        // The ordering is over the whole result, not within each kind: the resistance at 90 sorts ahead of
-        // the support at 100, which sorts ahead of the resistance at 102. Inputs are given out of order to
-        // make sure the ordering is the merge's work and not the caller's.
+        //   [90,94] resistance has no neighbour — 94 < 100, so it stands alone, unchanged.
+        //   [100,104] and [102,106] intersect over [102,104]:
+        //     bottom min(100,102) = 100   top max(104,106) = 106   formed min(t0,t1) = t0
+        //     touches 1 + 1 = 2           significance max(1.0,2.0) = 2.0
+        //     kind    the stronger constituent's, which is the resistance at 2.0
+        //
+        // The ordering claim this case has always carried is untouched and still checked: it is over the
+        // whole result rather than within a kind, and the inputs are given out of order so the ordering is
+        // the merge's work and not the caller's. The cross-kind rule itself is pinned at length in
+        // KeyLevelBjorgumBehaviourTests; what this case adds is that the two rules hold together.
         IReadOnlyList<KeyLevelZone> merged = KeyLevels.MergeOverlapping(
         [
             Zone(bottom: 100, top: 104, formedAt: 0, touches: 1, significance: 1.0m),
@@ -705,8 +714,7 @@ public sealed class KeyLevelsTests
 
         merged.Should().Equal(
             Zone(bottom: 90, top: 94, formedAt: 2, touches: 1, significance: 3.0m, kind: KeyLevelKind.Resistance),
-            Zone(bottom: 100, top: 104, formedAt: 0, touches: 1, significance: 1.0m),
-            Zone(bottom: 102, top: 106, formedAt: 1, touches: 1, significance: 2.0m, kind: KeyLevelKind.Resistance));
+            Zone(bottom: 100, top: 106, formedAt: 0, touches: 2, significance: 2.0m, kind: KeyLevelKind.Resistance));
     }
 
     [Fact]

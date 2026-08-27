@@ -115,12 +115,14 @@
 #         for a column-0 line to stay inside a fence, the fence must be at top level with at most three
 #         columns of indent, which this gate opens. That is a failed search, not a proof -- the two
 #         fail-opens this machinery has already had were both found by someone building the input.
-#   - **A CONFLICTED INDEX MAKES THE EVIDENCE LINE OVERCOUNT.** `git ls-files --cached` lists a path once
-#     PER STAGE, so during an unresolved merge a three-file tree is reported as five files and its
-#     citations counted twice. Measured, not reasoned (PR #195 round 8). The verdict is unaffected — every
-#     stage is the same path and resolves the same way — and CI never runs mid-merge, so this cannot reach
-#     the merge gate. It is listed because it is **the only number this gate prints that can fail to be true
-#     of what it read**, and a green line a reader cannot trust is what this whole script is about.
+#   - **Mid-merge, the corpus is the WORKING TREE's conflict-marked file** — text from both sides at once,
+#     belonging to no commit, plus the marker lines. Every citation in it is counted, once each, and the
+#     green line is true of exactly that; it is not true of either parent, and neither is the tree. This
+#     entry used to say something else and stronger: that a conflicted index made the evidence line
+#     OVERCOUNT, because `git ls-files --cached` lists a path once per stage, so the file arrived three
+#     times and its citations were counted three times. That was real and is measured at the read itself,
+#     where `--deduplicate` now closes it (gh#240). What is left is this — a corpus a reader should know is
+#     mid-merge, rather than a number they cannot trust.
 #   - **The `UNQUOTABLE PATH` branch fires for a REASON no fixture can produce on NTFS** — an embedded
 #     quote, backslash or control character in a filename. The branch itself is pinned: a path staged into
 #     the INDEX with `update-index --cacheinfo` needs no file on disk, which is how the self-test reaches
@@ -429,9 +431,30 @@ fi
 # this gate reports UNREADABLE about a file that is sitting right there (PR #195 review). A path git quotes
 # for the OTHER reasons — an embedded quote, backslash or control character — still arrives quoted, and is
 # refused below by name rather than mis-read.
+#
+# `--deduplicate` because `git ls-files --cached` LISTS A PATH ONCE PER STAGE (gh#240). During an unresolved
+# merge the conflicted path sits in the index at stages 1, 2 and 3, so it arrives three times, grep is handed
+# the same working-tree file three times, and BOTH numbers on the green line below inflate. The number is
+# re-derivable rather than quoted: take the flag off and run the self-test, whose case 39 builds its
+# conflicted index with a merge that really conflicts. Three files and thirteen citations there came back as
+# `17 citations of 6 distinct ids across 5 files`. The verdict does not move — every stage is the same path
+# and resolves the same way — so what this repairs is the evidence line, which was the only number printed
+# here that could fail to be true of what was read.
+#
+# THE FLAG RATHER THAN `sort -u`: sort's collation follows the locale, nothing here pins LC_ALL, and it would
+# RE-ORDER the list as well as dedupe it — the order being what decides the order of the DANGLING lines an
+# author reads. `--deduplicate` suppresses the stage duplicates and leaves git's own ordering alone; on this
+# repository's own tree at fecc463 its output is byte-identical to the unflagged form (217 paths, 10561
+# bytes, `cmp` clean). It arrived in git 2.31, and an older git rejects the flag, exits non-zero and lands on
+# CANNOT LIST below rather than on a quiet miscount — the direction to fail in.
+#
+# check-doc-links.sh reads the same list by the same idiom in the same `docs` job and has piped it through
+# `sort -u` since the template commit `3a1c42d` — checked, not assumed. This was therefore one of two copies
+# of one idiom missing a step rather than a decision, and the two gates answered differently about the same
+# tree. When a gate here grows a list-building idiom, read what the other copy of it does.
 file_list=""
 ls_status=0
-file_list="$(git -c core.quotepath=false ls-files --cached --others --exclude-standard)" || ls_status=$?
+file_list="$(git -c core.quotepath=false ls-files --cached --others --exclude-standard --deduplicate)" || ls_status=$?
 if [ "$ls_status" -ne 0 ]; then
   die "  CANNOT LIST  git ls-files exited $ls_status under $REPO_ROOT"
   die "No file has been read, so this cannot report the tree's citations clean."

@@ -524,7 +524,7 @@ this count together whenever a step is added**; the count is the only thing tell
   beside the code**: `die` reports through stderr, so there it is the answer rather than stray output.
   `check-doc-links.sh` proves a relative *link* resolves;
   nothing proved an *id* did, and gh#172 found two citations naming another repository's PRD entirely.
-  Three things in it are worth carrying forward, because each was a defect first:
+  Four things in it are worth carrying forward, because each was a defect first:
   - **The left word boundary.** An ADR number contains a citation-shaped substring, so without it the gate
     reddens every line that names an ADR — twelve phantom ids on this tree.
   - **The definition side is where it fails OPEN, and it needs fence and comment awareness.** Elsewhere a
@@ -538,6 +538,22 @@ this count together whenever a step is added**; the count is the only thing tell
     maintainer's own checkout, where agent worktrees sit outside `.gitignore`'s reach. Nested repositories
     are counted and skipped; `core.quotepath=false` is set for the same class of reason, since the default
     C-quotes any non-ASCII path into a filename that does not exist.
+  - **`git ls-files --cached` lists a path once PER STAGE**, so mid-merge the conflicted file reaches the
+    search three times and every number derived from that list inflates — case 39's fixture reads
+    `17 citations … across 5 files` for a tree of three files and thirteen citations. `--deduplicate` closes
+    it (gh#240), and `sort -u` was declined for it: sort collates by locale, nothing here pins `LC_ALL`, and
+    re-ordering the list re-orders the `DANGLING` lines an author reads. Three things generalise past this
+    gate. **The verdict never moved** — every stage is the same path and resolves the same way — so what was
+    wrong was the *evidence* alone, which is the half nothing asserted: **no case pinned the file count at
+    all** until this card, on the gate whose entire subject is numbers that stop being true. **The sibling
+    gate in this same job had already solved it** — `check-doc-links.sh` reads the identical list by the
+    identical idiom and has piped it through `sort -u` since the template commit `3a1c42d`, which was
+    checked rather than assumed — so this was one of two copies of one idiom
+    missing a step rather than a decision, and the two answered differently about one tree; when a gate here
+    grows a list-building idiom, check what the other copy of it does. And **"unreachable in CI" is a reason
+    to weigh the fix, never a reason to leave a diagnostic wrong**: `actions/checkout` produces a clean
+    index, so no merge gate was ever at risk — but the run that meets a conflicted one is a human's or an
+    agent's, by hand, mid-merge, which is the worst moment for a gate to miscount.
 
   It has **no exclusion list**, so it reads its own source and its own self-test like every other file, and
   the self-test assembles its dangling fixtures at run time rather than spelling them. The price, stated

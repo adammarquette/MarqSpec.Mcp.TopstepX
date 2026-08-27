@@ -90,17 +90,24 @@
 #
 # THAT IS A MEASUREMENT, NOT A PREFERENCE, and it was re-taken on `796b14c` rather than carried over from the
 # card that asked for it. A green run of this gate writes exactly ZERO bytes to stderr: 324 B stdout / 0 B
-# stderr against the real repository, and 318-319 B / 0 B across all nineteen green fixtures -- the
-# nested-repository one, the likeliest to leak because the gate SKIPS a nested repo where `grep` would
-# otherwise complain about a directory, at 319 B. Only the stderr half is asserted; the stdout figure is
-# quoted as a RANGE because it tracks the digits in the counts the gate prints, and gh#239 recorded a single
-# 318 B for a fixture measuring 319 B here. It is the same KIND of claim the cases below already make, not a
-# new one -- and it would have caught the carriage return on all nineteen green cases.
+# stderr against the real repository, and 318-319 B / 0 B across the green fixtures -- the nested-repository
+# one, the likeliest to leak because the gate SKIPS a nested repo where `grep` would otherwise complain about
+# a directory, at 319 B, and gh#240's conflicted-index fixture at 319 B as well. Only the stderr half is
+# asserted; the stdout figure is quoted as a RANGE because it tracks the digits in the counts the gate
+# prints, and gh#239 recorded a single 318 B for a fixture measuring 319 B here. It is the same KIND of claim
+# the cases below already make, not a new one -- and it would have caught the carriage return on every green
+# case in this file.
+#
+# THE STDERR HALF IS NOT A SAMPLE, and that is the difference worth keeping straight now that the suite has
+# grown: the stdout bytes above were measured on a handful of fixtures, while expect_green asserts the stderr
+# byte count on EVERY green case, so a passing run has just measured all of them. Adding a green case
+# therefore extends that measurement by construction and cannot quietly leave it behind -- which is why no
+# count of green cases is written here.
 #
 # AND THE MEASUREMENT AGREES WITH THE CODE, which is what makes it safe to assert on a runner nobody measured
 # on. The gate has exactly three writers to stderr -- `die`, `explain`, and one bare `echo >&2` -- and every
 # one of them sits on a path that ends `exit 1`. There is no green-path writer to stderr at all, so "green
-# implies silent" is structural here rather than a property nineteen fixtures happened to have. Re-derive it
+# implies silent" is structural here rather than a property the fixtures happened to have. Re-derive it
 # with `grep -n '>&2' scripts/check-requirement-ids.sh` if that stops being true.
 #
 # THE RED CASES ARE EXEMPT, DELIBERATELY: the gate reports their faults through `die`, which writes to stderr,
@@ -180,6 +187,17 @@ set -euo pipefail
 #                                                    suite size; the ratio did not. Compare `--cached`,
 #                                                    pinned at exactly one case.
 #   ls-files --exclude-standard .............. case  case 29 (every file ignored) and the ignore-prd case
+#   ls-files --deduplicate ................... mut   case 39, a conflicted index. Dropping the flag reddens
+#                                                    THAT CASE ALONE, on 17 citations across 5 files where
+#                                                    13 across 3 is the truth -- every other fixture's index
+#                                                    is clean, so this decision is held by exactly one case
+#                                                    and cannot be lost to another's incidental shape. Its
+#                                                    two failure directions are pinned by OTHER cases, which
+#                                                    is what keeps this row from promising more than it
+#                                                    measures: that the flag is INERT on a clean index by
+#                                                    case 13's file count, and that it does not swallow
+#                                                    `--others` by case 30, whose uncommitted file must
+#                                                    still be found.
 #   the `--` separator before the file list .. mut   case 33, a root file whose name begins with a dash
 #   trailing-slash entries are nested repos .. mut   a nested repository, counted and not read
 #   staged-then-deleted still reaches grep ... case  the unreadable case (no `[ -f ]` shortcut to mutate)
@@ -242,16 +260,27 @@ set -euo pipefail
 #                                                    } the hits array is non-empty and every entry fails the
 #                                                    } `[ -n ]` guard, i.e. grep emitted only blank lines)
 #   dangling>0 exits 1 ....................... case  every red case
-#   the green line's counts .................. mut   frozen definition counters; frozen section counter
+#   the green line's counts .................. mut   frozen definition counters; frozen section counter. THE
+#                                                    FILE COUNT HAD NO CASE AT ALL until gh#240 -- the only
+#                                                    figure on that line nothing asserted, which is how it
+#                                                    stayed wrong under a conflicted index through eight
+#                                                    rounds. Pinned now by case 13's third assertion on a
+#                                                    clean index and by case 39 on a conflicted one.
 # THE OUTPUT STREAM ITSELF -- not a decision the gate MAKES, which is why it had no row for eight rounds
-#   a green run says nothing on STDERR ....... mut   ALL NINETEEN green cases, and the mutation is gh#239's
-#                                                    own defect put back: a bare word above the gate's `set
+#   a green run says nothing on STDERR ....... mut   EVERY green case, and the mutation is gh#239's own
+#                                                    defect put back: a bare word above the gate's `set
 #                                                    -euo pipefail`. Non-fatal, so the exit status is
 #                                                    unchanged and EVERY BYTE OF STDOUT is unchanged with it
 #                                                    -- which is why status and needles both missed it and
-#                                                    all forty-two cases passed. Measured 19 green cases red
-#                                                    / 23 red cases still green, so the red half is pinned as
-#                                                    EXEMPT rather than merely left untouched.
+#                                                    all forty-two cases passed when it happened. RE-RUN AT
+#                                                    gh#240, which added two green cases: 21 green cases red
+#                                                    / 23 red cases still green, out of 44. It read 19/23 out
+#                                                    of 42 when the row was written, and re-running was the
+#                                                    only way to keep the grade true -- a `mut` row names the
+#                                                    cases that die, so growing the suite without re-running
+#                                                    it is how a ledger starts promising more than it
+#                                                    measures. The red half stays pinned as EXEMPT rather
+#                                                    than merely left untouched.
 #                                                    THE GRADE IS THE WHOLE POINT HERE: this row could only
 #                                                    ever have been written `mut`, because the assertion's
 #                                                    entire claim is about a defect no case could see.
@@ -294,7 +323,7 @@ DANGLING_REQUIREMENT_99="${R}9.9"
 #   $2 prd_kind     sound | absent | flat-headings | no-bullets | shadowed | fenced | commented | fenced-closed | nested-constructs | fence-bad-closer | unterminated-comment | inline-code-line | unterminated-fence | opener-overindented | backtick-info | tilde-info | misleveled-heading | empty-prd | no-questions | span-comment
 #   $3 notes        the body of documentation/notes.md — the file whose citations are under test
 #   $4 extra_kind   none | rich | ignore-prd | unreadable | nested | non-ascii | all-ignored
-#                   | committed | dash-file | single-file | quoted-path | self-hosted
+#                   | committed | dash-file | single-file | quoted-path | self-hosted | conflicted-index
 #   $5 bad_closer   fence-bad-closer only: the marker line that must NOT close the fence
 #   $6 opener       fence-bad-closer only: the opening marker, so its LENGTH can be varied
 #
@@ -514,6 +543,53 @@ make_fixture() {
       printf 'A note that is written but not yet committed, citing %s9.9.
 ' "$R" > "$dir/documentation/new.md"
       ;;
+    conflicted-index)
+      # A GENUINELY CONFLICTED INDEX, made by a merge that really conflicts rather than by staging stages by
+      # hand (gh#240). `git ls-files --cached` lists a path ONCE PER STAGE, so mid-merge the corpus arrives
+      # carrying the conflicted file three times over, grep is handed the same working-tree file three times,
+      # and BOTH numbers on the green line inflate.
+      #
+      # THE CONFLICT IS ON A THIRD FILE, so `$notes` and the fixture PRD are byte-identical to every other
+      # case here and the perturbation is exactly one: 7 baseline citations + 4 from SOUND_NOTES + 2 from the
+      # marker-wrapped union = 13, across 3 files. Read once per stage instead, it is 17 across 5.
+      #
+      # BOTH SIDES CITE IDS THE FIXTURE PRD DEFINES, on purpose. A gate that reads the file once, twice or
+      # three times stays GREEN either way, so only the counts move -- and this case is about a count. A
+      # fixture that could also flip the verdict would not tell the two apart.
+      #
+      # THE `-c` LIST PINS THREE USER SETTINGS THAT WOULD CHANGE WHAT THE WORKING TREE HOLDS:
+      # `merge.conflictStyle=merge`, because `diff3`/`zdiff3` write the BASE side in as well and its citation
+      # would be counted too; `rerere.enabled=false`, because a recorded resolution replayed here would leave
+      # no conflict at all; and `core.autocrlf=false`, so a Windows checkout does not print a line-ending
+      # warning into the middle of this self-test's output.
+      local git_c=(-c user.name=fixture -c user.email=fixture@example.invalid -c commit.gpgsign=false \
+        -c core.autocrlf=false -c merge.conflictStyle=merge -c rerere.enabled=false)
+      printf 'The base line, citing `%s1.1`.\n' "$R" > "$dir/documentation/merged.md"
+      git -C "$dir" "${git_c[@]}" add documentation/prd.md documentation/notes.md documentation/merged.md
+      git -C "$dir" "${git_c[@]}" commit -q -m 'fixture baseline'
+      git -C "$dir" "${git_c[@]}" checkout -q -b other
+      printf 'Their line, citing `%s1`.\n' "$Q" > "$dir/documentation/merged.md"
+      git -C "$dir" "${git_c[@]}" add documentation/merged.md
+      git -C "$dir" "${git_c[@]}" commit -q -m 'theirs'
+      git -C "$dir" "${git_c[@]}" checkout -q main
+      printf 'Our line, citing `%s2.1`.\n' "$R" > "$dir/documentation/merged.md"
+      git -C "$dir" "${git_c[@]}" add documentation/merged.md
+      git -C "$dir" "${git_c[@]}" commit -q -m 'ours'
+      local merge_status=0
+      git -C "$dir" "${git_c[@]}" merge --no-edit other >/dev/null 2>&1 || merge_status=$?
+      # THE FIXTURE HAS TO BE SHOWN TO CARRY THE FAULT. A merge that quietly succeeded leaves a CLEAN index,
+      # and the case would then assert an ordinary count on an ordinary tree and pass forever having
+      # exercised nothing -- the shape of every dead guard this suite exists to refuse. Both halves are
+      # checked, because either alone can be true while the other is not: the merge failed, AND the index
+      # really holds the three stages.
+      local stages
+      stages="$(git -C "$dir" ls-files --unmerged -- documentation/merged.md | wc -l | tr -d '[:space:]')"
+      if [ "$merge_status" -eq 0 ] || [ "$stages" -ne 3 ]; then
+        red "  FIXTURE BROKEN  conflicted-index is not conflicted (merge exit $merge_status, $stages unmerged stages, wanted 3)"
+        red "Its case would assert an ordinary count on an ordinary tree and prove nothing about gh#240."
+        exit 1
+      fi
+      ;;
     dash-file)
       # A ROOT-LEVEL FILE WHOSE NAME BEGINS WITH A DASH, which is the only thing the `--` separator before
       # the file list is for. Without it grep reads the name as an option -- measured: `invalid argument
@@ -680,9 +756,9 @@ expect_green() {
     failures=$(( failures + 1 ))
     return
   fi
-  # A GREEN RUN WRITES EXACTLY ZERO BYTES TO STDERR -- measured on all nineteen green fixtures, not assumed
-  # from the two the card measured. See the header for the numbers and for why only the stderr half is
-  # asserted.
+  # A GREEN RUN WRITES EXACTLY ZERO BYTES TO STDERR -- measured on every green fixture in this file rather
+  # than on the two the card measured, and measured HERE, by this line, on every run. See the header for the
+  # numbers and for why only the stderr half is asserted.
   #
   # Byte count rather than `[ -n ]`: a lone newline is stray output too, and the number is what an author
   # needs to see. `wc -c` pads on some platforms, hence the strip.
@@ -826,6 +902,16 @@ expect_green "a sound corpus, yaml and binary included" "$FIXTURES/sound" "12 ci
 #     (PR #195 review). The fixture PRD has two headings, three requirement bullets and one open question.
 expect_green "the definition counts the gate reports" "$FIXTURES/sound" \
   "(2 sections, 3 requirements, 1 open questions"
+
+#     …and the FILE COUNT, which no case asserted at all until gh#240 — the one figure on this line with
+#     nothing behind it, on the gate whose whole subject is numbers that stop being true. Four files: the
+#     PRD, the notes, the yaml and the binary. It is also the ORDINARY-TREE half of gh#240: the fix adds
+#     `--deduplicate` to the read, and this pins that the flag changes nothing where the index is clean
+#     rather than leaving that assumed. Measured the other way too — `git ls-files --cached --others
+#     --exclude-standard` with and against the flag is byte-identical on this repository's own tree at
+#     fecc463, 217 paths and 10561 bytes each.
+expect_green "the file count the gate reports on a clean index" "$FIXTURES/sound" \
+  "12 citations of 6 distinct ids across 4 files"
 
 #     A NESTED REPOSITORY, which must be skipped and SAID, not errored on. It carries a citation that does
 #     not resolve, so a gate that read into it would go red rather than merely counting differently.
@@ -1011,6 +1097,26 @@ make_fixture "$FIXTURES/self-hosted" sound "$SOUND_NOTES" self-hosted
 GATE_SELF_HOSTED="$FIXTURES/self-hosted/scripts/check-requirement-ids.sh"
 expect_green "the gate invoked with no argument, as ci.yml invokes it" "$FIXTURES/self-hosted"   "11 citations of 6 distinct ids"
 GATE_SELF_HOSTED=""
+
+#  39. A CONFLICTED INDEX (gh#240). `git ls-files --cached` lists a path ONCE PER STAGE, so during an
+#      unresolved merge the conflicted file reaches grep three times and BOTH counts on the green line
+#      inflate. Measured against the gate at fecc463, on a fixture built by a merge that really conflicts:
+#      `17 citations of 6 distinct ids across 5 files` where 13 across 3 is the truth.
+#
+#      THE MUTATION IS THE FLAG ITSELF: take `--deduplicate` off the read in check-requirement-ids.sh and
+#      THIS CASE ALONE reddens. Nothing else in the suite moves, because every other fixture's index is
+#      clean — which is precisely why the number went unpinned through eight review rounds and needed its
+#      own card. One case, one decision.
+#
+#      UNREACHABLE IN CI, AND FIXED ANYWAY, which is the part worth stating rather than assuming.
+#      `actions/checkout` never leaves a merge in progress, so the runner cannot produce this and no merge
+#      gate was ever at risk. What produces it is a person or an agent running the gate by hand mid-merge,
+#      which here is constant — and a diagnostic that is wrong only while you are already in trouble is the
+#      worst moment for it to be wrong. The sibling gate in the same `docs` job, check-doc-links.sh, has
+#      always run its identical file list through `sort -u`; the two answered differently about one tree.
+make_fixture "$FIXTURES/conflicted-index" sound "$SOUND_NOTES" conflicted-index
+expect_green "a conflicted index, whose stages must collapse to one path" "$FIXTURES/conflicted-index" \
+  "13 citations of 6 distinct ids across 3 files"
 
 info ""
 if [ "$failures" -gt 0 ]; then

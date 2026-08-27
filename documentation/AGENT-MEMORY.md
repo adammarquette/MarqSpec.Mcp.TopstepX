@@ -20,9 +20,13 @@ half, this file is charged to every agent on every task and never gives anything
 place by being the **only** copy of a practice, and it leaves when it stops being one. The test is never its
 age — it is **what fails without it**:
 
-- **Enforced** — a gate, a test, an `.editorconfig` stanza or a workflow now fails on the mistake *and names
-  the remedy in its own output*. The machine is the copy that cannot go stale. If the failure does not name
-  the remedy, fix the gate rather than keep the entry.
+- **Enforced — caught** — a gate, a test or a workflow now **fails** on the mistake *and names the remedy in
+  its own output*. The machine is the copy that cannot go stale; if the failure does not name the remedy,
+  fix the gate rather than keep the entry.
+- **Enforced — prevented** — a setting or a stanza (`.editorconfig`, `cancel-in-progress: false`) makes the
+  mistake **impossible**, so nothing ever fails and there is no output. **A comment beside it is not
+  output**: it reaches only someone already reading the file that prevents the problem, never someone
+  holding the symptom. This exit retires the *cause* — any *recovery* it does not carry stays here.
 - **Contracted** — `AGENTS.md`, a role or subtree contract, an ADR or `CONTRIBUTING.md` states it where the
   work happens. This file is overflow, not a second copy, and the second copy is the one nobody corrects.
 - **Superseded** — a later entry corrects it, or the ground it described moved. Not *old*: **contradicted**.
@@ -323,6 +327,12 @@ one.
   under gh#282 rather than quoted from the commit that hit it.
 - **[2026-08-23] A CLI verb with no test and no run is not delivered.** `rebuild-indicators` shipped in Phase 2
   and had never been executed anywhere. Running it once, twice in a row, exposed gh#37 immediately.
+
+- **[2026-08-22] A cancelled required check blocks the merge while `gh pr checks` shows green** — it reports
+  the latest run per name, so the block is invisible from the tool you reach for first (gh#25). See it with
+  `gh pr view N --json statusCheckRollup`, clear it with `gh run rerun <cancelled-run-id>`. The *cause* is
+  prevented — `cancel-in-progress: false` in both workflows (gh#26) — but a prevention emits no output, and
+  a required check cancelled any other way still lands you here.
 
 - **[2026-08-22] `dotnet run` is safe for the stdio transport** — checked, not assumed. MSBuild writes its
   build output to stderr, and this server's logging is stderr-only, so the first line on stdout is clean

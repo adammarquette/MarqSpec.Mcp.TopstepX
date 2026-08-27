@@ -49,9 +49,10 @@
 #
 # WHAT IT ENFORCES
 #
-#   1. Every data row under every (file, heading) pair in `PRICED` carries a `~tok` value within
-#      TOLERANCE_PCT of its measured size. Every pair must exist AND have rows, so a restructured table
-#      cannot turn this gate green by leaving it nothing to read.
+#   1. Every data row under every (file, heading) pair in `PRICED` carries the `~tok` value its file
+#      MEASURES, at the 0.1K granularity the column is written at — the value this script prints. Every
+#      pair must exist AND have rows, so a restructured table cannot turn this gate green by leaving it
+#      nothing to read.
 #   2. No row's prose makes a size claim. The `~tok` column is the only place a size claim lives, because a
 #      superlative in prose is the same fact stated twice and only one of the two copies ever gets corrected
 #      — which is exactly how "the cheapest whole-file read here" survived on the largest row.
@@ -106,25 +107,80 @@ PRICED=(
   "documentation/agents/README.md|## The contracts"
 )
 
-# How far a row may sit from its measured value before it is called wrong, as a percentage of the MEASURED
-# value.
+# THE ROW MUST SAY WHAT THE COLUMN CAN SAY -- there is no percentage band, and gh#196 is why.
 #
-# IT IS A BAND THAT CATCHES INVERSIONS AND MISSES ORDINARY DRIFT, and saying otherwise would be the same
-# mistake this script exists to stop. Run against the pre-gh#160 map (`f7bdcae:documentation/README.md`) it
-# flags 6 of the 10 rows and lets 4 through:
+# This was `TOLERANCE_PCT=25`: a row passed while it sat within 25% of its measured value. That number was
+# chosen deliberately against rounding and a paragraph edited here or there, and it was the WRONG SHAPE
+# rather than the wrong width. A proportional band's ABSOLUTE width scales with the file it prices, so it is
+# widest on exactly the documents that grow. Measured at `fecc463`, the two ends of this repository's own
+# priced set:
+#
+#   agents/platform.md                      23182 tok   25% = +/- 5795 tok of slack
+#   MarqSpec.Mcp.TopstepX.IntegrationTests/AGENTS.md   882 tok   25% = +/-  220 tok
+#
+# A 26x spread, and 5795 tokens is a quarter of the largest contract in the repository being addable before
+# anything complains. Drift here is not noise around a true value, it is SYSTEMATIC AND COMPOUNDING -- these
+# documents only grow, `AGENT-MEMORY.md` under standing orders to -- so each tolerated increment moved the
+# row further out AND the ceiling further away. gh#196 recorded the failure three times in one afternoon,
+# the sharpest being `code-reviewer.md` at 1.7K while measuring 1.8K: 3% off, green, and corrected only
+# because a human re-derived it by hand under the same-PR rule.
+#
+# THE BAND WAS ALSO TOO WIDE FOR THE DEFECT IT WAS WRITTEN FOR, and that measurement is kept from the
+# version of this comment it replaces. Run against the pre-gh#160 map (`f7bdcae:documentation/README.md`) a
+# 25% band flags 6 of the 10 rows and lets 4 through:
 #
 #   flagged   AGENT-MEMORY.md 88% · work-estimate-rubric.md 56% · project-board-workflow.md 44%
 #             mcp-tool-catalog.md 43% · architecture.md 35% (the row carrying the inverted recommendation)
 #             agents/README.md -- as NOT A SIZE, it was priced `index`
 #   tolerated prd.md 14% · data-dictionary.md 10% · CONTRIBUTING.md 7% · AGENTS.md 2%
 #
-# So four of the values gh#160 corrected would never have been demanded by this gate, `prd.md` among them.
-# That is the intended trade: tightening far enough to catch a 14% row means firing on rounding and on a
-# paragraph added to a short document, and a gate that reddens a required check on noise is deleted by the
-# first person it wrongly stops. The gate is the floor -- it stops the column from reversing its own advice
-# -- and the same-PR docs rule is the standard.
-TOLERANCE_PCT=25
+# So four of the values gh#160 corrected would never have been demanded by the gate gh#160 produced. That
+# was recorded as an accepted trade rather than as a defect, on the argument that tightening far enough to
+# reach a 14% row means firing on rounding -- which is true of a PERCENTAGE and is the assumption this
+# change drops. Re-run at `f7bdcae` with the rule that now ships, per sized row, `says` against the value it
+# rounds to:
+#
+#   prd.md 5.5K/4.8K (7 steps) · architecture.md 4.5K/7.0K (25) · mcp-tool-catalog.md 5K/8.9K (39)
+#   data-dictionary.md 3K/3.3K (3) · AGENT-MEMORY.md 0.8K/6.8K (60) · project-board-workflow.md 2.5K/1.7K (8)
+#   work-estimate-rubric.md 1.5K/1.0K (5) · ../CONTRIBUTING.md 4K/3.7K (3) · ../AGENTS.md 2K/2.0K (0)
+#
+# **8 of the 9 sized rows, against the old band's 5.** Three of the four it tolerated are 3, 3 and 7 steps
+# out -- none is a rounding artefact, which is what the trade assumed they were. The fourth, `../AGENTS.md`,
+# was simply CORRECT: 2K measures 2.0K, it is 0 steps out, and it stays green here. The tightening demands
+# the rows that were wrong and leaves alone the one that was not.
+#
+# SETTING THE PERCENTAGE TO ZERO IS NOT THE FIX, AND WAS MEASURED BEFORE BEING REJECTED. The column is
+# written to 0.1K, so rounding alone permits a delta of up to 50 tokens on a CORRECTLY priced row -- 5.7% of
+# the smallest priced file. At `fecc463`, `TOLERANCE_PCT=0` reddens 7 of the 14 rows, 6 of them stating
+# precisely the right value. A gate that fails on arrival is deleted on arrival.
+#
+# WHAT REPLACES IT IS NOT A NUMBER. The row must equal the measurement ROUNDED TO THE COLUMN'S OWN
+# GRANULARITY -- the value `as_k` computes and this script already prints for the author to paste. Rounding
+# then stops being a source of failure, because the comparison is against the rounded value rather than the
+# raw one, and the tolerance stops being a figure somebody picked: it is a property of how the column is
+# written. Three things follow, and they are the reason this shape and not a smaller percentage:
+#
+#   - THE REMAINING BLIND SPOT IS CONSTANT, NOT PROPORTIONAL. Drift below half a step -- under 50 tok, 200
+#     bytes -- still passes, everywhere, on a 0.9K index and on a 23K contract alike. It is a real remainder
+#     and it is stated rather than implied away.
+#   - BECAUSE IT IS CONSTANT, IT CANNOT COMPOUND, which is gh#196's acceptance criterion. Accumulated drift
+#     runs at a fixed ceiling instead of one that grows with every increment: any growth reaching 0.1K moves
+#     the printed value and reddens the row. Every priced file here is over 0.88K, so three pull requests
+#     each growing one by ~6% (+19%, over 160 tok on the smallest) cannot leave it green.
+#   - THE COST IS THE ONE-LINE DIFF THE GATE ALREADY PRINTS, AND ON THE BASE THIS LANDS ON IT IS ZERO. At
+#     `fecc463`, where this was written, 13 of 14 rows ALREADY stated exactly this value; the fourteenth was
+#     `data-dictionary.md` at 3.5K against a measured 3.6K. That row was corrected on `develop` rather than
+#     here: gh#276 (`f49dd5b`) dropped the `PriceLevels` table, shrinking the file to 13541 bytes, and
+#     re-priced the row to 3.4K -- which is what 13541/4 = 3385 tok rounds to. So at `6b6a9d9` ALL 14 rows
+#     state exactly this value and the strict comparison is green on arrival, re-derived by hand from
+#     `wc -c` rather than read off this gate. Authors already paste what the gate prints -- the band was
+#     tolerating a habit nobody had.
+#
+# The comparison is ARITHMETIC, not a string match: `1K` and `1.0K` are the same price and both are accepted.
+# A cell carrying more precision than the column has -- `1.05K` -- is refused, because the granularity is the
+# rule. `dev_pct` below survives only to say HOW FAR off a failing row is; it decides nothing.
 BYTES_PER_TOKEN=4
+ROUNDING_STEP=100
 
 # Rule 2's closed vocabulary, word-anchored so "largest" does not fire inside "enlargement". Matched against
 # a lowercased cell, so the pattern itself needs no case folding.
@@ -180,6 +236,11 @@ If you APPENDED to a priced document — AGENT-MEMORY.md especially, or document
 correct its row in this same pull request. That is the same-PR docs rule in AGENTS.md, and it is one
 character of editing.
 
+If you did NOT touch the document this row prices, you are most likely looking at gh#196: somebody else's
+merge grew the file, your rebase brought it in, and the row is now stale through no act of yours. It is
+still a one-character edit, and making it here is the whole point — the row is wrong on `develop` until
+some pull request corrects it, and no LATER one will have a reason to look.
+
 If you RESTRUCTURED a priced table — renamed a section heading, added a column, added a row with no size,
 moved a priced file, added a ~tok table somewhere new — update `PRICED` in this script in the same pull
 request. Deleting the gate because the table moved is how an 8.5x drift goes unnoticed a second time.
@@ -205,10 +266,17 @@ stated_tokens() {
 
 # 6825 -> "6.8K", 577 -> "0.6K". Rounds to the nearest 0.1K, the granularity the column is written at, so the
 # value reported is the value to paste.
+#
+# IT ALSO ASSIGNS THAT ROUNDED VALUE BACK IN TOKENS (`ROUNDED`), because since gh#196 it is the VERDICT and
+# not merely the advice: a row is right when it states this, and the two must be the same arithmetic or the
+# gate can print one value while demanding another. One derivation, two consumers -- gh#123's rule that two
+# copies of a rule are two rules, applied here before they can drift.
 SUGGESTED=""
+ROUNDED=0
 as_k() {
-  local tenths=$(( ($1 + 50) / 100 ))
+  local tenths=$(( ($1 + 50) / ROUNDING_STEP ))
   SUGGESTED="$(( tenths / 10 )).$(( tenths % 10 ))K"
+  ROUNDED=$(( tenths * ROUNDING_STEP ))
 }
 
 # FENCED CODE IS NOT MARKDOWN STRUCTURE, AND THIS GATE IS A PARSER (PR #193 review; the lesson is gh#123's
@@ -512,8 +580,22 @@ for file in "${FILES[@]}"; do
     [ "$delta" -ge 0 ] || delta=$(( -delta ))
     dev_pct=$(( delta * 100 / measured ))
 
-    if [ "$dev_pct" -gt "$TOLERANCE_PCT" ]; then
-      die "  OUT OF DATE  $target says $cell_tok, measures $suggested ($bytes bytes / $BYTES_PER_TOKEN) — ${dev_pct}% off, tolerance ${TOLERANCE_PCT}%"
+    # THE VERDICT IS `stated == ROUNDED`, and `dev_pct` is only ever the wording (gh#196). Comparing the
+    # stated tokens against the ROUNDED measurement rather than the raw one is what makes rounding harmless:
+    # a row that says what this script prints is right by construction, whatever the bytes underneath round
+    # from. Comparing TOKENS rather than the two strings is deliberate -- `SIZE_CELL` admits `1K` as well as
+    # `1.0K`, they are the same price, and a string match would redden one of them for its spelling.
+    if [ "$stated" -ne "$ROUNDED" ]; then
+      # A CELL FINER THAN THE COLUMN REPORTS AS A PRECISION FAULT, NOT AS "0% off". `1.05K` on a 1045-token
+      # file is nearer the truth than the 1.0K this demands, so `dev_pct` truncates to 0 and the obvious
+      # wording would refuse a row while printing a reason that says nothing is wrong. A confident wrong
+      # diagnostic is worse than a vague one on a gate whose whole job is to be believed about a number
+      # (gh#140, on `check-release-gate.sh`), so the two failures say different things.
+      if [ "$dev_pct" -eq 0 ]; then
+        die "  OUT OF DATE  $target says $cell_tok, measures $suggested ($bytes bytes / $BYTES_PER_TOKEN) — finer than the 0.1K this column is written at"
+      else
+        die "  OUT OF DATE  $target says $cell_tok, measures $suggested ($bytes bytes / $BYTES_PER_TOKEN) — ${dev_pct}% off"
+      fi
       die "               write $suggested in that row's ~tok cell, in $file."
       failures=$(( failures + 1 ))
     else
@@ -656,4 +738,4 @@ fi
 # under an unlisted heading went unread; that is now a failure above, so the sentence is true -- but it still
 # says how many rows, how many tables and how many files it swept, because a green line a reader cannot check
 # is the thing this whole script is about.
-ok "ok  $rows_checked priced rows under ${#PRICED[@]} (file, heading) pairs across ${#FILES[@]} file(s) — every ~tok within ${TOLERANCE_PCT}% of \`wc -c\`÷$BYTES_PER_TOKEN, no size claims in row prose, and no unlisted price table in the $swept markdown files swept."
+ok "ok  $rows_checked priced rows under ${#PRICED[@]} (file, heading) pairs across ${#FILES[@]} file(s) — every ~tok equal to \`wc -c\`÷$BYTES_PER_TOKEN rounded to 0.1K, no size claims in row prose, and no unlisted price table in the $swept markdown files swept."

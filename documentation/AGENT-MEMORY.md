@@ -94,8 +94,9 @@ at one this rule's own pull request retires.
 
 - **[2026-08-25] A rebase re-prices your rows AND invalidates your sentences — only the first half has a gate
   (gh#187, gh#196).** `scripts/check-doc-sizes.sh` re-measures every routed document on every pull request, so
-  a `~tok` that drifted because *somebody else's* merge grew a file is caught — provided the drift exceeds
-  25%. **Nothing whatsoever watches the prose.** Both halves fired at the same instant, out of one merge —
+  a `~tok` that drifted because *somebody else's* merge grew a file is caught — and since gh#196 that is
+  caught at 0.1K rather than at the 25% this entry was written against, so the sizes half is now closed.
+  **Nothing whatsoever watches the prose.** Both halves fired at the same instant, out of one merge —
   they were noticed twenty-six minutes apart, which is the whole problem: #189 grew `CONTRIBUTING.md`, leaving its
   row at 3.8K against a measured 4.1K — about 7% out,
   inside the band, green and invisible — and the same merge's `Closes #171` **closed gh#171**, falsifying

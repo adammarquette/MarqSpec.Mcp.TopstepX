@@ -503,10 +503,13 @@ this count together whenever a step is added**; the count is the only thing tell
 `docs` has five possible causes. Beside [`check-doc-links.sh`](../../scripts/check-doc-links.sh) it runs:
 
 - [`check-doc-sizes.sh`](../../scripts/check-doc-sizes.sh), which re-measures every row of every `~tok` table
-  it is pointed at (`wc -c` bytes ÷ 4, 25% tolerance) and fails a row that no longer describes its file — and
+  it is pointed at (`wc -c` bytes ÷ 4, **rounded to 0.1K and compared exactly** — gh#196 removed the 25%
+  band, see below) and fails a row that no longer describes its file — and
   [`check-doc-sizes-selftest.sh`](../../scripts/check-doc-sizes-selftest.sh), which requires that gate to
-  reject twenty-six known faults by name and to accept seventeen correct inputs — one at the tolerance
-  boundary, so the tolerance cannot be quietly set to zero, one whose prose contains "no longer", so the
+  reject twenty-nine known faults by name and to accept eighteen correct inputs — one priced off the 0.1K
+  grid at the value it rounds to, so the rule cannot collapse into "state the raw measurement" and redden
+  every real row, one spelling that price `1K` rather than `1.0K`, so the comparison cannot become a string
+  match, one whose prose contains "no longer", so the
   size-claim vocabulary cannot creep back onto ordinary English, and twelve that print a price table inside a
   fence — six quoted, four of those closed by the end of the blockquote or of the file, and four leaning on
   one opener/closer rule each — so a document explaining the column is not accused of adding one.
@@ -666,10 +669,11 @@ than twice, and the gate learned to read a second file. Three consequences worth
   nothing about it — nothing links to a *table* — so moving the index without telling `PRICED` would
   otherwise stop pricing four contracts with every check still green.
 
-**Appending to this file moves its own row.** Its price lives in [`README.md`](README.md) beside it, `docs`
-re-measures that row on every pull request, and the 25% band is about four thousand tokens at this size — so a
-long section lands red on the next PR, not on yours. Correct the row in the same pull request; the gate
-prints the value to paste.
+**Appending to this file moves its own row.** Its price lives in [`README.md`](README.md) beside it, and
+`docs` re-measures that row on every pull request. **Since gh#196 that costs 0.1K, not a quarter of the
+file** — the band used to be about 5,800 tokens at this size, so a long section landed red on somebody
+else's next pull request rather than on yours, and several landed on nobody's. Roughly 200 bytes of addition
+now moves the printed value. Correct the row in the same pull request; the gate prints the value to paste.
 
 **`commit-hygiene` also refuses a merge commit, on a pull request into `develop` and nowhere else** (gh#146).
 `protect-develop` is `allowed_merge_methods: ["rebase"]` and carries

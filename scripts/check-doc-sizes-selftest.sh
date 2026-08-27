@@ -59,12 +59,12 @@
 #   PRICED pair 1 (README / Start here)          a drifted ~tok value                               case
 #   PRICED pair 2 (README / Working agreements)  a renamed section heading                          case
 #   PRICED pair 3 (agents / The contracts)       a drifted row in the second priced file            case
-#   TOLERANCE_PCT = 25                           20% inside / 30% outside, both sides               case
+#   ROUNDING_STEP = 100 (the 0.1K grid)          off-grid green / one 0.1K step off red             case
 #   BYTES_PER_TOKEN = 4                          every sized fixture (sizes exact at 4)             case
 #   SIZE_CLAIM vocabulary                        size claim; quickest; no-longer green              case
 #   ALIGNMENT_ROW regex                          a sound pair of priced files                       case
 #   SIZE_CELL regex                              a placeholder instead of a size                    case
-#   stated_tokens fraction handling              20% inside / 30% outside                           case
+#   stated_tokens fraction handling              1K and 1.0K are the same price; 1.05K refused      case
 #   FILES de-duplication                         a sound pair (two pairs, one file)                 case
 #   NO SUCH FILE (priced file absent)            a priced file that is not on disk                  case
 #   EMPTY (priced file has no lines)             a priced file that exists and has no lines         mut
@@ -79,7 +79,10 @@
 #   NOT A SIZE                                   a placeholder instead of a size                    case
 #   MISSING (target absent)                      a row whose target is absent                       case
 #   measured <= 0 (zero-byte target)             a row pointing at a zero-byte document             mut
-#   tolerance comparison                         20% inside / 30% outside                           case
+#   as_k ROUNDED (the verdict's arithmetic)      off-grid green / one 0.1K step off red             case
+#   stated != ROUNDED  ->  OUT OF DATE           one step off; both compounding steps                case
+#   dev_pct == 0  ->  precision wording          a cell finer than the column has (needle IS it)    case
+#   compounding cannot accumulate                first ~6% growth; three compounded to 16%          case
 #   SIZE CLAIM in row prose                      prose making a size claim; no-longer green         case
 #   NO SECTION / NO ROWS, per pair               renamed heading; priced section with no rows       case
 #   shopt globstar                               a price table three directories down               mut
@@ -204,9 +207,14 @@ make_fixture() {
   local dir="$1" alpha_tok="$2" gamma_row="$3" agreements_heading="$4" reference_kind="$5"
   local contract_row="${6:-$SOUND_CONTRACT}" contracts_heading="${7:-$SOUND_CONTRACTS_HEADING}"
   local stray_kind="${8:-none}" second_file="${9:-present}" map_tail="${10:-none}"
+  # gh#196. `alpha.md`'s SIZE is now variable as well as its price, because the rule under test is no longer
+  # "how far apart are these two numbers" but "does the row state what the file rounds to" -- and that can
+  # only be exercised by moving the FILE under a fixed row, which is precisely the drift gh#196 is about.
+  # Defaulted, so every call that predates it is unchanged.
+  local alpha_bytes="${11:-4000}"
   local fk_kind=no fk_open="" fk_inner="" fk_close=""
   mkdir -p "$dir/documentation/agents"
-  mkfile "$dir/documentation/alpha.md" 4000
+  mkfile "$dir/documentation/alpha.md" "$alpha_bytes"
   mkfile "$dir/documentation/beta.md" 8000
   mkfile "$dir/documentation/gamma.md" 2000
   mkfile "$dir/documentation/delta.md" 400
@@ -478,13 +486,61 @@ info ""
 make_fixture "$FIXTURES/drifted" "5.0K" "$SOUND_GAMMA" "$SOUND_HEADING" "plain"
 expect_red "a drifted ~tok value (5.0K on a 1.0K file)" "$FIXTURES/drifted" "OUT OF DATE"
 
-# 2. The boundary, both sides. 1.2K on a 1.0K file is 20% out and must be tolerated; 1.3K is 30% and must not.
-#    Without the accepted half, TOLERANCE_PCT could be quietly set to 0 and every case above would still pass.
-make_fixture "$FIXTURES/within" "1.2K" "$SOUND_GAMMA" "$SOUND_HEADING" "plain"
-expect_green "20% out, inside the 25% tolerance" "$FIXTURES/within" "5 priced rows"
+# 2. THE GRANULARITY RULE, BOTH SIDES (gh#196). This pair replaced a 20%-green / 30%-red pair that pinned
+#    `TOLERANCE_PCT=25`. There is no percentage any more: a row is right when it states the measurement
+#    ROUNDED TO 0.1K, which is the value the gate prints.
+#
+#    `alpha.md` at 4180 B measures 1045 tok, which is deliberately NOT on a 0.1K boundary -- it rounds to
+#    1.0K and is 4% away from it. The green half is what stops the rule collapsing into "stated must equal
+#    the raw measurement", which would redden nearly every real row on this repository and be deleted the
+#    same afternoon; the red half is 1.1K, ONE STEP off, which the old 25% band accepted in silence. That
+#    red case is gh#196's regression test: it is the shape of `code-reviewer.md` sitting at 1.7K against a
+#    measured 1.8K, green for as long as nobody re-derived it by hand.
+make_fixture "$FIXTURES/rounds" "1.0K" "$SOUND_GAMMA" "$SOUND_HEADING" "plain" \
+  "$SOUND_CONTRACT" "$SOUND_CONTRACTS_HEADING" "none" "present" "none" 4180
+expect_green "a measurement off the 0.1K grid, priced at what it rounds to" "$FIXTURES/rounds" "5 priced rows"
 
-make_fixture "$FIXTURES/outside" "1.3K" "$SOUND_GAMMA" "$SOUND_HEADING" "plain"
-expect_red "30% out, past the 25% tolerance" "$FIXTURES/outside" "OUT OF DATE"
+make_fixture "$FIXTURES/onestep" "1.1K" "$SOUND_GAMMA" "$SOUND_HEADING" "plain" \
+  "$SOUND_CONTRACT" "$SOUND_CONTRACTS_HEADING" "none" "present" "none" 4180
+expect_red "one 0.1K step off, which the old 25% band accepted" "$FIXTURES/onestep" "OUT OF DATE"
+
+#    The comparison is arithmetic, not a string match. `SIZE_CELL` admits `1K` as well as `1.0K` and they are
+#    the same price, so a gate comparing the two CELLS would redden a row for its spelling -- a blocked merge
+#    on a correct number, which is how a gate gets deleted by the first person it wrongly stops.
+make_fixture "$FIXTURES/bareK" "1K" "$SOUND_GAMMA" "$SOUND_HEADING" "plain"
+expect_green "1K and 1.0K are the same price" "$FIXTURES/bareK" "5 priced rows"
+
+#    And a cell FINER than the column is refused, with its own wording. 1.05K on a 1045-token file is nearer
+#    the truth than the 1.0K demanded of it, so the deviation truncates to 0% and the ordinary diagnostic
+#    would refuse the row while printing a reason saying nothing is wrong. The needle is that wording, not
+#    `OUT OF DATE`, because what is being pinned here is the branch that explains the refusal.
+make_fixture "$FIXTURES/finer" "1.05K" "$SOUND_GAMMA" "$SOUND_HEADING" "plain" \
+  "$SOUND_CONTRACT" "$SOUND_CONTRACTS_HEADING" "none" "present" "none" 4180
+expect_red "a cell carrying more precision than the column has" "$FIXTURES/finer" \
+  "finer than the 0.1K this column is written at"
+
+# 2a. THE COMPOUNDING CASE, WHICH IS gh#196'S ACCEPTANCE CRITERION AND WHICH NO SINGLE OUT-OF-BAND ROW
+#     COVERS. The failure that card documents is not one wrong row; it is a row going wrong by increments
+#     nobody's pull request is responsible for, each one individually tolerated. Three merges each growing a
+#     priced file by ~6%, with the row never edited:
+#
+#       start   4000 B  1000 tok  row says 1.0K, correct
+#       +6%     4240 B  1060 tok  ->  1.1K.   5% off -- GREEN under the old 25% band
+#       +6%     4494 B  1123 tok  ->  1.1K.  11% off -- GREEN under the old 25% band
+#       +6%     4764 B  1191 tok  ->  1.2K.  16% off -- GREEN under the old 25% band
+#
+#     So the old gate tolerated the whole sequence and would have tolerated a fourth, because a proportional
+#     band's absolute width grows with the file it is measuring. Two of the four points are cases, and they
+#     make DIFFERENT claims: the first that the sequence cannot begin, the last that its endpoint -- the row
+#     16% wrong, which is the state gh#160 was filed for, reassembled out of individually tolerated steps --
+#     is refused. The middle step is arithmetic between them and is not a third decision.
+make_fixture "$FIXTURES/compound1" "1.0K" "$SOUND_GAMMA" "$SOUND_HEADING" "plain" \
+  "$SOUND_CONTRACT" "$SOUND_CONTRACTS_HEADING" "none" "present" "none" 4240
+expect_red "the first ~6% growth of a priced file, row unedited" "$FIXTURES/compound1" "OUT OF DATE"
+
+make_fixture "$FIXTURES/compound3" "1.0K" "$SOUND_GAMMA" "$SOUND_HEADING" "plain" \
+  "$SOUND_CONTRACT" "$SOUND_CONTRACTS_HEADING" "none" "present" "none" 4764
+expect_red "three ~6% growths compounded to 16%, still inside the old band" "$FIXTURES/compound3" "OUT OF DATE"
 
 # 3. THE SAME DRIFT, WRITTEN THE TWO OTHER WAYS GFM ALLOWS. Both of these render as ordinary rows, and both
 #    were silently skipped by the "the line starts with a pipe" test this gate used until the PR #175
@@ -732,10 +788,12 @@ make_fixture "$FIXTURES/fragment" "1.0K" \
   '| [`gamma.md`](gamma.md#a-section) | 0.5K | Before starting any work. |' "$SOUND_HEADING" "plain"
 expect_green "a row whose link carries a #fragment" "$FIXTURES/fragment" "5 priced rows"
 
-# 28. A ROW POINTING AT A ZERO-BYTE FILE. The `measured <= 0` guard exists so the tolerance arithmetic never
-#     divides by zero; without it the run dies on a bash division error instead of naming the row, i.e. it
-#     still fails but stops saying which document is empty. A priced document with no content is a routing
-#     error and the gate should say so.
+# 28. A ROW POINTING AT A ZERO-BYTE FILE. The `measured <= 0` guard exists so the deviation arithmetic never
+#     divides by zero. `dev_pct` decides nothing since gh#196 — it is the wording of a failure, not the
+#     verdict — but it is still computed on every row, so the guard is load-bearing exactly as it was.
+#     Without it the run dies on a bash division error instead of naming the row: it still fails, but stops
+#     saying which document is empty. A priced document with no content is a routing error and the gate
+#     should say so.
 make_fixture "$FIXTURES/zero-byte" "1.0K" \
   '| [`zero.md`](zero.md) | 0.5K | Before starting any work. |' "$SOUND_HEADING" "plain"
 expect_red "a row pointing at a zero-byte document" "$FIXTURES/zero-byte" "EMPTY"
@@ -788,4 +846,4 @@ if [ "$cases" -eq 0 ]; then
   exit 1
 fi
 
-ok "ok  $cases self-test cases across two priced files — check-doc-sizes.sh rejects each known fault BY NAME, and accepts correct input: one at the tolerance boundary, one whose prose says \"no longer\", twelve showing a price table inside a fence, one placing a thematic break under a priced heading, and one wholly sound."
+ok "ok  $cases self-test cases across two priced files — check-doc-sizes.sh rejects each known fault BY NAME, and accepts correct input: one priced off the 0.1K grid at what it rounds to, one spelling that price \`1K\`, one whose prose says \"no longer\", twelve showing a price table inside a fence, one placing a thematic break under a priced heading, and one wholly sound."

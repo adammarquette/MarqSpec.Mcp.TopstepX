@@ -459,7 +459,8 @@ public sealed class KeyLevelDetectionPlumbingTests : IDisposable
         SnapshotTools snapshot = new(
             marketData,
             new ReferenceTools(new InstrumentRegistry(market), calendar, gateway, market, clock),
-            new IndicatorCatalogNames(indicators));
+            new IndicatorCatalogNames(indicators),
+            clock);
 
         return (marketData, snapshot);
     }

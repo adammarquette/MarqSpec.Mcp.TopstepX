@@ -356,6 +356,7 @@ public sealed class StoreFaultBoundaryTests(SchemaFixture fixture)
                 SessionCloseCentral = "16:00",
             })),
             holder,
-            new FakeTimeProvider(Now));
+            new FakeTimeProvider(Now),
+            Options.Create(new KeyLevelDetectionOptions()));
     }
 }

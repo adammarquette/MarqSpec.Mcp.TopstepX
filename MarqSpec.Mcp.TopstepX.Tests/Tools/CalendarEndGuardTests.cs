@@ -371,7 +371,8 @@ public sealed class CalendarEndGuardTests : IDisposable
             _gateway,
             Guards(),
             new StoreAvailabilityHolder(),
-            _clock);
+            _clock,
+            Options.Create(new KeyLevelDetectionOptions()));
 
     /// <summary>Builds the reference tools — the ones that take an instant and no window.</summary>
     /// <returns>The reference tools.</returns>

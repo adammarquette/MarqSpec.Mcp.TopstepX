@@ -1,10 +1,12 @@
 using System.ComponentModel;
+using MarqSpec.Mcp.TopstepX.Configuration;
 using MarqSpec.Mcp.TopstepX.Data;
 using MarqSpec.Mcp.TopstepX.Domain;
 using MarqSpec.Mcp.TopstepX.Domain.MarketData;
 using MarqSpec.Mcp.TopstepX.MarketData;
 using MarqSpec.Mcp.TopstepX.Venue;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Options;
 using ModelContextProtocol;
 using ModelContextProtocol.Server;
 
@@ -24,7 +26,8 @@ public sealed class MarketDataTools(
     IMarketDataGateway gateway,
     ToolGuards guards,
     StoreAvailabilityHolder store,
-    TimeProvider clock)
+    TimeProvider clock,
+    IOptions<KeyLevelDetectionOptions> detection)
 {
     private readonly BarCacheService _cache = cache;
     private readonly TopstepXDbContext _database = database;
@@ -36,6 +39,12 @@ public sealed class MarketDataTools(
     private readonly ToolGuards _guards = guards;
     private readonly StoreAvailabilityHolder _store = store;
     private readonly TimeProvider _clock = clock;
+
+    // The detection defaults, not the detection options: two of the four fields are overridden per call, and
+    // the merge happens in ResolveDetection. The catalogue holds no copy of these -- ILevelMethod.Detect
+    // takes them per call precisely because levels are computed on read and nothing stores them (ADR-0013),
+    // so the tool boundary is where "the caller did not say" becomes "the operator's configured value".
+    private readonly KeyLevelDetectionOptions _detection = detection.Value;
 
     /// <summary>How much history key-level detection covers when the caller does not say.</summary>
     /// <remarks>
@@ -272,6 +281,8 @@ public sealed class MarketDataTools(
     /// <param name="symbol">The instrument symbol.</param>
     /// <param name="resolutionMinutes">The timeframe in minutes.</param>
     /// <param name="lookbackBars">How much history to detect over.</param>
+    /// <param name="pivotSource">Which price on a bar a pivot is measured from, or null for the configured one.</param>
+    /// <param name="pivotLookback">How many bars either side a pivot must dominate, or null for the configured one.</param>
     /// <param name="cancellationToken">The caller's cancellation token.</param>
     /// <returns>The levels, ordered by price.</returns>
     [McpServerTool(ReadOnly = true, Idempotent = true, Title = "Get key levels")]
@@ -283,17 +294,41 @@ public sealed class MarketDataTools(
         + "confined to the contract in front: if the lookback spans a quarterly roll, `detectedOverBars` is "
         + "smaller than the lookback asked for, because a level from the expiring contract sits at a price "
         + "the current one has never traded. Read `detectedOverBars` — fewer bars behind a level is less "
-        + "weight for it.")]
+        + "weight for it. `pivotSource` and `pivotLookback` tune the detection for one call; OMIT them and "
+        + "this server's configured defaults apply. They carry no default of their own, because the default "
+        + "is an operator setting rather than a constant — omitting one asks for the configured value, it "
+        + "does not name a particular one. Zone width and the significance floor are operator settings only, "
+        + "so every level this server reports is sized and filtered alike and two of them can be compared.")]
     public async Task<ToolPayloads.LevelSet> GetKeyLevels(
         [Description("The instrument symbol, e.g. ES.")] string symbol,
         [Description("The timeframe in minutes.")] int resolutionMinutes,
         [Description("How many bars of history to detect over. Omit for 500.")]
         int lookbackBars = DefaultLookbackBars,
+        [Description(
+            "Which price on a bar a pivot is measured from: HeikinAshiBody, Body or HighLow. Omit to use "
+            + "this server's configured source. HeikinAshiBody smooths single-bar noise into structure and "
+            + "is the shipped default. Body reads open and close only, HighLow reads the raw wicks. NOTE: on "
+            + "a continuous intraday series, where a bar opens at the previous close, a body high ties with "
+            + "its neighbour's on every bar and Body can find NO pivots at all — an empty level set there is "
+            + "a property of the source, not a market without structure. An unknown name is an error listing "
+            + "the three.")]
+        string? pivotSource = null,
+        [Description(
+            "How many bars either side a pivot must dominate; larger means fewer, more structural levels. "
+            + "Omit to use this server's configured lookback. A window needs 2 × this + 1 bars before a "
+            + "single pivot can form, and a value `lookbackBars` cannot satisfy is refused rather than "
+            + "answered with an empty level set.")]
+        int? pivotLookback = null,
         CancellationToken cancellationToken = default)
     {
         InstrumentId instrument = Resolve(symbol);
         ToolGuards.ValidateResolution(resolutionMinutes);
         int wanted = _guards.ValidateCount(lookbackBars);
+
+        // Before the read, not after it. Every check below is a fact about the REQUEST, and a store with no
+        // bars returns early -- so validating after the read is how an Unknown source arriving from
+        // configuration would be answered with an empty level set instead of a refusal.
+        KeyLevelOptions detection = ResolveDetection(pivotSource, pivotLookback, wanted);
 
         List<Bar> bars = await _database.Bars
             .Where(b => b.Venue == _gateway.VenueId
@@ -329,9 +364,8 @@ public sealed class MarketDataTools(
         IIndicator atr = _catalog.Resolve("atr");
         IReadOnlyList<decimal?> scale = atr.Compute(detectable);
 
-        KeyLevelOptions options = new();
         IReadOnlyList<KeyLevelZone> zones =
-            _levelMethods.Resolve(SwingLevelMethodName).Detect(detectable, scale, options);
+            _levelMethods.Resolve(SwingLevelMethodName).Detect(detectable, scale, detection);
 
         return new ToolPayloads.LevelSet(
             [.. zones.Select(z => new ToolPayloads.LevelInfo(
@@ -420,6 +454,86 @@ public sealed class MarketDataTools(
         CancellationToken cancellationToken) =>
         _indicators.EnsureProjectedAsync(
             _gateway.VenueId, instrument, resolutionMinutes, cancellationToken);
+
+    /// <summary>
+    /// Merges what the caller asked for over what the operator configured, and refuses what neither can mean.
+    /// </summary>
+    /// <param name="pivotSource">The requested source name, or null to take the configured one.</param>
+    /// <param name="pivotLookback">The requested lookback, or null to take the configured one.</param>
+    /// <param name="lookbackBars">The already-validated history the caller asked to detect over.</param>
+    /// <returns>The options detection will run under.</returns>
+    /// <exception cref="McpException">
+    /// The named source is not in the vocabulary, the configured source is not either, or the lookback is
+    /// one no window this wide could ever produce a pivot for.
+    /// </exception>
+    /// <remarks>
+    /// <para>
+    /// <b>The configured source is checked on the same terms as the caller's.</b> Startup validation already
+    /// refuses an unservable one (<see cref="KeyLevelDetectionOptions.Validate"/>), so this second door is
+    /// closed on a room that should be locked — which is the point: the two doors are opened by different
+    /// keys. A value that never went through <c>ValidateOnStart</c> otherwise reaches
+    /// <c>KeyLevels.PivotPrices</c>, which reads anything it does not recognise as Heikin-Ashi and returns
+    /// an ordinary-looking level set measured from a source nobody chose.
+    /// </para>
+    /// <para>
+    /// <b>The lookback is refused against the requested window rather than clamped into it.</b> A pivot must
+    /// dominate <c>pivotLookback</c> bars on both sides, so fewer than <c>2 × it + 1</c> bars can hold none
+    /// at all — and an empty level set reads as "this market has no structure", which is a conclusion, where
+    /// the truth is a request that could not be answered. The comparison is written against the halved bar
+    /// count rather than as <c>2 × lookback + 1</c> so that a large lookback cannot overflow the check meant
+    /// to catch it.
+    /// </para>
+    /// </remarks>
+    private KeyLevelOptions ResolveDetection(string? pivotSource, int? pivotLookback, int lookbackBars)
+    {
+        KeyLevelOptions defaults = _detection.Defaults();
+
+        PivotSource source;
+        if (pivotSource is null)
+        {
+            source = PivotSources.IsServable(defaults.Source)
+                ? defaults.Source
+                : throw new McpException(
+                    "This server's configured pivot source, '" + defaults.Source
+                    + "', is not one it can detect through. Known sources: " + PivotSources.KnownNames
+                    + ". Set " + KeyLevelDetectionOptions.SectionName + "__Source to one of them, or name a "
+                    + "source on the call.");
+        }
+        else
+        {
+            try
+            {
+                source = PivotSources.Resolve(pivotSource);
+            }
+            catch (KeyNotFoundException ex)
+            {
+                throw new McpException(ex.Message);
+            }
+        }
+
+        int lookback = pivotLookback ?? defaults.Lookback;
+
+        if (lookback < 1)
+        {
+            throw new McpException(
+                "pivotLookback must be at least 1; got "
+                + lookback.ToString(System.Globalization.CultureInfo.InvariantCulture)
+                + ". A pivot dominates that many bars on each side, so there is no such thing as a pivot "
+                + "confirmed by none.");
+        }
+
+        return lookback > (lookbackBars - 1) / 2
+            ? throw new McpException(
+                "pivotLookback " + lookback.ToString(System.Globalization.CultureInfo.InvariantCulture)
+                + " needs at least "
+                + (((long)lookback * 2) + 1).ToString(System.Globalization.CultureInfo.InvariantCulture)
+                + " bars before one pivot can form, and lookbackBars is "
+                + lookbackBars.ToString(System.Globalization.CultureInfo.InvariantCulture)
+                + ". A pivot must dominate the lookback on BOTH sides. The request is refused rather than "
+                + "answered with an empty level set, because no levels reads as 'this market has no "
+                + "structure'. Ask for more bars, or a smaller pivotLookback.")
+            : defaults with { Source = source, Lookback = lookback };
+    }
 
     private IIndicator ResolveIndicator(string name)
     {

@@ -266,7 +266,7 @@ dropped when there is nothing to report, and a caller testing `reading.value ===
 `contractId` is absent for **two** different reasons — there was no value, or the bar's provenance was never
 recorded — so an absent one is never evidence that two readings share a contract.
 
-### `get_key_levels(symbol, resolutionMinutes, lookbackBars?)`
+### `get_key_levels(symbol, resolutionMinutes, lookbackBars?, pivotSource?, pivotLookback?)`
 Support and resistance as **zones**, not lines.
 
 Returns `{ levels: [{ timeframeMinutes, bottom, top, midpoint, kind, significance, touchCount,
@@ -287,6 +287,34 @@ field is a breaking change to the tool contract rather than a typo to quietly fi
 `significance` is prominence in ATR multiples, so a 2.0 on ES and a 2.0 on NQ mean the same thing. `kind` is
 assigned **relative to the current price**, not to how the level formed: a broken resistance is today's support,
 and reporting it otherwise puts a ceiling underneath the market.
+
+**Detection has four parameters. Two are per call, two are the operator's only, and the split is deliberate
+rather than partial.** `pivotSource` and `pivotLookback` say *what is being asked* — which price a pivot is
+measured from, and how structural a level has to be — so a caller can compare two readings of the same bars
+in one session. The zone width (`KeyLevels__ZoneAtrMultiple`) and the significance floor
+(`KeyLevels__MinSignificance`) are configuration only, because they are the calibration that makes two of
+this server's answers comparable at all: gh#232's confluence score weighs zones from several methods against
+each other, and a width that moved per request would make two scores incomparable without either being wrong.
+The floor is the sharper case — turned up it empties the level set, and an empty level set reads as *this
+market has no structure*, which is a conclusion rather than a request artefact.
+
+**Omitting a per-call argument asks for the configured value; it does not name one.** Neither carries a
+default in the schema, unlike `lookbackBars`, whose 500 is this server's own constant. The shipped
+configuration is `HeikinAshiBody` — it smooths single-bar noise into structure — with a pivot lookback of 5,
+a zone width of 0.5 ATR and a floor of 0.5; `.env.example` carries the section. A source outside
+`HeikinAshiBody | Body | HighLow` is an error listing the three, from a call **and** from configuration,
+where `Unknown` is what an unset or mistyped value binds to.
+
+**Per-call detection parameters are sound here only because nothing stores a level** — `ADR-0013`. ADR-0006
+forbids the same freedom for indicators, whose storage key is `(Indicator, Period)`: a parameter the key
+cannot see leaves two parameterisations indistinguishable once written, spliced into one series with no seam
+visible anywhere. `PriceLevels` has never had a row, so there is no key for a parameter to fall out of — and
+`ADR-0013` names the one condition that reverses this, which is the moment anything writes that table.
+
+**`Body` can legitimately find nothing, and that is not a bug to report.** On a continuous intraday series a
+bar opens at the previous close, so a body high ties with its neighbour's on every bar, no candidate
+dominates its window, and the level set comes back empty (measured on gh#247). It is a property of the
+source, not of the market.
 
 ## Account reads
 
@@ -388,6 +416,10 @@ period the bars do not satisfy cannot measure.
 `levels.contracts` describes the longer `max(barCount, 200)` bars the levels were detected over. They can
 disagree: a short bar window can sit entirely inside the current contract while the history behind the levels
 crosses a roll. `levels.detectedOverBars` says how much of that history actually survived the confinement.
+
+**The levels here are detected at this server's configured defaults**, always. This tool takes no
+`pivotSource` or `pivotLookback` — one snapshot answers the common question, and a detection argument on it
+would tune one of the four things it returns.
 
 **`symbol` is the only required argument.** The defaults are:
 

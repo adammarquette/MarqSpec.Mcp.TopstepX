@@ -1,5 +1,6 @@
 using FluentAssertions;
 using MarqSpec.Mcp.TopstepX.Configuration;
+using MarqSpec.Mcp.TopstepX.Domain.MarketData;
 using MarqSpec.Mcp.TopstepX.Embeddings;
 using MarqSpec.Mcp.TopstepX.MarketData;
 using MarqSpec.Mcp.TopstepX.Tools;
@@ -197,5 +198,60 @@ public sealed class CompositionRootTests
         Func<object> resolve = () => scope.ServiceProvider.GetRequiredService<IndicatorRebuilder>();
 
         resolve.Should().NotThrow();
+    }
+
+    [Fact]
+    public void TheKeyLevelDetectionSection_Binds_IncludingItsSource()
+    {
+        // Bound from configuration rather than constructed, which is the whole of gh#244 on this side of the
+        // seam: the tool used to build `new KeyLevelOptions()` and never read a setting at all.
+        Dictionary<string, string?> configured = new()
+        {
+            ["KeyLevels:Source"] = "HighLow",
+            ["KeyLevels:PivotLookback"] = "9",
+            ["KeyLevels:ZoneAtrMultiple"] = "1.25",
+            ["KeyLevels:MinSignificance"] = "0.75",
+        };
+
+        using ServiceProvider provider = Build(configured, new McpOptions { Transport = McpTransport.Stdio });
+
+        KeyLevelDetectionOptions options =
+            provider.GetRequiredService<IOptions<KeyLevelDetectionOptions>>().Value;
+
+        options.Defaults().Should().Be(new KeyLevelOptions(9, PivotSource.HighLow, 1.25m, 0.75m));
+    }
+
+    [Fact]
+    public void TheShippedDetectionDefaults_AreTheOnesTheDocumentedSurfacePromises()
+    {
+        // An absent section binds the property initialisers, and those are the numbers `.env.example`,
+        // compose and the tool catalogue all state. Heikin-Ashi stays the default: it smooths single-bar
+        // noise into structure, which is the reason it has carried since the pipeline existed.
+        using ServiceProvider provider =
+            Build(new Dictionary<string, string?>(), new McpOptions { Transport = McpTransport.Stdio });
+
+        provider.GetRequiredService<IOptions<KeyLevelDetectionOptions>>().Value.Defaults()
+            .Should().Be(new KeyLevelOptions(5, PivotSource.HeikinAshiBody, 0.5m, 0.5m));
+    }
+
+    [Theory]
+    [InlineData("Unknown")]
+    [InlineData("0")]
+    public void AnUnsetConfiguredPivotSource_FailsValidation_RatherThanBootingOnIt(string configuredSource)
+    {
+        // Unknown = 0 is what a mistyped or absent value binds to, so honouring it picks a price series by
+        // accident -- and `KeyLevels.PivotPrices` reads anything it does not recognise as Heikin-Ashi, so
+        // the server would answer every level call from a source nobody chose, with nothing to see. The rule
+        // is an IValidatableObject on the options type, so it travels with the value rather than living in a
+        // lambda at this composition root that a second binder could miss.
+        Dictionary<string, string?> configured = new() { ["KeyLevels:Source"] = configuredSource };
+
+        using ServiceProvider provider = Build(configured, new McpOptions { Transport = McpTransport.Stdio });
+
+        Func<KeyLevelDetectionOptions> read =
+            () => provider.GetRequiredService<IOptions<KeyLevelDetectionOptions>>().Value;
+
+        read.Should().Throw<OptionsValidationException>()
+            .WithMessage("*HeikinAshiBody, Body, HighLow*");
     }
 }

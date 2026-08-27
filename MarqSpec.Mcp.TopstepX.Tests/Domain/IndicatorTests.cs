@@ -329,8 +329,11 @@ public sealed class IndicatorTests
     public void Vwap_RefusesATransposedSeries()
     {
         // Vwap_AccumulatesAcrossTheSession's two bars, exchanged. VWAP is a running accumulation and the
-        // session anchor is read in series order, so disorder does not merely reorder the output: it can
-        // attribute a bar's volume to the wrong session entirely and reset the day's average early.
+        // session anchor is read in series order, so disorder does not merely reorder the output: it restarts
+        // the day's average early, and every value after the disorder is computed from a partial session.
+        // It cannot carry volume across sessions — TradeDateFor is a pure per-bar function and the accumulator
+        // resets on every change of session — so no permutation adds a bar to a total labelled with another
+        // trade date. Measured, not reasoned from the shape of the loop.
         BarSessionCalendar calendar = BarSessionCalendar.Parse("16:00", []);
         DateTimeOffset open = MarketClock.FromMarket(new DateOnly(2026, 8, 18), new TimeOnly(9, 0));
 

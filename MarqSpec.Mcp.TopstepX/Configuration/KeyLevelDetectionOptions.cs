@@ -140,10 +140,11 @@ public sealed class KeyLevelDetectionOptions : IValidatableObject
     /// <remarks>
     /// <para>
     /// <b>The cap is on the answer, not on the work</b> — detection runs over every bar either way, which
-    /// ADR-0013 priced at about a quarter of a millisecond for the tool's default window. What it bounds is
-    /// how much an agent is handed: the same record measured <b>56 zones</b> over 10,000 bars at the shipped
-    /// parameters and <b>44</b> at a lookback of 20, and a wall of forty-four levels is a list nobody ranks
-    /// before acting on it.
+    /// ADR-0013 priced at <b>0.51 ms</b> over the tool's 500-bar window at a lookback of 20. (That record's
+    /// headline 0.21 ms is the figure for a lookback of <b>5</b>, which was the shipped value when it was
+    /// written and is not the shipped value now.) What the cap bounds is how much an agent is handed: the
+    /// same measurement found <b>44 zones</b> over 10,000 bars at a lookback of 20, and a wall of
+    /// forty-four levels is a list nobody ranks before acting on it.
     /// </para>
     /// <para>
     /// <b>The levels kept are the most significant ones, and the rest are absent rather than summarised.</b>

@@ -24,6 +24,13 @@ namespace MarqSpec.Mcp.TopstepX.MarketData;
 /// <see cref="All"/> in <c>LevelMethodCatalogRollTests</c> rather than trusted: a method reached by a
 /// different path loses the confinement without failing.
 /// </para>
+/// <para>
+/// <b>And a series whose bars are not in strictly ascending time order</b> — the same shape, a different
+/// guard, and a second sweep rather than a corner of the first: <c>LevelMethodCatalogOrderingTests</c>. The
+/// roll sweep counts only refusals whose message names the roll, so deleting
+/// <see cref="IndicatorGuard.RequireStrictlyAscending"/> from <see cref="KeyLevels.FindPivots"/> leaves all
+/// four of its tests green — measured on gh#283, where the ordering sweep was added because of it.
+/// </para>
 /// </remarks>
 public sealed class LevelMethodCatalog
 {

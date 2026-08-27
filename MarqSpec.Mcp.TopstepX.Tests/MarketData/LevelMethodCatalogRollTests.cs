@@ -31,15 +31,39 @@ namespace MarqSpec.Mcp.TopstepX.Tests.MarketData;
 /// <c>get_key_levels</c> would answer "no levels" for it on every instrument, forever, green. That is
 /// exactly the failure <see cref="LevelMethodCatalog"/> names in its own XML: a name that returns nothing is
 /// indistinguishable from a market that has produced no structure, and the second reads as a conclusion.
-/// Today it is caught only because <c>SwingLevelMethodTests</c> pins <c>swing</c> against hand-derived
-/// numbers; the hole opens the moment a sweep is the only thing covering a method, which is the whole reason
-/// this card built one.
+/// Each registered method is separately pinned against hand-derived numbers — <c>SwingLevelMethodTests</c>
+/// and <c>SessionLevelMethodTests</c> — so a silent <c>return [];</c> would go red there too; the hole opens
+/// the moment a sweep is the only thing covering a method, which is the whole reason this card built one.
+/// </para>
+/// <para>
+/// <b>It has already been paid for once.</b> Registering <c>session</c> (gh#257) turned
+/// <see cref="EveryRegisteredMethod_StillDetectsOverASingleContractSeries"/> red on the fixture as it stood:
+/// twenty-one bars inside a single trade date carry no prior day, no prior week and no finished session leg,
+/// so a session method could find nothing in them and would have shipped answering every instrument with an
+/// empty level set. The failure message's own instruction — extend the fixture — is what
+/// <see cref="SessionStart"/> records.
 /// </para>
 /// </remarks>
 public sealed class LevelMethodCatalogRollTests
 {
+    /// <summary>The catalogue, built with the session calendar <c>session</c> is anchored to.</summary>
+    private static LevelMethodCatalog Catalog() => new(BarSessionCalendar.Parse("16:00", []));
+
+    /// <summary>
+    /// 17:00 Central on Monday 17 August 2026 — the moment Tuesday's session reopens.
+    /// </summary>
+    /// <remarks>
+    /// <b>It moved here from 09:00 on the 18th when <c>session</c> was registered, and the sweep below is
+    /// what moved it (gh#257).</b> The old origin put all twenty-one bars inside one trade date with nothing
+    /// before them, which is a series a session method can find nothing in — no prior day, no prior week, no
+    /// finished overnight leg, no closed initial balance — and
+    /// <see cref="EveryRegisteredMethod_StillDetectsOverASingleContractSeries"/> went red saying exactly
+    /// that: <i>extend the fixture so it has something to find</i>. Starting at the reopen puts the run
+    /// inside Tuesday's <b>initial balance</b>, so the fixture carries structure for both registered methods
+    /// rather than for one. The measured failure and the repaired run are tabled in the pull request.
+    /// </remarks>
     private static DateTimeOffset SessionStart =>
-        MarketClock.FromMarket(new DateOnly(2026, 8, 18), new TimeOnly(9, 0)).ToUniversalTime();
+        MarketClock.FromMarket(new DateOnly(2026, 8, 17), new TimeOnly(17, 0)).ToUniversalTime();
 
     /// <summary>Bars per contiguous single-contract run.</summary>
     /// <remarks>
@@ -57,12 +81,24 @@ public sealed class LevelMethodCatalogRollTests
     /// One contiguous run of one contract: flat, with a single unmistakable high in the middle of it.
     /// </summary>
     /// <remarks>
+    /// <para>
     /// Flat bars tie with each other and a tie is not a pivot, so the peak is the only thing a swing-style
     /// method can find, and it is far enough above its neighbours to dominate the window under any of the
     /// three <see cref="PivotSource"/> readings rather than only the one the defaults happen to use.
     /// <b>Deliberately not a sawtooth.</b> A short repeating price cycle never lets a bar strictly dominate
     /// its lookback, so it yields no pivots at all — which is what made the earlier version of the second
     /// sweep here vacuous (PR #252 review, finding 2).
+    /// </para>
+    /// <para>
+    /// <b>The same twenty-one bars carry structure for a session method too, and that is what
+    /// <see cref="SessionStart"/> buys.</b> Beginning at the reopen puts the first <b>twelve</b> — 22:00Z to
+    /// 22:55Z — inside Tuesday's initial balance, and <c>session</c> answers this run with exactly two
+    /// zones: <c>98.5</c>–<c>99.5</c> support and <c>199.5</c>–<c>200.5</c> resistance, both significance
+    /// <c>50.5</c>, the balance's low and its high. Its prior day, prior week and overnight leg are all
+    /// absent, correctly: every bar carries the one trade date, nothing before the reopen is loaded, and the
+    /// evening leg has not closed. Measured on gh#257's branch. A method is asked here whether it can detect
+    /// at all, not whether it can detect everything.
+    /// </para>
     /// </remarks>
     private static IEnumerable<Bar> Run(string contractId, decimal baseline, int startIndex) =>
         Enumerable.Range(0, RunLength).Select(i => i == PeakIndex
@@ -131,7 +167,7 @@ public sealed class LevelMethodCatalogRollTests
     [Fact]
     public void EveryRegisteredMethod_RefusesASplicedSeries()
     {
-        LevelMethodCatalog catalog = new();
+        LevelMethodCatalog catalog = Catalog();
 
         catalog.All.Should().NotBeEmpty("the sweep must actually cover something");
 
@@ -165,7 +201,7 @@ public sealed class LevelMethodCatalogRollTests
         // The other half of the guard, and it asserts a RESULT rather than the absence of an exception. A
         // method that refused everything would pass the sweep above and break the tool; so would one that
         // quietly returned nothing, and those two failures look nothing alike from outside.
-        foreach (ILevelMethod method in new LevelMethodCatalog().All)
+        foreach (ILevelMethod method in Catalog().All)
         {
             DetectsOverASingleContractSeries(method).Should().BeTrue(
                 method.Name + " found nothing in a clean series built around one unmistakable peak. Either "

@@ -289,6 +289,21 @@ field is a breaking change to the tool contract rather than a typo to quietly fi
 assigned **relative to the current price**, not to how the level formed: a broken resistance is today's support,
 and reporting it otherwise puts a ceiling underneath the market.
 
+**This call detects with `swing`, and that is the whole of what it can ask for today.** The server's method
+vocabulary is `swing` and `session` — the second added by gh#257 — but `get_key_levels` carries no method
+argument, so `session` is registered and tested without yet being reachable from here. Selecting a method
+per call, and scoring the confluence between several, is gh#259; this paragraph goes when that argument
+arrives. `session` reports what a finished session left behind — prior-day and prior-week high, low and
+close, the overnight range, and the initial balance — sized into zones by **the same `zoneAtrMultiple`** a
+pivot is, so a line and a zone are the same width and a confluence score compares like with like. Its
+significance is the summarised period's own range in ATR multiples, which for that period's high and low is
+prominence measured over the session instead of over a lookback window. Whatever it cannot compute is
+**absent**: a window that does not reach the opening of the session a level belongs to yields no level for
+it rather than one taken from the part of the session the window holds, a prior "day" that did not trade is
+not a prior day, and a range still forming is not a level. At 500 five-minute bars the window spans about
+forty hours, so prior-week levels will normally be absent and prior-day levels often will be — ask for more
+`lookbackBars` rather than reading the absence as a market without structure.
+
 **Detection has four parameters. Two are per call, two are the operator's only, and the split is deliberate
 rather than partial.** `pivotSource` and `pivotLookback` say *what is being asked* — which price a pivot is
 measured from, and how structural a level has to be — so a caller can compare two readings of the same bars

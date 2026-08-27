@@ -23,9 +23,16 @@ namespace MarqSpec.Mcp.TopstepX.Tests.MarketData;
 /// It exists because <b>a level method does not inherit its guards</b>, which is the sentence that file
 /// opens with. An indicator is a projection over one shared compute path, so a catalogue sweep covers the
 /// twelfth indicator by construction. Each method here detects its own way, so ordering is a rule each
-/// implementation satisfies rather than a step each inherits. The catalogue has one member today and it
-/// reaches the guard through <see cref="KeyLevels.FindPivots"/>; the next one need not, and a method that
-/// detects by another path simply never calls it (gh#283).
+/// implementation satisfies rather than a step each inherits. <c>swing</c> reaches the guard through
+/// <see cref="KeyLevels.FindPivots"/>; the next one need not, and a method that detects by another path
+/// simply never calls it (gh#283).
+/// </para>
+/// <para>
+/// <b>The next one arrived, and it is why this file was sequenced first.</b> <c>session</c> does not go
+/// through <see cref="KeyLevels.FindPivots"/> at all — it reads a session's extremes directly — so it calls
+/// <see cref="IndicatorGuard.RequireStrictlyAscending"/> itself, and nothing but this sweep says it must.
+/// Measured on gh#257's branch: with that call removed from <c>SessionLevels.Compute</c>, the sweep below
+/// went red naming <c>session</c>, and nothing else did.
 /// </para>
 /// <para>
 /// <b>Entered through <see cref="ILevelMethod.Detect"/> and nothing else</b>, because the seam is the thing
@@ -64,8 +71,17 @@ public sealed class LevelMethodCatalogOrderingTests
 
     private const string ContractId = "CON.F.US.EP.U26";
 
+    /// <summary>
+    /// 17:00 Central on Monday 17 August 2026 — Tuesday's reopen, and the same origin
+    /// <see cref="LevelMethodCatalogRollTests"/> uses.
+    /// </summary>
+    /// <remarks>
+    /// The two must agree, because the run below claims to be that file's clean series bar for bar. It moved
+    /// there so <c>session</c> has an initial balance to find; it moved here so the claim stays true
+    /// (gh#257).
+    /// </remarks>
     private static DateTimeOffset SessionStart =>
-        MarketClock.FromMarket(new DateOnly(2026, 8, 18), new TimeOnly(9, 0)).ToUniversalTime();
+        MarketClock.FromMarket(new DateOnly(2026, 8, 17), new TimeOnly(17, 0)).ToUniversalTime();
 
     private static DateTimeOffset At(int index) => SessionStart.AddMinutes(5 * index);
 
@@ -95,8 +111,10 @@ public sealed class LevelMethodCatalogOrderingTests
     /// <b>The disorder does not show in the answer, and that is the whole point.</b> With
     /// <see cref="IndicatorGuard.RequireStrictlyAscending"/> deleted from <see cref="KeyLevels.FindPivots"/>,
     /// <c>swing</c> answered this series with one zone — <c>128.75</c>–<c>129.75</c>, resistance, formed at
-    /// <c>14:50Z</c>, significance <c>7.3125</c> — the same zone, to the tick, that it returns for these
-    /// same bars sorted into order. Both measured in one run, on this branch. A
+    /// <c>22:50Z</c>, significance <c>7.3125</c> — the same zone, to the tick, that it returns for these
+    /// same bars sorted into order. Both measured in one run; re-measured on gh#257's branch after
+    /// <see cref="SessionStart"/> moved to the reopen, which changed the formation time from <c>14:50Z</c>
+    /// and nothing else, because a price does not depend on when the bar carrying it opened. A
     /// <see cref="KeyLevelZone"/> records no provenance, so it cannot say which series it was computed
     /// from: a method that answers a disordered one hands back something that reads exactly like a level.
     /// </para>
@@ -155,7 +173,7 @@ public sealed class LevelMethodCatalogOrderingTests
     [Fact]
     public void EveryRegisteredMethod_RefusesATransposedSeries()
     {
-        LevelMethodCatalog catalog = new();
+        LevelMethodCatalog catalog = new(BarSessionCalendar.Parse("16:00", []));
 
         catalog.All.Should().NotBeEmpty("the sweep must actually cover something");
 

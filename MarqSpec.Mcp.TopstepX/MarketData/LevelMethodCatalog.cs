@@ -38,19 +38,37 @@ public sealed class LevelMethodCatalog
     private readonly Dictionary<string, ILevelMethod> _byName;
 
     /// <summary>Builds the catalogue.</summary>
+    /// <param name="calendar">
+    /// The session calendar — <c>session</c> is anchored to a session, so it needs one. The same parameter
+    /// <see cref="IndicatorCatalog"/> takes for <see cref="VwapIndicator"/>, resolved from the same single
+    /// registration.
+    /// </param>
     /// <remarks>
+    /// <para>
     /// <b>No configuration, and now by decision rather than by deferral (gh#244).</b>
     /// <see cref="ILevelMethod.Detect"/> takes its options <i>per call</i>, so a catalogue holding the
     /// configured defaults would hold a value it never reads. They live at the tool boundary instead —
     /// <c>MarketDataTools.ResolveDetection</c> — which is where "the caller did not say" becomes "the
     /// operator's configured value". That the options can be per-call at all is ADR-0013: levels are
     /// computed on read and nothing stores one, so there is no storage key for a parameter to fall out of.
+    /// </para>
+    /// <para>
+    /// <b>The calendar is not an exception to that, and the difference is worth being exact about.</b> It is
+    /// not a detection parameter a caller might vary — it is the definition of where a session begins, one
+    /// value for the whole server, parsed once from <c>MarketData__SessionCloseCentral</c> and
+    /// <c>MarketData__Holidays</c>. Constructing the method with it is what keeps
+    /// <see cref="ILevelMethod.Detect"/>'s signature free of it, and therefore keeps every other method from
+    /// carrying a parameter only one of them reads (gh#257).
+    /// </para>
     /// </remarks>
-    public LevelMethodCatalog()
+    public LevelMethodCatalog(BarSessionCalendar calendar)
     {
+        ArgumentNullException.ThrowIfNull(calendar);
+
         ILevelMethod[] methods =
         [
             new SwingLevelMethod(),
+            new SessionLevelMethod(calendar),
         ];
 
         _byName = methods.ToDictionary(m => m.Name, StringComparer.Ordinal);

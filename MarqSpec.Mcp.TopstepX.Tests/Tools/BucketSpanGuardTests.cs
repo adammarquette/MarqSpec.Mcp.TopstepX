@@ -353,7 +353,7 @@ public sealed class BucketSpanGuardTests : IDisposable
                 new IndicatorProjector(_database, _catalog, NullLogger<IndicatorProjector>.Instance),
                 _clock,
                 NullLogger<IndicatorCacheService>.Instance),
-            new LevelMethodCatalog(),
+            new LevelMethodCatalog(_calendar),
             _gateway,
             new ToolGuards(capped),
             new StoreAvailabilityHolder(),

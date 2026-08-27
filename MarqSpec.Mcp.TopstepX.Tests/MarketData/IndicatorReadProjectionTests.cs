@@ -394,7 +394,7 @@ public sealed class IndicatorReadProjectionTests : IDisposable
             new InstrumentRegistry(MarketData()),
             catalog,
             Cache(catalog),
-            new LevelMethodCatalog(),
+            new LevelMethodCatalog(Calendar()),
             _gateway,
             new ToolGuards(MarketData()),
             new StoreAvailabilityHolder(),

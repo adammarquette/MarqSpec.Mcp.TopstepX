@@ -153,7 +153,9 @@ The server serves OHLCV bars for a futures instrument at a requested resolution 
 - **R-3.1** Support and resistance are reported as **zones**, not lines, sized in ATR multiples so a zone is
   comparably wide across instruments.
 - **R-3.2** A level's significance is its prominence in ATR multiples, so scores compare across instruments and
-  volatility regimes.
+  volatility regimes. A method that finds levels other than by dominance measures prominence over **its own**
+  window — for a session extreme that window is the session — and states what the number means where it
+  differs.
 - **R-3.3** A zone's support/resistance label is assigned **relative to the current price**, not to how it
   formed. A broken resistance is today's support.
 - **R-3.4** Detection never uses bars after the pivot it reports — a level confirmed only by what came before it
@@ -163,6 +165,13 @@ The server serves OHLCV bars for a futures instrument at a requested resolution 
   reach. When the requested lookback spans a roll, detection is confined to the contract in front and the
   result reports how many bars it actually used
   ([ADR-0011](adr/0011-contract-roll-boundary.md)).
+- **R-3.6** Levels are detected by a **named method**, and the vocabulary is closed — an unknown name is an
+  error listing the known ones, never an empty level set. `swing` finds pivots; `session` reports what a
+  finished session left behind: prior-day and prior-week high, low and close, the overnight range and the
+  initial balance.
+- **R-3.7** A session boundary comes from the **calendar**, never from gaps in the series, and a period the
+  loaded window does not reach the opening of is **absent** rather than taken from the part of it the window
+  holds. A prior "day" that did not trade is not a prior day, and a range still forming is not a level.
 
 ## R-4 — Read-only venue boundary
 

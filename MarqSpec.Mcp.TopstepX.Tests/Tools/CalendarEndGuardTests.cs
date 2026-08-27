@@ -367,7 +367,7 @@ public sealed class CalendarEndGuardTests : IDisposable
                 new IndicatorProjector(_database, _catalog, NullLogger<IndicatorProjector>.Instance),
                 _clock,
                 NullLogger<IndicatorCacheService>.Instance),
-            new LevelMethodCatalog(),
+            new LevelMethodCatalog(_calendar),
             _gateway,
             Guards(),
             new StoreAvailabilityHolder(),

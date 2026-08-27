@@ -299,7 +299,7 @@ public sealed class ContractRollReportingTests : IDisposable
             catalog,
             new IndicatorCacheService(
                 _database, catalog, projector, clock, NullLogger<IndicatorCacheService>.Instance),
-            new LevelMethodCatalog(),
+            new LevelMethodCatalog(calendar),
             gateway,
             new ToolGuards(wrapped),
             new StoreAvailabilityHolder(),

@@ -54,12 +54,25 @@
 #   SHAPE of a fixture rather than by its intent is coverage this table cannot see it lacks. The
 #   fixture now sits at depth 2 and globstar has a case of its own. One case, one decision.
 #
+#   THE FOUR gh#196 ROWS CARRY `mut` BECAUSE THEY WERE RE-RUN, not because the change looked well covered.
+#   Each mutant is one substituted line, verified to differ from the shipped gate first -- a sed that fails
+#   to match produces a byte-identical "mutant" that reports as equivalent, which is a false all-clear:
+#
+#     verdict back to `dev_pct > 25`      -> onestep, finer, compound1, compound3 fail
+#     `cell_tok != suggested` (strings)   -> bareK fails
+#     `ROUNDED=$1` (no rounding)          -> rounds fails
+#     precision branch removed            -> finer fails
+#
+#   No new case is redundant and no new decision is unpinned. Note that `finer` dies under two different
+#   mutants, on its VERDICT under the first and on its NEEDLE under the last -- which is why its needle is
+#   the precision wording rather than `OUT OF DATE`.
+#
 #   DECISION in check-doc-sizes.sh               PINNED BY (case label)                             EV
 #   -------------------------------------------  -------------------------------------------------  ----
 #   PRICED pair 1 (README / Start here)          a drifted ~tok value                               case
 #   PRICED pair 2 (README / Working agreements)  a renamed section heading                          case
 #   PRICED pair 3 (agents / The contracts)       a drifted row in the second priced file            case
-#   ROUNDING_STEP = 100 (the 0.1K grid)          off-grid green / one 0.1K step off red             case
+#   ROUNDING_STEP = 100 (the 0.1K grid)          off-grid green; one 0.1K step off red              case
 #   BYTES_PER_TOKEN = 4                          every sized fixture (sizes exact at 4)             case
 #   SIZE_CLAIM vocabulary                        size claim; quickest; no-longer green              case
 #   ALIGNMENT_ROW regex                          a sound pair of priced files                       case
@@ -79,10 +92,9 @@
 #   NOT A SIZE                                   a placeholder instead of a size                    case
 #   MISSING (target absent)                      a row whose target is absent                       case
 #   measured <= 0 (zero-byte target)             a row pointing at a zero-byte document             mut
-#   as_k ROUNDED (the verdict's arithmetic)      off-grid green / one 0.1K step off red             case
-#   stated != ROUNDED  ->  OUT OF DATE           one step off; both compounding steps                case
-#   dev_pct == 0  ->  precision wording          a cell finer than the column has (needle IS it)    case
-#   compounding cannot accumulate                first ~6% growth; three compounded to 16%          case
+#   as_k ROUNDED (the verdict's arithmetic)      a measurement off the 0.1K grid                    mut
+#   stated != ROUNDED  ->  OUT OF DATE           one step off; finer; both compounding growths      mut
+#   dev_pct == 0  ->  precision wording          a cell finer than the column has (needle IS it)    mut
 #   SIZE CLAIM in row prose                      prose making a size claim; no-longer green         case
 #   NO SECTION / NO ROWS, per pair               renamed heading; priced section with no rows       case
 #   shopt globstar                               a price table three directories down               mut

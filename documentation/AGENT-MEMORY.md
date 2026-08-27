@@ -57,22 +57,51 @@ at one this rule's own pull request retires.
 
 ## Practices to follow
 
-- **[2026-08-26] `dotnet test` on this Windows box can report NO failures because it ran NO tests — Smart
-  App Control blocks the freshly built test assembly (gh#242).** The run prints
-  `An Application Control policy has blocked this file. (0x800711C7)`, then
-  `No test is available in …Tests.dll`, and a script that greps for failing test names comes back empty —
-  which reads as "nothing broke". It is the `Total:` line the Coding contract already tells you to read, and
-  this is the failure it is there for: **`Total: 554` is the result; the absence of a `Failed` line is not.**
-  A mutation-testing loop is where this bites hardest, because "no test reddened" is the answer you are
-  actually looking for.
-  - **The verdict is cached per file hash, and builds here are deterministic** (`Directory.Build.props`), so
-    the same sources rebuild to the same bytes and stay blocked however many times you clean and retry.
-    Editing the test file at all gives a new hash and a fresh verdict, which is why it looks intermittent.
-    Mutating *product* code does not help: it changes `Domain.dll`, not the test assembly being blocked.
+- **[2026-08-26] `dotnet test` on this Windows box can score a run it never fully executed — Smart App
+  Control blocks freshly built assemblies (gh#242, corrected under gh#281).** It comes back either as no
+  failures having run no tests, or as a well-formed summary over a fraction of the tier. The block lands on
+  **any** just-built assembly the run loads — the test assembly and the **product** ones alike. gh#242 hit it
+  on `…Tests.dll`; PR #278's reviewer on `MarqSpec.Mcp.TopstepX.dll`, the host, mid-mutation; PR #295's on
+  `Data.dll`. Grepping for failing test names comes back empty in the quiet cases and full of real names in
+  the loud one — neither answers whether the tier ran.
+  - **The reliable test is a `Total:` line carrying the count you expected** — not the line's presence, and
+    not the absence of a `Failed` line or of an error. **A `Total:` that is present but short is unscored,
+    exactly like a missing one.** **Know the count before you mutate**, or the run gets to score itself.
+  - **A blocked *load* is not a blocked *assembly*, and only the second one goes quiet.** Block the assembly
+    the runner must load and you get no summary. Block individual test loads and the run continues and prints
+    a syntactically perfect summary over a smaller tier. PR #295's mutation E took **263 blocked `Data.dll`
+    loads** and reported `Failed: 186, Passed: 356, Total: 542` against a **717**-test tier — 175 short, no
+    error text, and read as that mutation's red set it would have been a fabricated 186.
+  - **Do not detect on the message, because it varies.** Observed so far: `An Application Control policy has
+    blocked this file. (0x800711C7)` then `No test is available in …Tests.dll`; `FileLoadException …
+    0x800711C7` naming a product assembly; `Catastrophic failure … An Application Control policy has blocked
+    this file` then `No test matches the given testcase filter`, which is indistinguishable from a genuinely
+    bad `--filter`; a run that printed nothing at all; and PR #295's, which printed no error whatsoever.
+    **Four of the five carry no `Total:` and the fifth carries a wrong one** — which is why the denominator,
+    not the line's presence, is the test.
+  - **A mutation or deletion loop is the worst place for it**, because *"nothing reddened"* is the answer you
+    are hoping for. It has repeatedly been the difference between a real finding and a missed one: gh#242's
+    author read four stages as "no failures" having executed nothing, and PR #278's reviewer would have
+    recorded a load-bearing guard as unpinned.
+  - **Re-running does not clear it.** The verdict is cached per file hash and builds here are deterministic
+    (`Directory.Build.props`), so the same sources rebuild to the same bytes and stay blocked however many
+    times you clean and retry. **Only changed bytes clear it** — which is why it looks intermittent.
+  - **First, change the bytes without changing the behaviour: append a comment, or a single newline, to any
+    source file that compiles into the blocked assembly.** That is what cleared it for PR #278's and
+    PR #287's reviewers. Append into the assembly the run *named* — mutating product code gives `Domain.dll`
+    a new hash, not the test assembly, and vice versa.
+  - **That append is one escape, not a sufficient one. When it does not take, delete `bin`/`obj` and build in
+    a fresh path.** PR #295 appended into `Domain`, stayed blocked, and only the fresh path with both
+    directories removed cleared it. Try them in that order: the append costs a keystroke, the rebuild costs
+    the tier.
+  - **If neither clears it, containerise or fall back to CI** — the plain `docker run` form in the
+    2026-08-23 entry below, or the unit job on `ubuntu-latest`, which is the gate that counts anyway.
+  - **`--no-build` is not the way out**: it runs the *previous* assembly, so it reports a real, well-formed
+    `Total:` line about bytes you did not just produce. PR #278's rebase got `Total: 650, Failed: 0` from a
+    tree that did not compile. **Read the build's error count beside the total, from the same run.**
   - **Do not turn the policy off** — it is a machine security setting, and `VerifiedAndReputablePolicyState`
     under `HKLM:\SYSTEM\CurrentControlSet\Control\CI\Policy` is not an agent's to edit. Confirm the diagnosis
-    from `Microsoft-Windows-CodeIntegrity/Operational` (events 3033/3077 name the blocked file) and, if it
-    will not clear, fall back to CI — the unit job on `ubuntu-latest` is the gate that counts anyway.
+    from `Microsoft-Windows-CodeIntegrity/Operational` (events 3033/3077 name the blocked file).
 
 - **[2026-08-25] A conflict resolver that never ran let `git rebase` commit conflict markers, silently
   (gh#187).** The script sat at `/tmp/fix.py`; **the `python` on PATH is Windows-native and cannot see MSYS's

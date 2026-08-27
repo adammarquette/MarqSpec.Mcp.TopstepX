@@ -434,19 +434,21 @@ public sealed class KeyLevelDetectionPlumbingTests : IDisposable
         CountingGateway gateway = new([]);
         FakeTimeProvider clock = new(Bucket(Bars).AddHours(2));
 
+        IndicatorProjector projector = new(_database, indicators, NullLogger<IndicatorProjector>.Instance);
+
         BarCacheService cache = new(
-            _database,
-            gateway,
-            calendar,
-            new IndicatorProjector(_database, indicators, NullLogger<IndicatorProjector>.Instance),
-            clock,
-            NullLogger<BarCacheService>.Instance);
+            _database, gateway, calendar, projector, clock, NullLogger<BarCacheService>.Instance);
 
         MarketDataTools marketData = new(
             cache,
             _database,
             new InstrumentRegistry(market),
             indicators,
+            // gh#246's read-projection seam. Nothing here reads an indicator -- get_key_levels computes ATR
+            // from the bars it just loaded rather than from the store -- but the tool takes it, and the
+            // snapshot composed below DOES read indicators through it.
+            new IndicatorCacheService(
+                _database, indicators, projector, clock, NullLogger<IndicatorCacheService>.Instance),
             new LevelMethodCatalog(),
             gateway,
             new ToolGuards(market),

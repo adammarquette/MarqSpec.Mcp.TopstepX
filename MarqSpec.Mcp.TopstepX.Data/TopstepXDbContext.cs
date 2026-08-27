@@ -52,9 +52,6 @@ public sealed class TopstepXDbContext(DbContextOptions<TopstepXDbContext> option
     /// <summary>Ranges the venue answered empty — the negative-result ledger.</summary>
     public DbSet<BarCoverageRecord> BarCoverage => Set<BarCoverageRecord>();
 
-    /// <summary>Detected support and resistance zones.</summary>
-    public DbSet<PriceLevelRecord> PriceLevels => Set<PriceLevelRecord>();
-
     /// <summary>Agent-recorded observations — the only original data here.</summary>
     public DbSet<ObservationRecord> Observations => Set<ObservationRecord>();
 
@@ -133,29 +130,6 @@ public sealed class TopstepXDbContext(DbContextOptions<TopstepXDbContext> option
             entity.Property(c => c.Instrument).HasMaxLength(32);
 
             entity.HasIndex(c => new { c.Instrument, c.ResolutionMinutes, c.RangeStart, c.RangeEnd });
-        });
-
-        modelBuilder.Entity<PriceLevelRecord>(entity =>
-        {
-            entity.ToTable("PriceLevels", table =>
-            {
-                // In the database, not only in code. The detection pass's bugs are geometric, and an inverted
-                // or non-positive zone reads as entirely plausible everywhere except here.
-                table.HasCheckConstraint("CK_PriceLevels_ZoneOrdered", "\"Top\" > \"Bottom\"");
-                table.HasCheckConstraint("CK_PriceLevels_BottomPositive", "\"Bottom\" > 0");
-                table.HasCheckConstraint("CK_PriceLevels_KindKnown", "\"Kind\" <> 0");
-                table.HasCheckConstraint("CK_PriceLevels_TimeframePositive", "\"TimeframeMinutes\" > 0");
-            });
-
-            entity.HasKey(l => l.Id);
-            entity.Property(l => l.Venue).HasMaxLength(64);
-            entity.Property(l => l.Instrument).HasMaxLength(32);
-            entity.Property(l => l.Bottom).HasColumnType(PriceColumnType);
-            entity.Property(l => l.Top).HasColumnType(PriceColumnType);
-            entity.Property(l => l.Significance).HasColumnType(PriceColumnType);
-            entity.Property(l => l.Kind).HasConversion<int>();
-
-            entity.HasIndex(l => new { l.Instrument, l.TimeframeMinutes, l.Active });
         });
 
         modelBuilder.Entity<ObservationRecord>(entity =>

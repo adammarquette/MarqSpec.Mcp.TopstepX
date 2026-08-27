@@ -15,8 +15,9 @@ namespace MarqSpec.Mcp.TopstepX.MarketData;
 /// <para>
 /// <b>It is not the indicator projector's shape, deliberately.</b> That writes one <c>decimal</c> per
 /// <c>(name, period, bucket)</c>. A zone has bounds, a kind, a touch count and a formation time — which is
-/// why <c>PriceLevels</c> was given a synthetic key — and levels are computed on read rather than stored, so
-/// a method name is a request vocabulary rather than a storage key. Nothing here writes anything.
+/// why the level table nothing ever filled was given a synthetic key, until gh#276 dropped it — and levels
+/// are computed on read rather than stored, so a method name is a request vocabulary rather than a storage
+/// key. Nothing here writes anything.
 /// </para>
 /// <para>
 /// <b>Every method in it must refuse a series that spans a contract roll</b> (<c>R-3.5</c>). That is a rule
@@ -36,8 +37,7 @@ public sealed class LevelMethodCatalog
     /// configured defaults would hold a value it never reads. They live at the tool boundary instead —
     /// <c>MarketDataTools.ResolveDetection</c> — which is where "the caller did not say" becomes "the
     /// operator's configured value". That the options can be per-call at all is ADR-0013: levels are
-    /// computed on read and nothing writes <c>PriceLevels</c>, so there is no storage key for a parameter to
-    /// fall out of.
+    /// computed on read and nothing stores one, so there is no storage key for a parameter to fall out of.
     /// </remarks>
     public LevelMethodCatalog()
     {

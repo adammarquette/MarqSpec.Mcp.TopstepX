@@ -6,8 +6,9 @@
 [ADR-0006](adr/0006-indicators-as-projections.md) (`IndicatorValues`),
 [ADR-0011](adr/0011-contract-roll-boundary.md) (`Bars.ContractId`)
 
-One Postgres database, six tables. Entities live in `MarqSpec.Mcp.TopstepX.Data/Entities/`; the schema is
-whatever the migrations say, and this page is kept in lockstep with them in the same PR.
+One Postgres database, five tables — §4 is a retired number, not a sixth. Entities live in
+`MarqSpec.Mcp.TopstepX.Data/Entities/`; the schema is whatever the migrations say, and this page is kept in
+lockstep with them in the same PR.
 
 ## Conventions
 
@@ -138,34 +139,22 @@ on the key. There is no pre-read and no skip-unchanged rule: the ledger holds th
 range rather than a history of asking, so `RecordedAt` moves on every ask and there is no unchanged write to
 skip.
 
-## §4 `PriceLevels` — detected support and resistance
+## §4 `PriceLevels` — dropped 2026-08-27 (gh#276)
 
-| Column | Type | Note |
-|---|---|---|
-| `Id` | `uuid` | PK · synthetic; zones are mutable and have no natural key |
-| `Venue` `Instrument` | | |
-| `TimeframeMinutes` | `integer` | Levels are per-timeframe; a 5-minute level is not an hourly one |
-| `Bottom` `Top` | `numeric(18,8)` | CHECK `Top > Bottom`, CHECK `Bottom > 0` |
-| `Kind` | `integer` | CHECK `<> 0` — an unset kind is never valid |
-| `Significance` | `numeric(18,8)` | Prominence in ATR multiples, so scores compare across instruments |
-| `FormedAtBucket` | `timestamptz` | The **earliest** pivot in the zone, kept through merges |
-| `TouchCount` | `integer` | Summed through merges |
-| `Active` | `boolean` | |
-| `UpdatedAt` | `timestamptz` | |
+It held detected support and resistance zones, and **no row was ever written into it**.
+[ADR-0013](adr/0013-levels-are-computed-on-read.md) measured detection — about 0.2 ms over the tool's default
+500-bar window, against a bar query no cache can avoid — and decided against caching, which left a fully
+constrained, indexed table with no pending purpose. Migration `20260827071708_DropPriceLevels` removes it,
+its four CHECK constraints and its index.
 
-**Nothing writes this table.** Levels are computed on read by `get_key_levels` and returned; no pass has ever
-stored one. That is the opposite of the indicator decision in
-[ADR-0006](adr/0006-indicators-as-projections.md), and it is what makes per-request detection parameters safe
-— there is no storage key for one to fall out of. The CHECK constraints are in the database rather than only
-in code because the bugs a detection pass produces are geometric: an inverted zone is the shape a mistake
-takes, and it reads as plausible everywhere except at the constraint.
+**Levels are still computed on every `get_key_levels` call and returned**, and now there is no level store at
+all rather than an empty one. That is what keeps per-call detection parameters sound: ADR-0006 bans the same
+freedom for indicators because their storage key is `(Indicator, Period)`, and here there is no key for a
+parameter to fall out of.
 
-**That is now a decision rather than an open question.**
-[ADR-0013](adr/0013-levels-are-computed-on-read.md) measured detection first — about 0.2 ms over the tool's
-default 500-bar window — and chose not to cache, so per-call detection parameters stay free and this table
-stays unwritten. **It is therefore unused with no pending purpose**, and dropping it is a follow-up that
-record carries rather than a gap: it was left in place only because the migration also touches
-`TopstepXDbContext` and `SchemaTests`, and none of it was needed to settle the caching question.
+**The number is retired, not reused.** §5 and §6 keep theirs — `ObservationRecord`, `EmbeddingRecord` and
+[ADR-0009](adr/0009-cohere-embeddings.md) cite them by number, and renumbering would silently repoint every
+one of those citations at a different table.
 
 ## §5 `Observations` — the only original data here
 

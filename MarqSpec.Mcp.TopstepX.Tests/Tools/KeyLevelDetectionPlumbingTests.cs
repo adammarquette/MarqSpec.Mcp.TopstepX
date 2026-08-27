@@ -36,8 +36,9 @@ namespace MarqSpec.Mcp.TopstepX.Tests.Tools;
 /// </para>
 /// <para>
 /// <b>Per-call detection parameters are sound here because nothing stores a level</b> (ADR-0013). ADR-0006's
-/// ban on per-call indicator parameters is about a storage key that cannot see them; <c>PriceLevels</c> has
-/// no rows, so there is no key for one to fall out of.
+/// ban on per-call indicator parameters is about a storage key that cannot see them; there is no level store
+/// at all — the table that never held a row was dropped under gh#276 — so there is no key for one to fall
+/// out of.
 /// </para>
 /// </remarks>
 public sealed class KeyLevelDetectionPlumbingTests : IDisposable

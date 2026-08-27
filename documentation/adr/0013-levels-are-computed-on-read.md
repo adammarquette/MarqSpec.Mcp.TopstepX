@@ -243,3 +243,40 @@ so it costs nothing at runtime, and removing it is a migration that also touches
 - **Indicators have the mirror-image question and it is still open** — computed on fetch, never on read
   (gh#246). This record deliberately decides only the levels half. The two subsystems remain inconsistent,
   and after this they are inconsistent *by two decisions* rather than by accident.
+
+## Update (2026-08-27) — the follow-up landed: the table is gone
+
+**gh#276 took the first follow-up below and dropped `PriceLevels`.** Migration
+`20260827071708_DropPriceLevels` removes the table, its four CHECK constraints
+(`CK_PriceLevels_ZoneOrdered`, `_BottomPositive`, `_KindKnown`, `_TimeframePositive`), its primary key and
+`IX_PriceLevels_Instrument_TimeframeMinutes_Active`. `Up` is a single `DropTable` and touches nothing else;
+`Down` recreates all of it, so the drop is reversible rather than one-way. `PriceLevelRecord`, the `DbSet` and
+the `ToTable` configuration went with it.
+
+**The decision above is unchanged — this is its consequence, not a revision of it.** Levels were already
+computed on every read and stored nowhere; what changed is that there is no longer an empty table implying
+otherwise. The reason it was left standing here was scope, stated as such under *Alternatives considered*, and
+the reason it was taken now is the one gh#232 gave: a table documented as live that nothing writes is worse
+than an undocumented one.
+
+**Two sentences in this record now describe a table that no longer exists, and they are left as written.**
+The reopen condition in *This does not reopen ADR-0006* — *"the moment anything writes `PriceLevels`"* — reads
+after this update as **the moment anything stores a level**, by whatever means. That is the same condition:
+the argument was never about the table's name, it was about a storage key existing at all. A future record
+that decides to cache supersedes this one and creates its own storage; it does not reinstate this table.
+
+**gh#277 is superseded by this, and the reasoning is that its subject is gone.** That card proposed a CI gate
+failing when product code writes `PriceLevels`. There is no table and no `DbSet`, so the write it watched for
+is now a compile error rather than a silent erosion — the strongest form of the gate it asked for, and the
+one it explicitly anticipated: *"if gh#276 lands first, close this as superseded."* What the gate would still
+have bought — a check on *future* level storage arriving under a different name — is not something a grep for
+`PriceLevels` could ever have caught.
+
+**Measured, not inferred.** At the base commit `fecc463`, `PriceLevels` and `PriceLevelRecord` appeared on
+**16** C# lines outside `Migrations/`, of which exactly **two** were writes: the deliberate inserts in
+`SchemaTests` proving the CHECK constraints rejected inverted zones. Those two tests were removed with the
+constraints they exercised — coverage of a table's rules cannot outlive the table — and replaced by one
+assertion that the relation is absent from `information_schema.tables` after the migrations run. The
+integration tier applies `InitialSchema` → `AddBarContractId` → `DropPriceLevels` from empty against
+`timescale/timescaledb-ha:pg17`, which is both the fresh-database and the existing-database path: **86 tests
+at `fecc463`, 85 on the branch, zero failures either side.**

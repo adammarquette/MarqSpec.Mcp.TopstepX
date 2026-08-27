@@ -92,7 +92,9 @@ public sealed class KeyLevelDetectionPlumbingTests : IDisposable
     /// <param name="zoneAtrMultiple">The configured zone width, in ATR multiples.</param>
     /// <param name="minSignificance">The configured significance floor, in ATR multiples.</param>
     /// <returns>The options.</returns>
-    /// <param name="pivotRightLookback">The configured right-hand confirmation window.</param>
+    /// <param name="pivotRightLookback">
+    /// The configured right-hand confirmation window, or null to mirror <paramref name="pivotLookback"/>.
+    /// </param>
     /// <param name="maxZoneWidthPercent">The configured width cap, as a percentage of a zone's midpoint.</param>
     /// <param name="maxLevels">The configured level cap.</param>
     /// <remarks>
@@ -103,11 +105,13 @@ public sealed class KeyLevelDetectionPlumbingTests : IDisposable
     /// floor's own plumbing is pinned separately, by the pair that turns it up and watches the levels go.
     /// </para>
     /// <para>
-    /// <b>The two caps are effectively off here for the same reason, and the right lookback matches the
-    /// left.</b> The fixture is twenty-one bars around a price of 100 with an ATR of ten — a tenth of price,
-    /// where a real five-minute future is nearer a thousandth — so the shipped 2.5% width cap would delete
-    /// every zone in it, and the shipped 20/15 window would not fit the series at all. Each of the three has
-    /// its own case below that sets it deliberately and watches it bite.
+    /// <b>The two caps are effectively off here for the same reason, and the right window MIRRORS the left
+    /// unless a case names it.</b> The fixture is twenty-one bars around a price of 100 with an ATR of ten —
+    /// a tenth of price, where a real five-minute future is nearer a thousandth — so the shipped 2.5% width
+    /// cap would delete every zone in it, and the shipped 20/15 window would not fit the series at all. The
+    /// mirror keeps every derivation in this file readable as "dominates N bars either side", which is how
+    /// the fixture's own comment states them; the cases that are ABOUT the asymmetry set the two apart and
+    /// say so.
     /// </para>
     /// </remarks>
     private static KeyLevelDetectionOptions Detection(
@@ -115,7 +119,7 @@ public sealed class KeyLevelDetectionPlumbingTests : IDisposable
         int pivotLookback = 5,
         decimal zoneAtrMultiple = 0.5m,
         decimal minSignificance = 0m,
-        int pivotRightLookback = 5,
+        int? pivotRightLookback = null,
         decimal maxZoneWidthPercent = 100m,
         int maxLevels = 1_000) =>
         new()
@@ -124,7 +128,7 @@ public sealed class KeyLevelDetectionPlumbingTests : IDisposable
             PivotLookback = pivotLookback,
             ZoneAtrMultiple = zoneAtrMultiple,
             MinSignificance = minSignificance,
-            PivotRightLookback = pivotRightLookback,
+            PivotRightLookback = pivotRightLookback ?? pivotLookback,
             MaxZoneWidthPercent = maxZoneWidthPercent,
             MaxLevels = maxLevels,
         };
@@ -231,11 +235,65 @@ public sealed class KeyLevelDetectionPlumbingTests : IDisposable
     [Fact]
     public async Task ACallCanNameItsOwnPivotLookback()
     {
-        // Configured at 5, asked for at 2: the two shoulders come back as well as the peak.
+        // Configured at 5 either side, asked for at 2 either side: the two shoulders come back as well as
+        // the peak.
+        ToolPayloads.LevelSet levels = await Tools(Detection(pivotLookback: 5))
+            .GetKeyLevels(
+                "ES", 5, Bars, pivotLookback: 2, pivotRightLookback: 2,
+                cancellationToken: CancellationToken.None);
+
+        levels.Levels.Select(l => l.Midpoint).Should().Equal(107m, 125m, 145m);
+    }
+
+    [Fact]
+    public async Task ACallNamingOneEdgeOfTheWindow_LeavesTheOtherAtTheConfiguredValue()
+    {
+        // The consequence of an asymmetric window that a caller has to be able to see (gh#245), and it is
+        // not obvious from the argument names. Naming `pivotLookback` moves the LEFT edge only; the right
+        // stays at the configured 5, so the window is 2 and 5 rather than 2 and 2 — and the answer differs
+        // from the case above by one whole level.
+        //
+        // Bar 5's shoulder at 125 is what goes. Its right window now reaches bar 10, whose high of 129 is
+        // above it, so it stops dominating; bar 7's support and bar 14's peak both still clear five bars to
+        // their right. Hand-checked against the fixture's midpoints, where high = mid + 5.
         ToolPayloads.LevelSet levels = await Tools(Detection(pivotLookback: 5))
             .GetKeyLevels("ES", 5, Bars, pivotLookback: 2, cancellationToken: CancellationToken.None);
 
-        levels.Levels.Select(l => l.Midpoint).Should().Equal(107m, 125m, 145m);
+        levels.Levels.Select(l => l.Midpoint).Should().Equal(107m, 145m);
+
+        // And the payload says which window ran, which is the only way a caller tells this answer from the
+        // symmetric one.
+        levels.Detection.PivotLookback.Should().Be(2);
+        levels.Detection.PivotRightLookback.Should().Be(5);
+    }
+
+    [Fact]
+    public async Task ACallCanNameItsOwnRightLookback()
+    {
+        // The mirror image: the left edge stays at the configured 2 and the right is asked for at 5, which
+        // is the same 2-and-5 window the case above reaches from the other side. Both arguments are
+        // reachable, and neither is a synonym for the other.
+        ToolPayloads.LevelSet levels = await Tools(Detection(pivotLookback: 2))
+            .GetKeyLevels("ES", 5, Bars, pivotRightLookback: 5, cancellationToken: CancellationToken.None);
+
+        levels.Levels.Select(l => l.Midpoint).Should().Equal(107m, 145m);
+        levels.Detection.PivotLookback.Should().Be(2);
+        levels.Detection.PivotRightLookback.Should().Be(5);
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(-3)]
+    public async Task APivotRightLookbackBelowOne_IsRefused(int asked)
+    {
+        // Zero is R-3.4 turned off rather than "no confirmation wanted": a pivot judged only by the bars
+        // before it repaints as soon as the next one arrives. Refused at the tool boundary in the caller's
+        // own vocabulary, the same way a left lookback below one is.
+        Func<Task> read = () => Tools(Detection())
+            .GetKeyLevels("ES", 5, Bars, pivotRightLookback: asked, cancellationToken: CancellationToken.None);
+
+        (await read.Should().ThrowAsync<McpException>()).Which.Message
+            .Should().Contain("pivotRightLookback");
     }
 
     [Fact]
@@ -325,15 +383,24 @@ public sealed class KeyLevelDetectionPlumbingTests : IDisposable
         // detected over and not on what was asked for.
         //
         // Not refused, because the honest refusal would have to name `detectedOverBars`, which no caller
-        // controls: 21 is what the store holds. Explicable instead -- 2 x 11 + 1 = 23 needed, 21 detected
+        // controls: 21 is what the store holds. Explicable instead -- 11 + 11 + 1 = 23 needed, 21 detected
         // over, and both numbers are in the payload.
+        //
+        // BOTH edges are named, and since gh#245 that is load-bearing rather than tidy. The floor is
+        // left + right + 1, so a left window of 11 against the configured right of 5 needs only 17 and this
+        // fixture satisfies it -- the peak at bar 14 comes back and the case stops being about an
+        // unsatisfiable window at all.
         ToolPayloads.LevelSet levels = await Tools(Detection())
-            .GetKeyLevels("ES", 5, lookbackBars, pivotLookback: 11, cancellationToken: CancellationToken.None);
+            .GetKeyLevels(
+                "ES", 5, lookbackBars, pivotLookback: 11, pivotRightLookback: 11,
+                cancellationToken: CancellationToken.None);
 
         levels.Levels.Should().BeEmpty();
         levels.DetectedOverBars.Should().Be(Bars);
         levels.Detection.PivotLookback.Should().Be(
             11, "an empty level set is only distinguishable from no structure if the lookback is stated");
+        levels.Detection.PivotRightLookback.Should().Be(
+            11, "and the left edge alone does not say how many bars the window needed");
     }
 
     [Fact]

@@ -110,9 +110,14 @@ in `KeyLevelBjorgumBehaviourTests`, which is why they are a pair.
   common case rather than a corner.
 - **`KeyLevelZone` did not change shape.** Same six fields, same wire form. Only the values move, which is why
   this is a behaviour break rather than a schema break — and why a consumer will not be told by a compiler.
-- **The four hand-checked `KeyLevels` fixtures from gh#242 still pass unchanged.** None of them has an
-  overlapping support and resistance in it, so this record does not silently rewrite the baseline it was
-  measured against. The one baseline case that did assert the old rule was re-derived rather than adjusted:
+- **Every hand-derived expectation in gh#242's baseline survives this record, and exactly one did not.**
+  Stated precisely, because "the baseline still passes" is the kind of claim that is easy to write and easy
+  to be wrong about. The four `Detect` fixtures produce `[97,99]` support against `[109,113]`, `[109,111]`,
+  `[109,114]` and `[111,113]` resistance — **no support and resistance overlaps in any of them**, so not one
+  expected value moved. Their *options* did change: each now states `RightLookback` and both caps explicitly
+  rather than inheriting shipped defaults calibrated for a real instrument, because those fixtures run an ATR
+  of 4 against a price near 110. The single case that asserted the old rule was re-derived from the
+  definition rather than adjusted to the new output, and renamed to say what it now pins:
   `MergeOverlapping_MergesAcrossKindsToo_AndOrdersTheResultGloballyByBottom`.
 - **This does not reopen [ADR-0013](0013-levels-are-computed-on-read.md).** Nothing here stores a level, and
   the two caps and the second lookback are per-request or configured values that reach `Detect` as arguments,

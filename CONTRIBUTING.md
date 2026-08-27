@@ -106,9 +106,11 @@ naming nothing. Two traps sit either side of it:
   than Dependabot"* — and stays manual forever. Leave Dependabot's branches to `@dependabot rebase`.
 
 If it has already happened, `git rebase origin/develop` drops the merge commits by itself; a conflict resolved
-*inside* one is re-resolved per commit. The `commit-hygiene` check fails a PR into `develop` that carries a
-merge commit, so the branch is refused at push time rather than at the merge button (gh#146). It does not apply
-to promotions into `staging` or `main`, which carry merge commits by construction.
+*inside* one is re-resolved per commit — **do that rather than collapsing the branch with `reset --soft` and a
+single commit**, which is how #131 lost five curated commits to a squash. The `commit-hygiene` check fails a PR
+into `develop` that carries a merge commit, so the branch is refused at push time rather than at the merge
+button (gh#146). It does not apply to promotions into `staging` or `main`, which carry merge commits by
+construction.
 
 ## Branch naming
 

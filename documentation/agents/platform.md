@@ -663,9 +663,10 @@ as **"All checks have passed"** beside **"Unable to merge (rebase) — Cannot me
 nothing. On 2026-08-24, #131, #139, #141 and #143 were approved, green and unmergeable at once; #131 lost five
 curated commits to a squash, and Dependabot disowned #143 for having been edited.
 
-*Enforced, not merely documented, and the reason is that the reader is not reading.* The entries in
-[`AGENT-MEMORY.md`](../AGENT-MEMORY.md) and [`CONTRIBUTING.md`](../../CONTRIBUTING.md) landed in the same PR
-and are the floor — but the mistake is one click on GitHub's *Update branch* button, whose **default is a
+*Enforced, not merely documented, and the reason is that the reader is not reading.*
+[`CONTRIBUTING.md`](../../CONTRIBUTING.md)'s *Falling behind* section is the floor; the twin entry it landed
+beside in [`AGENT-MEMORY.md`](../AGENT-MEMORY.md) was retired by gh#254 as a second copy of it. But the
+mistake is one click on GitHub's *Update branch* button, whose **default is a
 merge**, taken by someone looking at a page rather than at a document, and it *looks* right: the branch does
 come up to date and the checks do go green. Only a check answers at push time. It costs one
 `git rev-list --merges` inside a job that already resolves the range, its detection rule is exact, and it

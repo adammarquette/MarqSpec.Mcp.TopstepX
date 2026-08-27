@@ -180,11 +180,14 @@ public sealed class SnapshotClockTests : IDisposable
             _database,
             new InstrumentRegistry(wrapped),
             catalog,
+            new IndicatorCacheService(
+                _database, catalog, projector, clock, NullLogger<IndicatorCacheService>.Instance),
             new LevelMethodCatalog(),
             gateway,
             new ToolGuards(wrapped),
             new StoreAvailabilityHolder(),
-            clock);
+            clock,
+            Options.Create(new KeyLevelDetectionOptions()));
 
         ReferenceTools reference = new(
             new InstrumentRegistry(wrapped), calendar, gateway, wrapped, clock);

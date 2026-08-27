@@ -495,20 +495,37 @@ public static class KeyLevels
     }
 
     /// <summary>
-    /// The whole pipeline: pivots, ATR-scaled zones, merge, then label against the last close.
+    /// The whole pipeline: pivots, ATR-scaled zones, merge, cap the widths, label against the last close,
+    /// then cap the count.
     /// </summary>
     /// <param name="bars">The series, in strictly ascending time order.</param>
     /// <param name="atr">ATR aligned one-to-one with <paramref name="bars"/>; nulls are skipped.</param>
     /// <param name="options">Detection options.</param>
     /// <returns>The levels, ordered by price.</returns>
     /// <exception cref="ArgumentException">The ATR series is not aligned with the bars.</exception>
-    /// <exception cref="ArgumentOutOfRangeException">The lookback is less than one, or the source is unset.</exception>
+    /// <exception cref="ArgumentOutOfRangeException">
+    /// Either lookback is less than one, the source is unset, the width cap is not positive, or the level cap
+    /// is less than one.
+    /// </exception>
     /// <remarks>
+    /// <para>
     /// <b>The options are checked here as well as in <see cref="FindPivots"/>, and before the empty-series
     /// exit rather than after it.</b> An empty store is exactly when a bad source is invisible: the pipeline
     /// returns no levels, which is what an empty store looks like anyway, and the configuration that would
     /// have measured pivots from a price nobody chose is never mentioned. A refusal that only fires once
     /// somebody has bars is a refusal that fires after the mistake has been in place for a while.
+    /// <b>The two caps are checked on the same terms and for the same reason</b> — a cap of zero would answer
+    /// every call with nothing, which is precisely the shape an empty store already has.
+    /// </para>
+    /// <para>
+    /// <b>Why the two caps sit where they do.</b> The width cap is after the merge because the merge is the
+    /// only stage that can widen a zone without limit; the level cap is after
+    /// <see cref="ApplyClose"/> because it selects on <see cref="KeyLevelZone.Significance"/>, which
+    /// <c>ApplyClose</c> does not touch — so the two commute and the list handed back is exactly the one the
+    /// cap chose. Both are claims with runs behind them:
+    /// <c>ApplyWidthCap_FiresOnWhatTheMergeProduced_NotOnWhatWentIntoIt</c> and
+    /// <c>KeyLevelsTests.ApplyClose_ChangesNothingButTheKind</c>.
+    /// </para>
     /// </remarks>
     public static IReadOnlyList<KeyLevelZone> Detect(
         IReadOnlyList<Bar> bars,

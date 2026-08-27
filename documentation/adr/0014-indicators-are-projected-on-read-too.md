@@ -56,10 +56,14 @@ they still do. `TheReadTriggeredProjection_ProducesWhatARebuildWouldHave` and
 
 **ADR-0013 decided the same week that price levels are *not* cached**, and it would be easy to read the two
 as pulling opposite ways. They do not, because the numbers are not comparable: level detection costs
-**0.20 ms** at the tool's default window, against a bar query no cache removes, so caching it would save a
-fraction of a millisecond and buy a staleness problem. A projection over a year of five-minute bars costs
-**8.3 s** and produces 747,640 rows that are then read back in microseconds. One is worth storing and one is
-not, and both answers came from measuring first.
+**about 0.2 ms** at the tool's default window, against a bar query no cache removes, so caching it would
+save a fraction of a millisecond and buy a staleness problem. A projection over a year of five-minute bars
+costs **8.3 s**, and the rows it writes are then served by an indexed key lookup inside a probe measured at
+11 ms. One is worth storing and one is not, and both answers came from measuring first.
+
+*The level figure is given to one digit on purpose.* It is quoted from a record on an unmerged branch, and
+that branch moved it from 0.20 ms to 0.21 ms during this record's own review. One digit is what a citation
+across a moving branch can honestly carry; the argument turns on the first one.
 
 *Unlinked on purpose:* ADR-0013 is gh#247's, in flight as PR #273 and **not yet on `develop`**, so a link
 here would fail `scripts/check-doc-links.sh`. Whichever of the two lands second adds the cross-link in both
@@ -114,7 +118,7 @@ on the largest series, where it hurts most. Three things make the unbounded cost
   50-per-30-seconds — about a **minute** of deliberate sleeping. An 8.3 s projection is strictly smaller than
   the read that put those bars there, on a path whose slow first call is already documented behaviour.
 - **It is once per series, not once per window.** The cost is bounded by how much history the operator keeps,
-  and every read after it pays the probe.
+  and every read after it pays the probe — except on the series the last consequence below describes.
 - **Nothing is fabricated either way.** A bounded version would have to return *something* for the series it
   refused to compute, and the only honest something is an absence — which is the defect, not the remedy.
 
@@ -182,14 +186,15 @@ series, and the loss reads as a warm-up.
 
 ### Compute on read and do not store, the way levels are
 
-ADR-0013's answer, and wrong here by four orders of magnitude: 8.3 s of
-arithmetic per call against 11 ms to look the answer up. It would also delete ADR-0006's whole premise — the
-stored series is what makes a read a lookup.
+ADR-0013's answer, and wrong here by a factor of about **750**: 8.3 s of
+arithmetic per call against the 11 ms probe that serves the stored answer. It would also delete ADR-0006's
+whole premise — the stored series is what makes a read a lookup.
 
 ### Probe with eleven `EXISTS` seeks instead of one `DISTINCT`
 
 The obvious way to avoid scanning a whole key range on Postgres 17, which has no index skip scan. **Measured
-and rejected: about 20 ms at every series size**, because eleven round trips cost more than one scan. The bar
+and rejected: about 20–27 ms, and it does not fall with size** — 21.00, 19.72, 21.43, 26.04 and 26.99 ms
+across the five rows — because eleven round trips cost more than one scan. The bar
 count *was* capped at the largest warm-up on the same evidence — flat at ~2–3 ms against 2.24 ms to 7.85 ms
 uncapped — so the measurement moved one half and refused the other.
 
@@ -204,7 +209,7 @@ once per catalogue change. `rebuild-indicators` already does it on demand for an
 - **An indicator added to the catalogue is live on the next read**, for every bar already cached, with no
   operator action and no vendor request. That is the point.
 - **The first read of a cold series is slow in proportion to the history kept** — 8.3 s at a year of
-  five-minute bars — and every read after it pays the probe.
+  five-minute bars — and every read after it pays the probe, with the one exception two entries below.
 - **Every indicator read now pays a probe**: 4.3 ms p50 over 2,000 bars, 11.2 ms over 70,000. The residual
   growth is the `DISTINCT`, and it would flatten for free on Postgres 18's index skip scan.
 - **A `40001` is reachable from a read.** New in kind, not in shape — `R-5.7` and `StoreFaultGuard` already
@@ -213,8 +218,17 @@ once per catalogue change. `rebuild-indicators` already does it on demand for an
   it is *not yet measurable*, and treating the two alike would replay a short series on every read forever
   while never writing a value. The residue: the bound counts the whole series while warm-up restarts at every
   contract roll, so a series whose every contract run is shorter than the warm-up but whose total is not would
-  re-replay on each read. That needs more rolls than a quarterly contract can have inside one warm-up, and the
-  series in question is by definition tiny.
+  re-replay on each read, opening a transaction and logging a line each time. **It takes one roll**, not
+  many: the stored series is whatever was fetched rather than a complete contract run — `BarCacheService`
+  writes only the outstanding buckets and `ContractRollDetector.Segment` splits purely on a `ContractId`
+  change — so two ordinary `get_bars` windows either side of one quarterly roll are enough. Twelve bars under
+  each of two contracts leaves seven pairs past the bound at the shipped periods and none of them producible.
+  Nothing is wrong on such a series: the pass writes nothing and the absences are honest. What it costs is a
+  replay of a series that short, on every read. Recorded rather than guarded — and pinned by
+  `ASeriesWhoseEveryContractRunIsShorterThanTheWarmUp_ReplaysOnEveryRead`, because a residue nobody has
+  watched behave as claimed is a guess. The first version of this paragraph said it needed more rolls than a
+  quarterly contract can have, which is the causal-claim failure `AGENT-MEMORY.md` warns about; the review of
+  this pull request caught it.
 - **`rebuild-indicators` keeps its registration and its test**, and its job is now correction rather than
   repair. Deleting it would remove the only forced replay, and a changed formula needs one.
 - **`IndicatorCacheService` is scoped, and the lifetime is load-bearing.** It memoises which series it found

@@ -1,6 +1,7 @@
 using FluentAssertions;
 using MarqSpec.Mcp.TopstepX.Configuration;
 using MarqSpec.Mcp.TopstepX.Data;
+using MarqSpec.Mcp.TopstepX.Data.Entities;
 using MarqSpec.Mcp.TopstepX.Domain;
 using MarqSpec.Mcp.TopstepX.Domain.MarketData;
 using MarqSpec.Mcp.TopstepX.MarketData;
@@ -79,6 +80,25 @@ public sealed class IndicatorReadProjectionTests : IDisposable
             decimal close = 5_000m + (i * drift);
             return new Bar(Bucket(i), close, close + 1.25m, close - 0.75m, close, 1_000 + i, "CON.F.US.TEST.Z26");
         }),
+    ];
+
+    /// <summary>
+    /// Bars over a half-open index range, split across two contracts at <paramref name="rollAt"/>.
+    /// </summary>
+    /// <param name="fromIndex">The first bucket index.</param>
+    /// <param name="toIndexExclusive">One past the last bucket index.</param>
+    /// <param name="rollAt">The bucket index the second contract starts at.</param>
+    /// <returns>The bars.</returns>
+    /// <remarks>
+    /// The quarter after the first contract, because a roll is what actually puts two contracts on one
+    /// series — an arbitrary second string would exercise the same segmentation while describing something
+    /// that cannot happen.
+    /// </remarks>
+    private static IReadOnlyList<Bar> BarsAcrossARoll(int fromIndex, int toIndexExclusive, int rollAt) =>
+    [
+        .. Bars(fromIndex, toIndexExclusive).Select(bar => bar.OpenTime < Bucket(rollAt)
+            ? bar
+            : bar with { ContractId = "CON.F.US.TEST.H27" }),
     ];
 
     // ── The card ─────────────────────────────────────────────────────────────────────────────────────
@@ -218,6 +238,49 @@ public sealed class IndicatorReadProjectionTests : IDisposable
         _gateway.BarRequests.Should().Be(0);
     }
 
+    [Fact]
+    public async Task ASeriesWhoseEveryContractRunIsShorterThanTheWarmUp_ReplaysOnEveryRead()
+    {
+        // THE RESIDUE OF THE WARM-UP BOUND, PINNED RATHER THAN ASSERTED -- and it is reachable with ONE roll,
+        // not with the implausible number the first version of this claim said. The bound counts the WHOLE
+        // stored series while warm-up restarts at every contract seam, and the stored series is whatever was
+        // fetched rather than a complete contract run: BarCacheService writes only the outstanding buckets,
+        // and ContractRollDetector.Segment splits purely on a ContractId change. So two ordinary get_bars
+        // windows either side of one quarterly roll are enough.
+        //
+        // Twelve bars under each of two contracts, at the SHIPPED periods. Seven pairs pass `WarmupBars <= 24`
+        // -- atr(14) and rsi(14) at 15, sma(20), ema(20) and the three Bollinger bands at 20 -- and not one of
+        // them can ever be produced from a twelve-bar run. Only vwap, whose warm-up is 1, gets rows.
+        //
+        // Nothing is WRONG here: the pass writes nothing, the absences are the honest answer, and the series
+        // is by construction tiny. What it costs is a transaction and a replay on every read, forever. It is
+        // recorded rather than guarded, and this test is what stops that decision being a guess.
+        // Written straight to the store. A history call answers for exactly ONE contract and CountingGateway
+        // stamps every bar it serves with the one it resolved, as a real gateway must (ADR-0011) -- so two
+        // contracts cannot reach the store through a single fill. Two fills either side of the roll is what
+        // puts them there, and this is that state.
+        await SeedDirectlyAsync(BarsAcrossARoll(0, 24, 12));
+
+        IndicatorCacheService first = Cache(ShippedCatalog());
+        IndicatorCacheService second = Cache(ShippedCatalog());
+        IndicatorCacheService third = Cache(ShippedCatalog());
+
+        bool one = await first.EnsureProjectedAsync("test", _es, Resolution, CancellationToken.None);
+        bool two = await second.EnsureProjectedAsync("test", _es, Resolution, CancellationToken.None);
+        bool three = await third.EnsureProjectedAsync("test", _es, Resolution, CancellationToken.None);
+
+        new[] { one, two, three }.Should().AllBeEquivalentTo(
+            true,
+            "each read finds the same seven pairs missing, replays the series, and produces none of them -- "
+            + "so the next read finds them missing again. ADR-0014 and IndicatorCacheService both describe "
+            + "this, and both said it needed more rolls than a quarterly contract can have; it needs one");
+
+        (await StoredPairsAsync()).Should().Equal(
+            [("vwap", 0)],
+            "the only warm-up a twelve-bar run satisfies is VWAP's, which is 1. If this ever grows, the "
+            + "series stops re-replaying and the paragraph this test pins is describing nothing");
+    }
+
     // ── Scaffolding ──────────────────────────────────────────────────────────────────────────────────
 
     private static BarSessionCalendar Calendar() => BarSessionCalendar.Parse("16:00", []);
@@ -231,6 +294,58 @@ public sealed class IndicatorReadProjectionTests : IDisposable
     /// ATR is pinned short so a forty-bar series produces values at all; RSI is the knob these tests move,
     /// because moving it is how a pair the store has never held becomes one the catalogue computes.
     /// </remarks>
+    /// <summary>
+    /// The catalogue at the periods this server actually ships, so warm-ups are the real ones.
+    /// </summary>
+    /// <returns>The catalogue.</returns>
+    /// <remarks>
+    /// The other tests here pin ATR short so a forty-bar series produces values at all. The residue test
+    /// needs the opposite — warm-ups long enough that a twelve-bar contract run cannot satisfy them — and
+    /// the shipped defaults already are, so it uses them rather than inventing a period nobody runs.
+    /// </remarks>
+    private static IndicatorCatalog ShippedCatalog() =>
+        new(Options.Create(new IndicatorOptions()), Calendar());
+
+    /// <summary>Writes bars straight to the store, bypassing the fill path and its single contract.</summary>
+    /// <param name="bars">The bars.</param>
+    private async Task SeedDirectlyAsync(IReadOnlyList<Bar> bars)
+    {
+        foreach (Bar bar in bars)
+        {
+            _database.Bars.Add(new BarRecord
+            {
+                Venue = "test",
+                Instrument = _es.Symbol,
+                ResolutionMinutes = Resolution,
+                BucketStart = bar.OpenTime,
+                Open = bar.Open,
+                High = bar.High,
+                Low = bar.Low,
+                Close = bar.Close,
+                Volume = bar.Volume,
+                ContractId = bar.ContractId,
+                RecordedAt = SessionStart,
+            });
+        }
+
+        await _database.SaveChangesAsync();
+    }
+
+    /// <summary>The distinct <c>(Indicator, Period)</c> pairs the store holds for the seeded series.</summary>
+    /// <returns>The pairs, ordered.</returns>
+    private async Task<IReadOnlyList<(string Indicator, int Period)>> StoredPairsAsync()
+    {
+        var held = await _database.IndicatorValues
+            .Where(v => v.Venue == "test"
+                && v.Instrument == _es.Symbol
+                && v.ResolutionMinutes == Resolution)
+            .Select(v => new { v.Indicator, v.Period })
+            .Distinct()
+            .ToListAsync();
+
+        return [.. held.Select(v => (v.Indicator, v.Period)).OrderBy(p => p.Item1, StringComparer.Ordinal)];
+    }
+
     private static IndicatorCatalog Catalog(int rsiPeriod) =>
         new(
             Options.Create(new IndicatorOptions { AtrPeriod = 3, RsiPeriod = rsiPeriod }),

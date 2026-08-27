@@ -230,8 +230,10 @@ before they read**, which is what makes them cache-aside rather than merely cach
    `IIndicator.WarmupBars`. A pair the bars cannot yet satisfy is **not yet measurable**, which is a fact
    (`R-2.3`) rather than a gap — and treating the two alike would replay a short series on every read forever
    while never writing a value.
-3. **Nothing missing ⇒ return.** No transaction is opened. The answer is memoised for the life of the request
-   scope, so `get_market_snapshot`'s eleven `get_indicator_at` calls per resolution cost **one** probe.
+3. **Nothing missing ⇒ return**, opening no transaction — on every series except the short-run one
+   ADR-0014's consequences describe, where *nothing missing* is never reached. The answer is memoised for
+   the life of the request scope, so `get_market_snapshot`'s eleven `get_indicator_at` calls per resolution
+   cost **one** probe.
 4. **Otherwise replay the whole series** through the same `IndicatorProjector` inside the same
    `SeriesUnitOfWork` the fill path uses — never a window around what was asked for (`R-2.13`).
 

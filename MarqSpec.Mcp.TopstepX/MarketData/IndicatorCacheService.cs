@@ -110,9 +110,10 @@ public sealed class IndicatorCacheService(
     /// which scans the whole key range because Postgres 17 has no index skip scan.
     /// </para>
     /// <para>
-    /// <b>Eleven <c>EXISTS</c> seeks were the obvious alternative and are measurably worse</b> — about 20 ms
-    /// at every series size, because eleven round trips cost more than one scan. Measured rather than
-    /// assumed, in the same run.
+    /// <b>Eleven <c>EXISTS</c> seeks were the obvious alternative and are measurably worse</b> — 21.00,
+    /// 19.72, 21.43, 26.04 and 26.99 ms across the five series sizes, so about 20–27 ms and not falling with
+    /// size, because eleven round trips cost more than one scan. Measured rather than assumed, in the same
+    /// run.
     /// </para>
     /// <para>
     /// <b>A pair is only <i>missing</i> when the stored bars could have produced it.</b>
@@ -123,11 +124,17 @@ public sealed class IndicatorCacheService(
     /// justify is a fact (`R-2.3`) and is left alone.
     /// </para>
     /// <para>
-    /// <b>The residue, stated exactly.</b> The bound counts the whole series, while warm-up restarts at every
-    /// contract roll (ADR-0011). A series whose every contract run is shorter than the warm-up but whose
-    /// total is not would be re-probed and re-replayed on each read. That needs more rolls than a quarterly
-    /// contract can have in the span of a warm-up, and the cost of it is a replay of a series that short —
-    /// so it is recorded rather than guarded.
+    /// <b>The residue, stated exactly, and it takes ONE roll.</b> The bound counts the whole stored series
+    /// while warm-up restarts at every contract seam (ADR-0011), so a series whose every contract run is
+    /// shorter than the warm-up but whose total is not is re-probed and re-replayed on every read. That is
+    /// not rare arithmetic: the stored series is whatever was fetched rather than a complete contract run —
+    /// <see cref="BarCacheService"/> writes only the outstanding buckets and
+    /// <c>ContractRollDetector.Segment</c> splits purely on a <c>ContractId</c> change — so two ordinary
+    /// <c>get_bars</c> windows either side of
+    /// one quarterly roll produce it. Nothing is wrong when it happens: the pass writes nothing and the
+    /// absences are the honest answer. The cost is a replay of a series that short, which is why it is
+    /// recorded rather than guarded — and pinned by
+    /// <c>ASeriesWhoseEveryContractRunIsShorterThanTheWarmUp_ReplaysOnEveryRead</c> rather than asserted.
     /// </para>
     /// </remarks>
     public async Task<bool> EnsureProjectedAsync(

@@ -21,10 +21,12 @@ namespace MarqSpec.Mcp.TopstepX.MarketData;
 /// gh#42 was for indicators.
 /// </para>
 /// <para>
-/// <b>Each contiguous single-contract run is projected on its own</b> (ADR-0011). The aggregator
-/// also refuses a bucket whose counted prints come from more than one contract; the host split is
-/// what keeps a clean roll (adjacent buckets, two contracts) as two honest cells rather than one
-/// mixed bucket.
+/// <b>Each contiguous counted single-contract run is projected on its own</b> (ADR-0011).
+/// Uncounted prints — <see cref="TradeDirection.Unknown"/>, and size of 0 or less — do not open a
+/// seam. The aggregator already skips them before it records a contract; a host split that
+/// included them would treat two same-contract buys around an Unknown as a splice and write no
+/// cell, which reads as a bar that did not trade. A bucket whose counted prints come from more
+/// than one contract still produces none.
 /// </para>
 /// <para>
 /// <b><c>RecordedAt</c> is handed in.</b> The aggregator does not read a clock. A confirming
@@ -214,12 +216,14 @@ public sealed class FootprintProjector(
     }
 
     /// <summary>
-    /// Projects each contiguous single-contract run, then drops any bucket more than one run touched.
+    /// Projects each contiguous counted single-contract run, then drops any bucket more than one
+    /// counted run touched.
     /// </summary>
     /// <remarks>
-    /// A clean roll lands in adjacent buckets and both cells survive. A roll inside one bar would
-    /// otherwise write each run's cell under the same key — last write wins, and the survivor looks
-    /// like the bar's footprint. Refusing the bucket is an absence; merging it is a wrong number.
+    /// A clean roll lands in adjacent buckets and both cells survive. A counted roll inside one bar
+    /// would otherwise write each run's cell under the same key — last write wins, and the survivor
+    /// looks like the bar's footprint. Refusing the bucket is an absence; merging it is a wrong
+    /// number. An uncounted print in the middle of a counted run is not a roll.
     /// </remarks>
     private static IReadOnlyList<FootprintCell> ProjectRuns(
         IReadOnlyList<TradeRecord> trades,
@@ -270,14 +274,26 @@ public sealed class FootprintProjector(
     }
 
     /// <summary>
-    /// Splits a time-ordered tape into contiguous single-contract runs (ADR-0011).
+    /// Splits a time-ordered tape into contiguous counted single-contract runs (ADR-0011).
     /// </summary>
     /// <param name="trades">The tape, already ordered by time then sequence.</param>
-    /// <returns>The runs, in tape order. Empty for an empty tape.</returns>
+    /// <returns>
+    /// The runs, in tape order. Uncounted prints are omitted. Empty when nothing on the tape is
+    /// counted.
+    /// </returns>
     private static IReadOnlyList<IReadOnlyList<TradeRecord>> SegmentByContract(
         IReadOnlyList<TradeRecord> trades)
     {
-        if (trades.Count == 0)
+        List<TradeRecord> counted = [];
+        foreach (TradeRecord trade in trades)
+        {
+            if (IsCounted(trade))
+            {
+                counted.Add(trade);
+            }
+        }
+
+        if (counted.Count == 0)
         {
             return [];
         }
@@ -285,12 +301,12 @@ public sealed class FootprintProjector(
         List<IReadOnlyList<TradeRecord>> runs = [];
         int start = 0;
 
-        for (int i = 1; i <= trades.Count; i++)
+        for (int i = 1; i <= counted.Count; i++)
         {
-            bool boundary = i == trades.Count
+            bool boundary = i == counted.Count
                 || !string.Equals(
-                    trades[i].ContractId,
-                    trades[start].ContractId,
+                    counted[i].ContractId,
+                    counted[start].ContractId,
                     StringComparison.Ordinal);
 
             if (!boundary)
@@ -301,7 +317,7 @@ public sealed class FootprintProjector(
             List<TradeRecord> run = [];
             for (int j = start; j < i; j++)
             {
-                run.Add(trades[j]);
+                run.Add(counted[j]);
             }
 
             runs.Add(run);
@@ -310,6 +326,13 @@ public sealed class FootprintProjector(
 
         return runs;
     }
+
+    /// <summary>
+    /// The same filter <see cref="FootprintAggregator"/> applies before it records a contract:
+    /// only a Buy or Sell with size greater than zero is a counted print.
+    /// </summary>
+    private static bool IsCounted(TradeRecord trade) =>
+        trade.Direction is TradeDirection.Buy or TradeDirection.Sell && trade.Size > 0;
 
     private static TradePrint ToPrint(TradeRecord record) =>
         new(

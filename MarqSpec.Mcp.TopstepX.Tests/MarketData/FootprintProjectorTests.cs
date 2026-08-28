@@ -15,7 +15,8 @@ namespace MarqSpec.Mcp.TopstepX.Tests.MarketData;
 /// <remarks>
 /// Seeded trades, not a live hub. The aggregator's numbers are pinned in
 /// <c>FootprintAggregatorTests</c>; this file pins the store-shaped claims — idempotence,
-/// reconciliation, an empty tape, and the Unknown refusal end to end (gh#220).
+/// reconciliation, an empty tape, the Unknown refusal end to end, and that an uncounted
+/// print on another contract does not delete the counted volume (gh#220).
 /// </remarks>
 public sealed class FootprintProjectorTests : IDisposable
 {
@@ -76,6 +77,46 @@ public sealed class FootprintProjectorTests : IDisposable
 
         FootprintCellRecord cell = (await CellsAsync()).Should().ContainSingle().Subject;
         cell.BuyVolume.Should().Be(5, "Unknown must not be counted as a buy");
+        cell.SellVolume.Should().Be(0);
+        cell.Price.Should().Be(5000m);
+    }
+
+    [Theory]
+    [InlineData("start")]
+    [InlineData("middle")]
+    [InlineData("end")]
+    public async Task AnUnknownPrintOnAnotherContract_DoesNotDropTheCountedVolume(string position)
+    {
+        // 2 + 3 = 5 buy on U26. An Unknown of 100 on Z26 is uncounted; it must not
+        // open a contract seam that MixedBuckets then refuses as a splice.
+        await SeedAsync(UnknownOnAnotherContract(position));
+
+        await Projector().ProjectAsync(Venue, _es, FiveMinutes, _recordedFirst, CancellationToken.None);
+        await _database.SaveChangesAsync();
+
+        FootprintCellRecord cell = (await CellsAsync()).Should().ContainSingle(
+            "the known tape still justifies 5; an empty series would read as a bar that did not trade")
+            .Subject;
+        cell.BuyVolume.Should().Be(5);
+        cell.SellVolume.Should().Be(0);
+        cell.Price.Should().Be(5000m);
+        cell.BucketStart.Should().Be(_bucket1430);
+    }
+
+    [Fact]
+    public async Task AZeroSizePrintOnAnotherContract_DoesNotDropTheCountedVolume()
+    {
+        // Same 2 + 3 = 5 on U26. A Sell of size 0 on Z26 is uncounted, same as Unknown.
+        await SeedAsync(
+            Trade(_bucket1430.AddMinutes(1), 1, 5000m, 2, TradeDirection.Buy, Front),
+            Trade(_bucket1430.AddMinutes(2), 2, 5000m, 0, TradeDirection.Sell, Next),
+            Trade(_bucket1430.AddMinutes(3), 3, 5000m, 3, TradeDirection.Buy, Front));
+
+        await Projector().ProjectAsync(Venue, _es, FiveMinutes, _recordedFirst, CancellationToken.None);
+        await _database.SaveChangesAsync();
+
+        FootprintCellRecord cell = (await CellsAsync()).Should().ContainSingle().Subject;
+        cell.BuyVolume.Should().Be(5);
         cell.SellVolume.Should().Be(0);
         cell.Price.Should().Be(5000m);
     }
@@ -222,6 +263,29 @@ public sealed class FootprintProjectorTests : IDisposable
             .OrderBy(c => c.BucketStart)
             .ThenBy(c => c.Price)
             .ToListAsync();
+
+    private static TradeRecord[] UnknownOnAnotherContract(string position) => position switch
+    {
+        "start" =>
+        [
+            Trade(_bucket1430.AddMinutes(1), 1, 5000m, 100, TradeDirection.Unknown, Next),
+            Trade(_bucket1430.AddMinutes(2), 2, 5000m, 2, TradeDirection.Buy, Front),
+            Trade(_bucket1430.AddMinutes(3), 3, 5000m, 3, TradeDirection.Buy, Front),
+        ],
+        "middle" =>
+        [
+            Trade(_bucket1430.AddMinutes(1), 1, 5000m, 2, TradeDirection.Buy, Front),
+            Trade(_bucket1430.AddMinutes(2), 2, 5000m, 100, TradeDirection.Unknown, Next),
+            Trade(_bucket1430.AddMinutes(3), 3, 5000m, 3, TradeDirection.Buy, Front),
+        ],
+        "end" =>
+        [
+            Trade(_bucket1430.AddMinutes(1), 1, 5000m, 2, TradeDirection.Buy, Front),
+            Trade(_bucket1430.AddMinutes(2), 2, 5000m, 3, TradeDirection.Buy, Front),
+            Trade(_bucket1430.AddMinutes(3), 3, 5000m, 100, TradeDirection.Unknown, Next),
+        ],
+        _ => throw new ArgumentOutOfRangeException(nameof(position)),
+    };
 
     private static TradeRecord Trade(
         DateTimeOffset when,

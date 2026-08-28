@@ -125,9 +125,10 @@ public sealed record PivotLine(decimal Price, KeyLevelKind Kind);
 /// a period of <c>O=100 H=300 L=96 C=250</c>: <c>pivot-classic</c> answers five ordinary-looking zones at
 /// significance <c>102</c>, midpoints <c>130.67</c>, <c>215.33</c>, <c>334.67</c>, <c>419.33</c> and
 /// <c>538.67</c>. <b><see cref="SessionLevels"/> is exposed identically on the same bars</b> — its prior-day
-/// high comes back as <c>299.5</c>–<c>300.5</c> at the same significance — which is what places the residue
-/// in gh#259's first routed finding rather than here: closing it needs the <i>resolution</i>, and the
-/// resolution is known at the tool boundary and not inside a method that is handed only bars.
+/// high comes back as <c>299.5</c>–<c>300.5</c> at the same significance. The residue is closed at the
+/// tool boundary by <see cref="SessionBucketGuard"/> (<c>R-3.13</c>): Detect is handed only bars and
+/// must not infer a width. The measured demonstration stays here so the next edit does not rediscover
+/// it as a method-level problem.
 /// </para>
 /// <para>
 /// <b>The alignment is load-bearing and the first version of this paragraph got it wrong</b>, which is worth
@@ -298,6 +299,8 @@ public static class PivotLevels
         decimal halfBand = scale * options.ZoneAtrMultiple / 2m;
         decimal lastClose = bars[^1].Close;
         DateTimeOffset formedAt = bars[closeIndex].OpenTime;
+        string? periodLabel = calendar.TradeDateFor(bars[indices[0]].OpenTime)
+            ?.ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture);
 
         List<KeyLevelZone> lines = [];
         foreach (PivotLine line in Lines(formula, period))
@@ -315,7 +318,8 @@ public static class PivotLevels
                 Kind: kind,
                 FormedAtBucket: formedAt,
                 TouchCount: 1,
-                Significance: significance));
+                Significance: significance,
+                Period: periodLabel));
         }
 
         // The shared invariant carriers, in the order `KeyLevels.Detect` reaches them: merge (`R-3.1`), then
@@ -362,21 +366,10 @@ public static class PivotLevels
             return null;
         }
 
-        // The most recent trade date before this one that the series carries bars for. A weekend or a
-        // declared holiday never becomes a trade date, so nothing here has to exclude one.
-        DateOnly? prior = null;
-        for (int i = 0; i < tradeDates.Length; i++)
-        {
-            if (tradeDates[i] is { } date && date < currentTradeDate && (prior is null || date > prior))
-            {
-                prior = date;
-            }
-        }
-
-        // A period is reported only when the series reaches the OPENING of the session it began in. The
-        // boundary is the calendar's own — handed back to it and kept only if it agrees — rather than one
-        // reconstructed from the close and the window.
-        if (prior is not { } priorTradeDate
+        // The immediately previous trading day the calendar names — not the most recent date the
+        // series happens to hold. A trading day the series does not carry is absent, not replaced
+        // by an older day (gh#259 finding 2, the same substitute `session` used to make).
+        if (SessionLevels.PreviousTradingDay(calendar, currentTradeDate) is not { } priorTradeDate
             || SessionLevels.SessionOpenFor(calendar, priorTradeDate) is not { } open
             || bars[0].OpenTime > open)
         {

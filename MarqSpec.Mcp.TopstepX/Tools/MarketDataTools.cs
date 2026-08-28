@@ -54,14 +54,8 @@ public sealed class MarketDataTools(
     /// </remarks>
     public const int DefaultLookbackBars = 500;
 
-    /// <summary>The level method <c>get_key_levels</c> detects with.</summary>
-    /// <remarks>
-    /// Resolved through <see cref="LevelMethodCatalog"/> rather than called directly, so the path that serves
-    /// levels today is the path every later method arrives on (gh#243). The tool surface carries no method
-    /// argument yet — selecting one per call is a later card on gh#232 — so this is the whole vocabulary in
-    /// use, and what the tool returns is unchanged either way.
-    /// </remarks>
-    private const string SwingLevelMethodName = "swing";
+    /// <summary>The level method <c>get_key_levels</c> detects with when the caller does not name one.</summary>
+    private const string DefaultLevelMethodName = "swing";
 
     /// <summary>Reads OHLCV bars for a window.</summary>
     /// <param name="symbol">The instrument symbol.</param>
@@ -287,8 +281,12 @@ public sealed class MarketDataTools(
     /// <param name="pivotSource">Which price on a bar a pivot is measured from, or null for the configured one.</param>
     /// <param name="pivotLookback">How many bars to its left a pivot must dominate, or null for the configured one.</param>
     /// <param name="pivotRightLookback">How many bars to its right a pivot must dominate, or null for the configured one.</param>
+    /// <param name="methods">
+    /// The level methods to run, comma-separated, or null for <c>swing</c>. Unknown names are an error
+    /// listing the known ones.
+    /// </param>
     /// <param name="cancellationToken">The caller's cancellation token.</param>
-    /// <returns>The levels, ordered by price.</returns>
+    /// <returns>The levels, ordered by price, plus the confluence score over the requested methods.</returns>
     [McpServerTool(ReadOnly = true, Idempotent = true, Title = "Get key levels")]
     [Description(
         "Detects support and resistance as ZONES rather than lines, sized in ATR multiples so a zone is "
@@ -309,7 +307,12 @@ public sealed class MarketDataTools(
         + "most significant ones; a list exactly that long is a CAPPED list, and the levels below it are "
         + "absent rather than folded into the ones you can see. "
         + "The response reports the detection it actually ran under as `detection`, so an empty `levels` can "
-        + "be told from a market with no structure — read it with `detectedOverBars`.")]
+        + "be told from a market with no structure — read it with `detectedOverBars`. "
+        + "`methods` selects which detectors run — `swing`, `session`, `pivot-classic`, `pivot-fibonacci`, "
+        + "`pivot-camarilla`, `pivot-woodie`, `pivot-demark` — comma-separated; Omit for swing. The "
+        + "response names each method's zones and a family-aware confluence score, with the tolerance "
+        + "it was computed against. Methods that share a family share one budget. A requested method "
+        + "that contributed nothing is named, with why.")]
     public async Task<ToolPayloads.LevelSet> GetKeyLevels(
         [Description("The instrument symbol, e.g. ES.")] string symbol,
         [Description("The timeframe in minutes.")] int resolutionMinutes,
@@ -339,9 +342,15 @@ public sealed class MarketDataTools(
             + "answer different questions: the left asks how much history the level stood clear of, the "
             + "right only has to show the extreme held. It is also the lag: the last this-many bars of the "
             + "series can never produce a pivot, so the newest structure is always missing from the answer. "
-            + "There is no zero — a pivot judged only by the bars before it repaints as soon as the next "
+            +             "There is no zero — a pivot judged only by the bars before it repaints as soon as the next "
             + "one arrives.")]
         int? pivotRightLookback = null,
+        [Description(
+            "Which level methods to run, comma-separated: swing, session, pivot-classic, pivot-fibonacci, "
+            + "pivot-camarilla, pivot-woodie, pivot-demark. Omit for swing. An unknown name is an error "
+            + "listing the known ones — never an empty level set. Session and every pivot-* method refuse "
+            + "when a bucket of this resolutionMinutes overhangs a session close.")]
+        string? methods = null,
         CancellationToken cancellationToken = default)
     {
         InstrumentId instrument = Resolve(symbol);
@@ -351,7 +360,12 @@ public sealed class MarketDataTools(
         // Before the read, not after it. Every check below is a fact about the REQUEST, and a store with no
         // bars returns early -- so validating after the read is how an Unknown source arriving from
         // configuration would be answered with an empty level set instead of a refusal.
-        KeyLevelOptions detection = ResolveDetection(pivotSource, pivotLookback, pivotRightLookback);
+        KeyLevelOptions detection = ResolveDetection(pivotSource, pivotLookback, pivotRightLookback)
+            with
+        {
+            ResolutionMinutes = resolutionMinutes,
+        };
+        IReadOnlyList<ILevelMethod> requested = ResolveMethods(methods);
 
         List<Bar> bars = await _database.Bars
             .Where(b => b.Venue == _gateway.VenueId
@@ -365,9 +379,14 @@ public sealed class MarketDataTools(
 
         if (bars.Count == 0)
         {
-            return new ToolPayloads.LevelSet(
-                [], new ToolPayloads.ContractCoverage(ToolPayloads.ContractSpan.Unknown, []), 0,
-                Reported(detection));
+            return AssembleLevelSet(
+                [],
+                new ToolPayloads.ContractCoverage(ToolPayloads.ContractSpan.Unknown, []),
+                0,
+                detection,
+                requested,
+                overhang: false,
+                scale: []);
         }
 
         // Reversed FIRST, then described. Coverage over a descending series would give every segment a
@@ -388,16 +407,114 @@ public sealed class MarketDataTools(
         IIndicator atr = _catalog.Resolve("atr");
         IReadOnlyList<decimal?> scale = atr.Compute(detectable);
 
-        IReadOnlyList<KeyLevelZone> zones =
-            _levelMethods.Resolve(SwingLevelMethodName).Detect(detectable, scale, detection);
+        bool overhang = SessionBucketGuard.OverhangsClose(
+            resolutionMinutes, _levelMethods.Calendar, detectable);
+
+        return AssembleLevelSet(detectable, coverage, detectable.Count, detection, requested, overhang, scale);
+    }
+
+    /// <summary>
+    /// Runs the requested methods, scores their agreement, and builds the payload.
+    /// </summary>
+    private ToolPayloads.LevelSet AssembleLevelSet(
+        IReadOnlyList<Bar> detectable,
+        ToolPayloads.ContractCoverage coverage,
+        int detectedOverBars,
+        KeyLevelOptions detection,
+        IReadOnlyList<ILevelMethod> requested,
+        bool overhang,
+        IReadOnlyList<decimal?> scale)
+    {
+        List<ConfluenceMethodInput> inputs = [];
+        List<ToolPayloads.LevelInfo> combined = [];
+        List<ToolPayloads.LevelMethodResult> methodResults = [];
+        int timeframe = detection.ResolutionMinutes;
+
+        foreach (ILevelMethod method in requested)
+        {
+            decimal weight = _detection.WeightOf(method.Name);
+            bool anchored = method.Name == "session" || method.Family == PivotLevels.FamilyName;
+
+            if (detectable.Count == 0)
+            {
+                inputs.Add(new ConfluenceMethodInput(method.Name, method.Family, [], "no data"));
+                methodResults.Add(new ToolPayloads.LevelMethodResult(method.Name, method.Family, weight, [], "no data"));
+                continue;
+            }
+
+            if (anchored && overhang)
+            {
+                inputs.Add(new ConfluenceMethodInput(
+                    method.Name, method.Family, [], SessionBucketGuard.RefusalReason));
+                methodResults.Add(new ToolPayloads.LevelMethodResult(
+                    method.Name, method.Family, weight, [], SessionBucketGuard.RefusalReason));
+                continue;
+            }
+
+            IReadOnlyList<KeyLevelZone> zones = method.Detect(detectable, scale, detection);
+            inputs.Add(new ConfluenceMethodInput(method.Name, method.Family, zones));
+
+            List<ToolPayloads.LevelInfo> infos = [];
+            foreach (KeyLevelZone zone in zones)
+            {
+                ToolPayloads.LevelInfo info = new(
+                    timeframe, zone.Bottom, zone.Top, zone.Midpoint, zone.Kind, zone.Significance,
+                    zone.TouchCount, zone.FormedAtBucket, method.Name, zone.Period);
+                infos.Add(info);
+                combined.Add(info);
+            }
+
+            methodResults.Add(new ToolPayloads.LevelMethodResult(
+                method.Name,
+                method.Family,
+                weight,
+                infos,
+                zones.Count == 0 ? ConfluenceScoring.NoLevelsReason : null));
+        }
+
+        ConfluenceResult scored = ConfluenceScoring.Score(
+            inputs, _detection.Weights, detection.ZoneAtrMultiple);
 
         return new ToolPayloads.LevelSet(
-            [.. zones.Select(z => new ToolPayloads.LevelInfo(
-                resolutionMinutes, z.Bottom, z.Top, z.Midpoint, z.Kind, z.Significance, z.TouchCount,
-                z.FormedAtBucket))],
+            combined,
             coverage,
-            detectable.Count,
-            Reported(detection));
+            detectedOverBars,
+            Reported(detection),
+            methodResults,
+            new ToolPayloads.ConfluenceScore(
+                scored.Score,
+                scored.Tolerance,
+                [.. scored.Constituents.Select(c =>
+                    new ToolPayloads.ConfluenceConstituentInfo(c.Method, c.Family, c.Weight, c.ZoneCount))],
+                [.. scored.Absent.Select(a => new ToolPayloads.ConfluenceAbsenceInfo(a.Method, a.Reason))]));
+    }
+
+    /// <summary>
+    /// Resolves the requested method names, defaulting to <see cref="DefaultLevelMethodName"/>.
+    /// </summary>
+    /// <exception cref="McpException">A name is not in the vocabulary.</exception>
+    private IReadOnlyList<ILevelMethod> ResolveMethods(string? methods)
+    {
+        IEnumerable<string> names = string.IsNullOrWhiteSpace(methods)
+            ? [DefaultLevelMethodName]
+            : methods.Split([',', ' ', ';'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                .Select(static name => name.ToLowerInvariant())
+                .Distinct(StringComparer.Ordinal);
+
+        List<ILevelMethod> resolved = [];
+        foreach (string name in names)
+        {
+            try
+            {
+                resolved.Add(_levelMethods.Resolve(name));
+            }
+            catch (KeyNotFoundException ex)
+            {
+                throw new McpException(ex.Message);
+            }
+        }
+
+        return resolved.Count == 0 ? [_levelMethods.Resolve(DefaultLevelMethodName)] : resolved;
     }
 
     /// <summary>

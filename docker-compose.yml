@@ -86,6 +86,14 @@ services:
       KeyLevels__MinSignificance: "${KeyLevels__MinSignificance:-0.5}"
       KeyLevels__MaxZoneWidthPercent: "${KeyLevels__MaxZoneWidthPercent:-2.5}"
       KeyLevels__MaxLevels: "${KeyLevels__MaxLevels:-12}"
+      # Per-method confluence weights. Unlisted methods weigh 1; do not encode the family discount here.
+      KeyLevels__Weights__swing: "${KeyLevels__Weights__swing:-1}"
+      KeyLevels__Weights__session: "${KeyLevels__Weights__session:-1}"
+      KeyLevels__Weights__pivot-classic: "${KeyLevels__Weights__pivot-classic:-1}"
+      KeyLevels__Weights__pivot-fibonacci: "${KeyLevels__Weights__pivot-fibonacci:-1}"
+      KeyLevels__Weights__pivot-camarilla: "${KeyLevels__Weights__pivot-camarilla:-1}"
+      KeyLevels__Weights__pivot-woodie: "${KeyLevels__Weights__pivot-woodie:-1}"
+      KeyLevels__Weights__pivot-demark: "${KeyLevels__Weights__pivot-demark:-1}"
 
       Embeddings__ApiKey: "${Embeddings__ApiKey:-}"
       Embeddings__Model: "${Embeddings__Model:-embed-v4.0}"

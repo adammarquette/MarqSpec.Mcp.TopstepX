@@ -64,6 +64,12 @@ public static class SessionLevels
     /// </remarks>
     public static readonly TimeSpan InitialBalanceLength = TimeSpan.FromHours(1);
 
+    /// <summary>The period label an initial-balance zone carries.</summary>
+    public const string InitialBalancePeriod = "initial-balance";
+
+    /// <summary>The period label an overnight-range zone carries.</summary>
+    public const string OvernightPeriod = "overnight";
+
     /// <summary>
     /// Detects the session levels a series carries.
     /// </summary>
@@ -96,6 +102,7 @@ public static class SessionLevels
         ArgumentNullException.ThrowIfNull(options);
         ArgumentNullException.ThrowIfNull(calendar);
         RequireUsableOptions(options);
+        KeyLevels.RequireUsableOptions(options);
 
         // Before anything reads a price, and in the order the rest of the catalogue refuses in: a disordered
         // series computes a different, wrong answer rather than failing, and a spliced one puts a level at a
@@ -148,10 +155,39 @@ public static class SessionLevels
         AddPriorWeek(bars, atr, options, calendar, tradeDates, currentTradeDate, windowStart, lines);
         AddCurrentSession(bars, atr, options, calendar, tradeDates, currentTradeDate, windowStart, lines);
 
-        // The shared invariant carriers, exactly as `swing` reaches them: `MergeOverlapping` for `R-3.1` and
-        // `ApplyClose` for `R-3.3`. Two session measures landing on the same price is genuine agreement, and
-        // the merge is what reports it as one zone with two touches rather than as two levels.
-        return KeyLevels.ApplyClose(KeyLevels.MergeOverlapping(lines), bars[^1].Close);
+        // The shared invariant carriers, exactly as `swing` and the pivot family reach them: merge
+        // (`R-3.1`), the width cap, relabel against the close (`R-3.3`), then the level cap. Both
+        // caps are applied so `detection` reporting them is a fact about this method too (gh#259).
+        IReadOnlyList<KeyLevelZone> withinWidth =
+            KeyLevels.ApplyWidthCap(KeyLevels.MergeOverlapping(lines), options);
+        return KeyLevels.ApplyLevelCap(KeyLevels.ApplyClose(withinWidth, bars[^1].Close), options);
+    }
+
+    /// <summary>
+    /// The immediately previous trading day, or <see langword="null"/> when none falls inside two weeks.
+    /// </summary>
+    /// <param name="calendar">The calendar that decides which dates trade.</param>
+    /// <param name="tradeDate">The day whose predecessor is wanted.</param>
+    /// <returns>The previous trading day, never an older day the series happens to hold.</returns>
+    /// <remarks>
+    /// The most recent date <i>in a series</i> is a different question, and answering it here is how
+    /// Friday's levels get served when Monday traded but was not loaded (gh#259 finding 2). The
+    /// calendar is the source of "which day"; the series is only asked whether it covers that day.
+    /// </remarks>
+    public static DateOnly? PreviousTradingDay(BarSessionCalendar calendar, DateOnly tradeDate)
+    {
+        ArgumentNullException.ThrowIfNull(calendar);
+
+        DateOnly floor = tradeDate.AddDays(-14);
+        for (DateOnly day = tradeDate.AddDays(-1); day >= floor; day = day.AddDays(-1))
+        {
+            if (calendar.IsTradingDay(day))
+            {
+                return day;
+            }
+        }
+
+        return null;
     }
 
     /// <summary>
@@ -196,19 +232,11 @@ public static class SessionLevels
         DateTimeOffset windowStart,
         List<KeyLevelZone> lines)
     {
-        // The most recent trade date before this one that the series actually carries bars for. A weekend or
-        // a declared holiday never becomes a trade date at all, so nothing here has to exclude one: the
-        // calendar already refused to assign a bar to it.
-        DateOnly? priorDay = null;
-        for (int i = 0; i < tradeDates.Count; i++)
-        {
-            if (tradeDates[i] is { } date && date < currentTradeDate && (priorDay is null || date > priorDay))
-            {
-                priorDay = date;
-            }
-        }
-
-        if (priorDay is not { } day
+        // The immediately previous trading day the calendar names — not the most recent date the
+        // series happens to hold. A weekend or a declared holiday is not a trading day, so this
+        // walks back past them; a trading day the series does not carry is absent, not replaced
+        // by Friday (gh#259 finding 2).
+        if (PreviousTradingDay(calendar, currentTradeDate) is not { } day
             || SessionOpenFor(calendar, day) is not { } open
             || windowStart > open)
         {
@@ -224,7 +252,7 @@ public static class SessionLevels
             }
         }
 
-        AddPeriod(bars, atr, options, indices, withClose: true, lines);
+        AddPeriod(bars, atr, options, indices, withClose: true, PeriodLabel(day), lines);
     }
 
     private static void AddPriorWeek(
@@ -270,7 +298,7 @@ public static class SessionLevels
             }
         }
 
-        AddPeriod(bars, atr, options, indices, withClose: true, lines);
+        AddPeriod(bars, atr, options, indices, withClose: true, "week:" + PeriodLabel(priorMonday), lines);
     }
 
     private static void AddCurrentSession(
@@ -305,13 +333,18 @@ public static class SessionLevels
                 }
             }
 
-            AddPeriod(bars, atr, options, overnight, withClose: false, lines);
+            AddPeriod(bars, atr, options, overnight, withClose: false, OvernightPeriod, lines);
         }
 
-        // The initial balance, on the same terms: reported once the hour it covers is behind the series, and
-        // absent while it is still forming.
+        // The initial balance, on the same terms: reported once the hour it covers is behind the series,
+        // and absent while it is still forming. A resolution coarser than that hour would report a
+        // four-hour bar as the one-hour balance — refused, symmetrically with a partial period
+        // (gh#259 finding 1). Resolution 0 means the caller did not say, and the existing fixtures
+        // that do not pass one still measure the hour.
         DateTimeOffset initialBalanceEnd = open + InitialBalanceLength;
-        if (last >= initialBalanceEnd)
+        int ibMinutes = (int)InitialBalanceLength.TotalMinutes;
+        if (last >= initialBalanceEnd
+            && (options.ResolutionMinutes == 0 || options.ResolutionMinutes <= ibMinutes))
         {
             List<int> initialBalance = [];
             for (int i = 0; i < tradeDates.Count; i++)
@@ -324,7 +357,7 @@ public static class SessionLevels
                 }
             }
 
-            AddPeriod(bars, atr, options, initialBalance, withClose: false, lines);
+            AddPeriod(bars, atr, options, initialBalance, withClose: false, InitialBalancePeriod, lines);
         }
     }
 
@@ -340,6 +373,7 @@ public static class SessionLevels
     /// initial balance are <i>ranges</i>, and the price a range happened to stop at is not a level anybody
     /// watches.
     /// </param>
+    /// <param name="period">The period label every line of this period carries.</param>
     /// <param name="lines">The accumulator.</param>
     /// <remarks>
     /// <para>
@@ -364,6 +398,7 @@ public static class SessionLevels
         KeyLevelOptions options,
         IReadOnlyList<int> indices,
         bool withClose,
+        string period,
         List<KeyLevelZone> lines)
     {
         if (indices.Count == 0)
@@ -388,8 +423,8 @@ public static class SessionLevels
 
         decimal range = bars[highIndex].High - bars[lowIndex].Low;
 
-        AddLine(bars, atr, options, highIndex, bars[highIndex].High, range, KeyLevelKind.Resistance, lines);
-        AddLine(bars, atr, options, lowIndex, bars[lowIndex].Low, range, KeyLevelKind.Support, lines);
+        AddLine(bars, atr, options, highIndex, bars[highIndex].High, range, KeyLevelKind.Resistance, period, lines);
+        AddLine(bars, atr, options, lowIndex, bars[lowIndex].Low, range, KeyLevelKind.Support, period, lines);
 
         if (!withClose)
         {
@@ -404,8 +439,11 @@ public static class SessionLevels
         // decides which side of the merge it groups with -- a seed of `Unknown` would group with nothing and
         // reach the payload as an unset kind.
         KeyLevelKind seed = close > bars[^1].Close ? KeyLevelKind.Resistance : KeyLevelKind.Support;
-        AddLine(bars, atr, options, closeIndex, close, range, seed, lines);
+        AddLine(bars, atr, options, closeIndex, close, range, seed, period, lines);
     }
+
+    private static string PeriodLabel(DateOnly tradeDate) =>
+        tradeDate.ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture);
 
     private static void AddLine(
         IReadOnlyList<Bar> bars,
@@ -415,6 +453,7 @@ public static class SessionLevels
         decimal price,
         decimal range,
         KeyLevelKind kind,
+        string period,
         List<KeyLevelZone> lines)
     {
         if (atr[sourceIndex] is not { } scale || scale <= 0m)
@@ -440,7 +479,8 @@ public static class SessionLevels
             Kind: kind,
             FormedAtBucket: bars[sourceIndex].OpenTime,
             TouchCount: 1,
-            Significance: significance));
+            Significance: significance,
+            Period: period));
     }
 
     private static void RequireUsableOptions(KeyLevelOptions options)

@@ -1,8 +1,7 @@
 namespace MarqSpec.Mcp.TopstepX.Domain.MarketData;
 
 /// <summary>
-/// A named way of detecting price levels — swing pivots, session extremes and pivot-family arithmetic.
-/// <c>session</c> is registered; <c>get_key_levels</c> cannot select it (gh#259).
+/// A named way of detecting price levels — swing pivots, session extremes, or a pivot-family formula.
 /// </summary>
 /// <remarks>
 /// <para>

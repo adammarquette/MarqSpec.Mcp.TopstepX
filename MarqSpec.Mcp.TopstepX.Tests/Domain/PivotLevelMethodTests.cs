@@ -309,9 +309,8 @@ public sealed class PivotLevelMethodTests
         //
         // Two bars rule that case out and NOTHING MORE. They do not bound the period's last bar, which has
         // no successor inside the period to be measured against, so a bucket that opens inside a session and
-        // runs past its close is still read as that session's. `PivotLevels`' own remarks carry the measured
-        // twelve-hour case that slips through, and gh#259 owns closing it -- `session` is exposed
-        // identically, and the fix needs a resolution neither method is handed.
+        // runs past its close is still read as that session's. Detect is not handed a resolution and must
+        // not infer one. The tool boundary refuses those buckets (`SessionBucketGuard`, R-3.13).
         IReadOnlyList<Bar> daily =
         [
             Hour(Aug16, 17, 100, 120, 96, 111),
@@ -353,6 +352,28 @@ public sealed class PivotLevelMethodTests
             new PivotLevelMethod(formula, shut)
                 .Detect(Fixture, FlatAtr(Fixture.Count), Options)
                 .Should().BeEmpty(formula + " pivoted off a day the calendar says did not trade");
+        }
+    }
+
+    [Fact]
+    public void APriorTradingDayAbsentFromTheSeries_IsAbsent_NotAnOlderDayTheWindowHappensToHold()
+    {
+        // Tuesday is in progress. Monday traded but is not loaded; Friday is. Pivoting off Friday's
+        // 100/120/96/111 is the same substitute session finding 2 named for `session`, and this
+        // family is exposed identically.
+        IReadOnlyList<Bar> mondayMissing =
+        [
+            Hour(new DateOnly(2026, 8, 13), 17, 90, 92, 89, 91),
+            Hour(new DateOnly(2026, 8, 14), 9, 91, 95, 90, 93),
+            Hour(new DateOnly(2026, 8, 14), 15, 93, 94, 92, 93),
+            Fixture[3],
+            Fixture[4],
+        ];
+
+        foreach (PivotFormula formula in AllFormulas)
+        {
+            Detect(formula, mondayMissing).Should().BeEmpty(
+                formula + " promoted Friday into Monday's place");
         }
     }
 

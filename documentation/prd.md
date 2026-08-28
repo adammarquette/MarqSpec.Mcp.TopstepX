@@ -177,15 +177,18 @@ The server serves OHLCV bars for a futures instrument at a requested resolution 
 - **R-3.7** A session boundary comes from the **calendar**, never from gaps in the series, and a period the
   loaded window does not reach the opening of is **absent** rather than taken from the part of it the window
   holds. A prior "day" that did not trade is not a prior day, and a range still forming is not a level.
+  The prior day is the calendar's immediately previous **trading** day: a trading day absent from the store
+  is absent, never an older day the window happens to hold. Zones carry the period they came from.
 - **R-3.8** Overlapping zones merge **whichever side of price each of them formed on**, and the merged zone
   takes its kind from its strongest constituent. A price defended from below and rejected from above is one
   level traded twice, not two levels touched once, and `touchCount` is the field that says so
   ([ADR-0015](adr/0015-levels-merge-across-support-and-resistance.md)).
 - **R-3.9** A level the detection cannot report is **absent**. A zone wider than `MaxZoneWidthPercent` of its
   own price is dropped rather than narrowed to the cap, and a level beyond `MaxLevels` is dropped rather than
-  folded into the survivor beside it — either would report a band at a price nothing was measured at. The
-  parameters detection ran under are reported with every answer, so a list that stopped at the cap can be
-  told from a market that produced that many levels.
+  folded into the survivor beside it — either would report a band at a price nothing was measured at. **Every
+  method honours both caps**, so the parameters detection reports are a fact about the selected method and
+  not only about `swing`. A list that stopped at the cap can be told from a market that produced that many
+  levels.
 - **R-3.10** The **pivot family** computes its published formula over **one finished prior session's** open,
   high, low and close. Its significance is that period's own range in ATR multiples, which is `R-3.7`'s
   session-window reading of `R-3.2` rather than a prominence a computed line cannot have — so one score
@@ -197,6 +200,19 @@ The server serves OHLCV bars for a futures instrument at a requested resolution 
   budget when their agreement is scored. Five pivot variants landing on a price is one prior session
   transformed five ways, not five confirmations. The family is declared by the method rather than listed
   beside the scorer, because a list of names is silently escaped by the next variant added.
+- **R-3.12** `get_key_levels` runs **every requested method** in one call and returns a **confluence score**.
+  Per-method weights come from configuration (an unlisted method weighs 1). The score is the strongest
+  overlapping cluster's family-aware weight (`R-3.11`). The result names the constituents, the weights used,
+  and the line-to-zone tolerance — the same `ZoneAtrMultiple` that sizes a swing zone and a session or pivot
+  line. A requested method that contributed nothing is named, with why: refused, no data, or no levels.
+  The same inputs always produce the same score; nothing in the scoring path reads a clock, a store or a
+  configuration singleton at evaluation (ADR-0006). Two callers with different tolerances cannot share a
+  score, and the tolerance is on the result to prove it. `MergeOverlapping` and `ApplyClose` remain the
+  carriers of `R-3.1` and `R-3.3`; confluence scores what they produce.
+- **R-3.13** A bucket that **overhangs a session close** is refused for `session` and the pivot family, at
+  the tool boundary, from the stated `resolutionMinutes` — `Detect` does not infer a bar's width. The
+  initial balance is refused when the resolution is coarser than the hour it measures. Both are absences,
+  never a well-formed number taken from a wider period.
 
 ## R-4 — Read-only venue boundary
 

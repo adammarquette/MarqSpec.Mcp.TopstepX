@@ -13,8 +13,16 @@ namespace MarqSpec.Mcp.TopstepX.Tests.Domain;
 /// same four prices to one formula and checks the prices that come back against the published definition,
 /// with nothing between the two: no fixture to read a period off, no ATR to scale by, no merge, no cap and
 /// no relabelling. <c>PivotLevelMethodTests</c> checks the same formulas through the whole pipeline, which
-/// is where the zones and the kinds are pinned; what it cannot show is a line the pipeline legitimately
-/// drops, and two of the sets below have one.
+/// is where the zones and the kinds are pinned.
+/// </para>
+/// <para>
+/// <b>What only this file can show is a line the pipeline never hands back</b>, and the worked period below
+/// has none — measured, all five formulas come out of the pipeline with exactly as many zones as they have
+/// lines, 7, 7, 8, 5 and 3. So <see cref="Wide"/> is here too: on a period whose range is most of its own
+/// low, classic computes <c>-35</c> and <c>32</c> and fibonacci <c>32</c>, and the width cap drops all
+/// three before anything is returned. <b>The first version of this paragraph claimed the worked period had
+/// such lines and named two that are in fact reported</b>; it was a claim about a run nobody had made, which
+/// is the kind of prose this repository treats as a build break.
 /// </para>
 /// <para>
 /// <b>The period is <c>O=100 H=120 L=96 C=111</c>, the same one the pipeline file works</b>, so the two
@@ -28,6 +36,15 @@ public sealed class PivotFormulaTests
 {
     /// <summary>The worked period: opened at 100, ranged 96 to 120, closed at 111.</summary>
     private static PivotPeriod Period => new(Open: 100m, High: 120m, Low: 96m, Close: 111m);
+
+    /// <summary>
+    /// A period whose range is most of its own low — the one that sends far legs off the price scale.
+    /// </summary>
+    /// <remarks>
+    /// The period <c>PivotLevelMethodTests.AFormulaThatLeavesThePriceDomain_NeverReachesTheAnswer</c> builds
+    /// its bars around, so the two files can be read against each other there as well.
+    /// </remarks>
+    private static PivotPeriod Wide => new(Open: 100m, High: 200m, Low: 99m, Close: 100m);
 
     private static IEnumerable<decimal> Prices(PivotFormula formula) =>
         PivotLevels.Lines(formula, Period).Select(line => line.Price);
@@ -133,6 +150,50 @@ public sealed class PivotFormulaTests
 
         Kinds(PivotFormula.DeMark).Should().Equal(
             KeyLevelKind.Support, KeyLevelKind.Unknown, KeyLevelKind.Resistance);
+    }
+
+    // ── The lines the pipeline never hands back ───────────────────────────────────────────────────────
+
+    [Fact]
+    public void OnAWidePeriod_TheFarLegsRunOffThePriceScale_AndOnlyThisFileEverSeesThem()
+    {
+        //  P = (200 + 99 + 100) / 3 = 399 / 3 = 133, range = 101.
+        //    S3 = L - 2(H - P) =  99 - 134 = -35   a price no instrument can trade at
+        //    S2 = P - (H - L)  = 133 - 101 =  32   a real price, but a 1-point zone is 3.1% of it
+        //
+        // Neither reaches an answer: the width cap needs `width * 100 <= MaxZoneWidthPercent * midpoint`,
+        // which at the shipped 2.5% wants a midpoint of at least 40 and can never hold at or below zero,
+        // because a zone's width is always positive. So the arithmetic below is visible HERE and nowhere
+        // else, which is what having a formula-only file buys.
+        // `PivotLevelMethodTests.AFormulaThatLeavesThePriceDomain_NeverReachesTheAnswer` is the other half:
+        // the same period, through the pipeline, coming back as five zones rather than seven.
+        PivotLevels.Lines(PivotFormula.Classic, Wide).Select(line => line.Price)
+            .Should().Equal(-35m, 32m, 66m, 133m, 167m, 234m, 268m);
+
+        // Fibonacci's own S3 lands on the same 32, from a different route: P - 1.000 * range.
+        PivotLevels.Lines(PivotFormula.Fibonacci, Wide)[0].Price.Should().Be(32m);
+    }
+
+    [Theory]
+    [InlineData(PivotFormula.Classic, 7)]
+    [InlineData(PivotFormula.Fibonacci, 7)]
+    [InlineData(PivotFormula.Camarilla, 8)]
+    [InlineData(PivotFormula.Woodie, 5)]
+    [InlineData(PivotFormula.DeMark, 3)]
+    public void TheWorkedPeriodHasNoSuchLine_WhichIsWhyTheWideOneIsHere(PivotFormula formula, int lines)
+    {
+        // The claim this file's remarks used to make about the worked period, turned into a run.
+        //
+        // At the pipeline file's ATR of 2 and the shipped 0.5 zone width, every zone is exactly ONE point
+        // wide, and the width cap keeps a zone when `1 * 100 <= 2.5 * midpoint` -- so it bites below a
+        // midpoint of 40 and nowhere else. Every line the five compute from O=100 H=120 L=96 C=111 is at 74
+        // or above, so all of them survive: line counts and zone counts are equal formula for formula, and
+        // nothing about a dropped line is observable from this period at all.
+        IReadOnlyList<PivotLine> computed = PivotLevels.Lines(formula, Period);
+
+        computed.Should().HaveCount(lines);
+        computed.Select(line => line.Price).Min().Should().BeGreaterThanOrEqualTo(
+            40m, "below 40 the shipped width cap drops a one-point zone, and this period reaches no such line");
     }
 
     // ── Every formula answers, and an unset one does not ──────────────────────────────────────────────

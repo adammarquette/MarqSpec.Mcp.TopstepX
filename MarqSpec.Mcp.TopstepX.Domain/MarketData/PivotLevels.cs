@@ -115,16 +115,28 @@ public sealed record PivotLine(decimal Price, KeyLevelKind Kind);
 /// <para>
 /// <b>What two bars do and do not buy, exactly.</b> They rule out the case where one bar <i>is</i> the whole
 /// period or more, which is every resolution of a day and above. <b>They do not bound the last bar</b>: a
-/// bar's width is knowable only from the interval to its successor, and the period's last bar's successor is
+/// bar's width is knowable only from the interval to its successor, and a period's last bar's successor is
 /// in the next session, an unrelated maintenance window away. So a resolution between a bar and a session
-/// still slips through, and it was measured on this branch rather than reasoned about — twelve-hour buckets
-/// aligned to a 17:00 reopen put a bar at 05:00 running to 17:00, an hour past the 16:00 close. It carries
-/// Monday's trade date, two bars cover Monday, and a high the bar made in <i>Tuesday's</i> first hour is
-/// reported as Monday's: <c>pivot-classic</c> answered five ordinary-looking zones at significance
-/// <c>102</c>. <b><see cref="SessionLevels"/> is exposed identically on the same bars</b> — its prior-day
-/// high is the same 300 — which is what places the residue in gh#259's first routed finding rather than
-/// here: closing it needs the <i>resolution</i>, and the resolution is known at the tool boundary and not
-/// inside a method that is handed only bars.
+/// still slips through, and it was measured rather than reasoned about. Twelve-hour buckets aligned to
+/// <c>07:00</c> and <c>19:00</c> Central, against a 16:00 close: the bucket opening Monday <c>07:00</c> runs
+/// to Monday <c>19:00</c>, which is <b>two hours inside Tuesday's session</b> — that session reopened at
+/// 17:00. The calendar puts the bucket on Monday's trade date because that is where it <i>opens</i>, two
+/// buckets cover Monday, and a high made in Tuesday's first two hours is reported as Monday's. Measured with
+/// a period of <c>O=100 H=300 L=96 C=250</c>: <c>pivot-classic</c> answers five ordinary-looking zones at
+/// significance <c>102</c>, midpoints <c>130.67</c>, <c>215.33</c>, <c>334.67</c>, <c>419.33</c> and
+/// <c>538.67</c>. <b><see cref="SessionLevels"/> is exposed identically on the same bars</b> — its prior-day
+/// high comes back as <c>299.5</c>–<c>300.5</c> at the same significance — which is what places the residue
+/// in gh#259's first routed finding rather than here: closing it needs the <i>resolution</i>, and the
+/// resolution is known at the tool boundary and not inside a method that is handed only bars.
+/// </para>
+/// <para>
+/// <b>The alignment is load-bearing and the first version of this paragraph got it wrong</b>, which is worth
+/// leaving on the record. Aligned to the reopen instead — buckets at <c>17:00</c> and <c>05:00</c> — the
+/// Monday <c>05:00</c> bucket overhangs the close by one hour, but that hour is <c>16:00</c>–<c>17:00</c>,
+/// the maintenance window, which the calendar models as the venue being <b>shut</b>
+/// (<see cref="BarSessionCalendar.TradeDateFor"/> returns nothing for it). No trade happens there, so
+/// nothing can enter the period through it. An overhang only contaminates when it reaches a window that
+/// <i>trades</i>, and only an alignment off the reopen produces one.
 /// </para>
 /// <para>
 /// <b>The other known bound, inherited from <see cref="SessionLevels"/> and stated on the same terms:</b>

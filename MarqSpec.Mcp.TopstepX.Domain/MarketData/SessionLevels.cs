@@ -171,9 +171,17 @@ public static class SessionLevels
     /// measured at a <c>23:30</c> close, where the candidate for Tuesday the 18th is Monday the 17th at
     /// <c>00:30</c> and the calendar reads it as the 17th, so every period goes absent
     /// (<c>SessionLevelMethodTests</c> pins it).
+    /// <para>
+    /// <b>Public since gh#258, so the pivot family reads this boundary rather than defining a second
+    /// one.</b> "The prior period" a pivot is computed from is the same session boundary, and
+    /// <see cref="ILevelMethod"/>'s own remarks reject putting a second definition of a session next to
+    /// <see cref="BarSessionCalendar"/>.
+    /// </para>
     /// </remarks>
-    private static DateTimeOffset? SessionOpenFor(BarSessionCalendar calendar, DateOnly tradeDate)
+    public static DateTimeOffset? SessionOpenFor(BarSessionCalendar calendar, DateOnly tradeDate)
     {
+        ArgumentNullException.ThrowIfNull(calendar);
+
         DateTimeOffset candidate = MarketClock.FromMarket(tradeDate.AddDays(-1), calendar.SessionOpen);
         return calendar.TradeDateFor(candidate) == tradeDate ? candidate : null;
     }
@@ -477,6 +485,12 @@ public sealed class SessionLevelMethod(BarSessionCalendar calendar) : ILevelMeth
 
     /// <summary>The method name, <c>session</c>.</summary>
     public string Name => "session";
+
+    /// <summary>
+    /// The correlation family, <c>session</c> — a family of one. Nothing else reports a finished period's
+    /// own extremes, and the pivot family shares its <i>input</i> rather than its answer.
+    /// </summary>
+    public string Family => "session";
 
     /// <inheritdoc />
     public IReadOnlyList<KeyLevelZone> Detect(

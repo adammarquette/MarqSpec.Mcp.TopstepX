@@ -63,6 +63,33 @@ public interface ILevelMethod
     string Name { get; }
 
     /// <summary>
+    /// The correlation family this method belongs to — lowercase and stable, e.g. <c>pivot</c>.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>Methods that share a family share a budget in a confluence score.</b> The five <c>pivot-*</c>
+    /// methods are arithmetic on one prior session's open, high, low and close, so all five landing on a
+    /// price is one input transformed five ways rather than five independent confirmations — and a score
+    /// that counted it as 5/5 would be at its most confident exactly where a reader would most want to trust
+    /// it (gh#232). The weighting that discounts them is gh#259's; what this property does is make the
+    /// grouping <b>a property of the catalogue</b> rather than a hardcoded list of five names, which the
+    /// sixth variant would silently escape.
+    /// </para>
+    /// <para>
+    /// <b>It has no default, and that is the decision rather than an omission.</b> A default of
+    /// <see cref="Name"/> — "a method is its own family unless it says otherwise" — reads well and fails in
+    /// the one direction that matters: a new variant that forgot to declare one would be given a budget of
+    /// its own and counted as independent evidence for the very thing it is derived from. Declaring it is
+    /// one line; forgetting it must not be silent.
+    /// </para>
+    /// <para>
+    /// A method with no correlated siblings is a family of one and returns its own name — <c>swing</c> and
+    /// <c>session</c> both do — so the weighting needs no special case for "uncorrelated".
+    /// </para>
+    /// </remarks>
+    string Family { get; }
+
+    /// <summary>
     /// Detects the levels this method finds in a series.
     /// </summary>
     /// <param name="bars">The series, in <b>strictly ascending</b> time order and from one contract.</param>

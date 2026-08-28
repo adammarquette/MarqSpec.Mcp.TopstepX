@@ -26,6 +26,14 @@ namespace MarqSpec.Mcp.TopstepX.MarketData;
 /// different path loses the confinement without failing.
 /// </para>
 /// <para>
+/// <b>Every method also declares the correlation family it belongs to</b>
+/// (<see cref="ILevelMethod.Family"/>), so a confluence score can discount methods derived from one input
+/// instead of counting them as independent agreement. The five <c>pivot-*</c> names share one;
+/// <c>swing</c> and <c>session</c> are each families of one. That too is swept over <see cref="All"/>, in
+/// <c>LevelMethodCatalogFamilyTests</c>, for the reason gh#259 gives: a hardcoded list of the five is
+/// silently escaped by the sixth variant.
+/// </para>
+/// <para>
 /// <b>And a series whose bars are not in strictly ascending time order</b> — the same shape, a different
 /// guard, and a second sweep rather than a corner of the first: <c>LevelMethodCatalogOrderingTests</c>. The
 /// roll sweep counts only refusals whose message names the roll, so deleting
@@ -39,9 +47,9 @@ public sealed class LevelMethodCatalog
 
     /// <summary>Builds the catalogue.</summary>
     /// <param name="calendar">
-    /// The session calendar — <c>session</c> is anchored to a session, so it needs one. The same parameter
-    /// <see cref="IndicatorCatalog"/> takes for <see cref="VwapIndicator"/>, resolved from the same single
-    /// registration.
+    /// The session calendar — <c>session</c> and every <c>pivot-*</c> are anchored to a session, so they
+    /// need one. The same parameter <see cref="IndicatorCatalog"/> takes for <see cref="VwapIndicator"/>,
+    /// resolved from the same single registration.
     /// </param>
     /// <remarks>
     /// <para>
@@ -69,6 +77,11 @@ public sealed class LevelMethodCatalog
         [
             new SwingLevelMethod(),
             new SessionLevelMethod(calendar),
+            new PivotLevelMethod(PivotFormula.Classic, calendar),
+            new PivotLevelMethod(PivotFormula.Fibonacci, calendar),
+            new PivotLevelMethod(PivotFormula.Camarilla, calendar),
+            new PivotLevelMethod(PivotFormula.Woodie, calendar),
+            new PivotLevelMethod(PivotFormula.DeMark, calendar),
         ];
 
         _byName = methods.ToDictionary(m => m.Name, StringComparer.Ordinal);

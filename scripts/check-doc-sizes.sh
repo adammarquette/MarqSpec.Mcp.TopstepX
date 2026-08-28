@@ -171,10 +171,11 @@ PRICED=(
 #     `fecc463`, where this was written, 13 of 14 rows ALREADY stated exactly this value; the fourteenth was
 #     `data-dictionary.md` at 3.5K against a measured 3.6K. That row was corrected on `develop` rather than
 #     here: gh#276 (`f49dd5b`) dropped the `PriceLevels` table, shrinking the file to 13541 bytes, and
-#     re-priced the row to 3.4K -- which is what 13541/4 = 3385 tok rounds to. So at `6b6a9d9` ALL 14 rows
-#     state exactly this value and the strict comparison is green on arrival, re-derived by hand from
-#     `wc -c` rather than read off this gate. Authors already paste what the gate prints -- the band was
-#     tolerating a habit nobody had.
+#     re-priced the row to 3.4K -- which is what 13541/4 = 3385 tok rounds to. So at `7836223`, THE BASE
+#     THIS LANDS ON, all 14 rows state exactly this value and the strict comparison is green on arrival --
+#     run there rather than reasoned, and re-derived by hand from `wc -c` rather than read off this gate.
+#     Authors already paste what the gate prints -- the band was tolerating a habit nobody had. (This sha
+#     moves with every rebase; it names the base, so re-run the gate against it rather than trusting it.)
 #
 # The comparison is ARITHMETIC, not a string match: `1K` and `1.0K` are the same price and both are accepted.
 # A cell carrying more precision than the column has -- `1.05K` -- is refused, because the granularity is the

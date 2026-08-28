@@ -83,6 +83,8 @@ replay reaching for the ATR behind a past decision should find the number that w
 `Period` is `0` for indicators that take none (VWAP is anchored, not windowed), which keeps them from colliding
 with a windowed indicator of the same name.
 
+Index: `(Instrument, ResolutionMinutes, Indicator, Period, BucketStart)` — the shape of every read.
+
 **There is no `ContractId` here, and that is deliberate.** A value is always computed inside a single contract
 run — the projection never smooths across a roll ([ADR-0011](adr/0011-contract-roll-boundary.md)) — so the
 contract is a property of the bar at `BucketStart`, and duplicating it would be a second copy of a fact that
@@ -138,6 +140,8 @@ write assigns it unconditionally rather than preserving whatever is stored, or a
 it was first asked about would keep the expiry it was given while it was still recent and be re-fetched
 forever.
 
+Index: `(Instrument, ResolutionMinutes, RangeStart, RangeEnd)` — the shape of every coverage lookup.
+
 **The write reaches the composite key with `ON CONFLICT … DO UPDATE`**, not by reading the row and deciding
 (gh#122) — so two callers recording the same empty range concurrently both land, instead of the loser faulting
 on the key. There is no pre-read and no skip-unchanged rule: the ledger holds the **latest answer** for a
@@ -176,6 +180,8 @@ one of those citations at a different table.
 the vendor or from the bars. Observations are not. Neither is the tape (§7, §8): there is no market-tape REST
 backfill ([ADR-0016](adr/0016-subscribe-to-the-market-hub.md)), so a dropped store loses prints that cannot be
 refetched. Back up both.
+
+Index: `(Instrument, RecordedAt)` — list-by-instrument and recency.
 
 ## §6 `Embeddings` — pgvector
 

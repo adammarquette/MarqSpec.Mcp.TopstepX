@@ -14,9 +14,10 @@ namespace MarqSpec.Mcp.TopstepX.MarketData;
 /// empty series — a wrong symbol and a quiet market must not look the same to an agent (`R-5.3`).
 /// </para>
 /// <para>
-/// The built-in specs are a <b>fallback</b>, used until the venue supplies its own. Where the venue is
-/// reachable, its <c>tickSize</c> and <c>tickValue</c> win: they are the contract's actual terms, and a table
-/// in this repository is a snapshot of them that ages.
+/// The built-in specs are the <b>only</b> source of tick size and point value. <c>InstrumentSpec.FromVenue</c>
+/// exists and is never called. When the venue is reachable, its <c>tickSize</c> is a <b>match-or-refuse</b>
+/// check: a contract whose tick disagrees with this table is refused rather than adopted, because a wrong
+/// tick silently rescales every money figure. There is no per-instrument override field.
 /// </para>
 /// </remarks>
 public sealed class InstrumentRegistry

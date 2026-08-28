@@ -52,9 +52,10 @@ joins the discounted budget by being written rather than by somebody remembering
 
 ## The cache-aside read — the only genuinely interesting path
 
-**`resolution` is chosen by the caller, not by configuration.** There is no supported-resolution list: any
-**positive** resolution is servable, each becomes an independent cached series, and a timeframe is fetched from
-the venue rather than derived from a finer one — [ADR-0010](adr/0010-per-call-resolutions-fetched-not-derived.md).
+**`resolution` is chosen by the caller, not by configuration.** There is no supported-resolution list: every
+whole number of minutes from **1 to 10,080** is servable (`R-1.9`), each becomes an independent cached series,
+and a timeframe is fetched from the venue rather than derived from a finer one —
+[ADR-0010](adr/0010-per-call-resolutions-fetched-not-derived.md).
 Zero and negative are refused at the tool boundary by `ToolGuards.ValidateResolution` and never reach this
 path (gh#69).
 
@@ -195,7 +196,9 @@ the contract listed, a session the exchange cancelled — is expected by the cal
 which is indistinguishable from a fetch that has not happened yet. The `BarCoverage` ledger is the third state.
 
 Its TTL is asymmetric: **short near `now`** (a bucket that is empty because it has not printed yet will print
-shortly) and **long for settled history** (a hole in 2024 is not going to fill in).
+shortly) and **`ExpiresAt = null` — never — for settled history** once the range is older than
+`SettledHistoryAge` (2 days). A hole in 2024 is not going to fill in; null means *never*, not *not recorded*,
+which is already how this page's step 9 and the data dictionary word it.
 
 ### The seam step 5 records, and why nothing crosses it
 

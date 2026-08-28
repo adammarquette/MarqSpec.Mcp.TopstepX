@@ -259,8 +259,12 @@ The server serves OHLCV bars for a futures instrument at a requested resolution 
 
 - **R-7.1** Credentials come from environment or user secrets only. No tracked file holds one; this repository
   is public.
-- **R-7.2** The market-data tier (`Simulated` / `Live`) is **required and never defaulted**. The wrong tier
-  returns an empty universe rather than an error, and the failure surfaces far away as "no contract matches ES".
+- **R-7.2** The market-data tier (`Simulated` / `Live`) is **required and never defaulted in the application**.
+  The wrong tier returns an empty universe rather than an error, and the failure surfaces far away as "no
+  contract matches ES". The compose stack is the one exception, and it is the same local convenience as
+  `Mcp__HttpBearerToken:-changeme-local`: `docker-compose.yml` forwards `ProjectX__DataTier:-Simulated` so
+  `docker compose up` with credentials and no tier does not fail startup. Do not drop that compose default
+  without saying so — the application would then refuse to boot.
 - **R-7.3** Configuration is validated at startup. A malformed session close or a non-positive tick size fails
   the process rather than producing wrong numbers quietly.
 
@@ -268,9 +272,11 @@ The server serves OHLCV bars for a futures instrument at a requested resolution 
 
 - **R-8.1** Series are keyed by a **normalised** venue-neutral symbol. A row written under one casing and read
   under another is a row nobody finds.
-- **R-8.2** Tick size and point value come from the venue where available, with configuration as an override
-  that replaces an entry **wholesale** — a new tick size against a stale point value is a silently wrong
-  contract.
+- **R-8.2** Tick size and point value come from a **hardcoded registry** (`InstrumentRegistry`). The venue is
+  used as a **match-or-refuse** check: a contract whose tick size disagrees with the registry is refused, not
+  adopted. `InstrumentSpec.FromVenue` exists and is never called. There is no per-instrument override field —
+  a wholesale config override would be a silently wrong contract (a new tick size against a stale point value)
+  and is not implemented.
 - **R-8.3** A missing instrument spec is reported as missing, never substituted.
 
 ## Open questions
@@ -280,9 +286,9 @@ The server serves OHLCV bars for a futures instrument at a requested resolution 
   the contract that produced it, no value is derived across a roll, and a read spanning one says so in its
   payload. The successor question — whether to key bars by contract id outright — is left open there rather
   than here, because it is now a migration rather than a design choice.
-- **Q-2 — Embedding provider.** Cohere at `vector(1024)` matches `trading-copilot` and keeps the schema
-  identical; Voyage or a local model are alternatives. Deferred — R-6.3's fallback means this is useful before
-  the decision.
+- **Q-2 — Embedding provider. RESOLVED** by [ADR-0009](adr/0009-cohere-embeddings.md). Cohere
+  `embed-v4.0` at `vector(1024)` is wired as `CohereEmbeddingProvider` when `Embeddings__ApiKey` is set.
+  An unset key remains a supported state (`R-6.3`): search falls back to substring matching and says so.
 - **Q-3 — Vendor rate limits. RESOLVED (gh#43).** Extracted: **50 requests / 30 s** on
   `History/retrieveBars`, **200 / 60 s** everywhere else, a breach reported as a 429. The paging loop needed
   pacing and now has it (`R-1.10`). Numbers, the assumptions the vendor's page forces, and the arithmetic

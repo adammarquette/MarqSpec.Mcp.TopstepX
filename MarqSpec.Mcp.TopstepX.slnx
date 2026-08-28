@@ -40,6 +40,14 @@
     <File Path="documentation/adr/0006-indicators-as-projections.md" />
     <File Path="documentation/adr/0007-dual-transport.md" />
     <File Path="documentation/adr/0008-numeric-only-tool-payloads.md" />
+    <File Path="documentation/adr/0009-cohere-embeddings.md" />
+    <File Path="documentation/adr/0010-per-call-resolutions-fetched-not-derived.md" />
+    <File Path="documentation/adr/0011-contract-roll-boundary.md" />
+    <File Path="documentation/adr/0012-fills-are-not-serialised.md" />
+    <File Path="documentation/adr/0013-levels-are-computed-on-read.md" />
+    <File Path="documentation/adr/0014-indicators-are-projected-on-read-too.md" />
+    <File Path="documentation/adr/0015-levels-merge-across-support-and-resistance.md" />
+    <File Path="documentation/adr/0016-subscribe-to-the-market-hub.md" />
   </Folder>
   <Folder Name="/Solution Items/documentation/agents/">
     <File Path="documentation/agents/README.md" />

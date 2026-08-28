@@ -27,7 +27,7 @@ namespace MarqSpec.Mcp.TopstepX.Tests.MarketData;
 /// </para>
 /// <para>
 /// <b>The second sweep asserts a result, and until gh#285 it asserted only <c>NotThrow</c> over thirty
-/// bars.</b> Two of the eleven declare a warm-up of 35 — <c>macd-signal</c> and <c>macd-histogram</c>, both
+/// bars.</b> Two of the eleven declared a warm-up of 35 — <c>macd-signal</c> and <c>macd-histogram</c>, both
 /// <c>MacdSlowPeriod</c> 26 + <c>Macd.SignalPeriod</c> 9 — and both answered that fixture with 0 non-null
 /// values out of 30, so it passed for them because nothing was computed rather than because something was.
 /// A <c>Compute</c> that returned a list of nulls for every member would have passed it too. The fixture is
@@ -51,7 +51,7 @@ public sealed class IndicatorCatalogRollTests
     /// <remarks>
     /// <para>
     /// The longest warm-up in <see cref="IndicatorCatalog.All"/> plus <see cref="Headroom"/>. Today that is
-    /// <c>35 + 5 = 40</c>, and nothing here says forty: an indicator added with a longer warm-up than any
+    /// <c>34 + 5 = 39</c>, and nothing here says thirty-nine: an indicator added with a longer warm-up than any
     /// existing one widens the fixture by arriving, which is the one thing a hand-picked number cannot do.
     /// </para>
     /// <para>
@@ -80,7 +80,7 @@ public sealed class IndicatorCatalogRollTests
     /// cannot be an artefact of a series nothing could compute over, because those exact bars are proven
     /// productive by <see cref="EveryConfiguredIndicator_StillComputesValuesOverASingleContractSeries"/>.
     /// <b>The sixty-bar version this replaced could not say that.</b> It was split thirty/thirty, and thirty
-    /// bars is under the 35 <c>macd-signal</c> and <c>macd-histogram</c> declare, so <i>both</i> sides of the
+    /// bars is under the 35 <c>macd-signal</c> and <c>macd-histogram</c> then declared, so <i>both</i> sides of the
     /// old seam returned 0 non-null for those two — measured on <c>1d558eb</c>, each half separately, and
     /// tabled in gh#285's pull request. Each side clears the longest warm-up now, because
     /// <see cref="RunLength"/> is that warm-up plus <see cref="Headroom"/>.

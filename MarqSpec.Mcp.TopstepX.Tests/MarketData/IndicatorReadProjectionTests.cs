@@ -168,7 +168,7 @@ public sealed class IndicatorReadProjectionTests : IDisposable
     public async Task ASeriesShorterThanTheWarmUp_IsNotProjected_AndTheAbsenceStands()
     {
         // A missing number is missing, never a default -- and never a reason to replay on every read either.
-        // Six bars cannot satisfy MACD's signal warm-up of 35, so the absence is a fact about the bars. A
+        // Six bars cannot satisfy MACD's signal warm-up of 34, so the absence is a fact about the bars. A
         // trigger keyed on "this pair has no rows" alone would project this series forever and never write a
         // value, because there is no value to write.
         await WarmAsync(Catalog(rsiPeriod: 3), bars: 6);
@@ -185,7 +185,7 @@ public sealed class IndicatorReadProjectionTests : IDisposable
         ToolPayloads.IndicatorSeries series = await tools.GetIndicators(
             "ES", Resolution, "macd-signal", Bucket(0), Bucket(6), CancellationToken.None);
 
-        series.Values.Should().BeEmpty("thirty-five bars are needed and six are stored");
+        series.Values.Should().BeEmpty("thirty-four bars are needed and six are stored");
     }
 
     [Fact]

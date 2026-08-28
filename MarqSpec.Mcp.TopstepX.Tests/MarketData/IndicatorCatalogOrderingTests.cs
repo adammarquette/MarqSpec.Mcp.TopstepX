@@ -40,7 +40,7 @@ namespace MarqSpec.Mcp.TopstepX.Tests.MarketData;
 /// <para>
 /// <b>Its other half asserts that values come back, and until gh#285 nothing in this tier did.</b> That
 /// sweep's fixture was <c>Spliced().Take(30)</c> — thirty bars, against two of the catalogue's eleven
-/// members that declare a warm-up of 35: <c>macd-signal</c> and <c>macd-histogram</c>, both
+/// members that declared a warm-up of 35: <c>macd-signal</c> and <c>macd-histogram</c>, both
 /// <c>MacdSlowPeriod + Macd.SignalPeriod</c> = 26 + 9. Both answered it with 0 non-null values out of 30, so
 /// for those two it passed because nothing was computed rather than because something was. The hole that
 /// left is the twelfth indicator whose warm-up arithmetic is wrong: it returns all-nulls forever, it does
@@ -60,7 +60,7 @@ public sealed class IndicatorCatalogOrderingTests
 
     /// <summary>Sixty bars under one contract, with two adjacent bars exchanged in the middle.</summary>
     /// <remarks>
-    /// Long enough that the <b>longest</b> warm-up in the catalogue is satisfied — 35, <c>macd-signal</c> and
+    /// Long enough that the <b>longest</b> warm-up in the catalogue is satisfied — 34, <c>macd-signal</c> and
     /// <c>macd-histogram</c> — so a refusal cannot be an artefact of a series too short to compute over. The
     /// enumeration this replaced named Bollinger at 20 and MACD's slow leg at 26 and stopped there; that same
     /// short reading is what left the roll suite's single-contract fixture five bars under its own slowest

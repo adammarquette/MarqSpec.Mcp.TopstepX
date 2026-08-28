@@ -332,8 +332,8 @@ The root contract's five apply here unchanged. Four land specifically on the pip
   grep is a sound check that a green run is silent ONLY for a gate whose children are silent on success.
   For one that shells out to a daemon client, a package manager or a network tool, it answers a question
   nobody asked.** The assertion has nowhere to live in that suite in any case — one case, and it is **red**,
-  where the assertion is deliberately exempt. `check-doc-links.sh`, the one gate in this job with no
-  self-test at all, has no green helper either; that is gh#293 rather than this rule.
+  where the assertion is deliberately exempt. `check-doc-links.sh` carries the same assertion on its
+  green helper (gh#293) — measured at 0 B stderr on the real tree and on every green fixture.
 - **A PR into a non-integration base used to get no CI at all, and read as `CLEAN`** (gh#60). `ci.yml` and
   `codeql.yml` filtered `pull_request` to `[develop, staging, main]`, so a stacked PR onto a feature branch
   produced zero runs — and because the required checks hang off the `develop` ruleset, nothing was pending or
@@ -471,7 +471,7 @@ by mutation, not as a description of the workflow files.**
 |---|---|---|---|---|
 | `build & unit tests` | required | required | required | `ci.yml` |
 | `integration tests` | required | required | required | `ci.yml` |
-| `docs` | required | required | required | `ci.yml` — five steps since gh#182, see below |
+| `docs` | required | required | required | `ci.yml` — six steps since gh#293, see below |
 | `coverage` | required | required | required | `ci.yml` |
 | `no-order-path` | required | required | required | `ci.yml` |
 | `paced-paging` | required | required | required | `ci.yml` — added by gh#72 |
@@ -510,10 +510,11 @@ for all ten contexts required on that rung, `image` included, and `false` for bo
 at `main`; the rulesets are what stop that refusal depending on one job. A single content gate that stops one
 rung short is also a question every future reader has to re-derive.
 
-**`docs` is one status context running five steps, so a red `docs` is not necessarily a broken link**
-(gh#160, gh#182) — the required-context count is unchanged, and the row above says so. **Update that row and
+**`docs` is one status context running six steps, so a red `docs` is not necessarily a broken link**
+(gh#160, gh#182, gh#293) — the required-context count is unchanged, and the row above says so. **Update that row and
 this count together whenever a step is added**; the count is the only thing telling a reader that a red
-`docs` has five possible causes. Beside [`check-doc-links.sh`](../../scripts/check-doc-links.sh) it runs:
+`docs` has six possible causes. Beside [`check-doc-links.sh`](../../scripts/check-doc-links.sh) and
+[`check-doc-links-selftest.sh`](../../scripts/check-doc-links-selftest.sh) it runs:
 
 - [`check-doc-sizes.sh`](../../scripts/check-doc-sizes.sh), which re-measures every row of every `~tok` table
   it is pointed at (`wc -c` bytes ÷ 4, **rounded to 0.1K and compared exactly** — gh#196 removed the 25%

@@ -284,8 +284,8 @@ public static class Program
         services.AddSingleton<EmbeddingAvailabilityHolder>();
         services.AddSingleton<EmbeddingAvailabilityProbe>();
 
-        // The embedding seam. Only the keyless default exists today (gh#45); a real provider is selected here
-        // once one is chosen (gh#44). An unset key is a supported state, so this is never a startup failure.
+        // The embedding seam. CohereEmbeddingProvider is selected when Embeddings__ApiKey is set
+        // (ADR-0009). An unset key is a supported state, so this is never a startup failure.
         services.AddOptions<EmbeddingOptions>()
             .Bind(builder.Configuration.GetSection(EmbeddingOptions.SectionName));
 

@@ -30,7 +30,9 @@ page against either**, so check it against the code, never against another docum
   window is measured *before* anything is read and the refusal carries the real bucket count and the cap it is
   over, so "you asked for too much" never arrives disguised as "here is all there was", and it costs no vendor
   request to find out.
-- **Times are ISO-8601 UTC**, in and out. A naive local timestamp in a request is rejected, not guessed at.
+- **Times are ISO-8601 UTC**, in and out. An offset-bearing stamp is **converted** via `ToUniversalTime()`,
+  not rejected — a `-05:00` instant becomes the matching UTC instant. Whether a missing `Z` dies at JSON
+  parse is the SDK, not this repo. There is no application check that the offset is zero.
 - **A fault in this server's own database is stated, never emitted as a stack.** A lost write race, a dropped
   connection, a constraint this repo adds later — each reaches the caller as an error naming the condition and
   its Postgres SqlState, from *every* tool, because the guard is a call-tool filter on the server rather than a
@@ -87,8 +89,9 @@ page against either**, so check it against the code, never against another docum
   faulted, while sailing past that guard because it is positive (gh#81). Above a week a timeframe is a calendar
   month or a quarter, whose length in minutes is not fixed, so nothing above the ceiling is a bar anyone could
   be asking for. **Two cross-axis pairs are refused alongside it.** `get_latest_bars` reaches back four bar
-  spans per bar wanted, so a coarse resolution and a big count — each inside its own bound — can name a window
-  that **starts before the calendar does**, and that is an error naming both rather than a fault (gh#81). The
+  spans per bar wanted **plus four days** (`ToolGuards.LookbackWindow`), so a coarse resolution and a big
+  count — each inside its own bound — can name a window that **starts before the calendar does**, and that is
+  an error naming both rather than a fault (gh#81). The
   second is the **bucket count**: `MaxRows` and `BarGapDetector.MaxBucketsPerPass` bound the same quantity from
   two sides, so a window at 300,000 buckets, or 100,000 one-minute bars whose reach is 405,760, used to clear
   every check here and fault one layer down. Both are now refused naming the buckets asked for and the cap they
@@ -143,10 +146,11 @@ The instruments this server is configured for, with the contract arithmetic.
 
 Returns `[{ symbol, tickSize, pointValue, tickValue, sessionCloseCentral }]`.
 
-Where `tickSize` and `pointValue` come from matters: the venue publishes money-per-**tick**, and this returns
-money-per-**point** (they differ by the tick size). A configured override replaces an entry **wholesale** — a
-new tick size against a stale point value is a silently wrong contract, and every number derived from it is
-wrong by a plausible-looking constant factor.
+Where `tickSize` and `pointValue` come from matters: they come from the **hardcoded** `InstrumentRegistry`
+table. The venue publishes money-per-**tick**, and this returns money-per-**point** (they differ by the tick
+size). A venue tick that disagrees with the registry is **refused**, not adopted — `InstrumentSpec.FromVenue`
+exists and is never called, and there is no wholesale override field. A new tick size against a stale point
+value would be a silently wrong contract; that path is not implemented (`R-8.2`).
 
 ### `search_contracts(symbol)`
 Resolves a symbol to the venue contracts quoting it.
@@ -159,7 +163,9 @@ the front month, but `isActive` is the field that says so, not the position in t
 > zero contracts — so **this tool refuses rather than passing `[]` on**, naming `ProjectX__DataTier` and the
 > tier each credential kind needs. The instrument is on the served list, so "the venue knows no contracts for
 > it" is a misconfiguration and not a quiet market, and the two must not arrive looking the same (`R-5.3`).
-> That is why the setting is required and never defaulted.
+> That is why the application requires the setting and never defaults it. The compose stack is the
+> exception — it forwards `ProjectX__DataTier:-Simulated`, the same local convenience as
+> `Mcp__HttpBearerToken:-changeme-local` (`R-7.2`).
 
 ### `get_market_session(symbol, atUtc?)`
 Whether the market is open, and what happens next.
@@ -217,8 +223,9 @@ be paced.
 
 ### `get_latest_bars(symbol, resolutionMinutes, count)`
 The recent window, which is what an agent actually asks for. Same shape as `get_bars`, anchored on the last
-**closed** bucket. `count` is bounded by `MaxRows`, and a coarse resolution with a large `count` is refused
-for reaching back past the start of the calendar — one of the cross-axis pairs above.
+**closed** bucket. `count` is bounded by `MaxRows`. The look-back is four bar spans per bar wanted **plus
+four days** (`ToolGuards.LookbackWindow`), and a coarse resolution with a large `count` is refused for
+reaching back past the start of the calendar — one of the cross-axis pairs above.
 
 ### `get_indicators(symbol, resolutionMinutes, indicator, fromUtc, toUtc)`
 A stored indicator series, **filled on demand from bars this server already holds**.
@@ -496,7 +503,9 @@ five or six.
 
 Returns `{ symbol, session, perResolution: [{ resolutionMinutes, bars[],
 indicators: { "<name>": { value, bucketStart, contractId } | null },
-levels: { levels[], contracts, detectedOverBars }, contracts }] }`.
+levels: { levels[], contracts, detectedOverBars, detection: { source, pivotLookback,
+zoneAtrMultiple, minSignificance, pivotRightLookback, maxZoneWidthPercent, maxLevels } },
+contracts }] }`.
 
 **`indicators{}` is the one map on this surface** — the map row of the null table above, and the only place on
 it where a `null` reaches the wire spelled `null`. Every indicator this server computes is assigned a key

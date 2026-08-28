@@ -155,6 +155,7 @@ correct bar, and the guard's failure mode is silent.
 | [2026-08-23](#update-2026-08-23--any-meant-any-positive-and-four-tools-did-not-enforce-it) | Read "any" above as "any positive"; the rule now has its own guard and reaches all six tools |
 | [2026-08-23](#update-2026-08-23--the-range-is-1-to-10080-and-the-ceiling-is-not-sufficient-on-its-own) | Read "any positive" as "1 to 10,080"; the range is now closed at both ends |
 | [2026-08-23](#update-2026-08-23--maxbucketsperpass-is-a-second-cap-on-the-same-quantity-and-it-is-now-stated-at-the-boundary) | The cost bound named in *Alternatives* is now a **tool error**, not a fault one layer down |
+| [2026-08-28](#update-2026-08-28--gh49s-snapshot-default-shipped) | gh#49 closed: `get_market_snapshot` defaults `[5, 60]` |
 
 ## Update (2026-08-23) — any meant any positive, and four tools did not enforce it
 
@@ -323,8 +324,14 @@ clamped boundary is not on the grid, which is a wrong answer wearing an ordinary
 and the tool boundary refuses first. The rule needs the *session calendar's* day arithmetic to state it, which
 `BarGapDetector` cannot see, so a second copy of it there would have been a partial copy.
 
+## Update (2026-08-28) — gh#49's snapshot default shipped
+
+**The decision stands and nothing in it changes.** Resolution is still a per-call parameter, there is still
+no allow-list, and a timeframe is still fetched rather than derived. What this record's Follow-ups listed as
+open is now closed: `SnapshotTools.DefaultResolutionMinutes` is `[5, 60]`, and the catalogue documents that
+default. An agent that omits the set is no longer guessing.
+
 ## Follow-ups
 
-- gh#49 — `get_market_snapshot` should default its resolution set rather than making an agent guess. This
-  record supplies the cost side of that judgement.
+- gh#49 — closed; see the 2026-08-28 update. `get_market_snapshot` defaults `[5, 60]`.
 - gh#43 — extract the gateway's documented rate limits. That is the evidence that would move point 3 above.

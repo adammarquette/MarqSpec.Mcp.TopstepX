@@ -20,10 +20,10 @@ open and should have published one. A weekend is not a gap.
 > server computes is a number, not a recommendation — and a number that is subtly wrong looks exactly like one
 > that is right.
 
-> **Status: pre-release.** Phase 0 is merged and the ProjectX adapter has landed on
-> `MarqSpec.Client.ProjectX` 2.1.0, so the venue is live. The documentation layer is the source of truth
-> and the code is written against it. See the
-> [project board](https://github.com/users/adammarquette/projects/5) for what is next.
+> **Status: pre-release.** The ProjectX adapter is `MarqSpec.Client.ProjectX` 2.1.0, so the venue is live.
+> The tree is past Phase 0: contract rolls, on-read indicator projection, session levels, observations and
+> embeddings are in the product. The documentation layer is the source of truth and the code is written
+> against it. See the [project board](https://github.com/users/adammarquette/projects/5) for what is next.
 
 ---
 
@@ -33,10 +33,15 @@ Requires Docker and the .NET 10 SDK.
 
 ```bash
 cp .env.example .env       # then fill in ProjectX__ApiKey / ProjectX__ApiSecret / ProjectX__DataTier
-docker compose up -d       # Postgres (TimescaleDB + pgvector) and the server
+docker compose up -d       # Postgres (TimescaleDB + pgvector) and the HTTP server on :8080
 ```
 
-Register it with an MCP client over stdio:
+`docker compose up` is the **HTTP** transport on `:8080`, not stdio. Calls need
+`Authorization: Bearer <Mcp__HttpBearerToken>` — compose defaults that token to `changeme-local`, the same
+local convenience as `POSTGRES_PASSWORD` and `ProjectX__DataTier:-Simulated`. Change the token before the
+port is reachable from anywhere but localhost.
+
+Register a **stdio** client against a locally launched process:
 
 ```bash
 claude mcp add topstepx -- dotnet run --project MarqSpec.Mcp.TopstepX
@@ -59,9 +64,11 @@ time in the sibling repo:
 
 - `ProjectX__ApiKey` is your **username**. `ProjectX__ApiSecret` is your **API key**. Putting the API key in
   both authenticates as a user who does not exist, and fails with a bare "Unknown error" on an HTTP 200.
-- `ProjectX__DataTier` is **required**, and is `Simulated` or `Live`. The wrong tier returns an **empty**
-  universe rather than an error — practice credentials asking for the live tier see zero contracts, and the
-  failure surfaces far away as "no contract matches ES".
+- `ProjectX__DataTier` is **required in the application**, and is `Simulated` or `Live`. The wrong tier
+  returns an **empty** universe rather than an error — practice credentials asking for the live tier see
+  zero contracts, and the failure surfaces far away as "no contract matches ES". The compose stack is the
+  exception: it defaults `Simulated`, the same local convenience as `Mcp__HttpBearerToken:-changeme-local`,
+  so `docker compose up` with credentials and no tier does not fail startup.
 
 Full configuration catalogue: [`.env.example`](.env.example). Real secrets are never committed; this repository
 is public.

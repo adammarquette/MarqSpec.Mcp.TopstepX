@@ -330,8 +330,10 @@ fibonacci report seven lines, camarilla eight, woodie five and demark three — 
 is the published set, and inventing an `R2` to make the family look uniform would be arithmetic nobody
 published. Sized into zones by **the same `zoneAtrMultiple`** again, and scored by **the same significance
 `session` uses** — the period's own range in ATR multiples — so one number covers a whole set and
-`minSignificance` keeps or drops it whole. Unlike `session`, this family **applies both caps**: a pivot line
-below the price scale, or a set longer than `maxLevels`, is dropped rather than reported.
+`minSignificance` keeps or drops it whole. Unlike `session`, this family **applies both caps**: a set longer
+than `maxLevels` is cut to the most significant, and a zone wider than `maxZoneWidthPercent` of its own
+midpoint is dropped — which also removes a far leg that has run below the price scale, since that comparison
+cannot be satisfied at a midpoint of zero or less.
 
 **A pivot period the series cannot supply is absent, and one of the three ways is about resolution.** No
 prior session in the window, a window that begins after that session opened, or a session the series covers

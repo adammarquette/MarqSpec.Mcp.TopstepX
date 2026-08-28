@@ -78,8 +78,9 @@ public sealed class LevelMethodCatalogRollTests
     /// </para>
     /// <para>
     /// <b>Not one price moved</b>, which is why every price and score below is unchanged and only the
-    /// timestamps are new. A five-minute run of this length could not have been made to work: forty-one
-    /// bars span three hours and twenty-five minutes, and this calendar's session is twenty-three.
+    /// timestamps are new. A five-minute run of this length could not have been made to work at any origin:
+    /// forty-one five-minute bars cover three hours and twenty-five minutes, and a session on this calendar
+    /// runs from 17:00 to 16:00, which is twenty-three hours.
     /// </para>
     /// </remarks>
     private static DateTimeOffset SessionStart =>

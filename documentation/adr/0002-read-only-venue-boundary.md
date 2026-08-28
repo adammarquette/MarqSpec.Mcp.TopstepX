@@ -2,7 +2,8 @@
 
 **Status:** Accepted · **Date:** 2026-08-21 · **Deciders:** Adam (operator)
 **Relates to:** PRD `R-4` · [ADR-0003](0003-client-as-package.md) (the dependency that makes this a live
-question) · [architecture](../architecture.md) *What is deliberately absent* · enforced by
+question) · [ADR-0016](0016-subscribe-to-the-market-hub.md) (the market hub is a read; this record is not
+reopened) · [architecture](../architecture.md) *What is deliberately absent* · enforced by
 `scripts/check-no-order-path.sh` (gh#11)
 
 ## Context

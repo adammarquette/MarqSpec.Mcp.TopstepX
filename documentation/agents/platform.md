@@ -8,7 +8,7 @@ root [`AGENTS.md`](../../AGENTS.md) still applies. It owns the artifacts below *
 | --- | --- |
 | CI, branch-policy, CodeQL, release workflows | [`.github/workflows/`](../../.github/workflows/) |
 | The published image | [`Dockerfile`](../../Dockerfile) — built by `ci.yml`'s `image` job, pushed to GHCR only by `release.yml` |
-| Local stack | [`docker-compose.dev.yml`](../../docker-compose.dev.yml) |
+| Local stack | [`docker-compose.yml`](../../docker-compose.yml) (Postgres + server) and [`docker-compose.dev.yml`](../../docker-compose.dev.yml) (SDK overlay) |
 | Build and dependency properties | `Directory.Build.props`, `Directory.Packages.props` (Central Package Management — package *versions*, since nothing here is packaged), `global.json` |
 | Repo governance that lives in GitHub settings | [ADR-0001](../adr/0001-tag-driven-versioning.md), reproduced by `bootstrap.sh` |
 | Platform decisions | [ADR-0001](../adr/0001-tag-driven-versioning.md) |
@@ -25,7 +25,7 @@ told you.
 
 ## Non-negotiables
 
-The root contract's five apply here unchanged. Four land specifically on the pipeline:
+The root contract's six apply here unchanged. Four land specifically on the pipeline:
 
 - **A gate that cannot fail is not a gate.** Coverage artifacts were uploaded by CI and never evaluated. An
   artifact nobody reads is a report, not a gate — either wire the threshold or stop claiming the target. This
@@ -44,6 +44,8 @@ The root contract's five apply here unchanged. Four land specifically on the pip
   repository whose history already contains a rotated real-credential commit.
 
 ## Constraints that bite in CI
+
+### Shell reads that decide a verdict
 
 - **A read whose result decides a verdict is assigned on its own line and checked** (gh#126). Five shells'
   worth of near-identical shapes, and they do not behave alike — measured on bash 5.2.37 (Linux) and 5.3.15
@@ -74,6 +76,8 @@ The root contract's five apply here unchanged. Four land specifically on the pip
   read that would have stripped the merge gate), and gh#126's sweep, which found `check-no-order-path.sh`
   skipping a listed product project that was not on disk and reporting "no order path" when grep exited 2.
   That gate now prints the number of files it read, so its pass carries its own evidence.
+
+### Line endings, MinVer, SDK, chmod
 
 - **Line endings are LF everywhere**, pinned in **both** `.gitattributes` and `.editorconfig`, which have to
   agree. Otherwise `dotnet format` defaults to the host's line ending and a Windows contributor sees violations
@@ -126,6 +130,9 @@ The root contract's five apply here unchanged. Four land specifically on the pip
   the file back at `100644`. `git ls-files -s` then reports `100755` right up until the reset, so the check
   passes and the commit is still wrong. Verify with `git ls-tree HEAD <path>` *after* committing; the index is
   not the evidence. (`check-paced-paging.sh`, gh#43, cost one red CI run.)
+
+### Merge-box silence and citation parsing
+
 - **A conflicting PR gets no CI at all** — `mergeable_state: dirty` produces zero workflow runs, which reads as
   "no checks reported" rather than as a conflict. Check the state before waiting on checks.
 - **A closing keyword binds only on a PR into the DEFAULT branch** (gh#101). `closingIssuesReferences` is
@@ -290,6 +297,9 @@ The root contract's five apply here unchanged. Four land specifically on the pip
   [32905389963]: https://github.com/adammarquette/MarqSpec.Mcp.TopstepX/actions/runs/32905389963
   [32916678861]: https://github.com/adammarquette/MarqSpec.Mcp.TopstepX/actions/runs/32916678861
   [32916682980]: https://github.com/adammarquette/MarqSpec.Mcp.TopstepX/actions/runs/32916682980
+
+### Text-matching gates and their needles
+
 - **Run a text-matching gate before believing its diagnostics.** Proving the above by mutation turned up a
   second defect nobody could have read off the file: `issue-link`'s backtick diagnostic was the only one of the
   three greps without `-i`, so it matched a lowercase `` `closes #1` `` and **missed the canonical**
@@ -318,10 +328,11 @@ The root contract's five apply here unchanged. Four land specifically on the pip
   was held by nothing**, and the later ones came from auditing its own ledger rather than from a reviewer
   pointing at a rule. That gate's closer states three CommonMark conditions and shipped with cases for two.
   **And needles have a ceiling no further needle raises: they assert output that IS there** (gh#239). A stray
-  line in that gate's header printed `command not found` before every invocation with all forty-two cases
-  green — it matched no needle, and matching no needle is precisely what a needle cannot detect. The
-  assertion that catches it is about the *stream*, not the text: split stdout from stderr and require a green
-  run to write nothing to the second. **Measure the stream before asserting it is empty**, per gate — which
+  line in that gate's header printed `command not found` before every invocation with every case then in the
+  suite green — forty-two at gh#239 — it matched no needle, and matching no needle is precisely what a needle
+  cannot detect. The assertion that catches it is about the *stream*, not the text: split stdout from stderr
+  and require a green run to write nothing to the second. **Measure the stream before asserting it is empty**,
+  per gate — which
   gh#271 then did for the two gates gh#239 left uncovered, and **they answered differently, on two different
   halves of the test**. `check-doc-sizes.sh` passed both and now carries the assertion; the numbers and the
   mutant that proves it live in `check-doc-sizes-selftest.sh`'s header. **`check-image-entrypoint.sh` failed
@@ -334,6 +345,9 @@ The root contract's five apply here unchanged. Four land specifically on the pip
   nobody asked.** The assertion has nowhere to live in that suite in any case — one case, and it is **red**,
   where the assertion is deliberately exempt. `check-doc-links.sh` carries the same assertion on its
   green helper (gh#293) — measured at 0 B stderr on the real tree and on every green fixture.
+
+### Stacked PRs used to look CLEAN
+
 - **A PR into a non-integration base used to get no CI at all, and read as `CLEAN`** (gh#60). `ci.yml` and
   `codeql.yml` filtered `pull_request` to `[develop, staging, main]`, so a stacked PR onto a feature branch
   produced zero runs — and because the required checks hang off the `develop` ruleset, nothing was pending or
@@ -341,6 +355,9 @@ The root contract's five apply here unchanged. Four land specifically on the pip
   "tidy" the filter back.** Note the residue: running the checks does not make them *required* for a
   feature-branch base, because rulesets protect named branches. Visibility is what this buys; enforcement
   still happens at the `develop` gate.
+
+### Image job must match the release path
+
 - **CI must build the image by the mechanism the release uses** (gh#54). `ci.yml`'s `image` job built with raw
   `docker build` while `release.yml` built with `docker/build-push-action`, so no number of green checks could
   fail for a publish-path regression — and two major bumps merged on exactly that basis without executing once
@@ -467,6 +484,8 @@ at. That is the failure to expect from a typo here, and it is why `bootstrap.sh`
 context list onto a fresh repo. **Read this table as a claim about GitHub settings that has to be re-confirmed
 by mutation, not as a description of the workflow files.**
 
+### The required-context table
+
 | Context | develop | staging | main | Reported by |
 |---|---|---|---|---|
 | `build & unit tests` | required | required | required | `ci.yml` |
@@ -490,9 +509,9 @@ $ gh api repos/adammarquette/MarqSpec.Mcp.TopstepX/rulesets/<id> --jq \
     '[.rules[]|select(.type=="required_status_checks")|.parameters.required_status_checks[].context]'
 ```
 
-Last reconciled 2026-08-28 (gh#297) against the same three ids — the nine `develop` strings and the ten on
-each promotion rung are unchanged since gh#125, the card that exists because `image` was made required and
-this table was not told. That read settles which **strings** are required and nothing more; what shows a
+Last reconciled 2026-08-28 (gh#297); re-read on this card (gh#253) against the same three ids — the nine
+`develop` strings and the ten on each promotion rung are unchanged since gh#125, the card that exists
+because `image` was made required and this table was not told. That read settles which **strings** are required and nothing more; what shows a
 string is spelled the way its job reports is GitHub's own per-context `isRequired`, taken on a real pull
 request. That field is **GraphQL-only** — `isRequired(pullRequestNumber:)` on the `statusCheckRollup`
 contexts — and `gh pr
@@ -509,6 +528,8 @@ for all ten contexts required on that rung, `image` included, and `false` for bo
 `no-order-path`, which is required on all three anyway. `ladder` is what refuses a pull request opened straight
 at `main`; the rulesets are what stop that refusal depending on one job. A single content gate that stops one
 rung short is also a question every future reader has to re-derive.
+
+### `docs` is six steps
 
 **`docs` is one status context running six steps, so a red `docs` is not necessarily a broken link**
 (gh#160, gh#182, gh#293) — the required-context count is unchanged, and the row above says so. **Update that row and
@@ -536,11 +557,12 @@ this count together whenever a step is added**; the count is the only thing tell
   gate's own printed counts on every correct input, requires a green run to write **nothing at all to
   stderr**, and carries a **decision ledger** — the third gate here to need one. That last assertion is
   gh#239: a stray non-fatal line in the gate's header printed `command not found` before every invocation
-  and **all forty-two cases still passed**, because it sits above the gate's own `set -euo pipefail`, so the
-  exit status was unchanged and stdout stayed byte-identical. Splitting the streams and requiring stderr to
-  be empty is cheap **because it was measured rather than argued** — a green run writes exactly zero bytes
-  there, on the real tree and on the nested-repository fixture alike. **The red cases are exempt and say so
-  beside the code**: `die` reports through stderr, so there it is the answer rather than stray output.
+  and **every case then in the suite still passed** — forty-two at gh#239 — because it sits above the gate's
+  own `set -euo pipefail`, so the exit status was unchanged and stdout stayed byte-identical. Splitting the
+  streams and requiring stderr to be empty is cheap **because it was measured rather than argued** — a green
+  run writes exactly zero bytes there, on the real tree and on the nested-repository fixture alike. **The red
+  cases are exempt and say so beside the code**: `die` reports through stderr, so there it is the answer
+  rather than stray output.
   `check-doc-links.sh` proves a relative *link* resolves;
   nothing proved an *id* did, and gh#172 found two citations naming another repository's PRD entirely.
   Four things in it are worth carrying forward, because each was a defect first:
@@ -583,6 +605,8 @@ All of it rides in the one job **because `docs` is already required on all three
 needed a ruleset write and [the table above](#what-is-required-and-what-only-reports) does not change — the
 same argument as `commit-hygiene`'s merge-commit refusal below. Four new jobs would have meant four new
 required contexts added by hand, and a context nobody adds is a check that only ever reports (gh#26).
+
+### Size-gate targeting and decision ledgers
 
 **What it is pointed at is a list of (file, heading) pairs, and both halves of that list fail closed**
 (gh#178). It was one file and a fixed pair of headings until the role contracts needed pricing: the routing
@@ -691,12 +715,17 @@ file** — the band used to be about 5,800 tokens at this size, so a long sectio
 else's next pull request rather than on yours, and several landed on nobody's. Roughly 200 bytes of addition
 now moves the printed value. Correct the row in the same pull request; the gate prints the value to paste.
 
+### `commit-hygiene` refuses merge commits on `develop`
+
 **`commit-hygiene` also refuses a merge commit, on a pull request into `develop` and nowhere else** (gh#146).
 `protect-develop` (`21182074`) is `allowed_merge_methods: ["rebase"]` and carries
 `strict_required_status_checks_policy: false` — both read from that ruleset on 2026-08-28, same call as
-the table above; do not quote them from memory. The nine required contexts on it are the nine the table
-lists for `develop`; `ladder` is still absent there. *Rebase and merge* cannot replay a merge commit, so a
-branch that has ever had `git merge develop` run into it is unmergeable for good — and the pull request
+the table above; do not quote them from memory. `protect-staging` (`21182075`) and `protect-main`
+(`21182079`) still carry `allowed_merge_methods: ["merge"]` and
+`strict_required_status_checks_policy: true` — same three calls. The nine required contexts on
+`protect-develop` are the nine the table lists for `develop`; `ladder` is still absent there. *Rebase and
+merge* cannot replay a merge commit, so a branch that has ever had `git merge develop` run into it is
+unmergeable for good — and the pull request
 says so only as **"All checks have passed"** beside **"Unable to merge (rebase) — Cannot merge at this
 time"**, naming nothing. On 2026-08-24, #131, #139, #141 and #143 were approved, green and unmergeable at
 once; #131 lost five curated commits to a squash, and Dependabot disowned #143 for having been edited.
@@ -831,6 +860,8 @@ the process substitution's, so no guard is needed and no remainder is left.
 pins `EVENT` in the throwaway instead. That is the honest description of what it proves: the arm's own code
 on the input it exists for, not the event delivering it.
 
+### `image` is required; CodeQL is not
+
 **`image` IS required, on all three rungs — gh#115 made it required and said so; this table was not told.**
 The change is #121 (`Closes #115`) — `4f2c31f` on its branch, which the rebase merge landed on `develop` as
 `3bcb5fa`, so that is the SHA to `git show` here. Its message opens on exactly this: *"`image` was not a
@@ -895,6 +926,8 @@ is the never-reports failure above. Worse, a CodeQL run goes **green when it fin
 as alerts in the Security tab, not as a job failure — so requiring it would enforce "the analysis ran", never
 "the analysis was clean". What actually blocks on findings is code scanning's own merge protection, a separate
 mechanism and an ADR-sized decision.
+
+### Ruleset writes replace
 
 **A required context does NOT have to have been seen before.** "GitHub will not accept a check name it has
 never seen" was `bootstrap.sh`'s stated reason for declaring none, and it is false — inherited folklore from

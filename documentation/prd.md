@@ -298,6 +298,25 @@ The server serves OHLCV bars for a futures instrument at a requested resolution 
   and is not implemented.
 - **R-8.3** A missing instrument spec is reported as missing, never substituted.
 
+## R-9 — Volume profile
+
+- **R-9.1** A volume profile is an **aggregate over footprint cells**, never a stored third table. Volume
+  by price, the point of control and the value area are a function of the cells and the listening ranges
+  handed in ([ADR-0006](adr/0006-indicators-as-projections.md), gh#221).
+- **R-9.2** The point of control is the price with the **most volume**. A tie goes to the price closest to
+  the midpoint of the lowest and highest prices that traded; a remaining tie goes to the **lower** price.
+- **R-9.3** The value area is the conventional **70%** Market Profile expansion: start at the point of
+  control and add the next two unused prices above or below, taking the side with more volume, until seven
+  tenths of total volume is held. A side with one unused price contributes that one. The whole winning
+  group is added even when that crosses 70%. A volume tie between sides adds the lower-price side.
+- **R-9.4** A profile is **never computed across a contract roll**. A window that spans one is confined to
+  the contract in front, and the narrowing is reported — the same cut `get_key_levels` makes
+  ([ADR-0011](adr/0011-contract-roll-boundary.md)). An advisory flag beside a spliced number is still a
+  wrong number.
+- **R-9.5** The reported window comes from **`TapeCoverage`**, not the window the caller asked for. The tape
+  has a beginning and can have holes, and neither is recoverable.
+- **R-9.6** A window with **no tape refuses** rather than returning an empty profile.
+
 ## Open questions
 
 - **Q-1 — Contract roll. RESOLVED 2026-08-23** by [ADR-0011](adr/0011-contract-roll-boundary.md) (gh#42),

@@ -32,7 +32,7 @@ Solution `MarqSpec.Mcp.TopstepX.slnx`, five projects on `net10.0`:
 | Project | What it is |
 |---|---|
 | `MarqSpec.Mcp.TopstepX` | The host — tool registration, stdio + HTTP transports, composition root, cache-aside services |
-| `…​.Domain` | Pure: `Bar`, `InstrumentId`, `InstrumentSpec`, `IIndicator` and `ILevelMethod` + implementations, `BarSessionCalendar`, `BarGapDetector`, `KeyLevels`, `SessionLevels`. **References nothing** |
+| `…​.Domain` | Pure: `Bar`, `InstrumentId`, `InstrumentSpec`, `IIndicator` and `ILevelMethod` + implementations, `BarSessionCalendar`, `BarGapDetector`, `KeyLevels`, `SessionLevels`, `FootprintAggregator`, `VolumeProfileAggregator`. **References nothing** |
 | `…​.Data` | EF Core entities, `DbContext`, migrations |
 | `…​.Tests` / `…​.IntegrationTests` | Unit; and Testcontainers-backed integration |
 

@@ -47,3 +47,10 @@ performance property here, not a correctness one.
   not today's recomputation of it.
 - Losing this database loses the cache, not the truth. Everything in it is re-derivable from the vendor and from
   the bars — except observations, which are the only original data here and the only thing worth backing up.
+
+## Update (2026-08-28) — compression arrives, retention does not
+
+`Trades` (gh#215) is the store's first compression policy: chunks older than seven days compress in place.
+Retention is still deliberately absent, on the tape as on bars and indicator values. A replay reaching for the
+prints behind a past footprint should find what was actually used. The hypertable stays conditional on the
+same `pg_available_extensions` probe as `Bars`.

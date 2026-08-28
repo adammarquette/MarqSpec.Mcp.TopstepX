@@ -394,8 +394,11 @@ market has no structure*, which is a conclusion rather than a request artefact.
 **Both caps DROP; neither adjusts.** A zone wider than `maxZoneWidthPercent` of its own midpoint is gone, not
 narrowed to the cap. Beyond `maxLevels`, the most significant survive and the rest are gone, not folded into
 the ones you can see — so a survivor's `touchCount` and bounds are never inflated by a level you cannot see
-(`R-3.9`). **`levels.length == detection.maxLevels` is the only signal that a list was cut**, which is why
-the cap is in the payload.
+(`R-3.9`). **The cut signal is per method** — `methods[i].levels.length == detection.maxLevels`, and
+`capped` is true when any requested method stopped there. The top-level `levels` array is the union,
+ordered by price; its length is not a completeness signal. A silent global cap on that union would
+hide the other method's zones. The cap is in the payload so a cut method can be told from a complete
+one.
 
 **Omitting a per-call argument asks for the configured value; it does not name one.** None of the three
 carries a default in the schema, unlike `lookbackBars`, whose 500 is this server's own constant. The shipped

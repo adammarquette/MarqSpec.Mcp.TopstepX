@@ -307,13 +307,19 @@ public static class ToolPayloads
     /// The weighted, family-aware score over the requested methods, the tolerance it was computed against,
     /// and the constituents that produced it.
     /// </param>
+    /// <param name="Capped">
+    /// Whether any requested method stopped at <see cref="LevelDetection.MaxLevels"/>. The top-level
+    /// <paramref name="Levels"/> array is the union of those methods, so its length is not a
+    /// completeness signal — this flag is.
+    /// </param>
     public sealed record LevelSet(
         IReadOnlyList<LevelInfo> Levels,
         ContractCoverage Contracts,
         int DetectedOverBars,
         LevelDetection Detection,
         IReadOnlyList<LevelMethodResult>? Methods = null,
-        ConfluenceScore? Confluence = null);
+        ConfluenceScore? Confluence = null,
+        bool Capped = false);
 
     /// <summary>One requested method as <c>get_key_levels</c> reports it.</summary>
     /// <param name="Name">The method name.</param>
@@ -321,12 +327,17 @@ public static class ToolPayloads
     /// <param name="Weight">The weight the score used.</param>
     /// <param name="Levels">The zones it produced.</param>
     /// <param name="AbsentReason">Why it contributed nothing, or omitted when it contributed.</param>
+    /// <param name="Capped">
+    /// Whether this method stopped at <c>detection.maxLevels</c>. That length on <i>this</i> array
+    /// is the per-method cut signal; the top-level union is not.
+    /// </param>
     public sealed record LevelMethodResult(
         string Name,
         string Family,
         decimal Weight,
         IReadOnlyList<LevelInfo> Levels,
-        string? AbsentReason);
+        string? AbsentReason,
+        bool Capped = false);
 
     /// <summary>The confluence score a level set was produced under.</summary>
     /// <param name="Score">The strongest cluster's family-aware weight.</param>
@@ -353,9 +364,12 @@ public static class ToolPayloads
     /// parameters at all — so reporting some of them would leave the answer partly reproducible.
     /// </para>
     /// <para>
-    /// <b><see cref="MaxLevels"/> is the one a caller most needs and would least expect.</b> A list that
-    /// stops at the cap looks exactly like a market that produced that many levels, and the two are acted on
-    /// differently: <c>levels.Count == maxLevels</c> is the only thing that separates them.
+    /// <b><see cref="MaxLevels"/> is the one a caller most needs and would least expect.</b> A method
+    /// that stops at the cap looks exactly like a market that produced that many levels, and the two
+    /// are acted on differently. The cut signal is per method —
+    /// <c>methods[i].levels.length == maxLevels</c>, or <c>capped</c> on that method and on the
+    /// level set. The top-level <c>levels</c> array is the union of the requested methods, so its
+    /// length is not a completeness signal.
     /// </para>
     /// </remarks>
     /// <param name="Source">Which price on a bar each pivot was measured from.</param>

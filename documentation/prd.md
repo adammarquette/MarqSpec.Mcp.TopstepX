@@ -187,8 +187,9 @@ The server serves OHLCV bars for a futures instrument at a requested resolution 
   own price is dropped rather than narrowed to the cap, and a level beyond `MaxLevels` is dropped rather than
   folded into the survivor beside it — either would report a band at a price nothing was measured at. **Every
   method honours both caps**, so the parameters detection reports are a fact about the selected method and
-  not only about `swing`. A list that stopped at the cap can be told from a market that produced that many
-  levels.
+  not only about `swing`. A method that stopped at the cap is told apart from a market that produced that
+  many levels by `methods[i].levels.length == maxLevels` and by `capped` — not by the length of the
+  concatenated top-level list.
 - **R-3.10** The **pivot family** computes its published formula over **one finished prior session's** open,
   high, low and close. Its significance is that period's own range in ATR multiples, which is `R-3.7`'s
   session-window reading of `R-3.2` rather than a prominence a computed line cannot have — so one score
@@ -207,8 +208,10 @@ The server serves OHLCV bars for a futures instrument at a requested resolution 
   line. A requested method that contributed nothing is named, with why: refused, no data, or no levels.
   The same inputs always produce the same score; nothing in the scoring path reads a clock, a store or a
   configuration singleton at evaluation (ADR-0006). Two callers with different tolerances cannot share a
-  score, and the tolerance is on the result to prove it. `MergeOverlapping` and `ApplyClose` remain the
-  carriers of `R-3.1` and `R-3.3`; confluence scores what they produce.
+  score, and the tolerance is on the result to prove it. The top-level `levels` array is the union of the
+  requested methods, ordered by price; `capped` says whether any method stopped at `MaxLevels` (`R-3.9`).
+  `MergeOverlapping` and `ApplyClose` remain the carriers of `R-3.1` and `R-3.3`; confluence scores what
+  they produce.
 - **R-3.13** A bucket that **overhangs a session close** is refused for `session` and the pivot family, at
   the tool boundary, from the stated `resolutionMinutes` — `Detect` does not infer a bar's width. The
   initial balance is refused when the resolution is coarser than the hour it measures. Both are absences,

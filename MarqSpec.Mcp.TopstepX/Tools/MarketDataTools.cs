@@ -303,9 +303,12 @@ public sealed class MarketDataTools(
         + "because the default is an operator setting rather than a constant — omitting one asks for the "
         + "configured value, it does not name a particular one. Zone width, the significance floor and the "
         + "two caps are operator settings only, so every level this server reports is sized, filtered and "
-        + "capped alike and two of them can be compared. At most `detection.maxLevels` levels come back, the "
-        + "most significant ones; a list exactly that long is a CAPPED list, and the levels below it are "
-        + "absent rather than folded into the ones you can see. "
+        + "capped alike and two of them can be compared. Each method returns at most `detection.maxLevels` "
+        + "levels, the most significant ones; `methods[i].levels.length == detection.maxLevels` is the "
+        + "per-method signal that that method was cut, and `capped` is true when any requested method "
+        + "stopped there. The top-level `levels` array is the union, ordered by price — its length is "
+        + "not a completeness signal. Levels below a method's cap are absent rather than folded into "
+        + "the ones you can see. "
         + "The response reports the detection it actually ran under as `detection`, so an empty `levels` can "
         + "be told from a market with no structure — read it with `detectedOverBars`. "
         + "`methods` selects which detectors run — `swing`, `session`, `pivot-classic`, `pivot-fibonacci`, "
@@ -469,8 +472,23 @@ public sealed class MarketDataTools(
                 method.Family,
                 weight,
                 infos,
-                zones.Count == 0 ? ConfluenceScoring.NoLevelsReason : null));
+                zones.Count == 0 ? ConfluenceScoring.NoLevelsReason : null,
+                Capped: zones.Count == detection.MaxLevels));
         }
+
+        combined.Sort(static (left, right) =>
+        {
+            int byPrice = left.Midpoint.CompareTo(right.Midpoint);
+            if (byPrice != 0)
+            {
+                return byPrice;
+            }
+
+            int byBottom = left.Bottom.CompareTo(right.Bottom);
+            return byBottom != 0
+                ? byBottom
+                : string.CompareOrdinal(left.Method, right.Method);
+        });
 
         ConfluenceResult scored = ConfluenceScoring.Score(
             inputs, _detection.Weights, detection.ZoneAtrMultiple);
@@ -486,7 +504,8 @@ public sealed class MarketDataTools(
                 scored.Tolerance,
                 [.. scored.Constituents.Select(c =>
                     new ToolPayloads.ConfluenceConstituentInfo(c.Method, c.Family, c.Weight, c.ZoneCount))],
-                [.. scored.Absent.Select(a => new ToolPayloads.ConfluenceAbsenceInfo(a.Method, a.Reason))]));
+                [.. scored.Absent.Select(a => new ToolPayloads.ConfluenceAbsenceInfo(a.Method, a.Reason))]),
+            Capped: methodResults.Exists(static m => m.Capped));
     }
 
     /// <summary>

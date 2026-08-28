@@ -43,6 +43,7 @@ public sealed class SchemaTests(SchemaFixture fixture)
     [Theory]
     [InlineData("Bars")]
     [InlineData("IndicatorValues")]
+    [InlineData("Trades")]
     public async Task TimeSeriesTables_AreHypertables(string table)
     {
         long count = await ScalarAsync(
@@ -50,6 +51,38 @@ public sealed class SchemaTests(SchemaFixture fixture)
             ("t", table));
 
         count.Should().Be(1, "the migration probes for timescaledb and this image has it");
+    }
+
+    [Theory]
+    [InlineData("TapeCoverage")]
+    [InlineData("FootprintCells")]
+    public async Task LedgerAndProjectionTables_AreNotHypertables(string table)
+    {
+        // TapeCoverage is a listening ledger (like BarCoverage); FootprintCells are a projection
+        // keyed on bucket+price. Neither is the high-volume tape, so neither is partitioned.
+        long tables = await ScalarAsync(
+            "SELECT count(*) FROM information_schema.tables "
+            + "WHERE table_schema = 'public' AND table_name = @t;",
+            ("t", table));
+        tables.Should().Be(1);
+
+        long hypertables = await ScalarAsync(
+            "SELECT count(*) FROM timescaledb_information.hypertables WHERE hypertable_name = @t;",
+            ("t", table));
+        hypertables.Should().Be(0);
+    }
+
+    [Fact]
+    public async Task Trades_CarriesACompressionPolicy()
+    {
+        // gh#215 / ADR-0004. This is the store's first compression policy: keep the tape, shrink
+        // the chunks. Compression is a different job type from retention, so the no-retention
+        // assertion below staying green is not evidence this was considered.
+        long jobs = await ScalarAsync(
+            "SELECT count(*) FROM timescaledb_information.jobs "
+            + "WHERE proc_name = 'policy_compression' AND hypertable_name = 'Trades';");
+
+        jobs.Should().Be(1);
     }
 
     [Fact]
@@ -118,6 +151,47 @@ public sealed class SchemaTests(SchemaFixture fixture)
             + "WHERE table_name = 'Bars' AND column_name = 'ContractId' AND is_nullable = 'YES';");
 
         nullable.Should().Be(1);
+    }
+
+    [Fact]
+    public async Task ATradesContractId_IsRequiredBecauseAPrintWithoutAContractHasNoMeaning()
+    {
+        // gh#215. Unlike Bars, where ContractId is nullable provenance beside the key, a tape row
+        // that cannot be attributed cannot be stored. The column is in the key and NOT NULL.
+        long notNullable = await ScalarAsync(
+            "SELECT count(*) FROM information_schema.columns "
+            + "WHERE table_name = 'Trades' AND column_name = 'ContractId' AND is_nullable = 'NO';");
+
+        notNullable.Should().Be(1);
+    }
+
+    [Fact]
+    public async Task FootprintCells_HaveNoContractId_TheAsymmetryTheDictionaryHasToState()
+    {
+        // The cell key is (venue, instrument, resolution, bucket, price). Contract is a property
+        // of the trades that produced the cell, not of the cell — same reason IndicatorValues
+        // does not copy Bars.ContractId. Stating the absence is what keeps someone from "fixing"
+        // it later.
+        long columns = await ScalarAsync(
+            "SELECT count(*) FROM information_schema.columns "
+            + "WHERE table_name = 'FootprintCells' AND column_name = 'ContractId';");
+
+        columns.Should().Be(0);
+    }
+
+    [Theory]
+    [InlineData("Trades", "Price")]
+    [InlineData("FootprintCells", "Price")]
+    public async Task TapePrices_AreNumericEighteenEight(string table, string column)
+    {
+        long count = await ScalarAsync(
+            "SELECT count(*) FROM information_schema.columns "
+            + "WHERE table_name = @t AND column_name = @c "
+            + "AND numeric_precision = 18 AND numeric_scale = 8;",
+            ("t", table),
+            ("c", column));
+
+        count.Should().Be(1);
     }
 
     [Fact]
@@ -196,6 +270,119 @@ public sealed class SchemaTests(SchemaFixture fixture)
         relations.Should().Be(0);
     }
 
+    [Fact]
+    public async Task TwoPrintsAtTheSameMillisecond_SurviveBecauseSequenceBreaksTheTie()
+    {
+        // The venue supplies no trade id, and two prints share a millisecond routinely. Without
+        // Sequence the primary key silently collapses them and the survivor looks ordinary.
+        await using TopstepXDbContext database = _fixture.CreateContext();
+        DateTimeOffset printed = new(2026, 8, 28, 14, 0, 0, TimeSpan.Zero);
+
+        database.Trades.AddRange(
+            NewTrade("TIE", printed, sequence: 1, price: 5000m),
+            NewTrade("TIE", printed, sequence: 2, price: 5000.25m));
+        await database.SaveChangesAsync();
+
+        await using TopstepXDbContext reader = _fixture.CreateContext();
+        List<decimal> prices = await reader.Trades
+            .Where(t => t.Instrument == "TIE")
+            .OrderBy(t => t.Sequence)
+            .Select(t => t.Price)
+            .ToListAsync();
+
+        prices.Should().Equal(5000m, 5000.25m);
+    }
+
+    [Fact]
+    public async Task InsertingASecondPrintForTheSameSequence_IsRejected()
+    {
+        await using TopstepXDbContext database = _fixture.CreateContext();
+        DateTimeOffset printed = new(2026, 8, 28, 15, 0, 0, TimeSpan.Zero);
+
+        database.Trades.Add(NewTrade("DUPETAPE", printed, sequence: 1, price: 5000m));
+        await database.SaveChangesAsync();
+
+        await using TopstepXDbContext second = _fixture.CreateContext();
+        second.Trades.Add(NewTrade("DUPETAPE", printed, sequence: 1, price: 5001m));
+
+        Func<Task> save = () => second.SaveChangesAsync();
+        await save.Should().ThrowAsync<DbUpdateException>();
+    }
+
+    [Fact]
+    public async Task ATradeWithoutAContract_IsRejected()
+    {
+        // The column is NOT NULL in the database. Empty-string would still be a value; the
+        // required-ness is the decision that a print with no attribution has no meaning.
+        long notNullable = await ScalarAsync(
+            "SELECT count(*) FROM information_schema.columns "
+            + "WHERE table_name = 'Trades' AND column_name = 'ContractId' AND is_nullable = 'NO';");
+        notNullable.Should().Be(1);
+
+        await using NpgsqlConnection connection = new(_fixture.ConnectionString);
+        await connection.OpenAsync();
+        await using NpgsqlCommand command = new(
+            """
+            INSERT INTO "Trades" ("Venue", "Instrument", "ContractId", "TradeTimeUtc", "Sequence",
+                                  "Price", "Size", "Direction", "RecordedAt")
+            VALUES ('test', 'NOCON', NULL, TIMESTAMPTZ '2026-08-28 16:00:00+00', 1,
+                    5000, 1, 1, TIMESTAMPTZ '2026-08-28 16:00:00+00');
+            """,
+            connection);
+
+        Func<Task> insert = () => command.ExecuteNonQueryAsync();
+        await insert.Should().ThrowAsync<PostgresException>()
+            .Where(ex => ex.SqlState == PostgresErrorCodes.NotNullViolation);
+    }
+
+    [Fact]
+    public async Task WritingTheSameFootprintCellTwice_UpdatesRatherThanDuplicating()
+    {
+        await using TopstepXDbContext database = _fixture.CreateContext();
+        DateTimeOffset bucket = new(2026, 8, 28, 14, 0, 0, TimeSpan.Zero);
+
+        database.FootprintCells.Add(NewCell("CELL", bucket, price: 5000m, buy: 10, sell: 4));
+        await database.SaveChangesAsync();
+
+        FootprintCellRecord stored = await database.FootprintCells.SingleAsync(c =>
+            c.Instrument == "CELL" && c.BucketStart == bucket && c.Price == 5000m);
+        stored.BuyVolume = 12;
+        await database.SaveChangesAsync();
+
+        List<FootprintCellRecord> rows = await database.FootprintCells
+            .Where(c => c.Instrument == "CELL" && c.BucketStart == bucket && c.Price == 5000m)
+            .ToListAsync();
+
+        rows.Should().ContainSingle();
+        rows[0].BuyVolume.Should().Be(12);
+    }
+
+    [Fact]
+    public async Task TapeCoverage_RoundTripsAHalfOpenListeningRange()
+    {
+        await using TopstepXDbContext database = _fixture.CreateContext();
+        DateTimeOffset start = new(2026, 8, 28, 13, 0, 0, TimeSpan.Zero);
+        DateTimeOffset end = start.AddHours(1);
+
+        database.TapeCoverage.Add(new TapeCoverageRecord
+        {
+            Venue = "test",
+            Instrument = "COV",
+            ContractId = "CON.F.US.EP.U26",
+            RangeStart = start,
+            RangeEnd = end,
+            RecordedAt = DateTimeOffset.UtcNow,
+        });
+        await database.SaveChangesAsync();
+
+        await using TopstepXDbContext reader = _fixture.CreateContext();
+        TapeCoverageRecord stored = await reader.TapeCoverage.SingleAsync(c => c.Instrument == "COV");
+
+        stored.RangeStart.Should().Be(start);
+        stored.RangeEnd.Should().Be(end);
+        stored.ContractId.Should().Be("CON.F.US.EP.U26");
+    }
+
     private static BarRecord NewBar(string instrument, DateTimeOffset bucket, decimal close) => new()
     {
         Venue = "test",
@@ -209,6 +396,40 @@ public sealed class SchemaTests(SchemaFixture fixture)
         Volume = 1_000,
         RecordedAt = DateTimeOffset.UtcNow,
     };
+
+    private static TradeRecord NewTrade(
+        string instrument,
+        DateTimeOffset printed,
+        long sequence,
+        decimal price) => new()
+        {
+            Venue = "test",
+            Instrument = instrument,
+            ContractId = "CON.F.US.EP.U26",
+            TradeTimeUtc = printed,
+            Sequence = sequence,
+            Price = price,
+            Size = 1,
+            Direction = TradeDirection.Buy,
+            RecordedAt = DateTimeOffset.UtcNow,
+        };
+
+    private static FootprintCellRecord NewCell(
+        string instrument,
+        DateTimeOffset bucket,
+        decimal price,
+        long buy,
+        long sell) => new()
+        {
+            Venue = "test",
+            Instrument = instrument,
+            ResolutionMinutes = 5,
+            BucketStart = bucket,
+            Price = price,
+            BuyVolume = buy,
+            SellVolume = sell,
+            RecordedAt = DateTimeOffset.UtcNow,
+        };
 
     private async Task<long> ScalarAsync(string sql, params (string Name, object Value)[] parameters)
     {

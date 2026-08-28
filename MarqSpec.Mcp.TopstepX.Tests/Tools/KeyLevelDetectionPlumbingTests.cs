@@ -486,6 +486,7 @@ public sealed class KeyLevelDetectionPlumbingTests : IDisposable
             .GetKeyLevels("ES", 5, Bars, cancellationToken: CancellationToken.None);
 
         levels.Methods.Should().ContainSingle().Which.Name.Should().Be("swing");
+        levels.Capped.Should().BeFalse("one swing zone under a cap of 1000 is a complete list");
         levels.Confluence.Should().NotBeNull();
         levels.Confluence!.Tolerance.Should().Be(0.5m);
         levels.Confluence.Constituents.Should().ContainSingle(c => c.Method == "swing");
@@ -543,6 +544,43 @@ public sealed class KeyLevelDetectionPlumbingTests : IDisposable
             a => a.Method == "swing" && a.Reason == SessionBucketGuard.RefusalReason);
         levels.Methods!.Single(m => m.Name == "swing").AbsentReason.Should()
             .NotBe(SessionBucketGuard.RefusalReason);
+    }
+
+    [Fact]
+    public async Task ACappedSwingPlusANonEmptySession_CannotLookLikeACompleteMarket()
+    {
+        // The review failure: each method is capped, then survivors are concatenated. Swing at the
+        // cap plus any session zones makes `levels.length == detection.maxLevels` false, so a caller
+        // taught that equality is the only cut-signal treats a truncated swing list as a complete
+        // market. The completeness flag has to stay true of what the caller is taught to read;
+        // capping the concatenated list would hide the session zones and recreate the lie.
+        SeedTwoSessionsOfHourlyBars();
+
+        ToolPayloads.LevelSet levels = await Tools(Detection(
+                pivotLookback: 1,
+                minSignificance: 0m,
+                maxLevels: 1))
+            .GetKeyLevels(
+                "ES",
+                60,
+                11,
+                methods: "swing,session",
+                cancellationToken: CancellationToken.None);
+
+        ToolPayloads.LevelMethodResult swing = levels.Methods!.Single(m => m.Name == "swing");
+        ToolPayloads.LevelMethodResult session = levels.Methods!.Single(m => m.Name == "session");
+
+        swing.Levels.Should().HaveCount(1, "MaxLevels=1 cut swing; more structure is in the window");
+        session.Levels.Should().NotBeEmpty("the prior session is in the store, so session contributes");
+        levels.Levels.Count.Should().BeGreaterThan(
+            levels.Detection.MaxLevels,
+            "the concatenated list is longer than the per-method cap — the old top-level equality is false");
+
+        levels.Capped.Should().BeTrue(
+            "a caller who only reads the top-level array must still be told a method was cut");
+        swing.Capped.Should().BeTrue();
+        levels.Levels.Select(l => l.Midpoint).Should().BeInAscendingOrder(
+            "LevelSet still claims the combined list is ordered by price");
     }
 
     // ── Composition ─────────────────────────────────────────────────────────────────────────────────
@@ -676,6 +714,51 @@ public sealed class KeyLevelDetectionPlumbingTests : IDisposable
         Add(monday, 7, 300m);
         Add(monday, 19, 100m);
         Add(tuesday, 7, 100m);
+        _database.SaveChanges();
+    }
+
+    /// <summary>
+    /// The session-method fixture as hourly rows: a finished prior day plus Tuesday's open, so
+    /// <c>session</c> has zones and <c>swing</c> has more than one pivot to cap.
+    /// </summary>
+    private void SeedTwoSessionsOfHourlyBars()
+    {
+        DateOnly aug13 = new(2026, 8, 13);
+        DateOnly aug14 = new(2026, 8, 14);
+        DateOnly aug16 = new(2026, 8, 16);
+        DateOnly aug17 = new(2026, 8, 17);
+        DateOnly aug18 = new(2026, 8, 18);
+
+        void Add(DateOnly date, int hour, decimal open, decimal high, decimal low, decimal close)
+        {
+            DateTimeOffset start = MarketClock.FromMarket(date, new TimeOnly(hour, 0)).ToUniversalTime();
+            _database.Bars.Add(new BarRecord
+            {
+                Venue = "test",
+                Instrument = "ES",
+                ResolutionMinutes = 60,
+                BucketStart = start,
+                Open = open,
+                High = high,
+                Low = low,
+                Close = close,
+                Volume = 1_000,
+                ContractId = Contract,
+                RecordedAt = start,
+            });
+        }
+
+        Add(aug13, 17, 100m, 104m, 99m, 102m);
+        Add(aug14, 9, 102m, 108m, 101m, 106m);
+        Add(aug14, 15, 106m, 107m, 103m, 105m);
+        Add(aug16, 17, 105m, 110m, 104m, 109m);
+        Add(aug17, 9, 109m, 120m, 108m, 118m);
+        Add(aug17, 15, 118m, 119m, 112m, 115m);
+        Add(aug17, 17, 115m, 130m, 114m, 128m);
+        Add(aug17, 20, 128m, 131m, 125m, 126m);
+        Add(aug17, 23, 126m, 127m, 121m, 122m);
+        Add(aug18, 2, 122m, 124m, 118m, 123m);
+        Add(aug18, 9, 123m, 126m, 117m, 125m);
         _database.SaveChanges();
     }
 }

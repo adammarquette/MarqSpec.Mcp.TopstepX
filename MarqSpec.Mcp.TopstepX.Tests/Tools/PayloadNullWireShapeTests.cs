@@ -153,6 +153,17 @@ public sealed class PayloadNullWireShapeTests
     }
 
     [Fact]
+    public void LevelSetCapped_IsWrittenEvenWhenFalse()
+    {
+        JsonElement set = Wire(new ToolPayloads.LevelSet([], EmptyCoverage, 0, ShippedDetection));
+
+        set.TryGetProperty("capped", out JsonElement capped).Should().BeTrue(
+            "dropping a false capped flag would leave only the old length-equals-cap test, which is a lie "
+            + "once levels is a union of methods");
+        capped.GetBoolean().Should().BeFalse();
+    }
+
+    [Fact]
     public void SnapshotIndicator_KeepsItsKey_AndCarriesNull_WhenItCannotMeasure()
     {
         JsonElement slice = Wire(new ToolPayloads.ResolutionSnapshot(

@@ -151,7 +151,8 @@ public sealed class KeyLevelDetectionOptions : IValidatableObject
     /// Significance is prominence in ATR multiples, which is the one score this server already treats as
     /// comparable across instruments and regimes (<c>R-3.2</c>), so it is the ranking that means the same thing
     /// on ES and on NQ. <c>maxLevels</c> is reported beside the answer, so a caller holding exactly this
-    /// many levels can tell a capped list from a complete one.
+    /// many levels on <i>that method</i> can tell a capped list from a complete one. The top-level
+    /// union's length is not that signal — <c>capped</c> is.
     /// </para>
     /// <para>
     /// <b>Zero is refused.</b> A cap of zero empties every level set the server can produce, and an empty

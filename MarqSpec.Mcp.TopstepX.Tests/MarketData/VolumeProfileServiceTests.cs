@@ -26,6 +26,7 @@ public sealed class VolumeProfileServiceTests : IDisposable
     private static readonly InstrumentId _es = new("ES");
 
     private static readonly DateTimeOffset _ten = new(2026, 8, 18, 10, 0, 0, TimeSpan.Zero);
+    private static readonly DateTimeOffset _twelve = new(2026, 8, 18, 12, 0, 0, TimeSpan.Zero);
     private static readonly DateTimeOffset _fourteen = new(2026, 8, 18, 14, 0, 0, TimeSpan.Zero);
     private static readonly DateTimeOffset _sixteen = new(2026, 8, 18, 16, 0, 0, TimeSpan.Zero);
     private static readonly DateTimeOffset _bucket1030 = new(2026, 8, 18, 10, 30, 0, TimeSpan.Zero);
@@ -78,6 +79,28 @@ public sealed class VolumeProfileServiceTests : IDisposable
         read.Window.Narrowed.Should().BeTrue();
         read.Profile.PointOfControl.Should().Be(5000m);
         read.Profile.TotalVolume.Should().Be(5);
+    }
+
+    [Fact]
+    public async Task AListeningHole_UsesOnlyTheNewestRun_AndDoesNotTakeTheMorningPoc()
+    {
+        // Same contract, hole at [12:00, 14:00). 1000 at 100 in the morning run would
+        // steal the POC if the host still unioned both intervals under an envelope.
+        await SeedCoverageAsync(
+            Coverage(Next, _ten, _twelve),
+            Coverage(Next, _fourteen, _sixteen));
+        await SeedCellsAsync(
+            Cell(_bucket1030, 100m, buy: 1000, sell: 0),
+            Cell(_bucket1430, 140m, buy: 10, sell: 0));
+
+        VolumeProfileRead read = await Service().ReadAsync(
+            Venue, _es, FiveMinutes, _ten, _sixteen, CancellationToken.None);
+
+        read.Window.Start.Should().Be(_fourteen);
+        read.Window.End.Should().Be(_sixteen);
+        read.Window.Narrowed.Should().BeTrue();
+        read.Profile.PointOfControl.Should().Be(140m);
+        read.Profile.TotalVolume.Should().Be(10);
     }
 
     [Fact]

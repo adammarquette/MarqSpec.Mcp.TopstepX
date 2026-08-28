@@ -89,16 +89,38 @@ public sealed class VolumeProfileWindowTests
     }
 
     [Fact]
-    public void AdjacentCoverageHoles_KeepTheEnvelopeOfTheFrontContract()
+    public void AdjacentCoverageHoles_ConfineToTheNewestListeningRun_AndReportTheNarrowing()
     {
-        // Z26 listened [10:00, 12:00) and [14:00, 16:00). The ask is the whole afternoon.
-        // The reported window is the envelope of what that contract covered inside the ask.
+        // Z26 listened [10:00, 12:00) and [14:00, 16:00) — a permanent hole at [12:00, 14:00).
+        // Collapsing those into a [10:00, 16:00) envelope with Narrowed=false is the short
+        // series that does not say so: a caller cannot tell this from uninterrupted listening.
+        // Same cut as get_key_levels / Newest: keep the newest contiguous run, report it.
         CoveredTapeWindow window = VolumeProfileAggregator.Confine(
             _ten,
             _sixteen,
             [
                 new ListeningRange(Next, _ten, _twelve),
                 new ListeningRange(Next, _fourteen, _sixteen),
+            ]);
+
+        window.ContractId.Should().Be(Next);
+        window.Start.Should().Be(_fourteen);
+        window.End.Should().Be(_sixteen);
+        window.Narrowed.Should().BeTrue();
+    }
+
+    [Fact]
+    public void AdjacentTouchingRanges_MergeIntoOneRun_AndAreNotAHole()
+    {
+        // Half-open ranges that meet at 12:00 leave no instant uncovered. Merging them
+        // is the honest continuous window; treating the join as a hole would refuse a
+        // ledger that was written correctly.
+        CoveredTapeWindow window = VolumeProfileAggregator.Confine(
+            _ten,
+            _sixteen,
+            [
+                new ListeningRange(Next, _ten, _twelve),
+                new ListeningRange(Next, _twelve, _sixteen),
             ]);
 
         window.ContractId.Should().Be(Next);

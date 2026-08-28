@@ -291,13 +291,18 @@ Not a hypertable. This is a ledger, like §3, not a time series of events.
 | `RecordedAt` | `timestamptz` | |
 
 Nothing here is authoritative — every row is reproducible from §7, and that is the point
-([ADR-0006](adr/0006-indicators-as-projections.md), gh#220). Buckets align with §1 at the same resolution, so
-a footprint bar and a price bar cover the same window.
+([ADR-0006](adr/0006-indicators-as-projections.md), gh#220). The aggregation is a pure function of the
+prints handed in: it reads no clock. `RecordedAt` is when the host pass last wrote the row, handed in.
+An `Unknown` direction is refused, never counted as a buy (`TradeLogType.Buy = 0` is the trap). Buckets
+use the same .NET-epoch grid as §1 (`BarGapDetector.AlignDown`), so a footprint bar and a price bar
+cover the same window.
 
 **There is no `ContractId` here, and that is deliberate — the inverse of §7.** A cell is always computed
 inside a single contract run; the contract is a property of the trades in the bucket, and duplicating it
 would be a second copy of a fact that can disagree with the first. The projection never smooths across a
-roll. **Two reads that need the contract join §7.**
+roll — a bucket whose counted prints come from more than one contract produces no cell (ADR-0011). A
+rebuild reconciles: cells the current tape no longer justifies are removed, not left behind. An empty
+tape yields empty cells, not a fabricated profile. **Two reads that need the contract join §7.**
 
 Not a hypertable. The tape is the high-volume series; this is its projection, rebuildable.
 

@@ -27,13 +27,14 @@ Three assemblies, layered so the pure part stays pure:
 
 | Project | Depends on | Holds |
 |---|---|---|
-| `…​.Domain` | **nothing** | `Bar`, `InstrumentId`, `InstrumentSpec`, `IIndicator` and `ILevelMethod` + implementations, `BarSessionCalendar`, `BarGapDetector`, `KeyLevels`, `SessionLevels`, `PivotLevels` |
+| `…​.Domain` | **nothing** | `Bar`, `InstrumentId`, `InstrumentSpec`, `IIndicator` and `ILevelMethod` + implementations, `BarSessionCalendar`, `BarGapDetector`, `KeyLevels`, `SessionLevels`, `PivotLevels`, `TradeDirection`, `FootprintAggregator` |
 | `…​.Data` | Domain | Entities, `DbContext`, migrations |
 | `MarqSpec.Mcp.TopstepX` | Domain, Data, the venue client | Tools, transports, cache-aside services, the ProjectX adapter, composition root |
 
 `Domain`'s emptiness is load-bearing. An indicator is a pure function of the bars handed in, and that is what
 makes "rebuild = replay" true — a dependency on a clock or a store there would make a recomputation depend on
-*when* it ran, and no test would notice.
+*when* it ran, and no test would notice. The footprint aggregation is the same shape: a pure function of the
+prints handed in, which is why `TradeDirection` lives here rather than on the store entity (gh#220).
 
 **A session boundary is the one thing bars cannot supply, and it arrives by construction rather than by
 widening a signature.** `vwap`, `session` and all five `pivot-*` need to know where a session begins; neither

@@ -1,6 +1,7 @@
 using FluentAssertions;
 using MarqSpec.Mcp.TopstepX.Data;
 using MarqSpec.Mcp.TopstepX.Data.Entities;
+using MarqSpec.Mcp.TopstepX.Domain.MarketData;
 using Microsoft.EntityFrameworkCore;
 using Npgsql;
 

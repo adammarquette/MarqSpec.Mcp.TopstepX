@@ -1,24 +1,6 @@
+using MarqSpec.Mcp.TopstepX.Domain.MarketData;
+
 namespace MarqSpec.Mcp.TopstepX.Data.Entities;
-
-/// <summary>Which side of the tape produced a print.</summary>
-/// <remarks>
-/// <para>
-/// Zero is <see cref="Unknown"/>, and unlike <see cref="EmbeddingOwnerKind"/> it <b>is</b> storable.
-/// An unstated or unparseable venue direction must remain missing rather than silently become a buy
-/// (<c>TradeLogType.Buy = 0</c> is the trap this exists to survive — gh#213, gh#220).
-/// </para>
-/// </remarks>
-public enum TradeDirection
-{
-    /// <summary>The direction could not be determined. Stored, never defaulted to a side.</summary>
-    Unknown = 0,
-
-    /// <summary>The aggressor was lifting (buying).</summary>
-    Buy = 1,
-
-    /// <summary>The aggressor was hitting (selling).</summary>
-    Sell = 2,
-}
 
 /// <summary>
 /// One print on the trade tape — the order-flow system of record (data dictionary §7).

@@ -153,6 +153,49 @@ public sealed class SnapshotIndicatorProvenanceTests : IDisposable
     }
 
     [Fact]
+    public async Task EveryReadingThatIsThere_CarriesBothItsValueAndItsBucket()
+    {
+        // The invariant the payload's own documentation states and nothing else checks: inside this map the
+        // reading's `{}` form -- every field null, which is what `get_indicator_at` returns for cannot-measure
+        // -- never occurs, because cannot-measure is the map's null instead. It holds because GetIndicatorAt
+        // returns (null, null) when there is no row and (value, bucket, contract) when there is, and the
+        // stored value column is not nullable. That is two facts in another file, so it is pinned here rather
+        // than asserted in prose: a reading with a value and no bucket would be a number with no as-of again,
+        // which is the whole of gh#286.
+        SnapshotTools snapshot = await ComposeAsync();
+
+        ToolPayloads.MarketSnapshot payload =
+            await snapshot.GetMarketSnapshot("ES", [5], TotalBars, CancellationToken.None);
+
+        ToolPayloads.ResolutionSnapshot slice = payload.PerResolution.Should().ContainSingle().Subject;
+
+        // Both halves have to be non-empty or this measures one branch and calls it the rule. The fixture
+        // produces both: the short-period indicators and VWAP read, the Bollinger and MACD windows do not.
+        slice.Indicators.Values.Where(r => r is not null).Should().NotBeEmpty(
+            "a slice where nothing measured would satisfy the loop below without entering it");
+        slice.Indicators.Values.Where(r => r is null).Should().NotBeEmpty(
+            "and one where everything measured would never exercise the null this map keeps");
+
+        foreach ((string name, ToolPayloads.IndicatorReading? reading) in slice.Indicators)
+        {
+            if (reading is null)
+            {
+                continue;
+            }
+
+            reading.Value.Should().NotBeNull(
+                "{0} is present in the map, and a present entry means measured -- cannot-measure is the "
+                + "map's own null",
+                name);
+
+            reading.BucketStart.Should().NotBeNull(
+                "{0} carries a number, and a number with no bucket is exactly the unanchored reading this "
+                + "payload shape exists to prevent",
+                name);
+        }
+    }
+
+    [Fact]
     public async Task ABarLessSlice_SaysHowFarBehindTheAnchorItsReadingWasComputed()
     {
         // The state gh#268 pinned and gh#286 is about: an instrument that stopped updating. The look-back

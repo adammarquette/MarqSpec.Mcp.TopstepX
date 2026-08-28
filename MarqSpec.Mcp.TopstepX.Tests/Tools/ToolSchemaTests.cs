@@ -247,15 +247,23 @@ public sealed class ToolSchemaTests
 
     // ── Descriptions against the shape a missing number takes on the wire ────────────────────────────
 
-    public static TheoryData<string, string> EveryToolAbsentField()
+    /// <summary>Every (tool, field) pair a description must not aim a <c>null</c> comparison at.</summary>
+    /// <remarks>
+    /// <b><c>onlyThroughMap</c> is carried in the data rather than recomputed</b>, so the distinction shows up
+    /// in the test's own name. A field reached only through a dictionary's value type is <i>not</i> dropped
+    /// from the result, so the remediation the message gives has to differ — and a gate that told an author
+    /// the wrong remediation would produce the confidently-backwards guidance it exists to stop (gh#286
+    /// review).
+    /// </remarks>
+    public static TheoryData<string, string, bool> EveryToolAbsentField()
     {
-        TheoryData<string, string> data = [];
+        TheoryData<string, string, bool> data = [];
 
         foreach (MethodInfo method in ToolMethods())
         {
-            foreach (string field in AbsentFields(method.ReturnType))
+            foreach ((string field, bool onlyThroughMap) in AbsentFields(method.ReturnType))
             {
-                data.Add(method.DeclaringType!.Name + "." + method.Name, field);
+                data.Add(method.DeclaringType!.Name + "." + method.Name, field, onlyThroughMap);
             }
         }
 
@@ -264,7 +272,10 @@ public sealed class ToolSchemaTests
 
     [Theory]
     [MemberData(nameof(EveryToolAbsentField))]
-    public void ADescription_DoesNotTellACallerToCompareAnAbsentFieldToNull(string tool, string field)
+    public void ADescription_DoesNotTellACallerToCompareAnAbsentFieldToNull(
+        string tool,
+        string field,
+        bool onlyThroughMap)
     {
         // The third member of the promise-vs-reality family, and the one that reaches the RESULT rather than
         // the arguments. `get_indicator_at` said "A null value means CANNOT MEASURE" while `value` is a
@@ -277,16 +288,30 @@ public sealed class ToolSchemaTests
         // closed pattern list on the half that is prose. It is a NEGATIVE gate: it bans the comparison
         // shapes that produce the bug, and says nothing about how a description phrases the truth. A wrong
         // sentence in some shape not listed here escapes it, which is the honest limit of gating prose.
+        //
+        // THE BAN IS ONE RULE; THE REMEDIATION IS TWO, and gh#286 is why. A field reached only through a
+        // dictionary's value type is not dropped from anything, so telling its author to "say the key is
+        // ABSENT instead" sends them to write a key-presence test that is wrong in both directions -- it
+        // throws on the entry that is null, and can never be false on the entry that is not. The comparison
+        // is still banned, because the entry above the field can be null and a field-level null test skips
+        // that question; only the sentence explaining why differs.
         MethodInfo method = ToolMethods().Single(m => m.DeclaringType!.Name + "." + m.Name == tool);
         string description = method.GetCustomAttribute<DescriptionAttribute>()?.Description ?? string.Empty;
+
+        string why = onlyThroughMap
+            ? "{0} reaches `{1}` only through a MAP VALUE, so `{1}` is never dropped -- but the entry holding "
+                + "it can itself be null, and a null test aimed at `{1}` skips that question and dereferences "
+                + "it. Point the caller at the ENTRY; do not tell them to test for the `{1}` key either, "
+                + "because on a measured entry it is always there. Current text: \"{2}\""
+            : "{0} DROPS `{1}` from the result when it has nothing to report, so an agent told to test it "
+                + "against null compares undefined to null, gets false, and concludes the server measured. "
+                + "Say the key is ABSENT instead. Current text: \"{2}\"";
 
         foreach (string shape in _nullComparisons)
         {
             description.Should().NotMatchRegex(
                 shape.Replace(FieldToken, Regex.Escape(field), StringComparison.Ordinal),
-                "{0} DROPS `{1}` from the result when it has nothing to report, so an agent told to test it "
-                + "against null compares undefined to null, gets false, and concludes the server measured. "
-                + "Say the key is ABSENT instead. Current text: \"{2}\"",
+                why,
                 tool,
                 field,
                 description);
@@ -606,38 +631,80 @@ public sealed class ToolSchemaTests
         @"(?i)\b<field>\s+(?:is|are|equals)\s+null\b",
     ];
 
-    /// <summary>The wire fields a tool's result drops entirely when they have nothing to report.</summary>
+    /// <summary>The wire fields a caller must not be told to compare to <c>null</c>.</summary>
     /// <param name="returnType">The tool method's return type.</param>
-    /// <returns>The field names, camel-cased as the wire spells them.</returns>
-    private static IEnumerable<string> AbsentFields(Type returnType)
+    /// <returns>
+    /// The field names, camel-cased as the wire spells them, each with whether it is reached
+    /// <b>only</b> through a dictionary's value type — in which case it is not dropped from anything, and
+    /// the reason a null test on it is wrong is a different one.
+    /// </returns>
+    private static IEnumerable<(string Field, bool OnlyThroughMap)> AbsentFields(Type returnType)
     {
-        HashSet<string> fields = [];
-        CollectAbsentFields(returnType, fields, []);
-        return fields.OrderBy(f => f, StringComparer.Ordinal);
+        Dictionary<string, bool> fields = [];
+        CollectAbsentFields(returnType, fields, [], inMapValue: false);
+        return fields.OrderBy(f => f.Key, StringComparer.Ordinal)
+            .Select(f => (f.Key, f.Value));
     }
 
     /// <summary>Walks a payload graph collecting the nullable properties on it.</summary>
     /// <param name="type">The type to walk.</param>
-    /// <param name="fields">The names collected so far.</param>
-    /// <param name="seen">Types already walked, so a cycle terminates.</param>
+    /// <param name="fields">
+    /// The names collected so far, each mapped to whether <b>every</b> path that reached it went through a
+    /// dictionary's VALUE type. False is the conservative answer and wins on merge: one direct path is enough
+    /// to make the field genuinely droppable somewhere on this payload.
+    /// </param>
+    /// <param name="seen">
+    /// Type-and-position pairs already walked, so a cycle terminates. Keyed on the pair rather than the type
+    /// because a payload can reach one record both directly and through a map value, and those two give
+    /// different answers — keyed on the type alone, whichever path arrived first would decide for both.
+    /// </param>
+    /// <param name="inMapValue">Whether this step is inside a dictionary's value type.</param>
     /// <remarks>
-    /// A nullable PROPERTY is dropped by <c>WhenWritingNull</c>; a null inside a dictionary is not, and a
-    /// dictionary contributes nothing here because its keys are data rather than field names. The walk stops
-    /// at the assembly boundary: framework types have no descriptions pointing at them.
+    /// <para>
+    /// A nullable PROPERTY is dropped by <c>WhenWritingNull</c>; a null inside a dictionary is not. <b>What
+    /// governs this walk is the assembly boundary, checked per type reached</b> — framework types have no
+    /// descriptions pointing at them, so the recursion stops there. Generic arguments are walked <i>before</i>
+    /// that check, which is how a payload's collections and maps are reached at all.
+    /// </para>
+    /// <para>
+    /// <b>So a map-valued payload does contribute its value type's fields</b>, and until gh#286 nothing here
+    /// did: <c>ResolutionSnapshot.Indicators</c> is the only dictionary on this surface, and its value type
+    /// was <c>decimal?</c> — a framework type, which is why it contributed nothing. That was a fact about the
+    /// value type, never about the keys. Its value type is now <c>IndicatorReading</c>, so
+    /// <c>get_market_snapshot</c> gained <c>value</c> and <c>bucketStart</c>, and those two are reached
+    /// <i>only</i> through the map. <see cref="ADescription_DoesNotTellACallerToCompareAnAbsentFieldToNull"/>
+    /// has to say something different about them, because they are not dropped from anything.
+    /// </para>
     /// </remarks>
-    private static void CollectAbsentFields(Type type, HashSet<string> fields, HashSet<Type> seen)
+    private static void CollectAbsentFields(
+        Type type,
+        Dictionary<string, bool> fields,
+        HashSet<(Type Type, bool InMapValue)> seen,
+        bool inMapValue)
     {
         if (type.IsGenericType)
         {
-            foreach (Type argument in type.GetGenericArguments())
+            // A dictionary's two arguments are not the same position. The value type carries the payload
+            // records; the key is a string the caller reads as data, and nothing nullable can hang off it.
+            Type[] mapArguments = DictionaryArgumentsOf(type);
+
+            if (mapArguments.Length == 2)
             {
-                CollectAbsentFields(argument, fields, seen);
+                CollectAbsentFields(mapArguments[0], fields, seen, inMapValue);
+                CollectAbsentFields(mapArguments[1], fields, seen, inMapValue: true);
+            }
+            else
+            {
+                foreach (Type argument in type.GetGenericArguments())
+                {
+                    CollectAbsentFields(argument, fields, seen, inMapValue);
+                }
             }
         }
 
         Type bare = Nullable.GetUnderlyingType(type) ?? type;
 
-        if (bare.Assembly != typeof(ToolPayloads).Assembly || !seen.Add(bare))
+        if (bare.Assembly != typeof(ToolPayloads).Assembly || !seen.Add((bare, inMapValue)))
         {
             return;
         }
@@ -649,12 +716,32 @@ public sealed class ToolSchemaTests
             if (Nullable.GetUnderlyingType(property.PropertyType) is not null
                 || nullability.Create(property).ReadState == NullabilityState.Nullable)
             {
-                fields.Add(char.ToLowerInvariant(property.Name[0]) + property.Name[1..]);
+                string name = char.ToLowerInvariant(property.Name[0]) + property.Name[1..];
+
+                fields[name] = fields.TryGetValue(name, out bool onlyThroughMap)
+                    ? onlyThroughMap && inMapValue
+                    : inMapValue;
             }
 
-            CollectAbsentFields(property.PropertyType, fields, seen);
+            CollectAbsentFields(property.PropertyType, fields, seen, inMapValue);
         }
     }
+
+    /// <summary>The key and value types when a type is a dictionary, or empty when it is not.</summary>
+    /// <param name="type">The type to test.</param>
+    /// <returns>Two types — key then value — or an empty array.</returns>
+    /// <remarks>
+    /// Matched on the interface rather than on <c>Dictionary&lt;,&gt;</c>, because every payload declares the
+    /// read-only interface and a concrete dictionary reaching the wire through one would otherwise be walked
+    /// as though its values were an ordinary nested record.
+    /// </remarks>
+    private static Type[] DictionaryArgumentsOf(Type type) =>
+        type.GetInterfaces().Append(type)
+            .Where(i => i.IsGenericType
+                && (i.GetGenericTypeDefinition() == typeof(IReadOnlyDictionary<,>)
+                    || i.GetGenericTypeDefinition() == typeof(IDictionary<,>)))
+            .Select(i => i.GetGenericArguments())
+            .FirstOrDefault([]);
 
     private static bool IsNullable(ParameterInfo parameter) =>
         Nullable.GetUnderlyingType(parameter.ParameterType) is not null

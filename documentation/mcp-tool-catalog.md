@@ -511,10 +511,11 @@ a reading that is too old for what you are deciding.
 
 **A null here is narrower than it looks.** The read behind each entry is bounded only by the anchor — it has
 no lower bound, so it sees the whole stored series — and a `null` therefore means **no row exists at or
-before the anchor at all**: a series in which that indicator has never had enough bars to measure. It is
-**not** what a roll produces: warm-up does restart at the seam, but an as-of read then reaches back past it,
-which is the paragraph above and the retraction at the foot of this page. The same absence of a lower bound
-is why a reading can be arbitrarily old — hence `bucketStart`.
+before the anchor at all**. Two different states produce that, and neither is the obvious one: the indicator
+has never had enough bars to measure, *or* it has rows and the moment you asked about precedes every one of
+them. It is **not** what a roll produces: warm-up does restart at the seam, but an as-of read then reaches
+back past it, which is the paragraph above and the retraction at the foot of this page. The same absence of a
+lower bound is why a reading can be arbitrarily old — hence `bucketStart`.
 
 **Two windows, two coverages — check both.** The slice's `contracts` describes the `barCount` bars returned;
 `levels.contracts` describes the longer `max(barCount, 200)` bars the levels were detected over. They can

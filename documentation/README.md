@@ -38,10 +38,10 @@ rather than reword it.
 
 | Document | ~tok | Read it when |
 |---|---:|---|
-| [`prd.md`](prd.md) | 7.0K | You need **what is required**, or you are citing an `R-#`. Ids are stable and never renumbered, and a citation that does not resolve here fails CI. |
-| [`architecture.md`](architecture.md) | 8.6K | You need **how the pieces fit** — the cache-aside path, the projection, the transports. |
+| [`prd.md`](prd.md) | 7.4K | You need **what is required**, or you are citing an `R-#`. Ids are stable and never renumbered, and a citation that does not resolve here fails CI. |
+| [`architecture.md`](architecture.md) | 8.7K | You need **how the pieces fit** — the cache-aside path, the projection, the transports. |
 | [`mcp-tool-catalogue`](mcp-tool-catalog.md) | 13.6K | You are adding, changing or calling a tool. The tool surface is a contract; this is it. |
-| [`data-dictionary.md`](data-dictionary.md) | 4.9K | You need the data model — the eight tables, their keys, and why each key is shaped that way. |
+| [`data-dictionary.md`](data-dictionary.md) | 5.0K | You need the data model — the eight tables, their keys, and why each key is shaped that way. |
 
 ## Working agreements
 
@@ -52,7 +52,7 @@ rather than reword it.
 | [`work-estimate-rubric.md`](work-estimate-rubric.md) | 1.0K | You are setting a `Work Estimate` on an issue. |
 | [`agents/README.md`](agents/README.md) | 1.0K | You are wearing a role hat. **This row prices the index, not the route it serves** — each contract behind it is a separate read, and the index prices all four in its own gated `~tok` column (gh#178). Reviewer and Platform contracts **never auto-load**; open them yourself. |
 | [`../CONTRIBUTING.md`](../CONTRIBUTING.md) | 4.1K | Branching, claiming, commits, PRs, and the Definition of Done. |
-| [`../AGENTS.md`](../AGENTS.md) | 2.2K | Loads automatically. The non-negotiables and the role routing table. |
+| [`../AGENTS.md`](../AGENTS.md) | 2.3K | Loads automatically. The non-negotiables and the role routing table. |
 
 ## Decisions — [`adr/`](adr/README.md)
 

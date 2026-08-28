@@ -306,6 +306,11 @@ tape yields empty cells, not a fabricated profile. **Two reads that need the con
 
 Not a hypertable. The tape is the high-volume series; this is its projection, rebuildable.
 
+**A volume profile is not a tenth table.** Point of control and the 70% value area are an aggregate over
+these cells plus §8 (`R-9`, gh#221). The host reads the cells and the listening ledger and calls Domain;
+nothing here is written for that answer. A window that spans a roll is confined to one contract, and the
+reported window is the listening range, not the ask.
+
 ---
 *Changing an entity or a migration? Update the section above in the same PR. A data dictionary that lags the
 schema is worse than none, because it is read as authoritative.*

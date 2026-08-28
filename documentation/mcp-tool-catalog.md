@@ -306,10 +306,10 @@ assigned **relative to the current price**, not to how the level formed: a broke
 and reporting it otherwise puts a ceiling underneath the market.
 
 **This call detects with `swing`, and that is the whole of what it can ask for today.** The server's method
-vocabulary is `swing` and `session` — the second added by gh#257 — but `get_key_levels` carries no method
-argument, so `session` is registered and tested without yet being reachable from here. Selecting a method
-per call, and scoring the confluence between several, is gh#259; this paragraph goes when that argument
-arrives. `session` reports what a finished session left behind — prior-day and prior-week high, low and
+vocabulary is `swing`, `session` and the five `pivot-*` names — `session` added by gh#257 and the family by
+gh#258 — but `get_key_levels` carries no method argument, so the other six are registered and tested without
+yet being reachable from here. Selecting a method per call, and scoring the confluence between several, is
+gh#259; this paragraph goes when that argument arrives. `session` reports what a finished session left behind — prior-day and prior-week high, low and
 close, the overnight range, and the initial balance — sized into zones by **the same `zoneAtrMultiple`** a
 pivot is, so a line and a zone are the same width and a confluence score compares like with like. Its
 significance is the summarised period's own range in ATR multiples, which for that period's high and low is
@@ -319,6 +319,25 @@ it rather than one taken from the part of the session the window holds, a prior 
 not a prior day, and a range still forming is not a level. At 500 five-minute bars the window spans about
 forty hours, so prior-week levels will normally be absent and prior-day levels often will be — ask for more
 `lookbackBars` rather than reading the absence as a market without structure.
+
+**The five `pivot-*` names are one family, and the vocabulary says so twice — once in the names, once in the
+method's declared family.** `pivot-classic`, `pivot-fibonacci`, `pivot-camarilla`, `pivot-woodie` and
+`pivot-demark` are each a published formula over **one finished prior session's** open, high, low and close,
+so all five are the same three or four numbers transformed five ways. Five of them landing on a price is one
+input agreeing with itself; the confluence score that discounts them (gh#259) groups by the declared family
+rather than by a list of the five names, so a sixth variant cannot slip out of the budget. Classic and
+fibonacci report seven lines, camarilla eight, woodie five and demark three — demark is three because that
+is the published set, and inventing an `R2` to make the family look uniform would be arithmetic nobody
+published. Sized into zones by **the same `zoneAtrMultiple`** again, and scored by **the same significance
+`session` uses** — the period's own range in ATR multiples — so one number covers a whole set and
+`minSignificance` keeps or drops it whole. Unlike `session`, this family **applies both caps**: a pivot line
+below the price scale, or a set longer than `maxLevels`, is dropped rather than reported.
+
+**A pivot period the series cannot supply is absent, and one of the three ways is about resolution.** No
+prior session in the window, a window that begins after that session opened, or a session the series covers
+with a **single bar** — the last because a bar records no width, so at a daily resolution or above "the
+prior day's high" would be the high of everything the bar spans. Ask for a finer `resolutionMinutes` rather
+than reading the absence as a session without structure.
 
 **The pivot window is asymmetric, and both edges are per call.** `pivotLookback` is how many bars to the
 **left** a pivot must dominate; `pivotRightLookback` is how many to the **right**, which is the confirmation

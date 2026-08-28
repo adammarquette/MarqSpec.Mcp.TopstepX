@@ -172,7 +172,8 @@ The server serves OHLCV bars for a futures instrument at a requested resolution 
 - **R-3.6** Levels are detected by a **named method**, and the vocabulary is closed — an unknown name is an
   error listing the known ones, never an empty level set. `swing` finds pivots; `session` reports what a
   finished session left behind: prior-day and prior-week high, low and close, the overnight range and the
-  initial balance.
+  initial balance; `pivot-classic`, `pivot-fibonacci`, `pivot-camarilla`, `pivot-woodie` and `pivot-demark`
+  are `R-3.10`'s family.
 - **R-3.7** A session boundary comes from the **calendar**, never from gaps in the series, and a period the
   loaded window does not reach the opening of is **absent** rather than taken from the part of it the window
   holds. A prior "day" that did not trade is not a prior day, and a range still forming is not a level.
@@ -185,6 +186,17 @@ The server serves OHLCV bars for a futures instrument at a requested resolution 
   folded into the survivor beside it — either would report a band at a price nothing was measured at. The
   parameters detection ran under are reported with every answer, so a list that stopped at the cap can be
   told from a market that produced that many levels.
+- **R-3.10** The **pivot family** computes its published formula over **one finished prior session's** open,
+  high, low and close. Its significance is that period's own range in ATR multiples, which is `R-3.7`'s
+  session-window reading of `R-3.2` rather than a prominence a computed line cannot have — so one score
+  covers a whole set and the significance floor keeps or drops it whole. A period the series cannot
+  **resolve** is absent on the same terms as one the window does not reach the opening of: a session covered
+  by a single bar is one whose high could be the high of everything that bar spans, because a bar carries no
+  width.
+- **R-3.11** Every method declares the **correlation family** it belongs to, and methods sharing one share a
+  budget when their agreement is scored. Five pivot variants landing on a price is one prior session
+  transformed five ways, not five confirmations. The family is declared by the method rather than listed
+  beside the scorer, because a list of names is silently escaped by the next variant added.
 
 ## R-4 — Read-only venue boundary
 

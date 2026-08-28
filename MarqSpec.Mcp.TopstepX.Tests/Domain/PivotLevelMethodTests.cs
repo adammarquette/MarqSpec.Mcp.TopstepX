@@ -140,8 +140,16 @@ public sealed class PivotLevelMethodTests
         Shape(IReadOnlyList<KeyLevelZone> zones) =>
         zones.Select(z => (z.Bottom, z.Top, z.Kind, z.TouchCount, z.Significance));
 
+    /// <summary>Every formula the domain can compute.</summary>
+    /// <remarks>
+    /// <b>Read off the enum rather than listed</b>, so a sixth formula joins every sweep below by being
+    /// written. A hardcoded list of the five is the shape gh#259 names and rejects: the variant that escapes
+    /// it does so silently, and here that would mean a formula nothing ever checked produced a level at all.
+    /// <see cref="EachFormulaCarriesItsOwnStableLowercaseName"/> is the one case that must be edited by hand
+    /// when a sixth arrives, which is deliberate — a name is a request vocabulary, not a derived string.
+    /// </remarks>
     private static PivotFormula[] AllFormulas =>
-        [PivotFormula.Classic, PivotFormula.Fibonacci, PivotFormula.Camarilla, PivotFormula.Woodie, PivotFormula.DeMark];
+        [.. Enum.GetValues<PivotFormula>().Where(f => f != PivotFormula.Unknown)];
 
     // ── The five formulas, each against its own hand-worked arithmetic ────────────────────────────────
 

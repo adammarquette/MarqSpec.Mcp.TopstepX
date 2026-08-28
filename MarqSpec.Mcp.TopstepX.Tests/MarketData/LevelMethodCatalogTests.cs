@@ -61,6 +61,22 @@ public sealed class LevelMethodCatalogTests
     }
 
     [Fact]
+    public void EveryPivotFormulaTheDomainCanCompute_IsInTheVocabulary()
+    {
+        // The registration is written out five times, so a sixth formula added to `PivotFormula` and given a
+        // name would compute perfectly well and be unaskable -- which from outside is indistinguishable from
+        // a formula that does not exist. Read off the enum rather than listed, for the reason gh#259 gives
+        // about the sixth variant.
+        IEnumerable<string> servable = Enum.GetValues<PivotFormula>()
+            .Where(formula => formula != PivotFormula.Unknown)
+            .Select(PivotLevels.NameOf);
+
+        servable.Should().BeSubsetOf(
+            Catalog().KnownNames,
+            "a formula the domain can compute but the catalogue cannot name is one no caller can ever ask for");
+    }
+
+    [Fact]
     public void EveryNameInTheVocabularyResolvesToTheMethodThatCarriesIt()
     {
         // The dictionary is keyed by each method's own Name, so a method whose Name changed without the

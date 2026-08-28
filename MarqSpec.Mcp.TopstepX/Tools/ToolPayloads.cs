@@ -169,6 +169,15 @@ public static class ToolPayloads
         ContractCoverage Contracts);
 
     /// <summary>One indicator value as of a moment.</summary>
+    /// <remarks>
+    /// <b>Two tools return this</b> — <c>get_indicator_at</c> as its whole result, and
+    /// <c>get_market_snapshot</c> as the value type of <see cref="ResolutionSnapshot.Indicators"/> (gh#286).
+    /// The fields below describe the first; inside the map, <b>cannot-measure is the map's own
+    /// <c>null</c></b> rather than the <c>{}</c> described here, because the serializer's ignore condition
+    /// does not reach inside a dictionary and the catalogue has always told callers to test for that. So an
+    /// entry that is there always carries <see cref="Value"/> and <see cref="BucketStart"/>, and the
+    /// <c>{}</c> form never occurs in a snapshot.
+    /// </remarks>
     /// <param name="Value">
     /// The value, or <see langword="null"/> meaning <b>cannot measure</b> — not zero, and not a neutral
     /// reading. A caller receiving it should refuse to conclude, rather than substitute.
@@ -355,10 +364,27 @@ public static class ToolPayloads
     /// <param name="ResolutionMinutes">The bar size.</param>
     /// <param name="Bars">The recent bars.</param>
     /// <param name="Indicators">
-    /// The latest value of each indicator, keyed by name. <b>Every indicator this server computes has a
-    /// key</b>, so presence says nothing — a <c>null</c> VALUE is what means cannot measure. The keys come
-    /// from the catalogue and are assigned unconditionally, so an absent key would mean the server does not
-    /// compute that indicator at all.
+    /// The latest <b>reading</b> of each indicator, keyed by name — the same
+    /// <see cref="IndicatorReading"/> <c>get_indicator_at</c> returns, so the two tools agree about what a
+    /// reading is. <b>Every indicator this server computes has a key</b>, so presence says nothing — a
+    /// <c>null</c> ENTRY is what means cannot measure. The keys come from the catalogue and are assigned
+    /// unconditionally, so an absent key would mean the server does not compute that indicator at all.
+    /// <para>
+    /// <b>A bare number here was a present number with no as-of</b>, which is acted on exactly like a fresh
+    /// one (gh#286). One slice reads every indicator at ONE anchor — <c>bars[^1].t</c>, or the clock when
+    /// there are no bars — but the anchor is where the read stopped, not where the value was computed, and an
+    /// as-of read takes the last row at or before it. Warm-up restarts at every contract seam, so just after
+    /// a roll the indicators the new contract's bars cannot yet satisfy fall back to a row on the
+    /// <i>expiring</i> quarter while the rest sit on the bar in front — measured, and both arrive in this one
+    /// map. So the bucket and the contract are per reading rather than per slice.
+    /// </para>
+    /// <para>
+    /// <b>Cannot-measure is unchanged: the map's own <c>null</c>, not an empty object.</b> The ignore
+    /// condition does not reach inside a dictionary (see this class's remarks), so a caller's test stays
+    /// <c>indicators.rsi === null</c>. A non-null entry always carries <see cref="IndicatorReading.Value"/>
+    /// and <see cref="IndicatorReading.BucketStart"/>; only <see cref="IndicatorReading.ContractId"/> can be
+    /// absent inside one, and it means the bar's provenance was never recorded.
+    /// </para>
     /// </param>
     /// <param name="Levels">
     /// The detected levels, <b>with their own coverage</b>. Levels are detected over a longer window than the
@@ -368,15 +394,17 @@ public static class ToolPayloads
     /// dropped on the one tool an agent is told to reach for first.
     /// </param>
     /// <param name="Contracts">
-    /// Which contracts produced <b>the bars in this slice</b> — not the longer history behind the levels.
-    /// <see cref="ContractSpan.SpansRoll"/> means the bar window crosses a quarterly roll, so the earlier bars
-    /// belong to a contract that no longer trades. The levels and the indicator readings come from the
-    /// contract in front regardless.
+    /// Which contracts produced <b>the bars in this slice</b> — not the longer history behind the levels, and
+    /// <b>not the indicator readings either</b>. <see cref="ContractSpan.SpansRoll"/> means the bar window
+    /// crosses a quarterly roll, so the earlier bars belong to a contract that no longer trades. The levels
+    /// do come from the contract in front regardless; a reading does not, and says which contract it came
+    /// from itself. This block cannot stand in for that — with no bars it describes nothing at all, while the
+    /// readings behind it still exist.
     /// </param>
     public sealed record ResolutionSnapshot(
         int ResolutionMinutes,
         IReadOnlyList<BarPoint> Bars,
-        IReadOnlyDictionary<string, decimal?> Indicators,
+        IReadOnlyDictionary<string, IndicatorReading?> Indicators,
         LevelSet Levels,
         ContractCoverage Contracts);
 

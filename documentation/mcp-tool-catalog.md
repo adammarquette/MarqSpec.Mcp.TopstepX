@@ -111,9 +111,13 @@ page against either**, so check it against the code, never against another docum
   `contractId` and bucket range. **Read `span` before comparing anything across the window**: a high from the
   expiring contract is not a price the contract in front has ever reached. The bars themselves are still
   returned, because each is a real observation; the *derived* values are not computed across the seam, so
-  expect a run of buckets with **no indicator value** just after one — which is *absent from* `get_indicators`'
-  `values[]` and *present as `null`* in the snapshot's `indicators{}`, per the two forms above
-  ([ADR-0011](adr/0011-contract-roll-boundary.md)).
+  expect a run of buckets with **no indicator value** just after one — *absent from* `get_indicators`' `values[]`
+  ([ADR-0011](adr/0011-contract-roll-boundary.md)). **`get_market_snapshot` does not show that run as `null`,
+  and this page said it did until gh#286.** Its `indicators{}` is not one entry per bucket; it is one *as-of
+  read* per indicator, and an as-of read falls back to the newest row at or before the anchor — which just
+  after a seam is a row on the **expiring** contract. So the snapshot answers with the pre-seam number, and
+  the entry is `null` only when no row exists at or before the anchor at all. That is what `bucketStart` and
+  `contractId` on each reading are for.
 
   `span` has **three** values, not two:
 
@@ -265,6 +269,10 @@ dropped when there is nothing to report, and a caller testing `reading.value ===
 
 `contractId` is absent for **two** different reasons — there was no value, or the bar's provenance was never
 recorded — so an absent one is never evidence that two readings share a contract.
+
+**`get_market_snapshot` returns this same reading**, as the value of each entry in its `indicators{}` map
+(gh#286) — with one difference the container forces: there, cannot-measure is the map's own `null` rather
+than the empty object, because the ignore condition does not reach inside a dictionary.
 
 ### `get_key_levels(symbol, resolutionMinutes, lookbackBars?, pivotSource?, pivotLookback?, pivotRightLookback?)`
 Support and resistance as **zones**, not lines.
@@ -463,7 +471,8 @@ usefully carried is already parsed into `stage`.
 Bars, indicators, key levels and session state in one call — the common question at one round trip instead of
 five or six.
 
-Returns `{ symbol, session, perResolution: [{ resolutionMinutes, bars[], indicators{},
+Returns `{ symbol, session, perResolution: [{ resolutionMinutes, bars[],
+indicators: { "<name>": { value, bucketStart, contractId } | null },
 levels: { levels[], contracts, detectedOverBars }, contracts }] }`.
 
 **`indicators{}` is the one map on this surface** — the map row of the null table above, and the only place on
@@ -472,8 +481,38 @@ it where a `null` reaches the wire spelled `null`. Every indicator this server c
 is the test, and it means *cannot measure*. An **absent** key would mean this server does not compute that
 indicator at all — a different statement, and not one you should expect to see.
 
-Expect nulls right after a roll and on a short window: warm-up restarts at the seam, and an indicator whose
-period the bars do not satisfy cannot measure.
+**A non-null entry is a reading, not a number** — `{ value, bucketStart, contractId }`, the same shape
+`get_indicator_at` returns, and **that is a breaking change to this tool's payload** (gh#286).
+`indicators.atr` was `2`; it is now `{ "value": 2, "bucketStart": "…", "contractId": "…" }`. The `null` half
+is untouched, so a caller's `indicators.atr === null` still says *cannot measure*; a caller that used the
+value arithmetically has to reach one field deeper. Inside the reading the ordinary property rule applies
+again — `contractId` is **omitted** when the bar's provenance was never recorded — so this one object is the
+only place on the surface where both null shapes are in force at once.
+
+**One slice has one anchor and many provenances, which is why the bucket is per indicator.** Every read in a
+slice is taken as of the same moment — the last bar's `t`, or *now* when there are no bars — but that anchor
+is where the read *stopped*, not where the value was *computed*: an as-of read returns the last row at or
+before it. Warm-up restarts at every contract seam, so just past a roll the indicators the new contract's
+bars cannot satisfy yet answer from the **expiring** quarter while the rest answer from the bar in front.
+Measured on a nine-bar fixture that rolls after six: `atr` came back at `2` from the expiring contract three
+buckets behind the anchor while `vwap` came back at `140` from the new front's last bar — fifteen minutes and
+one contract apart, in one map, and `2` is half the range the contract in front was trading. So
+`contractId` here can differ **between entries** and from the slice's own `contracts` block; that block
+describes the bars, and the sentence that once said the readings come from the contract in front regardless
+was wrong.
+
+**When `bars` is empty the indicators are still returned, and `bucketStart` is the only thing that dates
+them.** An instrument that has stopped updating still has stored rows behind a look-back window that no
+longer reaches them, so the slice answers `bars: []` beside readings computed days or weeks earlier — and the
+slice's `contracts` block, describing zero bars, cannot contradict them. The key is **not** dropped in that
+case: an absent key already means "this server does not compute that indicator", and giving it a second
+meaning would make the honest answer unreadable. Read `bucketStart` against the moment you asked, and refuse
+a reading that is too old for what you are deciding.
+
+**A null here is narrower than it looks.** It means no row exists at or before the anchor *at all* — a young
+series, or a window whose whole history is shorter than the indicator's period. It is **not** what a roll
+produces: warm-up does restart at the seam, but an as-of read then reaches back past it, which is the
+paragraph above and the retraction at the foot of this page.
 
 **Two windows, two coverages — check both.** The slice's `contracts` describes the `barCount` bars returned;
 `levels.contracts` describes the longer `max(barCount, 200)` bars the levels were detected over. They can
@@ -616,6 +655,7 @@ not from whether its type is nullable, so `string? symbol` with no `= null` is n
 | `get_bars` | `fetchedBuckets` ≡ `venueRequests` as evidence | only `venueRequests == 0` proves the store served it | gh#73 |
 | `get_indicators` | `period` is a parameter | never was; fixed per indicator, and returned | gh#48 |
 | `get_indicator_at` | cannot-measure is `{ value: null }` | it is `{}` | gh#85 |
+| `get_market_snapshot` | the run of absent values after a roll arrives as `null` in `indicators{}` | that map is one **as-of read** per indicator, not one entry per bucket, so it answers with the newest row at or before the anchor — on the **expiring** contract just after a seam. Measured: `atr` came back at the pre-seam `2` where the contract in front was ranging `4` | gh#286 |
 | `get_orders` | `fromUtc`/`toUtc` optional, as described | required on the wire — the documented way to read the working book was refused before reaching any code | gh#70 |
 | `record_observation` · `search_observations` | `symbol`, `kind`, `tags`, `limit` optional, as described | required on the wire | gh#70 |
 | `search_contracts` | a wrong tier surfaces far away as "no contract matches ES" | the tool refuses, naming `ProjectX__DataTier` | gh#255 |

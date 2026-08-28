@@ -31,21 +31,23 @@ namespace MarqSpec.Mcp.TopstepX.Tests.MarketData;
 /// </para>
 /// <para>
 /// The green half of the two-run rule is <see cref="IndicatorCatalogRollTests"/>'s
-/// <c>EveryConfiguredIndicator_StillComputesASingleContractSeries</c> — the same catalogue over an ordinary
-/// ascending series, asserting <c>NotThrow</c>. That is the absence of an exception, and it is the right
-/// assertion for what this half exists to catch: a guard that refused <i>everything</i> would pass the sweep
-/// above and still break the server, and the two failures look nothing alike from outside. It is not
-/// duplicated here, because a second copy would prove the same thing twice and drift separately.
+/// <c>EveryConfiguredIndicator_StillComputesValuesOverASingleContractSeries</c> — the same catalogue over an
+/// ordinary ascending series. Part of it is still <c>NotThrow</c>, the absence of an exception, and that is
+/// the right assertion for one of the two failures it exists to catch: a guard that refused <i>everything</i>
+/// would pass the sweep above and still break the server. It is not duplicated here, because a second copy
+/// would prove the same thing twice and drift separately.
 /// </para>
 /// <para>
-/// <b>What it does not assert — and on its fixture could not — is that values come back.</b>
-/// <c>Spliced().Take(30)</c> is thirty bars, and two of the catalogue's eleven members warm up in 35 —
-/// <c>macd-signal</c> and <c>macd-histogram</c>, both <c>MacdSlowPeriod + Macd.SignalPeriod</c> = 26 + 9.
-/// Both return 0 non-null values out of 30 over that fixture, so a loop rewritten to require a value fails
-/// naming them. So <b>nothing in this tier pins a catalogue-wide “values come back”</b>. That matters when
-/// adding a twelfth indicator: one whose warm-up arithmetic is wrong returns all-nulls forever and passes
-/// every sweep there is — it does refuse a splice and it does refuse a shuffle — leaving
-/// <c>get_indicators</c> answering with an empty series, green, on every instrument.
+/// <b>Its other half asserts that values come back, and until gh#285 nothing in this tier did.</b> That
+/// sweep's fixture was <c>Spliced().Take(30)</c> — thirty bars, against two of the catalogue's eleven
+/// members that declare a warm-up of 35: <c>macd-signal</c> and <c>macd-histogram</c>, both
+/// <c>MacdSlowPeriod + Macd.SignalPeriod</c> = 26 + 9. Both answered it with 0 non-null values out of 30, so
+/// for those two it passed because nothing was computed rather than because something was. The hole that
+/// left is the twelfth indicator whose warm-up arithmetic is wrong: it returns all-nulls forever, it does
+/// refuse a splice and it does refuse a shuffle, so every sweep here stays green while
+/// <c>get_indicators</c> answers with an empty series on every instrument. That fixture is now
+/// <c>IndicatorCatalog.All.Max(i =&gt; i.WarmupBars)</c> plus headroom rather than a chosen number, the sweep
+/// counts values, and a fake returning all-nulls is watched reddening it.
 /// </para>
 /// </remarks>
 public sealed class IndicatorCatalogOrderingTests
@@ -58,8 +60,14 @@ public sealed class IndicatorCatalogOrderingTests
 
     /// <summary>Sixty bars under one contract, with two adjacent bars exchanged in the middle.</summary>
     /// <remarks>
-    /// Long enough that every default period — Bollinger at 20, MACD's slow leg at 26 — is satisfied, so a
-    /// refusal cannot be an artefact of a series too short to compute over. <b>One contract throughout</b>,
+    /// Long enough that the <b>longest</b> warm-up in the catalogue is satisfied — 35, <c>macd-signal</c> and
+    /// <c>macd-histogram</c> — so a refusal cannot be an artefact of a series too short to compute over. The
+    /// enumeration this replaced named Bollinger at 20 and MACD's slow leg at 26 and stopped there; that same
+    /// short reading is what left the roll suite's single-contract fixture five bars under its own slowest
+    /// member (gh#285). Sixty is still chosen rather than derived the way
+    /// <c>IndicatorCatalogRollTests.RunLength</c> now is — this fixture also fixes the transposed pair at
+    /// indices 30 and 31, and deriving one without the other is half a change — so an indicator warming up in
+    /// more than sixty would put this sentence back where it started. <b>One contract throughout</b>,
     /// deliberately: were it spliced, the roll guard would refuse it and the sweep would pass without the
     /// ordering guard being reached at all, which is the vacuous-fixture failure PR #252 found next door.
     /// </remarks>

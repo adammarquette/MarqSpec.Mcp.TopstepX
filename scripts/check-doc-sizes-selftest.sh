@@ -24,6 +24,74 @@
 # AND THE ACCEPTANCE IS NOT SATISFIED BY EXIT 0 EITHER. The sound case additionally requires the gate to say
 # how many rows it priced, because "green having measured nothing" is the exact failure every guard above had.
 #
+# AND NEITHER OF THOSE CAN SEE OUTPUT THAT SHOULD NOT BE THERE AT ALL (gh#271, extending gh#239). Exit status
+# and named substrings are both assertions about output that IS there; a stray non-fatal line above the gate's
+# own `set -euo pipefail` matches no needle, and matching no needle is precisely what a needle cannot detect.
+# So expect_green makes the one assertion that does: it SPLITS the gate's streams instead of merging them with
+# `2>&1`, and requires a green run to write ZERO BYTES to stderr.
+#
+# MEASURED BEFORE IT WAS ASSERTED, on `1d558eb`, and per gate rather than by analogy with gh#239's measurement
+# of check-requirement-ids.sh:
+#
+#     the real repository (no argument)  1331 B stdout   0 B stderr   exit 0
+#     all 18 green fixtures below         604-605 B      0 B stderr   exit 0
+#     all 29 red fixtures below           0-390 B        194-2223 B   exit 1
+#
+# The stdout figures are a RANGE and are not asserted -- they track the digits in the counts the gate prints.
+# The stderr half IS asserted, on every green case, so a passing run has just re-measured all eighteen and a
+# nineteenth green case extends the measurement by construction rather than quietly escaping it.
+#
+# AND THE MEASUREMENT AGREES WITH THE CODE, which is what makes it safe to assert on a runner nobody measured
+# on. `grep -n '>&2' scripts/check-doc-sizes.sh` finds exactly three writers -- `die`, `explain`, and one bare
+# `echo >&2`.
+#
+# THAT GREP ONLY SEES THIS SCRIPT'S OWN REDIRECTIONS, so it has to be paired with a reading of what the gate
+# SPAWNS -- a child's stderr is not this repository's to promise, and gh#271 declined the assertion on
+# check-image-entrypoint.sh for exactly that reason (see its self-test's header: a green `docker run` there
+# writes 152 B of platform WARNING). This gate spawns THREE external commands in total, and no others:
+# `dirname`, once, inside the no-argument REPO_ROOT derivation; `wc -c < "$resolved"`, once per priced row;
+# and `cat`, inside `explain`, which is a red path. All three are silent when they succeed. Everything else
+# the gate runs is a shell builtin. Re-derive that list if the gate grows a command; it is the half the grep
+# cannot show you.
+#
+# THE ONE OF THE THREE THAT CAN WRITE TO STDERR STILL LEAVES THE RUN RED, and this was RUN rather than
+# reasoned, because the obvious reasoning is wrong. `dirname` sits inside
+# `REPO_ROOT="${1:-$(cd "$(dirname ...)/.." && pwd)}"`, and a bare assignment carries the LAST substitution's
+# status -- but the last one is the OUTER `$(cd ... && pwd)`, whose `pwd` succeeds regardless. Measured:
+# with that `dirname` replaced by a name that does not exist, the assignment SURVIVES under `set -euo
+# pipefail`, prints 62 B of `command not found` to stderr, and yields `REPO_ROOT=/` -- because an empty
+# substitution makes the path `"/.."`, which `cd` resolves to `/`. The run is not silently green, though:
+# rooted at `/`, the gate exits **1** with 0 B stdout and 285 B stderr, `NO SUCH FILE
+# documentation/README.md`. So the stderr write and the non-zero exit arrive together, which is what the
+# assertion needs. An earlier draft of this paragraph claimed `set -e` aborted the assignment; it does not.
+#
+# THE SHAPE IS NOT check-requirement-ids.sh's, either, and the difference is the load-bearing part: there
+# every writer sits on a path ending `exit 1`, whereas `die` HERE does not exit. Most call sites report a row
+# and then `failures=$(( failures + 1 ))`, carrying on so an author sees every bad row at once. What closes
+# it is the pair of them: every one of the fifty-three `die` calls reaches either an immediate `exit 1` or
+# that counter, and `failures > 0 -> exit 1` at the bottom turns it into a non-zero exit. "Green implies
+# silent" is therefore structural here TOO, but it rests on that final check as well as on the writers'
+# placement -- re-derive BOTH halves if either stops being true.
+#
+# PROVEN ABLE TO FAIL, by putting gh#239's own defect into this gate (a bare word above its `set -euo
+# pipefail`, verified with `cmp` to differ from the shipped file before it was scored). It is non-fatal, so
+# the exit status is unchanged and EVERY BYTE OF STDOUT is unchanged with it -- 1331 B, byte-identical to the
+# shipped gate's on the real tree, with 84 B of `command not found` on stderr. Against that mutant:
+#
+#     this suite BEFORE gh#271   47 of 47 cases green    the blindness, reproduced
+#     this suite AFTER  gh#271   18 green cases RED, 29 red cases still green
+#
+# THE RED CASES ARE EXEMPT, DELIBERATELY: the gate reports their faults through `die`, which writes to stderr,
+# so there stderr is the answer rather than stray output. The reason is recorded again beside expect_red,
+# because the asymmetry looks like an oversight and the fix for a supposed oversight is deleting the
+# assertion.
+#
+# ONE HAZARD THIS ASSERTION MAKES VISIBLE, recorded so a red run is not misdiagnosed: editing
+# check-doc-sizes.sh WHILE this suite is running can hand bash a torn read of it, which prints a
+# `command not found` naming a fragment of the line being rewritten. Before gh#271 that ran green; now the
+# green cases go red naming stray bytes. The run really was untrustworthy — re-run it, do not chase the line
+# number.
+#
 # TWO RUNS, NOT ONE (the Coding contract, Tests). This file is the first: red on the faults the gate exists to
 # catch. The second is `ci.yml`'s `docs` job running the gate against this repository's REAL priced tables —
 # the most awkward correct input there is, with fourteen rows across three tables in two files, targets that
@@ -121,6 +189,19 @@
 #   failures > 0  ->  exit 1                     every red case                                     case
 #   green line names rows / pairs / files        every green case (needle N priced rows)            case
 #
+# THE OUTPUT STREAM ITSELF — not a decision the gate MAKES, which is why it had no row until gh#271.
+#
+#   DECISION in check-doc-sizes.sh               PINNED BY (case label)                             EV
+#   -------------------------------------------  -------------------------------------------------  ----
+#   a green run says NOTHING on stderr           EVERY green case (18 of them)                      mut
+#
+#   The mutant is gh#239's own defect put into this gate: a bare word above its `set -euo pipefail`,
+#   `cmp`-verified to differ from the shipped file before it was scored. Non-fatal, so the exit status is
+#   unchanged and every byte of stdout is unchanged with it — which is why status and needles both miss it.
+#   Scored twice: 47 of 47 green on the suite as it stood BEFORE this row existed, and 18 green cases red /
+#   29 red cases still green after. A `mut` row names the cases that die, so growing the suite without
+#   re-running it makes the grade a lie; the count is written here for exactly that reason.
+#
 # NO CASE, AND WHY. Every one RE-DERIVED by trying to reach it (round 7), after two of the original
 # seven turned out to be reachable -- EMPTY and NOTHING CHECKED, both now cases above. The EMPTY entry
 # had been wrong in BOTH halves: its stated reason was that NO SECTION reports first, and NO SECTION
@@ -137,6 +218,15 @@
 #                                    bash >= 4.4 the loop iterates an empty array, which is a no-op.
 #   NOTHING SWEPT (swept == 0)       structural: a priced file is itself markdown at a path both globs
 #                                    reach, and if it is absent the run has already exited NO SUCH FILE.
+#   die writes to STDERR             MEASURED equivalent mutant, and RUN rather than argued because the
+#                                    empty-stderr row above looks like it covers this and does not:
+#                                    dropping ` >&2` from `die` (cmp-verified to differ, one line) fails
+#                                    0 of 47. Both helpers survive it -- expect_red matches its needles
+#                                    against BOTH streams through gate_output, and expect_green requires
+#                                    stderr to be EMPTY, which a `die` that never writes there satisfies
+#                                    trivially. Pinning it needs a DIFFERENT assertion, that a RED run
+#                                    writes something to stderr; gh#271 declined to ship one it had not
+#                                    also mutated. Stated so the row above is not read as covering it.
 #
 # LOCAL RUNTIME. Each case forks a shell and a `wc` per row. That is milliseconds on the CI runner and can be
 # a couple of minutes on a Windows checkout, where process creation is pathologically slow; the fixtures
@@ -440,12 +530,41 @@ SOUND_HEADING='## Working agreements'
 SOUND_CONTRACT='| [`epsilon.md`](epsilon.md) | 1.5K | Open it yourself. |'
 SOUND_CONTRACTS_HEADING='## The contracts'
 
+# THE GATE'S STDERR IS CAPTURED SEPARATELY RATHER THAN MERGED WITH `2>&1` (gh#271, extending gh#239), so
+# expect_green can assert it is EMPTY. Merged, output that should not be there at all is indistinguishable
+# from output that should -- see the header for the measurement and for the mutant that proves it.
+#
+# It lives directly under $FIXTURES, which the EXIT trap already removes, and NOT inside any fixture: every
+# root the gate is pointed at is $FIXTURES/<name>, and this gate SWEEPS its root for markdown, so a file
+# written inside one would be read as part of the corpus under test.
+GATE_STDERR="$FIXTURES/.gate-stderr"
+
+run_gate() {
+  # Truncated per call, not appended: each case asserts what ITS OWN run wrote, and a leftover byte from the
+  # previous case would redden the next one and name the wrong culprit.
+  : > "$GATE_STDERR"
+  bash "$GATE" "$1" 2>"$GATE_STDERR"
+}
+
+# Both streams as one string, for the callers that must read the gate's own words wherever it chose to put
+# them -- `die` writes to stderr, `ok` to stdout. Ordering between the two is lost, which costs nothing: every
+# needle in this file is a substring of a single line.
+gate_output() { printf '%s\n%s' "$1" "$(cat "$GATE_STDERR")"; }
+
 # Runs the REAL gate against a fixture and requires it to REJECT it, saying why in its own words.
+#
+# THE RED CASES DELIBERATELY DO NOT TAKE expect_green's EMPTY-STDERR ASSERTION, AND THIS IS THE ONLY PLACE
+# BESIDE THE HEADER THAT SAYS WHY (gh#271). The gate reports every one of these faults through `die`, which
+# writes to stderr -- measured at 194 to 2223 bytes across the twenty-nine cases below -- so here stderr is
+# not stray output, it is THE ANSWER, and the needles are matched against it. "Stderr must be empty" is a
+# claim about a GREEN run only. The asymmetry between the two helpers is the finding, not an oversight in
+# one of them; pushing the assertion up into run_gate would redden all twenty-nine.
 expect_red() {
   local label="$1" dir="$2" needle="$3" out status=0
   cases=$(( cases + 1 ))
 
-  out="$(bash "$GATE" "$dir" 2>&1)" || status=$?
+  out="$(run_gate "$dir")" || status=$?
+  out="$(gate_output "$out")"
 
   if [ "$status" -eq 0 ]; then
     red "SELF-TEST FAILED  $label"
@@ -465,18 +584,22 @@ expect_red() {
   ok "  red as required  $label  ($needle)"
 }
 
-# Runs the REAL gate against a SOUND fixture and requires it to ACCEPT it — and to have measured something.
+# Runs the REAL gate against a SOUND fixture and requires it to ACCEPT it — to have measured something, and
+# to have said NOTHING ELSE ANYWHERE. The third assertion is the one gh#271 added, and it is the only one
+# here that looks at output the case did not ask for.
 expect_green() {
-  local label="$1" dir="$2" needle="$3" out status=0
+  local label="$1" dir="$2" needle="$3" out err status=0 stray
   cases=$(( cases + 1 ))
 
-  out="$(bash "$GATE" "$dir" 2>&1)" || status=$?
+  out="$(run_gate "$dir")" || status=$?
+  err="$(cat "$GATE_STDERR")"
 
   if [ "$status" -ne 0 ]; then
     red "SELF-TEST FAILED  $label"
     red "  The gate REJECTED a sound fixture (exit $status). It would fail correct pull requests, and the"
     red "  first person it wrongly stops will delete it."
-    info "$out"
+    # Both streams: the gate says WHY it rejected through `die`, i.e. on stderr, which $out no longer carries.
+    info "$(gate_output "$out")"
     failures=$(( failures + 1 ))
     return
   fi
@@ -484,11 +607,28 @@ expect_green() {
     red "SELF-TEST FAILED  $label"
     red "  The gate passed without saying '$needle'. Exit 0 having priced NOTHING is the shape of every"
     red "  dead guard in this repository; a pass has to carry its own evidence."
-    info "$out"
+    info "$(gate_output "$out")"
     failures=$(( failures + 1 ))
     return
   fi
-  ok "  green as required  $label  ($needle)"
+  # A GREEN RUN WRITES EXACTLY ZERO BYTES TO STDERR -- measured on every green fixture in this file and on
+  # the real tree, and re-measured HERE, by this line, on every run. See the header for the numbers, for the
+  # code reading that agrees with them, and for the mutant that proves this line can fail.
+  #
+  # Byte count rather than `[ -n ]`: a lone newline is stray output too, and the number is what an author
+  # needs to see. `wc -c` pads on some platforms, hence the strip.
+  stray="$(wc -c < "$GATE_STDERR" | tr -d '[:space:]')"
+  if [ "$stray" -ne 0 ]; then
+    red "SELF-TEST FAILED  $label"
+    red "  The gate went green, said '$needle', and still wrote $stray bytes to STDERR. Exit status and"
+    red "  needles both survive a gate that is ALSO doing something else — a stray line above its own"
+    red "  \`set -euo pipefail\` is non-fatal, changes no exit code, leaves stdout byte-identical and"
+    red "  matches every needle (gh#239, gh#271)."
+    info "$err"
+    failures=$(( failures + 1 ))
+    return
+  fi
+  ok "  green as required  $label  ($needle; stderr empty)"
 }
 
 info "check-doc-sizes.sh self-test — the gate is run against fixtures with known faults."
@@ -858,4 +998,4 @@ if [ "$cases" -eq 0 ]; then
   exit 1
 fi
 
-ok "ok  $cases self-test cases across two priced files — check-doc-sizes.sh rejects each known fault BY NAME, and accepts correct input: one priced off the 0.1K grid at what it rounds to, one spelling that price \`1K\`, one whose prose says \"no longer\", twelve showing a price table inside a fence, one placing a thematic break under a priced heading, and one wholly sound."
+ok "ok  $cases self-test cases across two priced files — check-doc-sizes.sh rejects each known fault BY NAME, and accepts correct input WITHOUT WRITING A BYTE TO STDERR: one priced off the 0.1K grid at what it rounds to, one spelling that price \`1K\`, one whose prose says \"no longer\", twelve showing a price table inside a fence, one placing a thematic break under a priced heading, and one wholly sound."

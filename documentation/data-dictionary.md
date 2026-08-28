@@ -84,8 +84,11 @@ with a windowed indicator of the same name.
 **There is no `ContractId` here, and that is deliberate.** A value is always computed inside a single contract
 run — the projection never smooths across a roll ([ADR-0011](adr/0011-contract-roll-boundary.md)) — so the
 contract is a property of the bar at `BucketStart`, and duplicating it would be a second copy of a fact that
-can disagree with the first. A read that needs it joins §1. Expect a run of **absent** rows immediately after
-a roll: the new contract's warm-up starts over there.
+can disagree with the first. **Two reads need it and both join §1** — `get_indicator_at`, and
+`get_market_snapshot` since gh#286, whose `indicators{}` map carries the same reading. Expect a run of
+**absent** rows immediately after a roll: the new contract's warm-up starts over there — which is also why
+those two reads must carry the contract rather than infer it, since an as-of read landing in that run falls
+back to a row on the quarter *before* the seam.
 
 **There is no foreign key to §1 either**, and that is a consequence worth knowing: deleting bars does not
 delete the values derived from them, it orphans them. A projection is a rebuildable view over §1 rather than a

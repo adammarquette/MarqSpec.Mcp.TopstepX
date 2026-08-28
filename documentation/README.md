@@ -40,8 +40,8 @@ rather than reword it.
 |---|---:|---|
 | [`prd.md`](prd.md) | 6.1K | You need **what is required**, or you are citing an `R-#`. Ids are stable and never renumbered, and a citation that does not resolve here fails CI. |
 | [`architecture.md`](architecture.md) | 8.3K | You need **how the pieces fit** — the cache-aside path, the projection, the transports. |
-| [`mcp-tool-catalogue`](mcp-tool-catalog.md) | 11.3K | You are adding, changing or calling a tool. The tool surface is a contract; this is it. |
-| [`data-dictionary.md`](data-dictionary.md) | 3.4K | You need the data model — the five tables, their keys, and why each key is shaped that way. |
+| [`mcp-tool-catalogue`](mcp-tool-catalog.md) | 12.2K | You are adding, changing or calling a tool. The tool surface is a contract; this is it. |
+| [`data-dictionary.md`](data-dictionary.md) | 3.5K | You need the data model — the five tables, their keys, and why each key is shaped that way. |
 
 ## Working agreements
 

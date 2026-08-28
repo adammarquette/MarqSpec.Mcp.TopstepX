@@ -30,6 +30,12 @@ namespace MarqSpec.Mcp.TopstepX.Tests.Tools;
 /// varied too, a change in the answer would have somewhere else to have come from.
 /// </para>
 /// <para>
+/// <b>The map now holds readings rather than bare numbers</b> (gh#286), so the first case also reads the
+/// bucket its value came from. That is an added assertion, not a changed contrast: the two cases still take
+/// the same store and the same arguments and still differ only in the clock, and each still measures which
+/// stored value the anchor reaches — one reaches the last, the other reaches none.
+/// </para>
+/// <para>
 /// The store deliberately holds indicator rows the bar window cannot reach. That is not a contrived state, it
 /// is an instrument that has stopped updating: the history is still there, the look-back reaches back four
 /// days plus four bar spans per bar asked for (<see cref="ToolGuards.LookbackWindow"/>) and finds nothing, and
@@ -85,10 +91,22 @@ public sealed class SnapshotClockTests : IDisposable
             "the look-back reaches four days back from a clock thirty days past the fixture, so this is the "
             + "zero-bars branch -- the one under test. A slice with bars in it is testing the other branch");
 
-        slice.Indicators["atr"].Should().Be(
-            ExpectedAtr,
+        slice.Indicators["atr"].Should().NotBeNull(
             "the anchor is now, now is after every stored value, and an as-of read takes the last one at or "
             + "before it");
+
+        ToolPayloads.IndicatorReading atr = slice.Indicators["atr"]!;
+
+        atr.Value.Should().Be(ExpectedAtr);
+
+        // Added by gh#286, and it strengthens this case rather than changing what it contrasts: the inputs
+        // are still the fixture and one clock. The value above is the fixture's LAST stored bucket, and this
+        // clock sits thirty days past Bucket(0) -- so the number is a month old, and until the reading
+        // carried its bucket nothing in the payload said so.
+        atr.BucketStart.Should().Be(
+            Bucket(7),
+            "the newest bucket ATR(3) has a row for -- and the anchor is thirty days past Bucket(0), so this "
+            + "is a month-old number arriving beside an empty bar list");
     }
 
     [Fact]

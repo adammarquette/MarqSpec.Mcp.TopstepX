@@ -158,7 +158,11 @@ public sealed class PayloadNullWireShapeTests
         JsonElement slice = Wire(new ToolPayloads.ResolutionSnapshot(
             ResolutionMinutes: 5,
             Bars: [],
-            Indicators: new Dictionary<string, decimal?> { ["rsi"] = null, ["atr"] = 12.5m },
+            Indicators: new Dictionary<string, ToolPayloads.IndicatorReading?>
+            {
+                ["rsi"] = null,
+                ["atr"] = new(12.5m, DateTimeOffset.UnixEpoch, "CON.F.US.EP.U26"),
+            },
             Levels: new ToolPayloads.LevelSet([], EmptyCoverage, 0, ShippedDetection),
             Contracts: EmptyCoverage));
 
@@ -169,7 +173,40 @@ public sealed class PayloadNullWireShapeTests
             "every indicator gets a key unconditionally, so presence says nothing about measurability");
         rsi.ValueKind.Should().Be(JsonValueKind.Null, "the null IS the cannot-measure signal");
 
-        indicators.GetProperty("atr").GetDecimal().Should().Be(12.5m);
+        // gh#286 moved the map's VALUE from a bare number to the reading get_indicator_at returns, and left
+        // the null alone. Both halves are asserted here: a caller's `indicators.rsi === null` still works,
+        // and a measured entry now says where its number came from.
+        JsonElement atr = indicators.GetProperty("atr");
+        atr.ValueKind.Should().Be(
+            JsonValueKind.Object, "a present entry is a reading, not a number — this is the breaking half");
+        atr.GetProperty("value").GetDecimal().Should().Be(12.5m);
+        atr.GetProperty("bucketStart").GetDateTimeOffset().Should().Be(DateTimeOffset.UnixEpoch);
+        atr.GetProperty("contractId").GetString().Should().Be("CON.F.US.EP.U26");
+    }
+
+    [Fact]
+    public void SnapshotIndicatorContractId_IsOmitted_WhenProvenanceWasNeverRecorded()
+    {
+        // Inside the map the reading is an ordinary object, so its own nullable properties are dropped the
+        // property way even though the map's null survives the map way. Both rules apply at once here, which
+        // is the one place on this surface where that is true (gh#286).
+        JsonElement slice = Wire(new ToolPayloads.ResolutionSnapshot(
+            ResolutionMinutes: 5,
+            Bars: [],
+            Indicators: new Dictionary<string, ToolPayloads.IndicatorReading?>
+            {
+                ["atr"] = new(12.5m, DateTimeOffset.UnixEpoch, ContractId: null),
+            },
+            Levels: new ToolPayloads.LevelSet([], EmptyCoverage, 0, ShippedDetection),
+            Contracts: EmptyCoverage));
+
+        JsonElement atr = slice.GetProperty("indicators").GetProperty("atr");
+
+        atr.TryGetProperty("contractId", out _).Should().BeFalse(
+            "an unrecorded contract is an omitted key, never a null — and never evidence that two readings "
+            + "share a contract");
+        atr.GetProperty("value").GetDecimal().Should().Be(
+            12.5m, "the value is unaffected: an absent contract does not make a reading unmeasured");
     }
 
     private static ToolPayloads.ContractCoverage EmptyCoverage =>

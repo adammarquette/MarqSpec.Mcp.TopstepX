@@ -57,6 +57,32 @@ at one this rule's own pull request retires.
 
 ## Practices to follow
 
+- **[2026-08-28] A restore can backdate a source file's mtime, MSBuild skips the compile, and `dotnet test`
+  scores a stale binary with a plausible `Total:` (gh#302).** Found by PR #298's author (gh#286) with a
+  `Copy-Item` restore: the timestamp went **backwards**, the compile was skipped, and the host ran the
+  *previous* assembly. The run looked entirely normal — a `Total:` line, a plausible count, no error.
+  MSBuild's up-to-date check is **timestamp-based**; restoring from a backup is what every mutation and
+  deletion loop does between runs.
+  - **This is not the Application Control case** (the 2026-08-26 entry, gh#281 / PR #296). That rule — *a
+    `Total:` line carrying the count you expected* — catches a **short** denominator (`Total: 542` on a
+    717-test tier). Here the denominator is *right*; the assembly simply predates the edit. A short
+    `Total:` is Application Control; a **plausible** `Total:` after a restore is this.
+  - **Population at risk:** any harness that restores a file between runs — every mutation matrix, every
+    deletion matrix, and the guard-count sweeps the level and indicator catalogues rely on. The committed
+    scripts under `scripts/` are **not** that population: checked 2026-08-28 on this tree. The four
+    `*-selftest.sh` harnesses write disposable fixture trees under `mktemp` and `rm -rf` them on EXIT;
+    `check-requirement-ids-selftest.sh` copies the gate *into* a fixture (`cp "$GATE" "$dir/scripts/…"`)
+    and never copies anything back. `check-paced-paging.sh` reads a `.cs` file and does not write it. No
+    script in `scripts/` calls `touch`, `git restore`, `git checkout --`, or `Copy-Item` against a product
+    source. The loops that restore are the **ad-hoc agent ones** — mutate, `dotnet test`, restore the
+    backup — which is how #298 hit it.
+  - **Remedy:** `touch` what you restore, or compare the built assembly's mtime against the source it was
+    built from before scoring the run. A rebuild after `touch` is what turned #298's plausible total into
+    the real number.
+  - **General form:** a present, plausible `Total:` is not evidence the run measured the code you think it
+    did. Same family as `--no-build` in the 2026-08-26 entry (a well-formed total about bytes you did not
+    just produce), different cause.
+
 - **[2026-08-26] `dotnet test` on this Windows box can score a run it never fully executed — Smart App
   Control blocks freshly built assemblies (gh#242, corrected under gh#281).** It comes back either as no
   failures having run no tests, or as a well-formed summary over a fraction of the tier. The block lands on

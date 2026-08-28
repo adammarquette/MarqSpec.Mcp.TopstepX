@@ -376,6 +376,7 @@ public static class Program
 
         services.AddScoped<IndicatorProjector>();
         services.AddScoped<IndicatorRebuilder>();
+        services.AddScoped<FootprintProjector>();
         services.AddScoped<BarCacheService>();
 
         // Scoped, and the lifetime is load-bearing rather than conventional: this service memoises which

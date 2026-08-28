@@ -201,6 +201,21 @@ public sealed class CompositionRootTests
     }
 
     [Fact]
+    public void TheFootprintRebuildVerbCanBeResolved()
+    {
+        // FootprintProjector is reachable from NO tool yet (gh#222 is the surface). Leaving its
+        // registration unchecked would ship a verb that dies the first time anyone asks the
+        // container for it — the same hole IndicatorRebuilder had before this test existed.
+        using ServiceProvider provider =
+            Build(new Dictionary<string, string?>(), new McpOptions { Transport = McpTransport.Stdio });
+        using IServiceScope scope = provider.CreateScope();
+
+        Func<object> resolve = () => scope.ServiceProvider.GetRequiredService<FootprintProjector>();
+
+        resolve.Should().NotThrow();
+    }
+
+    [Fact]
     public void TheKeyLevelDetectionSection_Binds_IncludingItsSource()
     {
         // Bound from configuration rather than constructed, which is the whole of gh#244 on this side of the

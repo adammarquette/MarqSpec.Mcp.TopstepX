@@ -59,8 +59,9 @@
 # `REPO_ROOT="${1:-$(cd "$(dirname ...)/.." && pwd)}"`, and a bare assignment carries the LAST substitution's
 # status -- but the last one is the OUTER `$(cd ... && pwd)`, whose `pwd` succeeds regardless. Measured:
 # with that `dirname` replaced by a name that does not exist, the assignment SURVIVES under `set -euo
-# pipefail`, prints 62 B of `command not found` to stderr (path-dependent, as above), and yields
-# `REPO_ROOT=/` -- because an empty substitution makes the path `"/.."`, which `cd` resolves to `/`.
+# pipefail`, prints 62 B of `command not found` to stderr -- path-dependent for the same reason as the 84 B
+# BELOW, bash putting `$0` in its own error line -- and yields `REPO_ROOT=/`, because an empty substitution
+# makes the path `"/.."`, which `cd` resolves to `/`.
 # The run is not silently green, though:
 # rooted at `/`, the gate exits **1** with 0 B stdout and 285 B stderr, `NO SUCH FILE
 # documentation/README.md`. So the stderr write and the non-zero exit arrive together, which is what the
@@ -78,9 +79,10 @@
 # pipefail`, verified with `cmp` to differ from the shipped file before it was scored). It is non-fatal, so
 # the exit status is unchanged and EVERY BYTE OF STDOUT is unchanged with it -- 1331 B, byte-identical to the
 # shipped gate's on the real tree, with 84 B of `command not found` on stderr. That 84 is PATH-DEPENDENT and
-# nothing asserts it: bash puts `$0` in its own error line, so the same mutant reports 69, 85 or 88 B
-# depending on where the copy was run from. What the assertion reads is the byte COUNT being non-zero.
-# Against that mutant:
+# NOTHING ASSERTS IT: bash puts `$0` in its own error line, so the same mutant reports 83, 69, 85 or 88 B
+# depending on where the copy was run from -- five values across three people measuring the one mutant, none
+# of which changed a verdict. What `expect_green` reads is the byte COUNT being non-zero, and all five
+# reddened all eighteen. Against that mutant:
 #
 #     this suite BEFORE gh#271   47 of 47 cases green    the blindness, reproduced
 #     this suite AFTER  gh#271   18 green cases RED, 29 red cases still green

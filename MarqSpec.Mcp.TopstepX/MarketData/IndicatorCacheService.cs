@@ -119,7 +119,7 @@ public sealed class IndicatorCacheService(
     /// <b>A pair is only <i>missing</i> when the stored bars could have produced it.</b>
     /// <see cref="IIndicator.WarmupBars"/> is the domain's own statement of that boundary, and using it is
     /// what stops a short series replaying itself on every read forever: six bars cannot satisfy MACD's
-    /// signal warm-up of thirty-five, so a projection would compute nothing, write nothing, and leave the
+    /// signal warm-up of thirty-four, so a projection would compute nothing, write nothing, and leave the
     /// probe answering "missing" for as long as the series stays short. An absence the bars genuinely
     /// justify is a fact (`R-2.3`) and is left alone.
     /// </para>

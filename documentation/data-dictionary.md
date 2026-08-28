@@ -161,7 +161,7 @@ parameter to fall out of.
 [ADR-0009](adr/0009-cohere-embeddings.md) cite them by number, and renumbering would silently repoint every
 one of those citations at a different table.
 
-## §5 `Observations` — the only original data here
+## §5 `Observations` — agent-recorded notes
 
 | Column | Type | Note |
 |---|---|---|
@@ -172,8 +172,10 @@ one of those citations at a different table.
 | `Tags` | `text[]` | |
 | `RecordedAt` | `timestamptz` | |
 
-Everything else in this database is re-derivable from the vendor. This is not, and it is the only thing worth
-backing up.
+**Original, and not the only original data here.** Bars, indicator values and embeddings are re-derivable from
+the vendor or from the bars. Observations are not. Neither is the tape (§7, §8): there is no market-tape REST
+backfill ([ADR-0016](adr/0016-subscribe-to-the-market-hub.md)), so a dropped store loses prints that cannot be
+refetched. Back up both.
 
 ## §6 `Embeddings` — pgvector
 
@@ -239,6 +241,10 @@ is assigned at ingest, not read from the payload.
 **`Direction` of `0` is a stored unknown**, not a default buy. The venue enum's zero *is* a buy
 (`TradeLogType.Buy = 0`), which is how an absent type would land in the delta as real buying pressure. The
 store refuses that rewrite; a missing number stays missing.
+
+**This is original data, not a cache.** There is no market-tape REST backfill, so losing the store loses
+prints that cannot be refetched — the same fact §8 states for the listening ledger, and the correction
+[ADR-0004](adr/0004-one-postgres-timescale-pgvector.md)'s 2026-08-28 update records.
 
 **Deliberately no retention policy** — same reason as §1. This is the store's **first compression policy**:
 chunks older than seven days compress in place. Compression is a different Timescale job from retention;

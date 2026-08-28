@@ -37,9 +37,9 @@ public enum TradeDirection
 /// </para>
 /// <para>
 /// This table is a record rather than a pipeline: it carries <b>no retention policy</b>, and it is
-/// the store's first compression policy. A replay reaching for the prints behind a past footprint
-/// should find what was actually used; compression shrinks the chunks without deleting them
-/// (ADR-0004).
+/// the store's first compression policy. It is also <b>original data, not a cache</b> — there is no
+/// market-tape REST backfill, so losing the store loses prints that cannot be refetched (ADR-0004,
+/// ADR-0016). Compression shrinks the chunks without deleting them.
 /// </para>
 /// </remarks>
 public sealed class TradeRecord

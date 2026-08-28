@@ -490,10 +490,12 @@ $ gh api repos/adammarquette/MarqSpec.Mcp.TopstepX/rulesets/<id> --jq \
     '[.rules[]|select(.type=="required_status_checks")|.parameters.required_status_checks[].context]'
 ```
 
-Last reconciled 2026-08-24 (gh#125) — the card that exists because `image` was made required and this table
-was not told. That read settles which **strings** are required and nothing more; what shows a string is
-spelled the way its job reports is GitHub's own per-context `isRequired`, taken on a real pull request. That
-field is **GraphQL-only** — `isRequired(pullRequestNumber:)` on the `statusCheckRollup` contexts — and `gh pr
+Last reconciled 2026-08-28 (gh#297) against the same three ids — the nine `develop` strings and the ten on
+each promotion rung are unchanged since gh#125, the card that exists because `image` was made required and
+this table was not told. That read settles which **strings** are required and nothing more; what shows a
+string is spelled the way its job reports is GitHub's own per-context `isRequired`, taken on a real pull
+request. That field is **GraphQL-only** — `isRequired(pullRequestNumber:)` on the `statusCheckRollup`
+contexts — and `gh pr
 view --json statusCheckRollup` returns it as `null` for every context, which reads as "nothing is required"
 rather than as "this field was not asked for". Asked properly on PR #130 (base `staging`) it answered `true`
 for all ten contexts required on that rung, `image` included, and `false` for both `Analyze (csharp)` and
@@ -689,12 +691,22 @@ else's next pull request rather than on yours, and several landed on nobody's. R
 now moves the printed value. Correct the row in the same pull request; the gate prints the value to paste.
 
 **`commit-hygiene` also refuses a merge commit, on a pull request into `develop` and nowhere else** (gh#146).
-`protect-develop` is `allowed_merge_methods: ["rebase"]` and carries
-`strict_required_status_checks_policy: true`; *Rebase and merge* cannot replay a merge commit, so a branch
-that has ever had `git merge develop` run into it is unmergeable for good — and the pull request says so only
-as **"All checks have passed"** beside **"Unable to merge (rebase) — Cannot merge at this time"**, naming
-nothing. On 2026-08-24, #131, #139, #141 and #143 were approved, green and unmergeable at once; #131 lost five
-curated commits to a squash, and Dependabot disowned #143 for having been edited.
+`protect-develop` (`21182074`) is `allowed_merge_methods: ["rebase"]` and carries
+`strict_required_status_checks_policy: false` — both read from that ruleset on 2026-08-28, same call as
+the table above; do not quote them from memory. The nine required contexts on it are the nine the table
+lists for `develop`; `ladder` is still absent there. *Rebase and merge* cannot replay a merge commit, so a
+branch that has ever had `git merge develop` run into it is unmergeable for good — and the pull request
+says so only as **"All checks have passed"** beside **"Unable to merge (rebase) — Cannot merge at this
+time"**, naming nothing. On 2026-08-24, #131, #139, #141 and #143 were approved, green and unmergeable at
+once; #131 lost five curated commits to a squash, and Dependabot disowned #143 for having been edited.
+
+`strict` was `true` when that paragraph was written. Turning it off is what stopped the Update-branch
+storm that produced those four: with it on, every merge on `develop` forced every open PR to catch up,
+and the page's default catch-up is a merge. **The cost of `false` is the live hazard.** Required contexts
+do not re-run when `develop` moves, so a green tick can describe a base that no longer exists. Re-verify
+a rebased branch rather than trusting its ticks; an approval is a property of a SHA. PR #272 nearly
+merged a tree that did not compile behind stale green checks. PR #289's approval named a SHA one commit
+behind the head, and the merge took the unreviewed commit.
 
 *Enforced, not merely documented, and the reason is that the reader is not reading.*
 [`CONTRIBUTING.md`](../../CONTRIBUTING.md)'s *Falling behind* section is the floor; the twin entry it landed

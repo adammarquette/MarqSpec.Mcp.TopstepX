@@ -24,12 +24,12 @@
 # WHY THERE IS MORE THAN ONE PRICED TABLE (gh#178)
 #
 # The routing map is a two-level route: its `agents/` row points at `documentation/agents/README.md`, and that
-# index points on at the four role contracts. gh#160 priced the row — correctly, for the index — and the row
+# index points on at the role contracts. gh#160 priced the row — correctly, for the index — and the row
 # was then the entrance to a read nothing described, `documentation/agents/platform.md` being an order of
 # magnitude past the number a reader had just budgeted from.
 #
-# The prices went into the index's own contract table rather than into four more rows of the map. Four map
-# rows would have listed the same four contracts a second time, priced, beside the index's table listing them
+# The prices went into the index's own contract table rather than into one map row per contract. Map
+# rows would have listed the same contracts a second time, priced, beside the index's table listing them
 # unpriced — one fact in two places with only one copy ever corrected, which is precisely what rule 2 below
 # refuses inside a single row. The cost of that choice is this script: "the priced table" became a LIST of
 # (file, heading) pairs, and the list is `PRICED` below.
@@ -229,7 +229,7 @@ explain() {
 
 A `~tok` column is the price list a reader consults before opening a document, and it is only worth
 consulting while it is true. documentation/README.md carries one for the documents it routes to;
-documentation/agents/README.md carries one for the four role contracts.
+documentation/agents/README.md carries one for the role contracts.
 
   tokens = bytes / 4, bytes from `wc -c`, rounded to 0.1K. The value to write is printed above each failure.
 

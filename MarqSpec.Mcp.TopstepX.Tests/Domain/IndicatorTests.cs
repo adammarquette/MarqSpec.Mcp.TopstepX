@@ -237,6 +237,34 @@ public sealed class IndicatorTests
     }
 
     [Fact]
+    public void MacdSignalIndicator_FirstValueArrivesAtExactlyWarmupBars()
+    {
+        AssertFirstValueArrivesAtExactlyWarmupBars(new MacdSignalIndicator(26));
+    }
+
+    [Fact]
+    public void MacdHistogramIndicator_FirstValueArrivesAtExactlyWarmupBars()
+    {
+        AssertFirstValueArrivesAtExactlyWarmupBars(new MacdHistogramIndicator(26));
+    }
+
+    /// <summary>
+    /// The bar at exactly <see cref="IIndicator.WarmupBars"/> carries the first value; the one before it
+    /// does not.
+    /// </summary>
+    private static void AssertFirstValueArrivesAtExactlyWarmupBars(IIndicator indicator)
+    {
+        int warmup = indicator.WarmupBars;
+        IReadOnlyList<Bar> justEnough = [.. Enumerable.Range(1, warmup).Select(i => Bar(i, i, i, i))];
+        IReadOnlyList<Bar> oneShort = [.. justEnough.Take(warmup - 1)];
+
+        indicator.Compute(oneShort).Should().OnlyContain(value => !value.HasValue);
+        IReadOnlyList<decimal?> atWarmup = indicator.Compute(justEnough);
+        atWarmup.Count(value => value.HasValue).Should().Be(1);
+        atWarmup[warmup - 1].Should().NotBeNull();
+    }
+
+    [Fact]
     public void MacdLine_RefusesASlowPeriodThatIsNotSlower()
     {
         Action compute = () => Macd.Line(Closes(1m, 2m, 3m), Macd.FastPeriod);

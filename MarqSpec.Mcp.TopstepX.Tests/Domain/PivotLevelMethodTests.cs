@@ -305,8 +305,13 @@ public sealed class PivotLevelMethodTests
         // (above), so it must also refuse one the series covers too coarsely to distinguish. At a daily
         // resolution and above, one bar carries a trade date and everything else it spans, and `Bar` records
         // no width to tell the two apart -- so "Monday's high" would be the high of whatever that bar
-        // covered. Two bars are the least that shows the series samples the session more finely than the
-        // session itself.
+        // covered.
+        //
+        // Two bars rule that case out and NOTHING MORE. They do not bound the period's last bar, which has
+        // no successor inside the period to be measured against, so a bucket that opens inside a session and
+        // runs past its close is still read as that session's. `PivotLevels`' own remarks carry the measured
+        // twelve-hour case that slips through, and gh#259 owns closing it -- `session` is exposed
+        // identically, and the fix needs a resolution neither method is handed.
         IReadOnlyList<Bar> daily =
         [
             Hour(Aug16, 17, 100, 120, 96, 111),

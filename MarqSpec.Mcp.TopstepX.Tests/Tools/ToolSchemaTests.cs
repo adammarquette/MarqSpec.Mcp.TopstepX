@@ -250,10 +250,11 @@ public sealed class ToolSchemaTests
     /// <summary>Every (tool, field) pair a description must not aim a <c>null</c> comparison at.</summary>
     /// <remarks>
     /// <b><c>onlyThroughMap</c> is carried in the data rather than recomputed</b>, so the distinction shows up
-    /// in the test's own name. A field reached only through a dictionary's value type is <i>not</i> dropped
-    /// from the result, so the remediation the message gives has to differ — and a gate that told an author
-    /// the wrong remediation would produce the confidently-backwards guidance it exists to stop (gh#286
-    /// review).
+    /// in the test's own name. The flag is a PATH shape, not a droppability claim: a field reached only
+    /// through a dictionary's value type can still be omitted from a present entry by <c>WhenWritingNull</c>
+    /// (gh#304). The remediation differs because a null test aimed at the field skips the question of whether
+    /// the entry itself is null — and a gate that told an author the wrong remediation would produce the
+    /// confidently-backwards guidance it exists to stop (gh#286 review).
     /// </remarks>
     public static TheoryData<string, string, bool> EveryToolAbsentField()
     {
@@ -290,22 +291,15 @@ public sealed class ToolSchemaTests
         // sentence in some shape not listed here escapes it, which is the honest limit of gating prose.
         //
         // THE BAN IS ONE RULE; THE REMEDIATION IS TWO, and gh#286 is why. A field reached only through a
-        // dictionary's value type is not dropped from anything, so telling its author to "say the key is
-        // ABSENT instead" sends them to write a key-presence test that is wrong in both directions -- it
-        // throws on the entry that is null, and can never be false on the entry that is not. The comparison
-        // is still banned, because the entry above the field can be null and a field-level null test skips
-        // that question; only the sentence explaining why differs.
+        // dictionary's value type still must not be compared to null, but the reason is the ENTRY above it
+        // -- a field-level null test skips that question and dereferences a missing reading. Map-reachedness
+        // is not why, and it does not mean the field is never dropped: a nullable member of a present
+        // entry is still omitted (gh#304). The comparison is still banned; only the sentence explaining
+        // why differs.
         MethodInfo method = ToolMethods().Single(m => m.DeclaringType!.Name + "." + m.Name == tool);
         string description = method.GetCustomAttribute<DescriptionAttribute>()?.Description ?? string.Empty;
 
-        string why = onlyThroughMap
-            ? "{0} reaches `{1}` only through a MAP VALUE, so `{1}` is never dropped -- but the entry holding "
-                + "it can itself be null, and a null test aimed at `{1}` skips that question and dereferences "
-                + "it. Point the caller at the ENTRY; do not tell them to test for the `{1}` key either, "
-                + "because on a measured entry it is always there. Current text: \"{2}\""
-            : "{0} DROPS `{1}` from the result when it has nothing to report, so an agent told to test it "
-                + "against null compares undefined to null, gets false, and concludes the server measured. "
-                + "Say the key is ABSENT instead. Current text: \"{2}\"";
+        string why = AbsentFieldNullComparisonWhy(onlyThroughMap);
 
         foreach (string shape in _nullComparisons)
         {
@@ -316,6 +310,40 @@ public sealed class ToolSchemaTests
                 field,
                 description);
         }
+    }
+
+    [Fact]
+    public void MapReachedRemediation_DoesNotCreditTheMapForMakingAFieldUndroppable()
+    {
+        // gh#304: onlyThroughMap is a path shape, not a droppability claim. A nullable member of a
+        // present map entry is still omitted by WhenWritingNull — contractId on a measured
+        // indicators.atr is the shipped proof. The map branch used to tell an author the field is
+        // never dropped *because* it is map-reached; following that lands the gh#90 shape the
+        // moment a map value carries a nullable member.
+        string why = AbsentFieldNullComparisonWhy(onlyThroughMap: true);
+
+        why.Should().NotContain(
+            "so `{1}` is never dropped",
+            "map-reachedness does not make a field undroppable; that clause is the wrong cause (gh#304)");
+
+        why.Should().Contain(
+            "ENTRY",
+            "the remediation must still point the author at the entry, or it is not actionable");
+
+        why.Should().MatchRegex(
+            "WhenWritingNull|omitted|ABSENT",
+            "following the message must land green prose for a member that can be omitted from a present "
+            + "entry, not the 'always there' claim that is false for a nullable map member");
+    }
+
+    [Fact]
+    public void DirectPathRemediation_StillTellsTheAuthorToSayTheKeyIsAbsent()
+    {
+        // The ban does not change. The drop-branch remedy is still the key-presence test; only the
+        // map branch's *cause* was wrong (gh#304).
+        AbsentFieldNullComparisonWhy(onlyThroughMap: false).Should().Contain(
+            "Say the key is ABSENT instead",
+            "narrowing or rewording the map branch must not rewrite the drop-path remedy");
     }
 
     // ── Descriptions against what the payload they name actually proves ──────────────────────────────
@@ -631,12 +659,33 @@ public sealed class ToolSchemaTests
         @"(?i)\b<field>\s+(?:is|are|equals)\s+null\b",
     ];
 
+    /// <summary>
+    /// The sentence a failing <see cref="ADescription_DoesNotTellACallerToCompareAnAbsentFieldToNull"/>
+    /// run hands the author.
+    /// </summary>
+    /// <param name="onlyThroughMap">
+    /// Whether every path that reached the field went through a dictionary's value type.
+    /// </param>
+    /// <returns>A format string taking tool, field, and the current description.</returns>
+    private static string AbsentFieldNullComparisonWhy(bool onlyThroughMap) =>
+        onlyThroughMap
+            ? "{0} reaches `{1}` only through a map value. That path does not make `{1}` undroppable: "
+                + "WhenWritingNull still omits a nullable member from a present entry. A null test aimed at "
+                + "`{1}` skips the question of whether the ENTRY itself is null and dereferences it. Point "
+                + "the caller at the ENTRY. Do not compare `{1}` to null. On a measured entry, an always-"
+                + "populated member is simply there (do not test for its key); a member that can be omitted "
+                + "is ABSENT, not null. Current text: \"{2}\""
+            : "{0} DROPS `{1}` from the result when it has nothing to report, so an agent told to test it "
+                + "against null compares undefined to null, gets false, and concludes the server measured. "
+                + "Say the key is ABSENT instead. Current text: \"{2}\"";
+
     /// <summary>The wire fields a caller must not be told to compare to <c>null</c>.</summary>
     /// <param name="returnType">The tool method's return type.</param>
     /// <returns>
     /// The field names, camel-cased as the wire spells them, each with whether it is reached
-    /// <b>only</b> through a dictionary's value type — in which case it is not dropped from anything, and
-    /// the reason a null test on it is wrong is a different one.
+    /// <b>only</b> through a dictionary's value type. That flag is the path, not a promise the field
+    /// survives <c>WhenWritingNull</c> — a nullable member of a present entry is still omitted. The
+    /// reason a null test on a map-reached field is wrong is the ENTRY, not undroppability.
     /// </returns>
     private static IEnumerable<(string Field, bool OnlyThroughMap)> AbsentFields(Type returnType)
     {
@@ -673,7 +722,10 @@ public sealed class ToolSchemaTests
     /// value type, never about the keys. Its value type is now <c>IndicatorReading</c>, so
     /// <c>get_market_snapshot</c> gained <c>value</c> and <c>bucketStart</c>, and those two are reached
     /// <i>only</i> through the map. <see cref="ADescription_DoesNotTellACallerToCompareAnAbsentFieldToNull"/>
-    /// has to say something different about them, because they are not dropped from anything.
+    /// has to say something different about them, because a null test aimed at the field skips the entry —
+    /// not because the map makes them undroppable. A nullable member of a present entry is still
+    /// omitted (gh#304); what keeps <c>value</c> and <c>bucketStart</c> on a measured reading is the
+    /// non-nullability invariant, not the map.
     /// </para>
     /// </remarks>
     private static void CollectAbsentFields(

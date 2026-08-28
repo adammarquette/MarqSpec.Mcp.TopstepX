@@ -138,19 +138,20 @@ public static class PivotLevels
     /// caller asks for, and what a recorded score says it was a score of — so it must not move when a C#
     /// identifier does.
     /// </remarks>
-    public static string NameOf(PivotFormula formula) => formula switch
+    public static string NameOf(PivotFormula formula)
     {
-        PivotFormula.Classic => "pivot-classic",
-        PivotFormula.Fibonacci => "pivot-fibonacci",
-        PivotFormula.Camarilla => "pivot-camarilla",
-        PivotFormula.Woodie => "pivot-woodie",
-        PivotFormula.DeMark => "pivot-demark",
-        _ => throw new ArgumentOutOfRangeException(
-            nameof(formula),
-            formula,
-            "The pivot formula must be one of Classic, Fibonacci, Camarilla, Woodie, DeMark. Unknown is what "
-            + "an unset value binds to, so it is refused rather than resolved to a default."),
-    };
+        RequireServableFormula(formula);
+
+        return formula switch
+        {
+            PivotFormula.Classic => "pivot-classic",
+            PivotFormula.Fibonacci => "pivot-fibonacci",
+            PivotFormula.Camarilla => "pivot-camarilla",
+            PivotFormula.Woodie => "pivot-woodie",
+            PivotFormula.DeMark => "pivot-demark",
+            _ => throw UnnamedFormula(formula),
+        };
+    }
 
     /// <summary>
     /// The lines one formula computes from one finished period.
@@ -177,6 +178,7 @@ public static class PivotLevels
     public static IReadOnlyList<PivotLine> Lines(PivotFormula formula, PivotPeriod period)
     {
         ArgumentNullException.ThrowIfNull(period);
+        RequireServableFormula(formula);
 
         return formula switch
         {
@@ -185,8 +187,7 @@ public static class PivotLevels
             PivotFormula.Camarilla => Camarilla(period),
             PivotFormula.Woodie => Woodie(period),
             PivotFormula.DeMark => DeMark(period),
-            _ => throw new ArgumentOutOfRangeException(
-                nameof(formula), formula, "The pivot formula must be set explicitly."),
+            _ => throw UnnamedFormula(formula),
         };
     }
 
@@ -505,13 +506,27 @@ public static class PivotLevels
     {
         if (formula == PivotFormula.Unknown || !Enum.IsDefined(formula))
         {
-            throw new ArgumentOutOfRangeException(
-                nameof(formula),
-                formula,
-                "The pivot formula must be one of Classic, Fibonacci, Camarilla, Woodie, DeMark. Unknown is "
-                + "what an unset value binds to, so it is refused rather than resolved to a default.");
+            throw UnnamedFormula(formula);
         }
     }
+
+    /// <summary>
+    /// The one refusal a formula outside the vocabulary gets, wherever it is caught.
+    /// </summary>
+    /// <param name="formula">The offending value.</param>
+    /// <returns>The exception to throw.</returns>
+    /// <remarks>
+    /// One message rather than three, because the three would drift and only one of them is ever read. It
+    /// reaches the switch arms as well as <see cref="RequireServableFormula"/>: a switch over an enum needs a
+    /// default arm to be exhaustive, and an arm that said something different from the check in front of it
+    /// would describe a value by whichever path happened to catch it.
+    /// </remarks>
+    private static ArgumentOutOfRangeException UnnamedFormula(PivotFormula formula) =>
+        new(nameof(formula),
+            formula,
+            "The pivot formula must be one of Classic, Fibonacci, Camarilla, Woodie, DeMark. Unknown is what "
+            + "an unset value binds to, and a value outside the vocabulary is not resolved to a default "
+            + "either — either would answer with somebody's pivot set and never say whose.");
 
     /// <summary>
     /// Refuses the two options this family reads directly.

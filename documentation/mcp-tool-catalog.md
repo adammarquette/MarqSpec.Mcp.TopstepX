@@ -281,12 +281,16 @@ recorded — so an absent one is never evidence that two readings share a contra
 (gh#286) — with one difference the container forces: there, cannot-measure is the map's own `null` rather
 than the empty object, because the ignore condition does not reach inside a dictionary.
 
-### `get_key_levels(symbol, resolutionMinutes, lookbackBars?, pivotSource?, pivotLookback?, pivotRightLookback?)`
-Support and resistance as **zones**, not lines.
+### `get_key_levels(symbol, resolutionMinutes, lookbackBars?, pivotSource?, pivotLookback?, pivotRightLookback?, methods?)`
+Support and resistance as **zones**, not lines. One call runs every requested method and returns a
+family-aware confluence score (`R-3.12`).
 
 Returns `{ levels: [{ timeframeMinutes, bottom, top, midpoint, kind, significance, touchCount,
-formedAt }], contracts, detectedOverBars, detection: { source, pivotLookback, zoneAtrMultiple,
-minSignificance, pivotRightLookback, maxZoneWidthPercent, maxLevels } }`.
+formedAt, method, period }], contracts, detectedOverBars, detection: { source, pivotLookback,
+zoneAtrMultiple, minSignificance, pivotRightLookback, maxZoneWidthPercent, maxLevels },
+methods: [{ name, family, weight, levels, absentReason }], confluence: { score, tolerance,
+constituents: [{ method, family, weight, zoneCount }], absent: [{ method, reason }] } }`.
+`method` and `period` on a level, and `absentReason` on a method result, are omitted when null.
 
 **gh#245 changed what this returns, deliberately, and it is the kind of change no compiler reports.**
 Overlapping zones now merge **whichever side of price each of them formed on** — so where a support and a
@@ -312,20 +316,31 @@ field is a breaking change to the tool contract rather than a typo to quietly fi
 assigned **relative to the current price**, not to how the level formed: a broken resistance is today's support,
 and reporting it otherwise puts a ceiling underneath the market.
 
-**This call detects with `swing`, and that is the whole of what it can ask for today.** The server's method
-vocabulary is `swing`, `session` and the five `pivot-*` names — `session` added by gh#257 and the family by
-gh#258 — but `get_key_levels` carries no method argument, so the other six are registered and tested without
-yet being reachable from here. Selecting a method per call, and scoring the confluence between several, is
-gh#259; this paragraph goes when that argument arrives. `session` reports what a finished session left behind — prior-day and prior-week high, low and
+**`methods` selects the detectors; omit it and the call is `swing`, as it was.** The vocabulary is `swing`,
+`session`, `pivot-classic`, `pivot-fibonacci`, `pivot-camarilla`, `pivot-woodie` and `pivot-demark`. An
+unknown name is an error listing those, never an empty level set (`R-3.6`). Several names are
+comma-separated; the response's `methods` array is one entry per name, and `confluence` is the weighted
+agreement between them. Per-method weights are configuration (`KeyLevels__Weights__<name>`); an unlisted
+method weighs 1. Methods that share a `family` share one budget — the five `pivot-*` names declare
+`pivot`, so five of them landing on a price is one confirmation, not five (`R-3.11`). The score is the
+strongest overlapping cluster's family-aware weight. `confluence.tolerance` is `detection.zoneAtrMultiple`,
+the same width that turns a line into a zone, so two callers with different tolerances cannot share a
+score. A requested method that contributed nothing is in `confluence.absent` with why: `refused: buckets
+overhang a session close`, `no data`, or `no levels`.
+
+`session` reports what a finished session left behind — prior-day and prior-week high, low and
 close, the overnight range, and the initial balance — sized into zones by **the same `zoneAtrMultiple`** a
 pivot is, so a line and a zone are the same width and a confluence score compares like with like. Its
 significance is the summarised period's own range in ATR multiples, which for that period's high and low is
 prominence measured over the session instead of over a lookback window. Whatever it cannot compute is
 **absent**: a window that does not reach the opening of the session a level belongs to yields no level for
-it rather than one taken from the part of the session the window holds, a prior "day" that did not trade is
-not a prior day, and a range still forming is not a level. At 500 five-minute bars the window spans about
-forty hours, so prior-week levels will normally be absent and prior-day levels often will be — ask for more
-`lookbackBars` rather than reading the absence as a market without structure.
+it rather than one taken from the part of the session the window holds, a prior trading day **absent from
+the store** is not replaced by an older day, a prior "day" that did not trade is not a prior day, and a
+range still forming is not a level. The initial balance is refused when `resolutionMinutes` is coarser than
+the hour it measures. Zones carry `period` so a prior-day high names the date it came from. At 500
+five-minute bars the window spans about forty hours, so prior-week levels will normally be absent and
+prior-day levels often will be — ask for more `lookbackBars` rather than reading the absence as a market
+without structure.
 
 **The five `pivot-*` names are one family, and the vocabulary says so twice — once in the names, once in the
 method's declared family.** `pivot-classic`, `pivot-fibonacci`, `pivot-camarilla`, `pivot-woodie` and
@@ -337,18 +352,21 @@ fibonacci report seven lines, camarilla eight, woodie five and demark three — 
 is the published set, and inventing an `R2` to make the family look uniform would be arithmetic nobody
 published. Sized into zones by **the same `zoneAtrMultiple`** again, and scored by **the same significance
 `session` uses** — the period's own range in ATR multiples — so one number covers a whole set and
-`minSignificance` keeps or drops it whole. Unlike `session`, this family **applies both caps**: a set longer
+`minSignificance` keeps or drops it whole. **Every method applies both caps** (`R-3.9`): a set longer
 than `maxLevels` is cut to the most significant, and a zone wider than `maxZoneWidthPercent` of its own
 midpoint is dropped — which also removes a far leg that has run below the price scale, since that comparison
-cannot be satisfied at a midpoint of zero or less.
+cannot be satisfied at a midpoint of zero or less. `detection` reporting the caps is therefore true of
+`session` and `pivot-*` as well as `swing`.
 
 **A pivot period the series cannot supply is absent, and one of the three ways is about resolution.** No
 prior session in the window, a window that begins after that session opened, or a session the series covers
 with a **single bar** — the last because a bar records no width, so at a daily resolution or above "the
 prior day's high" would be the high of everything the bar spans. Ask for a finer `resolutionMinutes` rather
-than reading the absence as a session without structure. That last rule bounds the resolution at **a bar per
-session**, not at the session's own end: a bucket that begins inside a session and runs past its close is
-still read as that session's, which `session` does too and gh#259 owns for both.
+than reading the absence as a session without structure. A bucket that begins inside a session and runs
+**past its close** is refused for `session` and every `pivot-*` method, at the tool boundary, from the
+stated `resolutionMinutes` (`R-3.13`). `Detect` is not asked to infer the width. The refusal is the plain
+rule — every overhang, including one that only reaches the maintenance window — rather than an attempt to
+reason which alignments contaminate.
 
 **The pivot window is asymmetric, and both edges are per call.** `pivotLookback` is how many bars to the
 **left** a pivot must dominate; `pivotRightLookback` is how many to the **right**, which is the confirmation
@@ -364,10 +382,11 @@ window of 2 and **15**, not 2 and 2. Read `detection.pivotLookback` beside `dete
 **Detection has seven parameters. Three are per call, four are the operator's only, and the split is
 deliberate rather than partial.** `pivotSource`, `pivotLookback` and `pivotRightLookback` say *what is being
 asked* — which price a pivot is measured from, and how structural a level has to be — so a caller can compare
-two readings of the same bars in one session. The zone width (`KeyLevels__ZoneAtrMultiple`), the significance
+two readings of the same bars in one session. `methods` is a fourth per-call argument but not a detection
+parameter: it selects who runs, and omitting it asks for `swing`. The zone width (`KeyLevels__ZoneAtrMultiple`), the significance
 floor (`KeyLevels__MinSignificance`), the width cap (`KeyLevels__MaxZoneWidthPercent`) and the level cap
 (`KeyLevels__MaxLevels`) are configuration only, because they are the calibration that makes two of this
-server's answers comparable at all: gh#232's confluence score weighs zones from several methods against each
+server's answers comparable at all: the confluence score weighs zones from several methods against each
 other, and a width that moved per request would make two scores incomparable without either being wrong.
 The floor is the sharper case — turned up it empties the level set, and an empty level set reads as *this
 market has no structure*, which is a conclusion rather than a request artefact.

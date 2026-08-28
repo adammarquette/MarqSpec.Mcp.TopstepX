@@ -163,6 +163,40 @@ public sealed class KeyLevelDetectionOptions : IValidatableObject
     public int MaxLevels { get; init; } = 12;
 
     /// <summary>
+    /// Per-method confluence weights. An unlisted method weighs 1.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>These are the numbers, not the family discount.</b> Five pivot variants share one budget
+    /// because they declare one <c>Family</c>, not because their weights sum to 1. Encoding the
+    /// discount here as five 0.2s would be a list of names the sixth variant silently escapes —
+    /// the failure gh#259 names. Leave them at 1 and let the scorer group by family.
+    /// </para>
+    /// </remarks>
+    public Dictionary<string, decimal> Weights { get; init; } = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>The weight a named method carries in a confluence score. Unlisted methods weigh 1.</summary>
+    /// <param name="method">The method name.</param>
+    /// <returns>The configured weight, or 1.</returns>
+    public decimal WeightOf(string method)
+    {
+        if (Weights.TryGetValue(method, out decimal weight))
+        {
+            return weight;
+        }
+
+        foreach (KeyValuePair<string, decimal> pair in Weights)
+        {
+            if (string.Equals(pair.Key, method, StringComparison.OrdinalIgnoreCase))
+            {
+                return pair.Value;
+            }
+        }
+
+        return 1m;
+    }
+
+    /// <summary>
     /// These options as the detection record <c>Domain</c> takes.
     /// </summary>
     /// <returns>The configured defaults.</returns>
@@ -197,6 +231,17 @@ public sealed class KeyLevelDetectionOptions : IValidatableObject
                 + PivotSources.KnownNames + ". Unknown is what an unset or mistyped value binds to, so it is "
                 + "refused rather than honoured — a zero default would pick a price series by accident.",
                 [nameof(Source)]);
+        }
+
+        foreach (KeyValuePair<string, decimal> pair in Weights)
+        {
+            if (pair.Value <= 0m)
+            {
+                yield return new ValidationResult(
+                    SectionName + "__Weights__" + pair.Key + " must be positive; a zero or negative weight "
+                    + "would drop a requested method from a score without saying it was absent.",
+                    [nameof(Weights)]);
+            }
         }
     }
 }

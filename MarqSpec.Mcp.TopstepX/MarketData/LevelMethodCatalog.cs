@@ -72,6 +72,7 @@ public sealed class LevelMethodCatalog
     public LevelMethodCatalog(BarSessionCalendar calendar)
     {
         ArgumentNullException.ThrowIfNull(calendar);
+        Calendar = calendar;
 
         ILevelMethod[] methods =
         [
@@ -87,6 +88,9 @@ public sealed class LevelMethodCatalog
         _byName = methods.ToDictionary(m => m.Name, StringComparer.Ordinal);
         All = methods;
     }
+
+    /// <summary>The session calendar the anchored methods were constructed with.</summary>
+    public BarSessionCalendar Calendar { get; }
 
     /// <summary>Every method, in registration order.</summary>
     public IReadOnlyList<ILevelMethod> All { get; }

@@ -325,4 +325,98 @@ public sealed class SessionLevelMethodTests
         zones.Select(z => (z.Bottom, z.Top)).Should().Equal(
             (98.5m, 99.5m), (103.5m, 105.5m), (107.5m, 108.5m), (113.5m, 115.5m), (129.5m, 131.5m));
     }
+
+    [Fact]
+    public void APriorTradingDayAbsentFromTheSeries_IsAbsent_NotAnOlderDayTheWindowHappensToHold()
+    {
+        // Tuesday is in progress. Monday traded — the calendar does not shut it — but Monday's bars
+        // are not loaded. The most recent day the series holds is Friday. Serving Friday's 108/99/105
+        // as "prior day" is a missing number answered with a substitute (gh#259 finding 2).
+        //
+        // No holidays: the prior week is the week of Monday the 10th, whose open the window does not
+        // reach, so Friday cannot sneak in as a prior-week level either.
+        BarSessionCalendar openWeek = new(new TimeOnly(16, 0), []);
+        IReadOnlyList<Bar> mondayMissing =
+        [
+            Fixture[0], Fixture[1], Fixture[2], // Friday
+            Fixture[6], Fixture[7], Fixture[8], Fixture[9], Fixture[10], // Tuesday
+        ];
+
+        IReadOnlyList<KeyLevelZone> zones =
+            new SessionLevelMethod(openWeek).Detect(mondayMissing, FlatAtr(mondayMissing.Count), Options);
+
+        zones.Should().NotContain(z => z.Contains(108m), "108 is Friday's high, and Friday is not the prior day");
+        zones.Should().NotContain(z => z.Contains(99m), "99 is Friday's low");
+        zones.Should().NotContain(z => z.Contains(105m), "105 is Friday's close");
+        zones.Should().NotContain(z => z.Period == "2026-08-14", "Friday must not be labelled as a period at all");
+
+        // Tuesday's own overnight and initial balance still form — those are this session, not a
+        // substitute for Monday.
+        zones.Should().Contain(z => z.Contains(131m));
+    }
+
+    [Fact]
+    public void APriorDayZone_CarriesTheTradeDateItCameFrom()
+    {
+        // [119.5, 120.5] is Monday's high and it does not merge with anything, so the period on
+        // that zone is Monday's date rather than a silent "prior day".
+        IReadOnlyList<KeyLevelZone> zones = Detect(Fixture);
+
+        zones.Should().ContainSingle(z => z.Contains(120m) && z.Bottom == 119.5m)
+            .Which.Period.Should().Be("2026-08-17");
+    }
+
+    [Fact]
+    public void InitialBalance_IsAbsent_WhenTheResolutionIsCoarserThanTheHourItMeasures()
+    {
+        // The initial balance is one hour from the reopen. A 240-minute bar spanning 17:00–21:00
+        // labelled as that hour is the first routed finding: a partial period is already refused,
+        // an over-wide one was accepted silently. Symmetry refuses it.
+        IReadOnlyList<Bar> currentSessionOnly = [.. Fixture.Skip(6)];
+        KeyLevelOptions coarse = Options with { ResolutionMinutes = 240 };
+
+        IReadOnlyList<KeyLevelZone> zones =
+            new SessionLevelMethod(Calendar).Detect(currentSessionOnly, FlatAtr(currentSessionOnly.Count), coarse);
+
+        // Overnight survives: high 131, low 114, each a 1-wide zone, no IB to merge with.
+        zones.Select(z => (z.Bottom, z.Top, z.Kind, z.TouchCount, z.Significance)).Should().Equal(
+            (113.5m, 114.5m, KeyLevelKind.Support, 1, 8.5m),
+            (130.5m, 131.5m, KeyLevelKind.Resistance, 1, 8.5m));
+
+        zones.Should().NotContain(z => z.Period == SessionLevels.InitialBalancePeriod);
+    }
+
+    [Fact]
+    public void InitialBalance_IsStillReported_AtTheHourItIsDefinedAt()
+    {
+        IReadOnlyList<Bar> currentSessionOnly = [.. Fixture.Skip(6)];
+        KeyLevelOptions hourly = Options with { ResolutionMinutes = 60 };
+
+        IReadOnlyList<KeyLevelZone> zones =
+            new SessionLevelMethod(Calendar).Detect(currentSessionOnly, FlatAtr(currentSessionOnly.Count), hourly);
+
+        // Same as AWindowStartingAtTheCurrentSessionsOpen: IB merges with overnight.
+        zones.Select(z => (z.Bottom, z.Top, z.Kind, z.TouchCount, z.Significance)).Should().Equal(
+            (113.5m, 114.5m, KeyLevelKind.Support, 2, 8.5m),
+            (129.5m, 131.5m, KeyLevelKind.Resistance, 2, 8.5m));
+    }
+
+    [Fact]
+    public void MaxLevels_IsHonoured_SoAReportedCapIsACapThatFired()
+    {
+        // The fixture yields six zones. Significance after merge+close, read off
+        // TheFixtureProducesTheSixZonesDerivedAbove:
+        //
+        //   4.5, 8, 4.5, 8.5, 8, 8.5
+        //
+        // The two 8.5s survive a cap of 2. Touch-count breaks the tie (3 before 2), then they
+        // return in price order. A method that ignored MaxLevels would still return six, and
+        // `detection.maxLevels` would be a number that never happened (gh#259 finding 3).
+        IReadOnlyList<KeyLevelZone> zones =
+            new SessionLevelMethod(Calendar).Detect(Fixture, FlatAtr(Fixture.Count), Options with { MaxLevels = 2 });
+
+        zones.Select(z => (z.Bottom, z.Top, z.TouchCount, z.Significance)).Should().Equal(
+            (113.5m, 115.5m, 3, 8.5m),
+            (129.5m, 131.5m, 2, 8.5m));
+    }
 }

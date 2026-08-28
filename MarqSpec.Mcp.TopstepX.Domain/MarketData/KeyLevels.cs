@@ -61,13 +61,18 @@ public sealed record SwingPivot(
 /// <param name="FormedAtBucket">When the earliest pivot in this zone formed.</param>
 /// <param name="TouchCount">How many pivots fell inside this zone. More touches, more agreement.</param>
 /// <param name="Significance">Prominence in ATR multiples — comparable across instruments and regimes.</param>
+/// <param name="Period">
+/// Which finished period produced the zone — a trade date, a week, overnight, the initial balance —
+/// or <see langword="null"/> when the method has no period to name (a swing pivot).
+/// </param>
 public sealed record KeyLevelZone(
     decimal Bottom,
     decimal Top,
     KeyLevelKind Kind,
     DateTimeOffset FormedAtBucket,
     int TouchCount,
-    decimal Significance)
+    decimal Significance,
+    string? Period = null)
 {
     /// <summary>The middle of the zone.</summary>
     public decimal Midpoint => (Top + Bottom) / 2m;
@@ -107,6 +112,11 @@ public sealed record KeyLevelZone(
 /// <b>dropped</b>, not narrowed.
 /// </param>
 /// <param name="MaxLevels">The most levels a detection may report. The rest are absent, not summarised.</param>
+/// <param name="ResolutionMinutes">
+/// The bar size the series was requested at. <c>session</c> refuses an initial balance when this is
+/// coarser than the hour that balance is defined as; 0 means the caller did not say, and the refusal
+/// does not fire. Handed in rather than inferred from the bars: a bar carries no width.
+/// </param>
 /// <remarks>
 /// <para>
 /// <b>The two lookbacks are separate because a pivot's two sides do different jobs.</b> The left window asks
@@ -127,7 +137,8 @@ public sealed record KeyLevelOptions(
     decimal MinSignificance = 0.5m,
     int RightLookback = 15,
     decimal MaxZoneWidthPercent = 2.5m,
-    int MaxLevels = 12);
+    int MaxLevels = 12,
+    int ResolutionMinutes = 0);
 
 /// <summary>
 /// Swing-pivot detection and the support/resistance zones built from it.
@@ -330,7 +341,8 @@ public static class KeyLevels
                     Kind: strongest.Kind,
                     FormedAtBucket: open.FormedAtBucket <= zone.FormedAtBucket ? open.FormedAtBucket : zone.FormedAtBucket,
                     TouchCount: open.TouchCount + zone.TouchCount,
-                    Significance: Math.Max(open.Significance, zone.Significance));
+                    Significance: Math.Max(open.Significance, zone.Significance),
+                    Period: strongest.Period);
             }
             else
             {

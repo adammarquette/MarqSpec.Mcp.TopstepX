@@ -45,9 +45,8 @@ public sealed class LevelMethodCatalogTests
     [Fact]
     public void TheVocabularyIsExactlyTheMethodsThisServerDetectsWith()
     {
-        // One place declares the set. The tool surface does not yet carry a method argument -- selecting one
-        // per call is a later card on gh#232 -- so this is the whole vocabulary, and `session` and the five
-        // `pivot-*` names are in it without `get_key_levels` being able to ask for them yet.
+        // One place declares the set. `get_key_levels` asks for these by name (gh#259); an unknown
+        // name is an error listing them, never an empty level set.
         Catalog().KnownNames.Should().BeEquivalentTo(
         [
             "swing",

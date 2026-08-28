@@ -479,6 +479,72 @@ public sealed class KeyLevelDetectionPlumbingTests : IDisposable
         levels.Detection.MinSignificance.Should().Be(0.5m);
     }
 
+    [Fact]
+    public async Task AnOmittedMethodsArgument_DetectsWithSwing_AndReportsTheScore()
+    {
+        ToolPayloads.LevelSet levels = await Tools(Detection(pivotLookback: 5))
+            .GetKeyLevels("ES", 5, Bars, cancellationToken: CancellationToken.None);
+
+        levels.Methods.Should().ContainSingle().Which.Name.Should().Be("swing");
+        levels.Confluence.Should().NotBeNull();
+        levels.Confluence!.Tolerance.Should().Be(0.5m);
+        levels.Confluence.Constituents.Should().ContainSingle(c => c.Method == "swing");
+        levels.Levels.Should().NotBeEmpty();
+    }
+
+    [Fact]
+    public async Task AnUnknownMethod_IsAnErrorListingTheKnownOnes()
+    {
+        Func<Task> ask = () => Tools(Detection())
+            .GetKeyLevels("ES", 5, Bars, methods: "murrey", cancellationToken: CancellationToken.None);
+
+        (await ask.Should().ThrowAsync<McpException>())
+            .Which.Message.Should().Contain("murrey").And.Contain("swing").And.Contain("session");
+    }
+
+    [Fact]
+    public async Task ARequestedMethodThatContributesNothing_IsNamedOnTheScore()
+    {
+        // 5-minute bars do not overhang. Asking for session over a 21-bar window that is all one
+        // session and never reaches a prior day's open yields no session levels — and that absence
+        // is on the result, not a quietly omitted constituent.
+        ToolPayloads.LevelSet levels = await Tools(Detection(pivotLookback: 5))
+            .GetKeyLevels(
+                "ES", 5, Bars, methods: "swing,session", cancellationToken: CancellationToken.None);
+
+        levels.Confluence.Should().NotBeNull();
+        levels.Confluence!.Absent.Should().Contain(a => a.Method == "session");
+        levels.Confluence.Constituents.Select(c => c.Method).Should().Equal("swing", "session");
+        levels.Methods!.Select(m => m.Name).Should().Equal("swing", "session");
+    }
+
+    [Fact]
+    public async Task SessionAndPivotMethods_RefuseWhenBucketsOverhangAClose()
+    {
+        // The contaminating 07:00/19:00 twelve-hour alignment (gh#259 finding 4). Detect must not infer
+        // the width; the tool is the place that knows resolutionMinutes. Swing is not session-anchored
+        // and is not refused.
+        SeedTwelveHourContaminating();
+
+        ToolPayloads.LevelSet levels = await Tools(Detection(pivotLookback: 1))
+            .GetKeyLevels(
+                "ES",
+                720,
+                10,
+                methods: "swing,session,pivot-classic",
+                cancellationToken: CancellationToken.None);
+
+        levels.Confluence.Should().NotBeNull();
+        levels.Confluence!.Absent.Should().Contain(
+            a => a.Method == "session" && a.Reason == SessionBucketGuard.RefusalReason);
+        levels.Confluence.Absent.Should().Contain(
+            a => a.Method == "pivot-classic" && a.Reason == SessionBucketGuard.RefusalReason);
+        levels.Confluence.Absent.Should().NotContain(
+            a => a.Method == "swing" && a.Reason == SessionBucketGuard.RefusalReason);
+        levels.Methods!.Single(m => m.Name == "swing").AbsentReason.Should()
+            .NotBe(SessionBucketGuard.RefusalReason);
+    }
+
     // ── Composition ─────────────────────────────────────────────────────────────────────────────────
 
     /// <summary>Builds the market-data tools over the seeded fixture, at a given detection configuration.</summary>
@@ -574,6 +640,42 @@ public sealed class KeyLevelDetectionPlumbingTests : IDisposable
             });
         }
 
+        _database.SaveChanges();
+    }
+
+    /// <summary>
+    /// The 07:00/19:00 twelve-hour series whose Monday 07:00 bucket runs into Tuesday's session.
+    /// </summary>
+    private void SeedTwelveHourContaminating()
+    {
+        DateOnly sunday = new(2026, 8, 16);
+        DateOnly monday = new(2026, 8, 17);
+        DateOnly tuesday = new(2026, 8, 18);
+
+        void Add(DateOnly date, int hour, decimal high)
+        {
+            DateTimeOffset start = MarketClock.FromMarket(date, new TimeOnly(hour, 0)).ToUniversalTime();
+            _database.Bars.Add(new BarRecord
+            {
+                Venue = "test",
+                Instrument = "ES",
+                ResolutionMinutes = 720,
+                BucketStart = start,
+                Open = 100m,
+                High = high,
+                Low = 99m,
+                Close = 100m,
+                Volume = 1_000,
+                ContractId = Contract,
+                RecordedAt = start,
+            });
+        }
+
+        Add(sunday, 7, 100m);
+        Add(sunday, 19, 120m);
+        Add(monday, 7, 300m);
+        Add(monday, 19, 100m);
+        Add(tuesday, 7, 100m);
         _database.SaveChanges();
     }
 }

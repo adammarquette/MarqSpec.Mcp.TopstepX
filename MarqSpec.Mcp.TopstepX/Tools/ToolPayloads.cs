@@ -264,6 +264,8 @@ public static class ToolPayloads
     /// <param name="Significance">Prominence in ATR multiples — comparable across instruments.</param>
     /// <param name="TouchCount">How many pivots agreed on this zone.</param>
     /// <param name="FormedAt">When the earliest pivot in the zone formed.</param>
+    /// <param name="Method">The method that produced the zone, when more than one was asked for.</param>
+    /// <param name="Period">The finished period the zone came from, when the method names one.</param>
     public sealed record LevelInfo(
         int TimeframeMinutes,
         decimal Bottom,
@@ -272,7 +274,9 @@ public static class ToolPayloads
         KeyLevelKind Kind,
         decimal Significance,
         int TouchCount,
-        DateTimeOffset FormedAt);
+        DateTimeOffset FormedAt,
+        string? Method = null,
+        string? Period = null);
 
     /// <summary>The detected levels, and how much history actually produced them.</summary>
     /// <param name="Levels">The zones, ordered by price.</param>
@@ -298,11 +302,48 @@ public static class ToolPayloads
     /// indistinguishable from a market that has produced no structure, which is a conclusion an agent will
     /// act on.
     /// </param>
+    /// <param name="Methods">Each requested method, its zones, and why it contributed nothing when it did not.</param>
+    /// <param name="Confluence">
+    /// The weighted, family-aware score over the requested methods, the tolerance it was computed against,
+    /// and the constituents that produced it.
+    /// </param>
     public sealed record LevelSet(
         IReadOnlyList<LevelInfo> Levels,
         ContractCoverage Contracts,
         int DetectedOverBars,
-        LevelDetection Detection);
+        LevelDetection Detection,
+        IReadOnlyList<LevelMethodResult>? Methods = null,
+        ConfluenceScore? Confluence = null);
+
+    /// <summary>One requested method as <c>get_key_levels</c> reports it.</summary>
+    /// <param name="Name">The method name.</param>
+    /// <param name="Family">The correlation family.</param>
+    /// <param name="Weight">The weight the score used.</param>
+    /// <param name="Levels">The zones it produced.</param>
+    /// <param name="AbsentReason">Why it contributed nothing, or omitted when it contributed.</param>
+    public sealed record LevelMethodResult(
+        string Name,
+        string Family,
+        decimal Weight,
+        IReadOnlyList<LevelInfo> Levels,
+        string? AbsentReason);
+
+    /// <summary>The confluence score a level set was produced under.</summary>
+    /// <param name="Score">The strongest cluster's family-aware weight.</param>
+    /// <param name="Tolerance">The line-to-zone tolerance the score was computed against.</param>
+    /// <param name="Constituents">Every requested method, the weight used, and how many zones it gave.</param>
+    /// <param name="Absent">The requested methods that contributed nothing, and why.</param>
+    public sealed record ConfluenceScore(
+        decimal Score,
+        decimal Tolerance,
+        IReadOnlyList<ConfluenceConstituentInfo> Constituents,
+        IReadOnlyList<ConfluenceAbsenceInfo> Absent);
+
+    /// <summary>One requested method as the score names it.</summary>
+    public sealed record ConfluenceConstituentInfo(string Method, string Family, decimal Weight, int ZoneCount);
+
+    /// <summary>A requested method that contributed nothing.</summary>
+    public sealed record ConfluenceAbsenceInfo(string Method, string Reason);
 
     /// <summary>The detection parameters a level set was produced under.</summary>
     /// <remarks>

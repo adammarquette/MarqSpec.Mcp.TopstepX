@@ -31,17 +31,22 @@ namespace MarqSpec.Mcp.TopstepX.Tests.MarketData;
 /// <c>get_key_levels</c> would answer "no levels" for it on every instrument, forever, green. That is
 /// exactly the failure <see cref="LevelMethodCatalog"/> names in its own XML: a name that returns nothing is
 /// indistinguishable from a market that has produced no structure, and the second reads as a conclusion.
-/// Each registered method is separately pinned against hand-derived numbers — <c>SwingLevelMethodTests</c>
-/// and <c>SessionLevelMethodTests</c> — so a silent <c>return [];</c> would go red there too; the hole opens
-/// the moment a sweep is the only thing covering a method, which is the whole reason this card built one.
+/// Each registered method is separately pinned against hand-derived numbers — <c>SwingLevelMethodTests</c>,
+/// <c>SessionLevelMethodTests</c> and <c>PivotLevelMethodTests</c> — so a silent <c>return [];</c> would go
+/// red there too; the hole opens the moment a sweep is the only thing covering a method, which is the whole
+/// reason this card built one.
 /// </para>
 /// <para>
-/// <b>It has already been paid for once.</b> Registering <c>session</c> (gh#257) turned
+/// <b>It has already been paid for twice.</b> Registering <c>session</c> (gh#257) turned
 /// <see cref="EveryRegisteredMethod_StillDetectsOverASingleContractSeries"/> red on the fixture as it stood:
 /// twenty-one bars inside a single trade date carry no prior day, no prior week and no finished session leg,
 /// so a session method could find nothing in them and would have shipped answering every instrument with an
-/// empty level set. The failure message's own instruction — extend the fixture — is what
-/// <see cref="SessionStart"/> records.
+/// empty level set. Registering the five <c>pivot-*</c> methods (gh#258) turned the same test red again and
+/// for the same reason — a pivot is arithmetic on a <b>finished</b> prior session, and a run beginning at
+/// the current session's own reopen contains none. Measured on that branch before the repair: the detection
+/// sweep failed naming <c>pivot-classic</c>, and the other three tests in this file stayed green. Both times
+/// the failure message's own instruction — extend the fixture — is what <see cref="SessionStart"/>
+/// records, and neither time was the sweep relaxed to meet it.
 /// </para>
 /// </remarks>
 public sealed class LevelMethodCatalogRollTests
@@ -50,20 +55,35 @@ public sealed class LevelMethodCatalogRollTests
     private static LevelMethodCatalog Catalog() => new(BarSessionCalendar.Parse("16:00", []));
 
     /// <summary>
-    /// 17:00 Central on Monday 17 August 2026 — the moment Tuesday's session reopens.
+    /// 17:00 Central on Sunday 16 August 2026 — the moment Monday's session reopens.
     /// </summary>
     /// <remarks>
-    /// <b>It moved here from 09:00 on the 18th when <c>session</c> was registered, and the sweep below is
-    /// what moved it (gh#257).</b> The old origin put all twenty-one bars inside one trade date with nothing
-    /// before them, which is a series a session method can find nothing in — no prior day, no prior week, no
-    /// finished overnight leg, no closed initial balance — and
+    /// <para>
+    /// <b>The origin has moved twice, and this file's detection sweep moved it both times.</b> It began at
+    /// 09:00 on Tuesday the 18th. Registering <c>session</c> moved it to 17:00 on Monday the 17th (gh#257),
+    /// because the old origin put every bar inside one trade date with nothing before them — a series a
+    /// session method can find nothing in — and
     /// <see cref="EveryRegisteredMethod_StillDetectsOverASingleContractSeries"/> went red saying exactly
-    /// that: <i>extend the fixture so it has something to find</i>. Starting at the reopen puts the run
-    /// inside Tuesday's <b>initial balance</b>, so the fixture carries structure for both registered methods
-    /// rather than for one. The measured failure and the repaired run are tabled in the pull request.
+    /// that: <i>extend the fixture so it has something to find</i>.
+    /// </para>
+    /// <para>
+    /// <b>Registering the pivot family moved it again, with the same message and the same repair
+    /// (gh#258).</b> All five are arithmetic on one <b>finished</b> prior session, and a run beginning at
+    /// the current session's own reopen holds none of one. Two things changed together, and only together
+    /// do they buy a finished session: the bars are now an <b>hour</b> apart rather than five minutes, and
+    /// the run starts one session earlier. Forty-one hourly bars from Monday's reopen cover the whole of
+    /// Monday the 17th and the first seventeen hours of Tuesday's session — measured, the calendar puts
+    /// indices 0 to 22 on trade date 2026-08-17, index 23 in the maintenance window with no trade date at
+    /// all, and indices 24 to 40 on 2026-08-18.
+    /// </para>
+    /// <para>
+    /// <b>Not one price moved</b>, which is why every price and score below is unchanged and only the
+    /// timestamps are new. A five-minute run of this length could not have been made to work: forty-one
+    /// bars span three hours and twenty-five minutes, and this calendar's session is twenty-three.
+    /// </para>
     /// </remarks>
     private static DateTimeOffset SessionStart =>
-        MarketClock.FromMarket(new DateOnly(2026, 8, 17), new TimeOnly(17, 0)).ToUniversalTime();
+        MarketClock.FromMarket(new DateOnly(2026, 8, 16), new TimeOnly(17, 0)).ToUniversalTime();
 
     /// <summary>Bars per contiguous single-contract run.</summary>
     /// <remarks>
@@ -85,7 +105,7 @@ public sealed class LevelMethodCatalogRollTests
     /// </remarks>
     private const int PeakIndex = 20;
 
-    private static DateTimeOffset At(int index) => SessionStart.AddMinutes(5 * index);
+    private static DateTimeOffset At(int index) => SessionStart.AddHours(index);
 
     /// <summary>
     /// One contiguous run of one contract: flat, with a single unmistakable high in the middle of it.
@@ -98,30 +118,34 @@ public sealed class LevelMethodCatalogRollTests
     /// <b>Deliberately not a sawtooth.</b> A short repeating price cycle never lets a bar strictly dominate
     /// its lookback, so it yields no pivots at all — which is what made the earlier version of the second
     /// sweep here vacuous (PR #252 review, finding 2).
-    /// <b>Re-measured on gh#245's branch after the run was extended to forty-one bars</b>, because a fixture
-    /// that changed is a claim that has to be re-run: all three sources still find exactly one pivot and one
-    /// zone — Heikin-Ashi <c>128.75</c>–<c>129.75</c> at significance <c>7.3125</c>, Body
+    /// <b>Re-measured on gh#258's branch after the bars became hourly and the run moved back one session</b>,
+    /// because a fixture that changed is a claim that has to be re-run: all three sources still find exactly
+    /// one pivot and one zone — Heikin-Ashi <c>128.75</c>–<c>129.75</c> at significance <c>7.3125</c>, Body
     /// <c>117.5</c>–<c>118.5</c> at <c>9</c>, High/Low <c>199.5</c>–<c>200.5</c> at <c>49.5</c> — and each is
-    /// 0.5% to 0.85% of its own midpoint, comfortably inside the shipped 2.5% width cap.
+    /// 0.5% to 0.85% of its own midpoint, comfortably inside the shipped 2.5% width cap. Identical to the
+    /// reading gh#245 took, and necessarily so: a price does not depend on how far apart the bars carrying
+    /// it are.
     /// </para>
     /// <para>
-    /// <b>The same bars carry structure for a session method too, and that is what <see cref="SessionStart"/>
-    /// buys.</b> Beginning at the reopen puts the first <b>twelve</b> — 22:00Z to 22:55Z — inside Tuesday's
-    /// initial balance, and <c>session</c> answers this run with exactly two zones, the balance's low and its
-    /// high. Its prior day, prior week and overnight leg are all absent, correctly: every bar carries the one
-    /// trade date, nothing before the reopen is loaded, and the evening leg has not closed. A method is asked
-    /// here whether it can detect at all, not whether it can detect everything.
+    /// <b>The same bars carry structure for a session method and for the pivot family, and that is what
+    /// <see cref="SessionStart"/> buys.</b> Beginning one session earlier puts the whole of Monday the 17th
+    /// in the window — indices 0 to 22, opening at the very instant that session does — so a prior day is
+    /// both present and completely covered, which is the one thing every one of the six non-<c>swing</c>
+    /// methods needs. The prior week is absent throughout, correctly: it opens on Sunday the 9th and nothing
+    /// that early is loaded. A method is asked here whether it can detect at all, not whether it can detect
+    /// everything.
     /// </para>
     /// <para>
-    /// <b>Those two zones are <c>98.5</c>–<c>99.5</c> support and <c>100.5</c>–<c>101.5</c> resistance, both
-    /// significance <c>1</c> — and until gh#245 they were <c>98.5</c>–<c>99.5</c> and
-    /// <c>199.5</c>–<c>200.5</c>, both <c>50.5</c>.</b> Nothing about <c>session</c> changed. The run grew
-    /// from twenty-one bars to forty-one so the shipped 20/15 pivot window could hold a pivot at all, which
-    /// moved <see cref="PeakIndex"/> from the tenth bucket to the twentieth — <i>out</i> of the initial
-    /// balance — so the balance's high is now an ordinary bar's <c>101</c> rather than the peak's <c>200</c>.
-    /// Both readings were measured; the second replaced the first here rather than being left to a reader to
-    /// notice, because a number measured against a fixture that has since moved is the shape of prose this
-    /// repository treats as a build break.
+    /// <b>Measured on this branch, and every one of the seven answers.</b> <c>session</c> returns two zones,
+    /// <c>98.5</c>–<c>101.5</c> support at significance <c>50.5</c> with six touches — the prior day's low,
+    /// the overnight low, the balance low, the prior day's close, and the overnight and balance highs, all
+    /// chained together by the merge — and <c>199.5</c>–<c>200.5</c> resistance at <c>50.5</c>, which is
+    /// the peak. The prior period every
+    /// <c>pivot-*</c> reads is that same session: open <c>100</c>, high <c>200</c>, low <c>99</c>, close
+    /// <c>100</c>, so significance is <c>101 / 2 = 50.5</c> there too and the classic pivot is
+    /// <c>399 / 3 = 133</c>. The five return five, six, eight, four and three zones respectively — fewer
+    /// than each formula's full set, because a range that is most of its own low sends the far legs below
+    /// the price scale and the shipped 2.5% width cap drops them.
     /// </para>
     /// </remarks>
     private static IEnumerable<Bar> Run(string contractId, decimal baseline, int startIndex) =>
@@ -159,7 +183,10 @@ public sealed class LevelMethodCatalogRollTests
     /// <remarks>
     /// Written as a predicate rather than as an assertion so that both halves of the two-run rule call
     /// <b>the same code</b>. Any exception other than the roll refusal propagates and fails the caller: a
-    /// method that threw for some unrelated reason has not been shown to carry the guard.
+    /// method that threw for some unrelated reason has not been shown to carry the guard. Measured on
+    /// gh#258's branch with <c>IndicatorGuard.RequireSingleContract</c> removed from
+    /// <c>PivotLevels.Compute</c>: the sweep went red naming <c>pivot-classic</c>, and the ordering sweep
+    /// next door stayed green.
     /// </remarks>
     private static bool RefusesASplicedSeries(ILevelMethod method)
     {
@@ -256,6 +283,8 @@ public sealed class LevelMethodCatalogRollTests
     {
         public string Name => "guardless";
 
+        public string Family => "guardless";
+
         public IReadOnlyList<KeyLevelZone> Detect(
             IReadOnlyList<Bar> bars,
             IReadOnlyList<decimal?> atr,
@@ -279,6 +308,8 @@ public sealed class LevelMethodCatalogRollTests
     private sealed class SilentLevelMethod : ILevelMethod
     {
         public string Name => "silent";
+
+        public string Family => "silent";
 
         public IReadOnlyList<KeyLevelZone> Detect(
             IReadOnlyList<Bar> bars,

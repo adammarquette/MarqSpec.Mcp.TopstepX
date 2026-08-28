@@ -35,6 +35,14 @@ namespace MarqSpec.Mcp.TopstepX.Tests.MarketData;
 /// went red naming <c>session</c>, and nothing else did.
 /// </para>
 /// <para>
+/// <b>And then five more arrived at once.</b> The <c>pivot-*</c> family reads a finished session's four
+/// prices and never goes near <see cref="KeyLevels.FindPivots"/> either, so <c>PivotLevels.Compute</c> calls
+/// the guard itself. Measured on gh#258's branch: with that call removed, the sweep below went red naming
+/// <c>pivot-classic</c> — the first of the five the catalogue reaches — while all four tests in
+/// <see cref="LevelMethodCatalogRollTests"/> stayed green, which is the separation this file's first
+/// paragraph claims.
+/// </para>
+/// <para>
 /// <b>Entered through <see cref="ILevelMethod.Detect"/> and nothing else</b>, because the seam is the thing
 /// that must not be bypassable: a case calling <c>KeyLevels.FindPivots</c> directly pins the path today's
 /// one method happens to take and stays green for a method that takes another. And like the roll sweep, it
@@ -63,7 +71,9 @@ public sealed class LevelMethodCatalogOrderingTests
     /// <remarks>
     /// Forty-one, the same as <see cref="LevelMethodCatalogRollTests"/>'s, and it moved with that one when
     /// the shipped lookback became asymmetric (gh#245): 20 bars of left dominance and 15 of right
-    /// confirmation need <c>20 + 15 + 1 = 36</c> before a series can hold a pivot at all. The refusal this
+    /// confirmation need <c>20 + 15 + 1 = 36</c> before a series can hold a pivot at all. The count did not
+    /// move again for gh#258 — what moved there was the <i>spacing</i> and the origin, so forty-one bars
+    /// now span a whole session and part of the next instead of three and a half hours. The refusal this
     /// file sweeps for fires either way — <see cref="IndicatorGuard.RequireStrictlyAscending"/> runs before
     /// the length check, and a series too short returns empty rather than throwing — but a fixture nothing
     /// could detect in is what made the sweep next door vacuous once already, so the two runs stay the same
@@ -77,18 +87,19 @@ public sealed class LevelMethodCatalogOrderingTests
     private const string ContractId = "CON.F.US.EP.U26";
 
     /// <summary>
-    /// 17:00 Central on Monday 17 August 2026 — Tuesday's reopen, and the same origin
+    /// 17:00 Central on Sunday 16 August 2026 — Monday's reopen, and the same origin
     /// <see cref="LevelMethodCatalogRollTests"/> uses.
     /// </summary>
     /// <remarks>
     /// The two must agree, because the run below claims to be that file's clean series bar for bar. It moved
-    /// there so <c>session</c> has an initial balance to find; it moved here so the claim stays true
-    /// (gh#257).
+    /// there so <c>session</c> had an initial balance to find (gh#257) and again, together with the hourly
+    /// spacing, so the <c>pivot-*</c> family had a <b>finished</b> prior session to compute from (gh#258);
+    /// it moved here both times so the claim stays true.
     /// </remarks>
     private static DateTimeOffset SessionStart =>
-        MarketClock.FromMarket(new DateOnly(2026, 8, 17), new TimeOnly(17, 0)).ToUniversalTime();
+        MarketClock.FromMarket(new DateOnly(2026, 8, 16), new TimeOnly(17, 0)).ToUniversalTime();
 
-    private static DateTimeOffset At(int index) => SessionStart.AddMinutes(5 * index);
+    private static DateTimeOffset At(int index) => SessionStart.AddHours(index);
 
     /// <summary>
     /// One contiguous run of one contract, with the peak bar and the one after it exchanged.
@@ -109,22 +120,24 @@ public sealed class LevelMethodCatalogOrderingTests
     /// </para>
     /// <para>
     /// Exchanging two <i>adjacent</i> bars is the smallest disorder there is, and it is the one the guard
-    /// exists for — after the swap the bar at <see cref="PeakIndex"/> + 1 opens five minutes before the one
+    /// exists for — after the swap the bar at <see cref="PeakIndex"/> + 1 opens an hour before the one
     /// preceding it.
     /// </para>
     /// <para>
     /// <b>The disorder does not show in the answer, and that is the whole point.</b> With
     /// <see cref="IndicatorGuard.RequireStrictlyAscending"/> deleted from <see cref="KeyLevels.FindPivots"/>,
     /// <c>swing</c> answered this series with one zone — <c>128.75</c>–<c>129.75</c>, resistance, formed at
-    /// <c>23:40Z</c>, significance <c>7.3125</c> — the same zone, to the tick, that it returns for these
-    /// same bars sorted into order. <b>Measured three times, and the time is the only thing that has ever
-    /// moved.</b> First on gh#283's branch, where the run began at 09:00 Central and the answer was
-    /// <c>14:50Z</c>. Then on gh#257's, which moved <see cref="SessionStart"/> to the reopen so
-    /// <c>session</c> had an initial balance to find, giving <c>22:50Z</c>. Then on gh#245's, which extended
-    /// the run to forty-one bars for the asymmetric window and moved <see cref="PeakIndex"/> from the tenth
-    /// bucket to the twentieth. The zone and the score are identical in all three, because a price does not
-    /// depend on when the bar carrying it opened or on which index carries it. A
-    /// <see cref="KeyLevelZone"/> records no provenance, so it cannot say which series it was computed
+    /// <c>2026-08-17T18:00Z</c>, significance <c>7.3125</c> — the same zone, to the tick, that it returns
+    /// for these same bars sorted into order, and the sweep below went red naming <c>swing</c> and nothing
+    /// else. <b>Measured four times, and the time is the only thing that has ever moved.</b> First on
+    /// gh#283's branch, where the run began at 09:00 Central and the answer was <c>14:50Z</c>. Then on
+    /// gh#257's, which moved <see cref="SessionStart"/> to the reopen so <c>session</c> had an initial
+    /// balance to find, giving <c>22:50Z</c>. Then on gh#245's, which extended the run to forty-one bars for
+    /// the asymmetric window and moved <see cref="PeakIndex"/> from the tenth bucket to the twentieth. Then
+    /// on gh#258's, which made the bars hourly and moved the origin back one session so the pivot family had
+    /// a finished prior session. The zone and the score are identical in all four, because a price does not
+    /// depend on when the bar carrying it opened, on which index carries it, or on how far apart the buckets
+    /// are. A <see cref="KeyLevelZone"/> records no provenance, so it cannot say which series it was computed
     /// from: a method that answers a disordered one hands back something that reads exactly like a level.
     /// </para>
     /// </remarks>
@@ -224,6 +237,8 @@ public sealed class LevelMethodCatalogOrderingTests
     private sealed class OrderBlindLevelMethod : ILevelMethod
     {
         public string Name => "order-blind";
+
+        public string Family => "order-blind";
 
         public IReadOnlyList<KeyLevelZone> Detect(
             IReadOnlyList<Bar> bars,

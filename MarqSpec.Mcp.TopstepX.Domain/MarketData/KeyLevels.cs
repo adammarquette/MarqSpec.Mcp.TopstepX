@@ -594,6 +594,15 @@ public static class KeyLevels
     /// Refuses a set of options no pipeline stage could honour.
     /// </summary>
     /// <param name="options">The options.</param>
+    /// <remarks>
+    /// <b>Public since gh#258, because the caps are shared and their refusals travel with them.</b>
+    /// <see cref="PivotLevels"/> applies <see cref="ApplyWidthCap"/> and <see cref="ApplyLevelCap"/> rather
+    /// than adding a third method that reports a cap it ignores (gh#259), and it calls this up front so the
+    /// refusal fires on every call rather than only on the ones whose window happens to hold a period to
+    /// compute over. That it also refuses <see cref="KeyLevelOptions.Lookback"/> and
+    /// <see cref="KeyLevelOptions.Source"/>, which no pivot formula reads, is the price of one definition of
+    /// an unusable option set instead of two that drift.
+    /// </remarks>
     /// <exception cref="ArgumentOutOfRangeException">
     /// Either lookback is less than one, the source is unset or outside the vocabulary, the width cap is not
     /// positive, or the level cap is less than one.
@@ -606,8 +615,10 @@ public static class KeyLevels
     /// because a zero default picks a source by accident; the same sentence is true of
     /// <c>(PivotSource)99</c>, which had been arriving as a silent Heikin-Ashi.
     /// </remarks>
-    private static void RequireUsableOptions(KeyLevelOptions options)
+    public static void RequireUsableOptions(KeyLevelOptions options)
     {
+        ArgumentNullException.ThrowIfNull(options);
+
         if (options.Lookback < 1)
         {
             throw new ArgumentOutOfRangeException(nameof(options), options.Lookback, "The lookback must be at least 1.");
@@ -728,6 +739,11 @@ public sealed class SwingLevelMethod : ILevelMethod
 {
     /// <summary>The method name, <c>swing</c>.</summary>
     public string Name => "swing";
+
+    /// <summary>
+    /// The correlation family, <c>swing</c> — a family of one, because nothing else here measures dominance.
+    /// </summary>
+    public string Family => "swing";
 
     /// <inheritdoc />
     public IReadOnlyList<KeyLevelZone> Detect(

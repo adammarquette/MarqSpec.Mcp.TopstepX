@@ -24,12 +24,16 @@ public sealed class LevelMethodCatalogTests
     [Fact]
     public void AnUnknownMethod_IsAnError_AndListsTheKnownOnes()
     {
-        Action resolve = () => Catalog().Resolve("fibonacci");
+        // `murrey` rather than `fibonacci`: since gh#258 the vocabulary contains `pivot-fibonacci`, and an
+        // unknown-name case whose name is a substring of a known one cannot tell the error message apart
+        // from the list it prints.
+        Action resolve = () => Catalog().Resolve("murrey");
 
         resolve.Should().Throw<KeyNotFoundException>()
-            .WithMessage("*fibonacci*")
+            .WithMessage("*murrey*")
             .WithMessage("*swing*")
-            .WithMessage("*session*");
+            .WithMessage("*session*")
+            .WithMessage("*pivot-camarilla*");
     }
 
     [Fact]
@@ -42,9 +46,18 @@ public sealed class LevelMethodCatalogTests
     public void TheVocabularyIsExactlyTheMethodsThisServerDetectsWith()
     {
         // One place declares the set. The tool surface does not yet carry a method argument -- selecting one
-        // per call is a later card on gh#232 -- so this is the whole vocabulary, and `session` is in it
-        // without `get_key_levels` being able to ask for it yet.
-        Catalog().KnownNames.Should().BeEquivalentTo(["swing", "session"]);
+        // per call is a later card on gh#232 -- so this is the whole vocabulary, and `session` and the five
+        // `pivot-*` names are in it without `get_key_levels` being able to ask for them yet.
+        Catalog().KnownNames.Should().BeEquivalentTo(
+        [
+            "swing",
+            "session",
+            "pivot-classic",
+            "pivot-fibonacci",
+            "pivot-camarilla",
+            "pivot-woodie",
+            "pivot-demark",
+        ]);
     }
 
     [Fact]

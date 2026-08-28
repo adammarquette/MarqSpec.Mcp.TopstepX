@@ -8,7 +8,8 @@ namespace MarqSpec.Mcp.TopstepX.Data.Entities;
 /// <para>
 /// Written from subscription lifecycle, not inferred from rows. A quiet market and a dead
 /// subscription produce the same empty range, and only lifecycle can tell them apart — the same
-/// third-state role <see cref="BarCoverageRecord"/> plays for bars (gh#215, gh#217).
+/// third-state role <see cref="BarCoverageRecord"/> plays for bars (gh#215, gh#217). A hole here
+/// is permanent: there is no market-tape REST backfill (ADR-0016).
 /// </para>
 /// <para>
 /// <b>The range is half-open, <c>[RangeStart, RangeEnd)</c>.</b> Closed ranges written adjacently

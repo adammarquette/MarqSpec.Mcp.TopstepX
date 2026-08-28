@@ -52,7 +52,7 @@ public sealed class TopstepXDbContext(DbContextOptions<TopstepXDbContext> option
     /// <summary>Ranges the venue answered empty — the negative-result ledger.</summary>
     public DbSet<BarCoverageRecord> BarCoverage => Set<BarCoverageRecord>();
 
-    /// <summary>Agent-recorded observations — the only original data here.</summary>
+    /// <summary>Agent-recorded observations — original data, as is the tape.</summary>
     public DbSet<ObservationRecord> Observations => Set<ObservationRecord>();
 
     /// <summary>Vector embeddings over <see cref="Observations"/>.</summary>

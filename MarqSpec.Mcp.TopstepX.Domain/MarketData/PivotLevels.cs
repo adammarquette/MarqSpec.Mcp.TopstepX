@@ -106,17 +106,31 @@ public sealed record PivotLine(decimal Price, KeyLevelKind Kind);
 /// being taken from half a prior session. The calendar may say the day did not trade. Or the series may
 /// cover the period with a <b>single bar</b>: <see cref="Bar"/> records no width, so one bar carrying a
 /// trade date is indistinguishable from a bar spanning that date and everything around it, and at a daily
-/// resolution or above "the prior day's high" would be the high of whatever that bar covered. Two bars are
-/// the least that shows the series samples the session more finely than the session itself. That last rule
-/// is the deliberately conservative side of gh#259's first routed finding, where <c>session</c> refuses a
-/// <i>partial</i> period but accepts an <i>over-wide</i> one silently: a genuine one-bar session is refused
-/// here, and an absence is the failure this repository prefers to a well-formed number no period produced.
+/// resolution or above "the prior day's high" would be the high of whatever that bar covered. That last
+/// rule is the deliberately conservative side of gh#259's first routed finding, where <c>session</c>
+/// refuses a <i>partial</i> period but accepts an <i>over-wide</i> one silently: a genuine one-bar session
+/// is refused here, and an absence is the failure this repository prefers to a well-formed number no period
+/// produced.
 /// </para>
 /// <para>
-/// <b>Known bound, inherited from <see cref="SessionLevels"/> and stated on the same terms:</b> the coverage
-/// rule checks where the window starts and how many bars carry the trade date, not that the period is
-/// densely sampled throughout. A store with a hole in the middle of a prior session yields that session's
-/// extremes over the bars it holds. Holes are <c>BarGapDetector</c>'s subject.
+/// <b>What two bars do and do not buy, exactly.</b> They rule out the case where one bar <i>is</i> the whole
+/// period or more, which is every resolution of a day and above. <b>They do not bound the last bar</b>: a
+/// bar's width is knowable only from the interval to its successor, and the period's last bar's successor is
+/// in the next session, an unrelated maintenance window away. So a resolution between a bar and a session
+/// still slips through, and it was measured on this branch rather than reasoned about — twelve-hour buckets
+/// aligned to a 17:00 reopen put a bar at 05:00 running to 17:00, an hour past the 16:00 close. It carries
+/// Monday's trade date, two bars cover Monday, and a high the bar made in <i>Tuesday's</i> first hour is
+/// reported as Monday's: <c>pivot-classic</c> answered five ordinary-looking zones at significance
+/// <c>102</c>. <b><see cref="SessionLevels"/> is exposed identically on the same bars</b> — its prior-day
+/// high is the same 300 — which is what places the residue in gh#259's first routed finding rather than
+/// here: closing it needs the <i>resolution</i>, and the resolution is known at the tool boundary and not
+/// inside a method that is handed only bars.
+/// </para>
+/// <para>
+/// <b>The other known bound, inherited from <see cref="SessionLevels"/> and stated on the same terms:</b>
+/// the coverage rule checks where the window starts and how many bars carry the trade date, not that the
+/// period is densely sampled throughout. A store with a hole in the middle of a prior session yields that
+/// session's extremes over the bars it holds. Holes are <c>BarGapDetector</c>'s subject.
 /// </para>
 /// </remarks>
 public static class PivotLevels
@@ -368,6 +382,8 @@ public static class PivotLevels
 
         // A session the series covers with one bar is a session the series cannot resolve: `Bar` carries no
         // width, so that bar is indistinguishable from one spanning the trade date and everything around it.
+        // This rules out a day and above; it does NOT bound the period's LAST bar, and the remarks on this
+        // class carry the measured case that still slips through.
         return indices.Count >= 2 ? indices : null;
     }
 

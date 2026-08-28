@@ -11,6 +11,9 @@
 > *Addition, 2026-08-23 (gh#43):* **[Rate limits](#rate-limits)** added. Read from the vendor's own
 > documentation that day and marked **documented, not observed** — no 429 has ever been provoked from this
 > repository, so those numbers are the vendor's claim and nothing more. Nothing on the page was corrected.
+> *Correction, 2026-08-28 (gh#214):* **[Realtime](#realtime)** cited [ADR-0007](../../adr/0007-dual-transport.md)
+> for "this repository does not subscribe". That record is the stdio/HTTP transport decision and never mentions
+> the hub. The standing choice and its reversal are [ADR-0016](../../adr/0016-subscribe-to-the-market-hub.md).
 
 The REST + realtime API behind prop firms on the ProjectX Gateway. **TopstepX is one firm on it**, which is why
 the two names are used interchangeably here — the gateway is the API, and the firm brands the hostname.
@@ -261,11 +264,12 @@ before it is served — a guessed code resolves to a **real contract in the wron
 `tickSize` and `tickValue` come back on the contract. `tickValue` is money per **tick**; money per **point** is
 `tickValue / tickSize`. ES at \$12.50 a tick on a 0.25 tick size is \$50 a point.
 
-### Realtime (not used here)
-The market hub carries quotes, trades and depth over SignalR. **This repository does not subscribe** — see
-[ADR-0007](../../adr/0007-dual-transport.md) and the architecture doc's *What is deliberately absent*. It is
-recorded because it is the reason there is no `get_quote`: there is no REST quote endpoint, so live bid/ask is
-available only from a stream this server does not consume.
+### Realtime
+The market hub carries quotes, trades and depth over SignalR. **This repository has decided to subscribe and
+record the trade tape** — see [ADR-0016](../../adr/0016-subscribe-to-the-market-hub.md) and the architecture
+doc's *What is deliberately absent*. ADR-0007 is the stdio/HTTP transport record and says nothing about this
+hub. There is still no REST quote endpoint, so live bid/ask remains stream-only; quote and depth recording are
+out of Phase 5. The recorder itself is not in the tree yet (Client#86/#87).
 
 > One gotcha for whoever adds it: **you subscribe by full contract id, but quotes come back tagged by product
 > root.** Subscribing to `CON.F.US.MES.U26` succeeds, and every quote then reports `F.US.MES`. A stream

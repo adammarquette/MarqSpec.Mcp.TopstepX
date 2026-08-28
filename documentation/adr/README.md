@@ -39,6 +39,7 @@ retrospective justification is a press release. The useful ones name the option 
 | [0013](0013-levels-are-computed-on-read.md) | Price levels are computed on read and not cached — the detection was measured first | Accepted · the mirror image of [0006](0006-indicators-as-projections.md), which it does **not** reopen (gh#247) |
 | [0014](0014-indicators-are-projected-on-read-too.md) | **An indicator read projects what the catalogue has outrun** — the trigger changes, the key does not | Accepted · refines [0006](0006-indicators-as-projections.md), whose per-call-period rule it does **not** reopen · rests on [0012](0012-fills-are-not-serialised.md) (gh#246) |
 | [0015](0015-levels-merge-across-support-and-resistance.md) | **Overlapping levels merge across support and resistance** — a deliberate break in `get_key_levels` | Accepted · rests on [0013](0013-levels-are-computed-on-read.md) · the same kind of break, on the same terms, as [0011](0011-contract-roll-boundary.md) (gh#245) |
+| [0016](0016-subscribe-to-the-market-hub.md) | **Subscribe to the market hub** — the standing choice, then the reversal | Accepted · records the unwritten choice and supersedes it in this file (gh#214) · does not reopen [0002](0002-read-only-venue-boundary.md) · [0007](0007-dual-transport.md) is not this question |
 
 *Adding a record? Add its row here in the same PR, and a routing entry in [`../README.md`](../README.md) if
 the corpus shape changes.*

@@ -39,7 +39,7 @@ rather than reword it.
 | Document | ~tok | Read it when |
 |---|---:|---|
 | [`prd.md`](prd.md) | 6.4K | You need **what is required**, or you are citing an `R-#`. Ids are stable and never renumbered, and a citation that does not resolve here fails CI. |
-| [`architecture.md`](architecture.md) | 8.4K | You need **how the pieces fit** — the cache-aside path, the projection, the transports. |
+| [`architecture.md`](architecture.md) | 8.5K | You need **how the pieces fit** — the cache-aside path, the projection, the transports. |
 | [`mcp-tool-catalogue`](mcp-tool-catalog.md) | 12.9K | You are adding, changing or calling a tool. The tool surface is a contract; this is it. |
 | [`data-dictionary.md`](data-dictionary.md) | 3.5K | You need the data model — the five tables, their keys, and why each key is shaped that way. |
 
@@ -64,6 +64,8 @@ matches your increment.
 The two that most often turn out to be the answer to "why is it like this":
 [ADR-0002](adr/0002-read-only-venue-boundary.md) (no order path) and
 [ADR-0005](adr/0005-session-aware-gap-detection.md) (why the cache terminates).
+The market-hub subscription — and the standing choice it reversed — is
+[ADR-0016](adr/0016-subscribe-to-the-market-hub.md), not [ADR-0007](adr/0007-dual-transport.md).
 
 ## Reference — [`wiki/`](wiki/index.md)
 

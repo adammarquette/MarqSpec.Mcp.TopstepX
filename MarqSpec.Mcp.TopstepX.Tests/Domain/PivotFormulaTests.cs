@@ -153,17 +153,23 @@ public sealed class PivotFormulaTests
     {
         Action unset = () => PivotLevels.Lines(PivotFormula.Unknown, Period);
 
-        unset.Should().Throw<ArgumentOutOfRangeException>();
+        unset.Should().Throw<ArgumentOutOfRangeException>().WithMessage("*Unknown*");
     }
 
-    [Fact]
-    public void AFormulaOutsideTheVocabulary_IsRefusedRatherThanFallingThroughToADefaultArm()
+    [Theory]
+    [InlineData(0)]  // Unknown, what an unset value binds to
+    [InlineData(6)]  // one past the vocabulary
+    [InlineData(99)] // nowhere near it
+    public void AFormulaOutsideTheVocabulary_IsRefusedByBothEntryPoints_WithTheSameMessage(int raw)
     {
         // The lesson `KeyLevels` learned about `PivotSource`: a cast integer outside the enum is not
         // `Unknown`, and a switch whose default arm computed something would answer with a level set nobody
-        // named.
-        Action outside = () => PivotLevels.NameOf((PivotFormula)99);
+        // named. Both entry points refuse it, and they say the same thing -- a value described one way by
+        // `NameOf` and another by `Lines` is a value described by whichever path happened to catch it.
+        Action named = () => PivotLevels.NameOf((PivotFormula)raw);
+        Action lined = () => PivotLevels.Lines((PivotFormula)raw, Period);
 
-        outside.Should().Throw<ArgumentOutOfRangeException>();
+        named.Should().Throw<ArgumentOutOfRangeException>().WithMessage("*Classic, Fibonacci, Camarilla*");
+        lined.Should().Throw<ArgumentOutOfRangeException>().WithMessage("*Classic, Fibonacci, Camarilla*");
     }
 }

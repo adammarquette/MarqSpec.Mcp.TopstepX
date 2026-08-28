@@ -86,16 +86,20 @@ at one this rule's own pull request retires.
   - **Re-running does not clear it.** The verdict is cached per file hash and builds here are deterministic
     (`Directory.Build.props`), so the same sources rebuild to the same bytes and stay blocked however many
     times you clean and retry. **Only changed bytes clear it** — which is why it looks intermittent.
-  - **First, change the bytes without changing the behaviour: append a comment, or a single newline, to any
-    source file that compiles into the blocked assembly.** That is what cleared it for PR #278's and
-    PR #287's reviewers. Append into the assembly the run *named* — mutating product code gives `Domain.dll`
-    a new hash, not the test assembly, and vice versa.
-  - **That append is one escape, not a sufficient one. When it does not take, delete `bin`/`obj` and build in
-    a fresh path.** PR #295 appended into `Domain`, stayed blocked, and only the fresh path with both
-    directories removed cleared it. Try them in that order: the append costs a keystroke, the rebuild costs
-    the tier.
-  - **If neither clears it, containerise or fall back to CI** — the plain `docker run` form in the
-    2026-08-23 entry below, or the unit job on `ubuntu-latest`, which is the gate that counts anyway.
+  - **Change the bytes of whichever assembly was blocked; you may not know which one it is.** The
+    verdict is per file hash, so something whose bytes feed that assembly must change — but the run
+    does not always name it, and dirtying the named one is not always what lifts the block. Work
+    outward: a comment or newline in a test source (cleared it for #278 and #287; failed for #298's
+    author), then in a product source the run exercises (cleared #298; a byte in `Domain` failed
+    for #295), then a clean path with `bin`/`obj` removed (cleared #295; failed for #298 and #301),
+    then `-c Release` / `-p:Deterministic=false` (cleared #301; failed for the reviewer who hit it
+    in Debug and Release both). **No single one of those has worked every time.** A true sentence
+    about the hash is not a playbook: appending into the assembly the run named is how the cache
+    works, not a reason to skip the other family. **Treat any run without your expected `Total:`
+    count as unscored throughout.**
+  - **The container is the only escape with no recorded failure.** If the cheap attempts do not
+    restore the count, containerise — the plain `docker run` form in the 2026-08-23 entry below —
+    or fall back to the unit job on `ubuntu-latest`, which is the gate that counts anyway.
   - **`--no-build` is not the way out**: it runs the *previous* assembly, so it reports a real, well-formed
     `Total:` line about bytes you did not just produce. PR #278's rebase got `Total: 650, Failed: 0` from a
     tree that did not compile. **Read the build's error count beside the total, from the same run.**

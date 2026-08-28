@@ -314,7 +314,9 @@ The server serves OHLCV bars for a futures instrument at a requested resolution 
   ([ADR-0011](adr/0011-contract-roll-boundary.md)). An advisory flag beside a spliced number is still a
   wrong number.
 - **R-9.5** The reported window comes from **`TapeCoverage`**, not the window the caller asked for. The tape
-  has a beginning and can have holes, and neither is recoverable.
+  has a beginning and can have holes, and neither is recoverable. A hole confines the answer to the
+  **newest contiguous listening run** and reports the narrowing — the same cut `get_key_levels` makes.
+  Collapsing two runs into a continuous envelope would claim coverage that was never there.
 - **R-9.6** A window with **no tape refuses** rather than returning an empty profile.
 
 ## Open questions

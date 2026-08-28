@@ -42,7 +42,8 @@ public sealed record ListeningRange(
 /// <param name="Start">The start of the covered window, inclusive. From the ledger, not the ask.</param>
 /// <param name="End">The end of the covered window, exclusive.</param>
 /// <param name="Narrowed">
-/// Whether the ask was cut back — a roll, or coverage shorter than what was asked.
+/// Whether the ask was cut back — a roll, a late start or early end, or a listening hole
+/// that left only the newest contiguous run.
 /// </param>
 public sealed record CoveredTapeWindow(
     string ContractId,

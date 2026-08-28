@@ -15,9 +15,10 @@ namespace MarqSpec.Mcp.TopstepX.MarketData;
 /// way gh#220 proved cells — the recorder is not built and nothing here subscribes to the hub.
 /// </para>
 /// <para>
-/// A window that spans a roll is confined to the contract in front and the narrowing is
-/// reported. The reported window is the listening range, not the ask. A window with no tape
-/// refuses rather than returning an empty profile (ADR-0011).
+/// A window that spans a roll or a listening hole is confined to the newest contiguous
+/// run of the contract in front and the narrowing is reported. The reported window is that
+/// run, not the ask. A window with no tape refuses rather than returning an empty profile
+/// (ADR-0011).
 /// </para>
 /// </remarks>
 /// <param name="database">The store.</param>
@@ -70,24 +71,6 @@ public sealed class VolumeProfileService(TopstepXDbContext database)
             end,
             [.. rows.Select(row => new ListeningRange(row.ContractId, row.RangeStart, row.RangeEnd))]);
 
-        List<ListeningRange> intervals = [];
-
-        foreach (TapeCoverageRecord row in rows)
-        {
-            if (!string.Equals(row.ContractId, window.ContractId, StringComparison.Ordinal))
-            {
-                continue;
-            }
-
-            DateTimeOffset rangeStart = row.RangeStart > start ? row.RangeStart : start;
-            DateTimeOffset rangeEnd = row.RangeEnd < end ? row.RangeEnd : end;
-
-            if (rangeEnd > rangeStart)
-            {
-                intervals.Add(new ListeningRange(row.ContractId, rangeStart, rangeEnd));
-            }
-        }
-
         DateTimeOffset loadFrom = window.Start.AddMinutes(-resolutionMinutes);
 
         List<FootprintCellRecord> stored = await _database.FootprintCells
@@ -104,7 +87,8 @@ public sealed class VolumeProfileService(TopstepXDbContext database)
 
         foreach (FootprintCellRecord row in stored)
         {
-            if (!Covered(row.BucketStart, resolutionMinutes, intervals))
+            if (!VolumeProfileAggregator.BarOverlapsWindow(
+                row.BucketStart, resolutionMinutes, window.Start, window.End))
             {
                 continue;
             }
@@ -119,22 +103,5 @@ public sealed class VolumeProfileService(TopstepXDbContext database)
         }
 
         return new VolumeProfileRead(VolumeProfileAggregator.From(cells), window);
-    }
-
-    private static bool Covered(
-        DateTimeOffset bucketStart,
-        int resolutionMinutes,
-        IReadOnlyList<ListeningRange> intervals)
-    {
-        foreach (ListeningRange interval in intervals)
-        {
-            if (VolumeProfileAggregator.BarOverlapsWindow(
-                bucketStart, resolutionMinutes, interval.RangeStart, interval.RangeEnd))
-            {
-                return true;
-            }
-        }
-
-        return false;
     }
 }

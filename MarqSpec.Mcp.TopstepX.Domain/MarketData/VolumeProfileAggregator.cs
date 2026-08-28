@@ -33,7 +33,10 @@ namespace MarqSpec.Mcp.TopstepX.Domain.MarketData;
 /// </para>
 /// <para>
 /// <b>The reported window comes from the listening ranges, not the ask.</b> The tape has a
-/// beginning and can have holes, and neither is recoverable. A window with no overlapping
+/// beginning and can have holes, and neither is recoverable. A hole is confined to the
+/// newest contiguous listening run — the same cut <c>get_key_levels</c> makes with
+/// <c>Newest</c> — and the narrowing is reported. Collapsing two runs into a continuous
+/// envelope would claim coverage that was never there. A window with no overlapping
 /// coverage refuses rather than returning an empty profile.
 /// </para>
 /// </remarks>
@@ -162,9 +165,8 @@ public static class VolumeProfileAggregator
     /// <param name="requestedEnd">The end of the ask, exclusive.</param>
     /// <param name="coverage">Listening ranges. Values, not store rows.</param>
     /// <returns>
-    /// The covered window. <see cref="CoveredTapeWindow.Start"/> and
-    /// <see cref="CoveredTapeWindow.End"/> come from the ledger intersected with the ask,
-    /// never from the ask alone.
+    /// The newest contiguous listening run of the contract in front, intersected with the
+    /// ask. An interior hole drops the older run rather than filling it with an envelope.
     /// </returns>
     /// <exception cref="ArgumentNullException"><paramref name="coverage"/> is <see langword="null"/>.</exception>
     /// <exception cref="ArgumentOutOfRangeException">The ask is empty or inverted.</exception>
@@ -217,27 +219,45 @@ public static class VolumeProfileAggregator
             }
         }
 
-        DateTimeOffset coveredStart = confined[0].RangeStart;
-        DateTimeOffset coveredEnd = confined[0].RangeEnd;
-
-        foreach (ListeningRange range in confined)
-        {
-            if (range.RangeStart < coveredStart)
-            {
-                coveredStart = range.RangeStart;
-            }
-
-            if (range.RangeEnd > coveredEnd)
-            {
-                coveredEnd = range.RangeEnd;
-            }
-        }
+        IReadOnlyList<ListeningRange> runs = MergeAdjacent(confined);
+        ListeningRange newest = runs[^1];
 
         bool narrowed = confined.Count != overlapping.Count
-            || coveredStart > requestedStart
-            || coveredEnd < requestedEnd;
+            || runs.Count > 1
+            || newest.RangeStart > requestedStart
+            || newest.RangeEnd < requestedEnd;
 
-        return new CoveredTapeWindow(front, coveredStart, coveredEnd, narrowed);
+        return new CoveredTapeWindow(front, newest.RangeStart, newest.RangeEnd, narrowed);
+    }
+
+    /// <summary>
+    /// Merges overlapping or abutting ranges of one contract into contiguous runs, earliest first.
+    /// </summary>
+    /// <remarks>
+    /// Half-open ranges that meet (<c>end == next.start</c>) leave no instant uncovered and
+    /// merge. A gap between them is a hole and stays two runs.
+    /// </remarks>
+    private static IReadOnlyList<ListeningRange> MergeAdjacent(IReadOnlyList<ListeningRange> ranges)
+    {
+        List<ListeningRange> ordered = [.. ranges.OrderBy(range => range.RangeStart)];
+        List<ListeningRange> merged = [ordered[0]];
+
+        for (int i = 1; i < ordered.Count; i++)
+        {
+            ListeningRange next = ordered[i];
+            ListeningRange open = merged[^1];
+
+            if (next.RangeStart <= open.RangeEnd)
+            {
+                DateTimeOffset end = next.RangeEnd > open.RangeEnd ? next.RangeEnd : open.RangeEnd;
+                merged[^1] = open with { RangeEnd = end };
+                continue;
+            }
+
+            merged.Add(next);
+        }
+
+        return merged;
     }
 
     /// <summary>

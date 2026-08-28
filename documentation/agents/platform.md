@@ -323,23 +323,17 @@ The root contract's five apply here unchanged. Four land specifically on the pip
   assertion that catches it is about the *stream*, not the text: split stdout from stderr and require a green
   run to write nothing to the second. **Measure the stream before asserting it is empty**, per gate — which
   gh#271 then did for the two gates gh#239 left uncovered, and **they answered differently, on two different
-  halves of the test**. `check-doc-sizes.sh` passed both halves and now carries the assertion: 0 B on stderr
-  against the real tree and against all eighteen green fixtures, three writers all reaching a non-zero exit,
-  and the same mutant reddening all eighteen. **`check-image-entrypoint.sh` failed on the half `grep -n
-  '>&2'` cannot see.** Its own three writers do sit on failing paths — and its green path then spawns
-  `docker` three times with stderr *unredirected*, so silence there is a property of the host's docker rather
-  than of the script. Measured — on a developer machine and **not** on the runner, which is the whole of what
-  it claims: `docker run --rm --entrypoint <test> <image> -f <path>`, the probe's own shape against an image
-  whose recorded platform is not the host's, exits **0** having written **152 B** of `WARNING: The requested
-  image's platform … does not match …` to stderr. That closes the structural argument without asserting
-  anything about `ubuntu-latest`. That grep is the one-command version of the code check *for a gate whose
-  children are
-  silent on success* — `check-doc-sizes.sh` spawns only `dirname`, `wc` and `cat`, and nothing else;
-  **for one that shells out to a daemon client it answers a question nobody asked.** And
-  the assertion has nowhere to live there in any case: that suite is one case and it is **red**, where the
-  assertion is deliberately exempt, so there is no green helper to extend. `check-doc-links.sh` — the third
-  gate the `docs` job runs — has no self-test at all, so there is no green helper there either; that is
-  gh#293 rather than this rule.
+  halves of the test**. `check-doc-sizes.sh` passed both and now carries the assertion; the numbers and the
+  mutant that proves it live in `check-doc-sizes-selftest.sh`'s header. **`check-image-entrypoint.sh` failed
+  on the half `grep -n '>&2'` cannot see** — its own writers do all sit on failing paths, and its green path
+  then spawns `docker` three times with stderr *unredirected*, so silence there is a property of the host's
+  daemon rather than of the script; the measurement, and the fact that no figure in it was taken on the
+  runner, are in `check-image-entrypoint-selftest.sh`'s header. **The rule that outlives both gates: that
+  grep is a sound check that a green run is silent ONLY for a gate whose children are silent on success.
+  For one that shells out to a daemon client, a package manager or a network tool, it answers a question
+  nobody asked.** The assertion has nowhere to live in that suite in any case — one case, and it is **red**,
+  where the assertion is deliberately exempt. `check-doc-links.sh`, the one gate in this job with no
+  self-test at all, has no green helper either; that is gh#293 rather than this rule.
 - **A PR into a non-integration base used to get no CI at all, and read as `CLEAN`** (gh#60). `ci.yml` and
   `codeql.yml` filtered `pull_request` to `[develop, staging, main]`, so a stacked PR onto a feature branch
   produced zero runs — and because the required checks hang off the `develop` ruleset, nothing was pending or
@@ -526,10 +520,9 @@ this count together whenever a step is added**; the count is the only thing tell
   reject twenty-nine known faults by name and to accept eighteen correct inputs — **requiring of every one of
   those eighteen that the gate write nothing at all to stderr** (gh#271, the assertion gh#239 established on
   the sibling gate; the red cases are exempt and say so beside the code, since `die` reports through stderr
-  there) — one priced off the 0.1K
-  grid at the value it rounds to, so the rule cannot collapse into "state the raw measurement" and redden
-  every real row, one spelling that price `1K` rather than `1.0K`, so the comparison cannot become a string
-  match, one whose prose contains "no longer", so the
+  there) — one priced off the 0.1K grid at the value it rounds to, so the rule cannot collapse into "state
+  the raw measurement" and redden every real row, one spelling that price `1K` rather than `1.0K`, so the
+  comparison cannot become a string match, one whose prose contains "no longer", so the
   size-claim vocabulary cannot creep back onto ordinary English, and twelve that print a price table inside a
   fence — six quoted, four of those closed by the end of the blockquote or of the file, and four leaning on
   one opener/closer rule each — so a document explaining the column is not accused of adding one.

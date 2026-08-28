@@ -339,7 +339,9 @@ cannot be satisfied at a midpoint of zero or less.
 prior session in the window, a window that begins after that session opened, or a session the series covers
 with a **single bar** — the last because a bar records no width, so at a daily resolution or above "the
 prior day's high" would be the high of everything the bar spans. Ask for a finer `resolutionMinutes` rather
-than reading the absence as a session without structure.
+than reading the absence as a session without structure. That last rule bounds the resolution at **a bar per
+session**, not at the session's own end: a bucket that begins inside a session and runs past its close is
+still read as that session's, which `session` does too and gh#259 owns for both.
 
 **The pivot window is asymmetric, and both edges are per call.** `pivotLookback` is how many bars to the
 **left** a pivot must dominate; `pivotRightLookback` is how many to the **right**, which is the confirmation

@@ -610,9 +610,9 @@ required contexts added by hand, and a context nobody adds is a check that only 
 
 **What it is pointed at is a list of (file, heading) pairs, and both halves of that list fail closed**
 (gh#178). It was one file and a fixed pair of headings until the role contracts needed pricing: the routing
-map's `agents/` row prices [the index](README.md), while the route it serves ends at one of the four
+map's `agents/` row prices [the index](README.md), while the route it serves ends at one of the
 contracts the index names — **this file among them**, and it is the one that grows. The numbers went into the
-index's own table rather than into four more rows of the map, so the four contracts are listed once rather
+index's own table rather than into one map row per contract, so the contracts are listed once rather
 than twice, and the gate learned to read a second file. Three consequences worth keeping:
 
 - **Every link resolves against the file that names it**, not against the routing map's directory. Three of

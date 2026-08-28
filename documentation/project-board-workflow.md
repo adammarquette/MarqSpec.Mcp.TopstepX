@@ -40,7 +40,8 @@ Seven transitions. **The board makes two of them by itself** — the first and t
 described #4. The other five are somebody's deliberate act, and two of those five are not the author's.
 
 **One principle sets every actor below: whoever performs the action moves the card** — except the reviewer,
-who is barred from card writes, so the coordinator covers the two transitions a reviewer's verdict triggers.
+who is barred from card writes, so the [coordinator](agents/coordinator.md) covers the two transitions a
+reviewer's verdict triggers.
 The column is therefore **not symmetrical, and should not be made to look it**: you move it when you act, the
 coordinator moves it when a reviewer acts, and the board moves it when nobody does.
 

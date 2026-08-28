@@ -60,6 +60,14 @@ jobs:
       - name: Check documentation links
         run: ./scripts/check-doc-links.sh
 
+      # gh#293. The `-u` on this gate's file-list sort is load-bearing under a conflicted `--cached` index
+      # (same defect as gh#240) and a no-op on a clean one, which is exactly when nothing would redden if
+      # it were tidied away. This runs the gate against a fixture whose index genuinely conflicts and
+      # requires the file count to stay honest — the mutation is the flag itself. Ordered after the
+      # real-tree run so a genuinely broken link is reported first.
+      - name: Prove the doc-link gate can still fail
+        run: ./scripts/check-doc-links-selftest.sh
+
       # gh#160. documentation/README.md prices every document it routes to so a reader can see the cost before
       # paying it, and the column had drifted until it INVERTED its own advice -- AGENT-MEMORY.md priced at
       # 0.8K beside "cheap; just read it" while measuring 6.8K. The drift is produced by obeying another rule

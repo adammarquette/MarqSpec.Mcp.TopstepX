@@ -10,6 +10,10 @@
 #
 # Only relative links to repo files are checked. External URLs are the internet's problem; anchors are not
 # resolved.
+#
+# ITS OWN ABILITY TO FAIL IS TESTED: scripts/check-doc-links-selftest.sh runs this script against fixtures
+# whose faults are known — including a genuinely conflicted index, whose mutation is the `-u` on the file
+# list (gh#293). Both run in ci.yml's `docs` job.
 
 set -euo pipefail
 
@@ -31,6 +35,22 @@ scanned=0
 # THE READ IS SPLIT FROM THE SORT. As one pipeline the bare assignment does carry `pipefail`'s status, so a
 # failed `git ls-files` stopped the script -- but silently, with no line saying what could not be listed,
 # which is the wrong failure for the right reason. Checked explicitly instead.
+#
+# THE `-u` IS LOAD-BEARING UNDER A CONFLICTED INDEX (gh#293). `git ls-files --cached` lists a path ONCE PER
+# STAGE, so during an unresolved merge a conflicted document arrives three times. This loop increments
+# `scanned` once per list entry and re-reads that file's links each time, so without the flag BOTH numbers
+# on BOTH evidence lines inflate: the green line below (`ok  %d markdown files, no broken relative links.`)
+# and the red line (`%d broken link(s) across %d markdown files.`). On a clean index the list has no
+# duplicates and the flag is a no-op — measured at `ab25594` (45 files either way) and on the self-test's
+# conflicted fixture, where three files come back as five without it. The verdict never moves: every stage
+# is the same path and resolves the same way. What the flag keeps honest is the evidence.
+#
+# KEPT RATHER THAN `git ls-files --deduplicate` (gh#240's fix on the sibling gate). This gate already
+# sorts the list, so `-u` is the load-bearing half of a step that is already here; adding `--deduplicate`
+# would make `-u` a no-op and the self-test's mutation (removing `-u`) would stop reddening. The sibling
+# declined `sort -u` because sort re-orders DANGLING lines; this gate's BROKEN lines already follow
+# sort's order. Two idioms, two order constraints. Measured on the same fixture: `--deduplicate` also
+# listed three paths, so the two agree on the count and disagree on whether `-u` stays load-bearing.
 files=""
 ls_status=0
 files="$(git ls-files --cached --others --exclude-standard '*.md')" || ls_status=$?

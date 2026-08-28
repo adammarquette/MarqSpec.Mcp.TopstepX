@@ -27,7 +27,7 @@ Three assemblies, layered so the pure part stays pure:
 
 | Project | Depends on | Holds |
 |---|---|---|
-| `…​.Domain` | **nothing** | `Bar`, `InstrumentId`, `InstrumentSpec`, `IIndicator` and `ILevelMethod` + implementations, `BarSessionCalendar`, `BarGapDetector`, `KeyLevels`, `SessionLevels` |
+| `…​.Domain` | **nothing** | `Bar`, `InstrumentId`, `InstrumentSpec`, `IIndicator` and `ILevelMethod` + implementations, `BarSessionCalendar`, `BarGapDetector`, `KeyLevels`, `SessionLevels`, `PivotLevels` |
 | `…​.Data` | Domain | Entities, `DbContext`, migrations |
 | `MarqSpec.Mcp.TopstepX` | Domain, Data, the venue client | Tools, transports, cache-aside services, the ProjectX adapter, composition root |
 
@@ -36,13 +36,19 @@ makes "rebuild = replay" true — a dependency on a clock or a store there would
 *when* it ran, and no test would notice.
 
 **A session boundary is the one thing bars cannot supply, and it arrives by construction rather than by
-widening a signature.** `vwap` and `session` both need to know where a session begins; neither
-`IIndicator.Compute` nor `ILevelMethod.Detect` carries a calendar, and neither gained one. `IndicatorCatalog`
+widening a signature.** `vwap`, `session` and all five `pivot-*` need to know where a session begins; neither
+`IIndicator.Compute` nor `ILevelMethod.Detect` carries a calendar, and neither gained one — the pivot family
+was the third method family to want one and the second to be built on the answer (gh#258). `IndicatorCatalog`
 and `LevelMethodCatalog` each take the single `BarSessionCalendar` the composition root parses once from
 `MarketData__SessionCloseCentral` and `MarketData__Holidays`, and hand it to the one member that needs it.
 That is a **value**, not a source — deterministic in its configuration, fixed for the process — so a method
 holding one is still a pure function of what it was built and handed, and every other method keeps a
 signature free of a parameter it would never read (gh#257).
+
+**The catalogue also carries correlation, because the scorer must not.** Every `ILevelMethod` declares the
+family it belongs to; the five `pivot-*` names share one, `swing` and `session` are families of one. A
+confluence score groups by that rather than by a list of names it holds itself, so the next pivot variant
+joins the discounted budget by being written rather than by somebody remembering to add it (`R-3.11`).
 
 ## The cache-aside read — the only genuinely interesting path
 
@@ -208,12 +214,13 @@ one.**
   `IndicatorGuard.RequireSingleContract` refuses, on the same shared path as the ordering check, so a new
   indicator inherits the rule rather than remembering it.
   **A level method does not inherit it.** Each `ILevelMethod` detects its own way — swing pivots, session
-  extremes, arithmetic on a prior bar — so there is no shared compute path to hang the check on. Every
+  extremes, arithmetic on a prior session — so there is no shared compute path to hang the check on. Every
   implementation must therefore **refuse** a spliced series, reaching the guard directly *or through whatever
   it delegates detection to*: `swing` delegates to `KeyLevels.FindPivots`, which already calls it, and adding
   a second call there would only change which of two refusals a caller sees when a series is both spliced and
   handed a misaligned ATR. `session` has nothing to delegate to — it reads a finished session's extremes
-  rather than running the pivot pipeline — so it calls both guards itself. So `LevelMethodCatalogRollTests`
+  rather than running the pivot pipeline — so it calls both guards itself, and `PivotLevels` does the same
+  for all five methods built on it. So `LevelMethodCatalogRollTests`
   sweeps `LevelMethodCatalog.All` for **the refusal**, not for the call — a method that skipped it would not
   fail, it would answer with an ordinary-looking zone built across the seam.
 - The two callers that legitimately hold a multi-contract series segment first, using the pure

@@ -255,6 +255,21 @@ public sealed class CompositionRootTests
     }
 
     [Fact]
+    public void TheTapeVolumeFrontServiceCanBeResolved()
+    {
+        // gh#219 stops at the service so the footprint tools' health block (gh#218) is not
+        // a merge collision. Leaving the registration unchecked would ship a reader that
+        // dies the first time anyone asks the container for it.
+        using ServiceProvider provider =
+            Build(new Dictionary<string, string?>(), new McpOptions { Transport = McpTransport.Stdio });
+        using IServiceScope scope = provider.CreateScope();
+
+        Func<object> resolve = () => scope.ServiceProvider.GetRequiredService<TapeVolumeFrontService>();
+
+        resolve.Should().NotThrow();
+    }
+
+    [Fact]
     public void TheKeyLevelDetectionSection_Binds_IncludingItsSource()
     {
         // Bound from configuration rather than constructed, which is the whole of gh#244 on this side of the

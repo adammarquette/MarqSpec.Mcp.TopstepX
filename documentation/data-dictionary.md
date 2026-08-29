@@ -263,6 +263,14 @@ The hypertable is **conditional**, following [ADR-0004](adr/0004-one-postgres-ti
 
 Index: `(Instrument, ContractId, TradeTimeUtc)` — the shape of every read.
 
+**Volume-front is a read over this table, not a filter and not a tenth table** (gh#219). Per
+`(instrument, contract)` per session, total `Size`. The highest-volume contract is the tape's
+front; the session it overtook the previous one is the changeover. `Unknown` direction still
+counts as size — unlike §9, which refuses it so an unstated side cannot look like a buy. Both
+contracts stay in the table across a roll. This answer can disagree with the gateway
+`ActiveContract` `Bars` uses (`contracts[0]`), and with the newest-listening-run `contracts`
+block on a footprint; that disagreement is reported, not resolved by dropping one.
+
 ## §8 `TapeCoverage` — what was actually listening
 
 | Column | Type | Note |

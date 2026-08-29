@@ -27,7 +27,7 @@ Three assemblies, layered so the pure part stays pure:
 
 | Project | Depends on | Holds |
 |---|---|---|
-| `…​.Domain` | **nothing** | `Bar`, `InstrumentId`, `InstrumentSpec`, `IIndicator` and `ILevelMethod` + implementations, `BarSessionCalendar`, `BarGapDetector`, `KeyLevels`, `SessionLevels`, `PivotLevels`, `VolumeLevels`, `TradeDirection`, `FootprintAggregator`, `VolumeProfileAggregator` |
+| `…​.Domain` | **nothing** | `Bar`, `InstrumentId`, `InstrumentSpec`, `IIndicator` and `ILevelMethod` + implementations, `BarSessionCalendar`, `BarGapDetector`, `KeyLevels`, `SessionLevels`, `PivotLevels`, `VolumeLevels`, `TradeDirection`, `FootprintAggregator`, `VolumeProfileAggregator`, `TapeVolumeFront` |
 | `…​.Data` | Domain | Entities, `DbContext`, migrations |
 | `MarqSpec.Mcp.TopstepX` | Domain, Data, the venue client | Tools, transports, cache-aside services, the ProjectX adapter, composition root |
 
@@ -37,7 +37,10 @@ makes "rebuild = replay" true — a dependency on a clock or a store there would
 prints handed in, which is why `TradeDirection` lives here rather than on the store entity (gh#220).
 The volume profile is the next projection over those cells: a pure function of the cells and the
 listening ranges handed in — point of control, 70% value area, and a window confined to one
-contract (`R-9`, gh#221). It is not a stored table.
+contract (`R-9`, gh#221). It is not a stored table. Volume-front is a third pure read over the
+prints themselves: per session, per contract, highest `Size` wins, including an `Unknown`
+direction (gh#219). It is not a stored table either, and it is not the profile's `contracts`
+block.
 
 **A session boundary is the one thing bars cannot supply, and it arrives by construction rather than by
 widening a signature.** `vwap`, `session` and all five `pivot-*` need to know where a session begins; neither
@@ -454,6 +457,27 @@ computed it is **`null`, never `0`**: zero is an answer, and reporting one on th
 looked is the same fabrication as a `1.0` similarity on the text path. It is a property rather than a map
 entry, so that null **reaches the caller as an omitted key**, not as `null` — the two forms and their tests are
 in the [tool catalogue](mcp-tool-catalog.md).
+
+## Two answers for the front month
+
+Bars resolve the contract they fetch through the gateway: `ResolveContractsAsync` then
+`contracts[0]`. Search is fuzzy and often marks every hit `ActiveContract = true`, so that pick
+is not "the front month the venue named" — it is the first surviving result after product-code
+filter and front-month sort. The tape answers the same question by volume. Per
+`(instrument, contract)`, per session (`BarSessionCalendar.TradeDateFor`), total `Trades.Size`.
+The highest-volume contract is the tape's front; the session it overtook the previous front is
+the changeover, with the print time it flipped. `Unknown` direction still counts as size.
+
+**They disagree during a roll, by design, and neither is dropped.** A read that compares them
+names both, says the tape is the volume-front, and does not rewrite `Bars` or substitute the
+gateway when the tape has no unique winner. Choosing the front is a read-time decision: both
+contracts stay in `Trades`. Filtering at ingest would discard the prints that prove the choice.
+
+**Profile `contracts` is a third cut.** `get_footprint` and `get_volume_profile` report
+`contracts` from cells and `TapeCoverage` — the newest contiguous listening run, not session
+volume. Replacing that block with volume-front without naming the difference would be a second
+silent source of truth wearing the first's field names. This increment stops at
+`TapeVolumeFrontService`; the tools are not wired (gh#218 owns their health block).
 
 ## What is deliberately absent
 

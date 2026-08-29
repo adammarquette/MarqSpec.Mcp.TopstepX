@@ -646,7 +646,8 @@ public sealed class KeyLevelDetectionPlumbingTests : IDisposable
             new ToolGuards(market),
             new StoreAvailabilityHolder(),
             clock,
-            Options.Create(detection));
+            Options.Create(detection),
+            new VolumeProfileService(_database));
 
         SnapshotTools snapshot = new(
             marketData,

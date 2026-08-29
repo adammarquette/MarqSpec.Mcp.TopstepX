@@ -399,5 +399,6 @@ public sealed class IndicatorReadProjectionTests : IDisposable
             new ToolGuards(MarketData()),
             new StoreAvailabilityHolder(),
             _clock,
-            Options.Create(new KeyLevelDetectionOptions()));
+            Options.Create(new KeyLevelDetectionOptions()),
+            new VolumeProfileService(_database));
 }

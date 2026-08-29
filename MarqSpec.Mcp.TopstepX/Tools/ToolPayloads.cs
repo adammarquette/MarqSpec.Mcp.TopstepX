@@ -556,6 +556,103 @@ public static class ToolPayloads
         return new BarPoint(bar.OpenTime, bar.Open, bar.High, bar.Low, bar.Close, bar.Volume);
     }
 
+    /// <summary>One footprint cell on the wire.</summary>
+    /// <param name="T">When the bar opened, UTC.</param>
+    /// <param name="P">The price level inside the bar.</param>
+    /// <param name="Buy">Volume whose aggressor was lifting.</param>
+    /// <param name="Sell">Volume whose aggressor was hitting.</param>
+    public sealed record FootprintCellPoint(DateTimeOffset T, decimal P, long Buy, long Sell);
+
+    /// <summary>
+    /// The window <c>TapeCoverage</c> actually covered — never the window the caller asked for.
+    /// </summary>
+    /// <param name="Start">Covered start, inclusive. From the ledger.</param>
+    /// <param name="End">Covered end, exclusive.</param>
+    /// <param name="Narrowed">
+    /// Whether the ask was cut back — a roll, a late start or early end, or a listening hole.
+    /// </param>
+    /// <remarks>
+    /// Every field is always present; none are omitted and none are null. A quiet market under a
+    /// listening run still carries this window — that is how it differs from a pre-recording refusal.
+    /// </remarks>
+    public sealed record CoveredWindow(DateTimeOffset Start, DateTimeOffset End, bool Narrowed);
+
+    /// <summary>Stored footprint cells for a covered tape window.</summary>
+    /// <param name="Symbol">The normalised instrument.</param>
+    /// <param name="ResolutionMinutes">The bar size the cells were projected at.</param>
+    /// <param name="Cells">The cells, ordered by bucket then price. Empty means quiet under coverage.</param>
+    /// <param name="Covered">The ledger window that produced them.</param>
+    /// <param name="Contracts">
+    /// Contract provenance. A profile/footprint is confined to one contract, so
+    /// <see cref="ContractSpan.SingleContract"/> with one segment naming it.
+    /// </param>
+    /// <remarks>
+    /// Every field is always present; none are omitted and none are null. Live tape-subscription health
+    /// is not on this payload — that surface does not exist yet (gh#218).
+    /// </remarks>
+    public sealed record FootprintSeries(
+        string Symbol,
+        int ResolutionMinutes,
+        IReadOnlyList<FootprintCellPoint> Cells,
+        CoveredWindow Covered,
+        ContractCoverage Contracts);
+
+    /// <summary>Volume at one price on the wire.</summary>
+    /// <param name="P">The price.</param>
+    /// <param name="V">Buy plus sell volume at that price.</param>
+    public sealed record VolumeAtPricePoint(decimal P, long V);
+
+    /// <summary>A volume profile over a covered tape window.</summary>
+    /// <param name="Symbol">The normalised instrument.</param>
+    /// <param name="ResolutionMinutes">The bar size the cells were projected at.</param>
+    /// <param name="ByPrice">Every price that traded, in price order.</param>
+    /// <param name="PointOfControl">The price with the most volume.</param>
+    /// <param name="ValueAreaLow">The lowest price in the 70% value area.</param>
+    /// <param name="ValueAreaHigh">The highest price in the 70% value area.</param>
+    /// <param name="ValueAreaVolume">How much volume sits inside the value area.</param>
+    /// <param name="TotalVolume">How much volume the cells carried.</param>
+    /// <param name="Covered">The ledger window that produced the profile.</param>
+    /// <param name="Contracts">
+    /// Contract provenance. Always <see cref="ContractSpan.SingleContract"/> — a roll is confined
+    /// before aggregation, never reported as <see cref="ContractSpan.SpansRoll"/>.
+    /// </param>
+    /// <remarks>
+    /// Every field is always present; none are omitted and none are null. Live tape-subscription health
+    /// is not on this payload — that surface does not exist yet (gh#218).
+    /// </remarks>
+    public sealed record VolumeProfileSeries(
+        string Symbol,
+        int ResolutionMinutes,
+        IReadOnlyList<VolumeAtPricePoint> ByPrice,
+        decimal PointOfControl,
+        decimal ValueAreaLow,
+        decimal ValueAreaHigh,
+        long ValueAreaVolume,
+        long TotalVolume,
+        CoveredWindow Covered,
+        ContractCoverage Contracts);
+
+    /// <summary>
+    /// Contract provenance for a tape-derived answer that has already been confined to one contract.
+    /// </summary>
+    /// <param name="window">The covered tape window.</param>
+    /// <param name="bucketCount">How many distinct bar buckets contributed.</param>
+    /// <returns><see cref="ContractSpan.SingleContract"/> with one segment naming the contract.</returns>
+    public static ContractCoverage ToTapeCoverage(CoveredTapeWindow window, int bucketCount)
+    {
+        ArgumentNullException.ThrowIfNull(window);
+
+        return new ContractCoverage(
+            ContractSpan.SingleContract,
+            [
+                new ContractSegmentInfo(
+                    window.ContractId,
+                    window.Start,
+                    window.End,
+                    bucketCount),
+            ]);
+    }
+
     /// <summary>Describes which contracts produced a series of bars.</summary>
     /// <param name="bars">The bars, in ascending time order.</param>
     /// <returns>The coverage, with one segment per contiguous single-contract run.</returns>

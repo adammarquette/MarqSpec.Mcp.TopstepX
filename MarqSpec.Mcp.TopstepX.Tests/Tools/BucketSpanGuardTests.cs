@@ -358,7 +358,8 @@ public sealed class BucketSpanGuardTests : IDisposable
             new ToolGuards(capped),
             new StoreAvailabilityHolder(),
             _clock,
-            Options.Create(new KeyLevelDetectionOptions()));
+            Options.Create(new KeyLevelDetectionOptions()),
+            new VolumeProfileService(_database));
     }
 
     /// <summary>Builds the composed tool over the same row cap.</summary>

@@ -121,7 +121,8 @@ public sealed class ResolutionGuardTests : IDisposable
             new ToolGuards(options),
             new StoreAvailabilityHolder(),
             _clock,
-            Options.Create(new KeyLevelDetectionOptions()));
+            Options.Create(new KeyLevelDetectionOptions()),
+            new VolumeProfileService(_database));
 
         _snapshot = new SnapshotTools(
             _marketData,
@@ -392,7 +393,8 @@ public sealed class ResolutionGuardTests : IDisposable
             new ToolGuards(capped),
             new StoreAvailabilityHolder(),
             _clock,
-            Options.Create(new KeyLevelDetectionOptions()));
+            Options.Create(new KeyLevelDetectionOptions()),
+            new VolumeProfileService(_database));
     }
 
     // ── The drift guard ──────────────────────────────────────────────────────────────────────────────

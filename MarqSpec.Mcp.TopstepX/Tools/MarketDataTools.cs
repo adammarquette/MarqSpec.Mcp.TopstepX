@@ -27,7 +27,8 @@ public sealed class MarketDataTools(
     ToolGuards guards,
     StoreAvailabilityHolder store,
     TimeProvider clock,
-    IOptions<KeyLevelDetectionOptions> detection)
+    IOptions<KeyLevelDetectionOptions> detection,
+    VolumeProfileService volumeProfiles)
 {
     private readonly BarCacheService _cache = cache;
     private readonly TopstepXDbContext _database = database;
@@ -39,6 +40,7 @@ public sealed class MarketDataTools(
     private readonly ToolGuards _guards = guards;
     private readonly StoreAvailabilityHolder _store = store;
     private readonly TimeProvider _clock = clock;
+    private readonly VolumeProfileService _volumeProfiles = volumeProfiles;
 
     // The detection defaults, not the detection options: three of the seven fields are overridden per call, and
     // the merge happens in ResolveDetection. The catalogue holds no copy of these -- ILevelMethod.Detect
@@ -506,6 +508,162 @@ public sealed class MarketDataTools(
                     new ToolPayloads.ConfluenceConstituentInfo(c.Method, c.Family, c.Weight, c.ZoneCount))],
                 [.. scored.Absent.Select(a => new ToolPayloads.ConfluenceAbsenceInfo(a.Method, a.Reason))]),
             Capped: methodResults.Exists(static m => m.Capped));
+    }
+
+    /// <summary>Reads stored footprint cells for a covered tape window.</summary>
+    /// <param name="symbol">The instrument symbol.</param>
+    /// <param name="resolutionMinutes">The bar size the cells were projected at.</param>
+    /// <param name="fromUtc">The window start, inclusive.</param>
+    /// <param name="toUtc">The window end, exclusive.</param>
+    /// <param name="cancellationToken">The caller's cancellation token.</param>
+    /// <returns>The cells under the ledger window that was actually covered.</returns>
+    [McpServerTool(ReadOnly = true, Idempotent = true, Title = "Get footprint")]
+    [Description(
+        "Reads buy/sell volume by price by bar from stored footprint cells. The tape only goes forward: "
+        + "there is no historical footprint for a period before recording began — not slow, not expensive, "
+        + "ABSENT. A window before recording began is refused and names the earliest covered time; an empty "
+        + "answer is not a quiet market. The response reports `covered` from TapeCoverage — not the window "
+        + "you asked for — and `contracts` with span SingleContract naming which contract was listened to. "
+        + "A roll or listening hole narrows the answer to the newest contiguous run and sets "
+        + "`covered.narrowed`. Live tape-subscription health is not on this payload. Every field is always "
+        + "present; none are omitted and none are null. Empty `cells` under a covered window means the "
+        + "subscription listened and nothing traded at those prices — that is the quiet-market case, and it "
+        + "is not the same as a pre-recording refusal. Never truncates: an over-cap window is refused.")]
+    public async Task<ToolPayloads.FootprintSeries> GetFootprint(
+        [Description("The instrument symbol, e.g. ES.")] string symbol,
+        [Description("The bar size in minutes the cells were projected at.")] int resolutionMinutes,
+        [Description("Window start, ISO-8601 UTC, inclusive.")] DateTimeOffset fromUtc,
+        [Description("Window end, ISO-8601 UTC, exclusive.")] DateTimeOffset toUtc,
+        CancellationToken cancellationToken)
+    {
+        InstrumentId instrument = Resolve(symbol);
+        BarRange window = _guards.ValidateWindow(fromUtc, toUtc, resolutionMinutes);
+
+        FootprintRead read;
+        try
+        {
+            read = await _volumeProfiles.ReadCellsAsync(
+                    _gateway.VenueId,
+                    instrument,
+                    resolutionMinutes,
+                    window.Start,
+                    window.End,
+                    cancellationToken)
+                .ConfigureAwait(false);
+        }
+        catch (InvalidOperationException ex)
+        {
+            throw new McpException(ex.Message);
+        }
+
+        RefuseIfOverCellCap(read.Cells.Count, "footprint cells");
+
+        List<ToolPayloads.FootprintCellPoint> cells =
+        [
+            .. read.Cells
+                .OrderBy(c => c.BucketStart)
+                .ThenBy(c => c.Price)
+                .Select(c => new ToolPayloads.FootprintCellPoint(
+                    c.BucketStart, c.Price, c.BuyVolume, c.SellVolume)),
+        ];
+
+        int buckets = cells.Select(c => c.T).Distinct().Count();
+
+        return new ToolPayloads.FootprintSeries(
+            instrument.Symbol,
+            resolutionMinutes,
+            cells,
+            new ToolPayloads.CoveredWindow(read.Window.Start, read.Window.End, read.Window.Narrowed),
+            ToolPayloads.ToTapeCoverage(read.Window, buckets));
+    }
+
+    /// <summary>Aggregates stored footprint cells into a volume profile for a covered tape window.</summary>
+    /// <param name="symbol">The instrument symbol.</param>
+    /// <param name="resolutionMinutes">The bar size the cells were projected at.</param>
+    /// <param name="fromUtc">The window start, inclusive.</param>
+    /// <param name="toUtc">The window end, exclusive.</param>
+    /// <param name="cancellationToken">The caller's cancellation token.</param>
+    /// <returns>The profile under the ledger window that was actually covered.</returns>
+    [McpServerTool(ReadOnly = true, Idempotent = true, Title = "Get volume profile")]
+    [Description(
+        "Aggregates stored footprint cells into volume by price, the point of control, and the 70% value "
+        + "area. The tape only goes forward: there is no historical footprint for a period before recording "
+        + "began — not slow, not expensive, ABSENT. A window before recording began is refused and names "
+        + "the earliest covered time; an empty profile is not a quiet market. The response reports "
+        + "`covered` from TapeCoverage — not the window you asked for — and `contracts` with span "
+        + "SingleContract naming which contract was listened to. A roll or listening hole narrows the "
+        + "answer to the newest contiguous run and sets `covered.narrowed`. Live tape-subscription health "
+        + "is not on this payload. Every field is always present; none are omitted and none are null. "
+        + "Never truncates: an over-cap window is refused.")]
+    public async Task<ToolPayloads.VolumeProfileSeries> GetVolumeProfile(
+        [Description("The instrument symbol, e.g. ES.")] string symbol,
+        [Description("The bar size in minutes the cells were projected at.")] int resolutionMinutes,
+        [Description("Window start, ISO-8601 UTC, inclusive.")] DateTimeOffset fromUtc,
+        [Description("Window end, ISO-8601 UTC, exclusive.")] DateTimeOffset toUtc,
+        CancellationToken cancellationToken)
+    {
+        InstrumentId instrument = Resolve(symbol);
+        BarRange window = _guards.ValidateWindow(fromUtc, toUtc, resolutionMinutes);
+
+        FootprintRead cells;
+        try
+        {
+            cells = await _volumeProfiles.ReadCellsAsync(
+                    _gateway.VenueId,
+                    instrument,
+                    resolutionMinutes,
+                    window.Start,
+                    window.End,
+                    cancellationToken)
+                .ConfigureAwait(false);
+        }
+        catch (InvalidOperationException ex)
+        {
+            throw new McpException(ex.Message);
+        }
+
+        RefuseIfOverCellCap(cells.Cells.Count, "footprint cells");
+
+        VolumeProfile profile;
+        try
+        {
+            profile = VolumeProfileAggregator.From(cells.Cells);
+        }
+        catch (ArgumentException ex)
+        {
+            throw new McpException(ex.Message);
+        }
+
+        int buckets = cells.Cells.Select(c => c.BucketStart).Distinct().Count();
+
+        return new ToolPayloads.VolumeProfileSeries(
+            instrument.Symbol,
+            resolutionMinutes,
+            [.. profile.ByPrice.Select(level => new ToolPayloads.VolumeAtPricePoint(level.Price, level.Volume))],
+            profile.PointOfControl,
+            profile.ValueAreaLow,
+            profile.ValueAreaHigh,
+            profile.ValueAreaVolume,
+            profile.TotalVolume,
+            new ToolPayloads.CoveredWindow(cells.Window.Start, cells.Window.End, cells.Window.Narrowed),
+            ToolPayloads.ToTapeCoverage(cells.Window, buckets));
+    }
+
+    /// <summary>
+    /// Refuses a tape-derived answer that would exceed the row cap rather than truncating it.
+    /// </summary>
+    private void RefuseIfOverCellCap(int count, string what)
+    {
+        if (count > _guards.MaxRows)
+        {
+            throw new McpException(
+                "That covered window holds "
+                + count.ToString(System.Globalization.CultureInfo.InvariantCulture)
+                + " " + what + ", over this server's cap of "
+                + _guards.MaxRows.ToString(System.Globalization.CultureInfo.InvariantCulture)
+                + ". Narrow the window or ask for a coarser resolution. The read is refused rather than "
+                + "truncated, because a shortened answer is indistinguishable from a complete one.");
+        }
     }
 
     /// <summary>

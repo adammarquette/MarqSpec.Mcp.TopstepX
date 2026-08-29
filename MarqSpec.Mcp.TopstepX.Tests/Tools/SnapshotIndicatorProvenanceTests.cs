@@ -309,7 +309,8 @@ public sealed class SnapshotIndicatorProvenanceTests : IDisposable
             new ToolGuards(wrapped),
             new StoreAvailabilityHolder(),
             clock,
-            Options.Create(new KeyLevelDetectionOptions()));
+            Options.Create(new KeyLevelDetectionOptions()),
+            new VolumeProfileService(_database));
 
         ReferenceTools reference = new(
             new InstrumentRegistry(wrapped), calendar, gateway, wrapped, clock);

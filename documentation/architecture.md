@@ -336,7 +336,9 @@ on a late failure.
 Its job is now **correction rather than repair** (`R-2.5`). A read self-heals only what the probe can see — a
 `(Indicator, Period)` pair with no rows — so **correcting an indicator's arithmetic leaves every pair present
 and no read will ever recompute it.** That forced replay, the accepted write skew of `R-2.11`, and warming a
-series ahead of its first caller are what the verb is for.
+series ahead of its first caller are what the verb is for. It reports how many series it rewrote — values that
+actually changed, not confirming rebuilds — so the heal of `R-2.11` is visible without measuring it from
+inside a fill ([ADR-0012](adr/0012-fills-are-not-serialised.md), gh#348).
 
 Multi-output and multi-parameter indicators are the awkward case: the key carries *one* period, and MACD takes
 three parameters. The non-period ones are **fixed at their conventional values** rather than hidden behind a

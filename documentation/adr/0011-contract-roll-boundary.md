@@ -116,6 +116,7 @@ can tell that a roll happened.
 | Update | What changed |
 |---|---|
 | [2026-08-23](#update-2026-08-23--the-reconcile-has-a-precondition-and-nothing-stated-it) | The reconcile's precondition is named and enforced: one snapshot, and the whole series ([gh#73](https://github.com/adammarquette/MarqSpec.Mcp.TopstepX/issues/73)) |
+| [2026-08-29](#update-2026-08-29--the-roll-event-is-a-tool) | `get_contract_roll` reports the tape changeover; no roll table ([gh#349](https://github.com/adammarquette/MarqSpec.Mcp.TopstepX/issues/349)) |
 
 ## Alternatives considered
 
@@ -228,7 +229,7 @@ most wants to look at just after a roll.
   a re-key migration to be possible. That is a new issue, not a promise.
 - A **back-adjusted derived view**, if a question genuinely needs one. Derived, never stored.
 - Nothing reports the roll **event** itself: there is no "when did ES roll" tool. It is now answerable from
-  this column, and it is not built.
+  this column, and it is not built. **Discharged 2026-08-29** — see the update at the end of this record.
 
 ## Update (2026-08-23) — the reconcile has a precondition, and nothing stated it
 
@@ -311,3 +312,13 @@ and gh#104 found: the next pass has to *happen*. A series nothing writes to agai
 Nothing about the segmentation or the reconcile this record decided changes. The two sentences that read as
 pending are marked in place rather than rewritten — the deferral above, and the gh#122 paragraph's closing
 clause — so the trail still shows what was true when each was written.
+
+## Update (2026-08-29) — the roll event is a tool
+
+The Follow-ups bullet that said nothing reports the roll **event** itself is discharged (gh#349).
+`get_contract_roll(symbol, asOfUtc?)` projects the most recent changeover the stored tape can prove
+(`TapeVolumeFrontService`) and the bar-side seam around it (`ContractRollDetector` over bars already
+held). There is still no roll table: the event is a read, not a row. `front` is the same
+`VolumeFrontInfo` the footprint tools grew (gh#346). This is how a caller decides whether Q-1's
+successor — re-keying bars by contract id — is worth a migration. The keying decision itself is
+unchanged.

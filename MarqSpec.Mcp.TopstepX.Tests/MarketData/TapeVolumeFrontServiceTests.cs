@@ -131,6 +131,28 @@ public sealed class TapeVolumeFrontServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task AsOfUtc_IgnoresPrintsAfterTheInstant()
+    {
+        await SeedAsync(
+            Trade(Central(2026, 8, 18, 10, 0), 1, Front, 100, TradeDirection.Buy),
+            Trade(Central(2026, 8, 18, 11, 0), 2, Next, 20, TradeDirection.Sell),
+            Trade(Central(2026, 8, 19, 10, 0), 3, Front, 30, TradeDirection.Buy),
+            Trade(Central(2026, 8, 19, 10, 5), 4, Next, 80, TradeDirection.Buy));
+
+        TapeVolumeFrontRead beforeFlip = await Service(Gateway(Front)).ReadAsync(
+            _es, CancellationToken.None, Central(2026, 8, 18, 15, 0));
+
+        beforeFlip.Tape.ActiveContractId.Should().Be(Front);
+        beforeFlip.Tape.Changeover.Should().BeNull();
+
+        TapeVolumeFrontRead afterFlip = await Service(Gateway(Front)).ReadAsync(
+            _es, CancellationToken.None, Central(2026, 8, 19, 16, 0));
+
+        afterFlip.Tape.ActiveContractId.Should().Be(Next);
+        afterFlip.Tape.Changeover!.SessionDate.Should().Be(_wednesday);
+    }
+
+    [Fact]
     public async Task AnotherInstrument_DoesNotMoveTheFront()
     {
         await SeedAsync(

@@ -111,6 +111,29 @@ public sealed class PayloadNullWireShapeTests
     }
 
     [Fact]
+    public void ContractRoll_OmitsChangeoverAndContracts_WhenTheTapeCannotProveAFlip()
+    {
+        JsonElement roll = Wire(new ToolPayloads.ContractRollInfo(
+            Symbol: "ES",
+            AsOfUtc: DateTimeOffset.UnixEpoch,
+            Front: new ToolPayloads.VolumeFrontInfo(
+                Used: "none",
+                Agree: false,
+                TapeContractId: null,
+                TapeSessionDate: null,
+                GatewayContractId: "CON.F.US.TEST.Z26",
+                Changeover: null),
+            Contracts: null));
+
+        roll.GetProperty("symbol").GetString().Should().Be("ES");
+        roll.GetProperty("asOfUtc").GetDateTimeOffset().Should().Be(DateTimeOffset.UnixEpoch);
+        roll.GetProperty("front").TryGetProperty("changeover", out _).Should().BeFalse();
+        roll.TryGetProperty("contracts", out _).Should().BeFalse();
+        roll.TryGetProperty("why", out _).Should().BeFalse();
+        roll.GetProperty("front").TryGetProperty("why", out _).Should().BeFalse();
+    }
+
+    [Fact]
     public void SegmentContractId_IsOmitted_WhenProvenanceWasNeverRecorded()
     {
         JsonElement segment = Wire(new ToolPayloads.ContractSegmentInfo(

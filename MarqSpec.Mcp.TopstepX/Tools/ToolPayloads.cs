@@ -706,6 +706,28 @@ public static class ToolPayloads
         VolumeFrontChangeoverInfo? Changeover);
 
     /// <summary>
+    /// The most recent tape changeover a symbol's stored prints can prove, both front-month
+    /// answers at <see cref="AsOfUtc"/>, and the bar-side seam around that flip.
+    /// </summary>
+    /// <param name="Symbol">The normalised instrument.</param>
+    /// <param name="AsOfUtc">The instant the fronts were read at.</param>
+    /// <param name="Front">
+    /// The same object the footprint tools return. <b>Always present as an object</b>; keys
+    /// inside it — including <see cref="VolumeFrontInfo.Changeover"/> — are omitted when that
+    /// answer does not exist.
+    /// </param>
+    /// <param name="Contracts">
+    /// Bar provenance in a short window around the changeover. <b>Omitted</b> when the tape
+    /// cannot prove a flip, so there is no window to place. <see cref="ContractSpan.Unknown"/>
+    /// means the bars' contract was never recorded, not that there was no roll.
+    /// </param>
+    public sealed record ContractRollInfo(
+        string Symbol,
+        DateTimeOffset AsOfUtc,
+        VolumeFrontInfo Front,
+        ContractCoverage? Contracts);
+
+    /// <summary>
     /// Contract provenance for a tape-derived answer confined to one contract, with bar-open times
     /// from the cells that contributed — not the exclusive coverage envelope.
     /// </summary>

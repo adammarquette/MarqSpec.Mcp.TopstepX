@@ -77,16 +77,28 @@ public sealed class TapeVolumeFrontService(
     /// </summary>
     /// <param name="instrument">The instrument.</param>
     /// <param name="cancellationToken">The caller's cancellation token.</param>
+    /// <param name="asOfUtc">
+    /// When set, only prints at or before this instant take part. Omitted reads the whole tape.
+    /// </param>
     /// <returns>Both answers, which one this read uses, and why.</returns>
     public async Task<TapeVolumeFrontRead> ReadAsync(
         InstrumentId instrument,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        DateTimeOffset? asOfUtc = null)
     {
         string venue = _gateway.VenueId;
 
-        List<TradeRecord> rows = await _database.Trades
+        IQueryable<TradeRecord> query = _database.Trades
             .AsNoTracking()
-            .Where(trade => trade.Venue == venue && trade.Instrument == instrument.Symbol)
+            .Where(trade => trade.Venue == venue && trade.Instrument == instrument.Symbol);
+
+        if (asOfUtc is { } until)
+        {
+            DateTimeOffset cutoff = until.ToUniversalTime();
+            query = query.Where(trade => trade.TradeTimeUtc <= cutoff);
+        }
+
+        List<TradeRecord> rows = await query
             .ToListAsync(cancellationToken)
             .ConfigureAwait(false);
 

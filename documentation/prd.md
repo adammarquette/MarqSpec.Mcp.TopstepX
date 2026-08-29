@@ -281,6 +281,16 @@ The server serves OHLCV bars for a futures instrument at a requested resolution 
   tool refuses with a sentence naming the fix — never reported healthy by default, never
   answered thinly. Another symbol's subscribe does not make this one healthy. Reads refuse
   rather than truncate when over cap.
+- **R-5.9** **`get_contract_roll`** reports the most recent tape changeover a symbol's stored
+  prints can prove, plus both front-month answers at `asOfUtc` (default now, bounded like
+  `get_market_session`'s `atUtc`, R-5.4). `front` is the same object the footprint tools
+  return (gh#346). The bar-side seam is `contracts.span` / segments around the changeover,
+  or omitted when there is no flip to place a window around; `Unknown` means provenance was
+  never recorded, not that there was no roll. No roll table: the event is a projection over
+  prints and bars already held ([ADR-0011](adr/0011-contract-roll-boundary.md)). There is no
+  historical tape before recording began. An unknown instrument is an error (R-5.3). A
+  symbol with no changeover omits it rather than guessing a date. No `why` on the wire
+  (ADR-0008).
 
 ## R-6 — Observations
 
@@ -348,7 +358,9 @@ The server serves OHLCV bars for a futures instrument at a requested resolution 
   and carried forward as `R-1.11`, `R-2.7`, `R-2.8` and `R-3.5`. Bars stay keyed by the venue-neutral symbol, every bar records
   the contract that produced it, no value is derived across a roll, and a read spanning one says so in its
   payload. The successor question — whether to key bars by contract id outright — is left open there rather
-  than here, because it is now a migration rather than a design choice.
+  than here, because it is now a migration rather than a design choice. `get_contract_roll` (`R-5.9`) is
+  how a caller decides whether that migration is worth it: it reports the roll event the tape can prove,
+  before any re-key.
 - **Q-2 — Embedding provider. RESOLVED** by [ADR-0009](adr/0009-cohere-embeddings.md). Cohere
   `embed-v4.0` at `vector(1024)` is wired as `CohereEmbeddingProvider` when `Embeddings__ApiKey` is set.
   An unset key remains a supported state (`R-6.3`): search falls back to substring matching and says so.

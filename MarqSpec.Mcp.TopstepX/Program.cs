@@ -380,6 +380,12 @@ public static class Program
         services.AddScoped<VolumeProfileService>();
         services.AddScoped<BarCacheService>();
 
+        // The tape recorder. Always registered so the container shape does not depend on the
+        // switch — ExecuteAsync returns immediately unless the transport is HTTP and
+        // MarketData__RecordTape is on. It takes no scoped venue client in the constructor;
+        // every operation opens a scope (the captive-dependency case, ADR-0016).
+        services.AddHostedService<TradeTapeRecorder>();
+
         // Scoped, and the lifetime is load-bearing rather than conventional: this service memoises which
         // series it has already found complete, and the scope is one request. A singleton would remember the
         // answer past the fill that invalidated it (gh#246).

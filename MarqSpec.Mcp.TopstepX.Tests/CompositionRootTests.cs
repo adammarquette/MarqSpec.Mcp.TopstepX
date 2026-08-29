@@ -8,6 +8,7 @@ using MarqSpec.Mcp.TopstepX.Venue;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Http;
 using Microsoft.Extensions.Options;
 
@@ -151,6 +152,29 @@ public sealed class CompositionRootTests
 
         using ServiceProvider provider = Build(settings, http);
         provider.Should().NotBeNull();
+    }
+
+    [Fact]
+    public void TheContainerBuilds_WhenCredentialsAreConfiguredAndTheRecorderIsEnabled()
+    {
+        // THE captive-dependency case the recorder exists to survive. IProjectXApiClient is scoped;
+        // a BackgroundService is a singleton. Consuming the client in the constructor refuses to
+        // build — and only when credentials ARE configured, which is the path local dev never
+        // reaches. ValidateOnBuild + ValidateScopes turn that startup crash into this test.
+        Dictionary<string, string?> configured = new()
+        {
+            ["ProjectX:ApiKey"] = "a-username",
+            ["ProjectX:ApiSecret"] = "an-api-key",
+            ["ProjectX:DataTier"] = "Simulated",
+            ["MarketData:RecordTape"] = "true",
+            ["Mcp:HttpBearerToken"] = "a-token",
+        };
+
+        using ServiceProvider provider = Build(
+            configured,
+            new McpOptions { Transport = McpTransport.Http, HttpBearerToken = "a-token" });
+
+        provider.GetServices<IHostedService>().Should().Contain(s => s is TradeTapeRecorder);
     }
 
     [Theory]

@@ -218,13 +218,14 @@ repository now pins. The nupkg XML (`lib/net10.0/MarqSpec.Client.ProjectX.xml`) 
   (Client#86).
 - Reconnect restores recorded subscriptions before reporting `Connected` (Client#87).
 
-The recorder itself is still unwritten (gh#216). This update removes the *package* block, not the
-implementation card. gh#217 still defends re-subscribe in this repository: a missed print cannot be
-backfilled, even when the client restores intent.
+The recorder is gh#216: it starts only under HTTP when `MarketData__RecordTape` is on, hands prints off
+a bounded channel, and writes attributed UTC rows to `Trades`. This update removed the *package* block;
+that card is no longer waiting on 3.0.0. gh#217 still defends re-subscribe in this repository: a missed
+print cannot be backfilled, even when the client restores intent.
 
 ## Follow-ups
 
-- gh#215 — tape, coverage and footprint tables. Schema-only; not blocked on the client.
-- gh#216 — the recorder. Unblocked on the package; not started here.
+- gh#215 — tape, coverage and footprint tables. Schema-only; landed.
+- gh#216 — the recorder. Writes prints; does not aggregate, write `TapeCoverage`, or re-subscribe.
 - gh#217 — re-subscribe after reconnect, and write `TapeCoverage` from lifecycle. Still defended here
   after Client#87, because a missed print cannot be backfilled.

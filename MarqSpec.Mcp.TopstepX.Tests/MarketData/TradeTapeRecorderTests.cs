@@ -6,6 +6,7 @@ using MarqSpec.Mcp.TopstepX.Data.Entities;
 using MarqSpec.Mcp.TopstepX.Domain;
 using MarqSpec.Mcp.TopstepX.Domain.MarketData;
 using MarqSpec.Mcp.TopstepX.MarketData;
+using MarqSpec.Mcp.TopstepX.Tools;
 using MarqSpec.Mcp.TopstepX.Venue;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Diagnostics;
@@ -264,6 +265,51 @@ public sealed class TradeTapeRecorderTests
     }
 
     [Fact]
+    public async Task GetFootprintAndGetVolumeProfile_ForNq_Refuse_WhenOnlyEsIsSubscribed()
+    {
+        // Shipped default is ES,NQ. ES subscribe succeeds; NQ is refused. Process-wide
+        // Listening would let get_footprint("NQ") return stored cells while NQ's tape is silent.
+        (TradeTapeRecorder recorder, FakeMarketHub hub, TopstepXDbContext database, ServiceProvider services, _) =
+            Build(
+                McpTransport.Http,
+                recordTape: true,
+                instruments: "ES,NQ",
+                gateway: new PerInstrumentGateway());
+
+        hub.SubscribeThrowsAfterFirst =
+            new InvalidOperationException("the venue refused the NQ trade subscribe");
+
+        await using (services)
+        await using (database)
+        {
+            TapeAvailabilityHolder tape = services.GetRequiredService<TapeAvailabilityHolder>();
+            await SeedNqCellsAsync(database);
+
+            await recorder.StartAsync(CancellationToken.None);
+            await WaitUntil(() => hub.SubscribeAttempts >= 2 && hub.TradeSubscriptions.Contains("CON.F.US.EP.Z26"));
+
+            hub.TradeSubscriptions.Should().Equal("CON.F.US.EP.Z26");
+            recorder.ExecuteTask.Should().NotBeNull();
+            recorder.ExecuteTask!.IsFaulted.Should().BeFalse(
+                "a faulted ExecuteTask is what Program.AnyFaulted reads");
+
+            MarketDataTools tools = Tools(database, tape);
+            DateTimeOffset from = new(2026, 8, 18, 14, 0, 0, TimeSpan.Zero);
+            DateTimeOffset to = new(2026, 8, 18, 16, 0, 0, TimeSpan.Zero);
+
+            Func<Task> footprint = () => tools.GetFootprint("NQ", 5, from, to, CancellationToken.None);
+            Func<Task> profile = () => tools.GetVolumeProfile("NQ", 5, from, to, CancellationToken.None);
+
+            (await footprint.Should().ThrowAsync<ModelContextProtocol.McpException>())
+                .WithMessage("*not restored*");
+            (await profile.Should().ThrowAsync<ModelContextProtocol.McpException>())
+                .WithMessage("*not restored*");
+
+            await recorder.StopAsync(CancellationToken.None);
+        }
+    }
+
+    [Fact]
     public async Task TheRecorderCompletesWithoutFaulting_WhenTheHubThrows()
     {
         (TradeTapeRecorder recorder, FakeMarketHub hub, TopstepXDbContext database, ServiceProvider services, _) =
@@ -448,20 +494,20 @@ public sealed class TradeTapeRecorderTests
             TapeAvailabilityHolder tape = services.GetRequiredService<TapeAvailabilityHolder>();
 
             await recorder.StartAsync(CancellationToken.None);
-            await WaitUntil(() => hub.TradeSubscriptions.Count > 0 && tape.Value.IsListening);
+            await WaitUntil(() => hub.TradeSubscriptions.Count > 0 && tape.For("ES").IsListening);
 
-            tape.Value.Reason.Should().Be(TapeUnavailableReason.None);
+            tape.For("ES").Reason.Should().Be(TapeUnavailableReason.None);
 
             hub.SimulateMarketDisconnect();
-            await WaitUntil(() => !tape.Value.IsListening);
+            await WaitUntil(() => !tape.For("ES").IsListening);
 
-            tape.Value.Reason.Should().Be(TapeUnavailableReason.Reconnecting);
-            tape.Value.Explanation.Should().MatchRegex("(?i)reconnect|restore|restart");
+            tape.For("ES").Reason.Should().Be(TapeUnavailableReason.Reconnecting);
+            tape.For("ES").Explanation.Should().MatchRegex("(?i)reconnect|restore|restart");
 
             hub.SimulateMarketReconnect();
-            await WaitUntil(() => tape.Value.IsListening);
+            await WaitUntil(() => tape.For("ES").IsListening);
 
-            tape.Value.Reason.Should().Be(TapeUnavailableReason.None);
+            tape.For("ES").Reason.Should().Be(TapeUnavailableReason.None);
 
             await recorder.StopAsync(CancellationToken.None);
         }
@@ -479,21 +525,21 @@ public sealed class TradeTapeRecorderTests
             TapeAvailabilityHolder tape = services.GetRequiredService<TapeAvailabilityHolder>();
 
             await recorder.StartAsync(CancellationToken.None);
-            await WaitUntil(() => hub.TradeSubscriptions.Count > 0 && tape.Value.IsListening);
+            await WaitUntil(() => hub.TradeSubscriptions.Count > 0 && tape.For("ES").IsListening);
 
             hub.SubscribeThrowsAfterFirst =
                 new InvalidOperationException("the venue refused the trade re-subscribe");
 
             hub.SimulateMarketDisconnect();
-            await WaitUntil(() => tape.Value.Reason == TapeUnavailableReason.Reconnecting);
+            await WaitUntil(() => tape.For("ES").Reason == TapeUnavailableReason.Reconnecting);
 
             hub.SimulateMarketReconnect();
             await WaitUntil(() => hub.SubscribeAttempts >= 2);
 
-            tape.Value.IsListening.Should().BeFalse(
+            tape.For("ES").IsListening.Should().BeFalse(
                 "Connected is not listening — a failed restore must not look healthy");
-            tape.Value.Reason.Should().Be(TapeUnavailableReason.ConnectedButNotSubscribed);
-            tape.Value.Explanation.Should().MatchRegex("(?i)not restored|subscriptions");
+            tape.For("ES").Reason.Should().Be(TapeUnavailableReason.ConnectedButNotSubscribed);
+            tape.For("ES").Explanation.Should().MatchRegex("(?i)not restored|subscriptions");
 
             recorder.ExecuteTask.Should().NotBeNull();
             recorder.ExecuteTask!.IsFaulted.Should().BeFalse(
@@ -536,6 +582,69 @@ public sealed class TradeTapeRecorderTests
     {
         database.ChangeTracker.Clear();
         return [.. database.TapeCoverage.OrderBy(row => row.RangeStart)];
+    }
+
+    private static async Task SeedNqCellsAsync(TopstepXDbContext database)
+    {
+        DateTimeOffset fourteen = new(2026, 8, 18, 14, 0, 0, TimeSpan.Zero);
+        DateTimeOffset sixteen = new(2026, 8, 18, 16, 0, 0, TimeSpan.Zero);
+        DateTimeOffset bucket = new(2026, 8, 18, 14, 30, 0, TimeSpan.Zero);
+
+        database.TapeCoverage.Add(new TapeCoverageRecord
+        {
+            Venue = "test",
+            Instrument = "NQ",
+            ContractId = "CON.F.US.ENQ.Z26",
+            RangeStart = fourteen,
+            RangeEnd = sixteen,
+            RecordedAt = sixteen,
+        });
+        database.FootprintCells.Add(new FootprintCellRecord
+        {
+            Venue = "test",
+            Instrument = "NQ",
+            ResolutionMinutes = 5,
+            BucketStart = bucket,
+            Price = 18000m,
+            BuyVolume = 4,
+            SellVolume = 1,
+            RecordedAt = sixteen,
+        });
+        await database.SaveChangesAsync();
+    }
+
+    private static MarketDataTools Tools(TopstepXDbContext database, TapeAvailabilityHolder tape)
+    {
+        IOptions<MarketDataOptions> options = Options.Create(new MarketDataOptions
+        {
+            Instruments = "ES,NQ",
+            MaxRows = 5_000,
+            SessionCloseCentral = "16:00",
+        });
+        BarSessionCalendar calendar = BarSessionCalendar.Parse("16:00", []);
+        IndicatorCatalog catalog = new(
+            Options.Create(new IndicatorOptions { AtrPeriod = 3, RsiPeriod = 3 }), calendar);
+        FakeTimeProvider clock = new(new DateTimeOffset(2026, 8, 18, 16, 0, 0, TimeSpan.Zero));
+        CountingGateway gateway = new([]);
+        IndicatorProjector projector = new(database, catalog, NullLogger<IndicatorProjector>.Instance);
+        BarCacheService cache = new(
+            database, gateway, calendar, projector, clock, NullLogger<BarCacheService>.Instance);
+
+        return new MarketDataTools(
+            cache,
+            database,
+            new InstrumentRegistry(options),
+            catalog,
+            new IndicatorCacheService(
+                database, catalog, projector, clock, NullLogger<IndicatorCacheService>.Instance),
+            new LevelMethodCatalog(calendar),
+            gateway,
+            new ToolGuards(options),
+            new StoreAvailabilityHolder(),
+            clock,
+            Options.Create(new KeyLevelDetectionOptions()),
+            new VolumeProfileService(database),
+            tape);
     }
 
     private static TradeUpdate Print(

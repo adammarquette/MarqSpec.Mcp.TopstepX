@@ -489,7 +489,7 @@ silent source of truth wearing the first's field names. This increment stops at
   `TapeCoverage` from that lifecycle (gh#217); `Connected` is not listening. Live tape health is a
   mutable holder written from that same lifecycle and read at the point of use (gh#218) — the opposite
   of the store probe, which is set once at startup and never re-probed. `get_footprint` and
-  `get_volume_profile` refuse when it is not listening, with a sentence naming the fix. It resolves the
+  `get_volume_profile` refuse when **that instrument's** tape is not listening, with a sentence naming the fix. It resolves the
   scoped venue client per operation; it does not extend `IMarketDataGateway`. Quote and depth recording
   stay out of this phase, and there is still no `get_quote`.
 - **No REST poller.** Bar, contract and account fetches stay caused by a tool call. The tape recorder is a push

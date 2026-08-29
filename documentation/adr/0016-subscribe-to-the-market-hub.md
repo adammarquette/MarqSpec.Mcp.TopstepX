@@ -242,8 +242,9 @@ gh#218 is the live holder. `TapeAvailability` follows `EmbeddingAvailability`'s 
 `Reason` with `None` = 0 and an `Explanation` naming the fix — but it is mutable. The recorder
 writes it as the hub drops and restores: never started (stdio, switch off, or no venue client),
 connected and subscribed, reconnecting, connected but subscriptions not restored, and stopped.
-`get_footprint` and `get_volume_profile` `Require()` it at the point of use and refuse rather than
-return an empty profile.
+`get_footprint` and `get_volume_profile` `Require()` **that instrument's** tape at the point of
+use and refuse rather than return an empty profile. Health is not process-wide: an ES subscribe
+does not make `get_footprint("NQ")` healthy.
 
 This is the opposite of `StoreAvailabilityHolder`, which is set once at startup and deliberately
 never re-probed. A database that appears later is a restart; a tape that drops mid-session is a

@@ -583,8 +583,9 @@ public sealed class MarketDataTools(
         + "`contracts.segments` use bar-open times from the cells (`firstBucket` / `lastBucket`), not the "
         + "exclusive coverage end — that range stays on `covered`. A roll or listening hole narrows the "
         + "answer to the newest contiguous run and sets `covered.narrowed`. When the live tape is not "
-        + "listening the tool refuses with a sentence naming the fix — an empty answer and an absent tape "
-        + "must not look the same. Every field is always present; none are omitted and none are null. "
+        + "listening for that instrument the tool refuses with a sentence naming the fix — an empty "
+        + "answer and an absent tape must not look the same. Every field is always present; none are "
+        + "omitted and none are null. "
         + "TapeCoverage is not per-resolution: a covered window with no cells at the asked bar size is "
         + "refused rather than returned as empty `cells` — that quiet-looking shape would hide an "
         + "unprojected resolution. Never truncates: an over-cap window is refused.")]
@@ -597,7 +598,7 @@ public sealed class MarketDataTools(
     {
         InstrumentId instrument = Resolve(symbol);
         BarRange window = _guards.ValidateWindow(fromUtc, toUtc, resolutionMinutes);
-        _tape.Value.Require();
+        _tape.For(instrument.Symbol).Require();
 
         FootprintRead read;
         try
@@ -660,7 +661,8 @@ public sealed class MarketDataTools(
         + "from the cells, not the exclusive coverage end. A roll or listening hole narrows the answer to "
         + "the newest contiguous run and sets `covered.narrowed`. When the live tape is not listening the "
         + "tool refuses with a sentence naming the fix — an empty profile and an absent tape must not look "
-        + "the same. Every field is always present; none are omitted and none are null. "
+        + "the same. Health is that instrument's tape, not another symbol's subscribe. Every field is "
+        + "always present; none are omitted and none are null. "
         + "Never truncates: an over-cap window is refused.")]
     public async Task<ToolPayloads.VolumeProfileSeries> GetVolumeProfile(
         [Description("The instrument symbol, e.g. ES.")] string symbol,
@@ -671,7 +673,7 @@ public sealed class MarketDataTools(
     {
         InstrumentId instrument = Resolve(symbol);
         BarRange window = _guards.ValidateWindow(fromUtc, toUtc, resolutionMinutes);
-        _tape.Value.Require();
+        _tape.For(instrument.Symbol).Require();
 
         FootprintRead cells;
         try

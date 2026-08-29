@@ -66,6 +66,18 @@ public sealed class TapeAvailabilityTests
             .WithMessage("*reconnect*");
     }
 
+    [Fact]
+    public void ListeningOnOneInstrument_DoesNotMakeAnotherInstrumentListening()
+    {
+        TapeAvailabilityHolder holder = new();
+        holder.Set(TapeAvailability.ConnectedButNotSubscribed());
+        holder.Set("ES", TapeAvailability.Listening());
+
+        holder.For("ES").IsListening.Should().BeTrue();
+        holder.For("NQ").IsListening.Should().BeFalse();
+        holder.For("NQ").Reason.Should().Be(TapeUnavailableReason.ConnectedButNotSubscribed);
+    }
+
     public static TheoryData<TapeAvailability> UnhealthyStates() =>
     [
         TapeAvailability.NeverStartedBecauseStdio(),

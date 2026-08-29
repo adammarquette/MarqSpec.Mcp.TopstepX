@@ -396,6 +396,7 @@ public sealed class TradeTapeRecorder : BackgroundService
                     _openRanges[contractId] = new OpenRange(attribution.Venue, attribution.Instrument, start);
                 }
 
+                _tape.Set(attribution.Instrument, TapeAvailability.Listening());
                 restored++;
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -408,6 +409,7 @@ public sealed class TradeTapeRecorder : BackgroundService
                     exception,
                     "The trade-tape recorder could not re-subscribe {Contract}. That contract is not listening.",
                     contractId);
+                _tape.Set(attribution.Instrument, TapeAvailability.ConnectedButNotSubscribed());
                 DateTimeOffset end = _clock.GetUtcNow();
                 lock (_coverageGate)
                 {
@@ -424,7 +426,6 @@ public sealed class TradeTapeRecorder : BackgroundService
 
         if (restored > 0)
         {
-            _tape.Set(TapeAvailability.Listening());
             _logger.LogInformation(
                 "Restored trade subscriptions for {Count} contract(s). Connected is not listening.",
                 restored);

@@ -274,8 +274,9 @@ The server serves OHLCV bars for a futures instrument at a requested resolution 
   `ContractCoverage` with `span` `SingleContract` naming the contract. Descriptions state that the tape
   only goes forward: there is no historical footprint before recording began. A request for a window
   before recording began refuses and names the earliest covered time. Live tape-subscription health is
-  required at the point of use (gh#218): when the tape is not listening the tool refuses with a
-  sentence naming the fix — never reported healthy by default, never answered thinly. Reads refuse
+  required at the point of use (gh#218): when **that instrument's** tape is not listening the
+  tool refuses with a sentence naming the fix — never reported healthy by default, never
+  answered thinly. Another symbol's subscribe does not make this one healthy. Reads refuse
   rather than truncate when over cap.
 
 ## R-6 — Observations
@@ -332,8 +333,9 @@ The server serves OHLCV bars for a futures instrument at a requested resolution 
   **newest contiguous listening run** and reports the narrowing — the same cut `get_key_levels` makes.
   Collapsing two runs into a continuous envelope would claim coverage that was never there.
 - **R-9.6** A window with **no tape refuses** rather than returning an empty profile. Live
-  tape-subscription health that is not listening refuses the same way, with a sentence naming the
-  fix — an empty profile and an absent tape must not look the same (gh#218).
+  tape-subscription health for **that instrument** that is not listening refuses the same way,
+  with a sentence naming the fix — an empty profile and an absent tape must not look the same
+  (gh#218). Another symbol's subscribe does not make this one healthy.
 - **R-9.7** A window entirely **before recording began** refuses and **names the earliest covered
   time** for that instrument. An empty answer there would look like a quiet market (gh#222).
 

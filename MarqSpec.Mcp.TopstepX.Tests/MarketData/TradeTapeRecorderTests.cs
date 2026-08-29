@@ -435,6 +435,100 @@ public sealed class TradeTapeRecorderTests
         }
     }
 
+    [Fact]
+    public async Task TapeHealth_ChangesWhenTheHubDropsAndRestores()
+    {
+        // Drive the hub. Reading a field the test just wrote is not a test.
+        (TradeTapeRecorder recorder, FakeMarketHub hub, TopstepXDbContext database, ServiceProvider services, _) =
+            Build(McpTransport.Http, recordTape: true);
+
+        await using (services)
+        await using (database)
+        {
+            TapeAvailabilityHolder tape = services.GetRequiredService<TapeAvailabilityHolder>();
+
+            await recorder.StartAsync(CancellationToken.None);
+            await WaitUntil(() => hub.TradeSubscriptions.Count > 0 && tape.Value.IsListening);
+
+            tape.Value.Reason.Should().Be(TapeUnavailableReason.None);
+
+            hub.SimulateMarketDisconnect();
+            await WaitUntil(() => !tape.Value.IsListening);
+
+            tape.Value.Reason.Should().Be(TapeUnavailableReason.Reconnecting);
+            tape.Value.Explanation.Should().MatchRegex("(?i)reconnect|restore|restart");
+
+            hub.SimulateMarketReconnect();
+            await WaitUntil(() => tape.Value.IsListening);
+
+            tape.Value.Reason.Should().Be(TapeUnavailableReason.None);
+
+            await recorder.StopAsync(CancellationToken.None);
+        }
+    }
+
+    [Fact]
+    public async Task ConnectedButNotSubscribed_IsNotReportedAsListening()
+    {
+        (TradeTapeRecorder recorder, FakeMarketHub hub, TopstepXDbContext database, ServiceProvider services, _) =
+            Build(McpTransport.Http, recordTape: true);
+
+        await using (services)
+        await using (database)
+        {
+            TapeAvailabilityHolder tape = services.GetRequiredService<TapeAvailabilityHolder>();
+
+            await recorder.StartAsync(CancellationToken.None);
+            await WaitUntil(() => hub.TradeSubscriptions.Count > 0 && tape.Value.IsListening);
+
+            hub.SubscribeThrowsAfterFirst =
+                new InvalidOperationException("the venue refused the trade re-subscribe");
+
+            hub.SimulateMarketDisconnect();
+            await WaitUntil(() => tape.Value.Reason == TapeUnavailableReason.Reconnecting);
+
+            hub.SimulateMarketReconnect();
+            await WaitUntil(() => hub.SubscribeAttempts >= 2);
+
+            tape.Value.IsListening.Should().BeFalse(
+                "Connected is not listening — a failed restore must not look healthy");
+            tape.Value.Reason.Should().Be(TapeUnavailableReason.ConnectedButNotSubscribed);
+            tape.Value.Explanation.Should().MatchRegex("(?i)not restored|subscriptions");
+
+            recorder.ExecuteTask.Should().NotBeNull();
+            recorder.ExecuteTask!.IsFaulted.Should().BeFalse(
+                "a faulted ExecuteTask is what Program.AnyFaulted reads");
+
+            await recorder.StopAsync(CancellationToken.None);
+        }
+    }
+
+    [Theory]
+    [InlineData(McpTransport.Stdio, true)]
+    [InlineData(McpTransport.Http, false)]
+    public async Task TapeHealth_IsNeverStarted_WhenStdioOrTheSwitchIsOff(
+        McpTransport transport,
+        bool recordTape)
+    {
+        (TradeTapeRecorder recorder, _, TopstepXDbContext database, ServiceProvider services, _) =
+            Build(transport, recordTape);
+
+        await using (services)
+        await using (database)
+        {
+            TapeAvailabilityHolder tape = services.GetRequiredService<TapeAvailabilityHolder>();
+
+            await recorder.StartAsync(CancellationToken.None);
+            await WaitUntil(() => recorder.ExecuteTask?.IsCompleted == true);
+
+            tape.Value.IsListening.Should().BeFalse();
+            tape.Value.Reason.Should().Be(TapeUnavailableReason.NeverStarted);
+            tape.Value.Explanation.Should().MatchRegex("(?i)http|recordtape");
+
+            await recorder.StopAsync(CancellationToken.None);
+        }
+    }
+
     private static DateTime Utc(int hour, int minute, int second) =>
         new(2026, 8, 28, hour, minute, second, DateTimeKind.Utc);
 
@@ -495,6 +589,7 @@ public sealed class TradeTapeRecorderTests
             HttpBearerToken = transport == McpTransport.Http ? "a-token" : string.Empty,
         };
 
+        TapeAvailabilityHolder tape = new();
         ServiceCollection services = new();
         services.AddSingleton<IOptions<MarketDataOptions>>(Options.Create(market));
         services.AddSingleton<IOptions<McpOptions>>(Options.Create(mcp));
@@ -502,6 +597,7 @@ public sealed class TradeTapeRecorderTests
         services.AddSingleton<TimeProvider>(clock);
         services.AddSingleton(hub);
         services.AddSingleton<MarqSpec.Client.ProjectX.WebSocket.IProjectXWebSocketClient>(hub);
+        services.AddSingleton(tape);
         services.AddScoped<IMarketDataGateway>(_ => gateway ?? new CountingGateway([]));
         services.AddScoped(_ => new TopstepXDbContext(options));
 
@@ -515,6 +611,7 @@ public sealed class TradeTapeRecorderTests
             provider.GetRequiredService<InstrumentRegistry>(),
             clock,
             logger ?? NullLogger<TradeTapeRecorder>.Instance,
+            tape,
             channelCapacity);
 
         return (recorder, hub, database, provider, clock);

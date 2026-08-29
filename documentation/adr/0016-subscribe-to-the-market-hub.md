@@ -75,6 +75,7 @@ decides that one host speaks stdio and streamable HTTP; grep it for `signalr`, `
 | [2026-08-28](#update-2026-08-28--the-standing-choice-is-reversed) | The standing choice is reversed: subscribe to the market hub and record the trade tape |
 | [2026-08-28](#update-2026-08-28--300-unblocks-the-package) | Client#86/#87 landed in 3.0.0; the recorder is no longer blocked on the package |
 | [2026-08-29](#update-2026-08-29--the-recorder-defends-re-subscribe-and-writes-tapecoverage) | The recorder re-subscribes on `Connected` and writes `TapeCoverage` from lifecycle (gh#217) |
+| [2026-08-29](#update-2026-08-29--live-tape-health-is-read-at-the-point-of-use) | Live tape health, written from lifecycle and required by footprint tools (gh#218) |
 
 ## Update (2026-08-28) — the standing choice is reversed
 
@@ -235,6 +236,19 @@ the range closed without faulting `ExecuteTask`.
 
 Client#87 already restores in 3.0.0. This repository still defends: there is no tape backfill.
 
+## Update (2026-08-29) — live tape health is read at the point of use
+
+gh#218 is the live holder. `TapeAvailability` follows `EmbeddingAvailability`'s idiom — a closed
+`Reason` with `None` = 0 and an `Explanation` naming the fix — but it is mutable. The recorder
+writes it as the hub drops and restores: never started (stdio, switch off, or no venue client),
+connected and subscribed, reconnecting, connected but subscriptions not restored, and stopped.
+`get_footprint` and `get_volume_profile` `Require()` it at the point of use and refuse rather than
+return an empty profile.
+
+This is the opposite of `StoreAvailabilityHolder`, which is set once at startup and deliberately
+never re-probed. A database that appears later is a restart; a tape that drops mid-session is a
+state change. Both ends say so.
+
 ## Follow-ups
 
 - gh#215 — tape, coverage and footprint tables. Schema-only; landed.
@@ -242,3 +256,4 @@ Client#87 already restores in 3.0.0. This repository still defends: there is no 
   gh#217.
 - gh#217 — re-subscribe after reconnect, and write `TapeCoverage` from lifecycle. Landed; still
   defended here after Client#87, because a missed print cannot be backfilled.
+- gh#218 — live tape health, required by the tape tools. Landed.

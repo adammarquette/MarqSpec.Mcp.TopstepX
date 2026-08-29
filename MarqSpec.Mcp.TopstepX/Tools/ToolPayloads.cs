@@ -589,9 +589,10 @@ public static class ToolPayloads
     /// </param>
     /// <remarks>
     /// Every field is always present; none are omitted and none are null. Live tape-subscription health
-    /// is not on this payload — that surface does not exist yet (gh#218). A covered window with no cells
-    /// at the asked bar size is refused rather than returned empty: TapeCoverage is not per-resolution,
-    /// so empty <c>cells</c> would look like a quiet market when the series was never projected.
+    /// is not a field on this payload — when the tape is not listening the tool refuses with a sentence
+    /// naming the fix (gh#218). A covered window with no cells at the asked bar size is refused rather
+    /// than returned empty: TapeCoverage is not per-resolution, so empty <c>cells</c> would look like a
+    /// quiet market when the series was never projected.
     /// </remarks>
     public sealed record FootprintSeries(
         string Symbol,
@@ -621,7 +622,8 @@ public static class ToolPayloads
     /// </param>
     /// <remarks>
     /// Every field is always present; none are omitted and none are null. Live tape-subscription health
-    /// is not on this payload — that surface does not exist yet (gh#218).
+    /// is not a field on this payload — when the tape is not listening the tool refuses with a sentence
+    /// naming the fix (gh#218).
     /// </remarks>
     public sealed record VolumeProfileSeries(
         string Symbol,

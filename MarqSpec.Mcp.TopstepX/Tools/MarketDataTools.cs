@@ -28,7 +28,8 @@ public sealed class MarketDataTools(
     StoreAvailabilityHolder store,
     TimeProvider clock,
     IOptions<KeyLevelDetectionOptions> detection,
-    VolumeProfileService volumeProfiles)
+    VolumeProfileService volumeProfiles,
+    TapeAvailabilityHolder? tape = null)
 {
     private readonly BarCacheService _cache = cache;
     private readonly TopstepXDbContext _database = database;
@@ -41,6 +42,7 @@ public sealed class MarketDataTools(
     private readonly StoreAvailabilityHolder _store = store;
     private readonly TimeProvider _clock = clock;
     private readonly VolumeProfileService _volumeProfiles = volumeProfiles;
+    private readonly TapeAvailabilityHolder _tape = tape ?? new();
 
     // The detection defaults, not the detection options: three of the seven fields are overridden per call, and
     // the merge happens in ResolveDetection. The catalogue holds no copy of these -- ILevelMethod.Detect
@@ -580,8 +582,9 @@ public sealed class MarketDataTools(
         + "you asked for — and `contracts` with span SingleContract naming which contract was listened to. "
         + "`contracts.segments` use bar-open times from the cells (`firstBucket` / `lastBucket`), not the "
         + "exclusive coverage end — that range stays on `covered`. A roll or listening hole narrows the "
-        + "answer to the newest contiguous run and sets `covered.narrowed`. Live tape-subscription health "
-        + "is not on this payload. Every field is always present; none are omitted and none are null. "
+        + "answer to the newest contiguous run and sets `covered.narrowed`. When the live tape is not "
+        + "listening the tool refuses with a sentence naming the fix — an empty answer and an absent tape "
+        + "must not look the same. Every field is always present; none are omitted and none are null. "
         + "TapeCoverage is not per-resolution: a covered window with no cells at the asked bar size is "
         + "refused rather than returned as empty `cells` — that quiet-looking shape would hide an "
         + "unprojected resolution. Never truncates: an over-cap window is refused.")]
@@ -594,6 +597,7 @@ public sealed class MarketDataTools(
     {
         InstrumentId instrument = Resolve(symbol);
         BarRange window = _guards.ValidateWindow(fromUtc, toUtc, resolutionMinutes);
+        _tape.Value.Require();
 
         FootprintRead read;
         try
@@ -654,8 +658,9 @@ public sealed class MarketDataTools(
         + "`covered` from TapeCoverage — not the window you asked for — and `contracts` with span "
         + "SingleContract naming which contract was listened to. `contracts.segments` use bar-open times "
         + "from the cells, not the exclusive coverage end. A roll or listening hole narrows the answer to "
-        + "the newest contiguous run and sets `covered.narrowed`. Live tape-subscription health is not on "
-        + "this payload. Every field is always present; none are omitted and none are null. "
+        + "the newest contiguous run and sets `covered.narrowed`. When the live tape is not listening the "
+        + "tool refuses with a sentence naming the fix — an empty profile and an absent tape must not look "
+        + "the same. Every field is always present; none are omitted and none are null. "
         + "Never truncates: an over-cap window is refused.")]
     public async Task<ToolPayloads.VolumeProfileSeries> GetVolumeProfile(
         [Description("The instrument symbol, e.g. ES.")] string symbol,
@@ -666,6 +671,7 @@ public sealed class MarketDataTools(
     {
         InstrumentId instrument = Resolve(symbol);
         BarRange window = _guards.ValidateWindow(fromUtc, toUtc, resolutionMinutes);
+        _tape.Value.Require();
 
         FootprintRead cells;
         try

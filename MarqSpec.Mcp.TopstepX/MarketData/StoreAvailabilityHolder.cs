@@ -15,6 +15,12 @@ namespace MarqSpec.Mcp.TopstepX.MarketData;
 /// restart, not a state change, and re-probing per call would make the same tool succeed and fail
 /// unpredictably while an operator was trying to work out what was wrong.
 /// </para>
+/// <para>
+/// Tape health is the opposite shape. A tape's subscriptions change mid-session — reconnects, a restore
+/// that did not finish — and <see cref="TapeAvailabilityHolder"/> is written from that lifecycle and
+/// read at the point of use. Do not copy this holder's once-at-startup rule onto the tape, and do not
+/// copy the tape holder's liveness onto the store.
+/// </para>
 /// </remarks>
 public sealed class StoreAvailabilityHolder
 {

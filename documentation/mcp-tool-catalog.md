@@ -465,8 +465,9 @@ times from the cells**, not the exclusive coverage end — that range stays on `
 
 **A window before recording began is refused** and names the earliest covered time. **A covered window with
 no cells at the asked bar size is refused** rather than returned as empty `cells`: `TapeCoverage` is not
-per-resolution, so that quiet-looking shape would hide an unprojected series. Live tape-subscription health is
-**not** on this payload (gh#218). Every field is always present; none are omitted and none are null.
+per-resolution, so that quiet-looking shape would hide an unprojected series. **When the live tape is not
+listening the tool refuses** with a sentence naming the fix — an empty answer and an absent tape must not
+look the same (gh#218). Every field is always present; none are omitted and none are null.
 
 ### `get_volume_profile(symbol, resolutionMinutes, fromUtc, toUtc)`
 Volume by price, the point of control, and the 70% value area — an aggregate over the same stored cells
@@ -475,9 +476,9 @@ Volume by price, the point of control, and the 70% value area — an aggregate o
 Returns `{ symbol, resolutionMinutes, byPrice: [{ p, v }], pointOfControl, valueAreaLow, valueAreaHigh,
 valueAreaVolume, totalVolume, covered: { start, end, narrowed }, contracts }`.
 
-Coverage without volume **refuses** rather than returning an empty profile (`R-9.6`). Every field is always
-present; none are omitted and none are null. Live tape health is omitted for the same reason as
-`get_footprint`.
+Coverage without volume **refuses** rather than returning an empty profile (`R-9.6`). **When the live tape
+is not listening the tool refuses** with a sentence naming the fix — an empty profile and an absent tape
+must not look the same (gh#218). Every field is always present; none are omitted and none are null.
 
 ## Account reads
 

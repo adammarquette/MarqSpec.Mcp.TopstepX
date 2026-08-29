@@ -281,6 +281,7 @@ public static class Program
         services.AddSingleton<LevelMethodCatalog>();
         services.AddSingleton<ToolGuards>();
         services.AddSingleton<StoreAvailabilityHolder>();
+        services.AddSingleton<TapeAvailabilityHolder>();
         services.AddSingleton<EmbeddingAvailabilityHolder>();
         services.AddSingleton<EmbeddingAvailabilityProbe>();
 

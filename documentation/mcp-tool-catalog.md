@@ -317,16 +317,18 @@ assigned **relative to the current price**, not to how the level formed: a broke
 and reporting it otherwise puts a ceiling underneath the market.
 
 **`methods` selects the detectors; omit it and the call is `swing`, as it was.** The vocabulary is `swing`,
-`session`, `pivot-classic`, `pivot-fibonacci`, `pivot-camarilla`, `pivot-woodie` and `pivot-demark`. An
+`session`, `pivot-classic`, `pivot-fibonacci`, `pivot-camarilla`, `pivot-woodie`, `pivot-demark`,
+`volume-poc`, `volume-vah`, `volume-val` and `volume-traded`. An
 unknown name is an error listing those, never an empty level set (`R-3.6`). Several names are
 comma-separated; the response's `methods` array is one entry per name, and `confluence` is the weighted
 agreement between them. Per-method weights are configuration (`KeyLevels__Weights__<name>`); an unlisted
 method weighs 1. Methods that share a `family` share one budget — the five `pivot-*` names declare
-`pivot`, so five of them landing on a price is one confirmation, not five (`R-3.11`). The score is the
+`pivot`, so five of them landing on a price is one confirmation, not five; the four `volume-*` names
+declare `volume` for the same reason (`R-3.11`). The score is the
 strongest overlapping cluster's family-aware weight. `confluence.tolerance` is `detection.zoneAtrMultiple`,
 the same width that turns a line into a zone, so two callers with different tolerances cannot share a
 score. A requested method that contributed nothing is in `confluence.absent` with why: `refused: buckets
-overhang a session close`, `no data`, or `no levels`.
+overhang a session close`, `no data`, `no tape`, or `no levels`.
 
 `session` reports what a finished session left behind — prior-day and prior-week high, low and
 close, the overnight range, and the initial balance — sized into zones by **the same `zoneAtrMultiple`** a
@@ -356,7 +358,15 @@ published. Sized into zones by **the same `zoneAtrMultiple`** again, and scored 
 than `maxLevels` is cut to the most significant, and a zone wider than `maxZoneWidthPercent` of its own
 midpoint is dropped — which also removes a far leg that has run below the price scale, since that comparison
 cannot be satisfied at a midpoint of zero or less. `detection` reporting the caps is therefore true of
-`session` and `pivot-*` as well as `swing`.
+`session`, `pivot-*` and `volume-*` as well as `swing`.
+
+**The four `volume-*` names are the tape family.** `volume-poc`, `volume-vah` and `volume-val` are the
+point of control and the 70% value-area edges; `volume-traded` is every other price the tape actually
+printed. They consume the profile the footprint cells already produce — never a volume spread across a
+bar's high–low range. The profile is bound around `Detect` for the request (`VolumeProfileScope`): it is
+not a `Detect` parameter, not a `KeyLevelOptions` field, and not a process-lifetime catalogue argument,
+which is why the methods stay inside `LevelMethodCatalog.All` and a roll window still refuses rather
+than splicing. A window with no tape is `no tape` on that method, not a POC invented from OHLCV.
 
 **A pivot period the series cannot supply is absent, and one of the three ways is about resolution.** No
 prior session in the window, a window that begins after that session opened, or a session the series covers

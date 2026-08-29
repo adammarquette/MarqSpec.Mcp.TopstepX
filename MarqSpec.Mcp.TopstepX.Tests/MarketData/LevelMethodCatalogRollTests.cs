@@ -195,7 +195,7 @@ public sealed class LevelMethodCatalogRollTests
 
         try
         {
-            method.Detect(spliced, FlatAtr(spliced.Count), new KeyLevelOptions());
+            WithSweepProfile(() => method.Detect(spliced, FlatAtr(spliced.Count), new KeyLevelOptions()));
         }
         catch (ArgumentException e) when (e.Message.Contains("contract roll", StringComparison.Ordinal))
         {
@@ -213,7 +213,25 @@ public sealed class LevelMethodCatalogRollTests
     private static bool DetectsOverASingleContractSeries(ILevelMethod method)
     {
         IReadOnlyList<Bar> clean = SingleContract();
-        return method.Detect(clean, FlatAtr(clean.Count), new KeyLevelOptions()).Count > 0;
+        return WithSweepProfile(() => method.Detect(clean, FlatAtr(clean.Count), new KeyLevelOptions())).Count > 0;
+    }
+
+    /// <summary>
+    /// A tape-derived profile the volume methods can find a zone in. Swing, session and pivot-*
+    /// ignore it. Bound rather than injected: the cells are request-scoped, and a method that
+    /// could not be constructed without them would leave <see cref="LevelMethodCatalog.All"/>.
+    /// </summary>
+    private static T WithSweepProfile<T>(Func<T> detect)
+    {
+        VolumeProfile profile = VolumeProfileAggregator.From(
+        [
+            new FootprintCell("ES", 60, SessionStart, 100m, 10, 0),
+            new FootprintCell("ES", 60, SessionStart, 150m, 40, 0),
+            new FootprintCell("ES", 60, SessionStart, 200m, 10, 0),
+        ]);
+
+        using VolumeProfileScope scope = new(profile);
+        return detect();
     }
 
     [Fact]

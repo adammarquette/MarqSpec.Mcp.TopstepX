@@ -37,6 +37,9 @@ public sealed class LevelMethodCatalogFamilyTests
     /// <summary>The prefix a method's name carries when it belongs to the pivot family.</summary>
     private const string PivotNamePrefix = "pivot-";
 
+    /// <summary>The prefix a method's name carries when it belongs to the volume family.</summary>
+    private const string VolumeNamePrefix = "volume-";
+
     /// <summary>
     /// Whether a method's declared family is usable as a grouping key at all.
     /// </summary>
@@ -56,9 +59,20 @@ public sealed class LevelMethodCatalogFamilyTests
     /// <returns>
     /// <see langword="true"/> unless the method is named <c>pivot-*</c> and declares some other family.
     /// </returns>
-    private static bool ItsNameAndItsFamilyAgree(ILevelMethod method) =>
-        !method.Name.StartsWith(PivotNamePrefix, StringComparison.Ordinal)
-        || method.Family == PivotLevels.FamilyName;
+    private static bool ItsNameAndItsFamilyAgree(ILevelMethod method)
+    {
+        if (method.Name.StartsWith(PivotNamePrefix, StringComparison.Ordinal))
+        {
+            return method.Family == PivotLevels.FamilyName;
+        }
+
+        if (method.Name.StartsWith(VolumeNamePrefix, StringComparison.Ordinal))
+        {
+            return method.Family == VolumeLevels.FamilyName;
+        }
+
+        return true;
+    }
 
     [Fact]
     public void EveryRegisteredMethod_DeclaresAUsableFamily()
@@ -127,6 +141,40 @@ public sealed class LevelMethodCatalogFamilyTests
         catalog.Resolve("session").Family.Should().Be("session");
     }
 
+    [Fact]
+    public void EveryMethodNamedForTheVolumeFamily_DeclaresIt()
+    {
+        foreach (ILevelMethod method in Catalog().All)
+        {
+            if (!method.Name.StartsWith(VolumeNamePrefix, StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            ItsNameAndItsFamilyAgree(method).Should().BeTrue(
+                method.Name + " is named for the volume family and declares '" + method.Family + "'. A "
+                + "variant outside the family's budget is counted as an independent confirmation of the "
+                + "tape it is computed from.");
+        }
+    }
+
+    [Fact]
+    public void TheNameAndFamilySweepGoesRed_WhenAVolumeNamedMethodDeclaresAnother()
+    {
+        ItsNameAndItsFamilyAgree(new RogueVolumeLevelMethod()).Should().BeFalse(
+            "the sweep must go RED on a volume variant that gives itself a budget of its own");
+    }
+
+    [Fact]
+    public void TheVolumeMethods_ShareOneFamily_AndTheOthersDoNotJoinIt()
+    {
+        LevelMethodCatalog catalog = Catalog();
+
+        catalog.All.Where(m => m.Family == VolumeLevels.FamilyName).Select(m => m.Name)
+            .Should().BeEquivalentTo(
+                ["volume-poc", "volume-vah", "volume-val", "volume-traded"]);
+    }
+
     /// <summary>
     /// A deliberately defective method: it declares no family at all.
     /// </summary>
@@ -158,6 +206,24 @@ public sealed class LevelMethodCatalogFamilyTests
         public string Name => "pivot-murrey";
 
         public string Family => "pivot-murrey";
+
+        public IReadOnlyList<KeyLevelZone> Detect(
+            IReadOnlyList<Bar> bars,
+            IReadOnlyList<decimal?> atr,
+            KeyLevelOptions options) => [];
+    }
+
+    /// <summary>
+    /// A deliberately defective method: a fifth volume variant that gives itself a budget of its own.
+    /// </summary>
+    /// <remarks>
+    /// Registered nowhere. Same failure the pivot rogue exists for, on the family this card added.
+    /// </remarks>
+    private sealed class RogueVolumeLevelMethod : ILevelMethod
+    {
+        public string Name => "volume-hvn";
+
+        public string Family => "volume-hvn";
 
         public IReadOnlyList<KeyLevelZone> Detect(
             IReadOnlyList<Bar> bars,

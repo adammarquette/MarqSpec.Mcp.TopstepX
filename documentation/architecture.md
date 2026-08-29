@@ -27,7 +27,7 @@ Three assemblies, layered so the pure part stays pure:
 
 | Project | Depends on | Holds |
 |---|---|---|
-| `…​.Domain` | **nothing** | `Bar`, `InstrumentId`, `InstrumentSpec`, `IIndicator` and `ILevelMethod` + implementations, `BarSessionCalendar`, `BarGapDetector`, `KeyLevels`, `SessionLevels`, `PivotLevels`, `TradeDirection`, `FootprintAggregator`, `VolumeProfileAggregator` |
+| `…​.Domain` | **nothing** | `Bar`, `InstrumentId`, `InstrumentSpec`, `IIndicator` and `ILevelMethod` + implementations, `BarSessionCalendar`, `BarGapDetector`, `KeyLevels`, `SessionLevels`, `PivotLevels`, `VolumeLevels`, `TradeDirection`, `FootprintAggregator`, `VolumeProfileAggregator` |
 | `…​.Data` | Domain | Entities, `DbContext`, migrations |
 | `MarqSpec.Mcp.TopstepX` | Domain, Data, the venue client | Tools, transports, cache-aside services, the ProjectX adapter, composition root |
 
@@ -49,8 +49,17 @@ That is a **value**, not a source — deterministic in its configuration, fixed 
 holding one is still a pure function of what it was built and handed, and every other method keeps a
 signature free of a parameter it would never read (gh#257).
 
+**A request-scoped tape is the other thing `Detect` cannot see, and it does not take that constructor
+path.** Cells and the profile they roll up to belong to this request's window. Widening `Detect`, putting
+the tape on `KeyLevelOptions`, deriving a POC from bar volume, or hanging request-scoped cells on
+`LevelMethodCatalog`'s constructor were all refused (gh#319). The fourth path is a `VolumeProfileScope`
+bound around the call: the four `volume-*` methods are constructed without a profile so they stay in
+`LevelMethodCatalog.All`, `Detect` reads the bind after the roll and ordering guards, and a call with
+nothing bound refuses rather than spreading OHLCV.
+
 **The catalogue also carries correlation, because the scorer must not.** Every `ILevelMethod` declares the
-family it belongs to; the five `pivot-*` names share one, `swing` and `session` are families of one. A
+family it belongs to; the five `pivot-*` names share one, the four `volume-*` names share one, `swing` and
+`session` are families of one. A
 confluence score groups by that rather than by a list of names it holds itself, so the next pivot variant
 joins the discounted budget by being written rather than by somebody remembering to add it (`R-3.11`).
 

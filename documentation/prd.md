@@ -173,7 +173,11 @@ The server serves OHLCV bars for a futures instrument at a requested resolution 
   error listing the known ones, never an empty level set. `swing` finds pivots; `session` reports what a
   finished session left behind: prior-day and prior-week high, low and close, the overnight range and the
   initial balance; `pivot-classic`, `pivot-fibonacci`, `pivot-camarilla`, `pivot-woodie` and `pivot-demark`
-  are `R-3.10`'s family.
+  are `R-3.10`'s family; `volume-poc`, `volume-vah`, `volume-val` and `volume-traded` are the tape-derived
+  family — point of control, value-area high and low, and every other price the tape actually traded.
+  They consume the profile the footprint cells produce, never a volume spread across a bar's high–low
+  range. The profile is bound for the request; it is not a `Detect` parameter, not a detection option,
+  and not a process-lifetime catalogue argument.
 - **R-3.7** A session boundary comes from the **calendar**, never from gaps in the series, and a period the
   loaded window does not reach the opening of is **absent** rather than taken from the part of it the window
   holds. A prior "day" that did not trade is not a prior day, and a range still forming is not a level.
@@ -199,7 +203,8 @@ The server serves OHLCV bars for a futures instrument at a requested resolution 
   width.
 - **R-3.11** Every method declares the **correlation family** it belongs to, and methods sharing one share a
   budget when their agreement is scored. Five pivot variants landing on a price is one prior session
-  transformed five ways, not five confirmations. The family is declared by the method rather than listed
+  transformed five ways, not five confirmations. The four `volume-*` names share one family for the same
+  reason: they are one tape read several ways. The family is declared by the method rather than listed
   beside the scorer, because a list of names is silently escaped by the next variant added.
 - **R-3.12** `get_key_levels` runs **every requested method** in one call and returns a **confluence score**.
   Per-method weights come from configuration (an unlisted method weighs 1). The score is the strongest

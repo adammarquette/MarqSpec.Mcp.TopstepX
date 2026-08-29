@@ -314,7 +314,8 @@ public sealed class MarketDataTools(
         + "The response reports the detection it actually ran under as `detection`, so an empty `levels` can "
         + "be told from a market with no structure — read it with `detectedOverBars`. "
         + "`methods` selects which detectors run — `swing`, `session`, `pivot-classic`, `pivot-fibonacci`, "
-        + "`pivot-camarilla`, `pivot-woodie`, `pivot-demark` — comma-separated; Omit for swing. The "
+        + "`pivot-camarilla`, `pivot-woodie`, `pivot-demark`, `volume-poc`, `volume-vah`, `volume-val`, "
+        + "`volume-traded` — comma-separated; Omit for swing. The "
         + "response names each method's zones and a family-aware confluence score, with the tolerance "
         + "it was computed against. Methods that share a family share one budget. A requested method "
         + "that contributed nothing is named, with why.")]
@@ -352,9 +353,11 @@ public sealed class MarketDataTools(
         int? pivotRightLookback = null,
         [Description(
             "Which level methods to run, comma-separated: swing, session, pivot-classic, pivot-fibonacci, "
-            + "pivot-camarilla, pivot-woodie, pivot-demark. Omit for swing. An unknown name is an error "
+            + "pivot-camarilla, pivot-woodie, pivot-demark, volume-poc, volume-vah, volume-val, "
+            + "volume-traded. Omit for swing. An unknown name is an error "
             + "listing the known ones — never an empty level set. Session and every pivot-* method refuse "
-            + "when a bucket of this resolutionMinutes overhangs a session close.")]
+            + "when a bucket of this resolutionMinutes overhangs a session close. Volume-* methods consume "
+            + "the tape-derived profile for the window; they never spread a bar's volume across its range.")]
         string? methods = null,
         CancellationToken cancellationToken = default)
     {
@@ -415,7 +418,38 @@ public sealed class MarketDataTools(
         bool overhang = SessionBucketGuard.OverhangsClose(
             resolutionMinutes, _levelMethods.Calendar, detectable);
 
-        return AssembleLevelSet(detectable, coverage, detectable.Count, detection, requested, overhang, scale);
+        VolumeProfile? profile = null;
+        string? volumeAbsent = null;
+        if (detectable.Count > 0 && requested.Any(static m => m.Family == VolumeLevels.FamilyName))
+        {
+            try
+            {
+                DateTimeOffset windowStart = detectable[0].OpenTime;
+                DateTimeOffset windowEnd = detectable[^1].OpenTime.AddMinutes(resolutionMinutes);
+                VolumeProfileRead read = await new VolumeProfileService(_database)
+                    .ReadAsync(
+                        _gateway.VenueId,
+                        instrument,
+                        resolutionMinutes,
+                        windowStart,
+                        windowEnd,
+                        cancellationToken)
+                    .ConfigureAwait(false);
+                profile = read.Profile;
+            }
+            catch (InvalidOperationException)
+            {
+                volumeAbsent = VolumeLevels.NoTapeReason;
+            }
+            catch (ArgumentException)
+            {
+                volumeAbsent = VolumeLevels.NoTapeReason;
+            }
+        }
+
+        using VolumeProfileScope? bind = profile is { } bound ? new VolumeProfileScope(bound) : null;
+        return AssembleLevelSet(
+            detectable, coverage, detectable.Count, detection, requested, overhang, scale, volumeAbsent);
     }
 
     /// <summary>
@@ -428,7 +462,8 @@ public sealed class MarketDataTools(
         KeyLevelOptions detection,
         IReadOnlyList<ILevelMethod> requested,
         bool overhang,
-        IReadOnlyList<decimal?> scale)
+        IReadOnlyList<decimal?> scale,
+        string? volumeAbsent = null)
     {
         List<ConfluenceMethodInput> inputs = [];
         List<ToolPayloads.LevelInfo> combined = [];
@@ -444,6 +479,14 @@ public sealed class MarketDataTools(
             {
                 inputs.Add(new ConfluenceMethodInput(method.Name, method.Family, [], "no data"));
                 methodResults.Add(new ToolPayloads.LevelMethodResult(method.Name, method.Family, weight, [], "no data"));
+                continue;
+            }
+
+            if (method.Family == VolumeLevels.FamilyName && volumeAbsent is not null)
+            {
+                inputs.Add(new ConfluenceMethodInput(method.Name, method.Family, [], volumeAbsent));
+                methodResults.Add(new ToolPayloads.LevelMethodResult(
+                    method.Name, method.Family, weight, [], volumeAbsent));
                 continue;
             }
 

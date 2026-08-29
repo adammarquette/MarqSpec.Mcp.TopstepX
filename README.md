@@ -105,14 +105,14 @@ signatures: [the tool catalogue](documentation/mcp-tool-catalog.md).
 | Group | Tools |
 |---|---|
 | Reference & session | `list_instruments` · `search_contracts` · `get_market_session` |
-| Market data | `get_bars` · `get_latest_bars` · `get_indicators` · `get_indicator_at` · `get_key_levels` |
+| Market data | `get_bars` · `get_latest_bars` · `get_indicators` · `get_indicator_at` · `get_key_levels` · `get_footprint` · `get_volume_profile` |
 | Account (read) | `list_accounts` · `get_positions` · `get_orders` · `get_trades` |
 | Composed | `get_market_snapshot` — bars, indicators, levels and session state in one call |
 | Observations | `record_observation` · `search_observations` — writes to *this* database, never the venue |
 
-**There is no `get_quote`.** ProjectX publishes no REST quote endpoint; live bid/ask is SignalR-only and this
-version does not record the stream. The most recent *closed bar* is what this server can honestly serve, and a
-tool called `get_quote` that returned a bar close would be a lie an agent trades on.
+**There is no `get_quote`.** ProjectX publishes no REST quote endpoint; live bid/ask is SignalR-only. The HTTP
+transport can opt in to recording the trade tape (`MarketData__RecordTape`), which is prints and volume, not
+quotes. A tool called `get_quote` that returned a bar close would be a lie an agent trades on.
 
 ## How the cache works
 

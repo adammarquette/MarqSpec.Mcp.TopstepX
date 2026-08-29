@@ -117,6 +117,6 @@ what this repository now maps:
 - Automatic reconnect restores recorded subscriptions before reporting `Connected` (Client#87).
 
 `ProjectXMapping.ToSide` accepts that published `OrderSide?` and maps `null` to `VenueSide.Unknown`. The
-2.1.0 defect-pinning test is gone. The recorder (gh#216) is still unwritten; this update only makes the
-package it needs restorable.
+2.1.0 defect-pinning test is gone. This update made the package the recorder needs restorable; writing
+prints is gh#216.
 

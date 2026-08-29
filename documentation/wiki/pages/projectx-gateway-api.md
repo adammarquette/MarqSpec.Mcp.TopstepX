@@ -267,7 +267,8 @@ The market hub carries quotes, trades and depth over SignalR. **This repository 
 record the trade tape** — see [ADR-0016](../../adr/0016-subscribe-to-the-market-hub.md) and the architecture
 doc's *What is deliberately absent*. ADR-0007 is the stdio/HTTP transport record and says nothing about this
 hub. There is still no REST quote endpoint, so live bid/ask remains stream-only; quote and depth recording are
-out of Phase 5. The recorder itself is not in the tree yet (gh#216); Client#86/#87 landed in 3.0.0.
+out of Phase 5. The recorder (gh#216) writes prints to `Trades` under HTTP when
+`MarketData__RecordTape` is on; Client#86/#87 landed in 3.0.0.
 
 > One gotcha for whoever adds it: **you subscribe by full contract id, but quotes come back tagged by product
 > root.** Subscribing to `CON.F.US.MES.U26` succeeds, and every quote then reports `F.US.MES`. A stream

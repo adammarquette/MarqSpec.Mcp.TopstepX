@@ -41,6 +41,38 @@ public sealed class ProjectXMappingTests
             .Should().Be(new DateTime(2026, 8, 18, 14, 30, 0, DateTimeKind.Utc));
     }
 
+    [Fact]
+    public void AUtcTimestamp_KeepsItsInstant()
+    {
+        DateTime utc = new(2026, 8, 18, 14, 30, 0, DateTimeKind.Utc);
+
+        DateTimeOffset mapped = ProjectXMapping.ToUtc(utc);
+
+        mapped.Offset.Should().Be(TimeSpan.Zero);
+        mapped.UtcDateTime.Should().Be(utc);
+    }
+
+    [Fact]
+    public void ANullTradeLogType_IsUnknown_NotBuy()
+    {
+        // TradeLogType.Buy = 0. A missing Type that became Buy would write buying pressure the
+        // tape never stated (gh#216, Client#86).
+        ProjectXMapping.ToTradeDirection(null).Should().Be(TradeDirection.Unknown);
+    }
+
+    [Fact]
+    public void AnUnrecognisedTradeLogType_IsUnknown_NotBuy()
+    {
+        ProjectXMapping.ToTradeDirection((TradeLogType)99).Should().Be(TradeDirection.Unknown);
+    }
+
+    [Fact]
+    public void ABuyAndASell_MapToTheirDirections()
+    {
+        ProjectXMapping.ToTradeDirection(TradeLogType.Buy).Should().Be(TradeDirection.Buy);
+        ProjectXMapping.ToTradeDirection(TradeLogType.Sell).Should().Be(TradeDirection.Sell);
+    }
+
     // ── Bar units ────────────────────────────────────────────────────────────────────────────────────
 
     [Theory]

@@ -66,6 +66,8 @@ services:
       MarketData__Holidays: "${MarketData__Holidays:-}"
       MarketData__MaxRows: "${MarketData__MaxRows:-5000}"
       MarketData__Instruments: "${MarketData__Instruments:-ES,NQ}"
+      # Off by default: the composed server is HTTP, and HTTP is not consent to record (ADR-0016).
+      MarketData__RecordTape: "${MarketData__RecordTape:-false}"
 
       Indicators__AtrPeriod: "${Indicators__AtrPeriod:-14}"
       Indicators__RsiPeriod: "${Indicators__RsiPeriod:-14}"

@@ -289,6 +289,29 @@ public static partial class ProjectXMapping
         _ => VenueSide.Unknown,
     };
 
+    /// <summary>
+    /// Maps the market-hub trade direction, or the absence of one.
+    /// </summary>
+    /// <param name="type">
+    /// The hub's direction, or <c>null</c> when the venue omitted or sent an unrecognised
+    /// <c>type</c>.
+    /// </param>
+    /// <returns>This server's direction.</returns>
+    /// <remarks>
+    /// <para>
+    /// <see cref="TradeLogType.Buy"/> is wire <c>0</c>. An omitted or unrecognised value that
+    /// became Buy would write buying pressure the tape never stated. Absence maps to
+    /// <see cref="TradeDirection.Unknown"/> and is stored as that fact (gh#216, Client#86).
+    /// </para>
+    /// </remarks>
+    public static TradeDirection ToTradeDirection(TradeLogType? type) => type switch
+    {
+        null => TradeDirection.Unknown,
+        TradeLogType.Buy => TradeDirection.Buy,
+        TradeLogType.Sell => TradeDirection.Sell,
+        _ => TradeDirection.Unknown,
+    };
+
     /// <summary>Maps the gateway's order status.</summary>
     /// <param name="status">The gateway's status.</param>
     /// <returns>This server's status.</returns>

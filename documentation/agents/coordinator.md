@@ -37,7 +37,8 @@ back saying what is missing, and it gets re-scored.
 **Pick order**, so two coordinator sessions do not thrash:
 
 1. `In Review` whose current head has no reviewer verdict, or the named SHA is behind HEAD — launch a reviewer
-2. Changes-requested, conflicts, or red CI — re-dispatch the implementer on the **same** claim
+2. Changes-requested or a merge conflict — card to `Todo`, re-dispatch the implementer on the **same**
+   claim. Red CI is the same re-dispatch.
 3. `In Progress` whose branch tip is stale ≥ 4 hours — announce on the issue, then re-claim
 4. Ready `Todo`, oldest first
 
@@ -79,15 +80,18 @@ When the PR is open and the card is `In Review`, launch a reviewer wearing the
 never review either.
 
 The reviewer posts a verdict and names the head SHA. **You move the card** — `Ready to Merge` on approve,
-`Todo` on changes-requested. The reviewer does not write to the board. Columns and ids:
+`Todo` on changes-requested **or a merge conflict**. The reviewer does not write to the board. Columns and ids:
 [board workflow](../project-board-workflow.md). Verdicts arrive as a first line of
-`**Verdict: Approve**` or `**Verdict: Request changes**` when GitHub blocks self-review.
+`**Verdict: Approve**` or `**Verdict: Request changes**` when GitHub blocks self-review. A conflict has no
+verdict; it is still the same kickback.
 
 - **Approve** → card to `Ready to Merge`. Stop. Merging stays the maintainer's.
 - **Request changes** → card to `Todo`, re-dispatch the implementer on the same claim. They move it to
   `In Progress` while they fix and to `In Review` when they push.
-- **Conflicts or red CI** → re-dispatch the implementer on the same claim. You do not resolve merge conflicts
-  or apply review findings in the product tree — that is implementing.
+- **Merge conflicts** → the same walk: card to `Todo`, re-dispatch the implementer on the same claim. They
+  move it to `In Progress` while they fix and to `In Review` when they push. You do not resolve the conflict
+  in the product tree — that is implementing.
+- **Red CI** → re-dispatch the implementer on the same claim.
 
 Any unresolved finding wins. `Ready to Merge` requires every reviewer approving
 ([board case 5](../project-board-workflow.md#5-two-reviewers-split-verdict)).
@@ -107,5 +111,5 @@ Any unresolved finding wins. `Ready to Merge` requires every reviewer approving
 ## Definition of done
 
 Every dispatched issue matched its hat and tier · in-flight work watched · stalls announced on the issue
-before takeover · every `In Review` PR has a reviewer on the current head · cards follow verdicts · nothing
-merged.
+before takeover · every `In Review` PR has a reviewer on the current head · cards follow verdicts and
+conflict kickbacks · nothing merged.

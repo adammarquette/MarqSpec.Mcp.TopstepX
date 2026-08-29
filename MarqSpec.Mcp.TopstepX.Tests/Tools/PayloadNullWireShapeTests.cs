@@ -90,6 +90,27 @@ public sealed class PayloadNullWireShapeTests
     }
 
     [Fact]
+    public void VolumeFront_OmitsAbsentAnswers_AndNeverWritesWhy()
+    {
+        JsonElement front = Wire(new ToolPayloads.VolumeFrontInfo(
+            Used: "none",
+            Agree: false,
+            TapeContractId: null,
+            TapeSessionDate: null,
+            GatewayContractId: "CON.F.US.TEST.Z26",
+            Changeover: null));
+
+        front.GetProperty("used").GetString().Should().Be("none");
+        front.GetProperty("agree").GetBoolean().Should().BeFalse();
+        front.GetProperty("gatewayContractId").GetString().Should().Be("CON.F.US.TEST.Z26");
+        front.TryGetProperty("tapeContractId", out _).Should().BeFalse();
+        front.TryGetProperty("tapeSessionDate", out _).Should().BeFalse();
+        front.TryGetProperty("changeover", out _).Should().BeFalse();
+        front.TryGetProperty("why", out _).Should().BeFalse();
+        front.EnumerateObject().Select(p => p.Name).Should().NotContain("why");
+    }
+
+    [Fact]
     public void SegmentContractId_IsOmitted_WhenProvenanceWasNeverRecorded()
     {
         JsonElement segment = Wire(new ToolPayloads.ContractSegmentInfo(

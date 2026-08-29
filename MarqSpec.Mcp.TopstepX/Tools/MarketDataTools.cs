@@ -29,7 +29,8 @@ public sealed class MarketDataTools(
     TimeProvider clock,
     IOptions<KeyLevelDetectionOptions> detection,
     VolumeProfileService volumeProfiles,
-    TapeAvailabilityHolder? tape = null)
+    TapeAvailabilityHolder? tape = null,
+    TapeVolumeFrontService? volumeFront = null)
 {
     private readonly BarCacheService _cache = cache;
     private readonly TopstepXDbContext _database = database;
@@ -43,6 +44,8 @@ public sealed class MarketDataTools(
     private readonly TimeProvider _clock = clock;
     private readonly VolumeProfileService _volumeProfiles = volumeProfiles;
     private readonly TapeAvailabilityHolder _tape = tape ?? new();
+    private readonly TapeVolumeFrontService _volumeFront = volumeFront
+        ?? new TapeVolumeFrontService(database, gateway, levelMethods.Calendar);
 
     // The detection defaults, not the detection options: three of the seven fields are overridden per call, and
     // the merge happens in ResolveDetection. The catalogue holds no copy of these -- ILevelMethod.Detect
@@ -584,8 +587,11 @@ public sealed class MarketDataTools(
         + "exclusive coverage end — that range stays on `covered`. A roll or listening hole narrows the "
         + "answer to the newest contiguous run and sets `covered.narrowed`. When the live tape is not "
         + "listening for that instrument the tool refuses with a sentence naming the fix — an empty "
-        + "answer and an absent tape must not look the same. Every field is always present; none are "
-        + "omitted and none are null. "
+        + "answer and an absent tape must not look the same. Top-level fields are always present. "
+        + "`front` names the tape volume-front beside the contract Bars would fetch — `used` is "
+        + "`tape-volume` or `none`, never a silent prefer of the gateway. `contracts` stays the "
+        + "newest listening run; it is not rewritten from `front`. Keys inside `front` are omitted "
+        + "when that answer does not exist. "
         + "TapeCoverage is not per-resolution: a covered window with no cells at the asked bar size is "
         + "refused rather than returned as empty `cells` — that quiet-looking shape would hide an "
         + "unprojected resolution. Never truncates: an over-cap window is refused.")]
@@ -640,7 +646,8 @@ public sealed class MarketDataTools(
             resolutionMinutes,
             cells,
             new ToolPayloads.CoveredWindow(read.Window.Start, read.Window.End, read.Window.Narrowed),
-            ToolPayloads.ToTapeCoverage(read.Window, read.Cells));
+            ToolPayloads.ToTapeCoverage(read.Window, read.Cells),
+            await FrontAsync(instrument, cancellationToken).ConfigureAwait(false));
     }
 
     /// <summary>Aggregates stored footprint cells into a volume profile for a covered tape window.</summary>
@@ -661,8 +668,11 @@ public sealed class MarketDataTools(
         + "from the cells, not the exclusive coverage end. A roll or listening hole narrows the answer to "
         + "the newest contiguous run and sets `covered.narrowed`. When the live tape is not listening the "
         + "tool refuses with a sentence naming the fix — an empty profile and an absent tape must not look "
-        + "the same. Health is that instrument's tape, not another symbol's subscribe. Every field is "
-        + "always present; none are omitted and none are null. "
+        + "the same. Health is that instrument's tape, not another symbol's subscribe. Top-level "
+        + "fields are always present. `front` names the tape volume-front beside the contract Bars "
+        + "would fetch — `used` is `tape-volume` or `none`, never a silent prefer of the gateway. "
+        + "`contracts` stays the newest listening run; it is not rewritten from `front`. Keys inside "
+        + "`front` are omitted when that answer does not exist. "
         + "Never truncates: an over-cap window is refused.")]
     public async Task<ToolPayloads.VolumeProfileSeries> GetVolumeProfile(
         [Description("The instrument symbol, e.g. ES.")] string symbol,
@@ -714,7 +724,44 @@ public sealed class MarketDataTools(
             profile.ValueAreaVolume,
             profile.TotalVolume,
             new ToolPayloads.CoveredWindow(cells.Window.Start, cells.Window.End, cells.Window.Narrowed),
-            ToolPayloads.ToTapeCoverage(cells.Window, cells.Cells));
+            ToolPayloads.ToTapeCoverage(cells.Window, cells.Cells),
+            await FrontAsync(instrument, cancellationToken).ConfigureAwait(false));
+    }
+
+    /// <summary>
+    /// Reads both answers for the front month. Called only after the tape-derived answer is
+    /// already going to be returned — a no-tape refusal is not rescued by this object.
+    /// </summary>
+    private async Task<ToolPayloads.VolumeFrontInfo> FrontAsync(
+        InstrumentId instrument,
+        CancellationToken cancellationToken)
+    {
+        TapeVolumeFrontRead read;
+        try
+        {
+            read = await _volumeFront
+                .ReadAsync(instrument, cancellationToken)
+                .ConfigureAwait(false);
+        }
+        catch (VenueException ex)
+        {
+            throw new McpException("The venue could not answer: " + ex.Message);
+        }
+
+        VolumeFrontChangeover? flip = read.Tape.Changeover;
+        return new ToolPayloads.VolumeFrontInfo(
+            read.Used,
+            read.Agree,
+            read.Tape.ActiveContractId,
+            read.Tape.ActiveSessionDate,
+            read.GatewaySelectedContractId,
+            flip is null
+                ? null
+                : new ToolPayloads.VolumeFrontChangeoverInfo(
+                    flip.SessionDate,
+                    flip.FlippedAtUtc,
+                    flip.FromContractId,
+                    flip.ToContractId));
     }
 
     /// <summary>

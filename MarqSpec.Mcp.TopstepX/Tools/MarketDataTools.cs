@@ -435,7 +435,18 @@ public sealed class MarketDataTools(
                         windowEnd,
                         cancellationToken)
                     .ConfigureAwait(false);
-                profile = read.Profile;
+
+                // Narrowed is gh#221's confinement signal. Binding the confined profile would
+                // report a POC of the listened subset as a POC of the key-levels window —
+                // detectedOverBars still names the full bar series.
+                if (read.Window.Narrowed)
+                {
+                    volumeAbsent = VolumeLevels.NarrowedReason;
+                }
+                else
+                {
+                    profile = read.Profile;
+                }
             }
             catch (InvalidOperationException)
             {

@@ -328,7 +328,7 @@ declare `volume` for the same reason (`R-3.11`). The score is the
 strongest overlapping cluster's family-aware weight. `confluence.tolerance` is `detection.zoneAtrMultiple`,
 the same width that turns a line into a zone, so two callers with different tolerances cannot share a
 score. A requested method that contributed nothing is in `confluence.absent` with why: `refused: buckets
-overhang a session close`, `no data`, `no tape`, or `no levels`.
+overhang a session close`, `no data`, `no tape`, `tape narrowed`, or `no levels`.
 
 `session` reports what a finished session left behind — prior-day and prior-week high, low and
 close, the overnight range, and the initial balance — sized into zones by **the same `zoneAtrMultiple`** a
@@ -367,6 +367,8 @@ bar's high–low range. The profile is bound around `Detect` for the request (`V
 not a `Detect` parameter, not a `KeyLevelOptions` field, and not a process-lifetime catalogue argument,
 which is why the methods stay inside `LevelMethodCatalog.All` and a roll window still refuses rather
 than splicing. A window with no tape is `no tape` on that method, not a POC invented from OHLCV.
+A covered tape narrower than the ask — late start, hole, or roll confinement — is `tape narrowed`,
+not a POC of the listened run served as if it covered the key-levels window.
 
 **A pivot period the series cannot supply is absent, and one of the three ways is about resolution.** No
 prior session in the window, a window that begins after that session opened, or a session the series covers

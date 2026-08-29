@@ -25,6 +25,11 @@ public sealed class FakeMarketHub : IProjectXWebSocketClient
 
     public Exception? ConnectThrows { get; set; }
 
+    /// <summary>Thrown on the second and later <see cref="SubscribeToTradeUpdatesAsync"/> call.</summary>
+    public Exception? SubscribeThrowsAfterFirst { get; set; }
+
+    public int SubscribeAttempts { get; private set; }
+
     public ConnectionState MarketHubState { get; set; } = ConnectionState.Disconnected;
 
     public ConnectionState UserHubState { get; set; } = ConnectionState.Disconnected;
@@ -106,6 +111,12 @@ public sealed class FakeMarketHub : IProjectXWebSocketClient
 
     public Task SubscribeToTradeUpdatesAsync(string contractId, CancellationToken cancellationToken = default)
     {
+        SubscribeAttempts++;
+        if (SubscribeAttempts > 1 && SubscribeThrowsAfterFirst is not null)
+        {
+            throw SubscribeThrowsAfterFirst;
+        }
+
         TradeSubscriptions.Add(contractId);
         return Task.CompletedTask;
     }

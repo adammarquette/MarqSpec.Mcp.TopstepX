@@ -3,8 +3,10 @@ using MarqSpec.Client.ProjectX.Api.Models;
 using MarqSpec.Mcp.TopstepX.Configuration;
 using MarqSpec.Mcp.TopstepX.Data;
 using MarqSpec.Mcp.TopstepX.Data.Entities;
+using MarqSpec.Mcp.TopstepX.Domain;
 using MarqSpec.Mcp.TopstepX.Domain.MarketData;
 using MarqSpec.Mcp.TopstepX.MarketData;
+using MarqSpec.Mcp.TopstepX.Venue;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.Extensions.DependencyInjection;
@@ -215,6 +217,52 @@ public sealed class TradeTapeRecorderTests
     }
 
     [Fact]
+    public async Task APrintOnTheFirstContract_IsStillRecorded_WhenALaterSubscribeThrows()
+    {
+        // Shipped default is ES,NQ. The connect-throws test never reaches subscribe, and the
+        // rest of this suite configures ES alone, so a throw on instrument 1 used to leave the
+        // ES subscription live with no drain: prints TryWrite into an unread channel, then
+        // log as full-channel drops, and Trades stays empty while ExecuteTask looks clean.
+        (TradeTapeRecorder recorder, FakeMarketHub hub, TopstepXDbContext database, ServiceProvider services) =
+            Build(
+                McpTransport.Http,
+                recordTape: true,
+                instruments: "ES,NQ",
+                gateway: new PerInstrumentGateway());
+
+        hub.SubscribeThrowsAfterFirst =
+            new InvalidOperationException("the venue refused the NQ trade subscribe");
+
+        await using (services)
+        await using (database)
+        {
+            await recorder.StartAsync(CancellationToken.None);
+            await WaitUntil(() => hub.SubscribeAttempts >= 2);
+
+            recorder.ExecuteTask.Should().NotBeNull();
+            recorder.ExecuteTask!.IsFaulted.Should().BeFalse(
+                "a faulted ExecuteTask is what Program.AnyFaulted reads");
+
+            hub.Raise(Print(
+                new DateTime(2026, 8, 28, 13, 45, 0, DateTimeKind.Utc),
+                TradeLogType.Buy,
+                price: 5000.25m,
+                contractId: "CON.F.US.EP.Z26"));
+
+            await WaitUntil(() => recorder.RecordedPrints == 1);
+
+            TradeRecord row = database.Trades.Should().ContainSingle().Subject;
+            row.Instrument.Should().Be("ES");
+            row.ContractId.Should().Be("CON.F.US.EP.Z26");
+            hub.TradeSubscriptions.Should().Equal("CON.F.US.EP.Z26");
+
+            await recorder.StopAsync(CancellationToken.None);
+
+            recorder.ExecuteTask.IsFaulted.Should().BeFalse();
+        }
+    }
+
+    [Fact]
     public async Task TheRecorderCompletesWithoutFaulting_WhenTheHubThrows()
     {
         (TradeTapeRecorder recorder, FakeMarketHub hub, TopstepXDbContext database, ServiceProvider services) =
@@ -241,10 +289,14 @@ public sealed class TradeTapeRecorderTests
     private static DateTime Utc(int hour, int minute, int second) =>
         new(2026, 8, 28, hour, minute, second, DateTimeKind.Utc);
 
-    private static TradeUpdate Print(DateTime timestamp, TradeLogType? type, decimal price) =>
+    private static TradeUpdate Print(
+        DateTime timestamp,
+        TradeLogType? type,
+        decimal price,
+        string contractId = "CON.F.US.TEST.Z26") =>
         new()
         {
-            ContractId = "CON.F.US.TEST.Z26",
+            ContractId = contractId,
             SymbolId = "F.US.EP",
             Price = price,
             Timestamp = timestamp,
@@ -262,7 +314,9 @@ public sealed class TradeTapeRecorderTests
             bool recordTape,
             int channelCapacity = 16,
             TaskCompletionSource? persistHold = null,
-            TaskCompletionSource? persistStarted = null)
+            TaskCompletionSource? persistStarted = null,
+            string instruments = "ES",
+            IMarketDataGateway? gateway = null)
     {
         FakeMarketHub hub = new();
         FakeTimeProvider clock = new(_receipt);
@@ -277,7 +331,7 @@ public sealed class TradeTapeRecorderTests
 
         DbContextOptions<TopstepXDbContext> options = builder.Options;
 
-        MarketDataOptions market = new() { Instruments = "ES", RecordTape = recordTape };
+        MarketDataOptions market = new() { Instruments = instruments, RecordTape = recordTape };
         McpOptions mcp = new()
         {
             Transport = transport,
@@ -291,7 +345,7 @@ public sealed class TradeTapeRecorderTests
         services.AddSingleton<TimeProvider>(clock);
         services.AddSingleton(hub);
         services.AddSingleton<MarqSpec.Client.ProjectX.WebSocket.IProjectXWebSocketClient>(hub);
-        services.AddScoped<MarqSpec.Mcp.TopstepX.Venue.IMarketDataGateway>(_ => new CountingGateway([]));
+        services.AddScoped<IMarketDataGateway>(_ => gateway ?? new CountingGateway([]));
         services.AddScoped(_ => new TopstepXDbContext(options));
 
         ServiceProvider provider = services.BuildServiceProvider();
@@ -316,6 +370,56 @@ public sealed class TradeTapeRecorderTests
         {
             await Task.Delay(10, timeout.Token);
         }
+    }
+
+    /// <summary>Resolves a distinct front contract per symbol so two instruments are two subscriptions.</summary>
+    private sealed class PerInstrumentGateway : IMarketDataGateway
+    {
+        public string VenueId => "test";
+
+        public Task<IReadOnlyList<VenueContract>> ResolveContractsAsync(
+            InstrumentId instrument,
+            CancellationToken cancellationToken)
+        {
+            string contract = instrument.Symbol switch
+            {
+                "ES" => "CON.F.US.EP.Z26",
+                "NQ" => "CON.F.US.ENQ.Z26",
+                _ => "CON.F.US.TEST.Z26",
+            };
+
+            return Task.FromResult<IReadOnlyList<VenueContract>>(
+                [new VenueContract(contract, instrument, true, 0.25m, 12.50m)]);
+        }
+
+        public Task<IReadOnlyList<Bar>> GetBarsAsync(
+            string contractId,
+            BarRange window,
+            TimeSpan barSize,
+            CancellationToken cancellationToken) =>
+            Task.FromResult<IReadOnlyList<Bar>>([]);
+
+        public Task<IReadOnlyList<VenueAccount>> GetAccountsAsync(
+            bool onlyActive,
+            CancellationToken cancellationToken) =>
+            Task.FromResult<IReadOnlyList<VenueAccount>>([]);
+
+        public Task<IReadOnlyList<VenuePosition>> GetOpenPositionsAsync(
+            int accountId,
+            CancellationToken cancellationToken) =>
+            Task.FromResult<IReadOnlyList<VenuePosition>>([]);
+
+        public Task<IReadOnlyList<VenueOrder>> GetOrdersAsync(
+            int accountId,
+            BarRange? window,
+            CancellationToken cancellationToken) =>
+            Task.FromResult<IReadOnlyList<VenueOrder>>([]);
+
+        public Task<IReadOnlyList<VenueTrade>> GetTradesAsync(
+            int accountId,
+            BarRange window,
+            CancellationToken cancellationToken) =>
+            Task.FromResult<IReadOnlyList<VenueTrade>>([]);
     }
 
     /// <summary>Holds persist so the bounded channel can fill in a test.</summary>

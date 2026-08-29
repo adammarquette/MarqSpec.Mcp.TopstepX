@@ -140,11 +140,12 @@ public sealed class TradeTapeRecorder : BackgroundService
                 return;
             }
 
-            IProjectXWebSocketClient? hub = null;
+            IProjectXWebSocketClient hub;
+            bool drain = false;
             using (IServiceScope scope = _scopes.CreateScope())
             {
-                hub = scope.ServiceProvider.GetService<IProjectXWebSocketClient>();
-                if (hub is null)
+                IProjectXWebSocketClient? resolved = scope.ServiceProvider.GetService<IProjectXWebSocketClient>();
+                if (resolved is null)
                 {
                     _logger.LogWarning(
                         "RecordTape is on but the venue client is not registered. Set ProjectX credentials "
@@ -152,44 +153,76 @@ public sealed class TradeTapeRecorder : BackgroundService
                     return;
                 }
 
+                hub = resolved;
+
                 IMarketDataGateway gateway = scope.ServiceProvider.GetRequiredService<IMarketDataGateway>();
 
                 // Hook BEFORE the first await that can yield, so a print cannot land
                 // between Subscribe returning and the handler being attached.
                 hub.TradeUpdateReceived += OnTrade;
-
-                await hub.ConnectMarketHubAsync(stoppingToken).ConfigureAwait(false);
-
-                foreach (InstrumentId instrument in _registry.Instruments)
+                try
                 {
-                    IReadOnlyList<VenueContract> contracts = await gateway
-                        .ResolveContractsAsync(instrument, stoppingToken)
-                        .ConfigureAwait(false);
+                    await hub.ConnectMarketHubAsync(stoppingToken).ConfigureAwait(false);
 
-                    if (contracts.Count == 0)
+                    try
                     {
-                        _logger.LogWarning(
-                            "The venue returned no contracts for {Instrument}, so it will not be recorded. "
-                            + "If this instrument is listed, check ProjectX__DataTier.",
-                            instrument.Symbol);
-                        continue;
+                        foreach (InstrumentId instrument in _registry.Instruments)
+                        {
+                            IReadOnlyList<VenueContract> contracts = await gateway
+                                .ResolveContractsAsync(instrument, stoppingToken)
+                                .ConfigureAwait(false);
+
+                            if (contracts.Count == 0)
+                            {
+                                _logger.LogWarning(
+                                    "The venue returned no contracts for {Instrument}, so it will not be recorded. "
+                                    + "If this instrument is listed, check ProjectX__DataTier.",
+                                    instrument.Symbol);
+                                continue;
+                            }
+
+                            VenueContract front = contracts[0];
+                            _attribution[front.ContractId] = new Attribution(gateway.VenueId, instrument.Symbol);
+                            await hub.SubscribeToTradeUpdatesAsync(front.ContractId, stoppingToken)
+                                .ConfigureAwait(false);
+                        }
+                    }
+                    catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+                    {
+                        throw;
+                    }
+                    catch (Exception exception)
+                    {
+                        // A later instrument's resolve/subscribe must not skip drain: the first
+                        // subscription is already live, and OnTrade writes a channel nobody would
+                        // read. Catch here so ExecuteTask stays clean (Program.AnyFaulted).
+                        _logger.LogError(
+                            exception,
+                            "The trade-tape recorder could not finish every subscribe. Prints on "
+                            + "contracts that did subscribe will still be recorded.");
                     }
 
-                    VenueContract front = contracts[0];
-                    _attribution[front.ContractId] = new Attribution(gateway.VenueId, instrument.Symbol);
-                    await hub.SubscribeToTradeUpdatesAsync(front.ContractId, stoppingToken)
-                        .ConfigureAwait(false);
+                    drain = true;
+                }
+                catch
+                {
+                    hub.TradeUpdateReceived -= OnTrade;
+                    _channel.Writer.TryComplete();
+                    throw;
                 }
             }
 
-            try
+            if (drain)
             {
-                await DrainAsync(stoppingToken).ConfigureAwait(false);
-            }
-            finally
-            {
-                hub.TradeUpdateReceived -= OnTrade;
-                _channel.Writer.TryComplete();
+                try
+                {
+                    await DrainAsync(stoppingToken).ConfigureAwait(false);
+                }
+                finally
+                {
+                    hub.TradeUpdateReceived -= OnTrade;
+                    _channel.Writer.TryComplete();
+                }
             }
         }
         catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)

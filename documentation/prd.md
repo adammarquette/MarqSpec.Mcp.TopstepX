@@ -177,7 +177,8 @@ The server serves OHLCV bars for a futures instrument at a requested resolution 
   family — point of control, value-area high and low, and every other price the tape actually traded.
   They consume the profile the footprint cells produce, never a volume spread across a bar's high–low
   range. The profile is bound for the request; it is not a `Detect` parameter, not a detection option,
-  and not a process-lifetime catalogue argument.
+  and not a process-lifetime catalogue argument. A covered tape narrower than the ask is **absent**
+  (`tape narrowed`), not a POC of the listened subset dressed as a POC of the window.
 - **R-3.7** A session boundary comes from the **calendar**, never from gaps in the series, and a period the
   loaded window does not reach the opening of is **absent** rather than taken from the part of it the window
   holds. A prior "day" that did not trade is not a prior day, and a range still forming is not a level.

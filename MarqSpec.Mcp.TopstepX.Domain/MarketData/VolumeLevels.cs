@@ -62,6 +62,17 @@ public static class VolumeLevels
     /// </summary>
     public const string NoTapeReason = "no tape";
 
+    /// <summary>
+    /// Why <c>get_key_levels</c> names a volume method whose covered tape is narrower than the ask.
+    /// </summary>
+    /// <remarks>
+    /// Late start, early end, a listening hole, or roll confinement all set
+    /// <see cref="CoveredTapeWindow.Narrowed"/>. Serving that profile as ordinary zones would
+    /// report a POC of the confined run as a POC of the key-levels window — the same class of
+    /// lie as answering from OHLCV when nothing is bound (gh#221, gh#319).
+    /// </remarks>
+    public const string NarrowedReason = "tape narrowed";
+
     /// <summary>The name a kind is registered and asked for under.</summary>
     /// <param name="kind">The kind.</param>
     /// <returns>The lowercase, stable method name.</returns>

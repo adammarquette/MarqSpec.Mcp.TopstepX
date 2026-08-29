@@ -16,8 +16,8 @@ namespace MarqSpec.Mcp.TopstepX.Tests.Venue;
 /// gh#84's acceptance criteria call that out by name.
 /// </para>
 /// <para>
-/// The uncomfortable one is <see cref="AnAbsentSide_IsIndistinguishableFromABuy"/>. It pins a defect rather
-/// than a guarantee, and it is written to <b>fail the day the client stops producing it</b> — see its remarks.
+/// An omitted <c>side</c> must map to <see cref="VenueSide.Unknown"/>, not <see cref="VenueSide.Buy"/>.
+/// That used to be unrecoverable on 2.1.0; the tripwire that pinned the defect is gone.
 /// </para>
 /// </remarks>
 public sealed class VenueSideBindingTests
@@ -63,7 +63,7 @@ public sealed class VenueSideBindingTests
         // deserialiser can produce it, which is what gh#84 asked for.
         Order order = OrderFrom("{" + OrderShell + "\"side\":9}");
 
-        ((int)order.Side).Should().Be(9, "the binding admits values the enum does not declare");
+        ((int)order.Side!).Should().Be(9, "the binding admits values the enum does not declare");
         ProjectXMapping.ToSide(order.Side).Should().Be(VenueSide.Unknown);
     }
 
@@ -77,30 +77,21 @@ public sealed class VenueSideBindingTests
         ProjectXMapping.ToSide(trade.Side).Should().Be(VenueSide.Unknown);
     }
 
-    // ── The one that is not ──────────────────────────────────────────────────────────────────────────
+    // ── The one that used to be unrecoverable ────────────────────────────────────────────────────────
 
     [Fact]
-    public void AnAbsentSide_IsIndistinguishableFromABuy()
+    public void AnOmittedSide_MapsToUnknown_NotBuy()
     {
-        // THIS TEST PINS A DEFECT, NOT A GUARANTEE, AND IT IS MEANT TO FAIL EVENTUALLY.
-        //
-        // MarqSpec.Client.ProjectX 2.1.0 declares `OrderSide { Bid = 0, Ask = 1 }` and binds it to a
-        // NON-NULLABLE property. Zero is a real side, so an absent field lands on Bid -- byte-identical to an
-        // explicit "side":0 -- and this server reports a confident Buy for an order the venue never gave a
-        // direction to. The client exposes no raw body and no [JsonExtensionData], so nothing downstream can
-        // recover what was on the wire: the fact is destroyed before this repository sees it.
-        //
-        // The honest fix is upstream -- a nullable Side, or a zero value meaning unset, as OrderStatus and
-        // PositionType already have. When that lands, THIS TEST GOES RED, which is the point: it is the
-        // tripwire that says the limitation is over and VenueSide.Unknown can finally carry the case.
-        // Delete it then, and change the remarks it is named in.
-        Order absent = OrderFrom("{" + OrderShell.TrimEnd(',') + "}");
+        // Driven from JSON with the field absent, not from a hand-built null. An explicit "side":0 is a
+        // real buy; omitting the field is not. Those two payloads must not collapse into the same answer.
+        Order omitted = OrderFrom("{" + OrderShell.TrimEnd(',') + "}");
         Order explicitBuy = OrderFrom("{" + OrderShell + "\"side\":0}");
 
-        absent.Side.Should().Be(explicitBuy.Side, "zero is a real side, so the default is a real side");
-        ProjectXMapping.ToSide(absent.Side).Should().Be(
-            VenueSide.Buy,
-            "documented limitation, tracked upstream — an absent side is unrecoverable at this boundary");
+        ProjectXMapping.ToSide(omitted.Side).Should().Be(VenueSide.Unknown);
+        ProjectXMapping.ToSide(explicitBuy.Side).Should().Be(VenueSide.Buy);
+        ProjectXMapping.ToSide(omitted.Side).Should().NotBe(
+            ProjectXMapping.ToSide(explicitBuy.Side),
+            "an omitted side is not a buy");
     }
 
     // ── The property that makes the other enums safe ─────────────────────────────────────────────────
@@ -111,16 +102,15 @@ public sealed class VenueSideBindingTests
         // gh#84 asked whether the same shape exists elsewhere. This pins the answer so a client bump that
         // introduces it is caught here rather than in a position report.
         //
-        // Surveyed across the client's public enums: OrderSide is the ONLY one this server binds from a
-        // response whose zero is a real value. OrderStatus is None, PositionType is Undefined, OrderType is
-        // Unknown. AggregateBarUnit's zero is real, but it is only ever CONSTRUCTED for a request and never
-        // bound from one, so it cannot carry an absent field.
+        // Surveyed across the client's public enums: OrderSide is still the ONLY one this server binds
+        // from a response whose zero is a real value. OrderStatus is None, PositionType is Undefined,
+        // OrderType is Unknown. Absence is the nullable property (OrderSide?), not a rewrite of that zero.
         default(OrderStatus).Should().Be(OrderStatus.None);
         default(PositionType).Should().Be(PositionType.Undefined);
 
-        // And the one that is not safe, stated rather than implied.
+        // The enum default is still a real buy; an omitted field is no longer this value.
         default(OrderSide).Should().Be(
-            OrderSide.Bid, "which is exactly why an absent side cannot be told from a buy");
+            OrderSide.Bid, "zero is still a real buy; absence is the nullable wrapper, not this default");
     }
 
     [Fact]

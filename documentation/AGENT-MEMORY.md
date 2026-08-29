@@ -414,12 +414,6 @@ at one this rule's own pull request retires.
   projector reads the series back with a query, and **a query does not see rows that are only tracked**.
   Projecting first produced zero indicator values, silently, with no error anywhere — caught only because a
   test asserted the indicators existed. Both saves sit inside one transaction where the provider has them.
-- **[2026-08-22] On the next `MarqSpec.Client.ProjectX` bump, extract the surface from the nupkg's XML docs
-  before writing against it**, not from the client repo's source branch — the two have disagreed before, and
-  a major version is a statement that something changed. Guessing which part is how a wrong error code ends
-  up in a log nobody questions. What the 1.0.4 → 2.1.0 jump caught is in
-  [ADR-0003](adr/0003-client-as-package.md) *Update (2026-08-22)*.
-
 - **[2026-08-23] The `.worktrees/` sweep is swept, not landed — verify before you trust it (gh#40).** All
   four siblings were checked; `trading-copilot` already had the entry, and the other three each got a PR
   whose state is the sibling repository's to report and not this file's. **The template's is blocked by its

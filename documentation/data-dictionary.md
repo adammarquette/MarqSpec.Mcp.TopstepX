@@ -237,8 +237,8 @@ Postgres executes, not a predicate C# evaluates.
 **`ContractId` is in the key here, unlike `Bars`.** On bars the contract is nullable provenance beside a
 venue-neutral key, so a roll still writes the new quarter's bars under the same symbol. A tape row without a
 contract has no meaning at all — there is nothing to attribute the print to — so the column is identity, not
-annotation. The client package still drops it at ingest (Client#86); the column is waiting for a value, which
-is not a reason to wait on the schema (gh#215).
+annotation. The 3.0.0 package stamps `ContractId` from the hub argument (Client#86); the column is waiting
+for the recorder to write a value (gh#216), which is not a reason to wait on the schema (gh#215).
 
 **`Sequence` exists because the venue supplies no trade id.** Two prints share a millisecond routinely, so
 without a tiebreak the primary key silently collapses them and the survivor looks like an ordinary trade. It

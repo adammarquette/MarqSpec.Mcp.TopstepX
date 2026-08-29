@@ -17,17 +17,16 @@ public enum VenueSide
     /// is surfaced and the caller is told not to reason about direction from it.
     /// </para>
     /// <para>
-    /// <b>An <i>absent</i> side never reaches here, and that is a known limitation.</b> The client's
-    /// <c>OrderSide</c> is <c>{ Bid = 0, Ask = 1 }</c> bound to a non-nullable property, so a payload that
-    /// omits the field lands on <c>Bid</c> — indistinguishable from an explicit buy, and reported as one. The
-    /// client exposes no raw body and no extension data, so the fact is destroyed before this repository sees
-    /// it. Measured against 2.1.0, not inferred; the fix belongs upstream (MarqSpec.Client.ProjectX gh#83), and
-    /// <c>VenueSideBindingTests.AnAbsentSide_IsIndistinguishableFromABuy</c> goes red when it lands.
+    /// <b>An omitted <c>side</c> reaches here as <see cref="Unknown"/>.</b> From 3.0.0 the published
+    /// response type is <c>OrderSide?</c>, so a payload that omits the field arrives as <c>null</c> rather
+    /// than as <c>Bid</c>. <c>ProjectXMapping.ToSide</c> maps that null here. The enum's own zero is still
+    /// Bid — a real buy — which is why absence had to be the nullable property and not a rewrite of the
+    /// wire (MarqSpec.Client.ProjectX gh#83, consumed in 3.0.0).
     /// </para>
     /// <para>
-    /// <see cref="VenueOrderStatus.Unknown"/> and <c>PositionType.Undefined</c> do not have this problem:
-    /// their zero means unset, so an absent field lands on it correctly. <c>OrderSide</c> is the only enum
-    /// this server binds from a response whose zero is a real value.
+    /// <see cref="VenueOrderStatus.Unknown"/> and <c>PositionType.Undefined</c> still use a zero that means
+    /// unset. <c>OrderSide</c> remains the only mapped response enum whose zero is a real value; the
+    /// nullable wrapper is what makes an omitted field distinguishable from that zero.
     /// </para>
     /// </remarks>
     Unknown = 0,

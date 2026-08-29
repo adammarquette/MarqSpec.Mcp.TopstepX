@@ -488,6 +488,29 @@ must not look the same (gh#218). Another symbol's subscribe does not make this o
 fields are always present. **`front` is the same object `get_footprint` returns** — tape volume-front
 and the gateway pick as separate fields; `contracts` is still the listening-run cut.
 
+### `get_contract_roll(symbol, asOfUtc?)`
+The roll **event** itself: the most recent changeover the stored tape can prove, plus both
+front-month answers at `asOfUtc` (`R-5.9`). There is no historical tape before recording began —
+a flip from before that is omitted, not guessed.
+
+Returns `{ symbol, asOfUtc, front: { used, agree, tapeContractId?, tapeSessionDate?,
+gatewayContractId?, changeover?: { sessionDate, flippedAtUtc?, fromContractId, toContractId } },
+contracts?: { span, segments: [{ contractId, firstBucket, lastBucket, barCount }] } }`.
+
+**`front` is the same object `get_footprint` returns.** `used` is `tape-volume` or `none` —
+never a silent prefer of the gateway. `tapeContractId`, `tapeSessionDate`, `gatewayContractId`
+and `changeover` are omitted when that answer does not exist. No `why` sentence (ADR-0008).
+
+**`contracts` is the bar-side seam around the changeover**, from bars already held — not a
+venue fetch. It is omitted when there is no changeover to place a window around. `span`
+`Unknown` means provenance was never recorded, *not* that there was no roll. A symbol with
+no changeover returns a payload that says so (empty changeover omitted, not a guessed date).
+An unknown instrument is an error (`R-5.3`), not an empty roll.
+
+**`asOfUtc` defaults to now** and is bounded like `get_market_session`'s `atUtc` (`R-5.4`):
+past the last instant the session rules can be expressed at, the tool refuses naming both
+that instant and the horizon, rather than faulting below the boundary.
+
 ## Account reads
 
 All read-only. Reading what already happened transmits nothing.

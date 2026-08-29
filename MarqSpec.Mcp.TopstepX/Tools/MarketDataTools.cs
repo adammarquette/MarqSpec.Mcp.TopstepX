@@ -728,19 +728,55 @@ public sealed class MarketDataTools(
             await FrontAsync(instrument, cancellationToken).ConfigureAwait(false));
     }
 
+    /// <summary>Reports the most recent tape changeover a symbol's stored prints can prove.</summary>
+    /// <param name="symbol">The instrument symbol.</param>
+    /// <param name="asOfUtc">The instant to evaluate, or null for now.</param>
+    /// <param name="cancellationToken">The caller's cancellation token.</param>
+    /// <returns>The changeover, both front-month answers, and the bar-side seam around the flip.</returns>
+    [McpServerTool(ReadOnly = true, Idempotent = true, Title = "Get contract roll")]
+    [Description(
+        "Reports the most recent contract-roll changeover the stored tape can prove for a symbol, "
+        + "plus both front-month answers at asOfUtc. There is no historical tape before recording "
+        + "began — a changeover from before that is ABSENT, not guessed. `front` is the same object "
+        + "get_footprint returns: `used` is `tape-volume` or `none`, never a silent prefer of the "
+        + "gateway. Keys inside `front` — including `changeover` — are omitted when that answer "
+        + "does not exist. `contracts` is the bar-side seam around the changeover (`span` / "
+        + "segments); it is omitted when there is no changeover to place a window around. "
+        + "`span` Unknown means provenance was never recorded, not that there was no roll. "
+        + "asOfUtc is bounded like get_market_session's atUtc.")]
+    public async Task<ToolPayloads.ContractRollInfo> GetContractRoll(
+        [Description("The instrument symbol, e.g. ES.")] string symbol,
+        [Description("The instant to evaluate, ISO-8601 UTC. Defaults to now.")] DateTimeOffset? asOfUtc = null,
+        CancellationToken cancellationToken = default)
+    {
+        InstrumentId instrument = Resolve(symbol);
+        DateTimeOffset at =
+            ToolGuards.ValidateInstant((asOfUtc ?? _clock.GetUtcNow()).ToUniversalTime(), "asOfUtc");
+
+        ToolPayloads.VolumeFrontInfo front =
+            await FrontAsync(instrument, cancellationToken, at).ConfigureAwait(false);
+
+        ToolPayloads.ContractCoverage? contracts = front.Changeover is { } flip
+            ? await BarSeamAroundAsync(instrument, flip, at, cancellationToken).ConfigureAwait(false)
+            : null;
+
+        return new ToolPayloads.ContractRollInfo(instrument.Symbol, at, front, contracts);
+    }
+
     /// <summary>
     /// Reads both answers for the front month. Called only after the tape-derived answer is
     /// already going to be returned — a no-tape refusal is not rescued by this object.
     /// </summary>
     private async Task<ToolPayloads.VolumeFrontInfo> FrontAsync(
         InstrumentId instrument,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        DateTimeOffset? asOfUtc = null)
     {
         TapeVolumeFrontRead read;
         try
         {
             read = await _volumeFront
-                .ReadAsync(instrument, cancellationToken)
+                .ReadAsync(instrument, cancellationToken, asOfUtc)
                 .ConfigureAwait(false);
         }
         catch (VenueException ex)
@@ -762,6 +798,55 @@ public sealed class MarketDataTools(
                     flip.FlippedAtUtc,
                     flip.FromContractId,
                     flip.ToContractId));
+    }
+
+    /// <summary>
+    /// Bar provenance in a short window around a tape changeover — stored bars only, never a fetch.
+    /// </summary>
+    private async Task<ToolPayloads.ContractCoverage> BarSeamAroundAsync(
+        InstrumentId instrument,
+        ToolPayloads.VolumeFrontChangeoverInfo flip,
+        DateTimeOffset asOfUtc,
+        CancellationToken cancellationToken)
+    {
+        DateTimeOffset anchor = flip.FlippedAtUtc
+            ?? MarketClock.FromMarket(flip.SessionDate, _levelMethods.Calendar.SessionClose)
+                .ToUniversalTime();
+
+        DateTimeOffset start = anchor - TimeSpan.FromDays(2);
+        DateTimeOffset end = anchor + TimeSpan.FromDays(2);
+        if (end > asOfUtc)
+        {
+            end = asOfUtc;
+        }
+
+        if (end <= start)
+        {
+            return new ToolPayloads.ContractCoverage(ToolPayloads.ContractSpan.Unknown, []);
+        }
+
+        List<int> resolutions = await _database.Bars
+            .AsNoTracking()
+            .Where(bar => bar.Venue == _gateway.VenueId
+                && bar.Instrument == instrument.Symbol
+                && bar.BucketStart >= start
+                && bar.BucketStart < end)
+            .Select(bar => bar.ResolutionMinutes)
+            .Distinct()
+            .ToListAsync(cancellationToken)
+            .ConfigureAwait(false);
+
+        if (resolutions.Count == 0)
+        {
+            return new ToolPayloads.ContractCoverage(ToolPayloads.ContractSpan.Unknown, []);
+        }
+
+        return await CoverageAsync(
+                instrument,
+                resolutions.Min(),
+                new BarRange(start, end),
+                cancellationToken)
+            .ConfigureAwait(false);
     }
 
     /// <summary>

@@ -482,7 +482,10 @@ silent source of truth wearing the first's field names. Both tools call
 `TapeVolumeFrontService.ReadAsync` and carry the comparison as `front` beside `contracts`:
 `used` is `tape-volume` or `none`, never a silent prefer of the gateway. `why` stays off the
 wire (ADR-0008). gh#218 owns the health block that refuses when that instrument's tape is not
-listening.
+listening. **`get_contract_roll` is the dedicated event tool** (gh#349, `R-5.9`): the same
+`front` object at `asOfUtc`, plus `contracts` for a short window of stored bars around the
+tape changeover — or omitted when the tape cannot prove a flip. It does not fetch bars and
+does not write a roll row.
 
 ## What is deliberately absent
 

@@ -238,8 +238,10 @@ once per catalogue change. `rebuild-indicators` already does it on demand for an
 
 ## Follow-ups
 
-- **Nothing measures how often a read triggers a projection.** The log line names the series and the missing
-  pairs, which is enough to notice; a counter would be the cheap next move if it ever stops being.
+- **A process-lifetime counter now records how often a read opens a replay**
+  (`IndicatorReadProjectionCounter.Replays`, incremented from
+  `IndicatorCacheService.EnsureProjectedAsync`; the existing log line still names the series and the missing
+  pairs, and now includes the process total). gh#347.
 - **The `DISTINCT` half of the probe scans the whole key range.** Worth re-measuring on Postgres 18, where an
   index skip scan should make it flat without a code change.
 - **Warming on startup stays open**, and this record makes it cheaper to revisit: the cost it would move is

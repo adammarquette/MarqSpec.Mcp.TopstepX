@@ -141,6 +141,26 @@ public sealed class CompositionRootTests
     }
 
     [Fact]
+    public void TheReadTriggeredReplayCounterIsOneCountSharedByEveryScope()
+    {
+        // IndicatorCacheService is scoped so its memo cannot outlive a request. The replay count has to
+        // outlive every scope or an operator — and startup warmup — cannot tell a one-off cold read from a
+        // process that has been replaying on every call (gh#347).
+        using ServiceProvider provider = Build([], new McpOptions { Transport = McpTransport.Stdio });
+
+        using IServiceScope first = provider.CreateScope();
+        using IServiceScope second = provider.CreateScope();
+
+        IndicatorReadProjectionCounter one =
+            first.ServiceProvider.GetRequiredService<IndicatorReadProjectionCounter>();
+        IndicatorReadProjectionCounter other =
+            second.ServiceProvider.GetRequiredService<IndicatorReadProjectionCounter>();
+
+        one.Should().BeSameAs(other);
+        one.Replays.Should().Be(0);
+    }
+
+    [Fact]
     public void TheContainerBuilds_ForTheHttpTransport()
     {
         McpOptions http = new() { Transport = McpTransport.Http, HttpBearerToken = "a-token" };

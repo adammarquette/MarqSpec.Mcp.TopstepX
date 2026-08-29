@@ -221,6 +221,53 @@ public sealed class IndicatorReadProjectionTests : IDisposable
     }
 
     [Fact]
+    public async Task AWarmRead_DoesNotIncrementTheProcessReplayCounter()
+    {
+        // The probe found nothing missing, so nothing opened a replay. A counter that ticked on every
+        // EnsureProjectedAsync would make a warm process look like a cold one, and startup warmup would
+        // have no way to tell the two apart (gh#347).
+        await WarmAsync(Catalog(rsiPeriod: 3));
+
+        IndicatorReadProjectionCounter counter = new();
+        IndicatorCacheService indicators = Cache(Catalog(rsiPeriod: 3), counter);
+
+        bool projected = await indicators.EnsureProjectedAsync(
+            "test", _es, Resolution, CancellationToken.None);
+
+        projected.Should().BeFalse();
+        counter.Replays.Should().Be(0, "a complete series must not count as a read-triggered replay");
+        indicators.Projections.Should().Be(0);
+    }
+
+    [Fact]
+    public async Task AColdRead_IncrementsTheProcessReplayCounterOnce_EvenAcrossElevenCallsInOneScope()
+    {
+        // get_market_snapshot asks get_indicator_at eleven times over one series. The scope memo already
+        // collapses those to one replay; the process counter must follow that, not the call count, and it
+        // must outlive the scope so a later request can read it without scraping a log (gh#347).
+        await WarmAsync(Catalog(rsiPeriod: 3));
+
+        IndicatorReadProjectionCounter counter = new();
+        IndicatorCacheService first = Cache(Catalog(rsiPeriod: 5), counter);
+
+        for (int i = 0; i < 11; i++)
+        {
+            await first.EnsureProjectedAsync("test", _es, Resolution, CancellationToken.None);
+        }
+
+        first.Projections.Should().Be(1, "the memo still collapses eleven reads of one series to one replay");
+        counter.Replays.Should().Be(1, "one series, one request, one increment — readable as a field");
+
+        IndicatorCacheService second = Cache(Catalog(rsiPeriod: 5), counter);
+        bool projectedAgain = await second.EnsureProjectedAsync(
+            "test", _es, Resolution, CancellationToken.None);
+
+        projectedAgain.Should().BeFalse("the first scope already wrote the missing pair");
+        second.Projections.Should().Be(0);
+        counter.Replays.Should().Be(1, "the count is process-lifetime, not per-scope, and a warm read adds none");
+    }
+
+    [Fact]
     public async Task GetIndicatorAt_ProjectsToo_NotOnlyGetIndicators()
     {
         // Both indicator reads are on the trigger, and get_indicator_at is the one get_market_snapshot uses.
@@ -377,9 +424,11 @@ public sealed class IndicatorReadProjectionTests : IDisposable
         warmed.Bars.Should().HaveCount(bars, "the rest of each test rests on the store being warm");
     }
 
-    private IndicatorCacheService Cache(IndicatorCatalog catalog) =>
+    private IndicatorCacheService Cache(
+        IndicatorCatalog catalog,
+        IndicatorReadProjectionCounter? readTriggeredReplays = null) =>
         new(_database, catalog, new IndicatorProjector(_database, catalog, NullLogger<IndicatorProjector>.Instance),
-            _clock, NullLogger<IndicatorCacheService>.Instance);
+            _clock, NullLogger<IndicatorCacheService>.Instance, readTriggeredReplays);
 
     private MarketDataTools Tools(IndicatorCatalog catalog) =>
         new(

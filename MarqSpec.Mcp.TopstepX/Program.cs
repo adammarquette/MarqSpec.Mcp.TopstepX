@@ -285,6 +285,11 @@ public static class Program
         services.AddSingleton<EmbeddingAvailabilityHolder>();
         services.AddSingleton<EmbeddingAvailabilityProbe>();
 
+        // Process-lifetime: IndicatorCacheService is scoped, so its Projections reset every request.
+        // This is the count startup warmup will read, and the one an operator can read without a debugger
+        // (the replay log line prints it; the property is the typed form) (gh#347).
+        services.AddSingleton<IndicatorReadProjectionCounter>();
+
         // The embedding seam. CohereEmbeddingProvider is selected when Embeddings__ApiKey is set
         // (ADR-0009). An unset key is a supported state, so this is never a startup failure.
         services.AddOptions<EmbeddingOptions>()

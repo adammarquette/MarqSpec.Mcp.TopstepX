@@ -524,11 +524,13 @@ public sealed class MarketDataTools(
         + "ABSENT. A window before recording began is refused and names the earliest covered time; an empty "
         + "answer is not a quiet market. The response reports `covered` from TapeCoverage — not the window "
         + "you asked for — and `contracts` with span SingleContract naming which contract was listened to. "
-        + "A roll or listening hole narrows the answer to the newest contiguous run and sets "
-        + "`covered.narrowed`. Live tape-subscription health is not on this payload. Every field is always "
-        + "present; none are omitted and none are null. Empty `cells` under a covered window means the "
-        + "subscription listened and nothing traded at those prices — that is the quiet-market case, and it "
-        + "is not the same as a pre-recording refusal. Never truncates: an over-cap window is refused.")]
+        + "`contracts.segments` use bar-open times from the cells (`firstBucket` / `lastBucket`), not the "
+        + "exclusive coverage end — that range stays on `covered`. A roll or listening hole narrows the "
+        + "answer to the newest contiguous run and sets `covered.narrowed`. Live tape-subscription health "
+        + "is not on this payload. Every field is always present; none are omitted and none are null. "
+        + "TapeCoverage is not per-resolution: a covered window with no cells at the asked bar size is "
+        + "refused rather than returned as empty `cells` — that quiet-looking shape would hide an "
+        + "unprojected resolution. Never truncates: an over-cap window is refused.")]
     public async Task<ToolPayloads.FootprintSeries> GetFootprint(
         [Description("The instrument symbol, e.g. ES.")] string symbol,
         [Description("The bar size in minutes the cells were projected at.")] int resolutionMinutes,
@@ -556,6 +558,13 @@ public sealed class MarketDataTools(
             throw new McpException(ex.Message);
         }
 
+        if (read.Cells.Count == 0)
+        {
+            throw new McpException(await EmptyFootprintRefusalAsync(
+                    instrument, resolutionMinutes, read.Window, cancellationToken)
+                .ConfigureAwait(false));
+        }
+
         RefuseIfOverCellCap(read.Cells.Count, "footprint cells");
 
         List<ToolPayloads.FootprintCellPoint> cells =
@@ -567,14 +576,12 @@ public sealed class MarketDataTools(
                     c.BucketStart, c.Price, c.BuyVolume, c.SellVolume)),
         ];
 
-        int buckets = cells.Select(c => c.T).Distinct().Count();
-
         return new ToolPayloads.FootprintSeries(
             instrument.Symbol,
             resolutionMinutes,
             cells,
             new ToolPayloads.CoveredWindow(read.Window.Start, read.Window.End, read.Window.Narrowed),
-            ToolPayloads.ToTapeCoverage(read.Window, buckets));
+            ToolPayloads.ToTapeCoverage(read.Window, read.Cells));
     }
 
     /// <summary>Aggregates stored footprint cells into a volume profile for a covered tape window.</summary>
@@ -591,9 +598,10 @@ public sealed class MarketDataTools(
         + "began — not slow, not expensive, ABSENT. A window before recording began is refused and names "
         + "the earliest covered time; an empty profile is not a quiet market. The response reports "
         + "`covered` from TapeCoverage — not the window you asked for — and `contracts` with span "
-        + "SingleContract naming which contract was listened to. A roll or listening hole narrows the "
-        + "answer to the newest contiguous run and sets `covered.narrowed`. Live tape-subscription health "
-        + "is not on this payload. Every field is always present; none are omitted and none are null. "
+        + "SingleContract naming which contract was listened to. `contracts.segments` use bar-open times "
+        + "from the cells, not the exclusive coverage end. A roll or listening hole narrows the answer to "
+        + "the newest contiguous run and sets `covered.narrowed`. Live tape-subscription health is not on "
+        + "this payload. Every field is always present; none are omitted and none are null. "
         + "Never truncates: an over-cap window is refused.")]
     public async Task<ToolPayloads.VolumeProfileSeries> GetVolumeProfile(
         [Description("The instrument symbol, e.g. ES.")] string symbol,
@@ -634,8 +642,6 @@ public sealed class MarketDataTools(
             throw new McpException(ex.Message);
         }
 
-        int buckets = cells.Cells.Select(c => c.BucketStart).Distinct().Count();
-
         return new ToolPayloads.VolumeProfileSeries(
             instrument.Symbol,
             resolutionMinutes,
@@ -646,7 +652,56 @@ public sealed class MarketDataTools(
             profile.ValueAreaVolume,
             profile.TotalVolume,
             new ToolPayloads.CoveredWindow(cells.Window.Start, cells.Window.End, cells.Window.Narrowed),
-            ToolPayloads.ToTapeCoverage(cells.Window, buckets));
+            ToolPayloads.ToTapeCoverage(cells.Window, cells.Cells));
+    }
+
+    /// <summary>
+    /// Refuses a covered window with no cells at the asked bar size — TapeCoverage is not per-resolution,
+    /// so an empty list would look like a quiet market when the series was simply never projected.
+    /// </summary>
+    private async Task<string> EmptyFootprintRefusalAsync(
+        InstrumentId instrument,
+        int resolutionMinutes,
+        CoveredTapeWindow covered,
+        CancellationToken cancellationToken)
+    {
+        // Broaden slightly so a cell whose bucket grazes the covered window is still visible — same
+        // loadFrom margin ReadCellsAsync uses. Distinct resolutions other than the ask name the bug.
+        DateTimeOffset loadFrom = covered.Start.AddMinutes(-Math.Max(resolutionMinutes, 1));
+
+        List<int> otherResolutions = await _database.FootprintCells
+            .AsNoTracking()
+            .Where(c => c.Venue == _gateway.VenueId
+                && c.Instrument == instrument.Symbol
+                && c.ResolutionMinutes != resolutionMinutes
+                && c.BucketStart < covered.End
+                && c.BucketStart > loadFrom)
+            .Select(c => c.ResolutionMinutes)
+            .Distinct()
+            .OrderBy(r => r)
+            .ToListAsync(cancellationToken)
+            .ConfigureAwait(false);
+
+        string resolution = resolutionMinutes.ToString(
+            System.Globalization.CultureInfo.InvariantCulture);
+
+        if (otherResolutions.Count > 0)
+        {
+            string known = string.Join(
+                ", ",
+                otherResolutions.Select(static r =>
+                    r.ToString(System.Globalization.CultureInfo.InvariantCulture) + "m"));
+
+            return "No footprint cells at " + resolution
+                + "-minute resolution for the covered window. TapeCoverage is not per-resolution — "
+                + "listening succeeded, and cells exist at other bar sizes (" + known
+                + "). Ask for a resolution that has been projected. An empty cell list would look like a "
+                + "quiet market.";
+        }
+
+        return "No footprint cells at " + resolution
+            + "-minute resolution for the covered window. An empty cell list would look like a quiet "
+            + "market.";
     }
 
     /// <summary>

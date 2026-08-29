@@ -128,6 +128,51 @@ public sealed class FootprintAndVolumeProfileToolTests : IDisposable
     }
 
     [Fact]
+    public async Task GetFootprint_AtAnUnprojectedResolution_Refuses_RatherThanLookingQuiet()
+    {
+        // Reviewer fixture: TapeCoverage is not per-resolution. Coverage + 5-minute cells with
+        // volume, then ask for 15-minute footprint. Confine succeeds; the 15m cell query is empty.
+        // Returning { cells: [] } is the quiet-market shape for an absent projection (gh#69 shape).
+        await SeedCoverageAsync(Coverage(Front, _fourteen, _sixteen));
+        await SeedCellsAsync(Cell(_bucket1430, 5000m, buy: 4, sell: 1));
+
+        Func<Task> footprint = () => _tools.GetFootprint(
+            "ES", 15, _fourteen, _sixteen, CancellationToken.None);
+
+        (await footprint.Should().ThrowAsync<McpException>())
+            .WithMessage("*15*")
+            .WithMessage("*quiet*");
+    }
+
+    [Fact]
+    public async Task ContractsSegments_ReportBarOpenTimes_NotTheCoverageEnvelope()
+    {
+        // Coverage [14:00, 16:00), one 5-minute cell at 14:30. lastBucket is when the run's last
+        // bar opened — 14:30 — not the exclusive coverage end 16:00. covered already carries the ledger.
+        await SeedCoverageAsync(Coverage(Front, _fourteen, _sixteen));
+        await SeedCellsAsync(Cell(_bucket1430, 5000m, buy: 4, sell: 1));
+
+        ToolPayloads.FootprintSeries footprint = await _tools.GetFootprint(
+            "ES", FiveMinutes, _fourteen, _sixteen, CancellationToken.None);
+        ToolPayloads.VolumeProfileSeries profile = await _tools.GetVolumeProfile(
+            "ES", FiveMinutes, _fourteen, _sixteen, CancellationToken.None);
+
+        ToolPayloads.ContractSegmentInfo footprintSegment = footprint.Contracts.Segments.Should().ContainSingle().Subject;
+        footprintSegment.FirstBucket.Should().Be(_bucket1430);
+        footprintSegment.LastBucket.Should().Be(_bucket1430);
+        footprintSegment.BarCount.Should().Be(1);
+        footprintSegment.LastBucket.Should().NotBe(_sixteen);
+
+        ToolPayloads.ContractSegmentInfo profileSegment = profile.Contracts.Segments.Should().ContainSingle().Subject;
+        profileSegment.FirstBucket.Should().Be(_bucket1430);
+        profileSegment.LastBucket.Should().Be(_bucket1430);
+        profileSegment.BarCount.Should().Be(1);
+
+        footprint.Covered.Start.Should().Be(_fourteen);
+        footprint.Covered.End.Should().Be(_sixteen);
+    }
+
+    [Fact]
     public async Task AWindowBeforeRecordingBegan_Refuses_AndNamesTheEarliestCoveredTime()
     {
         await SeedCoverageAsync(Coverage(Front, _fourteen, _sixteen));

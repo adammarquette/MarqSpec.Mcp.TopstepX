@@ -448,11 +448,12 @@ contracts: { span, segments: [{ contractId, firstBucket, lastBucket, barCount }]
 
 **`covered` is the ledger window, not the ask.** A roll or listening hole narrows to the newest contiguous
 run of the contract in front and sets `narrowed`. `contracts.span` is always `SingleContract` — a profile
-or footprint is never computed across a roll (`R-9.4`).
+or footprint is never computed across a roll (`R-9.4`). Segment `firstBucket` / `lastBucket` are **bar-open
+times from the cells**, not the exclusive coverage end — that range stays on `covered`.
 
-**A window before recording began is refused** and names the earliest covered time. An empty `cells` array
-under a covered window means the subscription listened and nothing traded at those prices — that is the
-quiet-market case, and it is not the same as a pre-recording refusal. Live tape-subscription health is
+**A window before recording began is refused** and names the earliest covered time. **A covered window with
+no cells at the asked bar size is refused** rather than returned as empty `cells`: `TapeCoverage` is not
+per-resolution, so that quiet-looking shape would hide an unprojected series. Live tape-subscription health is
 **not** on this payload (gh#218). Every field is always present; none are omitted and none are null.
 
 ### `get_volume_profile(symbol, resolutionMinutes, fromUtc, toUtc)`

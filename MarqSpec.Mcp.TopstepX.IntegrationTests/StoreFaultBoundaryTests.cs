@@ -357,6 +357,7 @@ public sealed class StoreFaultBoundaryTests(SchemaFixture fixture)
             })),
             holder,
             new FakeTimeProvider(Now),
-            Options.Create(new KeyLevelDetectionOptions()));
+            Options.Create(new KeyLevelDetectionOptions()),
+            new VolumeProfileService(store));
     }
 }

@@ -53,18 +53,25 @@ namespace MarqSpec.Mcp.TopstepX.MarketData;
 /// <param name="projector">The whole-series replay.</param>
 /// <param name="clock">The clock, stamped on rows a projection actually changes.</param>
 /// <param name="logger">The logger. A read that silently replayed a year of bars would be invisible.</param>
+/// <param name="readTriggeredReplays">
+/// The process-lifetime count of read-opened replays. Optional only so hand-built tests that do not
+/// care about it keep compiling; the composition root always supplies the singleton.
+/// </param>
 public sealed class IndicatorCacheService(
     TopstepXDbContext database,
     IndicatorCatalog catalog,
     IndicatorProjector projector,
     TimeProvider clock,
-    ILogger<IndicatorCacheService> logger)
+    ILogger<IndicatorCacheService> logger,
+    IndicatorReadProjectionCounter? readTriggeredReplays = null)
 {
     private readonly TopstepXDbContext _database = database;
     private readonly IndicatorCatalog _catalog = catalog;
     private readonly IndicatorProjector _projector = projector;
     private readonly TimeProvider _clock = clock;
     private readonly ILogger<IndicatorCacheService> _logger = logger;
+    private readonly IndicatorReadProjectionCounter _readTriggeredReplays =
+        readTriggeredReplays ?? new IndicatorReadProjectionCounter();
 
     /// <summary>
     /// Series this scope has already found complete.
@@ -89,6 +96,9 @@ public sealed class IndicatorCacheService(
     public int Probes { get; private set; }
 
     /// <summary>How many whole-series replays this scope ran to serve a read.</summary>
+    /// <remarks>
+    /// Per-request. The process-lifetime count is <see cref="IndicatorReadProjectionCounter.Replays"/>.
+    /// </remarks>
     public int Projections { get; private set; }
 
     /// <summary>
@@ -210,12 +220,16 @@ public sealed class IndicatorCacheService(
 
         string what = instrument.Symbol + " " + resolutionMinutes.ToString(CultureInfo.InvariantCulture) + "m";
 
+        _readTriggeredReplays.RecordReplay();
+
         _logger.LogInformation(
             "The catalogue computes {Missing} the store holds no value for on {Series}: "
-            + "{Names}. Replaying the whole series to serve this read.",
+            + "{Names}. Replaying the whole series to serve this read. "
+            + "Read-triggered replays this process: {Replays}.",
             missing.Count,
             what,
-            string.Join(", ", missing.Select(i => i.Name + "(" + i.Period.ToString(CultureInfo.InvariantCulture) + ")")));
+            string.Join(", ", missing.Select(i => i.Name + "(" + i.Period.ToString(CultureInfo.InvariantCulture) + ")")),
+            _readTriggeredReplays.Replays);
 
         DateTimeOffset now = _clock.GetUtcNow();
 

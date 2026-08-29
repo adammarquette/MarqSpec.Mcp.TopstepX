@@ -136,7 +136,8 @@ public sealed class VolumeKeyLevelPlumbingTests : IDisposable
                 MinSignificance = 0m,
                 MaxZoneWidthPercent = 100m,
                 MaxLevels = 1_000,
-            }));
+            }),
+            new VolumeProfileService(_database));
     }
 
     private void SeedBars()

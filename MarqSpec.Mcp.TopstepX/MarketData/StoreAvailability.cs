@@ -24,6 +24,12 @@ namespace MarqSpec.Mcp.TopstepX.MarketData;
 /// defect in this repository, and that still fails the process — degrading there would leave the server
 /// serving reads against a schema nobody has verified.
 /// </para>
+/// <para>
+/// This answer is a <b>startup probe</b>. Tape health is the opposite: it changes mid-session and is
+/// carried by <see cref="TapeAvailability"/> / <see cref="TapeAvailabilityHolder"/>, written from the
+/// recorder's lifecycle and read at the point of use. Do not copy this type's once-at-startup rule
+/// onto the tape.
+/// </para>
 /// </remarks>
 public sealed class StoreAvailability
 {

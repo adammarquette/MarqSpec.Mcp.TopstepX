@@ -58,8 +58,10 @@ namespace MarqSpec.Mcp.TopstepX.MarketData;
 /// be a different client if the registration is scoped, and would miss the transition.
 /// </para>
 /// <para>
-/// This card does not aggregate, invent a health-holder <c>Reason</c>, or pick the front
-/// month by volume. Those are gh#218 / #219.
+/// <b>Live tape health.</b> This service writes <see cref="TapeAvailabilityHolder"/> as the
+/// hub drops and restores. That holder is the opposite of <see cref="StoreAvailabilityHolder"/>:
+/// it is mutable and read at the point of use, because a tape's subscriptions change mid-session.
+/// This card does not pick the front month by volume — that is gh#219.
 /// </para>
 /// </remarks>
 public sealed class TradeTapeRecorder : BackgroundService
@@ -73,6 +75,7 @@ public sealed class TradeTapeRecorder : BackgroundService
     private readonly InstrumentRegistry _registry;
     private readonly TimeProvider _clock;
     private readonly ILogger<TradeTapeRecorder> _logger;
+    private readonly TapeAvailabilityHolder _tape;
     private readonly Channel<PendingPrint> _channel;
     private readonly Channel<LifecycleWork> _lifecycle;
     private readonly Dictionary<string, Attribution> _attribution = new(StringComparer.Ordinal);
@@ -100,8 +103,9 @@ public sealed class TradeTapeRecorder : BackgroundService
         IOptions<McpOptions> mcp,
         InstrumentRegistry registry,
         TimeProvider clock,
-        ILogger<TradeTapeRecorder> logger)
-        : this(scopes, market, mcp, registry, clock, logger, DefaultChannelCapacity)
+        ILogger<TradeTapeRecorder> logger,
+        TapeAvailabilityHolder tape)
+        : this(scopes, market, mcp, registry, clock, logger, tape, DefaultChannelCapacity)
     {
     }
 
@@ -112,6 +116,7 @@ public sealed class TradeTapeRecorder : BackgroundService
     /// <param name="registry">The configured instruments.</param>
     /// <param name="clock">The clock. Receipt time is taken here, not at persist.</param>
     /// <param name="logger">The logger.</param>
+    /// <param name="tape">Live subscription health, written from this lifecycle.</param>
     /// <param name="channelCapacity">
     /// How many prints may wait. Tests pass 1 so a drop is reachable without a live tape.
     /// </param>
@@ -122,6 +127,7 @@ public sealed class TradeTapeRecorder : BackgroundService
         InstrumentRegistry registry,
         TimeProvider clock,
         ILogger<TradeTapeRecorder> logger,
+        TapeAvailabilityHolder tape,
         int channelCapacity)
     {
         ArgumentNullException.ThrowIfNull(scopes);
@@ -130,6 +136,7 @@ public sealed class TradeTapeRecorder : BackgroundService
         ArgumentNullException.ThrowIfNull(registry);
         ArgumentNullException.ThrowIfNull(clock);
         ArgumentNullException.ThrowIfNull(logger);
+        ArgumentNullException.ThrowIfNull(tape);
         ArgumentOutOfRangeException.ThrowIfLessThan(channelCapacity, 1);
 
         _scopes = scopes;
@@ -138,6 +145,7 @@ public sealed class TradeTapeRecorder : BackgroundService
         _registry = registry;
         _clock = clock;
         _logger = logger;
+        _tape = tape;
         _channel = Channel.CreateBounded<PendingPrint>(new BoundedChannelOptions(channelCapacity)
         {
             SingleReader = true,
@@ -166,6 +174,9 @@ public sealed class TradeTapeRecorder : BackgroundService
         {
             if (_mcp.Transport != McpTransport.Http || !_market.RecordTape)
             {
+                _tape.Set(_mcp.Transport != McpTransport.Http
+                    ? TapeAvailability.NeverStartedBecauseStdio()
+                    : TapeAvailability.NeverStartedBecauseSwitchOff());
                 _logger.LogInformation(
                     "Tape recording is off (transport {Transport}, RecordTape {RecordTape}).",
                     _mcp.Transport,
@@ -179,6 +190,7 @@ public sealed class TradeTapeRecorder : BackgroundService
                 IProjectXWebSocketClient? resolved = scope.ServiceProvider.GetService<IProjectXWebSocketClient>();
                 if (resolved is null)
                 {
+                    _tape.Set(TapeAvailability.NeverStartedBecauseNoVenueClient());
                     _logger.LogWarning(
                         "RecordTape is on but the venue client is not registered. Set ProjectX credentials "
                         + "and a data tier, then restart. Nothing will be recorded until then.");
@@ -263,15 +275,21 @@ public sealed class TradeTapeRecorder : BackgroundService
                     Unhook();
                     _channel.Writer.TryComplete();
                     _lifecycle.Writer.TryComplete();
+                    _tape.Set(TapeAvailability.Stopped());
                 }
             }
         }
         catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
         {
             // Host shutdown. Not a fault.
+            if (_tape.Value.Reason != TapeUnavailableReason.NeverStarted)
+            {
+                _tape.Set(TapeAvailability.Stopped());
+            }
         }
         catch (Exception exception)
         {
+            _tape.Set(TapeAvailability.Stopped());
             _logger.LogError(
                 exception,
                 "The trade-tape recorder stopped after a fault. Prints will not be recorded until "
@@ -297,6 +315,8 @@ public sealed class TradeTapeRecorder : BackgroundService
         if (change.CurrentState == ConnectionState.Connected
             && change.PreviousState != ConnectionState.Connected)
         {
+            // Connected is not listening. Tools must refuse until restore completes.
+            _tape.Set(TapeAvailability.ConnectedButNotSubscribed());
             _lifecycle.Writer.TryWrite(LifecycleWork.RestoreSubscriptions);
             return;
         }
@@ -304,6 +324,7 @@ public sealed class TradeTapeRecorder : BackgroundService
         if (change.PreviousState == ConnectionState.Connected
             && change.CurrentState != ConnectionState.Connected)
         {
+            _tape.Set(TapeAvailability.Reconnecting());
             CloseOpenRangesAt(_clock.GetUtcNow());
             _lifecycle.Writer.TryWrite(LifecycleWork.PersistCloses);
         }
@@ -403,6 +424,7 @@ public sealed class TradeTapeRecorder : BackgroundService
 
         if (restored > 0)
         {
+            _tape.Set(TapeAvailability.Listening());
             _logger.LogInformation(
                 "Restored trade subscriptions for {Count} contract(s). Connected is not listening.",
                 restored);

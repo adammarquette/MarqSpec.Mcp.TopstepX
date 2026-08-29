@@ -24,7 +24,8 @@ namespace MarqSpec.Mcp.TopstepX.Tests.Tools;
 /// </summary>
 /// <remarks>
 /// Coverage and cells are seeded the way gh#220 / gh#221 proved them — the recorder is not built.
-/// Live tape health is omitted on purpose (gh#218 is still blocked).
+/// Live tape health is a holder this fixture Sets: Listening for the stored-read path,
+/// and not-listening for the gh#218 refusal.
 /// </remarks>
 public sealed class FootprintAndVolumeProfileToolTests : IDisposable
 {
@@ -46,6 +47,7 @@ public sealed class FootprintAndVolumeProfileToolTests : IDisposable
             .UseInMemoryDatabase(Guid.NewGuid().ToString())
             .Options);
 
+    private readonly TapeAvailabilityHolder _tape = new();
     private readonly MarketDataTools _tools;
 
     public FootprintAndVolumeProfileToolTests()
@@ -66,6 +68,7 @@ public sealed class FootprintAndVolumeProfileToolTests : IDisposable
         BarCacheService cache = new(
             _database, gateway, calendar, projector, clock, NullLogger<BarCacheService>.Instance);
 
+        _tape.Set(TapeAvailability.Listening());
         _tools = new MarketDataTools(
             cache,
             _database,
@@ -79,7 +82,8 @@ public sealed class FootprintAndVolumeProfileToolTests : IDisposable
             new StoreAvailabilityHolder(),
             clock,
             Options.Create(new KeyLevelDetectionOptions()),
-            new VolumeProfileService(_database));
+            new VolumeProfileService(_database),
+            _tape);
     }
 
     public void Dispose() => _database.Dispose();
@@ -206,6 +210,30 @@ public sealed class FootprintAndVolumeProfileToolTests : IDisposable
     }
 
     [Fact]
+    public async Task GetFootprintAndGetVolumeProfile_RefuseWithTheExplanation_WhenHealthIsNotListening()
+    {
+        // Cells in the store must not look like a live tape. An absent tape refuses;
+        // it does not answer thinly.
+        await SeedCoverageAsync(Coverage(Front, _fourteen, _sixteen));
+        await SeedCellsAsync(Cell(_bucket1430, 5000m, buy: 4, sell: 1));
+
+        _tape.Set(TapeAvailability.NeverStartedBecauseStdio());
+        string explanation = _tape.Value.Explanation!;
+
+        Func<Task<ToolPayloads.FootprintSeries>> footprint = () => _tools.GetFootprint(
+            "ES", FiveMinutes, _fourteen, _sixteen, CancellationToken.None);
+        Func<Task<ToolPayloads.VolumeProfileSeries>> profile = () => _tools.GetVolumeProfile(
+            "ES", FiveMinutes, _fourteen, _sixteen, CancellationToken.None);
+
+        McpException footprintError = (await footprint.Should().ThrowAsync<McpException>()).Which;
+        footprintError.Message.Should().Be(explanation);
+        footprintError.Message.Should().MatchRegex("(?i)stdio|http|recordtape");
+
+        McpException profileError = (await profile.Should().ThrowAsync<McpException>()).Which;
+        profileError.Message.Should().Be(explanation);
+    }
+
+    [Fact]
     public void BothTools_AreRegistered_AndTheirDescriptionsStateTheForwardOnlyLimitAndNullForms()
     {
         MethodInfo footprint = typeof(MarketDataTools).GetMethod(nameof(MarketDataTools.GetFootprint))!;
@@ -221,6 +249,8 @@ public sealed class FootprintAndVolumeProfileToolTests : IDisposable
         {
             description.Should().MatchRegex("(?i)tape only goes forward|no historical footprint|before recording");
             description.Should().MatchRegex("(?i)omitted|present.*null|always present");
+            description.Should().MatchRegex("(?i)refus");
+            description.Should().MatchRegex("(?i)listen");
         }
     }
 

@@ -520,20 +520,17 @@ get_trades    -> [{ tradeId, orderId, contractId, side, size, price,
 | `status` | `Open` · `Filled` · `Cancelled` · `Expired` · `Rejected` · `Pending` · `Unknown` |
 
 `Unknown` is never a value the venue chose — it is the same shape as `stage` above, where a near-miss
-resolves to `Unknown` rather than to a guess. **The two differ in what else it can mean, and the difference
-runs the other way from what you would expect.**
+resolves to `Unknown` rather than to a guess.
 
 For `status` it also covers the vendor's own `None`, which is what an order deserialised with no status field
 carries — so `status: "Unknown"` can mean *the venue reported nothing here*.
 
-For `side` it cannot. Every declared wire value maps, so `Unknown` does say the server did not recognise what
-arrived — but **an omitted `side` never reaches it.** The gateway client binds `side` to an enum whose zero is
-`Bid`, a real direction, so an order the venue gave no side to arrives already indistinguishable from a buy
-and is reported as `Buy` (gh#84; the fix is upstream, and the distinction is destroyed before this server sees
-the order).
+For `side` it now covers the same absence. From 3.0.0 the published property is `OrderSide?`, so an omitted
+`side` arrives as `null` and is reported as `Unknown`, not `Buy`. An explicit `"side": 0` is still `Buy` and
+`"side": 1` is still `Sell`. An unrecognised wire value (`"side": 9`) also maps to `Unknown` (gh#84).
 
-So: **`status: "Unknown"` can report an absence and `side` cannot.** Neither is a state to reason from, and a
-`side` you are about to act on is worth confirming against the position rather than the order.
+So: **`status: "Unknown"` and `side: "Unknown"` can both report an absence.** Neither is a state to reason
+from, and a `side` you are about to act on is worth confirming against the position rather than the order.
 
 **Four fields are optional, and an absent one is a fact rather than a zero:**
 

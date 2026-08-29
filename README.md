@@ -105,7 +105,7 @@ signatures: [the tool catalogue](documentation/mcp-tool-catalog.md).
 | Group | Tools |
 |---|---|
 | Reference & session | `list_instruments` · `search_contracts` · `get_market_session` |
-| Market data | `get_bars` · `get_latest_bars` · `get_indicators` · `get_indicator_at` · `get_key_levels` · `get_footprint` · `get_volume_profile` |
+| Market data | `get_bars` · `get_latest_bars` · `get_indicators` · `get_indicator_at` · `get_key_levels` · `get_footprint` · `get_volume_profile` · `get_contract_roll` |
 | Account (read) | `list_accounts` · `get_positions` · `get_orders` · `get_trades` |
 | Composed | `get_market_snapshot` — bars, indicators, levels and session state in one call |
 | Observations | `record_observation` · `search_observations` — writes to *this* database, never the venue |

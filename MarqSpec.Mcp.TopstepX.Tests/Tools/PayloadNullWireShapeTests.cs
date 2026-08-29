@@ -111,6 +111,23 @@ public sealed class PayloadNullWireShapeTests
     }
 
     [Fact]
+    public void VolumeFront_OmitsAgreeAndGateway_WhenTheVenueWasNotAsked()
+    {
+        JsonElement front = Wire(new ToolPayloads.VolumeFrontInfo(
+            Used: "tape-volume",
+            Agree: null,
+            TapeContractId: "CON.F.US.EP.U26",
+            TapeSessionDate: new DateOnly(2026, 8, 18),
+            GatewayContractId: null,
+            Changeover: null));
+
+        front.GetProperty("used").GetString().Should().Be("tape-volume");
+        front.GetProperty("tapeContractId").GetString().Should().Be("CON.F.US.EP.U26");
+        front.TryGetProperty("agree", out _).Should().BeFalse();
+        front.TryGetProperty("gatewayContractId", out _).Should().BeFalse();
+    }
+
+    [Fact]
     public void ContractRoll_OmitsChangeoverAndContracts_WhenTheTapeCannotProveAFlip()
     {
         JsonElement roll = Wire(new ToolPayloads.ContractRollInfo(

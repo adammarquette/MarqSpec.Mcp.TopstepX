@@ -1,6 +1,9 @@
+using System.ComponentModel;
+using System.Reflection;
 using FluentAssertions;
 using MarqSpec.Mcp.TopstepX.Domain.MarketData;
 using MarqSpec.Mcp.TopstepX.MarketData;
+using MarqSpec.Mcp.TopstepX.Tools;
 
 namespace MarqSpec.Mcp.TopstepX.Tests.MarketData;
 
@@ -33,7 +36,8 @@ public sealed class LevelMethodCatalogTests
             .WithMessage("*murrey*")
             .WithMessage("*swing*")
             .WithMessage("*session*")
-            .WithMessage("*pivot-camarilla*");
+            .WithMessage("*pivot-camarilla*")
+            .WithMessage("*volume-poc*");
     }
 
     [Fact]
@@ -56,6 +60,10 @@ public sealed class LevelMethodCatalogTests
             "pivot-camarilla",
             "pivot-woodie",
             "pivot-demark",
+            "volume-poc",
+            "volume-vah",
+            "volume-val",
+            "volume-traded",
         ]);
     }
 
@@ -98,6 +106,23 @@ public sealed class LevelMethodCatalogTests
         foreach (ILevelMethod method in Catalog().All)
         {
             method.Name.Should().Be(method.Name.ToLowerInvariant());
+        }
+    }
+
+    [Fact]
+    public void GetKeyLevelsDescriptions_NameEveryRegisteredMethod()
+    {
+        // A name the catalogue serves but the tool description does not list is a method an agent
+        // cannot discover. Both the tool [Description] and the methods-parameter one must name them.
+        MethodInfo method = typeof(MarketDataTools).GetMethod(nameof(MarketDataTools.GetKeyLevels))!;
+        string tool = method.GetCustomAttribute<DescriptionAttribute>()?.Description ?? string.Empty;
+        string parameter = method.GetParameters().Single(p => p.Name == "methods")
+            .GetCustomAttribute<DescriptionAttribute>()?.Description ?? string.Empty;
+
+        foreach (string name in Catalog().KnownNames)
+        {
+            tool.Should().Contain(name, "get_key_levels [Description] must list " + name);
+            parameter.Should().Contain(name, "the methods parameter [Description] must list " + name);
         }
     }
 }

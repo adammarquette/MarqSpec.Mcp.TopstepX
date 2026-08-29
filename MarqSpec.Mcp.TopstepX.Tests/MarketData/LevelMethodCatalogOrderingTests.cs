@@ -182,6 +182,14 @@ public sealed class LevelMethodCatalogOrderingTests
 
         try
         {
+            VolumeProfile profile = VolumeProfileAggregator.From(
+            [
+                new FootprintCell("ES", 60, SessionStart, 100m, 10, 0),
+                new FootprintCell("ES", 60, SessionStart, 150m, 40, 0),
+                new FootprintCell("ES", 60, SessionStart, 200m, 10, 0),
+            ]);
+
+            using VolumeProfileScope scope = new(profile);
             method.Detect(transposed, FlatAtr(transposed.Count), new KeyLevelOptions());
         }
         catch (ArgumentException e) when (e.Message.Contains("ascending", StringComparison.Ordinal))

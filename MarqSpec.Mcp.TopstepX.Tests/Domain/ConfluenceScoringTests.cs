@@ -255,4 +255,21 @@ public sealed class ConfluenceScoringTests
 
         result.Score.Should().Be(3m);
     }
+
+    [Fact]
+    public void VolumePocVahAndVal_OnTheSamePrice_ScoreOne_BecauseTheyShareABudget()
+    {
+        // The tape family is one input — the same cells — read three ways. Counting them as 3/3
+        // would be the pivot-family failure with different names (gh#319).
+        ConfluenceResult result = ConfluenceScoring.Score(
+            [
+                Hit("volume-poc", VolumeLevels.FamilyName, 100m),
+                Hit("volume-vah", VolumeLevels.FamilyName, 100m),
+                Hit("volume-val", VolumeLevels.FamilyName, 100m),
+            ],
+            UnitWeights,
+            tolerance: 0.5m);
+
+        result.Score.Should().Be(1m);
+    }
 }

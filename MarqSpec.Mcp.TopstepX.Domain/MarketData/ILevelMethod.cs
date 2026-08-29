@@ -55,6 +55,19 @@ namespace MarqSpec.Mcp.TopstepX.Domain.MarketData;
 /// could not be constructed without an instrument would leave those sweeps and lose <c>R-3.5</c> without
 /// failing.
 /// </para>
+/// <para>
+/// <b>A request-scoped tape is not a session calendar, and that is the fourth path (gh#319).</b> Cells
+/// and the profile they roll up to are a fact about <i>this request's window</i>, not a process-lifetime
+/// value parsed once at startup. Putting them on <c>LevelMethodCatalog</c>'s constructor would hold
+/// request-scoped data on a singleton. The three alternatives above stay refused — this interface is
+/// not widened, <c>KeyLevelOptions</c> does not carry a tape, and a POC derived from bar volume is the
+/// spreading rule the volume family exists to prevent. The fourth path is a
+/// <see cref="VolumeProfileScope"/> bound around the call: every volume method is still constructed
+/// without a profile, so it stays in <c>LevelMethodCatalog.All</c>; <see cref="Detect"/> reads the
+/// bound profile after the roll and ordering guards; a Detect that sees no bind refuses rather than
+/// answering from OHLCV. The calculation itself is a pure function of the bars, the ATR, the options
+/// and the profile it is handed (<see cref="VolumeLevels.Compute"/>).
+/// </para>
 /// </remarks>
 public interface ILevelMethod
 {

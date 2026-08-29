@@ -29,7 +29,8 @@ namespace MarqSpec.Mcp.TopstepX.MarketData;
 /// <b>Every method also declares the correlation family it belongs to</b>
 /// (<see cref="ILevelMethod.Family"/>), so a confluence score can discount methods derived from one input
 /// instead of counting them as independent agreement. The five <c>pivot-*</c> names share one;
-/// <c>swing</c> and <c>session</c> are each families of one. That too is swept over <see cref="All"/>, in
+/// <c>swing</c> and <c>session</c> are each families of one; the four <c>volume-*</c> names share
+/// <c>volume</c>. That too is swept over <see cref="All"/>, in
 /// <c>LevelMethodCatalogFamilyTests</c>, for the reason gh#259 gives: a hardcoded list of the five is
 /// silently escaped by the sixth variant.
 /// </para>
@@ -83,6 +84,10 @@ public sealed class LevelMethodCatalog
             new PivotLevelMethod(PivotFormula.Camarilla, calendar),
             new PivotLevelMethod(PivotFormula.Woodie, calendar),
             new PivotLevelMethod(PivotFormula.DeMark, calendar),
+            new VolumeLevelMethod(VolumeLevelKind.PointOfControl),
+            new VolumeLevelMethod(VolumeLevelKind.ValueAreaHigh),
+            new VolumeLevelMethod(VolumeLevelKind.ValueAreaLow),
+            new VolumeLevelMethod(VolumeLevelKind.Traded),
         ];
 
         _byName = methods.ToDictionary(m => m.Name, StringComparer.Ordinal);

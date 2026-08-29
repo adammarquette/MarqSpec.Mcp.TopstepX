@@ -263,6 +263,13 @@ The server serves OHLCV bars for a futures instrument at a requested resolution 
   - A lost write race is **reported** — never swallowed as a success another writer achieved, and never
     retried at the boundary, where a retry would re-run a whole tool call. A defect in *this* server — an
     invariant violation — still propagates as itself rather than as a store condition.
+- **R-5.8** **`get_footprint` and `get_volume_profile`** serve stored tape projections over MCP (gh#222).
+  Payloads carry the covered window from `TapeCoverage` — not the window asked for — and
+  `ContractCoverage` with `span` `SingleContract` naming the contract. Descriptions state that the tape
+  only goes forward: there is no historical footprint before recording began. A request for a window
+  before recording began refuses and names the earliest covered time. Live tape-subscription health is
+  omitted until it exists (gh#218) — never reported healthy by default. Reads refuse rather than
+  truncate when over cap.
 
 ## R-6 — Observations
 
@@ -318,6 +325,8 @@ The server serves OHLCV bars for a futures instrument at a requested resolution 
   **newest contiguous listening run** and reports the narrowing — the same cut `get_key_levels` makes.
   Collapsing two runs into a continuous envelope would claim coverage that was never there.
 - **R-9.6** A window with **no tape refuses** rather than returning an empty profile.
+- **R-9.7** A window entirely **before recording began** refuses and **names the earliest covered
+  time** for that instrument. An empty answer there would look like a quiet market (gh#222).
 
 ## Open questions
 

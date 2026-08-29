@@ -321,6 +321,7 @@ public sealed class ContractRollReportingTests : IDisposable
             new ToolGuards(wrapped),
             new StoreAvailabilityHolder(),
             clock,
-            Options.Create(detection ?? new KeyLevelDetectionOptions()));
+            Options.Create(detection ?? new KeyLevelDetectionOptions()),
+            new VolumeProfileService(_database));
     }
 }

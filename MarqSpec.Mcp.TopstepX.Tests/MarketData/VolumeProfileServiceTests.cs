@@ -115,6 +115,20 @@ public sealed class VolumeProfileServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task AWindowBeforeRecordingBegan_Refuses_AndNamesTheEarliestCoveredTime()
+    {
+        await SeedCoverageAsync(Coverage(Next, _fourteen, _sixteen));
+        await SeedCellsAsync(Cell(_bucket1430, 5000m, buy: 4, sell: 1));
+
+        Func<Task> read = () => Service().ReadAsync(
+            Venue, _es, FiveMinutes, _ten, _twelve, CancellationToken.None);
+
+        await read.Should().ThrowAsync<InvalidOperationException>()
+            .WithMessage("*earliest*")
+            .WithMessage("*" + _fourteen.ToString("O") + "*");
+    }
+
+    [Fact]
     public async Task CoverageWithoutCells_Refuses_RatherThanReturningAnEmptyProfile()
     {
         await SeedCoverageAsync(Coverage(Next, _fourteen, _sixteen));

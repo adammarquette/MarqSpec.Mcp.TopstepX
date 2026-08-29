@@ -439,6 +439,33 @@ Whether a lookback is *satisfiable* is not one of those: it depends on what the 
 argument, so a refusal on that axis would be an error naming knobs its caller does not have. That is an
 outage, not a refusal.
 
+### `get_footprint(symbol, resolutionMinutes, fromUtc, toUtc)`
+Buy and sell volume by price by bar, from **stored** footprint cells. There is no vendor backfill — the tape
+only goes forward from when recording began.
+
+Returns `{ symbol, resolutionMinutes, cells: [{ t, p, buy, sell }], covered: { start, end, narrowed },
+contracts: { span, segments: [{ contractId, firstBucket, lastBucket, barCount }] } }`.
+
+**`covered` is the ledger window, not the ask.** A roll or listening hole narrows to the newest contiguous
+run of the contract in front and sets `narrowed`. `contracts.span` is always `SingleContract` — a profile
+or footprint is never computed across a roll (`R-9.4`).
+
+**A window before recording began is refused** and names the earliest covered time. An empty `cells` array
+under a covered window means the subscription listened and nothing traded at those prices — that is the
+quiet-market case, and it is not the same as a pre-recording refusal. Live tape-subscription health is
+**not** on this payload (gh#218). Every field is always present; none are omitted and none are null.
+
+### `get_volume_profile(symbol, resolutionMinutes, fromUtc, toUtc)`
+Volume by price, the point of control, and the 70% value area — an aggregate over the same stored cells
+`get_footprint` reads (`R-9`). Same covered-window and contract-provenance rules, same forward-only refusal.
+
+Returns `{ symbol, resolutionMinutes, byPrice: [{ p, v }], pointOfControl, valueAreaLow, valueAreaHigh,
+valueAreaVolume, totalVolume, covered: { start, end, narrowed }, contracts }`.
+
+Coverage without volume **refuses** rather than returning an empty profile (`R-9.6`). Every field is always
+present; none are omitted and none are null. Live tape health is omitted for the same reason as
+`get_footprint`.
+
 ## Account reads
 
 All read-only. Reading what already happened transmits nothing.

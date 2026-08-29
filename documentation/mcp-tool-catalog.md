@@ -489,17 +489,23 @@ fields are always present. **`front` is the same object `get_footprint` returns*
 and the gateway pick as separate fields; `contracts` is still the listening-run cut.
 
 ### `get_contract_roll(symbol, asOfUtc?)`
-The roll **event** itself: the most recent changeover the stored tape can prove, plus both
-front-month answers at `asOfUtc` (`R-5.9`). There is no historical tape before recording began —
+The roll **event** itself: the most recent changeover the stored tape can prove, and the
+tape front at `asOfUtc` (`R-5.9`). There is no historical tape before recording began —
 a flip from before that is omitted, not guessed.
 
-Returns `{ symbol, asOfUtc, front: { used, agree, tapeContractId?, tapeSessionDate?,
+Returns `{ symbol, asOfUtc, front: { used, agree?, tapeContractId?, tapeSessionDate?,
 gatewayContractId?, changeover?: { sessionDate, flippedAtUtc?, fromContractId, toContractId } },
 contracts?: { span, segments: [{ contractId, firstBucket, lastBucket, barCount }] } }`.
 
 **`front` is the same object `get_footprint` returns.** `used` is `tape-volume` or `none` —
-never a silent prefer of the gateway. `tapeContractId`, `tapeSessionDate`, `gatewayContractId`
-and `changeover` are omitted when that answer does not exist. No `why` sentence (ADR-0008).
+never a silent prefer of the gateway. `tapeContractId`, `tapeSessionDate`, `gatewayContractId`,
+`agree` and `changeover` are omitted when that answer does not exist. No `why` sentence
+(ADR-0008).
+
+**The gateway pick is live only.** The venue cannot give a historical front. When `asOfUtc`
+defaults to now, `gatewayContractId` and `agree` sit beside the tape, as on the footprint
+tools. A historical `asOfUtc` omits both — substituting today's pick would date a comparison
+that never happened.
 
 **`contracts` is the bar-side seam around the changeover**, from bars already held — not a
 venue fetch. It is omitted when there is no changeover to place a window around. `span`

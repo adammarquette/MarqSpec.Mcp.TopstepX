@@ -160,6 +160,31 @@ public sealed class ContractRollToolTests : IDisposable
     }
 
     [Fact]
+    public async Task HistoricalAsOf_OmitsTheLiveGatewayPick_AndDoesNotReportAgree()
+    {
+        // The 19 Aug flip is on the tape. asOfUtc is the 18th. The live gateway
+        // selects CON.F.US.TEST.Z26 — today's pick. Mixing them makes agree false
+        // as if they already disagreed on the 18th. That comparison never happened.
+        await SeedRolledTapeAsync();
+
+        DateTimeOffset eighteenth = new(2026, 8, 18, 20, 0, 0, TimeSpan.Zero);
+        ToolPayloads.ContractRollInfo payload =
+            await _tools.GetContractRoll("ES", eighteenth, CancellationToken.None);
+
+        payload.AsOfUtc.Should().Be(eighteenth);
+        payload.Front.TapeContractId.Should().Be(Expiring);
+        payload.Front.Changeover.Should().BeNull();
+        payload.Front.Used.Should().Be(TapeVolumeFrontRead.UsedTapeVolume);
+        payload.Front.GatewayContractId.Should().BeNull();
+        payload.Front.Agree.Should().BeNull();
+
+        JsonElement front = Wire(payload).GetProperty("front");
+        front.GetProperty("tapeContractId").GetString().Should().Be(Expiring);
+        front.TryGetProperty("gatewayContractId", out _).Should().BeFalse();
+        front.TryGetProperty("agree", out _).Should().BeFalse();
+    }
+
+    [Fact]
     public async Task BarSideSeam_AroundTheChangeover_ReportsSpansRoll()
     {
         await SeedRolledTapeAsync();

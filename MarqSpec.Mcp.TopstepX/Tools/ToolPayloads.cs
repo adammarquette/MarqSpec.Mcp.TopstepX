@@ -672,7 +672,12 @@ public static class ToolPayloads
     /// <c>tape-volume</c> when the tape named a unique front; <c>none</c> when it did not.
     /// The gateway is never substituted into this field.
     /// </param>
-    /// <param name="Agree">Whether the tape's unique front and the gateway's selected contract are the same id.</param>
+    /// <param name="Agree">
+    /// Whether the tape's unique front and the gateway's selected contract are the same id.
+    /// <b>Omitted</b> when the gateway was not asked at this instant — a historical
+    /// <c>asOfUtc</c> has no venue pick, and substituting the live one would date a
+    /// comparison that never happened.
+    /// </param>
     /// <param name="TapeContractId">
     /// The tape's unique highest-volume contract. <b>Omitted</b> when the tape named no unique front.
     /// </param>
@@ -681,7 +686,7 @@ public static class ToolPayloads
     /// </param>
     /// <param name="GatewayContractId">
     /// <c>ResolveContractsAsync</c>'s first result — the contract Bars would fetch.
-    /// <b>Omitted</b> when the venue named none.
+    /// <b>Omitted</b> when the venue named none, or when the pick is not as-of this instant.
     /// </param>
     /// <param name="Changeover">
     /// The most recent flip that produced the current tape front. <b>Omitted</b> when none has.
@@ -699,15 +704,15 @@ public static class ToolPayloads
     /// </remarks>
     public sealed record VolumeFrontInfo(
         string Used,
-        bool Agree,
+        bool? Agree,
         string? TapeContractId,
         DateOnly? TapeSessionDate,
         string? GatewayContractId,
         VolumeFrontChangeoverInfo? Changeover);
 
     /// <summary>
-    /// The most recent tape changeover a symbol's stored prints can prove, both front-month
-    /// answers at <see cref="AsOfUtc"/>, and the bar-side seam around that flip.
+    /// The most recent tape changeover a symbol's stored prints can prove, the tape front
+    /// at <see cref="AsOfUtc"/>, and the bar-side seam around that flip.
     /// </summary>
     /// <param name="Symbol">The normalised instrument.</param>
     /// <param name="AsOfUtc">The instant the fronts were read at.</param>

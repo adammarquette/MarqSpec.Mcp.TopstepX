@@ -282,15 +282,17 @@ The server serves OHLCV bars for a futures instrument at a requested resolution 
   answered thinly. Another symbol's subscribe does not make this one healthy. Reads refuse
   rather than truncate when over cap.
 - **R-5.9** **`get_contract_roll`** reports the most recent tape changeover a symbol's stored
-  prints can prove, plus both front-month answers at `asOfUtc` (default now, bounded like
+  prints can prove, and the tape front at `asOfUtc` (default now, bounded like
   `get_market_session`'s `atUtc`, R-5.4). `front` is the same object the footprint tools
-  return (gh#346). The bar-side seam is `contracts.span` / segments around the changeover,
-  or omitted when there is no flip to place a window around; `Unknown` means provenance was
-  never recorded, not that there was no roll. No roll table: the event is a projection over
-  prints and bars already held ([ADR-0011](adr/0011-contract-roll-boundary.md)). There is no
-  historical tape before recording began. An unknown instrument is an error (R-5.3). A
-  symbol with no changeover omits it rather than guessing a date. No `why` on the wire
-  (ADR-0008).
+  return (gh#346). The gateway pick is live only: when `asOfUtc` is now (the omitted
+  default), `gatewayContractId` and `agree` sit beside the tape; a historical `asOfUtc`
+  omits both rather than dating today's pick as if it were as-of. The bar-side seam is
+  `contracts.span` / segments around the changeover, or omitted when there is no flip to
+  place a window around; `Unknown` means provenance was never recorded, not that there was
+  no roll. No roll table: the event is a projection over prints and bars already held
+  ([ADR-0011](adr/0011-contract-roll-boundary.md)). There is no historical tape before
+  recording began. An unknown instrument is an error (R-5.3). A symbol with no changeover
+  omits it rather than guessing a date. No `why` on the wire (ADR-0008).
 
 ## R-6 — Observations
 

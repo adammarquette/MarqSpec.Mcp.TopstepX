@@ -736,11 +736,13 @@ public sealed class MarketDataTools(
     [McpServerTool(ReadOnly = true, Idempotent = true, Title = "Get contract roll")]
     [Description(
         "Reports the most recent contract-roll changeover the stored tape can prove for a symbol, "
-        + "plus both front-month answers at asOfUtc. There is no historical tape before recording "
+        + "and the tape front at asOfUtc. There is no historical tape before recording "
         + "began — a changeover from before that is ABSENT, not guessed. `front` is the same object "
         + "get_footprint returns: `used` is `tape-volume` or `none`, never a silent prefer of the "
-        + "gateway. Keys inside `front` — including `changeover` — are omitted when that answer "
-        + "does not exist. `contracts` is the bar-side seam around the changeover (`span` / "
+        + "gateway. Keys inside `front` — including `changeover`, `gatewayContractId` and `agree` — "
+        + "are omitted when that answer does not exist. The gateway pick is live only; a historical "
+        + "asOfUtc omits `gatewayContractId` and `agree` rather than dating today's pick as if it "
+        + "were as-of. `contracts` is the bar-side seam around the changeover (`span` / "
         + "segments); it is omitted when there is no changeover to place a window around. "
         + "`span` Unknown means provenance was never recorded, not that there was no roll. "
         + "asOfUtc is bounded like get_market_session's atUtc.")]
@@ -750,11 +752,13 @@ public sealed class MarketDataTools(
         CancellationToken cancellationToken = default)
     {
         InstrumentId instrument = Resolve(symbol);
+        DateTimeOffset now = _clock.GetUtcNow().ToUniversalTime();
         DateTimeOffset at =
-            ToolGuards.ValidateInstant((asOfUtc ?? _clock.GetUtcNow()).ToUniversalTime(), "asOfUtc");
+            ToolGuards.ValidateInstant((asOfUtc ?? now).ToUniversalTime(), "asOfUtc");
+        bool resolveGateway = asOfUtc is null || at == now;
 
         ToolPayloads.VolumeFrontInfo front =
-            await FrontAsync(instrument, cancellationToken, at).ConfigureAwait(false);
+            await FrontAsync(instrument, cancellationToken, at, resolveGateway).ConfigureAwait(false);
 
         ToolPayloads.ContractCoverage? contracts = front.Changeover is { } flip
             ? await BarSeamAroundAsync(instrument, flip, at, cancellationToken).ConfigureAwait(false)
@@ -770,13 +774,14 @@ public sealed class MarketDataTools(
     private async Task<ToolPayloads.VolumeFrontInfo> FrontAsync(
         InstrumentId instrument,
         CancellationToken cancellationToken,
-        DateTimeOffset? asOfUtc = null)
+        DateTimeOffset? asOfUtc = null,
+        bool resolveGateway = true)
     {
         TapeVolumeFrontRead read;
         try
         {
             read = await _volumeFront
-                .ReadAsync(instrument, cancellationToken, asOfUtc)
+                .ReadAsync(instrument, cancellationToken, asOfUtc, resolveGateway)
                 .ConfigureAwait(false);
         }
         catch (VenueException ex)
@@ -787,10 +792,10 @@ public sealed class MarketDataTools(
         VolumeFrontChangeover? flip = read.Tape.Changeover;
         return new ToolPayloads.VolumeFrontInfo(
             read.Used,
-            read.Agree,
+            resolveGateway ? read.Agree : null,
             read.Tape.ActiveContractId,
             read.Tape.ActiveSessionDate,
-            read.GatewaySelectedContractId,
+            resolveGateway ? read.GatewaySelectedContractId : null,
             flip is null
                 ? null
                 : new ToolPayloads.VolumeFrontChangeoverInfo(

@@ -80,11 +80,17 @@ public sealed class TapeVolumeFrontService(
     /// <param name="asOfUtc">
     /// When set, only prints at or before this instant take part. Omitted reads the whole tape.
     /// </param>
+    /// <param name="resolveGateway">
+    /// Whether to ask the venue for the contract Bars would fetch. The venue has no
+    /// historical pick: a past <paramref name="asOfUtc"/> must pass <see langword="false"/>
+    /// rather than date today's answer as if it were as-of.
+    /// </param>
     /// <returns>Both answers, which one this read uses, and why.</returns>
     public async Task<TapeVolumeFrontRead> ReadAsync(
         InstrumentId instrument,
         CancellationToken cancellationToken,
-        DateTimeOffset? asOfUtc = null)
+        DateTimeOffset? asOfUtc = null,
+        bool resolveGateway = true)
     {
         string venue = _gateway.VenueId;
 
@@ -114,6 +120,19 @@ public sealed class TapeVolumeFrontService(
         ];
 
         VolumeFront tape = TapeVolumeFront.Measure(prints, _calendar);
+
+        if (!resolveGateway)
+        {
+            return new TapeVolumeFrontRead(
+                tape,
+                null,
+                [],
+                Agree: false,
+                tape.ActiveContractId is null
+                    ? TapeVolumeFrontRead.UsedNone
+                    : TapeVolumeFrontRead.UsedTapeVolume,
+                Why: string.Empty);
+        }
 
         IReadOnlyList<VenueContract> contracts = await _gateway
             .ResolveContractsAsync(instrument, cancellationToken)

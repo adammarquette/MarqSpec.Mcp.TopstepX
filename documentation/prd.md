@@ -287,9 +287,9 @@ The server serves OHLCV bars for a futures instrument at a requested resolution 
   return (gh#346). The gateway pick is live only: when `asOfUtc` is now (the omitted
   default), `gatewayContractId` and `agree` sit beside the tape; a historical `asOfUtc`
   omits both rather than dating today's pick as if it were as-of. The bar-side seam is
-  `contracts.span` / segments around the changeover, inspected at every stored resolution
-  so a finer series that starts after the flip cannot report `SingleContract` while a
-  coarser one already held spans; omitted when there is no flip to place a window around;
+  `contracts.span` / segments around the changeover, over stored bars in that window
+  across every resolution, so two contracts on different sizes cannot report
+  `SingleContract`; omitted when there is no flip to place a window around;
   `Unknown` means provenance was never recorded, not that there was no roll. No roll table: the event is a projection over prints and bars already held
   ([ADR-0011](adr/0011-contract-roll-boundary.md)). There is no historical tape before
   recording began. An unknown instrument is an error (R-5.3). A symbol with no changeover

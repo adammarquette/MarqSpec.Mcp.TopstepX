@@ -225,6 +225,27 @@ public sealed class ContractRollToolTests : IDisposable
     }
 
     [Fact]
+    public async Task BarSideSeam_TwoContractsOnDifferentResolutions_ReportsSpansRoll()
+    {
+        // 5-minute U26 only before the flip; 1-minute Z26 only after. No single
+        // series crosses, so picking one resolution reports SingleContract.
+        // The store around the flip has two contracts — that is SpansRoll.
+        await SeedRolledTapeAsync();
+        await SeedFiveMinuteBarsBeforeFlipAsync(Expiring);
+        await SeedOneMinuteBarsAfterFlipAsync(Next);
+
+        ToolPayloads.ContractRollInfo payload =
+            await _tools.GetContractRoll("ES", asOfUtc: null, CancellationToken.None);
+
+        payload.Front.Changeover.Should().NotBeNull();
+        payload.Front.Changeover!.FromContractId.Should().Be(Expiring);
+        payload.Front.Changeover.ToContractId.Should().Be(Next);
+        payload.Contracts.Should().NotBeNull();
+        payload.Contracts!.Span.Should().Be(ToolPayloads.ContractSpan.SpansRoll);
+        payload.Contracts.Segments.Select(s => s.ContractId).Should().Equal(Expiring, Next);
+    }
+
+    [Fact]
     public async Task BarSideSeam_WithUnrecordedProvenance_IsUnknown_NotAGuessedSingleContract()
     {
         await SeedRolledTapeAsync();
@@ -270,6 +291,15 @@ public sealed class ContractRollToolTests : IDisposable
             Bar(flip.AddMinutes(-5), knownProvenance ? Expiring : null),
             Bar(flip, knownProvenance ? Next : null),
             Bar(flip.AddMinutes(5), knownProvenance ? Next : null));
+        await _database.SaveChangesAsync();
+    }
+
+    private async Task SeedFiveMinuteBarsBeforeFlipAsync(string contractId)
+    {
+        DateTimeOffset flip = Central(2026, 8, 19, 10, 1);
+        _database.Bars.AddRange(
+            Bar(flip.AddMinutes(-10), contractId, FiveMinutes),
+            Bar(flip.AddMinutes(-5), contractId, FiveMinutes));
         await _database.SaveChangesAsync();
     }
 

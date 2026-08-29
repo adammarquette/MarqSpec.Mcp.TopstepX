@@ -456,7 +456,9 @@ Buy and sell volume by price by bar, from **stored** footprint cells. There is n
 only goes forward from when recording began.
 
 Returns `{ symbol, resolutionMinutes, cells: [{ t, p, buy, sell }], covered: { start, end, narrowed },
-contracts: { span, segments: [{ contractId, firstBucket, lastBucket, barCount }] } }`.
+contracts: { span, segments: [{ contractId, firstBucket, lastBucket, barCount }] },
+front: { used, agree, tapeContractId?, tapeSessionDate?, gatewayContractId?,
+changeover?: { sessionDate, flippedAtUtc?, fromContractId, toContractId } } }`.
 
 **`covered` is the ledger window, not the ask.** A roll or listening hole narrows to the newest contiguous
 run of the contract in front and sets `narrowed`. `contracts.span` is always `SingleContract` — a profile
@@ -467,20 +469,24 @@ times from the cells**, not the exclusive coverage end — that range stays on `
 no cells at the asked bar size is refused** rather than returned as empty `cells`: `TapeCoverage` is not
 per-resolution, so that quiet-looking shape would hide an unprojected series. **When that instrument's live tape is not
 listening the tool refuses** with a sentence naming the fix — an empty answer and an absent tape must not
-look the same (gh#218). Another symbol's subscribe does not make this one healthy. Every field is always
-present; none are omitted and none are null.
+look the same (gh#218). Another symbol's subscribe does not make this one healthy. Top-level fields are
+always present. **`front` is a new object, not a replacement for `contracts`.** `used` is `tape-volume`
+or `none` — never a silent prefer of the gateway. `tapeContractId`, `tapeSessionDate`,
+`gatewayContractId` and `changeover` are omitted when that answer does not exist. No `why` sentence
+(ADR-0008). `contracts` stays the newest listening run from cells and `TapeCoverage`.
 
 ### `get_volume_profile(symbol, resolutionMinutes, fromUtc, toUtc)`
 Volume by price, the point of control, and the 70% value area — an aggregate over the same stored cells
 `get_footprint` reads (`R-9`). Same covered-window and contract-provenance rules, same forward-only refusal.
 
 Returns `{ symbol, resolutionMinutes, byPrice: [{ p, v }], pointOfControl, valueAreaLow, valueAreaHigh,
-valueAreaVolume, totalVolume, covered: { start, end, narrowed }, contracts }`.
+valueAreaVolume, totalVolume, covered: { start, end, narrowed }, contracts, front }`.
 
 Coverage without volume **refuses** rather than returning an empty profile (`R-9.6`). **When that instrument's live tape
 is not listening the tool refuses** with a sentence naming the fix — an empty profile and an absent tape
-must not look the same (gh#218). Another symbol's subscribe does not make this one healthy. Every field is
-always present; none are omitted and none are null.
+must not look the same (gh#218). Another symbol's subscribe does not make this one healthy. Top-level
+fields are always present. **`front` is the same object `get_footprint` returns** — tape volume-front
+and the gateway pick as separate fields; `contracts` is still the listening-run cut.
 
 ## Account reads
 

@@ -478,8 +478,11 @@ contracts stay in `Trades`. Filtering at ingest would discard the prints that pr
 **Profile `contracts` is a third cut.** `get_footprint` and `get_volume_profile` report
 `contracts` from cells and `TapeCoverage` — the newest contiguous listening run, not session
 volume. Replacing that block with volume-front without naming the difference would be a second
-silent source of truth wearing the first's field names. This increment stops at
-`TapeVolumeFrontService`; the tools are not wired (gh#218 owns their health block).
+silent source of truth wearing the first's field names. Both tools call
+`TapeVolumeFrontService.ReadAsync` and carry the comparison as `front` beside `contracts`:
+`used` is `tape-volume` or `none`, never a silent prefer of the gateway. `why` stays off the
+wire (ADR-0008). gh#218 owns the health block that refuses when that instrument's tape is not
+listening.
 
 ## What is deliberately absent
 

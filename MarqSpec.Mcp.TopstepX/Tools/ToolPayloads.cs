@@ -585,10 +585,15 @@ public static class ToolPayloads
     /// <param name="Contracts">
     /// Contract provenance. A profile/footprint is confined to one contract, so
     /// <see cref="ContractSpan.SingleContract"/> with one segment naming it. Segment bucket times are
-    /// bar opens from the cells, not the exclusive coverage end.
+    /// bar opens from the cells, not the exclusive coverage end. This is the newest listening run,
+    /// not the tape's volume-front — that answer lives on <see cref="Front"/>.
+    /// </param>
+    /// <param name="Front">
+    /// Tape volume-front beside the contract Bars would fetch. Always present as an object;
+    /// keys inside it are omitted when that answer does not exist.
     /// </param>
     /// <remarks>
-    /// Every field is always present; none are omitted and none are null. Live tape-subscription health
+    /// Top-level fields are always present. Live tape-subscription health
     /// is not a field on this payload — when the tape is not listening the tool refuses with a sentence
     /// naming the fix (gh#218). A covered window with no cells at the asked bar size is refused rather
     /// than returned empty: TapeCoverage is not per-resolution, so empty <c>cells</c> would look like a
@@ -599,7 +604,8 @@ public static class ToolPayloads
         int ResolutionMinutes,
         IReadOnlyList<FootprintCellPoint> Cells,
         CoveredWindow Covered,
-        ContractCoverage Contracts);
+        ContractCoverage Contracts,
+        VolumeFrontInfo Front);
 
     /// <summary>Volume at one price on the wire.</summary>
     /// <param name="P">The price.</param>
@@ -618,10 +624,15 @@ public static class ToolPayloads
     /// <param name="Covered">The ledger window that produced the profile.</param>
     /// <param name="Contracts">
     /// Contract provenance. Always <see cref="ContractSpan.SingleContract"/> — a roll is confined
-    /// before aggregation, never reported as <see cref="ContractSpan.SpansRoll"/>.
+    /// before aggregation, never reported as <see cref="ContractSpan.SpansRoll"/>. The newest
+    /// listening run, not the tape's volume-front — that answer lives on <see cref="Front"/>.
+    /// </param>
+    /// <param name="Front">
+    /// Tape volume-front beside the contract Bars would fetch. Always present as an object;
+    /// keys inside it are omitted when that answer does not exist.
     /// </param>
     /// <remarks>
-    /// Every field is always present; none are omitted and none are null. Live tape-subscription health
+    /// Top-level fields are always present. Live tape-subscription health
     /// is not a field on this payload — when the tape is not listening the tool refuses with a sentence
     /// naming the fix (gh#218).
     /// </remarks>
@@ -635,7 +646,64 @@ public static class ToolPayloads
         long ValueAreaVolume,
         long TotalVolume,
         CoveredWindow Covered,
-        ContractCoverage Contracts);
+        ContractCoverage Contracts,
+        VolumeFrontInfo Front);
+
+    /// <summary>
+    /// The session — and the instant inside it — when the volume-front flipped.
+    /// </summary>
+    /// <param name="SessionDate">The trade date whose winner differed from the previous session's.</param>
+    /// <param name="FlippedAtUtc">
+    /// The first print time the new front's running volume exceeded the previous front's.
+    /// <b>A property, so it is omitted</b> when the instant could not be placed.
+    /// </param>
+    /// <param name="FromContractId">The contract that had been the front.</param>
+    /// <param name="ToContractId">The contract that overtook it.</param>
+    public sealed record VolumeFrontChangeoverInfo(
+        DateOnly SessionDate,
+        DateTimeOffset? FlippedAtUtc,
+        string FromContractId,
+        string ToContractId);
+
+    /// <summary>
+    /// Both answers for which contract is in front: tape volume and the gateway pick Bars would fetch.
+    /// </summary>
+    /// <param name="Used">
+    /// <c>tape-volume</c> when the tape named a unique front; <c>none</c> when it did not.
+    /// The gateway is never substituted into this field.
+    /// </param>
+    /// <param name="Agree">Whether the tape's unique front and the gateway's selected contract are the same id.</param>
+    /// <param name="TapeContractId">
+    /// The tape's unique highest-volume contract. <b>Omitted</b> when the tape named no unique front.
+    /// </param>
+    /// <param name="TapeSessionDate">
+    /// The session that measurement belongs to. <b>Omitted</b> when the tape named no session.
+    /// </param>
+    /// <param name="GatewayContractId">
+    /// <c>ResolveContractsAsync</c>'s first result — the contract Bars would fetch.
+    /// <b>Omitted</b> when the venue named none.
+    /// </param>
+    /// <param name="Changeover">
+    /// The most recent flip that produced the current tape front. <b>Omitted</b> when none has.
+    /// </param>
+    /// <remarks>
+    /// <para>
+    /// This is not <see cref="ContractCoverage"/>. Profile <c>contracts</c> is the newest contiguous
+    /// listening run from cells and <c>TapeCoverage</c>. Copying <see cref="TapeContractId"/> into
+    /// that block would be a second silent source of truth (gh#346).
+    /// </para>
+    /// <para>
+    /// No sentence explaining the choice — ADR-0008 forbids vendor-adjacent free text on the wire.
+    /// <c>used</c>, the ids, and <c>agree</c> are the facts.
+    /// </para>
+    /// </remarks>
+    public sealed record VolumeFrontInfo(
+        string Used,
+        bool Agree,
+        string? TapeContractId,
+        DateOnly? TapeSessionDate,
+        string? GatewayContractId,
+        VolumeFrontChangeoverInfo? Changeover);
 
     /// <summary>
     /// Contract provenance for a tape-derived answer confined to one contract, with bar-open times

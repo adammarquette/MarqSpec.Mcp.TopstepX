@@ -271,7 +271,10 @@ The server serves OHLCV bars for a futures instrument at a requested resolution 
     invariant violation — still propagates as itself rather than as a store condition.
 - **R-5.8** **`get_footprint` and `get_volume_profile`** serve stored tape projections over MCP (gh#222).
   Payloads carry the covered window from `TapeCoverage` — not the window asked for — and
-  `ContractCoverage` with `span` `SingleContract` naming the contract. Descriptions state that the tape
+  `ContractCoverage` with `span` `SingleContract` naming the contract. They also carry `front`:
+  tape volume-front and the gateway-selected contract as separate fields, with `used` `tape-volume`
+  or `none` — never a silent prefer of the gateway, and never a rewrite of `contracts` (gh#346).
+  Descriptions state that the tape
   only goes forward: there is no historical footprint before recording began. A request for a window
   before recording began refuses and names the earliest covered time. Live tape-subscription health is
   required at the point of use (gh#218): when **that instrument's** tape is not listening the

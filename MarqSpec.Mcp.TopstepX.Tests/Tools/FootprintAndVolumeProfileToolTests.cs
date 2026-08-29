@@ -31,6 +31,8 @@ public sealed class FootprintAndVolumeProfileToolTests : IDisposable
 {
     private const string Venue = "test";
     private const string Front = "CON.F.US.EP.Z26";
+    private const string Expiring = "CON.F.US.EP.U26";
+    private const string GatewaySelected = "CON.F.US.TEST.Z26";
     private const int FiveMinutes = 5;
 
     private static readonly InstrumentId _es = new("ES");
@@ -200,6 +202,11 @@ public sealed class FootprintAndVolumeProfileToolTests : IDisposable
     [Fact]
     public async Task AWindowWithNoTapeAtAll_Refuses_RatherThanReturningAnEmptyAnswer()
     {
+        // Prints that would name a volume-front must not turn a no-tape window
+        // into a payload. front is not a consolation prize (R-9.6, gh#346).
+        await SeedTradesAsync(
+            Trade(Central(2026, 8, 18, 10, 0), 1, Expiring, 80, TradeDirection.Buy));
+
         Func<Task> footprint = () => _tools.GetFootprint(
             "ES", FiveMinutes, _ten, _sixteen, CancellationToken.None);
         Func<Task> profile = () => _tools.GetVolumeProfile(
@@ -207,6 +214,64 @@ public sealed class FootprintAndVolumeProfileToolTests : IDisposable
 
         await footprint.Should().ThrowAsync<McpException>().WithMessage("*no tape*");
         await profile.Should().ThrowAsync<McpException>().WithMessage("*no tape*");
+    }
+
+    [Fact]
+    public async Task Front_NamesBothAnswers_WhenTapeVolumeAndTheGatewayDisagree()
+    {
+        await SeedCoverageAsync(Coverage(Front, _fourteen, _sixteen));
+        await SeedCellsAsync(Cell(_bucket1430, 5000m, buy: 4, sell: 1));
+        await SeedTradesAsync(
+            Trade(Central(2026, 8, 18, 10, 0), 1, Front, 20, TradeDirection.Buy),
+            Trade(Central(2026, 8, 19, 10, 0), 2, Front, 10, TradeDirection.Sell),
+            Trade(Central(2026, 8, 19, 10, 1), 3, Expiring, 80, TradeDirection.Unknown));
+
+        ToolPayloads.FootprintSeries footprint = await _tools.GetFootprint(
+            "ES", FiveMinutes, _fourteen, _sixteen, CancellationToken.None);
+        ToolPayloads.VolumeProfileSeries profile = await _tools.GetVolumeProfile(
+            "ES", FiveMinutes, _fourteen, _sixteen, CancellationToken.None);
+
+        AssertDisagreement(footprint.Front);
+        AssertDisagreement(profile.Front);
+    }
+
+    [Fact]
+    public async Task Front_UsedIsNone_WhenTheTapeHasNoUniqueFront_AndTheGatewayIsNotSubstituted()
+    {
+        await SeedCoverageAsync(Coverage(Front, _fourteen, _sixteen));
+        await SeedCellsAsync(Cell(_bucket1430, 5000m, buy: 4, sell: 1));
+
+        ToolPayloads.FootprintSeries footprint = await _tools.GetFootprint(
+            "ES", FiveMinutes, _fourteen, _sixteen, CancellationToken.None);
+        ToolPayloads.VolumeProfileSeries profile = await _tools.GetVolumeProfile(
+            "ES", FiveMinutes, _fourteen, _sixteen, CancellationToken.None);
+
+        AssertUnusedGateway(footprint.Front);
+        AssertUnusedGateway(profile.Front);
+    }
+
+    [Fact]
+    public async Task ContractsSegments_StayTheListeningRun_WhenFrontTapeContractIdDiffers()
+    {
+        await SeedCoverageAsync(Coverage(Front, _fourteen, _sixteen));
+        await SeedCellsAsync(Cell(_bucket1430, 5000m, buy: 4, sell: 1));
+        await SeedTradesAsync(
+            Trade(Central(2026, 8, 18, 10, 0), 1, Expiring, 80, TradeDirection.Buy),
+            Trade(Central(2026, 8, 18, 10, 1), 2, Front, 10, TradeDirection.Sell));
+
+        ToolPayloads.FootprintSeries footprint = await _tools.GetFootprint(
+            "ES", FiveMinutes, _fourteen, _sixteen, CancellationToken.None);
+        ToolPayloads.VolumeProfileSeries profile = await _tools.GetVolumeProfile(
+            "ES", FiveMinutes, _fourteen, _sixteen, CancellationToken.None);
+
+        footprint.Front.TapeContractId.Should().Be(Expiring);
+        profile.Front.TapeContractId.Should().Be(Expiring);
+        footprint.Contracts.Segments.Should().ContainSingle()
+            .Which.ContractId.Should().Be(Front);
+        profile.Contracts.Segments.Should().ContainSingle()
+            .Which.ContractId.Should().Be(Front);
+        footprint.Contracts.Segments[0].ContractId.Should().NotBe(footprint.Front.TapeContractId);
+        profile.Contracts.Segments[0].ContractId.Should().NotBe(profile.Front.TapeContractId);
     }
 
     [Fact]
@@ -251,7 +316,30 @@ public sealed class FootprintAndVolumeProfileToolTests : IDisposable
             description.Should().MatchRegex("(?i)omitted|present.*null|always present");
             description.Should().MatchRegex("(?i)refus");
             description.Should().MatchRegex("(?i)listen");
+            description.Should().MatchRegex("(?i)tape-volume|volume-front");
         }
+    }
+
+    private static void AssertDisagreement(ToolPayloads.VolumeFrontInfo front)
+    {
+        front.Used.Should().Be(TapeVolumeFrontRead.UsedTapeVolume);
+        front.Agree.Should().BeFalse();
+        front.TapeContractId.Should().Be(Expiring);
+        front.TapeSessionDate.Should().Be(new DateOnly(2026, 8, 19));
+        front.GatewayContractId.Should().Be(GatewaySelected);
+        front.Changeover.Should().NotBeNull();
+        front.Changeover!.SessionDate.Should().Be(new DateOnly(2026, 8, 19));
+        front.Changeover.FromContractId.Should().Be(Front);
+        front.Changeover.ToContractId.Should().Be(Expiring);
+    }
+
+    private static void AssertUnusedGateway(ToolPayloads.VolumeFrontInfo front)
+    {
+        front.Used.Should().Be(TapeVolumeFrontRead.UsedNone);
+        front.Used.Should().NotBe(TapeVolumeFrontRead.UsedTapeVolume);
+        front.TapeContractId.Should().BeNull();
+        front.GatewayContractId.Should().Be(GatewaySelected);
+        front.Agree.Should().BeFalse();
     }
 
     private async Task SeedCoverageAsync(params TapeCoverageRecord[] rows)
@@ -265,6 +353,33 @@ public sealed class FootprintAndVolumeProfileToolTests : IDisposable
         _database.FootprintCells.AddRange(cells);
         await _database.SaveChangesAsync();
     }
+
+    private async Task SeedTradesAsync(params TradeRecord[] trades)
+    {
+        _database.Trades.AddRange(trades);
+        await _database.SaveChangesAsync();
+    }
+
+    private static DateTimeOffset Central(int year, int month, int day, int hour, int minute) =>
+        MarketClock.FromMarket(new DateOnly(year, month, day), new TimeOnly(hour, minute));
+
+    private static TradeRecord Trade(
+        DateTimeOffset when,
+        long sequence,
+        string contractId,
+        long size,
+        TradeDirection direction) => new()
+        {
+            Venue = Venue,
+            Instrument = _es.Symbol,
+            ContractId = contractId,
+            TradeTimeUtc = when,
+            Sequence = sequence,
+            Price = 5000m,
+            Size = size,
+            Direction = direction,
+            RecordedAt = _recorded,
+        };
 
     private static TapeCoverageRecord Coverage(
         string contractId,

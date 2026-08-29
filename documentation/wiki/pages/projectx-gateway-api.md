@@ -66,26 +66,24 @@ Handled inside the client. Any new code path constructing a request must not rei
 
 ### A zero that means something is a missing field wearing an answer
 
-Integer-typed enums bind by value, so **an absent field lands on the enum's zero** — and whether that is safe
-depends entirely on what the client declared at zero.
+Integer-typed enums bind by value, so **an absent field lands on the enum's zero** unless the property is
+nullable — and whether that is safe depends entirely on what the client declared at zero.
 
 | Client enum | Zero | An absent field becomes |
 |---|---|---|
 | `OrderStatus` | `None` | `Unknown` — correct |
 | `PositionType` | `Undefined` | refused by the signed-size guard — correct |
 | `OrderType` | `Unknown` | correct |
-| **`OrderSide`** | **`Bid`** | **`Buy` — a direction the venue never stated** |
+| **`OrderSide`** | **`Bid`** | **`null` → `VenueSide.Unknown` (3.0.0)** |
 
-`OrderSide` is the only enum this server binds from a *response* whose zero is a real value, and the property
-is non-nullable, so nothing downstream can tell an omitted `side` from an explicit buy. The client exposes no
-raw body and no extension data, so the distinction is destroyed before this repository sees the object
-(gh#84). An out-of-range value is different and *is* caught — `"side":9` binds to `(OrderSide)9` and maps to
-`Unknown`.
+`OrderSide` is still the only mapped response enum whose zero is a real buy. From 3.0.0 the published
+property is `OrderSide?`, so an omitted `side` arrives as `null` rather than as `Bid`, and this server maps
+that null to `VenueSide.Unknown`. An explicit `"side":0` is still Buy and `"side":1` is still Sell. An
+out-of-range value is still caught — `"side":9` binds to `(OrderSide)9` and maps to `Unknown`.
 
-**The fix is upstream** — a nullable `Side`, or a zero meaning unset as the other three already have,
-filed as [MarqSpec.Client.ProjectX#83](https://github.com/adammarquette/MarqSpec.Client.ProjectX/issues/83). Until
-then `side` on `get_orders` and `get_trades` carries the caveat, and
-`VenueSideBindingTests.AnAbsentSide_IsIndistinguishableFromABuy` is the tripwire that goes red when it is over.
+[MarqSpec.Client.ProjectX#83](https://github.com/adammarquette/MarqSpec.Client.ProjectX/issues/83) landed in
+3.0.0. The 2.1.0 tripwire (`AnAbsentSide_IsIndistinguishableFromABuy`) is gone; the pin is
+`VenueSideBindingTests.AnOmittedSide_MapsToUnknown_NotBuy`.
 
 `AggregateBarUnit`'s zero is `Unspecified`, a real value — but it is only ever *constructed* for a request and
 never bound from a response, so it cannot carry this fault.
@@ -269,7 +267,7 @@ The market hub carries quotes, trades and depth over SignalR. **This repository 
 record the trade tape** — see [ADR-0016](../../adr/0016-subscribe-to-the-market-hub.md) and the architecture
 doc's *What is deliberately absent*. ADR-0007 is the stdio/HTTP transport record and says nothing about this
 hub. There is still no REST quote endpoint, so live bid/ask remains stream-only; quote and depth recording are
-out of Phase 5. The recorder itself is not in the tree yet (Client#86/#87).
+out of Phase 5. The recorder itself is not in the tree yet (gh#216); Client#86/#87 landed in 3.0.0.
 
 > One gotcha for whoever adds it: **you subscribe by full contract id, but quotes come back tagged by product
 > root.** Subscribing to `CON.F.US.MES.U26` succeeds, and every quote then reports `F.US.MES`. A stream

@@ -20,7 +20,7 @@ open and should have published one. A weekend is not a gap.
 > server computes is a number, not a recommendation — and a number that is subtly wrong looks exactly like one
 > that is right.
 
-> **Status: pre-release.** The ProjectX adapter is `MarqSpec.Client.ProjectX` 2.1.0, so the venue is live.
+> **Status: pre-release.** The ProjectX adapter is `MarqSpec.Client.ProjectX` 3.0.0, so the venue is live.
 > The tree is past Phase 0: contract rolls, on-read indicator projection, session levels, observations and
 > embeddings are in the product. The documentation layer is the source of truth and the code is written
 > against it. See the [project board](https://github.com/users/adammarquette/projects/5) for what is next.

@@ -39,7 +39,7 @@ rather than reword it.
 | Document | ~tok | Read it when |
 |---|---:|---|
 | [`prd.md`](prd.md) | 7.8K | You need **what is required**, or you are citing an `R-#`. Ids are stable and never renumbered, and a citation that does not resolve here fails CI. |
-| [`architecture.md`](architecture.md) | 8.8K | You need **how the pieces fit** — the cache-aside path, the projection, the transports. |
+| [`architecture.md`](architecture.md) | 8.9K | You need **how the pieces fit** — the cache-aside path, the projection, the transports. |
 | [`mcp-tool-catalogue`](mcp-tool-catalog.md) | 14.3K | You are adding, changing or calling a tool. The tool surface is a contract; this is it. |
 | [`data-dictionary.md`](data-dictionary.md) | 5.0K | You need the data model — the eight tables, their keys, and why each key is shaped that way. |
 
@@ -47,7 +47,7 @@ rather than reword it.
 
 | Document | ~tok | Read it when |
 |---|---:|---|
-| [`AGENT-MEMORY.md`](AGENT-MEMORY.md) | 9.9K | **Before starting any work.** It grows by *append, don't overwrite* and shrinks by the retirement rule in its own header (gh#254), so this row moves in both directions — correct it in the pull request that moves the file. |
+| [`AGENT-MEMORY.md`](AGENT-MEMORY.md) | 9.8K | **Before starting any work.** It grows by *append, don't overwrite* and shrinks by the retirement rule in its own header (gh#254), so this row moves in both directions — correct it in the pull request that moves the file. |
 | [`project-board-workflow.md`](project-board-workflow.md) | 6.0K | You are filing, grooming or moving a card. **The board is project #5; #4 is retired.** The board makes two of the seven transitions by itself; the other five are somebody's deliberate act. |
 | [`work-estimate-rubric.md`](work-estimate-rubric.md) | 1.0K | You are setting a `Work Estimate` on an issue. |
 | [`agents/README.md`](agents/README.md) | 1.0K | You are wearing a role hat. **This row prices the index, not the route it serves** — each contract behind it is a separate read, and the index prices all five in its own gated `~tok` column (gh#178). Reviewer, Platform and Coordinator contracts **never auto-load**; open them yourself. |

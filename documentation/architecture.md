@@ -459,8 +459,9 @@ in the [tool catalogue](mcp-tool-catalog.md).
 
 - **No order path.** Not a guarded one ([ADR-0002](adr/0002-read-only-venue-boundary.md)).
 - **Market-hub recording is decided.** The standing choice not to subscribe is reversed
-  ([ADR-0016](adr/0016-subscribe-to-the-market-hub.md)). The recorder is Phase 5 and is not in the tree yet —
-  blocked on Client#86/#87 — so there is still no tape and still no `get_quote`. Quote and depth recording stay
+  ([ADR-0016](adr/0016-subscribe-to-the-market-hub.md)). The recorder is Phase 5 and is not in the tree yet
+  (gh#216). Client#86/#87 landed in `MarqSpec.Client.ProjectX` 3.0.0, so the package is no longer the block —
+  there is still no tape and still no `get_quote`. Quote and depth recording stay
   out of this phase; the stream that will be consumed is the trade tape.
 - **No REST poller.** Bar, contract and account fetches stay caused by a tool call. The tape recorder is a push
   subscriber under the HTTP transport, not a background poll of a quote endpoint the venue does not have. A

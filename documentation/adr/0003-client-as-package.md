@@ -50,6 +50,7 @@ order placement from retry. Reimplementing that is reimplementing the bugs.
 |---|---|
 | [2026-08-22](#update-2026-08-22--the-package-lags-the-fixes) | The published package predates the fixes this server needs; the reference is deferred behind a seam |
 | [2026-08-22](#update-2026-08-22--resolved-by-210) | 2.1.0 published; the reference is live and the adapter has landed |
+| [2026-08-28](#update-2026-08-28--consumed-300) | 3.0.0 published; absent `side` is `null`, and the hub stamp is restorable |
 
 ## Update (2026-08-22) — the package lags the fixes
 
@@ -98,4 +99,24 @@ code at worst.
 commented out, so `PlaceOrderAsync` was not reachable and a green gate was consistent with an empty
 repository. With 2.1.0 referenced those methods are genuinely one call away, and the gate is green because
 nothing calls them — which is the claim it was written to make.
+
+## Update (2026-08-28) — consumed 3.0.0
+
+The operator published **3.0.0**. The pin moved; the decision did not. No `ProjectReference`, no client
+`develop` tree.
+
+**The public surface was read from the nupkg XML docs**, file
+`lib/net10.0/MarqSpec.Client.ProjectX.xml` — the same rule the 1.0.4 → 2.1.0 jump established above, and
+the practice that lived as an AGENT-MEMORY note until this bump consumed it. What that file states, and
+what this repository now maps:
+
+- `P:MarqSpec.Client.ProjectX.Api.Models.Order.Side` and `HalfTrade.Side` are `OrderSide?`. An omitted
+  `side` is `null`, not `Bid`. Wire `0` is still Bid and `1` is still Ask (Client#83).
+- `TradeUpdate.ContractId` is stamped from the hub `(contractId, payload)` argument; `TradeUpdate.Type`
+  is `TradeLogType?`, so an unstated direction stays `null` rather than `Buy` (Client#86).
+- Automatic reconnect restores recorded subscriptions before reporting `Connected` (Client#87).
+
+`ProjectXMapping.ToSide` accepts that published `OrderSide?` and maps `null` to `VenueSide.Unknown`. The
+2.1.0 defect-pinning test is gone. The recorder (gh#216) is still unwritten; this update only makes the
+package it needs restorable.
 

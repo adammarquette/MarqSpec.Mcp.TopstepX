@@ -73,6 +73,7 @@ decides that one host speaks stdio and streamable HTTP; grep it for `signalr`, `
 | Update | What changed |
 |---|---|
 | [2026-08-28](#update-2026-08-28--the-standing-choice-is-reversed) | The standing choice is reversed: subscribe to the market hub and record the trade tape |
+| [2026-08-28](#update-2026-08-28--300-unblocks-the-package) | Client#86/#87 landed in 3.0.0; the recorder is no longer blocked on the package |
 
 ## Update (2026-08-28) — the standing choice is reversed
 
@@ -80,10 +81,11 @@ decides that one host speaks stdio and streamable HTTP; grep it for `signalr`, `
 recording, depth/DOM recording, and the user hub stay out of scope.
 
 This is the Phase 5 decision (gh#213). The recorder, the tables and the tools are **not** this record —
-they are gh#215–#222, and the code stays blocked on
+they are gh#215–#222. Those cards were then blocked on
 [MarqSpec.Client.ProjectX#86](https://github.com/adammarquette/MarqSpec.Client.ProjectX/issues/86) and
-[#87](https://github.com/adammarquette/MarqSpec.Client.ProjectX/issues/87). What this update settles is
-whether that work is allowed, and where it sits.
+[#87](https://github.com/adammarquette/MarqSpec.Client.ProjectX/issues/87); both closed in the 3.0.0
+package this repository now pins (see the update below). What this update settles is whether that work
+is allowed, and where it sits.
 
 ### Why it moves
 
@@ -206,14 +208,23 @@ not create.
   the same pull request as this file (gh#214).
 - There is still no `get_quote` in this phase. The reason is no longer "we do not subscribe"; it is that
   quote recording was left out of gh#213 on purpose.
-- Implementation remains blocked on Client#86 (the hub's `contractId` is dropped and an unstated
-  `TradeLogType` deserialises as `Buy`) and Client#87 (reconnect restores the connection and loses every
-  subscription, while reporting `Connected`). This record does not unblock those cards.
+
+## Update (2026-08-28) — 3.0.0 unblocks the package
+
+Client#86 and Client#87 are **closed** and present in `MarqSpec.Client.ProjectX` 3.0.0, which this
+repository now pins. The nupkg XML (`lib/net10.0/MarqSpec.Client.ProjectX.xml`) is the source:
+
+- `TradeUpdate.ContractId` is stamped from the hub argument; `TradeUpdate.Type` is `TradeLogType?`
+  (Client#86).
+- Reconnect restores recorded subscriptions before reporting `Connected` (Client#87).
+
+The recorder itself is still unwritten (gh#216). This update removes the *package* block, not the
+implementation card. gh#217 still defends re-subscribe in this repository: a missed print cannot be
+backfilled, even when the client restores intent.
 
 ## Follow-ups
 
 - gh#215 — tape, coverage and footprint tables. Schema-only; not blocked on the client.
-- gh#216 — the recorder. Blocked on Client#86.
-- gh#217 — re-subscribe after reconnect, and write `TapeCoverage` from lifecycle. Defended here even if
-  Client#87 lands, because a missed print cannot be backfilled.
-- Client#86, Client#87 — the two upstream defects that keep Phase 5 code closed.
+- gh#216 — the recorder. Unblocked on the package; not started here.
+- gh#217 — re-subscribe after reconnect, and write `TapeCoverage` from lifecycle. Still defended here
+  after Client#87, because a missed print cannot be backfilled.

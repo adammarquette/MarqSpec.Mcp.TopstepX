@@ -75,6 +75,9 @@ places: change either and change both.**
 - **When GitHub blocks self-review** — agents here authenticate as the maintainer who authored the PR — fall
   back to a comment whose **first line is the verdict**: `**Verdict: Request changes**` or `**Verdict: Approve**`.
   An ambiguous review state is worse than a bluntly-stated one.
+- **Sign what you write.** An AI-authored inline note, review body or verdict comment ends with
+  `Assisted-by: <Model Name> (<tool>)` — the same form as the commit trailer, on the comment itself. A single
+  footer on the PR does not cover a comment you added later.
 - **Your verdict moves the card, but you do not move it.** Approval sends the card to `Ready to Merge` — the
   maintainer's "what may I merge" signal, which no automation ever sets — and changes-requested sends it back
   to `Todo` for the author. **Do not write to the board yourself:** card writes need the Projects **GraphQL**

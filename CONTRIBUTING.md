@@ -202,6 +202,10 @@ tracker and drifts from it.
   A citation inside code binds nothing and `issue-link` refuses it — backticks, a fenced block, or an HTML
   comment alike; see the bullets under *Issue-first* above for what the check reads and what it still misses.
 - **Populate every field — maximal metadata.** Assignee, milestone, `work:*` + `Work Estimate` labels.
+- **Attribution is per section, not per PR.** AI-authored body sections, comments and reviews each carry
+  `Assisted-by: <Model Name> (<tool>)` in the same form as the commit trailer. More than one tool can write
+  the same PR, so a single footer attributes the wrong agent. Replace the template placeholder on a section
+  you wrote; a later edit replaces the line. Human-only text omits it. **Dependabot is exempt.**
 - **Reviews submit a verdict.** A reviewer leaves findings as comments and **Approves** or **Requests changes** —
   never a bare comment that leaves the state ambiguous. **Merging stays the maintainer's.**
 - **Clean history — rebase-merge with curated commits.** A branch may carry several commits while in progress;

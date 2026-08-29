@@ -743,8 +743,10 @@ public sealed class MarketDataTools(
         + "are omitted when that answer does not exist. The gateway pick is live only; a historical "
         + "asOfUtc omits `gatewayContractId` and `agree` rather than dating today's pick as if it "
         + "were as-of. `contracts` is the bar-side seam around the changeover (`span` / "
-        + "segments); it is omitted when there is no changeover to place a window around. "
-        + "`span` Unknown means provenance was never recorded, not that there was no roll. "
+        + "segments) across every stored bar size; it is omitted when there is no "
+        + "changeover to place a window around. `SingleContract` means no held series in "
+        + "that window crosses the roll — not that the finest one does not. `span` Unknown "
+        + "means provenance was never recorded, not that there was no roll. "
         + "asOfUtc is bounded like get_market_session's atUtc.")]
     public async Task<ToolPayloads.ContractRollInfo> GetContractRoll(
         [Description("The instrument symbol, e.g. ES.")] string symbol,
@@ -846,12 +848,41 @@ public sealed class MarketDataTools(
             return new ToolPayloads.ContractCoverage(ToolPayloads.ContractSpan.Unknown, []);
         }
 
-        return await CoverageAsync(
-                instrument,
-                resolutions.Min(),
-                new BarRange(start, end),
-                cancellationToken)
-            .ConfigureAwait(false);
+        // Finest-only under-reports: a 1-minute series that starts after the flip is
+        // SingleContract while a coarser series already held across it is SpansRoll.
+        // Inspect every stored size. SpansRoll wins — that is the question this tool
+        // answers. Unknown beats SingleContract: a missing provenance is not a confident
+        // negative. Coarsest first so a spanning series keeps its own segments.
+        ToolPayloads.ContractCoverage? spanning = null;
+        ToolPayloads.ContractCoverage? unknown = null;
+        ToolPayloads.ContractCoverage? single = null;
+        BarRange window = new(start, end);
+
+        foreach (int resolution in resolutions.OrderByDescending(static r => r))
+        {
+            ToolPayloads.ContractCoverage coverage = await CoverageAsync(
+                    instrument,
+                    resolution,
+                    window,
+                    cancellationToken)
+                .ConfigureAwait(false);
+
+            switch (coverage.Span)
+            {
+                case ToolPayloads.ContractSpan.SpansRoll:
+                    spanning ??= coverage;
+                    break;
+                case ToolPayloads.ContractSpan.Unknown:
+                    unknown ??= coverage;
+                    break;
+                case ToolPayloads.ContractSpan.SingleContract:
+                    single ??= coverage;
+                    break;
+            }
+        }
+
+        return spanning ?? unknown ?? single
+            ?? new ToolPayloads.ContractCoverage(ToolPayloads.ContractSpan.Unknown, []);
     }
 
     /// <summary>

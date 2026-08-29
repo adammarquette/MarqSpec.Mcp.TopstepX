@@ -317,8 +317,9 @@ clause — so the trail still shows what was true when each was written.
 
 The Follow-ups bullet that said nothing reports the roll **event** itself is discharged (gh#349).
 `get_contract_roll(symbol, asOfUtc?)` projects the most recent changeover the stored tape can prove
-(`TapeVolumeFrontService`) and the bar-side seam around it (`ContractRollDetector` over bars already
-held). There is still no roll table: the event is a read, not a row. `front` is the same
+(`TapeVolumeFrontService`) and the bar-side seam around it (`ContractRollDetector` over every
+stored resolution in a short window — finest-only would report `SingleContract` while a
+coarser series already held spans). There is still no roll table: the event is a read, not a row. `front` is the same
 `VolumeFrontInfo` the footprint tools grew (gh#346). The gateway pick is live only: a historical
 `asOfUtc` omits `gatewayContractId` and `agree` rather than dating today's venue answer. This is
 how a caller decides whether Q-1's successor — re-keying bars by contract id — is worth a

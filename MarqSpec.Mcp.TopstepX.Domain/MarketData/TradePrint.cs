@@ -12,7 +12,10 @@ namespace MarqSpec.Mcp.TopstepX.Domain.MarketData;
 /// <param name="TradeTimeUtc">When the venue says the print occurred. Always UTC.</param>
 /// <param name="Price">The traded price.</param>
 /// <param name="Size">The traded size, in contracts.</param>
-/// <param name="Direction">Who lifted. <see cref="TradeDirection.Unknown"/> is refused, not counted.</param>
+/// <param name="Direction">
+/// Who lifted. Footprint aggregation refuses <see cref="TradeDirection.Unknown"/>; a
+/// volume-front read still counts <paramref name="Size"/>.
+/// </param>
 public sealed record TradePrint(
     string Instrument,
     string ContractId,

@@ -378,6 +378,7 @@ public static class Program
         services.AddScoped<IndicatorRebuilder>();
         services.AddScoped<FootprintProjector>();
         services.AddScoped<VolumeProfileService>();
+        services.AddScoped<TapeVolumeFrontService>();
         services.AddScoped<BarCacheService>();
 
         // The tape recorder. Always registered so the container shape does not depend on the

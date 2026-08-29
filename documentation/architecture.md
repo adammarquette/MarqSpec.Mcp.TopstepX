@@ -461,8 +461,10 @@ in the [tool catalogue](mcp-tool-catalog.md).
 - **Market-hub recording is opted in, not implied by HTTP.** The standing choice not to subscribe is reversed
   ([ADR-0016](adr/0016-subscribe-to-the-market-hub.md)). The first first-party `BackgroundService` records
   prints to `Trades` (gh#216) only when the transport is HTTP **and** `MarketData__RecordTape` is on —
-  choosing HTTP is not consent. It resolves the scoped venue client per operation; it does not extend
-  `IMarketDataGateway`. Quote and depth recording stay out of this phase, and there is still no `get_quote`.
+  choosing HTTP is not consent. It re-subscribes on every transition into `Connected` and writes
+  `TapeCoverage` from that lifecycle (gh#217); `Connected` is not listening. It resolves the scoped venue
+  client per operation; it does not extend `IMarketDataGateway`. Quote and depth recording stay out of this
+  phase, and there is still no `get_quote`.
 - **No REST poller.** Bar, contract and account fetches stay caused by a tool call. The tape recorder is a push
   subscriber, not a background poll of a quote endpoint the venue does not have. A second stdio process must
   not subscribe to the same tape (ADR-0016).

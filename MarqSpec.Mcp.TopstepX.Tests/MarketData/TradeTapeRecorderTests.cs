@@ -11,6 +11,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using Microsoft.Extensions.Time.Testing;
@@ -34,7 +35,7 @@ public sealed class TradeTapeRecorderTests
         McpTransport transport,
         bool recordTape)
     {
-        (TradeTapeRecorder recorder, FakeMarketHub hub, TopstepXDbContext database, ServiceProvider services) =
+        (TradeTapeRecorder recorder, FakeMarketHub hub, TopstepXDbContext database, ServiceProvider services, _) =
             Build(transport, recordTape);
 
         await using (services)
@@ -53,7 +54,7 @@ public sealed class TradeTapeRecorderTests
     [Fact]
     public async Task TheRecorderWritesAnAttributedUtcPrint_WhenHttpAndRecordTapeAreOn()
     {
-        (TradeTapeRecorder recorder, FakeMarketHub hub, TopstepXDbContext database, ServiceProvider services) =
+        (TradeTapeRecorder recorder, FakeMarketHub hub, TopstepXDbContext database, ServiceProvider services, _) =
             Build(McpTransport.Http, recordTape: true);
 
         await using (services)
@@ -106,7 +107,7 @@ public sealed class TradeTapeRecorderTests
             _ => DateTime.SpecifyKind(utcInstant, DateTimeKind.Unspecified),
         };
 
-        (TradeTapeRecorder recorder, FakeMarketHub hub, TopstepXDbContext database, ServiceProvider services) =
+        (TradeTapeRecorder recorder, FakeMarketHub hub, TopstepXDbContext database, ServiceProvider services, _) =
             Build(McpTransport.Http, recordTape: true);
 
         await using (services)
@@ -129,7 +130,7 @@ public sealed class TradeTapeRecorderTests
     [Fact]
     public async Task ANullTradeType_IsStoredAsUnknown_NotBuy()
     {
-        (TradeTapeRecorder recorder, FakeMarketHub hub, TopstepXDbContext database, ServiceProvider services) =
+        (TradeTapeRecorder recorder, FakeMarketHub hub, TopstepXDbContext database, ServiceProvider services, _) =
             Build(McpTransport.Http, recordTape: true);
 
         await using (services)
@@ -154,7 +155,7 @@ public sealed class TradeTapeRecorderTests
     [Fact]
     public async Task AnUnrecognisedTradeType_IsStoredAsUnknown_NotBuy()
     {
-        (TradeTapeRecorder recorder, FakeMarketHub hub, TopstepXDbContext database, ServiceProvider services) =
+        (TradeTapeRecorder recorder, FakeMarketHub hub, TopstepXDbContext database, ServiceProvider services, _) =
             Build(McpTransport.Http, recordTape: true);
 
         await using (services)
@@ -181,7 +182,7 @@ public sealed class TradeTapeRecorderTests
     {
         TaskCompletionSource hold = new(TaskCreationOptions.RunContinuationsAsynchronously);
         TaskCompletionSource persistStarted = new(TaskCreationOptions.RunContinuationsAsynchronously);
-        (TradeTapeRecorder recorder, FakeMarketHub hub, TopstepXDbContext database, ServiceProvider services) =
+        (TradeTapeRecorder recorder, FakeMarketHub hub, TopstepXDbContext database, ServiceProvider services, _) =
             Build(
                 McpTransport.Http,
                 recordTape: true,
@@ -223,7 +224,7 @@ public sealed class TradeTapeRecorderTests
         // rest of this suite configures ES alone, so a throw on instrument 1 used to leave the
         // ES subscription live with no drain: prints TryWrite into an unread channel, then
         // log as full-channel drops, and Trades stays empty while ExecuteTask looks clean.
-        (TradeTapeRecorder recorder, FakeMarketHub hub, TopstepXDbContext database, ServiceProvider services) =
+        (TradeTapeRecorder recorder, FakeMarketHub hub, TopstepXDbContext database, ServiceProvider services, _) =
             Build(
                 McpTransport.Http,
                 recordTape: true,
@@ -265,7 +266,7 @@ public sealed class TradeTapeRecorderTests
     [Fact]
     public async Task TheRecorderCompletesWithoutFaulting_WhenTheHubThrows()
     {
-        (TradeTapeRecorder recorder, FakeMarketHub hub, TopstepXDbContext database, ServiceProvider services) =
+        (TradeTapeRecorder recorder, FakeMarketHub hub, TopstepXDbContext database, ServiceProvider services, _) =
             Build(McpTransport.Http, recordTape: true);
 
         hub.ConnectThrows = new InvalidOperationException("the market hub refused the handshake");
@@ -286,8 +287,162 @@ public sealed class TradeTapeRecorderTests
         }
     }
 
+    [Fact]
+    public async Task AForcedDisconnectAndReconnect_ResumesPrints_OnlyWhenSubscribeRunsAgain()
+    {
+        CollectingLogger logger = new();
+        (TradeTapeRecorder recorder, FakeMarketHub hub, TopstepXDbContext database, ServiceProvider services, _) =
+            Build(McpTransport.Http, recordTape: true, logger: logger);
+
+        await using (services)
+        await using (database)
+        {
+            await recorder.StartAsync(CancellationToken.None);
+            await WaitUntil(() => hub.TradeSubscriptions.Count > 0);
+
+            int subscribesBeforeOutage = hub.SubscribeAttempts;
+            hub.TransitionsIntoConnected.Should().Be(1, "the first connect must be a real Connected transition");
+
+            hub.Raise(Print(Utc(13, 45, 0), TradeLogType.Buy, price: 5000m));
+            await WaitUntil(() => recorder.RecordedPrints == 1);
+
+            hub.SimulateMarketDisconnect();
+            hub.TradeSubscriptions.Should().BeEmpty();
+            hub.Raise(Print(Utc(13, 45, 1), TradeLogType.Buy, price: 5001m));
+            recorder.RecordedPrints.Should().Be(1, "a print during the outage must not land — the tape is silent");
+
+            hub.SimulateMarketReconnect();
+            hub.TransitionsIntoConnected.Should().Be(2, "the test must drive a second Connected, not inspect a path that never ran");
+            await WaitUntil(() => hub.SubscribeAttempts > subscribesBeforeOutage
+                && hub.TradeSubscriptions.Contains("CON.F.US.TEST.Z26"));
+
+            hub.Raise(Print(Utc(13, 46, 0), TradeLogType.Buy, price: 5002m));
+            hub.RaisedToListeners.Should().Be(2, "the post-reconnect print must reach listeners, or subscribe did not restore the set");
+
+            await WaitUntil(
+                () => recorder.RecordedPrints == 2,
+                because: $"prints={recorder.RecordedPrints} dropped={recorder.DroppedPrints} "
+                    + $"faulted={recorder.ExecuteTask?.IsFaulted} "
+                    + $"errors={string.Join(" | ", logger.Errors.Select(e => e.Message))}");
+
+            database.Trades.Select(t => t.Price).Should().BeEquivalentTo([5000m, 5002m]);
+            recorder.ExecuteTask.Should().NotBeNull();
+            recorder.ExecuteTask!.IsFaulted.Should().BeFalse(
+                "a faulted ExecuteTask is what Program.AnyFaulted reads");
+
+            await recorder.StopAsync(CancellationToken.None);
+        }
+    }
+
+    [Fact]
+    public async Task TapeCoverage_ClosesAcrossAnOutage_WithNoOverlapOrGapAgainstTheRangesEitherSide()
+    {
+        (TradeTapeRecorder recorder, FakeMarketHub hub, TopstepXDbContext database, ServiceProvider services, FakeTimeProvider clock) =
+            Build(McpTransport.Http, recordTape: true);
+
+        await using (services)
+        await using (database)
+        {
+            await recorder.StartAsync(CancellationToken.None);
+            await WaitUntil(() => hub.TradeSubscriptions.Count > 0);
+
+            DateTimeOffset listenStart = clock.GetUtcNow();
+            clock.Advance(TimeSpan.FromSeconds(1));
+            DateTimeOffset outageStart = clock.GetUtcNow();
+
+            hub.SimulateMarketDisconnect();
+            await WaitUntil(() => CoverageRows(database).Count == 1);
+
+            clock.Advance(TimeSpan.FromSeconds(1));
+            DateTimeOffset outageEnd = clock.GetUtcNow();
+
+            hub.SimulateMarketReconnect();
+            await WaitUntil(() => hub.SubscribeAttempts >= 2);
+
+            clock.Advance(TimeSpan.FromSeconds(1));
+            DateTimeOffset listenEnd = clock.GetUtcNow();
+
+            await recorder.StopAsync(CancellationToken.None);
+            await WaitUntil(() => CoverageRows(database).Count == 2);
+
+            IReadOnlyList<TapeCoverageRecord> ranges = CoverageRows(database);
+            ranges.Should().HaveCount(2);
+
+            TapeCoverageRecord before = ranges[0];
+            TapeCoverageRecord after = ranges[1];
+
+            before.Venue.Should().Be("test");
+            before.Instrument.Should().Be("ES");
+            before.ContractId.Should().Be("CON.F.US.TEST.Z26");
+            before.RangeStart.Should().Be(listenStart);
+            before.RangeEnd.Should().Be(outageStart);
+
+            after.Venue.Should().Be("test");
+            after.Instrument.Should().Be("ES");
+            after.ContractId.Should().Be("CON.F.US.TEST.Z26");
+            after.RangeStart.Should().Be(outageEnd);
+            after.RangeEnd.Should().Be(listenEnd);
+
+            // Half-open [Start, End): the outage is exactly [before.End, after.Start).
+            before.RangeEnd.Should().BeOnOrBefore(after.RangeStart);
+            before.RangeEnd.Should().Be(outageStart, "the closed range must meet the outage with no slack");
+            after.RangeStart.Should().Be(outageEnd, "the next range must meet the outage with no slack");
+            (after.RangeStart - before.RangeEnd).Should().Be(TimeSpan.FromSeconds(1));
+        }
+    }
+
+    [Fact]
+    public async Task AResubscribeFailure_IsSurfaced_AndLeavesTheOpenRangeClosed()
+    {
+        CollectingLogger logger = new();
+        (TradeTapeRecorder recorder, FakeMarketHub hub, TopstepXDbContext database, ServiceProvider services, FakeTimeProvider clock) =
+            Build(McpTransport.Http, recordTape: true, logger: logger);
+
+        await using (services)
+        await using (database)
+        {
+            await recorder.StartAsync(CancellationToken.None);
+            await WaitUntil(() => hub.TradeSubscriptions.Count > 0);
+
+            clock.Advance(TimeSpan.FromSeconds(1));
+            InvalidOperationException refused = new("the venue refused the trade re-subscribe");
+            hub.SubscribeThrowsAfterFirst = refused;
+
+            hub.SimulateMarketDisconnect();
+            await WaitUntil(() => CoverageRows(database).Count == 1);
+
+            hub.SimulateMarketReconnect();
+            await WaitUntil(() => hub.SubscribeAttempts >= 2);
+
+            recorder.ExecuteTask.Should().NotBeNull();
+            recorder.ExecuteTask!.IsFaulted.Should().BeFalse(
+                "a faulted ExecuteTask is what Program.AnyFaulted reads");
+
+            logger.Errors.Should().Contain(entry =>
+                entry.Exception == refused
+                && entry.Message.Contains("re-subscribe", StringComparison.OrdinalIgnoreCase));
+
+            CoverageRows(database).Should().ContainSingle(
+                "a failed re-subscribe must not open a new range, and must leave the prior range closed");
+
+            hub.Raise(Print(Utc(13, 46, 0), TradeLogType.Buy, price: 1m));
+            recorder.RecordedPrints.Should().Be(0, "a failed restore is not listening");
+
+            await recorder.StopAsync(CancellationToken.None);
+
+            recorder.ExecuteTask.IsFaulted.Should().BeFalse();
+            CoverageRows(database).Should().ContainSingle();
+        }
+    }
+
     private static DateTime Utc(int hour, int minute, int second) =>
         new(2026, 8, 28, hour, minute, second, DateTimeKind.Utc);
+
+    private static List<TapeCoverageRecord> CoverageRows(TopstepXDbContext database)
+    {
+        database.ChangeTracker.Clear();
+        return [.. database.TapeCoverage.OrderBy(row => row.RangeStart)];
+    }
 
     private static TradeUpdate Print(
         DateTime timestamp,
@@ -308,7 +463,8 @@ public sealed class TradeTapeRecorderTests
         TradeTapeRecorder Recorder,
         FakeMarketHub Hub,
         TopstepXDbContext Database,
-        ServiceProvider Services)
+        ServiceProvider Services,
+        FakeTimeProvider Clock)
         Build(
             McpTransport transport,
             bool recordTape,
@@ -316,7 +472,8 @@ public sealed class TradeTapeRecorderTests
             TaskCompletionSource? persistHold = null,
             TaskCompletionSource? persistStarted = null,
             string instruments = "ES",
-            IMarketDataGateway? gateway = null)
+            IMarketDataGateway? gateway = null,
+            ILogger<TradeTapeRecorder>? logger = null)
     {
         FakeMarketHub hub = new();
         FakeTimeProvider clock = new(_receipt);
@@ -357,18 +514,58 @@ public sealed class TradeTapeRecorderTests
             Options.Create(mcp),
             provider.GetRequiredService<InstrumentRegistry>(),
             clock,
-            NullLogger<TradeTapeRecorder>.Instance,
+            logger ?? NullLogger<TradeTapeRecorder>.Instance,
             channelCapacity);
 
-        return (recorder, hub, database, provider);
+        return (recorder, hub, database, provider, clock);
     }
 
-    private static async Task WaitUntil(Func<bool> condition)
+    /// <summary>Captures <see cref="LogLevel.Error"/> so a swallowed re-subscribe failure is visible.</summary>
+    private sealed class CollectingLogger : ILogger<TradeTapeRecorder>
+    {
+        public List<(Exception? Exception, string Message)> Errors { get; } = [];
+
+        public IDisposable BeginScope<TState>(TState state)
+            where TState : notnull => NullScope.Instance;
+
+        public bool IsEnabled(LogLevel logLevel) => true;
+
+        public void Log<TState>(
+            LogLevel logLevel,
+            EventId eventId,
+            TState state,
+            Exception? exception,
+            Func<TState, Exception?, string> formatter)
+        {
+            if (logLevel == LogLevel.Error)
+            {
+                Errors.Add((exception, formatter(state, exception)));
+            }
+        }
+
+        private sealed class NullScope : IDisposable
+        {
+            public static readonly NullScope Instance = new();
+
+            public void Dispose()
+            {
+            }
+        }
+    }
+
+    private static async Task WaitUntil(Func<bool> condition, string? because = null)
     {
         using CancellationTokenSource timeout = new(TimeSpan.FromSeconds(2));
-        while (!condition())
+        try
         {
-            await Task.Delay(10, timeout.Token);
+            while (!condition())
+            {
+                await Task.Delay(10, timeout.Token);
+            }
+        }
+        catch (OperationCanceledException) when (because is not null)
+        {
+            throw new InvalidOperationException($"Timed out waiting: {because}");
         }
     }
 

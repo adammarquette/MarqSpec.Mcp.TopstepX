@@ -74,6 +74,7 @@ decides that one host speaks stdio and streamable HTTP; grep it for `signalr`, `
 |---|---|
 | [2026-08-28](#update-2026-08-28--the-standing-choice-is-reversed) | The standing choice is reversed: subscribe to the market hub and record the trade tape |
 | [2026-08-28](#update-2026-08-28--300-unblocks-the-package) | Client#86/#87 landed in 3.0.0; the recorder is no longer blocked on the package |
+| [2026-08-29](#update-2026-08-29--the-recorder-defends-re-subscribe-and-writes-tapecoverage) | The recorder re-subscribes on `Connected` and writes `TapeCoverage` from lifecycle (gh#217) |
 
 ## Update (2026-08-28) — the standing choice is reversed
 
@@ -223,9 +224,21 @@ a bounded channel, and writes attributed UTC rows to `Trades`. This update remov
 that card is no longer waiting on 3.0.0. gh#217 still defends re-subscribe in this repository: a missed
 print cannot be backfilled, even when the client restores intent.
 
+## Update (2026-08-29) — the recorder defends re-subscribe and writes TapeCoverage
+
+gh#217 is the defence named above. `TradeTapeRecorder` restores the intended trade-subscription set
+on every transition into `Connected` — including the first connect, so one path covers both — and
+writes `TapeCoverage` from that lifecycle: a range opens when a subscribe is confirmed and closes
+when the connection drops, the recorder stops, or a re-subscribe fails. Ranges are half-open
+`[RangeStart, RangeEnd)`. `Connected` is not listening; a re-subscribe failure is logged and leaves
+the range closed without faulting `ExecuteTask`.
+
+Client#87 already restores in 3.0.0. This repository still defends: there is no tape backfill.
+
 ## Follow-ups
 
 - gh#215 — tape, coverage and footprint tables. Schema-only; landed.
-- gh#216 — the recorder. Writes prints; does not aggregate, write `TapeCoverage`, or re-subscribe.
-- gh#217 — re-subscribe after reconnect, and write `TapeCoverage` from lifecycle. Still defended here
-  after Client#87, because a missed print cannot be backfilled.
+- gh#216 — the recorder. Writes prints; does not aggregate. Re-subscribe and `TapeCoverage` are
+  gh#217.
+- gh#217 — re-subscribe after reconnect, and write `TapeCoverage` from lifecycle. Landed; still
+  defended here after Client#87, because a missed print cannot be backfilled.

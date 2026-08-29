@@ -10,6 +10,12 @@ namespace MarqSpec.Mcp.TopstepX.Tests.MarketData;
 /// The published 3.0.0 nupkg ships no fake. This is the second-seam stand-in ADR-0016 describes:
 /// it counts subscriptions, not REST bar requests. <see cref="CountingGateway"/> stays the
 /// request/response meter.
+/// <para>
+/// A test can force disconnect → <see cref="ConnectionState.Connected"/> and watch whether
+/// subscribe ran again. Disconnecting drops the server-side set (prints stop) the way a real
+/// SignalR reconnect loses the subscription; <see cref="TransitionsIntoConnected"/> is the
+/// proof the transition ran, not an inspection of the recorder.
+/// </para>
 /// </remarks>
 public sealed class FakeMarketHub : IProjectXWebSocketClient
 {
@@ -30,6 +36,9 @@ public sealed class FakeMarketHub : IProjectXWebSocketClient
 
     public int SubscribeAttempts { get; private set; }
 
+    /// <summary>How many times the market hub transitioned into <see cref="ConnectionState.Connected"/>.</summary>
+    public int TransitionsIntoConnected { get; private set; }
+
     public ConnectionState MarketHubState { get; set; } = ConnectionState.Disconnected;
 
     public ConnectionState UserHubState { get; set; } = ConnectionState.Disconnected;
@@ -38,9 +47,9 @@ public sealed class FakeMarketHub : IProjectXWebSocketClient
 
     public UserHubSubscriptions UserSubscriptions { get; } = new();
 
-#pragma warning disable CS0067 // The interface requires these; this double never raises them.
     public event EventHandler<ConnectionStatusChange>? ConnectionStatusChanged;
 
+#pragma warning disable CS0067 // The interface requires these; this double never raises them.
     public event EventHandler<PriceUpdate>? PriceUpdateReceived;
 
     public event EventHandler<OrderBookUpdate>? OrderBookUpdateReceived;
@@ -66,7 +75,7 @@ public sealed class FakeMarketHub : IProjectXWebSocketClient
         }
 
         MarketConnects++;
-        MarketHubState = ConnectionState.Connected;
+        EnterMarketState(ConnectionState.Connected);
         return Task.CompletedTask;
     }
 
@@ -79,7 +88,7 @@ public sealed class FakeMarketHub : IProjectXWebSocketClient
 
     public Task DisconnectMarketHubAsync(CancellationToken cancellationToken = default)
     {
-        MarketHubState = ConnectionState.Disconnected;
+        EnterMarketState(ConnectionState.Disconnected);
         return Task.CompletedTask;
     }
 
@@ -88,6 +97,22 @@ public sealed class FakeMarketHub : IProjectXWebSocketClient
         UserHubState = ConnectionState.Disconnected;
         return Task.CompletedTask;
     }
+
+    /// <summary>
+    /// Drops the market hub the way a transport fault does: server-side trade
+    /// subscriptions are gone, and <see cref="ConnectionStatusChanged"/> reports it.
+    /// </summary>
+    public void SimulateMarketDisconnect()
+    {
+        TradeSubscriptions.Clear();
+        EnterMarketState(ConnectionState.Disconnected);
+    }
+
+    /// <summary>
+    /// Completes a reconnect: <see cref="ConnectionState.Connected"/> with no
+    /// subscriptions. The recorder must subscribe again or prints stay silent.
+    /// </summary>
+    public void SimulateMarketReconnect() => EnterMarketState(ConnectionState.Connected);
 
     public Task SubscribeToPriceUpdatesAsync(string contractId, CancellationToken cancellationToken = default)
     {
@@ -150,5 +175,40 @@ public sealed class FakeMarketHub : IProjectXWebSocketClient
 
     public ValueTask DisposeAsync() => ValueTask.CompletedTask;
 
-    public void Raise(TradeUpdate update) => TradeUpdateReceived?.Invoke(this, update);
+    /// <summary>Prints that passed the live-subscription check and were raised to listeners.</summary>
+    public int RaisedToListeners { get; private set; }
+
+    public void Raise(TradeUpdate update)
+    {
+        if (string.IsNullOrWhiteSpace(update.ContractId)
+            || !TradeSubscriptions.Contains(update.ContractId))
+        {
+            return;
+        }
+
+        RaisedToListeners++;
+        TradeUpdateReceived?.Invoke(this, update);
+    }
+
+    private void EnterMarketState(ConnectionState current)
+    {
+        ConnectionState previous = MarketHubState;
+        if (previous == current)
+        {
+            return;
+        }
+
+        MarketHubState = current;
+        if (current == ConnectionState.Connected)
+        {
+            TransitionsIntoConnected++;
+        }
+
+        ConnectionStatusChanged?.Invoke(this, new ConnectionStatusChange
+        {
+            PreviousState = previous,
+            CurrentState = current,
+            Timestamp = DateTime.UtcNow,
+        });
+    }
 }

@@ -16,7 +16,8 @@ namespace MarqSpec.Mcp.TopstepX.MarketData;
 
 /// <summary>
 /// The first first-party <see cref="BackgroundService"/>: subscribe to the market hub for every
-/// configured instrument's front contract, and write prints to <c>Trades</c>.
+/// configured instrument's front contract, write prints to <c>Trades</c>, and write
+/// <c>TapeCoverage</c> from subscription lifecycle.
 /// </summary>
 /// <remarks>
 /// <para>
@@ -35,16 +36,30 @@ namespace MarqSpec.Mcp.TopstepX.MarketData;
 /// <b>Events are handed off, never handled on SignalR's loop.</b> The hub raises synchronously.
 /// A slow persist must not back-pressure the connection. Writes go through a bounded
 /// <see cref="Channel{T}"/>; when the channel is full the drop is recorded, not discarded
-/// silently.
+/// silently. Connection transitions enqueue restore or coverage-close work on a second
+/// channel; <see cref="ConnectionState.Connected"/> is not treated as listening.
 /// </para>
 /// <para>
 /// <b><see cref="ExecuteAsync"/> catches rather than faulting the host.</b> A faulted
 /// <see cref="BackgroundService.ExecuteTask"/> is what <c>Program.AnyFaulted</c> reads, and
-/// would turn an ordinary stdio EOF into a crash (gh#76).
+/// would turn an ordinary stdio EOF into a crash (gh#76). A re-subscribe failure is logged
+/// and leaves the coverage range closed; it does not fault the host.
 /// </para>
 /// <para>
-/// This card does not aggregate, write <c>TapeCoverage</c>, re-subscribe after reconnect, or
-/// pick the front month by volume. Those are gh#217 / #218 / #219.
+/// <b>Re-subscribe on every transition into <see cref="ConnectionState.Connected"/>.</b>
+/// The intended set is held here and restored on that event, including the first connect,
+/// so one path covers both. Client#87 already restores in 3.0.0; this service still defends,
+/// because a missed print cannot be backfilled (gh#217, ADR-0016).
+/// </para>
+/// <para>
+/// <b>The hub handle outlives the resolve scope, as it did on gh#216.</b> The scoped
+/// resolve is only how the singleton finds the client. Events and re-subscribe have to
+/// target the instance that actually reconnected; a new scope per <c>Connected</c> would
+/// be a different client if the registration is scoped, and would miss the transition.
+/// </para>
+/// <para>
+/// This card does not aggregate, invent a health-holder <c>Reason</c>, or pick the front
+/// month by volume. Those are gh#218 / #219.
 /// </para>
 /// </remarks>
 public sealed class TradeTapeRecorder : BackgroundService
@@ -59,9 +74,21 @@ public sealed class TradeTapeRecorder : BackgroundService
     private readonly TimeProvider _clock;
     private readonly ILogger<TradeTapeRecorder> _logger;
     private readonly Channel<PendingPrint> _channel;
+    private readonly Channel<LifecycleWork> _lifecycle;
     private readonly Dictionary<string, Attribution> _attribution = new(StringComparer.Ordinal);
     private readonly Dictionary<(string Venue, string Instrument, string Contract), long> _sequences = [];
+    private readonly Dictionary<string, OpenRange> _openRanges = new(StringComparer.Ordinal);
+    private readonly List<ClosedRange> _pendingCloses = [];
+    private readonly object _coverageGate = new();
 
+    /// <summary>
+    /// Serialises store writes. Print persist and coverage persist can run on
+    /// different tasks; the in-memory provider is not safe for concurrent
+    /// <c>SaveChanges</c>, and a hang there looks like a silent tape.
+    /// </summary>
+    private readonly SemaphoreSlim _store = new(1, 1);
+
+    private IProjectXWebSocketClient? _hub;
     private long _recorded;
     private long _dropped;
 
@@ -118,6 +145,12 @@ public sealed class TradeTapeRecorder : BackgroundService
             FullMode = BoundedChannelFullMode.Wait,
             AllowSynchronousContinuations = false,
         });
+        _lifecycle = Channel.CreateUnbounded<LifecycleWork>(new UnboundedChannelOptions
+        {
+            SingleReader = true,
+            SingleWriter = false,
+            AllowSynchronousContinuations = false,
+        });
     }
 
     /// <summary>Prints that landed in <c>Trades</c> during this process.</summary>
@@ -140,7 +173,6 @@ public sealed class TradeTapeRecorder : BackgroundService
                 return;
             }
 
-            IProjectXWebSocketClient hub;
             bool drain = false;
             using (IServiceScope scope = _scopes.CreateScope())
             {
@@ -153,61 +185,58 @@ public sealed class TradeTapeRecorder : BackgroundService
                     return;
                 }
 
-                hub = resolved;
+                _hub = resolved;
 
                 IMarketDataGateway gateway = scope.ServiceProvider.GetRequiredService<IMarketDataGateway>();
 
-                // Hook BEFORE the first await that can yield, so a print cannot land
-                // between Subscribe returning and the handler being attached.
-                hub.TradeUpdateReceived += OnTrade;
                 try
                 {
-                    await hub.ConnectMarketHubAsync(stoppingToken).ConfigureAwait(false);
-
-                    try
+                    foreach (InstrumentId instrument in _registry.Instruments)
                     {
-                        foreach (InstrumentId instrument in _registry.Instruments)
+                        IReadOnlyList<VenueContract> contracts = await gateway
+                            .ResolveContractsAsync(instrument, stoppingToken)
+                            .ConfigureAwait(false);
+
+                        if (contracts.Count == 0)
                         {
-                            IReadOnlyList<VenueContract> contracts = await gateway
-                                .ResolveContractsAsync(instrument, stoppingToken)
-                                .ConfigureAwait(false);
-
-                            if (contracts.Count == 0)
-                            {
-                                _logger.LogWarning(
-                                    "The venue returned no contracts for {Instrument}, so it will not be recorded. "
-                                    + "If this instrument is listed, check ProjectX__DataTier.",
-                                    instrument.Symbol);
-                                continue;
-                            }
-
-                            VenueContract front = contracts[0];
-                            _attribution[front.ContractId] = new Attribution(gateway.VenueId, instrument.Symbol);
-                            await hub.SubscribeToTradeUpdatesAsync(front.ContractId, stoppingToken)
-                                .ConfigureAwait(false);
+                            _logger.LogWarning(
+                                "The venue returned no contracts for {Instrument}, so it will not be recorded. "
+                                + "If this instrument is listed, check ProjectX__DataTier.",
+                                instrument.Symbol);
+                            continue;
                         }
-                    }
-                    catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
-                    {
-                        throw;
-                    }
-                    catch (Exception exception)
-                    {
-                        // A later instrument's resolve/subscribe must not skip drain: the first
-                        // subscription is already live, and OnTrade writes a channel nobody would
-                        // read. Catch here so ExecuteTask stays clean (Program.AnyFaulted).
-                        _logger.LogError(
-                            exception,
-                            "The trade-tape recorder could not finish every subscribe. Prints on "
-                            + "contracts that did subscribe will still be recorded.");
-                    }
 
+                        VenueContract front = contracts[0];
+                        _attribution[front.ContractId] = new Attribution(gateway.VenueId, instrument.Symbol);
+                    }
+                }
+                catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+                {
+                    throw;
+                }
+                catch (Exception exception)
+                {
+                    _logger.LogError(
+                        exception,
+                        "The trade-tape recorder could not finish resolving every contract. "
+                        + "Contracts that did resolve will still be restored on Connected.");
+                }
+
+                // Hook BEFORE the first await that can yield after connect, so a print cannot
+                // land between Subscribe returning and the handler being attached, and so the
+                // first Connected uses the same restore path as a reconnect.
+                _hub.TradeUpdateReceived += OnTrade;
+                _hub.ConnectionStatusChanged += OnConnectionStatusChanged;
+                try
+                {
+                    await _hub.ConnectMarketHubAsync(stoppingToken).ConfigureAwait(false);
                     drain = true;
                 }
                 catch
                 {
-                    hub.TradeUpdateReceived -= OnTrade;
+                    Unhook();
                     _channel.Writer.TryComplete();
+                    _lifecycle.Writer.TryComplete();
                     throw;
                 }
             }
@@ -216,12 +245,24 @@ public sealed class TradeTapeRecorder : BackgroundService
             {
                 try
                 {
-                    await DrainAsync(stoppingToken).ConfigureAwait(false);
+                    await Task.WhenAll(DrainAsync(stoppingToken), ProcessLifecycleAsync(stoppingToken))
+                        .ConfigureAwait(false);
                 }
                 finally
                 {
-                    hub.TradeUpdateReceived -= OnTrade;
+                    CloseOpenRangesAt(_clock.GetUtcNow());
+                    try
+                    {
+                        await PersistPendingClosesAsync(CancellationToken.None).ConfigureAwait(false);
+                    }
+                    catch (Exception exception)
+                    {
+                        _logger.LogError(exception, "The trade-tape recorder could not close the last coverage range.");
+                    }
+
+                    Unhook();
                     _channel.Writer.TryComplete();
+                    _lifecycle.Writer.TryComplete();
                 }
             }
         }
@@ -238,6 +279,36 @@ public sealed class TradeTapeRecorder : BackgroundService
         }
     }
 
+    private void OnConnectionStatusChanged(object? sender, ConnectionStatusChange change)
+    {
+        IProjectXWebSocketClient? hub = _hub;
+        if (hub is null)
+        {
+            return;
+        }
+
+        // The nupkg XML says this event fires for either hub. User hub is out of scope;
+        // ignore a transition that is not the market hub we opened.
+        if (hub.MarketHubState != change.CurrentState)
+        {
+            return;
+        }
+
+        if (change.CurrentState == ConnectionState.Connected
+            && change.PreviousState != ConnectionState.Connected)
+        {
+            _lifecycle.Writer.TryWrite(LifecycleWork.RestoreSubscriptions);
+            return;
+        }
+
+        if (change.PreviousState == ConnectionState.Connected
+            && change.CurrentState != ConnectionState.Connected)
+        {
+            CloseOpenRangesAt(_clock.GetUtcNow());
+            _lifecycle.Writer.TryWrite(LifecycleWork.PersistCloses);
+        }
+    }
+
     private void OnTrade(object? sender, TradeUpdate update)
     {
         PendingPrint pending = new(update, _clock.GetUtcNow());
@@ -251,6 +322,149 @@ public sealed class TradeTapeRecorder : BackgroundService
             "The tape channel is full; a print on {Contract} at {TradeTime} was dropped.",
             update.ContractId,
             update.Timestamp);
+    }
+
+    private async Task ProcessLifecycleAsync(CancellationToken stoppingToken)
+    {
+        await foreach (LifecycleWork work in _lifecycle.Reader.ReadAllAsync(stoppingToken)
+            .ConfigureAwait(false))
+        {
+            try
+            {
+                switch (work)
+                {
+                    case LifecycleWork.RestoreSubscriptions:
+                        await RestoreSubscriptionsAsync(stoppingToken).ConfigureAwait(false);
+                        break;
+                    case LifecycleWork.PersistCloses:
+                        await PersistPendingClosesAsync(stoppingToken).ConfigureAwait(false);
+                        break;
+                }
+            }
+            catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception exception)
+            {
+                _logger.LogError(
+                    exception,
+                    "The trade-tape recorder could not finish a connection-lifecycle step.");
+            }
+        }
+    }
+
+    private async Task RestoreSubscriptionsAsync(CancellationToken cancellationToken)
+    {
+        IProjectXWebSocketClient? hub = _hub;
+        if (hub is null)
+        {
+            return;
+        }
+
+        int restored = 0;
+        foreach ((string contractId, Attribution attribution) in _attribution)
+        {
+            try
+            {
+                await hub.SubscribeToTradeUpdatesAsync(contractId, cancellationToken)
+                    .ConfigureAwait(false);
+                DateTimeOffset start = _clock.GetUtcNow();
+                lock (_coverageGate)
+                {
+                    _openRanges[contractId] = new OpenRange(attribution.Venue, attribution.Instrument, start);
+                }
+
+                restored++;
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception exception)
+            {
+                _logger.LogError(
+                    exception,
+                    "The trade-tape recorder could not re-subscribe {Contract}. That contract is not listening.",
+                    contractId);
+                DateTimeOffset end = _clock.GetUtcNow();
+                lock (_coverageGate)
+                {
+                    if (_openRanges.Remove(contractId, out OpenRange open) && end > open.RangeStart)
+                    {
+                        _pendingCloses.Add(
+                            new ClosedRange(open.Venue, open.Instrument, contractId, open.RangeStart, end));
+                    }
+                }
+
+                await PersistPendingClosesAsync(cancellationToken).ConfigureAwait(false);
+            }
+        }
+
+        if (restored > 0)
+        {
+            _logger.LogInformation(
+                "Restored trade subscriptions for {Count} contract(s). Connected is not listening.",
+                restored);
+        }
+    }
+
+    private void CloseOpenRangesAt(DateTimeOffset end)
+    {
+        lock (_coverageGate)
+        {
+            foreach ((string contractId, OpenRange open) in _openRanges)
+            {
+                if (end > open.RangeStart)
+                {
+                    _pendingCloses.Add(
+                        new ClosedRange(open.Venue, open.Instrument, contractId, open.RangeStart, end));
+                }
+            }
+
+            _openRanges.Clear();
+        }
+    }
+
+    private async Task PersistPendingClosesAsync(CancellationToken cancellationToken)
+    {
+        ClosedRange[] batch;
+        lock (_coverageGate)
+        {
+            if (_pendingCloses.Count == 0)
+            {
+                return;
+            }
+
+            batch = [.. _pendingCloses];
+            _pendingCloses.Clear();
+        }
+
+        await _store.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            using IServiceScope scope = _scopes.CreateScope();
+            TopstepXDbContext database = scope.ServiceProvider.GetRequiredService<TopstepXDbContext>();
+            DateTimeOffset recordedAt = _clock.GetUtcNow();
+            foreach (ClosedRange range in batch)
+            {
+                database.TapeCoverage.Add(new TapeCoverageRecord
+                {
+                    Venue = range.Venue,
+                    Instrument = range.Instrument,
+                    ContractId = range.ContractId,
+                    RangeStart = range.RangeStart,
+                    RangeEnd = range.RangeEnd,
+                    RecordedAt = recordedAt,
+                });
+            }
+
+            await database.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            _store.Release();
+        }
     }
 
     private async Task DrainAsync(CancellationToken stoppingToken)
@@ -293,24 +507,32 @@ public sealed class TradeTapeRecorder : BackgroundService
             return;
         }
 
-        using IServiceScope scope = _scopes.CreateScope();
-        TopstepXDbContext database = scope.ServiceProvider.GetRequiredService<TopstepXDbContext>();
-
-        database.Trades.Add(new TradeRecord
+        await _store.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
         {
-            Venue = attribution.Venue,
-            Instrument = attribution.Instrument,
-            ContractId = update.ContractId,
-            TradeTimeUtc = ProjectXMapping.ToUtc(update.Timestamp),
-            Sequence = NextSequence(database, attribution, update.ContractId),
-            Price = update.Price,
-            Size = decimal.ToInt64(decimal.Truncate(update.Volume)),
-            Direction = ProjectXMapping.ToTradeDirection(update.Type),
-            RecordedAt = pending.ReceivedAt,
-        });
+            using IServiceScope scope = _scopes.CreateScope();
+            TopstepXDbContext database = scope.ServiceProvider.GetRequiredService<TopstepXDbContext>();
 
-        await database.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
-        Interlocked.Increment(ref _recorded);
+            database.Trades.Add(new TradeRecord
+            {
+                Venue = attribution.Venue,
+                Instrument = attribution.Instrument,
+                ContractId = update.ContractId,
+                TradeTimeUtc = ProjectXMapping.ToUtc(update.Timestamp),
+                Sequence = NextSequence(database, attribution, update.ContractId),
+                Price = update.Price,
+                Size = decimal.ToInt64(decimal.Truncate(update.Volume)),
+                Direction = ProjectXMapping.ToTradeDirection(update.Type),
+                RecordedAt = pending.ReceivedAt,
+            });
+
+            await database.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+            Interlocked.Increment(ref _recorded);
+        }
+        finally
+        {
+            _store.Release();
+        }
     }
 
     private long NextSequence(TopstepXDbContext database, Attribution attribution, string contractId)
@@ -336,7 +558,33 @@ public sealed class TradeTapeRecorder : BackgroundService
         return next;
     }
 
+    private void Unhook()
+    {
+        if (_hub is null)
+        {
+            return;
+        }
+
+        _hub.TradeUpdateReceived -= OnTrade;
+        _hub.ConnectionStatusChanged -= OnConnectionStatusChanged;
+    }
+
     private readonly record struct PendingPrint(TradeUpdate Update, DateTimeOffset ReceivedAt);
 
     private readonly record struct Attribution(string Venue, string Instrument);
+
+    private readonly record struct OpenRange(string Venue, string Instrument, DateTimeOffset RangeStart);
+
+    private readonly record struct ClosedRange(
+        string Venue,
+        string Instrument,
+        string ContractId,
+        DateTimeOffset RangeStart,
+        DateTimeOffset RangeEnd);
+
+    private enum LifecycleWork
+    {
+        RestoreSubscriptions,
+        PersistCloses,
+    }
 }

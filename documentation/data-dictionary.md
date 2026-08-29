@@ -275,10 +275,14 @@ Written from **subscription lifecycle**, not inferred from rows. A quiet market 
 produce the same empty range, and only lifecycle can tell them apart — the same third-state role §3 plays for
 bars. There is no market-tape REST backfill, so a hole in this ledger is permanent.
 
-`ContractId` is in the key because listening is per contract: a roll changes the intended subscription set.
+The recorder **opens a range when a subscribe is confirmed** and **closes it** when the connection leaves
+`Connected`, the process stops, or a re-subscribe fails (gh#217). A hub that reports `Connected` with no
+confirmed subscribe is not a range. The intended contract set is held by the recorder; a roll still changes
+that set, which is why `ContractId` is in the key.
 
 **The range is half-open, `[RangeStart, RangeEnd)`.** Closed ranges written adjacently either overlap by one
-instant or leave a hole, and both are invisible until a profile reports a window that was never covered.
+instant or leave a hole, and both are invisible until a profile reports a window that was never covered. An
+outage is the hole between two closed ranges: they must meet it with no slack on either side.
 
 Not a hypertable. This is a ledger, like §3, not a time series of events.
 

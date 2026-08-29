@@ -465,9 +465,10 @@ times from the cells**, not the exclusive coverage end — that range stays on `
 
 **A window before recording began is refused** and names the earliest covered time. **A covered window with
 no cells at the asked bar size is refused** rather than returned as empty `cells`: `TapeCoverage` is not
-per-resolution, so that quiet-looking shape would hide an unprojected series. **When the live tape is not
+per-resolution, so that quiet-looking shape would hide an unprojected series. **When that instrument's live tape is not
 listening the tool refuses** with a sentence naming the fix — an empty answer and an absent tape must not
-look the same (gh#218). Every field is always present; none are omitted and none are null.
+look the same (gh#218). Another symbol's subscribe does not make this one healthy. Every field is always
+present; none are omitted and none are null.
 
 ### `get_volume_profile(symbol, resolutionMinutes, fromUtc, toUtc)`
 Volume by price, the point of control, and the 70% value area — an aggregate over the same stored cells
@@ -476,9 +477,10 @@ Volume by price, the point of control, and the 70% value area — an aggregate o
 Returns `{ symbol, resolutionMinutes, byPrice: [{ p, v }], pointOfControl, valueAreaLow, valueAreaHigh,
 valueAreaVolume, totalVolume, covered: { start, end, narrowed }, contracts }`.
 
-Coverage without volume **refuses** rather than returning an empty profile (`R-9.6`). **When the live tape
+Coverage without volume **refuses** rather than returning an empty profile (`R-9.6`). **When that instrument's live tape
 is not listening the tool refuses** with a sentence naming the fix — an empty profile and an absent tape
-must not look the same (gh#218). Every field is always present; none are omitted and none are null.
+must not look the same (gh#218). Another symbol's subscribe does not make this one healthy. Every field is
+always present; none are omitted and none are null.
 
 ## Account reads
 

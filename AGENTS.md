@@ -99,7 +99,8 @@ it before starting, and add dated entries only when nothing formal fits.
   agent rebuilds context from these fields.
   Detail: [board workflow](documentation/project-board-workflow.md).
 - **Commits:** Conventional Commits, plus **both** an `Assisted-by:` and a `Co-Authored-By:` trailer on
-  AI-authored changes. Full type list: [`CONTRIBUTING.md`](CONTRIBUTING.md).
+  AI-authored changes. **PR documentation** carries the `Assisted-by:` line on every body section, comment
+  and review — more than one tool can write the same PR. Full type list: [`CONTRIBUTING.md`](CONTRIBUTING.md).
 - **Branch off `develop` and PR back into it.** `develop` is the sole integration branch, never a workspace.
   Promotion is one-way with one source per step: `staging` ← `develop`, `main` ← `staging`. Never branch off or
   PR into `main`. Name branches `<type>/<work-item-id>_<title>`. **A release is cut on `main`, and the tag is

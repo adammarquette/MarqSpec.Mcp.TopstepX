@@ -1,7 +1,12 @@
 using FluentAssertions;
+using MarqSpec.Mcp.TopstepX.Configuration;
 using MarqSpec.Mcp.TopstepX.Data;
+using MarqSpec.Mcp.TopstepX.Domain;
 using MarqSpec.Mcp.TopstepX.MarketData;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Options;
+using Microsoft.Extensions.Time.Testing;
 
 namespace MarqSpec.Mcp.TopstepX.IntegrationTests;
 
@@ -206,6 +211,41 @@ public sealed class AdjacentFillWriteSkewTests(SchemaFixture fixture)
             + "ADR-0006's reproducibility buys and what makes the residue recoverable rather than permanent");
     }
 
+    [Fact]
+    public async Task RebuildIndicators_AfterTheAdjacentFillSeam_CountsTheSeriesAsRewritten()
+    {
+        // Option 1 (gh#348): the heal count is how many series rebuild-indicators rewrote. MES so this
+        // rebuild does not walk every other test's ES series in the shared container — the verb filters by
+        // instrument, not by venue (see ConcurrencyHarness.RebuildSymbol).
+        const string symbol = "MES";
+        InstrumentId instrument = new(symbol);
+        string venue = ConcurrencyHarness.Venue();
+
+        await RaceTwoAdjacentFillsAsync(venue, instrument);
+
+        await using TopstepXDbContext store = _fixture.CreateContext();
+        IndicatorRebuilder rebuilder = new(
+            store,
+            ConcurrencyHarness.Projector(store),
+            new InstrumentRegistry(Options.Create(new MarketDataOptions { Instruments = symbol })),
+            new FakeTimeProvider(Now),
+            NullLogger<IndicatorRebuilder>.Instance);
+
+        IndicatorRebuildResult result = await rebuilder.RebuildAsync(symbol, CancellationToken.None);
+
+        result.SeriesRewritten.Should().Be(
+            1,
+            "the raced series still holds the seam, so the rebuild must rewrite it — a confirming rebuild "
+            + "would be 0, and that is the unit-tier pin");
+        result.ValuesChanged.Should().BeGreaterThan(0, "the heal changed values, not merely walked the series");
+
+        IReadOnlyDictionary<Key, decimal> healed = await ValuesAsync(venue, symbol);
+        Key atrAtTheSeam = new("atr", 3, ConcurrencyHarness.Bucket(Seam));
+        healed.Should().ContainKey(
+            atrAtTheSeam,
+            "the increment has to be the heal — ATR at the seam was the absence the race left");
+    }
+
     /// <summary>The identity of one stored value, without the series it belongs to.</summary>
     /// <param name="Indicator">The indicator's stable name.</param>
     /// <param name="Period">The period.</param>
@@ -259,9 +299,12 @@ public sealed class AdjacentFillWriteSkewTests(SchemaFixture fixture)
 
     /// <summary>Drives the two adjacent fills so the later one holds a snapshot without the earlier one's bars.</summary>
     /// <param name="venue">The private venue id for this test.</param>
+    /// <param name="instrument">The instrument to fill. Defaults to the harness symbol.</param>
     /// <returns>The task.</returns>
-    private async Task RaceTwoAdjacentFillsAsync(string venue)
+    private async Task RaceTwoAdjacentFillsAsync(string venue, InstrumentId? instrument = null)
     {
+        InstrumentId id = instrument ?? ConcurrencyHarness.Instrument;
+
         await using TopstepXDbContext aStore = _fixture.CreateContext();
 
         async Task TheEarlierHalfLandsWhileThisOneHoldsItsSnapshot()
@@ -269,7 +312,7 @@ public sealed class AdjacentFillWriteSkewTests(SchemaFixture fixture)
             BarCacheService a = ConcurrencyHarness.Cache(
                 aStore, venue, ConcurrencyHarness.Bars(0, Seam), Now);
             await a.GetBarsAsync(
-                ConcurrencyHarness.Instrument,
+                id,
                 ConcurrencyHarness.ResolutionMinutes,
                 ConcurrencyHarness.Window(0, Seam),
                 CancellationToken.None);
@@ -283,7 +326,7 @@ public sealed class AdjacentFillWriteSkewTests(SchemaFixture fixture)
             bStore, venue, ConcurrencyHarness.Bars(Seam, End), Now);
 
         await b.GetBarsAsync(
-            ConcurrencyHarness.Instrument,
+            id,
             ConcurrencyHarness.ResolutionMinutes,
             ConcurrencyHarness.Window(Seam, End),
             CancellationToken.None);
@@ -294,19 +337,21 @@ public sealed class AdjacentFillWriteSkewTests(SchemaFixture fixture)
 
     /// <summary>Every stored value for a series, keyed by what identifies it inside that series.</summary>
     /// <param name="venue">The venue id.</param>
+    /// <param name="symbol">The instrument symbol. Defaults to the harness symbol.</param>
     /// <returns>The values.</returns>
     /// <remarks>
     /// <c>RecordedAt</c> is deliberately not read. It moves whenever a value is rewritten, so comparing it
     /// across two venues would report the write history rather than the numbers.
     /// </remarks>
-    private async Task<IReadOnlyDictionary<Key, decimal>> ValuesAsync(string venue)
+    private async Task<IReadOnlyDictionary<Key, decimal>> ValuesAsync(string venue, string? symbol = null)
     {
+        string instrument = symbol ?? ConcurrencyHarness.Symbol;
         await using TopstepXDbContext reader = _fixture.CreateContext();
 
         return await reader.IndicatorValues
             .AsNoTracking()
             .Where(v => v.Venue == venue
-                && v.Instrument == ConcurrencyHarness.Symbol
+                && v.Instrument == instrument
                 && v.ResolutionMinutes == ConcurrencyHarness.ResolutionMinutes)
             .ToDictionaryAsync(
                 v => new Key(v.Indicator, v.Period, v.BucketStart),

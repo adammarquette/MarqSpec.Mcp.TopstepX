@@ -228,8 +228,10 @@ uncommitted, so a wider read still cannot see them.
 - **If this is ever revisited**, the two traps are measured and the working shape is written down. The bar to
   clear is not "does the lock work" — it is *what releases it when the request that took it does not*, and
   *how long the series is unavailable meanwhile*.
-- **Nothing measures how often this happens**, and by the argument above nothing inside a fill can: the pass
-  that suffers it cannot see that it did. If the residue ever starts mattering, the cheap first move is to make
-  the heal deliberate — a scheduled `rebuild-indicators` — rather than to make it unnecessary with a lock.
+- **Nothing inside a fill can measure how often this happens**: the pass that suffers it cannot see that it
+  did. `rebuild-indicators` now reports how many series it rewrote (values actually changed, not confirming
+  rebuilds) — a heal count, not a skew count, which is the cheap first move this record already named (gh#348).
+  A periodic in-memory compare remains available if that count is not enough to decide; do not take a lock
+  just to count.
 - **The projection's own read-then-insert race** was gh#133, untouched by this record and closed separately by
   the same `ON CONFLICT … DO UPDATE` remedy its two siblings got. With it, epic gh#80 closed.

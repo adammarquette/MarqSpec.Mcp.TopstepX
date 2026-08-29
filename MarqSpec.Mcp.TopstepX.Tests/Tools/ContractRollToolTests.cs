@@ -32,6 +32,7 @@ public sealed class ContractRollToolTests : IDisposable
     private const string Expiring = "CON.F.US.EP.U26";
     private const string Next = "CON.F.US.EP.Z26";
     private const string GatewaySelected = "CON.F.US.TEST.Z26";
+    private const int OneMinute = 1;
     private const int FiveMinutes = 5;
 
     private static readonly InstrumentId _es = new("ES");
@@ -201,6 +202,29 @@ public sealed class ContractRollToolTests : IDisposable
     }
 
     [Fact]
+    public async Task BarSideSeam_FinestIsSingleContract_ButCoarserSpans_ReportsSpansRoll()
+    {
+        // 5-minute series already holds U26 then Z26 across the flip (SpansRoll).
+        // 1-minute series after the flip is Z26 only. Finest-only coverage would
+        // report SingleContract and hide the 5-minute seam this tool exists to name.
+        await SeedRolledTapeAsync();
+        await SeedBarsAroundFlipAsync(knownProvenance: true);
+        await SeedOneMinuteBarsAfterFlipAsync(Next);
+
+        ToolPayloads.ContractRollInfo payload =
+            await _tools.GetContractRoll("ES", asOfUtc: null, CancellationToken.None);
+
+        payload.Front.Changeover.Should().NotBeNull();
+        payload.Front.Changeover!.FromContractId.Should().Be(Expiring);
+        payload.Front.Changeover.ToContractId.Should().Be(Next);
+        payload.Contracts.Should().NotBeNull();
+        payload.Contracts!.Span.Should().Be(ToolPayloads.ContractSpan.SpansRoll);
+        payload.Contracts.Segments.Should().HaveCount(2);
+        payload.Contracts.Segments[0].ContractId.Should().Be(Expiring);
+        payload.Contracts.Segments[1].ContractId.Should().Be(Next);
+    }
+
+    [Fact]
     public async Task BarSideSeam_WithUnrecordedProvenance_IsUnknown_NotAGuessedSingleContract()
     {
         await SeedRolledTapeAsync();
@@ -249,6 +273,16 @@ public sealed class ContractRollToolTests : IDisposable
         await _database.SaveChangesAsync();
     }
 
+    private async Task SeedOneMinuteBarsAfterFlipAsync(string contractId)
+    {
+        DateTimeOffset flip = Central(2026, 8, 19, 10, 1);
+        _database.Bars.AddRange(
+            Bar(flip, contractId, OneMinute),
+            Bar(flip.AddMinutes(1), contractId, OneMinute),
+            Bar(flip.AddMinutes(2), contractId, OneMinute));
+        await _database.SaveChangesAsync();
+    }
+
     private async Task SeedTradesAsync(params TradeRecord[] trades)
     {
         _database.Trades.AddRange(trades);
@@ -276,11 +310,11 @@ public sealed class ContractRollToolTests : IDisposable
             RecordedAt = _recorded,
         };
 
-    private static BarRecord Bar(DateTimeOffset bucket, string? contractId) => new()
+    private static BarRecord Bar(DateTimeOffset bucket, string? contractId, int resolutionMinutes = FiveMinutes) => new()
     {
         Venue = Venue,
         Instrument = _es.Symbol,
-        ResolutionMinutes = FiveMinutes,
+        ResolutionMinutes = resolutionMinutes,
         BucketStart = bucket,
         Open = 100m,
         High = 101m,

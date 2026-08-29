@@ -508,10 +508,13 @@ tools. A historical `asOfUtc` omits both — substituting today's pick would dat
 that never happened.
 
 **`contracts` is the bar-side seam around the changeover**, from bars already held — not a
-venue fetch. It is omitted when there is no changeover to place a window around. `span`
-`Unknown` means provenance was never recorded, *not* that there was no roll. A symbol with
-no changeover returns a payload that says so (empty changeover omitted, not a guessed date).
-An unknown instrument is an error (`R-5.3`), not an empty roll.
+venue fetch. It inspects **every stored resolution** in a short window around the flip:
+`SingleContract` means no held series in that window crosses, not that the finest one does
+not. A coarser series that already spans wins over a finer post-flip series that does not.
+It is omitted when there is no changeover to place a window around. `span` `Unknown` means
+provenance was never recorded, *not* that there was no roll. A symbol with no changeover
+returns a payload that says so (empty changeover omitted, not a guessed date). An unknown
+instrument is an error (`R-5.3`), not an empty roll.
 
 **`asOfUtc` defaults to now** and is bounded like `get_market_session`'s `atUtc` (`R-5.4`):
 past the last instant the session rules can be expressed at, the tool refuses naming both

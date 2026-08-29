@@ -57,6 +57,6 @@ public sealed record CoveredTapeWindow(
 public sealed record VolumeProfileRead(VolumeProfile Profile, CoveredTapeWindow Window);
 
 /// <summary>Footprint cells together with the window they were read under.</summary>
-/// <param name="Cells">The cells inside the covered window. Empty means listened-and-quiet, not absent tape.</param>
+/// <param name="Cells">The cells inside the covered window. Empty at the tool boundary is refused — it is not a quiet-market answer.</param>
 /// <param name="Window">The covered window, from <c>TapeCoverage</c>.</param>
 public sealed record FootprintRead(IReadOnlyList<FootprintCell> Cells, CoveredTapeWindow Window);

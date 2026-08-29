@@ -580,15 +580,18 @@ public static class ToolPayloads
     /// <summary>Stored footprint cells for a covered tape window.</summary>
     /// <param name="Symbol">The normalised instrument.</param>
     /// <param name="ResolutionMinutes">The bar size the cells were projected at.</param>
-    /// <param name="Cells">The cells, ordered by bucket then price. Empty means quiet under coverage.</param>
+    /// <param name="Cells">The cells, ordered by bucket then price. Never empty on the wire — absence refuses.</param>
     /// <param name="Covered">The ledger window that produced them.</param>
     /// <param name="Contracts">
     /// Contract provenance. A profile/footprint is confined to one contract, so
-    /// <see cref="ContractSpan.SingleContract"/> with one segment naming it.
+    /// <see cref="ContractSpan.SingleContract"/> with one segment naming it. Segment bucket times are
+    /// bar opens from the cells, not the exclusive coverage end.
     /// </param>
     /// <remarks>
     /// Every field is always present; none are omitted and none are null. Live tape-subscription health
-    /// is not on this payload — that surface does not exist yet (gh#218).
+    /// is not on this payload — that surface does not exist yet (gh#218). A covered window with no cells
+    /// at the asked bar size is refused rather than returned empty: TapeCoverage is not per-resolution,
+    /// so empty <c>cells</c> would look like a quiet market when the series was never projected.
     /// </remarks>
     public sealed record FootprintSeries(
         string Symbol,
@@ -633,24 +636,50 @@ public static class ToolPayloads
         ContractCoverage Contracts);
 
     /// <summary>
-    /// Contract provenance for a tape-derived answer that has already been confined to one contract.
+    /// Contract provenance for a tape-derived answer confined to one contract, with bar-open times
+    /// from the cells that contributed — not the exclusive coverage envelope.
     /// </summary>
-    /// <param name="window">The covered tape window.</param>
-    /// <param name="bucketCount">How many distinct bar buckets contributed.</param>
+    /// <param name="window">The covered tape window (contract id only; times stay on <see cref="CoveredWindow"/>).</param>
+    /// <param name="cells">The cells behind the answer. Must not be empty.</param>
     /// <returns><see cref="ContractSpan.SingleContract"/> with one segment naming the contract.</returns>
-    public static ContractCoverage ToTapeCoverage(CoveredTapeWindow window, int bucketCount)
+    /// <exception cref="ArgumentException"><paramref name="cells"/> is empty.</exception>
+    public static ContractCoverage ToTapeCoverage(
+        CoveredTapeWindow window,
+        IReadOnlyList<FootprintCell> cells)
     {
         ArgumentNullException.ThrowIfNull(window);
+        ArgumentNullException.ThrowIfNull(cells);
+
+        if (cells.Count == 0)
+        {
+            throw new ArgumentException(
+                "Contract segments need at least one cell so firstBucket and lastBucket are bar opens, "
+                + "not the exclusive coverage end.",
+                nameof(cells));
+        }
+
+        DateTimeOffset first = cells[0].BucketStart;
+        DateTimeOffset last = cells[0].BucketStart;
+        HashSet<DateTimeOffset> buckets = [];
+
+        foreach (FootprintCell cell in cells)
+        {
+            if (cell.BucketStart < first)
+            {
+                first = cell.BucketStart;
+            }
+
+            if (cell.BucketStart > last)
+            {
+                last = cell.BucketStart;
+            }
+
+            buckets.Add(cell.BucketStart);
+        }
 
         return new ContractCoverage(
             ContractSpan.SingleContract,
-            [
-                new ContractSegmentInfo(
-                    window.ContractId,
-                    window.Start,
-                    window.End,
-                    bucketCount),
-            ]);
+            [new ContractSegmentInfo(window.ContractId, first, last, buckets.Count)]);
     }
 
     /// <summary>Describes which contracts produced a series of bars.</summary>

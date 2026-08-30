@@ -256,6 +256,15 @@ caller pays when the switch is off, or when warmup has not finished, or when a s
 arrives after boot. When the flag is on and warmup completed, that first read is the
 probe.
 
+## Update (2026-08-29) — the tool surface names the window before warmup finishes
+
+The first wording of the tool descriptions said an HTTP process with the switch on
+pays at start, so the first read is a probe. That is true only after
+`ExecuteAsync` finishes the series. `/mcp` accepts calls while `RebuildAsync` is
+still walking. A read in that window is still today's first-read path — the 8.3 s
+replay, or `StoreContentionException` after two `40001`s. The tool descriptions and
+the catalogue now say so, the way the update above already did.
+
 ## Follow-ups
 
 - **A process-lifetime counter now records how often a read opens a replay**

@@ -368,6 +368,33 @@ public sealed class ToolSchemaTests
 
     [Theory]
     [MemberData(nameof(EveryTool))]
+    public void ADescriptionThatNamesWarmIndicators_AlsoNamesTheWindowBeforeWarmupFinishes(string tool)
+    {
+        // gh#350's first wording said an HTTP process with MarketData__WarmIndicators on pays the
+        // 8.3 s at start, so the first read is a probe. IndicatorWarmup is a BackgroundService:
+        // /mcp accepts calls while RebuildAsync is still walking, and a read in that window is
+        // still today's first-read path — the replay, or StoreContentionException after two
+        // 40001s. ADR-0014's decision log already named "when warmup has not finished"; the
+        // tool surface has to.
+        MethodInfo method = ToolMethods().Single(m => m.DeclaringType!.Name + "." + m.Name == tool);
+        string description = method.GetCustomAttribute<DescriptionAttribute>()?.Description ?? string.Empty;
+
+        if (!description.Contains("WarmIndicators", StringComparison.Ordinal))
+        {
+            return;
+        }
+
+        description.Should().MatchRegex(
+            @"\bfinish",
+            "{0} names MarketData__WarmIndicators, so it must also name the window before warmup "
+            + "finishes — otherwise it promises a probe while ExecuteAsync is still walking. "
+            + "Current text: \"{1}\"",
+            tool,
+            description);
+    }
+
+    [Theory]
+    [MemberData(nameof(EveryTool))]
     public void ADescriptionNamingFetchedBuckets_NamesVenueRequestsBesideIt(string tool)
     {
         // gh#71 retracted "zero fetched buckets proves the read touched no venue" from the tool catalogue,

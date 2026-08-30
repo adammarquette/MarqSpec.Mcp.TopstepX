@@ -60,6 +60,10 @@ The first promotion since `v0.1.0`. New MCP tools are additions. Two existing pa
 - A confirmed subscribe writes `TapeCoverage` immediately; `get_footprint` / `get_volume_profile` no longer
   treat a first live listen as no tape (gh#365).
 - A covered tape with no footprint cells is projected on the read, same trigger as indicators (gh#366).
+- A store fault after the hub confirms a subscribe drops the subscription, rather than filling `Trades`
+  against a window no `TapeCoverage` row claims (gh#376).
+- A print stored after a footprint projection is no longer skipped by the on-read probe (gh#377).
+- A stdio or switch-off start no longer deletes a live HTTP recorder's open `TapeCoverage` row (gh#378).
 
 ### Removed
 

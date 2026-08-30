@@ -65,6 +65,7 @@ difference between the two entry points is a handful of lines.
 | [2026-08-22](#update-2026-08-22--the-token-was-required-and-never-checked) | The bearer token is now enforced in the pipeline, not merely required in configuration |
 | [2026-08-23](#update-2026-08-23--never-listens-is-not-never-starts-a-listener) | A shutdown requested while the host is still starting is a clean stop, not a crash |
 | [2026-08-23](#update-2026-08-23--the-image-gate-does-read-the-exit-code) | The image gate reads the exit code after all — as a second signal, behind the handshake |
+| [2026-08-30](#update-2026-08-30--the-stdio-listener-takes-an-ephemeral-port) | The listener stdio starts no longer takes a well-known port, so two sessions can run at once |
 
 ## Update (2026-08-22) — starting is not the same as being ready
 
@@ -181,3 +182,38 @@ header and in [`agents/platform.md`](../agents/platform.md), not here.
 mid-startup is untouched. The gate holds stdin open, which is the shape that read **0** on both sides of
 gh#76 — so reading the exit code would not have caught that crash, and it is not claimed to.
 
+## Update (2026-08-30) — the stdio listener takes an ephemeral port
+
+The update above established that stdio **starts a listener**, and rejected not starting one. Both still
+hold. What neither settled is the *address* that listener takes, and the default was a bad one (gh#392).
+
+With no `ASPNETCORE_URLS` and no `launchSettings.json`, Kestrel takes the framework default
+`http://localhost:5000` and holds it for the life of the process — exclusively, for a listener that serves
+nothing, since `MapMcp` is inside the HTTP branch and the session runs over stdin and stdout. So a second
+stdio session died on `IOException: Failed to bind to address http://127.0.0.1:5000: address already in use`,
+exit `0xE0434352`, before any tool was reachable.
+
+That is this record's own failure mode returning by a different door: a stack trace naming Kestrel, an opaque
+exit code, and nothing pointing at stdio or at the session already running. It bites here in particular,
+because `AGENTS.md` is built around parallel agent sessions — and the workaround was in the tree before the
+cause was, in `HostShutdownTests`, which pins its own hosts to `127.0.0.1:0` because "a fixed port would make
+these tests unable to run beside anything else".
+
+**`Program.ConfigureDefaultBinding` now gives stdio `http://127.0.0.1:0`** — loopback, port assigned by the
+OS — when nothing names an address. Port 0 rather than a second well-known number, because any fixed choice
+is the same bug at a different address; loopback rather than any interface, because nothing should reach this
+listener at all.
+
+**An explicitly named address still wins, under either transport** — `ASPNETCORE_URLS`,
+`ASPNETCORE_HTTP_PORTS` (which `docker-compose.yml` uses to place the composed server on 8080) and
+`ASPNETCORE_HTTPS_PORTS`. A default that overrode them would not be a default, and that is what the last
+three tests in `TransportBindingTests` exist to stop.
+
+Measured on Windows 11, Docker Desktop 29.7.2, with a client-launched server already holding `:5000`: two
+further stdio servers started concurrently, completed `initialize`, and answered a store-backed `tools/call`
+— where before the fix the first of them failed to bind. The HTTP transport under
+`ASPNETCORE_HTTP_PORTS=8099` still reported `Now listening on: http://[::]:8099`.
+
+**What is unchanged.** Kestrel still starts under stdio; `RunHostAsync`'s handling of a shutdown requested
+mid-startup is untouched; and a genuine address conflict — an operator who names a port that is taken —
+still fails the process, exactly as the update above says it should.

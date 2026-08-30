@@ -548,39 +548,68 @@ public sealed class TradeTapeRecorder : BackgroundService
         {
             using IServiceScope scope = _scopes.CreateScope();
             TopstepXDbContext database = scope.ServiceProvider.GetRequiredService<TopstepXDbContext>();
-            DateTimeOffset recordedAt = _clock.GetUtcNow();
-            foreach (ClosedRange range in batch)
+            try
             {
-                List<TapeCoverageRecord> stillOpen = await database.TapeCoverage
-                    .Where(row => row.Venue == range.Venue
-                        && row.Instrument == range.Instrument
-                        && row.ContractId == range.ContractId
-                        && row.RangeEnd == TapeCoverageRecord.StillListeningEnd)
-                    .ToListAsync(cancellationToken)
-                    .ConfigureAwait(false);
-
-                if (stillOpen.Count > 0)
+                bool retired = false;
+                foreach (ClosedRange range in batch)
                 {
+                    List<TapeCoverageRecord> stillOpen = await database.TapeCoverage
+                        .Where(row => row.Venue == range.Venue
+                            && row.Instrument == range.Instrument
+                            && row.ContractId == range.ContractId
+                            && row.RangeEnd == TapeCoverageRecord.StillListeningEnd)
+                        .ToListAsync(cancellationToken)
+                        .ConfigureAwait(false);
+
+                    if (stillOpen.Count == 0)
+                    {
+                        continue;
+                    }
+
                     database.TapeCoverage.RemoveRange(stillOpen);
+                    retired = true;
                 }
 
-                if (range.RangeEnd <= range.RangeStart)
+                if (retired)
                 {
-                    continue;
+                    await database.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
                 }
 
-                database.TapeCoverage.Add(new TapeCoverageRecord
+                DateTimeOffset recordedAt = _clock.GetUtcNow();
+                bool wroteClosed = false;
+                foreach (ClosedRange range in batch)
                 {
-                    Venue = range.Venue,
-                    Instrument = range.Instrument,
-                    ContractId = range.ContractId,
-                    RangeStart = range.RangeStart,
-                    RangeEnd = range.RangeEnd,
-                    RecordedAt = recordedAt,
-                });
+                    if (range.RangeEnd <= range.RangeStart)
+                    {
+                        continue;
+                    }
+
+                    database.TapeCoverage.Add(new TapeCoverageRecord
+                    {
+                        Venue = range.Venue,
+                        Instrument = range.Instrument,
+                        ContractId = range.ContractId,
+                        RangeStart = range.RangeStart,
+                        RangeEnd = range.RangeEnd,
+                        RecordedAt = recordedAt,
+                    });
+                    wroteClosed = true;
+                }
+
+                if (wroteClosed)
+                {
+                    await database.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+                }
             }
+            catch
+            {
+                lock (_coverageGate)
+                {
+                    _pendingCloses.InsertRange(0, batch);
+                }
 
-            await database.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+                throw;
+            }
         }
         finally
         {

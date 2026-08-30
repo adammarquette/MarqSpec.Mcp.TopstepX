@@ -42,6 +42,12 @@ public sealed class FakeMarketHub : IProjectXWebSocketClient
     /// <summary>How many times <see cref="UnsubscribeFromTradeUpdatesAsync"/> ran.</summary>
     public int UnsubscribeAttempts { get; private set; }
 
+    /// <summary>
+    /// Runs inside <see cref="SubscribeToTradeUpdatesAsync"/> once the subscription is live but
+    /// before the call returns, so a test can print while the venue RPC is still in flight.
+    /// </summary>
+    public Action? WhileSubscribing { get; set; }
+
     /// <summary>Signalled when an unsubscribe starts, so a test can interleave a hub drop.</summary>
     public TaskCompletionSource? UnsubscribeStarted { get; set; }
 
@@ -160,6 +166,7 @@ public sealed class FakeMarketHub : IProjectXWebSocketClient
         }
 
         TradeSubscriptions.Add(contractId);
+        WhileSubscribing?.Invoke();
         return Task.CompletedTask;
     }
 

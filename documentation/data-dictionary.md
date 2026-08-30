@@ -298,10 +298,12 @@ a still-open row is coverage only while that instrument is Listening, so a lefto
 claim coverage after death. Opening a new listen retires any other still-open row for that
 contract. A store fault **after** a confirmed subscribe is not a refused subscribe (`R-5.7`, gh#376):
 the venue subscription is dropped so prints cannot land without a ledger row — including
-prints already queued for that listen — and the in-memory open is assigned only after the
-persist lands, so a hub drop during that unsubscribe cannot write a close for a listen that
-never reached the store. A later successful restore opens a new range at the new subscribe
-time and does not cover that hole. A hub that reports `Connected` with no confirmed subscribe
+every print queued since the subscribe was *attempted*, because the venue can print while
+that call is still in flight — and the pending close a hub drop snapshotted for that listen
+is discarded, so a listen that never reached the store cannot be written as a closed range.
+A drop while the persist is still in flight still closes that listen if the persist then
+lands. A later successful restore opens a new range at the new subscribe time and does not
+cover that hole. A hub that reports `Connected` with no confirmed subscribe
 is not a range. The intended contract set is held by the recorder; a roll still changes that
 set, which is why `ContractId` is in the key.
 

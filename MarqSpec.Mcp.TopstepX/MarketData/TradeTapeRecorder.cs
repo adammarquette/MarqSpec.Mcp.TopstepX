@@ -396,21 +396,28 @@ public sealed class TradeTapeRecorder : BackgroundService
         foreach ((string contractId, Attribution attribution) in _attribution)
         {
             bool subscribed = false;
+
+            // Recorded before the call, not after it. The venue can print as soon as it accepts the
+            // subscribe, so a print queued while the RPC is still in flight belongs to this listen
+            // and must not be stored unless this listen's open reaches the store (gh#376). The
+            // coverage range still starts at the confirm, so nothing claims the in-flight window.
+            DateTimeOffset attempt = _clock.GetUtcNow();
+            DateTimeOffset start = attempt;
+            RememberSubscribeAttempt(contractId, attempt);
             try
             {
                 await hub.SubscribeToTradeUpdatesAsync(contractId, cancellationToken)
                     .ConfigureAwait(false);
                 subscribed = true;
-                DateTimeOffset start = _clock.GetUtcNow();
-
-                await PersistOpenRangeAsync(
-                        attribution.Venue, attribution.Instrument, contractId, start, cancellationToken)
-                    .ConfigureAwait(false);
-
+                start = _clock.GetUtcNow();
                 lock (_coverageGate)
                 {
                     _openRanges[contractId] = new OpenRange(attribution.Venue, attribution.Instrument, start);
                 }
+
+                await PersistOpenRangeAsync(
+                        attribution.Venue, attribution.Instrument, contractId, start, cancellationToken)
+                    .ConfigureAwait(false);
 
                 _tape.Set(attribution.Instrument, TapeAvailability.Listening());
                 restored++;
@@ -423,9 +430,9 @@ public sealed class TradeTapeRecorder : BackgroundService
             {
                 // The venue accepted the subscribe. A store fault after that side effect is
                 // not "the venue refused" (R-5.7). Drop the subscription so prints cannot
-                // land without a ledger row. _openRanges is assigned only after the open
-                // persist lands, so a hub drop during this unsubscribe cannot close a
-                // listen that never reached the store (gh#376).
+                // land without a ledger row. A hub drop between the assignment and here has
+                // already snapshotted this listen into _pendingCloses; discard that snapshot,
+                // because a listen that never reached the store is a hole, not a range (gh#376).
                 _logger.LogError(
                     exception,
                     "The trade-tape recorder subscribed {Contract} but could not persist the open "
@@ -450,10 +457,7 @@ public sealed class TradeTapeRecorder : BackgroundService
                         contractId);
                 }
 
-                lock (_coverageGate)
-                {
-                    _openRanges.Remove(contractId);
-                }
+                DiscardFailedOpen(contractId, start);
 
                 _tape.Set(attribution.Instrument, TapeAvailability.ConnectedButNotSubscribed());
             }
@@ -577,11 +581,10 @@ public sealed class TradeTapeRecorder : BackgroundService
         }
         catch
         {
-            lock (_coverageGate)
-            {
-                _suppressPrintsFrom[contractId] = start;
-            }
-
+            // Still holding the store gate: discard the in-memory listen so a close write
+            // queued behind this gate cannot invent a closed row for an open the store
+            // refused (gh#376).
+            DiscardFailedOpen(contractId, start);
             throw;
         }
         finally
@@ -592,21 +595,23 @@ public sealed class TradeTapeRecorder : BackgroundService
 
     private async Task PersistPendingClosesAsync(CancellationToken cancellationToken)
     {
-        ClosedRange[] batch;
-        lock (_coverageGate)
-        {
-            if (_pendingCloses.Count == 0)
-            {
-                return;
-            }
-
-            batch = [.. _pendingCloses];
-            _pendingCloses.Clear();
-        }
-
+        // The batch is taken under the store gate, not before it: a range still queued is a
+        // range a failed open persist can still discard (gh#376).
         await _store.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
+            ClosedRange[] batch;
+            lock (_coverageGate)
+            {
+                if (_pendingCloses.Count == 0)
+                {
+                    return;
+                }
+
+                batch = [.. _pendingCloses];
+                _pendingCloses.Clear();
+            }
+
             using IServiceScope scope = _scopes.CreateScope();
             TopstepXDbContext database = scope.ServiceProvider.GetRequiredService<TopstepXDbContext>();
             try
@@ -755,11 +760,39 @@ public sealed class TradeTapeRecorder : BackgroundService
         }
     }
 
+    private void RememberSubscribeAttempt(string contractId, DateTimeOffset attempt)
+    {
+        lock (_coverageGate)
+        {
+            // An earlier attempt whose open never reached the store stays the boundary. Its
+            // prints are uncovered whatever happens next, and moving the boundary forward
+            // would let them through as if they belonged to a previous listen.
+            if (_suppressPrintsFrom.TryGetValue(contractId, out DateTimeOffset suppress)
+                && (!_ledgerOpenFrom.TryGetValue(contractId, out DateTimeOffset ledger) || ledger < suppress))
+            {
+                return;
+            }
+
+            _suppressPrintsFrom[contractId] = attempt;
+        }
+    }
+
     private void RememberLedgerOpen(string contractId, DateTimeOffset start)
     {
         lock (_coverageGate)
         {
             _ledgerOpenFrom[contractId] = start;
+        }
+    }
+
+    private void DiscardFailedOpen(string contractId, DateTimeOffset start)
+    {
+        lock (_coverageGate)
+        {
+            _openRanges.Remove(contractId);
+            _pendingCloses.RemoveAll(range =>
+                string.Equals(range.ContractId, contractId, StringComparison.Ordinal)
+                && range.RangeStart == start);
         }
     }
 
@@ -773,9 +806,9 @@ public sealed class TradeTapeRecorder : BackgroundService
                 return false;
             }
 
-            bool laterLedger = _ledgerOpenFrom.TryGetValue(contractId, out DateTimeOffset ledger)
-                && ledger > suppress;
-            return !laterLedger || receivedAt < ledger;
+            bool landedOpen = _ledgerOpenFrom.TryGetValue(contractId, out DateTimeOffset ledger)
+                && ledger >= suppress;
+            return !landedOpen || receivedAt < ledger;
         }
     }
 

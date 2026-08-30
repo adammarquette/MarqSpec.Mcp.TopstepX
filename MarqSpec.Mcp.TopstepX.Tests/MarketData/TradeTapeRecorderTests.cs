@@ -1143,6 +1143,84 @@ public sealed class TradeTapeRecorderTests
     }
 
     [Fact]
+    public async Task AHubDropWhileTheOpenPersistIsInFlight_ClosesThatListen_WhenThePersistThenLands()
+    {
+        // The open persist is a query plus SaveChanges. A drop while it runs must still be able
+        // to snapshot the listen: lose that snapshot and the still-open row it then writes is
+        // closed by the next shutdown, taping straight through the outage (gh#376 review).
+        TaskCompletionSource hold = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        TaskCompletionSource started = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        (TradeTapeRecorder recorder, FakeMarketHub hub, TopstepXDbContext database, ServiceProvider services, FakeTimeProvider clock) =
+            Build(
+                McpTransport.Http,
+                recordTape: true,
+                extraInterceptor: new HeldFirstOpenCoverageInterceptor(hold, started));
+
+        await using (services)
+        await using (database)
+        {
+            await recorder.StartAsync(CancellationToken.None);
+            await started.Task.WaitAsync(TimeSpan.FromSeconds(2));
+
+            DateTimeOffset listen = clock.GetUtcNow();
+            clock.Advance(TimeSpan.FromSeconds(1));
+            DateTimeOffset disconnectAt = clock.GetUtcNow();
+
+            hub.SimulateMarketDisconnect();
+            hold.SetResult();
+
+            await WaitUntil(
+                () => CoverageRows(database).Exists(row => row.RangeEnd == disconnectAt),
+                "a listen that reached the store is closed at the drop that interrupted it");
+
+            CoverageRows(database).Should().ContainSingle(row =>
+                row.RangeStart == listen && row.RangeEnd == disconnectAt);
+            CoverageRows(database).Should().NotContain(
+                row => row.RangeEnd == TapeCoverageRecord.StillListeningEnd,
+                "a sentinel nobody closes is coverage across an outage");
+
+            await recorder.StopAsync(CancellationToken.None);
+        }
+    }
+
+    [Fact]
+    public async Task APrintQueuedWhileTheSubscribeIsInFlight_IsNotStored_WhenTheOpenPersistThenFails()
+    {
+        // The venue can print as soon as it accepts the subscribe, so a print is queued before
+        // the confirm the coverage range starts from. Letting it through because it predates
+        // that confirm stores volume no ledger row ever covered (gh#376 review).
+        CollectingLogger logger = new();
+        (TradeTapeRecorder recorder, FakeMarketHub hub, TopstepXDbContext database, ServiceProvider services, FakeTimeProvider clock) =
+            Build(
+                McpTransport.Http,
+                recordTape: true,
+                logger: logger,
+                extraInterceptor: new FailingOpenCoverageInterceptor());
+
+        hub.WhileSubscribing = () =>
+        {
+            hub.Raise(Print(Utc(14, 30, 0), TradeLogType.Buy, price: 5000.25m));
+            clock.Advance(TimeSpan.FromSeconds(1));
+        };
+
+        await using (services)
+        await using (database)
+        {
+            await recorder.StartAsync(CancellationToken.None);
+            await WaitUntil(
+                () => logger.Warnings.Exists(message =>
+                    message.Contains("without a persisted coverage open", StringComparison.Ordinal)),
+                "a print queued during the subscribe is suppressed with the listen whose open failed");
+
+            recorder.RecordedPrints.Should().Be(0);
+            database.ChangeTracker.Clear();
+            database.Trades.Should().BeEmpty("volume with no ledger row is a hole, not a taped print");
+
+            await recorder.StopAsync(CancellationToken.None);
+        }
+    }
+
+    [Fact]
     public async Task AResubscribeFailure_IsSurfaced_AndLeavesTheOpenRangeClosed()
     {
         CollectingLogger logger = new();
@@ -1473,10 +1551,15 @@ public sealed class TradeTapeRecorderTests
         return (recorder, hub, database, provider, clock);
     }
 
-    /// <summary>Captures <see cref="LogLevel.Error"/> so a swallowed re-subscribe failure is visible.</summary>
+    /// <summary>
+    /// Captures <see cref="LogLevel.Error"/> so a swallowed re-subscribe failure is visible, and
+    /// <see cref="LogLevel.Warning"/> so a suppressed print is a signal a test can wait on.
+    /// </summary>
     private sealed class CollectingLogger : ILogger<TradeTapeRecorder>
     {
         public List<(Exception? Exception, string Message)> Errors { get; } = [];
+
+        public List<string> Warnings { get; } = [];
 
         public IDisposable BeginScope<TState>(TState state)
             where TState : notnull => NullScope.Instance;
@@ -1493,6 +1576,10 @@ public sealed class TradeTapeRecorderTests
             if (logLevel == LogLevel.Error)
             {
                 Errors.Add((exception, formatter(state, exception)));
+            }
+            else if (logLevel == LogLevel.Warning)
+            {
+                Warnings.Add(formatter(state, exception));
             }
         }
 
@@ -1684,6 +1771,36 @@ public sealed class TradeTapeRecorderTests
                 started?.TrySetResult();
                 await hold.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
                 throw new InvalidOperationException("the store refused the coverage open");
+            }
+
+            return await base.SavingChangesAsync(eventData, result, cancellationToken)
+                .ConfigureAwait(false);
+        }
+    }
+
+    /// <summary>
+    /// Holds the first still-open TapeCoverage write so a hub drop can run mid-persist, then lets
+    /// it land.
+    /// </summary>
+    private sealed class HeldFirstOpenCoverageInterceptor(
+        TaskCompletionSource hold,
+        TaskCompletionSource? started) : SaveChangesInterceptor
+    {
+        private int _holds;
+
+        public override async ValueTask<InterceptionResult<int>> SavingChangesAsync(
+            DbContextEventData eventData,
+            InterceptionResult<int> result,
+            CancellationToken cancellationToken = default)
+        {
+            bool writingOpen = eventData.Context?.ChangeTracker.Entries<TapeCoverageRecord>()
+                .Any(entry =>
+                    entry.State == EntityState.Added
+                    && entry.Entity.RangeEnd == TapeCoverageRecord.StillListeningEnd) == true;
+            if (writingOpen && Interlocked.Increment(ref _holds) == 1)
+            {
+                started?.TrySetResult();
+                await hold.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
             }
 
             return await base.SavingChangesAsync(eventData, result, cancellationToken)

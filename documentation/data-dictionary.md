@@ -291,10 +291,12 @@ coverage. A close persist retires the still-open row that **opened that range**,
 is live now — a requeued close from a failed retire must not delete the listen that restored after
 the outage. A still-open row is coverage only while that instrument is Listening: a leftover during an
 outage — including a persist that failed to retire it — is not a taped window. A leftover still-open
-row from a crash is discarded on **every** next start that can still serve tools — stdio, the switch
-off, and a missing venue client included — so it cannot claim coverage after death. Opening a new
-listen retires any other still-open row for that contract; two sentinels must not merge across an
-outage. A hub that reports `Connected` with no confirmed subscribe is not a range. The
+row from a crash is discarded on the next HTTP start that will record, before a new listen
+opens — not on a stdio, switch-off, or missing-venue-client start that can still serve
+tools — so two sentinels cannot merge across an outage. Those other starts leave the row;
+a still-open row is coverage only while that instrument is Listening, so a leftover cannot
+claim coverage after death. Opening a new listen retires any other still-open row for that
+contract. A hub that reports `Connected` with no confirmed subscribe is not a range. The
 intended contract set is held by the recorder; a roll still changes that set, which is why `ContractId`
 is in the key.
 

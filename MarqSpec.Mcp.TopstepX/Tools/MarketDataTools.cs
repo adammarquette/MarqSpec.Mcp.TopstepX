@@ -445,7 +445,7 @@ public sealed class MarketDataTools(
             {
                 DateTimeOffset windowStart = detectable[0].OpenTime;
                 DateTimeOffset windowEnd = detectable[^1].OpenTime.AddMinutes(resolutionMinutes);
-                VolumeProfileRead read = await new VolumeProfileService(_database)
+                VolumeProfileRead read = await _volumeProfiles
                     .ReadAsync(
                         _gateway.VenueId,
                         instrument,

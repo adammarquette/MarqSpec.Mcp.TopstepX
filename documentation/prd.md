@@ -276,7 +276,8 @@ The server serves OHLCV bars for a futures instrument at a requested resolution 
   or `none` — never a silent prefer of the gateway, and never a rewrite of `contracts` (gh#346).
   Descriptions state that the tape
   only goes forward: there is no historical footprint before recording began. A request for a window
-  before recording began refuses and names the earliest covered time. Live tape-subscription health is
+  before recording began refuses and names the earliest covered time. A covered window whose tape
+  has prints but no cells is projected on the read — no vendor call (gh#366). Live tape-subscription health is
   required at the point of use (gh#218): when **that instrument's** tape is not listening the
   tool refuses with a sentence naming the fix — never reported healthy by default, never
   answered thinly. Another symbol's subscribe does not make this one healthy. Reads refuse

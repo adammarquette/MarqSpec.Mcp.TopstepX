@@ -137,8 +137,8 @@ public sealed class FootprintAndVolumeProfileToolTests : IDisposable
     public async Task GetFootprint_AtAnUnprojectedResolution_Refuses_RatherThanLookingQuiet()
     {
         // Reviewer fixture: TapeCoverage is not per-resolution. Coverage + 5-minute cells with
-        // volume, then ask for 15-minute footprint. Confine succeeds; the 15m cell query is empty.
-        // Returning { cells: [] } is the quiet-market shape for an absent projection (gh#69 shape).
+        // volume and no trades, then ask for 15-minute footprint. On-read has nothing to project
+        // from; the 15m cell query stays empty. Returning { cells: [] } is the quiet-market shape.
         await SeedCoverageAsync(Coverage(Front, _fourteen, _sixteen));
         await SeedCellsAsync(Cell(_bucket1430, 5000m, buy: 4, sell: 1));
 
@@ -255,9 +255,12 @@ public sealed class FootprintAndVolumeProfileToolTests : IDisposable
     {
         await SeedCoverageAsync(Coverage(Front, _fourteen, _sixteen));
         await SeedCellsAsync(Cell(_bucket1430, 5000m, buy: 4, sell: 1));
+        // Counted prints justify the seeded cell. Expiring size is Unknown so it
+        // moves tape-volume front without entering the footprint (data dictionary §7 / §9).
         await SeedTradesAsync(
-            Trade(Central(2026, 8, 18, 10, 0), 1, Expiring, 80, TradeDirection.Buy),
-            Trade(Central(2026, 8, 18, 10, 1), 2, Front, 10, TradeDirection.Sell));
+            Trade(_bucket1430.AddMinutes(1), 1, Front, 4, TradeDirection.Buy),
+            Trade(_bucket1430.AddMinutes(2), 2, Front, 1, TradeDirection.Sell),
+            Trade(_bucket1430.AddMinutes(3), 3, Expiring, 80, TradeDirection.Unknown));
 
         ToolPayloads.FootprintSeries footprint = await _tools.GetFootprint(
             "ES", FiveMinutes, _fourteen, _sixteen, CancellationToken.None);

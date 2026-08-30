@@ -34,7 +34,25 @@ public sealed class FakeMarketHub : IProjectXWebSocketClient
     /// <summary>Thrown on the second and later <see cref="SubscribeToTradeUpdatesAsync"/> call.</summary>
     public Exception? SubscribeThrowsAfterFirst { get; set; }
 
+    /// <summary>Thrown when this contract is subscribed, if set after the first wave.</summary>
+    public string? SubscribeThrowsFor { get; set; }
+
     public int SubscribeAttempts { get; private set; }
+
+    /// <summary>How many times <see cref="UnsubscribeFromTradeUpdatesAsync"/> ran.</summary>
+    public int UnsubscribeAttempts { get; private set; }
+
+    /// <summary>
+    /// Runs inside <see cref="SubscribeToTradeUpdatesAsync"/> once the subscription is live but
+    /// before the call returns, so a test can print while the venue RPC is still in flight.
+    /// </summary>
+    public Action? WhileSubscribing { get; set; }
+
+    /// <summary>Signalled when an unsubscribe starts, so a test can interleave a hub drop.</summary>
+    public TaskCompletionSource? UnsubscribeStarted { get; set; }
+
+    /// <summary>When set, unsubscribe waits here so a disconnect can run mid-await.</summary>
+    public TaskCompletionSource? UnsubscribeHold { get; set; }
 
     /// <summary>How many times the market hub transitioned into <see cref="ConnectionState.Connected"/>.</summary>
     public int TransitionsIntoConnected { get; private set; }
@@ -142,12 +160,29 @@ public sealed class FakeMarketHub : IProjectXWebSocketClient
             throw SubscribeThrowsAfterFirst;
         }
 
+        if (SubscribeThrowsFor is { } refused && refused == contractId)
+        {
+            throw new InvalidOperationException("the venue refused the trade re-subscribe");
+        }
+
         TradeSubscriptions.Add(contractId);
+        WhileSubscribing?.Invoke();
         return Task.CompletedTask;
     }
 
-    public Task UnsubscribeFromTradeUpdatesAsync(string contractId, CancellationToken cancellationToken = default) =>
-        Task.CompletedTask;
+    public async Task UnsubscribeFromTradeUpdatesAsync(
+        string contractId,
+        CancellationToken cancellationToken = default)
+    {
+        UnsubscribeAttempts++;
+        UnsubscribeStarted?.TrySetResult();
+        if (UnsubscribeHold is { } hold)
+        {
+            await hold.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
+        }
+
+        TradeSubscriptions.RemoveAll(id => id == contractId);
+    }
 
     public Task SubscribeToAccountUpdatesAsync(CancellationToken cancellationToken = default) =>
         Task.CompletedTask;

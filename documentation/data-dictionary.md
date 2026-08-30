@@ -283,10 +283,29 @@ Written from **subscription lifecycle**, not inferred from rows. A quiet market 
 produce the same empty range, and only lifecycle can tell them apart — the same third-state role §3 plays for
 bars. There is no market-tape REST backfill, so a hole in this ledger is permanent.
 
-The recorder **opens a range when a subscribe is confirmed** and **closes it** when the connection leaves
-`Connected`, the process stops, or a re-subscribe fails (gh#217). A hub that reports `Connected` with no
-confirmed subscribe is not a range. The intended contract set is held by the recorder; a roll still changes
-that set, which is why `ContractId` is in the key.
+The recorder **opens a range when a subscribe is confirmed** — that write is a stored row whose exclusive
+end is still open (`9999-12-31Z`) — and **closes it** by replacing that end when the connection leaves
+`Connected`, the process stops, or a re-subscribe fails (gh#217, gh#365). The still-open row is retired
+before the closed row is written, so a persist that then throws cannot leave the sentinel as ordinary
+coverage. A close persist retires the still-open row that **opened that range**, not whatever sentinel
+is live now — a requeued close from a failed retire must not delete the listen that restored after
+the outage. A still-open row is coverage only while that instrument is Listening: a leftover during an
+outage — including a persist that failed to retire it — is not a taped window. A leftover still-open
+row from a crash is discarded on the next HTTP start that will record, before a new listen
+opens — not on a stdio, switch-off, or missing-venue-client start that can still serve
+tools — so two sentinels cannot merge across an outage. Those other starts leave the row;
+a still-open row is coverage only while that instrument is Listening, so a leftover cannot
+claim coverage after death. Opening a new listen retires any other still-open row for that
+contract. A store fault **after** a confirmed subscribe is not a refused subscribe (`R-5.7`, gh#376):
+the venue subscription is dropped so prints cannot land without a ledger row — including
+every print queued since the subscribe was *attempted*, because the venue can print while
+that call is still in flight — and the pending close a hub drop snapshotted for that listen
+is discarded, so a listen that never reached the store cannot be written as a closed range.
+A drop while the persist is still in flight still closes that listen if the persist then
+lands. A later successful restore opens a new range at the new subscribe time and does not
+cover that hole. A hub that reports `Connected` with no confirmed subscribe
+is not a range. The intended contract set is held by the recorder; a roll still changes that
+set, which is why `ContractId` is in the key.
 
 **The range is half-open, `[RangeStart, RangeEnd)`.** Closed ranges written adjacently either overlap by one
 instant or leave a hole, and both are invisible until a profile reports a window that was never covered. An

@@ -96,6 +96,21 @@ verdict; it is still the same kickback.
 Any unresolved finding wins. `Ready to Merge` requires every reviewer approving
 ([board case 5](../project-board-workflow.md#5-two-reviewers-split-verdict)).
 
+**`BLOCKED` at `Ready to Merge` is the expected end, not a fault.** `develop` carries
+`require_extra_approval_for_unattributed_changes`, and it fires on the `Co-Authored-By:` trailer the
+[root contract](../../AGENTS.md) *mandates* on AI-authored commits. So a PR that is approved, green on every
+required check, unconflicted and up to date still reads:
+
+```
+mergeStateStatus: BLOCKED    reviewDecision: ""    mergeable: MERGEABLE
+```
+
+**No agent can clear that**, and there is no approval to chase — `required_approving_review_count` is `0`, so
+the rule asks the *maintainer* for a review rather than counting one, and GitHub blocks self-approval besides.
+Read it as the gate doing its job: confirm the required checks are green with no unresolved threads, leave the
+card on `Ready to Merge`, and report it. Re-dispatching an implementer here burns a session against a wall only
+the maintainer can clear.
+
 ## What you do not do
 
 - **Implement** — including resolving merge conflicts and applying review findings. Send those back.

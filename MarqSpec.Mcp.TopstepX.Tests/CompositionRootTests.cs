@@ -269,9 +269,10 @@ public sealed class CompositionRootTests
     [Fact]
     public void TheFootprintRebuildVerbCanBeResolved()
     {
-        // FootprintProjector is reachable from NO tool yet (gh#222 is the surface). Leaving its
-        // registration unchecked would ship a verb that dies the first time anyone asks the
-        // container for it — the same hole IndicatorRebuilder had before this test existed.
+        // FootprintProjector is reached from get_footprint / get_volume_profile via
+        // FootprintCacheService (gh#366). Leaving its registration unchecked would ship a
+        // read that dies the first time anyone asks the container for it — the same hole
+        // IndicatorRebuilder had before this test existed.
         using ServiceProvider provider =
             Build(new Dictionary<string, string?>(), new McpOptions { Transport = McpTransport.Stdio });
         using IServiceScope scope = provider.CreateScope();
@@ -282,11 +283,26 @@ public sealed class CompositionRootTests
     }
 
     [Fact]
+    public void TheFootprintCacheServiceCanBeResolved()
+    {
+        // The on-read path (gh#366) is what actually calls FootprintProjector. Leaving this
+        // registration unchecked would ship a tool that dies the first time a covered tape
+        // has no cells.
+        using ServiceProvider provider =
+            Build(new Dictionary<string, string?>(), new McpOptions { Transport = McpTransport.Stdio });
+        using IServiceScope scope = provider.CreateScope();
+
+        Func<object> resolve = () => scope.ServiceProvider.GetRequiredService<FootprintCacheService>();
+
+        resolve.Should().NotThrow();
+    }
+
+    [Fact]
     public void TheVolumeProfileServiceCanBeResolved()
     {
-        // VolumeProfileService is reachable from NO tool yet (gh#222 is the surface). Leaving
-        // its registration unchecked would ship a reader that dies the first time anyone asks
-        // the container for it — the same hole FootprintProjector had this test close.
+        // VolumeProfileService is reached from get_footprint / get_volume_profile (gh#222).
+        // Leaving its registration unchecked would ship a reader that dies the first time
+        // anyone asks the container for it — the same hole FootprintProjector had this test close.
         using ServiceProvider provider =
             Build(new Dictionary<string, string?>(), new McpOptions { Transport = McpTransport.Stdio });
         using IServiceScope scope = provider.CreateScope();

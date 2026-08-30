@@ -15,6 +15,11 @@ namespace MarqSpec.Mcp.TopstepX;
 /// <summary>The composition root.</summary>
 public static class Program
 {
+    /// <summary>
+    /// Where the stdio transport listens when nothing names an address: loopback, port assigned by the OS.
+    /// </summary>
+    private const string StdioLoopbackAddress = "http://127.0.0.1:0";
+
     /// <summary>Runs the server, or a CLI verb.</summary>
     /// <param name="args">Command-line arguments.</param>
     /// <returns>The process exit code.</returns>
@@ -28,6 +33,9 @@ public static class Program
             ?? new McpOptions();
 
         ConfigureLogging(builder, mcp.Transport);
+
+        // Before Build(), because it is the builder that carries the address into Kestrel (gh#392).
+        ConfigureDefaultBinding(builder, mcp.Transport);
         ConfigureServices(builder, mcp);
 
         WebApplication app = builder.Build();
@@ -227,6 +235,61 @@ public static class Program
         builder.Logging.ClearProviders();
         builder.Logging.AddConsole(options => options.LogToStandardErrorThreshold = LogLevel.Trace);
     }
+
+    /// <summary>
+    /// Gives the stdio transport an ephemeral loopback address, unless one has been named explicitly.
+    /// </summary>
+    /// <param name="builder">The host builder.</param>
+    /// <param name="transport">The transport that was selected.</param>
+    /// <remarks>
+    /// <para>
+    /// <b>Kestrel still starts.</b> ADR-0007 settled that and gh#76 rejected not starting it; this changes
+    /// which address it takes, not whether it takes one. Under stdio the listener serves nothing —
+    /// <c>MapMcp</c> is inside the HTTP branch and the session runs over stdin and stdout — but it was still
+    /// holding the framework default <c>http://localhost:5000</c>, exclusively, for the life of the process.
+    /// </para>
+    /// <para>
+    /// So a second session could not start (gh#392): <c>IOException: Failed to bind to address
+    /// http://127.0.0.1:5000: address already in use</c>, raised before any tool was reachable and saying
+    /// nothing about stdio. That is an ordinary thing to do here — this repository runs parallel agent
+    /// sessions by design — and :5000 is contended by a great many other dev servers besides.
+    /// </para>
+    /// <para>
+    /// Port <b>0</b> rather than another well-known number, because any fixed choice is the same bug at a
+    /// different address; loopback rather than any interface, because nothing should reach this listener.
+    /// </para>
+    /// <para>
+    /// <b>An explicitly named address still wins</b>, under either transport — <c>ASPNETCORE_URLS</c>,
+    /// <c>ASPNETCORE_HTTP_PORTS</c> (which <c>docker-compose.yml</c> uses to place the composed server on
+    /// 8080) and <c>ASPNETCORE_HTTPS_PORTS</c>. A default that overrode them would not be a default.
+    /// </para>
+    /// </remarks>
+    public static void ConfigureDefaultBinding(WebApplicationBuilder builder, McpTransport transport)
+    {
+        ArgumentNullException.ThrowIfNull(builder);
+
+        // The HTTP transport is the one that is meant to be reachable, and it is told where to listen by
+        // configuration. Leave the framework's own defaulting alone.
+        if (transport == McpTransport.Http)
+        {
+            return;
+        }
+
+        if (HasExplicitAddress(builder.Configuration))
+        {
+            return;
+        }
+
+        builder.WebHost.UseUrls(StdioLoopbackAddress);
+    }
+
+    /// <summary>Whether an address has been named by any of the ways the framework reads one.</summary>
+    /// <param name="configuration">The configuration to read.</param>
+    /// <returns><see langword="true"/> when the operator has named an address.</returns>
+    private static bool HasExplicitAddress(IConfiguration configuration)
+        => !string.IsNullOrWhiteSpace(configuration[WebHostDefaults.ServerUrlsKey])
+            || !string.IsNullOrWhiteSpace(configuration[WebHostDefaults.HttpPortsKey])
+            || !string.IsNullOrWhiteSpace(configuration[WebHostDefaults.HttpsPortsKey]);
 
     /// <summary>Registers everything the server needs.</summary>
     /// <param name="builder">The host builder.</param>

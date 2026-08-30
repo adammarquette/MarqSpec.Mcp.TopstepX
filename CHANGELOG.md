@@ -13,6 +13,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-08-30
+
+### Fixed
+
+- The stdio transport no longer holds the framework's default port. `WebApplication` starts Kestrel under both
+  transports ([ADR-0007](documentation/adr/0007-dual-transport.md)), and under stdio it was taking
+  `http://localhost:5000` for a listener that serves nothing — so a second stdio session could not start, and
+  anything else wanting :5000 was locked out. It now binds an ephemeral loopback port; an explicitly named
+  `ASPNETCORE_URLS`, `ASPNETCORE_HTTP_PORTS` or `ASPNETCORE_HTTPS_PORTS` still wins, and the HTTP transport is
+  unchanged (gh#392).
+
 ## [0.2.0] - 2026-08-30
 
 The first promotion since `v0.1.0`. New MCP tools are additions. Two existing payloads changed: a
@@ -75,6 +86,7 @@ First tagged release. Read-only MCP server over the ProjectX/TopstepX gateway: c
 projections, contract-aware series, observations with semantic search, fifteen tools on stdio and streamable
 HTTP. The tag was re-cut after the first publish failed on an uppercase image reference (gh#115).
 
-[Unreleased]: https://github.com/adammarquette/MarqSpec.Mcp.TopstepX/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/adammarquette/MarqSpec.Mcp.TopstepX/compare/v0.2.1...HEAD
+[0.2.1]: https://github.com/adammarquette/MarqSpec.Mcp.TopstepX/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/adammarquette/MarqSpec.Mcp.TopstepX/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/adammarquette/MarqSpec.Mcp.TopstepX/releases/tag/v0.1.0

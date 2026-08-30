@@ -6,6 +6,19 @@ using Microsoft.Extensions.Logging;
 namespace MarqSpec.Mcp.TopstepX.MarketData;
 
 /// <summary>
+/// What <see cref="IndicatorRebuilder"/> observed after replaying the store.
+/// </summary>
+/// <param name="ValuesChanged">Rows written, updated, or removed.</param>
+/// <param name="SeriesRewritten">
+/// Series in which at least one value actually changed. A confirming rebuild is not one of these.
+/// </param>
+/// <remarks>
+/// A heal count, not a skew count (ADR-0012, gh#348). The pass that suffers adjacent-fill write-skew cannot
+/// see that it did, so this is counted on the rebuild that repairs it — never inside a fill.
+/// </remarks>
+public sealed record IndicatorRebuildResult(int ValuesChanged, int SeriesRewritten);
+
+/// <summary>
 /// Replays the indicator projection over every series the store holds — the <c>rebuild-indicators</c> verb.
 /// </summary>
 /// <remarks>
@@ -44,7 +57,10 @@ public sealed class IndicatorRebuilder(
     /// </summary>
     /// <param name="onlyInstrument">One symbol to restrict to, or <see langword="null"/> for all of them.</param>
     /// <param name="cancellationToken">The caller's cancellation token.</param>
-    /// <returns>How many values the rebuild changed — written, updated, or removed.</returns>
+    /// <returns>
+    /// How many values changed, and how many series those changes belonged to. A confirming rebuild is
+    /// <c>(0, 0)</c> — the heal count does not move when nothing was rewritten.
+    /// </returns>
     /// <remarks>
     /// <b>One <see cref="SeriesUnitOfWork"/> per series</b>, which is where the isolation level and the
     /// retry are decided. A projection reads the bars and then the values standing over them and reconciles
@@ -59,7 +75,7 @@ public sealed class IndicatorRebuilder(
     /// length of the run, and a failure at the end would throw away everything before it for no gain.
     /// </para>
     /// </remarks>
-    public async Task<int> RebuildAsync(string? onlyInstrument, CancellationToken cancellationToken)
+    public async Task<IndicatorRebuildResult> RebuildAsync(string? onlyInstrument, CancellationToken cancellationToken)
     {
         string? only = onlyInstrument?.Trim().ToUpperInvariant();
         DateTimeOffset now = _clock.GetUtcNow();
@@ -74,6 +90,8 @@ public sealed class IndicatorRebuilder(
             .ConfigureAwait(false);
 
         int total = 0;
+        int rewritten = 0;
+        int walked = 0;
         foreach (var s in series)
         {
             if (only is not null && !string.Equals(s.Instrument, only, StringComparison.Ordinal))
@@ -91,14 +109,25 @@ public sealed class IndicatorRebuilder(
 
             int changed = await ReplaySeriesAsync(s.Venue, s.Instrument, s.ResolutionMinutes, now, cancellationToken)
                 .ConfigureAwait(false);
+            walked++;
+            if (changed > 0)
+            {
+                rewritten++;
+            }
 
-            // The series is committed and this context will never look at it again, so let it go. Without
-            // this the run accumulates every series' IndicatorValues for its whole length, and each later
-            // series pays for the earlier ones on every SaveChanges. It is the REPAIR verb over the WHOLE
-            // store, so it degrades worst exactly where the store is largest (gh#73 review).
+            // The series is committed and this context will never look at it again, so let it go.
             //
-            // Safe here and nowhere else in this class: RunAsync has committed, `series` holds projections
-            // rather than entities, and nothing below reads a tracked object.
+            // THE COST THIS USED TO NAME IS GONE, and saying so is the point of keeping the comment. It used
+            // to be that the run accumulated every series' IndicatorValues for its whole length and each
+            // later series paid for the earlier ones on every SaveChanges (gh#73 review) -- the REPAIR verb
+            // over the WHOLE store, degrading worst exactly where the store is largest. Since gh#133 the
+            // projection reads its values untracked and writes them with SQL, so after a series the tracker
+            // holds nothing but the reconcile's deletions, which SaveChanges has already detached.
+            //
+            // It stays because it is a cheap statement of the invariant rather than a cure for a measured
+            // cost: nothing below reads a tracked object, and a later change that starts tracking again would
+            // otherwise re-acquire the old behaviour silently. Safe here and nowhere else in this class:
+            // RunAsync has committed, and `series` holds projections rather than entities.
             _database.ChangeTracker.Clear();
 
             total += changed;
@@ -111,9 +140,12 @@ public sealed class IndicatorRebuilder(
         }
 
         _logger.LogInformation(
-            "Rebuild complete: {Total} values changed across {Series} series.", total, series.Count);
+            "Rebuild complete: {Total} values changed; {Rewritten} of {Walked} series rewritten.",
+            total,
+            rewritten,
+            walked);
 
-        return total;
+        return new IndicatorRebuildResult(total, rewritten);
     }
 
     private Task<int> ReplaySeriesAsync(

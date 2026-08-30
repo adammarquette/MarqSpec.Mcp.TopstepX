@@ -1,5 +1,6 @@
 using FluentAssertions;
 using MarqSpec.Mcp.TopstepX.Configuration;
+using MarqSpec.Mcp.TopstepX.Domain.MarketData;
 using MarqSpec.Mcp.TopstepX.Embeddings;
 using MarqSpec.Mcp.TopstepX.MarketData;
 using MarqSpec.Mcp.TopstepX.Tools;
@@ -7,6 +8,7 @@ using MarqSpec.Mcp.TopstepX.Venue;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Http;
 using Microsoft.Extensions.Options;
 
@@ -139,6 +141,26 @@ public sealed class CompositionRootTests
     }
 
     [Fact]
+    public void TheReadTriggeredReplayCounterIsOneCountSharedByEveryScope()
+    {
+        // IndicatorCacheService is scoped so its memo cannot outlive a request. The replay count has to
+        // outlive every scope or an operator — and startup warmup — cannot tell a one-off cold read from a
+        // process that has been replaying on every call (gh#347).
+        using ServiceProvider provider = Build([], new McpOptions { Transport = McpTransport.Stdio });
+
+        using IServiceScope first = provider.CreateScope();
+        using IServiceScope second = provider.CreateScope();
+
+        IndicatorReadProjectionCounter one =
+            first.ServiceProvider.GetRequiredService<IndicatorReadProjectionCounter>();
+        IndicatorReadProjectionCounter other =
+            second.ServiceProvider.GetRequiredService<IndicatorReadProjectionCounter>();
+
+        one.Should().BeSameAs(other);
+        one.Replays.Should().Be(0);
+    }
+
+    [Fact]
     public void TheContainerBuilds_ForTheHttpTransport()
     {
         McpOptions http = new() { Transport = McpTransport.Http, HttpBearerToken = "a-token" };
@@ -150,6 +172,51 @@ public sealed class CompositionRootTests
 
         using ServiceProvider provider = Build(settings, http);
         provider.Should().NotBeNull();
+    }
+
+    [Fact]
+    public void TheContainerBuilds_WhenCredentialsAreConfiguredAndTheRecorderIsEnabled()
+    {
+        // THE captive-dependency case the recorder exists to survive. IProjectXApiClient is scoped;
+        // a BackgroundService is a singleton. Consuming the client in the constructor refuses to
+        // build — and only when credentials ARE configured, which is the path local dev never
+        // reaches. ValidateOnBuild + ValidateScopes turn that startup crash into this test.
+        Dictionary<string, string?> configured = new()
+        {
+            ["ProjectX:ApiKey"] = "a-username",
+            ["ProjectX:ApiSecret"] = "an-api-key",
+            ["ProjectX:DataTier"] = "Simulated",
+            ["MarketData:RecordTape"] = "true",
+            ["Mcp:HttpBearerToken"] = "a-token",
+        };
+
+        using ServiceProvider provider = Build(
+            configured,
+            new McpOptions { Transport = McpTransport.Http, HttpBearerToken = "a-token" });
+
+        provider.GetServices<IHostedService>().Should().Contain(s => s is TradeTapeRecorder);
+        provider.GetServices<IHostedService>().Should().Contain(
+            s => s is IndicatorWarmup,
+            "warmup is always registered; the switch decides whether ExecuteAsync runs");
+    }
+
+    [Fact]
+    public void TheContainerBuilds_WhenCredentialsAreConfiguredAndWarmupIsEnabled()
+    {
+        Dictionary<string, string?> configured = new()
+        {
+            ["ProjectX:ApiKey"] = "a-username",
+            ["ProjectX:ApiSecret"] = "an-api-key",
+            ["ProjectX:DataTier"] = "Simulated",
+            ["MarketData:WarmIndicators"] = "true",
+            ["Mcp:HttpBearerToken"] = "a-token",
+        };
+
+        using ServiceProvider provider = Build(
+            configured,
+            new McpOptions { Transport = McpTransport.Http, HttpBearerToken = "a-token" });
+
+        provider.GetServices<IHostedService>().Should().Contain(s => s is IndicatorWarmup);
     }
 
     [Theory]
@@ -197,5 +264,130 @@ public sealed class CompositionRootTests
         Func<object> resolve = () => scope.ServiceProvider.GetRequiredService<IndicatorRebuilder>();
 
         resolve.Should().NotThrow();
+    }
+
+    [Fact]
+    public void TheFootprintRebuildVerbCanBeResolved()
+    {
+        // FootprintProjector is reached from get_footprint / get_volume_profile via
+        // FootprintCacheService (gh#366). Leaving its registration unchecked would ship a
+        // read that dies the first time anyone asks the container for it — the same hole
+        // IndicatorRebuilder had before this test existed.
+        using ServiceProvider provider =
+            Build(new Dictionary<string, string?>(), new McpOptions { Transport = McpTransport.Stdio });
+        using IServiceScope scope = provider.CreateScope();
+
+        Func<object> resolve = () => scope.ServiceProvider.GetRequiredService<FootprintProjector>();
+
+        resolve.Should().NotThrow();
+    }
+
+    [Fact]
+    public void TheFootprintCacheServiceCanBeResolved()
+    {
+        // The on-read path (gh#366) is what actually calls FootprintProjector. Leaving this
+        // registration unchecked would ship a tool that dies the first time a covered tape
+        // has no cells.
+        using ServiceProvider provider =
+            Build(new Dictionary<string, string?>(), new McpOptions { Transport = McpTransport.Stdio });
+        using IServiceScope scope = provider.CreateScope();
+
+        Func<object> resolve = () => scope.ServiceProvider.GetRequiredService<FootprintCacheService>();
+
+        resolve.Should().NotThrow();
+    }
+
+    [Fact]
+    public void TheVolumeProfileServiceCanBeResolved()
+    {
+        // VolumeProfileService is reached from get_footprint / get_volume_profile (gh#222).
+        // Leaving its registration unchecked would ship a reader that dies the first time
+        // anyone asks the container for it — the same hole FootprintProjector had this test close.
+        using ServiceProvider provider =
+            Build(new Dictionary<string, string?>(), new McpOptions { Transport = McpTransport.Stdio });
+        using IServiceScope scope = provider.CreateScope();
+
+        Func<object> resolve = () => scope.ServiceProvider.GetRequiredService<VolumeProfileService>();
+
+        resolve.Should().NotThrow();
+    }
+
+    [Fact]
+    public void TheTapeVolumeFrontServiceCanBeResolved()
+    {
+        // gh#219 stops at the service so the footprint tools' health block (gh#218) is not
+        // a merge collision. Leaving the registration unchecked would ship a reader that
+        // dies the first time anyone asks the container for it.
+        using ServiceProvider provider =
+            Build(new Dictionary<string, string?>(), new McpOptions { Transport = McpTransport.Stdio });
+        using IServiceScope scope = provider.CreateScope();
+
+        Func<object> resolve = () => scope.ServiceProvider.GetRequiredService<TapeVolumeFrontService>();
+
+        resolve.Should().NotThrow();
+    }
+
+    [Fact]
+    public void TheKeyLevelDetectionSection_Binds_IncludingItsSource()
+    {
+        // Bound from configuration rather than constructed, which is the whole of gh#244 on this side of the
+        // seam: the tool used to build `new KeyLevelOptions()` and never read a setting at all.
+        Dictionary<string, string?> configured = new()
+        {
+            ["KeyLevels:Source"] = "HighLow",
+            ["KeyLevels:PivotLookback"] = "9",
+            ["KeyLevels:ZoneAtrMultiple"] = "1.25",
+            ["KeyLevels:MinSignificance"] = "0.75",
+            ["KeyLevels:PivotRightLookback"] = "4",
+            ["KeyLevels:MaxZoneWidthPercent"] = "1.75",
+            ["KeyLevels:MaxLevels"] = "6",
+        };
+
+        using ServiceProvider provider = Build(configured, new McpOptions { Transport = McpTransport.Stdio });
+
+        KeyLevelDetectionOptions options =
+            provider.GetRequiredService<IOptions<KeyLevelDetectionOptions>>().Value;
+
+        // Every one of the seven is a DIFFERENT value from its shipped default, so a field the projection
+        // forgot to carry reads back as the default and this goes red naming it. Four of them agreeing with
+        // the defaults would have hidden a dropped field in the three that did not.
+        options.Defaults().Should().Be(
+            new KeyLevelOptions(9, PivotSource.HighLow, 1.25m, 0.75m, 4, 1.75m, 6));
+    }
+
+    [Fact]
+    public void TheShippedDetectionDefaults_AreTheOnesTheDocumentedSurfacePromises()
+    {
+        // An absent section binds the property initialisers, and those are the numbers `.env.example`,
+        // compose and the tool catalogue all state. Heikin-Ashi stays the default: it smooths single-bar
+        // noise into structure, which is the reason it has carried since the pipeline existed. The window is
+        // 20 left and 15 right, and the caps 2.5% and 12 -- Bjorgum's calibration, adopted whole by gh#245,
+        // which moved the lookback off 5 and is a BREAKING change to what an omitted argument produces.
+        using ServiceProvider provider =
+            Build(new Dictionary<string, string?>(), new McpOptions { Transport = McpTransport.Stdio });
+
+        provider.GetRequiredService<IOptions<KeyLevelDetectionOptions>>().Value.Defaults()
+            .Should().Be(new KeyLevelOptions(20, PivotSource.HeikinAshiBody, 0.5m, 0.5m, 15, 2.5m, 12));
+    }
+
+    [Theory]
+    [InlineData("Unknown")]
+    [InlineData("0")]
+    public void AnUnsetConfiguredPivotSource_FailsValidation_RatherThanBootingOnIt(string configuredSource)
+    {
+        // Unknown = 0 is what a mistyped or absent value binds to, so honouring it picks a price series by
+        // accident -- and `KeyLevels.PivotPrices` reads anything it does not recognise as Heikin-Ashi, so
+        // the server would answer every level call from a source nobody chose, with nothing to see. The rule
+        // is an IValidatableObject on the options type, so it travels with the value rather than living in a
+        // lambda at this composition root that a second binder could miss.
+        Dictionary<string, string?> configured = new() { ["KeyLevels:Source"] = configuredSource };
+
+        using ServiceProvider provider = Build(configured, new McpOptions { Transport = McpTransport.Stdio });
+
+        Func<KeyLevelDetectionOptions> read =
+            () => provider.GetRequiredService<IOptions<KeyLevelDetectionOptions>>().Value;
+
+        read.Should().Throw<OptionsValidationException>()
+            .WithMessage("*HeikinAshiBody, Body, HighLow*");
     }
 }

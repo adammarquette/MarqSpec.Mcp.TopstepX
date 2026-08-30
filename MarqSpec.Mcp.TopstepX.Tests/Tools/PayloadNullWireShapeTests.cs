@@ -1,5 +1,6 @@
 using System.Text.Json;
 using FluentAssertions;
+using MarqSpec.Mcp.TopstepX.Domain.MarketData;
 using MarqSpec.Mcp.TopstepX.Tools;
 using MarqSpec.Mcp.TopstepX.Venue;
 using ModelContextProtocol;
@@ -89,6 +90,67 @@ public sealed class PayloadNullWireShapeTests
     }
 
     [Fact]
+    public void VolumeFront_OmitsAbsentAnswers_AndNeverWritesWhy()
+    {
+        JsonElement front = Wire(new ToolPayloads.VolumeFrontInfo(
+            Used: "none",
+            Agree: false,
+            TapeContractId: null,
+            TapeSessionDate: null,
+            GatewayContractId: "CON.F.US.TEST.Z26",
+            Changeover: null));
+
+        front.GetProperty("used").GetString().Should().Be("none");
+        front.GetProperty("agree").GetBoolean().Should().BeFalse();
+        front.GetProperty("gatewayContractId").GetString().Should().Be("CON.F.US.TEST.Z26");
+        front.TryGetProperty("tapeContractId", out _).Should().BeFalse();
+        front.TryGetProperty("tapeSessionDate", out _).Should().BeFalse();
+        front.TryGetProperty("changeover", out _).Should().BeFalse();
+        front.TryGetProperty("why", out _).Should().BeFalse();
+        front.EnumerateObject().Select(p => p.Name).Should().NotContain("why");
+    }
+
+    [Fact]
+    public void VolumeFront_OmitsAgreeAndGateway_WhenTheVenueWasNotAsked()
+    {
+        JsonElement front = Wire(new ToolPayloads.VolumeFrontInfo(
+            Used: "tape-volume",
+            Agree: null,
+            TapeContractId: "CON.F.US.EP.U26",
+            TapeSessionDate: new DateOnly(2026, 8, 18),
+            GatewayContractId: null,
+            Changeover: null));
+
+        front.GetProperty("used").GetString().Should().Be("tape-volume");
+        front.GetProperty("tapeContractId").GetString().Should().Be("CON.F.US.EP.U26");
+        front.TryGetProperty("agree", out _).Should().BeFalse();
+        front.TryGetProperty("gatewayContractId", out _).Should().BeFalse();
+    }
+
+    [Fact]
+    public void ContractRoll_OmitsChangeoverAndContracts_WhenTheTapeCannotProveAFlip()
+    {
+        JsonElement roll = Wire(new ToolPayloads.ContractRollInfo(
+            Symbol: "ES",
+            AsOfUtc: DateTimeOffset.UnixEpoch,
+            Front: new ToolPayloads.VolumeFrontInfo(
+                Used: "none",
+                Agree: false,
+                TapeContractId: null,
+                TapeSessionDate: null,
+                GatewayContractId: "CON.F.US.TEST.Z26",
+                Changeover: null),
+            Contracts: null));
+
+        roll.GetProperty("symbol").GetString().Should().Be("ES");
+        roll.GetProperty("asOfUtc").GetDateTimeOffset().Should().Be(DateTimeOffset.UnixEpoch);
+        roll.GetProperty("front").TryGetProperty("changeover", out _).Should().BeFalse();
+        roll.TryGetProperty("contracts", out _).Should().BeFalse();
+        roll.TryGetProperty("why", out _).Should().BeFalse();
+        roll.GetProperty("front").TryGetProperty("why", out _).Should().BeFalse();
+    }
+
+    [Fact]
     public void SegmentContractId_IsOmitted_WhenProvenanceWasNeverRecorded()
     {
         JsonElement segment = Wire(new ToolPayloads.ContractSegmentInfo(
@@ -152,13 +214,28 @@ public sealed class PayloadNullWireShapeTests
     }
 
     [Fact]
+    public void LevelSetCapped_IsWrittenEvenWhenFalse()
+    {
+        JsonElement set = Wire(new ToolPayloads.LevelSet([], EmptyCoverage, 0, ShippedDetection));
+
+        set.TryGetProperty("capped", out JsonElement capped).Should().BeTrue(
+            "dropping a false capped flag would leave only the old length-equals-cap test, which is a lie "
+            + "once levels is a union of methods");
+        capped.GetBoolean().Should().BeFalse();
+    }
+
+    [Fact]
     public void SnapshotIndicator_KeepsItsKey_AndCarriesNull_WhenItCannotMeasure()
     {
         JsonElement slice = Wire(new ToolPayloads.ResolutionSnapshot(
             ResolutionMinutes: 5,
             Bars: [],
-            Indicators: new Dictionary<string, decimal?> { ["rsi"] = null, ["atr"] = 12.5m },
-            Levels: new ToolPayloads.LevelSet([], EmptyCoverage, 0),
+            Indicators: new Dictionary<string, ToolPayloads.IndicatorReading?>
+            {
+                ["rsi"] = null,
+                ["atr"] = new(12.5m, DateTimeOffset.UnixEpoch, "CON.F.US.EP.U26"),
+            },
+            Levels: new ToolPayloads.LevelSet([], EmptyCoverage, 0, ShippedDetection),
             Contracts: EmptyCoverage));
 
         JsonElement indicators = slice.GetProperty("indicators");
@@ -168,11 +245,48 @@ public sealed class PayloadNullWireShapeTests
             "every indicator gets a key unconditionally, so presence says nothing about measurability");
         rsi.ValueKind.Should().Be(JsonValueKind.Null, "the null IS the cannot-measure signal");
 
-        indicators.GetProperty("atr").GetDecimal().Should().Be(12.5m);
+        // gh#286 moved the map's VALUE from a bare number to the reading get_indicator_at returns, and left
+        // the null alone. Both halves are asserted here: a caller's `indicators.rsi === null` still works,
+        // and a measured entry now says where its number came from.
+        JsonElement atr = indicators.GetProperty("atr");
+        atr.ValueKind.Should().Be(
+            JsonValueKind.Object, "a present entry is a reading, not a number — this is the breaking half");
+        atr.GetProperty("value").GetDecimal().Should().Be(12.5m);
+        atr.GetProperty("bucketStart").GetDateTimeOffset().Should().Be(DateTimeOffset.UnixEpoch);
+        atr.GetProperty("contractId").GetString().Should().Be("CON.F.US.EP.U26");
+    }
+
+    [Fact]
+    public void SnapshotIndicatorContractId_IsOmitted_WhenProvenanceWasNeverRecorded()
+    {
+        // Inside the map the reading is an ordinary object, so its own nullable properties are dropped the
+        // property way even though the map's null survives the map way. Both rules apply at once here, which
+        // is the one place on this surface where that is true (gh#286).
+        JsonElement slice = Wire(new ToolPayloads.ResolutionSnapshot(
+            ResolutionMinutes: 5,
+            Bars: [],
+            Indicators: new Dictionary<string, ToolPayloads.IndicatorReading?>
+            {
+                ["atr"] = new(12.5m, DateTimeOffset.UnixEpoch, ContractId: null),
+            },
+            Levels: new ToolPayloads.LevelSet([], EmptyCoverage, 0, ShippedDetection),
+            Contracts: EmptyCoverage));
+
+        JsonElement atr = slice.GetProperty("indicators").GetProperty("atr");
+
+        atr.TryGetProperty("contractId", out _).Should().BeFalse(
+            "an unrecorded contract is an omitted key, never a null — and never evidence that two readings "
+            + "share a contract");
+        atr.GetProperty("value").GetDecimal().Should().Be(
+            12.5m, "the value is unaffected: an absent contract does not make a reading unmeasured");
     }
 
     private static ToolPayloads.ContractCoverage EmptyCoverage =>
         new(ToolPayloads.ContractSpan.Unknown, []);
+
+    /// <summary>The shipped detection defaults — filler, since this fixture is about the indicator map.</summary>
+    private static ToolPayloads.LevelDetection ShippedDetection =>
+        new(PivotSource.HeikinAshiBody, 20, 0.5m, 0.5m, 15, 2.5m, 12);
 
     /// <summary>Serialises a payload exactly as the server would, and reads it back.</summary>
     /// <typeparam name="T">The payload type.</typeparam>

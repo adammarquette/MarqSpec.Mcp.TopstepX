@@ -12,11 +12,13 @@ flowchart LR
   AGENT["MCP client (Claude Cowork / Claude Code)"]
   AGENT -->|stdio or streamable HTTP| TOOLS[Tool surface]
   TOOLS --> CACHE["BarCacheService — the read-through"]
+  TOOLS --> IND["IndicatorCacheService — the indicator read-through"]
   TOOLS --> READS["Account reads — pass-through, no cache"]
   CACHE --> STORE[("Postgres · TimescaleDB + pgvector")]
   CACHE -->|only what is missing| VENUE["MarqSpec.Client.ProjectX → api.topstepx.com"]
   READS --> VENUE
   CACHE --> PROJ["IndicatorProjector — same transaction"]
+  IND -->|only what the store lacks| PROJ
   PROJ --> STORE
   STORE --> TOOLS
 ```
@@ -25,19 +27,51 @@ Three assemblies, layered so the pure part stays pure:
 
 | Project | Depends on | Holds |
 |---|---|---|
-| `…​.Domain` | **nothing** | `Bar`, `InstrumentId`, `InstrumentSpec`, `IIndicator` + implementations, `BarSessionCalendar`, `BarGapDetector`, `KeyLevels` |
+| `…​.Domain` | **nothing** | `Bar`, `InstrumentId`, `InstrumentSpec`, `IIndicator` and `ILevelMethod` + implementations, `BarSessionCalendar`, `BarGapDetector`, `KeyLevels`, `SessionLevels`, `PivotLevels`, `VolumeLevels`, `TradeDirection`, `FootprintAggregator`, `VolumeProfileAggregator`, `TapeVolumeFront` |
 | `…​.Data` | Domain | Entities, `DbContext`, migrations |
 | `MarqSpec.Mcp.TopstepX` | Domain, Data, the venue client | Tools, transports, cache-aside services, the ProjectX adapter, composition root |
 
 `Domain`'s emptiness is load-bearing. An indicator is a pure function of the bars handed in, and that is what
 makes "rebuild = replay" true — a dependency on a clock or a store there would make a recomputation depend on
-*when* it ran, and no test would notice.
+*when* it ran, and no test would notice. The footprint aggregation is the same shape: a pure function of the
+prints handed in, which is why `TradeDirection` lives here rather than on the store entity (gh#220).
+The volume profile is the next projection over those cells: a pure function of the cells and the
+listening ranges handed in — point of control, 70% value area, and a window confined to one
+contract (`R-9`, gh#221). It is not a stored table. Volume-front is a third pure read over the
+prints themselves: per session, per contract, highest `Size` wins, including an `Unknown`
+direction (gh#219). It is not a stored table either, and it is not the profile's `contracts`
+block.
+
+**A session boundary is the one thing bars cannot supply, and it arrives by construction rather than by
+widening a signature.** `vwap`, `session` and all five `pivot-*` need to know where a session begins; neither
+`IIndicator.Compute` nor `ILevelMethod.Detect` carries a calendar, and neither gained one — the pivot family
+was the third method family to want one and the second to be built on the answer (gh#258). `IndicatorCatalog`
+and `LevelMethodCatalog` each take the single `BarSessionCalendar` the composition root parses once from
+`MarketData__SessionCloseCentral` and `MarketData__Holidays`, and hand it to the one member that needs it.
+That is a **value**, not a source — deterministic in its configuration, fixed for the process — so a method
+holding one is still a pure function of what it was built and handed, and every other method keeps a
+signature free of a parameter it would never read (gh#257).
+
+**A request-scoped tape is the other thing `Detect` cannot see, and it does not take that constructor
+path.** Cells and the profile they roll up to belong to this request's window. Widening `Detect`, putting
+the tape on `KeyLevelOptions`, deriving a POC from bar volume, or hanging request-scoped cells on
+`LevelMethodCatalog`'s constructor were all refused (gh#319). The fourth path is a `VolumeProfileScope`
+bound around the call: the four `volume-*` methods are constructed without a profile so they stay in
+`LevelMethodCatalog.All`, `Detect` reads the bind after the roll and ordering guards, and a call with
+nothing bound refuses rather than spreading OHLCV.
+
+**The catalogue also carries correlation, because the scorer must not.** Every `ILevelMethod` declares the
+family it belongs to; the five `pivot-*` names share one, the four `volume-*` names share one, `swing` and
+`session` are families of one. A
+confluence score groups by that rather than by a list of names it holds itself, so the next pivot variant
+joins the discounted budget by being written rather than by somebody remembering to add it (`R-3.11`).
 
 ## The cache-aside read — the only genuinely interesting path
 
-**`resolution` is chosen by the caller, not by configuration.** There is no supported-resolution list: any
-**positive** resolution is servable, each becomes an independent cached series, and a timeframe is fetched from
-the venue rather than derived from a finer one — [ADR-0010](adr/0010-per-call-resolutions-fetched-not-derived.md).
+**`resolution` is chosen by the caller, not by configuration.** There is no supported-resolution list: every
+whole number of minutes from **1 to 10,080** is servable (`R-1.9`), each becomes an independent cached series,
+and a timeframe is fetched from the venue rather than derived from a finer one —
+[ADR-0010](adr/0010-per-call-resolutions-fetched-not-derived.md).
 Zero and negative are refused at the tool boundary by `ToolGuards.ValidateResolution` and never reach this
 path (gh#69).
 
@@ -67,8 +101,20 @@ path (gh#69).
    next call in the same scope in preference to the row it just read, and both the context and the cache
    service are scoped (gh#103).
 8. **Project indicators** for the affected buckets, in the same unit of work, so an indicator exists the moment
-   its bar does.
-9. **Record coverage** for ranges that came back empty.
+   its bar does. The values are written with one `ON CONFLICT … DO UPDATE` on
+   `(Venue, Instrument, ResolutionMinutes, Indicator, Period, BucketStart)`, for the same reason step 7 is
+   (gh#133) — a pass recomputes the whole series *its own snapshot* can see, so two fills of ranges sharing no
+   bucket still both produce the history in front of both. There is **no skip-unchanged `WHERE` here**, unlike
+   step 7: the rule is stated once, in C#, because the value is rounded to the column's own scale before it is
+   compared and the stored side came out of that column, so both sides already carry `numeric(18,8)` (gh#37).
+   The removals still go through the change tracker, so this step needs a **transaction** around it rather than
+   merely one snapshot, and refuses without one.
+9. **Record coverage** for ranges that came back empty — one `ON CONFLICT … DO UPDATE` on
+   `(Venue, Instrument, ResolutionMinutes, RangeStart, RangeEnd)`, for the same reason step 7 is (gh#122).
+   There is **no pre-read here at all**: the ledger holds the latest answer for a range rather than a history
+   of asking, so `RecordedAt` moves on every ask and there is no unchanged write to save. `ExpiresAt` is
+   assigned unconditionally, `null` included — `null` means *never*, not *not recorded*, so preserving a
+   stored expiry would leave a permanent claim wearing the TTL it was given while the range was still recent.
 
 **Step 5 sits outside the transaction; steps 7–9 sit inside one, at `RepeatableRead`.** The projection reads
 the bars and then the values standing over them; under `READ COMMITTED` those are two snapshots, so a
@@ -87,7 +133,8 @@ written afterwards.
 into a `40001`, and that is reachable from the tool surface: the reconcile is unscoped by bucket range, so a
 whole-series sweep is a whole-series *write set* — two fills whose fetched ranges share no bucket still delete
 the same unjustified rows — and the coverage ledger reaches it with no bars at all, because two callers asking
-for one empty range both *refresh* one row. The retry is not a gamble: in every shape of this conflict the
+for one empty range both *write* one row, whether that row already existed or not (gh#122). The retry is not a
+gamble: in every shape of this conflict the
 transaction that won committed exactly the work the loser was missing, so the second attempt runs over a
 better-informed store, and because the fetch already happened it costs no vendor requests. A second collision
 is sustained contention rather than a race, so it becomes a `StoreContentionException`, which the **store-fault
@@ -121,24 +168,34 @@ reached disk. Three consequences, and they are the contract the tool surface off
   credentials — and are reported as permanent, saying plainly that retrying will not help. Neither list is a
   default: a code in neither is reported as unclassified rather than swept into either.
 
-**A lost race is reported, not swallowed and not retried at the boundary.** Two callers asking for one range
-the venue answers *empty* both find no coverage row in their own snapshot and both insert one; the loser gets
-`23505`. The row it collided on *is* in the store — so a duplicate key on an idempotent upsert looks like a
-success someone else achieved. It is not one:
+**A lost race is reported, not swallowed and not retried at the boundary.** A duplicate key on an idempotent
+write looks like a success someone else achieved — the rows it collided on *are* in the store. It is not one:
 the collision aborts the whole transaction, so answering "fine" would return work assembled inside a
 transaction that rolled back. Retrying at the boundary is equally wrong — it would re-run the whole tool call,
 paced page-walk included; a retry belongs in `SeriesUnitOfWork`, bounded, where the fetch already happened.
 So the caller is told that another writer committed the rows it collided on, that its own transaction kept
 nothing, and that a retry is served from what that writer committed. *What else* was in the aborted
-transaction — here, the bars and the projection over the same series — is a fact about `SeriesUnitOfWork`, and
-it is stated there rather than in a sentence handed to all fifteen tools.
+transaction — here, the bars and the coverage ledger over the same series — is a fact about
+`SeriesUnitOfWork`, and it is stated there rather than in a sentence handed to all fifteen tools.
 
-**The bar write no longer reaches that boundary at all** (gh#103). It is a real upsert, so a losing insert
-updates instead of faulting, and the caller of `get_bars` is not handed a database error for asking an
-ordinary question. What is *not* fixed is a fill whose snapshot misses a range another fill is filling: its
-values are seeded from the wrong bar and are stale until the next pass, which is recoverable by construction
-(`R-2.9`, [ADR-0006](adr/0006-indicators-as-projections.md)). Closing that means serialising fills per
-series — a lock rather than an isolation level, tracked as gh#104 and still open.
+**No write on this path reaches that boundary with a `23505` any more** (gh#103, gh#122, gh#133 — epic gh#80).
+The bar write, the coverage ledger and the indicator projection were the three instances of one shape: read the
+key from this transaction's snapshot, then decide insert-versus-update from what that read said. All three are
+now real upserts, so a losing insert updates instead of faulting and the caller of `get_bars` is not handed a
+database error for asking an ordinary question. The duplicate-key branch above stays — the schema has unique
+keys and a writer added later can still hit one — but nothing in the fill path can reach it, and the
+store-fault boundary's own integration test therefore drives a `40001` past the retry instead.
+
+**And one is decided rather than fixed.** A fill whose snapshot does not reach the start of the series seeds
+its values from the first bar it *can* see, so two fills of adjacent ranges leave the seam unmeasured and the
+values after it smoothed from the wrong bar. Nothing refuses — the two write sets are genuinely disjoint — so
+this is write skew rather than contention and the retry above cannot reach it. **Fills are deliberately not
+serialised** ([ADR-0012](adr/0012-fills-are-not-serialised.md), `R-2.11`): the remedy is a lock rather than an
+isolation level, and a session-level advisory lock was measured going on holding the key after its connection
+returned to the pool — an unbounded wedge traded for values that are **recoverable** rather than
+self-correcting. The next pass over that series recomputes them, and a series nothing writes to again has no
+next pass: that one is repaired by `rebuild-indicators` and by nothing else (`R-2.9`, `R-2.11`,
+[ADR-0006](adr/0006-indicators-as-projections.md)).
 
 ### Why step 2 exists
 
@@ -155,7 +212,9 @@ the contract listed, a session the exchange cancelled — is expected by the cal
 which is indistinguishable from a fetch that has not happened yet. The `BarCoverage` ledger is the third state.
 
 Its TTL is asymmetric: **short near `now`** (a bucket that is empty because it has not printed yet will print
-shortly) and **long for settled history** (a hole in 2024 is not going to fill in).
+shortly) and **`ExpiresAt = null` — never — for settled history** once the range is older than
+`SettledHistoryAge` (2 days). A hole in 2024 is not going to fill in; null means *never*, not *not recorded*,
+which is already how this page's step 9 and the data dictionary word it.
 
 ### The seam step 5 records, and why nothing crosses it
 
@@ -173,6 +232,16 @@ one.**
 - Derived values are claims about a *series*, so there is no honest number to return across a seam and none is.
   `IndicatorGuard.RequireSingleContract` refuses, on the same shared path as the ordering check, so a new
   indicator inherits the rule rather than remembering it.
+  **A level method does not inherit it.** Each `ILevelMethod` detects its own way — swing pivots, session
+  extremes, arithmetic on a prior session — so there is no shared compute path to hang the check on. Every
+  implementation must therefore **refuse** a spliced series, reaching the guard directly *or through whatever
+  it delegates detection to*: `swing` delegates to `KeyLevels.FindPivots`, which already calls it, and adding
+  a second call there would only change which of two refusals a caller sees when a series is both spliced and
+  handed a misaligned ATR. `session` has nothing to delegate to — it reads a finished session's extremes
+  rather than running the pivot pipeline — so it calls both guards itself, and `PivotLevels` does the same
+  for all five methods built on it. So `LevelMethodCatalogRollTests`
+  sweeps `LevelMethodCatalog.All` for **the refusal**, not for the call — a method that skipped it would not
+  fail, it would answer with an ordinary-looking zone built across the seam.
 - The two callers that legitimately hold a multi-contract series segment first, using the pure
   `ContractRollDetector`: the projector computes each run independently, and `get_key_levels` detects over the
   newest run only and reports `detectedOverBars`.
@@ -180,10 +249,76 @@ one.**
 Detail, including why keying by contract id and back-adjustment were both rejected for now:
 [ADR-0011](adr/0011-contract-roll-boundary.md).
 
+## The indicator read — cache-aside on the same terms, and never against the vendor
+
+`get_indicators` and `get_indicator_at` read stored values. Since gh#246 they also **fill what is missing
+before they read**, which is what makes them cache-aside rather than merely cached
+([ADR-0014](adr/0014-indicators-are-projected-on-read-too.md)).
+
+`IndicatorCacheService.EnsureProjectedAsync(venue, instrument, resolution)`:
+
+1. **Probe** — a bar count **capped at the largest warm-up in the catalogue**, and one
+   `DISTINCT (Indicator, Period)` over the series' stored values. Two aggregates, and they are the whole cost
+   of a warm read: **4.3 ms** at 2,000 bars, **11.2 ms** at 70,000. The cap is why the first half does not
+   grow with the series — the only thing that count decides is `WarmupBars <= bars` for each catalogue member,
+   and any number at or above the largest warm-up answers every one of those identically.
+2. **Diff against the catalogue.** A pair is *missing* only when the stored bars reach its
+   `IIndicator.WarmupBars`. A pair the bars cannot yet satisfy is **not yet measurable**, which is a fact
+   (`R-2.3`) rather than a gap — and treating the two alike would replay a short series on every read forever
+   while never writing a value.
+3. **Nothing missing ⇒ return**, opening no transaction — on every series except the short-run one
+   ADR-0014's consequences describe, where *nothing missing* is never reached. The answer is memoised for
+   the life of the request scope, so `get_market_snapshot`'s eleven `get_indicator_at` calls per resolution
+   cost **one** probe.
+4. **Otherwise replay the whole series** through the same `IndicatorProjector` inside the same
+   `SeriesUnitOfWork` the fill path uses — never a window around what was asked for (`R-2.13`).
+
+**The venue is unreachable from here by construction**: the service takes no `IMarketDataGateway` at all, the
+same statement `IndicatorRebuilder` makes. Every bar a projection needs is already stored.
+
+**The first read of a cold series pays for the replay, once** — about **8.3 s** for a year of five-minute
+bars, measured, against **106 paced venue pages and roughly a minute of sleeping** for the `get_bars` call
+that put those bars there. It is not capped: a cap would hand the caller back the operator step this path
+exists to remove, and only on the largest series. An HTTP process with `MarketData__WarmIndicators` on
+moves that cost to start via `IndicatorRebuilder` (gh#350). HTTP is not consent; stdio never warms — a
+Cowork child would stall the handshake. The tool descriptions say so.
+
+**A `40001` is now reachable from a read.** Two simultaneous cold reads of one series both replay, the loser's
+write meets the winner's committed rows, and `R-2.10`'s single retry re-derives against them and writes
+nothing — so one projection lands. Nothing is serialised and no lock is taken
+([ADR-0012](adr/0012-fills-are-not-serialised.md) measured both shapes and rejected both).
+
+## The footprint read — on-read, the same trigger, never against the vendor
+
+`get_footprint` and `get_volume_profile` read stored cells. Since gh#366 they also **project what the
+tape has and the cells do not**, which is what makes them cache-aside rather than a reader over a
+writer that never ran ([ADR-0014](adr/0014-indicators-are-projected-on-read-too.md) shape).
+
+`FootprintCacheService.EnsureProjectedAsync(venue, instrument, resolution)`:
+
+1. **Probe** — no stored prints ⇒ nothing to project. Otherwise the cells
+   `FootprintAggregator` produces from that tape, against the cells already stored at the
+   asked bar size. That is a completeness check (the ADR-0014 missing-pair shape), not a
+   comparison of two `RecordedAt` clocks: trade `RecordedAt` is receipt time and cell
+   `RecordedAt` is the projection clock, and they are different facts (gh#377). Matching
+   cells ⇒ return, opening no transaction. A print whose receipt is earlier than the last
+   cell write but which is not in the cells is still missing, and is projected.
+2. **Otherwise replay the whole tape** through the same `FootprintProjector` inside the same
+   `SeriesUnitOfWork` — never a window around what was asked for, and never a vendor call. A
+   confirming rebuild is still an empty diff. A bucket whose counted prints span two contracts
+   still produces no cell.
+
+Ingest after each print is **not** taken. The projector is whole-tape; live `TapeCoverage` is a
+sibling claim (gh#365). The read of a covered window is the moment cells have to exist.
+
+**The venue is unreachable from here by construction**: the service takes no `IMarketDataGateway`.
+
 ## The indicator projection
 
 Indicators are **projections** over the bar store, not facts. Every row is reproducible from `Bars`, and that
-is the point ([ADR-0006](adr/0006-indicators-as-projections.md)).
+is the point ([ADR-0006](adr/0006-indicators-as-projections.md)). They are computed **when bars are written,
+and on the first read that finds the catalogue has outrun the store** (`R-2.1`) — two triggers over one
+replay.
 
 A projection seeds from the **start of the stored series**, never from a moving window. Wilder smoothing is
 path-dependent: seeding from a window would make a value depend on how much history happened to be loaded, so
@@ -224,6 +359,13 @@ series regardless of which range it fetched. That is the substance of the retry 
 the same isolation level, for the same reason. The series is the unit of work because a rebuild is idempotent
 per series; one snapshot held across the whole run would be pinned for its length and would discard everything
 on a late failure.
+
+Its job is now **correction rather than repair** (`R-2.5`). A read self-heals only what the probe can see — a
+`(Indicator, Period)` pair with no rows — so **correcting an indicator's arithmetic leaves every pair present
+and no read will ever recompute it.** That forced replay, the accepted write skew of `R-2.11`, and warming a
+series ahead of its first caller are what the verb is for. It reports how many series it rewrote — values that
+actually changed, not confirming rebuilds — so the heal of `R-2.11` is visible without measuring it from
+inside a fill ([ADR-0012](adr/0012-fills-are-not-serialised.md), gh#348).
 
 Multi-output and multi-parameter indicators are the awkward case: the key carries *one* period, and MACD takes
 three parameters. The non-period ones are **fixed at their conventional values** rather than hidden behind a
@@ -345,13 +487,49 @@ looked is the same fabrication as a `1.0` similarity on the text path. It is a p
 entry, so that null **reaches the caller as an omitted key**, not as `null` — the two forms and their tests are
 in the [tool catalogue](mcp-tool-catalog.md).
 
+## Two answers for the front month
+
+Bars resolve the contract they fetch through the gateway: `ResolveContractsAsync` then
+`contracts[0]`. Search is fuzzy and often marks every hit `ActiveContract = true`, so that pick
+is not "the front month the venue named" — it is the first surviving result after product-code
+filter and front-month sort. The tape answers the same question by volume. Per
+`(instrument, contract)`, per session (`BarSessionCalendar.TradeDateFor`), total `Trades.Size`.
+The highest-volume contract is the tape's front; the session it overtook the previous front is
+the changeover, with the print time it flipped. `Unknown` direction still counts as size.
+
+**They disagree during a roll, by design, and neither is dropped.** A read that compares them
+names both, says the tape is the volume-front, and does not rewrite `Bars` or substitute the
+gateway when the tape has no unique winner. Choosing the front is a read-time decision: both
+contracts stay in `Trades`. Filtering at ingest would discard the prints that prove the choice.
+
+**Profile `contracts` is a third cut.** `get_footprint` and `get_volume_profile` report
+`contracts` from cells and `TapeCoverage` — the newest contiguous listening run, not session
+volume. Replacing that block with volume-front without naming the difference would be a second
+silent source of truth wearing the first's field names. Both tools call
+`TapeVolumeFrontService.ReadAsync` and carry the comparison as `front` beside `contracts`:
+`used` is `tape-volume` or `none`, never a silent prefer of the gateway. `why` stays off the
+wire (ADR-0008). gh#218 owns the health block that refuses when that instrument's tape is not
+listening. **`get_contract_roll` is the dedicated event tool** (gh#349, `R-5.9`): the same
+`front` object, tape-side at `asOfUtc`, plus `contracts` for a short window of stored bars
+around the tape changeover — every resolution together, so two contracts on different sizes
+cannot hide as `SingleContract` — or omitted when the tape cannot prove a flip. The gateway pick
+is live only; a historical `asOfUtc` omits `gatewayContractId` and `agree` rather than
+dating today's pick. It does not fetch bars and does not write a roll row.
+
 ## What is deliberately absent
 
 - **No order path.** Not a guarded one ([ADR-0002](adr/0002-read-only-venue-boundary.md)).
-- **No SignalR recording.** The market hub is not subscribed, so there is no live quote and no order flow. That
-  is why there is no `get_quote`: the most recent *closed bar* is the freshest thing this server can honestly
-  serve.
-- **No background poller.** Every fetch is caused by a tool call. A warm-loop service is a reasonable later
-  addition for a deployed instance; it is not needed for a local one and it would call the vendor while nobody
-  is asking.
+- **Market-hub recording is opted in, not implied by HTTP.** The standing choice not to subscribe is reversed
+  ([ADR-0016](adr/0016-subscribe-to-the-market-hub.md)). The first first-party `BackgroundService` records
+  prints to `Trades` (gh#216) only when the transport is HTTP **and** `MarketData__RecordTape` is on —
+  choosing HTTP is not consent. It re-subscribes on every transition into `Connected` and writes
+  `TapeCoverage` from that lifecycle (gh#217); `Connected` is not listening. Live tape health is a
+  mutable holder written from that same lifecycle and read at the point of use (gh#218) — the opposite
+  of the store probe, which is set once at startup and never re-probed. `get_footprint` and
+  `get_volume_profile` refuse when **that instrument's** tape is not listening, with a sentence naming the fix. It resolves the
+  scoped venue client per operation; it does not extend `IMarketDataGateway`. Quote and depth recording
+  stay out of this phase, and there is still no `get_quote`.
+- **No REST poller.** Bar, contract and account fetches stay caused by a tool call. The tape recorder is a push
+  subscriber, not a background poll of a quote endpoint the venue does not have. A second stdio process must
+  not subscribe to the same tape (ADR-0016).
 - **No LLM.** This server hands an agent numbers. The reasoning happens in the client.

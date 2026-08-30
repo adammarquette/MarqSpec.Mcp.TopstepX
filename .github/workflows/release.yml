@@ -14,10 +14,44 @@ permissions:
   contents: read
 
 jobs:
+  # THE JOB BELOW IS INERT WITHOUT A SETTING THIS FILE CANNOT DECLARE (gh#108). `environment: production` does
+  # not create or require anything: if the environment does not exist, GitHub CREATES IT AT RUN TIME WITH NO
+  # PROTECTION RULES and the job passes straight through. It did not exist, and was created -- requiring
+  # review by @adammarquette -- minutes before v0.1.0 was cut, having been found by reading the API rather
+  # than by anything in this repository.
+  #
+  # So the dependency is asserted here rather than assumed. This job declares NO `environment:` of its own,
+  # deliberately: a check on the approval gate that is itself gated by the approval gate can only run after
+  # the thing it is checking has already let it through, and would report green on an inert gate by
+  # construction.
+  #
+  # It is the LAST line, not the first. The same script runs in ci.yml on every pull request and is where a
+  # broken gate should normally be found -- before a tag exists. This one covers the window between the last
+  # merge and the release, and it is the one that actually stops the publish: `gate` needs it, so a red run
+  # here means nothing is built and nothing reaches GHCR.
+  verify-gate:
+    name: Verify the approval gate is real
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: The release approval gate exists and requires a human
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: ./scripts/check-release-gate.sh
+
+      # The check above is a shell script, and a release runs from a TAG -- which may carry a version of it
+      # that no pull request ever exercised. Re-proving it can still go red costs seconds here.
+      - name: Self-test — that check still rejects an inert gate
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: ./scripts/check-release-gate-selftest.sh
+
   # Pauses until the "production" environment's required reviewers approve, before anything is built or
   # pushed. A published image tag can be overwritten but not un-pulled.
   gate:
     name: Await release approval
+    needs: verify-gate
     runs-on: ubuntu-latest
     environment: production
     steps:
@@ -34,8 +68,19 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
-          # MinVer derives the version from the nearest v-prefixed tag, and a shallow clone yields
-          # 0.0.0-alpha.0 SILENTLY rather than failing. Every job that builds or stamps a version needs this.
+          # NOT FOR MINVER, and this comment used to say it was (gh#176). This job installs no SDK and builds
+          # nothing on the runner: it hands the context to buildx, and the assembly is produced inside the
+          # container, which never sees .git because .dockerignore excludes it. The proof is the artifact this
+          # job itself published -- MarqSpec.Mcp.TopstepX.dll inside
+          # ghcr.io/adammarquette/marqspec.mcp.topstepx:0.1.0 carries AssemblyInformationalVersion
+          # 0.0.0-alpha.0, from a run that had this depth set. What carries the release number is the image
+          # TAG and the org.opencontainers.image.version label below, by decision (ADR-0001's decision log).
+          #
+          # Nothing else in this job reads history either: image-reference.sh reads remote.origin.url from
+          # git CONFIG, and the tag check below reads GITHUB_REF_NAME. KEPT ANYWAY, deliberately -- this is
+          # the run that can least cheaply be repeated, it must stay identical to ci.yml's `image` checkout
+          # (gh#54), and trimming it would change the release path to buy nothing. Correct the claim, not the
+          # setting.
           fetch-depth: 0
 
       - name: Verify the tag looks like a version
@@ -55,8 +100,20 @@ jobs:
       # `push: false`. That is the part that keeps it honest: before gh#115 this expression existed only in
       # this file and was evaluated only during a real release, so its first execution was also its first
       # test.
+      #
+      # ASSIGNED ON ITS OWN LINE, THEN CHECKED (gh#126), and this is the copy that mattered. As one line --
+      # `echo "IMAGE=$(./scripts/image-reference.sh)" >> "$GITHUB_ENV"` -- a failed resolution exited 0 and
+      # exported an EMPTY `IMAGE`, because a command substitution used as an ARGUMENT has its status
+      # discarded; measured under `bash -e`, `echo "IMAGE=$(false)"` prints `IMAGE=` and exits 0. The push
+      # below would then have been handed `:$VERSION` and `:latest`, and the first thing to object would be
+      # buildx -- after the `production` approval, on a tag already cut, on the one job in this repository
+      # that cannot cheaply be repeated. ci.yml's `image` job carries the identical step; keep the two
+      # together.
       - name: Resolve the image reference
-        run: echo "IMAGE=$(./scripts/image-reference.sh)" >> "$GITHUB_ENV"
+        run: |
+          ref="$(./scripts/image-reference.sh)"
+          [ -n "$ref" ] || { echo "::error::image-reference.sh exited 0 without naming a reference"; exit 1; }
+          echo "IMAGE=$ref" >> "$GITHUB_ENV"
 
       # DECLARED, not inherited from the runner image (gh#54). Buildx is preinstalled on GitHub-hosted
       # runners, so this step was never needed to make the build work -- which is the problem: the builder was
@@ -94,12 +151,18 @@ jobs:
           # manifest plus a manifest list; `--provenance=false` exported only the image manifest and config;
           # the image manifest DIGEST was identical either way. The pin changes the wrapper, nothing else.
           #
-          # WHAT THIS PIN IS NOT: protection for existing consumers. NOTHING has been published from this
-          # pipeline -- no `v*` tag, no GitHub release, no run of this workflow, ever. It fixes the published
-          # shape deliberately at the one moment that is still free, instead of letting it be decided by
-          # whichever driver happens to be set up. Turning attestations ON later is a fine decision to take
-          # on its own ADR. No pull request can cover the choice either way: `ci.yml` exports with `load` and
-          # never pushes, so the published shape is never produced outside a real release.
+          # WHAT THIS PIN WAS, AND WHAT IT NOW IS. It was taken while NOTHING had been published from this
+          # pipeline -- no `v*` tag, no GitHub release, no run of this workflow -- so it protected no
+          # existing consumer and cost nothing: it fixed the published shape deliberately instead of letting
+          # it be decided by whichever driver happens to be set up.
+          #
+          # THAT WINDOW IS CLOSED (gh#125). v0.1.0 is tagged and released, and this workflow has now run
+          # twice: 32668734971 FAILED at this very step 2026-08-23T21:50Z (the gh#115 reference bug) and
+          # 32683215519 SUCCEEDED 2026-08-24T02:29Z. Flipping this to true now changes the published manifest
+          # shape under a tag consumers can already pull, so turning attestations ON is still a decision for
+          # its own ADR -- now with a consumer to consider rather than none. No pull request can cover the
+          # choice either way: `ci.yml` exports with `load` and never pushes, so the published shape is never
+          # produced outside a real release.
           provenance: false
           tags: |
             ${{ env.IMAGE }}:${{ env.VERSION }}

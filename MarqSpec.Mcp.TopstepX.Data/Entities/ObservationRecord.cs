@@ -5,9 +5,10 @@ namespace MarqSpec.Mcp.TopstepX.Data.Entities;
 /// </summary>
 /// <remarks>
 /// <para>
-/// <b>The only original data in this database.</b> Bars, indicator values and price levels are all
-/// re-derivable — from the vendor, or from the bars. These are not, which makes this the one table worth
-/// backing up.
+/// <b>Original data, and not the only original data here.</b> Bars, indicator values and embeddings are
+/// re-derivable — from the vendor, or from the bars. Price levels are not stored at all (gh#276). These
+/// observations are not re-derivable. Neither is the trade tape (data dictionary §7 / §8): there is no
+/// market-tape REST backfill, so a dropped store loses prints that cannot be refetched.
 /// </para>
 /// <para>
 /// Writing one is a write to <i>this</i> store, not to the venue. It does not weaken the read-only boundary

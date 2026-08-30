@@ -6,6 +6,16 @@ What this server must do, as numbered requirements. **`R-#` ids are stable and n
 cited from C# XML docs, from issues, and from the ADRs, so a renumber silently redirects every reference.
 A requirement that turns out to be wrong is superseded by a new one and marked, never overwritten.
 
+**Scope — what the SERVER must do.** Build hygiene, the pipeline and the release path carry no `R-#`: they
+are the [platform contract](agents/platform.md)'s, and a build setting is justified there or on its own
+reasoning. **An id this file does not define is not a requirement of this project**, however confidently it
+is cited. This repository's scaffolding was extracted from `MarqSpec.Client.ProjectX`, whose PRD numbers
+further and differently, so a citation that does not resolve below is residue from it rather than a
+requirement (gh#172). **That sentence is enforced, not merely asserted:**
+[`scripts/check-requirement-ids.sh`](../scripts/check-requirement-ids.sh) resolves every `R-#` and `Q-#`
+cited anywhere in the tree against this file and fails CI on one that does not, naming file, line and symbol
+(gh#182). It proves an id *exists*; whether the citation quotes it correctly is still a reader's job.
+
 ## R-1 — Cached historical bars
 
 The server serves OHLCV bars for a futures instrument at a requested resolution and time window.
@@ -28,7 +38,10 @@ The server serves OHLCV bars for a futures instrument at a requested resolution 
   rather than rewritten (gh#103). Deciding it from a read instead makes the decision against a snapshot,
   which another writer can invalidate before the write lands.
 - **R-1.7** A range the vendor answers **empty** is recorded as covered, so a genuine data hole is not
-  re-requested on every subsequent call.
+  re-requested on every subsequent call. **The store performs that write too** — an `ON CONFLICT … DO UPDATE`
+  on the ledger's composite key, so two callers asking about one quiet range at the same time both land rather
+  than the loser faulting on a duplicate key (gh#122). The ledger holds the **latest answer** for a range, not
+  a history of asking, so a second recording is an update by design and not a way to dodge the error.
 - **R-1.8** Bar timestamps are stored in UTC. The gateway returns timestamps with no kind; they are UTC, and
   inferring local shifts every bar by the operator's offset.
 - **R-1.9** The supported resolutions are **every whole number of minutes from 1 to 10,080 — one minute to one
@@ -44,7 +57,10 @@ The server serves OHLCV bars for a futures instrument at a requested resolution 
   `BarGapDetector.MaxBucketsPerPass` bound the same quantity from two sides — the first operator-configurable
   to 1,000,000, the second fixed at 250,000 — so the ceiling on a windowed read is **the lesser of the two**,
   and a request past it is refused naming the buckets asked for and the cap they are over rather than faulting
-  below the boundary or being shortened to fit (gh#96). A timeframe is fetched from the venue independently,
+  below the boundary or being shortened to fit (gh#96). **Nor is any bound on *size* sufficient**, which is
+  the same lesson a third time: a window at the far end of the calendar spans *zero* buckets, clears every cap
+  above at the default configuration, and still overflowed the bucket-grid arithmetic below the boundary — so
+  the window's **end** is bounded too, by R-5.4 (gh#110). A timeframe is fetched from the venue independently,
   never derived from a finer one: a bar derived from an incomplete set of constituents is indistinguishable
   from a real one, which R-2.3's rule forbids in the indicator path and which is no more acceptable here.
   See [ADR-0010](adr/0010-per-call-resolutions-fetched-not-derived.md).
@@ -62,13 +78,27 @@ The server serves OHLCV bars for a futures instrument at a requested resolution 
 
 ## R-2 — Pre-computed indicators
 
-- **R-2.1** Indicator values are computed when bars are written, not when they are read.
+- **R-2.1** Indicator values are computed **when bars are written, and on the first read that finds the
+  catalogue has outrun the store** — a `(Indicator, Period)` pair the catalogue computes, the stored bars
+  justify, and `IndicatorValues` holds no row for. A read never reaches the vendor: every bar a projection
+  needs is already local, so adding an indicator or moving a period is live on the next read with no operator
+  action ([ADR-0014](adr/0014-indicators-are-projected-on-read-too.md), gh#246). **The trigger is what
+  changed; the key is not** — a period is still never a per-call argument (`R-2.12`). **The store performs
+  the write** — an `ON CONFLICT … DO UPDATE` on `(Venue, Instrument, ResolutionMinutes, Indicator, Period,
+  BucketStart)` — so two passes over one series whose snapshots each miss the other's rows both land instead of
+  the loser faulting on a duplicate key (gh#133). A pass recomputes the whole series *its own snapshot* can
+  see (`R-2.2`), so ranges that share no bucket still share a write set, and deciding insert-versus-update from
+  a read makes that decision against a snapshot another writer can invalidate before the write lands. A value
+  recomputed to the number already stored is still not rewritten (`R-2.8`).
 - **R-2.2** A recomputation over the same stored bars produces identical values. Nothing in the calculation may
   depend on when it ran ([ADR-0006](adr/0006-indicators-as-projections.md)).
 - **R-2.3** A value that the period does not yet support is **absent**, never a partial or substituted number.
 - **R-2.4** An indicator read as of a moment returns the value at or **before** that moment, never after.
 - **R-2.5** The full stored series can be rebuilt from the bars by a single command, without re-fetching from
-  the vendor.
+  the vendor. Since `R-2.1` made a read a trigger too, that command's job is a **forced** replay rather than
+  the only one: correcting an indicator's arithmetic leaves every `(Indicator, Period)` pair present, so no
+  read will recompute it. It also repairs `R-2.11`'s accepted skew, and warms a series ahead of its first
+  caller.
 - **R-2.6** Supported at v1: ATR, RSI, SMA, EMA, MACD (line, signal, histogram), session-anchored VWAP, and
   Bollinger bands. The set is a **closed vocabulary** at the tool boundary — an unknown name is an error that
   names the known ones.
@@ -86,29 +116,112 @@ The server serves OHLCV bars for a futures instrument at a requested resolution 
   write justified between them; and a pass that finds it read less than the whole series **refuses** rather
   than sweeping a range it never looked at. Both call sites read at `RepeatableRead`, and `rebuild-indicators`
   is transactional per series. Without this, `R-2.8` deletes correct values and the loss arrives as an
-  absence, which `R-2.3` makes a caller read as *cannot measure* (gh#73).
+  absence, which `R-2.3` makes a caller read as *cannot measure* (gh#73). **A snapshot is not sufficient on
+  its own: it must be a transaction**, because the write of `R-2.1` is a statement the store runs when it is
+  sent while the removal waits for the caller's unit of work — outside one the first commits alone, leaving
+  values standing that the same pass decided to remove. A pass with no transaction open **refuses**.
 - **R-2.10** A write the store **refuses to serialise** against a concurrent one is retried once and then
   **reported as contention**, naming what to do. Snapshot isolation is what makes `R-2.9` hold; a `40001` is
   the cost of it, and one retry is the whole budget because the transaction that won committed exactly the
   work the loser was missing — a second collision is sustained contention rather than a race, and looping
   would hide it. How that report reaches a caller — never as a raw database error — is `R-5.7`, which holds
   for every store fault and every tool rather than only for this one.
+- **R-2.11** Fills of one series are **not serialised**, and a pass projects over the series *its own snapshot*
+  holds. A fill whose snapshot does not reach the start of the series seeds from the first bar it can see, so
+  it leaves the seam unmeasured and the values after it smoothed from the wrong bar. Those values are
+  **recoverable, which is not the same as self-correcting**: every pass recomputes the whole stored series, so
+  the next pass over *that* series fixes them — but a series nothing writes to again has no next pass, and a
+  concurrent backfill of settled history therefore keeps its stale values, indefinitely and with nothing
+  reporting it, until `rebuild-indicators` is run (`R-2.5`). Nothing refuses and nothing retries — two adjacent
+  fills share no bar, no coverage row and no indicator key, so this is write skew rather than contention and
+  `R-2.10` cannot reach it. Closing it would need a lock rather than an isolation level, and the measurements
+  behind not taking one are [ADR-0012](adr/0012-fills-are-not-serialised.md).
+- **R-2.12** A period is **never a per-call argument**. It is part of a value's identity and the storage key
+  carries one, so a value computed under a period the key cannot see would be served for another. `R-2.1`'s
+  read trigger does not reopen this: a read asks for exactly the period the catalogue is configured for and
+  gets that or an honest absence (`R-2.3`). A configurable non-period parameter goes in the indicator's
+  **name**, and [ADR-0006](adr/0006-indicators-as-projections.md) is superseded rather than reinterpreted.
+- **R-2.13** A read that finds a series cold **replays the whole stored series**, never a window around what
+  was asked for. A moving seed window makes a value depend on how much history happened to be loaded, which
+  `R-2.2` forbids, and a narrowed read under `R-2.8`'s unscoped removal would delete every value outside the
+  range. The first such read is therefore slow in proportion to the history kept — about **8.3 seconds** for a
+  year of five-minute bars, measured — and every read after it pays only the probe. That cost is stated in the
+  tool's own description rather than being a surprise.
 
 ## R-3 — Key levels
 
 - **R-3.1** Support and resistance are reported as **zones**, not lines, sized in ATR multiples so a zone is
   comparably wide across instruments.
 - **R-3.2** A level's significance is its prominence in ATR multiples, so scores compare across instruments and
-  volatility regimes.
+  volatility regimes. A method that finds levels other than by dominance measures prominence over **its own**
+  window — for a session extreme that window is the session — and states what the number means where it
+  differs.
 - **R-3.3** A zone's support/resistance label is assigned **relative to the current price**, not to how it
   formed. A broken resistance is today's support.
-- **R-3.4** Detection never uses bars after the pivot it reports — a level confirmed only by what came before it
-  repaints as soon as more data arrives.
+- **R-3.4** Detection never reports a pivot that later bars have not confirmed — a level confirmed only by
+  what came before it repaints as soon as more data arrives. The confirmation window is `PivotRightLookback`,
+  so the newest bars of any series can never produce a level and that lag is the price of the rule.
+  *(The head clause read "never uses bars after the pivot it reports" until gh#245, which is the opposite of
+  what the trailing clause and the detection have always done: the bars after a pivot are exactly what
+  confirms it. The requirement is unchanged; the sentence now says it.)*
 - **R-3.5** Detection never spans a contract roll. A level built from the expiring quarter's bars sits at a
   price the contract in front has never traded, and it is indistinguishable from a level price is about to
   reach. When the requested lookback spans a roll, detection is confined to the contract in front and the
   result reports how many bars it actually used
   ([ADR-0011](adr/0011-contract-roll-boundary.md)).
+- **R-3.6** Levels are detected by a **named method**, and the vocabulary is closed — an unknown name is an
+  error listing the known ones, never an empty level set. `swing` finds pivots; `session` reports what a
+  finished session left behind: prior-day and prior-week high, low and close, the overnight range and the
+  initial balance; `pivot-classic`, `pivot-fibonacci`, `pivot-camarilla`, `pivot-woodie` and `pivot-demark`
+  are `R-3.10`'s family; `volume-poc`, `volume-vah`, `volume-val` and `volume-traded` are the tape-derived
+  family — point of control, value-area high and low, and every other price the tape actually traded.
+  They consume the profile the footprint cells produce, never a volume spread across a bar's high–low
+  range. The profile is bound for the request; it is not a `Detect` parameter, not a detection option,
+  and not a process-lifetime catalogue argument. A covered tape narrower than the ask is **absent**
+  (`tape narrowed`), not a POC of the listened subset dressed as a POC of the window.
+- **R-3.7** A session boundary comes from the **calendar**, never from gaps in the series, and a period the
+  loaded window does not reach the opening of is **absent** rather than taken from the part of it the window
+  holds. A prior "day" that did not trade is not a prior day, and a range still forming is not a level.
+  The prior day is the calendar's immediately previous **trading** day: a trading day absent from the store
+  is absent, never an older day the window happens to hold. Zones carry the period they came from.
+- **R-3.8** Overlapping zones merge **whichever side of price each of them formed on**, and the merged zone
+  takes its kind from its strongest constituent. A price defended from below and rejected from above is one
+  level traded twice, not two levels touched once, and `touchCount` is the field that says so
+  ([ADR-0015](adr/0015-levels-merge-across-support-and-resistance.md)).
+- **R-3.9** A level the detection cannot report is **absent**. A zone wider than `MaxZoneWidthPercent` of its
+  own price is dropped rather than narrowed to the cap, and a level beyond `MaxLevels` is dropped rather than
+  folded into the survivor beside it — either would report a band at a price nothing was measured at. **Every
+  method honours both caps**, so the parameters detection reports are a fact about the selected method and
+  not only about `swing`. A method that stopped at the cap is told apart from a market that produced that
+  many levels by `methods[i].levels.length == maxLevels` and by `capped` — not by the length of the
+  concatenated top-level list.
+- **R-3.10** The **pivot family** computes its published formula over **one finished prior session's** open,
+  high, low and close. Its significance is that period's own range in ATR multiples, which is `R-3.7`'s
+  session-window reading of `R-3.2` rather than a prominence a computed line cannot have — so one score
+  covers a whole set and the significance floor keeps or drops it whole. A period the series cannot
+  **resolve** is absent on the same terms as one the window does not reach the opening of: a session covered
+  by a single bar is one whose high could be the high of everything that bar spans, because a bar carries no
+  width.
+- **R-3.11** Every method declares the **correlation family** it belongs to, and methods sharing one share a
+  budget when their agreement is scored. Five pivot variants landing on a price is one prior session
+  transformed five ways, not five confirmations. The four `volume-*` names share one family for the same
+  reason: they are one tape read several ways. The family is declared by the method rather than listed
+  beside the scorer, because a list of names is silently escaped by the next variant added.
+- **R-3.12** `get_key_levels` runs **every requested method** in one call and returns a **confluence score**.
+  Per-method weights come from configuration (an unlisted method weighs 1). The score is the strongest
+  overlapping cluster's family-aware weight (`R-3.11`). The result names the constituents, the weights used,
+  and the line-to-zone tolerance — the same `ZoneAtrMultiple` that sizes a swing zone and a session or pivot
+  line. A requested method that contributed nothing is named, with why: refused, no data, or no levels.
+  The same inputs always produce the same score; nothing in the scoring path reads a clock, a store or a
+  configuration singleton at evaluation (ADR-0006). Two callers with different tolerances cannot share a
+  score, and the tolerance is on the result to prove it. The top-level `levels` array is the union of the
+  requested methods, ordered by price; `capped` says whether any method stopped at `MaxLevels` (`R-3.9`).
+  `MergeOverlapping` and `ApplyClose` remain the carriers of `R-3.1` and `R-3.3`; confluence scores what
+  they produce.
+- **R-3.13** A bucket that **overhangs a session close** is refused for `session` and the pivot family, at
+  the tool boundary, from the stated `resolutionMinutes` — `Detect` does not infer a bar's width. The
+  initial balance is refused when the resolution is coarser than the hour it measures. Both are absences,
+  never a well-formed number taken from a wider period.
 
 ## R-4 — Read-only venue boundary
 
@@ -128,7 +241,16 @@ The server serves OHLCV bars for a futures instrument at a requested resolution 
   not be indistinguishable. A *known* instrument with no data in the window returns an empty series.
 - **R-5.4** A windowed read that would exceed **either** cap on its size — the configured row cap, or the
   buckets one gap-detection pass will enumerate — **refuses and says so with the count**, naming the tighter of
-  the two. It never silently truncates, and it costs no vendor request to be told (gh#96).
+  the two. It never silently truncates, and it costs no vendor request to be told (gh#96). **Size is not the
+  only bound**: a window must also **end** far enough before the end of the representable calendar for the
+  machinery serving it to reason about its last bucket — two bar spans plus three days, because the bucket
+  grid is aligned *up* from the window's start, the gap detector tests one bucket beyond the last, and the
+  session calendar maps an evening bucket onto the next trade date. Past that the read is refused naming both
+  the `toUtc` given and the last one that would have been accepted; it is **not** moved back to fit, for the
+  same reason it is not truncated. That bound is on *representability*, so unlike the two size caps it binds
+  at the **default** configuration and for a window spanning zero buckets. **A tool that takes a bare instant
+  is bounded too** — `get_market_session`'s `atUtc` against the last instant the session rules can be
+  expressed at — because a bound built around a window never reaches one (gh#110).
 - **R-5.5** On stdio, all logging goes to stderr. Anything on stdout corrupts the protocol frame.
 - **R-5.6** One composed tool returns bars, indicators, levels and session state together, so the common
   question costs one round trip rather than five.
@@ -147,6 +269,32 @@ The server serves OHLCV bars for a futures instrument at a requested resolution 
   - A lost write race is **reported** — never swallowed as a success another writer achieved, and never
     retried at the boundary, where a retry would re-run a whole tool call. A defect in *this* server — an
     invariant violation — still propagates as itself rather than as a store condition.
+- **R-5.8** **`get_footprint` and `get_volume_profile`** serve stored tape projections over MCP (gh#222).
+  Payloads carry the covered window from `TapeCoverage` — not the window asked for — and
+  `ContractCoverage` with `span` `SingleContract` naming the contract. They also carry `front`:
+  tape volume-front and the gateway-selected contract as separate fields, with `used` `tape-volume`
+  or `none` — never a silent prefer of the gateway, and never a rewrite of `contracts` (gh#346).
+  Descriptions state that the tape
+  only goes forward: there is no historical footprint before recording began. A request for a window
+  before recording began refuses and names the earliest covered time. A covered window whose tape
+  has prints but no cells is projected on the read — no vendor call (gh#366). Live tape-subscription health is
+  required at the point of use (gh#218): when **that instrument's** tape is not listening the
+  tool refuses with a sentence naming the fix — never reported healthy by default, never
+  answered thinly. Another symbol's subscribe does not make this one healthy. Reads refuse
+  rather than truncate when over cap.
+- **R-5.9** **`get_contract_roll`** reports the most recent tape changeover a symbol's stored
+  prints can prove, and the tape front at `asOfUtc` (default now, bounded like
+  `get_market_session`'s `atUtc`, R-5.4). `front` is the same object the footprint tools
+  return (gh#346). The gateway pick is live only: when `asOfUtc` is now (the omitted
+  default), `gatewayContractId` and `agree` sit beside the tape; a historical `asOfUtc`
+  omits both rather than dating today's pick as if it were as-of. The bar-side seam is
+  `contracts.span` / segments around the changeover, over stored bars in that window
+  across every resolution, so two contracts on different sizes cannot report
+  `SingleContract`; omitted when there is no flip to place a window around;
+  `Unknown` means provenance was never recorded, not that there was no roll. No roll table: the event is a projection over prints and bars already held
+  ([ADR-0011](adr/0011-contract-roll-boundary.md)). There is no historical tape before
+  recording began. An unknown instrument is an error (R-5.3). A symbol with no changeover
+  omits it rather than guessing a date. No `why` on the wire (ADR-0008).
 
 ## R-6 — Observations
 
@@ -162,8 +310,12 @@ The server serves OHLCV bars for a futures instrument at a requested resolution 
 
 - **R-7.1** Credentials come from environment or user secrets only. No tracked file holds one; this repository
   is public.
-- **R-7.2** The market-data tier (`Simulated` / `Live`) is **required and never defaulted**. The wrong tier
-  returns an empty universe rather than an error, and the failure surfaces far away as "no contract matches ES".
+- **R-7.2** The market-data tier (`Simulated` / `Live`) is **required and never defaulted in the application**.
+  The wrong tier returns an empty universe rather than an error, and the failure surfaces far away as "no
+  contract matches ES". The compose stack is the one exception, and it is the same local convenience as
+  `Mcp__HttpBearerToken:-changeme-local`: `docker-compose.yml` forwards `ProjectX__DataTier:-Simulated` so
+  `docker compose up` with credentials and no tier does not fail startup. Do not drop that compose default
+  without saying so — the application would then refuse to boot.
 - **R-7.3** Configuration is validated at startup. A malformed session close or a non-positive tick size fails
   the process rather than producing wrong numbers quietly.
 
@@ -171,10 +323,38 @@ The server serves OHLCV bars for a futures instrument at a requested resolution 
 
 - **R-8.1** Series are keyed by a **normalised** venue-neutral symbol. A row written under one casing and read
   under another is a row nobody finds.
-- **R-8.2** Tick size and point value come from the venue where available, with configuration as an override
-  that replaces an entry **wholesale** — a new tick size against a stale point value is a silently wrong
-  contract.
+- **R-8.2** Tick size and point value come from a **hardcoded registry** (`InstrumentRegistry`). The venue is
+  used as a **match-or-refuse** check: a contract whose tick size disagrees with the registry is refused, not
+  adopted. `InstrumentSpec.FromVenue` exists and is never called. There is no per-instrument override field —
+  a wholesale config override would be a silently wrong contract (a new tick size against a stale point value)
+  and is not implemented.
 - **R-8.3** A missing instrument spec is reported as missing, never substituted.
+
+## R-9 — Volume profile
+
+- **R-9.1** A volume profile is an **aggregate over footprint cells**, never a stored third table. Volume
+  by price, the point of control and the value area are a function of the cells and the listening ranges
+  handed in ([ADR-0006](adr/0006-indicators-as-projections.md), gh#221).
+- **R-9.2** The point of control is the price with the **most volume**. A tie goes to the price closest to
+  the midpoint of the lowest and highest prices that traded; a remaining tie goes to the **lower** price.
+- **R-9.3** The value area is the conventional **70%** Market Profile expansion: start at the point of
+  control and add the next two unused prices above or below, taking the side with more volume, until seven
+  tenths of total volume is held. A side with one unused price contributes that one. The whole winning
+  group is added even when that crosses 70%. A volume tie between sides adds the lower-price side.
+- **R-9.4** A profile is **never computed across a contract roll**. A window that spans one is confined to
+  the contract in front, and the narrowing is reported — the same cut `get_key_levels` makes
+  ([ADR-0011](adr/0011-contract-roll-boundary.md)). An advisory flag beside a spliced number is still a
+  wrong number.
+- **R-9.5** The reported window comes from **`TapeCoverage`**, not the window the caller asked for. The tape
+  has a beginning and can have holes, and neither is recoverable. A hole confines the answer to the
+  **newest contiguous listening run** and reports the narrowing — the same cut `get_key_levels` makes.
+  Collapsing two runs into a continuous envelope would claim coverage that was never there.
+- **R-9.6** A window with **no tape refuses** rather than returning an empty profile. Live
+  tape-subscription health for **that instrument** that is not listening refuses the same way,
+  with a sentence naming the fix — an empty profile and an absent tape must not look the same
+  (gh#218). Another symbol's subscribe does not make this one healthy.
+- **R-9.7** A window entirely **before recording began** refuses and **names the earliest covered
+  time** for that instrument. An empty answer there would look like a quiet market (gh#222).
 
 ## Open questions
 
@@ -182,10 +362,12 @@ The server serves OHLCV bars for a futures instrument at a requested resolution 
   and carried forward as `R-1.11`, `R-2.7`, `R-2.8` and `R-3.5`. Bars stay keyed by the venue-neutral symbol, every bar records
   the contract that produced it, no value is derived across a roll, and a read spanning one says so in its
   payload. The successor question — whether to key bars by contract id outright — is left open there rather
-  than here, because it is now a migration rather than a design choice.
-- **Q-2 — Embedding provider.** Cohere at `vector(1024)` matches `trading-copilot` and keeps the schema
-  identical; Voyage or a local model are alternatives. Deferred — R-6.3's fallback means this is useful before
-  the decision.
+  than here, because it is now a migration rather than a design choice. `get_contract_roll` (`R-5.9`) is
+  how a caller decides whether that migration is worth it: it reports the roll event the tape can prove,
+  before any re-key.
+- **Q-2 — Embedding provider. RESOLVED** by [ADR-0009](adr/0009-cohere-embeddings.md). Cohere
+  `embed-v4.0` at `vector(1024)` is wired as `CohereEmbeddingProvider` when `Embeddings__ApiKey` is set.
+  An unset key remains a supported state (`R-6.3`): search falls back to substring matching and says so.
 - **Q-3 — Vendor rate limits. RESOLVED (gh#43).** Extracted: **50 requests / 30 s** on
   `History/retrieveBars`, **200 / 60 s** everywhere else, a breach reported as a 429. The paging loop needed
   pacing and now has it (`R-1.10`). Numbers, the assumptions the vendor's page forces, and the arithmetic

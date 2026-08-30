@@ -5,6 +5,14 @@
 #
 # The integration tier needs the Docker socket mounted below; see the note on that volume before adopting it.
 #
+# IF THE COMMAND ABOVE FAILS WITH "all predefined address pools have been fully subnetted", it is not this
+# file: `compose run` brings up the project network, and on a machine already running several stacks there is
+# no subnet left to give it. Fall back to a plain `docker run`, which creates no network -- but for the
+# INTEGRATION tier carry over the socket, TESTCONTAINERS_HOST_OVERRIDE and the host.docker.internal entry from
+# the service below, or Testcontainers starts its containers and cannot reach them and the run HANGS rather
+# than failing. The whole command is in documentation/AGENT-MEMORY.md (gh#166); do not reconstruct it from
+# memory, which is how those three were dropped the first time.
+#
 # Two reasons this exists.
 #
 # A local check that disagrees with CI is worse than no local check. CI runs on ubuntu-latest with LF line
@@ -36,9 +44,6 @@ services:
     environment:
       DOTNET_CLI_TELEMETRY_OPTOUT: "1"
       DOTNET_NOLOGO: "1"
-      # The integration suite defaults to hosting the gateway in-process. Point it at the composed one instead
-      # when both services are up.
-      PROJECTX_FAKE_GATEWAY_URL: "${PROJECTX_FAKE_GATEWAY_URL:-}"
       # Containers started through that socket are SIBLINGS of this one, not children, so Testcontainers must
       # reach them at an address that means something from in here -- "localhost" would mean this container.
       TESTCONTAINERS_HOST_OVERRIDE: "host.docker.internal"

@@ -5,9 +5,10 @@
 
 ## What it is for
 
-One number, applied during **Planning**, before an item reaches Current ToDo. It routes work to a **model
+One number, applied when the issue is filed, before anyone picks it up. It routes work to a **model
 tier**: cheap models for low estimates, the most capable for high ones. It is a guideline for dispatch, not a
-contract — a mis-score costs money or quality, not correctness.
+contract — a mis-score costs money or quality, not correctness. The
+[coordinator](agents/coordinator.md) is who dispatches from this number.
 
 **It estimates the capability the work demands — its reasoning difficulty and blast radius — not how long it
 takes.** A 300-line mechanical rename is a 1. A one-line change to the gap detector is a 4. If you find
@@ -29,7 +30,7 @@ number every time. Hence a tight absolute scale anchored to worked examples.
    **≥ 4**, whatever the factors say.
 4. **When torn between two levels, round up.** Genuine uncertainty about the task *is itself* a signal that the
    reasoning load is real.
-5. **Re-score on kickback.** If scope grew in Planning, estimate again.
+5. **Re-score on kickback.** If an issue went back to `Todo` because scope grew, estimate again.
 
 ## The factors
 

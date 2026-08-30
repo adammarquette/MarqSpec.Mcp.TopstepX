@@ -116,6 +116,7 @@ can tell that a roll happened.
 | Update | What changed |
 |---|---|
 | [2026-08-23](#update-2026-08-23--the-reconcile-has-a-precondition-and-nothing-stated-it) | The reconcile's precondition is named and enforced: one snapshot, and the whole series ([gh#73](https://github.com/adammarquette/MarqSpec.Mcp.TopstepX/issues/73)) |
+| [2026-08-29](#update-2026-08-29--the-roll-event-is-a-tool) | `get_contract_roll` reports the tape changeover; no roll table ([gh#349](https://github.com/adammarquette/MarqSpec.Mcp.TopstepX/issues/349)) |
 
 ## Alternatives considered
 
@@ -228,7 +229,7 @@ most wants to look at just after a roll.
   a re-key migration to be possible. That is a new issue, not a promise.
 - A **back-adjusted derived view**, if a question genuinely needs one. Derived, never stored.
 - Nothing reports the roll **event** itself: there is no "when did ES roll" tool. It is now answerable from
-  this column, and it is not built.
+  this column, and it is not built. **Discharged 2026-08-29** — see the update at the end of this record.
 
 ## Update (2026-08-23) — the reconcile has a precondition, and nothing stated it
 
@@ -270,7 +271,9 @@ Neither is free of residue, and the honest statement of it is: two fills whose r
 project over their own view, so one can write values seeded from the wrong bar. Those are **stale, not lost** —
 the projection is reproducible from the bars by design ([ADR-0006](0006-indicators-as-projections.md)), so the
 next pass over the series corrects them. Closing that as well means serialising fills per series, which is a
-lock rather than an isolation level and is not decided here — it is tracked as gh#104.
+lock rather than an isolation level and is not decided here — it is tracked as gh#104. **That deferral has
+since been discharged: gh#104 decided not to serialise, and the residue described in this paragraph is
+therefore accepted rather than pending. See the gh#104 update at the end of this section.**
 
 The other residue named here was a **`23505` out of `get_bars`** when two fills of overlapping ranges both
 inserted a bucket each believed absent, and that one **is closed** (gh#103). It needed no lock: the bar write
@@ -279,3 +282,45 @@ losing insert updates. It matters to *this* record because a bucket's provenance
 come out of the same venue answer — and the statement writes `ContractId` in the same `SET` as the OHLCV, so a
 row can never hold one observation's numbers under another observation's contract. The remaining half of
 gh#80, the write skew above, is untouched by it.
+
+**Update (2026-08-24, gh#122).** The same shape was one table over, on the negative-result ledger, and is
+closed the same way: `RecordEmptyAsync` now records an empty range with `ON CONFLICT … DO UPDATE` rather than
+reading the row and deciding, so two callers polling one quiet range both land. It is noted here only to keep
+the paragraph above from over-claiming — a `23505` out of `get_bars` remained reachable at that point, on the
+**indicator projection**, which is a reconcile rather than an upsert and so was not one statement. That was
+the last instance of the shape on this path; it was tracked as gh#133 and is closed immediately below.
+
+**Update (2026-08-24, gh#133).** The projection's write is now `ON CONFLICT … DO UPDATE` on
+`(Venue, Instrument, ResolutionMinutes, Indicator, Period, BucketStart)`, and **no `23505` out of `get_bars`
+remains reachable at all** — that closes epic gh#80. It matters to *this* record only in what it does **not**
+change: a value is still computed inside a single contract run, the seams are still a function of the stored
+bars, and the statement writes no `ContractId`, because §2 holds none — the contract is a property of the bar
+at `BucketStart` and duplicating it would be a second copy of a fact that can disagree with the first. The
+removal half — the thing this record introduced, and the reason the remedy was not one statement — keeps its
+`(Indicator, Period)` scope and its whole-series guard untouched.
+
+**Update (2026-08-24, gh#104).** The question this section left open — whether to serialise fills per series —
+**is settled, and the answer is no** ([ADR-0012](0012-fills-are-not-serialised.md)). The residue named above is
+therefore **accepted rather than closed**, and it was measured before it was declined: a session-level advisory
+lock was observed still holding its key after the connection that took it had gone back to Npgsql's pool, so
+the remedy trades a staleness the next pass recomputes away for a series wedged until unrelated traffic happens
+to reuse that connection. Both halves — the skew, and the heal — are now driven by a test rather than argued,
+so *"stale, not lost"* is checkable here rather than asserted — with one condition this section did not state
+and gh#104 found: the next pass has to *happen*. A series nothing writes to again keeps the stale values until
+`rebuild-indicators` is run over it.
+
+Nothing about the segmentation or the reconcile this record decided changes. The two sentences that read as
+pending are marked in place rather than rewritten — the deferral above, and the gh#122 paragraph's closing
+clause — so the trail still shows what was true when each was written.
+
+## Update (2026-08-29) — the roll event is a tool
+
+The Follow-ups bullet that said nothing reports the roll **event** itself is discharged (gh#349).
+`get_contract_roll(symbol, asOfUtc?)` projects the most recent changeover the stored tape can prove
+(`TapeVolumeFrontService`) and the bar-side seam around it (`ContractRollDetector` over stored
+bars in a short window, every resolution together — a per-size pick would report
+`SingleContract` when the two contracts live on different sizes). There is still no roll table: the event is a read, not a row. `front` is the same
+`VolumeFrontInfo` the footprint tools grew (gh#346). The gateway pick is live only: a historical
+`asOfUtc` omits `gatewayContractId` and `agree` rather than dating today's venue answer. This is
+how a caller decides whether Q-1's successor — re-keying bars by contract id — is worth a
+migration. The keying decision itself is unchanged.

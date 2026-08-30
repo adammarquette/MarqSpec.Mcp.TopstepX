@@ -113,9 +113,9 @@ public sealed class IndicatorRebuilderTrackingTests : IDisposable
         // emptier change tracker is exactly what that failure would look like from the test above.
         Seed("ES", 5, 40);
 
-        int changed = await Rebuilder().RebuildAsync("ES", CancellationToken.None);
+        IndicatorRebuildResult changed = await Rebuilder().RebuildAsync("ES", CancellationToken.None);
 
-        changed.Should().BeGreaterThan(0);
+        changed.ValuesChanged.Should().BeGreaterThan(0);
         _database.IndicatorValues.Count(v => v.Instrument == "ES").Should().BeGreaterThan(0);
     }
 
@@ -127,8 +127,9 @@ public sealed class IndicatorRebuilderTrackingTests : IDisposable
         Seed("ES", 5, 40);
 
         await Rebuilder().RebuildAsync("ES", CancellationToken.None);
-        int second = await Rebuilder().RebuildAsync("ES", CancellationToken.None);
+        IndicatorRebuildResult second = await Rebuilder().RebuildAsync("ES", CancellationToken.None);
 
-        second.Should().Be(0, "the same bars justify the same values, so the second pass changes nothing");
+        second.ValuesChanged.Should().Be(
+            0, "the same bars justify the same values, so the second pass changes nothing");
     }
 }

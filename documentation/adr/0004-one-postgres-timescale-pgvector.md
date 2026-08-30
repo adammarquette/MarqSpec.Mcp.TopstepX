@@ -47,3 +47,23 @@ performance property here, not a correctness one.
   not today's recomputation of it.
 - Losing this database loses the cache, not the truth. Everything in it is re-derivable from the vendor and from
   the bars — except observations, which are the only original data here and the only thing worth backing up.
+
+## Update (2026-08-28) — compression arrives, retention does not
+
+`Trades` (gh#215) is the store's first compression policy: chunks older than seven days compress in place.
+Retention is still deliberately absent, on the tape as on bars and indicator values. A replay reaching for the
+prints behind a past footprint should find what was actually used. The hypertable stays conditional on the
+same `pg_available_extensions` probe as `Bars`.
+
+## Update (2026-08-28) — the tape is original data, not a cache
+
+The consequence above — *losing this database loses the cache, not the truth* — was true of bars, indicator
+values and embeddings. It is false of the trade tape.
+
+There is no market-tape REST backfill ([ADR-0016](0016-subscribe-to-the-market-hub.md)): `SearchTradesAsync`
+returns the login's own executions, not the public prints. A drop or rebuild of Postgres after the recorder
+exists refetches bars and leaves `Trades` and `TapeCoverage` empty. Later footprint and coverage reads then
+return an ordinary empty window — a quiet market — for prints that were recorded and are gone.
+
+`Trades` and `TapeCoverage` are a system of record. Losing the store loses those prints. They are worth
+backing up with observations, not instead of them.

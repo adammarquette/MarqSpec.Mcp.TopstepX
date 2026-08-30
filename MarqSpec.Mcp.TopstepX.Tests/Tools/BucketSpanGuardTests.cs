@@ -347,10 +347,19 @@ public sealed class BucketSpanGuardTests : IDisposable
             _database,
             new InstrumentRegistry(capped),
             _catalog,
+            new IndicatorCacheService(
+                _database,
+                _catalog,
+                new IndicatorProjector(_database, _catalog, NullLogger<IndicatorProjector>.Instance),
+                _clock,
+                NullLogger<IndicatorCacheService>.Instance),
+            new LevelMethodCatalog(_calendar),
             _gateway,
             new ToolGuards(capped),
             new StoreAvailabilityHolder(),
-            _clock);
+            _clock,
+            Options.Create(new KeyLevelDetectionOptions()),
+            new VolumeProfileService(_database));
     }
 
     /// <summary>Builds the composed tool over the same row cap.</summary>
@@ -369,7 +378,8 @@ public sealed class BucketSpanGuardTests : IDisposable
         return new SnapshotTools(
             marketData,
             new ReferenceTools(new InstrumentRegistry(capped), _calendar, _gateway, capped, _clock),
-            new IndicatorCatalogNames(_catalog));
+            new IndicatorCatalogNames(_catalog),
+            _clock);
     }
 
     /// <summary>Runs a call and hands back whatever it threw, if anything.</summary>

@@ -248,6 +248,15 @@ public static class Program
             .ValidateDataAnnotations()
             .ValidateOnStart();
 
+        // The detection defaults get_key_levels falls back to. Validated on start, and the Unknown check is
+        // an IValidatableObject on the type rather than a lambda here -- Unknown = 0 is what a mistyped or
+        // absent value binds to, and a server that boots on one answers every level call from a source
+        // nobody chose.
+        services.AddOptions<KeyLevelDetectionOptions>()
+            .Bind(builder.Configuration.GetSection(KeyLevelDetectionOptions.SectionName))
+            .ValidateDataAnnotations()
+            .ValidateOnStart();
+
         services.AddOptions<McpOptions>()
             .Bind(builder.Configuration.GetSection(McpOptions.SectionName))
             .Validate(
@@ -269,13 +278,20 @@ public static class Program
         services.AddSingleton<InstrumentRegistry>();
         services.AddSingleton<IndicatorCatalog>();
         services.AddSingleton<IndicatorCatalogNames>();
+        services.AddSingleton<LevelMethodCatalog>();
         services.AddSingleton<ToolGuards>();
         services.AddSingleton<StoreAvailabilityHolder>();
+        services.AddSingleton<TapeAvailabilityHolder>();
         services.AddSingleton<EmbeddingAvailabilityHolder>();
         services.AddSingleton<EmbeddingAvailabilityProbe>();
 
-        // The embedding seam. Only the keyless default exists today (gh#45); a real provider is selected here
-        // once one is chosen (gh#44). An unset key is a supported state, so this is never a startup failure.
+        // Process-lifetime: IndicatorCacheService is scoped, so its Projections reset every request.
+        // This is the count startup warmup will read, and the one an operator can read without a debugger
+        // (the replay log line prints it; the property is the typed form) (gh#347).
+        services.AddSingleton<IndicatorReadProjectionCounter>();
+
+        // The embedding seam. CohereEmbeddingProvider is selected when Embeddings__ApiKey is set
+        // (ADR-0009). An unset key is a supported state, so this is never a startup failure.
         services.AddOptions<EmbeddingOptions>()
             .Bind(builder.Configuration.GetSection(EmbeddingOptions.SectionName));
 
@@ -366,7 +382,28 @@ public static class Program
 
         services.AddScoped<IndicatorProjector>();
         services.AddScoped<IndicatorRebuilder>();
+        services.AddScoped<FootprintProjector>();
+        services.AddScoped<FootprintCacheService>();
+        services.AddScoped<VolumeProfileService>();
+        services.AddScoped<TapeVolumeFrontService>();
         services.AddScoped<BarCacheService>();
+
+        // The tape recorder. Always registered so the container shape does not depend on the
+        // switch — ExecuteAsync returns immediately unless the transport is HTTP and
+        // MarketData__RecordTape is on. It takes no scoped venue client in the constructor;
+        // every operation opens a scope (the captive-dependency case, ADR-0016).
+        services.AddHostedService<TradeTapeRecorder>();
+
+        // Indicator warmup. Same shape: HTTP and an explicit switch, both. Always registered
+        // so the container does not change with MarketData__WarmIndicators; ExecuteAsync
+        // returns immediately unless the transport is HTTP and the switch is on. The
+        // rebuilder is scoped, so the pass opens a scope (gh#350, ADR-0014).
+        services.AddHostedService<IndicatorWarmup>();
+
+        // Scoped, and the lifetime is load-bearing rather than conventional: this service memoises which
+        // series it has already found complete, and the scope is one request. A singleton would remember the
+        // answer past the fill that invalidated it (gh#246).
+        services.AddScoped<IndicatorCacheService>();
 
         // The tool types themselves. The SDK activates a tool per call with ActivatorUtilities, which resolves
         // constructor parameters from DI but does NOT recursively activate unregistered types -- so a tool that

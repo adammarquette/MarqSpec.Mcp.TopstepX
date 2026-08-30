@@ -5,6 +5,8 @@ using MarqSpec.Mcp.TopstepX.Domain;
 using MarqSpec.Mcp.TopstepX.Domain.MarketData;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
+using Npgsql;
+using NpgsqlTypes;
 
 namespace MarqSpec.Mcp.TopstepX.MarketData;
 
@@ -40,6 +42,15 @@ namespace MarqSpec.Mcp.TopstepX.MarketData;
 /// stays. That row is a stored number the bars cannot account for, which is the failure gh#42 is about.
 /// </para>
 /// <para>
+/// <b>The store decides insert-versus-update, not this process</b> (gh#133). The values a pass produces are
+/// written with one <c>ON CONFLICT … DO UPDATE</c> on the composite key, so a pass whose snapshot missed a
+/// concurrent pass's rows updates them rather than colliding on the key. Deciding it from the pre-read — which
+/// is what this did until gh#133 — decides it against <i>this</i> transaction's snapshot, and the loser took
+/// a <c>23505</c> out of <c>get_bars</c> for an ordinary question. The removal half stays with the change
+/// tracker, so the two halves need a transaction around them rather than merely one snapshot; see
+/// <see cref="ProjectAsync"/>.
+/// </para>
+/// <para>
 /// <b>The cost, stated honestly.</b> That makes a projection O(series), not O(changed). A year of 5-minute
 /// bars is on the order of 70,000 rows per instrument — comfortably fast, and bounded by how much history the
 /// operator keeps rather than by how often bars arrive. If it ever stops being comfortable, the answer is an
@@ -67,6 +78,9 @@ public sealed class IndicatorProjector(
     /// <param name="now">The instant this pass runs at, stamped on changed rows.</param>
     /// <param name="cancellationToken">The caller's cancellation token.</param>
     /// <returns>How many rows this pass changed — written, updated, or <b>removed</b>.</returns>
+    /// <exception cref="InvalidOperationException">
+    /// The caller opened no transaction, so the two halves of this pass could not commit together.
+    /// </exception>
     /// <remarks>
     /// Does <b>not</b> call <c>SaveChanges</c>. The caller owns the unit of work, so bars and the indicators
     /// derived from them commit together — a partial commit would leave a bar whose indicators silently do
@@ -83,6 +97,12 @@ public sealed class IndicatorProjector(
     /// therefore wrap it in a <see cref="System.Data.IsolationLevel.RepeatableRead"/> transaction, and
     /// <see cref="ReconcileAsync"/> refuses rather than deleting if that ever stops being true.
     /// </para>
+    /// <para>
+    /// <b>And it must be a transaction, not merely one snapshot</b> (gh#133). The values are written by a
+    /// statement the store executes when it is sent, while the removals still go through the change tracker
+    /// and wait for the caller's <c>SaveChanges</c>. Inside a transaction that difference is invisible; outside
+    /// one the write autocommits and the removals do not, so this refuses rather than half-committing.
+    /// </para>
     /// </remarks>
     public async Task<int> ProjectAsync(
         string venue,
@@ -92,6 +112,23 @@ public sealed class IndicatorProjector(
         CancellationToken cancellationToken)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(venue);
+
+        // CHECKED FIRST, so a refusal costs nothing and leaves nothing half-done -- the same shape as the
+        // whole-series guard below, and it cannot fire as shipped for the same reason: both call sites go
+        // through SeriesUnitOfWork. It fires when a third one is added, which is the only way to get this
+        // wrong.
+        bool relational = _database.Database.IsRelational();
+
+        if (relational && _database.Database.CurrentTransaction is null)
+        {
+            throw new InvalidOperationException(
+                "A projection pass writes its values with one statement the store runs as it is sent, and "
+                + "removes the values the bars no longer justify through the change tracker, which waits for "
+                + "the caller's SaveChanges. Outside a transaction the first commits on its own and the "
+                + "second does not, leaving values standing that this very pass decided to remove — and bars "
+                + "committed without the indicators derived from them. Wrap this call in a transaction; "
+                + "SeriesUnitOfWork is the one shape every series write uses.");
+        }
 
         // AsNoTracking because NOTHING HERE MUTATES A BAR -- the projection reads them and writes
         // IndicatorValues. Tracked, a whole series' history sits in the change tracker being re-examined by
@@ -112,11 +149,21 @@ public sealed class IndicatorProjector(
         // Loaded unconditionally, and the early return for an empty series is gone with it: reconciliation
         // has to run even when no bars remain, because values standing over a series whose bars have all been
         // deleted are exactly values nothing can justify.
+        IQueryable<IndicatorValueRecord> values = _database.IndicatorValues
+            .Where(v => v.Venue == venue
+                && v.Instrument == instrument.Symbol
+                && v.ResolutionMinutes == resolutionMinutes);
+
+        // AsNoTracking ON THE RELATIONAL PATH, and it is not tidiness (gh#103's identity-map finding). These
+        // rows are written by SQL the change tracker never sees, so a tracked copy is a stale entity the
+        // identity map would hand back to the next read of IndicatorValues in the same scope in preference to
+        // the row it just read. It is also what the perf note on the bar read above says: a whole series in
+        // the tracker is re-examined by every subsequent SaveChanges.
+        //
+        // NOT on the in-memory path, where the write below IS the change tracker and a no-tracking read
+        // would hand it entities nothing is watching.
         Dictionary<(string Indicator, int Period, DateTimeOffset Bucket), IndicatorValueRecord> existing =
-            await _database.IndicatorValues
-                .Where(v => v.Venue == venue
-                    && v.Instrument == instrument.Symbol
-                    && v.ResolutionMinutes == resolutionMinutes)
+            await (relational ? values.AsNoTracking() : values)
                 .ToDictionaryAsync(v => (v.Indicator, v.Period, v.BucketStart), cancellationToken)
                 .ConfigureAwait(false);
 
@@ -126,7 +173,10 @@ public sealed class IndicatorProjector(
         // case is why a confirming rebuild still reconciles to an empty diff.
         HashSet<(string Indicator, int Period, DateTimeOffset Bucket)> produced = [];
 
-        int written = 0;
+        // Every value this pass decided is not what the store already holds. Collected across all segments
+        // and written once at the end, so the whole series costs one statement rather than one per contract
+        // run -- and so no key can appear twice in it, which ON CONFLICT cannot resolve within one command.
+        List<PendingValue> pending = [];
 
         // One run per contract, each projected on its own. A single-contract series -- which is every series
         // that has not yet lived through a roll -- is one segment, so this costs nothing and changes nothing
@@ -136,8 +186,16 @@ public sealed class IndicatorProjector(
         foreach (ContractSegment segment in segments)
         {
             List<Bar> run = bars.GetRange(segment.StartIndex, segment.BarCount);
-            written += ProjectSegment(venue, instrument, resolutionMinutes, run, existing, produced, now);
+            ProjectSegment(run, existing, produced, pending);
         }
+
+        int written = pending.Count == 0
+            ? 0
+            : relational
+                ? await WriteInStoreAsync(
+                    venue, instrument, resolutionMinutes, pending, now, cancellationToken)
+                    .ConfigureAwait(false)
+                : WriteInMemory(venue, instrument, resolutionMinutes, pending, existing, now);
 
         int removed = await ReconcileAsync(
             venue, instrument, resolutionMinutes, stored.Count, existing, produced, cancellationToken)
@@ -166,7 +224,11 @@ public sealed class IndicatorProjector(
     /// <param name="instrument">The instrument.</param>
     /// <param name="resolutionMinutes">The bar size in minutes.</param>
     /// <param name="barsRead">How many bars this pass loaded — the claim the guard below checks.</param>
-    /// <param name="existing">Every stored value for the series.</param>
+    /// <param name="existing">
+    /// Every stored value for the series. Untracked on the relational path, which changes nothing here:
+    /// <c>Remove</c> attaches an untracked row as <c>Deleted</c> and the statement it produces is the same
+    /// <c>DELETE</c> by key.
+    /// </param>
     /// <param name="produced">The keys this pass accounted for.</param>
     /// <param name="cancellationToken">The caller's cancellation token.</param>
     /// <returns>How many rows were removed.</returns>
@@ -265,22 +327,21 @@ public sealed class IndicatorProjector(
     }
 
     /// <summary>Projects every configured indicator over one single-contract run of bars.</summary>
+    /// <param name="bars">The run.</param>
+    /// <param name="existing">Every stored value for the series — the pre-filter, not the decision.</param>
+    /// <param name="produced">The keys this pass accounted for. Appended to.</param>
+    /// <param name="pending">The values that are not what the store already holds. Appended to.</param>
     /// <remarks>
     /// The run is what each indicator sees, so its smoothing seeds from the run's own first bar. Handing the
     /// whole series in would let a roll gap -- routinely tens of points between adjacent quarters -- be
     /// smoothed forward as though it were price action, which is exactly the number nobody would question.
     /// </remarks>
-    private int ProjectSegment(
-        string venue,
-        InstrumentId instrument,
-        int resolutionMinutes,
+    private void ProjectSegment(
         IReadOnlyList<Bar> bars,
         Dictionary<(string Indicator, int Period, DateTimeOffset Bucket), IndicatorValueRecord> existing,
         HashSet<(string Indicator, int Period, DateTimeOffset Bucket)> produced,
-        DateTimeOffset now)
+        List<PendingValue> pending)
     {
-        int written = 0;
-
         foreach (IIndicator indicator in _catalog.All)
         {
             IReadOnlyList<decimal?> values = indicator.Compute(bars);
@@ -315,38 +376,163 @@ public sealed class IndicatorProjector(
                 // for "not produced" and delete the whole series on every rebuild.
                 produced.Add(key);
 
-                if (existing.TryGetValue(key, out IndicatorValueRecord? row))
+                // THE SKIP-UNCHANGED RULE, AND IT IS STATED ONCE -- here, in C#, rather than restated in the
+                // statement's own WHERE the way the bar write states its (gh#103). The difference is the
+                // rounding directly above: `value` has already been coerced to the column's own scale, and
+                // `row.Value` came out of the column, so both sides of this comparison are numeric(18,8) and
+                // it cannot answer "changed" for a difference numeric(18,8) cannot hold. That is the gh#37
+                // shape, and rounding is where this projection closed it. The bar write cannot do the same --
+                // it compares six prices straight off the venue answer, at full decimal precision -- which is
+                // why the rule lives in SQL there and here does not.
+                //
+                // A second copy in SQL would therefore be a clause nothing could ever make fail: unreachable
+                // by any input, and so unverifiable by any test.
+                if (existing.TryGetValue(key, out IndicatorValueRecord? row) && row.Value == value)
                 {
-                    if (row.Value == value)
-                    {
-                        // Unchanged. Leaving RecordedAt alone is what makes a confirming rebuild produce an
-                        // empty diff rather than rewriting every timestamp in the series.
-                        continue;
-                    }
-
-                    row.Value = value;
-                    row.RecordedAt = now;
-                }
-                else
-                {
-                    _database.IndicatorValues.Add(new IndicatorValueRecord
-                    {
-                        Venue = venue,
-                        Instrument = instrument.Symbol,
-                        ResolutionMinutes = resolutionMinutes,
-                        Indicator = indicator.Name,
-                        Period = indicator.Period,
-                        BucketStart = bars[i].OpenTime,
-                        Value = value,
-                        RecordedAt = now,
-                    });
+                    // Unchanged. Leaving RecordedAt alone is what makes a confirming rebuild produce an
+                    // empty diff rather than rewriting every timestamp in the series.
+                    continue;
                 }
 
-                written++;
+                // WHICH OF INSERT AND UPDATE THIS IS, IS NOT DECIDED HERE. `existing` is read from this
+                // transaction's snapshot, so a concurrent pass that has committed a value this one still
+                // believes absent makes both INSERT it -- and the loser took 23505 out of `get_bars` for an
+                // ordinary question (gh#133). The store decides, against the row it has committed.
+                pending.Add(new PendingValue(indicator.Name, indicator.Period, bars[i].OpenTime, value));
             }
         }
+    }
 
-        return written;
+    /// <summary>
+    /// The value write, as one statement the store resolves against the rows it has committed.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>The conflict target is the composite primary key</b> — the same key the pre-read looked the values
+    /// up by, reached directly instead of being inferred from a read of it. Under
+    /// <see cref="SeriesUnitOfWork.Isolation"/> a conflict against a row committed <i>after</i> this
+    /// transaction's snapshot is refused with <c>40001</c> rather than <c>23505</c>, which is what
+    /// <c>R-2.10</c> already retries once — and the retry runs over the store the winner committed, where the
+    /// pre-filter above simply recognises those values as already produced.
+    /// </para>
+    /// <para>
+    /// <b>There is no skip-unchanged <c>WHERE</c>, and its absence is deliberate</b> — see the comment at the
+    /// pre-filter. Nothing reaches this statement that the C# comparison did not already find different, and
+    /// that comparison is made at the column's own scale.
+    /// </para>
+    /// <para>
+    /// <b>Arrays rather than a row per value</b>: a whole series times eleven indicators is tens of thousands
+    /// of rows, and four parameters each would exceed the protocol's parameter limit many times over.
+    /// </para>
+    /// </remarks>
+    private const string UpsertValuesSql = """
+        INSERT INTO "IndicatorValues" (
+            "Venue", "Instrument", "ResolutionMinutes", "Indicator", "Period", "BucketStart",
+            "Value", "RecordedAt")
+        SELECT @venue, @instrument, @resolution, a.indicator, a.period, a.bucket, a.value, @recorded
+        FROM unnest(@indicators, @periods, @buckets, @values)
+             AS a(indicator, period, bucket, value)
+        ON CONFLICT ("Venue", "Instrument", "ResolutionMinutes", "Indicator", "Period", "BucketStart")
+        DO UPDATE SET
+            "Value" = excluded."Value",
+            "RecordedAt" = excluded."RecordedAt"
+        """;
+
+    /// <summary>One value this pass found the store does not already hold.</summary>
+    /// <param name="Indicator">The indicator's stable name.</param>
+    /// <param name="Period">The period, part of the storage key.</param>
+    /// <param name="BucketStart">The bucket.</param>
+    /// <param name="Value">The value, already rounded to the stored scale.</param>
+    private readonly record struct PendingValue(
+        string Indicator,
+        int Period,
+        DateTimeOffset BucketStart,
+        decimal Value);
+
+    private async Task<int> WriteInStoreAsync(
+        string venue,
+        InstrumentId instrument,
+        int resolutionMinutes,
+        List<PendingValue> pending,
+        DateTimeOffset now,
+        CancellationToken cancellationToken)
+    {
+        NpgsqlParameter[] parameters =
+        [
+            new("venue", NpgsqlDbType.Varchar) { Value = venue },
+            new("instrument", NpgsqlDbType.Varchar) { Value = instrument.Symbol },
+            new("resolution", NpgsqlDbType.Integer) { Value = resolutionMinutes },
+            new("recorded", NpgsqlDbType.TimestampTz) { Value = now },
+            new("indicators", NpgsqlDbType.Array | NpgsqlDbType.Varchar)
+            {
+                Value = pending.Select(v => v.Indicator).ToArray(),
+            },
+            new("periods", NpgsqlDbType.Array | NpgsqlDbType.Integer)
+            {
+                Value = pending.Select(v => v.Period).ToArray(),
+            },
+            new("buckets", NpgsqlDbType.Array | NpgsqlDbType.TimestampTz)
+            {
+                Value = pending.Select(v => v.BucketStart).ToArray(),
+            },
+            new("values", NpgsqlDbType.Array | NpgsqlDbType.Numeric)
+            {
+                Value = pending.Select(v => v.Value).ToArray(),
+            },
+        ];
+
+        return await _database.Database
+            .ExecuteSqlRawAsync(UpsertValuesSql, parameters, cancellationToken)
+            .ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// The same write against a provider with no <c>ON CONFLICT</c> — the unit tier's in-memory store.
+    /// </summary>
+    /// <remarks>
+    /// It has no transactions and no snapshots either, so the race the relational path exists to survive is
+    /// not merely absent here, it is unrepresentable. This is the merge that was the only implementation
+    /// before gh#133, kept as it was.
+    /// </remarks>
+    /// <param name="venue">The venue.</param>
+    /// <param name="instrument">The instrument.</param>
+    /// <param name="resolutionMinutes">The bar size in minutes.</param>
+    /// <param name="pending">The values to write.</param>
+    /// <param name="existing">Every stored value for the series, tracked.</param>
+    /// <param name="now">The instant this pass runs at.</param>
+    /// <returns>How many rows were written.</returns>
+    private int WriteInMemory(
+        string venue,
+        InstrumentId instrument,
+        int resolutionMinutes,
+        List<PendingValue> pending,
+        Dictionary<(string Indicator, int Period, DateTimeOffset Bucket), IndicatorValueRecord> existing,
+        DateTimeOffset now)
+    {
+        foreach (PendingValue value in pending)
+        {
+            if (existing.TryGetValue(
+                (value.Indicator, value.Period, value.BucketStart), out IndicatorValueRecord? row))
+            {
+                row.Value = value.Value;
+                row.RecordedAt = now;
+                continue;
+            }
+
+            _database.IndicatorValues.Add(new IndicatorValueRecord
+            {
+                Venue = venue,
+                Instrument = instrument.Symbol,
+                ResolutionMinutes = resolutionMinutes,
+                Indicator = value.Indicator,
+                Period = value.Period,
+                BucketStart = value.BucketStart,
+                Value = value.Value,
+                RecordedAt = now,
+            });
+        }
+
+        return pending.Count;
     }
 
     /// <summary>Maps a stored row to the domain bar the indicators compute over.</summary>

@@ -265,7 +265,7 @@ public static partial class ProjectXMapping
     /// <summary>
     /// Maps the gateway's side enum.
     /// </summary>
-    /// <param name="side">The gateway's side.</param>
+    /// <param name="side">The gateway's side, or <c>null</c> when the venue omitted the field.</param>
     /// <returns>This server's side.</returns>
     /// <remarks>
     /// <para>
@@ -274,19 +274,42 @@ public static partial class ProjectXMapping
     /// value maps to <see cref="VenueSide.Unknown"/> rather than defaulting to either direction.
     /// </para>
     /// <para>
-    /// <b>This cannot catch an ABSENT side, and no arrangement of this method could.</b> The client declares
-    /// <c>OrderSide { Bid = 0, Ask = 1 }</c> on a non-nullable property, so a payload with no <c>side</c>
-    /// arrives here already bound to <c>Bid</c> — byte-identical to an explicit buy. The default arm below is
-    /// reachable only for a value outside the enum, which the binder does admit (<c>"side":9</c> becomes
-    /// <c>(OrderSide)9</c>). Measured against 2.1.0 and pinned by <c>VenueSideBindingTests</c>; see
-    /// <see cref="VenueSide.Unknown"/> for why the fix is upstream (gh#84).
+    /// <b>An omitted <c>side</c> is <c>null</c>, and that maps here to
+    /// <see cref="VenueSide.Unknown"/>.</b> From 3.0.0 the published response type is <c>OrderSide?</c>
+    /// (nupkg <c>lib/net10.0/MarqSpec.Client.ProjectX.xml</c>, <c>P:…Order.Side</c> / <c>P:…HalfTrade.Side</c>):
+    /// wire 0 is still Bid and 1 is still Ask, but an absent field is no longer bound to Bid. The default
+    /// arm still catches a value outside the enum (<c>"side":9</c> becomes <c>(OrderSide)9</c>).
     /// </para>
     /// </remarks>
-    public static VenueSide ToSide(OrderSide side) => side switch
+    public static VenueSide ToSide(OrderSide? side) => side switch
     {
+        null => VenueSide.Unknown,
         OrderSide.Bid => VenueSide.Buy,
         OrderSide.Ask => VenueSide.Sell,
         _ => VenueSide.Unknown,
+    };
+
+    /// <summary>
+    /// Maps the market-hub trade direction, or the absence of one.
+    /// </summary>
+    /// <param name="type">
+    /// The hub's direction, or <c>null</c> when the venue omitted or sent an unrecognised
+    /// <c>type</c>.
+    /// </param>
+    /// <returns>This server's direction.</returns>
+    /// <remarks>
+    /// <para>
+    /// <see cref="TradeLogType.Buy"/> is wire <c>0</c>. An omitted or unrecognised value that
+    /// became Buy would write buying pressure the tape never stated. Absence maps to
+    /// <see cref="TradeDirection.Unknown"/> and is stored as that fact (gh#216, Client#86).
+    /// </para>
+    /// </remarks>
+    public static TradeDirection ToTradeDirection(TradeLogType? type) => type switch
+    {
+        null => TradeDirection.Unknown,
+        TradeLogType.Buy => TradeDirection.Buy,
+        TradeLogType.Sell => TradeDirection.Sell,
+        _ => TradeDirection.Unknown,
     };
 
     /// <summary>Maps the gateway's order status.</summary>

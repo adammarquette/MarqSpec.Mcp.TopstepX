@@ -52,14 +52,20 @@ public sealed class TopstepXDbContext(DbContextOptions<TopstepXDbContext> option
     /// <summary>Ranges the venue answered empty — the negative-result ledger.</summary>
     public DbSet<BarCoverageRecord> BarCoverage => Set<BarCoverageRecord>();
 
-    /// <summary>Detected support and resistance zones.</summary>
-    public DbSet<PriceLevelRecord> PriceLevels => Set<PriceLevelRecord>();
-
-    /// <summary>Agent-recorded observations — the only original data here.</summary>
+    /// <summary>Agent-recorded observations — original data, as is the tape.</summary>
     public DbSet<ObservationRecord> Observations => Set<ObservationRecord>();
 
     /// <summary>Vector embeddings over <see cref="Observations"/>.</summary>
     public DbSet<EmbeddingRecord> Embeddings => Set<EmbeddingRecord>();
+
+    /// <summary>The trade tape — the order-flow system of record.</summary>
+    public DbSet<TradeRecord> Trades => Set<TradeRecord>();
+
+    /// <summary>Ranges during which a subscription was listening — the tape's coverage ledger.</summary>
+    public DbSet<TapeCoverageRecord> TapeCoverage => Set<TapeCoverageRecord>();
+
+    /// <summary>Buy and sell volume per price per bar — a projection over <see cref="Trades"/>.</summary>
+    public DbSet<FootprintCellRecord> FootprintCells => Set<FootprintCellRecord>();
 
     /// <inheritdoc />
     protected override void OnModelCreating(ModelBuilder modelBuilder)
@@ -135,27 +141,43 @@ public sealed class TopstepXDbContext(DbContextOptions<TopstepXDbContext> option
             entity.HasIndex(c => new { c.Instrument, c.ResolutionMinutes, c.RangeStart, c.RangeEnd });
         });
 
-        modelBuilder.Entity<PriceLevelRecord>(entity =>
+        modelBuilder.Entity<TradeRecord>(entity =>
         {
-            entity.ToTable("PriceLevels", table =>
-            {
-                // In the database, not only in code. The detection pass's bugs are geometric, and an inverted
-                // or non-positive zone reads as entirely plausible everywhere except here.
-                table.HasCheckConstraint("CK_PriceLevels_ZoneOrdered", "\"Top\" > \"Bottom\"");
-                table.HasCheckConstraint("CK_PriceLevels_BottomPositive", "\"Bottom\" > 0");
-                table.HasCheckConstraint("CK_PriceLevels_KindKnown", "\"Kind\" <> 0");
-                table.HasCheckConstraint("CK_PriceLevels_TimeframePositive", "\"TimeframeMinutes\" > 0");
-            });
+            entity.ToTable("Trades");
+            entity.HasKey(t => new { t.Venue, t.Instrument, t.ContractId, t.TradeTimeUtc, t.Sequence });
 
-            entity.HasKey(l => l.Id);
-            entity.Property(l => l.Venue).HasMaxLength(64);
-            entity.Property(l => l.Instrument).HasMaxLength(32);
-            entity.Property(l => l.Bottom).HasColumnType(PriceColumnType);
-            entity.Property(l => l.Top).HasColumnType(PriceColumnType);
-            entity.Property(l => l.Significance).HasColumnType(PriceColumnType);
-            entity.Property(l => l.Kind).HasConversion<int>();
+            entity.Property(t => t.Venue).HasMaxLength(64);
+            entity.Property(t => t.Instrument).HasMaxLength(32);
+            entity.Property(t => t.ContractId).HasMaxLength(64);
+            entity.Property(t => t.Price).HasColumnType(PriceColumnType);
+            entity.Property(t => t.Direction).HasConversion<int>();
 
-            entity.HasIndex(l => new { l.Instrument, l.TimeframeMinutes, l.Active });
+            // The shape of every read: one instrument, one contract, a window.
+            entity.HasIndex(t => new { t.Instrument, t.ContractId, t.TradeTimeUtc });
+        });
+
+        modelBuilder.Entity<TapeCoverageRecord>(entity =>
+        {
+            entity.ToTable("TapeCoverage");
+            entity.HasKey(c => new { c.Venue, c.Instrument, c.ContractId, c.RangeStart, c.RangeEnd });
+
+            entity.Property(c => c.Venue).HasMaxLength(64);
+            entity.Property(c => c.Instrument).HasMaxLength(32);
+            entity.Property(c => c.ContractId).HasMaxLength(64);
+
+            entity.HasIndex(c => new { c.Instrument, c.ContractId, c.RangeStart, c.RangeEnd });
+        });
+
+        modelBuilder.Entity<FootprintCellRecord>(entity =>
+        {
+            entity.ToTable("FootprintCells");
+            entity.HasKey(c => new { c.Venue, c.Instrument, c.ResolutionMinutes, c.BucketStart, c.Price });
+
+            entity.Property(c => c.Venue).HasMaxLength(64);
+            entity.Property(c => c.Instrument).HasMaxLength(32);
+            entity.Property(c => c.Price).HasColumnType(PriceColumnType);
+
+            entity.HasIndex(c => new { c.Instrument, c.ResolutionMinutes, c.BucketStart });
         });
 
         modelBuilder.Entity<ObservationRecord>(entity =>

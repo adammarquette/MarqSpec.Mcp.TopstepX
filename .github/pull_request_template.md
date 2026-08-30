@@ -1,6 +1,13 @@
 <!--
   Open against `develop`. Populate every field — assignee, milestone, one work:* label, a Work Estimate label.
-  Reference the issue with a PLAIN `Closes #N` below; a backticked keyword does not bind and will not auto-close.
+  Reference the issue with a PLAIN `Closes #N` below, in ordinary prose. A citation inside code binds nothing
+  and issue-link refuses it — backticks, a fenced block, or an HTML comment alike. Fence a pasted git log and
+  cite outside it: the log carries the OTHER work's issue, never this PR's.
+
+  Every section you write or edit ends with `Assisted-by: <Model Name> (<tool>)` — the same form as the
+  commit trailer. Replace the placeholder on sections you wrote; delete it on sections you did not. A later
+  rewrite replaces the line. Comments and reviews are not this file: write the trailer on the comment itself.
+  A single footer on the PR is not a substitute — more than one tool can write the same PR.
 -->
 
 Closes #
@@ -9,21 +16,28 @@ Closes #
 
 <!-- The why, not a restatement of the diff. A reviewer reads this to know what question the change answers. -->
 
+Assisted-by: <Model Name> (<tool>)
+
 ## How it was verified
 
 <!-- What you ran, and what it proved. "Tests pass" is not a verification; say which tests and what they cover. -->
 
 - [ ] `dotnet format --verify-no-changes` clean
-- [ ] `dotnet build -c Release` clean on **both** target frameworks, warnings-as-errors on
+- [ ] `dotnet build -c Release` clean on `net10.0` — the one framework every project declares — warnings-as-errors on
 - [ ] Unit tests green
-- [ ] Integration tests green against the fake gateway (no credentials required)
+- [ ] Integration tests green — Testcontainers Postgres, `--filter "Category!=Live"`, no credentials required
+
+Assisted-by: <Model Name> (<tool>)
 
 ## Checklist
 
 - [ ] **Test-first** — the new test failed before the implementation; a bug fix reproduces the bug first
-- [ ] **Docs in lockstep** — the affected section of the PRD (`R-#`), architecture doc, ADR, or the library
-      README that ships in the package is updated *in this PR*
+- [ ] **Docs in lockstep** — the affected section of the PRD (`R-#`), architecture doc, ADR, or the MCP tool
+      catalogue is updated *in this PR*, and a **breaking** change to the tools that catalogue documents carries
+      an ADR of its own
 - [ ] **No secrets** — nothing logged, nothing tracked, no credential-shaped value in a committed file
+- [ ] **PR documentation** — every body section you wrote, and every comment or review you add, carries
+      `Assisted-by: <Model Name> (<tool>)`. A single footer on the PR is not a substitute
 - [ ] **Commits** are Conventional and carry both `Assisted-by:` and `Co-Authored-By:` trailers if AI-authored
 - [ ] History is curated into units of work (this repo rebase-merges; squash is disabled)
 
@@ -36,7 +50,4 @@ Closes #
       "not placed" for a request that may be live.
 - [ ] New wire enum values are handled exhaustively; no zero-value default is permissive.
 
-## Public surface
-
-- [ ] No breaking change to the public API — **or** a major version bump and an ADR accompany it, because
-      trading-copilot compiles against this assembly directly.
+Assisted-by: <Model Name> (<tool>)

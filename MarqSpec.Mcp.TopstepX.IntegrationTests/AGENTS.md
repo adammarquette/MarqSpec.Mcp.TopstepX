@@ -33,9 +33,10 @@ inferring the answer from the code.
 
 ## No credentials, ever
 
-The default suite runs with **no ProjectX credentials at all**. Venue behaviour is exercised against the
-client package's own `FakeGateway`; a suite that needs a real login is a suite that does not run in CI, and a
-suite that does not run in CI does not exist.
+The default suite runs with **no ProjectX credentials at all**. **There is no fake gateway to point it at, and
+never has been** — the client package ships none. Venue behaviour is exercised against a hand-written
+`IMarketDataGateway` double, `SeriesGateway` in [`ConcurrencyHarness.cs`](ConcurrencyHarness.cs). A suite that
+needs a real login is a suite that does not run in CI, and a suite that does not run in CI does not exist.
 
 Anything that genuinely needs a live gateway is tagged `Category=Live`, is excluded by default
 (`--filter "Category!=Live"`), and reads its credentials from user secrets or the environment — never from a

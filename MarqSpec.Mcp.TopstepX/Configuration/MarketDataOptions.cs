@@ -76,6 +76,42 @@ public sealed class MarketDataOptions
     [Required]
     public string Instruments { get; init; } = "ES,NQ";
 
+    /// <summary>
+    /// Whether the process may subscribe to the market hub and write prints to
+    /// <c>Trades</c>.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>Off by default, and HTTP is not consent.</b> Choosing the HTTP transport does not start
+    /// the recorder. A Cowork stdio child against the same store a deployed HTTP instance already
+    /// writes would double every volume, and a doubled delta looks like order flow (ADR-0016). The
+    /// recorder therefore starts only when the transport is HTTP <i>and</i> this switch is on.
+    /// </para>
+    /// <para>
+    /// Two subscribers on one tape is the failure this exists to prevent. Leave it off on any
+    /// process that is not the single long-lived HTTP instance meant to hold the subscription.
+    /// </para>
+    /// </remarks>
+    public bool RecordTape { get; init; }
+
+    /// <summary>
+    /// Whether the process may replay stored indicator series at startup.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>Off by default, and HTTP is not consent.</b> Choosing the HTTP transport does not start
+    /// the warmup. A Cowork stdio child against a large store would stall the handshake paying the
+    /// first-read projection (ADR-0014, gh#350). Warmup therefore runs only when the transport is
+    /// HTTP <i>and</i> this switch is on.
+    /// </para>
+    /// <para>
+    /// The numbers do not change: the pass is <c>IndicatorRebuilder</c>, so a subsequent
+    /// <c>rebuild-indicators</c> is an empty diff (<c>R-2.2</c>). A failure is logged and the host
+    /// keeps serving — the first cold read then pays the projection, the same as today.
+    /// </para>
+    /// </remarks>
+    public bool WarmIndicators { get; init; }
+
     /// <summary>The declared holidays, parsed.</summary>
     /// <returns>The holiday strings, trimmed and non-empty.</returns>
     public IReadOnlyList<string> HolidayList() => SplitList(Holidays);

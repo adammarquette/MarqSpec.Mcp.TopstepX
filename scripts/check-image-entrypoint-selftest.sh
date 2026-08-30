@@ -33,6 +33,51 @@
 # and then exits dirty -- which nothing here can build without a switch in product code whose only purpose is
 # to break the server. Stated rather than papered over: what this proves is that the gate still rejects a
 # broken entrypoint, which is the failure mode it was written for.
+#
+# AND IT DOES NOT ASSERT AN EMPTY STDERR, WHICH IS A MEASURED "NO" RATHER THAN AN OVERSIGHT (gh#271).
+# `check-requirement-ids-selftest.sh` requires a green run of its gate to write ZERO BYTES to stderr (gh#239),
+# and `check-doc-sizes-selftest.sh` took the same assertion after gh#271 measured it. This suite cannot,
+# for two independent reasons, either of which is sufficient:
+#
+#   1. THERE IS NO GREEN CASE TO PUT IT ON. That assertion is a claim about a run the gate ACCEPTS. This file
+#      runs the gate exactly once, against a fixture it must REJECT -- and on a red run stderr is not stray
+#      output, it is THE ANSWER: `die` reports every fault through it. Both suites that carry the assertion
+#      exempt their red cases for precisely that reason. Adding a green case here would mean running the real
+#      `:ci` image a second time, which `ci.yml` already does in the step immediately above this one.
+#
+#   2. "GREEN IMPLIES SILENT" IS NOT STRUCTURAL FOR THIS GATE, and the one-command check that establishes it
+#      elsewhere cannot see why. `grep -n '>&2' scripts/check-image-entrypoint.sh` finds every writer on a
+#      path that ends `exit 1` -- so by that test this gate passes. But that grep only sees the script's OWN
+#      redirections, and this gate's green path spawns `docker` THREE times with stderr unredirected: the two
+#      `docker inspect --format` command substitutions (which capture stdout only) and the
+#      `docker run --rm --entrypoint /usr/bin/test` probe. Docker's stderr is not this repository's to
+#      promise. MEASURED, not argued -- the probe's own shape, `docker run --rm --entrypoint <test> <image>
+#      -f <path>`, against an image whose RECORDED platform does not match the host while its binaries do,
+#      so the container really runs and really exits 0:
+#
+#          $ printf 'FROM --platform=linux/amd64 busybox\n' > ctx/Dockerfile
+#          $ docker buildx build --platform linux/arm64 --load -t probe-mislabelled ctx
+#          $ docker run --rm --entrypoint /bin/test probe-mislabelled -f /bin/sh
+#          exit 0    stdout 0 B    stderr 152 B
+#          WARNING: The requested image's platform (linux/arm64) does not match the detected host
+#          platform (linux/amd64/v4) and no specific platform was requested
+#
+#      A green run, 152 bytes on stderr, and nothing in the script wrote them. `/bin/test` rather than
+#      `/usr/bin/test` only because busybox puts it there; the shape being demonstrated is the redirection,
+#      not the path.
+#
+#      WHERE THAT WAS TAKEN, because provenance is the whole point of the exit-code table in
+#      check-image-entrypoint.sh's own header (gh#98, which existed because 155 had only ever been seen on a
+#      Windows host): a developer machine -- Docker Desktop 29.6.2, engine 29.6.2, host `linux/amd64/v4` --
+#      and NOT the CI runner. No number in this paragraph has been observed on `ubuntu-latest`. On that same
+#      machine the real gate IS silent, 319 B stdout / 0 B stderr against the locally built `:ci` image.
+#      Neither figure is a property of this file: the first says docker CAN write to stderr on a run that
+#      exits 0, which is what closes the structural argument; the second says it did not happen here. An
+#      assertion resting on the second would go red for a reason no author in this repository could act on.
+#
+# THE GENERAL RULE, because it is the part worth carrying past this gate: `grep -n '>&2'` is a sound check
+# that a green run is silent ONLY for a gate whose children are silent on success. For one that shells out to
+# a daemon client, a package manager or a network tool, it answers a question nobody asked.
 
 set -euo pipefail
 
@@ -40,22 +85,47 @@ set -euo pipefail
 export MSYS_NO_PATHCONV=1
 export MSYS2_ARG_CONV_EXCL='*'
 
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+GATE="$HERE/check-image-entrypoint.sh"
+
+die() { printf '\033[31m%s\033[0m\n' "$*" >&2; }
+ok()  { printf '\033[32m%s\033[0m\n' "$*"; }
+
 # DERIVED, matching check-image-entrypoint.sh and for the same reason (gh#121 review): CI builds
 # `$(image-reference.sh):ci`, so a hardcoded default here would name a tag nothing produces and the
 # documented no-argument form would fail on a pull attempt rather than on the image.
-IMAGE="${1:-$("$(dirname "$0")/image-reference.sh"):ci}"
+#
+# RESOLVED ON ITS OWN LINE AND CHECKED, matching the gate line for line (gh#126). The reasoning, the measured
+# shell behaviour and what it is and is not fixing are in check-image-entrypoint.sh's header; the two defaults
+# stay identical on purpose, because a self-test that resolves its image differently from the gate it is
+# testing is a self-test reporting on a different run.
+if [ -n "${1:-}" ]; then
+  IMAGE="$1"
+else
+  REFERENCE=""
+  REF_STATUS=0
+  REFERENCE="$("$(dirname "$0")/image-reference.sh")" || REF_STATUS=$?
+  if [ "$REF_STATUS" -ne 0 ]; then
+    die "  UNRESOLVED  scripts/image-reference.sh exited $REF_STATUS, so this project's image has no name"
+    die "NOTHING HAS BEEN CHECKED, and in particular the GATE has not been proven able to fail. That script's"
+    die "own message is above. Pass the tag explicitly to work around it:"
+    die "    scripts/check-image-entrypoint-selftest.sh <image-tag>"
+    exit 1
+  fi
+  if [ -z "$REFERENCE" ]; then
+    die "  UNRESOLVED  scripts/image-reference.sh exited 0 without printing a reference"
+    die "There is nothing to append the :ci tag to, and ':ci' on its own is not an image. NOTHING HAS BEEN"
+    die "CHECKED, and the gate has not been proven able to fail."
+    exit 1
+  fi
+  IMAGE="${REFERENCE}:ci"
+fi
 # The FIXTURE stays a plain local name on purpose -- it is built here, never pushed, and never pulled.
 FIXTURE="${2:-marqspec-mcp-topstepx:entrypoint-selftest}"
 
 # The assembly the fixture's ENTRYPOINT names, and the string the assertion looks for. One definition, so the
 # fixture and the assertion cannot drift apart into a self-test that always passes.
 ABSENT_ASSEMBLY="MarqSpec.Mcp.TopstepX.DoesNotExist.dll"
-
-HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-GATE="$HERE/check-image-entrypoint.sh"
-
-die() { printf '\033[31m%s\033[0m\n' "$*" >&2; }
-ok()  { printf '\033[32m%s\033[0m\n' "$*"; }
 
 OUTPUT="$(mktemp)"
 cleanup() {

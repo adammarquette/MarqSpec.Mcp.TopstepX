@@ -363,7 +363,7 @@ MigrationBackup/
 FodyWeavers.xsd
 
 # =============================================================================
-# Secrets (R-9.3)
+# Secrets (R-7.1)
 # =============================================================================
 # This is a PUBLIC repository, and its history already contains a rotated real
 # credential (85cb240). Runtime app configuration is exactly the file a developer

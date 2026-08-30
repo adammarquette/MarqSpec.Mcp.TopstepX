@@ -30,8 +30,12 @@ namespace MarqSpec.Mcp.TopstepX.MarketData;
 /// rare: <see cref="IndicatorProjector"/>'s reconcile is <i>unscoped by bucket range</i>, so a whole-series
 /// sweep is a whole-series <b>write set</b>. Two fills whose fetched ranges share no bucket still delete the
 /// same unjustified rows. <see cref="BarCacheService"/>'s coverage ledger reaches it with no bars at all: two
-/// callers asking for the same range the venue answers empty both <i>refresh</i> one row. Reasoning about the
-/// ranges a fill fetched says nothing about the rows it writes.
+/// callers asking for the same range the venue answers empty both <i>write</i> one row — and since gh#122 that
+/// is one statement whether the row was already there or not. Reasoning about the
+/// ranges a fill fetched says nothing about the rows it writes. And since gh#133 the projection's
+/// <i>value</i> write is one statement too, so a pass whose snapshot missed another pass's rows meets a
+/// <c>40001</c> there rather than a <c>23505</c> — the same trade the bar write and the ledger made, and the
+/// reason the retry below is what absorbs all three.
 /// </para>
 /// <para>
 /// <b>So it retries — once, and the bound is the argument.</b> A retry here is not a gamble. In every shape of
@@ -40,6 +44,18 @@ namespace MarqSpec.Mcp.TopstepX.MarketData;
 /// now stored. The second attempt therefore runs over a strictly better-informed store and normally succeeds.
 /// A <b>second</b> collision is not that — it is sustained contention on one series, which is worth reporting
 /// rather than looping on, so it becomes a <see cref="StoreContentionException"/> naming the condition.
+/// </para>
+/// <para>
+/// <b>And not a lock either — decided, not deferred.</b> Snapshot isolation permits the write skew this
+/// retry cannot reach: two fills of <i>adjacent</i> ranges share no bar, no coverage row and no indicator key,
+/// so there is nothing for the store to refuse and the later one seeds its projection from the first bar its
+/// own snapshot can see. Serialising fills per series would need a session-level advisory lock taken
+/// <i>before</i> <c>BeginTransaction</c>, and that is not taken here: a session lock was observed
+/// still holding its key after the connection that took it had gone back to Npgsql's pool, released only when
+/// unrelated traffic happened to reuse that connection. The values the skew leaves are stale rather than lost
+/// — a projection is reproducible from the bars, so the next pass corrects them — and a wedged lock is not
+/// recomputable from anything. Reasoning, measurements and the alternatives:
+/// <c>documentation/adr/0012-fills-are-not-serialised.md</c> (gh#104), requirement <c>R-2.11</c>.
 /// </para>
 /// <para>
 /// <b>The venue is never called from inside.</b> Callers fetch first and hand in what they already hold, so a

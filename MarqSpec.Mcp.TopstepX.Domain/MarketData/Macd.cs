@@ -123,7 +123,12 @@ public sealed class MacdSignalIndicator(int slowPeriod) : IIndicator
     public int Period { get; } = slowPeriod;
 
     /// <inheritdoc />
-    public int WarmupBars => Period + Macd.SignalPeriod;
+    /// <remarks>
+    /// The line first produces a value after <see cref="Period"/> bars; the signal is a
+    /// <see cref="Macd.SignalPeriod"/> EMA of that line. The two windows share a bar, so the
+    /// minimum is their sum minus one.
+    /// </remarks>
+    public int WarmupBars => Period + Macd.SignalPeriod - 1;
 
     /// <inheritdoc />
     public IReadOnlyList<decimal?> Compute(IReadOnlyList<Bar> bars) => Macd.Signal(bars, Period);
@@ -140,7 +145,12 @@ public sealed class MacdHistogramIndicator(int slowPeriod) : IIndicator
     public int Period { get; } = slowPeriod;
 
     /// <inheritdoc />
-    public int WarmupBars => Period + Macd.SignalPeriod;
+    /// <remarks>
+    /// The histogram is warm on the same bar as the signal, so the minimum is the same
+    /// <c>Period + SignalPeriod - 1</c> — not the sum of the two periods, which double-counts
+    /// the bar they share.
+    /// </remarks>
+    public int WarmupBars => Period + Macd.SignalPeriod - 1;
 
     /// <inheritdoc />
     public IReadOnlyList<decimal?> Compute(IReadOnlyList<Bar> bars) => Macd.Histogram(bars, Period);

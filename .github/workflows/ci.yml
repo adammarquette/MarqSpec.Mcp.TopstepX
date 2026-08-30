@@ -43,6 +43,14 @@ permissions:
 
 jobs:
   # Needs no SDK, so a docs-only PR fails fast instead of waiting on a build.
+  #
+  # ONE STATUS CONTEXT, SIX STEPS, so a red `docs` is not necessarily a broken link -- read which step
+  # failed. `docs` is still exactly one required context; nothing was added to any ruleset.
+  #
+  # They ride in the one job on purpose: `docs` is already required on all three rungs, so these became
+  # enforcing by wiring rather than by a settings change. Same argument as `commit-hygiene`'s merge-commit
+  # refusal (gh#146). Splitting them into jobs of their own would mean adding five required contexts by hand,
+  # and a context nobody adds is a check that only ever reports (gh#26).
   docs:
     name: docs
     runs-on: ubuntu-latest
@@ -51,6 +59,54 @@ jobs:
 
       - name: Check documentation links
         run: ./scripts/check-doc-links.sh
+
+      # gh#293. The `-u` on this gate's file-list sort is load-bearing under a conflicted `--cached` index
+      # (same defect as gh#240) and a no-op on a clean one, which is exactly when nothing would redden if
+      # it were tidied away. This runs the gate against a fixture whose index genuinely conflicts and
+      # requires the file count to stay honest — the mutation is the flag itself. Ordered after the
+      # real-tree run so a genuinely broken link is reported first.
+      - name: Prove the doc-link gate can still fail
+        run: ./scripts/check-doc-links-selftest.sh
+
+      # gh#160. documentation/README.md prices every document it routes to so a reader can see the cost before
+      # paying it, and the column had drifted until it INVERTED its own advice -- AGENT-MEMORY.md priced at
+      # 0.8K beside "cheap; just read it" while measuring 6.8K. The drift is produced by obeying another rule
+      # ("append, don't overwrite"), so it recurs by construction and cannot be left to memory.
+      - name: Check the routing map's size column
+        run: ./scripts/check-doc-sizes.sh
+
+      # The gate above parses a table it does not own, which is the shape of all five guards in this repo that
+      # could not fire (gh#43, gh#98, gh#114, gh#126, gh#164). This runs it against fixtures whose faults are
+      # known and requires it to reject each BY NAME, and to accept a sound one -- so "the size column is
+      # clean" keeps meaning something. Ordered after it so a genuinely drifted row is reported first.
+      - name: Prove the size gate can still fail
+        run: ./scripts/check-doc-sizes-selftest.sh
+
+      # gh#182. `R-#` is half this repo's symbol table (AGENTS.md), and check-doc-links.sh proves only that a
+      # relative LINK resolves -- nothing proved an ID did. gh#172 found two citations naming another
+      # repository's PRD entirely, sitting in Directory.Build.props since the scaffolding commit and missed by
+      # every review and by the gh#151 sweep that walked that same file; two more of the same class were still
+      # in the tree. Two by hand, twice, is the argument for a gate rather than a third sweep.
+      #
+      # RUNS THE WHOLE TREE, not just documentation/: the four found so far were in a .props file, a
+      # .gitignore banner and this workflow's own coverage comment.
+      - name: Check requirement ids resolve
+        run: ./scripts/check-requirement-ids.sh
+
+      # Same argument as the size gate's self-test above, and the same shape: a text-matching gate is one
+      # demoted heading away from resolving zero citations and printing a green line saying so. This runs it
+      # against fixtures whose faults are known and requires it to reject each BY NAME, BY SYMBOL AND BY
+      # LOCATION, and to accept the awkward correct shapes this repository really contains -- ADR numbers,
+      # which contain a citation-shaped substring, and the literal `R-#` placeholder, which was on thirteen
+      # lines across ten files on `develop` at 8a2302d.
+      #
+      # MOST OF ITS CASES EXIST BECAUSE A DECISION THE GATE MAKES WAS HELD BY NOTHING, found over nine review
+      # rounds. It carries a DECISION LEDGER for that reason: every decision, against the case that kills it,
+      # graded mutated / exercised / unreachable. AUDIT THAT TABLE AGAINST THE SCRIPT, do not re-read it --
+      # that is where the later cases came from, one row was pinned only by every fixture happening to share
+      # a shape, and the `unreachable` rows have been the least reliable in the table.
+      - name: Prove the requirement-id gate can still fail
+        run: ./scripts/check-requirement-ids-selftest.sh
 
   # ADR-0002's enforcement. Its own job rather than a step inside build-test, so a failure reads as "the
   # read-only boundary was crossed" rather than as a build break -- and so it is a required check in its own
@@ -83,6 +139,51 @@ jobs:
 
       - name: Bar paging takes a rate-limit slot per page
         run: ./scripts/check-paced-paging.sh
+
+  # gh#108. release.yml's first job is called "Await release approval" and declares `environment: production`.
+  # That environment DID NOT EXIST, and GitHub auto-creates a referenced environment at run time WITH NO
+  # PROTECTION RULES -- so the job would have awaited nothing and v0.1.0 would have reached public GHCR
+  # unattended. Nothing in the repository could have said so: the workflow is version-controlled, the
+  # environment is repository SETTINGS, and no pull request, review or check can see settings.
+  #
+  # WHY IT RUNS HERE and not only in release.yml. A release is the one job that cannot be cheaply repeated --
+  # it runs on a tag already cut, against a GitHub release already published. Finding out there means finding
+  # out too late to avoid the cleanup. This costs one API call on every pull request and fails BEFORE a
+  # release is ever cut. release.yml carries the same check as well, in a job `gate` depends on, for the
+  # window between the last merge and the tag; that one is deliberately NOT gated by `production` itself,
+  # because a check on the environment that only runs after the environment has already let it through is
+  # circular.
+  #
+  # This context is NOT in the three rulesets, so it reports rather than blocks -- and it does not need to
+  # block, because the release.yml copy stops the publish by workflow topology rather than by a settings
+  # string. Making it required is a ruleset edit that must land AFTER this job exists on `develop`: a required
+  # context that no run reports leaves every open pull request BLOCKED with an empty check list and nothing
+  # red to point at (measured on a throwaway repo, gh#114).
+  #
+  # Needs no SDK and no credentials beyond the default token: gh#108 measured that GITHUB_TOKEN reads the
+  # environments API at `contents: read`, which is what this workflow already grants. It is deliberately not
+  # given more -- a check that could WRITE the setting it is checking is not a check.
+  release-gate:
+    name: release-gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: The release approval gate exists and requires a human
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: ./scripts/check-release-gate.sh
+
+      # THE GATE ABOVE HAS TO BE ABLE TO FAIL. It is a shell script full of API calls and string matching, so
+      # one loosened match -- or a `|| true` left behind after a debugging session -- turns it into a step
+      # that passes on anything while the run page stays green, which is gh#108 itself one layer down. This
+      # runs the real script against fixtures whose faults are known and requires it to reject each one, and
+      # it matches on the words naming each fault rather than on exit status: exit 1 is also what "gh is
+      # required" produces, so a self-test satisfied by status alone would go green on a runner with no gh.
+      - name: Self-test — that check still rejects an inert gate
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: ./scripts/check-release-gate-selftest.sh
 
   build-test:
     name: build & unit tests
@@ -172,11 +273,17 @@ jobs:
   # Coverage was collected and uploaded before this, and never evaluated. An artifact nobody reads is a report,
   # not a gate.
   #
-  # The floor is 43% because the unit suite MEASURES 45.7% line / 46.5% branch today. The PRD asks for 95%/90%
-  # (R-11.1) and this is nowhere near it — but a floor set at the aspiration fails every build from the first
-  # one, and a gate that is red on arrival gets disabled rather than satisfied. This one is set just under
+  # The floor is 43% because the unit suite MEASURES 45.7% line / 46.5% branch today. It is set just under
   # reality so it catches a regression now, and is meant to be RAISED as coverage improves. Never lower it to
   # accommodate a drop; that converts the gate back into a report.
+  #
+  # NOTHING IN THIS REPOSITORY ASKS FOR MORE THAN THAT, and this comment used to say otherwise. It claimed
+  # the PRD asked for 95%/90% and cited a requirement id for it; the id was MarqSpec.Client.ProjectX's and
+  # resolved against nothing here (gh#182), by the same route as the inherited `43` the next comment block
+  # records. The citation is gone rather than replaced: documentation/prd.md's Scope paragraph puts build
+  # hygiene, the pipeline and the release path OUTSIDE the numbered requirements deliberately, so there is no
+  # id here to point at and adding one would contradict it. A floor set at an aspiration fails every build
+  # from the first one and gets disabled rather than satisfied, which is reason enough on its own.
   coverage:
     name: coverage
     needs: build-test
@@ -240,7 +347,17 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
-          # MinVer reads the tag, and a shallow clone yields 0.0.0-alpha.0 SILENTLY rather than failing.
+          # NOT FOR MINVER, and this comment used to say it was (gh#176). Nothing is built on the runner
+          # here: the context goes to buildx and the assembly is produced inside the container, which never
+          # sees .git because .dockerignore excludes it. Read off the published image rather than off a build
+          # log -- MarqSpec.Mcp.TopstepX.dll inside ghcr.io/adammarquette/marqspec.mcp.topstepx:0.1.0 carries
+          # AssemblyInformationalVersion 0.0.0-alpha.0, at this very depth. The image TAG is the version
+          # (ADR-0001's decision log).
+          #
+          # KEPT ANYWAY, deliberately. This job exists to build by the mechanism the release uses (gh#54),
+          # the checkout is an input to that build, and release.yml's `publish` declares the same depth --
+          # so trimming one of the two would introduce the very divergence this job exists to remove, for no
+          # gain. Correct the claim, not the setting.
           fetch-depth: 0
 
       # DECLARED, not inherited from the runner image (gh#54). Buildx is preinstalled on GitHub-hosted
@@ -258,8 +375,24 @@ jobs:
       #
       # Nothing is pushed here. Building against the real reference is enough: buildx validates the tag
       # before it starts, so an invalid one fails a pull request instead of a release.
+      #
+      # ASSIGNED ON ITS OWN LINE, THEN CHECKED (gh#126). This was one line --
+      # `echo "IMAGE=$(./scripts/image-reference.sh)" >> "$GITHUB_ENV"` -- and a command substitution used as
+      # an ARGUMENT has its exit status DISCARDED: `echo` succeeded, the step exited 0 and went green, and
+      # `IMAGE` was exported EMPTY. Measured under `bash -e`, which is the default shell for a `run:` step:
+      # `echo "IMAGE=$(false)"` prints `IMAGE=` and exits 0. A bare assignment does not -- it carries the
+      # substitution's status (POSIX 2.9.1) -- which is the whole difference between this step and the
+      # scripts' own `${1:-...}` default, and why gh#126 found the real instance HERE rather than there.
+      #
+      # What used to follow a silent empty resolution: `tags: :ci` on the build, `:ci` handed to the smoke
+      # step as an explicit argument, and the first complaint coming from buildx about a Dockerfile that was
+      # fine. Red eventually, and pointed at the wrong file. The same shape sits in release.yml, where the
+      # first complaint would land after the `production` approval on an already-cut tag.
       - name: Resolve the image reference
-        run: echo "IMAGE=$(./scripts/image-reference.sh)" >> "$GITHUB_ENV"
+        run: |
+          ref="$(./scripts/image-reference.sh)"
+          [ -n "$ref" ] || { echo "::error::image-reference.sh exited 0 without naming a reference"; exit 1; }
+          echo "IMAGE=$ref" >> "$GITHUB_ENV"
 
       - name: Set up Buildx
         uses: docker/setup-buildx-action@v4

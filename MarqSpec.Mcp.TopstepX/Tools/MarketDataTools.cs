@@ -1,10 +1,13 @@
 using System.ComponentModel;
+using MarqSpec.Mcp.TopstepX.Configuration;
 using MarqSpec.Mcp.TopstepX.Data;
 using MarqSpec.Mcp.TopstepX.Domain;
 using MarqSpec.Mcp.TopstepX.Domain.MarketData;
 using MarqSpec.Mcp.TopstepX.MarketData;
 using MarqSpec.Mcp.TopstepX.Venue;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Options;
 using ModelContextProtocol;
 using ModelContextProtocol.Server;
 
@@ -19,19 +22,44 @@ public sealed class MarketDataTools(
     TopstepXDbContext database,
     InstrumentRegistry registry,
     IndicatorCatalog catalog,
+    IndicatorCacheService indicators,
+    LevelMethodCatalog levelMethods,
     IMarketDataGateway gateway,
     ToolGuards guards,
     StoreAvailabilityHolder store,
-    TimeProvider clock)
+    TimeProvider clock,
+    IOptions<KeyLevelDetectionOptions> detection,
+    VolumeProfileService volumeProfiles,
+    TapeAvailabilityHolder? tape = null,
+    TapeVolumeFrontService? volumeFront = null,
+    FootprintCacheService? footprints = null)
 {
     private readonly BarCacheService _cache = cache;
     private readonly TopstepXDbContext _database = database;
     private readonly InstrumentRegistry _registry = registry;
     private readonly IndicatorCatalog _catalog = catalog;
+    private readonly IndicatorCacheService _indicators = indicators;
+    private readonly LevelMethodCatalog _levelMethods = levelMethods;
     private readonly IMarketDataGateway _gateway = gateway;
     private readonly ToolGuards _guards = guards;
     private readonly StoreAvailabilityHolder _store = store;
     private readonly TimeProvider _clock = clock;
+    private readonly VolumeProfileService _volumeProfiles = volumeProfiles;
+    private readonly TapeAvailabilityHolder _tape = tape ?? new();
+    private readonly TapeVolumeFrontService _volumeFront = volumeFront
+        ?? new TapeVolumeFrontService(database, gateway, levelMethods.Calendar);
+    private readonly FootprintCacheService _footprints = footprints
+        ?? new FootprintCacheService(
+            database,
+            new FootprintProjector(database, NullLogger<FootprintProjector>.Instance),
+            clock,
+            NullLogger<FootprintCacheService>.Instance);
+
+    // The detection defaults, not the detection options: three of the seven fields are overridden per call, and
+    // the merge happens in ResolveDetection. The catalogue holds no copy of these -- ILevelMethod.Detect
+    // takes them per call precisely because levels are computed on read and nothing stores them (ADR-0013),
+    // so the tool boundary is where "the caller did not say" becomes "the operator's configured value".
+    private readonly KeyLevelDetectionOptions _detection = detection.Value;
 
     /// <summary>How much history key-level detection covers when the caller does not say.</summary>
     /// <remarks>
@@ -40,6 +68,9 @@ public sealed class MarketDataTools(
     /// the description was rejected before its call reached any code (gh#70).
     /// </remarks>
     public const int DefaultLookbackBars = 500;
+
+    /// <summary>The level method <c>get_key_levels</c> detects with when the caller does not name one.</summary>
+    private const string DefaultLevelMethodName = "swing";
 
     /// <summary>Reads OHLCV bars for a window.</summary>
     /// <param name="symbol">The instrument symbol.</param>
@@ -52,12 +83,15 @@ public sealed class MarketDataTools(
     [Description(
         "Reads OHLCV bars for an instrument over a time window. Served from a local cache; the vendor is "
         + "called only for buckets genuinely missing, where 'genuinely' excludes weekends, the daily "
-        + "maintenance window and holidays. The response reports fetchedBuckets, so a caller can see whether "
-        + "the answer cost a vendor round trip. Never returns a truncated series: an over-cap window is "
-        + "refused with the real count. The response also carries `contracts`: bars are keyed by the symbol, "
-        + "so a window spanning a quarterly roll contains TWO contracts. `contracts.span` is SingleContract, "
-        + "SpansRoll, or Unknown — Unknown means the provenance was never recorded, NOT that there was no "
-        + "roll. Adjacent quarters do not trade at the same price; do not read a series across a roll as one.")]
+        + "maintenance window and holidays. The response reports `venueRequests` and `fetchedBuckets`, and "
+        + "only the first is evidence of a vendor round trip: `venueRequests == 0` is the exact test for "
+        + "an answer served entirely from the store, while `fetchedBuckets` counts how much the answer "
+        + "changed the store and can read zero even after a genuine fetch. Never returns a truncated "
+        + "series: an over-cap window is refused with the real count. The response also carries "
+        + "`contracts`: bars are keyed by the symbol, so a window spanning a quarterly roll contains TWO "
+        + "contracts. `contracts.span` is SingleContract, SpansRoll, or Unknown — Unknown means the "
+        + "provenance was never recorded, NOT that there was no roll. Adjacent quarters do not trade at "
+        + "the same price; do not read a series across a roll as one.")]
     public async Task<ToolPayloads.BarSeries> GetBars(
         [Description("The instrument symbol, e.g. ES.")] string symbol,
         [Description("The bar size in minutes, e.g. 1, 5, 15, 60.")] int resolutionMinutes,
@@ -139,7 +173,15 @@ public sealed class MarketDataTools(
     /// <returns>The values.</returns>
     [McpServerTool(ReadOnly = true, Idempotent = true, Title = "Get indicators")]
     [Description(
-        "Reads a pre-computed indicator series. Known indicators: atr, rsi, sma, ema, macd, macd-signal, "
+        "Reads an indicator series from a local cache. The VENDOR IS NEVER CALLED: every value is computed "
+        + "from bars this server already holds. A series the cache has no values for — after an indicator is "
+        + "added or a period is changed — is computed and stored by the first read that asks for it, which "
+        + "for a year of 5-minute bars costs about eight seconds once. An HTTP process with "
+        + "MarketData__WarmIndicators on starts that replay at boot (stdio never does). A read that arrives "
+        + "before warmup finishes that series still pays the eight seconds, or can contend with it; once "
+        + "that series is written, the first read is a probe. "
+        + "Known "
+        + "indicators: atr, rsi, sma, ema, macd, macd-signal, "
         + "macd-histogram, vwap, bb-upper, bb-middle, bb-lower. An unknown name is an error listing these, "
         + "because a typo that returned no data would read as 'no signal'. Buckets where the indicator could "
         + "not yet measure are ABSENT rather than zero. Values are never smoothed across a contract roll, so "
@@ -156,6 +198,11 @@ public sealed class MarketDataTools(
         InstrumentId instrument = Resolve(symbol);
         BarRange window = _guards.ValidateWindow(fromUtc, toUtc, resolutionMinutes);
         IIndicator resolved = ResolveIndicator(indicator);
+
+        // Cache-aside, the way bars already are: a value the catalogue computes and the store does not hold
+        // is projected from the bars already cached before the read runs. No vendor traffic either way --
+        // the bars are local (gh#246). A warm series pays two aggregates and nothing else.
+        await EnsureProjectedAsync(instrument, resolutionMinutes, cancellationToken).ConfigureAwait(false);
 
         List<ToolPayloads.IndicatorPoint> values = await _database.IndicatorValues
             .Where(v => v.Venue == _gateway.VenueId
@@ -189,7 +236,11 @@ public sealed class MarketDataTools(
     /// <returns>The value, or a null value meaning cannot measure.</returns>
     [McpServerTool(ReadOnly = true, Idempotent = true, Title = "Get indicator as of")]
     [Description(
-        "Reads one indicator value as of a moment. Returns the value at or BEFORE that moment, never after — "
+        "Reads one indicator value as of a moment, from the same local cache get_indicators reads, and on "
+        + "the same terms: no vendor call, and a series with no stored values is computed by the first read "
+        + "that needs it — or at HTTP startup when MarketData__WarmIndicators is on, once warmup has "
+        + "finished that series. A read before then is still the first-read cost. Returns the value at or "
+        + "BEFORE that moment, never after — "
         + "a later value is information the market did not have. Cannot-measure DROPS the `value` KEY instead "
         + "of sending null, so the whole reading arrives as `{}`: test whether the key is THERE, never "
         + "whether it equals null. An ABSENT value means CANNOT MEASURE, not zero and not neutral — refuse "
@@ -206,6 +257,11 @@ public sealed class MarketDataTools(
         ToolGuards.ValidateResolution(resolutionMinutes);
         IIndicator resolved = ResolveIndicator(indicator);
         DateTimeOffset asOf = asOfUtc.ToUniversalTime();
+
+        // The same cache-aside trigger get_indicators is on (gh#246). This is the read get_market_snapshot
+        // composes, eleven times per resolution, so it is the one that would have gone on reporting
+        // cannot-measure over bars that measure perfectly well.
+        await EnsureProjectedAsync(instrument, resolutionMinutes, cancellationToken).ConfigureAwait(false);
 
         var row = await _database.IndicatorValues
             .Where(v => v.Venue == _gateway.VenueId
@@ -243,8 +299,15 @@ public sealed class MarketDataTools(
     /// <param name="symbol">The instrument symbol.</param>
     /// <param name="resolutionMinutes">The timeframe in minutes.</param>
     /// <param name="lookbackBars">How much history to detect over.</param>
+    /// <param name="pivotSource">Which price on a bar a pivot is measured from, or null for the configured one.</param>
+    /// <param name="pivotLookback">How many bars to its left a pivot must dominate, or null for the configured one.</param>
+    /// <param name="pivotRightLookback">How many bars to its right a pivot must dominate, or null for the configured one.</param>
+    /// <param name="methods">
+    /// The level methods to run, comma-separated, or null for <c>swing</c>. Unknown names are an error
+    /// listing the known ones.
+    /// </param>
     /// <param name="cancellationToken">The caller's cancellation token.</param>
-    /// <returns>The levels, ordered by price.</returns>
+    /// <returns>The levels, ordered by price, plus the confluence score over the requested methods.</returns>
     [McpServerTool(ReadOnly = true, Idempotent = true, Title = "Get key levels")]
     [Description(
         "Detects support and resistance as ZONES rather than lines, sized in ATR multiples so a zone is "
@@ -254,17 +317,82 @@ public sealed class MarketDataTools(
         + "confined to the contract in front: if the lookback spans a quarterly roll, `detectedOverBars` is "
         + "smaller than the lookback asked for, because a level from the expiring contract sits at a price "
         + "the current one has never traded. Read `detectedOverBars` — fewer bars behind a level is less "
-        + "weight for it.")]
+        + "weight for it. Overlapping zones MERGE whichever side of price they formed on, so one reported "
+        + "zone can be a support and a resistance that ran into each other; `touchCount` is how many pivots "
+        + "went into it. `pivotSource`, `pivotLookback` and `pivotRightLookback` tune the detection for one "
+        + "call; OMIT them and this server's configured defaults apply. They carry no default of their own, "
+        + "because the default is an operator setting rather than a constant — omitting one asks for the "
+        + "configured value, it does not name a particular one. Zone width, the significance floor and the "
+        + "two caps are operator settings only, so every level this server reports is sized, filtered and "
+        + "capped alike and two of them can be compared. Each method returns at most `detection.maxLevels` "
+        + "levels, the most significant ones; `methods[i].levels.length == detection.maxLevels` is the "
+        + "per-method signal that that method was cut, and `capped` is true when any requested method "
+        + "stopped there. The top-level `levels` array is the union, ordered by price — its length is "
+        + "not a completeness signal. Levels below a method's cap are absent rather than folded into "
+        + "the ones you can see. "
+        + "The response reports the detection it actually ran under as `detection`, so an empty `levels` can "
+        + "be told from a market with no structure — read it with `detectedOverBars`. "
+        + "`methods` selects which detectors run — `swing`, `session`, `pivot-classic`, `pivot-fibonacci`, "
+        + "`pivot-camarilla`, `pivot-woodie`, `pivot-demark`, `volume-poc`, `volume-vah`, `volume-val`, "
+        + "`volume-traded` — comma-separated; Omit for swing. The "
+        + "response names each method's zones and a family-aware confluence score, with the tolerance "
+        + "it was computed against. Methods that share a family share one budget. A requested method "
+        + "that contributed nothing is named, with why.")]
     public async Task<ToolPayloads.LevelSet> GetKeyLevels(
         [Description("The instrument symbol, e.g. ES.")] string symbol,
         [Description("The timeframe in minutes.")] int resolutionMinutes,
         [Description("How many bars of history to detect over. Omit for 500.")]
         int lookbackBars = DefaultLookbackBars,
+        [Description(
+            "Which price on a bar a pivot is measured from: HeikinAshiBody, Body or HighLow. Omit to use "
+            + "this server's configured source. HeikinAshiBody smooths single-bar noise into structure and "
+            + "is the shipped default. Body reads open and close only, HighLow reads the raw wicks. NOTE: on "
+            + "a continuous intraday series, where a bar opens at the previous close, a body high ties with "
+            + "its neighbour's on every bar and Body can find NO pivots at all — an empty level set there is "
+            + "a property of the source, not a market without structure. An unknown name is an error listing "
+            + "the three.")]
+        string? pivotSource = null,
+        [Description(
+            "How many bars to its LEFT a pivot must dominate; larger means fewer, more structural levels. "
+            + "Omit to use this server's configured lookback. The window is asymmetric: detection needs "
+            + "this + `pivotRightLookback` + 1 bars to find even one pivot — and the window it runs over "
+            + "is whatever the store holds, cut back to the contract in front, which can be far less than "
+            + "`lookbackBars` asked for. When that happens the answer is an EMPTY level set, not an error: "
+            + "compare `detection.pivotLookback` against `detectedOverBars` to tell that from a market with "
+            + "no structure.")]
+        int? pivotLookback = null,
+        [Description(
+            "How many bars to its RIGHT a pivot must dominate — the confirmation window. Omit to use this "
+            + "server's configured value. It is shorter than the left one by default because the two sides "
+            + "answer different questions: the left asks how much history the level stood clear of, the "
+            + "right only has to show the extreme held. It is also the lag: the last this-many bars of the "
+            + "series can never produce a pivot, so the newest structure is always missing from the answer. "
+            +             "There is no zero — a pivot judged only by the bars before it repaints as soon as the next "
+            + "one arrives.")]
+        int? pivotRightLookback = null,
+        [Description(
+            "Which level methods to run, comma-separated: swing, session, pivot-classic, pivot-fibonacci, "
+            + "pivot-camarilla, pivot-woodie, pivot-demark, volume-poc, volume-vah, volume-val, "
+            + "volume-traded. Omit for swing. An unknown name is an error "
+            + "listing the known ones — never an empty level set. Session and every pivot-* method refuse "
+            + "when a bucket of this resolutionMinutes overhangs a session close. Volume-* methods consume "
+            + "the tape-derived profile for the window; they never spread a bar's volume across its range.")]
+        string? methods = null,
         CancellationToken cancellationToken = default)
     {
         InstrumentId instrument = Resolve(symbol);
         ToolGuards.ValidateResolution(resolutionMinutes);
         int wanted = _guards.ValidateCount(lookbackBars);
+
+        // Before the read, not after it. Every check below is a fact about the REQUEST, and a store with no
+        // bars returns early -- so validating after the read is how an Unknown source arriving from
+        // configuration would be answered with an empty level set instead of a refusal.
+        KeyLevelOptions detection = ResolveDetection(pivotSource, pivotLookback, pivotRightLookback)
+            with
+        {
+            ResolutionMinutes = resolutionMinutes,
+        };
+        IReadOnlyList<ILevelMethod> requested = ResolveMethods(methods);
 
         List<Bar> bars = await _database.Bars
             .Where(b => b.Venue == _gateway.VenueId
@@ -278,8 +406,14 @@ public sealed class MarketDataTools(
 
         if (bars.Count == 0)
         {
-            return new ToolPayloads.LevelSet(
-                [], new ToolPayloads.ContractCoverage(ToolPayloads.ContractSpan.Unknown, []), 0);
+            return AssembleLevelSet(
+                [],
+                new ToolPayloads.ContractCoverage(ToolPayloads.ContractSpan.Unknown, []),
+                0,
+                detection,
+                requested,
+                overhang: false,
+                scale: []);
         }
 
         // Reversed FIRST, then described. Coverage over a descending series would give every segment a
@@ -300,15 +434,547 @@ public sealed class MarketDataTools(
         IIndicator atr = _catalog.Resolve("atr");
         IReadOnlyList<decimal?> scale = atr.Compute(detectable);
 
-        KeyLevelOptions options = new();
-        IReadOnlyList<KeyLevelZone> zones = KeyLevels.Detect(detectable, scale, options);
+        bool overhang = SessionBucketGuard.OverhangsClose(
+            resolutionMinutes, _levelMethods.Calendar, detectable);
+
+        VolumeProfile? profile = null;
+        string? volumeAbsent = null;
+        if (detectable.Count > 0 && requested.Any(static m => m.Family == VolumeLevels.FamilyName))
+        {
+            try
+            {
+                DateTimeOffset windowStart = detectable[0].OpenTime;
+                DateTimeOffset windowEnd = detectable[^1].OpenTime.AddMinutes(resolutionMinutes);
+                VolumeProfileRead read = await _volumeProfiles
+                    .ReadAsync(
+                        _gateway.VenueId,
+                        instrument,
+                        resolutionMinutes,
+                        windowStart,
+                        windowEnd,
+                        cancellationToken)
+                    .ConfigureAwait(false);
+
+                // Narrowed is gh#221's confinement signal. Binding the confined profile would
+                // report a POC of the listened subset as a POC of the key-levels window —
+                // detectedOverBars still names the full bar series.
+                if (read.Window.Narrowed)
+                {
+                    volumeAbsent = VolumeLevels.NarrowedReason;
+                }
+                else
+                {
+                    profile = read.Profile;
+                }
+            }
+            catch (InvalidOperationException)
+            {
+                volumeAbsent = VolumeLevels.NoTapeReason;
+            }
+            catch (ArgumentException)
+            {
+                volumeAbsent = VolumeLevels.NoTapeReason;
+            }
+        }
+
+        using VolumeProfileScope? bind = profile is { } bound ? new VolumeProfileScope(bound) : null;
+        return AssembleLevelSet(
+            detectable, coverage, detectable.Count, detection, requested, overhang, scale, volumeAbsent);
+    }
+
+    /// <summary>
+    /// Runs the requested methods, scores their agreement, and builds the payload.
+    /// </summary>
+    private ToolPayloads.LevelSet AssembleLevelSet(
+        IReadOnlyList<Bar> detectable,
+        ToolPayloads.ContractCoverage coverage,
+        int detectedOverBars,
+        KeyLevelOptions detection,
+        IReadOnlyList<ILevelMethod> requested,
+        bool overhang,
+        IReadOnlyList<decimal?> scale,
+        string? volumeAbsent = null)
+    {
+        List<ConfluenceMethodInput> inputs = [];
+        List<ToolPayloads.LevelInfo> combined = [];
+        List<ToolPayloads.LevelMethodResult> methodResults = [];
+        int timeframe = detection.ResolutionMinutes;
+
+        foreach (ILevelMethod method in requested)
+        {
+            decimal weight = _detection.WeightOf(method.Name);
+            bool anchored = method.Name == "session" || method.Family == PivotLevels.FamilyName;
+
+            if (detectable.Count == 0)
+            {
+                inputs.Add(new ConfluenceMethodInput(method.Name, method.Family, [], "no data"));
+                methodResults.Add(new ToolPayloads.LevelMethodResult(method.Name, method.Family, weight, [], "no data"));
+                continue;
+            }
+
+            if (method.Family == VolumeLevels.FamilyName && volumeAbsent is not null)
+            {
+                inputs.Add(new ConfluenceMethodInput(method.Name, method.Family, [], volumeAbsent));
+                methodResults.Add(new ToolPayloads.LevelMethodResult(
+                    method.Name, method.Family, weight, [], volumeAbsent));
+                continue;
+            }
+
+            if (anchored && overhang)
+            {
+                inputs.Add(new ConfluenceMethodInput(
+                    method.Name, method.Family, [], SessionBucketGuard.RefusalReason));
+                methodResults.Add(new ToolPayloads.LevelMethodResult(
+                    method.Name, method.Family, weight, [], SessionBucketGuard.RefusalReason));
+                continue;
+            }
+
+            IReadOnlyList<KeyLevelZone> zones = method.Detect(detectable, scale, detection);
+            inputs.Add(new ConfluenceMethodInput(method.Name, method.Family, zones));
+
+            List<ToolPayloads.LevelInfo> infos = [];
+            foreach (KeyLevelZone zone in zones)
+            {
+                ToolPayloads.LevelInfo info = new(
+                    timeframe, zone.Bottom, zone.Top, zone.Midpoint, zone.Kind, zone.Significance,
+                    zone.TouchCount, zone.FormedAtBucket, method.Name, zone.Period);
+                infos.Add(info);
+                combined.Add(info);
+            }
+
+            methodResults.Add(new ToolPayloads.LevelMethodResult(
+                method.Name,
+                method.Family,
+                weight,
+                infos,
+                zones.Count == 0 ? ConfluenceScoring.NoLevelsReason : null,
+                Capped: zones.Count == detection.MaxLevels));
+        }
+
+        combined.Sort(static (left, right) =>
+        {
+            int byPrice = left.Midpoint.CompareTo(right.Midpoint);
+            if (byPrice != 0)
+            {
+                return byPrice;
+            }
+
+            int byBottom = left.Bottom.CompareTo(right.Bottom);
+            return byBottom != 0
+                ? byBottom
+                : string.CompareOrdinal(left.Method, right.Method);
+        });
+
+        ConfluenceResult scored = ConfluenceScoring.Score(
+            inputs, _detection.Weights, detection.ZoneAtrMultiple);
 
         return new ToolPayloads.LevelSet(
-            [.. zones.Select(z => new ToolPayloads.LevelInfo(
-                resolutionMinutes, z.Bottom, z.Top, z.Midpoint, z.Kind, z.Significance, z.TouchCount,
-                z.FormedAtBucket))],
+            combined,
             coverage,
-            detectable.Count);
+            detectedOverBars,
+            Reported(detection),
+            methodResults,
+            new ToolPayloads.ConfluenceScore(
+                scored.Score,
+                scored.Tolerance,
+                [.. scored.Constituents.Select(c =>
+                    new ToolPayloads.ConfluenceConstituentInfo(c.Method, c.Family, c.Weight, c.ZoneCount))],
+                [.. scored.Absent.Select(a => new ToolPayloads.ConfluenceAbsenceInfo(a.Method, a.Reason))]),
+            Capped: methodResults.Exists(static m => m.Capped));
+    }
+
+    /// <summary>Reads stored footprint cells for a covered tape window.</summary>
+    /// <param name="symbol">The instrument symbol.</param>
+    /// <param name="resolutionMinutes">The bar size the cells were projected at.</param>
+    /// <param name="fromUtc">The window start, inclusive.</param>
+    /// <param name="toUtc">The window end, exclusive.</param>
+    /// <param name="cancellationToken">The caller's cancellation token.</param>
+    /// <returns>The cells under the ledger window that was actually covered.</returns>
+    [McpServerTool(ReadOnly = true, Idempotent = true, Title = "Get footprint")]
+    [Description(
+        "Reads buy/sell volume by price by bar from stored footprint cells. The tape only goes forward: "
+        + "there is no historical footprint for a period before recording began — not slow, not expensive, "
+        + "ABSENT. A window before recording began is refused and names the earliest covered time; an empty "
+        + "answer is not a quiet market. The response reports `covered` from TapeCoverage — not the window "
+        + "you asked for — and `contracts` with span SingleContract naming which contract was listened to. "
+        + "`contracts.segments` use bar-open times from the cells (`firstBucket` / `lastBucket`), not the "
+        + "exclusive coverage end — that range stays on `covered`. A roll or listening hole narrows the "
+        + "answer to the newest contiguous run and sets `covered.narrowed`. When the live tape is not "
+        + "listening for that instrument the tool refuses with a sentence naming the fix — an empty "
+        + "answer and an absent tape must not look the same. Top-level fields are always present. "
+        + "`front` names the tape volume-front beside the contract Bars would fetch — `used` is "
+        + "`tape-volume` or `none`, never a silent prefer of the gateway. `contracts` stays the "
+        + "newest listening run; it is not rewritten from `front`. Keys inside `front` are omitted "
+        + "when that answer does not exist. "
+        + "A covered window whose stored tape has prints the cells do not yet reflect is projected on this "
+        + "read (no vendor call). If the tape still produces no cell — a roll inside the bar, or prints "
+        + "that do not count — the tool refuses rather than returning empty `cells`. Never truncates: an "
+        + "over-cap window is refused.")]
+    public async Task<ToolPayloads.FootprintSeries> GetFootprint(
+        [Description("The instrument symbol, e.g. ES.")] string symbol,
+        [Description("The bar size in minutes the cells were projected at.")] int resolutionMinutes,
+        [Description("Window start, ISO-8601 UTC, inclusive.")] DateTimeOffset fromUtc,
+        [Description("Window end, ISO-8601 UTC, exclusive.")] DateTimeOffset toUtc,
+        CancellationToken cancellationToken)
+    {
+        InstrumentId instrument = Resolve(symbol);
+        BarRange window = _guards.ValidateWindow(fromUtc, toUtc, resolutionMinutes);
+        _tape.For(instrument.Symbol).Require();
+
+        await EnsureFootprintProjectedAsync(instrument, resolutionMinutes, cancellationToken)
+            .ConfigureAwait(false);
+
+        FootprintRead read;
+        try
+        {
+            read = await _volumeProfiles.ReadCellsAsync(
+                    _gateway.VenueId,
+                    instrument,
+                    resolutionMinutes,
+                    window.Start,
+                    window.End,
+                    cancellationToken)
+                .ConfigureAwait(false);
+        }
+        catch (InvalidOperationException ex)
+        {
+            throw new McpException(ex.Message);
+        }
+
+        if (read.Cells.Count == 0)
+        {
+            throw new McpException(await EmptyFootprintRefusalAsync(
+                    instrument, resolutionMinutes, read.Window, cancellationToken)
+                .ConfigureAwait(false));
+        }
+
+        RefuseIfOverCellCap(read.Cells.Count, "footprint cells");
+
+        List<ToolPayloads.FootprintCellPoint> cells =
+        [
+            .. read.Cells
+                .OrderBy(c => c.BucketStart)
+                .ThenBy(c => c.Price)
+                .Select(c => new ToolPayloads.FootprintCellPoint(
+                    c.BucketStart, c.Price, c.BuyVolume, c.SellVolume)),
+        ];
+
+        return new ToolPayloads.FootprintSeries(
+            instrument.Symbol,
+            resolutionMinutes,
+            cells,
+            new ToolPayloads.CoveredWindow(read.Window.Start, read.Window.End, read.Window.Narrowed),
+            ToolPayloads.ToTapeCoverage(read.Window, read.Cells),
+            await FrontAsync(instrument, cancellationToken).ConfigureAwait(false));
+    }
+
+    /// <summary>Aggregates stored footprint cells into a volume profile for a covered tape window.</summary>
+    /// <param name="symbol">The instrument symbol.</param>
+    /// <param name="resolutionMinutes">The bar size the cells were projected at.</param>
+    /// <param name="fromUtc">The window start, inclusive.</param>
+    /// <param name="toUtc">The window end, exclusive.</param>
+    /// <param name="cancellationToken">The caller's cancellation token.</param>
+    /// <returns>The profile under the ledger window that was actually covered.</returns>
+    [McpServerTool(ReadOnly = true, Idempotent = true, Title = "Get volume profile")]
+    [Description(
+        "Aggregates stored footprint cells into volume by price, the point of control, and the 70% value "
+        + "area. The tape only goes forward: there is no historical footprint for a period before recording "
+        + "began — not slow, not expensive, ABSENT. A window before recording began is refused and names "
+        + "the earliest covered time; an empty profile is not a quiet market. The response reports "
+        + "`covered` from TapeCoverage — not the window you asked for — and `contracts` with span "
+        + "SingleContract naming which contract was listened to. `contracts.segments` use bar-open times "
+        + "from the cells, not the exclusive coverage end. A roll or listening hole narrows the answer to "
+        + "the newest contiguous run and sets `covered.narrowed`. When the live tape is not listening the "
+        + "tool refuses with a sentence naming the fix — an empty profile and an absent tape must not look "
+        + "the same. Health is that instrument's tape, not another symbol's subscribe. Top-level "
+        + "fields are always present. `front` names the tape volume-front beside the contract Bars "
+        + "would fetch — `used` is `tape-volume` or `none`, never a silent prefer of the gateway. "
+        + "`contracts` stays the newest listening run; it is not rewritten from `front`. Keys inside "
+        + "`front` are omitted when that answer does not exist. "
+        + "A covered window whose stored tape has prints the cells do not yet reflect is projected on this "
+        + "read (no vendor call). If the tape still produces no cell the tool refuses rather than "
+        + "returning an empty profile. Never truncates: an over-cap window is refused.")]
+    public async Task<ToolPayloads.VolumeProfileSeries> GetVolumeProfile(
+        [Description("The instrument symbol, e.g. ES.")] string symbol,
+        [Description("The bar size in minutes the cells were projected at.")] int resolutionMinutes,
+        [Description("Window start, ISO-8601 UTC, inclusive.")] DateTimeOffset fromUtc,
+        [Description("Window end, ISO-8601 UTC, exclusive.")] DateTimeOffset toUtc,
+        CancellationToken cancellationToken)
+    {
+        InstrumentId instrument = Resolve(symbol);
+        BarRange window = _guards.ValidateWindow(fromUtc, toUtc, resolutionMinutes);
+        _tape.For(instrument.Symbol).Require();
+
+        await EnsureFootprintProjectedAsync(instrument, resolutionMinutes, cancellationToken)
+            .ConfigureAwait(false);
+
+        FootprintRead cells;
+        try
+        {
+            cells = await _volumeProfiles.ReadCellsAsync(
+                    _gateway.VenueId,
+                    instrument,
+                    resolutionMinutes,
+                    window.Start,
+                    window.End,
+                    cancellationToken)
+                .ConfigureAwait(false);
+        }
+        catch (InvalidOperationException ex)
+        {
+            throw new McpException(ex.Message);
+        }
+
+        RefuseIfOverCellCap(cells.Cells.Count, "footprint cells");
+
+        VolumeProfile profile;
+        try
+        {
+            profile = VolumeProfileAggregator.From(cells.Cells);
+        }
+        catch (ArgumentException ex)
+        {
+            throw new McpException(ex.Message);
+        }
+
+        return new ToolPayloads.VolumeProfileSeries(
+            instrument.Symbol,
+            resolutionMinutes,
+            [.. profile.ByPrice.Select(level => new ToolPayloads.VolumeAtPricePoint(level.Price, level.Volume))],
+            profile.PointOfControl,
+            profile.ValueAreaLow,
+            profile.ValueAreaHigh,
+            profile.ValueAreaVolume,
+            profile.TotalVolume,
+            new ToolPayloads.CoveredWindow(cells.Window.Start, cells.Window.End, cells.Window.Narrowed),
+            ToolPayloads.ToTapeCoverage(cells.Window, cells.Cells),
+            await FrontAsync(instrument, cancellationToken).ConfigureAwait(false));
+    }
+
+    /// <summary>Reports the most recent tape changeover a symbol's stored prints can prove.</summary>
+    /// <param name="symbol">The instrument symbol.</param>
+    /// <param name="asOfUtc">The instant to evaluate, or null for now.</param>
+    /// <param name="cancellationToken">The caller's cancellation token.</param>
+    /// <returns>
+    /// The changeover, the tape front at <paramref name="asOfUtc"/>, and the bar-side seam
+    /// around the flip. The gateway pick sits beside the tape only when the ask is now.
+    /// </returns>
+    [McpServerTool(ReadOnly = true, Idempotent = true, Title = "Get contract roll")]
+    [Description(
+        "Reports the most recent contract-roll changeover the stored tape can prove for a symbol, "
+        + "and the tape front at asOfUtc. There is no historical tape before recording "
+        + "began — a changeover from before that is ABSENT, not guessed. `front` is the same object "
+        + "get_footprint returns: `used` is `tape-volume` or `none`, never a silent prefer of the "
+        + "gateway. Keys inside `front` — including `changeover`, `gatewayContractId` and `agree` — "
+        + "are omitted when that answer does not exist. The gateway pick is live only; a historical "
+        + "asOfUtc omits `gatewayContractId` and `agree` rather than dating today's pick as if it "
+        + "were as-of. `contracts` is the bar-side seam around the changeover (`span` / "
+        + "segments) over stored bars in that window, every bar size together; it is "
+        + "omitted when there is no changeover to place a window around. `SingleContract` "
+        + "means that window has one contract — two contracts on different sizes is "
+        + "SpansRoll even when no single series crosses. `span` Unknown means provenance "
+        + "was never recorded, not that there was no roll. "
+        + "asOfUtc is bounded like get_market_session's atUtc.")]
+    public async Task<ToolPayloads.ContractRollInfo> GetContractRoll(
+        [Description("The instrument symbol, e.g. ES.")] string symbol,
+        [Description("The instant to evaluate, ISO-8601 UTC. Defaults to now.")] DateTimeOffset? asOfUtc = null,
+        CancellationToken cancellationToken = default)
+    {
+        InstrumentId instrument = Resolve(symbol);
+        DateTimeOffset now = _clock.GetUtcNow().ToUniversalTime();
+        DateTimeOffset at =
+            ToolGuards.ValidateInstant((asOfUtc ?? now).ToUniversalTime(), "asOfUtc");
+        bool resolveGateway = asOfUtc is null || at == now;
+
+        ToolPayloads.VolumeFrontInfo front =
+            await FrontAsync(instrument, cancellationToken, at, resolveGateway).ConfigureAwait(false);
+
+        ToolPayloads.ContractCoverage? contracts = front.Changeover is { } flip
+            ? await BarSeamAroundAsync(instrument, flip, at, cancellationToken).ConfigureAwait(false)
+            : null;
+
+        return new ToolPayloads.ContractRollInfo(instrument.Symbol, at, front, contracts);
+    }
+
+    /// <summary>
+    /// Reads both answers for the front month. Called only after the tape-derived answer is
+    /// already going to be returned — a no-tape refusal is not rescued by this object.
+    /// </summary>
+    private async Task<ToolPayloads.VolumeFrontInfo> FrontAsync(
+        InstrumentId instrument,
+        CancellationToken cancellationToken,
+        DateTimeOffset? asOfUtc = null,
+        bool resolveGateway = true)
+    {
+        TapeVolumeFrontRead read;
+        try
+        {
+            read = await _volumeFront
+                .ReadAsync(instrument, cancellationToken, asOfUtc, resolveGateway)
+                .ConfigureAwait(false);
+        }
+        catch (VenueException ex)
+        {
+            throw new McpException("The venue could not answer: " + ex.Message);
+        }
+
+        VolumeFrontChangeover? flip = read.Tape.Changeover;
+        return new ToolPayloads.VolumeFrontInfo(
+            read.Used,
+            resolveGateway ? read.Agree : null,
+            read.Tape.ActiveContractId,
+            read.Tape.ActiveSessionDate,
+            resolveGateway ? read.GatewaySelectedContractId : null,
+            flip is null
+                ? null
+                : new ToolPayloads.VolumeFrontChangeoverInfo(
+                    flip.SessionDate,
+                    flip.FlippedAtUtc,
+                    flip.FromContractId,
+                    flip.ToContractId));
+    }
+
+    /// <summary>
+    /// Bar provenance in a short window around a tape changeover — stored bars only, never a fetch.
+    /// </summary>
+    private async Task<ToolPayloads.ContractCoverage> BarSeamAroundAsync(
+        InstrumentId instrument,
+        ToolPayloads.VolumeFrontChangeoverInfo flip,
+        DateTimeOffset asOfUtc,
+        CancellationToken cancellationToken)
+    {
+        DateTimeOffset anchor = flip.FlippedAtUtc
+            ?? MarketClock.FromMarket(flip.SessionDate, _levelMethods.Calendar.SessionClose)
+                .ToUniversalTime();
+
+        DateTimeOffset start = anchor - TimeSpan.FromDays(2);
+        DateTimeOffset end = anchor + TimeSpan.FromDays(2);
+        if (end > asOfUtc)
+        {
+            end = asOfUtc;
+        }
+
+        if (end <= start)
+        {
+            return new ToolPayloads.ContractCoverage(ToolPayloads.ContractSpan.Unknown, []);
+        }
+
+        // Per-resolution CoverageAsync cannot see two contracts that live on
+        // different sizes — each series is SingleContract, and picking one reports
+        // a safe window. Union the stored bars in the window and let the detector
+        // answer once. Prices are structural zeros; Segment reads only time and id.
+        List<Bar> shape = await _database.Bars
+            .AsNoTracking()
+            .Where(bar => bar.Venue == _gateway.VenueId
+                && bar.Instrument == instrument.Symbol
+                && bar.BucketStart >= start
+                && bar.BucketStart < end)
+            .OrderBy(bar => bar.BucketStart)
+            .ThenBy(bar => bar.ResolutionMinutes)
+            .Select(bar => new Bar(bar.BucketStart, 0m, 0m, 0m, 0m, 0L, bar.ContractId))
+            .ToListAsync(cancellationToken)
+            .ConfigureAwait(false);
+
+        if (shape.Count == 0)
+        {
+            return new ToolPayloads.ContractCoverage(ToolPayloads.ContractSpan.Unknown, []);
+        }
+
+        return ToolPayloads.ToCoverage(shape);
+    }
+
+    /// <summary>
+    /// Refuses a covered window that still has no cells after the on-read projection — a roll inside
+    /// the bar, or prints that do not count. An empty list would look like a quiet market.
+    /// </summary>
+    private async Task<string> EmptyFootprintRefusalAsync(
+        InstrumentId instrument,
+        int resolutionMinutes,
+        CoveredTapeWindow covered,
+        CancellationToken cancellationToken)
+    {
+        // Broaden slightly so a cell whose bucket grazes the covered window is still visible — same
+        // loadFrom margin ReadCellsAsync uses. Distinct resolutions other than the ask name the bug.
+        DateTimeOffset loadFrom = covered.Start.AddMinutes(-Math.Max(resolutionMinutes, 1));
+
+        List<int> otherResolutions = await _database.FootprintCells
+            .AsNoTracking()
+            .Where(c => c.Venue == _gateway.VenueId
+                && c.Instrument == instrument.Symbol
+                && c.ResolutionMinutes != resolutionMinutes
+                && c.BucketStart < covered.End
+                && c.BucketStart > loadFrom)
+            .Select(c => c.ResolutionMinutes)
+            .Distinct()
+            .OrderBy(r => r)
+            .ToListAsync(cancellationToken)
+            .ConfigureAwait(false);
+
+        string resolution = resolutionMinutes.ToString(
+            System.Globalization.CultureInfo.InvariantCulture);
+
+        if (otherResolutions.Count > 0)
+        {
+            string known = string.Join(
+                ", ",
+                otherResolutions.Select(static r =>
+                    r.ToString(System.Globalization.CultureInfo.InvariantCulture) + "m"));
+
+            return "No footprint cells at " + resolution
+                + "-minute resolution for the covered window. TapeCoverage is not per-resolution — "
+                + "listening succeeded, and cells exist at other bar sizes (" + known
+                + "). Ask for a resolution that has been projected. An empty cell list would look like a "
+                + "quiet market.";
+        }
+
+        return "No footprint cells at " + resolution
+            + "-minute resolution for the covered window. An empty cell list would look like a quiet "
+            + "market.";
+    }
+
+    /// <summary>
+    /// Refuses a tape-derived answer that would exceed the row cap rather than truncating it.
+    /// </summary>
+    private void RefuseIfOverCellCap(int count, string what)
+    {
+        if (count > _guards.MaxRows)
+        {
+            throw new McpException(
+                "That covered window holds "
+                + count.ToString(System.Globalization.CultureInfo.InvariantCulture)
+                + " " + what + ", over this server's cap of "
+                + _guards.MaxRows.ToString(System.Globalization.CultureInfo.InvariantCulture)
+                + ". Narrow the window or ask for a coarser resolution. The read is refused rather than "
+                + "truncated, because a shortened answer is indistinguishable from a complete one.");
+        }
+    }
+
+    /// <summary>
+    /// Resolves the requested method names, defaulting to <see cref="DefaultLevelMethodName"/>.
+    /// </summary>
+    /// <exception cref="McpException">A name is not in the vocabulary.</exception>
+    private IReadOnlyList<ILevelMethod> ResolveMethods(string? methods)
+    {
+        IEnumerable<string> names = string.IsNullOrWhiteSpace(methods)
+            ? [DefaultLevelMethodName]
+            : methods.Split([',', ' ', ';'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                .Select(static name => name.ToLowerInvariant())
+                .Distinct(StringComparer.Ordinal);
+
+        List<ILevelMethod> resolved = [];
+        foreach (string name in names)
+        {
+            try
+            {
+                resolved.Add(_levelMethods.Resolve(name));
+            }
+            catch (KeyNotFoundException ex)
+            {
+                throw new McpException(ex.Message);
+            }
+        }
+
+        return resolved.Count == 0 ? [_levelMethods.Resolve(DefaultLevelMethodName)] : resolved;
     }
 
     /// <summary>
@@ -371,6 +1037,151 @@ public sealed class MarketDataTools(
         // record_observation exactly as exposed as they were -- which is the shape this repository has now
         // been bitten by three times.
     }
+
+    /// <summary>
+    /// Brings the stored indicators for a series up to what the catalogue computes, before reading them.
+    /// </summary>
+    /// <param name="instrument">The instrument.</param>
+    /// <param name="resolutionMinutes">The bar size in minutes.</param>
+    /// <param name="cancellationToken">The caller's cancellation token.</param>
+    /// <remarks>
+    /// <b>No catch here, deliberately</b>, for the reason <see cref="ReadAsync"/> states: a
+    /// <c>StoreContentionException</c> is a fact about this server's database and is translated once for the
+    /// whole tool surface by <see cref="StoreFaultGuard"/>. It cannot raise a <c>VenueException</c> at all —
+    /// <see cref="IndicatorCacheService"/> holds no gateway.
+    /// </remarks>
+    private Task EnsureProjectedAsync(
+        InstrumentId instrument,
+        int resolutionMinutes,
+        CancellationToken cancellationToken) =>
+        _indicators.EnsureProjectedAsync(
+            _gateway.VenueId, instrument, resolutionMinutes, cancellationToken);
+
+    /// <summary>
+    /// Projects stored prints into footprint cells for this resolution before reading them.
+    /// </summary>
+    /// <remarks>
+    /// <b>No catch here, deliberately</b>, for the reason <see cref="ReadAsync"/> states: a
+    /// <c>StoreContentionException</c> is a fact about this server's database and is translated once
+    /// for the whole tool surface by <see cref="StoreFaultGuard"/>. It cannot raise a
+    /// <c>VenueException</c> at all — <see cref="FootprintCacheService"/> holds no gateway.
+    /// </remarks>
+    private Task EnsureFootprintProjectedAsync(
+        InstrumentId instrument,
+        int resolutionMinutes,
+        CancellationToken cancellationToken) =>
+        _footprints.EnsureProjectedAsync(
+            _gateway.VenueId, instrument, resolutionMinutes, cancellationToken);
+
+    /// <summary>
+    /// Merges what the caller asked for over what the operator configured, and refuses what neither can mean.
+    /// </summary>
+    /// <param name="pivotSource">The requested source name, or null to take the configured one.</param>
+    /// <param name="pivotLookback">The requested left lookback, or null to take the configured one.</param>
+    /// <param name="pivotRightLookback">The requested right lookback, or null to take the configured one.</param>
+    /// <returns>The options detection will run under.</returns>
+    /// <exception cref="McpException">
+    /// The named source is not in the vocabulary, the configured source is not either, or either lookback is
+    /// below one.
+    /// </exception>
+    /// <remarks>
+    /// <para>
+    /// <b>The configured source is checked on the same terms as the caller's.</b> Startup validation already
+    /// refuses an unservable one (<see cref="KeyLevelDetectionOptions.Validate"/>), so this second door is
+    /// closed on a room that should be locked — which is the point: the two doors are opened by different
+    /// keys. A value that never went through <c>ValidateOnStart</c> otherwise reaches
+    /// <c>KeyLevels.PivotPrices</c>, which reads anything it does not recognise as Heikin-Ashi and returns
+    /// an ordinary-looking level set measured from a source nobody chose.
+    /// </para>
+    /// <para>
+    /// <b>Everything refused here is a fact about the REQUEST, decidable before a single bar is read, and
+    /// that is now the rule rather than an accident.</b> A lookback below one is not a lookback under any
+    /// data. Whether a lookback is <i>satisfiable</i> is a different kind of question and this is the wrong
+    /// place for it: it depends on <c>detectable.Count</c> — what the store actually holds, cut back to the
+    /// contract in front — which is not known until after the read, and is not something every caller can
+    /// change. An earlier revision bounded the lookback against <c>lookbackBars</c> instead, and bounding
+    /// the requested window rather than the detected one is wrong twice over. It refused calls that would
+    /// have succeeded, because a caller may ask for 500 bars over a store holding 40; and it refused calls
+    /// nobody could fix, because <c>get_market_snapshot</c> passes a fixed <c>max(barCount, 200)</c> and
+    /// exposes neither knob — a configured <c>PivotLookback</c> of 100, legal on its own range, made every
+    /// snapshot call fail with advice to change two arguments that tool does not have.
+    /// </para>
+    /// <para>
+    /// <b>An unsatisfiable lookback is therefore answered, not refused — and the answer says so.</b>
+    /// <see cref="ToolPayloads.LevelSet.Detection"/> reports all four parameters beside
+    /// <c>detectedOverBars</c>, so an empty level set carries its own explanation. That covers strictly more
+    /// than the refusal did: too few bars, a roll that cut the window down, a source whose candidates all
+    /// tie, and a significance floor that filtered every zone all arrive explicable, where the bound reached
+    /// only the first and only when the caller had asked for exactly what was stored.
+    /// </para>
+    /// </remarks>
+    private KeyLevelOptions ResolveDetection(string? pivotSource, int? pivotLookback, int? pivotRightLookback)
+    {
+        KeyLevelOptions defaults = _detection.Defaults();
+
+        PivotSource source;
+        if (pivotSource is null)
+        {
+            source = PivotSources.IsServable(defaults.Source)
+                ? defaults.Source
+                : throw new McpException(
+                    "This server's configured pivot source, '" + defaults.Source
+                    + "', is not one it can detect through. Known sources: " + PivotSources.KnownNames
+                    + ". Set " + KeyLevelDetectionOptions.SectionName + "__Source to one of them, or name a "
+                    + "source on the call.");
+        }
+        else
+        {
+            try
+            {
+                source = PivotSources.Resolve(pivotSource);
+            }
+            catch (KeyNotFoundException ex)
+            {
+                throw new McpException(ex.Message);
+            }
+        }
+
+        int lookback = pivotLookback ?? defaults.Lookback;
+        int rightLookback = pivotRightLookback ?? defaults.RightLookback;
+
+        if (lookback < 1)
+        {
+            throw new McpException(
+                "pivotLookback must be at least 1; got "
+                + lookback.ToString(System.Globalization.CultureInfo.InvariantCulture)
+                + ". A pivot dominates that many bars to its left, so there is no such thing as a pivot "
+                + "that dominates none.");
+        }
+
+        return rightLookback < 1
+            ? throw new McpException(
+                "pivotRightLookback must be at least 1; got "
+                + rightLookback.ToString(System.Globalization.CultureInfo.InvariantCulture)
+                + ". The right window is the confirmation, so a pivot with none is a guess about the bars "
+                + "that have not arrived and it repaints as soon as they do.")
+            : defaults with { Source = source, Lookback = lookback, RightLookback = rightLookback };
+    }
+
+    /// <summary>
+    /// The detection options as the payload reports them.
+    /// </summary>
+    /// <param name="options">The options detection ran under.</param>
+    /// <returns>The reported detection.</returns>
+    /// <remarks>
+    /// Projected from the same record detection was handed, never rebuilt from configuration. Read back from
+    /// <see cref="_detection"/> instead, this would report the operator's defaults on a call that overrode
+    /// them — a payload describing a detection that did not happen, which is worse than reporting nothing.
+    /// </remarks>
+    private static ToolPayloads.LevelDetection Reported(KeyLevelOptions options) =>
+        new(
+            options.Source,
+            options.Lookback,
+            options.ZoneAtrMultiple,
+            options.MinSignificance,
+            options.RightLookback,
+            options.MaxZoneWidthPercent,
+            options.MaxLevels);
 
     private IIndicator ResolveIndicator(string name)
     {

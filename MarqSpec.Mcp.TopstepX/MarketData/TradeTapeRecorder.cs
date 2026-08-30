@@ -7,6 +7,7 @@ using MarqSpec.Mcp.TopstepX.Data.Entities;
 using MarqSpec.Mcp.TopstepX.Domain;
 using MarqSpec.Mcp.TopstepX.Domain.MarketData;
 using MarqSpec.Mcp.TopstepX.Venue;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
@@ -17,7 +18,8 @@ namespace MarqSpec.Mcp.TopstepX.MarketData;
 /// <summary>
 /// The first first-party <see cref="BackgroundService"/>: subscribe to the market hub for every
 /// configured instrument's front contract, write prints to <c>Trades</c>, and write
-/// <c>TapeCoverage</c> from subscription lifecycle.
+/// <c>TapeCoverage</c> from subscription lifecycle — a still-open listen is stored when
+/// subscribe is confirmed, and replaced with the exclusive end when the range closes.
 /// </summary>
 /// <remarks>
 /// <para>
@@ -237,6 +239,8 @@ public sealed class TradeTapeRecorder : BackgroundService
                 // Hook BEFORE the first await that can yield after connect, so a print cannot
                 // land between Subscribe returning and the handler being attached, and so the
                 // first Connected uses the same restore path as a reconnect.
+                await DiscardAbandonedOpenRangesAsync(stoppingToken).ConfigureAwait(false);
+
                 _hub.TradeUpdateReceived += OnTrade;
                 _hub.ConnectionStatusChanged += OnConnectionStatusChanged;
                 try
@@ -396,6 +400,10 @@ public sealed class TradeTapeRecorder : BackgroundService
                     _openRanges[contractId] = new OpenRange(attribution.Venue, attribution.Instrument, start);
                 }
 
+                await PersistOpenRangeAsync(
+                        attribution.Venue, attribution.Instrument, contractId, start, cancellationToken)
+                    .ConfigureAwait(false);
+
                 _tape.Set(attribution.Instrument, TapeAvailability.Listening());
                 restored++;
             }
@@ -449,6 +457,77 @@ public sealed class TradeTapeRecorder : BackgroundService
         }
     }
 
+    private async Task DiscardAbandonedOpenRangesAsync(CancellationToken cancellationToken)
+    {
+        await _store.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            using IServiceScope scope = _scopes.CreateScope();
+            TopstepXDbContext database = scope.ServiceProvider.GetRequiredService<TopstepXDbContext>();
+            List<TapeCoverageRecord> abandoned = await database.TapeCoverage
+                .Where(row => row.RangeEnd == TapeCoverageRecord.StillListeningEnd)
+                .ToListAsync(cancellationToken)
+                .ConfigureAwait(false);
+
+            if (abandoned.Count == 0)
+            {
+                return;
+            }
+
+            database.TapeCoverage.RemoveRange(abandoned);
+            await database.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            _store.Release();
+        }
+    }
+
+    private async Task PersistOpenRangeAsync(
+        string venue,
+        string instrument,
+        string contractId,
+        DateTimeOffset start,
+        CancellationToken cancellationToken)
+    {
+        await _store.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            using IServiceScope scope = _scopes.CreateScope();
+            TopstepXDbContext database = scope.ServiceProvider.GetRequiredService<TopstepXDbContext>();
+            bool exists = await database.TapeCoverage
+                .AnyAsync(
+                    row => row.Venue == venue
+                        && row.Instrument == instrument
+                        && row.ContractId == contractId
+                        && row.RangeStart == start
+                        && row.RangeEnd == TapeCoverageRecord.StillListeningEnd,
+                    cancellationToken)
+                .ConfigureAwait(false);
+
+            if (exists)
+            {
+                return;
+            }
+
+            database.TapeCoverage.Add(new TapeCoverageRecord
+            {
+                Venue = venue,
+                Instrument = instrument,
+                ContractId = contractId,
+                RangeStart = start,
+                RangeEnd = TapeCoverageRecord.StillListeningEnd,
+                RecordedAt = _clock.GetUtcNow(),
+            });
+
+            await database.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            _store.Release();
+        }
+    }
+
     private async Task PersistPendingClosesAsync(CancellationToken cancellationToken)
     {
         ClosedRange[] batch;
@@ -471,6 +550,21 @@ public sealed class TradeTapeRecorder : BackgroundService
             DateTimeOffset recordedAt = _clock.GetUtcNow();
             foreach (ClosedRange range in batch)
             {
+                TapeCoverageRecord? open = await database.TapeCoverage
+                    .FirstOrDefaultAsync(
+                        row => row.Venue == range.Venue
+                            && row.Instrument == range.Instrument
+                            && row.ContractId == range.ContractId
+                            && row.RangeStart == range.RangeStart
+                            && row.RangeEnd == TapeCoverageRecord.StillListeningEnd,
+                        cancellationToken)
+                    .ConfigureAwait(false);
+
+                if (open is not null)
+                {
+                    database.TapeCoverage.Remove(open);
+                }
+
                 database.TapeCoverage.Add(new TapeCoverageRecord
                 {
                     Venue = range.Venue,

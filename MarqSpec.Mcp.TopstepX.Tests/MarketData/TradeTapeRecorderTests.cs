@@ -381,6 +381,120 @@ public sealed class TradeTapeRecorderTests
     }
 
     [Fact]
+    public async Task GetFootprint_WhileListeningWithNoClosedRow_DoesNotTakeTheEmptyLedgerRefusal()
+    {
+        // First HTTP listen: subscribe is confirmed, TapeAvailability is Listening, and no
+        // TapeCoverage row has been closed yet. A window that overlaps that listen is not "no tape"
+        // (gh#365). A quiet market — zero Trades — must not look like a dead subscription.
+        (TradeTapeRecorder recorder, FakeMarketHub hub, TopstepXDbContext database, ServiceProvider services, FakeTimeProvider clock) =
+            Build(McpTransport.Http, recordTape: true);
+
+        await using (services)
+        await using (database)
+        {
+            TapeAvailabilityHolder tape = services.GetRequiredService<TapeAvailabilityHolder>();
+
+            await recorder.StartAsync(CancellationToken.None);
+            await WaitUntil(() => hub.TradeSubscriptions.Count > 0 && tape.For("ES").IsListening);
+
+            DateTimeOffset listenStart = clock.GetUtcNow();
+            database.Trades.Should().BeEmpty("lifecycle writes the ledger; rows are not inferred from Trades");
+            CoverageRows(database).Should().NotBeEmpty(
+                "a confirmed subscribe must open a TapeCoverage row the tools can read");
+
+            await SeedEsCellAsync(database, listenStart);
+
+            MarketDataTools tools = Tools(database, tape);
+            DateTimeOffset to = listenStart.AddHours(2);
+
+            ToolPayloads.FootprintSeries payload = await tools.GetFootprint(
+                "ES", 5, listenStart, to, CancellationToken.None);
+
+            payload.Covered.Start.Should().Be(listenStart);
+            payload.Cells.Should().NotBeEmpty();
+
+            await recorder.StopAsync(CancellationToken.None);
+        }
+    }
+
+    [Fact]
+    public async Task AfterReconnect_GetFootprint_ConfinesToTheNewOpenRange_NotOnlyTheClosedOne()
+    {
+        // Disconnect closes A. Re-subscribe opens B. Confine of a window that spans both must
+        // include B (the newest run), not stop at A (gh#365).
+        (TradeTapeRecorder recorder, FakeMarketHub hub, TopstepXDbContext database, ServiceProvider services, FakeTimeProvider clock) =
+            Build(McpTransport.Http, recordTape: true);
+
+        await using (services)
+        await using (database)
+        {
+            TapeAvailabilityHolder tape = services.GetRequiredService<TapeAvailabilityHolder>();
+
+            await recorder.StartAsync(CancellationToken.None);
+            await WaitUntil(() => hub.TradeSubscriptions.Count > 0 && tape.For("ES").IsListening);
+
+            DateTimeOffset listenStart = clock.GetUtcNow();
+            clock.Advance(TimeSpan.FromSeconds(1));
+            hub.SimulateMarketDisconnect();
+            await WaitUntil(() => CoverageRows(database).Count == 1);
+
+            clock.Advance(TimeSpan.FromSeconds(1));
+            DateTimeOffset outageEnd = clock.GetUtcNow();
+
+            hub.SimulateMarketReconnect();
+            await WaitUntil(() => hub.SubscribeAttempts >= 2 && tape.For("ES").IsListening);
+
+            await SeedEsCellAsync(database, listenStart);
+
+            MarketDataTools tools = Tools(database, tape);
+            DateTimeOffset to = listenStart.AddHours(2);
+
+            ToolPayloads.FootprintSeries payload = await tools.GetFootprint(
+                "ES", 5, listenStart, to, CancellationToken.None);
+
+            payload.Covered.Start.Should().Be(outageEnd, "the newest listening run is B, not the closed A");
+            payload.Covered.End.Should().Be(to);
+
+            await recorder.StopAsync(CancellationToken.None);
+        }
+    }
+
+    [Fact]
+    public async Task ALeftoverStillListeningRow_IsDiscarded_WhenTheRecorderStarts()
+    {
+        DateTimeOffset leftoverStart = new(2026, 8, 1, 12, 0, 0, TimeSpan.Zero);
+        (TradeTapeRecorder recorder, FakeMarketHub hub, TopstepXDbContext database, ServiceProvider services, FakeTimeProvider clock) =
+            Build(McpTransport.Http, recordTape: true);
+
+        await using (services)
+        await using (database)
+        {
+            database.TapeCoverage.Add(new TapeCoverageRecord
+            {
+                Venue = "test",
+                Instrument = "ES",
+                ContractId = "CON.F.US.TEST.Z26",
+                RangeStart = leftoverStart,
+                RangeEnd = TapeCoverageRecord.StillListeningEnd,
+                RecordedAt = leftoverStart,
+            });
+            await database.SaveChangesAsync();
+
+            await recorder.StartAsync(CancellationToken.None);
+            await WaitUntil(() => hub.TradeSubscriptions.Count > 0);
+
+            DateTimeOffset listenStart = clock.GetUtcNow();
+            IReadOnlyList<TapeCoverageRecord> rows = CoverageRows(database);
+            rows.Should().NotContain(row => row.RangeStart == leftoverStart);
+            rows.Should().ContainSingle(row =>
+                row.RangeStart == listenStart
+                && row.RangeEnd == TapeCoverageRecord.StillListeningEnd);
+
+            await recorder.StopAsync(CancellationToken.None);
+        }
+    }
+
+    [Fact]
     public async Task TapeCoverage_ClosesAcrossAnOutage_WithNoOverlapOrGapAgainstTheRangesEitherSide()
     {
         (TradeTapeRecorder recorder, FakeMarketHub hub, TopstepXDbContext database, ServiceProvider services, FakeTimeProvider clock) =
@@ -582,6 +696,22 @@ public sealed class TradeTapeRecorderTests
     {
         database.ChangeTracker.Clear();
         return [.. database.TapeCoverage.OrderBy(row => row.RangeStart)];
+    }
+
+    private static async Task SeedEsCellAsync(TopstepXDbContext database, DateTimeOffset bucket)
+    {
+        database.FootprintCells.Add(new FootprintCellRecord
+        {
+            Venue = "test",
+            Instrument = "ES",
+            ResolutionMinutes = 5,
+            BucketStart = bucket,
+            Price = 5000m,
+            BuyVolume = 4,
+            SellVolume = 1,
+            RecordedAt = bucket,
+        });
+        await database.SaveChangesAsync();
     }
 
     private static async Task SeedNqCellsAsync(TopstepXDbContext database)
@@ -834,6 +964,14 @@ public sealed class TradeTapeRecorderTests
             InterceptionResult<int> result,
             CancellationToken cancellationToken = default)
         {
+            bool holdingTrades = eventData.Context?.ChangeTracker.Entries<TradeRecord>()
+                .Any(entry => entry.State == EntityState.Added) == true;
+            if (!holdingTrades)
+            {
+                return await base.SavingChangesAsync(eventData, result, cancellationToken)
+                    .ConfigureAwait(false);
+            }
+
             started?.TrySetResult();
             await hold.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
             return await base.SavingChangesAsync(eventData, result, cancellationToken)

@@ -393,6 +393,12 @@ public static class Program
         // every operation opens a scope (the captive-dependency case, ADR-0016).
         services.AddHostedService<TradeTapeRecorder>();
 
+        // Indicator warmup. Same shape: HTTP and an explicit switch, both. Always registered
+        // so the container does not change with MarketData__WarmIndicators; ExecuteAsync
+        // returns immediately unless the transport is HTTP and the switch is on. The
+        // rebuilder is scoped, so the pass opens a scope (gh#350, ADR-0014).
+        services.AddHostedService<IndicatorWarmup>();
+
         // Scoped, and the lifetime is load-bearing rather than conventional: this service memoises which
         // series it has already found complete, and the scope is one request. A singleton would remember the
         // answer past the fill that invalidated it (gh#246).

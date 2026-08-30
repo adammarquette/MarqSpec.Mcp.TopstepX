@@ -94,6 +94,24 @@ public sealed class MarketDataOptions
     /// </remarks>
     public bool RecordTape { get; init; }
 
+    /// <summary>
+    /// Whether the process may replay stored indicator series at startup.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>Off by default, and HTTP is not consent.</b> Choosing the HTTP transport does not start
+    /// the warmup. A Cowork stdio child against a large store would stall the handshake paying the
+    /// first-read projection (ADR-0014, gh#350). Warmup therefore runs only when the transport is
+    /// HTTP <i>and</i> this switch is on.
+    /// </para>
+    /// <para>
+    /// The numbers do not change: the pass is <c>IndicatorRebuilder</c>, so a subsequent
+    /// <c>rebuild-indicators</c> is an empty diff (<c>R-2.2</c>). A failure is logged and the host
+    /// keeps serving — the first cold read then pays the projection, the same as today.
+    /// </para>
+    /// </remarks>
+    public bool WarmIndicators { get; init; }
+
     /// <summary>The declared holidays, parsed.</summary>
     /// <returns>The holiday strings, trimmed and non-empty.</returns>
     public IReadOnlyList<string> HolidayList() => SplitList(Holidays);

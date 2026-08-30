@@ -236,6 +236,26 @@ once per catalogue change. `rebuild-indicators` already does it on demand for an
   complete, so `get_market_snapshot`'s eleven `get_indicator_at` calls per resolution cost one probe rather
   than eleven. A singleton would remember the answer past the fill that invalidated it.
 
+## Decision log
+
+## Update (2026-08-29) — warming on startup is taken, behind HTTP and a switch
+
+The follow-up this record left open is now taken (gh#350). A hosted service runs
+`IndicatorRebuilder` at process start when the transport is HTTP **and**
+`MarketData__WarmIndicators` is on. HTTP is not consent, the same shape as
+`MarketData__RecordTape`: a Cowork stdio child against a large store must not stall the
+handshake paying the 8.3 s. Stdio with the switch on does not warm.
+
+The numbers do not change. The pass is the existing forced replay, so a subsequent
+`rebuild-indicators` is an empty diff (`R-2.2`). A failure is logged;
+`ExecuteTask` does not fault — the lesson of gh#76 — and the first cold read then pays
+the projection, the same as today.
+
+The first-read cost in the tool descriptions is therefore conditional: it is what a
+caller pays when the switch is off, or when warmup has not finished, or when a series
+arrives after boot. When the flag is on and warmup completed, that first read is the
+probe.
+
 ## Follow-ups
 
 - **A process-lifetime counter now records how often a read opens a replay**
@@ -244,5 +264,5 @@ once per catalogue change. `rebuild-indicators` already does it on demand for an
   pairs, and now includes the process total). gh#347.
 - **The `DISTINCT` half of the probe scans the whole key range.** Worth re-measuring on Postgres 18, where an
   index skip scan should make it flat without a code change.
-- **Warming on startup stays open**, and this record makes it cheaper to revisit: the cost it would move is
-  measured above, and the shape it would use is `IndicatorRebuilder`, which already exists.
+- **Warming on startup is taken** (gh#350): `IndicatorWarmup` runs `IndicatorRebuilder` when HTTP and
+  `MarketData__WarmIndicators` are both on. Stdio never warms.

@@ -239,8 +239,9 @@ next read, with no operator running anything (gh#246,
 **That first read replays the whole stored series and is slow in proportion to the history kept** — about
 **8.3 seconds** for a year of five-minute bars, measured; every read after it pays a probe of a few
 milliseconds. It is **not** capped, because capping it would return the operator step this removes. For scale:
-the `get_bars` call that fetched that year spent about a *minute* on paced vendor pages. An operator who would
-rather pay it at deploy time runs `rebuild-indicators`.
+the `get_bars` call that fetched that year spent about a *minute* on paced vendor pages. An HTTP process with
+`MarketData__WarmIndicators` on pays it at start instead (stdio never does — a Cowork child would stall the
+handshake). `rebuild-indicators` remains the forced replay for a changed formula.
 
 A read can therefore report **contention** like `get_bars` can: two simultaneous cold reads of one series both
 replay, and the loser is retried once and then reported by name. One projection lands, not two.
@@ -264,7 +265,7 @@ the caller knows what it got.
 
 ### `get_indicator_at(symbol, resolutionMinutes, indicator, asOfUtc)`
 One value, as of a moment — at or **before** it, never after. **Cache-aside on exactly the terms
-`get_indicators` states above**, including the first-read cost: this is the read `get_market_snapshot`
+`get_indicators` states above**, including the first-read cost (or the probe, when HTTP warmup already ran): this is the read `get_market_snapshot`
 composes, and the probe behind it is memoised per request, so eleven indicator reads over one series cost one.
 
 Returns `{ value, bucketStart, contractId }`.

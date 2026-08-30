@@ -68,6 +68,8 @@ services:
       MarketData__Instruments: "${MarketData__Instruments:-ES,NQ}"
       # Off by default: the composed server is HTTP, and HTTP is not consent to record (ADR-0016).
       MarketData__RecordTape: "${MarketData__RecordTape:-false}"
+      # Off by default: HTTP is not consent to warm either (ADR-0014, gh#350).
+      MarketData__WarmIndicators: "${MarketData__WarmIndicators:-false}"
 
       Indicators__AtrPeriod: "${Indicators__AtrPeriod:-14}"
       Indicators__RsiPeriod: "${Indicators__RsiPeriod:-14}"

@@ -658,6 +658,68 @@ public sealed class TradeTapeRecorderTests
     }
 
     [Fact]
+    public async Task AFailedRetirePersist_DoesNotLeaveAStillOpenRow_AsOrdinaryCoverageDuringTheOutage()
+    {
+        // The retire SaveChanges is the first persist of a close. A throw there leaves
+        // [A.start, 9999) in the store. ConfineAsync must not treat that sentinel as a
+        // taped window while Reconnecting — get_key_levels volume-* has no tape Require.
+        CollectingLogger logger = new();
+        (TradeTapeRecorder recorder, FakeMarketHub hub, TopstepXDbContext database, ServiceProvider services, FakeTimeProvider clock) =
+            Build(
+                McpTransport.Http,
+                recordTape: true,
+                logger: logger,
+                extraInterceptor: new FailingRetireCoverageInterceptor());
+
+        await using (services)
+        await using (database)
+        {
+            TapeAvailabilityHolder tape = services.GetRequiredService<TapeAvailabilityHolder>();
+
+            await recorder.StartAsync(CancellationToken.None);
+            await WaitUntil(() => hub.TradeSubscriptions.Count > 0 && tape.For("ES").IsListening);
+
+            DateTimeOffset listenStart = clock.GetUtcNow();
+            await SeedEsCellAsync(database, listenStart);
+
+            clock.Advance(TimeSpan.FromSeconds(1));
+            hub.SimulateMarketDisconnect();
+            await WaitUntil(() =>
+                tape.For("ES").Reason == TapeUnavailableReason.Reconnecting
+                && logger.Errors.Exists(entry =>
+                    entry.Message.Contains("lifecycle", StringComparison.OrdinalIgnoreCase)));
+
+            CoverageRows(database).Should().Contain(
+                row => row.RangeEnd == TapeCoverageRecord.StillListeningEnd,
+                "this path pins a retire that did not land; the row may still be stored");
+
+            Func<Task> withoutHolder = () => new VolumeProfileService(database).ReadAsync(
+                "test",
+                new InstrumentId("ES"),
+                5,
+                listenStart,
+                listenStart.AddHours(2),
+                CancellationToken.None);
+            Func<Task> whileReconnecting = () => new VolumeProfileService(database, tape).ReadAsync(
+                "test",
+                new InstrumentId("ES"),
+                5,
+                listenStart,
+                listenStart.AddHours(2),
+                CancellationToken.None);
+
+            await withoutHolder.Should().ThrowAsync<InvalidOperationException>().WithMessage("*no tape*");
+            await whileReconnecting.Should().ThrowAsync<InvalidOperationException>().WithMessage("*no tape*");
+
+            recorder.ExecuteTask.Should().NotBeNull();
+            recorder.ExecuteTask!.IsFaulted.Should().BeFalse(
+                "a faulted ExecuteTask is what Program.AnyFaulted reads");
+
+            await recorder.StopAsync(CancellationToken.None);
+        }
+    }
+
+    [Fact]
     public async Task TapeCoverage_ClosesAcrossAnOutage_WithNoOverlapOrGapAgainstTheRangesEitherSide()
     {
         (TradeTapeRecorder recorder, FakeMarketHub hub, TopstepXDbContext database, ServiceProvider services, FakeTimeProvider clock) =
@@ -950,7 +1012,7 @@ public sealed class TradeTapeRecorderTests
             new StoreAvailabilityHolder(),
             clock,
             Options.Create(new KeyLevelDetectionOptions()),
-            new VolumeProfileService(database),
+            new VolumeProfileService(database, tape),
             tape);
     }
 
@@ -1164,6 +1226,27 @@ public sealed class TradeTapeRecorderTests
             await hold.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
             return await base.SavingChangesAsync(eventData, result, cancellationToken)
                 .ConfigureAwait(false);
+        }
+    }
+
+    /// <summary>Refuses a SaveChanges that retires a still-open TapeCoverage row.</summary>
+    private sealed class FailingRetireCoverageInterceptor : SaveChangesInterceptor
+    {
+        public override ValueTask<InterceptionResult<int>> SavingChangesAsync(
+            DbContextEventData eventData,
+            InterceptionResult<int> result,
+            CancellationToken cancellationToken = default)
+        {
+            bool retiringStillOpen = eventData.Context?.ChangeTracker.Entries<TapeCoverageRecord>()
+                .Any(entry =>
+                    entry.State == EntityState.Deleted
+                    && entry.Entity.RangeEnd == TapeCoverageRecord.StillListeningEnd) == true;
+            if (retiringStillOpen)
+            {
+                throw new InvalidOperationException("the store refused the coverage retire");
+            }
+
+            return base.SavingChangesAsync(eventData, result, cancellationToken);
         }
     }
 

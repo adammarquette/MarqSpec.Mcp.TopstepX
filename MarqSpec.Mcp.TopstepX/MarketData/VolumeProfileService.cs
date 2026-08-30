@@ -19,15 +19,22 @@ namespace MarqSpec.Mcp.TopstepX.MarketData;
 /// <para>
 /// A window that spans a roll or a listening hole is confined to the newest contiguous
 /// run of the contract in front and the narrowing is reported. The reported window is that
-/// run, not the ask. A window with no tape refuses rather than returning an empty answer
-/// (ADR-0011). A window entirely before recording began names the earliest covered time so a
-/// caller cannot read absence as a quiet market (gh#222).
+/// run, not the ask. A still-open ledger row is coverage only while that instrument is
+/// Listening; during an outage it is not a taped window (gh#365). A window with no tape
+/// refuses rather than returning an empty answer (ADR-0011). A window entirely before
+/// recording began names the earliest covered time so a caller cannot read absence as a
+/// quiet market (gh#222).
 /// </para>
 /// </remarks>
 /// <param name="database">The store.</param>
-public sealed class VolumeProfileService(TopstepXDbContext database)
+/// <param name="tape">Live subscription state. A still-open row is coverage only while this
+/// instrument is Listening — a leftover sentinel during an outage is not a taped window.</param>
+public sealed class VolumeProfileService(
+    TopstepXDbContext database,
+    TapeAvailabilityHolder? tape = null)
 {
     private readonly TopstepXDbContext _database = database;
+    private readonly TapeAvailabilityHolder? _tape = tape;
 
     /// <summary>
     /// Builds a volume profile over the cells that were actually covered in
@@ -135,12 +142,18 @@ public sealed class VolumeProfileService(TopstepXDbContext database)
         DateTimeOffset end,
         CancellationToken cancellationToken)
     {
-        List<TapeCoverageRecord> rows = await _database.TapeCoverage
+        IQueryable<TapeCoverageRecord> query = _database.TapeCoverage
             .AsNoTracking()
             .Where(c => c.Venue == venue
                 && c.Instrument == instrument.Symbol
                 && c.RangeStart < end
-                && c.RangeEnd > start)
+                && c.RangeEnd > start);
+        if (!IsListening(instrument))
+        {
+            query = query.Where(c => c.RangeEnd != TapeCoverageRecord.StillListeningEnd);
+        }
+
+        List<TapeCoverageRecord> rows = await query
             .ToListAsync(cancellationToken)
             .ConfigureAwait(false);
 
@@ -165,9 +178,15 @@ public sealed class VolumeProfileService(TopstepXDbContext database)
         InstrumentId instrument,
         CancellationToken cancellationToken)
     {
-        DateTimeOffset? earliest = await _database.TapeCoverage
+        IQueryable<TapeCoverageRecord> covered = _database.TapeCoverage
             .AsNoTracking()
-            .Where(c => c.Venue == venue && c.Instrument == instrument.Symbol)
+            .Where(c => c.Venue == venue && c.Instrument == instrument.Symbol);
+        if (!IsListening(instrument))
+        {
+            covered = covered.Where(c => c.RangeEnd != TapeCoverageRecord.StillListeningEnd);
+        }
+
+        DateTimeOffset? earliest = await covered
             .OrderBy(c => c.RangeStart)
             .Select(c => (DateTimeOffset?)c.RangeStart)
             .FirstOrDefaultAsync(cancellationToken)
@@ -187,4 +206,12 @@ public sealed class VolumeProfileService(TopstepXDbContext database)
             "A window with no tape cannot produce a footprint or volume profile. There is no "
             + "market-tape backfill, so an empty answer would look like a quiet market.");
     }
+
+    /// <summary>
+    /// A still-open row is a taped window only while this instrument is Listening. Without a
+    /// holder — get_key_levels used to construct one that way — the sentinel is never ordinary
+    /// coverage: a leftover during an outage must not bind as a POC of the lookback (gh#221).
+    /// </summary>
+    private bool IsListening(InstrumentId instrument) =>
+        _tape is { } holder && holder.For(instrument.Symbol).IsListening;
 }

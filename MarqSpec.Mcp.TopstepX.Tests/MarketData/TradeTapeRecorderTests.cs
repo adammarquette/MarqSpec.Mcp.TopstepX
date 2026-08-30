@@ -497,13 +497,15 @@ public sealed class TradeTapeRecorderTests
     [Theory]
     [InlineData(McpTransport.Stdio, true)]
     [InlineData(McpTransport.Http, false)]
-    public async Task ALeftoverStillListeningRow_IsDiscarded_WhenTheStartDoesNotRecord(
+    public async Task ALeftoverStillListeningRow_IsNotDeleted_WhenTheStartDoesNotRecord(
         McpTransport transport,
         bool recordTape)
     {
         // A Cowork stdio child, or HTTP with the switch off, still serves tools against the
-        // same store. Discard must run before those gates return, or StillListeningEnd is
-        // coverage through 9999-12-31Z and get_key_levels volume-* binds a pre-death POC.
+        // same store a live HTTP recorder may be writing. Discard must not run on a start
+        // that will not record, or that child deletes the HTTP process's still-open row
+        // (gh#378). IsListening is the confine guard: a leftover sentinel is not ordinary
+        // coverage for this process's own reads.
         DateTimeOffset leftoverStart = new(2026, 8, 1, 12, 0, 0, TimeSpan.Zero);
         (TradeTapeRecorder recorder, _, TopstepXDbContext database, ServiceProvider services, _) =
             Build(transport, recordTape);
@@ -511,15 +513,27 @@ public sealed class TradeTapeRecorderTests
         await using (services)
         await using (database)
         {
+            TapeAvailabilityHolder tape = services.GetRequiredService<TapeAvailabilityHolder>();
             await SeedStillListeningAsync(database, leftoverStart);
 
             await recorder.StartAsync(CancellationToken.None);
             await WaitUntil(() => recorder.ExecuteTask?.IsCompleted == true);
 
-            CoverageRows(database).Should().BeEmpty(
-                "a leftover still-open row cannot claim coverage after death on a start that still serves tools");
+            CoverageRows(database).Should().ContainSingle(
+                row => row.RangeStart == leftoverStart
+                    && row.RangeEnd == TapeCoverageRecord.StillListeningEnd,
+                "a start that will not record must not delete another process's still-open row");
 
-            Func<Task> read = () => new VolumeProfileService(database).ReadAsync(
+            tape.Value.IsListening.Should().BeFalse();
+
+            Func<Task> withoutHolder = () => new VolumeProfileService(database).ReadAsync(
+                "test",
+                new InstrumentId("ES"),
+                5,
+                leftoverStart.AddHours(1),
+                leftoverStart.AddHours(3),
+                CancellationToken.None);
+            Func<Task> withHolder = () => new VolumeProfileService(database, tape).ReadAsync(
                 "test",
                 new InstrumentId("ES"),
                 5,
@@ -527,14 +541,71 @@ public sealed class TradeTapeRecorderTests
                 leftoverStart.AddHours(3),
                 CancellationToken.None);
 
-            await read.Should().ThrowAsync<InvalidOperationException>().WithMessage("*no tape*");
+            await withoutHolder.Should().ThrowAsync<InvalidOperationException>().WithMessage("*no tape*");
+            await withHolder.Should().ThrowAsync<InvalidOperationException>().WithMessage("*no tape*");
 
             await recorder.StopAsync(CancellationToken.None);
         }
     }
 
     [Fact]
-    public async Task ALeftoverStillListeningRow_IsDiscarded_WhenRecordTapeIsOnButThereIsNoVenueClient()
+    public async Task AStdioStart_DoesNotDeleteALiveHttpListensStillOpenRow()
+    {
+        // HTTP is Listening with a still-open TapeCoverage row. A Cowork stdio child against
+        // the same store must not delete that row — HTTP get_footprint would then take the
+        // empty-ledger refusal gh#365 closed (gh#378).
+        string sharedStore = Guid.NewGuid().ToString();
+        (TradeTapeRecorder http, FakeMarketHub hub, TopstepXDbContext database, ServiceProvider httpServices, FakeTimeProvider clock) =
+            Build(McpTransport.Http, recordTape: true, sharedDatabaseName: sharedStore);
+
+        await using (httpServices)
+        await using (database)
+        {
+            TapeAvailabilityHolder httpTape = httpServices.GetRequiredService<TapeAvailabilityHolder>();
+
+            await http.StartAsync(CancellationToken.None);
+            await WaitUntil(() => hub.TradeSubscriptions.Count > 0 && httpTape.For("ES").IsListening);
+
+            DateTimeOffset listenStart = clock.GetUtcNow();
+            CoverageRows(database).Should().ContainSingle(row =>
+                row.RangeStart == listenStart
+                && row.RangeEnd == TapeCoverageRecord.StillListeningEnd);
+
+            await SeedEsCellAsync(database, listenStart);
+
+            (TradeTapeRecorder stdio, _, _, ServiceProvider stdioServices, _) =
+                Build(McpTransport.Stdio, recordTape: true, sharedDatabaseName: sharedStore);
+
+            await using (stdioServices)
+            {
+                await stdio.StartAsync(CancellationToken.None);
+                await WaitUntil(() => stdio.ExecuteTask?.IsCompleted == true);
+
+                CoverageRows(database).Should().ContainSingle(
+                    row => row.RangeStart == listenStart
+                        && row.RangeEnd == TapeCoverageRecord.StillListeningEnd,
+                    "a Cowork stdio child must not delete the HTTP process's still-open listen");
+
+                httpTape.For("ES").IsListening.Should().BeTrue();
+
+                MarketDataTools tools = Tools(database, httpTape);
+                DateTimeOffset to = listenStart.AddHours(2);
+
+                ToolPayloads.FootprintSeries payload = await tools.GetFootprint(
+                    "ES", 5, listenStart, to, CancellationToken.None);
+
+                payload.Covered.Start.Should().Be(listenStart);
+                payload.Cells.Should().NotBeEmpty();
+
+                await stdio.StopAsync(CancellationToken.None);
+            }
+
+            await http.StopAsync(CancellationToken.None);
+        }
+    }
+
+    [Fact]
+    public async Task ALeftoverStillListeningRow_IsNotDeleted_WhenRecordTapeIsOnButThereIsNoVenueClient()
     {
         DateTimeOffset leftoverStart = new(2026, 8, 1, 12, 0, 0, TimeSpan.Zero);
         (TradeTapeRecorder recorder, _, TopstepXDbContext database, ServiceProvider services, _) =
@@ -548,7 +619,20 @@ public sealed class TradeTapeRecorderTests
             await recorder.StartAsync(CancellationToken.None);
             await WaitUntil(() => recorder.ExecuteTask?.IsCompleted == true);
 
-            CoverageRows(database).Should().BeEmpty();
+            CoverageRows(database).Should().ContainSingle(
+                row => row.RangeStart == leftoverStart
+                    && row.RangeEnd == TapeCoverageRecord.StillListeningEnd,
+                "a start that will not record must not delete a leftover still-open row");
+
+            Func<Task> read = () => new VolumeProfileService(database).ReadAsync(
+                "test",
+                new InstrumentId("ES"),
+                5,
+                leftoverStart.AddHours(1),
+                leftoverStart.AddHours(3),
+                CancellationToken.None);
+
+            await read.Should().ThrowAsync<InvalidOperationException>().WithMessage("*no tape*");
 
             await recorder.StopAsync(CancellationToken.None);
         }
@@ -1113,11 +1197,12 @@ public sealed class TradeTapeRecorderTests
             IMarketDataGateway? gateway = null,
             ILogger<TradeTapeRecorder>? logger = null,
             bool registerHub = true,
-            SaveChangesInterceptor? extraInterceptor = null)
+            SaveChangesInterceptor? extraInterceptor = null,
+            string? sharedDatabaseName = null)
     {
         FakeMarketHub hub = new();
         FakeTimeProvider clock = new(_receipt);
-        string databaseName = Guid.NewGuid().ToString();
+        string databaseName = sharedDatabaseName ?? Guid.NewGuid().ToString();
         DbContextOptionsBuilder<TopstepXDbContext> builder = new DbContextOptionsBuilder<TopstepXDbContext>()
             .UseInMemoryDatabase(databaseName)
             .ConfigureWarnings(w => w.Ignore(InMemoryEventId.TransactionIgnoredWarning));

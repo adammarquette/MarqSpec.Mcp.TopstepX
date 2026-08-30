@@ -174,8 +174,6 @@ public sealed class TradeTapeRecorder : BackgroundService
     {
         try
         {
-            await DiscardAbandonedOpenRangesAsync(stoppingToken).ConfigureAwait(false);
-
             if (_mcp.Transport != McpTransport.Http || !_market.RecordTape)
             {
                 _tape.Set(_mcp.Transport != McpTransport.Http
@@ -200,6 +198,10 @@ public sealed class TradeTapeRecorder : BackgroundService
                         + "and a data tier, then restart. Nothing will be recorded until then.");
                     return;
                 }
+
+                // Crash leftovers only. A stdio or switch-off start still serves tools against
+                // the same store and must not delete a live HTTP listen (gh#378).
+                await DiscardAbandonedOpenRangesAsync(stoppingToken).ConfigureAwait(false);
 
                 _hub = resolved;
 

@@ -283,10 +283,12 @@ Written from **subscription lifecycle**, not inferred from rows. A quiet market 
 produce the same empty range, and only lifecycle can tell them apart — the same third-state role §3 plays for
 bars. There is no market-tape REST backfill, so a hole in this ledger is permanent.
 
-The recorder **opens a range when a subscribe is confirmed** and **closes it** when the connection leaves
-`Connected`, the process stops, or a re-subscribe fails (gh#217). A hub that reports `Connected` with no
-confirmed subscribe is not a range. The intended contract set is held by the recorder; a roll still changes
-that set, which is why `ContractId` is in the key.
+The recorder **opens a range when a subscribe is confirmed** — that write is a stored row whose exclusive
+end is still open (`9999-12-31Z`) — and **closes it** by replacing that end when the connection leaves
+`Connected`, the process stops, or a re-subscribe fails (gh#217, gh#365). A leftover still-open row from a
+crash is discarded on the next start so it cannot claim coverage after death. A hub that reports `Connected`
+with no confirmed subscribe is not a range. The intended contract set is held by the recorder; a roll still
+changes that set, which is why `ContractId` is in the key.
 
 **The range is half-open, `[RangeStart, RangeEnd)`.** Closed ranges written adjacently either overlap by one
 instant or leave a hole, and both are invisible until a profile reports a window that was never covered. An

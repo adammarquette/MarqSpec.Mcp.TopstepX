@@ -606,7 +606,7 @@ public sealed class MarketDataTools(
         + "`tape-volume` or `none`, never a silent prefer of the gateway. `contracts` stays the "
         + "newest listening run; it is not rewritten from `front`. Keys inside `front` are omitted "
         + "when that answer does not exist. "
-        + "A covered window with no cells at the asked bar size is projected from the stored tape on this "
+        + "A covered window whose stored tape has prints the cells do not yet reflect is projected on this "
         + "read (no vendor call). If the tape still produces no cell — a roll inside the bar, or prints "
         + "that do not count — the tool refuses rather than returning empty `cells`. Never truncates: an "
         + "over-cap window is refused.")]
@@ -691,7 +691,7 @@ public sealed class MarketDataTools(
         + "would fetch — `used` is `tape-volume` or `none`, never a silent prefer of the gateway. "
         + "`contracts` stays the newest listening run; it is not rewritten from `front`. Keys inside "
         + "`front` are omitted when that answer does not exist. "
-        + "A covered window with no cells at the asked bar size is projected from the stored tape on this "
+        + "A covered window whose stored tape has prints the cells do not yet reflect is projected on this "
         + "read (no vendor call). If the tape still produces no cell the tool refuses rather than "
         + "returning an empty profile. Never truncates: an over-cap window is refused.")]
     public async Task<ToolPayloads.VolumeProfileSeries> GetVolumeProfile(

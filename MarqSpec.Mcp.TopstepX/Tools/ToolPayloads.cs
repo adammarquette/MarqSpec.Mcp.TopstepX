@@ -595,9 +595,10 @@ public static class ToolPayloads
     /// <remarks>
     /// Top-level fields are always present. Live tape-subscription health
     /// is not a field on this payload — when the tape is not listening the tool refuses with a sentence
-    /// naming the fix (gh#218). A covered window with no cells at the asked bar size is projected from
-    /// the stored tape on the read (gh#366). If the tape still produces no cell the tool refuses rather
-    /// than returning empty <c>cells</c> — that quiet-looking shape would hide a roll or an uncounted tape.
+    /// naming the fix (gh#218). A covered window whose stored tape has prints the cells do not yet
+    /// reflect is projected on the read (gh#366, gh#377). If the tape still produces no cell the tool
+    /// refuses rather than returning empty <c>cells</c> — that quiet-looking shape would hide a roll
+    /// or an uncounted tape.
     /// </remarks>
     public sealed record FootprintSeries(
         string Symbol,

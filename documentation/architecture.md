@@ -296,9 +296,13 @@ writer that never ran ([ADR-0014](adr/0014-indicators-are-projected-on-read-too.
 
 `FootprintCacheService.EnsureProjectedAsync(venue, instrument, resolution)`:
 
-1. **Probe** — newest `Trades.RecordedAt` for the symbol, newest `FootprintCells.RecordedAt` at the
-   asked bar size. No prints ⇒ nothing to project. Cells at least as new as the newest print ⇒ the
-   tape has not grown since the last write that could have changed a cell.
+1. **Probe** — no stored prints ⇒ nothing to project. Otherwise the cells
+   `FootprintAggregator` produces from that tape, against the cells already stored at the
+   asked bar size. That is a completeness check (the ADR-0014 missing-pair shape), not a
+   comparison of two `RecordedAt` clocks: trade `RecordedAt` is receipt time and cell
+   `RecordedAt` is the projection clock, and they are different facts (gh#377). Matching
+   cells ⇒ return, opening no transaction. A print whose receipt is earlier than the last
+   cell write but which is not in the cells is still missing, and is projected.
 2. **Otherwise replay the whole tape** through the same `FootprintProjector` inside the same
    `SeriesUnitOfWork` — never a window around what was asked for, and never a vendor call. A
    confirming rebuild is still an empty diff. A bucket whose counted prints span two contracts

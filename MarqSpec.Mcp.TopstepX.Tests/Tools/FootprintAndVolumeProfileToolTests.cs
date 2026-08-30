@@ -255,9 +255,12 @@ public sealed class FootprintAndVolumeProfileToolTests : IDisposable
     {
         await SeedCoverageAsync(Coverage(Front, _fourteen, _sixteen));
         await SeedCellsAsync(Cell(_bucket1430, 5000m, buy: 4, sell: 1));
+        // Counted prints justify the seeded cell. Expiring size is Unknown so it
+        // moves tape-volume front without entering the footprint (data dictionary §7 / §9).
         await SeedTradesAsync(
-            Trade(Central(2026, 8, 18, 10, 0), 1, Expiring, 80, TradeDirection.Buy),
-            Trade(Central(2026, 8, 18, 10, 1), 2, Front, 10, TradeDirection.Sell));
+            Trade(_bucket1430.AddMinutes(1), 1, Front, 4, TradeDirection.Buy),
+            Trade(_bucket1430.AddMinutes(2), 2, Front, 1, TradeDirection.Sell),
+            Trade(_bucket1430.AddMinutes(3), 3, Expiring, 80, TradeDirection.Unknown));
 
         ToolPayloads.FootprintSeries footprint = await _tools.GetFootprint(
             "ES", FiveMinutes, _fourteen, _sixteen, CancellationToken.None);

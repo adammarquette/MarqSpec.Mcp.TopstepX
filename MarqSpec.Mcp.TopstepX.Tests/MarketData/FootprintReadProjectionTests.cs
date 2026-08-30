@@ -123,6 +123,69 @@ public sealed class FootprintReadProjectionTests : IDisposable
     }
 
     [Fact]
+    public async Task APrintWhoseReceiptIsEarlierThanTheLastCellWrite_IsProjectedOnTheNextRead()
+    {
+        // Receipt T1, projection clock T2: the two RecordedAt columns are different facts.
+        // A print that lands after the first write, stamped T1, must not be skipped (gh#377).
+        await SeedTapeAsync(
+            Trade(_bucket1430.AddMinutes(1), 1, 5000.00m, 5, TradeDirection.Buy),
+            Trade(_bucket1430.AddMinutes(2), 2, 5000.25m, 4, TradeDirection.Sell));
+
+        await Tools().GetFootprint("ES", FiveMinutes, _fourteen, _sixteen, CancellationToken.None);
+
+        DateTimeOffset lastCellWrite = await _database.FootprintCells
+            .Select(c => c.RecordedAt)
+            .MaxAsync();
+
+        lastCellWrite.Should().Be(_sixteen, "the first pass stamps cells with the projection clock");
+        _recorded.Should().BeBefore(lastCellWrite, "the late print's receipt is earlier than that write");
+
+        _database.Trades.Add(
+            Trade(_bucket1430.AddMinutes(3), 3, 5000.00m, 7, TradeDirection.Buy, Front, _recorded));
+        await _database.SaveChangesAsync();
+
+        _gateway.ResetCounters();
+
+        ToolPayloads.FootprintSeries footprint = await Tools().GetFootprint(
+            "ES", FiveMinutes, _fourteen, _sixteen, CancellationToken.None);
+        ToolPayloads.VolumeProfileSeries profile = await Tools().GetVolumeProfile(
+            "ES", FiveMinutes, _fourteen, _sixteen, CancellationToken.None);
+
+        footprint.Cells.Should().BeEquivalentTo(
+        [
+            new ToolPayloads.FootprintCellPoint(_bucket1430, 5000.00m, 12, 0),
+            new ToolPayloads.FootprintCellPoint(_bucket1430, 5000.25m, 0, 4),
+        ]);
+        profile.TotalVolume.Should().Be(16);
+        profile.ByPrice.Should().BeEquivalentTo(
+        [
+            new ToolPayloads.VolumeAtPricePoint(5000.00m, 12),
+            new ToolPayloads.VolumeAtPricePoint(5000.25m, 4),
+        ]);
+        _gateway.BarRequests.Should().Be(0, "a stored print is not a vendor fetch");
+
+        DateTimeOffset stampAfterHeal = await _database.FootprintCells
+            .Where(c => c.Price == 5000.00m)
+            .Select(c => c.RecordedAt)
+            .SingleAsync();
+
+        _clock.Advance(TimeSpan.FromHours(1));
+
+        int changed = await new FootprintProjector(_database, NullLogger<FootprintProjector>.Instance)
+            .ProjectAsync(Venue, _es, FiveMinutes, _clock.GetUtcNow(), CancellationToken.None);
+        await _database.SaveChangesAsync();
+
+        changed.Should().Be(0, "once the print is in the cells a confirming rebuild writes nothing");
+
+        DateTimeOffset stampAfterConfirm = await _database.FootprintCells
+            .Where(c => c.Price == 5000.00m)
+            .Select(c => c.RecordedAt)
+            .SingleAsync();
+
+        stampAfterConfirm.Should().Be(stampAfterHeal);
+    }
+
+    [Fact]
     public async Task ABucketWhoseCountedPrintsSpanTwoContracts_ProducesNoCell()
     {
         // 10 buy on the front month and 5 sell on the next, same 5-minute window, same price.
@@ -197,7 +260,8 @@ public sealed class FootprintReadProjectionTests : IDisposable
         decimal price,
         long size,
         TradeDirection direction,
-        string contractId = Front) => new()
+        string contractId = Front,
+        DateTimeOffset? recordedAt = null) => new()
         {
             Venue = Venue,
             Instrument = _es.Symbol,
@@ -207,6 +271,6 @@ public sealed class FootprintReadProjectionTests : IDisposable
             Price = price,
             Size = size,
             Direction = direction,
-            RecordedAt = _recorded,
+            RecordedAt = recordedAt ?? _recorded,
         };
 }

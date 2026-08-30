@@ -174,6 +174,8 @@ public sealed class TradeTapeRecorder : BackgroundService
     {
         try
         {
+            await DiscardAbandonedOpenRangesAsync(stoppingToken).ConfigureAwait(false);
+
             if (_mcp.Transport != McpTransport.Http || !_market.RecordTape)
             {
                 _tape.Set(_mcp.Transport != McpTransport.Http
@@ -239,8 +241,6 @@ public sealed class TradeTapeRecorder : BackgroundService
                 // Hook BEFORE the first await that can yield after connect, so a print cannot
                 // land between Subscribe returning and the handler being attached, and so the
                 // first Connected uses the same restore path as a reconnect.
-                await DiscardAbandonedOpenRangesAsync(stoppingToken).ConfigureAwait(false);
-
                 _hub.TradeUpdateReceived += OnTrade;
                 _hub.ConnectionStatusChanged += OnConnectionStatusChanged;
                 try
@@ -421,7 +421,7 @@ public sealed class TradeTapeRecorder : BackgroundService
                 DateTimeOffset end = _clock.GetUtcNow();
                 lock (_coverageGate)
                 {
-                    if (_openRanges.Remove(contractId, out OpenRange open) && end > open.RangeStart)
+                    if (_openRanges.Remove(contractId, out OpenRange open))
                     {
                         _pendingCloses.Add(
                             new ClosedRange(open.Venue, open.Instrument, contractId, open.RangeStart, end));
@@ -446,11 +446,8 @@ public sealed class TradeTapeRecorder : BackgroundService
         {
             foreach ((string contractId, OpenRange open) in _openRanges)
             {
-                if (end > open.RangeStart)
-                {
-                    _pendingCloses.Add(
-                        new ClosedRange(open.Venue, open.Instrument, contractId, open.RangeStart, end));
-                }
+                _pendingCloses.Add(
+                    new ClosedRange(open.Venue, open.Instrument, contractId, open.RangeStart, end));
             }
 
             _openRanges.Clear();
@@ -495,19 +492,23 @@ public sealed class TradeTapeRecorder : BackgroundService
         {
             using IServiceScope scope = _scopes.CreateScope();
             TopstepXDbContext database = scope.ServiceProvider.GetRequiredService<TopstepXDbContext>();
-            bool exists = await database.TapeCoverage
-                .AnyAsync(
-                    row => row.Venue == venue
-                        && row.Instrument == instrument
-                        && row.ContractId == contractId
-                        && row.RangeStart == start
-                        && row.RangeEnd == TapeCoverageRecord.StillListeningEnd,
-                    cancellationToken)
+            List<TapeCoverageRecord> stillOpen = await database.TapeCoverage
+                .Where(row => row.Venue == venue
+                    && row.Instrument == instrument
+                    && row.ContractId == contractId
+                    && row.RangeEnd == TapeCoverageRecord.StillListeningEnd)
+                .ToListAsync(cancellationToken)
                 .ConfigureAwait(false);
 
-            if (exists)
+            if (stillOpen.Count == 1
+                && stillOpen[0].RangeStart == start)
             {
                 return;
+            }
+
+            if (stillOpen.Count > 0)
+            {
+                database.TapeCoverage.RemoveRange(stillOpen);
             }
 
             database.TapeCoverage.Add(new TapeCoverageRecord
@@ -550,19 +551,22 @@ public sealed class TradeTapeRecorder : BackgroundService
             DateTimeOffset recordedAt = _clock.GetUtcNow();
             foreach (ClosedRange range in batch)
             {
-                TapeCoverageRecord? open = await database.TapeCoverage
-                    .FirstOrDefaultAsync(
-                        row => row.Venue == range.Venue
-                            && row.Instrument == range.Instrument
-                            && row.ContractId == range.ContractId
-                            && row.RangeStart == range.RangeStart
-                            && row.RangeEnd == TapeCoverageRecord.StillListeningEnd,
-                        cancellationToken)
+                List<TapeCoverageRecord> stillOpen = await database.TapeCoverage
+                    .Where(row => row.Venue == range.Venue
+                        && row.Instrument == range.Instrument
+                        && row.ContractId == range.ContractId
+                        && row.RangeEnd == TapeCoverageRecord.StillListeningEnd)
+                    .ToListAsync(cancellationToken)
                     .ConfigureAwait(false);
 
-                if (open is not null)
+                if (stillOpen.Count > 0)
                 {
-                    database.TapeCoverage.Remove(open);
+                    database.TapeCoverage.RemoveRange(stillOpen);
+                }
+
+                if (range.RangeEnd <= range.RangeStart)
+                {
+                    continue;
                 }
 
                 database.TapeCoverage.Add(new TapeCoverageRecord

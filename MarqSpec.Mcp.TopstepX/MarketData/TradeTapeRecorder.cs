@@ -44,8 +44,9 @@ namespace MarqSpec.Mcp.TopstepX.MarketData;
 /// <para>
 /// <b><see cref="ExecuteAsync"/> catches rather than faulting the host.</b> A faulted
 /// <see cref="BackgroundService.ExecuteTask"/> is what <c>Program.AnyFaulted</c> reads, and
-/// would turn an ordinary stdio EOF into a crash (gh#76). A re-subscribe failure is logged
-/// and leaves the coverage range closed; it does not fault the host.
+/// would turn an ordinary stdio EOF into a crash (gh#76). A refused subscribe is logged
+/// and leaves the coverage range closed. A store fault after a confirmed subscribe drops
+/// that subscription instead of claiming the venue refused it (gh#376). Neither faults the host.
 /// </para>
 /// <para>
 /// <b>Re-subscribe on every transition into <see cref="ConnectionState.Connected"/>.</b>
@@ -392,10 +393,12 @@ public sealed class TradeTapeRecorder : BackgroundService
         int restored = 0;
         foreach ((string contractId, Attribution attribution) in _attribution)
         {
+            bool subscribed = false;
             try
             {
                 await hub.SubscribeToTradeUpdatesAsync(contractId, cancellationToken)
                     .ConfigureAwait(false);
+                subscribed = true;
                 DateTimeOffset start = _clock.GetUtcNow();
                 lock (_coverageGate)
                 {
@@ -412,6 +415,43 @@ public sealed class TradeTapeRecorder : BackgroundService
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
                 throw;
+            }
+            catch (Exception exception) when (subscribed)
+            {
+                // The venue accepted the subscribe. A store fault after that side effect is
+                // not "the venue refused" (R-5.7). Drop the subscription so prints cannot
+                // land without a ledger row; do not write a close for a listen that never
+                // reached the store (gh#376).
+                _logger.LogError(
+                    exception,
+                    "The trade-tape recorder subscribed {Contract} but could not persist the open "
+                    + "coverage range. The venue subscription is being dropped.",
+                    contractId);
+
+                try
+                {
+                    await hub.UnsubscribeFromTradeUpdatesAsync(contractId, cancellationToken)
+                        .ConfigureAwait(false);
+                }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                {
+                    throw;
+                }
+                catch (Exception unsubscribeException)
+                {
+                    _logger.LogError(
+                        unsubscribeException,
+                        "The trade-tape recorder could not drop {Contract} after a failed open persist. "
+                        + "The store outcome is unknown; this contract is not listening.",
+                        contractId);
+                }
+
+                lock (_coverageGate)
+                {
+                    _openRanges.Remove(contractId);
+                }
+
+                _tape.Set(attribution.Instrument, TapeAvailability.ConnectedButNotSubscribed());
             }
             catch (Exception exception)
             {

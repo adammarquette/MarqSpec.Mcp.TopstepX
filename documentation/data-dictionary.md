@@ -296,9 +296,12 @@ opens — not on a stdio, switch-off, or missing-venue-client start that can sti
 tools — so two sentinels cannot merge across an outage. Those other starts leave the row;
 a still-open row is coverage only while that instrument is Listening, so a leftover cannot
 claim coverage after death. Opening a new listen retires any other still-open row for that
-contract. A hub that reports `Connected` with no confirmed subscribe is not a range. The
-intended contract set is held by the recorder; a roll still changes that set, which is why `ContractId`
-is in the key.
+contract. A store fault **after** a confirmed subscribe is not a refused subscribe (`R-5.7`, gh#376):
+the venue subscription is dropped so prints cannot land without a ledger row, and no close is
+written for a listen that never reached the store. A later successful restore opens a new range
+at the new subscribe time and does not cover that hole. A hub that reports `Connected` with no
+confirmed subscribe is not a range. The intended contract set is held by the recorder; a roll
+still changes that set, which is why `ContractId` is in the key.
 
 **The range is half-open, `[RangeStart, RangeEnd)`.** Closed ranges written adjacently either overlap by one
 instant or leave a hole, and both are invisible until a profile reports a window that was never covered. An

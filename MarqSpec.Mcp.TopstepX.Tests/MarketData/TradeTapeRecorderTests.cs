@@ -927,6 +927,106 @@ public sealed class TradeTapeRecorderTests
     }
 
     [Fact]
+    public async Task AFailedOpenPersist_AfterAConfirmedSubscribe_DropsTheVenueSubscription_AndDoesNotStorePrints()
+    {
+        // Subscribe confirmed, then PersistOpenRangeAsync throws. Treating that as a refused
+        // subscribe leaves the hub live and Trades filling a hole TapeCoverage never opened
+        // (gh#376 / R-5.7). The venue subscription must be dropped; tools must not see a
+        // live tape with no ledger row.
+        CollectingLogger logger = new();
+        (TradeTapeRecorder recorder, FakeMarketHub hub, TopstepXDbContext database, ServiceProvider services, _) =
+            Build(
+                McpTransport.Http,
+                recordTape: true,
+                logger: logger,
+                extraInterceptor: new FailingOpenCoverageInterceptor());
+
+        await using (services)
+        await using (database)
+        {
+            TapeAvailabilityHolder tape = services.GetRequiredService<TapeAvailabilityHolder>();
+
+            await recorder.StartAsync(CancellationToken.None);
+            await WaitUntil(() =>
+                hub.SubscribeAttempts >= 1
+                && logger.Errors.Exists(entry => entry.Exception is not null));
+
+            recorder.ExecuteTask.Should().NotBeNull();
+            recorder.ExecuteTask!.IsFaulted.Should().BeFalse(
+                "a faulted ExecuteTask is what Program.AnyFaulted reads");
+
+            hub.TradeSubscriptions.Should().BeEmpty(
+                "a store fault after a confirmed subscribe must drop the venue subscription");
+            hub.UnsubscribeAttempts.Should().BeGreaterThan(0);
+
+            tape.For("ES").IsListening.Should().BeFalse();
+            CoverageRows(database).Should().NotContain(
+                row => row.RangeEnd == TapeCoverageRecord.StillListeningEnd,
+                "a persist that never landed must not leave a still-open ledger row");
+
+            hub.Raise(Print(Utc(13, 46, 0), TradeLogType.Buy, price: 1m));
+            recorder.RecordedPrints.Should().Be(0, "prints must not land after the subscription is dropped");
+
+            await SeedEsCellAsync(database, _receipt);
+            MarketDataTools tools = Tools(database, tape);
+            Func<Task> footprint = () => tools.GetFootprint(
+                "ES", 5, _receipt, _receipt.AddHours(2), CancellationToken.None);
+
+            (await footprint.Should().ThrowAsync<ModelContextProtocol.McpException>())
+                .WithMessage("*not restored*");
+
+            await recorder.StopAsync(CancellationToken.None);
+        }
+    }
+
+    [Fact]
+    public async Task ALaterRestore_AfterAFailedOpenPersist_OpensANewRange_AndDoesNotCoverTheHole()
+    {
+        CollectingLogger logger = new();
+        (TradeTapeRecorder recorder, FakeMarketHub hub, TopstepXDbContext database, ServiceProvider services, FakeTimeProvider clock) =
+            Build(
+                McpTransport.Http,
+                recordTape: true,
+                logger: logger,
+                extraInterceptor: new FailingFirstOpenCoverageInterceptor());
+
+        await using (services)
+        await using (database)
+        {
+            TapeAvailabilityHolder tape = services.GetRequiredService<TapeAvailabilityHolder>();
+
+            await recorder.StartAsync(CancellationToken.None);
+            await WaitUntil(() =>
+                hub.SubscribeAttempts >= 1
+                && logger.Errors.Exists(entry => entry.Exception is not null));
+
+            DateTimeOffset failedListen = clock.GetUtcNow();
+            clock.Advance(TimeSpan.FromSeconds(1));
+            DateTimeOffset restoreStart = clock.GetUtcNow();
+
+            hub.SimulateMarketDisconnect();
+            hub.SimulateMarketReconnect();
+            await WaitUntil(() => hub.SubscribeAttempts >= 2 && tape.For("ES").IsListening);
+
+            CoverageRows(database).Should().NotContain(
+                row => row.RangeStart == failedListen,
+                "the listen that never reached the store is a hole, not a taped window");
+            CoverageRows(database).Should().ContainSingle(row =>
+                row.RangeStart == restoreStart
+                && row.RangeEnd == TapeCoverageRecord.StillListeningEnd);
+
+            await SeedEsCellAsync(database, restoreStart);
+            MarketDataTools tools = Tools(database, tape);
+            ToolPayloads.FootprintSeries payload = await tools.GetFootprint(
+                "ES", 5, failedListen, failedListen.AddHours(2), CancellationToken.None);
+
+            payload.Covered.Start.Should().Be(restoreStart, "the later restore must not backdate over the hole");
+
+            await recorder.StopAsync(CancellationToken.None);
+        }
+    }
+
+    [Fact]
     public async Task AResubscribeFailure_IsSurfaced_AndLeavesTheOpenRangeClosed()
     {
         CollectingLogger logger = new();
@@ -1418,6 +1518,50 @@ public sealed class TradeTapeRecorderTests
             if (retiringStillOpen)
             {
                 throw new InvalidOperationException("the store refused the coverage retire");
+            }
+
+            return base.SavingChangesAsync(eventData, result, cancellationToken);
+        }
+    }
+
+    /// <summary>Refuses a SaveChanges that writes a still-open TapeCoverage row.</summary>
+    private sealed class FailingOpenCoverageInterceptor : SaveChangesInterceptor
+    {
+        public override ValueTask<InterceptionResult<int>> SavingChangesAsync(
+            DbContextEventData eventData,
+            InterceptionResult<int> result,
+            CancellationToken cancellationToken = default)
+        {
+            bool writingOpen = eventData.Context?.ChangeTracker.Entries<TapeCoverageRecord>()
+                .Any(entry =>
+                    entry.State == EntityState.Added
+                    && entry.Entity.RangeEnd == TapeCoverageRecord.StillListeningEnd) == true;
+            if (writingOpen)
+            {
+                throw new InvalidOperationException("the store refused the coverage open");
+            }
+
+            return base.SavingChangesAsync(eventData, result, cancellationToken);
+        }
+    }
+
+    /// <summary>Refuses the first SaveChanges that writes a still-open TapeCoverage row.</summary>
+    private sealed class FailingFirstOpenCoverageInterceptor : SaveChangesInterceptor
+    {
+        private int _refusals;
+
+        public override ValueTask<InterceptionResult<int>> SavingChangesAsync(
+            DbContextEventData eventData,
+            InterceptionResult<int> result,
+            CancellationToken cancellationToken = default)
+        {
+            bool writingOpen = eventData.Context?.ChangeTracker.Entries<TapeCoverageRecord>()
+                .Any(entry =>
+                    entry.State == EntityState.Added
+                    && entry.Entity.RangeEnd == TapeCoverageRecord.StillListeningEnd) == true;
+            if (writingOpen && Interlocked.Increment(ref _refusals) == 1)
+            {
+                throw new InvalidOperationException("the store refused the coverage open");
             }
 
             return base.SavingChangesAsync(eventData, result, cancellationToken);

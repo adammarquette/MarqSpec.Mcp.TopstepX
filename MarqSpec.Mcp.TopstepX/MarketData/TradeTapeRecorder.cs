@@ -84,6 +84,8 @@ public sealed class TradeTapeRecorder : BackgroundService
     private readonly Dictionary<string, Attribution> _attribution = new(StringComparer.Ordinal);
     private readonly Dictionary<(string Venue, string Instrument, string Contract), long> _sequences = [];
     private readonly Dictionary<string, OpenRange> _openRanges = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, DateTimeOffset> _suppressPrintsFrom = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, DateTimeOffset> _ledgerOpenFrom = new(StringComparer.Ordinal);
     private readonly List<ClosedRange> _pendingCloses = [];
     private readonly object _coverageGate = new();
 
@@ -400,14 +402,15 @@ public sealed class TradeTapeRecorder : BackgroundService
                     .ConfigureAwait(false);
                 subscribed = true;
                 DateTimeOffset start = _clock.GetUtcNow();
-                lock (_coverageGate)
-                {
-                    _openRanges[contractId] = new OpenRange(attribution.Venue, attribution.Instrument, start);
-                }
 
                 await PersistOpenRangeAsync(
                         attribution.Venue, attribution.Instrument, contractId, start, cancellationToken)
                     .ConfigureAwait(false);
+
+                lock (_coverageGate)
+                {
+                    _openRanges[contractId] = new OpenRange(attribution.Venue, attribution.Instrument, start);
+                }
 
                 _tape.Set(attribution.Instrument, TapeAvailability.Listening());
                 restored++;
@@ -420,8 +423,9 @@ public sealed class TradeTapeRecorder : BackgroundService
             {
                 // The venue accepted the subscribe. A store fault after that side effect is
                 // not "the venue refused" (R-5.7). Drop the subscription so prints cannot
-                // land without a ledger row; do not write a close for a listen that never
-                // reached the store (gh#376).
+                // land without a ledger row. _openRanges is assigned only after the open
+                // persist lands, so a hub drop during this unsubscribe cannot close a
+                // listen that never reached the store (gh#376).
                 _logger.LogError(
                     exception,
                     "The trade-tape recorder subscribed {Contract} but could not persist the open "
@@ -545,6 +549,7 @@ public sealed class TradeTapeRecorder : BackgroundService
             if (stillOpen.Count == 1
                 && stillOpen[0].RangeStart == start)
             {
+                RememberLedgerOpen(contractId, start);
                 return;
             }
 
@@ -564,6 +569,20 @@ public sealed class TradeTapeRecorder : BackgroundService
             });
 
             await database.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+            RememberLedgerOpen(contractId, start);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch
+        {
+            lock (_coverageGate)
+            {
+                _suppressPrintsFrom[contractId] = start;
+            }
+
+            throw;
         }
         finally
         {
@@ -703,6 +722,14 @@ public sealed class TradeTapeRecorder : BackgroundService
         await _store.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
+            if (ShouldSuppressPrint(update.ContractId, pending.ReceivedAt))
+            {
+                _logger.LogWarning(
+                    "A print on {Contract} arrived without a persisted coverage open and was not stored.",
+                    update.ContractId);
+                return;
+            }
+
             using IServiceScope scope = _scopes.CreateScope();
             TopstepXDbContext database = scope.ServiceProvider.GetRequiredService<TopstepXDbContext>();
 
@@ -725,6 +752,30 @@ public sealed class TradeTapeRecorder : BackgroundService
         finally
         {
             _store.Release();
+        }
+    }
+
+    private void RememberLedgerOpen(string contractId, DateTimeOffset start)
+    {
+        lock (_coverageGate)
+        {
+            _ledgerOpenFrom[contractId] = start;
+        }
+    }
+
+    private bool ShouldSuppressPrint(string contractId, DateTimeOffset receivedAt)
+    {
+        lock (_coverageGate)
+        {
+            if (!_suppressPrintsFrom.TryGetValue(contractId, out DateTimeOffset suppress)
+                || receivedAt < suppress)
+            {
+                return false;
+            }
+
+            bool laterLedger = _ledgerOpenFrom.TryGetValue(contractId, out DateTimeOffset ledger)
+                && ledger > suppress;
+            return !laterLedger || receivedAt < ledger;
         }
     }
 

@@ -24,8 +24,10 @@ The first promotion since `v0.1.0`. New MCP tools are additions. Two existing pa
 
 - Live trade tape under HTTP when `MarketData__RecordTape` is on (stdio never records). Re-subscribe after a
   reconnect; per-instrument health; volume-front from the tape ([ADR-0016](documentation/adr/0016-subscribe-to-the-market-hub.md)).
-- `get_footprint` and `get_volume_profile` — stored cells only; no vendor backfill. A window before recording,
-  an unprojected resolution, or an instrument that is not listening, refuses rather than looking empty.
+  A confirmed subscribe writes a still-open `TapeCoverage` row so a first listen is not an empty ledger (gh#365).
+- `get_footprint` and `get_volume_profile` — stored cells only; no vendor backfill. A covered window with no
+  cells is projected on the read (gh#366). A window before recording, or an instrument that is not listening,
+  refuses rather than looking empty.
 - Tape volume-front on those two payloads (`front.used` is `tape-volume` or `none`; no silent prefer of the
   gateway).
 - `get_contract_roll` — the changeover the stored tape can prove, plus the bar-side seam around it. A
@@ -55,6 +57,9 @@ The first promotion since `v0.1.0`. New MCP tools are additions. Two existing pa
 - `get_bars`'s description names `venueRequests`, the field that is the round-trip test.
 - Tape health is **this** instrument's subscribe — another symbol's session does not make this one healthy.
 - A `PivotFormula` or `VolumeLevelKind` outside its own vocabulary is not treated as "unset".
+- A confirmed subscribe writes `TapeCoverage` immediately; `get_footprint` / `get_volume_profile` no longer
+  treat a first live listen as no tape (gh#365).
+- A covered tape with no footprint cells is projected on the read, same trigger as indicators (gh#366).
 
 ### Removed
 

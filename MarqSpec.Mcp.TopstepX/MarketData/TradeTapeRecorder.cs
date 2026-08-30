@@ -557,6 +557,7 @@ public sealed class TradeTapeRecorder : BackgroundService
                         .Where(row => row.Venue == range.Venue
                             && row.Instrument == range.Instrument
                             && row.ContractId == range.ContractId
+                            && row.RangeStart == range.RangeStart
                             && row.RangeEnd == TapeCoverageRecord.StillListeningEnd)
                         .ToListAsync(cancellationToken)
                         .ConfigureAwait(false);

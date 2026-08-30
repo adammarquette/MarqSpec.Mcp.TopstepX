@@ -287,7 +287,9 @@ The recorder **opens a range when a subscribe is confirmed** — that write is a
 end is still open (`9999-12-31Z`) — and **closes it** by replacing that end when the connection leaves
 `Connected`, the process stops, or a re-subscribe fails (gh#217, gh#365). The still-open row is retired
 before the closed row is written, so a persist that then throws cannot leave the sentinel as ordinary
-coverage. A still-open row is coverage only while that instrument is Listening: a leftover during an
+coverage. A close persist retires the still-open row that **opened that range**, not whatever sentinel
+is live now — a requeued close from a failed retire must not delete the listen that restored after
+the outage. A still-open row is coverage only while that instrument is Listening: a leftover during an
 outage — including a persist that failed to retire it — is not a taped window. A leftover still-open
 row from a crash is discarded on **every** next start that can still serve tools — stdio, the switch
 off, and a missing venue client included — so it cannot claim coverage after death. Opening a new

@@ -34,6 +34,9 @@ public sealed class FakeMarketHub : IProjectXWebSocketClient
     /// <summary>Thrown on the second and later <see cref="SubscribeToTradeUpdatesAsync"/> call.</summary>
     public Exception? SubscribeThrowsAfterFirst { get; set; }
 
+    /// <summary>Thrown when this contract is subscribed, if set after the first wave.</summary>
+    public string? SubscribeThrowsFor { get; set; }
+
     public int SubscribeAttempts { get; private set; }
 
     /// <summary>How many times the market hub transitioned into <see cref="ConnectionState.Connected"/>.</summary>
@@ -140,6 +143,11 @@ public sealed class FakeMarketHub : IProjectXWebSocketClient
         if (SubscribeAttempts > 1 && SubscribeThrowsAfterFirst is not null)
         {
             throw SubscribeThrowsAfterFirst;
+        }
+
+        if (SubscribeThrowsFor is { } refused && refused == contractId)
+        {
+            throw new InvalidOperationException("the venue refused the trade re-subscribe");
         }
 
         TradeSubscriptions.Add(contractId);

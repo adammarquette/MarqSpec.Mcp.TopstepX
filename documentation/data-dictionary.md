@@ -285,12 +285,14 @@ bars. There is no market-tape REST backfill, so a hole in this ledger is permane
 
 The recorder **opens a range when a subscribe is confirmed** — that write is a stored row whose exclusive
 end is still open (`9999-12-31Z`) — and **closes it** by replacing that end when the connection leaves
-`Connected`, the process stops, or a re-subscribe fails (gh#217, gh#365). A leftover still-open row from a
-crash is discarded on **every** next start that can still serve tools — stdio, the switch off, and a missing
-venue client included — so it cannot claim coverage after death. Opening a new listen retires any other
-still-open row for that contract; two sentinels must not merge across an outage. A hub that reports
-`Connected` with no confirmed subscribe is not a range. The intended contract set is held by the recorder;
-a roll still changes that set, which is why `ContractId` is in the key.
+`Connected`, the process stops, or a re-subscribe fails (gh#217, gh#365). The still-open row is retired
+before the closed row is written, so a persist that then throws cannot leave the sentinel as ordinary
+coverage. A leftover still-open row from a crash is discarded on **every** next start that can still serve
+tools — stdio, the switch off, and a missing venue client included — so it cannot claim coverage after
+death. Opening a new listen retires any other still-open row for that contract; two sentinels must not
+merge across an outage. A hub that reports `Connected` with no confirmed subscribe is not a range. The
+intended contract set is held by the recorder; a roll still changes that set, which is why `ContractId`
+is in the key.
 
 **The range is half-open, `[RangeStart, RangeEnd)`.** Closed ranges written adjacently either overlap by one
 instant or leave a hole, and both are invisible until a profile reports a window that was never covered. An

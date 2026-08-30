@@ -376,7 +376,9 @@ config knob the key cannot see — two parameterisations written under one key a
 One host, one tool registration, two ways in ([ADR-0007](adr/0007-dual-transport.md)):
 
 - **stdio** — what an MCP client launches locally. **All logging goes to stderr**; anything on stdout corrupts
-  the protocol frame, and it surfaces as a confusing handshake error rather than as a logging problem.
+  the protocol frame, and it surfaces as a confusing handshake error rather than as a logging problem. The
+  host still starts Kestrel in this mode, on an **ephemeral loopback port** it never serves from — a
+  well-known one stopped a second session starting at all (gh#392).
 - **streamable HTTP** — for a deployed instance, behind a bearer token.
 
 ## Degradation — what an absent dependency does

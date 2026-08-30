@@ -137,8 +137,8 @@ public sealed class FootprintAndVolumeProfileToolTests : IDisposable
     public async Task GetFootprint_AtAnUnprojectedResolution_Refuses_RatherThanLookingQuiet()
     {
         // Reviewer fixture: TapeCoverage is not per-resolution. Coverage + 5-minute cells with
-        // volume, then ask for 15-minute footprint. Confine succeeds; the 15m cell query is empty.
-        // Returning { cells: [] } is the quiet-market shape for an absent projection (gh#69 shape).
+        // volume and no trades, then ask for 15-minute footprint. On-read has nothing to project
+        // from; the 15m cell query stays empty. Returning { cells: [] } is the quiet-market shape.
         await SeedCoverageAsync(Coverage(Front, _fourteen, _sixteen));
         await SeedCellsAsync(Cell(_bucket1430, 5000m, buy: 4, sell: 1));
 

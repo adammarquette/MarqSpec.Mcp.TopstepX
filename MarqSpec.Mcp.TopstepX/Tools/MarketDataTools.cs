@@ -6,6 +6,7 @@ using MarqSpec.Mcp.TopstepX.Domain.MarketData;
 using MarqSpec.Mcp.TopstepX.MarketData;
 using MarqSpec.Mcp.TopstepX.Venue;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using ModelContextProtocol;
 using ModelContextProtocol.Server;
@@ -30,7 +31,8 @@ public sealed class MarketDataTools(
     IOptions<KeyLevelDetectionOptions> detection,
     VolumeProfileService volumeProfiles,
     TapeAvailabilityHolder? tape = null,
-    TapeVolumeFrontService? volumeFront = null)
+    TapeVolumeFrontService? volumeFront = null,
+    FootprintCacheService? footprints = null)
 {
     private readonly BarCacheService _cache = cache;
     private readonly TopstepXDbContext _database = database;
@@ -46,6 +48,12 @@ public sealed class MarketDataTools(
     private readonly TapeAvailabilityHolder _tape = tape ?? new();
     private readonly TapeVolumeFrontService _volumeFront = volumeFront
         ?? new TapeVolumeFrontService(database, gateway, levelMethods.Calendar);
+    private readonly FootprintCacheService _footprints = footprints
+        ?? new FootprintCacheService(
+            database,
+            new FootprintProjector(database, NullLogger<FootprintProjector>.Instance),
+            clock,
+            NullLogger<FootprintCacheService>.Instance);
 
     // The detection defaults, not the detection options: three of the seven fields are overridden per call, and
     // the merge happens in ResolveDetection. The catalogue holds no copy of these -- ILevelMethod.Detect
@@ -598,9 +606,10 @@ public sealed class MarketDataTools(
         + "`tape-volume` or `none`, never a silent prefer of the gateway. `contracts` stays the "
         + "newest listening run; it is not rewritten from `front`. Keys inside `front` are omitted "
         + "when that answer does not exist. "
-        + "TapeCoverage is not per-resolution: a covered window with no cells at the asked bar size is "
-        + "refused rather than returned as empty `cells` — that quiet-looking shape would hide an "
-        + "unprojected resolution. Never truncates: an over-cap window is refused.")]
+        + "A covered window with no cells at the asked bar size is projected from the stored tape on this "
+        + "read (no vendor call). If the tape still produces no cell — a roll inside the bar, or prints "
+        + "that do not count — the tool refuses rather than returning empty `cells`. Never truncates: an "
+        + "over-cap window is refused.")]
     public async Task<ToolPayloads.FootprintSeries> GetFootprint(
         [Description("The instrument symbol, e.g. ES.")] string symbol,
         [Description("The bar size in minutes the cells were projected at.")] int resolutionMinutes,
@@ -611,6 +620,9 @@ public sealed class MarketDataTools(
         InstrumentId instrument = Resolve(symbol);
         BarRange window = _guards.ValidateWindow(fromUtc, toUtc, resolutionMinutes);
         _tape.For(instrument.Symbol).Require();
+
+        await EnsureFootprintProjectedAsync(instrument, resolutionMinutes, cancellationToken)
+            .ConfigureAwait(false);
 
         FootprintRead read;
         try
@@ -679,7 +691,9 @@ public sealed class MarketDataTools(
         + "would fetch — `used` is `tape-volume` or `none`, never a silent prefer of the gateway. "
         + "`contracts` stays the newest listening run; it is not rewritten from `front`. Keys inside "
         + "`front` are omitted when that answer does not exist. "
-        + "Never truncates: an over-cap window is refused.")]
+        + "A covered window with no cells at the asked bar size is projected from the stored tape on this "
+        + "read (no vendor call). If the tape still produces no cell the tool refuses rather than "
+        + "returning an empty profile. Never truncates: an over-cap window is refused.")]
     public async Task<ToolPayloads.VolumeProfileSeries> GetVolumeProfile(
         [Description("The instrument symbol, e.g. ES.")] string symbol,
         [Description("The bar size in minutes the cells were projected at.")] int resolutionMinutes,
@@ -690,6 +704,9 @@ public sealed class MarketDataTools(
         InstrumentId instrument = Resolve(symbol);
         BarRange window = _guards.ValidateWindow(fromUtc, toUtc, resolutionMinutes);
         _tape.For(instrument.Symbol).Require();
+
+        await EnsureFootprintProjectedAsync(instrument, resolutionMinutes, cancellationToken)
+            .ConfigureAwait(false);
 
         FootprintRead cells;
         try
@@ -867,8 +884,8 @@ public sealed class MarketDataTools(
     }
 
     /// <summary>
-    /// Refuses a covered window with no cells at the asked bar size — TapeCoverage is not per-resolution,
-    /// so an empty list would look like a quiet market when the series was simply never projected.
+    /// Refuses a covered window that still has no cells after the on-read projection — a roll inside
+    /// the bar, or prints that do not count. An empty list would look like a quiet market.
     /// </summary>
     private async Task<string> EmptyFootprintRefusalAsync(
         InstrumentId instrument,
@@ -1038,6 +1055,22 @@ public sealed class MarketDataTools(
         int resolutionMinutes,
         CancellationToken cancellationToken) =>
         _indicators.EnsureProjectedAsync(
+            _gateway.VenueId, instrument, resolutionMinutes, cancellationToken);
+
+    /// <summary>
+    /// Projects stored prints into footprint cells for this resolution before reading them.
+    /// </summary>
+    /// <remarks>
+    /// <b>No catch here, deliberately</b>, for the reason <see cref="ReadAsync"/> states: a
+    /// <c>StoreContentionException</c> is a fact about this server's database and is translated once
+    /// for the whole tool surface by <see cref="StoreFaultGuard"/>. It cannot raise a
+    /// <c>VenueException</c> at all — <see cref="FootprintCacheService"/> holds no gateway.
+    /// </remarks>
+    private Task EnsureFootprintProjectedAsync(
+        InstrumentId instrument,
+        int resolutionMinutes,
+        CancellationToken cancellationToken) =>
+        _footprints.EnsureProjectedAsync(
             _gateway.VenueId, instrument, resolutionMinutes, cancellationToken);
 
     /// <summary>

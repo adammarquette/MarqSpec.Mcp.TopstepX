@@ -469,8 +469,10 @@ or footprint is never computed across a roll (`R-9.4`). Segment `firstBucket` / 
 times from the cells**, not the exclusive coverage end — that range stays on `covered`.
 
 **A window before recording began is refused** and names the earliest covered time. **A covered window with
-no cells at the asked bar size is refused** rather than returned as empty `cells`: `TapeCoverage` is not
-per-resolution, so that quiet-looking shape would hide an unprojected series. **When that instrument's live tape is not
+no cells at the asked bar size is projected from the stored tape on this read** — no vendor call, the
+same trigger as indicators ([ADR-0014](adr/0014-indicators-are-projected-on-read-too.md) shape, gh#366).
+If the tape still produces no cell (a roll inside the bar, or prints that do not count) the tool
+**refuses** rather than returning empty `cells`. **When that instrument's live tape is not
 listening the tool refuses** with a sentence naming the fix — an empty answer and an absent tape must not
 look the same (gh#218). Another symbol's subscribe does not make this one healthy. Top-level fields are
 always present. **`front` is a new object, not a replacement for `contracts`.** `used` is `tape-volume`
@@ -480,7 +482,8 @@ or `none` — never a silent prefer of the gateway. `tapeContractId`, `tapeSessi
 
 ### `get_volume_profile(symbol, resolutionMinutes, fromUtc, toUtc)`
 Volume by price, the point of control, and the 70% value area — an aggregate over the same stored cells
-`get_footprint` reads (`R-9`). Same covered-window and contract-provenance rules, same forward-only refusal.
+`get_footprint` reads (`R-9`). Same covered-window and contract-provenance rules, same forward-only
+refusal, same on-read projection when the covered tape has no cells at the asked bar size (gh#366).
 
 Returns `{ symbol, resolutionMinutes, byPrice: [{ p, v }], pointOfControl, valueAreaLow, valueAreaHigh,
 valueAreaVolume, totalVolume, covered: { start, end, narrowed }, contracts, front }`.

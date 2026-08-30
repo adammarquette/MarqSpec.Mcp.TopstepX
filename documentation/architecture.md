@@ -288,6 +288,27 @@ write meets the winner's committed rows, and `R-2.10`'s single retry re-derives 
 nothing — so one projection lands. Nothing is serialised and no lock is taken
 ([ADR-0012](adr/0012-fills-are-not-serialised.md) measured both shapes and rejected both).
 
+## The footprint read — on-read, the same trigger, never against the vendor
+
+`get_footprint` and `get_volume_profile` read stored cells. Since gh#366 they also **project what the
+tape has and the cells do not**, which is what makes them cache-aside rather than a reader over a
+writer that never ran ([ADR-0014](adr/0014-indicators-are-projected-on-read-too.md) shape).
+
+`FootprintCacheService.EnsureProjectedAsync(venue, instrument, resolution)`:
+
+1. **Probe** — newest `Trades.RecordedAt` for the symbol, newest `FootprintCells.RecordedAt` at the
+   asked bar size. No prints ⇒ nothing to project. Cells at least as new as the newest print ⇒ the
+   tape has not grown since the last write that could have changed a cell.
+2. **Otherwise replay the whole tape** through the same `FootprintProjector` inside the same
+   `SeriesUnitOfWork` — never a window around what was asked for, and never a vendor call. A
+   confirming rebuild is still an empty diff. A bucket whose counted prints span two contracts
+   still produces no cell.
+
+Ingest after each print is **not** taken. The projector is whole-tape; live `TapeCoverage` is a
+sibling claim (gh#365). The read of a covered window is the moment cells have to exist.
+
+**The venue is unreachable from here by construction**: the service takes no `IMarketDataGateway`.
+
 ## The indicator projection
 
 Indicators are **projections** over the bar store, not facts. Every row is reproducible from `Bars`, and that

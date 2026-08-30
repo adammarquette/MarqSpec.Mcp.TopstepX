@@ -123,14 +123,57 @@ public sealed class ProjectXMarketDataGateway : IMarketDataGateway
         }
 
         // Active first, then the nearest expiry -- the front month is what a caller asking for "ES" means.
-        return
-        [
-            .. matching
-                .OrderByDescending(c => c.ActiveContract)
-                .ThenBy(c => c.Id, StringComparer.Ordinal)
-                .Select(c => ProjectXMapping.ToContract(c, instrument)),
-        ];
+        return [.. InFrontMonthOrder(matching).Select(c => ProjectXMapping.ToContract(c, instrument))];
     }
+
+    /// <summary>
+    /// Orders the contracts of one product so the front month is first: active before inactive, then the
+    /// nearest expiry.
+    /// </summary>
+    /// <param name="contracts">The contracts already filtered to one product code.</param>
+    /// <returns>The same contracts, front month first.</returns>
+    /// <remarks>
+    /// <para>
+    /// <b><c>BarCacheService</c> takes element zero</b>, so this chooses the contract a whole series of bars
+    /// is fetched for. Those bars are then stored under the venue-neutral symbol with every indicator and key
+    /// level computed from them, so a wrong choice here is not an error anyone sees — it is an ordinary
+    /// looking chart of the wrong contract.
+    /// </para>
+    /// <para>
+    /// <b>The expiry is parsed, never compared as text</b> (<see cref="ExpiryRank"/>). Sorting the id as a
+    /// string compares the month letter ahead of the year, which agrees with expiry order inside one calendar
+    /// year and reverses across one: every December it files <c>Z25</c> behind <c>H26</c>, <c>M26</c> and
+    /// <c>U26</c> — last, at the one moment it is the front month. That was this method's behaviour until
+    /// gh#270, and <c>ContractResolutionTests</c> holds the cross-year set that reddens on it.
+    /// </para>
+    /// <para>
+    /// <b>An expiry that cannot be read sorts last, and that placement is deliberate.</b>
+    /// <see cref="ExpiryRank"/> answers null rather than inventing a rank, so the direction is chosen here:
+    /// last means an id nobody understands is never handed element zero. Note that the natural spelling gets
+    /// this backwards — ordering by a nullable int puts null <i>first</i>.
+    /// </para>
+    /// <para>
+    /// <b>What would make this matter, and what would make it wrong.</b> Today the venue usually leaves it
+    /// nothing to decide: contract search is fuzzy across <i>products</i> rather than expiries, so a search
+    /// for <c>ES</c> comes back with six products carrying one expiry each, and the product-code filter above
+    /// reduces that to a single element. <b>Nothing in this repository guarantees that.</b> The filter tests
+    /// the product segment only, and two expiries of one product share a tick size, so both survive every
+    /// check here; the cardinality is the venue's to choose. The observation behind "one expiry per product"
+    /// was taken mid-quarter, when a single expiry is active anyway, so it cannot distinguish that rule from
+    /// "the venue returns the active expiries" — and under the second, a roll window is exactly when a second
+    /// one appears. gh#219 (front month by volume) and gh#213 (both contracts recorded through a roll) both
+    /// need several expiries of one product at once, and are where this stops being hypothetical.
+    /// </para>
+    /// </remarks>
+    public static IEnumerable<Contract> InFrontMonthOrder(IEnumerable<Contract> contracts) =>
+        contracts
+            .OrderByDescending(c => c.ActiveContract)
+            .ThenBy(c => ExpiryRank(c.Id) ?? int.MaxValue)
+
+            // A total order, so the answer does not depend on the order the venue happened to list them in.
+            // The wiki's standing warning about this search is that neither the active flag nor result order
+            // identifies anything, and that applies to the tie-break as much as to the choice.
+            .ThenBy(c => c.Id, StringComparer.Ordinal);
 
     /// <inheritdoc />
     public async Task<IReadOnlyList<Bar>> GetBarsAsync(
@@ -157,13 +200,13 @@ public sealed class ProjectXMarketDataGateway : IMarketDataGateway
         TimeSpan pacedTotal = TimeSpan.Zero;
         int pacedPages = 0;
 
-        for (DateTimeOffset from = window.Start; from < window.End; from += page)
+        // CLAMPED BEFORE THE ADD, and stepped by the clamped end rather than by a whole page -- the same
+        // total form BarCacheService.FetchAsync uses, for the same reason. `from + page` computed first
+        // overflows for a window ending within one page of the end of the calendar, and a page here is 1,000
+        // bar spans (gh#110). The subtraction is total: two DateTimeOffsets always differ by a TimeSpan.
+        for (DateTimeOffset from = window.Start; from < window.End;)
         {
-            DateTimeOffset to = from + page;
-            if (to > window.End)
-            {
-                to = window.End;
-            }
+            DateTimeOffset to = window.End - from <= page ? window.End : from + page;
 
             // THIS LOOP IS THE ONLY BURST THIS SERVER ISSUES, and retrieveBars carries the vendor's TIGHTEST
             // limit: 50 requests / 30 seconds, which is a mean spacing of 600 ms. Unpaced, the loop is spaced
@@ -217,6 +260,7 @@ public sealed class ProjectXMarketDataGateway : IMarketDataGateway
                 "retrieving bars for " + contractId).ConfigureAwait(false);
 
             collected.AddRange(bars.Select(b => ProjectXMapping.ToBar(b, contractId)));
+            from = to;
         }
 
         if (pacedPages > 0)
@@ -314,6 +358,65 @@ public sealed class ProjectXMarketDataGateway : IMarketDataGateway
         // the venue ever lengthens the prefix.
         string[] segments = contractId.Split('.');
         return segments.Length >= 2 && string.Equals(segments[^2], productCode, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// The exchange's futures month codes in calendar order, so the index is the month less one.
+    /// </summary>
+    /// <remarks><c>I</c> and <c>L</c> are absent by convention, being confusable with digits.</remarks>
+    private const string MonthCodes = "FGHJKMNQUVXZ";
+
+    /// <summary>
+    /// The sort rank of a contract id's expiry, as <c>CON.F.US.{code}.{MYY}</c>.
+    /// </summary>
+    /// <param name="contractId">The venue contract id.</param>
+    /// <returns>
+    /// A rank that ascends with the expiry, or <see langword="null"/> when the expiry cannot be read.
+    /// </returns>
+    /// <remarks>
+    /// <para>
+    /// <b>Year first, then month.</b> The id's own string order compares the month letter before the year,
+    /// and the month letters happen to ascend alphabetically in calendar order — so a string sort agrees
+    /// with expiry order inside one calendar year and <b>inverts across one</b>. Every December,
+    /// <c>Z25</c> sorts after <c>H26</c>, <c>M26</c> and <c>U26</c>: last, exactly when it is the front month.
+    /// </para>
+    /// <para>
+    /// <b>Null is "cannot order", never a rank.</b> An invented rank would be indistinguishable from one that
+    /// was read, and it would decide which contract every bar is fetched for. The caller places unknown
+    /// deliberately; see <see cref="InFrontMonthOrder"/>.
+    /// </para>
+    /// <para>
+    /// The rank is ordinal within a century, which is all a two-digit year can support. A four-digit year is
+    /// a change of id shape and returns null rather than a guess — the strictness is the point, because a
+    /// shape change should degrade to "cannot read" rather than to a wrong order nothing would notice.
+    /// </para>
+    /// </remarks>
+    public static int? ExpiryRank(string contractId)
+    {
+        if (string.IsNullOrWhiteSpace(contractId))
+        {
+            return null;
+        }
+
+        string expiry = contractId.Split('.')[^1];
+        if (expiry.Length != 3)
+        {
+            return null;
+        }
+
+        int month = MonthCodes.IndexOf(expiry[0], StringComparison.Ordinal) + 1;
+        if (month == 0)
+        {
+            return null;
+        }
+
+        return int.TryParse(
+            expiry[1..],
+            System.Globalization.NumberStyles.None,
+            System.Globalization.CultureInfo.InvariantCulture,
+            out int year)
+            ? (year * 12) + month
+            : null;
     }
 
     /// <summary>

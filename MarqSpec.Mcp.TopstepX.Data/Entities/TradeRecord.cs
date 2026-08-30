@@ -1,0 +1,62 @@
+using MarqSpec.Mcp.TopstepX.Domain.MarketData;
+
+namespace MarqSpec.Mcp.TopstepX.Data.Entities;
+
+/// <summary>
+/// One print on the trade tape — the order-flow system of record (data dictionary §7).
+/// </summary>
+/// <remarks>
+/// <para>
+/// <b><see cref="ContractId"/> is in the key, unlike <see cref="BarRecord"/>.</b> A tape row without a
+/// contract cannot be attributed at all, so it has no meaning. Bars keep the venue-neutral symbol as
+/// the key and record the contract beside it; here the contract is identity (gh#215).
+/// </para>
+/// <para>
+/// <b><see cref="Sequence"/> exists because the venue supplies no trade id.</b> Two prints share a
+/// millisecond routinely, so without a tiebreak the primary key silently collapses them and the
+/// survivor looks like an ordinary trade. It is ingest-assigned and monotonic per
+/// <c>(instrument, contract)</c> — not a venue value.
+/// </para>
+/// <para>
+/// This table is a record rather than a pipeline: it carries <b>no retention policy</b>, and it is
+/// the store's first compression policy. It is also <b>original data, not a cache</b> — there is no
+/// market-tape REST backfill, so losing the store loses prints that cannot be refetched (ADR-0004,
+/// ADR-0016). Compression shrinks the chunks without deleting them.
+/// </para>
+/// </remarks>
+public sealed class TradeRecord
+{
+    /// <summary>The venue the print came from — the same product on two venues is two series.</summary>
+    public required string Venue { get; set; }
+
+    /// <summary>The normalised venue-neutral instrument symbol, e.g. <c>ES</c>. Never a contract id.</summary>
+    public required string Instrument { get; set; }
+
+    /// <summary>
+    /// The venue contract this print belongs to, e.g. <c>CON.F.US.EP.U26</c>. Required: a print
+    /// without a contract cannot be attributed.
+    /// </summary>
+    public required string ContractId { get; set; }
+
+    /// <summary>When the venue says the print occurred — the hypertable's time dimension. Always UTC.</summary>
+    public required DateTimeOffset TradeTimeUtc { get; set; }
+
+    /// <summary>
+    /// Ingest-assigned tiebreak, monotonic per <c>(instrument, contract)</c>. Not a venue trade id.
+    /// </summary>
+    public required long Sequence { get; set; }
+
+    /// <summary>The traded price.</summary>
+    public required decimal Price { get; set; }
+
+    /// <summary>The traded size, in contracts.</summary>
+    public required long Size { get; set; }
+
+    /// <summary>
+    /// Who lifted. <see cref="TradeDirection.Unknown"/> is a stored fact, never rewritten to a side.
+    /// </summary>
+    public required TradeDirection Direction { get; set; }
+
+    /// <summary>When this process received the print. Always UTC. Not the venue's stamp.</summary>
+    public required DateTimeOffset RecordedAt { get; set; }
+}

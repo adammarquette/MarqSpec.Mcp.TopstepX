@@ -5,4 +5,4 @@ contact_links:
     about: Report privately. Do not open a public issue for a vulnerability — see SECURITY.md.
   - name: Consumer-side behaviour (trading-copilot)
     url: https://github.com/adammarquette/trading-copilot/issues
-    about: Risk, sizing, auto-flatten and execution policy live in the consumer, not in this transport client.
+    about: Risk, sizing, auto-flatten and execution policy live in the consumer, not in this read-only server.

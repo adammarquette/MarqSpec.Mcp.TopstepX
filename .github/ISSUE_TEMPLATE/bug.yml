@@ -29,7 +29,7 @@ body:
     id: repro
     attributes:
       label: Reproduction
-      description: Smallest sequence that shows it. Say whether it reproduces against the fake gateway.
+      description: Smallest sequence that shows it. Say whether it reproduces against the local stack, which needs no credentials.
       value: |
         1.
         2.

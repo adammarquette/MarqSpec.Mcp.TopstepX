@@ -113,7 +113,7 @@ public sealed class ContractRollReportingTests : IDisposable
         // how much history supports the levels.
         MarketDataTools tools = await BuildSwingingAsync(rollAt: 20, total: 40);
 
-        ToolPayloads.LevelSet levels = await tools.GetKeyLevels("ES", 5, 40, CancellationToken.None);
+        ToolPayloads.LevelSet levels = await tools.GetKeyLevels("ES", 5, 40, cancellationToken: CancellationToken.None);
 
         levels.Contracts.Span.Should().Be(ToolPayloads.ContractSpan.SpansRoll);
         levels.DetectedOverBars.Should().Be(20, "only the bars of the contract in front are eligible");
@@ -214,6 +214,21 @@ public sealed class ContractRollReportingTests : IDisposable
     /// four-point range scores about 0.67 and clears the 0.5 floor.
     /// </para>
     /// </remarks>
+    /// <summary>
+    /// A triangle wave over two contracts, with the detection window stated rather than inherited.
+    /// </summary>
+    /// <param name="rollAt">The bar index the new front contract starts at.</param>
+    /// <param name="total">How many bars in total.</param>
+    /// <returns>The tool over the seeded store.</returns>
+    /// <remarks>
+    /// <b>The window is 5 and 5 here, not the shipped 20 and 15, and the fixture is why (gh#245).</b> The
+    /// swing repeats every twelve bars, so under a left window of twenty every peak has an EQUAL peak inside
+    /// its own window — and a tie is not dominance, so the series yields no pivots at any amplitude. That is
+    /// the sawtooth trap <c>LevelMethodCatalogRollTests</c> records, arriving from the other direction: the
+    /// fixture cannot carry the shipped window without ceasing to be a repeating swing. These cases are
+    /// about <c>R-3.5</c> — that detection stops at the seam — so the window is set to one this shape can
+    /// actually hold a pivot in, and stated here rather than assumed.
+    /// </remarks>
     private async Task<MarketDataTools> BuildSwingingAsync(int rollAt, int total)
     {
         for (int i = 0; i < total; i++)
@@ -229,7 +244,9 @@ public sealed class ContractRollReportingTests : IDisposable
                 contractId: rolled ? NewFront : Expiring);
         }
 
-        return await ComposeAsync(total);
+        return await ComposeAsync(
+            total,
+            new KeyLevelDetectionOptions { PivotLookback = 5, PivotRightLookback = 5 });
     }
 
     private void AddBar(int index, decimal close, decimal halfRange, string? contractId) =>
@@ -256,7 +273,7 @@ public sealed class ContractRollReportingTests : IDisposable
         ReferenceTools reference = new(
             new InstrumentRegistry(_wrapped!), _calendar!, _gateway!, _wrapped!, _clock!);
 
-        return new SnapshotTools(marketData, reference, new IndicatorCatalogNames(_catalog!));
+        return new SnapshotTools(marketData, reference, new IndicatorCatalogNames(_catalog!), _clock!);
     }
 
     private IOptions<MarketDataOptions>? _wrapped;
@@ -265,7 +282,7 @@ public sealed class ContractRollReportingTests : IDisposable
     private FakeTimeProvider? _clock;
     private CountingGateway? _gateway;
 
-    private async Task<MarketDataTools> ComposeAsync(int total)
+    private async Task<MarketDataTools> ComposeAsync(int total, KeyLevelDetectionOptions? detection = null)
     {
         await _database.SaveChangesAsync();
 
@@ -297,9 +314,14 @@ public sealed class ContractRollReportingTests : IDisposable
             _database,
             new InstrumentRegistry(wrapped),
             catalog,
+            new IndicatorCacheService(
+                _database, catalog, projector, clock, NullLogger<IndicatorCacheService>.Instance),
+            new LevelMethodCatalog(calendar),
             gateway,
             new ToolGuards(wrapped),
             new StoreAvailabilityHolder(),
-            clock);
+            clock,
+            Options.Create(detection ?? new KeyLevelDetectionOptions()),
+            new VolumeProfileService(_database));
     }
 }

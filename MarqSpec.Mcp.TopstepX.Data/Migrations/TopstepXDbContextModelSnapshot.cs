@@ -137,6 +137,41 @@ namespace MarqSpec.Mcp.TopstepX.Data.Migrations
                         });
                 });
 
+            modelBuilder.Entity("MarqSpec.Mcp.TopstepX.Data.Entities.FootprintCellRecord", b =>
+                {
+                    b.Property<string>("Venue")
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
+                    b.Property<string>("Instrument")
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)");
+
+                    b.Property<int>("ResolutionMinutes")
+                        .HasColumnType("integer");
+
+                    b.Property<DateTimeOffset>("BucketStart")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<decimal>("Price")
+                        .HasColumnType("numeric(18,8)");
+
+                    b.Property<long>("BuyVolume")
+                        .HasColumnType("bigint");
+
+                    b.Property<DateTimeOffset>("RecordedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<long>("SellVolume")
+                        .HasColumnType("bigint");
+
+                    b.HasKey("Venue", "Instrument", "ResolutionMinutes", "BucketStart", "Price");
+
+                    b.HasIndex("Instrument", "ResolutionMinutes", "BucketStart");
+
+                    b.ToTable("FootprintCells", (string)null);
+                });
+
             modelBuilder.Entity("MarqSpec.Mcp.TopstepX.Data.Entities.IndicatorValueRecord", b =>
                 {
                     b.Property<string>("Venue")
@@ -206,63 +241,73 @@ namespace MarqSpec.Mcp.TopstepX.Data.Migrations
                     b.ToTable("Observations", (string)null);
                 });
 
-            modelBuilder.Entity("MarqSpec.Mcp.TopstepX.Data.Entities.PriceLevelRecord", b =>
+            modelBuilder.Entity("MarqSpec.Mcp.TopstepX.Data.Entities.TapeCoverageRecord", b =>
                 {
-                    b.Property<Guid>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("uuid");
-
-                    b.Property<bool>("Active")
-                        .HasColumnType("boolean");
-
-                    b.Property<decimal>("Bottom")
-                        .HasColumnType("numeric(18,8)");
-
-                    b.Property<DateTimeOffset>("FormedAtBucket")
-                        .HasColumnType("timestamp with time zone");
-
-                    b.Property<string>("Instrument")
-                        .IsRequired()
-                        .HasMaxLength(32)
-                        .HasColumnType("character varying(32)");
-
-                    b.Property<int>("Kind")
-                        .HasColumnType("integer");
-
-                    b.Property<decimal>("Significance")
-                        .HasColumnType("numeric(18,8)");
-
-                    b.Property<int>("TimeframeMinutes")
-                        .HasColumnType("integer");
-
-                    b.Property<decimal>("Top")
-                        .HasColumnType("numeric(18,8)");
-
-                    b.Property<int>("TouchCount")
-                        .HasColumnType("integer");
-
-                    b.Property<DateTimeOffset>("UpdatedAt")
-                        .HasColumnType("timestamp with time zone");
-
                     b.Property<string>("Venue")
-                        .IsRequired()
                         .HasMaxLength(64)
                         .HasColumnType("character varying(64)");
 
-                    b.HasKey("Id");
+                    b.Property<string>("Instrument")
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)");
 
-                    b.HasIndex("Instrument", "TimeframeMinutes", "Active");
+                    b.Property<string>("ContractId")
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
 
-                    b.ToTable("PriceLevels", null, t =>
-                        {
-                            t.HasCheckConstraint("CK_PriceLevels_BottomPositive", "\"Bottom\" > 0");
+                    b.Property<DateTimeOffset>("RangeStart")
+                        .HasColumnType("timestamp with time zone");
 
-                            t.HasCheckConstraint("CK_PriceLevels_KindKnown", "\"Kind\" <> 0");
+                    b.Property<DateTimeOffset>("RangeEnd")
+                        .HasColumnType("timestamp with time zone");
 
-                            t.HasCheckConstraint("CK_PriceLevels_TimeframePositive", "\"TimeframeMinutes\" > 0");
+                    b.Property<DateTimeOffset>("RecordedAt")
+                        .HasColumnType("timestamp with time zone");
 
-                            t.HasCheckConstraint("CK_PriceLevels_ZoneOrdered", "\"Top\" > \"Bottom\"");
-                        });
+                    b.HasKey("Venue", "Instrument", "ContractId", "RangeStart", "RangeEnd");
+
+                    b.HasIndex("Instrument", "ContractId", "RangeStart", "RangeEnd");
+
+                    b.ToTable("TapeCoverage", (string)null);
+                });
+
+            modelBuilder.Entity("MarqSpec.Mcp.TopstepX.Data.Entities.TradeRecord", b =>
+                {
+                    b.Property<string>("Venue")
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
+                    b.Property<string>("Instrument")
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)");
+
+                    b.Property<string>("ContractId")
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
+                    b.Property<DateTimeOffset>("TradeTimeUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<long>("Sequence")
+                        .HasColumnType("bigint");
+
+                    b.Property<int>("Direction")
+                        .HasColumnType("integer");
+
+                    b.Property<decimal>("Price")
+                        .HasColumnType("numeric(18,8)");
+
+                    b.Property<DateTimeOffset>("RecordedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<long>("Size")
+                        .HasColumnType("bigint");
+
+                    b.HasKey("Venue", "Instrument", "ContractId", "TradeTimeUtc", "Sequence");
+
+                    b.HasIndex("Instrument", "ContractId", "TradeTimeUtc");
+
+                    b.ToTable("Trades", (string)null);
                 });
 #pragma warning restore 612, 618
         }

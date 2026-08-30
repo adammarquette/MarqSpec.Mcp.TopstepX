@@ -1,8 +1,7 @@
 <Project>
 
   <!--
-    Applies to every project in the repository. Project-specific settings (target frameworks,
-    packaging metadata) stay in the .csproj.
+    Applies to every project in the repository. Project-specific settings stay in the .csproj.
   -->
 
   <PropertyGroup>
@@ -11,8 +10,10 @@
     <ImplicitUsings>enable</ImplicitUsings>
 
     <!--
-      The PRD asks for analyzer warnings at zero (R-11.4). Nothing enforced it, so "at zero" was a
-      hope. This is what makes it true.
+      Warnings are errors because this file says so, not because a requirement asks: the PRD numbers
+      what the SERVER must do, and carries nothing about analyzer warnings. "At zero" is a hope until
+      something enforces it — this is what makes it true. The requirement id this used to cite was
+      another repository's, and never resolved here (gh#172).
     -->
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
     <EnforceCodeStyleInBuild>true</EnforceCodeStyleInBuild>
@@ -20,8 +21,9 @@
 
     <!--
       Deterministic, source-linked builds. SourceLink ships in the SDK since .NET 8, so no
-      PackageReference is needed — this library's dependency surface is part of its public contract
-      (R-10.5) and is kept small on purpose.
+      PackageReference is needed. Nothing compiles against this application's assemblies, so its
+      dependency surface is not a public contract (gh#171); it is kept small because every package
+      it takes ships inside the published image.
     -->
     <Deterministic>true</Deterministic>
     <ContinuousIntegrationBuild Condition="'$(GITHUB_ACTIONS)' == 'true'">true</ContinuousIntegrationBuild>
@@ -40,8 +42,16 @@
     ADR-0001 — the git tag is the version. No file declares one; MinVer derives it from the nearest
     v-prefixed tag. This is why <Version> is absent from every .csproj.
 
-    MinVer needs tag history: a shallow clone yields 0.0.0-alpha.0 SILENTLY rather than failing, so
-    any CI job that packs needs `fetch-depth: 0`.
+    MinVer needs tag history: a shallow clone yields 0.0.0-alpha.0 SILENTLY rather than failing.
+    NOTHING HERE PACKS, so the rule is that every CI job which BUILDS ON THE RUNNER needs
+    `fetch-depth: 0`. It does not reach the CONTAINER build, which never sees .git (see
+    .dockerignore) and stamps 0.0.0-alpha.0 every time, at any depth.
+
+    THAT IS READ OFF THE ARTIFACT, not inferred from a build log (gh#176): inside the published
+    ghcr.io/adammarquette/marqspec.mcp.topstepx:0.1.0 image, MarqSpec.Mcp.TopstepX.dll carries
+    AssemblyInformationalVersion 0.0.0-alpha.0 and AssemblyVersion 0.0.0.0. The release number is
+    carried by the image TAG and by org.opencontainers.image.version instead, and the assembly's
+    own stamp is decorative BY DECISION. ADR-0001's decision log has the reasoning and the cost.
   -->
   <PropertyGroup>
     <MinVerTagPrefix>v</MinVerTagPrefix>

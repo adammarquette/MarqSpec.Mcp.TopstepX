@@ -245,7 +245,13 @@ public sealed class BarCacheService
             return missing;
         }
 
+        // AsNoTracking, for the reason the reads of Bars are (gh#103): on a relational store the ledger is
+        // written by SQL the change tracker never sees, so a tracked row here is a copy the identity map
+        // would hand back to the NEXT call in this scope in preference to the row that call just read. The
+        // context and the service are both scoped, and a refresh moves RecordedAt and ExpiresAt -- the two
+        // columns this read exists to judge.
         List<BarCoverageRecord> covered = await _database.BarCoverage
+            .AsNoTracking()
             .Where(c => c.Venue == venue
                 && c.Instrument == instrument.Symbol
                 && c.ResolutionMinutes == resolutionMinutes
@@ -318,14 +324,15 @@ public sealed class BarCacheService
             // pages rather than asking for the whole thing and trusting the answer.
             TimeSpan page = TimeSpan.FromTicks(VenuePageSizeBars * barSize.Ticks);
 
-            for (DateTimeOffset from = range.Start; from < range.End; from += page)
+            // CLAMPED BEFORE THE ADD, and stepped by the clamped end rather than by a whole page. Computing
+            // `from + page` first and trimming it afterwards overflows for a range that ends within one page
+            // of the end of the calendar -- a page is 1,000 bar spans, so at 60-minute bars it is forty-two
+            // days -- and left the tool boundary as a raw ArgumentOutOfRangeException for a range four hours
+            // long (gh#110). `from = to` closes the same overflow on the increment. The subtraction is total:
+            // the difference between two DateTimeOffsets always fits a TimeSpan.
+            for (DateTimeOffset from = range.Start; from < range.End;)
             {
-                DateTimeOffset to = from + page;
-                if (to > range.End)
-                {
-                    to = range.End;
-                }
-
+                DateTimeOffset to = range.End - from <= page ? range.End : from + page;
                 BarRange slice = new(from, to);
                 IReadOnlyList<Bar> bars = await _gateway
                     .GetBarsAsync(contract.ContractId, slice, barSize, cancellationToken)
@@ -349,8 +356,11 @@ public sealed class BarCacheService
 
                 // Drop still-forming bars even though the request already asks the venue not to send them.
                 // A half-formed bar stored as final is indistinguishable from data and corrupts everything
-                // derived from it -- this must not depend on a venue behaving.
-                slices.Add(new FetchedSlice(slice, [.. bars.Where(b => b.OpenTime + barSize <= now)]));
+                // derived from it -- this must not depend on a venue behaving. Written as a subtraction
+                // rather than `b.OpenTime + barSize <= now` for the same reason the page walk above is:
+                // exactly equivalent, and total for a bar the venue placed at the end of the calendar.
+                slices.Add(new FetchedSlice(slice, [.. bars.Where(b => now - b.OpenTime >= barSize)]));
+                from = to;
             }
         }
 
@@ -638,6 +648,47 @@ public sealed class BarCacheService
         return written;
     }
 
+    /// <summary>
+    /// The coverage write, as one statement the store resolves against the row it has committed.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>The conflict target is the composite primary key</b> — the same key the read this replaced looked
+    /// the row up by, reached directly instead of being inferred from a read of it.
+    /// </para>
+    /// <para>
+    /// <b>There is no skip-unchanged <c>WHERE</c>, and its absence is the point.</b> The bar write has one
+    /// because rewriting a bucket with the numbers it already held moves <c>RecordedAt</c> for nothing and
+    /// sends the whole series back through the projection. Here <c>RecordedAt</c> is <i>the answer this row
+    /// exists to give</i> — when the venue was last asked — and <c>ExpiresAt</c> is derived from it, so every
+    /// ask is a change by construction and there is nothing to skip. Nothing compares a stored value against
+    /// an incoming one, which is also what keeps the gh#37 shape out: the only comparison is the key's, made
+    /// by the index, on both sides in the column's own type.
+    /// </para>
+    /// <para>
+    /// <b><c>ExpiresAt</c> is assigned unconditionally, <see langword="null"/> included.</b> Null means
+    /// <i>never</i> here, not <i>not recorded</i>, so a write that preserved a stored expiry — omitting the
+    /// column, or coalescing over it — would leave a permanent claim wearing the TTL it was given back when
+    /// the range was still near the present, and the range would be re-fetched on every call forever.
+    /// </para>
+    /// </remarks>
+    private const string RecordCoverageSql = """
+        INSERT INTO "BarCoverage" (
+            "Venue", "Instrument", "ResolutionMinutes", "RangeStart", "RangeEnd", "RecordedAt", "ExpiresAt")
+        VALUES (@venue, @instrument, @resolution, @rangeStart, @rangeEnd, @recorded, @expires)
+        ON CONFLICT ("Venue", "Instrument", "ResolutionMinutes", "RangeStart", "RangeEnd") DO UPDATE SET
+            "RecordedAt" = excluded."RecordedAt",
+            "ExpiresAt" = excluded."ExpiresAt"
+        """;
+
+    /// <summary>
+    /// Records that the venue answered a range <b>empty</b>, with the TTL its age earns it.
+    /// </summary>
+    /// <remarks>
+    /// Two implementations for the same reason the bar write has two (gh#122, gh#103): whether this is an
+    /// insert or an update is a fact about the <b>store</b> rather than about this process, and the in-memory
+    /// provider the unit tier runs on has no <c>ON CONFLICT</c> to leave it to.
+    /// </remarks>
     private async Task RecordEmptyAsync(
         string venue,
         InstrumentId instrument,
@@ -649,9 +700,89 @@ public sealed class BarCacheService
         // Asymmetric TTL. Near the present an empty answer means "not yet", and believing it permanently
         // would blind the cache to the bar that is about to print. For settled history it means "never", and
         // re-asking costs a venue request on every single call.
+        //
+        // Decided HERE, once, and handed to both writes: the classification is a question about the clock and
+        // the range, which is this process's business, while insert-versus-update is the store's.
         bool settled = range.End <= now - SettledHistoryAge;
         DateTimeOffset? expiresAt = settled ? null : now + RecentEmptyTtl;
 
+        if (_database.Database.IsRelational())
+        {
+            await RecordEmptyInStoreAsync(
+                venue, instrument, resolutionMinutes, range, now, expiresAt, cancellationToken)
+                .ConfigureAwait(false);
+        }
+        else
+        {
+            await RecordEmptyInMemoryAsync(
+                venue, instrument, resolutionMinutes, range, now, expiresAt, cancellationToken)
+                .ConfigureAwait(false);
+        }
+
+        _logger.LogDebug(
+            "The venue returned no bars for {Instrument} {Resolution}m over {From:o}..{To:o}; recorded as "
+            + "covered ({Ttl}).",
+            instrument.Symbol,
+            resolutionMinutes,
+            range.Start,
+            range.End,
+            settled ? "permanently" : "briefly");
+    }
+
+    private async Task RecordEmptyInStoreAsync(
+        string venue,
+        InstrumentId instrument,
+        int resolutionMinutes,
+        BarRange range,
+        DateTimeOffset now,
+        DateTimeOffset? expiresAt,
+        CancellationToken cancellationToken)
+    {
+        // THE READ THAT USED TO DECIDE THIS IS GONE, RATHER THAN DEMOTED (gh#122).
+        //
+        // It read the row from THIS transaction's snapshot, so under the RepeatableRead of gh#73 two callers
+        // asking about one range the venue answers empty both found no row, both INSERTed one, and the loser
+        // took a 23505 out of `get_bars` -- with no bars involved at all, on the ordinary polling case the
+        // ledger exists to make cheap. The bar write kept its pre-read because it still SAVES A WRITE; this
+        // one had nothing left to save, because the ledger holds the latest answer for a range rather than a
+        // history of asking, so every ask is a write.
+        //
+        // The 23505 becomes a 40001 rather than disappearing: Postgres refuses a conflict against a row
+        // committed AFTER this snapshot, which is exactly what `R-2.10` already retries once -- and the
+        // retry runs over the store the winner committed, so it converges.
+        NpgsqlParameter[] parameters =
+        [
+            new("venue", NpgsqlDbType.Varchar) { Value = venue },
+            new("instrument", NpgsqlDbType.Varchar) { Value = instrument.Symbol },
+            new("resolution", NpgsqlDbType.Integer) { Value = resolutionMinutes },
+            new("rangeStart", NpgsqlDbType.TimestampTz) { Value = range.Start },
+            new("rangeEnd", NpgsqlDbType.TimestampTz) { Value = range.End },
+            new("recorded", NpgsqlDbType.TimestampTz) { Value = now },
+            new("expires", NpgsqlDbType.TimestampTz) { Value = (object?)expiresAt ?? DBNull.Value },
+        ];
+
+        await _database.Database
+            .ExecuteSqlRawAsync(RecordCoverageSql, parameters, cancellationToken)
+            .ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// The same write against a provider with no <c>ON CONFLICT</c> — the unit tier's in-memory store.
+    /// </summary>
+    /// <remarks>
+    /// It has no transactions and no snapshots either, so the race the relational path exists to survive is
+    /// not merely absent here, it is unrepresentable. This is the read-then-write that was the only
+    /// implementation before gh#122, kept as it was.
+    /// </remarks>
+    private async Task RecordEmptyInMemoryAsync(
+        string venue,
+        InstrumentId instrument,
+        int resolutionMinutes,
+        BarRange range,
+        DateTimeOffset now,
+        DateTimeOffset? expiresAt,
+        CancellationToken cancellationToken)
+    {
         // An EXPIRED row for this exact range is filtered out of the covered set, so it is invisible to the
         // caller -- but it is still in the table, and inserting over it is a primary-key violation. Refresh
         // rather than insert: the ledger tracks the latest answer for a range, not a history of asking.
@@ -683,14 +814,5 @@ public sealed class BarCacheService
                 ExpiresAt = expiresAt,
             });
         }
-
-        _logger.LogDebug(
-            "The venue returned no bars for {Instrument} {Resolution}m over {From:o}..{To:o}; recorded as "
-            + "covered ({Ttl}).",
-            instrument.Symbol,
-            resolutionMinutes,
-            range.Start,
-            range.End,
-            settled ? "permanently" : "briefly");
     }
 }

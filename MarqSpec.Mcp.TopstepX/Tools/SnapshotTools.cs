@@ -17,11 +17,13 @@ namespace MarqSpec.Mcp.TopstepX.Tools;
 public sealed class SnapshotTools(
     MarketDataTools marketData,
     ReferenceTools reference,
-    IndicatorCatalogNames names)
+    IndicatorCatalogNames names,
+    TimeProvider clock)
 {
     private readonly MarketDataTools _marketData = marketData;
     private readonly ReferenceTools _reference = reference;
     private readonly IndicatorCatalogNames _names = names;
+    private readonly TimeProvider _clock = clock;
 
     /// <summary>The resolutions a snapshot covers when the caller does not name any.</summary>
     /// <remarks>
@@ -107,8 +109,14 @@ public sealed class SnapshotTools(
         "Reads recent bars, the latest value of every indicator, detected key levels and the session state "
         + "for one instrument across one or more resolutions — in a single call. This is usually the right "
         + "tool to start with; the single-purpose tools are for when you need a longer window or one specific "
-        + "series. Every indicator has a KEY in the map; a NULL value there means CANNOT MEASURE at that "
-        + "bucket, so read the value rather than testing whether the key is there. "
+        + "series. Every indicator has a KEY in the map; a NULL ENTRY there means CANNOT MEASURE, so read "
+        + "the entry rather than testing whether the key is there. An entry that is not null is a READING — "
+        + "`{ value, bucketStart, contractId }`, what get_indicator_at returns — not a bare number. READ "
+        + "`bucketStart`: it is the bucket the value was COMPUTED at, at or before the moment this slice was "
+        + "read, and it is NOT the same for every indicator. Just after a roll, an indicator the new "
+        + "contract's bars cannot satisfy yet falls back to the EXPIRING contract, so `contractId` can differ "
+        + "between entries and from the bars' own `contracts`. When `bars` is empty the readings are still "
+        + "returned and `bucketStart` is the only thing that says how old they are. "
         + "CALL IT WITH JUST A SYMBOL: it defaults to 5-minute and 60-minute bars, 100 of each. Those two are "
         + "the setup and the bias, and they are the point — on one timeframe alone, a pullback in an uptrend "
         + "and the start of a downtrend look identical. Both defaults are overridable: pass any resolutions "
@@ -141,25 +149,41 @@ public sealed class SnapshotTools(
                 .GetLatestBars(symbol, resolution, barCount, cancellationToken)
                 .ConfigureAwait(false);
 
+            // The moment every indicator below is read as of. With bars that is a property of the data; with
+            // none it is "now", and now comes from the INJECTED clock. DateTimeOffset.UtcNow made this the
+            // one path on the tool surface no test could pin, and the state where it is observable is a real
+            // one rather than a contrived one: an instrument that has stopped updating still has indicator
+            // rows behind a look-back window that now reaches past them, and the anchor decides whether the
+            // last stored reading comes back or a null does (gh#268).
             DateTimeOffset asOf = series.Bars.Count > 0
                 ? series.Bars[^1].T
-                : DateTimeOffset.UtcNow;
+                : _clock.GetUtcNow();
 
-            Dictionary<string, decimal?> indicators = [];
+            Dictionary<string, ToolPayloads.IndicatorReading?> indicators = [];
             foreach (string name in _names.Names)
             {
                 ToolPayloads.IndicatorReading reading = await _marketData
                     .GetIndicatorAt(symbol, resolution, name, asOf, cancellationToken)
                     .ConfigureAwait(false);
 
+                // THE WHOLE READING TRAVELS, not reading.Value. The anchor above is one moment for the slice,
+                // but it is where each read STOPPED, not where its value was computed -- an as-of read takes
+                // the last row at or before it, and warm-up restarts at every contract seam (R-2.7). So a
+                // slice just past a roll answers with the new contract's VWAP beside an ATR from the expiring
+                // quarter -- measured three buckets and one contract apart in SnapshotIndicatorProvenanceTests
+                // -- and a bare number said neither (gh#286). A slice-wide as-of would have been cheaper and
+                // wrong for the same reason: the anchor is shared, the provenance is not.
+                //
                 // The null is kept rather than dropped. An absent key and a null value read differently: one
                 // says "this server does not compute that", the other says "it does, and it cannot measure
-                // yet". The second is the answer here.
-                indicators[name] = reading.Value;
+                // yet". The second is the answer here -- and it stays the MAP'S null rather than becoming the
+                // reading's own {} form, because the SDK's ignore condition does not reach inside a
+                // dictionary and `indicators.x === null` is the test the catalogue has always given callers.
+                indicators[name] = reading.Value is null ? null : reading;
             }
 
             ToolPayloads.LevelSet levels = await _marketData
-                .GetKeyLevels(symbol, resolution, Math.Max(barCount, 200), cancellationToken)
+                .GetKeyLevels(symbol, resolution, Math.Max(barCount, 200), cancellationToken: cancellationToken)
                 .ConfigureAwait(false);
 
             // The WHOLE level set travels, not just its list. Levels are detected over max(barCount, 200)

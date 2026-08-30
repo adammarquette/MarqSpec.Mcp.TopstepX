@@ -35,7 +35,9 @@ public static class BarGapDetector
     /// <param name="calendar">The session calendar deciding which buckets count.</param>
     /// <returns>The expected bucket starts, ascending.</returns>
     /// <exception cref="ArgumentOutOfRangeException">
-    /// <paramref name="barSize"/> is not positive, or the window needs more than <see cref="MaxBucketsPerPass"/> buckets.
+    /// <paramref name="barSize"/> is not positive, the window needs more than <see cref="MaxBucketsPerPass"/>
+    /// buckets, or its bucket grid runs past the end of the representable calendar — see
+    /// <see cref="AlignUp"/>, which the tool boundary bounds ahead of this (gh#110).
     /// </exception>
     public static IReadOnlyList<DateTimeOffset> ExpectedBuckets(
         BarRange window,
@@ -148,10 +150,21 @@ public static class BarGapDetector
     /// <param name="instant">The instant.</param>
     /// <param name="barSize">The bar size.</param>
     /// <returns>The aligned instant.</returns>
+    /// <exception cref="ArgumentOutOfRangeException">
+    /// <paramref name="barSize"/> is not positive, or the next bucket boundary above
+    /// <paramref name="instant"/> is past <see cref="DateTimeOffset.MaxValue"/>.
+    /// </exception>
     /// <remarks>
+    /// <b>Rounding up near the end of the calendar has no answer, so this throws rather than inventing one.</b>
+    /// Clamping to the last representable instant would move a bucket boundary off the grid and hand back a
+    /// bucket that is not one — a wrong number wearing an ordinary face. The tool boundary refuses such a
+    /// window first, naming the value, so a caller sees a readable error rather than this exception
+    /// (<c>ToolGuards.LastServableEnd</c>, gh#110).
+    /// <para>
     /// Alignment is against a fixed UTC grid anchored at the .NET epoch (<c>UtcTicks</c>), not against the
     /// window. Aligning against the window's own start would produce a different bucket grid for every caller,
     /// and two callers asking overlapping questions would each miss the other's cached rows entirely.
+    /// </para>
     /// <para>
     /// The anchor is midnight, so for any bar size dividing 1440 minutes this is the same grid the venue
     /// publishes on — which covers every resolution anyone has asked for. It is <i>not</i> the Unix epoch, as

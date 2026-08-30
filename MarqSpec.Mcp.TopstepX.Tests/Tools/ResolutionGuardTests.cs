@@ -110,15 +110,25 @@ public sealed class ResolutionGuardTests : IDisposable
             _database,
             new InstrumentRegistry(options),
             _catalog,
+            new IndicatorCacheService(
+                _database,
+                _catalog,
+                new IndicatorProjector(_database, _catalog, NullLogger<IndicatorProjector>.Instance),
+                _clock,
+                NullLogger<IndicatorCacheService>.Instance),
+            new LevelMethodCatalog(calendar),
             _gateway,
             new ToolGuards(options),
             new StoreAvailabilityHolder(),
-            _clock);
+            _clock,
+            Options.Create(new KeyLevelDetectionOptions()),
+            new VolumeProfileService(_database));
 
         _snapshot = new SnapshotTools(
             _marketData,
             new ReferenceTools(new InstrumentRegistry(options), calendar, _gateway, options, _clock),
-            new IndicatorCatalogNames(_catalog));
+            new IndicatorCatalogNames(_catalog),
+            _clock);
     }
 
     public void Dispose() => _database.Dispose();
@@ -204,7 +214,7 @@ public sealed class ResolutionGuardTests : IDisposable
         // The same silence in a different shape: no bars matched, so it returned an empty level set. Nothing
         // in "no levels here" tells the caller the timeframe it asked for cannot exist.
         Func<Task> call = () =>
-            _marketData.GetKeyLevels("ES", resolutionMinutes, 100, CancellationToken.None);
+            _marketData.GetKeyLevels("ES", resolutionMinutes, 100, cancellationToken: CancellationToken.None);
 
         (await call.Should().ThrowAsync<McpException>()).WithMessage("*resolutionMinutes*");
     }
@@ -372,10 +382,19 @@ public sealed class ResolutionGuardTests : IDisposable
             _database,
             new InstrumentRegistry(capped),
             _catalog,
+            new IndicatorCacheService(
+                _database,
+                _catalog,
+                new IndicatorProjector(_database, _catalog, NullLogger<IndicatorProjector>.Instance),
+                _clock,
+                NullLogger<IndicatorCacheService>.Instance),
+            new LevelMethodCatalog(BarSessionCalendar.Parse("16:00", [])),
             _gateway,
             new ToolGuards(capped),
             new StoreAvailabilityHolder(),
-            _clock);
+            _clock,
+            Options.Create(new KeyLevelDetectionOptions()),
+            new VolumeProfileService(_database));
     }
 
     // ── The drift guard ──────────────────────────────────────────────────────────────────────────────

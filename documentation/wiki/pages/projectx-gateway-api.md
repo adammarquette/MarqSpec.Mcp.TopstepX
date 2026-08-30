@@ -11,6 +11,9 @@
 > *Addition, 2026-08-23 (gh#43):* **[Rate limits](#rate-limits)** added. Read from the vendor's own
 > documentation that day and marked **documented, not observed** — no 429 has ever been provoked from this
 > repository, so those numbers are the vendor's claim and nothing more. Nothing on the page was corrected.
+> *Correction, 2026-08-28 (gh#214):* **[Realtime](#realtime)** cited [ADR-0007](../../adr/0007-dual-transport.md)
+> for "this repository does not subscribe". That record is the stdio/HTTP transport decision and never mentions
+> the hub. The standing choice and its reversal are [ADR-0016](../../adr/0016-subscribe-to-the-market-hub.md).
 
 The REST + realtime API behind prop firms on the ProjectX Gateway. **TopstepX is one firm on it**, which is why
 the two names are used interchangeably here — the gateway is the API, and the firm brands the hostname.
@@ -63,26 +66,24 @@ Handled inside the client. Any new code path constructing a request must not rei
 
 ### A zero that means something is a missing field wearing an answer
 
-Integer-typed enums bind by value, so **an absent field lands on the enum's zero** — and whether that is safe
-depends entirely on what the client declared at zero.
+Integer-typed enums bind by value, so **an absent field lands on the enum's zero** unless the property is
+nullable — and whether that is safe depends entirely on what the client declared at zero.
 
 | Client enum | Zero | An absent field becomes |
 |---|---|---|
 | `OrderStatus` | `None` | `Unknown` — correct |
 | `PositionType` | `Undefined` | refused by the signed-size guard — correct |
 | `OrderType` | `Unknown` | correct |
-| **`OrderSide`** | **`Bid`** | **`Buy` — a direction the venue never stated** |
+| **`OrderSide`** | **`Bid`** | **`null` → `VenueSide.Unknown` (3.0.0)** |
 
-`OrderSide` is the only enum this server binds from a *response* whose zero is a real value, and the property
-is non-nullable, so nothing downstream can tell an omitted `side` from an explicit buy. The client exposes no
-raw body and no extension data, so the distinction is destroyed before this repository sees the object
-(gh#84). An out-of-range value is different and *is* caught — `"side":9` binds to `(OrderSide)9` and maps to
-`Unknown`.
+`OrderSide` is still the only mapped response enum whose zero is a real buy. From 3.0.0 the published
+property is `OrderSide?`, so an omitted `side` arrives as `null` rather than as `Bid`, and this server maps
+that null to `VenueSide.Unknown`. An explicit `"side":0` is still Buy and `"side":1` is still Sell. An
+out-of-range value is still caught — `"side":9` binds to `(OrderSide)9` and maps to `Unknown`.
 
-**The fix is upstream** — a nullable `Side`, or a zero meaning unset as the other three already have,
-filed as [MarqSpec.Client.ProjectX#83](https://github.com/adammarquette/MarqSpec.Client.ProjectX/issues/83). Until
-then `side` on `get_orders` and `get_trades` carries the caveat, and
-`VenueSideBindingTests.AnAbsentSide_IsIndistinguishableFromABuy` is the tripwire that goes red when it is over.
+[MarqSpec.Client.ProjectX#83](https://github.com/adammarquette/MarqSpec.Client.ProjectX/issues/83) landed in
+3.0.0. The 2.1.0 tripwire (`AnAbsentSide_IsIndistinguishableFromABuy`) is gone; the pin is
+`VenueSideBindingTests.AnOmittedSide_MapsToUnknown_NotBuy`.
 
 `AggregateBarUnit`'s zero is `Unspecified`, a real value — but it is only ever *constructed* for a request and
 never bound from a response, so it cannot carry this fault.
@@ -261,11 +262,13 @@ before it is served — a guessed code resolves to a **real contract in the wron
 `tickSize` and `tickValue` come back on the contract. `tickValue` is money per **tick**; money per **point** is
 `tickValue / tickSize`. ES at \$12.50 a tick on a 0.25 tick size is \$50 a point.
 
-### Realtime (not used here)
-The market hub carries quotes, trades and depth over SignalR. **This repository does not subscribe** — see
-[ADR-0007](../../adr/0007-dual-transport.md) and the architecture doc's *What is deliberately absent*. It is
-recorded because it is the reason there is no `get_quote`: there is no REST quote endpoint, so live bid/ask is
-available only from a stream this server does not consume.
+### Realtime
+The market hub carries quotes, trades and depth over SignalR. **This repository has decided to subscribe and
+record the trade tape** — see [ADR-0016](../../adr/0016-subscribe-to-the-market-hub.md) and the architecture
+doc's *What is deliberately absent*. ADR-0007 is the stdio/HTTP transport record and says nothing about this
+hub. There is still no REST quote endpoint, so live bid/ask remains stream-only; quote and depth recording are
+out of Phase 5. The recorder (gh#216) writes prints to `Trades` under HTTP when
+`MarketData__RecordTape` is on; Client#86/#87 landed in 3.0.0.
 
 > One gotcha for whoever adds it: **you subscribe by full contract id, but quotes come back tagged by product
 > root.** Subscribing to `CON.F.US.MES.U26` succeeds, and every quote then reports `F.US.MES`. A stream

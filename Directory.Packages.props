@@ -36,12 +36,12 @@
     <!--
       The ProjectX/TopstepX gateway client, consumed as a package rather than a submodule (ADR-0003).
 
-      2.1.0 is the first release carrying the fixes this server needs. The 1.0.x line on nuget.org predated
-      all of them, which is why the reference sat commented out through Phase 0 (gh#13): the integer-enum
-      serialization, without which EVERY retrieveBars call returned 400; the Retry-After handling; and the
-      startTimestamp rename that Order/Trade search silently requires.
+      3.0.0 is the first published major carrying Client#83 (nullable OrderSide on responses), #86 (hub
+      contract id + honest trade direction) and #87 (re-subscribe). 2.1.0 was the first release this
+      server could consume at all; the 1.0.x line predated the integer-enum serialization, Retry-After
+      handling, and the startTimestamp rename that Order/Trade search silently requires (gh#13).
     -->
-    <PackageVersion Include="MarqSpec.Client.ProjectX" Version="2.1.0" />
+    <PackageVersion Include="MarqSpec.Client.ProjectX" Version="3.0.0" />
   </ItemGroup>
 
   <ItemGroup Label="Persistence">

@@ -1,7 +1,8 @@
 # ADR-0007: One host, two transports — stdio and streamable HTTP
 
 **Status:** Accepted · **Date:** 2026-08-21 · **Deciders:** Adam (operator)
-**Relates to:** PRD `R-5.1`, `R-5.5` · [architecture](../architecture.md) *Transports*
+**Relates to:** PRD `R-5.1`, `R-5.5` · [architecture](../architecture.md) *Transports* · not the record
+for market-hub subscription — that is [ADR-0016](0016-subscribe-to-the-market-hub.md)
 
 ## Context
 

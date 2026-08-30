@@ -169,6 +169,15 @@ public static class ToolPayloads
         ContractCoverage Contracts);
 
     /// <summary>One indicator value as of a moment.</summary>
+    /// <remarks>
+    /// <b>Two tools return this</b> — <c>get_indicator_at</c> as its whole result, and
+    /// <c>get_market_snapshot</c> as the value type of <see cref="ResolutionSnapshot.Indicators"/> (gh#286).
+    /// The fields below describe the first; inside the map, <b>cannot-measure is the map's own
+    /// <c>null</c></b> rather than the <c>{}</c> described here, because the serializer's ignore condition
+    /// does not reach inside a dictionary and the catalogue has always told callers to test for that. So an
+    /// entry that is there always carries <see cref="Value"/> and <see cref="BucketStart"/>, and the
+    /// <c>{}</c> form never occurs in a snapshot.
+    /// </remarks>
     /// <param name="Value">
     /// The value, or <see langword="null"/> meaning <b>cannot measure</b> — not zero, and not a neutral
     /// reading. A caller receiving it should refuse to conclude, rather than substitute.
@@ -255,6 +264,8 @@ public static class ToolPayloads
     /// <param name="Significance">Prominence in ATR multiples — comparable across instruments.</param>
     /// <param name="TouchCount">How many pivots agreed on this zone.</param>
     /// <param name="FormedAt">When the earliest pivot in the zone formed.</param>
+    /// <param name="Method">The method that produced the zone, when more than one was asked for.</param>
+    /// <param name="Period">The finished period the zone came from, when the method names one.</param>
     public sealed record LevelInfo(
         int TimeframeMinutes,
         decimal Bottom,
@@ -263,7 +274,9 @@ public static class ToolPayloads
         KeyLevelKind Kind,
         decimal Significance,
         int TouchCount,
-        DateTimeOffset FormedAt);
+        DateTimeOffset FormedAt,
+        string? Method = null,
+        string? Period = null);
 
     /// <summary>The detected levels, and how much history actually produced them.</summary>
     /// <param name="Levels">The zones, ordered by price.</param>
@@ -278,10 +291,104 @@ public static class ToolPayloads
     /// roll this is therefore fewer bars than requested, and it is reported rather than implied — silently
     /// halving the history behind a level changes how much weight it deserves.
     /// </param>
+    /// <param name="Detection">
+    /// The detection this answer was actually produced by. <b>Reported for the same reason
+    /// <see cref="IndicatorSeries.Period"/> is</b>: three of these seven are per-call arguments and four are
+    /// operator configuration, so a caller that omitted an argument does not otherwise know what ran — and
+    /// an <b>empty</b> <paramref name="Levels"/> is the case where that matters. No levels can mean the
+    /// window held fewer than <c>pivotLookback + pivotRightLookback + 1</c> bars, or that the source found no
+    /// candidate that dominated its window, or that every zone fell under the significance floor, or that
+    /// every merged zone came out wider than <c>maxZoneWidthPercent</c>. Without these seven it is
+    /// indistinguishable from a market that has produced no structure, which is a conclusion an agent will
+    /// act on.
+    /// </param>
+    /// <param name="Methods">Each requested method, its zones, and why it contributed nothing when it did not.</param>
+    /// <param name="Confluence">
+    /// The weighted, family-aware score over the requested methods, the tolerance it was computed against,
+    /// and the constituents that produced it.
+    /// </param>
+    /// <param name="Capped">
+    /// Whether any requested method stopped at <see cref="LevelDetection.MaxLevels"/>. The top-level
+    /// <paramref name="Levels"/> array is the union of those methods, so its length is not a
+    /// completeness signal — this flag is.
+    /// </param>
     public sealed record LevelSet(
         IReadOnlyList<LevelInfo> Levels,
         ContractCoverage Contracts,
-        int DetectedOverBars);
+        int DetectedOverBars,
+        LevelDetection Detection,
+        IReadOnlyList<LevelMethodResult>? Methods = null,
+        ConfluenceScore? Confluence = null,
+        bool Capped = false);
+
+    /// <summary>One requested method as <c>get_key_levels</c> reports it.</summary>
+    /// <param name="Name">The method name.</param>
+    /// <param name="Family">The correlation family.</param>
+    /// <param name="Weight">The weight the score used.</param>
+    /// <param name="Levels">The zones it produced.</param>
+    /// <param name="AbsentReason">Why it contributed nothing, or omitted when it contributed.</param>
+    /// <param name="Capped">
+    /// Whether this method stopped at <c>detection.maxLevels</c>. That length on <i>this</i> array
+    /// is the per-method cut signal; the top-level union is not.
+    /// </param>
+    public sealed record LevelMethodResult(
+        string Name,
+        string Family,
+        decimal Weight,
+        IReadOnlyList<LevelInfo> Levels,
+        string? AbsentReason,
+        bool Capped = false);
+
+    /// <summary>The confluence score a level set was produced under.</summary>
+    /// <param name="Score">The strongest cluster's family-aware weight.</param>
+    /// <param name="Tolerance">The line-to-zone tolerance the score was computed against.</param>
+    /// <param name="Constituents">Every requested method, the weight used, and how many zones it gave.</param>
+    /// <param name="Absent">The requested methods that contributed nothing, and why.</param>
+    public sealed record ConfluenceScore(
+        decimal Score,
+        decimal Tolerance,
+        IReadOnlyList<ConfluenceConstituentInfo> Constituents,
+        IReadOnlyList<ConfluenceAbsenceInfo> Absent);
+
+    /// <summary>One requested method as the score names it.</summary>
+    public sealed record ConfluenceConstituentInfo(string Method, string Family, decimal Weight, int ZoneCount);
+
+    /// <summary>A requested method that contributed nothing.</summary>
+    public sealed record ConfluenceAbsenceInfo(string Method, string Reason);
+
+    /// <summary>The detection parameters a level set was produced under.</summary>
+    /// <remarks>
+    /// <para>
+    /// All seven, not just the three a call may override. A level set is reproducible from the bars that were
+    /// on hand <i>and these numbers</i> — which is the property ADR-0013 rests on when it allows per-request
+    /// parameters at all — so reporting some of them would leave the answer partly reproducible.
+    /// </para>
+    /// <para>
+    /// <b><see cref="MaxLevels"/> is the one a caller most needs and would least expect.</b> A method
+    /// that stops at the cap looks exactly like a market that produced that many levels, and the two
+    /// are acted on differently. The cut signal is per method —
+    /// <c>methods[i].levels.length == maxLevels</c>, or <c>capped</c> on that method and on the
+    /// level set. The top-level <c>levels</c> array is the union of the requested methods, so its
+    /// length is not a completeness signal.
+    /// </para>
+    /// </remarks>
+    /// <param name="Source">Which price on a bar each pivot was measured from.</param>
+    /// <param name="PivotLookback">How many bars to its left a pivot had to dominate.</param>
+    /// <param name="ZoneAtrMultiple">The zone's full width, in ATR multiples.</param>
+    /// <param name="MinSignificance">The smallest prominence, in ATR multiples, that was reported.</param>
+    /// <param name="PivotRightLookback">How many bars to its right a pivot had to dominate.</param>
+    /// <param name="MaxZoneWidthPercent">
+    /// The widest a zone could be, as a percentage of its own midpoint price. A wider one was dropped.
+    /// </param>
+    /// <param name="MaxLevels">The most levels this answer could carry. The rest were dropped, not summarised.</param>
+    public sealed record LevelDetection(
+        PivotSource Source,
+        int PivotLookback,
+        decimal ZoneAtrMultiple,
+        decimal MinSignificance,
+        int PivotRightLookback,
+        decimal MaxZoneWidthPercent,
+        int MaxLevels);
 
     /// <summary>An account, as this server reports it.</summary>
     /// <param name="AccountId">The venue account id.</param>
@@ -312,10 +419,27 @@ public static class ToolPayloads
     /// <param name="ResolutionMinutes">The bar size.</param>
     /// <param name="Bars">The recent bars.</param>
     /// <param name="Indicators">
-    /// The latest value of each indicator, keyed by name. <b>Every indicator this server computes has a
-    /// key</b>, so presence says nothing — a <c>null</c> VALUE is what means cannot measure. The keys come
-    /// from the catalogue and are assigned unconditionally, so an absent key would mean the server does not
-    /// compute that indicator at all.
+    /// The latest <b>reading</b> of each indicator, keyed by name — the same
+    /// <see cref="IndicatorReading"/> <c>get_indicator_at</c> returns, so the two tools agree about what a
+    /// reading is. <b>Every indicator this server computes has a key</b>, so presence says nothing — a
+    /// <c>null</c> ENTRY is what means cannot measure. The keys come from the catalogue and are assigned
+    /// unconditionally, so an absent key would mean the server does not compute that indicator at all.
+    /// <para>
+    /// <b>A bare number here was a present number with no as-of</b>, which is acted on exactly like a fresh
+    /// one (gh#286). One slice reads every indicator at ONE anchor — <c>bars[^1].t</c>, or the clock when
+    /// there are no bars — but the anchor is where the read stopped, not where the value was computed, and an
+    /// as-of read takes the last row at or before it. Warm-up restarts at every contract seam, so just after
+    /// a roll the indicators the new contract's bars cannot yet satisfy fall back to a row on the
+    /// <i>expiring</i> quarter while the rest sit on the bar in front — measured, and both arrive in this one
+    /// map. So the bucket and the contract are per reading rather than per slice.
+    /// </para>
+    /// <para>
+    /// <b>Cannot-measure is unchanged: the map's own <c>null</c>, not an empty object.</b> The ignore
+    /// condition does not reach inside a dictionary (see this class's remarks), so a caller's test stays
+    /// <c>indicators.rsi === null</c>. A non-null entry always carries <see cref="IndicatorReading.Value"/>
+    /// and <see cref="IndicatorReading.BucketStart"/>; only <see cref="IndicatorReading.ContractId"/> can be
+    /// absent inside one, and it means the bar's provenance was never recorded.
+    /// </para>
     /// </param>
     /// <param name="Levels">
     /// The detected levels, <b>with their own coverage</b>. Levels are detected over a longer window than the
@@ -325,15 +449,17 @@ public static class ToolPayloads
     /// dropped on the one tool an agent is told to reach for first.
     /// </param>
     /// <param name="Contracts">
-    /// Which contracts produced <b>the bars in this slice</b> — not the longer history behind the levels.
-    /// <see cref="ContractSpan.SpansRoll"/> means the bar window crosses a quarterly roll, so the earlier bars
-    /// belong to a contract that no longer trades. The levels and the indicator readings come from the
-    /// contract in front regardless.
+    /// Which contracts produced <b>the bars in this slice</b> — not the longer history behind the levels, and
+    /// <b>not the indicator readings either</b>. <see cref="ContractSpan.SpansRoll"/> means the bar window
+    /// crosses a quarterly roll, so the earlier bars belong to a contract that no longer trades. The levels
+    /// do come from the contract in front regardless; a reading does not, and says which contract it came
+    /// from itself. This block cannot stand in for that — with no bars it describes nothing at all, while the
+    /// readings behind it still exist.
     /// </param>
     public sealed record ResolutionSnapshot(
         int ResolutionMinutes,
         IReadOnlyList<BarPoint> Bars,
-        IReadOnlyDictionary<string, decimal?> Indicators,
+        IReadOnlyDictionary<string, IndicatorReading?> Indicators,
         LevelSet Levels,
         ContractCoverage Contracts);
 
@@ -428,6 +554,229 @@ public static class ToolPayloads
     {
         ArgumentNullException.ThrowIfNull(bar);
         return new BarPoint(bar.OpenTime, bar.Open, bar.High, bar.Low, bar.Close, bar.Volume);
+    }
+
+    /// <summary>One footprint cell on the wire.</summary>
+    /// <param name="T">When the bar opened, UTC.</param>
+    /// <param name="P">The price level inside the bar.</param>
+    /// <param name="Buy">Volume whose aggressor was lifting.</param>
+    /// <param name="Sell">Volume whose aggressor was hitting.</param>
+    public sealed record FootprintCellPoint(DateTimeOffset T, decimal P, long Buy, long Sell);
+
+    /// <summary>
+    /// The window <c>TapeCoverage</c> actually covered — never the window the caller asked for.
+    /// </summary>
+    /// <param name="Start">Covered start, inclusive. From the ledger.</param>
+    /// <param name="End">Covered end, exclusive.</param>
+    /// <param name="Narrowed">
+    /// Whether the ask was cut back — a roll, a late start or early end, or a listening hole.
+    /// </param>
+    /// <remarks>
+    /// Every field is always present; none are omitted and none are null. A quiet market under a
+    /// listening run still carries this window — that is how it differs from a pre-recording refusal.
+    /// </remarks>
+    public sealed record CoveredWindow(DateTimeOffset Start, DateTimeOffset End, bool Narrowed);
+
+    /// <summary>Stored footprint cells for a covered tape window.</summary>
+    /// <param name="Symbol">The normalised instrument.</param>
+    /// <param name="ResolutionMinutes">The bar size the cells were projected at.</param>
+    /// <param name="Cells">The cells, ordered by bucket then price. Never empty on the wire — absence refuses.</param>
+    /// <param name="Covered">The ledger window that produced them.</param>
+    /// <param name="Contracts">
+    /// Contract provenance. A profile/footprint is confined to one contract, so
+    /// <see cref="ContractSpan.SingleContract"/> with one segment naming it. Segment bucket times are
+    /// bar opens from the cells, not the exclusive coverage end. This is the newest listening run,
+    /// not the tape's volume-front — that answer lives on <see cref="Front"/>.
+    /// </param>
+    /// <param name="Front">
+    /// Tape volume-front beside the contract Bars would fetch. Always present as an object;
+    /// keys inside it are omitted when that answer does not exist.
+    /// </param>
+    /// <remarks>
+    /// Top-level fields are always present. Live tape-subscription health
+    /// is not a field on this payload — when the tape is not listening the tool refuses with a sentence
+    /// naming the fix (gh#218). A covered window with no cells at the asked bar size is refused rather
+    /// than returned empty: TapeCoverage is not per-resolution, so empty <c>cells</c> would look like a
+    /// quiet market when the series was never projected.
+    /// </remarks>
+    public sealed record FootprintSeries(
+        string Symbol,
+        int ResolutionMinutes,
+        IReadOnlyList<FootprintCellPoint> Cells,
+        CoveredWindow Covered,
+        ContractCoverage Contracts,
+        VolumeFrontInfo Front);
+
+    /// <summary>Volume at one price on the wire.</summary>
+    /// <param name="P">The price.</param>
+    /// <param name="V">Buy plus sell volume at that price.</param>
+    public sealed record VolumeAtPricePoint(decimal P, long V);
+
+    /// <summary>A volume profile over a covered tape window.</summary>
+    /// <param name="Symbol">The normalised instrument.</param>
+    /// <param name="ResolutionMinutes">The bar size the cells were projected at.</param>
+    /// <param name="ByPrice">Every price that traded, in price order.</param>
+    /// <param name="PointOfControl">The price with the most volume.</param>
+    /// <param name="ValueAreaLow">The lowest price in the 70% value area.</param>
+    /// <param name="ValueAreaHigh">The highest price in the 70% value area.</param>
+    /// <param name="ValueAreaVolume">How much volume sits inside the value area.</param>
+    /// <param name="TotalVolume">How much volume the cells carried.</param>
+    /// <param name="Covered">The ledger window that produced the profile.</param>
+    /// <param name="Contracts">
+    /// Contract provenance. Always <see cref="ContractSpan.SingleContract"/> — a roll is confined
+    /// before aggregation, never reported as <see cref="ContractSpan.SpansRoll"/>. The newest
+    /// listening run, not the tape's volume-front — that answer lives on <see cref="Front"/>.
+    /// </param>
+    /// <param name="Front">
+    /// Tape volume-front beside the contract Bars would fetch. Always present as an object;
+    /// keys inside it are omitted when that answer does not exist.
+    /// </param>
+    /// <remarks>
+    /// Top-level fields are always present. Live tape-subscription health
+    /// is not a field on this payload — when the tape is not listening the tool refuses with a sentence
+    /// naming the fix (gh#218).
+    /// </remarks>
+    public sealed record VolumeProfileSeries(
+        string Symbol,
+        int ResolutionMinutes,
+        IReadOnlyList<VolumeAtPricePoint> ByPrice,
+        decimal PointOfControl,
+        decimal ValueAreaLow,
+        decimal ValueAreaHigh,
+        long ValueAreaVolume,
+        long TotalVolume,
+        CoveredWindow Covered,
+        ContractCoverage Contracts,
+        VolumeFrontInfo Front);
+
+    /// <summary>
+    /// The session — and the instant inside it — when the volume-front flipped.
+    /// </summary>
+    /// <param name="SessionDate">The trade date whose winner differed from the previous session's.</param>
+    /// <param name="FlippedAtUtc">
+    /// The first print time the new front's running volume exceeded the previous front's.
+    /// <b>A property, so it is omitted</b> when the instant could not be placed.
+    /// </param>
+    /// <param name="FromContractId">The contract that had been the front.</param>
+    /// <param name="ToContractId">The contract that overtook it.</param>
+    public sealed record VolumeFrontChangeoverInfo(
+        DateOnly SessionDate,
+        DateTimeOffset? FlippedAtUtc,
+        string FromContractId,
+        string ToContractId);
+
+    /// <summary>
+    /// Both answers for which contract is in front: tape volume and the gateway pick Bars would fetch.
+    /// </summary>
+    /// <param name="Used">
+    /// <c>tape-volume</c> when the tape named a unique front; <c>none</c> when it did not.
+    /// The gateway is never substituted into this field.
+    /// </param>
+    /// <param name="Agree">
+    /// Whether the tape's unique front and the gateway's selected contract are the same id.
+    /// <b>Omitted</b> when the gateway was not asked at this instant — a historical
+    /// <c>asOfUtc</c> has no venue pick, and substituting the live one would date a
+    /// comparison that never happened.
+    /// </param>
+    /// <param name="TapeContractId">
+    /// The tape's unique highest-volume contract. <b>Omitted</b> when the tape named no unique front.
+    /// </param>
+    /// <param name="TapeSessionDate">
+    /// The session that measurement belongs to. <b>Omitted</b> when the tape named no session.
+    /// </param>
+    /// <param name="GatewayContractId">
+    /// <c>ResolveContractsAsync</c>'s first result — the contract Bars would fetch.
+    /// <b>Omitted</b> when the venue named none, or when the pick is not as-of this instant.
+    /// </param>
+    /// <param name="Changeover">
+    /// The most recent flip that produced the current tape front. <b>Omitted</b> when none has.
+    /// </param>
+    /// <remarks>
+    /// <para>
+    /// This is not <see cref="ContractCoverage"/>. Profile <c>contracts</c> is the newest contiguous
+    /// listening run from cells and <c>TapeCoverage</c>. Copying <see cref="TapeContractId"/> into
+    /// that block would be a second silent source of truth (gh#346).
+    /// </para>
+    /// <para>
+    /// No sentence explaining the choice — ADR-0008 forbids vendor-adjacent free text on the wire.
+    /// <c>used</c>, the ids, and <c>agree</c> are the facts.
+    /// </para>
+    /// </remarks>
+    public sealed record VolumeFrontInfo(
+        string Used,
+        bool? Agree,
+        string? TapeContractId,
+        DateOnly? TapeSessionDate,
+        string? GatewayContractId,
+        VolumeFrontChangeoverInfo? Changeover);
+
+    /// <summary>
+    /// The most recent tape changeover a symbol's stored prints can prove, the tape front
+    /// at <see cref="AsOfUtc"/>, and the bar-side seam around that flip.
+    /// </summary>
+    /// <param name="Symbol">The normalised instrument.</param>
+    /// <param name="AsOfUtc">The instant the fronts were read at.</param>
+    /// <param name="Front">
+    /// The same object the footprint tools return. <b>Always present as an object</b>; keys
+    /// inside it — including <see cref="VolumeFrontInfo.Changeover"/> — are omitted when that
+    /// answer does not exist.
+    /// </param>
+    /// <param name="Contracts">
+    /// Bar provenance in a short window around the changeover. <b>Omitted</b> when the tape
+    /// cannot prove a flip, so there is no window to place. <see cref="ContractSpan.Unknown"/>
+    /// means the bars' contract was never recorded, not that there was no roll.
+    /// </param>
+    public sealed record ContractRollInfo(
+        string Symbol,
+        DateTimeOffset AsOfUtc,
+        VolumeFrontInfo Front,
+        ContractCoverage? Contracts);
+
+    /// <summary>
+    /// Contract provenance for a tape-derived answer confined to one contract, with bar-open times
+    /// from the cells that contributed — not the exclusive coverage envelope.
+    /// </summary>
+    /// <param name="window">The covered tape window (contract id only; times stay on <see cref="CoveredWindow"/>).</param>
+    /// <param name="cells">The cells behind the answer. Must not be empty.</param>
+    /// <returns><see cref="ContractSpan.SingleContract"/> with one segment naming the contract.</returns>
+    /// <exception cref="ArgumentException"><paramref name="cells"/> is empty.</exception>
+    public static ContractCoverage ToTapeCoverage(
+        CoveredTapeWindow window,
+        IReadOnlyList<FootprintCell> cells)
+    {
+        ArgumentNullException.ThrowIfNull(window);
+        ArgumentNullException.ThrowIfNull(cells);
+
+        if (cells.Count == 0)
+        {
+            throw new ArgumentException(
+                "Contract segments need at least one cell so firstBucket and lastBucket are bar opens, "
+                + "not the exclusive coverage end.",
+                nameof(cells));
+        }
+
+        DateTimeOffset first = cells[0].BucketStart;
+        DateTimeOffset last = cells[0].BucketStart;
+        HashSet<DateTimeOffset> buckets = [];
+
+        foreach (FootprintCell cell in cells)
+        {
+            if (cell.BucketStart < first)
+            {
+                first = cell.BucketStart;
+            }
+
+            if (cell.BucketStart > last)
+            {
+                last = cell.BucketStart;
+            }
+
+            buckets.Add(cell.BucketStart);
+        }
+
+        return new ContractCoverage(
+            ContractSpan.SingleContract,
+            [new ContractSegmentInfo(window.ContractId, first, last, buckets.Count)]);
     }
 
     /// <summary>Describes which contracts produced a series of bars.</summary>

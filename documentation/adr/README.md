@@ -29,12 +29,17 @@ retrospective justification is a press release. The useful ones name the option 
 | [0003](0003-client-as-package.md) | Consume `MarqSpec.Client.ProjectX` as a NuGet package, not a submodule | Accepted |
 | [0004](0004-one-postgres-timescale-pgvector.md) | One Postgres, two extensions | Accepted |
 | [0005](0005-session-aware-gap-detection.md) | Cache-aside is decided against the session calendar | Accepted · the reason the cache terminates |
-| [0006](0006-indicators-as-projections.md) | Indicators are projections — computed on write, rebuilt by replay | Accepted · extends [0004](0004-one-postgres-timescale-pgvector.md) · refined by [0011](0011-contract-roll-boundary.md) |
+| [0006](0006-indicators-as-projections.md) | Indicators are projections — computed on write, rebuilt by replay | Accepted · extends [0004](0004-one-postgres-timescale-pgvector.md) · refined by [0011](0011-contract-roll-boundary.md) and [0014](0014-indicators-are-projected-on-read-too.md) · mirrored, and left intact, by [0013](0013-levels-are-computed-on-read.md) |
 | [0007](0007-dual-transport.md) | One host, two transports — stdio and streamable HTTP | Accepted |
 | [0008](0008-numeric-only-tool-payloads.md) | Tool payloads are numeric-only | Accepted · narrows [0002](0002-read-only-venue-boundary.md) |
 | [0009](0009-cohere-embeddings.md) | Cohere `embed-v4.0`, pinned to 1024 dimensions | Accepted · fits the column [0004](0004-one-postgres-timescale-pgvector.md) chose |
 | [0010](0010-per-call-resolutions-fetched-not-derived.md) | Resolution is a per-call parameter, and a timeframe is fetched rather than derived | Accepted · the cost side is [0006](0006-indicators-as-projections.md) |
-| [0011](0011-contract-roll-boundary.md) | **A bar records its contract, and nothing is derived across a roll** | Accepted · refines [0006](0006-indicators-as-projections.md) (gh#42) |
+| [0011](0011-contract-roll-boundary.md) | **A bar records its contract, and nothing is derived across a roll** | Accepted · refines [0006](0006-indicators-as-projections.md) (gh#42) · its deferred question is settled by [0012](0012-fills-are-not-serialised.md) |
+| [0012](0012-fills-are-not-serialised.md) | Fills of one series are not serialised — the skew is accepted, and the lock was measured first | Accepted · settles what [0011](0011-contract-roll-boundary.md) deferred (gh#104) |
+| [0013](0013-levels-are-computed-on-read.md) | Price levels are computed on read and not cached — the detection was measured first | Accepted · the mirror image of [0006](0006-indicators-as-projections.md), which it does **not** reopen (gh#247) |
+| [0014](0014-indicators-are-projected-on-read-too.md) | **An indicator read projects what the catalogue has outrun** — the trigger changes, the key does not | Accepted · refines [0006](0006-indicators-as-projections.md), whose per-call-period rule it does **not** reopen · rests on [0012](0012-fills-are-not-serialised.md) (gh#246) |
+| [0015](0015-levels-merge-across-support-and-resistance.md) | **Overlapping levels merge across support and resistance** — a deliberate break in `get_key_levels` | Accepted · rests on [0013](0013-levels-are-computed-on-read.md) · the same kind of break, on the same terms, as [0011](0011-contract-roll-boundary.md) (gh#245) |
+| [0016](0016-subscribe-to-the-market-hub.md) | **Subscribe to the market hub** — the standing choice, then the reversal | Accepted · records the unwritten choice and supersedes it in this file (gh#214) · does not reopen [0002](0002-read-only-venue-boundary.md) · [0007](0007-dual-transport.md) is not this question |
 
 *Adding a record? Add its row here in the same PR, and a routing entry in [`../README.md`](../README.md) if
 the corpus shape changes.*

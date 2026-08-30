@@ -260,9 +260,11 @@ the venue subscription stayed live. Prints kept landing into a hole `TapeCoverag
 There is no tape backfill, so that hole is permanent.
 
 A refused *subscribe* is still "not subscribed". A persist that fails after the venue accepted is
-not (`R-5.7`). The recorder drops that subscription, does not store prints already queued for that
-listen, and assigns the in-memory open only after the persist lands — a hub drop during the
-unsubscribe cannot close a listen that never reached the store. Tools refuse while not Listening.
+not (`R-5.7`). The recorder drops that subscription and does not store prints queued for that listen
+— from the moment the subscribe was *attempted*, because the venue can print while that call is
+still in flight — and discards the pending close a hub drop mid-persist snapshotted, so a listen
+that never reached the store is never written as a closed range. A drop while the persist is still
+in flight can still close that listen if the persist then lands. Tools refuse while not Listening.
 A later successful restore opens a new range at the new subscribe time and does not cover the hole.
 
 ## Follow-ups

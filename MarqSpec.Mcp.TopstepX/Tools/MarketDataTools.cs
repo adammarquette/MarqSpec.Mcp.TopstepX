@@ -167,8 +167,10 @@ public sealed class MarketDataTools(
     [Description(
         "Reads an indicator series from a local cache. The VENDOR IS NEVER CALLED: every value is computed "
         + "from bars this server already holds. A series the cache has no values for — after an indicator is "
-        + "added or a period is changed — is computed and stored by the FIRST read that asks for it, which "
-        + "for a year of 5-minute bars costs about eight seconds once and nothing on any read after. Known "
+        + "added or a period is changed — is computed and stored by the first read that asks for it, which "
+        + "for a year of 5-minute bars costs about eight seconds once. An HTTP process with "
+        + "MarketData__WarmIndicators on pays that at start instead, so that first read is then a probe. "
+        + "Known "
         + "indicators: atr, rsi, sma, ema, macd, macd-signal, "
         + "macd-histogram, vwap, bb-upper, bb-middle, bb-lower. An unknown name is an error listing these, "
         + "because a typo that returned no data would read as 'no signal'. Buckets where the indicator could "
@@ -226,7 +228,8 @@ public sealed class MarketDataTools(
     [Description(
         "Reads one indicator value as of a moment, from the same local cache get_indicators reads, and on "
         + "the same terms: no vendor call, and a series with no stored values is computed by the first read "
-        + "that needs it. Returns the value at or BEFORE that moment, never after — "
+        + "that needs it — or at HTTP startup when MarketData__WarmIndicators is on, so the first read is a "
+        + "probe. Returns the value at or BEFORE that moment, never after — "
         + "a later value is information the market did not have. Cannot-measure DROPS the `value` KEY instead "
         + "of sending null, so the whole reading arrives as `{}`: test whether the key is THERE, never "
         + "whether it equals null. An ABSENT value means CANNOT MEASURE, not zero and not neutral — refuse "

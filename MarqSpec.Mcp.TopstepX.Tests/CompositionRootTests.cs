@@ -195,6 +195,28 @@ public sealed class CompositionRootTests
             new McpOptions { Transport = McpTransport.Http, HttpBearerToken = "a-token" });
 
         provider.GetServices<IHostedService>().Should().Contain(s => s is TradeTapeRecorder);
+        provider.GetServices<IHostedService>().Should().Contain(
+            s => s is IndicatorWarmup,
+            "warmup is always registered; the switch decides whether ExecuteAsync runs");
+    }
+
+    [Fact]
+    public void TheContainerBuilds_WhenCredentialsAreConfiguredAndWarmupIsEnabled()
+    {
+        Dictionary<string, string?> configured = new()
+        {
+            ["ProjectX:ApiKey"] = "a-username",
+            ["ProjectX:ApiSecret"] = "an-api-key",
+            ["ProjectX:DataTier"] = "Simulated",
+            ["MarketData:WarmIndicators"] = "true",
+            ["Mcp:HttpBearerToken"] = "a-token",
+        };
+
+        using ServiceProvider provider = Build(
+            configured,
+            new McpOptions { Transport = McpTransport.Http, HttpBearerToken = "a-token" });
+
+        provider.GetServices<IHostedService>().Should().Contain(s => s is IndicatorWarmup);
     }
 
     [Theory]

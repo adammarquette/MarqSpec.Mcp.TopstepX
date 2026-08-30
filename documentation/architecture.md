@@ -279,7 +279,9 @@ same statement `IndicatorRebuilder` makes. Every bar a projection needs is alrea
 **The first read of a cold series pays for the replay, once** — about **8.3 s** for a year of five-minute
 bars, measured, against **106 paced venue pages and roughly a minute of sleeping** for the `get_bars` call
 that put those bars there. It is not capped: a cap would hand the caller back the operator step this path
-exists to remove, and only on the largest series. The tool descriptions say so.
+exists to remove, and only on the largest series. An HTTP process with `MarketData__WarmIndicators` on
+moves that cost to start via `IndicatorRebuilder` (gh#350). HTTP is not consent; stdio never warms — a
+Cowork child would stall the handshake. The tool descriptions say so.
 
 **A `40001` is now reachable from a read.** Two simultaneous cold reads of one series both replay, the loser's
 write meets the winner's committed rows, and `R-2.10`'s single retry re-derives against them and writes

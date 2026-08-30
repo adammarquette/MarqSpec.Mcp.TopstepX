@@ -383,6 +383,7 @@ public static class Program
         services.AddScoped<IndicatorProjector>();
         services.AddScoped<IndicatorRebuilder>();
         services.AddScoped<FootprintProjector>();
+        services.AddScoped<FootprintCacheService>();
         services.AddScoped<VolumeProfileService>();
         services.AddScoped<TapeVolumeFrontService>();
         services.AddScoped<BarCacheService>();

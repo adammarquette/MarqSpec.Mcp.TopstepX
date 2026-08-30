@@ -76,6 +76,7 @@ decides that one host speaks stdio and streamable HTTP; grep it for `signalr`, `
 | [2026-08-28](#update-2026-08-28--300-unblocks-the-package) | Client#86/#87 landed in 3.0.0; the recorder is no longer blocked on the package |
 | [2026-08-29](#update-2026-08-29--the-recorder-defends-re-subscribe-and-writes-tapecoverage) | The recorder re-subscribes on `Connected` and writes `TapeCoverage` from lifecycle (gh#217) |
 | [2026-08-29](#update-2026-08-29--live-tape-health-is-read-at-the-point-of-use) | Live tape health, written from lifecycle and required by footprint tools (gh#218) |
+| [2026-08-30](#update-2026-08-30--a-failed-open-persist-drops-the-subscribe) | A store fault after a confirmed subscribe drops the venue subscription (gh#376) |
 
 ## Update (2026-08-28) — the standing choice is reversed
 
@@ -250,6 +251,19 @@ This is the opposite of `StoreAvailabilityHolder`, which is set once at startup 
 never re-probed. A database that appears later is a restart; a tape that drops mid-session is a
 state change. Both ends say so.
 
+## Update (2026-08-30) — a failed open persist drops the subscribe
+
+gh#376 is a store fault after a side effect that the recorder can undo. `RestoreSubscriptionsAsync`
+confirms the hub subscribe, then `PersistOpenRangeAsync`. A throw there used the refused-subscribe
+path: health became `ConnectedButNotSubscribed`, a close was written, the host did not fault — and
+the venue subscription stayed live. Prints kept landing into a hole `TapeCoverage` never opened.
+There is no tape backfill, so that hole is permanent.
+
+A refused *subscribe* is still "not subscribed". A persist that fails after the venue accepted is
+not (`R-5.7`). The recorder drops that subscription and does not write a close for a listen that
+never reached the store. Tools refuse while not Listening. A later successful restore opens a new
+range at the new subscribe time and does not cover the hole.
+
 ## Follow-ups
 
 - gh#215 — tape, coverage and footprint tables. Schema-only; landed.
@@ -258,3 +272,4 @@ state change. Both ends say so.
 - gh#217 — re-subscribe after reconnect, and write `TapeCoverage` from lifecycle. Landed; still
   defended here after Client#87, because a missed print cannot be backfilled.
 - gh#218 — live tape health, required by the tape tools. Landed.
+- gh#376 — a failed open persist after a confirmed subscribe drops that subscription. Landed.

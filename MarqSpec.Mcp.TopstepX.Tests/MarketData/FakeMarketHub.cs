@@ -39,6 +39,9 @@ public sealed class FakeMarketHub : IProjectXWebSocketClient
 
     public int SubscribeAttempts { get; private set; }
 
+    /// <summary>How many times <see cref="UnsubscribeFromTradeUpdatesAsync"/> ran.</summary>
+    public int UnsubscribeAttempts { get; private set; }
+
     /// <summary>How many times the market hub transitioned into <see cref="ConnectionState.Connected"/>.</summary>
     public int TransitionsIntoConnected { get; private set; }
 
@@ -154,8 +157,12 @@ public sealed class FakeMarketHub : IProjectXWebSocketClient
         return Task.CompletedTask;
     }
 
-    public Task UnsubscribeFromTradeUpdatesAsync(string contractId, CancellationToken cancellationToken = default) =>
-        Task.CompletedTask;
+    public Task UnsubscribeFromTradeUpdatesAsync(string contractId, CancellationToken cancellationToken = default)
+    {
+        UnsubscribeAttempts++;
+        TradeSubscriptions.RemoveAll(id => id == contractId);
+        return Task.CompletedTask;
+    }
 
     public Task SubscribeToAccountUpdatesAsync(CancellationToken cancellationToken = default) =>
         Task.CompletedTask;

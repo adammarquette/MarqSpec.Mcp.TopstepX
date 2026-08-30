@@ -15,8 +15,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.2.0] - 2026-08-30
 
-The first promotion since `v0.1.0`. New MCP tools are additions. Existing tool contracts are not rewritten
-into a different answer.
+The first promotion since `v0.1.0`. New MCP tools are additions. Two existing payloads changed: a
+`get_market_snapshot` indicator entry is `{ value, bucketStart, contractId }` rather than a bare number
+(gh#286), and overlapping `get_key_levels` (and snapshot levels) merge across support and resistance
+([ADR-0015](documentation/adr/0015-levels-merge-across-support-and-resistance.md)).
 
 ### Added
 
@@ -38,11 +40,13 @@ into a different answer.
 
 ### Changed
 
-- `MarqSpec.Client.ProjectX` **3.0.0** — omitted `Side` is `Unknown`; hub argument stamps `OrderBookUpdate.ContractId`.
+- `MarqSpec.Client.ProjectX` **3.0.0** — omitted `Side` is `Unknown`; hub argument stamps `TradeUpdate.ContractId` (Client#86).
 - Repository license is all rights reserved (the MIT grant is gone).
 - `get_key_levels` takes per-call source and lookback; levels stay computed on read
-  ([ADR-0013](documentation/adr/0013-levels-are-computed-on-read.md)).
-- `get_market_snapshot` indicator values name the bucket and contract they came from.
+  ([ADR-0013](documentation/adr/0013-levels-are-computed-on-read.md)). Overlapping zones merge whichever
+  side of price they formed on ([ADR-0015](documentation/adr/0015-levels-merge-across-support-and-resistance.md)).
+- `get_market_snapshot` indicator values are no longer a bare number: each entry is
+  `{ value, bucketStart, contractId }` (gh#286). Snapshot levels inherit ADR-0015.
 - Contracts are ordered by parsed expiry, not by the id as text.
 
 ### Fixed
@@ -50,7 +54,7 @@ into a different answer.
 - MACD signal / histogram warm-up is the sum minus the shared bar.
 - `get_bars`'s description names `venueRequests`, the field that is the round-trip test.
 - Tape health is **this** instrument's subscribe — another symbol's session does not make this one healthy.
-- A formula outside the indicator vocabulary is not treated as "unset".
+- A `PivotFormula` or `VolumeLevelKind` outside its own vocabulary is not treated as "unset".
 
 ### Removed
 

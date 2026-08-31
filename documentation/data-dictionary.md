@@ -313,8 +313,10 @@ is discarded, so a listen that never reached the store cannot be written as a cl
 A drop while the persist is still in flight still closes that listen if the persist then
 lands. A later successful restore opens a new range at the new subscribe time and does not
 cover that hole. A hub that reports `Connected` with no confirmed subscribe
-is not a range. The intended contract set is held by the recorder; a roll still changes that
-set, which is why `ContractId` is in the key.
+is not a range. Every rule above belongs to one type — `TapeCoverageLedger`, extracted so
+this state machine has a name and its invariants one place to be stated (gh#390); the
+recorder holds the hub, the intended contract set and the print pipeline, and calls it. A
+roll still changes that set, which is why `ContractId` is in the key.
 
 **The range is half-open, `[RangeStart, RangeEnd)`.** Closed ranges written adjacently either overlap by one
 instant or leave a hole, and both are invisible until a profile reports a window that was never covered. An

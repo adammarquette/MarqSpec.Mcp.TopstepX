@@ -133,13 +133,20 @@ public sealed class BarCacheService
         DateTimeOffset now = _clock.GetUtcNow();
         string venue = _gateway.VenueId;
 
-        // 1. What the store already holds.
+        // 1. What the store already holds -- WITH a recorded contract. A bucket present but carrying no
+        // provenance (written before migration 20260823074908_AddBarContractId, or backfilled by a gateway
+        // that has since started stamping one) is treated as though the store did not have it at all: the
+        // alternative, leaving it "found", means FindMissing never asks the venue again and the row keeps
+        // ContractId == null forever (gh#402). This is not a guess at which contract it was -- the venue is
+        // asked again, exactly as for a genuinely missing bucket, and the ordinary upsert below already
+        // overwrites "ContractId" from whatever the venue answers with.
         List<DateTimeOffset> storedBuckets = await _database.Bars
             .Where(b => b.Venue == venue
                 && b.Instrument == instrument.Symbol
                 && b.ResolutionMinutes == resolutionMinutes
                 && b.BucketStart >= window.Start
-                && b.BucketStart < window.End)
+                && b.BucketStart < window.End
+                && b.ContractId != null)
             .Select(b => b.BucketStart)
             .ToListAsync(cancellationToken)
             .ConfigureAwait(false);

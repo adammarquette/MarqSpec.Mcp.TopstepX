@@ -84,10 +84,13 @@ public static class ToolPayloads
         SingleContract = 1,
 
         /// <summary>
-        /// <b>The window crosses a roll.</b> The bars either side of the seam belong to different quarters,
-        /// which do not trade at the same price — the gap between them is routinely tens of points and is a
-        /// bookkeeping event, not market movement. A high from the expiring contract is not a level the
-        /// contract in front has ever reached.
+        /// <b>The window crosses a roll.</b> Every run's contract is known, and the bars either side of the
+        /// seam belong to different quarters, which do not trade at the same price — the gap between them is
+        /// routinely tens of points and is a bookkeeping event, not market movement. A high from the expiring
+        /// contract is not a level the contract in front has ever reached. A run with <i>no</i> recorded
+        /// contract is reported as <see cref="Unknown"/> instead, never folded in here — a caller cannot be
+        /// taught to read "the window is short" as a roll when the true cause was rows with no recorded
+        /// provenance (gh#402).
         /// </summary>
         SpansRoll = 2,
     }
@@ -282,14 +285,19 @@ public static class ToolPayloads
     /// <param name="Levels">The zones, ordered by price.</param>
     /// <param name="Contracts">
     /// Which contracts the requested lookback covered. A <c>span</c> of <c>SpansRoll</c> is why
-    /// <paramref name="DetectedOverBars"/> can be smaller than the lookback that was asked for.
+    /// <paramref name="DetectedOverBars"/> can be smaller than the lookback that was asked for — and so is a
+    /// <c>span</c> of <c>Unknown</c>, which is a <i>different</i> cause: rows with no recorded contract
+    /// (typically pre-migration history) confine detection exactly as a real roll does, but it is a store
+    /// defect rather than a market event, and reads it are meant to distinguish the two rather than read a
+    /// short <paramref name="DetectedOverBars"/> as always meaning a roll (gh#402).
     /// </param>
     /// <param name="DetectedOverBars">
     /// How many bars detection actually ran over. <b>Detection is confined to the contract in front</b>: a
     /// level built from the expiring quarter's bars sits at a price the current contract has never traded, and
     /// an agent reading it cannot tell that from a level price is about to reach. When the lookback spans a
-    /// roll this is therefore fewer bars than requested, and it is reported rather than implied — silently
-    /// halving the history behind a level changes how much weight it deserves.
+    /// roll — or crosses rows with no recorded contract — this is therefore fewer bars than requested, and it
+    /// is reported rather than implied — silently halving the history behind a level changes how much weight
+    /// it deserves. <see cref="ContractCoverage.Span"/> on <see cref="Contracts"/> says which of the two it was.
     /// </param>
     /// <param name="Detection">
     /// The detection this answer was actually produced by. <b>Reported for the same reason
@@ -787,14 +795,17 @@ public static class ToolPayloads
     {
         IReadOnlyList<ContractSegment> segments = ContractRollDetector.Segment(bars);
 
-        // More than one run is a seam whichever way the provenance falls -- an unrecorded run beside a
-        // recorded one is still two things that must not be read as one contract. A SINGLE run is only
-        // SingleContract when its provenance is actually known; otherwise the honest answer is that nobody
-        // can tell, which is the whole reason this is not a boolean.
+        // A null segment ANYWHERE means "cannot tell", not "SpansRoll" -- whichever position it sits in.
+        // Reporting a run with no recorded provenance as SpansRoll used to be indistinguishable from a
+        // genuine quarterly roll (gh#402): a caller reading `detectedOverBars` short of the lookback asked
+        // for had exactly one explanation offered, and it was wrong whenever the seam was really pre-migration
+        // rows written before 20260823074908_AddBarContractId rather than a second contract. A real SpansRoll
+        // requires every run to know which contract it is; a SINGLE run is only SingleContract on the same
+        // condition.
         ContractSpan span = segments.Count switch
         {
             0 => ContractSpan.Unknown,
-            1 when segments[0].ContractId is null => ContractSpan.Unknown,
+            _ when segments.Any(static s => s.ContractId is null) => ContractSpan.Unknown,
             1 => ContractSpan.SingleContract,
             _ => ContractSpan.SpansRoll,
         };

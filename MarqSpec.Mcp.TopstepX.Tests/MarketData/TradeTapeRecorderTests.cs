@@ -494,6 +494,100 @@ public sealed class TradeTapeRecorderTests
         }
     }
 
+    [Fact]
+    public async Task ASecondRecordersStart_DoesNotDeleteTheOpenRowOfAnInstrumentItDoesNotRecord()
+    {
+        // Two HTTP recorders with RecordTape on, split by MarketData__Instruments, against one
+        // store. A is listening on ES; B records only NQ. B's start must discard its own NQ
+        // leftover and leave A's ES row alone — an unscoped discard deletes every open row in
+        // the table, and A then takes the empty-ledger refusal gh#365 closed while it is still
+        // writing prints (gh#382). The coverage range is not recoverable: there is no
+        // market-tape backfill (ADR-0016).
+        string sharedStore = Guid.NewGuid().ToString();
+        DateTimeOffset nqLeftoverStart = new(2026, 8, 1, 12, 0, 0, TimeSpan.Zero);
+        (TradeTapeRecorder recorderA, FakeMarketHub hubA, TopstepXDbContext database, ServiceProvider servicesA, FakeTimeProvider clock) =
+            Build(
+                McpTransport.Http,
+                recordTape: true,
+                instruments: "ES",
+                gateway: new PerInstrumentGateway(),
+                sharedDatabaseName: sharedStore);
+
+        await using (servicesA)
+        await using (database)
+        {
+            TapeAvailabilityHolder tapeA = servicesA.GetRequiredService<TapeAvailabilityHolder>();
+
+            database.TapeCoverage.Add(new TapeCoverageRecord
+            {
+                Venue = "test",
+                Instrument = "NQ",
+                ContractId = "CON.F.US.ENQ.Z26",
+                RangeStart = nqLeftoverStart,
+                RangeEnd = TapeCoverageRecord.StillListeningEnd,
+                RecordedAt = nqLeftoverStart,
+            });
+            await database.SaveChangesAsync();
+
+            await recorderA.StartAsync(CancellationToken.None);
+            await WaitUntil(() => hubA.TradeSubscriptions.Count > 0 && tapeA.For("ES").IsListening);
+
+            DateTimeOffset listenStart = clock.GetUtcNow();
+            CoverageRows(database).Should().ContainSingle(row =>
+                row.Instrument == "ES"
+                && row.RangeStart == listenStart
+                && row.RangeEnd == TapeCoverageRecord.StillListeningEnd);
+
+            await SeedEsCellAsync(database, listenStart);
+
+            (TradeTapeRecorder recorderB, FakeMarketHub hubB, _, ServiceProvider servicesB, _) =
+                Build(
+                    McpTransport.Http,
+                    recordTape: true,
+                    instruments: "NQ",
+                    gateway: new PerInstrumentGateway(),
+                    sharedDatabaseName: sharedStore);
+
+            await using (servicesB)
+            {
+                TapeAvailabilityHolder tapeB = servicesB.GetRequiredService<TapeAvailabilityHolder>();
+
+                await recorderB.StartAsync(CancellationToken.None);
+                await WaitUntil(() => hubB.TradeSubscriptions.Count > 0 && tapeB.For("NQ").IsListening);
+
+                IReadOnlyList<TapeCoverageRecord> rows = CoverageRows(database);
+
+                rows.Should().ContainSingle(
+                    row => row.Instrument == "ES"
+                        && row.RangeStart == listenStart
+                        && row.RangeEnd == TapeCoverageRecord.StillListeningEnd,
+                    "a recorder that does not record ES must not delete the ES recorder's open listen");
+
+                rows.Should().NotContain(
+                    row => row.Instrument == "NQ" && row.RangeStart == nqLeftoverStart,
+                    "B's own leftover from a previous run is still a crash leftover it supersedes");
+
+                rows.Should().ContainSingle(
+                    row => row.Instrument == "NQ"
+                        && row.RangeStart == listenStart
+                        && row.RangeEnd == TapeCoverageRecord.StillListeningEnd);
+
+                tapeA.For("ES").IsListening.Should().BeTrue();
+
+                MarketDataTools tools = Tools(database, tapeA);
+                ToolPayloads.FootprintSeries payload = await tools.GetFootprint(
+                    "ES", 5, listenStart, listenStart.AddHours(2), CancellationToken.None);
+
+                payload.Covered.Start.Should().Be(listenStart);
+                payload.Cells.Should().NotBeEmpty();
+
+                await recorderB.StopAsync(CancellationToken.None);
+            }
+
+            await recorderA.StopAsync(CancellationToken.None);
+        }
+    }
+
     [Theory]
     [InlineData(McpTransport.Stdio, true)]
     [InlineData(McpTransport.Http, false)]

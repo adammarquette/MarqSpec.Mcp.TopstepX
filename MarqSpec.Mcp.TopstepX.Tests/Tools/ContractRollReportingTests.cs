@@ -185,6 +185,39 @@ public sealed class ContractRollReportingTests : IDisposable
     }
 
     [Fact]
+    public async Task GetKeyLevels_NullRunBetweenTwoDifferentContracts_IsStillReportedAsSpansRoll()
+    {
+        // gh#402 review. A genuine roll -- two DIFFERENT recorded contracts -- must not be swallowed by an
+        // unattributed run sitting inside the same window. The store KNOWS a roll happened here; a null run
+        // elsewhere cannot make that knowledge disappear. An earlier version of this fix checked "any null
+        // segment present" BEFORE checking "two different recorded contracts present", so it reported
+        // Unknown here -- worse than the original defect, because it teaches a caller to read a genuine
+        // bookkeeping gap as market movement, which is the unsafe direction.
+        for (int i = 0; i < 8; i++)
+        {
+            string? contractId = i switch
+            {
+                < 3 => Expiring,
+                < 5 => null,
+                _ => NewFront,
+            };
+
+            AddBar(i, close: 100m, halfRange: 1m, contractId: contractId);
+        }
+
+        MarketDataTools tools = await ComposeAsync(8);
+
+        ToolPayloads.LevelSet levels =
+            await tools.GetKeyLevels("ES", 5, 8, cancellationToken: CancellationToken.None);
+
+        levels.Contracts.Span.Should().Be(
+            ToolPayloads.ContractSpan.SpansRoll,
+            "two DIFFERENT recorded contracts appear in the window -- the store is certain a roll happened, "
+            + "and an unattributed run elsewhere must not outrank that certainty");
+        levels.Contracts.Segments.Should().HaveCount(3, "the null run is still its own segment");
+    }
+
+    [Fact]
     public async Task UnknownProvenance_IsReportedAsUnknown_NotAsNoRoll()
     {
         // gh#42 review, finding 3. Every bar written before this server recorded provenance carries none, so

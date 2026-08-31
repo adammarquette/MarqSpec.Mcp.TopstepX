@@ -58,6 +58,13 @@ public sealed class SnapshotIndicatorProvenanceTests : IDisposable
 
     private const int TotalBars = 9;
 
+    /// <summary>How many indicators the catalogue computes, and therefore how many keys the map carries.</summary>
+    /// <remarks>
+    /// Stated rather than read off the catalogue, so a batched read that quietly dropped a name — the join's
+    /// natural failure — is a red test rather than a smaller map that agrees with itself.
+    /// </remarks>
+    private const int IndicatorCount = 11;
+
     /// <summary>ATR(3) over the expiring run, hand-checked.</summary>
     /// <remarks>
     /// Those six bars are flat at 100 with a high-low range of exactly 2, so every true range is that same 2 —
@@ -128,6 +135,77 @@ public sealed class SnapshotIndicatorProvenanceTests : IDisposable
         // anchor produced two readings fifteen minutes and one contract apart.
         atr.BucketStart.Should().NotBe(vwap.BucketStart);
         atr.ContractId.Should().NotBe(vwap.ContractId);
+    }
+
+    [Fact]
+    public async Task EveryReadingInTheMap_IsTheOneGetIndicatorAtWouldHaveReturned_AcrossARoll()
+    {
+        // The equivalence the batched read has to keep (gh#388). The snapshot used to COMPOSE eleven
+        // get_indicator_at calls, so per-indicator provenance was true by construction; it now composes ONE
+        // query per (instrument, resolution) that returns the latest row for every (Indicator, Period) at
+        // once, with the ContractId folded in. Collapsing eleven as-of reads into one join is exactly where
+        // a bucket -- or worse, a contract -- gets attributed to the wrong indicator, and the resulting
+        // number is plausible and is acted on. So the two shapes are compared here rather than trusted:
+        // the fixture spans a roll, so the eleven readings genuinely disagree about both bucket and
+        // contract, and an implementation that broadcast one bucket across the map goes red.
+        (SnapshotTools snapshot, MarketDataTools marketData) = await ComposeBothAsync();
+
+        ToolPayloads.MarketSnapshot payload =
+            await snapshot.GetMarketSnapshot("ES", [5], TotalBars, CancellationToken.None);
+
+        ToolPayloads.ResolutionSnapshot slice = payload.PerResolution.Should().ContainSingle().Subject;
+
+        // The anchor the slice read at, reconstructed the way the tool does it: the last bar's bucket.
+        DateTimeOffset asOf = slice.Bars[^1].T;
+
+        slice.Indicators.Should().HaveCount(
+            IndicatorCount, "the whole catalogue is keyed unconditionally, measured or not");
+
+        foreach ((string name, ToolPayloads.IndicatorReading? composed) in slice.Indicators)
+        {
+            ToolPayloads.IndicatorReading single =
+                await marketData.GetIndicatorAt("ES", 5, name, asOf, CancellationToken.None);
+
+            if (single.Value is null)
+            {
+                composed.Should().BeNull(
+                    "{0} cannot measure at the anchor, and the single-purpose tool's `{{}}` reading is "
+                    + "published in this map as the map's own null",
+                    name);
+                continue;
+            }
+
+            composed.Should().NotBeNull(
+                "{0} has a stored row at or before the anchor, so the snapshot must carry it too", name);
+
+            composed!.Value.Should().Be(single.Value, "{0}'s number must be the same number", name);
+            composed.BucketStart.Should().Be(
+                single.BucketStart,
+                "{0} must be attributed to the bucket its own as-of read lands on, not to the slice's anchor "
+                + "and not to another indicator's bucket",
+                name);
+            composed.ContractId.Should().Be(
+                single.ContractId,
+                "{0} must be attributed to the contract its own bucket belongs to -- a reading carrying the "
+                + "wrong contract is the failure this card is scored on",
+                name);
+        }
+
+        // And the comparison has to have had something to catch. A map whose eleven readings all sat on one
+        // bucket would satisfy every assertion above against an implementation that broadcast one bucket.
+        slice.Indicators.Values
+            .Where(r => r is not null)
+            .Select(r => r!.BucketStart)
+            .Distinct()
+            .Should()
+            .HaveCountGreaterThan(1, "the fixture spans a roll, so the readings sit on different buckets");
+
+        slice.Indicators.Values
+            .Where(r => r is not null)
+            .Select(r => r!.ContractId)
+            .Distinct()
+            .Should()
+            .HaveCountGreaterThan(1, "and on different contracts");
     }
 
     [Fact]
@@ -241,7 +319,21 @@ public sealed class SnapshotIndicatorProvenanceTests : IDisposable
     /// the snapshot, because that is how the container wires it — a test that handed the snapshot a clock of
     /// its own could pass with the composition root still giving the real one to everything else.
     /// </remarks>
-    private async Task<SnapshotTools> ComposeAsync(DateTimeOffset? now = null)
+    private async Task<SnapshotTools> ComposeAsync(DateTimeOffset? now = null) =>
+        (await ComposeBothAsync(now)).Snapshot;
+
+    /// <summary>
+    /// The same composition, with the single-purpose tool handed back beside the composed one.
+    /// </summary>
+    /// <param name="now">The moment every part of the composition agrees is <i>now</i>.</param>
+    /// <returns>The snapshot tool and the market-data tool it composes.</returns>
+    /// <remarks>
+    /// Both come out of <b>one</b> wiring, sharing the store, the catalogue and the clock, because the claim
+    /// is that the two shapes agree — and two independently wired tools could agree by having been given the
+    /// same fixture twice while disagreeing about the same one.
+    /// </remarks>
+    private async Task<(SnapshotTools Snapshot, MarketDataTools MarketData)> ComposeBothAsync(
+        DateTimeOffset? now = null)
     {
         for (int i = 0; i < TotalBars; i++)
         {
@@ -315,6 +407,6 @@ public sealed class SnapshotIndicatorProvenanceTests : IDisposable
         ReferenceTools reference = new(
             new InstrumentRegistry(wrapped), calendar, gateway, wrapped, clock);
 
-        return new SnapshotTools(marketData, reference, new IndicatorCatalogNames(catalog), clock);
+        return (new SnapshotTools(marketData, reference, new IndicatorCatalogNames(catalog), clock), marketData);
     }
 }

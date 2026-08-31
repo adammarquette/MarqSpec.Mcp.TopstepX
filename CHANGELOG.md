@@ -13,6 +13,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- `get_market_snapshot` reads its whole indicator map for a resolution in one query instead of eleven
+  `get_indicator_at` calls, each of which had gone back to `Bars` for its bucket's contract. A default call
+  cost **60** database statements, **44** of them that block; it now costs **18**, with the block down to one
+  statement per resolution. **The payload is unchanged** — every reading keeps its own `value`, `bucketStart`
+  and `contractId`, which just past a contract roll legitimately differ between entries, and cannot-measure is
+  still the map's own `null`. `get_indicator_at` is untouched (gh#388).
+
 ### Fixed
 
 - A starting recorder no longer discards every still-open `TapeCoverage` row in the store. The crash-leftover

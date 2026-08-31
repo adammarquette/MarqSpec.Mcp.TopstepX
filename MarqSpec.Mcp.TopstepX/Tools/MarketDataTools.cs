@@ -1,6 +1,7 @@
 using System.ComponentModel;
 using MarqSpec.Mcp.TopstepX.Configuration;
 using MarqSpec.Mcp.TopstepX.Data;
+using MarqSpec.Mcp.TopstepX.Data.Entities;
 using MarqSpec.Mcp.TopstepX.Domain;
 using MarqSpec.Mcp.TopstepX.Domain.MarketData;
 using MarqSpec.Mcp.TopstepX.MarketData;
@@ -293,6 +294,137 @@ public sealed class MarketDataTools(
             .ConfigureAwait(false);
 
         return new ToolPayloads.IndicatorReading(row.Value, row.BucketStart, contractId);
+    }
+
+    /// <summary>
+    /// Reads the latest value of every catalogue indicator as of one moment, in a single statement.
+    /// </summary>
+    /// <param name="symbol">The instrument symbol.</param>
+    /// <param name="resolutionMinutes">The bar size in minutes.</param>
+    /// <param name="asOfUtc">The moment. Values from after it are never returned.</param>
+    /// <param name="cancellationToken">The caller's cancellation token.</param>
+    /// <returns>
+    /// A reading per indicator name the store holds a row for at or before the moment. <b>A name absent from
+    /// this dictionary is cannot-measure</b>, and the caller decides how that is published — the snapshot
+    /// publishes it as the map's own <c>null</c>.
+    /// </returns>
+    /// <remarks>
+    /// <para>
+    /// <b>Not a tool, and deliberately not the shape <see cref="GetIndicatorAt"/> has.</b> That one answers
+    /// about one indicator and stays exactly as it was; this exists because
+    /// <c>get_market_snapshot</c> asked it eleven times per resolution and paid two statements for each —
+    /// the value, then a second round trip to <c>Bars</c> for the <c>ContractId</c> of the bucket it had
+    /// just found. A default snapshot cost <b>60</b> statements, <b>44</b> of them this block (gh#388).
+    /// </para>
+    /// <para>
+    /// <b>Per-indicator provenance is what the collapse must not lose, and it is the whole risk.</b> The
+    /// anchor is one moment for the slice, but warm-up restarts at every contract seam (<c>R-2.7</c>), so
+    /// just past a roll the eleven readings legitimately sit on different buckets and different contracts.
+    /// So this groups by <c>(Indicator, Period)</c> and takes each group's own latest bucket — never one
+    /// bucket broadcast across the map — and joins the contract to <i>that</i> row's bucket. A reading
+    /// attributed to the wrong contract is a plausible number that is acted on, which is why
+    /// <c>SnapshotIndicatorProvenanceTests</c> compares this map against eleven separate
+    /// <see cref="GetIndicatorAt"/> calls across a roll rather than asserting the shape looks right.
+    /// </para>
+    /// <para>
+    /// <b>Ordinary LINQ rather than the <c>DISTINCT ON</c> the store would enjoy</b>, because raw SQL is
+    /// executable at neither the unit tier nor by anything but Postgres (gh#387), and the one thing this
+    /// change must be pinned by is a unit test that can actually run it. The group-max plus self-join
+    /// translates to one statement on Npgsql and runs unchanged on the in-memory provider, so the
+    /// equivalence above is proven where it is cheap and the translation is proven where it is real.
+    /// </para>
+    /// <para>
+    /// <b>Filtered to the catalogue's names, matched to the catalogue's periods after materialisation.</b>
+    /// A period moved in configuration leaves rows behind under the old one, and those are a different
+    /// series rather than a stale copy of this one — handing an <c>ATR(14)</c> to a caller who asked for the
+    /// configured <c>ATR(3)</c> is the same wrong-attribution failure in another dimension.
+    /// </para>
+    /// <para>
+    /// <b>AsNoTracking</b> for the reason every read of <c>IndicatorValues</c> here is: the rows are written
+    /// by SQL the change tracker never sees, so a tracked copy is a stale entity the identity map would hand
+    /// back to the next read in the same scope (gh#103).
+    /// </para>
+    /// </remarks>
+    internal async Task<IReadOnlyDictionary<string, ToolPayloads.IndicatorReading>> GetLatestIndicatorReadings(
+        string symbol,
+        int resolutionMinutes,
+        DateTimeOffset asOfUtc,
+        CancellationToken cancellationToken)
+    {
+        InstrumentId instrument = Resolve(symbol);
+        ToolGuards.ValidateResolution(resolutionMinutes);
+        DateTimeOffset asOf = asOfUtc.ToUniversalTime();
+
+        // The same cache-aside trigger get_indicators and get_indicator_at are on (gh#246). It memoises per
+        // scope, so the eleven reads this replaces already paid it once rather than eleven times.
+        await EnsureProjectedAsync(instrument, resolutionMinutes, cancellationToken).ConfigureAwait(false);
+
+        string venue = _gateway.VenueId;
+        string instrumentSymbol = instrument.Symbol;
+        string[] names = [.. _catalog.All.Select(i => i.Name)];
+
+        IQueryable<IndicatorValueRecord> series = _database.IndicatorValues
+            .AsNoTracking()
+            .Where(v => v.Venue == venue
+                && v.Instrument == instrumentSymbol
+                && v.ResolutionMinutes == resolutionMinutes
+                && v.BucketStart <= asOf
+                && names.Contains(v.Indicator));
+
+        IQueryable<BarRecord> bars = _database.Bars
+            .AsNoTracking()
+            .Where(b => b.Venue == venue
+                && b.Instrument == instrumentSymbol
+                && b.ResolutionMinutes == resolutionMinutes);
+
+        // ONE statement: the latest bucket PER (Indicator, Period), joined back for that row's value, with
+        // the contract taken from the bar at that same bucket. The bar side is a LEFT join, not an inner
+        // one -- a value whose bar the store no longer holds keeps its number and reports an unknown
+        // contract, exactly as GetIndicatorAt's FirstOrDefault did. An inner join would DROP that reading,
+        // turning a known number with unknown provenance into cannot-measure, which is a different and worse
+        // answer.
+        var rows = await series
+            .GroupBy(v => new { v.Indicator, v.Period })
+            .Select(g => new { g.Key.Indicator, g.Key.Period, BucketStart = g.Max(v => v.BucketStart) })
+            .Join(
+                series,
+                latest => new { latest.Indicator, latest.Period, latest.BucketStart },
+                value => new { value.Indicator, value.Period, value.BucketStart },
+                (latest, value) => value)
+            .GroupJoin(
+                bars,
+                value => value.BucketStart,
+                bar => bar.BucketStart,
+                (value, matched) => new { Row = value, Bars = matched })
+            .SelectMany(
+                pair => pair.Bars.DefaultIfEmpty(),
+                (pair, bar) => new
+                {
+                    pair.Row.Indicator,
+                    pair.Row.Period,
+                    pair.Row.BucketStart,
+                    pair.Row.Value,
+                    ContractId = bar == null ? null : bar.ContractId,
+                })
+            .ToListAsync(cancellationToken)
+            .ConfigureAwait(false);
+
+        Dictionary<string, ToolPayloads.IndicatorReading> readings = new(StringComparer.Ordinal);
+
+        foreach (IIndicator indicator in _catalog.All)
+        {
+            var row = rows.FirstOrDefault(r =>
+                string.Equals(r.Indicator, indicator.Name, StringComparison.Ordinal)
+                && r.Period == indicator.Period);
+
+            if (row is not null)
+            {
+                readings[indicator.Name] =
+                    new ToolPayloads.IndicatorReading(row.Value, row.BucketStart, row.ContractId);
+            }
+        }
+
+        return readings;
     }
 
     /// <summary>Detects support and resistance zones.</summary>

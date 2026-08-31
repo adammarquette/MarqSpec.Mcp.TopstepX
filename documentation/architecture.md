@@ -540,7 +540,10 @@ dating today's pick. It does not fetch bars and does not write a roll row.
   ([ADR-0016](adr/0016-subscribe-to-the-market-hub.md)). The first first-party `BackgroundService` records
   prints to `Trades` (gh#216) only when the transport is HTTP **and** `MarketData__RecordTape` is on —
   choosing HTTP is not consent. It re-subscribes on every transition into `Connected` and writes
-  `TapeCoverage` from that lifecycle (gh#217); `Connected` is not listening. Live tape health is a
+  `TapeCoverage` from that lifecycle (gh#217); `Connected` is not listening. That ledger is its own
+  type, `TapeCoverageLedger` — the service keeps the subscription lifecycle and the print pipeline and
+  calls it — because five of one release's six defects landed in that half while it had no name (gh#390).
+  Live tape health is a
   mutable holder written from that same lifecycle and read at the point of use (gh#218) — the opposite
   of the store probe, which is set once at startup and never re-probed. `get_footprint` and
   `get_volume_profile` refuse when **that instrument's** tape is not listening, with a sentence naming the fix. It resolves the

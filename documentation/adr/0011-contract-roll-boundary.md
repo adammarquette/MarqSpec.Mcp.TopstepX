@@ -91,8 +91,12 @@ shape this record exists to refuse, appearing on the field added to prevent it. 
 and `SpansRoll`, with `Unknown = 0` — the same closed-vocabulary idiom `AccountStage` and `VenueSide` already
 use here, where a near-miss resolves to `Unknown` rather than to a guess ([ADR-0008](0008-numeric-only-tool-payloads.md)).
 
-More than one run is `SpansRoll` whichever way the provenance falls: an unrecorded run beside a recorded one is
-still two things that must not be read as one contract.
+More than one run is `SpansRoll` only when the store can back it: at least two runs carry *different recorded*
+contract ids. An unrecorded run does not, on its own, prove a second contract — beside a single known one it
+is `Unknown`, because the two are not *known* to be the same contract either. It also does not erase a roll
+the store already proved: two different recorded ids anywhere in the window stay `SpansRoll` even when an
+unattributed run sits between or beside them — a roll the store can prove outranks a gap it cannot explain
+(see the [2026-08-31 update](#update-2026-08-31--a-proven-roll-outranks-an-unattributed-run), gh#402).
 
 ### Report on the bars, refuse on the derivation — one rule, not two
 
@@ -117,6 +121,7 @@ can tell that a roll happened.
 |---|---|
 | [2026-08-23](#update-2026-08-23--the-reconcile-has-a-precondition-and-nothing-stated-it) | The reconcile's precondition is named and enforced: one snapshot, and the whole series ([gh#73](https://github.com/adammarquette/MarqSpec.Mcp.TopstepX/issues/73)) |
 | [2026-08-29](#update-2026-08-29--the-roll-event-is-a-tool) | `get_contract_roll` reports the tape changeover; no roll table ([gh#349](https://github.com/adammarquette/MarqSpec.Mcp.TopstepX/issues/349)) |
+| [2026-08-31](#update-2026-08-31--a-proven-roll-outranks-an-unattributed-run) | A roll two runs already prove is not downgraded to `Unknown` by a null run elsewhere in the window, and legacy `NULL` rows heal on read instead of only by manual delete-and-refetch ([gh#402](https://github.com/adammarquette/MarqSpec.Mcp.TopstepX/issues/402)) |
 
 ## Alternatives considered
 
@@ -188,13 +193,22 @@ most wants to look at just after a roll.
 
 ## Consequences
 
-- **Existing rows carry `NULL`, permanently.** The migration adds a nullable column and does nothing else. The
-  contract was never captured at write time and cannot be recovered from anything the store holds — the
-  bucket, the prices and the volume look the same whichever quarter produced them. **Backfill is impossible
-  without guessing, so it is not done.**
-- **An unrecorded run beside a recorded one is reported as a seam.** That is not a defect: they are not
-  *known* to be the same contract. Every store carrying pre-existing history is in this state until those rows
-  are deleted and refetched, which is the only remedy and is deliberately manual.
+- **Existing rows carry `NULL` until a read re-fetches them — not permanently.** The migration added a
+  nullable column and did nothing else: the contract was never captured at write time and is not recoverable
+  from anything the row itself holds — the bucket, the prices and the volume look the same whichever quarter
+  produced them, so backfilling by guessing is not done. `gh#402` closed the other half instead:
+  `BarCacheService` treats a bucket carrying no recorded contract as though the store did not have it, so an
+  ordinary cache-aside read re-asks the venue and the existing upsert overwrites the null — no schema change,
+  no guessed provenance, no manual step. It heals only what a read actually touches and the calendar still
+  expects: a bucket outside `BarGapDetector`'s expected grid, or one the venue no longer restates, keeps its
+  `NULL` regardless of how many reads pass over it (see the
+  [2026-08-31 update](#update-2026-08-31--a-proven-roll-outranks-an-unattributed-run)).
+- **An unrecorded run beside a recorded one is reported as `Unknown`, not folded into a known contract.**
+  That is not a defect: they are not *known* to be the same contract, so `SingleContract` would be a guess.
+  Nor is it promoted to `SpansRoll` on its own — that is reserved for what the store CAN prove: two runs whose
+  contract id is recorded and different. A null run does not erase a roll the store already proved, either:
+  two different recorded ids anywhere in the window stay `SpansRoll` even when an unattributed run sits beside
+  or between them (`gh#402`).
 - **A store whose bars are *all* unrecorded behaves exactly as before.** One run of unknown provenance is
   still one run, so nothing is refused and no existing deployment loses a tool.
 - **Indicators are absent for `WarmupBars` after every roll.** ATR(14) genuinely cannot measure the new
@@ -324,3 +338,33 @@ bars in a short window, every resolution together — a per-size pick would repo
 `asOfUtc` omits `gatewayContractId` and `agree` rather than dating today's venue answer. This is
 how a caller decides whether Q-1's successor — re-keying bars by contract id — is worth a
 migration. The keying decision itself is unchanged.
+
+## Update (2026-08-31) — a proven roll outranks an unattributed run
+
+Bars written before the migration this record introduced carry `ContractId = NULL` forever, because
+`BarCacheService` only re-fetched what `BarGapDetector.FindMissing` reported as genuinely missing, and a
+bucket the store already holds is never missing. A block of legacy rows sitting between two attributed runs
+of the *same* contract was therefore a permanent, self-inflicted seam — and worse, `ToCoverage` reported
+`span: SpansRoll` for it, byte-identical to a genuine quarterly roll, because the classification rule this
+record stated ("more than one run is `SpansRoll` whichever way the provenance falls") did not distinguish a
+seam the store could prove from one it could only fail to explain (gh#402).
+
+**The read path now heals what it touches.** `BarCacheService` excludes a bucket with no recorded contract
+from what it considers already stored, so `BarGapDetector.FindMissing` reports it missing and the existing
+upsert — which already writes `ContractId` in the same statement as the OHLCV, per §1 — overwrites the null
+the next time a read reaches that range. No schema change, no guessed provenance: the venue is asked again,
+exactly as for a bucket that was never fetched at all. This does not reach a bucket outside the calendar's
+expected grid, or one a venue page omits without restating, so `NULL` is still not eliminated on a
+schedule — only on the reads that happen to touch it.
+
+**The classification rule is corrected, not relaxed.** The first attempt at this fix read *any* unattributed
+run in the window as proof that nothing could be concluded, which flipped the defect the other way: a window
+holding a genuine roll — two runs with *different recorded* contract ids — plus one legacy unattributed run
+anywhere inside it now reported `Unknown` instead of `SpansRoll`, and this record's own new prose would have
+told a caller that meant "probably one contract." That is the unsafe direction — a real bookkeeping gap read
+as market movement — and a review on the PR caught it before merge. The rule is now: two recorded, different
+contract ids anywhere in the window are `SpansRoll` regardless of what else sits beside them; only when the
+known contracts (zero or one of them) never disagree does an unattributed run downgrade the answer to
+`Unknown`. §3's classification rule and the Consequences section above are corrected in place to state this
+version rather than the one first shipped; `ContractRollDetector.Segment` and `Newest` are untouched by
+either attempt — the segmentation was always right, only `ToCoverage`'s summary of it was not.

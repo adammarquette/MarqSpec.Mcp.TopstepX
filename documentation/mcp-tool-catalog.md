@@ -308,10 +308,11 @@ sits at a price the current contract has never traded, and it reads exactly like
 about to reach. So when the requested lookback spans a roll, `detectedOverBars` is smaller than the
 lookback asked for — reported rather than implied, because silently halving the history behind a level
 changes how much weight it deserves. **The same truncation, for a different reason, happens over rows
-with no recorded contract** — history cached before this server tracked provenance (`gh#402`) — and that
-is *not* a roll: every one of those bars can belong to the very contract on either side of them. Read
-`contracts.span` to tell the two apart: `SpansRoll` is a genuine roll, `Unknown` is unattributed rows, a
-store defect rather than a market event.
+with no recorded contract** — history cached before this server tracked provenance (`gh#402`). Read
+`contracts.span` to tell the two apart: `SpansRoll` means the store holds two DIFFERENT recorded
+contracts — a genuine roll — even when an unattributed run also sits in the window; `Unknown` means at
+least one run's contract was never recorded and the known ones never disagree, which is genuinely
+*cannot tell*, not a statement that there was no roll.
 
 **One resolution per call**, and `lookbackBars` defaults to 500 — its description said *"500 is a reasonable
 default"* while the schema required it, until gh#70. This page described an array of timeframes and no
@@ -443,11 +444,12 @@ computed at: a caller that omitted an argument does not otherwise know what ran.
   it runs over what the **store** holds cut back to the contract in front — which can be far less than
   `lookbackBars` asked for. `detectedOverBars` is that number.
 - **A roll inside the window**, which is the same case arriving a different way; `contracts.span` of
-  `SpansRoll` names it.
+  `SpansRoll` names it — reported whenever the store holds two DIFFERENT recorded contracts, even if an
+  unattributed run also sits in the window.
 - **Unattributed rows confining the window the same way a roll does**, but for a store reason rather than a
-  market one: history cached before this server recorded provenance. `contracts.span` of `Unknown` names
-  this one instead — the two are not interchangeable, and reading `Unknown` as a roll draws the wrong
-  conclusion about what a thin `detectedOverBars` means (`gh#402`).
+  market one: history cached before this server recorded provenance, with no second recorded contract to
+  prove a roll either way. `contracts.span` of `Unknown` names this one instead — it is genuinely *cannot
+  tell*, not a claim that there was no roll, and the two are not interchangeable (`gh#402`).
 - **`Body` legitimately finding nothing.** On a continuous intraday series a bar opens at the previous close,
   so a body high ties with its neighbour's on every bar and no candidate dominates its window (measured on
   gh#247). A property of the source, not of the market.

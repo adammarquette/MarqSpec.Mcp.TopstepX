@@ -155,6 +155,36 @@ public sealed class ContractRollReportingTests : IDisposable
     }
 
     [Fact]
+    public async Task GetKeyLevels_NullRunBetweenTwoRunsOfTheSameContract_IsUnknown_NotSpansRoll()
+    {
+        // gh#402. Bars written before migration 20260823074908_AddBarContractId kept ContractId == null
+        // forever, and a block of them sitting between two attributed runs of the SAME contract used to be
+        // reported exactly like a genuine roll -- SpansRoll -- because ToCoverage treated any run count above
+        // one as a roll regardless of whether a run's provenance was ever recorded. There was no roll here:
+        // every bar is Expiring. ContractRollDetector's segmentation is UNCHANGED by the fix -- it still
+        // reports three runs, and Newest still confines detection to the trailing one -- only the SUMMARY
+        // exposed to the caller must stop calling an unattributed seam a roll.
+        for (int i = 0; i < 8; i++)
+        {
+            bool unattributed = i is >= 3 and < 5;
+            AddBar(i, close: 100m, halfRange: 1m, contractId: unattributed ? null : Expiring);
+        }
+
+        MarketDataTools tools = await ComposeAsync(8);
+
+        ToolPayloads.LevelSet levels =
+            await tools.GetKeyLevels("ES", 5, 8, cancellationToken: CancellationToken.None);
+
+        levels.Contracts.Span.Should().Be(
+            ToolPayloads.ContractSpan.Unknown,
+            "every bar is the Expiring contract -- the seam is missing provenance, not a second contract");
+        levels.Contracts.Segments.Should().HaveCount(
+            3, "the null run is still its own segment -- the fix reports it honestly, it does not fold it in");
+        levels.DetectedOverBars.Should().Be(
+            3, "detection still confines to the trailing run -- this fix is about the SIGNAL, not the window");
+    }
+
+    [Fact]
     public async Task UnknownProvenance_IsReportedAsUnknown_NotAsNoRoll()
     {
         // gh#42 review, finding 3. Every bar written before this server recorded provenance carries none, so

@@ -1,6 +1,7 @@
 using FluentAssertions;
 using MarqSpec.Mcp.TopstepX.Configuration;
 using MarqSpec.Mcp.TopstepX.Data;
+using MarqSpec.Mcp.TopstepX.Data.Entities;
 using MarqSpec.Mcp.TopstepX.Domain;
 using MarqSpec.Mcp.TopstepX.Domain.MarketData;
 using MarqSpec.Mcp.TopstepX.MarketData;
@@ -226,6 +227,50 @@ public sealed class BarCacheServiceTests : IDisposable
             _es, 5, new BarRange(SessionStart, SessionStart.AddHours(1)), CancellationToken.None);
 
         result.Bars.Should().AllSatisfy(b => b.ContractId.Should().Be("CON.F.US.TEST.Z26"));
+    }
+
+    [Fact]
+    public async Task StoredBarsWithNoRecordedContract_AreRefetched_SoTheUpsertCanHealThem()
+    {
+        // gh#402. A bucket the store already holds is not "missing" by FindMissing's definition, so a bucket
+        // written before migration 20260823074908_AddBarContractId -- ContractId == null -- was never asked
+        // for again and kept that null forever. This is RED against the pre-fix query: it selected every
+        // stored bucket start regardless of ContractId, so FindMissing saw the window as fully covered and
+        // the venue was never asked.
+        DateTimeOffset now = SessionStart.AddHours(2);
+        IReadOnlyList<Bar> venueBars = VenueBars(12);
+        (BarCacheService cache, CountingGateway gateway) = Build(venueBars, now);
+
+        // Seed the store directly with the SAME numbers the venue would answer with, but no contract -- this
+        // is exactly what a pre-migration row looks like: present, with numbers already correct, and never
+        // "missing".
+        foreach (Bar bar in venueBars)
+        {
+            _database.Bars.Add(new BarRecord
+            {
+                Venue = "test",
+                Instrument = _es.Symbol,
+                ResolutionMinutes = 5,
+                BucketStart = bar.OpenTime,
+                Open = bar.Open,
+                High = bar.High,
+                Low = bar.Low,
+                Close = bar.Close,
+                Volume = bar.Volume,
+                ContractId = null,
+                RecordedAt = SessionStart,
+            });
+        }
+
+        await _database.SaveChangesAsync();
+
+        BarReadResult result = await cache.GetBarsAsync(
+            _es, 5, new BarRange(SessionStart, SessionStart.AddHours(1)), CancellationToken.None);
+
+        gateway.BarRequests.Should().BeGreaterThan(
+            0, "a bucket with no recorded contract must be re-asked for, not treated as already answered");
+        result.Bars.Should().OnlyContain(b => b.ContractId != null);
+        _database.Bars.Should().AllSatisfy(b => b.ContractId.Should().Be("CON.F.US.TEST.Z26"));
     }
 
     [Fact]

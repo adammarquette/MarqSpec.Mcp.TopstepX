@@ -202,10 +202,6 @@ public sealed class TradeTapeRecorder : BackgroundService
                     return;
                 }
 
-                // Crash leftovers only. A stdio or switch-off start still serves tools against
-                // the same store and must not delete a live HTTP listen (gh#378).
-                await DiscardAbandonedOpenRangesAsync(stoppingToken).ConfigureAwait(false);
-
                 _hub = resolved;
 
                 IMarketDataGateway gateway = scope.ServiceProvider.GetRequiredService<IMarketDataGateway>();
@@ -242,6 +238,13 @@ public sealed class TradeTapeRecorder : BackgroundService
                         "The trade-tape recorder could not finish resolving every contract. "
                         + "Contracts that did resolve will still be restored on Connected.");
                 }
+
+                // Crash leftovers of this process's own instruments only, and so after the
+                // resolve above: the discard set is what this start is about to subscribe.
+                // A stdio or switch-off start still serves tools against the same store and
+                // must not delete a live HTTP listen (gh#378); a second recorder must not
+                // delete a listen it does not own (gh#382).
+                await DiscardAbandonedOpenRangesAsync(gateway.VenueId, stoppingToken).ConfigureAwait(false);
 
                 // Hook BEFORE the first await that can yield after connect, so a print cannot
                 // land between Subscribe returning and the handler being attached, and so the
@@ -504,15 +507,61 @@ public sealed class TradeTapeRecorder : BackgroundService
         }
     }
 
-    private async Task DiscardAbandonedOpenRangesAsync(CancellationToken cancellationToken)
+    /// <summary>
+    /// Discards still-open coverage rows this start supersedes — the ones an earlier run of
+    /// <b>this</b> process left behind — so a crash cannot claim coverage after death.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>Scoped to the instruments this start is about to subscribe.</b> The predicate carries
+    /// the venue and the instruments a front contract actually resolved for, not the whole table.
+    /// Unscoped, a second recorder passing the HTTP and <c>RecordTape</c> gates — a rolling
+    /// redeploy, or two recorders split by <c>MarketData__Instruments</c> — deleted every open row
+    /// in the store, including one a live process was still writing under. That process does not
+    /// notice: it keeps writing prints and stays Listening, while its reads take the empty-ledger
+    /// refusal gh#365 closed. The range is not recoverable — there is no market-tape REST backfill
+    /// (ADR-0016, gh#382).
+    /// </para>
+    /// <para>
+    /// <b>An open row for an instrument this process does not record is left, not deleted.</b> The
+    /// two answers are indistinguishable from outside the store, so this one is written down:
+    /// another recorder may still own that row, and deleting it destroys a ledger range that
+    /// cannot be rebuilt, whereas leaving it costs this process nothing —
+    /// <c>VolumeProfileService</c> only reads a still-open row as coverage while that instrument
+    /// is Listening <i>here</i>, and an instrument this process never subscribed never is, so a
+    /// foreign sentinel is filtered out of its own answers.
+    /// </para>
+    /// <para>
+    /// <b><c>ContractId</c> is deliberately not in the predicate.</b> Every open row for an
+    /// instrument this start subscribes is superseded, whichever contract it names, because a
+    /// leftover written before a roll would otherwise survive forever — and the Listening guard
+    /// is per instrument, so that stale sentinel would read as coverage to
+    /// <see cref="TapeCoverageRecord.StillListeningEnd"/> on a contract nothing is listening to.
+    /// </para>
+    /// </remarks>
+    /// <param name="venue">The venue this start resolved its contracts through.</param>
+    /// <param name="cancellationToken">The stopping token.</param>
+    private async Task DiscardAbandonedOpenRangesAsync(string venue, CancellationToken cancellationToken)
     {
+        List<string> instruments = [.. _attribution.Values
+            .Where(attribution => string.Equals(attribution.Venue, venue, StringComparison.Ordinal))
+            .Select(attribution => attribution.Instrument)
+            .Distinct(StringComparer.Ordinal)];
+
+        if (instruments.Count == 0)
+        {
+            return;
+        }
+
         await _store.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
             using IServiceScope scope = _scopes.CreateScope();
             TopstepXDbContext database = scope.ServiceProvider.GetRequiredService<TopstepXDbContext>();
             List<TapeCoverageRecord> abandoned = await database.TapeCoverage
-                .Where(row => row.RangeEnd == TapeCoverageRecord.StillListeningEnd)
+                .Where(row => row.RangeEnd == TapeCoverageRecord.StillListeningEnd
+                    && row.Venue == venue
+                    && instruments.Contains(row.Instrument))
                 .ToListAsync(cancellationToken)
                 .ConfigureAwait(false);
 

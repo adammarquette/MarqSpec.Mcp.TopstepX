@@ -295,7 +295,13 @@ row from a crash is discarded on the next HTTP start that will record, before a 
 opens — not on a stdio, switch-off, or missing-venue-client start that can still serve
 tools — so two sentinels cannot merge across an outage. Those other starts leave the row;
 a still-open row is coverage only while that instrument is Listening, so a leftover cannot
-claim coverage after death. Opening a new listen retires any other still-open row for that
+claim coverage after death. That discard is **scoped to the venue and instruments the
+start resolved a front contract for** — the set it is about to subscribe, at every
+contract, so a leftover written before a roll does not survive it. An open row for any
+other instrument is left alone: a second recorder split by `MarketData__Instruments`
+may still be listening under it, and a deleted range cannot be rebuilt, while a foreign
+sentinel cannot reach this process's answers because that instrument is not Listening
+here (gh#382). Opening a new listen retires any other still-open row for that
 contract. A store fault **after** a confirmed subscribe is not a refused subscribe (`R-5.7`, gh#376):
 the venue subscription is dropped so prints cannot land without a ledger row — including
 every print queued since the subscribe was *attempted*, because the venue can print while

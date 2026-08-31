@@ -13,6 +13,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- A starting recorder no longer discards every still-open `TapeCoverage` row in the store. The crash-leftover
+  discard now names the venue and the instruments that start resolved a front contract for, so two HTTP
+  recorders against one store — a rolling redeploy, or a pair split by `MarketData__Instruments` — stop wiping
+  each other's coverage ledger. An open row for an instrument this process does not record is left alone: it
+  may still be owned, and a coverage range has no backfill (gh#382).
+
 ## [0.2.1] - 2026-08-30
 
 ### Fixed

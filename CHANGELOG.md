@@ -17,9 +17,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - A starting recorder no longer discards every still-open `TapeCoverage` row in the store. The crash-leftover
   discard now names the venue and the instruments that start resolved a front contract for, so two HTTP
-  recorders against one store — a rolling redeploy, or a pair split by `MarketData__Instruments` — stop wiping
-  each other's coverage ledger. An open row for an instrument this process does not record is left alone: it
-  may still be owned, and a coverage range has no backfill (gh#382).
+  recorders against one store **split by `MarketData__Instruments`** stop wiping each other's coverage ledger.
+  An open row for an instrument this process does not record is left alone: it may still be owned, and a
+  coverage range has no backfill. Two recorders configured for the **same** instrument — a rolling redeploy,
+  or a restart overlapping a still-draining container — still collide: they resolve the same front contract,
+  so no predicate can tell one's leftover from the other's listen. ADR-0016 already calls that deployment
+  wrong; refusing the second recorder outright is gh#404 (gh#382).
 
 ## [0.2.1] - 2026-08-30
 

@@ -301,7 +301,10 @@ contract, so a leftover written before a roll does not survive it. An open row f
 other instrument is left alone: a second recorder split by `MarketData__Instruments`
 may still be listening under it, and a deleted range cannot be rebuilt, while a foreign
 sentinel cannot reach this process's answers because that instrument is not Listening
-here (gh#382). Opening a new listen retires any other still-open row for that
+here (gh#382). Two recorders on the **same** instrument are not separated by this and
+cannot be: they resolve the same front contract, so the starting one still supersedes the
+running one's open row — the deployment ADR-0016 already calls wrong, and a claim that
+refuses the second recorder is gh#404. Opening a new listen retires any other still-open row for that
 contract. A store fault **after** a confirmed subscribe is not a refused subscribe (`R-5.7`, gh#376):
 the venue subscription is dropped so prints cannot land without a ledger row — including
 every print queued since the subscribe was *attempted*, because the venue can print while

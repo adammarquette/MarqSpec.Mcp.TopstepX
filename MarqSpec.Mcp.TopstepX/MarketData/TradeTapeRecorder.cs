@@ -538,6 +538,15 @@ public sealed class TradeTapeRecorder : BackgroundService
     /// is per instrument, so that stale sentinel would read as coverage to
     /// <see cref="TapeCoverageRecord.StillListeningEnd"/> on a contract nothing is listening to.
     /// </para>
+    /// <para>
+    /// <b>What this does not fix.</b> Two recorders configured for the <i>same</i> instrument — a
+    /// rolling redeploy, or a restart overlapping a still-draining container — resolve the same
+    /// front contract, so the starting one still supersedes the running one's open row. No
+    /// predicate can separate them: "my crash leftover" and "their live listen" are the same row,
+    /// and this method has to keep deleting the first. That overlap is the deployment ADR-0016
+    /// already calls wrong, and closing it means refusing the second recorder a claim rather than
+    /// widening a query (gh#404). It is left visible here rather than papered over.
+    /// </para>
     /// </remarks>
     /// <param name="venue">The venue this start resolved its contracts through.</param>
     /// <param name="cancellationToken">The stopping token.</param>

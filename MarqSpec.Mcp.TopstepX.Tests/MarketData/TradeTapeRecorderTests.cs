@@ -588,6 +588,52 @@ public sealed class TradeTapeRecorderTests
         }
     }
 
+    [Fact]
+    public async Task ALeftoverOnARolledAwayContract_IsStillDiscarded_ForAnInstrumentThisStartRecords()
+    {
+        // The discard is scoped by (Venue, Instrument), not by the front contract, and this is the
+        // case that pins it: a crash before a roll leaves an open row on the contract that was in
+        // front then. Keyed on ContractId too, that row survives every later start — and the
+        // Listening guard is per instrument (VolumeProfileService.IsListening), so it would read
+        // as coverage to 9999 on a contract nothing is subscribed to (gh#382).
+        DateTimeOffset leftoverStart = new(2026, 8, 1, 12, 0, 0, TimeSpan.Zero);
+        (TradeTapeRecorder recorder, FakeMarketHub hub, TopstepXDbContext database, ServiceProvider services, FakeTimeProvider clock) =
+            Build(McpTransport.Http, recordTape: true);
+
+        await using (services)
+        await using (database)
+        {
+            database.TapeCoverage.Add(new TapeCoverageRecord
+            {
+                Venue = "test",
+                Instrument = "ES",
+                ContractId = "CON.F.US.TEST.U26",
+                RangeStart = leftoverStart,
+                RangeEnd = TapeCoverageRecord.StillListeningEnd,
+                RecordedAt = leftoverStart,
+            });
+            await database.SaveChangesAsync();
+
+            await recorder.StartAsync(CancellationToken.None);
+            await WaitUntil(() => hub.TradeSubscriptions.Count > 0);
+
+            DateTimeOffset listenStart = clock.GetUtcNow();
+            IReadOnlyList<TapeCoverageRecord> rows = CoverageRows(database);
+
+            rows.Should().NotContain(
+                row => row.ContractId == "CON.F.US.TEST.U26",
+                "a leftover written before a roll is still this process's own, and would otherwise "
+                + "claim coverage to 9999 on a contract nothing is listening to");
+            rows.Should().ContainSingle(row =>
+                row.Instrument == "ES"
+                && row.ContractId == "CON.F.US.TEST.Z26"
+                && row.RangeStart == listenStart
+                && row.RangeEnd == TapeCoverageRecord.StillListeningEnd);
+
+            await recorder.StopAsync(CancellationToken.None);
+        }
+    }
+
     [Theory]
     [InlineData(McpTransport.Stdio, true)]
     [InlineData(McpTransport.Http, false)]

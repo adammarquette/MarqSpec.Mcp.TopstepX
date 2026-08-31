@@ -53,13 +53,18 @@ seam is now recorded, and a read that would cross it says so instead of splicing
 quarters differ by tens of points, and everything derived from a spliced series inherits that gap as though it
 were market movement.
 
-**It is nullable, and it is never backfilled.** Every row written before the column existed carries null. The
-contract was not captured at the time and cannot be recovered from anything stored here — bucket, prices and
-volume look the same whichever quarter produced them. It could be *inferred* from the expiry month a contract
-id encodes plus a front-month convention, and that is exactly the plausible-wrong-number failure the column
-was added to stop. So **null means unknown**: an unrecorded run adjacent to a recorded one is reported as a
-roll boundary, because the two are not known to be the same contract. The only remedy is to delete those rows
-and refetch them.
+**It is nullable, and it is never backfilled by guessing.** Every row written before the column existed
+carries null. The contract was not captured at the time and cannot be recovered from anything stored here —
+bucket, prices and volume look the same whichever quarter produced them. It could be *inferred* from the
+expiry month a contract id encodes plus a front-month convention, and that is exactly the
+plausible-wrong-number failure the column was added to stop. So **null means unknown, not a claim about
+whether a roll happened**: an unrecorded run adjacent to a single recorded contract reports `Unknown` — cannot
+tell — rather than being folded into it or promoted to a roll on its own. It does not, however, erase a roll
+the store can already prove: two runs whose contract id is recorded and different are `SpansRoll` even when an
+unattributed run sits beside or between them ([ADR-0011](adr/0011-contract-roll-boundary.md), gh#402). A read
+that touches a null bucket re-asks the venue and the existing upsert overwrites it, so provenance heals on its
+own the next time something reads that range — bounded to buckets the calendar still expects and the venue
+still restates; deleting and refetching by hand is no longer the only remedy.
 
 **Deliberately no retention policy.** This is a record, not a pipeline.
 

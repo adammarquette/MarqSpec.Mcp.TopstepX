@@ -268,8 +268,23 @@ before they read**, which is what makes them cache-aside rather than merely cach
    while never writing a value.
 3. **Nothing missing ⇒ return**, opening no transaction — on every series except the short-run one
    ADR-0014's consequences describe, where *nothing missing* is never reached. The answer is memoised for
-   the life of the request scope, so `get_market_snapshot`'s eleven `get_indicator_at` calls per resolution
-   cost **one** probe.
+   the life of the request scope, so a snapshot covering several resolutions pays **one** probe per
+   `(instrument, resolution)` however many times that series is read.
+
+**`get_market_snapshot` reads the whole indicator map for a resolution in ONE query** —
+`MarketDataTools.GetLatestIndicatorReadings`, which groups by `(Indicator, Period)`, takes each group's own
+latest bucket at or before the anchor, and joins the bar at *that* bucket for the `ContractId`. It composed
+eleven `get_indicator_at` calls until gh#388, and each of those paid a second round trip to `Bars` for the
+contract of the bucket it had just found: **44** statements of a default call's **60**, now **2** of **18**,
+measured on Postgres in `SnapshotQueryCountTests`.
+
+**The collapse is bounded by provenance, not by convenience.** Warm-up restarts at every contract seam
+(`R-2.7`), so just past a roll the eleven readings legitimately sit on different buckets and different
+contracts — which is what gh#286 put `bucketStart` and `contractId` on each reading for. One bucket
+broadcast across the map would attribute a number to the wrong contract, so
+`SnapshotIndicatorProvenanceTests` compares the map against eleven separate `get_indicator_at` calls across
+a roll rather than asserting its shape. `get_indicator_at` itself is unchanged, and stays the single-purpose
+tool.
 4. **Otherwise replay the whole series** through the same `IndicatorProjector` inside the same
    `SeriesUnitOfWork` the fill path uses — never a window around what was asked for (`R-2.13`).
 

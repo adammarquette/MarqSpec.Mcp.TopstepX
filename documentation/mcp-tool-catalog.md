@@ -267,8 +267,8 @@ the caller knows what it got.
 
 ### `get_indicator_at(symbol, resolutionMinutes, indicator, asOfUtc)`
 One value, as of a moment — at or **before** it, never after. **Cache-aside on exactly the terms
-`get_indicators` states above**, including the first-read cost (or the probe, once HTTP warmup has finished that series): this is the read `get_market_snapshot`
-composes, and the probe behind it is memoised per request, so eleven indicator reads over one series cost one.
+`get_indicators` states above**, including the first-read cost (or the probe, once HTTP warmup has finished that series);
+the probe behind it is memoised per request, so several reads over one series cost one.
 
 Returns `{ value, bucketStart, contractId }`.
 

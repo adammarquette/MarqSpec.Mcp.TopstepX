@@ -159,12 +159,24 @@ public sealed class SnapshotTools(
                 ? series.Bars[^1].T
                 : _clock.GetUtcNow();
 
+            // ONE query for the whole map, not eleven -- and not twenty-two, which is what it was once each
+            // read went back to Bars for its bucket's contract. A default snapshot cost 60 statements and 44
+            // of them were this block (gh#388). What the batch must not do is collapse the PROVENANCE with
+            // the queries: it groups by (Indicator, Period) and takes each group's own latest bucket, so the
+            // eleven readings still disagree about bucket and contract wherever they legitimately do.
+            IReadOnlyDictionary<string, ToolPayloads.IndicatorReading> readings = await _marketData
+                .GetLatestIndicatorReadings(symbol, resolution, asOf, cancellationToken)
+                .ConfigureAwait(false);
+
+            // The KEY SET is still the catalogue's, walked here rather than taken from the query's results.
+            // A name the store holds no row for has to arrive as a key with a null under it, and a map built
+            // from what came BACK would simply not have the key -- which is the one distinction gh#286's
+            // contract turns on, and exactly what a join loses if nobody is watching for it.
             Dictionary<string, ToolPayloads.IndicatorReading?> indicators = [];
             foreach (string name in _names.Names)
             {
-                ToolPayloads.IndicatorReading reading = await _marketData
-                    .GetIndicatorAt(symbol, resolution, name, asOf, cancellationToken)
-                    .ConfigureAwait(false);
+                ToolPayloads.IndicatorReading? reading =
+                    readings.TryGetValue(name, out ToolPayloads.IndicatorReading? found) ? found : null;
 
                 // THE WHOLE READING TRAVELS, not reading.Value. The anchor above is one moment for the slice,
                 // but it is where each read STOPPED, not where its value was computed -- an as-of read takes
@@ -179,7 +191,7 @@ public sealed class SnapshotTools(
                 // yet". The second is the answer here -- and it stays the MAP'S null rather than becoming the
                 // reading's own {} form, because the SDK's ignore condition does not reach inside a
                 // dictionary and `indicators.x === null` is the test the catalogue has always given callers.
-                indicators[name] = reading.Value is null ? null : reading;
+                indicators[name] = reading?.Value is null ? null : reading;
             }
 
             ToolPayloads.LevelSet levels = await _marketData

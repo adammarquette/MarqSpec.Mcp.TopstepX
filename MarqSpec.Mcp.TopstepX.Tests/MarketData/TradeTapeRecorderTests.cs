@@ -16,6 +16,7 @@ using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using Microsoft.Extensions.Time.Testing;
+using ModelContextProtocol;
 
 namespace MarqSpec.Mcp.TopstepX.Tests.MarketData;
 
@@ -1498,6 +1499,322 @@ public sealed class TradeTapeRecorderTests
         }
     }
 
+    [Fact]
+    public async Task ASecondRecorderOnTheSameInstrument_DoesNotSubscribe_AndNamesTheOtherHolder()
+    {
+        // The card. Two subscribers on one tape double every volume, and a doubled delta looks
+        // like order flow rather than like a bug (ADR-0016). gh#382 made the collision survivable
+        // by scoping the discard; it did not make it illegal. The claim does (gh#404).
+        string sharedStore = Guid.NewGuid().ToString();
+        (TradeTapeRecorder first, FakeMarketHub firstHub, TopstepXDbContext database, ServiceProvider firstServices, FakeTimeProvider clock) =
+            Build(McpTransport.Http, recordTape: true, sharedDatabaseName: sharedStore);
+
+        await using (firstServices)
+        await using (database)
+        {
+            TapeAvailabilityHolder firstTape = firstServices.GetRequiredService<TapeAvailabilityHolder>();
+
+            await first.StartAsync(CancellationToken.None);
+            await WaitUntil(() => firstHub.TradeSubscriptions.Count > 0 && firstTape.For("ES").IsListening);
+
+            DateTimeOffset listenStart = clock.GetUtcNow();
+
+            (TradeTapeRecorder second, FakeMarketHub secondHub, _, ServiceProvider secondServices, _) =
+                Build(McpTransport.Http, recordTape: true, sharedDatabaseName: sharedStore);
+
+            await using (secondServices)
+            {
+                TapeAvailabilityHolder secondTape = secondServices.GetRequiredService<TapeAvailabilityHolder>();
+
+                await second.StartAsync(CancellationToken.None);
+                await WaitUntil(
+                    () => second.ExecuteTask?.IsCompleted == true,
+                    "a refused recorder finishes rather than sitting on a hub it never opened");
+
+                secondHub.TradeSubscriptions.Should().BeEmpty(
+                    "the second recorder must not subscribe to a tape another process is recording");
+                secondHub.MarketConnects.Should().Be(0,
+                    "with every configured instrument claimed there is nothing to connect for");
+                second.RecordedPrints.Should().Be(0);
+
+                TapeAvailability refused = secondTape.For("ES");
+                refused.IsListening.Should().BeFalse();
+                refused.Reason.Should().Be(TapeUnavailableReason.HeldByAnotherRecorder,
+                    "a claimed tape is a different situation from a switch that is off");
+                refused.Explanation.Should().Contain("Another recorder");
+
+                second.ExecuteTask!.IsFaulted.Should().BeFalse(
+                    "Program.AnyFaulted reads a faulted ExecuteTask; a refusal must not take the host down (gh#76)");
+
+                // The first recorder is untouched: still listening, still covered.
+                firstTape.For("ES").IsListening.Should().BeTrue();
+                CoverageRows(database).Should().ContainSingle(row =>
+                    row.Instrument == "ES"
+                    && row.RangeStart == listenStart
+                    && row.RangeEnd == TapeCoverageRecord.StillListeningEnd,
+                    "the refused start never reached the discard, so it cannot supersede a live listen");
+
+                await second.StopAsync(CancellationToken.None);
+            }
+
+            await first.StopAsync(CancellationToken.None);
+        }
+    }
+
+    [Fact]
+    public async Task ARefusedRecorder_StillServesReads_AndItsHostDoesNotFault()
+    {
+        // A refused recorder is not a broken process. It holds no tape, and every read that does
+        // not need one still answers; the tape tools refuse with a sentence naming the fix.
+        string sharedStore = Guid.NewGuid().ToString();
+        (TradeTapeRecorder first, FakeMarketHub firstHub, TopstepXDbContext database, ServiceProvider firstServices, FakeTimeProvider clock) =
+            Build(McpTransport.Http, recordTape: true, sharedDatabaseName: sharedStore);
+
+        await using (firstServices)
+        await using (database)
+        {
+            TapeAvailabilityHolder firstTape = firstServices.GetRequiredService<TapeAvailabilityHolder>();
+            await first.StartAsync(CancellationToken.None);
+            await WaitUntil(() => firstHub.TradeSubscriptions.Count > 0 && firstTape.For("ES").IsListening);
+
+            DateTimeOffset listenStart = clock.GetUtcNow();
+            await SeedEsCellAsync(database, listenStart);
+
+            (TradeTapeRecorder second, _, _, ServiceProvider secondServices, _) =
+                Build(McpTransport.Http, recordTape: true, sharedDatabaseName: sharedStore);
+
+            await using (secondServices)
+            {
+                TapeAvailabilityHolder secondTape = secondServices.GetRequiredService<TapeAvailabilityHolder>();
+                await second.StartAsync(CancellationToken.None);
+                await WaitUntil(() => second.ExecuteTask?.IsCompleted == true);
+
+                second.ExecuteTask!.IsCompletedSuccessfully.Should().BeTrue();
+
+                MarketDataTools refusedTools = Tools(database, secondTape);
+                Func<Task> footprint = () => refusedTools.GetFootprint(
+                    "ES", 5, listenStart, listenStart.AddHours(2), CancellationToken.None);
+
+                (await footprint.Should().ThrowAsync<McpException>(
+                    "an unclaimed tape refuses rather than returning an empty profile"))
+                    .WithMessage("*Another recorder*");
+
+                // The holder still answers the same window from the same store.
+                MarketDataTools holderTools = Tools(database, firstTape);
+                ToolPayloads.FootprintSeries payload = await holderTools.GetFootprint(
+                    "ES", 5, listenStart, listenStart.AddHours(2), CancellationToken.None);
+                payload.Cells.Should().NotBeEmpty();
+
+                await second.StopAsync(CancellationToken.None);
+            }
+
+            await first.StopAsync(CancellationToken.None);
+        }
+    }
+
+    [Fact]
+    public async Task TheSplitByInstrumentDeployment_StillStartsBothRecorders()
+    {
+        // The claim is per (Venue, Instrument), so the deployment gh#382 protects stays legal. A
+        // whole-store claim would have outlawed it, which is why the granularity is written down.
+        string sharedStore = Guid.NewGuid().ToString();
+        (TradeTapeRecorder es, FakeMarketHub esHub, TopstepXDbContext database, ServiceProvider esServices, _) =
+            Build(
+                McpTransport.Http,
+                recordTape: true,
+                instruments: "ES",
+                gateway: new PerInstrumentGateway(),
+                sharedDatabaseName: sharedStore);
+
+        await using (esServices)
+        await using (database)
+        {
+            TapeAvailabilityHolder esTape = esServices.GetRequiredService<TapeAvailabilityHolder>();
+            await es.StartAsync(CancellationToken.None);
+            await WaitUntil(() => esHub.TradeSubscriptions.Count > 0 && esTape.For("ES").IsListening);
+
+            (TradeTapeRecorder nq, FakeMarketHub nqHub, _, ServiceProvider nqServices, _) =
+                Build(
+                    McpTransport.Http,
+                    recordTape: true,
+                    instruments: "NQ",
+                    gateway: new PerInstrumentGateway(),
+                    sharedDatabaseName: sharedStore);
+
+            await using (nqServices)
+            {
+                TapeAvailabilityHolder nqTape = nqServices.GetRequiredService<TapeAvailabilityHolder>();
+                await nq.StartAsync(CancellationToken.None);
+                await WaitUntil(
+                    () => nqHub.TradeSubscriptions.Count > 0 && nqTape.For("NQ").IsListening,
+                    "a recorder that records different instruments is not the collision being refused");
+
+                esTape.For("ES").IsListening.Should().BeTrue();
+                LeaseRows(database).Should().HaveCount(2);
+
+                await nq.StopAsync(CancellationToken.None);
+            }
+
+            await es.StopAsync(CancellationToken.None);
+        }
+    }
+
+    [Fact]
+    public async Task AClaimWhoseHolderCrashed_IsTakenOverOnTheNextStart_SoTheTapeIsNotStranded()
+    {
+        // The crashed holder wrote no release, so only the expiry frees the claim. It has to, or
+        // one crash silences the tape until an operator finds the row by hand.
+        DateTimeOffset crashed = _receipt - TimeSpan.FromHours(1);
+        (TradeTapeRecorder recorder, FakeMarketHub hub, TopstepXDbContext database, ServiceProvider services, _) =
+            Build(McpTransport.Http, recordTape: true);
+
+        await using (services)
+        await using (database)
+        {
+            database.TapeLeases.Add(new TapeLeaseRecord
+            {
+                Venue = "test",
+                Instrument = "ES",
+                OwnerId = "a-process-that-is-gone",
+                Generation = 7,
+                AcquiredAt = crashed,
+                HeartbeatAt = crashed,
+                ExpiresAt = crashed.AddSeconds(90),
+            });
+            await database.SaveChangesAsync();
+
+            TapeAvailabilityHolder tape = services.GetRequiredService<TapeAvailabilityHolder>();
+            await recorder.StartAsync(CancellationToken.None);
+            await WaitUntil(
+                () => hub.TradeSubscriptions.Count > 0 && tape.For("ES").IsListening,
+                "a lapsed claim is reclaimable, or a crash locks the tape out forever");
+
+            LeaseRows(database).Should().ContainSingle(row =>
+                row.Instrument == "ES"
+                && row.OwnerId != "a-process-that-is-gone"
+                && row.Generation == 8);
+
+            await recorder.StopAsync(CancellationToken.None);
+        }
+    }
+
+    [Fact]
+    public async Task ARecorderWhoseClaimIsTakenOver_DropsTheSubscription_RatherThanWritingASecondCopy()
+    {
+        // The failure the expiry could otherwise create. A holder paused past its expiry can be
+        // taken over while it is still subscribed; the renewal is where it finds out, and it
+        // stands down rather than leaving two writers on one tape.
+        TimeSpan timeToLive = TimeSpan.FromSeconds(90);
+        (TradeTapeRecorder recorder, FakeMarketHub hub, TopstepXDbContext database, ServiceProvider services, FakeTimeProvider clock) =
+            Build(McpTransport.Http, recordTape: true, leaseTimeToLive: timeToLive);
+
+        await using (services)
+        await using (database)
+        {
+            TapeAvailabilityHolder tape = services.GetRequiredService<TapeAvailabilityHolder>();
+            await recorder.StartAsync(CancellationToken.None);
+            await WaitUntil(() => hub.TradeSubscriptions.Count > 0 && tape.For("ES").IsListening);
+
+            DateTimeOffset listenStart = clock.GetUtcNow();
+
+            // Another process takes the lapsed claim while this one is stalled.
+            database.ChangeTracker.Clear();
+            TapeLeaseRecord row = database.TapeLeases.Single();
+            row.OwnerId = "the-process-that-took-over";
+            row.Generation++;
+            row.ExpiresAt = listenStart + timeToLive + timeToLive;
+            await database.SaveChangesAsync();
+
+            clock.Advance(timeToLive / 3);
+
+            await WaitUntil(
+                () => tape.For("ES").Reason == TapeUnavailableReason.HeldByAnotherRecorder,
+                "a renewal that finds the row taken is a loss, and the loser stands down");
+
+            hub.TradeSubscriptions.Should().BeEmpty(
+                "the evicted recorder drops the venue subscription rather than doubling the tape");
+
+            CoverageRows(database).Should().ContainSingle(row =>
+                row.Instrument == "ES"
+                && row.RangeStart == listenStart
+                && row.RangeEnd != TapeCoverageRecord.StillListeningEnd,
+                "the listen it gave up is closed, not left claiming coverage to 9999");
+
+            LeaseRows(database).Should().ContainSingle(row =>
+                row.OwnerId == "the-process-that-took-over",
+                "the evicted holder must not write its expiry back over the new holder's");
+
+            recorder.ExecuteTask!.IsFaulted.Should().BeFalse();
+
+            await recorder.StopAsync(CancellationToken.None);
+        }
+    }
+
+    [Fact]
+    public async Task ACleanStop_ReleasesTheClaim_SoARedeployDoesNotWaitOutTheTimeToLive()
+    {
+        string sharedStore = Guid.NewGuid().ToString();
+        (TradeTapeRecorder stopping, FakeMarketHub stoppingHub, TopstepXDbContext database, ServiceProvider stoppingServices, _) =
+            Build(McpTransport.Http, recordTape: true, sharedDatabaseName: sharedStore);
+
+        await using (stoppingServices)
+        await using (database)
+        {
+            TapeAvailabilityHolder tape = stoppingServices.GetRequiredService<TapeAvailabilityHolder>();
+            await stopping.StartAsync(CancellationToken.None);
+            await WaitUntil(() => stoppingHub.TradeSubscriptions.Count > 0 && tape.For("ES").IsListening);
+
+            await stopping.StopAsync(CancellationToken.None);
+            await WaitUntil(() => LeaseRows(database).Count == 0);
+        }
+
+        (TradeTapeRecorder next, FakeMarketHub nextHub, TopstepXDbContext nextDatabase, ServiceProvider nextServices, _) =
+            Build(McpTransport.Http, recordTape: true, sharedDatabaseName: sharedStore);
+
+        await using (nextServices)
+        await using (nextDatabase)
+        {
+            TapeAvailabilityHolder tape = nextServices.GetRequiredService<TapeAvailabilityHolder>();
+            await next.StartAsync(CancellationToken.None);
+            await WaitUntil(
+                () => nextHub.TradeSubscriptions.Count > 0 && tape.For("ES").IsListening,
+                "a rolling redeploy must not have to wait out a claim nobody holds");
+
+            await next.StopAsync(CancellationToken.None);
+        }
+    }
+
+    [Theory]
+    [InlineData(McpTransport.Stdio, true)]
+    [InlineData(McpTransport.Http, false)]
+    public async Task AStartThatWillNotRecord_ClaimsNothing_SoItCannotLockOutTheRecorder(
+        McpTransport transport,
+        bool recordTape)
+    {
+        // A Cowork stdio child and a switch-off HTTP instance both still serve tools against the
+        // same store. Neither subscribes, so neither may take a claim the recording process needs
+        // — the same reason they do not run the coverage discard (gh#378).
+        (TradeTapeRecorder recorder, _, TopstepXDbContext database, ServiceProvider services, _) =
+            Build(transport, recordTape);
+
+        await using (services)
+        await using (database)
+        {
+            await recorder.StartAsync(CancellationToken.None);
+            await WaitUntil(() => recorder.ExecuteTask?.IsCompleted == true);
+
+            LeaseRows(database).Should().BeEmpty();
+
+            await recorder.StopAsync(CancellationToken.None);
+        }
+    }
+
+    private static List<TapeLeaseRecord> LeaseRows(TopstepXDbContext database)
+    {
+        database.ChangeTracker.Clear();
+        return [.. database.TapeLeases.OrderBy(row => row.Instrument)];
+    }
+
     private static DateTime Utc(int hour, int minute, int second) =>
         new(2026, 8, 28, hour, minute, second, DateTimeKind.Utc);
 
@@ -1638,7 +1955,8 @@ public sealed class TradeTapeRecorderTests
             ILogger<TradeTapeRecorder>? logger = null,
             bool registerHub = true,
             SaveChangesInterceptor? extraInterceptor = null,
-            string? sharedDatabaseName = null)
+            string? sharedDatabaseName = null,
+            TimeSpan? leaseTimeToLive = null)
     {
         FakeMarketHub hub = new();
         FakeTimeProvider clock = new(_receipt);
@@ -1692,7 +2010,8 @@ public sealed class TradeTapeRecorderTests
             clock,
             logger ?? NullLogger<TradeTapeRecorder>.Instance,
             tape,
-            channelCapacity);
+            channelCapacity,
+            leaseTimeToLive ?? TapeLease.DefaultTimeToLive);
 
         return (recorder, hub, database, provider, clock);
     }

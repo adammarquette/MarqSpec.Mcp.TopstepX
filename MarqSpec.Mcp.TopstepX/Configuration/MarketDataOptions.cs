@@ -88,8 +88,11 @@ public sealed class MarketDataOptions
     /// recorder therefore starts only when the transport is HTTP <i>and</i> this switch is on.
     /// </para>
     /// <para>
-    /// Two subscribers on one tape is the failure this exists to prevent. Leave it off on any
-    /// process that is not the single long-lived HTTP instance meant to hold the subscription.
+    /// Two subscribers on one tape is the failure this exists to prevent, and leaving this on in
+    /// two places no longer produces it: a start takes an exclusive per-instrument claim before it
+    /// subscribes, and the second one is refused and records nothing (gh#404). The switch is still
+    /// the honest place to say which process is meant to record — the claim is the backstop, not
+    /// the configuration.
     /// </para>
     /// </remarks>
     public bool RecordTape { get; init; }

@@ -33,6 +33,7 @@ public sealed class TapeAvailabilityHolder
 {
     private volatile TapeAvailability _value = TapeAvailability.NeverStarted();
     private readonly ConcurrentDictionary<string, TapeAvailability> _byInstrument = new(StringComparer.Ordinal);
+    private readonly ConcurrentDictionary<string, TapeAvailability> _unclaimed = new(StringComparer.Ordinal);
 
     /// <summary>The process-wide state, when no per-instrument override applies.</summary>
     public TapeAvailability Value => _value;
@@ -44,6 +45,16 @@ public sealed class TapeAvailabilityHolder
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(instrument);
 
+        string symbol = new InstrumentId(instrument).Symbol;
+
+        // An instrument this process holds no claim on outranks every connection state: the hub
+        // being up says nothing about a tape another recorder owns, and a process-wide write must
+        // not clear that answer the way a transient override is cleared (gh#404).
+        if (_unclaimed.TryGetValue(symbol, out TapeAvailability? unclaimed))
+        {
+            return unclaimed;
+        }
+
         TapeAvailability process = _value;
         if (process.Reason is TapeUnavailableReason.NeverStarted
             or TapeUnavailableReason.Reconnecting
@@ -52,7 +63,6 @@ public sealed class TapeAvailabilityHolder
             return process;
         }
 
-        string symbol = new InstrumentId(instrument).Symbol;
         return _byInstrument.TryGetValue(symbol, out TapeAvailability? per)
             ? per
             : process;
@@ -83,5 +93,25 @@ public sealed class TapeAvailabilityHolder
         ArgumentException.ThrowIfNullOrWhiteSpace(instrument);
         ArgumentNullException.ThrowIfNull(value);
         _byInstrument[new InstrumentId(instrument).Symbol] = value;
+    }
+
+    /// <summary>
+    /// Records that this process holds no tape claim on an instrument, so it is not recording it
+    /// and no connection event can change that.
+    /// </summary>
+    /// <param name="instrument">The instrument symbol.</param>
+    /// <param name="value">Why the claim is not this process's.</param>
+    /// <remarks>
+    /// Held apart from <see cref="Set(string, TapeAvailability)"/>, and read before it, because a
+    /// non-listening process-wide write clears the transient overrides. A refusal cleared on the
+    /// next reconnect would let a refused instrument inherit the process answer and then, on the
+    /// restore after it, look like an ordinary not-yet-subscribed tape rather than one this
+    /// process is deliberately not recording (gh#404).
+    /// </remarks>
+    public void SetUnclaimed(string instrument, TapeAvailability value)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(instrument);
+        ArgumentNullException.ThrowIfNull(value);
+        _unclaimed[new InstrumentId(instrument).Symbol] = value;
     }
 }

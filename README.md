@@ -47,7 +47,7 @@ docker compose up -d       # Postgres (TimescaleDB + pgvector) and the HTTPS ser
 ```
 
 `docker compose up` is the **HTTPS** transport on `:8443`, not stdio and **not plaintext** — Claude Cowork
-will not register a non-TLS endpoint as a connector (gh#422). There is no HTTP port beside it. Calls need
+will not register a non-TLS endpoint as a connector (gh#416). There is no HTTP port beside it. Calls need
 `Authorization: Bearer <Mcp__HttpBearerToken>`; TLS is confidentiality on the wire and the token is still what
 authorises the call. Compose defaults that token to `changeme-local`, the same local convenience as
 `POSTGRES_PASSWORD` and `ProjectX__DataTier:-Simulated`. **Compose binds that port to `127.0.0.1`**, which is

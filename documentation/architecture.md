@@ -400,7 +400,7 @@ One host, one tool registration, two ways in ([ADR-0007](adr/0007-dual-transport
   well-known one stopped a second session starting at all (gh#392).
 - **streamable HTTP** — for a deployed instance, behind a bearer token. The composed stack serves it over
   **TLS only**, on `https://localhost:8443`, with a certificate from a **local CA** the host already trusts —
-  Claude Cowork will not register a plaintext endpoint as a connector (gh#422). TLS is confidentiality; the
+  Claude Cowork will not register a plaintext endpoint as a connector (gh#416). TLS is confidentiality; the
   token is still what authorises the call, and the loopback bind (gh#415) is unchanged by it.
 
 ## Degradation — what an absent dependency does

@@ -27,7 +27,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   not enough on its own — the ASP.NET base image sets it to 8080, so compose overrides it to empty
   explicitly. The loopback bind and the bearer token are both unchanged: TLS is confidentiality on the wire,
   not authorisation, and not a licence to widen the bind
-  ([ADR-0007](documentation/adr/0007-dual-transport.md), gh#422; supersedes gh#416).
+  ([ADR-0007](documentation/adr/0007-dual-transport.md), gh#416 — gh#422 is a duplicate of it).
 - The composed MCP endpoint is no longer published on every interface. `docker-compose.yml`'s `ports` entry
   was a bare `- "8080:8080"`, which Docker maps on `0.0.0.0` and `[::]` — every interface the host has — while
   [ADR-0007](documentation/adr/0007-dual-transport.md) asserted the HTTP path was "not exposed by default".

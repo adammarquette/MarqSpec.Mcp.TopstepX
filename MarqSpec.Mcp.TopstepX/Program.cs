@@ -261,7 +261,7 @@ public static class Program
     /// <para>
     /// <b>An explicitly named address still wins</b>, under either transport — <c>ASPNETCORE_URLS</c>,
     /// <c>ASPNETCORE_HTTP_PORTS</c> and <c>ASPNETCORE_HTTPS_PORTS</c> (which <c>docker-compose.yml</c> uses
-    /// to place the composed server on 8443, over TLS, since gh#422 — it named <c>ASPNETCORE_HTTP_PORTS</c>
+    /// to place the composed server on 8443, over TLS, since gh#416 — it named <c>ASPNETCORE_HTTP_PORTS</c>
     /// and 8080 until then). A default that overrode any of them would not be a default.
     /// </para>
     /// <para>

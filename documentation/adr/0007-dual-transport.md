@@ -261,14 +261,27 @@ drives the container over stdin with `docker run --rm -i` and publishes no port 
 ## Update (2026-09-01) — the composed endpoint is TLS-only, behind a local CA
 
 The update above closed an exposure and named what it did **not** do: *"It does not add transport security —
-the endpoint is still plaintext HTTP, which is gh#416."* This is that card, filed a second time as gh#422 and
-worked here; gh#416 is the earlier duplicate and its subject is settled by this record.
+the endpoint is still plaintext HTTP, which is gh#416."* This is that card. It was filed a second time as
+gh#422 two hours later and dispatched under that number; **gh#416 is the card of record**, and the branch
+carrying this work is named for the duplicate.
 
-The forcing reason is a client, not a threat model. **Claude Cowork refuses to register a non-TLS endpoint as
-a connector**, so the composed stack could not be used by the tool it exists to serve. Two things the
-maintainer settled before any of this was designed: Cowork reaches the endpoint **from the same machine**, so
-there is no public hostname to certify; and **gh#415's loopback bind stays**, so TLS is added beside it rather
-than instead of it.
+**The reason is not only a client.** gh#416 makes the point its restatement did not: an endpoint carrying
+balances, positions and trade history has no business crossing a network in plaintext whatever any client
+demands, and a bearer token sent in clear is a credential anyone on the path can replay. The **forcing** event
+is nonetheless a client — **Claude Cowork refuses to register a non-TLS endpoint as a connector**, so the
+composed stack could not be used by the tool it exists to serve.
+
+Two things the maintainer settled before any of this was designed, and they resolve gh#416's first open
+decision: Cowork reaches the endpoint **from the same machine** — not Anthropic's cloud, not a LAN — so there
+is no public hostname to certify and no ACME challenge to answer; and **gh#415's loopback bind stays**, so TLS
+is added beside it rather than instead of it. A genuinely remote instance is a different operational story and
+is not decided here.
+
+**There was nothing to build on.** gh#416 swept `docker-compose.yml`, `docker-compose.dev.yml`, `Dockerfile`
+and `.env.example` for `https|tls|ssl|certificate|Kestrel__Certificates|ASPNETCORE_URLS|HTTPS_PORTS` and found
+zero matches; re-run here against `origin/develop` at `e21d70e`, the only hit in all four files is
+`ProjectX__BaseUrl=https://api.topstepx.com`, which is a vendor URL and not a TLS provision. This is a
+capability the stack has never had, not a regression.
 
 ### The certificate source, decided by measurement
 
@@ -297,8 +310,8 @@ result, which a passing request alone cannot show.
 
 So: **mkcert**, packed into a PFX with `openssl`, mounted read-only at `/https`. Its leaf expires
 **2028-12-02 UTC** — mkcert caps at roughly two years, against the dev cert's one. Nothing rotates it; rotation is
-out of scope for gh#422 and stays there, but the date is written here and in `.env.example` rather than left to
-be discovered.
+out of scope on this card and stays there — gh#416 does not ask for it — but the date is written here and in
+`.env.example` rather than left to be discovered.
 
 ### Plaintext does not survive
 

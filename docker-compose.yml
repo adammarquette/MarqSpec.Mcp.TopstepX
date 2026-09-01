@@ -110,7 +110,7 @@ services:
       ASPNETCORE_ENVIRONMENT: "${ASPNETCORE_ENVIRONMENT:-Development}"
 
       # HTTPS ONLY. Claude Cowork refuses to register a non-TLS endpoint as a connector, so the composed
-      # stack could not be used by the tool it exists to serve (gh#422).
+      # stack could not be used by the tool it exists to serve (gh#416).
       #
       # THE EMPTY VALUE BELOW IS LOAD-BEARING, AND DELETING THE LINE RE-OPENS THE PLAINTEXT PORT.
       # mcr.microsoft.com/dotnet/aspnet:10.0 sets ASPNETCORE_HTTP_PORTS=8080 in the IMAGE, so merely

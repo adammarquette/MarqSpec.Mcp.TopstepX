@@ -253,7 +253,7 @@ docker compose up -d     # the local stack: Postgres, and the server on https://
 Compose binds the server's port to `127.0.0.1` only (gh#415) — an IPv6 `localhost` resolution (`::1`) will
 not reach it; use the literal `127.0.0.1` address.
 
-That endpoint is **HTTPS and only HTTPS** (gh#422), so `docker compose up` needs a locally trusted certificate
+That endpoint is **HTTPS and only HTTPS** (gh#416), so `docker compose up` needs a locally trusted certificate
 and a password for it before it will start — [`README.md`](README.md#run-it) has the three commands. Compose
 refuses to render without `Kestrel__Certificates__Default__Password`, which is the one setting here with no
 default, because it unlocks a private key. `certs/` and `.env` are gitignored; check that before your first

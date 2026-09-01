@@ -2335,9 +2335,38 @@ public sealed class TradeTapeRecorderTests
         }
     }
 
+    /// <summary>
+    /// Polls an arbitrary predicate built from hub/tape/database state that some background
+    /// continuation of the recorder under test is expected to make true.
+    /// </summary>
+    /// <remarks>
+    /// This budget used to be a real 2 seconds (gh#407). That was long enough for the recorder's
+    /// own work — nothing in <c>TradeTapeRecorder</c> waits on real wall-clock time to react to a
+    /// reconnect; both its channels post continuations off the calling thread by design
+    /// (<c>AllowSynchronousContinuations = false</c>), which is correct for the product but means
+    /// resuming them costs a ThreadPool hop. Under xUnit's full-suite parallel load that hop
+    /// queues behind everything every other concurrently-running test collection is doing, and
+    /// that queueing delay is not bounded by anything this test, or the recorder, controls — it
+    /// flaked on three unrelated branches that never touched this file.
+    /// <para>
+    /// There is no single deterministic signal to replace the poll with: each condition here is
+    /// an ad hoc combination of independently-mutated state (subscribe counts, listening flags,
+    /// coverage rows), not one completion. Wiring a dedicated <see cref="TaskCompletionSource"/>
+    /// through every mutation this file's 50+ fixtures can make would be a rewrite of the harness,
+    /// not a fix to a wait-budget defect — and it is the mutation, not the poll interval, that
+    /// gh#387's slower relational provider will change, so widening this budget stays correct
+    /// once that lands: gh#387 makes the recorder's own store round-trips slower, it does not make
+    /// unrelated test collections contend harder for the ThreadPool.
+    /// </para>
+    /// <para>
+    /// 15s is not a tuned number — it is a large multiple of every delay this repro could produce
+    /// deliberately (see PR body), kept finite only so a genuine hang still fails inside a single
+    /// CI job rather than timing the whole run out.
+    /// </para>
+    /// </remarks>
     private static async Task WaitUntil(Func<bool> condition, string? because = null)
     {
-        using CancellationTokenSource timeout = new(TimeSpan.FromSeconds(2));
+        using CancellationTokenSource timeout = new(TimeSpan.FromSeconds(15));
         try
         {
             while (!condition())
@@ -2345,9 +2374,12 @@ public sealed class TradeTapeRecorderTests
                 await Task.Delay(10, timeout.Token);
             }
         }
-        catch (OperationCanceledException) when (because is not null)
+        catch (OperationCanceledException)
         {
-            throw new InvalidOperationException($"Timed out waiting: {because}");
+            throw new InvalidOperationException(
+                because is null
+                    ? "Timed out waiting for a condition to become true."
+                    : $"Timed out waiting: {because}");
         }
     }
 

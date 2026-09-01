@@ -47,10 +47,10 @@ public sealed class ContractRollReportingTests : IDisposable
     [Fact]
     public async Task GetBars_ReportsTheRollBoundaryInThePayload()
     {
-        MarketDataTools tools = await BuildAsync(rollAt: 4, total: 8);
+        Family tools = await BuildAsync(rollAt: 4, total: 8);
 
         ToolPayloads.BarSeries series =
-            await tools.GetBars("ES", 5, Bucket(0), Bucket(8), CancellationToken.None);
+            await tools.Bars.GetBars("ES", 5, Bucket(0), Bucket(8), CancellationToken.None);
 
         series.Bars.Should().HaveCount(8, "the bars themselves are observations and are still returned");
         series.Contracts.Span.Should().Be(ToolPayloads.ContractSpan.SpansRoll);
@@ -67,10 +67,10 @@ public sealed class ContractRollReportingTests : IDisposable
     public async Task GetBars_WithinOneContract_ReportsNoRoll()
     {
         // The reporting must distinguish, or it is noise. A window inside one quarter says so.
-        MarketDataTools tools = await BuildAsync(rollAt: 4, total: 8);
+        Family tools = await BuildAsync(rollAt: 4, total: 8);
 
         ToolPayloads.BarSeries series =
-            await tools.GetBars("ES", 5, Bucket(0), Bucket(4), CancellationToken.None);
+            await tools.Bars.GetBars("ES", 5, Bucket(0), Bucket(4), CancellationToken.None);
 
         series.Contracts.Span.Should().Be(ToolPayloads.ContractSpan.SingleContract);
         series.Contracts.Segments.Should().ContainSingle()
@@ -82,10 +82,10 @@ public sealed class ContractRollReportingTests : IDisposable
     {
         // Each stored value is honest on its own — the projection never smoothed across the seam — but the
         // SERIES still crosses it, and reading the two halves as one trend is the mistake to prevent.
-        MarketDataTools tools = await BuildAsync(rollAt: 4, total: 8);
+        Family tools = await BuildAsync(rollAt: 4, total: 8);
 
         ToolPayloads.IndicatorSeries series =
-            await tools.GetIndicators("ES", 5, "atr", Bucket(0), Bucket(8), CancellationToken.None);
+            await tools.Indicators.GetIndicators("ES", 5, "atr", Bucket(0), Bucket(8), CancellationToken.None);
 
         series.Contracts.Span.Should().Be(ToolPayloads.ContractSpan.SpansRoll);
         series.Contracts.Segments.Should().HaveCount(2);
@@ -95,10 +95,10 @@ public sealed class ContractRollReportingTests : IDisposable
     public async Task GetIndicatorAt_SaysWhichContractTheValueBelongsTo()
     {
         // Two readings either side of a roll are not comparable, and nothing in a bare number says so.
-        MarketDataTools tools = await BuildAsync(rollAt: 4, total: 8);
+        Family tools = await BuildAsync(rollAt: 4, total: 8);
 
         ToolPayloads.IndicatorReading reading =
-            await tools.GetIndicatorAt("ES", 5, "atr", Bucket(7), CancellationToken.None);
+            await tools.Indicators.GetIndicatorAt("ES", 5, "atr", Bucket(7), CancellationToken.None);
 
         reading.Value.Should().Be(4m, "the new contract's own range, hand-checked: (4+4+4)/3");
         reading.ContractId.Should().Be(NewFront);
@@ -111,9 +111,9 @@ public sealed class ContractRollReportingTests : IDisposable
         // Detection is confined to the newest contract segment, and the truncation is stated rather than
         // implied — a caller that asked for 40 bars and silently got 20 would draw the wrong conclusion about
         // how much history supports the levels.
-        MarketDataTools tools = await BuildSwingingAsync(rollAt: 20, total: 40);
+        Family tools = await BuildSwingingAsync(rollAt: 20, total: 40);
 
-        ToolPayloads.LevelSet levels = await tools.GetKeyLevels("ES", 5, 40, cancellationToken: CancellationToken.None);
+        ToolPayloads.LevelSet levels = await tools.KeyLevels.GetKeyLevels("ES", 5, 40, cancellationToken: CancellationToken.None);
 
         levels.Contracts.Span.Should().Be(ToolPayloads.ContractSpan.SpansRoll);
         levels.DetectedOverBars.Should().Be(20, "only the bars of the contract in front are eligible");
@@ -135,9 +135,9 @@ public sealed class ContractRollReportingTests : IDisposable
         //
         // Reporting only the bar window let the payload state the weaker fact on the one tool the catalogue
         // tells an agent to reach for first, and dropped detectedOverBars, which PRD R-3.5 requires.
-        MarketDataTools marketData = await BuildSwingingAsync(rollAt: 20, total: 40);
+        Family tools = await BuildSwingingAsync(rollAt: 20, total: 40);
 
-        ToolPayloads.MarketSnapshot snapshot = await Snapshot(marketData)
+        ToolPayloads.MarketSnapshot snapshot = await Snapshot(tools)
             .GetMarketSnapshot("ES", [5], 8, CancellationToken.None);
 
         ToolPayloads.ResolutionSnapshot slice = snapshot.PerResolution.Should().ContainSingle().Subject;
@@ -170,10 +170,10 @@ public sealed class ContractRollReportingTests : IDisposable
             AddBar(i, close: 100m, halfRange: 1m, contractId: unattributed ? null : Expiring);
         }
 
-        MarketDataTools tools = await ComposeAsync(8);
+        Family tools = await ComposeAsync(8);
 
         ToolPayloads.LevelSet levels =
-            await tools.GetKeyLevels("ES", 5, 8, cancellationToken: CancellationToken.None);
+            await tools.KeyLevels.GetKeyLevels("ES", 5, 8, cancellationToken: CancellationToken.None);
 
         levels.Contracts.Span.Should().Be(
             ToolPayloads.ContractSpan.Unknown,
@@ -205,10 +205,10 @@ public sealed class ContractRollReportingTests : IDisposable
             AddBar(i, close: 100m, halfRange: 1m, contractId: contractId);
         }
 
-        MarketDataTools tools = await ComposeAsync(8);
+        Family tools = await ComposeAsync(8);
 
         ToolPayloads.LevelSet levels =
-            await tools.GetKeyLevels("ES", 5, 8, cancellationToken: CancellationToken.None);
+            await tools.KeyLevels.GetKeyLevels("ES", 5, 8, cancellationToken: CancellationToken.None);
 
         levels.Contracts.Span.Should().Be(
             ToolPayloads.ContractSpan.SpansRoll,
@@ -228,10 +228,10 @@ public sealed class ContractRollReportingTests : IDisposable
             AddBar(i, close: 100m, halfRange: 1m, contractId: null);
         }
 
-        MarketDataTools tools = await ComposeAsync(8);
+        Family tools = await ComposeAsync(8);
 
         ToolPayloads.BarSeries series =
-            await tools.GetBars("ES", 5, Bucket(0), Bucket(8), CancellationToken.None);
+            await tools.Bars.GetBars("ES", 5, Bucket(0), Bucket(8), CancellationToken.None);
 
         series.Contracts.Span.Should().Be(ToolPayloads.ContractSpan.Unknown);
         series.Contracts.Segments.Should().ContainSingle()
@@ -245,7 +245,7 @@ public sealed class ContractRollReportingTests : IDisposable
     /// Each half has a constant high-low range, 2 points then 4, so every true range inside a segment equals
     /// that range and the Wilder seed is its own mean. Hand-checkable, and exact in <c>decimal</c>.
     /// </remarks>
-    private async Task<MarketDataTools> BuildAsync(int rollAt, int total)
+    private async Task<Family> BuildAsync(int rollAt, int total)
     {
         for (int i = 0; i < total; i++)
         {
@@ -292,7 +292,7 @@ public sealed class ContractRollReportingTests : IDisposable
     /// about <c>R-3.5</c> — that detection stops at the seam — so the window is set to one this shape can
     /// actually hold a pivot in, and stated here rather than assumed.
     /// </remarks>
-    private async Task<MarketDataTools> BuildSwingingAsync(int rollAt, int total)
+    private async Task<Family> BuildSwingingAsync(int rollAt, int total)
     {
         for (int i = 0; i < total; i++)
         {
@@ -331,13 +331,30 @@ public sealed class ContractRollReportingTests : IDisposable
     /// <summary>
     /// Composes the snapshot tool over the same store, so both windows it reads are the ones just seeded.
     /// </summary>
-    private SnapshotTools Snapshot(MarketDataTools marketData)
+    private SnapshotTools Snapshot(Family tools)
     {
         ReferenceTools reference = new(
             new InstrumentRegistry(_wrapped!), _calendar!, _gateway!, _wrapped!, _clock!);
 
-        return new SnapshotTools(marketData, reference, new IndicatorCatalogNames(_catalog!), _clock!);
+        return new SnapshotTools(
+            tools.Bars,
+            tools.Indicators,
+            tools.KeyLevels,
+            reference,
+            new IndicatorCatalogNames(_catalog!),
+            _clock!);
     }
+
+    /// <summary>The three market-data tool types these cases read a rolled store through.</summary>
+    /// <param name="Bars">The bar tools.</param>
+    /// <param name="Indicators">The indicator tools.</param>
+    /// <param name="KeyLevels">The key-level tools.</param>
+    /// <remarks>
+    /// Three constructor arguments where one used to do (gh#414). Which of the three a case builds on is
+    /// now visible at the call site: <c>tools.Bars.GetBars</c> cannot reach a level method, and
+    /// <c>tools.KeyLevels.GetKeyLevels</c> cannot reach the bar cache.
+    /// </remarks>
+    private sealed record Family(BarTools Bars, IndicatorTools Indicators, KeyLevelTools KeyLevels);
 
     private IOptions<MarketDataOptions>? _wrapped;
     private BarSessionCalendar? _calendar;
@@ -345,7 +362,7 @@ public sealed class ContractRollReportingTests : IDisposable
     private FakeTimeProvider? _clock;
     private CountingGateway? _gateway;
 
-    private async Task<MarketDataTools> ComposeAsync(int total, KeyLevelDetectionOptions? detection = null)
+    private async Task<Family> ComposeAsync(int total, KeyLevelDetectionOptions? detection = null)
     {
         await _database.SaveChangesAsync();
 
@@ -372,26 +389,27 @@ public sealed class ContractRollReportingTests : IDisposable
         BarCacheService cache = new(
             _database, gateway, calendar, projector, clock, NullLogger<BarCacheService>.Instance);
 
-        return new MarketDataTools(
-            cache,
-            _database,
-            new InstrumentRegistry(wrapped),
-            catalog,
-            new IndicatorCacheService(
-                _database, catalog, projector, clock, NullLogger<IndicatorCacheService>.Instance),
-            new LevelMethodCatalog(calendar),
-            gateway,
-            new ToolGuards(wrapped),
-            new StoreAvailabilityHolder(),
-            clock,
-            Options.Create(detection ?? new KeyLevelDetectionOptions()),
-            new VolumeProfileService(_database),
-            new TapeAvailabilityHolder(),
-            new TapeVolumeFrontService(_database, gateway, calendar),
-            new FootprintCacheService(
+        InstrumentResolver resolver = new(new InstrumentRegistry(wrapped), new StoreAvailabilityHolder());
+        ToolGuards guards = new(wrapped);
+
+        return new Family(
+            new BarTools(resolver, cache, guards, clock),
+            new IndicatorTools(
+                resolver,
                 _database,
-                new FootprintProjector(_database, NullLogger<FootprintProjector>.Instance),
-                clock,
-                NullLogger<FootprintCacheService>.Instance));
+                catalog,
+                new IndicatorCacheService(
+                    _database, catalog, projector, clock, NullLogger<IndicatorCacheService>.Instance),
+                gateway,
+                guards),
+            new KeyLevelTools(
+                resolver,
+                _database,
+                catalog,
+                new LevelMethodCatalog(calendar),
+                gateway,
+                guards,
+                new VolumeProfileService(_database),
+                Options.Create(detection ?? new KeyLevelDetectionOptions())));
     }
 }

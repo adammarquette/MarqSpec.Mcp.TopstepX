@@ -468,15 +468,34 @@ public static class Program
         // answer past the fill that invalidated it (gh#246).
         services.AddScoped<IndicatorCacheService>();
 
+        // The two collaborators the market-data tool types share, and the reason they are collaborators
+        // rather than a base class (gh#414). InstrumentResolver holds the symbol lookup and the
+        // store-availability check every one of those tools takes; VolumeFrontReader holds the front-month
+        // read that get_footprint, get_volume_profile and get_contract_roll all publish. Injected, neither
+        // InstrumentRegistry nor TapeVolumeFrontService is reachable from any tool type at all -- which is
+        // the boundary the compiler now holds and a partial class could not.
+        //
+        // The resolver is a singleton because both of its dependencies are; the front reader is scoped
+        // because TapeVolumeFrontService takes the DbContext.
+        services.AddSingleton<InstrumentResolver>();
+        services.AddScoped<VolumeFrontReader>();
+
         // The tool types themselves. The SDK activates a tool per call with ActivatorUtilities, which resolves
         // constructor parameters from DI but does NOT recursively activate unregistered types -- so a tool that
-        // composes another tool (SnapshotTools takes MarketDataTools and ReferenceTools) fails at CALL time
-        // with "unable to resolve service", while startup and tools/list both look perfectly healthy.
+        // composes another tool (SnapshotTools takes BarTools, IndicatorTools, KeyLevelTools and
+        // ReferenceTools) fails at CALL time with "unable to resolve service", while startup and tools/list
+        // both look perfectly healthy.
         //
         // Registering them explicitly is what makes that a startup-time guarantee rather than a per-tool
-        // surprise the first time someone calls the one composed tool.
+        // surprise the first time someone calls the one composed tool. Five market-data types now instead of
+        // one (gh#414): the guarantee is per TYPE, so splitting the type multiplied the number of
+        // registrations this comment is about rather than weakening what any one of them promises.
         services.AddScoped<ReferenceTools>();
-        services.AddScoped<MarketDataTools>();
+        services.AddScoped<BarTools>();
+        services.AddScoped<IndicatorTools>();
+        services.AddScoped<KeyLevelTools>();
+        services.AddScoped<TapeTools>();
+        services.AddScoped<ContractRollTools>();
         services.AddScoped<AccountTools>();
         services.AddScoped<SnapshotTools>();
         services.AddScoped<ObservationTools>();

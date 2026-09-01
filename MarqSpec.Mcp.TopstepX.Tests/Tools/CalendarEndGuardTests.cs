@@ -120,7 +120,7 @@ public sealed class CalendarEndGuardTests : IDisposable
         // under one bar wide, so it spans ZERO buckets and clears both caps -- and BarGapDetector.AlignUp
         // then rounds its start up to the next one-minute boundary on the fixed UTC grid, which is past the
         // end of year 9999. The DateTimeOffset that alignment builds is what threw.
-        MarketDataTools tools = Tools();
+        BarTools tools = Tools();
         DateTimeOffset from = new(9999, 12, 31, 23, 59, 59, TimeSpan.Zero);
         DateTimeOffset to = from.AddTicks(9_999_999);
 
@@ -149,7 +149,7 @@ public sealed class CalendarEndGuardTests : IDisposable
         //
         // 9999-12-22 is a Wednesday and 12:00-16:00 Central is inside its session, so the detector really
         // does hand FetchAsync an outstanding range here rather than an empty list.
-        MarketDataTools tools = Tools();
+        BarTools tools = Tools();
         DateTimeOffset from = new(9999, 12, 22, 18, 0, 0, TimeSpan.Zero);
 
         ToolPayloads.BarSeries series =
@@ -170,7 +170,7 @@ public sealed class CalendarEndGuardTests : IDisposable
         // 14:00 Central through the close and on into the evening leg -- which is the leg that makes the
         // calendar map a bucket onto the NEXT trade date, so the three-day term is exercised rather than
         // assumed.
-        MarketDataTools tools = Tools();
+        BarTools tools = Tools();
         DateTimeOffset from = new(9999, 12, 28, 20, 0, 0, TimeSpan.Zero);
 
         ToolPayloads.BarSeries series =
@@ -184,7 +184,7 @@ public sealed class CalendarEndGuardTests : IDisposable
     [Fact]
     public async Task AWindowEndingOneTickPastTheLastServableInstant_IsRefused()
     {
-        MarketDataTools tools = Tools();
+        BarTools tools = Tools();
         DateTimeOffset from = new(9999, 12, 28, 20, 0, 0, TimeSpan.Zero);
 
         Func<Task> call = () => tools.GetBars(
@@ -262,7 +262,7 @@ public sealed class CalendarEndGuardTests : IDisposable
     public async Task AnOrdinaryReadStillAnswers()
     {
         // The other half of the acceptance criterion: nothing changes for a request that was always fine.
-        MarketDataTools tools = Tools();
+        BarTools tools = Tools();
 
         ToolPayloads.BarSeries series = await tools.GetLatestBars("ES", 5, 10, CancellationToken.None);
 
@@ -290,14 +290,13 @@ public sealed class CalendarEndGuardTests : IDisposable
         // permitted "threw something" would have been green through every one of them.
         const BindingFlags Surface = BindingFlags.Public | BindingFlags.Instance | BindingFlags.DeclaredOnly;
 
-        MarketDataTools marketData = Tools();
-        SnapshotTools snapshot = SnapshotFor(marketData);
+        Family family = Compose();
         ReferenceTools reference = Reference();
         AccountTools accounts = new(_gateway, Guards());
 
         List<MethodInfo> takingAnInstant =
         [
-            .. typeof(MarketDataTools).Assembly.GetTypes()
+            .. typeof(BarTools).Assembly.GetTypes()
                 .Where(t => t.GetCustomAttribute<McpServerToolTypeAttribute>() is not null)
                 .SelectMany(t => t.GetMethods(Surface))
                 .Where(m => m.GetCustomAttribute<McpServerToolAttribute>() is not null)
@@ -314,13 +313,9 @@ public sealed class CalendarEndGuardTests : IDisposable
         {
             _gateway.ResetCounters();
 
-            object instance = tool.DeclaringType! == typeof(MarketDataTools) ? marketData
-                : tool.DeclaringType! == typeof(SnapshotTools) ? snapshot
-                : tool.DeclaringType! == typeof(ReferenceTools) ? reference
+            object instance = tool.DeclaringType! == typeof(ReferenceTools) ? reference
                 : tool.DeclaringType! == typeof(AccountTools) ? accounts
-                : throw new InvalidOperationException(
-                    tool.DeclaringType!.Name + " takes an instant and this fixture cannot build it. "
-                    + "Add it here rather than narrowing the sweep -- the sweep is the point.");
+                : family.Instance(tool.DeclaringType!);
 
             Exception? thrown = await Capture(() => Invoke(tool, instance, resolutionMinutes));
 
@@ -354,12 +349,35 @@ public sealed class CalendarEndGuardTests : IDisposable
     /// <returns>The guards.</returns>
     private static ToolGuards Guards() => new(Defaults());
 
-    /// <summary>Builds the market-data tools at the default row cap.</summary>
+    /// <summary>Builds the bar tools at the default row cap.</summary>
     /// <returns>The tools.</returns>
-    private MarketDataTools Tools() =>
-        new(_cache,
+    private BarTools Tools() => Compose().Bars;
+
+    /// <summary>Builds the reference tools — the ones that take an instant and no window.</summary>
+    /// <returns>The reference tools.</returns>
+    private ReferenceTools Reference() =>
+        new(new InstrumentRegistry(Defaults()), _calendar, _gateway, Defaults(), _clock);
+
+    /// <summary>
+    /// Builds every market-data tool type the reflection sweep can land on, at the default row cap.
+    /// </summary>
+    /// <returns>The family.</returns>
+    /// <remarks>
+    /// Five types now, not one (gh#414). The sweep maps a declaring type to an instance, so every one of
+    /// them has to be buildable here — <see cref="Family.Instance"/> throws by name for a type that is not,
+    /// rather than letting it drop out of the sweep.
+    /// </remarks>
+    private Family Compose()
+    {
+        InstrumentResolver resolver = new(new InstrumentRegistry(Defaults()), new StoreAvailabilityHolder());
+        ToolGuards guards = Guards();
+        VolumeFrontReader front = new(new TapeVolumeFrontService(_database, _gateway, _calendar));
+
+        BarTools bars = new(resolver, _cache, guards, _clock);
+
+        IndicatorTools indicators = new(
+            resolver,
             _database,
-            new InstrumentRegistry(Defaults()),
             _catalog,
             new IndicatorCacheService(
                 _database,
@@ -367,31 +385,71 @@ public sealed class CalendarEndGuardTests : IDisposable
                 new IndicatorProjector(_database, _catalog, NullLogger<IndicatorProjector>.Instance),
                 _clock,
                 NullLogger<IndicatorCacheService>.Instance),
+            _gateway,
+            guards);
+
+        KeyLevelTools keyLevels = new(
+            resolver,
+            _database,
+            _catalog,
             new LevelMethodCatalog(_calendar),
             _gateway,
-            Guards(),
-            new StoreAvailabilityHolder(),
-            _clock,
-            Options.Create(new KeyLevelDetectionOptions()),
+            guards,
             new VolumeProfileService(_database),
+            Options.Create(new KeyLevelDetectionOptions()));
+
+        TapeTools tape = new(
+            resolver,
+            _database,
+            _gateway,
+            guards,
             new TapeAvailabilityHolder(),
-            new TapeVolumeFrontService(_database, _gateway, _calendar),
+            new VolumeProfileService(_database),
+            front,
             new FootprintCacheService(
                 _database,
                 new FootprintProjector(_database, NullLogger<FootprintProjector>.Instance),
                 _clock,
                 NullLogger<FootprintCacheService>.Instance));
 
-    /// <summary>Builds the reference tools — the ones that take an instant and no window.</summary>
-    /// <returns>The reference tools.</returns>
-    private ReferenceTools Reference() =>
-        new(new InstrumentRegistry(Defaults()), _calendar, _gateway, Defaults(), _clock);
+        ContractRollTools roll = new(
+            resolver, _database, _gateway, new LevelMethodCatalog(_calendar), front, _clock);
 
-    /// <summary>Builds the composed tool over the same options.</summary>
-    /// <param name="marketData">The market-data tools it composes.</param>
-    /// <returns>The snapshot tool.</returns>
-    private SnapshotTools SnapshotFor(MarketDataTools marketData) =>
-        new(marketData, Reference(), new IndicatorCatalogNames(_catalog), _clock);
+        SnapshotTools snapshot = new(
+            bars, indicators, keyLevels, Reference(), new IndicatorCatalogNames(_catalog), _clock);
+
+        return new Family(bars, indicators, keyLevels, tape, roll, snapshot);
+    }
+
+    /// <summary>Every market-data tool type this fixture can hand the sweep.</summary>
+    /// <param name="Bars">The bar tools.</param>
+    /// <param name="Indicators">The indicator tools.</param>
+    /// <param name="KeyLevels">The key-level tools.</param>
+    /// <param name="Tape">The tape tools.</param>
+    /// <param name="Roll">The contract-roll tools.</param>
+    /// <param name="Snapshot">The composed snapshot tool.</param>
+    private sealed record Family(
+        BarTools Bars,
+        IndicatorTools Indicators,
+        KeyLevelTools KeyLevels,
+        TapeTools Tape,
+        ContractRollTools Roll,
+        SnapshotTools Snapshot)
+    {
+        /// <summary>Hands back the instance for a declaring type, or says what has to be added here.</summary>
+        /// <param name="type">The tool type the sweep found.</param>
+        /// <returns>An instance to invoke.</returns>
+        public object Instance(Type type) =>
+            type == typeof(BarTools) ? Bars
+            : type == typeof(IndicatorTools) ? Indicators
+            : type == typeof(KeyLevelTools) ? KeyLevels
+            : type == typeof(TapeTools) ? Tape
+            : type == typeof(ContractRollTools) ? Roll
+            : type == typeof(SnapshotTools) ? Snapshot
+            : throw new InvalidOperationException(
+                type.Name + " takes an instant and this fixture cannot build it. "
+                + "Add it here rather than narrowing the sweep -- the sweep is the point.");
+    }
 
     /// <summary>Runs a call and hands back whatever it threw, if anything.</summary>
     /// <param name="call">The call.</param>

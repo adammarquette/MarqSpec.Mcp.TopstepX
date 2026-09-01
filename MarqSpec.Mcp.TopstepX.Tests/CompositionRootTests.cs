@@ -224,7 +224,11 @@ public sealed class CompositionRootTests
 
     [Theory]
     [InlineData(typeof(ReferenceTools))]
-    [InlineData(typeof(MarketDataTools))]
+    [InlineData(typeof(BarTools))]
+    [InlineData(typeof(IndicatorTools))]
+    [InlineData(typeof(KeyLevelTools))]
+    [InlineData(typeof(TapeTools))]
+    [InlineData(typeof(ContractRollTools))]
     [InlineData(typeof(AccountTools))]
     [InlineData(typeof(SnapshotTools))]
     [InlineData(typeof(ObservationTools))]
@@ -326,36 +330,44 @@ public sealed class CompositionRootTests
             """{"name":"get_contract_roll","title":"Get contract roll","description":"Reports the most recent contract-roll changeover the stored tape can prove for a symbol, and the tape front at asOfUtc. There is no historical tape before recording began — a changeover from before that is ABSENT, not guessed. `front` is the same object get_footprint returns: `used` is `tape-volume` or `none`, never a silent prefer of the gateway. Keys inside `front` — including `changeover`, `gatewayContractId` and `agree` — are omitted when that answer does not exist. The gateway pick is live only; a historical asOfUtc omits `gatewayContractId` and `agree` rather than dating today's pick as if it were as-of. `contracts` is the bar-side seam around the changeover (`span` / segments) over stored bars in that window, every bar size together; it is omitted when there is no changeover to place a window around. `SingleContract` means that window has one contract — two contracts on different sizes is SpansRoll even when no single series crosses. `span` Unknown means provenance was never recorded, not that there was no roll. asOfUtc is bounded like get_market_session's atUtc.","inputSchema":{"type":"object","properties":{"symbol":{"description":"The instrument symbol, e.g. ES.","type":"string"},"asOfUtc":{"description":"The instant to evaluate, ISO-8601 UTC. Defaults to now.","type":["string","null"],"format":"date-time","default":null}},"required":["symbol"]},"outputSchema":null,"annotations":{"title":"Get contract roll","destructiveHint":null,"idempotentHint":true,"openWorldHint":null,"readOnlyHint":true},"icons":null,"_meta":null}""",
     };
 
-    [Fact]
-    public void MarketDataToolsFailsAtStartup_WhenTheFootprintCacheServiceRegistrationIsDropped()
+    [Theory]
+    [InlineData(typeof(BarTools), typeof(BarCacheService))]
+    [InlineData(typeof(IndicatorTools), typeof(IndicatorCacheService))]
+    [InlineData(typeof(KeyLevelTools), typeof(VolumeProfileService))]
+    [InlineData(typeof(TapeTools), typeof(FootprintCacheService))]
+    [InlineData(typeof(ContractRollTools), typeof(VolumeFrontReader))]
+    [InlineData(typeof(SnapshotTools), typeof(IndicatorCatalogNames))]
+    public void AMarketDataToolTypeFailsTheContainerBuild_WhenOneOfItsOwnDependenciesIsUnregistered(
+        Type toolType,
+        Type dependency)
     {
-        // The regression this closes (gh#391): three MarketDataTools constructor parameters -- tape,
-        // volumeFront, footprints -- used to be OPTIONAL, each falling back to a hand-built instance
-        // (`footprints ?? new FootprintCacheService(...)`) when DI supplied none. ActivatorUtilities
-        // honours a parameter's default value instead of throwing when the type behind it is
-        // unregistered, so the guarantee EveryToolTypeCanBeResolvedFromARequestScope pins above --
-        // "a tool that composes another tool fails at startup rather than at CALL time" -- did NOT
-        // hold for these three: dropping one of their registrations booted clean, and every activation
-        // built a throwaway collaborator instead. For FootprintCacheService specifically, that
-        // throwaway's `_complete` memo starts empty on every call -- exactly the on-read reprobing
-        // gh#347/gh#348 exist to count.
+        // THE STARTUP GUARANTEE, RE-ESTABLISHED ACROSS FIVE TYPES (gh#414), and it is the reason the theory
+        // names a DIFFERENT dependency per type rather than dropping one service and watching everything
+        // fall over. The regression gh#391 closed was that three MarketDataTools constructor parameters were
+        // OPTIONAL -- ActivatorUtilities honours a parameter's default value instead of throwing when the
+        // type behind it is unregistered, so a dropped registration booted clean and every activation built
+        // a throwaway collaborator whose per-scope memo started empty on every call (the on-read reprobing
+        // gh#347/gh#348 exist to count). Splitting one type into five multiplies the number of constructors
+        // that hole could reopen in, so each of them is driven here.
         //
-        // This reproduces the dropped registration directly on the real composition root, the same
-        // way TheContainerBuilds_WhenCredentialsAreConfiguredAndTheRecorderIsEnabled reproduces a real
-        // captive dependency above, rather than asserting the constructor shape looks right.
+        // Each pair is a dependency that type ALONE takes among the five, which is what makes the assertion
+        // discriminating: BarTools is the only one holding a BarCacheService, TapeTools the only one holding
+        // a FootprintCacheService, ContractRollTools' VolumeFrontReader reaches it through TapeTools too but
+        // the message names both. Assert on the message naming the SERVICE and the CONSUMING TYPE, because
+        // .NET validates every registered descriptor on build -- "something threw" would be satisfied by any
+        // other type in the container failing for its own reasons.
         WebApplicationBuilder builder = WebApplication.CreateBuilder();
         builder.Configuration.AddInMemoryCollection(_baseSettings);
 
         Program.ConfigureServices(builder, new McpOptions { Transport = McpTransport.Stdio });
 
-        ServiceDescriptor footprintCacheService =
-            builder.Services.Single(d => d.ServiceType == typeof(FootprintCacheService));
-        builder.Services.Remove(footprintCacheService);
+        ServiceDescriptor descriptor = builder.Services.Single(d => d.ServiceType == dependency);
+        builder.Services.Remove(descriptor);
 
-        // Caught by hand rather than through FluentAssertions' exception-assertion API: .NET's
-        // ServiceProvider validates every registered descriptor on build, so BOTH MarketDataTools and
-        // SnapshotTools (which composes it) fail validation here, and an assertion built to expect
-        // exactly one thrown exception cannot tell which of the two it was handed.
+        // Caught by hand rather than through FluentAssertions' exception-assertion API: the provider
+        // validates every registered descriptor on build, so more than one tool type fails validation here,
+        // and an assertion built to expect exactly one thrown exception cannot tell which of them it was
+        // handed.
         Exception? thrown = null;
         try
         {
@@ -371,9 +383,15 @@ public sealed class CompositionRootTests
         }
 
         thrown.Should().NotBeNull(
-            "a dropped FootprintCacheService registration must fail the container build, not silently "
-            + "hand MarketDataTools a fallback instance whose per-scope memo starts empty on every call");
-        thrown!.ToString().Should().Contain(nameof(FootprintCacheService));
+            "a dropped " + dependency.Name + " registration must fail the CONTAINER BUILD, not silently "
+            + "hand " + toolType.Name + " a fallback instance at call time");
+
+        string message = thrown!.ToString();
+        message.Should().Contain(dependency.Name, "the failure has to name the service that is missing");
+        message.Should().Contain(
+            toolType.Name,
+            toolType.Name + " takes " + dependency.Name + " and must be named by the failure -- otherwise "
+            + "this case is green on some OTHER type's validation error and pins nothing about this one");
     }
 
     [Fact]

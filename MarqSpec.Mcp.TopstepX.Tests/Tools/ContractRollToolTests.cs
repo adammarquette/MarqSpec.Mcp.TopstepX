@@ -47,7 +47,7 @@ public sealed class ContractRollToolTests : IDisposable
             .Options);
 
     private readonly FakeTimeProvider _clock = new(_now);
-    private readonly MarketDataTools _tools;
+    private readonly ContractRollTools _tools;
 
     public ContractRollToolTests()
     {
@@ -59,34 +59,15 @@ public sealed class ContractRollToolTests : IDisposable
         });
 
         BarSessionCalendar calendar = BarSessionCalendar.Parse("16:00", []);
-        IndicatorCatalog catalog = new(
-            Options.Create(new IndicatorOptions { AtrPeriod = 3, RsiPeriod = 3 }), calendar);
         CountingGateway gateway = new([]);
-        IndicatorProjector projector = new(_database, catalog, NullLogger<IndicatorProjector>.Instance);
-        BarCacheService cache = new(
-            _database, gateway, calendar, projector, _clock, NullLogger<BarCacheService>.Instance);
 
-        _tools = new MarketDataTools(
-            cache,
+        _tools = new ContractRollTools(
+            new InstrumentResolver(new InstrumentRegistry(options), new StoreAvailabilityHolder()),
             _database,
-            new InstrumentRegistry(options),
-            catalog,
-            new IndicatorCacheService(
-                _database, catalog, projector, _clock, NullLogger<IndicatorCacheService>.Instance),
-            new LevelMethodCatalog(calendar),
             gateway,
-            new ToolGuards(options),
-            new StoreAvailabilityHolder(),
-            _clock,
-            Options.Create(new KeyLevelDetectionOptions()),
-            new VolumeProfileService(_database),
-            new TapeAvailabilityHolder(),
-            new TapeVolumeFrontService(_database, gateway, calendar),
-            new FootprintCacheService(
-                _database,
-                new FootprintProjector(_database, NullLogger<FootprintProjector>.Instance),
-                _clock,
-                NullLogger<FootprintCacheService>.Instance));
+            new LevelMethodCatalog(calendar),
+            new VolumeFrontReader(new TapeVolumeFrontService(_database, gateway, calendar)),
+            _clock);
     }
 
     public void Dispose() => _database.Dispose();
@@ -270,7 +251,7 @@ public sealed class ContractRollToolTests : IDisposable
     [Fact]
     public void TheTool_IsRegistered_AndItsDescriptionStatesTheForwardOnlyLimit()
     {
-        MethodInfo method = typeof(MarketDataTools).GetMethod(nameof(MarketDataTools.GetContractRoll))!;
+        MethodInfo method = typeof(ContractRollTools).GetMethod(nameof(ContractRollTools.GetContractRoll))!;
 
         method.GetCustomAttribute<McpServerToolAttribute>().Should().NotBeNull();
         method.GetCustomAttribute<McpServerToolAttribute>()!.ReadOnly.Should().BeTrue();

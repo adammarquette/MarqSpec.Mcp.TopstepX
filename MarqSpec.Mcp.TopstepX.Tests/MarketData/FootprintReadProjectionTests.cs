@@ -207,7 +207,7 @@ public sealed class FootprintReadProjectionTests : IDisposable
             + "and a merged 10/5 would be a wrong number");
     }
 
-    private MarketDataTools Tools()
+    private TapeTools Tools()
     {
         IOptions<MarketDataOptions> options = Options.Create(new MarketDataOptions
         {
@@ -217,27 +217,15 @@ public sealed class FootprintReadProjectionTests : IDisposable
         });
 
         BarSessionCalendar calendar = BarSessionCalendar.Parse("16:00", []);
-        IndicatorCatalog catalog = new(
-            Options.Create(new IndicatorOptions { AtrPeriod = 3, RsiPeriod = 3 }), calendar);
-        IndicatorProjector projector = new(_database, catalog, NullLogger<IndicatorProjector>.Instance);
 
-        return new MarketDataTools(
-            new BarCacheService(
-                _database, _gateway, calendar, projector, _clock, NullLogger<BarCacheService>.Instance),
+        return new TapeTools(
+            new InstrumentResolver(new InstrumentRegistry(options), new StoreAvailabilityHolder()),
             _database,
-            new InstrumentRegistry(options),
-            catalog,
-            new IndicatorCacheService(
-                _database, catalog, projector, _clock, NullLogger<IndicatorCacheService>.Instance),
-            new LevelMethodCatalog(calendar),
             _gateway,
             new ToolGuards(options),
-            new StoreAvailabilityHolder(),
-            _clock,
-            Options.Create(new KeyLevelDetectionOptions()),
-            new VolumeProfileService(_database),
             _tape,
-            new TapeVolumeFrontService(_database, _gateway, calendar),
+            new VolumeProfileService(_database),
+            new VolumeFrontReader(new TapeVolumeFrontService(_database, _gateway, calendar)),
             new FootprintCacheService(
                 _database,
                 new FootprintProjector(_database, NullLogger<FootprintProjector>.Instance),

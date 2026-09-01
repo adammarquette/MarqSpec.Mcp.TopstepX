@@ -9,11 +9,31 @@ using ModelContextProtocol.Server;
 namespace MarqSpec.Mcp.TopstepX.Tools;
 
 /// <summary>
-/// <c>get_bars</c> and <c>get_latest_bars</c> — the cache-aside bar read every other concern in this class
-/// is built on top of, but does not itself depend on.
+/// <c>get_bars</c> and <c>get_latest_bars</c> — the cache-aside bar read every other market-data concern is
+/// built on top of, but does not itself depend on.
 /// </summary>
-public sealed partial class MarketDataTools
+/// <remarks>
+/// One of the five tool types gh#414 split <c>MarketDataTools</c> into, and the narrowest of them: four
+/// dependencies where the one type had fifteen. A footprint cache, an indicator catalogue and the level
+/// methods are not merely unused here — they are <b>unreachable</b>, which is the difference between the
+/// file split gh#391 made and this one.
+/// </remarks>
+/// <param name="resolver">Turns a caller's symbol into an instrument, refusing first if the store is absent.</param>
+/// <param name="cache">The cache-aside bar reader.</param>
+/// <param name="guards">The request-shape checks the whole tool surface shares.</param>
+/// <param name="clock">The clock <c>get_latest_bars</c> anchors on.</param>
+[McpServerToolType]
+public sealed class BarTools(
+    InstrumentResolver resolver,
+    BarCacheService cache,
+    ToolGuards guards,
+    TimeProvider clock)
 {
+    private readonly InstrumentResolver _resolver = resolver;
+    private readonly BarCacheService _cache = cache;
+    private readonly ToolGuards _guards = guards;
+    private readonly TimeProvider _clock = clock;
+
     /// <summary>Reads OHLCV bars for a window.</summary>
     /// <param name="symbol">The instrument symbol.</param>
     /// <param name="resolutionMinutes">The bar size in minutes.</param>
@@ -41,7 +61,7 @@ public sealed partial class MarketDataTools
         [Description("Window end, ISO-8601 UTC, exclusive.")] DateTimeOffset toUtc,
         CancellationToken cancellationToken)
     {
-        InstrumentId instrument = Resolve(symbol);
+        InstrumentId instrument = _resolver.Resolve(symbol);
         BarRange window = _guards.ValidateWindow(fromUtc, toUtc, resolutionMinutes);
 
         BarReadResult result = await ReadAsync(instrument, resolutionMinutes, window, cancellationToken)
@@ -77,7 +97,7 @@ public sealed partial class MarketDataTools
         [Description("How many bars to return.")] int count,
         CancellationToken cancellationToken)
     {
-        InstrumentId instrument = Resolve(symbol);
+        InstrumentId instrument = _resolver.Resolve(symbol);
         ToolGuards.ValidateResolution(resolutionMinutes);
         int wanted = _guards.ValidateCount(count);
 

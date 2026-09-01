@@ -110,7 +110,7 @@ public sealed class IndicatorReadProjectionTests : IDisposable
 
         // The catalogue now wants RSI at 5. Nothing has ever written (rsi, 5) for this series, and before
         // gh#246 the only thing that ever would was an operator running `rebuild-indicators`.
-        MarketDataTools tools = Tools(Catalog(rsiPeriod: 5));
+        IndicatorTools tools = Tools(Catalog(rsiPeriod: 5));
         _gateway.ResetCounters();
 
         ToolPayloads.IndicatorSeries series = await tools.GetIndicators(
@@ -134,7 +134,7 @@ public sealed class IndicatorReadProjectionTests : IDisposable
         await WarmAsync(Catalog(rsiPeriod: 3));
 
         IndicatorCatalog wider = Catalog(rsiPeriod: 5);
-        MarketDataTools tools = Tools(wider);
+        IndicatorTools tools = Tools(wider);
 
         ToolPayloads.IndicatorSeries fromRead = await tools.GetIndicators(
             "ES", Resolution, "rsi", Bucket(0), Bucket(SeededBars), CancellationToken.None);
@@ -181,7 +181,7 @@ public sealed class IndicatorReadProjectionTests : IDisposable
         projected.Should().BeFalse(
             "no pair the store lacks is one these bars could satisfy, so there is nothing to compute");
 
-        MarketDataTools tools = Tools(Catalog(rsiPeriod: 3));
+        IndicatorTools tools = Tools(Catalog(rsiPeriod: 3));
         ToolPayloads.IndicatorSeries series = await tools.GetIndicators(
             "ES", Resolution, "macd-signal", Bucket(0), Bucket(6), CancellationToken.None);
 
@@ -275,7 +275,7 @@ public sealed class IndicatorReadProjectionTests : IDisposable
         // reaches for -- reporting cannot-measure over bars that measure perfectly well.
         await WarmAsync(Catalog(rsiPeriod: 3));
 
-        MarketDataTools tools = Tools(Catalog(rsiPeriod: 5));
+        IndicatorTools tools = Tools(Catalog(rsiPeriod: 5));
         _gateway.ResetCounters();
 
         ToolPayloads.IndicatorReading reading = await tools.GetIndicatorAt(
@@ -430,31 +430,12 @@ public sealed class IndicatorReadProjectionTests : IDisposable
         new(_database, catalog, new IndicatorProjector(_database, catalog, NullLogger<IndicatorProjector>.Instance),
             _clock, NullLogger<IndicatorCacheService>.Instance, readTriggeredReplays);
 
-    private MarketDataTools Tools(IndicatorCatalog catalog) =>
+    private IndicatorTools Tools(IndicatorCatalog catalog) =>
         new(
-            new BarCacheService(
-                _database,
-                _gateway,
-                Calendar(),
-                new IndicatorProjector(_database, catalog, NullLogger<IndicatorProjector>.Instance),
-                _clock,
-                NullLogger<BarCacheService>.Instance),
+            new InstrumentResolver(new InstrumentRegistry(MarketData()), new StoreAvailabilityHolder()),
             _database,
-            new InstrumentRegistry(MarketData()),
             catalog,
             Cache(catalog),
-            new LevelMethodCatalog(Calendar()),
             _gateway,
-            new ToolGuards(MarketData()),
-            new StoreAvailabilityHolder(),
-            _clock,
-            Options.Create(new KeyLevelDetectionOptions()),
-            new VolumeProfileService(_database),
-            new TapeAvailabilityHolder(),
-            new TapeVolumeFrontService(_database, _gateway, Calendar()),
-            new FootprintCacheService(
-                _database,
-                new FootprintProjector(_database, NullLogger<FootprintProjector>.Instance),
-                _clock,
-                NullLogger<FootprintCacheService>.Instance));
+            new ToolGuards(MarketData()));
 }

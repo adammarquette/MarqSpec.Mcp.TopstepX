@@ -9,18 +9,35 @@ namespace MarqSpec.Mcp.TopstepX.Tools;
 /// The composed read — everything about one instrument in one call.
 /// </summary>
 /// <remarks>
+/// <para>
 /// This exists because the common question is not "what is the RSI"; it is "what is this market doing". Asked
 /// through the single-purpose tools that is five or six round trips, each of which the caller has to sequence
 /// correctly and none of which is interesting on its own.
+/// </para>
+/// <para>
+/// <b>Three market-data tool types, not one</b> (gh#414). A snapshot is a bar read, a batched indicator read
+/// and a level detection, and naming them separately is what makes that legible in the constructor: this type
+/// cannot reach a footprint cache or the tape-availability holder, because it never asks the tape anything.
+/// </para>
 /// </remarks>
+/// <param name="bars">The bar read each slice opens with.</param>
+/// <param name="indicators">The batched indicator read each slice composes.</param>
+/// <param name="keyLevels">The level detection each slice closes with.</param>
+/// <param name="reference">The session and instrument reference the snapshot is framed by.</param>
+/// <param name="names">The catalogue's key set, built from the catalogue rather than from the query.</param>
+/// <param name="clock">The anchor a slice with no bars falls back to.</param>
 [McpServerToolType]
 public sealed class SnapshotTools(
-    MarketDataTools marketData,
+    BarTools bars,
+    IndicatorTools indicators,
+    KeyLevelTools keyLevels,
     ReferenceTools reference,
     IndicatorCatalogNames names,
     TimeProvider clock)
 {
-    private readonly MarketDataTools _marketData = marketData;
+    private readonly BarTools _bars = bars;
+    private readonly IndicatorTools _indicators = indicators;
+    private readonly KeyLevelTools _keyLevels = keyLevels;
     private readonly ReferenceTools _reference = reference;
     private readonly IndicatorCatalogNames _names = names;
     private readonly TimeProvider _clock = clock;
@@ -145,7 +162,7 @@ public sealed class SnapshotTools(
         // cost their fetch and their projection.
         foreach (int resolution in ResolveResolutions(resolutionMinutes))
         {
-            ToolPayloads.BarSeries series = await _marketData
+            ToolPayloads.BarSeries series = await _bars
                 .GetLatestBars(symbol, resolution, barCount, cancellationToken)
                 .ConfigureAwait(false);
 
@@ -164,7 +181,7 @@ public sealed class SnapshotTools(
             // of them were this block (gh#388). What the batch must not do is collapse the PROVENANCE with
             // the queries: it groups by (Indicator, Period) and takes each group's own latest bucket, so the
             // eleven readings still disagree about bucket and contract wherever they legitimately do.
-            IReadOnlyDictionary<string, ToolPayloads.IndicatorReading> readings = await _marketData
+            IReadOnlyDictionary<string, ToolPayloads.IndicatorReading> readings = await _indicators
                 .GetLatestIndicatorReadings(symbol, resolution, asOf, cancellationToken)
                 .ConfigureAwait(false);
 
@@ -194,7 +211,7 @@ public sealed class SnapshotTools(
                 indicators[name] = reading?.Value is null ? null : reading;
             }
 
-            ToolPayloads.LevelSet levels = await _marketData
+            ToolPayloads.LevelSet levels = await _keyLevels
                 .GetKeyLevels(symbol, resolution, Math.Max(barCount, 200), cancellationToken: cancellationToken)
                 .ConfigureAwait(false);
 

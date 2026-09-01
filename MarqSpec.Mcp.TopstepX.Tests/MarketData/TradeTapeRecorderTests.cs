@@ -295,7 +295,7 @@ public sealed class TradeTapeRecorderTests
             recorder.ExecuteTask!.IsFaulted.Should().BeFalse(
                 "a faulted ExecuteTask is what Program.AnyFaulted reads");
 
-            MarketDataTools tools = Tools(database, tape);
+            TapeTools tools = Tools(database, tape);
             DateTimeOffset from = new(2026, 8, 18, 14, 0, 0, TimeSpan.Zero);
             DateTimeOffset to = new(2026, 8, 18, 16, 0, 0, TimeSpan.Zero);
 
@@ -406,7 +406,7 @@ public sealed class TradeTapeRecorderTests
 
             await SeedEsCellAsync(database, listenStart);
 
-            MarketDataTools tools = Tools(database, tape);
+            TapeTools tools = Tools(database, tape);
             DateTimeOffset to = listenStart.AddHours(2);
 
             ToolPayloads.FootprintSeries payload = await tools.GetFootprint(
@@ -448,7 +448,7 @@ public sealed class TradeTapeRecorderTests
 
             await SeedEsCellAsync(database, listenStart);
 
-            MarketDataTools tools = Tools(database, tape);
+            TapeTools tools = Tools(database, tape);
             DateTimeOffset to = listenStart.AddHours(2);
 
             ToolPayloads.FootprintSeries payload = await tools.GetFootprint(
@@ -576,7 +576,7 @@ public sealed class TradeTapeRecorderTests
 
                 tapeA.For("ES").IsListening.Should().BeTrue();
 
-                MarketDataTools tools = Tools(database, tapeA);
+                TapeTools tools = Tools(database, tapeA);
                 ToolPayloads.FootprintSeries payload = await tools.GetFootprint(
                     "ES", 5, listenStart, listenStart.AddHours(2), CancellationToken.None);
 
@@ -732,7 +732,7 @@ public sealed class TradeTapeRecorderTests
 
                 httpTape.For("ES").IsListening.Should().BeTrue();
 
-                MarketDataTools tools = Tools(database, httpTape);
+                TapeTools tools = Tools(database, httpTape);
                 DateTimeOffset to = listenStart.AddHours(2);
 
                 ToolPayloads.FootprintSeries payload = await tools.GetFootprint(
@@ -821,7 +821,7 @@ public sealed class TradeTapeRecorderTests
 
             await SeedEsCellAsync(database, listenStart);
 
-            MarketDataTools tools = Tools(database, tape);
+            TapeTools tools = Tools(database, tape);
             DateTimeOffset to = listenStart.AddHours(2);
 
             ToolPayloads.FootprintSeries payload = await tools.GetFootprint(
@@ -1000,7 +1000,7 @@ public sealed class TradeTapeRecorderTests
                 && row.RangeEnd == TapeCoverageRecord.StillListeningEnd);
 
             await SeedEsCellAsync(database, listenB);
-            MarketDataTools tools = Tools(database, tape);
+            TapeTools tools = Tools(database, tape);
             ToolPayloads.FootprintSeries payload = await tools.GetFootprint(
                 "ES", 5, listenB, listenB.AddHours(2), CancellationToken.None);
 
@@ -1114,7 +1114,7 @@ public sealed class TradeTapeRecorderTests
             recorder.RecordedPrints.Should().Be(0, "prints must not land after the subscription is dropped");
 
             await SeedEsCellAsync(database, _receipt);
-            MarketDataTools tools = Tools(database, tape);
+            TapeTools tools = Tools(database, tape);
             Func<Task> footprint = () => tools.GetFootprint(
                 "ES", 5, _receipt, _receipt.AddHours(2), CancellationToken.None);
 
@@ -1162,7 +1162,7 @@ public sealed class TradeTapeRecorderTests
                 && row.RangeEnd == TapeCoverageRecord.StillListeningEnd);
 
             await SeedEsCellAsync(database, restoreStart);
-            MarketDataTools tools = Tools(database, tape);
+            TapeTools tools = Tools(database, tape);
             ToolPayloads.FootprintSeries payload = await tools.GetFootprint(
                 "ES", 5, failedListen, failedListen.AddHours(2), CancellationToken.None);
 
@@ -1217,7 +1217,7 @@ public sealed class TradeTapeRecorderTests
                 row.RangeStart == restoreStart
                 && row.RangeEnd == TapeCoverageRecord.StillListeningEnd);
 
-            MarketDataTools tools = Tools(database, tape);
+            TapeTools tools = Tools(database, tape);
             Func<Task<ToolPayloads.FootprintSeries>> footprint = () => tools.GetFootprint(
                 "ES", 5, _receipt, _receipt.AddHours(2), CancellationToken.None);
 
@@ -1278,7 +1278,7 @@ public sealed class TradeTapeRecorderTests
                 && row.RangeEnd == TapeCoverageRecord.StillListeningEnd);
 
             await SeedEsCellAsync(database, restoreStart);
-            MarketDataTools tools = Tools(database, tape);
+            TapeTools tools = Tools(database, tape);
             ToolPayloads.FootprintSeries payload = await tools.GetFootprint(
                 "ES", 5, failedListen, failedListen.AddHours(2), CancellationToken.None);
 
@@ -2169,7 +2169,7 @@ public sealed class TradeTapeRecorderTests
         await database.SaveChangesAsync();
     }
 
-    private static MarketDataTools Tools(TopstepXDbContext database, TapeAvailabilityHolder tape)
+    private static TapeTools Tools(TopstepXDbContext database, TapeAvailabilityHolder tape)
     {
         IOptions<MarketDataOptions> options = Options.Create(new MarketDataOptions
         {
@@ -2178,30 +2178,17 @@ public sealed class TradeTapeRecorderTests
             SessionCloseCentral = "16:00",
         });
         BarSessionCalendar calendar = BarSessionCalendar.Parse("16:00", []);
-        IndicatorCatalog catalog = new(
-            Options.Create(new IndicatorOptions { AtrPeriod = 3, RsiPeriod = 3 }), calendar);
         FakeTimeProvider clock = new(new DateTimeOffset(2026, 8, 18, 16, 0, 0, TimeSpan.Zero));
         CountingGateway gateway = new([]);
-        IndicatorProjector projector = new(database, catalog, NullLogger<IndicatorProjector>.Instance);
-        BarCacheService cache = new(
-            database, gateway, calendar, projector, clock, NullLogger<BarCacheService>.Instance);
 
-        return new MarketDataTools(
-            cache,
+        return new TapeTools(
+            new InstrumentResolver(new InstrumentRegistry(options), new StoreAvailabilityHolder()),
             database,
-            new InstrumentRegistry(options),
-            catalog,
-            new IndicatorCacheService(
-                database, catalog, projector, clock, NullLogger<IndicatorCacheService>.Instance),
-            new LevelMethodCatalog(calendar),
             gateway,
             new ToolGuards(options),
-            new StoreAvailabilityHolder(),
-            clock,
-            Options.Create(new KeyLevelDetectionOptions()),
-            new VolumeProfileService(database, tape),
             tape,
-            new TapeVolumeFrontService(database, gateway, calendar),
+            new VolumeProfileService(database, tape),
+            new VolumeFrontReader(new TapeVolumeFrontService(database, gateway, calendar)),
             new FootprintCacheService(
                 database,
                 new FootprintProjector(database, NullLogger<FootprintProjector>.Instance),

@@ -1,8 +1,12 @@
 using System.ComponentModel;
 using MarqSpec.Mcp.TopstepX.Configuration;
+using MarqSpec.Mcp.TopstepX.Data;
 using MarqSpec.Mcp.TopstepX.Domain;
 using MarqSpec.Mcp.TopstepX.Domain.MarketData;
+using MarqSpec.Mcp.TopstepX.MarketData;
+using MarqSpec.Mcp.TopstepX.Venue;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Options;
 using ModelContextProtocol;
 using ModelContextProtocol.Server;
 
@@ -12,8 +16,63 @@ namespace MarqSpec.Mcp.TopstepX.Tools;
 /// <c>get_key_levels</c> — support and resistance zones, scored for confluence across whichever methods the
 /// caller names.
 /// </summary>
-public sealed partial class MarketDataTools
+/// <remarks>
+/// One of the five tool types gh#414 split <c>MarketDataTools</c> into: eight dependencies where the one type
+/// had fifteen. This is the widest of the five, and that is a fact about the tool rather than a residue of
+/// the old shape — <c>get_key_levels</c> genuinely reads bars, resolves an ATR from the catalogue, runs the
+/// level methods, consults the tape-derived profile for the volume family, and merges the caller's
+/// arguments over the operator's configured detection.
+/// </remarks>
+/// <param name="resolver">Turns a caller's symbol into an instrument, refusing first if the store is absent.</param>
+/// <param name="database">The store the detection window is read from.</param>
+/// <param name="catalog">Read for <c>atr</c> — levels are sized and scored in ATR multiples.</param>
+/// <param name="levelMethods">The level-method vocabulary, and the session calendar behind it.</param>
+/// <param name="gateway">Read ONCE for its venue id and not kept — every stored bar is keyed by it.</param>
+/// <param name="guards">The request-shape checks the whole tool surface shares.</param>
+/// <param name="volumeProfiles">The tape-derived profile the volume-* family consumes.</param>
+/// <param name="detection">The operator's detection defaults.</param>
+[McpServerToolType]
+public sealed class KeyLevelTools(
+    InstrumentResolver resolver,
+    TopstepXDbContext database,
+    IndicatorCatalog catalog,
+    LevelMethodCatalog levelMethods,
+    IMarketDataGateway gateway,
+    ToolGuards guards,
+    VolumeProfileService volumeProfiles,
+    IOptions<KeyLevelDetectionOptions> detection)
 {
+    private readonly InstrumentResolver _resolver = resolver;
+    private readonly TopstepXDbContext _database = database;
+    private readonly IndicatorCatalog _catalog = catalog;
+    private readonly LevelMethodCatalog _levelMethods = levelMethods;
+    // THE VENUE ID, NOT THE GATEWAY. Every row this tool reads is keyed by the venue, and that is the only
+    // thing it wants from the client -- so the client is read once, here, and not kept. Keeping it would put
+    // a live venue client in reach of a type that never calls one, and VenueFailureReportingTests is red on
+    // exactly that: a tool that HOLDS a gateway and translates no VenueException reports a venue failure as
+    // a bare "an error occurred". There is no _gateway field to call, so that cannot be added by accident
+    // (gh#414).
+    private readonly string _venue = gateway.VenueId;
+    private readonly ToolGuards _guards = guards;
+    private readonly VolumeProfileService _volumeProfiles = volumeProfiles;
+
+    // The detection defaults, not the detection options: three of the seven fields are overridden per call, and
+    // the merge happens in ResolveDetection. The catalogue holds no copy of these -- ILevelMethod.Detect
+    // takes them per call precisely because levels are computed on read and nothing stores them (ADR-0013),
+    // so the tool boundary is where "the caller did not say" becomes "the operator's configured value".
+    private readonly KeyLevelDetectionOptions _detection = detection.Value;
+
+    /// <summary>How much history key-level detection covers when the caller does not say.</summary>
+    /// <remarks>
+    /// Enough for a level to have been touched more than once at most intraday resolutions. The description
+    /// on the parameter advertised this number while the schema required the argument, so an agent following
+    /// the description was rejected before its call reached any code (gh#70).
+    /// </remarks>
+    public const int DefaultLookbackBars = 500;
+
+    /// <summary>The level method <c>get_key_levels</c> detects with when the caller does not name one.</summary>
+    private const string DefaultLevelMethodName = "swing";
+
     /// <summary>Detects support and resistance zones.</summary>
     /// <param name="symbol">The instrument symbol.</param>
     /// <param name="resolutionMinutes">The timeframe in minutes.</param>
@@ -105,7 +164,7 @@ public sealed partial class MarketDataTools
         string? methods = null,
         CancellationToken cancellationToken = default)
     {
-        InstrumentId instrument = Resolve(symbol);
+        InstrumentId instrument = _resolver.Resolve(symbol);
         ToolGuards.ValidateResolution(resolutionMinutes);
         int wanted = _guards.ValidateCount(lookbackBars);
 
@@ -120,7 +179,7 @@ public sealed partial class MarketDataTools
         IReadOnlyList<ILevelMethod> requested = ResolveMethods(methods);
 
         List<Bar> bars = await _database.Bars
-            .Where(b => b.Venue == _gateway.VenueId
+            .Where(b => b.Venue == _venue
                 && b.Instrument == instrument.Symbol
                 && b.ResolutionMinutes == resolutionMinutes)
             .OrderByDescending(b => b.BucketStart)
@@ -172,7 +231,7 @@ public sealed partial class MarketDataTools
                 DateTimeOffset windowEnd = detectable[^1].OpenTime.AddMinutes(resolutionMinutes);
                 VolumeProfileRead read = await _volumeProfiles
                     .ReadAsync(
-                        _gateway.VenueId,
+                        _venue,
                         instrument,
                         resolutionMinutes,
                         windowStart,

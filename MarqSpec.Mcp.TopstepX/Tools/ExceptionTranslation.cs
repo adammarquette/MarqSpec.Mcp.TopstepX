@@ -9,7 +9,7 @@ namespace MarqSpec.Mcp.TopstepX.Tools;
 /// <remarks>
 /// Extracted because the shape — catch one or two specific exception types, throw
 /// <see cref="McpException"/> with the same message, nothing else — appeared eight times across
-/// <see cref="MarketDataTools"/> before this existed, once per place a catalogue or a registry could refuse
+/// <see cref="KeyLevelTools"/> and its siblings before this existed, once per place a catalogue or a registry could refuse
 /// a name it did not recognise. A ninth call site copies the message, not the type: <c>which</c> filters the
 /// exception rather than pattern-matching it, so the set of types a caller translates is still visible at
 /// the call site instead of being hidden inside a shared catch list some sites do not want.

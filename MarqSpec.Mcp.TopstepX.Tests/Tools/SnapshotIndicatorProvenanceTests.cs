@@ -148,7 +148,7 @@ public sealed class SnapshotIndicatorProvenanceTests : IDisposable
         // number is plausible and is acted on. So the two shapes are compared here rather than trusted:
         // the fixture spans a roll, so the eleven readings genuinely disagree about both bucket and
         // contract, and an implementation that broadcast one bucket across the map goes red.
-        (SnapshotTools snapshot, MarketDataTools marketData) = await ComposeBothAsync();
+        (SnapshotTools snapshot, IndicatorTools indicators) = await ComposeBothAsync();
 
         ToolPayloads.MarketSnapshot payload =
             await snapshot.GetMarketSnapshot("ES", [5], TotalBars, CancellationToken.None);
@@ -164,7 +164,7 @@ public sealed class SnapshotIndicatorProvenanceTests : IDisposable
         foreach ((string name, ToolPayloads.IndicatorReading? composed) in slice.Indicators)
         {
             ToolPayloads.IndicatorReading single =
-                await marketData.GetIndicatorAt("ES", 5, name, asOf, CancellationToken.None);
+                await indicators.GetIndicatorAt("ES", 5, name, asOf, CancellationToken.None);
 
             if (single.Value is null)
             {
@@ -332,7 +332,7 @@ public sealed class SnapshotIndicatorProvenanceTests : IDisposable
     /// is that the two shapes agree — and two independently wired tools could agree by having been given the
     /// same fixture twice while disagreeing about the same one.
     /// </remarks>
-    private async Task<(SnapshotTools Snapshot, MarketDataTools MarketData)> ComposeBothAsync(
+    private async Task<(SnapshotTools Snapshot, IndicatorTools Indicators)> ComposeBothAsync(
         DateTimeOffset? now = null)
     {
         for (int i = 0; i < TotalBars; i++)
@@ -389,31 +389,41 @@ public sealed class SnapshotIndicatorProvenanceTests : IDisposable
         BarCacheService cache = new(
             _database, gateway, calendar, projector, clock, NullLogger<BarCacheService>.Instance);
 
-        MarketDataTools marketData = new(
-            cache,
+        InstrumentResolver resolver = new(new InstrumentRegistry(wrapped), new StoreAvailabilityHolder());
+        ToolGuards guards = new(wrapped);
+
+        // THE ONE INSTANCE BOTH SHAPES GO THROUGH. The claim is that the batched map and the eleven
+        // as-of reads agree, and after gh#414 those two live on the same type -- so handing the snapshot a
+        // second IndicatorTools would let them agree by having been given the same fixture twice while
+        // disagreeing about the same one, which is the trap this fixture's own remarks name.
+        IndicatorTools indicators = new(
+            resolver,
             _database,
-            new InstrumentRegistry(wrapped),
             catalog,
             new IndicatorCacheService(
                 _database, catalog, projector, clock, NullLogger<IndicatorCacheService>.Instance),
-            new LevelMethodCatalog(calendar),
             gateway,
-            new ToolGuards(wrapped),
-            new StoreAvailabilityHolder(),
-            clock,
-            Options.Create(new KeyLevelDetectionOptions()),
-            new VolumeProfileService(_database),
-            new TapeAvailabilityHolder(),
-            new TapeVolumeFrontService(_database, gateway, calendar),
-            new FootprintCacheService(
-                _database,
-                new FootprintProjector(_database, NullLogger<FootprintProjector>.Instance),
-                clock,
-                NullLogger<FootprintCacheService>.Instance));
+            guards);
 
         ReferenceTools reference = new(
             new InstrumentRegistry(wrapped), calendar, gateway, wrapped, clock);
 
-        return (new SnapshotTools(marketData, reference, new IndicatorCatalogNames(catalog), clock), marketData);
+        SnapshotTools snapshot = new(
+            new BarTools(resolver, cache, guards, clock),
+            indicators,
+            new KeyLevelTools(
+                resolver,
+                _database,
+                catalog,
+                new LevelMethodCatalog(calendar),
+                gateway,
+                guards,
+                new VolumeProfileService(_database),
+                Options.Create(new KeyLevelDetectionOptions())),
+            reference,
+            new IndicatorCatalogNames(catalog),
+            clock);
+
+        return (snapshot, indicators);
     }
 }

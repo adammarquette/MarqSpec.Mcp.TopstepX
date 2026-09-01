@@ -1,8 +1,10 @@
 using System.ComponentModel;
+using MarqSpec.Mcp.TopstepX.Data;
 using MarqSpec.Mcp.TopstepX.Data.Entities;
 using MarqSpec.Mcp.TopstepX.Domain;
 using MarqSpec.Mcp.TopstepX.Domain.MarketData;
 using MarqSpec.Mcp.TopstepX.MarketData;
+using MarqSpec.Mcp.TopstepX.Venue;
 using Microsoft.EntityFrameworkCore;
 using ModelContextProtocol.Server;
 
@@ -12,8 +14,39 @@ namespace MarqSpec.Mcp.TopstepX.Tools;
 /// <c>get_indicators</c>, <c>get_indicator_at</c>, and the internal batched read
 /// <c>get_market_snapshot</c> composes instead of calling <see cref="GetIndicatorAt"/> eleven times over.
 /// </summary>
-public sealed partial class MarketDataTools
+/// <remarks>
+/// One of the five tool types gh#414 split <c>MarketDataTools</c> into: six dependencies where the one type
+/// had fifteen. <c>get_market_snapshot</c> itself belongs to <see cref="SnapshotTools"/>, not here — the
+/// member that lives here is <see cref="GetLatestIndicatorReadings"/>, the batched read that serves it.
+/// </remarks>
+/// <param name="resolver">Turns a caller's symbol into an instrument, refusing first if the store is absent.</param>
+/// <param name="database">The store these series are read from and projected into.</param>
+/// <param name="catalog">The indicators this server computes, and the periods it computes them at.</param>
+/// <param name="indicators">The cache-aside projection an indicator read triggers.</param>
+/// <param name="gateway">Read ONCE for its venue id and not kept — every stored row is keyed by it.</param>
+/// <param name="guards">The request-shape checks the whole tool surface shares.</param>
+[McpServerToolType]
+public sealed class IndicatorTools(
+    InstrumentResolver resolver,
+    TopstepXDbContext database,
+    IndicatorCatalog catalog,
+    IndicatorCacheService indicators,
+    IMarketDataGateway gateway,
+    ToolGuards guards)
 {
+    private readonly InstrumentResolver _resolver = resolver;
+    private readonly TopstepXDbContext _database = database;
+    private readonly IndicatorCatalog _catalog = catalog;
+    private readonly IndicatorCacheService _indicators = indicators;
+    // THE VENUE ID, NOT THE GATEWAY. Every row this tool reads is keyed by the venue, and that is the only
+    // thing it wants from the client -- so the client is read once, here, and not kept. Keeping it would put
+    // a live venue client in reach of a type that never calls one, and VenueFailureReportingTests is red on
+    // exactly that: a tool that HOLDS a gateway and translates no VenueException reports a venue failure as
+    // a bare "an error occurred". There is no _gateway field to call, so that cannot be added by accident
+    // (gh#414).
+    private readonly string _venue = gateway.VenueId;
+    private readonly ToolGuards _guards = guards;
+
     /// <summary>Reads a stored indicator series.</summary>
     /// <param name="symbol">The instrument symbol.</param>
     /// <param name="resolutionMinutes">The bar size in minutes.</param>
@@ -46,7 +79,7 @@ public sealed partial class MarketDataTools
         [Description("Window end, ISO-8601 UTC, exclusive.")] DateTimeOffset toUtc,
         CancellationToken cancellationToken)
     {
-        InstrumentId instrument = Resolve(symbol);
+        InstrumentId instrument = _resolver.Resolve(symbol);
         BarRange window = _guards.ValidateWindow(fromUtc, toUtc, resolutionMinutes);
         IIndicator resolved = ResolveIndicator(indicator);
 
@@ -56,7 +89,7 @@ public sealed partial class MarketDataTools
         await EnsureProjectedAsync(instrument, resolutionMinutes, cancellationToken).ConfigureAwait(false);
 
         List<ToolPayloads.IndicatorPoint> values = await _database.IndicatorValues
-            .Where(v => v.Venue == _gateway.VenueId
+            .Where(v => v.Venue == _venue
                 && v.Instrument == instrument.Symbol
                 && v.ResolutionMinutes == resolutionMinutes
                 && v.Indicator == resolved.Name
@@ -104,7 +137,7 @@ public sealed partial class MarketDataTools
         [Description("The moment, ISO-8601 UTC.")] DateTimeOffset asOfUtc,
         CancellationToken cancellationToken)
     {
-        InstrumentId instrument = Resolve(symbol);
+        InstrumentId instrument = _resolver.Resolve(symbol);
         ToolGuards.ValidateResolution(resolutionMinutes);
         IIndicator resolved = ResolveIndicator(indicator);
         DateTimeOffset asOf = asOfUtc.ToUniversalTime();
@@ -115,7 +148,7 @@ public sealed partial class MarketDataTools
         await EnsureProjectedAsync(instrument, resolutionMinutes, cancellationToken).ConfigureAwait(false);
 
         var row = await _database.IndicatorValues
-            .Where(v => v.Venue == _gateway.VenueId
+            .Where(v => v.Venue == _venue
                 && v.Instrument == instrument.Symbol
                 && v.ResolutionMinutes == resolutionMinutes
                 && v.Indicator == resolved.Name
@@ -135,7 +168,7 @@ public sealed partial class MarketDataTools
         // bar at its bucket is the answer -- and without it, two readings either side of a roll are two
         // numbers with nothing saying they measure different instruments.
         string? contractId = await _database.Bars
-            .Where(b => b.Venue == _gateway.VenueId
+            .Where(b => b.Venue == _venue
                 && b.Instrument == instrument.Symbol
                 && b.ResolutionMinutes == resolutionMinutes
                 && b.BucketStart == row.BucketStart)
@@ -201,7 +234,7 @@ public sealed partial class MarketDataTools
         DateTimeOffset asOfUtc,
         CancellationToken cancellationToken)
     {
-        InstrumentId instrument = Resolve(symbol);
+        InstrumentId instrument = _resolver.Resolve(symbol);
         ToolGuards.ValidateResolution(resolutionMinutes);
         DateTimeOffset asOf = asOfUtc.ToUniversalTime();
 
@@ -209,7 +242,7 @@ public sealed partial class MarketDataTools
         // scope, so the eleven reads this replaces already paid it once rather than eleven times.
         await EnsureProjectedAsync(instrument, resolutionMinutes, cancellationToken).ConfigureAwait(false);
 
-        string venue = _gateway.VenueId;
+        string venue = _venue;
         string instrumentSymbol = instrument.Symbol;
         string[] names = [.. _catalog.All.Select(i => i.Name)];
 
@@ -297,7 +330,7 @@ public sealed partial class MarketDataTools
         CancellationToken cancellationToken)
     {
         List<Bar> shape = await _database.Bars
-            .Where(b => b.Venue == _gateway.VenueId
+            .Where(b => b.Venue == _venue
                 && b.Instrument == instrument.Symbol
                 && b.ResolutionMinutes == resolutionMinutes
                 && b.BucketStart >= window.Start
@@ -322,7 +355,7 @@ public sealed partial class MarketDataTools
     /// <param name="resolutionMinutes">The bar size in minutes.</param>
     /// <param name="cancellationToken">The caller's cancellation token.</param>
     /// <remarks>
-    /// <b>No catch here, deliberately</b>, for the reason bar reads' own <c>ReadAsync</c> states: a
+    /// <b>No catch here, deliberately</b>, for the reason <c>BarTools.ReadAsync</c> states: a
     /// <c>StoreContentionException</c> is a fact about this server's database and is translated once for the
     /// whole tool surface by <see cref="StoreFaultGuard"/>. It cannot raise a <c>VenueException</c> at all —
     /// <see cref="IndicatorCacheService"/> holds no gateway.
@@ -332,5 +365,5 @@ public sealed partial class MarketDataTools
         int resolutionMinutes,
         CancellationToken cancellationToken) =>
         _indicators.EnsureProjectedAsync(
-            _gateway.VenueId, instrument, resolutionMinutes, cancellationToken);
+            _venue, instrument, resolutionMinutes, cancellationToken);
 }

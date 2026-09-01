@@ -194,7 +194,7 @@ public sealed class SnapshotQueryCountTests(SchemaFixture fixture)
         await SeedAsync();
 
         await using TopstepXDbContext database = fixture.CreateContext();
-        SnapshotTools snapshot = Compose(database, out MarketDataTools marketData);
+        SnapshotTools snapshot = Compose(database, out IndicatorTools indicators);
 
         ToolPayloads.MarketSnapshot payload =
             await snapshot.GetMarketSnapshot("ES", [5], 100, CancellationToken.None);
@@ -205,7 +205,7 @@ public sealed class SnapshotQueryCountTests(SchemaFixture fixture)
         foreach ((string name, ToolPayloads.IndicatorReading? composed) in slice.Indicators)
         {
             ToolPayloads.IndicatorReading single =
-                await marketData.GetIndicatorAt("ES", 5, name, asOf, CancellationToken.None);
+                await indicators.GetIndicatorAt("ES", 5, name, asOf, CancellationToken.None);
 
             if (single.Value is null)
             {
@@ -274,7 +274,7 @@ public sealed class SnapshotQueryCountTests(SchemaFixture fixture)
 
     private static SnapshotTools Compose(TopstepXDbContext database) => Compose(database, out _);
 
-    private static SnapshotTools Compose(TopstepXDbContext database, out MarketDataTools marketData)
+    private static SnapshotTools Compose(TopstepXDbContext database, out IndicatorTools indicators)
     {
         MarketDataOptions options = new()
         {
@@ -296,31 +296,38 @@ public sealed class SnapshotQueryCountTests(SchemaFixture fixture)
         BarCacheService cache = new(
             database, gateway, calendar, projector, clock, NullLogger<BarCacheService>.Instance);
 
-        marketData = new MarketDataTools(
-            cache,
+        InstrumentResolver resolver = new(new InstrumentRegistry(wrapped), new StoreAvailabilityHolder());
+        ToolGuards guards = new(wrapped);
+
+        // THE ONE INSTANCE BOTH SHAPES GO THROUGH -- the batched map the snapshot composes and the eleven
+        // as-of reads it is compared against are the same object's methods after gh#414, so the statement
+        // count and the equivalence are measured over one wiring rather than two.
+        indicators = new IndicatorTools(
+            resolver,
             database,
-            new InstrumentRegistry(wrapped),
             catalog,
             new IndicatorCacheService(
                 database, catalog, projector, clock, NullLogger<IndicatorCacheService>.Instance),
-            new LevelMethodCatalog(calendar),
             gateway,
-            new ToolGuards(wrapped),
-            new StoreAvailabilityHolder(),
-            clock,
-            Options.Create(new KeyLevelDetectionOptions()),
-            new VolumeProfileService(database),
-            new TapeAvailabilityHolder(),
-            new TapeVolumeFrontService(database, gateway, calendar),
-            new FootprintCacheService(
-                database,
-                new FootprintProjector(database, NullLogger<FootprintProjector>.Instance),
-                clock,
-                NullLogger<FootprintCacheService>.Instance));
+            guards);
 
         ReferenceTools reference = new(
             new InstrumentRegistry(wrapped), calendar, gateway, wrapped, clock);
 
-        return new SnapshotTools(marketData, reference, new IndicatorCatalogNames(catalog), clock);
+        return new SnapshotTools(
+            new BarTools(resolver, cache, guards, clock),
+            indicators,
+            new KeyLevelTools(
+                resolver,
+                database,
+                catalog,
+                new LevelMethodCatalog(calendar),
+                gateway,
+                guards,
+                new VolumeProfileService(database),
+                Options.Create(new KeyLevelDetectionOptions())),
+            reference,
+            new IndicatorCatalogNames(catalog),
+            clock);
     }
 }

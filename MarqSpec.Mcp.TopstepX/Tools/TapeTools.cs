@@ -1,4 +1,5 @@
 using System.ComponentModel;
+using MarqSpec.Mcp.TopstepX.Data;
 using MarqSpec.Mcp.TopstepX.Domain;
 using MarqSpec.Mcp.TopstepX.Domain.MarketData;
 using MarqSpec.Mcp.TopstepX.MarketData;
@@ -10,11 +11,48 @@ using ModelContextProtocol.Server;
 namespace MarqSpec.Mcp.TopstepX.Tools;
 
 /// <summary>
-/// <c>get_footprint</c> and <c>get_volume_profile</c> — reads over the tape-derived footprint cells, plus
-/// the volume-front lookup <c>get_contract_roll</c> also shares through <see cref="FrontAsync"/>.
+/// <c>get_footprint</c> and <c>get_volume_profile</c> — reads over the tape-derived footprint cells.
 /// </summary>
-public sealed partial class MarketDataTools
+/// <remarks>
+/// One of the five tool types gh#414 split <c>MarketDataTools</c> into: eight dependencies where the one type
+/// had fifteen. The volume-front lookup this shares with <see cref="ContractRollTools"/> is
+/// <see cref="VolumeFrontReader"/>, injected rather than inherited, so neither type can reach the other's
+/// store or catalogue to get it.
+/// </remarks>
+/// <param name="resolver">Turns a caller's symbol into an instrument, refusing first if the store is absent.</param>
+/// <param name="database">The store the cells are read from.</param>
+/// <param name="gateway">Read ONCE for its venue id and not kept — every stored cell is keyed by it.</param>
+/// <param name="guards">The request-shape checks the whole tool surface shares.</param>
+/// <param name="tape">Whether the live tape is listening for this instrument at all.</param>
+/// <param name="volumeProfiles">The cell reader, under the coverage ledger's window.</param>
+/// <param name="front">The tape volume-front both tape answers publish.</param>
+/// <param name="footprints">The on-read projection that brings the cells up to the stored prints.</param>
+[McpServerToolType]
+public sealed class TapeTools(
+    InstrumentResolver resolver,
+    TopstepXDbContext database,
+    IMarketDataGateway gateway,
+    ToolGuards guards,
+    TapeAvailabilityHolder tape,
+    VolumeProfileService volumeProfiles,
+    VolumeFrontReader front,
+    FootprintCacheService footprints)
 {
+    private readonly InstrumentResolver _resolver = resolver;
+    private readonly TopstepXDbContext _database = database;
+    // THE VENUE ID, NOT THE GATEWAY. Every row this tool reads is keyed by the venue, and that is the only
+    // thing it wants from the client -- so the client is read once, here, and not kept. Keeping it would put
+    // a live venue client in reach of a type that never calls one, and VenueFailureReportingTests is red on
+    // exactly that: a tool that HOLDS a gateway and translates no VenueException reports a venue failure as
+    // a bare "an error occurred". There is no _gateway field to call, so that cannot be added by accident
+    // (gh#414).
+    private readonly string _venue = gateway.VenueId;
+    private readonly ToolGuards _guards = guards;
+    private readonly TapeAvailabilityHolder _tape = tape;
+    private readonly VolumeProfileService _volumeProfiles = volumeProfiles;
+    private readonly VolumeFrontReader _front = front;
+    private readonly FootprintCacheService _footprints = footprints;
+
     /// <summary>Reads stored footprint cells for a covered tape window.</summary>
     /// <param name="symbol">The instrument symbol.</param>
     /// <param name="resolutionMinutes">The bar size the cells were projected at.</param>
@@ -75,7 +113,7 @@ public sealed partial class MarketDataTools
             cells,
             new ToolPayloads.CoveredWindow(read.Window.Start, read.Window.End, read.Window.Narrowed),
             ToolPayloads.ToTapeCoverage(read.Window, read.Cells),
-            await FrontAsync(instrument, cancellationToken).ConfigureAwait(false));
+            await _front.ReadAsync(instrument, cancellationToken).ConfigureAwait(false));
     }
 
     /// <summary>Aggregates stored footprint cells into a volume profile for a covered tape window.</summary>
@@ -130,7 +168,7 @@ public sealed partial class MarketDataTools
             profile.TotalVolume,
             new ToolPayloads.CoveredWindow(cells.Window.Start, cells.Window.End, cells.Window.Narrowed),
             ToolPayloads.ToTapeCoverage(cells.Window, cells.Cells),
-            await FrontAsync(instrument, cancellationToken).ConfigureAwait(false));
+            await _front.ReadAsync(instrument, cancellationToken).ConfigureAwait(false));
     }
 
     /// <summary>
@@ -149,7 +187,7 @@ public sealed partial class MarketDataTools
         DateTimeOffset toUtc,
         CancellationToken cancellationToken)
     {
-        InstrumentId instrument = Resolve(symbol);
+        InstrumentId instrument = _resolver.Resolve(symbol);
         BarRange window = _guards.ValidateWindow(fromUtc, toUtc, resolutionMinutes);
         _tape.For(instrument.Symbol).Require();
 
@@ -158,7 +196,7 @@ public sealed partial class MarketDataTools
 
         FootprintRead read = await ExceptionTranslation.TryAsync(
                 () => _volumeProfiles.ReadCellsAsync(
-                    _gateway.VenueId,
+                    _venue,
                     instrument,
                     resolutionMinutes,
                     window.Start,
@@ -188,7 +226,7 @@ public sealed partial class MarketDataTools
 
         List<int> otherResolutions = await _database.FootprintCells
             .AsNoTracking()
-            .Where(c => c.Venue == _gateway.VenueId
+            .Where(c => c.Venue == _venue
                 && c.Instrument == instrument.Symbol
                 && c.ResolutionMinutes != resolutionMinutes
                 && c.BucketStart < covered.End
@@ -242,7 +280,7 @@ public sealed partial class MarketDataTools
     /// Projects stored prints into footprint cells for this resolution before reading them.
     /// </summary>
     /// <remarks>
-    /// <b>No catch here, deliberately</b>, for the reason bar reads' own <c>ReadAsync</c> states: a
+    /// <b>No catch here, deliberately</b>, for the reason <c>BarTools.ReadAsync</c> states: a
     /// <c>StoreContentionException</c> is a fact about this server's database and is translated once
     /// for the whole tool surface by <see cref="StoreFaultGuard"/>. It cannot raise a
     /// <c>VenueException</c> at all — <see cref="FootprintCacheService"/> holds no gateway.
@@ -252,43 +290,5 @@ public sealed partial class MarketDataTools
         int resolutionMinutes,
         CancellationToken cancellationToken) =>
         _footprints.EnsureProjectedAsync(
-            _gateway.VenueId, instrument, resolutionMinutes, cancellationToken);
-
-    /// <summary>
-    /// Reads both answers for the front month. Called only after the tape-derived answer is
-    /// already going to be returned — a no-tape refusal is not rescued by this object.
-    /// </summary>
-    private async Task<ToolPayloads.VolumeFrontInfo> FrontAsync(
-        InstrumentId instrument,
-        CancellationToken cancellationToken,
-        DateTimeOffset? asOfUtc = null,
-        bool resolveGateway = true)
-    {
-        TapeVolumeFrontRead read;
-        try
-        {
-            read = await _volumeFront
-                .ReadAsync(instrument, cancellationToken, asOfUtc, resolveGateway)
-                .ConfigureAwait(false);
-        }
-        catch (VenueException ex)
-        {
-            throw new McpException("The venue could not answer: " + ex.Message);
-        }
-
-        VolumeFrontChangeover? flip = read.Tape.Changeover;
-        return new ToolPayloads.VolumeFrontInfo(
-            read.Used,
-            resolveGateway ? read.Agree : null,
-            read.Tape.ActiveContractId,
-            read.Tape.ActiveSessionDate,
-            resolveGateway ? read.GatewaySelectedContractId : null,
-            flip is null
-                ? null
-                : new ToolPayloads.VolumeFrontChangeoverInfo(
-                    flip.SessionDate,
-                    flip.FlippedAtUtc,
-                    flip.FromContractId,
-                    flip.ToContractId));
-    }
+            _venue, instrument, resolutionMinutes, cancellationToken);
 }

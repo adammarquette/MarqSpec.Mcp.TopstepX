@@ -50,7 +50,7 @@ public sealed class FootprintAndVolumeProfileToolTests : IDisposable
             .Options);
 
     private readonly TapeAvailabilityHolder _tape = new();
-    private readonly MarketDataTools _tools;
+    private readonly TapeTools _tools;
 
     public FootprintAndVolumeProfileToolTests()
     {
@@ -62,31 +62,18 @@ public sealed class FootprintAndVolumeProfileToolTests : IDisposable
         });
 
         BarSessionCalendar calendar = BarSessionCalendar.Parse("16:00", []);
-        IndicatorCatalog catalog = new(
-            Options.Create(new IndicatorOptions { AtrPeriod = 3, RsiPeriod = 3 }), calendar);
         FakeTimeProvider clock = new(_sixteen);
         CountingGateway gateway = new([]);
-        IndicatorProjector projector = new(_database, catalog, NullLogger<IndicatorProjector>.Instance);
-        BarCacheService cache = new(
-            _database, gateway, calendar, projector, clock, NullLogger<BarCacheService>.Instance);
 
         _tape.Set(TapeAvailability.Listening());
-        _tools = new MarketDataTools(
-            cache,
+        _tools = new TapeTools(
+            new InstrumentResolver(new InstrumentRegistry(options), new StoreAvailabilityHolder()),
             _database,
-            new InstrumentRegistry(options),
-            catalog,
-            new IndicatorCacheService(
-                _database, catalog, projector, clock, NullLogger<IndicatorCacheService>.Instance),
-            new LevelMethodCatalog(calendar),
             gateway,
             new ToolGuards(options),
-            new StoreAvailabilityHolder(),
-            clock,
-            Options.Create(new KeyLevelDetectionOptions()),
-            new VolumeProfileService(_database),
             _tape,
-            new TapeVolumeFrontService(_database, gateway, calendar),
+            new VolumeProfileService(_database),
+            new VolumeFrontReader(new TapeVolumeFrontService(_database, gateway, calendar)),
             new FootprintCacheService(
                 _database,
                 new FootprintProjector(_database, NullLogger<FootprintProjector>.Instance),
@@ -310,8 +297,8 @@ public sealed class FootprintAndVolumeProfileToolTests : IDisposable
     [Fact]
     public void BothTools_AreRegistered_AndTheirDescriptionsStateTheForwardOnlyLimitAndNullForms()
     {
-        MethodInfo footprint = typeof(MarketDataTools).GetMethod(nameof(MarketDataTools.GetFootprint))!;
-        MethodInfo profile = typeof(MarketDataTools).GetMethod(nameof(MarketDataTools.GetVolumeProfile))!;
+        MethodInfo footprint = typeof(TapeTools).GetMethod(nameof(TapeTools.GetFootprint))!;
+        MethodInfo profile = typeof(TapeTools).GetMethod(nameof(TapeTools.GetVolumeProfile))!;
 
         footprint.GetCustomAttribute<McpServerToolAttribute>().Should().NotBeNull();
         profile.GetCustomAttribute<McpServerToolAttribute>().Should().NotBeNull();

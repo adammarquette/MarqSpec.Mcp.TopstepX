@@ -193,31 +193,33 @@ public sealed class SnapshotClockTests : IDisposable
         BarCacheService cache = new(
             _database, gateway, calendar, projector, clock, NullLogger<BarCacheService>.Instance);
 
-        MarketDataTools marketData = new(
-            cache,
-            _database,
-            new InstrumentRegistry(wrapped),
-            catalog,
-            new IndicatorCacheService(
-                _database, catalog, projector, clock, NullLogger<IndicatorCacheService>.Instance),
-            new LevelMethodCatalog(calendar),
-            gateway,
-            new ToolGuards(wrapped),
-            new StoreAvailabilityHolder(),
-            clock,
-            Options.Create(new KeyLevelDetectionOptions()),
-            new VolumeProfileService(_database),
-            new TapeAvailabilityHolder(),
-            new TapeVolumeFrontService(_database, gateway, calendar),
-            new FootprintCacheService(
-                _database,
-                new FootprintProjector(_database, NullLogger<FootprintProjector>.Instance),
-                clock,
-                NullLogger<FootprintCacheService>.Instance));
+        InstrumentResolver resolver = new(new InstrumentRegistry(wrapped), new StoreAvailabilityHolder());
+        ToolGuards guards = new(wrapped);
 
         ReferenceTools reference = new(
             new InstrumentRegistry(wrapped), calendar, gateway, wrapped, clock);
 
-        return new SnapshotTools(marketData, reference, new IndicatorCatalogNames(catalog), clock);
+        return new SnapshotTools(
+            new BarTools(resolver, cache, guards, clock),
+            new IndicatorTools(
+                resolver,
+                _database,
+                catalog,
+                new IndicatorCacheService(
+                    _database, catalog, projector, clock, NullLogger<IndicatorCacheService>.Instance),
+                gateway,
+                guards),
+            new KeyLevelTools(
+                resolver,
+                _database,
+                catalog,
+                new LevelMethodCatalog(calendar),
+                gateway,
+                guards,
+                new VolumeProfileService(_database),
+                Options.Create(new KeyLevelDetectionOptions())),
+            reference,
+            new IndicatorCatalogNames(catalog),
+            clock);
     }
 }

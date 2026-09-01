@@ -149,7 +149,7 @@ registered on the MCP server itself, so *every* `tools/call` passes through it �
 covered by having been registered rather than by its author remembering a `try`. It translates a
 `StoreContentionException`, a `DbUpdateException` and a bare `NpgsqlException` into an `McpException` stating
 the condition and its SqlState; it catches nothing else, so an `InvalidOperationException` — the projector's
-whole-series guard among them — still propagates as the defect it is. Before it, `MarketDataTools.ReadAsync`
+whole-series guard among them — still propagates as the defect it is. Before it, `BarTools.ReadAsync`
 was the only translation on the surface, and the thirteen tools that never call it had none: a `23505` from
 two overlapping fills reached a caller of `get_bars` as a raw `DbUpdateException` (gh#89).
 
@@ -276,7 +276,7 @@ before they read**, which is what makes them cache-aside rather than merely cach
    `(instrument, resolution)` however many times that series is read.
 
 **`get_market_snapshot` reads the whole indicator map for a resolution in ONE query** —
-`MarketDataTools.GetLatestIndicatorReadings`, which groups by `(Indicator, Period)`, takes each group's own
+`IndicatorTools.GetLatestIndicatorReadings`, which groups by `(Indicator, Period)`, takes each group's own
 latest bucket at or before the anchor, and joins the bar at *that* bucket for the `ContractId`. It composed
 eleven `get_indicator_at` calls until gh#388, and each of those paid a second round trip to `Bars` for the
 contract of the bucket it had just found: **44** statements of a default call's **60**, now **2** of **18**,

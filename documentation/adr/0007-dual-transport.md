@@ -67,6 +67,7 @@ difference between the two entry points is a handful of lines.
 | [2026-08-23](#update-2026-08-23--the-image-gate-does-read-the-exit-code) | The image gate reads the exit code after all — as a second signal, behind the handshake |
 | [2026-08-30](#update-2026-08-30--the-stdio-listener-takes-an-ephemeral-port) | The listener stdio starts no longer takes a well-known port, so two sessions can run at once |
 | [2026-09-01](#update-2026-09-01--not-exposed-by-default-was-not-true-of-the-composed-stack) | The composed HTTP port is bound to loopback, which is what the default token always assumed |
+| [2026-09-01](#update-2026-09-01--the-composed-endpoint-is-tls-only-behind-a-local-ca) | The composed endpoint is HTTPS on 8443 and nothing else, behind a certificate from a local CA |
 
 ## Update (2026-08-22) — starting is not the same as being ready
 
@@ -256,3 +257,110 @@ gh#421's card, deliberately not folded in here.
 **No CI surface moves.** Nothing in `.github/workflows` or `scripts/` runs `docker compose`; the `image` gate
 drives the container over stdin with `docker run --rm -i` and publishes no port at all, which is why a green
 `image` never said anything about this.
+
+## Update (2026-09-01) — the composed endpoint is TLS-only, behind a local CA
+
+The update above closed an exposure and named what it did **not** do: *"It does not add transport security —
+the endpoint is still plaintext HTTP, which is gh#416."* This is that card, filed a second time as gh#422 and
+worked here; gh#416 is the earlier duplicate and its subject is settled by this record.
+
+The forcing reason is a client, not a threat model. **Claude Cowork refuses to register a non-TLS endpoint as
+a connector**, so the composed stack could not be used by the tool it exists to serve. Two things the
+maintainer settled before any of this was designed: Cowork reaches the endpoint **from the same machine**, so
+there is no public hostname to certify; and **gh#415's loopback bind stays**, so TLS is added beside it rather
+than instead of it.
+
+### The certificate source, decided by measurement
+
+`dotnet dev-certs` is the obvious answer and it is the wrong one. Its certificate is a self-signed **leaf** —
+`basicConstraints: critical, CA:FALSE` — so OpenSSL cannot use it as a trust anchor, whatever store it is
+placed in. Windows' own trust store is more forgiving and accepts it directly, which is what makes this trap
+expensive: **half the clients work.** Measured, on one host, against one endpoint:
+
+| Client | ASP.NET dev cert | mkcert leaf from a local CA |
+|---|---|---|
+| .NET, `SslStream.AuthenticateAsClient("localhost")`, Windows trust store | **accepted** | **accepted** |
+| Node-based MCP client, no extra configuration | `UNABLE_TO_VERIFY_LEAF_SIGNATURE` | **connected** |
+| Node-based MCP client, `NODE_EXTRA_CA_CERTS` at the certificate itself | `UNABLE_TO_VERIFY_LEAF_SIGNATURE` | **connected** |
+
+The third row is the one that decides it. Handing the client the certificate directly is the documented escape
+hatch for a private certificate, and it **does not work** for the dev cert, because a `CA:FALSE` certificate is
+not a thing OpenSSL will anchor on. There is no client-side setting that rescues it, so the choice cannot be
+pushed onto the operator. `mkcert -install` puts a real CA in the trust store and the same Node client then
+connects with **no** extra environment at all.
+
+**Self-signed and untrusted was rejected on evidence rather than on principle.** The same request that answered
+`HTTP 200` against the trusted certificate, unchanged and with nothing disabled, answered *"Could not establish
+trust relationship for the SSL/TLS secure channel"* against an untrusted self-signed one served from the same
+container a minute earlier. That is also the negative control proving validation is live on the positive
+result, which a passing request alone cannot show.
+
+So: **mkcert**, packed into a PFX with `openssl`, mounted read-only at `/https`. Its leaf expires
+**2028-12-02 UTC** — mkcert caps at roughly two years, against the dev cert's one. Nothing rotates it; rotation is
+out of scope for gh#422 and stays there, but the date is written here and in `.env.example` rather than left to
+be discovered.
+
+### Plaintext does not survive
+
+**HTTPS on 8443, and no HTTP port beside it.** Serving both would leave a plaintext port to be reached by
+mistake, and the mistake is balances, positions and trade history in the clear. The number moves from 8080 so
+that a URL cannot be half right — a stale client's scheme and port are wrong together rather than one of them
+being quietly reused. Measured on the wrong scheme at the right port, `http://` against 8443 answers
+`The underlying connection was closed`, which is a diagnosis nobody enjoys; moving the number is what keeps
+anyone from meeting it. The cost is stated rather than hidden: **every local client's URL changes**, once, from
+`http://localhost:8080/mcp` to `https://localhost:8443/mcp`.
+
+**And "stop naming the variable" was not enough to remove the plaintext listener.** This is the finding worth
+carrying past this card. `mcr.microsoft.com/dotnet/aspnet:10.0` sets `ASPNETCORE_HTTP_PORTS=8080` **in the
+image**, so a compose file that simply ceases to mention it inherits it. The first build of this change set
+only `ASPNETCORE_HTTPS_PORTS: "8443"` and the server reported *both* `Now listening on: http://[::]:8080` and
+`https://[::]:8443` — a plaintext MCP endpoint still serving, out of a variable the file no longer mentioned,
+in a change whose entire subject is that there should not be one. `ASPNETCORE_HTTP_PORTS: ""` is the explicit
+override, and deleting that line re-opens the port. **A default you inherit is not removed by declining to
+restate it**, which is the same shape as gh#415's four-times-written assumption one layer down.
+
+That base-image variable has a second consequence, recorded because it reads as a gh#392 regression and is not
+one: inside the container an address is **always** named, so `ConfigureDefaultBinding`'s ephemeral loopback
+default never applies there. Driven over stdio with `docker run --rm -i`, the container reports `Now listening
+on: http://[::]:8080`. That has been true since the image existed, it is not what gh#392 was about — a client
+launching `dotnet run` on the host, where nothing names an address — and each container has its own network
+namespace, so it cannot collide the way `:5000` did. `TransportBindingTests` tests the method, not the image,
+and passes unmodified.
+
+### The password is the one setting with no default
+
+`Kestrel__Certificates__Default__Password` arrives through `.env` and **docker-compose.yml gives it no
+fallback** — `${...:?}`, so compose refuses to render rather than substituting anything. `POSTGRES_PASSWORD`
+and `Mcp__HttpBearerToken` carry local defaults because a loopback port is what they guard; a default that
+decrypts a private key is a different kind of object, and this repository is public. `certs/` and `.env` are
+gitignored, and `.gitignore` grew `*.key`, `*.crt` and `*.pem` beside the `*.pfx` the template already carried
+— mkcert writes a private key in the clear before it is packed, and none of those three extensions was
+covered.
+
+### What this does not change
+
+The **bearer token is untouched and still enforced**: `POST /mcp` with no `Authorization` header over TLS
+answers `401` with `WWW-Authenticate: Bearer`, exactly as the 2026-08-22 update requires. TLS is
+confidentiality on the wire; the token is authorisation, and neither substitutes for the other. The **loopback
+bind is untouched** — the resolved mapping is still `host_ip: 127.0.0.1` — and TLS is not a licence to widen
+it: the default token's tolerability still rests on loopback, exactly as gh#415 recorded. The stdio path is
+untouched. And the composed Postgres is still published the same way it always was, which is gh#421.
+
+### One sentence above is superseded
+
+The 2026-08-30 update reads:
+
+> `ASPNETCORE_HTTP_PORTS` (which `docker-compose.yml` uses to place the composed server on 8080)
+
+The parenthesis is no longer true: compose names `ASPNETCORE_HTTPS_PORTS` and 8443, and sets
+`ASPNETCORE_HTTP_PORTS` to empty. **The rule that sentence illustrates is unchanged** — an explicitly named
+address still wins under either transport, all three variables still count as one, and that is still what the
+last three `TransportBindingTests` cases exist to stop. Only the example moved.
+
+### No CI surface moves, again
+
+Nothing in `.github/workflows` or `scripts/` runs `docker compose`, and nothing observes which certificate a
+port presents. The `image` gate drives the container over stdin with `docker run --rm -i` and publishes no
+port, so a green `image` says nothing about any of this — the same sentence the update above had to write, for
+the same reason. `Dockerfile`'s `EXPOSE` moved to 8443 to stop naming a port nothing binds; `EXPOSE` publishes
+nothing and no gate reads it.

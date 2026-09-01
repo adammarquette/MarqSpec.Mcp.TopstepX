@@ -39,7 +39,7 @@ rather than reword it.
 | Document | ~tok | Read it when |
 |---|---:|---|
 | [`prd.md`](prd.md) | 8.3K | You need **what is required**, or you are citing an `R-#`. Ids are stable and never renumbered, and a citation that does not resolve here fails CI. |
-| [`architecture.md`](architecture.md) | 11.0K | You need **how the pieces fit** — the cache-aside path, the projection, the transports. |
+| [`architecture.md`](architecture.md) | 11.1K | You need **how the pieces fit** — the cache-aside path, the projection, the transports. |
 | [`mcp-tool-catalogue`](mcp-tool-catalog.md) | 15.5K | You are adding, changing or calling a tool. The tool surface is a contract; this is it. |
 | [`data-dictionary.md`](data-dictionary.md) | 7.4K | You need the data model — the nine tables, their keys, and why each key is shaped that way. |
 
@@ -51,7 +51,7 @@ rather than reword it.
 | [`project-board-workflow.md`](project-board-workflow.md) | 6.1K | You are filing, grooming or moving a card. **The board is project #5; #4 is retired.** The board makes two of the seven transitions by itself; the other five are somebody's deliberate act. |
 | [`work-estimate-rubric.md`](work-estimate-rubric.md) | 1.0K | You are setting a `Work Estimate` on an issue. |
 | [`agents/README.md`](agents/README.md) | 1.0K | You are wearing a role hat. **This row prices the index, not the route it serves** — each contract behind it is a separate read, and the index prices all five in its own gated `~tok` column (gh#178). Reviewer, Platform and Coordinator contracts **never auto-load**; open them yourself. |
-| [`../CONTRIBUTING.md`](../CONTRIBUTING.md) | 4.3K | Branching, claiming, commits, PRs, and the Definition of Done. |
+| [`../CONTRIBUTING.md`](../CONTRIBUTING.md) | 4.4K | Branching, claiming, commits, PRs, and the Definition of Done. |
 | [`../AGENTS.md`](../AGENTS.md) | 2.3K | Loads automatically. The non-negotiables and the role routing table. |
 
 ## Decisions — [`adr/`](adr/README.md)

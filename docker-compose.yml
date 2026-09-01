@@ -108,15 +108,67 @@ services:
       Embeddings__Model: "${Embeddings__Model:-embed-v4.0}"
 
       ASPNETCORE_ENVIRONMENT: "${ASPNETCORE_ENVIRONMENT:-Development}"
-      ASPNETCORE_HTTP_PORTS: "8080"
+
+      # HTTPS ONLY. Claude Cowork refuses to register a non-TLS endpoint as a connector, so the composed
+      # stack could not be used by the tool it exists to serve (gh#422).
+      #
+      # THE EMPTY VALUE BELOW IS LOAD-BEARING, AND DELETING THE LINE RE-OPENS THE PLAINTEXT PORT.
+      # mcr.microsoft.com/dotnet/aspnet:10.0 sets ASPNETCORE_HTTP_PORTS=8080 in the IMAGE, so merely
+      # ceasing to name it here leaves the base image's value in the environment. Measured: with only
+      # ASPNETCORE_HTTPS_PORTS: "8443" set, the server reported BOTH `Now listening on: http://[::]:8080`
+      # and `https://[::]:8443` -- a plaintext MCP endpoint still serving, from a variable this file no
+      # longer mentioned. The override has to be explicit.
+      #
+      # A surviving plaintext port is a port to reach by mistake, and the mistake leaks balances, positions
+      # and trade history. 8443 rather than 8080 so the scheme and the number agree and a URL cannot be half
+      # right: the old plaintext one is not quietly reused under a new scheme. Measured on the wrong scheme
+      # at the right port -- http:// against 8443 -- the client gets `The underlying connection was closed`,
+      # which is a diagnosis nobody enjoys; moving the number keeps anyone from meeting it.
+      ASPNETCORE_HTTP_PORTS: ""
+      ASPNETCORE_HTTPS_PORTS: "8443"
+
+      # The certificate is LOCALLY TRUSTED, not publicly issued -- Cowork reaches this from the same machine,
+      # so there is no public hostname to certify and no ACME challenge to answer. It comes from mkcert, a
+      # local CA installed once into the host trust store:
+      #
+      #   mkcert -install                                                       # once, per host
+      #   mkcert -cert-file ./certs/localhost.crt -key-file ./certs/localhost.key localhost 127.0.0.1 ::1
+      #   openssl pkcs12 -export -out ./certs/localhost.pfx \
+      #     -inkey ./certs/localhost.key -in ./certs/localhost.crt \
+      #     -certfile "$(mkcert -CAROOT)/rootCA.pem" -passout "pass:$Kestrel__Certificates__Default__Password"
+      #   rm ./certs/localhost.key                                              # the PFX carries it, encrypted
+      #
+      # NOT `dotnet dev-certs`, and the reason is measured rather than aesthetic: that certificate is a
+      # self-signed LEAF carrying `basicConstraints: CA:FALSE`, so OpenSSL cannot use it as a trust anchor at
+      # all. A Node-based MCP client refused it with `UNABLE_TO_VERIFY_LEAF_SIGNATURE`, and kept refusing it
+      # with NODE_EXTRA_CA_CERTS pointed straight at the certificate -- there is no client-side setting that
+      # rescues it. mkcert issues a leaf from a real CA, which both trust stores can anchor on. See ADR-0007.
+      #
+      # The leaf mkcert issues here expires 2028-12-02 UTC. Re-issue past that date; nothing rotates it.
+      Kestrel__Certificates__Default__Path: "/https/localhost.pfx"
+      # NO DEFAULT, deliberately, and this is the one variable in this file that must not get one. A PFX
+      # password is a credential; POSTGRES_PASSWORD's and Mcp__HttpBearerToken's local defaults are tolerable
+      # because they guard a loopback port, and a default that unlocks a private key is not the same kind of
+      # thing. The `:?` makes compose refuse to render rather than fall back. THIS REPOSITORY IS PUBLIC.
+      Kestrel__Certificates__Default__Password: "${Kestrel__Certificates__Default__Password:?set it in .env -- see .env.example. There is deliberately no default: this unlocks a private key.}"
+
       Logging__LogLevel__Default: "${Logging__LogLevel__Default:-Information}"
+    volumes:
+      # The DIRECTORY, not the file. Docker creates a missing bind source as a directory, so mounting
+      # ./certs/localhost.pfx directly would silently manufacture a directory of that name and Kestrel would
+      # fail on it obscurely; mounting the directory leaves the failure as a FileNotFoundException naming
+      # /https/localhost.pfx, which says what to do. Read-only: the server never writes a certificate.
+      - "./certs:/https:ro"
     ports:
-      # The bind address is EXPLICIT, and the whole defence depends on it. A bare "8080:8080" publishes on
-      # 0.0.0.0 -- every interface the host has -- which is what this file did while the comment above claimed
-      # localhost. Three defaults compose into an exposure nobody chose: the transport is Http here, the token
-      # defaults, and the port was open to the network. Anything that could route to the host could read
-      # balances, positions and trade history with a token published in a public repository (gh#415).
-      - "127.0.0.1:8080:8080"
+      # The bind address is EXPLICIT, and the whole defence depends on it. A bare "8443:8443" publishes on
+      # 0.0.0.0 -- every interface the host has -- which is what this file did on 8080 while the comment above
+      # claimed localhost. Three defaults composed into an exposure nobody chose: the transport is Http here,
+      # the token defaults, and the port was open to the network. Anything that could route to the host could
+      # read balances, positions and trade history with a token published in a public repository (gh#415).
+      #
+      # TLS does not replace this bind and does not license widening it. It is confidentiality on the wire;
+      # the token is authorisation, and loopback is what makes the token's local default tolerable.
+      - "127.0.0.1:8443:8443"
 
 volumes:
   postgres-data:

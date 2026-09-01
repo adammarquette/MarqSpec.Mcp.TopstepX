@@ -44,5 +44,8 @@ COPY --from=build --chown=64198:64198 /app .
 # formatting -- and it would do so by reporting plausible-looking wrong buckets.
 ENV DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=false
 
-EXPOSE 8080
+# Documentary only -- EXPOSE publishes nothing, and the port is decided by ASPNETCORE_HTTPS_PORTS in
+# docker-compose.yml. 8443 rather than 8080 because the composed server is HTTPS-only since gh#422, and a
+# number that no longer matches the one thing that binds it is how a reader learns to distrust the file.
+EXPOSE 8443
 ENTRYPOINT ["dotnet", "MarqSpec.Mcp.TopstepX.dll"]

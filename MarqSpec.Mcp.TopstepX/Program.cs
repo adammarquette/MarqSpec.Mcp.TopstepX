@@ -260,8 +260,15 @@ public static class Program
     /// </para>
     /// <para>
     /// <b>An explicitly named address still wins</b>, under either transport — <c>ASPNETCORE_URLS</c>,
-    /// <c>ASPNETCORE_HTTP_PORTS</c> (which <c>docker-compose.yml</c> uses to place the composed server on
-    /// 8080) and <c>ASPNETCORE_HTTPS_PORTS</c>. A default that overrode them would not be a default.
+    /// <c>ASPNETCORE_HTTP_PORTS</c> and <c>ASPNETCORE_HTTPS_PORTS</c> (which <c>docker-compose.yml</c> uses
+    /// to place the composed server on 8443, over TLS, since gh#422 — it named <c>ASPNETCORE_HTTP_PORTS</c>
+    /// and 8080 until then). A default that overrode any of them would not be a default.
+    /// </para>
+    /// <para>
+    /// Worth knowing while reading the three variables above: <c>mcr.microsoft.com/dotnet/aspnet:10.0</c>
+    /// sets <c>ASPNETCORE_HTTP_PORTS=8080</c> in the image, so inside the container an address is <i>always</i>
+    /// named and this method's stdio default never applies. Outside it — a client launching
+    /// <c>dotnet run</c> — nothing names one and the ephemeral loopback address is what gh#392 needs.
     /// </para>
     /// </remarks>
     public static void ConfigureDefaultBinding(WebApplicationBuilder builder, McpTransport transport)

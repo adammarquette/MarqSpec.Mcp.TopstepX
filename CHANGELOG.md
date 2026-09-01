@@ -15,6 +15,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- **BREAKING for local clients.** The composed MCP endpoint is now **HTTPS only**, on
+  `https://localhost:8443/mcp`, and there is no plaintext port beside it. Claude Cowork refuses to register a
+  non-TLS endpoint as a connector, so the composed stack could not be used by the tool it exists to serve.
+  Every local client's URL changes, once, from `http://localhost:8080/mcp`. `docker compose up` now needs a
+  locally trusted certificate and `Kestrel__Certificates__Default__Password` in `.env` — the one setting in
+  the stack with **no** compose default, because it unlocks a private key and this repository is public;
+  compose refuses to render without it. The certificate comes from **mkcert**, a local CA, and not from
+  `dotnet dev-certs`: that one issues a self-signed leaf (`CA:FALSE`) which OpenSSL cannot anchor on, so an
+  OpenSSL-based client rejects it and no client-side setting fixes that. Removing `ASPNETCORE_HTTP_PORTS` was
+  not enough on its own — the ASP.NET base image sets it to 8080, so compose overrides it to empty
+  explicitly. The loopback bind and the bearer token are both unchanged: TLS is confidentiality on the wire,
+  not authorisation, and not a licence to widen the bind
+  ([ADR-0007](documentation/adr/0007-dual-transport.md), gh#422; supersedes gh#416).
 - The composed MCP endpoint is no longer published on every interface. `docker-compose.yml`'s `ports` entry
   was a bare `- "8080:8080"`, which Docker maps on `0.0.0.0` and `[::]` — every interface the host has — while
   [ADR-0007](documentation/adr/0007-dual-transport.md) asserted the HTTP path was "not exposed by default".

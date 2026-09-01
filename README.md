@@ -33,15 +33,36 @@ Requires Docker and the .NET 10 SDK.
 
 ```bash
 cp .env.example .env       # then fill in ProjectX__ApiKey / ProjectX__ApiSecret / ProjectX__DataTier
-docker compose up -d       # Postgres (TimescaleDB + pgvector) and the HTTP server on :8080
+
+# TLS, once per host. The composed endpoint is HTTPS and needs a locally trusted certificate.
+mkcert -install
+mkcert -cert-file ./certs/localhost.crt -key-file ./certs/localhost.key localhost 127.0.0.1 ::1
+openssl rand -hex 24       # put it in .env as Kestrel__Certificates__Default__Password
+openssl pkcs12 -export -out ./certs/localhost.pfx \
+  -inkey ./certs/localhost.key -in ./certs/localhost.crt \
+  -certfile "$(mkcert -CAROOT)/rootCA.pem" -passout "pass:<that value>"
+rm ./certs/localhost.key   # the PFX carries the key, encrypted
+
+docker compose up -d       # Postgres (TimescaleDB + pgvector) and the HTTPS server on :8443
 ```
 
-`docker compose up` is the **HTTP** transport on `:8080`, not stdio. Calls need
-`Authorization: Bearer <Mcp__HttpBearerToken>` — compose defaults that token to `changeme-local`, the same
-local convenience as `POSTGRES_PASSWORD` and `ProjectX__DataTier:-Simulated`. **Compose binds that port to
-`127.0.0.1`**, which is the only reason the default token is tolerable; publish it wider and you set a real
-token in the same change (gh#415). That bind is IPv4-only — a client that resolves `localhost` to `::1`
-without falling back gets connection refused; use the literal `127.0.0.1` address if that happens.
+`docker compose up` is the **HTTPS** transport on `:8443`, not stdio and **not plaintext** — Claude Cowork
+will not register a non-TLS endpoint as a connector (gh#422). There is no HTTP port beside it. Calls need
+`Authorization: Bearer <Mcp__HttpBearerToken>`; TLS is confidentiality on the wire and the token is still what
+authorises the call. Compose defaults that token to `changeme-local`, the same local convenience as
+`POSTGRES_PASSWORD` and `ProjectX__DataTier:-Simulated`. **Compose binds that port to `127.0.0.1`**, which is
+the only reason the default token is tolerable; publish it wider and you set a real token in the same change
+(gh#415) — TLS does not license widening it. The certificate covers `localhost`, `127.0.0.1` and `::1`, so
+either literal works where the name does not.
+
+`Kestrel__Certificates__Default__Password` is the one setting with **no** compose default: it unlocks a
+private key, and this repository is public. Compose stops with a message rather than falling back.
+`certs/` and `.env` are gitignored. Nothing rotates the certificate; mkcert's leaf lasts about two years.
+
+**`dotnet dev-certs` is not a substitute**, and the reason is measured rather than stylistic: it issues a
+self-signed *leaf*, which OpenSSL cannot use as a trust anchor, so an OpenSSL-based client rejects it with
+`UNABLE_TO_VERIFY_LEAF_SIGNATURE` and no client-side setting fixes that. See
+[ADR-0007](documentation/adr/0007-dual-transport.md).
 
 Register a **stdio** client against a locally launched process:
 

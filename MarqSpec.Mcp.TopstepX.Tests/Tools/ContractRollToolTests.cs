@@ -79,7 +79,14 @@ public sealed class ContractRollToolTests : IDisposable
             new StoreAvailabilityHolder(),
             _clock,
             Options.Create(new KeyLevelDetectionOptions()),
-            new VolumeProfileService(_database));
+            new VolumeProfileService(_database),
+            new TapeAvailabilityHolder(),
+            new TapeVolumeFrontService(_database, gateway, calendar),
+            new FootprintCacheService(
+                _database,
+                new FootprintProjector(_database, NullLogger<FootprintProjector>.Instance),
+                _clock,
+                NullLogger<FootprintCacheService>.Instance));
     }
 
     public void Dispose() => _database.Dispose();

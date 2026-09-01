@@ -359,7 +359,14 @@ public sealed class BucketSpanGuardTests : IDisposable
             new StoreAvailabilityHolder(),
             _clock,
             Options.Create(new KeyLevelDetectionOptions()),
-            new VolumeProfileService(_database));
+            new VolumeProfileService(_database),
+            new TapeAvailabilityHolder(),
+            new TapeVolumeFrontService(_database, _gateway, _calendar),
+            new FootprintCacheService(
+                _database,
+                new FootprintProjector(_database, NullLogger<FootprintProjector>.Instance),
+                _clock,
+                NullLogger<FootprintCacheService>.Instance));
     }
 
     /// <summary>Builds the composed tool over the same row cap.</summary>

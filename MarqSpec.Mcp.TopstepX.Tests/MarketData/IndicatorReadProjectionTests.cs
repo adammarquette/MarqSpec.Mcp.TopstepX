@@ -449,5 +449,12 @@ public sealed class IndicatorReadProjectionTests : IDisposable
             new StoreAvailabilityHolder(),
             _clock,
             Options.Create(new KeyLevelDetectionOptions()),
-            new VolumeProfileService(_database));
+            new VolumeProfileService(_database),
+            new TapeAvailabilityHolder(),
+            new TapeVolumeFrontService(_database, _gateway, Calendar()),
+            new FootprintCacheService(
+                _database,
+                new FootprintProjector(_database, NullLogger<FootprintProjector>.Instance),
+                _clock,
+                NullLogger<FootprintCacheService>.Instance));
 }

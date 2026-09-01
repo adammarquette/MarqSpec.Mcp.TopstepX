@@ -1597,7 +1597,13 @@ public sealed class TradeTapeRecorderTests
             clock,
             Options.Create(new KeyLevelDetectionOptions()),
             new VolumeProfileService(database, tape),
-            tape);
+            tape,
+            new TapeVolumeFrontService(database, gateway, calendar),
+            new FootprintCacheService(
+                database,
+                new FootprintProjector(database, NullLogger<FootprintProjector>.Instance),
+                clock,
+                NullLogger<FootprintCacheService>.Instance));
     }
 
     private static TradeUpdate Print(

@@ -309,7 +309,14 @@ public sealed class SnapshotQueryCountTests(SchemaFixture fixture)
             new StoreAvailabilityHolder(),
             clock,
             Options.Create(new KeyLevelDetectionOptions()),
-            new VolumeProfileService(database));
+            new VolumeProfileService(database),
+            new TapeAvailabilityHolder(),
+            new TapeVolumeFrontService(database, gateway, calendar),
+            new FootprintCacheService(
+                database,
+                new FootprintProjector(database, NullLogger<FootprintProjector>.Instance),
+                clock,
+                NullLogger<FootprintCacheService>.Instance));
 
         ReferenceTools reference = new(
             new InstrumentRegistry(wrapped), calendar, gateway, wrapped, clock);

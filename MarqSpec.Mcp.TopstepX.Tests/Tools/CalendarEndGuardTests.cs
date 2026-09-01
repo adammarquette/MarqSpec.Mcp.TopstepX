@@ -373,7 +373,14 @@ public sealed class CalendarEndGuardTests : IDisposable
             new StoreAvailabilityHolder(),
             _clock,
             Options.Create(new KeyLevelDetectionOptions()),
-            new VolumeProfileService(_database));
+            new VolumeProfileService(_database),
+            new TapeAvailabilityHolder(),
+            new TapeVolumeFrontService(_database, _gateway, _calendar),
+            new FootprintCacheService(
+                _database,
+                new FootprintProjector(_database, NullLogger<FootprintProjector>.Instance),
+                _clock,
+                NullLogger<FootprintCacheService>.Instance));
 
     /// <summary>Builds the reference tools — the ones that take an instant and no window.</summary>
     /// <returns>The reference tools.</returns>

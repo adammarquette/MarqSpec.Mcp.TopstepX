@@ -85,7 +85,13 @@ public sealed class FootprintAndVolumeProfileToolTests : IDisposable
             clock,
             Options.Create(new KeyLevelDetectionOptions()),
             new VolumeProfileService(_database),
-            _tape);
+            _tape,
+            new TapeVolumeFrontService(_database, gateway, calendar),
+            new FootprintCacheService(
+                _database,
+                new FootprintProjector(_database, NullLogger<FootprintProjector>.Instance),
+                clock,
+                NullLogger<FootprintCacheService>.Instance));
     }
 
     public void Dispose() => _database.Dispose();

@@ -402,7 +402,14 @@ public sealed class SnapshotIndicatorProvenanceTests : IDisposable
             new StoreAvailabilityHolder(),
             clock,
             Options.Create(new KeyLevelDetectionOptions()),
-            new VolumeProfileService(_database));
+            new VolumeProfileService(_database),
+            new TapeAvailabilityHolder(),
+            new TapeVolumeFrontService(_database, gateway, calendar),
+            new FootprintCacheService(
+                _database,
+                new FootprintProjector(_database, NullLogger<FootprintProjector>.Instance),
+                clock,
+                NullLogger<FootprintCacheService>.Instance));
 
         ReferenceTools reference = new(
             new InstrumentRegistry(wrapped), calendar, gateway, wrapped, clock);

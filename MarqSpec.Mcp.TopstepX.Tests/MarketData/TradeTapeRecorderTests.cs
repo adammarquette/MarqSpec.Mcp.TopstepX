@@ -1,3 +1,4 @@
+using System.Runtime.CompilerServices;
 using FluentAssertions;
 using MarqSpec.Client.ProjectX.Api.Models;
 using MarqSpec.Mcp.TopstepX.Configuration;
@@ -658,7 +659,10 @@ public sealed class TradeTapeRecorderTests
             await SeedStillListeningAsync(database, leftoverStart);
 
             await recorder.StartAsync(CancellationToken.None);
-            await WaitUntil(() => recorder.ExecuteTask?.IsCompleted == true);
+            // ExecuteTask completion is a real, awaitable signal here — no poll needed.
+            // Task.WhenAny (not a bare await) so a fault, if this path ever produced one,
+            // would not be rethrown here; nothing downstream expects that.
+            await Task.WhenAny(recorder.ExecuteTask!);
 
             CoverageRows(database).Should().ContainSingle(
                 row => row.RangeStart == leftoverStart
@@ -758,7 +762,10 @@ public sealed class TradeTapeRecorderTests
             await SeedStillListeningAsync(database, leftoverStart);
 
             await recorder.StartAsync(CancellationToken.None);
-            await WaitUntil(() => recorder.ExecuteTask?.IsCompleted == true);
+            // ExecuteTask completion is a real, awaitable signal here — no poll needed.
+            // Task.WhenAny (not a bare await) so a fault, if this path ever produced one,
+            // would not be rethrown here; nothing downstream expects that.
+            await Task.WhenAny(recorder.ExecuteTask!);
 
             CoverageRows(database).Should().ContainSingle(
                 row => row.RangeStart == leftoverStart
@@ -1489,7 +1496,10 @@ public sealed class TradeTapeRecorderTests
             TapeAvailabilityHolder tape = services.GetRequiredService<TapeAvailabilityHolder>();
 
             await recorder.StartAsync(CancellationToken.None);
-            await WaitUntil(() => recorder.ExecuteTask?.IsCompleted == true);
+            // ExecuteTask completion is a real, awaitable signal here — no poll needed.
+            // Task.WhenAny (not a bare await) so a fault, if this path ever produced one,
+            // would not be rethrown here; nothing downstream expects that.
+            await Task.WhenAny(recorder.ExecuteTask!);
 
             tape.Value.IsListening.Should().BeFalse();
             tape.Value.Reason.Should().Be(TapeUnavailableReason.NeverStarted);
@@ -2072,7 +2082,10 @@ public sealed class TradeTapeRecorderTests
         await using (database)
         {
             await recorder.StartAsync(CancellationToken.None);
-            await WaitUntil(() => recorder.ExecuteTask?.IsCompleted == true);
+            // ExecuteTask completion is a real, awaitable signal here — no poll needed.
+            // Task.WhenAny (not a bare await) so a fault, if this path ever produced one,
+            // would not be rethrown here; nothing downstream expects that.
+            await Task.WhenAny(recorder.ExecuteTask!);
 
             LeaseRows(database).Should().BeEmpty();
 
@@ -2349,14 +2362,22 @@ public sealed class TradeTapeRecorderTests
     /// that queueing delay is not bounded by anything this test, or the recorder, controls — it
     /// flaked on three unrelated branches that never touched this file.
     /// <para>
-    /// There is no single deterministic signal to replace the poll with: each condition here is
-    /// an ad hoc combination of independently-mutated state (subscribe counts, listening flags,
-    /// coverage rows), not one completion. Wiring a dedicated <see cref="TaskCompletionSource"/>
-    /// through every mutation this file's 50+ fixtures can make would be a rewrite of the harness,
-    /// not a fix to a wait-budget defect — and it is the mutation, not the poll interval, that
-    /// gh#387's slower relational provider will change, so widening this budget stays correct
-    /// once that lands: gh#387 makes the recorder's own store round-trips slower, it does not make
-    /// unrelated test collections contend harder for the ThreadPool.
+    /// A completion-shaped condition (<c>ExecuteTask?.IsCompleted</c>) has a real signal and does
+    /// not belong here — those call sites now <c>await Task.WhenAny(recorder.ExecuteTask!)</c>
+    /// instead of polling. What is left in this poll are the multi-source predicates — the two at
+    /// gh#407's own repro (<c>SubscribeAttempts</c>, a logged error, and <c>IsListening</c>,
+    /// mutated independently by the hub double, the logger double and the recorder's lifecycle
+    /// channel) and others like it. For those there is no single completion to await: the only
+    /// point where all of that state is known to have settled is inside the recorder's private
+    /// <c>_lifecycle</c> channel, which exposes no test-observable event without a product change
+    /// this card puts out of scope. A budget is what is left for that shape, not a universal
+    /// property of every <c>WaitUntil</c> call in this file.
+    /// </para>
+    /// <para>
+    /// It is the mutation, not the poll interval, that gh#387's slower relational provider will
+    /// change, so widening this budget stays correct once that lands: gh#387 makes the recorder's
+    /// own store round-trips slower, it does not make unrelated test collections contend harder
+    /// for the ThreadPool.
     /// </para>
     /// <para>
     /// 15s is not a tuned number — it is a large multiple of every delay this repro could produce
@@ -2364,7 +2385,10 @@ public sealed class TradeTapeRecorderTests
     /// CI job rather than timing the whole run out.
     /// </para>
     /// </remarks>
-    private static async Task WaitUntil(Func<bool> condition, string? because = null)
+    private static async Task WaitUntil(
+        Func<bool> condition,
+        string? because = null,
+        [CallerArgumentExpression(nameof(condition))] string? conditionExpression = null)
     {
         using CancellationTokenSource timeout = new(TimeSpan.FromSeconds(15));
         try
@@ -2374,11 +2398,11 @@ public sealed class TradeTapeRecorderTests
                 await Task.Delay(10, timeout.Token);
             }
         }
-        catch (OperationCanceledException)
+        catch (OperationCanceledException exception) when (exception.CancellationToken == timeout.Token)
         {
             throw new InvalidOperationException(
                 because is null
-                    ? "Timed out waiting for a condition to become true."
+                    ? $"Timed out waiting for: {conditionExpression}"
                     : $"Timed out waiting: {because}");
         }
     }

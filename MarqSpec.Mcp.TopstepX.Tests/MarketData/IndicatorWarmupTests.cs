@@ -52,7 +52,11 @@ public sealed class IndicatorWarmupTests
         await using (database)
         {
             await warmup.StartAsync(CancellationToken.None);
-            await WaitUntil(() => warmup.ExecuteTask?.IsCompleted == true);
+
+            // ExecuteTask completion is a real, awaitable signal — no poll needed (gh#407).
+            // Task.WhenAny (not a bare await) so a fault is not rethrown here; every fixture in
+            // this file separately asserts IsFaulted itself.
+            await Task.WhenAny(warmup.ExecuteTask!);
 
             database.IndicatorValues.Should().BeEmpty(
                 "stdio, or HTTP with the switch off, must not replay — a Cowork child would stall");
@@ -73,7 +77,11 @@ public sealed class IndicatorWarmupTests
         await using (database)
         {
             await warmup.StartAsync(CancellationToken.None);
-            await WaitUntil(() => warmup.ExecuteTask?.IsCompleted == true);
+
+            // ExecuteTask completion is a real, awaitable signal — no poll needed (gh#407).
+            // Task.WhenAny (not a bare await) so a fault is not rethrown here; every fixture in
+            // this file separately asserts IsFaulted itself.
+            await Task.WhenAny(warmup.ExecuteTask!);
 
             database.IndicatorValues.Count(v => v.Instrument == "ES").Should().BeGreaterThan(0);
             warmup.ExecuteTask.Should().NotBeNull();
@@ -93,7 +101,11 @@ public sealed class IndicatorWarmupTests
         await using (database)
         {
             await warmup.StartAsync(CancellationToken.None);
-            await WaitUntil(() => warmup.ExecuteTask?.IsCompleted == true);
+
+            // ExecuteTask completion is a real, awaitable signal — no poll needed (gh#407).
+            // Task.WhenAny (not a bare await) so a fault is not rethrown here; every fixture in
+            // this file separately asserts IsFaulted itself.
+            await Task.WhenAny(warmup.ExecuteTask!);
             await warmup.StopAsync(CancellationToken.None);
 
             database.IndicatorValues.Should().NotBeEmpty("warmup must have written before the confirming rebuild");
@@ -125,7 +137,11 @@ public sealed class IndicatorWarmupTests
         await using (database)
         {
             await warmup.StartAsync(CancellationToken.None);
-            await WaitUntil(() => warmup.ExecuteTask?.IsCompleted == true);
+
+            // ExecuteTask completion is a real, awaitable signal — no poll needed (gh#407).
+            // Task.WhenAny (not a bare await) so a fault is not rethrown here; every fixture in
+            // this file separately asserts IsFaulted itself.
+            await Task.WhenAny(warmup.ExecuteTask!);
 
             warmup.ExecuteTask.Should().NotBeNull();
             warmup.ExecuteTask!.IsFaulted.Should().BeFalse(
@@ -153,7 +169,11 @@ public sealed class IndicatorWarmupTests
         await using (database)
         {
             await warmup.StartAsync(CancellationToken.None);
-            await WaitUntil(() => warmup.ExecuteTask?.IsCompleted == true);
+
+            // ExecuteTask completion is a real, awaitable signal — no poll needed (gh#407).
+            // Task.WhenAny (not a bare await) so a fault is not rethrown here; every fixture in
+            // this file separately asserts IsFaulted itself.
+            await Task.WhenAny(warmup.ExecuteTask!);
 
             warmup.ExecuteTask.Should().NotBeNull();
             warmup.ExecuteTask!.IsFaulted.Should().BeFalse(
@@ -259,15 +279,6 @@ public sealed class IndicatorWarmupTests
         }
 
         database.SaveChanges();
-    }
-
-    private static async Task WaitUntil(Func<bool> condition)
-    {
-        using CancellationTokenSource timeout = new(TimeSpan.FromSeconds(2));
-        while (!condition())
-        {
-            await Task.Delay(10, timeout.Token);
-        }
     }
 
     /// <summary>Captures <see cref="LogLevel.Error"/> so a swallowed warmup failure is visible.</summary>

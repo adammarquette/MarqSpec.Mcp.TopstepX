@@ -58,14 +58,29 @@ public sealed class BarCacheServiceTests : IDisposable
             new Bar(SessionStart.AddMinutes(5 * i), 100m + i, 101m + i, 99m + i, 100.5m + i, 1_000))];
 
     /// <summary>
+    /// One-minute bars covering a whole span, so a missing run is wider than one venue page.
+    /// </summary>
+    /// <param name="span">How much clock time to cover from <see cref="SessionStart"/>.</param>
+    /// <returns>The bars, ascending.</returns>
+    /// <remarks>
+    /// <see cref="BarCacheService.VenuePageSizeBars"/> is 1,000, so at this resolution a page is 1,000 minutes
+    /// — under seventeen hours. Anything narrower than that cannot observe the paging at all, which is the
+    /// whole reason this helper exists beside <see cref="VenueBars"/>.
+    /// </remarks>
+    private static IReadOnlyList<Bar> MinuteBars(TimeSpan span) =>
+        [.. Enumerable.Range(0, (int)span.TotalMinutes).Select(i =>
+            new Bar(SessionStart.AddMinutes(i), 100m, 101m, 99m, 100.5m, 1_000))];
+
+    /// <summary>
     /// Seeds the store with pre-migration rows: the right numbers, and no recorded contract.
     /// </summary>
     /// <param name="bars">The bars to seed, stripped of their provenance.</param>
+    /// <param name="resolutionMinutes">The resolution to seed them under.</param>
     /// <remarks>
     /// This is what a row written before migration <c>20260823074908_AddBarContractId</c> looks like — present,
     /// numerically correct, and therefore never "missing" until gh#402 taught the read path otherwise.
     /// </remarks>
-    private async Task SeedLegacyRowsAsync(IEnumerable<Bar> bars)
+    private async Task SeedLegacyRowsAsync(IEnumerable<Bar> bars, int resolutionMinutes = 5)
     {
         foreach (Bar bar in bars)
         {
@@ -73,7 +88,7 @@ public sealed class BarCacheServiceTests : IDisposable
             {
                 Venue = "test",
                 Instrument = _es.Symbol,
-                ResolutionMinutes = 5,
+                ResolutionMinutes = resolutionMinutes,
                 BucketStart = bar.OpenTime,
                 Open = bar.Open,
                 High = bar.High,
@@ -341,6 +356,69 @@ public sealed class BarCacheServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task ALegacyRangeWiderThanOneVenuePage_IsStillBoundedToOneRequestPerPage()
+    {
+        // gh#408, second review round -- and the finding that the one-hour fixture above CANNOT see. A range
+        // is fetched in pages of VenuePageSizeBars, the memo is written PER PAGE SLICE, and ExcludeCoveredAsync
+        // drops a range only when a SINGLE coverage row contains it whole. N page-memos never contain the
+        // N-page range they came from; their union does, and nothing computed the union.
+        //
+        // That is not an exotic shape for this population: legacy rows are by construction everything written
+        // before migration 20260823074908, so a multi-page missing run is the ORDINARY case the heal serves.
+        // Two days of one-minute bars is three pages, and the cost was three paced pages on every read,
+        // forever -- flat, not converging.
+        //
+        // RED against the pre-fix ExcludeCoveredAsync: 12 requests across these four reads, 3 per read.
+        TimeSpan span = TimeSpan.FromDays(2);
+        (BarCacheService cache, CountingGateway gateway) = Build([], SessionStart.AddDays(5));
+        await SeedLegacyRowsAsync(MinuteBars(span), resolutionMinutes: 1);
+
+        BarRange window = new(SessionStart, SessionStart + span);
+        for (int read = 0; read < 4; read++)
+        {
+            await cache.GetBarsAsync(_es, 1, window, CancellationToken.None);
+        }
+
+        gateway.BarRequests.Should().Be(
+            3,
+            "the range is three pages wide, so it costs three requests ONCE -- the union of the three "
+            + "page-memos answers it thereafter, and re-reading adds nothing");
+        _database.BarCoverage.Should().HaveCount(3, "a memo is written per page slice, not per range");
+    }
+
+    [Fact]
+    public async Task TwoCoverageRowsWithARealGapBetweenThem_DoNotAnswerTheGap()
+    {
+        // The guard on the union above, and the reason it is a union rather than a min-and-max. Merging every
+        // coverage row into one span from the earliest start to the latest end would make the multi-page test
+        // pass just as well -- and would then drop a range sitting in a genuine gap between two memos, which
+        // is a bar the venue HAS and the store never fetches. Traffic is the failure this path is allowed;
+        // a silently absent bar is not.
+        //
+        // The venue holds 09:15..09:25 and nothing either side, so the two reads below memoise two ranges
+        // with a real, unanswered gap between them.
+        (BarCacheService cache, CountingGateway gateway) = Build(
+            VenueBars(12).Skip(3).Take(3), SessionStart.AddDays(5));
+
+        await cache.GetBarsAsync(
+            _es, 5, new BarRange(SessionStart, SessionStart.AddMinutes(15)), CancellationToken.None);
+        await cache.GetBarsAsync(
+            _es, 5, new BarRange(SessionStart.AddMinutes(30), SessionStart.AddMinutes(45)),
+            CancellationToken.None);
+
+        _database.BarCoverage.Should().HaveCount(2, "two separated ranges were answered empty");
+        gateway.ResetCounters();
+
+        BarReadResult gap = await cache.GetBarsAsync(
+            _es, 5, new BarRange(SessionStart.AddMinutes(15), SessionStart.AddMinutes(30)),
+            CancellationToken.None);
+
+        gateway.BarRequests.Should().Be(
+            1, "the gap between two coverage rows is not covered by either of them, nor by their union");
+        gap.Bars.Should().HaveCount(3);
+    }
+
+    [Fact]
     public async Task TheMemoThatBoundsTheHeal_IsPermanent_SoTheBoundSurvivesTheClockMoving()
     {
         // The other half of gh#408's bound, and the half a same-instant test cannot see. The memo bounds the
@@ -407,36 +485,42 @@ public sealed class BarCacheServiceTests : IDisposable
     public async Task AVenueBarTheCalendarDoesNotExpect_SuppressesTheMemoForTheRunAroundIt_OnEveryRead()
     {
         // gh#408 part 2, the shape that genuinely does not converge -- and it is not the retention edge the
-        // issue described. A missing run coalesces ACROSS a stretch the calendar excludes: here 15:00 and
-        // 17:00 Central either side of the 16:00-17:00 maintenance window are one range, which is the
-        // coalescing FindMissing documents as a saving. If the venue publishes so much as one bar INSIDE that
-        // excluded stretch, every fetch of the run comes back non-empty, no memo is ever written, and the
-        // expected buckets stay missing -- so the run costs one paced page on every read, forever.
+        // issue described. A missing run coalesces ACROSS a stretch the calendar excludes, which is the saving
+        // FindMissing documents. If the venue publishes so much as one bar INSIDE that excluded stretch, the
+        // page holding it comes back non-empty, no memo is written for it, the expected buckets around it stay
+        // missing, and the run is re-derived whole on the next read.
+        //
+        // MEASURED AT ITS REAL COST, not a one-page fixture's (gh#408, second review round). A range is asked
+        // WHOLE -- ExcludeCoveredAsync drops it only on total containment and deliberately never splits it --
+        // so the cost is the width of the coalesced run in pages, on every read, even though two of the three
+        // pages here are memoised empty and only the first is not. Two days of one-minute bars is three pages,
+        // so this is nine requests across three reads, not three.
         //
         // ACCEPTED, not fixed (ADR-0011, gh#408). A memo over buckets a non-empty page omitted would say "the
-        // venue has nothing here" permanently, over a range the venue DID answer for -- turning a bounded,
-        // visible traffic cost into a silently absent bar that nothing will ever go and fetch. This test pins
-        // the accepted cost; if it goes red because a later change bounded it, that change is the fix landing
-        // and this test moves with the ADR.
-        DateTimeOffset afternoon =
-            MarketClock.FromMarket(new DateOnly(2026, 8, 18), new TimeOnly(15, 0)).ToUniversalTime();
+        // venue has nothing here" permanently, over a range the venue DID answer for -- turning a paced,
+        // VenueRequests-visible traffic cost into a silently absent bar that nothing will ever go and fetch.
+        // Unlike the multi-page bound above, this one needs a CALENDAR that disagrees with the venue, which is
+        // a misconfiguration rather than a steady state, and the remedy is the calendar. This test pins the
+        // accepted cost; if it goes red because a later change bounded it, that change is the fix landing and
+        // this test moves with the ADR.
         DateTimeOffset insideMaintenance =
             MarketClock.FromMarket(new DateOnly(2026, 8, 18), new TimeOnly(16, 30)).ToUniversalTime();
 
         (BarCacheService cache, CountingGateway gateway) = Build(
-            [new Bar(insideMaintenance, 100m, 101m, 99m, 100.5m, 1_000)], SettledNow);
+            [new Bar(insideMaintenance, 100m, 101m, 99m, 100.5m, 1_000)], SessionStart.AddDays(5));
 
-        BarRange window = new(afternoon, afternoon.AddHours(3));
+        BarRange window = new(SessionStart, SessionStart.AddDays(2));
         for (int read = 0; read < 3; read++)
         {
-            await cache.GetBarsAsync(_es, 5, window, CancellationToken.None);
+            await cache.GetBarsAsync(_es, 1, window, CancellationToken.None);
         }
 
         gateway.BarRequests.Should().Be(
-            3,
-            "one bar the calendar never expects keeps the whole coalesced run's answer non-empty, so no memo "
-            + "is written and the run is re-asked on every read");
-        _database.BarCoverage.Should().BeEmpty();
+            9,
+            "one bar the calendar never expects keeps its page's answer non-empty, so the run is never wholly "
+            + "covered and all three of its pages are re-asked on every read");
+        _database.Bars.Should().ContainSingle(
+            b => b.BucketStart == insideMaintenance, "the only bar the venue served is the unexpected one");
     }
 
     [Fact]

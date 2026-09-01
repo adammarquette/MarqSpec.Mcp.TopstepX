@@ -145,6 +145,13 @@ write assigns it unconditionally rather than preserving whatever is stored, or a
 it was first asked about would keep the expiry it was given while it was still recent and be re-fetched
 forever.
 
+**One answer can be several rows, and a lookup must union them.** A range is fetched in pages, and the memo is
+written per page slice, so a three-page empty answer leaves three abutting rows and no single one of them
+covers the range. A lookup that asks whether one row contains the range answers "no" forever and re-fetches
+every page on every read (gh#408); the containment test is made against the union of the unexpired rows, with
+touching rows merged — half-open slices abut exactly — and a genuine gap between two rows still covering
+nothing.
+
 Index: `(Instrument, ResolutionMinutes, RangeStart, RangeEnd)` — the shape of every coverage lookup.
 
 **The write reaches the composite key with `ON CONFLICT … DO UPDATE`**, not by reading the row and deciding

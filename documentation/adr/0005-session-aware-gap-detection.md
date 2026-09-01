@@ -35,6 +35,13 @@ Two mechanisms, addressing the two problems.
 `BarSessionCalendar` decides whether the venue was **expected** to publish a bucket. `BarGapDetector` diffs
 only expected buckets against the store, and coalesces the survivors into ranges.
 
+One set is enumerated on top of that grid: the buckets the store holds but **cannot attribute to a contract**,
+which the caller passes in. Those are missing provenance rather than prices, and a bucket the venue published
+off the grid — 16:30 Central, inside the maintenance window, measured — would otherwise never be re-asked and
+never heal ([ADR-0011](0011-contract-roll-boundary.md), gh#412). A bucket the store holds *with* a contract is
+never enumerated off-grid: it lacks nothing, and a stored bucket closes a coalesced run, so admitting it would
+undo the saving below.
+
 The model, ported from `trading-copilot`:
 
 - A **trade date**'s session opens the previous calendar evening at close + maintenance, and closes at the

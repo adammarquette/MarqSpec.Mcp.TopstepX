@@ -5,6 +5,7 @@ using MarqSpec.Mcp.TopstepX.Data.Entities;
 using MarqSpec.Mcp.TopstepX.Domain;
 using MarqSpec.Mcp.TopstepX.Domain.MarketData;
 using MarqSpec.Mcp.TopstepX.MarketData;
+using MarqSpec.Mcp.TopstepX.Tools;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
@@ -80,7 +81,21 @@ public sealed class BarCacheServiceTests : IDisposable
     /// This is what a row written before migration <c>20260823074908_AddBarContractId</c> looks like — present,
     /// numerically correct, and therefore never "missing" until gh#402 taught the read path otherwise.
     /// </remarks>
-    private async Task SeedLegacyRowsAsync(IEnumerable<Bar> bars, int resolutionMinutes = 5)
+    private Task SeedLegacyRowsAsync(IEnumerable<Bar> bars, int resolutionMinutes = 5) =>
+        SeedRowsAsync(bars, contractId: null, resolutionMinutes);
+
+    /// <summary>
+    /// Seeds the store directly, with or without a recorded contract.
+    /// </summary>
+    /// <param name="bars">The bars to seed.</param>
+    /// <param name="contractId">The contract to record, or <see langword="null"/> for a pre-migration row.</param>
+    /// <param name="resolutionMinutes">The resolution to seed them under.</param>
+    /// <remarks>
+    /// A test that needs a store which is <i>almost</i> healed — every bucket attributed except one — cannot be
+    /// built out of the legacy seeder alone, and the one unattributed bucket is the whole subject of gh#412.
+    /// </remarks>
+    private async Task SeedRowsAsync(
+        IEnumerable<Bar> bars, string? contractId, int resolutionMinutes = 5)
     {
         foreach (Bar bar in bars)
         {
@@ -95,7 +110,7 @@ public sealed class BarCacheServiceTests : IDisposable
                 Low = bar.Low,
                 Close = bar.Close,
                 Volume = bar.Volume,
-                ContractId = null,
+                ContractId = contractId,
                 RecordedAt = SessionStart,
             });
         }
@@ -521,6 +536,63 @@ public sealed class BarCacheServiceTests : IDisposable
             + "covered and all three of its pages are re-asked on every read");
         _database.Bars.Should().ContainSingle(
             b => b.BucketStart == insideMaintenance, "the only bar the venue served is the unexpected one");
+    }
+
+    [Fact]
+    public async Task ALegacyNullTheCalendarDoesNotExpect_IsHealed_SoTheWindowStopsReportingUnknown()
+    {
+        // gh#412. THE SHARP ONE: this shape fails toward a DEGRADED ANSWER, not toward vendor traffic.
+        //
+        // gh#402 made a bucket with no recorded contract count as not-stored, so FindMissing re-asks for it
+        // and the upsert heals it. But FindMissing walks only the buckets the CALENDAR EXPECTS, so a legacy
+        // null sitting off that grid is never enumerated, never asked for, and never heals. The venue really
+        // does publish there: gh#408 measured a bar at 16:30 Central, inside the 16:00-17:00 maintenance
+        // window this calendar excludes.
+        //
+        // The cost is not a request. ToCoverage reads an unattributed run beside a single recorded one as
+        // Unknown -- correctly, per ADR-0011 -- so ONE unhealable off-grid null downgrades get_key_levels and
+        // get_market_snapshot to "cannot tell whether this window spans a roll" for every read, forever, on a
+        // window whose bars are in fact all one contract.
+        //
+        // The fixture is deliberately ALMOST healed: every calendar-expected bucket on both sides of the
+        // maintenance window already carries the contract, so the ONLY thing the store lacks is the off-grid
+        // null. That makes the request count exact (one bucket, one request) and makes Unknown attributable
+        // to that bucket alone rather than to a store that is generally cold.
+        //
+        // RED against the pre-fix detector: zero venue requests, the 16:30 row keeps its null, and the span
+        // is Unknown.
+        DateTimeOffset offGrid =
+            MarketClock.FromMarket(new DateOnly(2026, 8, 18), new TimeOnly(16, 30)).ToUniversalTime();
+        BarRange window = new(SessionStart, SessionStart.AddDays(1));
+
+        // The venue holds the off-grid bar -- it published it, which is how the null got there.
+        (BarCacheService cache, CountingGateway gateway) = Build(
+            [new Bar(offGrid, 100m, 101m, 99m, 100.5m, 1_000)], SessionStart.AddDays(5));
+
+        // Everything the calendar DOES expect in the window, already attributed: 09:00-15:55 on the Tuesday,
+        // then 17:00 through 09:00 on the Wednesday. Nothing here is missing.
+        IReadOnlyList<DateTimeOffset> expected =
+            BarGapDetector.ExpectedBuckets(window, TimeSpan.FromMinutes(5), BarSessionCalendar.Parse("16:00", []));
+        await SeedRowsAsync(
+            expected.Select(b => new Bar(b, 100m, 101m, 99m, 100.5m, 1_000)), "CON.F.US.TEST.Z26");
+
+        // ... and the one pre-migration row the calendar does not expect.
+        await SeedRowsAsync([new Bar(offGrid, 100m, 101m, 99m, 100.5m, 1_000)], contractId: null);
+
+        BarReadResult result = await cache.GetBarsAsync(_es, 5, window, CancellationToken.None);
+
+        gateway.BarRequests.Should().Be(
+            1,
+            "the one bucket the store cannot attribute must be re-asked for, and it is the only thing the "
+            + "store lacks -- so the heal costs exactly one request, not a re-fetch of the window");
+        _database.Bars.Single(b => b.BucketStart == offGrid).ContractId.Should().Be(
+            "CON.F.US.TEST.Z26",
+            "the venue restated the bar it published, and the ordinary upsert writes the contract with the "
+            + "prices -- nothing here is guessed from the neighbouring rows");
+        ToolPayloads.ToCoverage(result.Bars).Span.Should().Be(
+            ToolPayloads.ContractSpan.SingleContract,
+            "with the null healed the window is one recorded contract end to end, which is the span the bars "
+            + "actually justify -- an unhealable off-grid null pins it at Unknown forever");
     }
 
     [Fact]

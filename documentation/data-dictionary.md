@@ -408,13 +408,21 @@ print takes a different key in each and lands **twice** rather than collapsing. 
 taken over closes its coverage range at the **handover**, never at the instant it noticed, so no
 two ranges claim one window.
 
-**The residual is clock skew, and it is not closed.** Both processes compare their own clock to one
-stored expiry, so a taker running more than one term ahead of the holder can acquire while the
+**A retiring holder closes its range on its own clock**, at the last instant it was both entitled
+to write and still listening — never at the acquisition the replacement stamped, which is at or
+after this holder's expiry and, if the clocks disagree, arbitrarily past it. Another host cannot
+decide how much coverage this process claims, and the range never spans a window in which this
+process had unsubscribed and stored nothing.
+
+**The residual is clock skew, and it has no mitigation here.** Both processes compare their own
+clock to one stored expiry, so a taker running more than one term ahead can acquire while the
 holder still believes it is inside its term. Only one process is ever the *owner* — the generation
-check guarantees that — but two can briefly be *writers*. The duplicate rows that produces fall
-outside the retiring holder's range, so a reader confined to covered windows does not count them
-twice; they are unreferenced rows, not doubled volume. Run the recorder on one host, or keep hosts
-synchronised.
+check guarantees that — but two can briefly be *writers*, and **those duplicate prints are
+counted**. They are written inside the holder's own term, so the retiring range covers them; and
+§9's projection reads every §7 row for the instrument with no coverage join and no time predicate,
+so coverage would not exclude them in any case — there is no link from a print to a range, and
+"unreferenced row" is not a state a print can be in. `Sequence` is per process, so the two copies
+do not collapse. Run the recorder on one host, or keep hosts synchronised.
 
 **This is not signalled through §3 or §8.** A `BarCoverage` row means the venue answered a range
 and had nothing, and a `TapeCoverage` row means a subscription was listening; both are facts about

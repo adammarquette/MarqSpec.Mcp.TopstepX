@@ -1769,17 +1769,18 @@ public sealed class TradeTapeRecorderTests
     }
 
     [Fact]
-    public async Task ARecorderWhoseClaimIsTakenOver_ClosesItsRangeAtTheHandover_SoNoWindowIsCoveredTwice()
+    public async Task ARecorderWhoseClaimIsTakenOver_ClosesItsRangeOnItsOwnClock_NotTheReplacements()
     {
-        // The finding this test exists for: a renewal only reports a lost claim at the next tick,
-        // so between the handover and the notice both processes are writing. Sequence is a
-        // per-process counter, so the same print takes a different key in each and lands twice
-        // rather than collapsing — and a range that ended at the *notice* would report that window
-        // as ordinary covered volume, which is a doubled delta reading as order flow: ADR-0016's
-        // own failure mode, arriving through the mechanism written to stop it.
+        // A takeover is only reachable once the holder's term has run out, so the replacement
+        // stamps AcquiredAt at or after that expiry — and if the two clocks disagree, arbitrarily
+        // far past it. Closing the retiring range at that value lets another host's clock decide
+        // how much coverage this process claims, and extends the range over a window in which this
+        // process had already unsubscribed and stored nothing. A covered window with no prints
+        // reads as "the market was quiet", which is the absence-versus-coverage confusion gh#365
+        // and gh#376 exist to prevent.
         //
-        // So a print IS pushed inside the window here, and the assertion is that no range of this
-        // recorder's covers it. The range closes at the handover the replacement recorded.
+        // The close is therefore this process's own arithmetic: the last instant it was both
+        // entitled to write — the same expiry the fence uses — and still listening.
         TimeSpan timeToLive = TapeLease.DefaultTimeToLive;
         (TradeTapeRecorder recorder, FakeMarketHub hub, TopstepXDbContext database, ServiceProvider services, FakeTimeProvider clock) =
             Build(McpTransport.Http, recordTape: true, leaseTimeToLive: timeToLive);
@@ -1792,30 +1793,29 @@ public sealed class TradeTapeRecorderTests
             await WaitUntil(() => hub.TradeSubscriptions.Count > 0 && tape.For("ES").IsListening);
 
             DateTimeOffset listenStart = clock.GetUtcNow();
+            DateTimeOffset term = listenStart + timeToLive;
 
             hub.Raise(Print(Utc(13, 45, 0), TradeLogType.Buy, price: 5000m));
             await WaitUntil(() => recorder.RecordedPrints == 1, "the recorder is genuinely recording");
 
-            // The handover happens between two renewal ticks, which is the only way this window
-            // can exist at all.
-            DateTimeOffset handover = listenStart + TimeSpan.FromSeconds(10);
-            clock.Advance(TimeSpan.FromSeconds(10));
-
+            // A replacement on a clock running a term and a half ahead. TryAcquireAsync only takes
+            // a lapsed row and stamps AcquiredAt from its own clock, so this is the shape a real
+            // skewed taker writes: at or after this holder's expiry, never before it.
+            DateTimeOffset foreignHandover = term + TimeSpan.FromSeconds(60);
             database.ChangeTracker.Clear();
             TapeLeaseRecord row = database.TapeLeases.Single();
             row.OwnerId = "the-process-that-took-over";
             row.Generation++;
-            row.AcquiredAt = handover;
-            row.ExpiresAt = handover + timeToLive;
+            row.AcquiredAt = foreignHandover;
+            row.ExpiresAt = foreignHandover + timeToLive;
             await database.SaveChangesAsync();
 
-            // A print inside the window, before this recorder has been told anything.
+            // A print in the window this process still believes is its own.
             hub.Raise(Print(Utc(13, 45, 10), TradeLogType.Buy, price: 5001m));
             await WaitUntil(() => recorder.RecordedPrints == 2);
 
-            // The next renewal tick: it finds the row is someone else's.
             DateTimeOffset noticed = listenStart + timeToLive / 3;
-            clock.Advance(timeToLive / 3 - TimeSpan.FromSeconds(10));
+            clock.Advance(timeToLive / 3);
 
             await WaitUntil(
                 () => tape.For("ES").Reason == TapeUnavailableReason.HeldByAnotherRecorder,
@@ -1826,23 +1826,71 @@ public sealed class TradeTapeRecorderTests
 
             TapeCoverageRecord range = CoverageRows(database).Should().ContainSingle().Subject;
             range.RangeStart.Should().Be(listenStart);
-            range.RangeEnd.Should().Be(handover,
-                "the range ends where this process stopped being the holder");
-            range.RangeEnd.Should().BeBefore(noticed,
-                "closing at the notice instead would claim the overlap, and the replacement claims "
-                + "it too — the same window counted twice is the doubled volume ADR-0016 forbids");
-
-            List<TradeRecord> trades = TradeRows(database);
-            trades.Should().HaveCount(2);
-            trades.Should().ContainSingle(trade => trade.RecordedAt >= range.RangeEnd,
-                "the print from the overlap is stored but sits outside every range this recorder "
-                + "claims, so a footprint confined to covered windows never counts it twice");
-
-            LeaseRows(database).Should().ContainSingle(row =>
-                row.OwnerId == "the-process-that-took-over",
-                "the evicted holder must not write its expiry back over the new holder's");
+            range.RangeEnd.Should().Be(noticed,
+                "it stopped listening here, and that is earlier than its own expiry");
+            range.RangeEnd.Should().NotBe(foreignHandover,
+                "another host's clock must not decide how much coverage this process claims");
+            range.RangeEnd.Should().BeOnOrBefore(term,
+                "it was never entitled to write past its own expiry, so it cannot claim past it");
 
             recorder.ExecuteTask!.IsFaulted.Should().BeFalse();
+
+            await recorder.StopAsync(CancellationToken.None);
+        }
+    }
+
+    [Fact]
+    public async Task ASkewedTakeover_LeavesItsOverlapPrintsInsideACoveredRange_TheKnownResidual()
+    {
+        // The residual, pinned so nobody re-reads it as fixed. A replacement whose clock runs more
+        // than a term ahead can take the claim while this process still believes it is inside its
+        // own term, so both write for a while. The fence cannot see that — it compares this
+        // process's clock to an expiry this process wrote — and no close value moves those prints
+        // out of the retiring range, because they were written inside the term the range covers.
+        //
+        // Nothing downstream saves it either: FootprintProjector reads every Trades row for the
+        // instrument with no coverage join and no time predicate, so a duplicate is aggregated
+        // into a cell whatever the ledger says. Sequence is per process, so the two copies take
+        // different keys and do not collapse. The only mitigation is one clock.
+        TimeSpan timeToLive = TapeLease.DefaultTimeToLive;
+        (TradeTapeRecorder recorder, FakeMarketHub hub, TopstepXDbContext database, ServiceProvider services, FakeTimeProvider clock) =
+            Build(McpTransport.Http, recordTape: true, leaseTimeToLive: timeToLive);
+
+        await using (services)
+        await using (database)
+        {
+            TapeAvailabilityHolder tape = services.GetRequiredService<TapeAvailabilityHolder>();
+            await recorder.StartAsync(CancellationToken.None);
+            await WaitUntil(() => hub.TradeSubscriptions.Count > 0 && tape.For("ES").IsListening);
+
+            DateTimeOffset listenStart = clock.GetUtcNow();
+            DateTimeOffset term = listenStart + timeToLive;
+
+            database.ChangeTracker.Clear();
+            TapeLeaseRecord row = database.TapeLeases.Single();
+            row.OwnerId = "a-recorder-whose-clock-runs-ahead";
+            row.Generation++;
+            row.AcquiredAt = term + TimeSpan.FromSeconds(60);
+            row.ExpiresAt = term + timeToLive;
+            await database.SaveChangesAsync();
+
+            // This process has been replaced already and cannot tell. It keeps recording.
+            hub.Raise(Print(Utc(13, 45, 5), TradeLogType.Buy, price: 5002m));
+            await WaitUntil(() => recorder.RecordedPrints == 1,
+                "the fence reads this process's own term, which has not run out, so it stores");
+
+            clock.Advance(timeToLive / 3);
+            await WaitUntil(
+                () => tape.For("ES").Reason == TapeUnavailableReason.HeldByAnotherRecorder);
+
+            TapeCoverageRecord range = CoverageRows(database).Should().ContainSingle().Subject;
+            TradeRecord overlap = TradeRows(database).Should().ContainSingle().Subject;
+
+            overlap.RecordedAt.Should().BeOnOrAfter(range.RangeStart);
+            overlap.RecordedAt.Should().BeBefore(range.RangeEnd,
+                "the overlap print sits INSIDE the retiring range — this is the residual, not a "
+                + "safety property: a reader counts it, and if the replacement stored the same "
+                + "print it is counted twice. Only a synchronised clock prevents it");
 
             await recorder.StopAsync(CancellationToken.None);
         }

@@ -13,9 +13,11 @@ namespace MarqSpec.Mcp.TopstepX.Tools;
 /// </summary>
 /// <remarks>
 /// <para>
-/// <b>One MCP tool type, five files.</b> The seven tools here share nothing but the instrument resolver —
+/// <b>One MCP tool type, five files.</b> The eight tools here share nothing but the instrument resolver —
 /// <c>Bars</c> (<c>get_bars</c>, <c>get_latest_bars</c>), <c>Indicators</c> (<c>get_indicators</c>,
-/// <c>get_indicator_at</c>, plus the internal <c>get_market_snapshot</c> batch read),
+/// <c>get_indicator_at</c>, plus the internal <see cref="MarketDataTools.GetLatestIndicatorReadings"/>
+/// batch read <c>get_market_snapshot</c> composes — that tool itself belongs to
+/// <see cref="Tools.SnapshotTools"/>, not here),
 /// <c>KeyLevels</c> (<c>get_key_levels</c>), <c>Tape</c> (<c>get_footprint</c>, <c>get_volume_profile</c>)
 /// and <c>Roll</c> (<c>get_contract_roll</c>) each live in their own partial-class file (gh#391), so a reader
 /// chasing one concern never has to skim the other four to find where it ends.

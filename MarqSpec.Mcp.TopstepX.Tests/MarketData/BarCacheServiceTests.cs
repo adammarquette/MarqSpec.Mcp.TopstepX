@@ -42,11 +42,61 @@ public sealed class BarCacheServiceTests : IDisposable
     private static DateTimeOffset SessionStart =>
         MarketClock.FromMarket(new DateOnly(2026, 8, 18), new TimeOnly(9, 0)).ToUniversalTime();
 
+    /// <summary>
+    /// A moment far enough past <see cref="SessionStart"/> that an empty answer over that session is settled
+    /// history, and the memo recording it is therefore permanent.
+    /// </summary>
+    /// <remarks>
+    /// <b>Deliberately a literal rather than <c>SessionStart + SettledHistoryAge</c>.</b> Derived from the
+    /// constant, this instant would move with it, and the tests below that exist to catch a change to
+    /// <see cref="BarCacheService.SettledHistoryAge"/> would follow it and stay green.
+    /// </remarks>
+    private static DateTimeOffset SettledNow => SessionStart.AddDays(3);
+
     private static IReadOnlyList<Bar> VenueBars(int count) =>
         [.. Enumerable.Range(0, count).Select(i =>
             new Bar(SessionStart.AddMinutes(5 * i), 100m + i, 101m + i, 99m + i, 100.5m + i, 1_000))];
 
+    /// <summary>
+    /// Seeds the store with pre-migration rows: the right numbers, and no recorded contract.
+    /// </summary>
+    /// <param name="bars">The bars to seed, stripped of their provenance.</param>
+    /// <remarks>
+    /// This is what a row written before migration <c>20260823074908_AddBarContractId</c> looks like — present,
+    /// numerically correct, and therefore never "missing" until gh#402 taught the read path otherwise.
+    /// </remarks>
+    private async Task SeedLegacyRowsAsync(IEnumerable<Bar> bars)
+    {
+        foreach (Bar bar in bars)
+        {
+            _database.Bars.Add(new BarRecord
+            {
+                Venue = "test",
+                Instrument = _es.Symbol,
+                ResolutionMinutes = 5,
+                BucketStart = bar.OpenTime,
+                Open = bar.Open,
+                High = bar.High,
+                Low = bar.Low,
+                Close = bar.Close,
+                Volume = bar.Volume,
+                ContractId = null,
+                RecordedAt = SessionStart,
+            });
+        }
+
+        await _database.SaveChangesAsync();
+    }
+
     private (BarCacheService Cache, CountingGateway Gateway) Build(
+        IEnumerable<Bar> venueBars,
+        DateTimeOffset now)
+    {
+        (BarCacheService cache, CountingGateway gateway, _) = BuildWithClock(venueBars, now);
+        return (cache, gateway);
+    }
+
+    private (BarCacheService Cache, CountingGateway Gateway, FakeTimeProvider Clock) BuildWithClock(
         IEnumerable<Bar> venueBars,
         DateTimeOffset now)
     {
@@ -62,7 +112,7 @@ public sealed class BarCacheServiceTests : IDisposable
         BarCacheService cache = new(
             _database, gateway, calendar, projector, clock, NullLogger<BarCacheService>.Instance);
 
-        return (cache, gateway);
+        return (cache, gateway, clock);
     }
 
     [Fact]
@@ -244,25 +294,7 @@ public sealed class BarCacheServiceTests : IDisposable
         // Seed the store directly with the SAME numbers the venue would answer with, but no contract -- this
         // is exactly what a pre-migration row looks like: present, with numbers already correct, and never
         // "missing".
-        foreach (Bar bar in venueBars)
-        {
-            _database.Bars.Add(new BarRecord
-            {
-                Venue = "test",
-                Instrument = _es.Symbol,
-                ResolutionMinutes = 5,
-                BucketStart = bar.OpenTime,
-                Open = bar.Open,
-                High = bar.High,
-                Low = bar.Low,
-                Close = bar.Close,
-                Volume = bar.Volume,
-                ContractId = null,
-                RecordedAt = SessionStart,
-            });
-        }
-
-        await _database.SaveChangesAsync();
+        await SeedLegacyRowsAsync(venueBars);
 
         BarReadResult result = await cache.GetBarsAsync(
             _es, 5, new BarRange(SessionStart, SessionStart.AddHours(1)), CancellationToken.None);
@@ -271,6 +303,140 @@ public sealed class BarCacheServiceTests : IDisposable
             0, "a bucket with no recorded contract must be re-asked for, not treated as already answered");
         result.Bars.Should().OnlyContain(b => b.ContractId != null);
         _database.Bars.Should().AllSatisfy(b => b.ContractId.Should().Be("CON.F.US.TEST.Z26"));
+    }
+
+    [Fact]
+    public async Task ALegacyRangeTheVenueCannotAttribute_CostsExactlyOneVenueRequest_HoweverOftenItIsRead()
+    {
+        // gh#408, and this is the whole safety argument for gh#402 -- which put a VENDOR CALL ON A READ PATH.
+        // A bucket with no recorded contract is deliberately not "stored", so every read re-derives it as
+        // missing and would re-ask for it. The only thing standing between that and one venue request per read
+        // forever is the memo RecordEmptyAsync writes when the venue answers the range empty. Nothing pinned
+        // it, so a change to who writes that memo would have turned an unbounded per-read fetch back on with
+        // every test still green.
+        //
+        // RED against a build with the RecordEmptyAsync call dropped from ApplyAsync: three reads, three
+        // requests.
+        IReadOnlyList<Bar> legacy = VenueBars(12);
+
+        // The venue holds NOTHING for this range any more -- past its retention, or a hole it will not
+        // restate. It cannot attribute what it will not serve, so the null is not going to heal; the question
+        // is only what re-asking costs.
+        (BarCacheService cache, CountingGateway gateway) = Build([], SettledNow);
+        await SeedLegacyRowsAsync(legacy);
+
+        BarRange window = new(SessionStart, SessionStart.AddHours(1));
+        for (int read = 0; read < 3; read++)
+        {
+            await cache.GetBarsAsync(_es, 5, window, CancellationToken.None);
+        }
+
+        gateway.BarRequests.Should().Be(
+            1,
+            "the empty answer to the first read is memoised permanently, so the heal is bounded to one "
+            + "request per range rather than one per read");
+        gateway.ContractRequests.Should().Be(1);
+        _database.Bars.Should().AllSatisfy(
+            b => b.ContractId.Should().BeNull("the venue answered nothing, so nothing was guessed"));
+    }
+
+    [Fact]
+    public async Task TheMemoThatBoundsTheHeal_IsPermanent_SoTheBoundSurvivesTheClockMoving()
+    {
+        // The other half of gh#408's bound, and the half a same-instant test cannot see. The memo bounds the
+        // re-ask only because the range is settled history and is therefore written with NO EXPIRY AT ALL.
+        // Given RecentEmptyTtl instead, the fifteen minutes run out and the heal is an unbounded per-read
+        // vendor fetch again -- on a schedule, so a test that reads twice at one instant stays green through it.
+        //
+        // RED against a build with SettledHistoryAge lengthened to 30 days: the range stops being settled, the
+        // memo is written with an expiry, and the second read below -- an hour later -- re-fetches.
+        (BarCacheService cache, CountingGateway gateway, FakeTimeProvider clock) =
+            BuildWithClock([], SettledNow);
+        await SeedLegacyRowsAsync(VenueBars(12));
+
+        BarRange window = new(SessionStart, SessionStart.AddHours(1));
+        await cache.GetBarsAsync(_es, 5, window, CancellationToken.None);
+
+        // Well past RecentEmptyTtl. A memo carrying that TTL is now expired and invisible to ExcludeCoveredAsync.
+        clock.Advance(TimeSpan.FromHours(1));
+        await cache.GetBarsAsync(_es, 5, window, CancellationToken.None);
+
+        // The behaviour first, and the column that produces it second: a bound that is only ever asserted as a
+        // stored value can be satisfied by a row nothing reads.
+        gateway.BarRequests.Should().Be(
+            1, "a permanent memo does not lapse, so the clock moving does not restart the re-ask");
+        _database.BarCoverage.Should().ContainSingle().Which.ExpiresAt.Should().BeNull(
+            "a range two days behind the present is settled history, and an empty answer over it is believed "
+            + "permanently");
+    }
+
+    [Fact]
+    public async Task APageThatOmitsSomeOfItsOwnNullBuckets_LeavesThemNull_AndSettlesAfterOneFurtherRequest()
+    {
+        // gh#408 part 2, as the issue frames it: a retention edge INSIDE one page. The venue answers the range
+        // non-empty -- so no memo is written for the whole slice -- while omitting six of the buckets the store
+        // holds as legacy nulls. Those six stay null and stay missing.
+        //
+        // It does NOT cost a page on every read forever, which is what this fixture was written to find out.
+        // FindMissing coalesces only across EXPECTED buckets, so the second read asks for the narrowed run --
+        // which contains nothing the venue will serve, is answered empty, and earns exactly the permanent memo
+        // the first read could not. Two requests, then nothing. That correction is why this test exists rather
+        // than an assertion of unboundedness; the shape that genuinely does not converge is the test below.
+        IReadOnlyList<Bar> legacy = VenueBars(12);
+        (BarCacheService cache, CountingGateway gateway) = Build(legacy.Skip(6), SettledNow);
+        await SeedLegacyRowsAsync(legacy);
+
+        BarRange window = new(SessionStart, SessionStart.AddHours(1));
+        for (int read = 0; read < 4; read++)
+        {
+            await cache.GetBarsAsync(_es, 5, window, CancellationToken.None);
+        }
+
+        gateway.BarRequests.Should().Be(2, "the first page is answered non-empty; the narrowed second is not");
+
+        // The provenance the venue would not restate is left absent, not invented from the neighbours.
+        _database.Bars
+            .Where(b => b.BucketStart < SessionStart.AddMinutes(30))
+            .Should().AllSatisfy(b => b.ContractId.Should().BeNull());
+        _database.Bars
+            .Where(b => b.BucketStart >= SessionStart.AddMinutes(30))
+            .Should().AllSatisfy(b => b.ContractId.Should().Be("CON.F.US.TEST.Z26"));
+    }
+
+    [Fact]
+    public async Task AVenueBarTheCalendarDoesNotExpect_SuppressesTheMemoForTheRunAroundIt_OnEveryRead()
+    {
+        // gh#408 part 2, the shape that genuinely does not converge -- and it is not the retention edge the
+        // issue described. A missing run coalesces ACROSS a stretch the calendar excludes: here 15:00 and
+        // 17:00 Central either side of the 16:00-17:00 maintenance window are one range, which is the
+        // coalescing FindMissing documents as a saving. If the venue publishes so much as one bar INSIDE that
+        // excluded stretch, every fetch of the run comes back non-empty, no memo is ever written, and the
+        // expected buckets stay missing -- so the run costs one paced page on every read, forever.
+        //
+        // ACCEPTED, not fixed (ADR-0011, gh#408). A memo over buckets a non-empty page omitted would say "the
+        // venue has nothing here" permanently, over a range the venue DID answer for -- turning a bounded,
+        // visible traffic cost into a silently absent bar that nothing will ever go and fetch. This test pins
+        // the accepted cost; if it goes red because a later change bounded it, that change is the fix landing
+        // and this test moves with the ADR.
+        DateTimeOffset afternoon =
+            MarketClock.FromMarket(new DateOnly(2026, 8, 18), new TimeOnly(15, 0)).ToUniversalTime();
+        DateTimeOffset insideMaintenance =
+            MarketClock.FromMarket(new DateOnly(2026, 8, 18), new TimeOnly(16, 30)).ToUniversalTime();
+
+        (BarCacheService cache, CountingGateway gateway) = Build(
+            [new Bar(insideMaintenance, 100m, 101m, 99m, 100.5m, 1_000)], SettledNow);
+
+        BarRange window = new(afternoon, afternoon.AddHours(3));
+        for (int read = 0; read < 3; read++)
+        {
+            await cache.GetBarsAsync(_es, 5, window, CancellationToken.None);
+        }
+
+        gateway.BarRequests.Should().Be(
+            3,
+            "one bar the calendar never expects keeps the whole coalesced run's answer non-empty, so no memo "
+            + "is written and the run is re-asked on every read");
+        _database.BarCoverage.Should().BeEmpty();
     }
 
     [Fact]

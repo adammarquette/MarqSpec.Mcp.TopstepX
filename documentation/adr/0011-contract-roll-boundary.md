@@ -368,3 +368,31 @@ known contracts (zero or one of them) never disagree does an unattributed run do
 `Unknown`. §3's classification rule and the Consequences section above are corrected in place to state this
 version rather than the one first shipped; `ContractRollDetector.Segment` and `Newest` are untouched by
 either attempt — the segmentation was always right, only `ToCoverage`'s summary of it was not.
+
+**Update (2026-08-31, gh#408) — what bounds the re-ask, and the one page that is paid forever.** Putting a
+vendor call behind a read needs a bound, and this record asserted one without pinning it. The bound is
+`RecordEmptyAsync`: a legacy range the venue answers **empty** is memoised, and because every such range is
+older than `SettledHistoryAge` the memo carries **no expiry at all** — so the heal costs one request per
+range, not one per read. Both halves are now tests, each shown red against a deliberately broken bound (the
+memo write removed; `SettledHistoryAge` lengthened past the fixture) rather than argued.
+
+The paragraph above says the heal does not reach "a bucket a venue page omits without restating". That shape
+was measured, and it is **two** shapes, not one:
+
+- **A retention edge inside a page converges** — in two requests, not never. The first page is answered
+  non-empty, so no memo is written for the buckets it omitted; but `BarGapDetector.FindMissing` coalesces only
+  across *expected* buckets, so the second read asks for the narrowed run alone, that run is answered empty,
+  and it earns exactly the permanent memo the first read could not.
+- **A venue bar the calendar does not expect, sitting inside a coalesced missing run, does not.** The run
+  spans a stretch the calendar excludes — a maintenance window — the venue publishes one bar inside it, every
+  fetch of the run therefore comes back non-empty, no memo is ever written, and the run costs one paced page
+  on **every** read, forever.
+
+**The second is accepted, not fixed.** A memo over buckets a *non-empty* page omitted would record "the venue
+has nothing here", permanently, over a range the venue did answer for — so one transient omission would freeze
+a genuine hole that nothing ever fetches again. That trades a bounded, paced, `VenueRequests`-visible traffic
+cost for a silently absent bar, which is the direction this repository does not go. A bounded retry is a new
+column and a state machine on a read path for a cost of one page. The remedy, if the shape is ever observed
+live, is to correct the *calendar* so the run is not coalesced across a stretch the venue actually trades —
+not to teach the ledger to say something the venue did not. Both shapes are pinned by tests, so the accepted
+cost is characterised rather than rediscovered.

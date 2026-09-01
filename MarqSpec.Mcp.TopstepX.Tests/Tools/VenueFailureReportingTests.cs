@@ -100,10 +100,10 @@ public sealed class VenueFailureReportingTests
         // Walks the surface by reflection rather than naming tools, so a tool added tomorrow is covered
         // without anyone remembering to add it here.
         //
-        // THE RULE FOLLOWS THE FIELDS, and gh#414 is why it had to. It used to read "any tool type whose
-        // CONSTRUCTOR TAKES an IMarketDataGateway must catch VenueException", which was exact while the
-        // market-data surface was one type holding the gateway, the bar cache and the front-month service
-        // all at once. Splitting that type into five broke the proxy in both directions:
+        // THE RULE FOLLOWS A PATH, NOT A SET, and gh#414 is why it had to move at all. It used to read "any
+        // tool type whose CONSTRUCTOR TAKES an IMarketDataGateway must catch VenueException", which was
+        // exact while the market-data surface was one type holding the gateway, the bar cache and the
+        // front-month service all at once. Splitting that type into five broke the proxy in both directions:
         //
         //   * TOO WIDE. IndicatorTools and KeyLevelTools read the gateway for its VenueId -- the key on
         //     every stored row -- and call nothing on it. Demanding a catch there would have meant adding
@@ -116,10 +116,25 @@ public sealed class VenueFailureReportingTests
         //     filter entirely and the market-data surface -- where the translation actually lives -- would
         //     have been covered by nothing.
         //
-        // So: a type can reach the venue when it HOLDS a gateway, and a tool reaches it when anything in
-        // its field graph does. The translation may live anywhere in that same graph, because that is where
-        // it legitimately lives: BarTools catches for its own cache, VolumeFrontReader catches for the two
-        // tools that publish a front.
+        // The first replacement asked "does ANY type in the tool's field graph catch?", and that was WEAKER
+        // than what it replaced in two ways PR #423's review reproduced on a real tree:
+        //
+        //   * A CATCH SOMEWHERE ELSE COUNTED. Removing ReferenceTools' own catch -- reopening the historical
+        //     search_contracts defect -- and giving it any field whose graph contains a catch made the check
+        //     GREEN, where the old constructor rule was red. That is not a hypothetical reach: only four
+        //     types in this assembly catch VenueException and SnapshotTools already holds two of them, so
+        //     the first direct gateway call ever added there would have been invisible from the moment it
+        //     was written.
+        //   * A GATEWAY BEHIND ONE LAYER OF STRUCTURE VANISHED. HoldsAGateway matched an exactly
+        //     IMarketDataGateway-typed field, so an IMarketDataGateway[] -- or a List<>, or a property's
+        //     backing field of either -- dropped the type out of the walk entirely and the check went green
+        //     with no translation anywhere.
+        //
+        // So the rule is now: WALK DOWN FROM THE TOOL TOWARDS THE GATEWAY, and a catch counts only where it
+        // is actually ON that route. A type that catches shields what it holds -- BarTools catches for its
+        // own cache, VolumeFrontReader for the two tools that publish a front -- and a type that holds a
+        // gateway ITSELF and does not catch is a violation whatever its siblings do. The field walk looks
+        // THROUGH arrays and generic arguments, so a gateway held in a collection is still held.
         Assembly assembly = typeof(ReferenceTools).Assembly;
 
         List<Type> toolTypes =
@@ -129,61 +144,149 @@ public sealed class VenueFailureReportingTests
 
         toolTypes.Should().NotBeEmpty("the reflection filter must actually match something");
 
-        List<Type> venueFacing = [.. toolTypes.Where(t => Graph(t).Any(HoldsAGateway))];
+        List<Type> venueFacing = [.. toolTypes.Where(Reaches)];
 
         venueFacing.Should().NotBeEmpty(
             "some tool must still reach the venue, or this check is measuring an empty set");
 
         foreach (Type type in venueFacing)
         {
-            Graph(type).Any(CatchesVenueException).Should().BeTrue(
-                type.Name + " reaches the venue through "
-                + string.Join(", ", Graph(type).Where(HoldsAGateway).Select(t => t.Name))
-                + " but nothing on that path catches VenueException, so a venue failure would reach the "
-                + "caller as a bare 'an error occurred' with no reason.");
+            IReadOnlyList<Type>? unshielded = UnshieldedPath(type, []);
+
+            unshielded.Should().BeNull(
+                type.Name + " reaches the venue along "
+                + string.Join(" -> ", (unshielded ?? []).Select(t => t.Name))
+                + " and NOTHING ON THAT ROUTE catches VenueException, so a venue failure would reach the "
+                + "caller as a bare 'an error occurred' with no reason. A catch elsewhere in this type's "
+                + "field graph does not cover this route.");
         }
     }
 
-    /// <summary>Every type this one can call, itself included — its instance fields, transitively.</summary>
-    /// <param name="root">The type to walk from.</param>
-    /// <returns>The reachable set, this assembly only.</returns>
+    /// <summary>
+    /// A route from this type down to one that holds a gateway, with no translation anywhere along it.
+    /// </summary>
+    /// <param name="type">The type to walk from.</param>
+    /// <param name="onPath">The types already on this route, so a field cycle terminates.</param>
+    /// <returns>The offending route, or <see langword="null"/> when every route is covered.</returns>
     /// <remarks>
-    /// Fields rather than constructor parameters, because a parameter that is read and dropped cannot be
-    /// called afterwards. That distinction is the whole of the too-wide half above, and it is the reason
-    /// four market-data tool types can take an <see cref="IMarketDataGateway"/> for its id and still, truly,
-    /// not reach the venue.
+    /// <para>
+    /// <b>A catch shields what is BELOW it, and nothing beside it.</b> A <c>VenueException</c> raised inside
+    /// a gateway call propagates through every frame between that call and the tool boundary, so the
+    /// translation covers iff it sits on that route — which is what walking the route expresses and what
+    /// gathering the graph into a set and asking whether it contains a catch does not.
+    /// </para>
+    /// <para>
+    /// <b>Holding a gateway and not catching is a violation on its own terms.</b> That is the case the
+    /// set-shaped version let through, and it is the shape of the original <c>search_contracts</c> defect.
+    /// </para>
     /// </remarks>
-    private static IReadOnlyList<Type> Graph(Type root)
+    private static IReadOnlyList<Type>? UnshieldedPath(Type type, HashSet<Type> onPath)
     {
-        HashSet<Type> seen = [];
-        Queue<Type> pending = new([root]);
-
-        while (pending.TryDequeue(out Type? next))
+        if (CatchesVenueException(type))
         {
-            if (!seen.Add(next))
+            return null;
+        }
+
+        if (!onPath.Add(type))
+        {
+            // A field cycle. It adds no route this walk has not already taken.
+            return null;
+        }
+
+        try
+        {
+            if (HoldsAGateway(type))
             {
-                continue;
+                return [type];
             }
 
-            foreach (Type field in next.GetFields(Members).Select(f => f.FieldType))
+            foreach (Type collaborator in Collaborators(type))
             {
-                // This assembly only. Walking into EF Core or the BCL would be unbounded and would report
-                // types nothing here can be responsible for translating.
-                if (field.Assembly == typeof(ReferenceTools).Assembly)
+                if (UnshieldedPath(collaborator, onPath) is { } rest)
                 {
-                    pending.Enqueue(field);
+                    return [type, .. rest];
                 }
+            }
+
+            return null;
+        }
+        finally
+        {
+            onPath.Remove(type);
+        }
+    }
+
+    /// <summary>Whether the venue is reachable from this type at all.</summary>
+    /// <param name="type">The type to walk from.</param>
+    /// <returns>Whether it, or anything it holds transitively, holds a gateway.</returns>
+    private static bool Reaches(Type type) => Reaches(type, []);
+
+    private static bool Reaches(Type type, HashSet<Type> seen) =>
+        seen.Add(type)
+        && (HoldsAGateway(type) || Collaborators(type).Any(c => Reaches(c, seen)));
+
+    /// <summary>The product types this one holds, looked at through arrays and generic arguments.</summary>
+    /// <param name="type">The holder.</param>
+    /// <returns>Its collaborators, this assembly only.</returns>
+    /// <remarks>
+    /// Fields rather than constructor parameters, because a parameter that is read and dropped cannot be
+    /// called afterwards. That distinction is the too-wide half above, and it is why four market-data tool
+    /// types can take an <see cref="IMarketDataGateway"/> for its id and still, truly, not reach the venue.
+    /// This assembly only: walking into EF Core or the BCL is unbounded and reports types nothing here can
+    /// be responsible for translating.
+    /// </remarks>
+    private static IEnumerable<Type> Collaborators(Type type) =>
+        type.GetFields(Members)
+            .SelectMany(f => Carried(f.FieldType))
+            .Where(t => t.Assembly == typeof(ReferenceTools).Assembly)
+            .Distinct();
+
+    /// <summary>A field's type and everything it structurally carries.</summary>
+    /// <param name="type">The field's declared type.</param>
+    /// <returns>That type, its element type, and its generic arguments, recursively.</returns>
+    /// <remarks>
+    /// <b>An <c>IMarketDataGateway[]</c> is a held gateway, and so is a <c>List&lt;IMarketDataGateway&gt;</c>
+    /// or a property whose backing field is either.</b> Matching the declared field type alone let both out
+    /// of the walk — green, with no translation anywhere — which PR #423's review reproduced.
+    /// </remarks>
+    private static IEnumerable<Type> Carried(Type type)
+    {
+        yield return type;
+
+        if (type.HasElementType && type.GetElementType() is { } element)
+        {
+            foreach (Type carried in Carried(element))
+            {
+                yield return carried;
             }
         }
 
-        return [.. seen];
+        if (type.IsGenericType)
+        {
+            foreach (Type argument in type.GetGenericArguments())
+            {
+                foreach (Type carried in Carried(argument))
+                {
+                    yield return carried;
+                }
+            }
+        }
     }
 
     private const BindingFlags Members = BindingFlags.Public | BindingFlags.NonPublic
         | BindingFlags.Instance | BindingFlags.Static | BindingFlags.DeclaredOnly;
 
+    /// <summary>Whether this type keeps a gateway it could call.</summary>
+    /// <param name="type">The type.</param>
+    /// <returns>Whether any field carries something assignable to <see cref="IMarketDataGateway"/>.</returns>
+    /// <remarks>
+    /// <b>Assignable, not equal</b>, so a field declared as a concrete gateway counts too — and through
+    /// <see cref="Carried"/>, so does one held inside an array or a generic.
+    /// </remarks>
     private static bool HoldsAGateway(Type type) =>
-        type.GetFields(Members).Any(f => f.FieldType == typeof(IMarketDataGateway));
+        type.GetFields(Members)
+            .SelectMany(f => Carried(f.FieldType))
+            .Any(typeof(IMarketDataGateway).IsAssignableFrom);
 
     private static bool CatchesVenueException(Type type)
     {

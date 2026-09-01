@@ -97,12 +97,21 @@ this card exists to remove, and the fixtures would have gone on building the wid
   the tool surface build all five, and say by name when they cannot.
 - **The tool surface did not move.** The wire-level `Tool` object for all eight family tools is byte-for-byte
   what gh#391 pinned, and `TheMarketDataToolFamily_IsUnchangedByTheFileSplit` passes unmodified.
-- **The venue-translation gate had to follow the fields.** `VenueFailureReportingTests` demanded a
+- **The venue-translation gate had to follow the route.** `VenueFailureReportingTests` demanded a
   `VenueException` catch from any tool type whose *constructor took* an `IMarketDataGateway`. That was exact
   while one type held the gateway, the bar cache and the front-month service together; after the split it was
   both too wide (types that read only the id) and too narrow (`BarTools` reaches the venue through
-  `BarCacheService` and takes no gateway at all). The rule now follows the **field graph**: a type reaches
-  the venue when something it holds holds a gateway, and the translation may live anywhere on that path.
+  `BarCacheService` and takes no gateway at all). The rule now walks **from the tool down towards the
+  gateway, through fields, looking through arrays and generic arguments** — and a catch counts only where it
+  sits **on that route**. An earlier revision of this PR asked instead whether *any* type in the tool graph
+  catches, which was weaker than what it replaced: a type holding a gateway and translating nothing passed as
+  long as some sibling field caught, and `SnapshotTools` already holds two types that do.
+- **What the route walk cannot see, recorded rather than assumed.** It reads fields and exception-handler
+  metadata, so three things are outside it: a type whose catch is in a *different method* from its gateway
+  call still counts as covering; a gateway that never becomes a field — resolved from a service locator,
+  constructed inline, or handed in as a method argument — is invisible; and the walk stops at this
+  assembly, so a translation in a package is not credited. It is a structural check on where translations
+  live, not a proof that every venue call is wrapped.
 - **A new tool must choose.** Adding one to an existing concern is free; a tool that fits none of the five
   gets its own type rather than being appended to the nearest.
 

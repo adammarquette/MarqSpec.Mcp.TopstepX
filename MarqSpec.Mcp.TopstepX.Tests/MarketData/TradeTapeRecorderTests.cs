@@ -1954,6 +1954,74 @@ public sealed class TradeTapeRecorderTests
     }
 
     [Fact]
+    public async Task AHolderThatCannotRenewBeforeItsTermRunsOut_ClosesAtItsExpiry_NotAtWhenItNoticed()
+    {
+        // Two things nothing else reaches.
+        //
+        // First the store-outage forfeit: the renewals fail, the term runs out, and the holder
+        // gives the instrument up rather than recording without a claim it can show. Nothing else
+        // in the suite makes a renewal throw.
+        //
+        // Second, and the reason this test exists: it is the only path where the notice lands
+        // *after* the expiry, so it is the only one that discriminates the two halves of the
+        // close. Everywhere else the holder notices while still inside its term and the close is
+        // the notice, which a broken clamp would also produce. Here the range must stop at the
+        // expiry — the same instant the fence stopped storing prints — because the window between
+        // the expiry and the notice is one this recorder was already dropping prints in. Claiming
+        // it would publish a covered window with nothing in it, which reads as a quiet market
+        // rather than as an absence: the confusion gh#365 and gh#376 exist to prevent.
+        TimeSpan timeToLive = TapeLease.DefaultTimeToLive;
+        CollectingLogger logger = new();
+        (TradeTapeRecorder recorder, FakeMarketHub hub, TopstepXDbContext database, ServiceProvider services, FakeTimeProvider clock) =
+            Build(
+                McpTransport.Http,
+                recordTape: true,
+                logger: logger,
+                extraInterceptor: new RefusingLeaseRenewalInterceptor(),
+                leaseTimeToLive: timeToLive);
+
+        await using (services)
+        await using (database)
+        {
+            TapeAvailabilityHolder tape = services.GetRequiredService<TapeAvailabilityHolder>();
+            await recorder.StartAsync(CancellationToken.None);
+            await WaitUntil(() => hub.TradeSubscriptions.Count > 0 && tape.For("ES").IsListening);
+
+            DateTimeOffset listenStart = clock.GetUtcNow();
+            DateTimeOffset term = listenStart + timeToLive;
+
+            // The store stops taking renewals and the term runs out before the loop next wakes,
+            // so the notice is strictly later than the expiry.
+            DateTimeOffset noticed = listenStart + timeToLive + TimeSpan.FromSeconds(10);
+            clock.Advance(timeToLive + TimeSpan.FromSeconds(10));
+
+            await WaitUntil(
+                () => !tape.For("ES").IsListening,
+                "a holder that cannot show it still holds the claim gives the instrument up");
+
+            hub.TradeSubscriptions.Should().BeEmpty(
+                "it stops listening rather than recording under a claim it cannot renew");
+
+            TapeCoverageRecord range = CoverageRows(database).Should().ContainSingle().Subject;
+            range.RangeStart.Should().Be(listenStart);
+            range.RangeEnd.Should().Be(term,
+                "the range stops where the fence stopped storing prints, not where the loop "
+                + "happened to wake up");
+            range.RangeEnd.Should().NotBe(noticed,
+                "the window between the expiry and the notice held no stored print, so claiming "
+                + "it would report an absence as a quiet market");
+
+            tape.For("ES").Explanation.Should().Contain("renew",
+                "nobody necessarily took this claim — it lapsed — and sending an operator to hunt "
+                + "a second recorder that does not exist is the wrong instruction");
+
+            recorder.ExecuteTask!.IsFaulted.Should().BeFalse();
+
+            await recorder.StopAsync(CancellationToken.None);
+        }
+    }
+
+    [Fact]
     public async Task ACleanStop_ReleasesTheClaim_SoARedeployDoesNotWaitOutTheTimeToLive()
     {
         string sharedStore = Guid.NewGuid().ToString();
@@ -2331,6 +2399,26 @@ public sealed class TradeTapeRecorderTests
             BarRange window,
             CancellationToken cancellationToken) =>
             Task.FromResult<IReadOnlyList<VenueTrade>>([]);
+    }
+
+    /// <summary>Refuses every tape-claim renewal, so a holder's term runs out under it.</summary>
+    private sealed class RefusingLeaseRenewalInterceptor : SaveChangesInterceptor
+    {
+        public override ValueTask<InterceptionResult<int>> SavingChangesAsync(
+            DbContextEventData eventData,
+            InterceptionResult<int> result,
+            CancellationToken cancellationToken = default)
+        {
+            // Only the renewal: an acquire adds the row and a release deletes it.
+            bool renewing = eventData.Context?.ChangeTracker.Entries<TapeLeaseRecord>()
+                .Any(entry => entry.State == EntityState.Modified) == true;
+            if (renewing)
+            {
+                throw new InvalidOperationException("the store refused the claim renewal");
+            }
+
+            return base.SavingChangesAsync(eventData, result, cancellationToken);
+        }
     }
 
     /// <summary>

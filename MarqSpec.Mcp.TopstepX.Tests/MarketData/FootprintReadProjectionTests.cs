@@ -236,7 +236,13 @@ public sealed class FootprintReadProjectionTests : IDisposable
             _clock,
             Options.Create(new KeyLevelDetectionOptions()),
             new VolumeProfileService(_database),
-            _tape);
+            _tape,
+            new TapeVolumeFrontService(_database, _gateway, calendar),
+            new FootprintCacheService(
+                _database,
+                new FootprintProjector(_database, NullLogger<FootprintProjector>.Instance),
+                _clock,
+                NullLogger<FootprintCacheService>.Instance));
     }
 
     private async Task SeedTapeAsync(params TradeRecord[] trades)

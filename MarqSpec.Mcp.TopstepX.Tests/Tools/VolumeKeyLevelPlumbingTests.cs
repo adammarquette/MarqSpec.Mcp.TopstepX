@@ -137,7 +137,14 @@ public sealed class VolumeKeyLevelPlumbingTests : IDisposable
                 MaxZoneWidthPercent = 100m,
                 MaxLevels = 1_000,
             }),
-            new VolumeProfileService(_database));
+            new VolumeProfileService(_database),
+            new TapeAvailabilityHolder(),
+            new TapeVolumeFrontService(_database, gateway, calendar),
+            new FootprintCacheService(
+                _database,
+                new FootprintProjector(_database, NullLogger<FootprintProjector>.Instance),
+                clock,
+                NullLogger<FootprintCacheService>.Instance));
     }
 
     private void SeedBars()

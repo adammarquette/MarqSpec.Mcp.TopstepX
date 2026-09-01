@@ -6,6 +6,7 @@ using MarqSpec.Mcp.TopstepX.Domain.MarketData;
 using MarqSpec.Mcp.TopstepX.MarketData;
 using MarqSpec.Mcp.TopstepX.Tools;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using Microsoft.Extensions.Time.Testing;
 using ModelContextProtocol;
@@ -358,6 +359,14 @@ public sealed class StoreFaultBoundaryTests(SchemaFixture fixture)
             holder,
             new FakeTimeProvider(Now),
             Options.Create(new KeyLevelDetectionOptions()),
-            new VolumeProfileService(store));
+            new VolumeProfileService(store),
+            new TapeAvailabilityHolder(),
+            new TapeVolumeFrontService(
+                store, new SeriesGateway(venue, available), BarSessionCalendar.Parse("16:00", [])),
+            new FootprintCacheService(
+                store,
+                new FootprintProjector(store, NullLogger<FootprintProjector>.Instance),
+                new FakeTimeProvider(Now),
+                NullLogger<FootprintCacheService>.Instance));
     }
 }

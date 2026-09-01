@@ -3,7 +3,7 @@
 **Status:** Accepted · **Date:** 2026-08-26 · **Deciders:** Adam (operator)
 **Relates to:** PRD `R-3`, `R-3.1`, `R-3.2` · [data dictionary](../data-dictionary.md) *§4 `PriceLevels`* ·
 the mirror image of [ADR-0006](0006-indicators-as-projections.md), which it does **not** reopen · gh#232,
-gh#247 · `Domain/MarketData/KeyLevels.cs`, `Tools/MarketDataTools.cs`
+gh#247 · `Domain/MarketData/KeyLevels.cs`, `Tools/MarketDataTools.KeyLevels.cs`
 
 ## Context
 

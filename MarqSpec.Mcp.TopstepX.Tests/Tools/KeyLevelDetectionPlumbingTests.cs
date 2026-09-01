@@ -647,7 +647,14 @@ public sealed class KeyLevelDetectionPlumbingTests : IDisposable
             new StoreAvailabilityHolder(),
             clock,
             Options.Create(detection),
-            new VolumeProfileService(_database));
+            new VolumeProfileService(_database),
+            new TapeAvailabilityHolder(),
+            new TapeVolumeFrontService(_database, gateway, calendar),
+            new FootprintCacheService(
+                _database,
+                new FootprintProjector(_database, NullLogger<FootprintProjector>.Instance),
+                clock,
+                NullLogger<FootprintCacheService>.Instance));
 
         SnapshotTools snapshot = new(
             marketData,

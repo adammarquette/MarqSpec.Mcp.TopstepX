@@ -122,7 +122,14 @@ public sealed class ResolutionGuardTests : IDisposable
             new StoreAvailabilityHolder(),
             _clock,
             Options.Create(new KeyLevelDetectionOptions()),
-            new VolumeProfileService(_database));
+            new VolumeProfileService(_database),
+            new TapeAvailabilityHolder(),
+            new TapeVolumeFrontService(_database, _gateway, calendar),
+            new FootprintCacheService(
+                _database,
+                new FootprintProjector(_database, NullLogger<FootprintProjector>.Instance),
+                _clock,
+                NullLogger<FootprintCacheService>.Instance));
 
         _snapshot = new SnapshotTools(
             _marketData,
@@ -394,7 +401,14 @@ public sealed class ResolutionGuardTests : IDisposable
             new StoreAvailabilityHolder(),
             _clock,
             Options.Create(new KeyLevelDetectionOptions()),
-            new VolumeProfileService(_database));
+            new VolumeProfileService(_database),
+            new TapeAvailabilityHolder(),
+            new TapeVolumeFrontService(_database, _gateway, BarSessionCalendar.Parse("16:00", [])),
+            new FootprintCacheService(
+                _database,
+                new FootprintProjector(_database, NullLogger<FootprintProjector>.Instance),
+                _clock,
+                NullLogger<FootprintCacheService>.Instance));
     }
 
     // ── The drift guard ──────────────────────────────────────────────────────────────────────────────

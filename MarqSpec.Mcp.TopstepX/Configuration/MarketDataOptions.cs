@@ -92,10 +92,12 @@ public sealed class MarketDataOptions
     /// places is now <i>refused</i> rather than tolerated: a start takes an exclusive
     /// per-instrument claim before it subscribes, the second is refused and records nothing, and a
     /// holder writes no print past its own claim's expiry (gh#404). What the claim cannot rule out
-    /// is two hosts whose clocks differ by more than the claim's term, which can briefly leave two
-    /// writers; those rows fall outside the retiring holder's coverage and so are not reported as
-    /// volume, but the tape is cleaner if this stays off everywhere but the one process meant to
-    /// record. The claim is the backstop, not the configuration.
+    /// is two hosts whose clocks differ by more than the claim's term: each compares its own clock
+    /// to one stored expiry, so a taker running far enough ahead can acquire while the holder still
+    /// believes it is inside its term, and both write. <b>Those duplicates are counted as
+    /// volume</b> — the footprint projection reads every stored print for the instrument, with no
+    /// coverage join — so the claim does not make this switch safe to leave on twice. Set it on the
+    /// one process meant to record. The claim is the backstop, not the configuration.
     /// </para>
     /// </remarks>
     public bool RecordTape { get; init; }

@@ -372,15 +372,33 @@ does report the loss, the holder drops the subscription, closes that listen's co
 the handover the replacement recorded** — never at the instant it noticed, which would claim a
 window the replacement claims too — and reports `HeldByAnotherRecorder` at the point of use.
 
-**What remains open is clock skew between hosts, and it is stated rather than claimed away.** Both
-processes compare their own clock to one stored expiry, so a taker running more than a term ahead
-of the holder can acquire while the holder still believes it is inside its term; no local mechanism
-fixes that, because it needs one clock. The generation check still leaves exactly one *owner* —
-what skew can produce is a second *writer*, and those are not the same property. The rows that
-produces are not reportable as ordinary volume: they fall outside the retiring holder's range,
-which ended at the handover, so a reader confined to covered windows does not count them. They are
-unreferenced rows. The mitigation is the ordinary one: run the recorder on one host, or keep hosts
-synchronised.
+**What remains open is clock skew between hosts, and it has no mitigation in this repository.**
+Both processes compare their own clock to one stored expiry, so a taker running more than a term
+ahead of the holder can acquire while the holder still believes it is inside its term; no local
+mechanism fixes that, because it needs one clock. The generation check still leaves exactly one
+*owner* — what skew can produce is a second *writer*, and those are not the same property.
+
+**Those duplicate prints are counted.** An earlier draft of this record claimed they fall outside
+the retiring holder's coverage and so are not reported as volume. That was wrong twice over, and
+the correction is worth keeping visible because the claim is tempting. First, the duplicates are
+written *inside* the holder's own term — the fence permits them, because on that holder's clock the
+term has not run out — and the retiring range covers its term, so no close value moves them
+outside it. Second, and more fundamental, **nothing downstream reads by coverage in the sense that
+claim needs**: `FootprintProjector` aggregates every `Trades` row for the instrument with no
+coverage join and no time predicate, and coverage enters only at `VolumeProfileService.ConfineAsync`,
+which trims the reported *window* rather than which prints built a cell. `Trades` has no link to a
+coverage range, so "an unreferenced row" is not a state a print can be in. With `Sequence` a
+per-process counter the two copies do not collapse either.
+
+So under skew beyond one term the failure at the top of this record is reachable: doubled volume
+and a doubled delta, reported as an ordinary answer. **The only mitigation is one clock** — run the
+recorder on a single host, or keep hosts synchronised. This is the residual, stated plainly rather
+than argued away, and it is pinned by a test so it cannot quietly be re-read as fixed.
+
+What *is* guaranteed is narrower and worth stating separately: the retiring holder closes its range
+using **its own clock only** — the last instant it was both entitled to write and still listening —
+so a replacement's clock can never decide how much coverage this process claims, and the range
+never extends over a window in which this process had unsubscribed and stored nothing.
 
 ### What this does not do
 

@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Threading.Channels;
 using MarqSpec.Client.ProjectX.Api.Models;
 using MarqSpec.Client.ProjectX.WebSocket;
@@ -80,7 +81,13 @@ public sealed class TradeTapeRecorder : BackgroundService
     private readonly TapeAvailabilityHolder _tape;
     private readonly Channel<PendingPrint> _channel;
     private readonly Channel<LifecycleWork> _lifecycle;
-    private readonly Dictionary<string, Attribution> _attribution = new(StringComparer.Ordinal);
+    /// <summary>
+    /// The contracts this process intends to record, by contract id. Concurrent because the
+    /// renewal task adds to it — an instrument picked up on a retry — while the drain task reads
+    /// it to attribute a print.
+    /// </summary>
+    private readonly ConcurrentDictionary<string, Attribution> _attribution =
+        new(StringComparer.Ordinal);
 
     /// <summary>
     /// Contracts this process resolved but does not hold the claim for — refused at start, or
@@ -89,6 +96,12 @@ public sealed class TradeTapeRecorder : BackgroundService
     /// backfill (gh#404).
     /// </summary>
     private readonly Dictionary<string, Attribution> _refused = new(StringComparer.Ordinal);
+
+    /// <summary>
+    /// Contracts already warned about a fenced print, so a busy tape past its claim logs one line
+    /// rather than one per print. Cleared when the contract is subscribed again.
+    /// </summary>
+    private readonly ConcurrentDictionary<string, byte> _fenceWarned = new(StringComparer.Ordinal);
     private readonly Dictionary<(string Venue, string Instrument, string Contract), long> _sequences = [];
 
     /// <summary>
@@ -408,7 +421,11 @@ public sealed class TradeTapeRecorder : BackgroundService
 
         foreach (string contractId in _attribution.Keys.ToList())
         {
-            Attribution attribution = _attribution[contractId];
+            if (!_attribution.TryGetValue(contractId, out Attribution attribution))
+            {
+                continue;
+            }
+
             TapeLeaseOutcome outcome;
             try
             {
@@ -437,7 +454,7 @@ public sealed class TradeTapeRecorder : BackgroundService
                 continue;
             }
 
-            _attribution.Remove(contractId);
+            _attribution.TryRemove(contractId, out _);
             _refused[contractId] = attribution;
 
             TapeAvailability refusal = outcome.HolderId is null
@@ -512,7 +529,7 @@ public sealed class TradeTapeRecorder : BackgroundService
                         + "recording without a claim. It will re-attempt.",
                         instrument);
                     _lease.Forfeit(venue, instrument);
-                    await StandDownAsync(venue, instrument, term.Value, stoppingToken)
+                    await StandDownAsync(venue, instrument, ClaimEnd(term), stoppingToken)
                         .ConfigureAwait(false);
                     continue;
                 }
@@ -527,14 +544,48 @@ public sealed class TradeTapeRecorder : BackgroundService
 
             if (!renewal.Kept)
             {
-                // Close at the handover, never at the notice. The window between them was written
-                // by two processes, and a range ending at notice would report it as ordinary
-                // covered volume — the doubled delta ADR-0016 exists to prevent.
-                DateTimeOffset closeAt = renewal.ReclaimedAt ?? term ?? _clock.GetUtcNow();
-                await StandDownAsync(venue, instrument, closeAt, stoppingToken)
+                if (renewal.ReclaimedAt is not null)
+                {
+                    _logger.LogWarning(
+                        "The tape claim on {Instrument} was taken over; the replacement recorded "
+                        + "taking it at {Handover}, on its own clock.",
+                        instrument,
+                        renewal.ReclaimedAt);
+                }
+
+                await StandDownAsync(venue, instrument, ClaimEnd(term), stoppingToken)
                     .ConfigureAwait(false);
             }
         }
+    }
+
+    /// <summary>
+    /// When a claim this process has lost stopped being its own: the last instant it was both
+    /// entitled to write and still listening.
+    /// </summary>
+    /// <param name="term">The expiry this process last wrote, when it had one.</param>
+    /// <returns>The exclusive end for the coverage range it is giving up.</returns>
+    /// <remarks>
+    /// <para>
+    /// <b>Both operands are this process's own clock, and the replacement's is never one of
+    /// them.</b> A takeover is only reachable once the holder's term has run out, so the
+    /// replacement stamps its acquisition at or after that expiry — and if the two clocks disagree,
+    /// arbitrarily far past it. Closing there would let another host decide how much coverage this
+    /// process claims, and would extend the range across a window in which this process had
+    /// already unsubscribed and stored nothing. A covered window with no prints reads as a quiet
+    /// market rather than as an absence, which is the confusion gh#365 and gh#376 exist to prevent.
+    /// </para>
+    /// <para>
+    /// <c>term</c> is the same value <see cref="TapeLease.MayWrite"/> fences on, so the range and
+    /// the prints inside it agree by construction: nothing was stored past it, and nothing past it
+    /// is claimed. <c>now</c> is when the subscription is being dropped, and a range cannot outlive
+    /// the listen it describes.
+    /// </para>
+    /// </remarks>
+    private DateTimeOffset ClaimEnd(DateTimeOffset? term)
+    {
+        DateTimeOffset now = _clock.GetUtcNow();
+        return term is null || now < term ? now : term.Value;
     }
 
     /// <summary>
@@ -660,7 +711,7 @@ public sealed class TradeTapeRecorder : BackgroundService
         {
             // Out of the intended set first, so a reconnect racing this cannot restore it, and
             // into the retry set, so the instrument comes back if the claim frees up again.
-            _attribution.Remove(contractId);
+            _attribution.TryRemove(contractId, out _);
             _refused[contractId] = new Attribution(venue, instrument);
 
             if (hub is not null)
@@ -849,6 +900,7 @@ public sealed class TradeTapeRecorder : BackgroundService
                         attribution.Venue, attribution.Instrument, contractId, start, cancellationToken)
                     .ConfigureAwait(false);
 
+                _fenceWarned.TryRemove(contractId, out _);
                 _tape.Set(attribution.Instrument, TapeAvailability.Listening());
                 return true;
             }
@@ -968,10 +1020,18 @@ public sealed class TradeTapeRecorder : BackgroundService
             // at or after this process's own term is therefore not stored (gh#404).
             if (!_lease.MayWrite(attribution.Venue, attribution.Instrument, pending.ReceivedAt))
             {
-                _logger.LogWarning(
-                    "A print on {Contract} was received after this recorder's tape claim expired "
-                    + "and was not stored. Another process may already hold that tape.",
-                    update.ContractId);
+                // Once per contract, not once per print: a busy tape past its claim would other-
+                // wise log thousands of identical lines and bury the one that matters. The flag
+                // clears when this contract is subscribed again.
+                if (_fenceWarned.TryAdd(update.ContractId, 0))
+                {
+                    _logger.LogWarning(
+                        "A print on {Contract} was received after this recorder's tape claim "
+                        + "expired and was not stored, and further ones will be dropped silently. "
+                        + "Another process may already hold that tape.",
+                        update.ContractId);
+                }
+
                 return;
             }
 

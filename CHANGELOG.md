@@ -36,10 +36,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   claim is per instrument and not per store. A claim whose expiry has passed is reclaimable, so a crash
   strands the tape for at most one term rather than indefinitely; a quiet holder whose expiry has *not*
   passed is still the holder; and a holder **stores no print past its own claim's expiry**, so a takeover
-  does not leave two processes writing the same prints under different `Sequence` keys. Not closed: two
-  hosts whose clocks differ by more than the term can still both write briefly — those rows fall outside the
-  retiring holder's coverage range, so they are not reported as volume, but the fix is a synchronised clock
-  (gh#404).
+  does not leave two processes writing the same prints under different `Sequence` keys. A retiring holder
+  closes its coverage range on its own clock, so a replacement's clock cannot extend what this process
+  claims. **Not closed, and with no mitigation in the server:** two hosts whose clocks differ by more than
+  the claim's term can still both write, and those duplicate prints **are** counted as volume — the
+  footprint projection reads every stored print for an instrument with no coverage join. Run the recorder on
+  one host, or keep hosts synchronised (gh#404).
 
 ### Fixed
 

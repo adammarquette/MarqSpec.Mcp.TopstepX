@@ -338,41 +338,6 @@ outage is the hole between two closed ranges: they must meet it with no slack on
 
 Not a hypertable. This is a ledger, like §3, not a time series of events.
 
-## §10 `TapeLeases` — who is allowed to record
-
-| Column | Type | Note |
-|---|---|---|
-| `Venue` `Instrument` | | PK |
-| `OwnerId` | `varchar(64)` | the holding process, new on every start |
-| `Generation` | `bigint` | concurrency token; bumped on acquire and takeover |
-| `AcquiredAt` `HeartbeatAt` `ExpiresAt` | `timestamptz` | |
-
-Not market data — the one table here that records something about *this system* rather than about
-the market. It exists because ADR-0016's rule that two subscribers on one tape double every volume
-was prose that nothing enforced: a recorder takes a claim on each instrument **before** it
-subscribes and before it runs the §8 discard, and one that cannot get a claim does not subscribe
-and does not fault its host (gh#404).
-
-**Keyed per `(Venue, Instrument)`, not per store.** Two recorders split by
-`MarketData__Instruments` are a supported deployment that §8's discard already protects; a
-whole-store claim would outlaw it. Only the overlap that doubles volume is refused.
-
-**A row is held until its `ExpiresAt` has passed**, whatever its holder is doing — a quiet holder
-is a holder, and an unreadable store refuses rather than granting. The absence of a row is the only
-free state: a clean stop deletes its own, so a redeploy does not wait out the expiry. The holder
-renews at a third of the time to live, so two lost renewals are survivable. `Generation` makes the
-takeover of a lapsed row one conditional update, so two starts reclaiming it leave one holder and
-not two; the loser re-reads and is refused. A holder that is taken over while still subscribed
-learns so at its next renewal and drops the subscription, which is what makes an expiry safe rather
-than a second way to get two writers.
-
-**This is not signalled through §3 or §8.** A `BarCoverage` row means the venue answered a range
-and had nothing, and a `TapeCoverage` row means a subscription was listening; both are facts about
-the market and the tape, not about which process is running. Putting "someone else holds this" on
-either would make an availability signal indistinguishable from a data fact.
-
-Not a hypertable, and not a time series at all — at most one row per instrument per venue.
-
 ## §9 `FootprintCells` — a projection over §7
 
 | Column | Type | Note |
@@ -403,6 +368,60 @@ Not a hypertable. The tape is the high-volume series; this is its projection, re
 these cells plus §8 (`R-9`, gh#221). The host reads the cells and the listening ledger and calls Domain;
 nothing here is written for that answer. A window that spans a roll or a listening hole is confined to
 the newest contiguous run of one contract, and the reported window is that run, not the ask.
+
+## §10 `TapeLeases` — who is allowed to record
+
+| Column | Type | Note |
+|---|---|---|
+| `Venue` `Instrument` | | PK |
+| `OwnerId` | `varchar(64)` | the holding process, new on every start |
+| `Generation` | `bigint` | concurrency token; bumped on acquire and takeover |
+| `AcquiredAt` `HeartbeatAt` `ExpiresAt` | `timestamptz` | |
+
+Not market data — the one table here that records something about *this system* rather than about
+the market. It exists because ADR-0016's rule that two subscribers on one tape double every volume
+was prose that nothing enforced: a recorder takes a claim on each instrument **before** it
+subscribes and before it runs the §8 discard, and one that cannot get a claim does not subscribe
+and does not fault its host (gh#404).
+
+**Keyed per `(Venue, Instrument)`, not per store.** Two recorders split by
+`MarketData__Instruments` are a supported deployment that §8's discard already protects; a
+whole-store claim would outlaw it. Only the overlap that doubles volume is refused.
+
+**A row is held until its `ExpiresAt` has passed**, whatever its holder is doing — a quiet holder
+is a holder, and an unreadable store refuses rather than granting. The absence of a row is the only
+free state: a clean stop deletes its own, so a redeploy does not wait out the expiry. The holder
+renews at a third of the time to live, so two lost renewals are survivable. `Generation` makes the
+takeover of a lapsed row one conditional update, so two starts reclaiming it leave one holder and
+not two; the loser re-reads and is refused.
+
+**A refusal is re-attempted, not final.** A start that is refused stays up and asks again on the
+renew cadence. Without that, a rolling redeploy ends with the arriving container quitting and the
+draining one deleting its row — nothing recording, permanently, and a tape gap has no backfill.
+That is worse than the double-recording the claim prevents.
+
+**A holder writes only inside its own term.** `ExpiresAt` is the earliest instant anyone else may
+hold the claim, so it is the latest instant this process stores a print — checked per print,
+against the print's receipt. Waiting to be told instead would leave both processes writing for up
+to one renew interval after a handover, and `Trades.Sequence` is a per-process counter, so the same
+print takes a different key in each and lands **twice** rather than collapsing. A holder that is
+taken over closes its coverage range at the **handover**, never at the instant it noticed, so no
+two ranges claim one window.
+
+**The residual is clock skew, and it is not closed.** Both processes compare their own clock to one
+stored expiry, so a taker running more than one term ahead of the holder can acquire while the
+holder still believes it is inside its term. Only one process is ever the *owner* — the generation
+check guarantees that — but two can briefly be *writers*. The duplicate rows that produces fall
+outside the retiring holder's range, so a reader confined to covered windows does not count them
+twice; they are unreferenced rows, not doubled volume. Run the recorder on one host, or keep hosts
+synchronised.
+
+**This is not signalled through §3 or §8.** A `BarCoverage` row means the venue answered a range
+and had nothing, and a `TapeCoverage` row means a subscription was listening; both are facts about
+the market and the tape, not about which process is running. Putting "someone else holds this" on
+either would make an availability signal indistinguishable from a data fact.
+
+Not a hypertable, and not a time series at all — at most one row per instrument per venue.
 
 ---
 *Changing an entity or a migration? Update the section above in the same PR. A data dictionary that lags the

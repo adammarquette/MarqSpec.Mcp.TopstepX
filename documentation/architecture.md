@@ -546,9 +546,15 @@ dating today's pick. It does not fetch bars and does not write a roll row.
   **One recorder per instrument is enforced, not assumed** (gh#404): a start takes a store-backed
   claim on each instrument — `TapeLeases`, keyed `(Venue, Instrument)` so a deployment split by
   `MarketData__Instruments` stays legal — before it subscribes and before it discards crash
-  leftovers, and a start that cannot get one declines cleanly rather than faulting `ExecuteTask`.
-  A lapsed claim is reclaimable so a crash cannot strand the tape, and a holder taken over while
-  still subscribed stands down at its next renewal rather than becoming the second writer.
+  leftovers. A start that cannot get one declines cleanly rather than faulting `ExecuteTask`, and
+  **stays up re-attempting**, so a rolling redeploy does not end with the arriving process quitting
+  and the draining one releasing its claim — nothing recording is worse than recording twice, and a
+  tape gap has no backfill. A lapsed claim is reclaimable, so a crash strands the tape for at most
+  one term. A holder **writes no print past its own claim's expiry**, which is the earliest instant
+  a replacement could exist, and closes its coverage range at the handover rather than at the
+  moment it noticed; waiting to be told would leave both processes writing under different
+  `Sequence` keys, which is doubled volume rather than a collapsed duplicate. Clock skew beyond one
+  term is the acknowledged residual (ADR-0016).
   Live tape health is a
   mutable holder written from that same lifecycle and read at the point of use (gh#218) — the opposite
   of the store probe, which is set once at startup and never re-probed. `get_footprint` and

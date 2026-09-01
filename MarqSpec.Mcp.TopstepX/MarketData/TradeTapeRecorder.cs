@@ -81,6 +81,14 @@ public sealed class TradeTapeRecorder : BackgroundService
     private readonly Channel<PendingPrint> _channel;
     private readonly Channel<LifecycleWork> _lifecycle;
     private readonly Dictionary<string, Attribution> _attribution = new(StringComparer.Ordinal);
+
+    /// <summary>
+    /// Contracts this process resolved but does not hold the claim for — refused at start, or
+    /// stood down from later. Re-attempted on every renewal tick, because a refusal that never
+    /// retried would turn a rolling redeploy into nothing recording at all, and a tape gap has no
+    /// backfill (gh#404).
+    /// </summary>
+    private readonly Dictionary<string, Attribution> _refused = new(StringComparer.Ordinal);
     private readonly Dictionary<(string Venue, string Instrument, string Contract), long> _sequences = [];
 
     /// <summary>
@@ -264,11 +272,18 @@ public sealed class TradeTapeRecorder : BackgroundService
                     gateway.VenueId, stoppingToken).ConfigureAwait(false);
                 if (refusedEverything is not null)
                 {
+                    // Refused everything, and it still stays up. Quitting here is what turns a
+                    // rolling redeploy into a silent stop: the new container is refused, exits,
+                    // and then the old one drains and releases its rows, leaving nothing
+                    // recording — permanently, and with no backfill to repair the gap. That is a
+                    // worse outcome than the double-recording this card exists to prevent, so the
+                    // recorder holds its connection and retries instead (gh#404).
                     _tape.Set(refusedEverything);
                     _logger.LogWarning(
                         "Every configured instrument's tape is claimed by another recorder, so this "
-                        + "one did not subscribe. It still serves reads; the tape tools refuse.");
-                    return;
+                        + "start subscribed to nothing. It stays up and re-attempts every {Interval}, "
+                        + "taking over as soon as a claim is released or lapses.",
+                        _lease.RenewInterval);
                 }
 
                 // Crash leftovers of this process's own instruments only, and so after the
@@ -417,10 +432,13 @@ public sealed class TradeTapeRecorder : BackgroundService
 
             if (outcome.IsGranted)
             {
+                _refused.Remove(contractId);
+                _tape.ClearUnclaimed(attribution.Instrument);
                 continue;
             }
 
             _attribution.Remove(contractId);
+            _refused[contractId] = attribution;
 
             TapeAvailability refusal = outcome.HolderId is null
                 ? TapeAvailability.NeverStartedBecauseTheClaimIsUnreadable()
@@ -457,32 +475,151 @@ public sealed class TradeTapeRecorder : BackgroundService
         {
             await Task.Delay(_lease.RenewInterval, _clock, stoppingToken).ConfigureAwait(false);
 
-            foreach ((string venue, string instrument) in _lease.Held)
+            await RenewHeldClaimsAsync(stoppingToken).ConfigureAwait(false);
+            await RetryRefusedClaimsAsync(stoppingToken).ConfigureAwait(false);
+        }
+    }
+
+    private async Task RenewHeldClaimsAsync(CancellationToken stoppingToken)
+    {
+        foreach ((string venue, string instrument) in _lease.Held)
+        {
+            // Read before renewing: a renewal that loses the claim clears it, and this is the
+            // instant after which this process could no longer prove it was the holder.
+            DateTimeOffset? term = _lease.ExpiryOf(venue, instrument);
+
+            TapeLeaseRenewal renewal;
+            try
             {
-                bool kept;
-                try
+                renewal = await _lease.TryRenewAsync(venue, instrument, stoppingToken)
+                    .ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception exception)
+            {
+                if (term is not null && _clock.GetUtcNow() >= term)
                 {
-                    kept = await _lease.TryRenewAsync(venue, instrument, stoppingToken)
-                        .ConfigureAwait(false);
-                }
-                catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
-                {
-                    throw;
-                }
-                catch (Exception exception)
-                {
+                    // The term ran out and the store will not say who holds it now. Another start
+                    // may already have taken it, so "probably still mine" is exactly the
+                    // assumption that produces two writers. Give it up and re-attempt.
                     _logger.LogError(
                         exception,
-                        "The trade-tape recorder could not renew its tape claim on {Instrument}. "
-                        + "It is still the holder until the claim expires, and will try again.",
+                        "The trade-tape recorder could not renew its tape claim on {Instrument} "
+                        + "before it expired, so it is giving the instrument up rather than "
+                        + "recording without a claim. It will re-attempt.",
                         instrument);
+                    _lease.Forfeit(venue, instrument);
+                    await StandDownAsync(venue, instrument, term.Value, stoppingToken)
+                        .ConfigureAwait(false);
                     continue;
                 }
 
-                if (!kept)
-                {
-                    await StandDownAsync(venue, instrument, stoppingToken).ConfigureAwait(false);
-                }
+                _logger.LogError(
+                    exception,
+                    "The trade-tape recorder could not renew its tape claim on {Instrument}. "
+                    + "It is still the holder until the claim expires, and will try again.",
+                    instrument);
+                continue;
+            }
+
+            if (!renewal.Kept)
+            {
+                // Close at the handover, never at the notice. The window between them was written
+                // by two processes, and a range ending at notice would report it as ordinary
+                // covered volume — the doubled delta ADR-0016 exists to prevent.
+                DateTimeOffset closeAt = renewal.ReclaimedAt ?? term ?? _clock.GetUtcNow();
+                await StandDownAsync(venue, instrument, closeAt, stoppingToken)
+                    .ConfigureAwait(false);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Re-attempts every instrument this process resolved but does not hold — refused at start, or
+    /// stood down from since.
+    /// </summary>
+    /// <remarks>
+    /// This is what keeps a refusal from being permanent. A redeploy whose old container has not
+    /// drained yet, a restart seconds after a crash, an operator stopping the duplicate: each is a
+    /// claim that becomes takeable within one term, and nothing else would ever take it. The
+    /// recorder does not try to recognise its own predecessor to shortcut that wait — see
+    /// <see cref="TapeLease.OwnerId"/> for why no identity is safe enough to key it on.
+    /// </remarks>
+    /// <param name="stoppingToken">The stopping token.</param>
+    /// <returns>A task that completes when every refused instrument has been re-attempted.</returns>
+    private async Task RetryRefusedClaimsAsync(CancellationToken stoppingToken)
+    {
+        if (_refused.Count == 0)
+        {
+            return;
+        }
+
+        foreach ((string contractId, Attribution attribution) in _refused.ToList())
+        {
+            TapeLeaseOutcome outcome;
+            try
+            {
+                outcome = await _lease
+                    .TryAcquireAsync(attribution.Venue, attribution.Instrument, stoppingToken)
+                    .ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception exception)
+            {
+                _logger.LogError(
+                    exception,
+                    "The trade-tape recorder could not re-attempt the tape claim for {Instrument}.",
+                    attribution.Instrument);
+                continue;
+            }
+
+            if (!outcome.IsGranted)
+            {
+                continue;
+            }
+
+            _refused.Remove(contractId);
+            _attribution[contractId] = attribution;
+            _tape.ClearUnclaimed(attribution.Instrument);
+
+            _logger.LogInformation(
+                "The trade-tape recorder took the tape claim for {Instrument} and is starting to "
+                + "record it.",
+                attribution.Instrument);
+
+            // The claim is new, so any still-open row under it is a leftover this process now
+            // supersedes — the same discard a start does, scoped the same way (gh#382).
+            try
+            {
+                await _ledger
+                    .DiscardAbandonedOpenRangesAsync(
+                        attribution.Venue, [attribution.Instrument], stoppingToken)
+                    .ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception exception)
+            {
+                _logger.LogError(
+                    exception,
+                    "The trade-tape recorder could not discard abandoned coverage for {Instrument} "
+                    + "after taking its claim.",
+                    attribution.Instrument);
+            }
+
+            IProjectXWebSocketClient? hub = _hub;
+            if (hub is not null && hub.MarketHubState == ConnectionState.Connected)
+            {
+                await SubscribeOneAsync(hub, contractId, attribution, stoppingToken)
+                    .ConfigureAwait(false);
             }
         }
     }
@@ -493,11 +630,17 @@ public sealed class TradeTapeRecorder : BackgroundService
     /// </summary>
     /// <param name="venue">The venue.</param>
     /// <param name="instrument">The instrument this process is no longer the holder of.</param>
+    /// <param name="closeAt">
+    /// When this process stopped being the holder — the replacement's acquisition, or this
+    /// process's own expiry. Never the instant it found out: a range ending there would claim a
+    /// window the replacement also claims.
+    /// </param>
     /// <param name="cancellationToken">The stopping token.</param>
     /// <returns>A task that completes when the subscription is dropped and the range closed.</returns>
     private async Task StandDownAsync(
         string venue,
         string instrument,
+        DateTimeOffset closeAt,
         CancellationToken cancellationToken)
     {
         _logger.LogError(
@@ -515,8 +658,10 @@ public sealed class TradeTapeRecorder : BackgroundService
 
         foreach (string contractId in contracts)
         {
-            // Out of the intended set first, so a reconnect racing this cannot restore it.
+            // Out of the intended set first, so a reconnect racing this cannot restore it, and
+            // into the retry set, so the instrument comes back if the claim frees up again.
             _attribution.Remove(contractId);
+            _refused[contractId] = new Attribution(venue, instrument);
 
             if (hub is not null)
             {
@@ -539,7 +684,7 @@ public sealed class TradeTapeRecorder : BackgroundService
                 }
             }
 
-            _ledger.CloseOpenRangeAt(contractId, _clock.GetUtcNow());
+            _ledger.CloseOpenRangeAt(contractId, closeAt);
         }
 
         try
@@ -649,7 +794,38 @@ public sealed class TradeTapeRecorder : BackgroundService
         }
 
         int restored = 0;
-        foreach ((string contractId, Attribution attribution) in _attribution)
+        foreach ((string contractId, Attribution attribution) in _attribution.ToList())
+        {
+            if (await SubscribeOneAsync(hub, contractId, attribution, cancellationToken)
+                .ConfigureAwait(false))
+            {
+                restored++;
+            }
+        }
+
+        if (restored > 0)
+        {
+            _logger.LogInformation(
+                "Restored trade subscriptions for {Count} contract(s). Connected is not listening.",
+                restored);
+        }
+    }
+
+    /// <summary>
+    /// Subscribes one contract and opens its coverage range. Shared by the restore-on-connect path
+    /// and by the retry that picks an instrument up after its claim frees.
+    /// </summary>
+    /// <param name="hub">The connected market hub.</param>
+    /// <param name="contractId">The contract to subscribe.</param>
+    /// <param name="attribution">Its venue and instrument.</param>
+    /// <param name="cancellationToken">The stopping token.</param>
+    /// <returns>Whether this contract is now listening.</returns>
+    private async Task<bool> SubscribeOneAsync(
+        IProjectXWebSocketClient hub,
+        string contractId,
+        Attribution attribution,
+        CancellationToken cancellationToken)
+    {
         {
             bool subscribed = false;
 
@@ -674,7 +850,7 @@ public sealed class TradeTapeRecorder : BackgroundService
                     .ConfigureAwait(false);
 
                 _tape.Set(attribution.Instrument, TapeAvailability.Listening());
-                restored++;
+                return true;
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
@@ -728,12 +904,7 @@ public sealed class TradeTapeRecorder : BackgroundService
             }
         }
 
-        if (restored > 0)
-        {
-            _logger.LogInformation(
-                "Restored trade subscriptions for {Count} contract(s). Connected is not listening.",
-                restored);
-        }
+        return false;
     }
 
     private async Task DrainAsync(CancellationToken stoppingToken)
@@ -784,6 +955,22 @@ public sealed class TradeTapeRecorder : BackgroundService
             {
                 _logger.LogWarning(
                     "A print on {Contract} arrived without a persisted coverage open and was not stored.",
+                    update.ContractId);
+                return;
+            }
+
+            // The fence. A renewal only reports a lost claim at the next tick, so between the
+            // expiry and that tick this process would otherwise keep writing prints a replacement
+            // is already writing too — and Sequence is a per-process counter, so the duplicate
+            // takes a different key and lands as a second row rather than collapsing. A footprint
+            // then reports doubled volume and a doubled delta as an ordinary answer, which is
+            // ADR-0016's failure arriving through the mechanism meant to stop it. A print received
+            // at or after this process's own term is therefore not stored (gh#404).
+            if (!_lease.MayWrite(attribution.Venue, attribution.Instrument, pending.ReceivedAt))
+            {
+                _logger.LogWarning(
+                    "A print on {Contract} was received after this recorder's tape claim expired "
+                    + "and was not stored. Another process may already hold that tape.",
                     update.ContractId);
                 return;
             }

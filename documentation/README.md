@@ -51,7 +51,7 @@ rather than reword it.
 | [`project-board-workflow.md`](project-board-workflow.md) | 6.1K | You are filing, grooming or moving a card. **The board is project #5; #4 is retired.** The board makes two of the seven transitions by itself; the other five are somebody's deliberate act. |
 | [`work-estimate-rubric.md`](work-estimate-rubric.md) | 1.0K | You are setting a `Work Estimate` on an issue. |
 | [`agents/README.md`](agents/README.md) | 1.0K | You are wearing a role hat. **This row prices the index, not the route it serves** — each contract behind it is a separate read, and the index prices all five in its own gated `~tok` column (gh#178). Reviewer, Platform and Coordinator contracts **never auto-load**; open them yourself. |
-| [`../CONTRIBUTING.md`](../CONTRIBUTING.md) | 4.2K | Branching, claiming, commits, PRs, and the Definition of Done. |
+| [`../CONTRIBUTING.md`](../CONTRIBUTING.md) | 4.3K | Branching, claiming, commits, PRs, and the Definition of Done. |
 | [`../AGENTS.md`](../AGENTS.md) | 2.3K | Loads automatically. The non-negotiables and the role routing table. |
 
 ## Decisions — [`adr/`](adr/README.md)

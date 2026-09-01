@@ -13,6 +13,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- The composed MCP endpoint is no longer published on every interface. `docker-compose.yml`'s `ports` entry
+  was a bare `- "8080:8080"`, which Docker maps on `0.0.0.0` and `[::]` — every interface the host has — while
+  [ADR-0007](documentation/adr/0007-dual-transport.md) asserted the HTTP path was "not exposed by default".
+  Compose also sets `Mcp__Transport: "Http"` and defaults `Mcp__HttpBearerToken` to `changeme-local`, a value
+  committed to this **public** repository, so anything able to route to the host could read balances,
+  positions and trade history on the default token. The port now binds `127.0.0.1` explicitly; the default
+  token stays, because the two are a coupling and widening the bind means setting a real token in the same
+  change. IPv6 `::1` is no longer bound either — a client that resolves `localhost` to `::1` without falling
+  back to IPv4 will need the literal `127.0.0.1` address (gh#415).
+
 ### Changed
 
 - `get_market_snapshot` reads its whole indicator map for a resolution in one query instead of eleven

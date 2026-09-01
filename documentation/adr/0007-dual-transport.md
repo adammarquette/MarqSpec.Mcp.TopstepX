@@ -110,7 +110,8 @@ CI gate for exactly this reason. The token had the assertion and no enforcement.
 
 The compose stack defaults the token to `changeme-local`, the same posture as `POSTGRES_PASSWORD`, so
 `docker compose up` works out of the box on a port published to localhost. That value is in a public
-repository and must change before the stack is reachable from anywhere else.
+repository and must change before the stack is reachable from anywhere else. (Corrected below: the
+2026-09-01 update found this was never true of the composed stack.)
 
 ## Update (2026-08-23) — "never listens" is not "never starts a listener"
 
@@ -235,11 +236,11 @@ token requirement was added to prevent, defeated by the assumption underneath it
 of the check itself. Nothing could be traded ([ADR-0002](0002-read-only-venue-boundary.md)); it was a data
 leak, not a trading risk.
 
-**The assumption was written down three times and never tested once.** `docker-compose.yml`, `.env.example`
-and `README.md` each told the reader to change the token "before that port is reachable from anywhere but
-localhost" — phrasing a future condition the operator would have to bring about, when it was already the
-case on the first `docker compose up`. A defence stated in three places is not three defences; all three
-were the same unexamined sentence.
+**The assumption was written down four times and never tested once.** `docker-compose.yml`, `.env.example`,
+`README.md` and this record's own 2026-08-22 update each told the reader to change the token "before that
+port is reachable from anywhere but localhost" — phrasing a future condition the operator would have to
+bring about, when it was already the case on the first `docker compose up`. A defence stated in four places
+is not four defences; all four were the same unexamined sentence.
 
 **The port is now bound explicitly: `- "127.0.0.1:8080:8080"`.** The default token stays, and the reason is
 recorded beside both: the default is acceptable *because* the bind address is loopback, and the two are a
@@ -249,8 +250,8 @@ and all three documents now say so in those terms.
 **What this does not do.** It does not add transport security — the endpoint is still plaintext HTTP, which
 is gh#416. It does not change the token requirement, which ADR-0007 already makes mandatory and gh#29 made
 real at request time. And it leaves the composed Postgres published the same way it always was: the same
-one-line shape on `- "5432:5432"`, carrying the same market data behind another public default. That is a
-separate card, deliberately not folded in here.
+one-line shape on `- "5432:5432"`, carrying the same market data behind another public default. That is
+gh#421's card, deliberately not folded in here.
 
 **No CI surface moves.** Nothing in `.github/workflows` or `scripts/` runs `docker compose`; the `image` gate
 drives the container over stdin with `docker run --rm -i` and publishes no port at all, which is why a green

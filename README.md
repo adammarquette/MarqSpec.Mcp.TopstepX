@@ -40,7 +40,8 @@ docker compose up -d       # Postgres (TimescaleDB + pgvector) and the HTTP serv
 `Authorization: Bearer <Mcp__HttpBearerToken>` — compose defaults that token to `changeme-local`, the same
 local convenience as `POSTGRES_PASSWORD` and `ProjectX__DataTier:-Simulated`. **Compose binds that port to
 `127.0.0.1`**, which is the only reason the default token is tolerable; publish it wider and you set a real
-token in the same change (gh#415).
+token in the same change (gh#415). That bind is IPv4-only — a client that resolves `localhost` to `::1`
+without falling back gets connection refused; use the literal `127.0.0.1` address if that happens.
 
 Register a **stdio** client against a locally launched process:
 

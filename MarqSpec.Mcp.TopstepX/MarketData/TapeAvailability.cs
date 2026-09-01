@@ -158,6 +158,24 @@ public sealed class TapeAvailability
             + "rather than doubling every volume. Only one process may record an instrument: stop "
             + "the second, or split MarketData__Instruments, then restart.");
 
+    /// <summary>
+    /// This process held the claim and could not renew it before it expired, so it gave the
+    /// instrument up rather than recording under a claim it can no longer show.
+    /// </summary>
+    /// <returns>An unavailable marker.</returns>
+    /// <remarks>
+    /// The same reason as <see cref="ClaimTakenOver"/> — this process does not hold the claim —
+    /// and a different sentence, because nobody necessarily took it. Telling an operator to go and
+    /// stop a second recorder that does not exist sends them after the wrong thing; the fault here
+    /// is between this process and the store.
+    /// </remarks>
+    public static TapeAvailability ClaimLapsed() =>
+        new(
+            TapeUnavailableReason.HeldByAnotherRecorder,
+            "This recorder could not renew its tape claim on this instrument before the claim "
+            + "expired, so it stopped recording rather than writing without one — another process "
+            + "is entitled to the tape from that moment. Check the database, then restart.");
+
     /// <summary>The claim could not be read, so ownership is unknown and nothing was subscribed.</summary>
     /// <returns>An unavailable marker.</returns>
     /// <remarks>

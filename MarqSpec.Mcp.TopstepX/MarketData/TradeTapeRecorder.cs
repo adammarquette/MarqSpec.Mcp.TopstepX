@@ -529,7 +529,12 @@ public sealed class TradeTapeRecorder : BackgroundService
                         + "recording without a claim. It will re-attempt.",
                         instrument);
                     _lease.Forfeit(venue, instrument);
-                    await StandDownAsync(venue, instrument, ClaimEnd(term), stoppingToken)
+                    await StandDownAsync(
+                            venue,
+                            instrument,
+                            ClaimEnd(term),
+                            TapeAvailability.ClaimLapsed(),
+                            stoppingToken)
                         .ConfigureAwait(false);
                     continue;
                 }
@@ -553,7 +558,12 @@ public sealed class TradeTapeRecorder : BackgroundService
                         renewal.ReclaimedAt);
                 }
 
-                await StandDownAsync(venue, instrument, ClaimEnd(term), stoppingToken)
+                await StandDownAsync(
+                        venue,
+                        instrument,
+                        ClaimEnd(term),
+                        TapeAvailability.ClaimTakenOver(),
+                        stoppingToken)
                     .ConfigureAwait(false);
             }
         }
@@ -682,9 +692,13 @@ public sealed class TradeTapeRecorder : BackgroundService
     /// <param name="venue">The venue.</param>
     /// <param name="instrument">The instrument this process is no longer the holder of.</param>
     /// <param name="closeAt">
-    /// When this process stopped being the holder — the replacement's acquisition, or this
-    /// process's own expiry. Never the instant it found out: a range ending there would claim a
-    /// window the replacement also claims.
+    /// The last instant this process was both entitled to write and still listening, from
+    /// <see cref="ClaimEnd"/>. Never the replacement's clock.
+    /// </param>
+    /// <param name="outcome">
+    /// Which of the two happened — the claim was taken, or it lapsed under a store this process
+    /// could not reach. They need different sentences: only one of them means go and stop another
+    /// recorder.
     /// </param>
     /// <param name="cancellationToken">The stopping token.</param>
     /// <returns>A task that completes when the subscription is dropped and the range closed.</returns>
@@ -692,11 +706,12 @@ public sealed class TradeTapeRecorder : BackgroundService
         string venue,
         string instrument,
         DateTimeOffset closeAt,
+        TapeAvailability outcome,
         CancellationToken cancellationToken)
     {
         _logger.LogError(
-            "Another recorder took this one's tape claim on {Instrument}. Dropping the subscription "
-            + "rather than leaving two writers on one tape.",
+            "This recorder no longer holds the tape claim on {Instrument}. Dropping the "
+            + "subscription rather than leaving two writers on one tape.",
             instrument);
 
         IProjectXWebSocketClient? hub = _hub;
@@ -755,7 +770,7 @@ public sealed class TradeTapeRecorder : BackgroundService
                 instrument);
         }
 
-        _tape.SetUnclaimed(instrument, TapeAvailability.ClaimTakenOver());
+        _tape.SetUnclaimed(instrument, outcome);
     }
 
     private void OnConnectionStatusChanged(object? sender, ConnectionStatusChange change)

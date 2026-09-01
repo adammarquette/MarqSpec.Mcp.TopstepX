@@ -306,13 +306,27 @@ it, turning a legitimate configuration into a refusal. What is refused is only t
 doubles volume: the *same* instrument in two processes. The same product at two venues stays two
 claims, for the same reason it is two series everywhere else in this repository.
 
-### The refusal: it declines, it does not fault
+### The refusal: it declines, it does not fault, and it does not give up
 
-A refused recorder logs, marks that instrument's tape health, and **returns cleanly**. It never
-throws out of `ExecuteAsync`: `Program.AnyFaulted` reads a faulted `ExecuteTask` (gh#76), so a
-refusal that threw would take the host down over a configuration an operator can fix without
-losing the reads the process is still perfectly able to serve. When *every* configured instrument
-is claimed, it does not even open the hub — there is nothing to connect for.
+A refused recorder logs, marks that instrument's tape health, and **does not throw**.
+`Program.AnyFaulted` reads a faulted `ExecuteTask` (gh#76), so a refusal that threw would take the
+host down over a configuration an operator can fix without losing the reads the process is still
+perfectly able to serve.
+
+**It also stays up and asks again**, every renew interval, for each instrument it was refused. That
+is not a refinement; without it the claim makes things worse. A rolling redeploy starts the new
+container while the old one is still draining, so the new one is refused every instrument — and if
+that were final it would quit, the old container would then finish draining and delete its rows,
+and **nothing would be recording, permanently**. A tape gap has no backfill, so a silent stop is a
+worse failure than the double-recording this record is trying to prevent. The retry also bounds the
+crash case: a process that dies leaves its row behind mid-term, so a container returning seconds
+later is refused, and it takes over when the term lapses rather than never.
+
+The recorder does **not** try to recognise its own predecessor to shortcut that wait. No identity
+earns it: a container id changes on every redeploy so it is not stable, and a host name or a
+configured name is shared by two containers on one host so it is not unique — and a key that is
+wrong in the second direction hands one tape to two writers, which is the whole failure. Waiting
+out at most one term is the cheaper mistake.
 
 `TapeAvailability` gains `HeldByAnotherRecorder`, distinct from every `NeverStarted` answer. The
 switch being off and someone else already recording are different situations with different fixes,
@@ -337,11 +351,36 @@ starts reclaiming one expired row race the same generation, exactly one update m
 loser re-reads and is refused.
 
 That leaves the case this record cares about most: **a holder merely paused past its expiry, taken
-over while it is still subscribed.** The expiry alone would produce exactly two writers there. It
-does not, because the losing holder finds out at its next renewal and **stands down** — it drops
-the venue subscription, closes that listen's coverage range rather than leaving it claiming
-coverage to `9999-12-31Z`, and reports `HeldByAnotherRecorder` at the point of use. Standing down,
-not the expiry, is what makes takeover safe.
+over while it is still subscribed.**
+
+Standing down at the next renewal is *not* sufficient, and it is worth being exact about why. The
+renewal only reports the loss at the next tick, so "stand down when you notice" leaves both
+processes writing for up to one renew interval — a third of the term. That window is not harmless.
+`Trades.Sequence` is a per-process counter seeded once from the stored maximum, so a print written
+by both processes takes a **different key in each** and the primary key does not collapse it: the
+row lands twice. A footprint over that window then reports doubled volume and a doubled delta as an
+ordinary answer, which is precisely the failure named at the top of this record, arriving through
+the mechanism written to prevent it. There is no vendor print id to deduplicate on, and the
+alternative natural key — time, price, size, direction — cannot tell two genuine one-lot buys on
+one tick apart, so collapsing on it would silently drop real prints.
+
+So the holder does not wait to be told. **Its own expiry is the last instant it stores a print**,
+checked per print against the print's receipt, because that expiry is the earliest instant anyone
+else could be holding the claim. A paused process therefore stops writing without needing to
+discover anything, and against one clock the overlap is not bounded but empty. When the renewal
+does report the loss, the holder drops the subscription, closes that listen's coverage range **at
+the handover the replacement recorded** — never at the instant it noticed, which would claim a
+window the replacement claims too — and reports `HeldByAnotherRecorder` at the point of use.
+
+**What remains open is clock skew between hosts, and it is stated rather than claimed away.** Both
+processes compare their own clock to one stored expiry, so a taker running more than a term ahead
+of the holder can acquire while the holder still believes it is inside its term; no local mechanism
+fixes that, because it needs one clock. The generation check still leaves exactly one *owner* —
+what skew can produce is a second *writer*, and those are not the same property. The rows that
+produces are not reportable as ordinary volume: they fall outside the retiring holder's range,
+which ended at the handover, so a reader confined to covered windows does not count them. They are
+unreferenced rows. The mitigation is the ordinary one: run the recorder on one host, or keep hosts
+synchronised.
 
 ### What this does not do
 

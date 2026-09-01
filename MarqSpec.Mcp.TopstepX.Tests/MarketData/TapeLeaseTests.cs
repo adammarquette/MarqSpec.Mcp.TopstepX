@@ -182,8 +182,13 @@ public sealed class TapeLeaseTests
             clock.Advance(paused.TimeToLive);
             await took.TryAcquireAsync(Venue, Instrument, CancellationToken.None);
 
-            (await paused.TryRenewAsync(Venue, Instrument, CancellationToken.None))
-                .Should().BeFalse("the row names someone else now");
+            TapeLeaseRenewal lost = await paused.TryRenewAsync(
+                Venue, Instrument, CancellationToken.None);
+
+            lost.Kept.Should().BeFalse("the row names someone else now");
+            lost.ReclaimedAt.Should().Be(_start + paused.TimeToLive,
+                "the loser closes its coverage range at the handover, not at the moment it "
+                + "noticed — a range ending at notice claims a window the replacement claims too");
             paused.Held.Should().BeEmpty();
 
             Rows(database).Should().ContainSingle(row => row.OwnerId == took.OwnerId,
@@ -205,7 +210,7 @@ public sealed class TapeLeaseTests
 
             clock.Advance(holder.RenewInterval);
             (await holder.TryRenewAsync(Venue, Instrument, CancellationToken.None))
-                .Should().BeTrue();
+                .Kept.Should().BeTrue();
 
             clock.Advance(holder.TimeToLive - holder.RenewInterval);
 
@@ -325,6 +330,116 @@ public sealed class TapeLeaseTests
         using (database)
         {
             lease.RenewInterval.Should().Be(lease.TimeToLive / 3);
+        }
+    }
+
+    [Fact]
+    public async Task AHolderPastItsOwnTerm_MayNotWriteAPrint_SoATakeoverCannotDoubleTheTape()
+    {
+        // The fence, and the reason the two-writer window is empty rather than merely short.
+        // A renewal only reports a lost claim at the next tick, so a holder that waited to be
+        // told would keep writing for up to one RenewInterval after a legitimate takeover — and
+        // Sequence is a per-process counter, so the same print written by both processes takes a
+        // different key in each and lands twice instead of collapsing. A footprint then reports
+        // doubled volume and a doubled delta as an ordinary answer, which is precisely ADR-0016's
+        // failure mode. So the holder does not wait: its own expiry is the last instant it writes,
+        // and that is the earliest instant anyone else can hold the claim.
+        FakeTimeProvider clock = new(_start);
+        (TapeLease lease, TopstepXDbContext database, ServiceProvider services) = Build(clock);
+
+        await using (services)
+        await using (database)
+        {
+            await lease.TryAcquireAsync(Venue, Instrument, CancellationToken.None);
+
+            lease.MayWrite(Venue, Instrument, _start).Should().BeTrue();
+            lease.MayWrite(Venue, Instrument, _start + lease.TimeToLive - TimeSpan.FromTicks(1))
+                .Should().BeTrue("the term is this process's to write in");
+
+            lease.MayWrite(Venue, Instrument, _start + lease.TimeToLive)
+                .Should().BeFalse("the expiry is exclusive: it is when someone else may take over");
+            lease.MayWrite(Venue, Instrument, _start + lease.TimeToLive + TimeSpan.FromMinutes(5))
+                .Should().BeFalse();
+        }
+    }
+
+    [Fact]
+    public async Task TheFence_AsksWhenThePrintArrived_NotWhenTheStoreGotRoundToIt()
+    {
+        // A slow drain must not throw away a print this process genuinely held the claim for.
+        // The question is whether the claim covered the print, not whether it covers now.
+        FakeTimeProvider clock = new(_start);
+        (TapeLease lease, TopstepXDbContext database, ServiceProvider services) = Build(clock);
+
+        await using (services)
+        await using (database)
+        {
+            await lease.TryAcquireAsync(Venue, Instrument, CancellationToken.None);
+            DateTimeOffset arrived = _start + TimeSpan.FromSeconds(1);
+
+            clock.Advance(lease.TimeToLive * 2);
+
+            lease.MayWrite(Venue, Instrument, arrived).Should().BeTrue(
+                "the print arrived well inside the term, however late the drain reached it");
+            lease.MayWrite(Venue, Instrument, clock.GetUtcNow()).Should().BeFalse();
+        }
+    }
+
+    [Fact]
+    public async Task ARenewal_MovesTheFence_SoAHolderThatKeepsItsClaimKeepsWriting()
+    {
+        FakeTimeProvider clock = new(_start);
+        (TapeLease lease, TopstepXDbContext database, ServiceProvider services) = Build(clock);
+
+        await using (services)
+        await using (database)
+        {
+            await lease.TryAcquireAsync(Venue, Instrument, CancellationToken.None);
+
+            clock.Advance(lease.RenewInterval);
+            await lease.TryRenewAsync(Venue, Instrument, CancellationToken.None);
+
+            lease.MayWrite(Venue, Instrument, _start + lease.TimeToLive).Should().BeTrue(
+                "the renewal pushed the term out past the original expiry");
+        }
+    }
+
+    [Fact]
+    public async Task AForfeitedClaim_StopsWritingImmediately_WithoutTouchingTheStore()
+    {
+        // The store is the thing that is not answering, so the row is left exactly as it is: it
+        // may already belong to a replacement, and deleting it would hand the tape to a third
+        // process. What must change at once is this process's own behaviour.
+        FakeTimeProvider clock = new(_start);
+        (TapeLease lease, TopstepXDbContext database, ServiceProvider services) = Build(clock);
+
+        await using (services)
+        await using (database)
+        {
+            await lease.TryAcquireAsync(Venue, Instrument, CancellationToken.None);
+
+            lease.Forfeit(Venue, Instrument);
+
+            lease.MayWrite(Venue, Instrument, _start).Should().BeFalse();
+            lease.Held.Should().BeEmpty();
+            Rows(database).Should().ContainSingle(row => row.OwnerId == lease.OwnerId,
+                "forfeiting is about this process, and says nothing about who owns the row");
+        }
+    }
+
+    [Fact]
+    public async Task AnUnheldInstrument_MayNotBeWritten_SoAnUnclaimedTapeIsNeverRecorded()
+    {
+        FakeTimeProvider clock = new(_start);
+        (TapeLease lease, TopstepXDbContext database, ServiceProvider services) = Build(clock);
+
+        await using (services)
+        await using (database)
+        {
+            await lease.TryAcquireAsync(Venue, "ES", CancellationToken.None);
+
+            lease.MayWrite(Venue, "NQ", _start).Should().BeFalse(
+                "holding one instrument is not a licence to record another");
         }
     }
 

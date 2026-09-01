@@ -114,4 +114,19 @@ public sealed class TapeAvailabilityHolder
         ArgumentNullException.ThrowIfNull(value);
         _unclaimed[new InstrumentId(instrument).Symbol] = value;
     }
+
+    /// <summary>
+    /// Forgets a recorded refusal, because this process has since taken that instrument's claim.
+    /// </summary>
+    /// <param name="instrument">The instrument now claimed.</param>
+    /// <remarks>
+    /// Without this the refusal outranks every later answer for the life of the process, and an
+    /// instrument the recorder picked up on a retry would still read as another recorder's. A
+    /// refusal is a fact with an expiry, not a permanent one (gh#404).
+    /// </remarks>
+    public void ClearUnclaimed(string instrument)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(instrument);
+        _unclaimed.TryRemove(new InstrumentId(instrument).Symbol, out _);
+    }
 }

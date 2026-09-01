@@ -26,14 +26,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **A second concurrent tape recorder is refused rather than tolerated.** A start now takes a store-backed
   claim on each instrument — a `TapeLeases` row keyed `(Venue, Instrument)` — **before** it subscribes and
-  before it discards crash leftovers, so two processes configured for the same instrument can no longer both
+  before it discards crash leftovers, so two processes configured for the same instrument no longer both
   write prints and double every volume ([ADR-0016](documentation/adr/0016-subscribe-to-the-market-hub.md)).
-  The refused recorder declines cleanly: it does not subscribe, does not fault its `ExecuteTask`, still
-  serves every read, and reports the new `HeldByAnotherRecorder` tape reason naming the holder — distinct
-  from "the switch is off". **The split-by-instrument deployment is unaffected**, because the claim is per
-  instrument and not per store. A claim whose expiry has passed is reclaimable, so a crash cannot strand the
-  tape; a quiet holder whose expiry has *not* passed is still the holder; and a holder taken over while it
-  was still subscribed drops that subscription at its next renewal rather than becoming a second writer
+  The refused recorder declines cleanly — it does not subscribe, does not fault its `ExecuteTask`, and still
+  serves every read — and reports the new `HeldByAnotherRecorder` tape reason naming the holder, distinct
+  from "the switch is off". **It also stays up and re-attempts** every claim it was refused, so a rolling
+  redeploy does not end with the arriving container quitting and the draining one releasing its rows, which
+  would leave nothing recording at all. **The split-by-instrument deployment is unaffected**, because the
+  claim is per instrument and not per store. A claim whose expiry has passed is reclaimable, so a crash
+  strands the tape for at most one term rather than indefinitely; a quiet holder whose expiry has *not*
+  passed is still the holder; and a holder **stores no print past its own claim's expiry**, so a takeover
+  does not leave two processes writing the same prints under different `Sequence` keys. Not closed: two
+  hosts whose clocks differ by more than the term can still both write briefly — those rows fall outside the
+  retiring holder's coverage range, so they are not reported as volume, but the fix is a synchronised clock
   (gh#404).
 
 ### Fixed

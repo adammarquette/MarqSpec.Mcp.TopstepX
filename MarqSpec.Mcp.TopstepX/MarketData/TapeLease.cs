@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using MarqSpec.Mcp.TopstepX.Data;
 using MarqSpec.Mcp.TopstepX.Data.Entities;
 using Microsoft.EntityFrameworkCore;
@@ -33,20 +34,35 @@ namespace MarqSpec.Mcp.TopstepX.MarketData;
 /// <b>The takeover is a conditional update, not a hopeful one.</b>
 /// <see cref="TapeLeaseRecord.Generation"/> is a concurrency token, so two starts that both see
 /// one expired row race the same generation: exactly one update matches, and the loser re-reads
-/// and is refused. Without that, the reclaim path would itself create the double writer.
+/// and is refused.
 /// </para>
 /// <para>
-/// <b>A renewal that finds the row taken is a loss, and the loser stands down.</b> A holder merely
-/// paused past its expiry — a long stall, a store outage — can be taken over while it is still
-/// subscribed. <see cref="TryRenewAsync"/> reports that, and the recorder drops the subscription
-/// rather than keeping a second writer on the tape. That, not the expiry itself, is what keeps a
-/// reclaim from producing the failure this type prevents.
+/// <b><see cref="MayWrite"/> is the fence, and it is what makes a takeover safe.</b> A renewal
+/// only tells a holder it has been replaced at the next tick, so "stand down when you notice"
+/// leaves both processes writing for up to one <see cref="RenewInterval"/>. That window is not
+/// harmless: <c>Sequence</c> is a per-process counter, so the same print written twice takes a
+/// different key in each process and lands as two rows, which a footprint then reports as ordinary
+/// doubled volume — ADR-0016's exact failure, arriving through the mechanism written to stop it.
+/// So a holder does not wait to be told. It refuses to store a print received at or after
+/// <em>its own</em> claim's expiry, which is the earliest instant anyone else could have taken
+/// over. Against one clock the overlap is therefore not bounded but empty.
+/// </para>
+/// <para>
+/// <b>What the fence does not close: clock skew between hosts.</b> Both processes compare their
+/// own clock to one stored expiry, so a taker whose clock runs more than
+/// <see cref="TimeToLive"/> ahead of the holder's can acquire while the holder still believes it
+/// is inside its term. No local mechanism fixes that — it needs one clock — so it is stated rather
+/// than claimed away, here and in ADR-0016. The generation check still leaves exactly one
+/// <em>owner</em>; what skew can produce is a second <em>writer</em>, and those are not the same
+/// property. Run the recorder on one host, or keep hosts synchronised.
 /// </para>
 /// <para>
 /// <b>The lock here is a leaf.</b> This type never takes <see cref="TapeCoverageLedger"/>'s store
 /// gate or its bookkeeping lock, and the ledger never calls this. There is therefore no path that
 /// takes two of the three in either order, and the ledger's uniform store-then-bookkeeping
-/// acquisition is untouched.
+/// acquisition is untouched. <see cref="MayWrite"/> and <see cref="Held"/> read a
+/// <see cref="ConcurrentDictionary{TKey,TValue}"/> and take no lock at all, because the print path
+/// calls the first of them under the ledger's store gate.
 /// </para>
 /// <para>
 /// <b>No captive dependency.</b> Every store operation opens its own scope through
@@ -60,11 +76,11 @@ public sealed class TapeLease
     /// How long a claim stands unrenewed before another start may take it over.
     /// </summary>
     /// <remarks>
-    /// Fixed rather than configured. A shorter value reclaims a crashed holder sooner and evicts a
-    /// merely slow one more often; a longer one strands the tape after a crash. This is generous
-    /// against both a full garbage collection pause and plausible clock skew between two hosts,
-    /// and the generation check means skew can only move <em>when</em> a reclaim happens, never
-    /// produce two owners.
+    /// Fixed rather than configured, and short on purpose. It is the worst-case tape gap after an
+    /// uncontrolled crash: the dead process left no release, so the next start is refused until
+    /// this elapses and only then acquires on its retry tick. A longer value strands the tape for
+    /// longer; a shorter one evicts a merely slow holder more often, and every eviction costs the
+    /// coverage range it closes.
     /// </remarks>
     public static readonly TimeSpan DefaultTimeToLive = TimeSpan.FromSeconds(90);
 
@@ -72,7 +88,13 @@ public sealed class TapeLease
     private readonly TimeProvider _clock;
     private readonly TimeSpan _timeToLive;
     private readonly SemaphoreSlim _gate = new(1, 1);
-    private readonly HashSet<(string Venue, string Instrument)> _held = [];
+
+    /// <summary>
+    /// The claims this process holds, each against the expiry <em>it</em> last wrote. The value is
+    /// the fence <see cref="MayWrite"/> reads, so it is kept here rather than re-read per print.
+    /// </summary>
+    private readonly ConcurrentDictionary<(string Venue, string Instrument), DateTimeOffset> _held =
+        new();
 
     /// <summary>Creates the lease with <see cref="DefaultTimeToLive"/>.</summary>
     /// <param name="scopes">Per-operation scopes — the store is scoped, this is not.</param>
@@ -99,35 +121,69 @@ public sealed class TapeLease
     }
 
     /// <summary>
-    /// This process's identity on the rows it holds — new on every start, so a restart is never
-    /// mistaken for the process it replaced.
+    /// This process's identity on the rows it holds — new on every start.
     /// </summary>
+    /// <remarks>
+    /// <b>Deliberately not stable across restarts.</b> A stable identity would let a restarting
+    /// process reclaim its own predecessor's claim immediately instead of waiting out
+    /// <see cref="TimeToLive"/>, and there is no key that earns it: a container id changes on every
+    /// redeploy, so it is not stable, and a host name or a configured name is shared by two
+    /// containers on one host, so it is not unique. A key that is wrong in the second direction
+    /// hands one tape to two writers, which is the failure this whole type exists to prevent. The
+    /// retry tick makes it unnecessary — a redeploy waits out at most one term rather than needing
+    /// to recognise itself.
+    /// </remarks>
     public string OwnerId { get; }
 
     /// <summary>How long a claim stands unrenewed before another start may take it over.</summary>
     public TimeSpan TimeToLive => _timeToLive;
 
     /// <summary>
-    /// How often a holder renews. A third of the time to live, so two renewals may be lost — a
-    /// store blip, a slow write — before the claim is reclaimable by anyone else.
+    /// How often a holder renews, and how often a refused instrument is re-attempted. A third of
+    /// the time to live, so two renewals may be lost — a store blip, a slow write — before the
+    /// claim is reclaimable by anyone else.
     /// </summary>
     public TimeSpan RenewInterval => _timeToLive / 3;
 
     /// <summary>The claims this process currently believes it holds.</summary>
-    public IReadOnlyCollection<(string Venue, string Instrument)> Held
+    public IReadOnlyCollection<(string Venue, string Instrument)> Held => [.. _held.Keys];
+
+    /// <summary>
+    /// Whether a print received at <paramref name="receivedAt"/> may be stored — the fence.
+    /// </summary>
+    /// <param name="venue">The venue.</param>
+    /// <param name="instrument">The normalised instrument symbol.</param>
+    /// <param name="receivedAt">When the print was received, taken at the hub event.</param>
+    /// <returns>
+    /// <see langword="true"/> only while this process can show it held the claim at that instant.
+    /// </returns>
+    /// <remarks>
+    /// The comparison is against the expiry this process last wrote, and it uses the print's
+    /// receipt rather than now, because the question is whether the claim was held when the print
+    /// arrived — not whether it is held now that a slow drain has got round to it. A holder that
+    /// cannot renew stops storing prints at its own expiry without being told anything, which is
+    /// the whole point: the earliest instant a replacement could exist is the latest instant this
+    /// process may write.
+    /// </remarks>
+    public bool MayWrite(string venue, string instrument, DateTimeOffset receivedAt)
     {
-        get
-        {
-            _gate.Wait();
-            try
-            {
-                return [.. _held];
-            }
-            finally
-            {
-                _gate.Release();
-            }
-        }
+        ArgumentException.ThrowIfNullOrWhiteSpace(venue);
+        ArgumentException.ThrowIfNullOrWhiteSpace(instrument);
+
+        return _held.TryGetValue((venue, instrument), out DateTimeOffset expiry)
+            && receivedAt < expiry;
+    }
+
+    /// <summary>The expiry this process last wrote for a claim it holds.</summary>
+    /// <param name="venue">The venue.</param>
+    /// <param name="instrument">The normalised instrument symbol.</param>
+    /// <returns>The expiry, or <see langword="null"/> when this process holds no such claim.</returns>
+    public DateTimeOffset? ExpiryOf(string venue, string instrument)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(venue);
+        ArgumentException.ThrowIfNullOrWhiteSpace(instrument);
+
+        return _held.TryGetValue((venue, instrument), out DateTimeOffset expiry) ? expiry : null;
     }
 
     /// <summary>
@@ -149,6 +205,7 @@ public sealed class TapeLease
         try
         {
             DateTimeOffset now = _clock.GetUtcNow();
+            DateTimeOffset expiry = now + _timeToLive;
             using IServiceScope scope = _scopes.CreateScope();
             TopstepXDbContext database = scope.ServiceProvider.GetRequiredService<TopstepXDbContext>();
 
@@ -165,11 +222,11 @@ public sealed class TapeLease
                     Generation = 1,
                     AcquiredAt = now,
                     HeartbeatAt = now,
-                    ExpiresAt = now + _timeToLive,
+                    ExpiresAt = expiry,
                 });
 
                 await database.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
-                _held.Add((venue, instrument));
+                _held[(venue, instrument)] = expiry;
                 return TapeLeaseOutcome.Granted();
             }
 
@@ -184,10 +241,10 @@ public sealed class TapeLease
             row.Generation++;
             row.AcquiredAt = now;
             row.HeartbeatAt = now;
-            row.ExpiresAt = now + _timeToLive;
+            row.ExpiresAt = expiry;
 
             await database.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
-            _held.Add((venue, instrument));
+            _held[(venue, instrument)] = expiry;
             return TapeLeaseOutcome.Granted();
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -199,6 +256,11 @@ public sealed class TapeLease
             // Either another start inserted the row between the read and the write, or its
             // takeover of the same expired row matched the generation first. Re-read, so the
             // answer names whoever actually won rather than guessing at it.
+            //
+            // The insert half of that is written for the relational shape: a duplicate key on a
+            // concurrent insert. The in-memory provider the unit suite runs does not raise the
+            // same way, so only the takeover half is covered by a test here — the integration
+            // suite is where the relational shape is exercised (gh#387).
             return await ReReadHolderAsync(venue, instrument, cancellationToken).ConfigureAwait(false);
         }
         finally
@@ -214,10 +276,12 @@ public sealed class TapeLease
     /// <param name="instrument">The normalised instrument symbol.</param>
     /// <param name="cancellationToken">The stopping token.</param>
     /// <returns>
-    /// <see langword="false"/> when the claim is gone — taken over, or deleted — so the caller can
-    /// stand down. A store fault throws instead: an unwritable renewal is not proof of a loss.
+    /// Whether the claim was renewed, and when the replacement took it if it was not — so the
+    /// caller can close its coverage range at the instant it stopped being the holder rather than
+    /// at the instant it found out. A store fault throws instead: an unwritable renewal is not
+    /// proof of a loss.
     /// </returns>
-    public async Task<bool> TryRenewAsync(
+    public async Task<TapeLeaseRenewal> TryRenewAsync(
         string venue,
         string instrument,
         CancellationToken cancellationToken)
@@ -229,6 +293,7 @@ public sealed class TapeLease
         try
         {
             DateTimeOffset now = _clock.GetUtcNow();
+            DateTimeOffset expiry = now + _timeToLive;
             using IServiceScope scope = _scopes.CreateScope();
             TopstepXDbContext database = scope.ServiceProvider.GetRequiredService<TopstepXDbContext>();
 
@@ -239,12 +304,14 @@ public sealed class TapeLease
             {
                 // Taken over while this process was paused, or the row was removed. Either way
                 // this process is no longer the holder and must stop recording that instrument.
-                _held.Remove((venue, instrument));
-                return false;
+                // A row that is someone else's dates the handover; a row that is gone does not,
+                // and the caller falls back to this process's own expiry.
+                _held.TryRemove((venue, instrument), out _);
+                return new TapeLeaseRenewal(false, row?.AcquiredAt);
             }
 
             row.HeartbeatAt = now;
-            row.ExpiresAt = now + _timeToLive;
+            row.ExpiresAt = expiry;
 
             try
             {
@@ -253,12 +320,12 @@ public sealed class TapeLease
             catch (DbUpdateConcurrencyException)
             {
                 // The generation moved between the read and the write: someone reclaimed it.
-                _held.Remove((venue, instrument));
-                return false;
+                _held.TryRemove((venue, instrument), out _);
+                return new TapeLeaseRenewal(false, null);
             }
 
-            _held.Add((venue, instrument));
-            return true;
+            _held[(venue, instrument)] = expiry;
+            return new TapeLeaseRenewal(true, null);
         }
         finally
         {
@@ -284,7 +351,7 @@ public sealed class TapeLease
         await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            _held.Remove((venue, instrument));
+            _held.TryRemove((venue, instrument), out _);
 
             using IServiceScope scope = _scopes.CreateScope();
             TopstepXDbContext database = scope.ServiceProvider.GetRequiredService<TopstepXDbContext>();
@@ -313,6 +380,25 @@ public sealed class TapeLease
         {
             _gate.Release();
         }
+    }
+
+    /// <summary>
+    /// Gives up the local claim on one instrument without asserting anything about the store.
+    /// </summary>
+    /// <param name="venue">The venue.</param>
+    /// <param name="instrument">The normalised instrument symbol.</param>
+    /// <remarks>
+    /// For the one case where the store cannot be reached and the term has run out: this process
+    /// can no longer show it is the holder, so it must stop behaving like one immediately —
+    /// <see cref="MayWrite"/> refuses from the next print. It deliberately does not delete the row
+    /// the way <see cref="ReleaseAsync"/> does, because the store is exactly what is not answering,
+    /// and because the row may already belong to a replacement.
+    /// </remarks>
+    public void Forfeit(string venue, string instrument)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(venue);
+        ArgumentException.ThrowIfNullOrWhiteSpace(instrument);
+        _held.TryRemove((venue, instrument), out _);
     }
 
     /// <summary>Gives up every claim this process holds.</summary>
@@ -358,3 +444,12 @@ public sealed class TapeLease
             : TapeLeaseOutcome.HeldBy(row.OwnerId, row.ExpiresAt);
     }
 }
+
+/// <summary>The result of renewing one claim (gh#404).</summary>
+/// <param name="Kept">Whether this process is still the holder.</param>
+/// <param name="ReclaimedAt">
+/// When the replacement took the claim, when a replacement is on the row. The losing holder closes
+/// its coverage range here rather than at the instant it noticed, so no two ranges claim the same
+/// window. <see langword="null"/> when the row is simply gone and nothing dates the handover.
+/// </param>
+public readonly record struct TapeLeaseRenewal(bool Kept, DateTimeOffset? ReclaimedAt);

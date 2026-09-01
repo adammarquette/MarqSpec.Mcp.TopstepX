@@ -659,10 +659,9 @@ public sealed class TradeTapeRecorderTests
             await SeedStillListeningAsync(database, leftoverStart);
 
             await recorder.StartAsync(CancellationToken.None);
-            // ExecuteTask completion is a real, awaitable signal here — no poll needed.
-            // Task.WhenAny (not a bare await) so a fault, if this path ever produced one,
-            // would not be rethrown here; nothing downstream expects that.
-            await Task.WhenAny(recorder.ExecuteTask!);
+            // ExecuteTask completion is a real, awaitable signal here — no poll needed, and
+            // bounded so a hang (the regression this test pins) still fails fast (gh#407).
+            await BackgroundServiceTestSupport.AwaitCompletionAsync(recorder.ExecuteTask!);
 
             CoverageRows(database).Should().ContainSingle(
                 row => row.RangeStart == leftoverStart
@@ -762,10 +761,9 @@ public sealed class TradeTapeRecorderTests
             await SeedStillListeningAsync(database, leftoverStart);
 
             await recorder.StartAsync(CancellationToken.None);
-            // ExecuteTask completion is a real, awaitable signal here — no poll needed.
-            // Task.WhenAny (not a bare await) so a fault, if this path ever produced one,
-            // would not be rethrown here; nothing downstream expects that.
-            await Task.WhenAny(recorder.ExecuteTask!);
+            // ExecuteTask completion is a real, awaitable signal here — no poll needed, and
+            // bounded so a hang (the regression this test pins) still fails fast (gh#407).
+            await BackgroundServiceTestSupport.AwaitCompletionAsync(recorder.ExecuteTask!);
 
             CoverageRows(database).Should().ContainSingle(
                 row => row.RangeStart == leftoverStart
@@ -1496,10 +1494,9 @@ public sealed class TradeTapeRecorderTests
             TapeAvailabilityHolder tape = services.GetRequiredService<TapeAvailabilityHolder>();
 
             await recorder.StartAsync(CancellationToken.None);
-            // ExecuteTask completion is a real, awaitable signal here — no poll needed.
-            // Task.WhenAny (not a bare await) so a fault, if this path ever produced one,
-            // would not be rethrown here; nothing downstream expects that.
-            await Task.WhenAny(recorder.ExecuteTask!);
+            // ExecuteTask completion is a real, awaitable signal here — no poll needed, and
+            // bounded so a hang (the regression this test pins) still fails fast (gh#407).
+            await BackgroundServiceTestSupport.AwaitCompletionAsync(recorder.ExecuteTask!);
 
             tape.Value.IsListening.Should().BeFalse();
             tape.Value.Reason.Should().Be(TapeUnavailableReason.NeverStarted);
@@ -2082,10 +2079,9 @@ public sealed class TradeTapeRecorderTests
         await using (database)
         {
             await recorder.StartAsync(CancellationToken.None);
-            // ExecuteTask completion is a real, awaitable signal here — no poll needed.
-            // Task.WhenAny (not a bare await) so a fault, if this path ever produced one,
-            // would not be rethrown here; nothing downstream expects that.
-            await Task.WhenAny(recorder.ExecuteTask!);
+            // ExecuteTask completion is a real, awaitable signal here — no poll needed, and
+            // bounded so a hang (the regression this test pins) still fails fast (gh#407).
+            await BackgroundServiceTestSupport.AwaitCompletionAsync(recorder.ExecuteTask!);
 
             LeaseRows(database).Should().BeEmpty();
 
@@ -2363,8 +2359,12 @@ public sealed class TradeTapeRecorderTests
     /// flaked on three unrelated branches that never touched this file.
     /// <para>
     /// A completion-shaped condition (<c>ExecuteTask?.IsCompleted</c>) has a real signal and does
-    /// not belong here — those call sites now <c>await Task.WhenAny(recorder.ExecuteTask!)</c>
-    /// instead of polling. What is left in this poll are the multi-source predicates — the two at
+    /// not belong here — those call sites now use
+    /// <see cref="BackgroundServiceTestSupport.AwaitCompletionAsync"/>, which awaits the real
+    /// completion instead of polling but keeps a bound so a hang still fails with a message
+    /// instead of taking the whole test host down (that is what an earlier, unbounded version of
+    /// this same fix did — see PR body). What is left in this poll are the multi-source
+    /// predicates — the two at
     /// gh#407's own repro (<c>SubscribeAttempts</c>, a logged error, and <c>IsListening</c>,
     /// mutated independently by the hub double, the logger double and the recorder's lifecycle
     /// channel) and others like it. For those there is no single completion to await: the only
@@ -2403,7 +2403,7 @@ public sealed class TradeTapeRecorderTests
             throw new InvalidOperationException(
                 because is null
                     ? $"Timed out waiting for: {conditionExpression}"
-                    : $"Timed out waiting: {because}");
+                    : $"Timed out waiting: {because} ({conditionExpression})");
         }
     }
 

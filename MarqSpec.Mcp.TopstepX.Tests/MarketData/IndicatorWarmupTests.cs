@@ -53,10 +53,9 @@ public sealed class IndicatorWarmupTests
         {
             await warmup.StartAsync(CancellationToken.None);
 
-            // ExecuteTask completion is a real, awaitable signal — no poll needed (gh#407).
-            // Task.WhenAny (not a bare await) so a fault is not rethrown here; every fixture in
-            // this file separately asserts IsFaulted itself.
-            await Task.WhenAny(warmup.ExecuteTask!);
+            // ExecuteTask completion is a real, awaitable signal — no poll needed, and bounded
+            // so a hang still fails fast rather than taking the test host down (gh#407).
+            await BackgroundServiceTestSupport.AwaitCompletionAsync(warmup.ExecuteTask!);
 
             database.IndicatorValues.Should().BeEmpty(
                 "stdio, or HTTP with the switch off, must not replay — a Cowork child would stall");
@@ -78,10 +77,9 @@ public sealed class IndicatorWarmupTests
         {
             await warmup.StartAsync(CancellationToken.None);
 
-            // ExecuteTask completion is a real, awaitable signal — no poll needed (gh#407).
-            // Task.WhenAny (not a bare await) so a fault is not rethrown here; every fixture in
-            // this file separately asserts IsFaulted itself.
-            await Task.WhenAny(warmup.ExecuteTask!);
+            // ExecuteTask completion is a real, awaitable signal — no poll needed, and bounded
+            // so a hang still fails fast rather than taking the test host down (gh#407).
+            await BackgroundServiceTestSupport.AwaitCompletionAsync(warmup.ExecuteTask!);
 
             database.IndicatorValues.Count(v => v.Instrument == "ES").Should().BeGreaterThan(0);
             warmup.ExecuteTask.Should().NotBeNull();
@@ -102,10 +100,9 @@ public sealed class IndicatorWarmupTests
         {
             await warmup.StartAsync(CancellationToken.None);
 
-            // ExecuteTask completion is a real, awaitable signal — no poll needed (gh#407).
-            // Task.WhenAny (not a bare await) so a fault is not rethrown here; every fixture in
-            // this file separately asserts IsFaulted itself.
-            await Task.WhenAny(warmup.ExecuteTask!);
+            // ExecuteTask completion is a real, awaitable signal — no poll needed, and bounded
+            // so a hang still fails fast rather than taking the test host down (gh#407).
+            await BackgroundServiceTestSupport.AwaitCompletionAsync(warmup.ExecuteTask!);
             await warmup.StopAsync(CancellationToken.None);
 
             database.IndicatorValues.Should().NotBeEmpty("warmup must have written before the confirming rebuild");
@@ -138,10 +135,9 @@ public sealed class IndicatorWarmupTests
         {
             await warmup.StartAsync(CancellationToken.None);
 
-            // ExecuteTask completion is a real, awaitable signal — no poll needed (gh#407).
-            // Task.WhenAny (not a bare await) so a fault is not rethrown here; every fixture in
-            // this file separately asserts IsFaulted itself.
-            await Task.WhenAny(warmup.ExecuteTask!);
+            // ExecuteTask completion is a real, awaitable signal — no poll needed, and bounded
+            // so a hang still fails fast rather than taking the test host down (gh#407).
+            await BackgroundServiceTestSupport.AwaitCompletionAsync(warmup.ExecuteTask!);
 
             warmup.ExecuteTask.Should().NotBeNull();
             warmup.ExecuteTask!.IsFaulted.Should().BeFalse(
@@ -170,10 +166,9 @@ public sealed class IndicatorWarmupTests
         {
             await warmup.StartAsync(CancellationToken.None);
 
-            // ExecuteTask completion is a real, awaitable signal — no poll needed (gh#407).
-            // Task.WhenAny (not a bare await) so a fault is not rethrown here; every fixture in
-            // this file separately asserts IsFaulted itself.
-            await Task.WhenAny(warmup.ExecuteTask!);
+            // ExecuteTask completion is a real, awaitable signal — no poll needed, and bounded
+            // so a hang still fails fast rather than taking the test host down (gh#407).
+            await BackgroundServiceTestSupport.AwaitCompletionAsync(warmup.ExecuteTask!);
 
             warmup.ExecuteTask.Should().NotBeNull();
             warmup.ExecuteTask!.IsFaulted.Should().BeFalse(

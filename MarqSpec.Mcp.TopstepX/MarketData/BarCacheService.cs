@@ -271,20 +271,83 @@ public sealed class BarCacheService
             return missing;
         }
 
-        // A range is dropped only when a single coverage row contains it whole. Partial containment is left
-        // alone deliberately: splitting a range around a covered sub-range would produce a swarm of tiny
-        // fetches, and re-asking for a slightly wider window is the cheaper error.
+        // THE ROWS ARE UNIONED BEFORE THEY ARE CONSULTED, AND THAT IS THE WHOLE FIX (gh#408).
+        //
+        // A range is fetched in pages of VenuePageSizeBars and the memo is written PER PAGE SLICE, so a
+        // three-page range the venue answers empty leaves three adjacent rows and no single one of them
+        // contains the range. Asking `covered.Any(row contains range)` therefore answered "no" forever, and
+        // the range cost three paced pages on EVERY read -- which is not an exotic case for the population
+        // this path serves: a legacy null-contract run is everything written before migration
+        // 20260823074908, so a missing run wider than one page is the ordinary shape, and the bound
+        // ADR-0011 records ("one request per range, not one per read") was false for exactly it.
+        //
+        // Adjacent slices touch exactly -- one ends where the next begins -- so their union is contiguous and
+        // is the range. Merging touching rows is sound rather than convenient: each was independently
+        // answered EMPTY by the venue, so their union was answered empty too.
+        //
+        // What this deliberately does NOT do is split a range around a covered sub-range. Partial containment
+        // is still left alone, for the reason it always was: splitting would produce a swarm of tiny fetches,
+        // and re-asking for a slightly wider window is the cheaper error. Only the containment TEST changed,
+        // from one row to the union of the rows.
+        IReadOnlyList<BarRange> answered = Union(covered);
+
         List<BarRange> outstanding = [];
         foreach (BarRange range in missing)
         {
-            bool answered = covered.Any(c => c.RangeStart <= range.Start && c.RangeEnd >= range.End);
-            if (!answered)
+            if (!answered.Any(a => a.Start <= range.Start && a.End >= range.End))
             {
                 outstanding.Add(range);
             }
         }
 
         return outstanding;
+    }
+
+    /// <summary>
+    /// Merges coverage rows into the maximal ranges they cover between them.
+    /// </summary>
+    /// <param name="covered">The unexpired coverage rows. Order does not matter.</param>
+    /// <returns>The merged ranges, ascending and non-overlapping.</returns>
+    /// <remarks>
+    /// <b>Touching rows merge, not merely overlapping ones.</b> The half-open convention makes one page slice
+    /// end at the instant the next begins, so a strict overlap test would leave every paged answer in as many
+    /// pieces as it was fetched in — which is the defect this exists to close, restated.
+    /// </remarks>
+    private static IReadOnlyList<BarRange> Union(IReadOnlyCollection<BarCoverageRecord> covered)
+    {
+        List<BarRange> merged = [];
+        DateTimeOffset start = default;
+        DateTimeOffset end = default;
+        bool open = false;
+
+        foreach (BarCoverageRecord row in covered.OrderBy(c => c.RangeStart).ThenBy(c => c.RangeEnd))
+        {
+            if (open && row.RangeStart <= end)
+            {
+                if (row.RangeEnd > end)
+                {
+                    end = row.RangeEnd;
+                }
+
+                continue;
+            }
+
+            if (open)
+            {
+                merged.Add(new BarRange(start, end));
+            }
+
+            start = row.RangeStart;
+            end = row.RangeEnd;
+            open = true;
+        }
+
+        if (open)
+        {
+            merged.Add(new BarRange(start, end));
+        }
+
+        return merged;
     }
 
     /// <summary>One venue answer, held until the transaction that will store it opens.</summary>

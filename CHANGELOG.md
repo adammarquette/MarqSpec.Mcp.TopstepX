@@ -24,6 +24,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A missing bar range wider than one venue page is no longer re-fetched on every read. The range is fetched in
+  pages and the "venue answered empty" memo is written **per page slice**, while the lookup dropped a range
+  only when a *single* memo contained it whole — so N page-memos never answered the N-page range they came
+  from, and it cost N paced vendor pages on every read, forever. The containment test is now made against the
+  **union** of the unexpired memos. It bites hardest on the read-path contract heal (gh#402), whose population
+  is everything written before the `ContractId` migration and therefore multi-page by construction: two days
+  of one-minute bars measured three pages per read before, three once in total after. A genuine gap between
+  two memos is still covered by neither, and a range is still never split around a covered sub-range (gh#408).
+
 - A starting recorder no longer discards every still-open `TapeCoverage` row in the store. The crash-leftover
   discard now names the venue and the instruments that start resolved a front contract for, so two HTTP
   recorders against one store **split by `MarketData__Instruments`** stop wiping each other's coverage ledger.

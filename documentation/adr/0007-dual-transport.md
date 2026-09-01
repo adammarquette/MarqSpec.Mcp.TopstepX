@@ -66,6 +66,7 @@ difference between the two entry points is a handful of lines.
 | [2026-08-23](#update-2026-08-23--never-listens-is-not-never-starts-a-listener) | A shutdown requested while the host is still starting is a clean stop, not a crash |
 | [2026-08-23](#update-2026-08-23--the-image-gate-does-read-the-exit-code) | The image gate reads the exit code after all — as a second signal, behind the handshake |
 | [2026-08-30](#update-2026-08-30--the-stdio-listener-takes-an-ephemeral-port) | The listener stdio starts no longer takes a well-known port, so two sessions can run at once |
+| [2026-09-01](#update-2026-09-01--not-exposed-by-default-was-not-true-of-the-composed-stack) | The composed HTTP port is bound to loopback, which is what the default token always assumed |
 
 ## Update (2026-08-22) — starting is not the same as being ready
 
@@ -217,3 +218,40 @@ further stdio servers started concurrently, completed `initialize`, and answered
 **What is unchanged.** Kestrel still starts under stdio; `RunHostAsync`'s handling of a shutdown requested
 mid-startup is untouched; and a genuine address conflict — an operator who names a port that is taken —
 still fails the process, exactly as the update above says it should.
+
+## Update (2026-09-01) — "not exposed by default" was not true of the composed stack
+
+This record's consequences say **the HTTP path is not exposed by default**, and that enabling it is a
+deliberate configuration change. Neither held for `docker compose up` (gh#415).
+
+Three defaults composed into an exposure nobody chose. `docker-compose.yml` sets `Mcp__Transport: "Http"`,
+defaults `Mcp__HttpBearerToken` to `changeme-local` — a value committed to a **public** repository — and
+published the port with a bare `- "8080:8080"`, which Docker maps on `0.0.0.0`, every interface the host has.
+Measured on a running stack: `0.0.0.0:8080->8080/tcp, [::]:8080->8080/tcp`, answering `initialize`,
+`search_contracts` and `search_observations` on that token.
+
+So anything able to route to the host could read balances, positions and trade history — the precise loss the
+token requirement was added to prevent, defeated by the assumption underneath it rather than by any failure
+of the check itself. Nothing could be traded ([ADR-0002](0002-read-only-venue-boundary.md)); it was a data
+leak, not a trading risk.
+
+**The assumption was written down three times and never tested once.** `docker-compose.yml`, `.env.example`
+and `README.md` each told the reader to change the token "before that port is reachable from anywhere but
+localhost" — phrasing a future condition the operator would have to bring about, when it was already the
+case on the first `docker compose up`. A defence stated in three places is not three defences; all three
+were the same unexamined sentence.
+
+**The port is now bound explicitly: `- "127.0.0.1:8080:8080"`.** The default token stays, and the reason is
+recorded beside both: the default is acceptable *because* the bind address is loopback, and the two are a
+**coupling** rather than independent choices. Widening one means setting a real token in the same change,
+and all three documents now say so in those terms.
+
+**What this does not do.** It does not add transport security — the endpoint is still plaintext HTTP, which
+is gh#416. It does not change the token requirement, which ADR-0007 already makes mandatory and gh#29 made
+real at request time. And it leaves the composed Postgres published the same way it always was: the same
+one-line shape on `- "5432:5432"`, carrying the same market data behind another public default. That is a
+separate card, deliberately not folded in here.
+
+**No CI surface moves.** Nothing in `.github/workflows` or `scripts/` runs `docker compose`; the `image` gate
+drives the container over stdin with `docker run --rm -i` and publishes no port at all, which is why a green
+`image` never said anything about this.

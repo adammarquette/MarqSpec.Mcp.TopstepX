@@ -58,8 +58,13 @@ services:
       #
       # The token is REQUIRED whenever the HTTP transport is on (ADR-0007) and startup fails without one --
       # an endpoint carrying balances, positions and trade history is a data leak even though nothing here can
-      # trade. Defaulting it here is a local-development convenience for a port published to localhost, and
-      # this value is in a public repository: change it before this stack is reachable from anywhere else.
+      # trade. This value is in a public repository.
+      #
+      # Defaulting it is a local-development convenience, and it is acceptable ONLY because the port below is
+      # bound to 127.0.0.1. That is a COUPLING, not two independent choices: widening the bind address means
+      # setting a real token in the same change. The sentence here used to assert the port was "published to
+      # localhost" while the mapping published it to every interface, which is how the assumption survived
+      # unexamined (gh#415).
       Mcp__HttpBearerToken: "${Mcp__HttpBearerToken:-changeme-local}"
 
       MarketData__SessionCloseCentral: "${MarketData__SessionCloseCentral:-16:00}"
@@ -106,7 +111,12 @@ services:
       ASPNETCORE_HTTP_PORTS: "8080"
       Logging__LogLevel__Default: "${Logging__LogLevel__Default:-Information}"
     ports:
-      - "8080:8080"
+      # The bind address is EXPLICIT, and the whole defence depends on it. A bare "8080:8080" publishes on
+      # 0.0.0.0 -- every interface the host has -- which is what this file did while the comment above claimed
+      # localhost. Three defaults compose into an exposure nobody chose: the transport is Http here, the token
+      # defaults, and the port was open to the network. Anything that could route to the host could read
+      # balances, positions and trade history with a token published in a public repository (gh#415).
+      - "127.0.0.1:8080:8080"
 
 volumes:
   postgres-data:

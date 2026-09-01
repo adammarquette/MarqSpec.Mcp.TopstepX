@@ -250,6 +250,9 @@ dotnet test              # unit + integration; needs a Docker daemon, no credent
 docker compose up -d     # the local stack: Postgres, and the server on :8080
 ```
 
+Compose binds the server's port to `127.0.0.1` only (gh#415) — an IPv6 `localhost` resolution (`::1`) will
+not reach it; use the literal `127.0.0.1` address.
+
 **There is no fake gateway here, and there never has been.** The integration tier starts its own
 `timescale/timescaledb-ha` Postgres through Testcontainers
 ([ADR-0004](documentation/adr/0004-one-postgres-timescale-pgvector.md)), so what it needs is a Docker daemon

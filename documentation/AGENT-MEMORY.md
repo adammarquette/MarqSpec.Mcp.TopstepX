@@ -132,6 +132,25 @@ at one this rule's own pull request retires.
   - **Do not turn the policy off** — it is a machine security setting, and `VerifiedAndReputablePolicyState`
     under `HKLM:\SYSTEM\CurrentControlSet\Control\CI\Policy` is not an agent's to edit. Confirm the diagnosis
     from `Microsoft-Windows-CodeIntegrity/Operational` (events 3033/3077 name the blocked file).
+  - **[2026-09-01] "Only changed bytes clear it" is false, and the mechanism above is still not established
+    (gh#426).** During gh#414 (PR #423, head `03bf03a`), an agent hit `FileLoadException … 0x800711C7` and
+    worked the ladder above in order — dirtied a test source, cleaned `bin`/`obj`, rebuilt `-c Release`, then
+    rebuilt with **`-p:Deterministic=false`** — and ran the copied assembly from outside `.worktrees`. **None
+    lifted it.** The fourth rung is the decisive one: a non-deterministic rebuild produces genuinely different
+    bytes, so under the sentence above the block should have cleared, and it did not. Meanwhile a reviewer on
+    the same repository, at the same head, in its own worktree, ran the full tier fine (1160/1160) — so the
+    block is not fixed by the tree or the commit either; it varies by worktree, session or machine state in a
+    way nothing here describes. **What is known, stated as what it is and no further:** changed bytes are not
+    sufficient to clear the block, the escalation ladder above has failed in full at least once, and the
+    trigger is unestablished. This is not "no rung ever clears it" — #278, #287, #298, #295 and #301 above
+    each cleared on one — only that none is guaranteed, one notch past the ladder's own "No single one of
+    those has worked every time": this is the case where none of them did.
+    - **A workaround for evidence while the tier is blocked: read the built assembly's metadata instead of
+      loading it.** `System.Reflection.Metadata` reads a PE as bytes rather than loading it as an assembly, so
+      Application Control's assembly-load policy does not apply. It is what let the gh#414 agent falsify a
+      gate rewrite with no tier able to run at all. **Its limit:** it scores a rule *as reimplemented against
+      the metadata reader*, not the shipped test executing — indirect evidence, never a substitute for a
+      `Total:` line.
 
 - **[2026-08-25] A conflict resolver that never ran let `git rebase` commit conflict markers, silently
   (gh#187).** The script sat at `/tmp/fix.py`; **the `python` on PATH is Windows-native and cannot see MSYS's

@@ -136,8 +136,10 @@ public sealed class BarGapDetectorTests
     public void FindMissing_ReportsAnUnattributedBucketTheCalendarDoesNotExpect()
     {
         // gh#412. 16:30 Central is inside the 16:00-17:00 maintenance window, so the calendar does not expect
-        // it -- and the venue was measured publishing a bar there. A row the store holds but cannot attribute
-        // is missing PROVENANCE even though it is not missing prices, so it has to be enumerated on top of the
+        // it. That is a constructed bucket, not an observed one; what makes an off-grid row real is that the
+        // calendar is CONFIGURATION and the write path does not consult it, so any change to the session close
+        // or the holiday list strands rows already written. A row the store holds but cannot attribute is
+        // missing PROVENANCE even though it is not missing prices, so it has to be enumerated on top of the
         // grid or it is never asked for again.
         //
         // Mid-sequence deliberately: the expected buckets either side are stored, so the run this produces is

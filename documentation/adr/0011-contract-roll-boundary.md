@@ -427,9 +427,21 @@ expected**. A legacy `NULL` sitting off that grid was therefore in neither set t
 "stored", because gh#402 deliberately excludes an unattributed row from stored; and not "expected", because
 the calendar says the venue was shut. It was never enumerated, never asked for, and never healed (gh#412).
 
-**The condition is measured, not hypothesised.** gh#408's implementer found the venue publishing a bar at
-**16:30 Central**, inside the 16:00–17:00 maintenance window `BarSessionCalendar` excludes. A pre-migration
-row at that bucket is exactly the shape above.
+**A row can sit off the store's own grid, and that is a certainty of the design rather than a claim about
+the venue.** `SessionCloseCentral` and `Holidays` are **configuration**
+([ADR-0005](0005-session-aware-gap-detection.md)), and the write path stores whatever the venue answers with —
+it does not consult the calendar. So the grid moves under rows already written: a corrected session close, a
+holiday declared after the fact, a product whose close differs from the equity-index default. Every row that
+was on-grid when it was written is off-grid the moment the configuration changes, and an unattributed one
+among them is then unhealable for good.
+
+**What is deliberately *not* claimed.** gh#408's fixture constructs a bar at 16:30 Central to exercise this
+path, and every "measurement" around it — here and in PR #410 — is a **request count against that fixture**.
+**Nobody has looked at a live store.** This record therefore does not assert that any venue publishes at 16:30,
+nor that any deployed store holds such a row today; gh#408's own shipped test comment reads a venue/calendar
+disagreement the other way — *"a misconfiguration rather than a steady state, and the remedy is the calendar"* —
+and that reading stands untouched for the shape it was written about. 16:30 survives below as the **constructed
+demonstration** the fixtures use, chosen because this calendar plainly does not expect it.
 
 **Its cost is the one this repository ranks worst.** The two shapes gh#408 accepted both fail toward paced,
 `VenueRequests`-visible vendor traffic. This one fails toward a reading a caller takes as ordinary: by this
@@ -451,14 +463,19 @@ function of its arguments: the extra set is *handed* to `Domain`, not read out o
 - **`ToCoverage` is untouched**, and so is everything gh#402 settled about it. This record changes which rows
   reach it, not how it reads them.
 
-**Why not correct the calendar instead**, which the 2026-08-31 sibling shape names as its remedy. Two reasons.
-It is not *this* defect's remedy: it would need the calendar edited to expect 16:00–17:00 Central, and the
-exchange's published schedule says equity-index futures are halted then — a calendar edited to make a
-symptom go away is a worse defect than the one it closes, because it silently turns every genuinely closed
-bucket in that hour into a permanent hole the cache re-requests. And it is per-instance: it fixes one window
-in one configuration, while any other disagreement between a store's rows and its calendar — an undeclared
-holiday, a session change, a product whose close differs — reproduces the same permanent `Unknown`. The heal
-here is keyed on what the store is **holding**, which is the fact that is actually true.
+**Why not correct the calendar instead**, which the 2026-08-31 sibling shape names as its remedy. It is the
+right remedy *there*: a calendar that disagrees with the venue about when it trades is a misconfiguration, and
+correcting it is how you stop paying for one. It is not the remedy *here*, for two reasons.
+
+**It cannot close this class, because it is what opens it.** The calendar is configuration, so correcting one
+moves the grid under rows already written — which is exactly how an unattributed row ends up off-grid in the
+first place. A remedy that re-creates the defect every time it is applied is not a remedy for it.
+
+**And there is nothing here to correct.** Making 16:00–17:00 Central expected would need an observation that
+the venue trades then, and none exists — the 16:30 bar is a fixture. Editing a calendar on a fixture's say-so
+turns every genuinely closed bucket in that hour into a permanent hole the cache re-requests forever: a
+calendar edited to make a symptom go away is a worse defect than the one it closes. The heal here is keyed on
+what the store is **holding**, which is a fact the store can actually check.
 
 The third candidate, **reporting the unattributed run's cause rather than healing it**, was rejected because
 it leaves the answer degraded: the caller would learn *why* it says `Unknown`, which is not the same as being

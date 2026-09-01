@@ -111,8 +111,7 @@ public static class BarGapDetector
     /// <b>The unattributed buckets are enumerated too, on top of the calendar's grid (gh#412).</b> Every other
     /// bucket in this pass is chosen by asking the calendar what the venue owed; these are chosen by what the
     /// store is actually <i>holding</i>, which is why they are passed in rather than derived. A bucket the
-    /// calendar does not expect but the store nonetheless has — the venue publishes at 16:30 Central, inside
-    /// the maintenance window, and was measured doing so — would otherwise never be enumerated, never be
+    /// calendar does not expect but the store nonetheless has would otherwise never be enumerated, never be
     /// re-asked for, and so never heal: the caller's window keeps an unattributed run in it forever and reports
     /// its contract span as <c>Unknown</c> on every read. That is a permanently degraded answer rather than a
     /// visible fetch, which is the worse direction to fail in. A bucket the store holds <i>with</i> a contract
@@ -120,9 +119,25 @@ public static class BarGapDetector
     /// method's saving depends on.
     /// </para>
     /// <para>
+    /// Such a bucket is <b>representable by construction</b>, which is the whole reason this is not a calendar
+    /// problem: the calendar is <i>configuration</i> and the write path does not consult it, so a corrected
+    /// session close or a holiday declared after the fact moves the grid under rows already written. No claim
+    /// is made here about a venue publishing outside its own session — the 16:30 Central bucket the fixtures
+    /// use is a constructed demonstration, not an observation of a live store.
+    /// </para>
+    /// <para>
     /// The bound is the one <see cref="ExpectedBuckets"/> uses — a bucket counts only when it opens at or after
     /// the window's start and closes at or before its end — so a missing range never reaches past the window
     /// the caller asked about.
+    /// </para>
+    /// <para>
+    /// <b>Precondition, stated rather than enforced:</b> an unattributed bucket start is assumed to sit on the
+    /// same <paramref name="barSize"/> grid the expected buckets use — the fixed UTC grid
+    /// <see cref="AlignUp"/> describes. Nothing here re-aligns one, so a misaligned start would produce a
+    /// missing range that is itself misaligned. It holds today because a bucket start is part of the bars
+    /// table's primary key and is only ever written from an aligned fetch. It is not checked because a check
+    /// could only guess what to do with a violation, and rounding one would ask the venue for a bucket nobody
+    /// stored while leaving the row that provoked it untouched.
     /// </para>
     /// </remarks>
     public static IReadOnlyList<BarRange> FindMissing(

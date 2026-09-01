@@ -48,16 +48,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A legacy bar carrying no `ContractId` at a bucket the **session calendar does not expect** now heals like
   any other. The read-path heal (gh#402) reaches a bucket by way of `BarGapDetector.FindMissing`, which walked
   only the calendar's expected grid — so a null off that grid was in neither set the read path knows about,
-  was never asked for, and never healed. The venue does publish there: a bar at 16:30 Central, inside the
-  16:00–17:00 maintenance window, was measured on real data. The cost was not vendor traffic but a **degraded
-  answer**: one unattributed run beside a recorded one makes the window `Unknown`, so a single unhealable
-  off-grid null pinned `get_key_levels` and `get_market_snapshot` at *cannot tell whether this window spans a
-  roll*, on every read, over bars that were all one contract. `FindMissing` now enumerates the buckets the
-  store holds **unattributed** on top of the expected ones — sorted into the sequence, so a run still
-  coalesces around them. A bucket the store holds *with* a contract is still not enumerated off-grid, so
-  gh#408's accepted cost does not grow, and no `ContractId` is guessed anywhere: the venue is asked, and a
-  bar it will not restate keeps its null and its honest `Unknown`
-  ([ADR-0011](documentation/adr/0011-contract-roll-boundary.md), gh#412).
+  was never asked for, and never healed. A row can sit off that grid by construction rather than by accident:
+  the session close and the holiday list are **configuration**, and the write path does not consult them, so
+  correcting a close or declaring a holiday late moves the grid under rows already written. The cost was not
+  vendor traffic but a **degraded answer**: one unattributed run beside a recorded one makes the window
+  `Unknown`, so a single unhealable off-grid null pinned `get_key_levels` and `get_market_snapshot` at *cannot
+  tell whether this window spans a roll*, on every read, over bars that were all one contract. `FindMissing`
+  now enumerates the buckets the store holds **unattributed** on top of the expected ones — sorted into the
+  sequence, so a run still coalesces around them. A bucket the store holds *with* a contract is still not
+  enumerated off-grid, so gh#408's accepted cost does not grow, and no `ContractId` is guessed anywhere: the
+  venue is asked, and a bar it will not restate keeps its null and its honest `Unknown`. The 16:30 Central
+  bucket the tests use is a constructed demonstration of an off-grid bucket, not an observation of a live
+  store ([ADR-0011](documentation/adr/0011-contract-roll-boundary.md), gh#412).
 
 - A missing bar range wider than one venue page is no longer re-fetched on every read. The range is fetched in
   pages and the "venue answered empty" memo is written **per page slice**, while the lookup dropped a range

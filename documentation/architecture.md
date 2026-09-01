@@ -77,9 +77,13 @@ path (gh#69).
 
 `BarCacheService.GetBarsAsync(instrument, resolution, window)`:
 
-1. **Read** stored bars for the window.
+1. **Read** the stored bucket starts for the window, split by whether the row records the contract that
+   produced it. A bucket carrying no `ContractId` is *not* counted as held: the venue is re-asked and the
+   upsert heals it ([ADR-0011](adr/0011-contract-roll-boundary.md), gh#402).
 2. **Ask the calendar** which buckets the venue was expected to publish — `BarGapDetector.ExpectedBuckets`
-   over `BarSessionCalendar`.
+   over `BarSessionCalendar` — **plus** the unattributed buckets from step 1, which are enumerated even when
+   the calendar does not expect them. Off the grid they would otherwise never be asked for, and the window
+   would report its contract span as `Unknown` for good (gh#412).
 3. **Diff.** Nothing missing ⇒ return. **Zero vendor calls** (R-1.3).
 4. **Consult the coverage ledger.** A range the vendor previously answered empty is treated as covered, so a
    genuine hole is not re-requested forever.

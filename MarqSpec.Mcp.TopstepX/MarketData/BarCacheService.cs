@@ -31,6 +31,16 @@ public sealed record BarReadResult(
     int FetchedBuckets,
     int VenueRequests);
 
+/// <summary>One stored bucket, and whether the row standing in it says which contract produced it.</summary>
+/// <param name="BucketStart">When the bucket opens.</param>
+/// <param name="HasContract">Whether <c>ContractId</c> is recorded.</param>
+/// <remarks>
+/// A named type rather than an anonymous one so the projection is a documented shape rather than a shape the
+/// query happens to have: the read that produces it is the one deciding what gets re-asked for, and the two
+/// sets it splits into mean different things (gh#412).
+/// </remarks>
+internal sealed record BucketProvenance(DateTimeOffset BucketStart, bool HasContract);
+
 /// <summary>
 /// Serves bars from the store, reaching the venue only for what is genuinely missing (ADR-0005).
 /// </summary>
@@ -133,27 +143,39 @@ public sealed class BarCacheService
         DateTimeOffset now = _clock.GetUtcNow();
         string venue = _gateway.VenueId;
 
-        // 1. What the store already holds -- WITH a recorded contract. A bucket present but carrying no
-        // provenance (written before migration 20260823074908_AddBarContractId, or backfilled by a gateway
-        // that has since started stamping one) is treated as though the store did not have it at all: the
-        // alternative, leaving it "found", means FindMissing never asks the venue again and the row keeps
-        // ContractId == null forever (gh#402). This is not a guess at which contract it was -- the venue is
-        // asked again, exactly as for a genuinely missing bucket, and the ordinary upsert below already
-        // overwrites "ContractId" from whatever the venue answers with.
-        List<DateTimeOffset> storedBuckets = await _database.Bars
+        // 1. What the store already holds, split by whether it can say WHICH CONTRACT produced it. A bucket
+        // present but carrying no provenance (written before migration 20260823074908_AddBarContractId, or
+        // backfilled by a gateway that has since started stamping one) is treated as though the store did not
+        // have it at all: the alternative, leaving it "found", means FindMissing never asks the venue again
+        // and the row keeps ContractId == null forever (gh#402). This is not a guess at which contract it was
+        // -- the venue is asked again, exactly as for a genuinely missing bucket, and the ordinary upsert
+        // below already overwrites "ContractId" from whatever the venue answers with.
+        //
+        // The unattributed ones are carried SEPARATELY rather than merely omitted, because omitting them is
+        // only half the heal: FindMissing walks the calendar's expected grid, so a null sitting OFF that grid
+        // is absent from both sets and is therefore never enumerated at all -- never asked for, never healed,
+        // and permanently downgrading the window's reported contract span to Unknown (gh#412). Naming them
+        // lets the detector enumerate them on top of the grid. One query, both sets: the split is done here
+        // rather than in two round-trips.
+        List<BucketProvenance> storedRows = await _database.Bars
             .Where(b => b.Venue == venue
                 && b.Instrument == instrument.Symbol
                 && b.ResolutionMinutes == resolutionMinutes
                 && b.BucketStart >= window.Start
-                && b.BucketStart < window.End
-                && b.ContractId != null)
-            .Select(b => b.BucketStart)
+                && b.BucketStart < window.End)
+            .Select(b => new BucketProvenance(b.BucketStart, b.ContractId != null))
             .ToListAsync(cancellationToken)
             .ConfigureAwait(false);
 
-        // 2 & 3. Which buckets the venue owed us, minus what we have.
-        IReadOnlyList<BarRange> missing =
-            BarGapDetector.FindMissing(storedBuckets, window, barSize, _calendar);
+        List<DateTimeOffset> storedBuckets =
+            [.. storedRows.Where(static r => r.HasContract).Select(static r => r.BucketStart)];
+        List<DateTimeOffset> unattributedBuckets =
+            [.. storedRows.Where(static r => !r.HasContract).Select(static r => r.BucketStart)];
+
+        // 2 & 3. Which buckets the venue owed us -- plus the ones it evidently published off the calendar's
+        // grid and we cannot attribute -- minus what we have.
+        IReadOnlyList<BarRange> missing = BarGapDetector.FindMissing(
+            storedBuckets, unattributedBuckets, window, barSize, _calendar);
 
         // 4. Ranges the venue has already told us are empty are not missing, they are answered.
         IReadOnlyList<BarRange> outstanding = await ExcludeCoveredAsync(

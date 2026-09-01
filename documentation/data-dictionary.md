@@ -64,8 +64,10 @@ tell — rather than being folded into it or promoted to a roll on its own. It d
 the store can already prove: two runs whose contract id is recorded and different are `SpansRoll` even when an
 unattributed run sits beside or between them ([ADR-0011](adr/0011-contract-roll-boundary.md), gh#402). A read
 that touches a null bucket re-asks the venue and the existing upsert overwrites it, so provenance heals on its
-own the next time something reads that range — bounded to buckets the calendar still expects and the venue
-still restates; deleting and refetching by hand is no longer the only remedy.
+own the next time something reads that range — including a bucket the session calendar does not expect, which
+the venue does sometimes publish and which otherwise pinned the window's span at `Unknown` for good
+([ADR-0011](adr/0011-contract-roll-boundary.md), gh#412). It is bounded by what the venue will still restate;
+deleting and refetching by hand is no longer the only remedy.
 
 **Deliberately no retention policy.** This is a record, not a pipeline.
 

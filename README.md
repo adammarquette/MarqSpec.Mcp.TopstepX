@@ -147,11 +147,10 @@ same observation, and the cache asks the vendor for the weekend forever.
 [`CONTRIBUTING.md`](CONTRIBUTING.md) — branching, claiming, commits, and the Definition of Done. Work is
 issue-first and tracked on the [project board](https://github.com/users/adammarquette/projects/5).
 
-## License
+## Notice
 
-Copyright (c) 2026 Adam Marquette. All rights reserved. See [`NOTICE`](NOTICE). Not affiliated with,
-endorsed by, or sponsored by ProjectX, TopstepX or Topstep. Trademarks belong to their owners and are
-used only to identify what is being integrated with.
+See [`NOTICE`](NOTICE). Not affiliated with, endorsed by, or sponsored by ProjectX, TopstepX or Topstep.
+Trademarks belong to their owners and are used only to identify what is being integrated with.
 
 ---
 

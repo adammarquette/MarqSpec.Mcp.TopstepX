@@ -545,9 +545,14 @@ public sealed class BarCacheServiceTests : IDisposable
         //
         // gh#402 made a bucket with no recorded contract count as not-stored, so FindMissing re-asks for it
         // and the upsert heals it. But FindMissing walks only the buckets the CALENDAR EXPECTS, so a legacy
-        // null sitting off that grid is never enumerated, never asked for, and never heals. The venue really
-        // does publish there: gh#408 measured a bar at 16:30 Central, inside the 16:00-17:00 maintenance
-        // window this calendar excludes.
+        // null sitting off that grid is never enumerated, never asked for, and never heals.
+        //
+        // A row CAN sit off that grid, and it is the CONFIGURATION that makes it so, not the venue: the
+        // session close and the holiday list are settings (MarketDataOptions.SessionCloseCentral, .Holidays)
+        // and the write path stores what the venue answers without consulting them, so correcting a close or
+        // declaring a holiday late strands rows already written. 16:30 Central is used below because this
+        // calendar plainly does not expect it -- it is a CONSTRUCTED demonstration, the same bucket gh#408's
+        // fixture uses, and no live store has been observed holding one.
         //
         // The cost is not a request. ToCoverage reads an unattributed run beside a single recorded one as
         // Unknown -- correctly, per ADR-0011 -- so ONE unhealable off-grid null downgrades get_key_levels and

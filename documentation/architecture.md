@@ -543,6 +543,12 @@ dating today's pick. It does not fetch bars and does not write a roll row.
   `TapeCoverage` from that lifecycle (gh#217); `Connected` is not listening. That ledger is its own
   type, `TapeCoverageLedger` — the service keeps the subscription lifecycle and the print pipeline and
   calls it — because five of one release's six defects landed in that half while it had no name (gh#390).
+  **One recorder per instrument is enforced, not assumed** (gh#404): a start takes a store-backed
+  claim on each instrument — `TapeLeases`, keyed `(Venue, Instrument)` so a deployment split by
+  `MarketData__Instruments` stays legal — before it subscribes and before it discards crash
+  leftovers, and a start that cannot get one declines cleanly rather than faulting `ExecuteTask`.
+  A lapsed claim is reclaimable so a crash cannot strand the tape, and a holder taken over while
+  still subscribed stands down at its next renewal rather than becoming the second writer.
   Live tape health is a
   mutable holder written from that same lifecycle and read at the point of use (gh#218) — the opposite
   of the store probe, which is set once at startup and never re-probed. `get_footprint` and
@@ -551,5 +557,6 @@ dating today's pick. It does not fetch bars and does not write a roll row.
   stay out of this phase, and there is still no `get_quote`.
 - **No REST poller.** Bar, contract and account fetches stay caused by a tool call. The tape recorder is a push
   subscriber, not a background poll of a quote endpoint the venue does not have. A second stdio process must
-  not subscribe to the same tape (ADR-0016).
+  not subscribe to the same tape, and a second HTTP one is refused a claim rather than trusted not to
+  (ADR-0016, gh#404).
 - **No LLM.** This server hands an agent numbers. The reasoning happens in the client.

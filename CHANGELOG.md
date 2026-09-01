@@ -22,6 +22,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and `contractId`, which just past a contract roll legitimately differ between entries, and cannot-measure is
   still the map's own `null`. `get_indicator_at` is untouched (gh#388).
 
+### Added
+
+- **A second concurrent tape recorder is refused rather than tolerated.** A start now takes a store-backed
+  claim on each instrument — a `TapeLeases` row keyed `(Venue, Instrument)` — **before** it subscribes and
+  before it discards crash leftovers, so two processes configured for the same instrument can no longer both
+  write prints and double every volume ([ADR-0016](documentation/adr/0016-subscribe-to-the-market-hub.md)).
+  The refused recorder declines cleanly: it does not subscribe, does not fault its `ExecuteTask`, still
+  serves every read, and reports the new `HeldByAnotherRecorder` tape reason naming the holder — distinct
+  from "the switch is off". **The split-by-instrument deployment is unaffected**, because the claim is per
+  instrument and not per store. A claim whose expiry has passed is reclaimable, so a crash cannot strand the
+  tape; a quiet holder whose expiry has *not* passed is still the holder; and a holder taken over while it
+  was still subscribed drops that subscription at its next renewal rather than becoming a second writer
+  (gh#404).
+
 ### Fixed
 
 - A missing bar range wider than one venue page is no longer re-fetched on every read. The range is fetched in

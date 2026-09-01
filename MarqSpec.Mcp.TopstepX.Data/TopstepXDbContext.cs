@@ -64,6 +64,9 @@ public sealed class TopstepXDbContext(DbContextOptions<TopstepXDbContext> option
     /// <summary>Ranges during which a subscription was listening — the tape's coverage ledger.</summary>
     public DbSet<TapeCoverageRecord> TapeCoverage => Set<TapeCoverageRecord>();
 
+    /// <summary>Which process holds each instrument's tape — the claim that refuses a second recorder.</summary>
+    public DbSet<TapeLeaseRecord> TapeLeases => Set<TapeLeaseRecord>();
+
     /// <summary>Buy and sell volume per price per bar — a projection over <see cref="Trades"/>.</summary>
     public DbSet<FootprintCellRecord> FootprintCells => Set<FootprintCellRecord>();
 
@@ -166,6 +169,24 @@ public sealed class TopstepXDbContext(DbContextOptions<TopstepXDbContext> option
             entity.Property(c => c.ContractId).HasMaxLength(64);
 
             entity.HasIndex(c => new { c.Instrument, c.ContractId, c.RangeStart, c.RangeEnd });
+        });
+
+        modelBuilder.Entity<TapeLeaseRecord>(entity =>
+        {
+            entity.ToTable("TapeLeases");
+
+            // Per instrument, not per store: two recorders split by MarketData__Instruments are a
+            // supported deployment (gh#382), and a whole-store key would outlaw it (gh#404).
+            entity.HasKey(l => new { l.Venue, l.Instrument });
+
+            entity.Property(l => l.Venue).HasMaxLength(64);
+            entity.Property(l => l.Instrument).HasMaxLength(32);
+            entity.Property(l => l.OwnerId).HasMaxLength(64);
+
+            // The takeover of an expired claim is one conditional update, not a read and a hopeful
+            // write: two starts racing the same expired row match the same generation, and exactly
+            // one update succeeds. The other gets DbUpdateConcurrencyException and refuses.
+            entity.Property(l => l.Generation).IsConcurrencyToken();
         });
 
         modelBuilder.Entity<FootprintCellRecord>(entity =>

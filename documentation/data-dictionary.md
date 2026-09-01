@@ -5,9 +5,10 @@
 [ADR-0005](adr/0005-session-aware-gap-detection.md) (`BarCoverage`),
 [ADR-0006](adr/0006-indicators-as-projections.md) (`IndicatorValues`),
 [ADR-0011](adr/0011-contract-roll-boundary.md) (`Bars.ContractId`),
-gh#215 (`Trades`, `TapeCoverage`, `FootprintCells`)
+gh#215 (`Trades`, `TapeCoverage`, `FootprintCells`),
+gh#404 (`TapeLeases`)
 
-One Postgres database, eight tables — §4 is a retired number, not a ninth. Entities live in
+One Postgres database, nine tables — §4 is a retired number, not a tenth. Entities live in
 `MarqSpec.Mcp.TopstepX.Data/Entities/`; the schema is whatever the migrations say, and this page is kept in
 lockstep with them in the same PR.
 
@@ -314,9 +315,10 @@ other instrument is left alone: a second recorder split by `MarketData__Instrume
 may still be listening under it, and a deleted range cannot be rebuilt, while a foreign
 sentinel cannot reach this process's answers because that instrument is not Listening
 here (gh#382). Two recorders on the **same** instrument are not separated by this and
-cannot be: they resolve the same front contract, so the starting one still supersedes the
-running one's open row — the deployment ADR-0016 already calls wrong, and a claim that
-refuses the second recorder is gh#404. Opening a new listen retires any other still-open row for that
+cannot be: they resolve the same front contract, so the starting one would still supersede
+the running one's open row. That is why **the claim in §10 is taken before this discard
+runs**: a start that does not hold an instrument drops it before the discard is scoped, so
+it never reaches a row it does not own (gh#404). Opening a new listen retires any other still-open row for that
 contract. A store fault **after** a confirmed subscribe is not a refused subscribe (`R-5.7`, gh#376):
 the venue subscription is dropped so prints cannot land without a ledger row — including
 every print queued since the subscribe was *attempted*, because the venue can print while
@@ -335,6 +337,41 @@ instant or leave a hole, and both are invisible until a profile reports a window
 outage is the hole between two closed ranges: they must meet it with no slack on either side.
 
 Not a hypertable. This is a ledger, like §3, not a time series of events.
+
+## §10 `TapeLeases` — who is allowed to record
+
+| Column | Type | Note |
+|---|---|---|
+| `Venue` `Instrument` | | PK |
+| `OwnerId` | `varchar(64)` | the holding process, new on every start |
+| `Generation` | `bigint` | concurrency token; bumped on acquire and takeover |
+| `AcquiredAt` `HeartbeatAt` `ExpiresAt` | `timestamptz` | |
+
+Not market data — the one table here that records something about *this system* rather than about
+the market. It exists because ADR-0016's rule that two subscribers on one tape double every volume
+was prose that nothing enforced: a recorder takes a claim on each instrument **before** it
+subscribes and before it runs the §8 discard, and one that cannot get a claim does not subscribe
+and does not fault its host (gh#404).
+
+**Keyed per `(Venue, Instrument)`, not per store.** Two recorders split by
+`MarketData__Instruments` are a supported deployment that §8's discard already protects; a
+whole-store claim would outlaw it. Only the overlap that doubles volume is refused.
+
+**A row is held until its `ExpiresAt` has passed**, whatever its holder is doing — a quiet holder
+is a holder, and an unreadable store refuses rather than granting. The absence of a row is the only
+free state: a clean stop deletes its own, so a redeploy does not wait out the expiry. The holder
+renews at a third of the time to live, so two lost renewals are survivable. `Generation` makes the
+takeover of a lapsed row one conditional update, so two starts reclaiming it leave one holder and
+not two; the loser re-reads and is refused. A holder that is taken over while still subscribed
+learns so at its next renewal and drops the subscription, which is what makes an expiry safe rather
+than a second way to get two writers.
+
+**This is not signalled through §3 or §8.** A `BarCoverage` row means the venue answered a range
+and had nothing, and a `TapeCoverage` row means a subscription was listening; both are facts about
+the market and the tape, not about which process is running. Putting "someone else holds this" on
+either would make an availability signal indistinguishable from a data fact.
+
+Not a hypertable, and not a time series at all — at most one row per instrument per venue.
 
 ## §9 `FootprintCells` — a projection over §7
 

@@ -201,13 +201,14 @@ public sealed class TapeCoverageLedger
     /// <see cref="TapeCoverageRecord.StillListeningEnd"/> on a contract nothing is listening to.
     /// </para>
     /// <para>
-    /// <b>What this does not fix.</b> Two recorders configured for the <i>same</i> instrument — a
-    /// rolling redeploy, or a restart overlapping a still-draining container — resolve the same
-    /// front contract, so the starting one still supersedes the running one's open row. No
-    /// predicate can separate them: "my crash leftover" and "their live listen" are the same row,
-    /// and this method has to keep deleting the first. That overlap is the deployment ADR-0016
-    /// already calls wrong, and closing it means refusing the second recorder a claim rather than
-    /// widening a query (gh#404). It is left visible here rather than papered over.
+    /// <b>What no predicate here could fix, and what does.</b> Two recorders configured for the
+    /// <i>same</i> instrument — a rolling redeploy, or a restart overlapping a still-draining
+    /// container — resolve the same front contract, so "my crash leftover" and "their live listen"
+    /// are the same row and this method would have to keep deleting the second. That is not solved
+    /// by widening a query, and it is not solved here: <see cref="TapeLease"/> refuses the second
+    /// recorder a claim on that instrument <em>before</em> this runs, so the instruments handed in
+    /// are only ones this process holds, and a start that owns nothing never calls this at all
+    /// (ADR-0016, gh#404).
     /// </para>
     /// </remarks>
     /// <param name="venue">The venue this start resolved its contracts through.</param>

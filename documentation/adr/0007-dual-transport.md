@@ -267,12 +267,19 @@ carrying this work is named for the duplicate.
 
 **The reason is not only a client.** gh#416 makes the point its restatement did not: an endpoint carrying
 balances, positions and trade history has no business crossing a network in plaintext whatever any client
-demands, and a bearer token sent in clear is a credential anyone on the path can replay. The **forcing** event
-is nonetheless a client — **Claude Cowork refuses to register a non-TLS endpoint as a connector**, so the
-composed stack could not be used by the tool it exists to serve.
+demands, and a bearer token sent in clear is a credential anyone on the path can replay. **Those two
+sentences are the whole case, and they are the part that is established.**
+
+The **forcing** event is reported rather than established, and this record says which is which because
+getting that backwards is the defect this repository keeps sending pull requests back for. gh#416's own
+words: *"the maintainer reports Claude Cowork is such a client … I have not independently verified Cowork's
+requirement, and this issue does not rest on it."* Nothing here verified it either — Cowork is not installed
+on the host this was built on, and **no measurement below is a Cowork measurement**. What was measured is a
+different, stricter thing: a Node/OpenSSL MCP client registering this endpoint as a connector, which is what
+discriminated the certificate sources.
 
 Two things the maintainer settled before any of this was designed, and they resolve gh#416's first open
-decision: Cowork reaches the endpoint **from the same machine** — not Anthropic's cloud, not a LAN — so there
+decision: the client reaches the endpoint **from the same machine** — not Anthropic's cloud, not a LAN — so there
 is no public hostname to certify and no ACME challenge to answer; and **gh#415's loopback bind stays**, so TLS
 is added beside it rather than instead of it. A genuinely remote instance is a different operational story and
 is not decided here.
@@ -308,6 +315,15 @@ trust relationship for the SSL/TLS secure channel"* against an untrusted self-si
 container a minute earlier. That is also the negative control proving validation is live on the positive
 result, which a passing request alone cannot show.
 
+**The cost of choosing mkcert is a root CA on the operator's machine, and it is stated rather than buried.**
+`mkcert -install` writes a new certificate authority into the OS trust store: until it is removed, anything
+that CA signs is trusted by every application reading that store, and whoever holds its key — `mkcert -CAROOT`
+— can mint a certificate for any name. It is reversible (`mkcert -uninstall`), and mkcert is not part of the
+.NET SDK, so it is also a tool the operator must install first. Neither fact is discoverable from
+`docker-compose.yml`, so both are stated in `README.md` **above** the command block and in `.env.example`.
+That cost is the whole of what the dev cert would have saved, and the table above is why it does not buy
+enough.
+
 So: **mkcert**, packed into a PFX with `openssl`, mounted read-only at `/https`. Its leaf expires
 **2028-12-02 UTC** — mkcert caps at roughly two years, against the dev cert's one. Nothing rotates it; rotation is
 out of scope on this card and stays there — gh#416 does not ask for it — but the date is written here and in
@@ -340,12 +356,39 @@ launching `dotnet run` on the host, where nothing names an address — and each 
 namespace, so it cannot collide the way `:5000` did. `TransportBindingTests` tests the method, not the image,
 and passes unmodified.
 
-### The password is the one setting with no default
+### The password ships with no value — and enforcing that in compose was a mistake
 
-`Kestrel__Certificates__Default__Password` arrives through `.env` and **docker-compose.yml gives it no
-fallback** — `${...:?}`, so compose refuses to render rather than substituting anything. `POSTGRES_PASSWORD`
-and `Mcp__HttpBearerToken` carry local defaults because a loopback port is what they guard; a default that
-decrypts a private key is a different kind of object, and this repository is public. `certs/` and `.env` are
+`Kestrel__Certificates__Default__Password` arrives through `.env` and **no value for it ships in any tracked
+file**. `POSTGRES_PASSWORD` and `Mcp__HttpBearerToken` carry local defaults because a loopback port is what
+they guard; a default that decrypts a private key is a different kind of object, and this repository is
+public.
+
+**Making compose enforce it was wrong, and the reason generalises to every guard in that file.
+`docker-compose.yml` is interpolated in full BEFORE a service is selected**, so `${...:?}` on a variable only
+the `server` service reads failed commands that never start it. Measured with no `.env`, at the first draft
+of this change:
+
+| Command | On `develop` | With the `:?` guard |
+|---|---|---|
+| `docker compose config postgres` | renders | **exit 1**, certificate error |
+| `docker compose -f docker-compose.yml -f docker-compose.dev.yml config sdk` | renders | **exit 1**, certificate error |
+
+Both matter more than they look. The second is the repository's own documented test loop and, on a host where
+Application Control blocks freshly built assemblies, the only way to run the suite at all. The first means
+`docker compose up -d postgres` fails with a TLS error — **and that is the exact command the server's own
+absent-database warning prints**, so the fix for one failure would have been blocked by another.
+
+Scoping it to the service was tried and does not exist: an `env_file` entry with `required: true` on `server`
+alone failed *both* commands identically. So the guard is gone — `${...:-}` — and the requirement is enforced
+where it belongs, at the server's own startup. The two failures there are recorded in `docker-compose.yml`
+and `README.md` because **one of them is misleading**: an unset password arrives as an empty one, and Kestrel
+reports *"the password may be incorrect"* rather than "there isn't one". A missing certificate is the clear
+case, `FileNotFoundException` naming `/https/localhost.pfx`.
+
+**The general rule this leaves: a `:?` in a multi-service compose file is a whole-file assertion, whatever
+service it sits under.** It is right only for something every service needs.
+
+`certs/` and `.env` are
 gitignored, and `.gitignore` grew `*.key`, `*.crt` and `*.pem` beside the `*.pfx` the template already carried
 — mkcert writes a private key in the clear before it is packed, and none of those three extensions was
 covered.

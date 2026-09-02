@@ -16,12 +16,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Security
 
 - **BREAKING for local clients.** The composed MCP endpoint is now **HTTPS only**, on
-  `https://localhost:8443/mcp`, and there is no plaintext port beside it. Claude Cowork refuses to register a
-  non-TLS endpoint as a connector, so the composed stack could not be used by the tool it exists to serve.
+  `https://localhost:8443/mcp`, and there is no plaintext port beside it — a client that requires HTTPS could
+  not connect at all before, and a bearer token sent in clear is replayable by anyone on the path. (Claude
+  Cowork is *reported* to be such a client; that report is not independently verified here and nothing rests
+  on it.)
   Every local client's URL changes, once, from `http://localhost:8080/mcp`. `docker compose up` now needs a
   locally trusted certificate and `Kestrel__Certificates__Default__Password` in `.env` — the one setting in
-  the stack with **no** compose default, because it unlocks a private key and this repository is public;
-  compose refuses to render without it. The certificate comes from **mkcert**, a local CA, and not from
+  the stack that ships with **no value**, because it unlocks a private key and this repository is public. It
+  is not enforced by compose: compose interpolates the whole file before selecting a service, so a `${...:?}`
+  guard on it broke `docker compose up -d postgres` and the containerised test loop, neither of which needs a
+  certificate. `docker compose up -d postgres` and the `sdk` loop still run with no `.env` at all. The
+  certificate comes from **mkcert**, a local CA installed into the host trust store with `mkcert -install`
+  (reversible with `mkcert -uninstall`) — a machine-wide change the README now states before the command —
+  and not from
   `dotnet dev-certs`: that one issues a self-signed leaf (`CA:FALSE`) which OpenSSL cannot anchor on, so an
   OpenSSL-based client rejects it and no client-side setting fixes that. Removing `ASPNETCORE_HTTP_PORTS` was
   not enough on its own — the ASP.NET base image sets it to 8080, so compose overrides it to empty

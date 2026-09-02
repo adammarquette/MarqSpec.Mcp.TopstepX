@@ -33,9 +33,25 @@ Requires Docker and the .NET 10 SDK.
 
 ```bash
 cp .env.example .env       # then fill in ProjectX__ApiKey / ProjectX__ApiSecret / ProjectX__DataTier
+```
 
-# TLS, once per host. The composed endpoint is HTTPS and needs a locally trusted certificate.
-mkcert -install
+**Read this before running the next block — it changes your machine, not just this directory.** The composed
+endpoint is HTTPS, so it needs a certificate your host trusts, and the only way to get one locally is to
+trust a **local certificate authority**. `mkcert -install` **writes a new root CA into your operating
+system's trust store**. Until it is removed, anything that CA signs is trusted by every application reading
+that store, and whoever holds its private key — `mkcert -CAROOT` prints the directory, so guard it — can
+mint a certificate for **any** name. It is the standard tool for this and the change is reversible:
+**`mkcert -uninstall`** removes the CA again. It is a decision, not a step.
+
+`mkcert` ships with nothing here and is not part of the .NET SDK, so install it first:
+
+```bash
+winget install FiloSottile.mkcert     # Windows.  macOS: brew install mkcert.  Linux: see the mkcert README
+```
+
+```bash
+# TLS, once per host.
+mkcert -install            # <-- writes a root CA to the OS trust store; `mkcert -uninstall` reverses it
 mkcert -cert-file ./certs/localhost.crt -key-file ./certs/localhost.key localhost 127.0.0.1 ::1
 openssl rand -hex 24       # put it in .env as Kestrel__Certificates__Default__Password
 openssl pkcs12 -export -out ./certs/localhost.pfx \
@@ -46,8 +62,16 @@ rm ./certs/localhost.key   # the PFX carries the key, encrypted
 docker compose up -d       # Postgres (TimescaleDB + pgvector) and the HTTPS server on :8443
 ```
 
-`docker compose up` is the **HTTPS** transport on `:8443`, not stdio and **not plaintext** — Claude Cowork
-will not register a non-TLS endpoint as a connector (gh#416). There is no HTTP port beside it. Calls need
+**Only the server needs any of that.** `docker compose up -d postgres` and the containerised test loop under
+[Local development](CONTRIBUTING.md#local-development) render and run with **no `.env` and no certificate** —
+verified, because compose interpolates the whole file before it picks a service and an earlier draft of this
+change broke both.
+
+`docker compose up` is the **HTTPS** transport on `:8443`, not stdio and **not plaintext**: a client that
+requires HTTPS could not connect at all before, and a bearer token sent in clear is a credential anyone on the
+path can replay (gh#416). *The maintainer reports that Claude Cowork is such a client and refuses to register
+a non-TLS endpoint as a connector; that report is **not** independently verified here, and nothing above
+depends on it.* There is no HTTP port beside it. Calls need
 `Authorization: Bearer <Mcp__HttpBearerToken>`; TLS is confidentiality on the wire and the token is still what
 authorises the call. Compose defaults that token to `changeme-local`, the same local convenience as
 `POSTGRES_PASSWORD` and `ProjectX__DataTier:-Simulated`. **Compose binds that port to `127.0.0.1`**, which is
@@ -55,8 +79,18 @@ the only reason the default token is tolerable; publish it wider and you set a r
 (gh#415) — TLS does not license widening it. The certificate covers `localhost`, `127.0.0.1` and `::1`, so
 either literal works where the name does not.
 
-`Kestrel__Certificates__Default__Password` is the one setting with **no** compose default: it unlocks a
-private key, and this repository is public. Compose stops with a message rather than falling back.
+`Kestrel__Certificates__Default__Password` is the one setting that ships with **no value** — it unlocks a
+private key, and this repository is public. It is **not** enforced by compose, and that is deliberate:
+compose interpolates the whole file before it picks a service, so a hard requirement here broke
+`docker compose up -d postgres` and the containerised test loop, neither of which needs a certificate.
+The server fails at its own startup instead, and one of the two messages is misleading, so it is worth
+knowing which is which:
+
+| What is wrong | What the server says |
+|---|---|
+| no certificate at `certs/localhost.pfx` | `FileNotFoundException: Could not find file '/https/localhost.pfx'` — clear |
+| certificate present, password unset or wrong | `The certificate data cannot be read with the provided password, the password may be incorrect` — an **unset** password arrives as an empty one, so *"may be incorrect"* also means *"may be missing"*. Check `.env` before you suspect the PFX. |
+
 `certs/` and `.env` are gitignored. Nothing rotates the certificate; mkcert's leaf lasts about two years.
 
 **`dotnet dev-certs` is not a substitute**, and the reason is measured rather than stylistic: it issues a

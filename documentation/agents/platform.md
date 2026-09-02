@@ -33,6 +33,33 @@ The root contract's six apply here unchanged. Four land specifically on the pipe
   stated one.** That figure and the requirement id `ci.yml` cited for it both came in with the scaffolding
   from `MarqSpec.Client.ProjectX`, the same route as the inherited coverage floor of `43`, and neither
   resolved here (gh#182). The floor `ci.yml` enforces is a measurement of this suite, ratcheted upward.
+- **A gate can also fail to be a gate by measuring the wrong population, and that failure is silent because
+  the gate still passes** (gh#431). `coverage` read the **unit** job's report alone. gh#387 then moved the
+  write-path suites into the integration tier and deleted the EF-InMemory second implementation the unit
+  tier needed to run them; the tests kept running, the lines stopped being counted, and the reported figure
+  fell from 64.4 % / 80.7 % to **56.0 % / 71.1 %** with nothing about what is tested changed. Above the 40 %
+  floor throughout, so nothing was red — a number that had simply stopped describing the repository, falling
+  in the direction that invites the conclusion *testing was reduced*. It now reads **both** tiers and gates
+  the **merged** figure, and the choice is argued beside `MINIMUM_LINE_COVERAGE` and at length in
+  [`check-coverage-floor.py`](../../scripts/check-coverage-floor.py)'s header rather than in a pull-request
+  body. Three things generalise past this gate; the rest, including the merge rules and cobertura's own
+  1905-against-1885 branch discrepancy, is in that header:
+  - **It moved out of the workflow into a tracked script**, because an inline `shell: python3 {0}` step can
+    only be run locally by *copying* it — measuring a copy and reporting it as the shipped text. gh#142 had
+    to extract `branch-policy.yml`'s stripper before its numbers meant anything. Same rule as the closing
+    line of this section.
+  - **Merging is a union, never an average of rates** — averaging two roots' `line-rate` double-counts every
+    line both tiers walk, and these two overlap on 2 285 of 8 127 instrumented lines. Cobertura's **branch**
+    detail cannot be unioned exactly at all, so that figure is a per-line maximum and a lower bound, stated
+    in the output. It costs nothing that decides anything: **the floor is on line coverage only.**
+  - **Coverage is an execution counter and cannot see what a covered line DOES.** This card was asked to
+    make a mutation of `UpsertBarsSql`'s `ON CONFLICT` visible in the reported figure. **It is not, and no
+    gate can make it so** — measured: `BarCacheService.cs` lines 522–542, the whole `private const string`,
+    are instrumented in *neither* tier, a compile-time constant carrying no sequence point. What catches
+    that mutation is the integration test going red (7 of 196). What the gate *can* see, and what gh#387
+    broke, is whether the lines that **execute** it are counted: the call site at `BarCacheService.cs:680`
+    reads **0 hits** in the unit report and **85** in the integration one. **Ask what a proposed signal
+    counts before writing an acceptance criterion in terms of it.**
 - **No live credentials in a test run that does not need them.** `release.yml` passed real API secrets into an
   unfiltered `dotnet test`. That integration tests mostly did not execute was an accident of hardcoded skip
   strings, not a design. Live-credentialed runs are opt-in, tagged, and never on the release path.
@@ -916,6 +943,14 @@ advisory were re-examined rather than assumed away:
 skip would then have nothing red beneath it, and `image` would go green on an image nobody built. The same
 holds for `coverage`. The argument is a property of the `needs:` list rather than of the job, so a change
 to either list re-runs it in this section, in the same PR.
+
+**And one has changed since, so here it is re-run rather than assumed** (gh#431). `coverage` now needs
+**`[build-test, integration-test]`** rather than `build-test` alone, because it merges both tiers' reports.
+Both added and existing entries report contexts that are themselves required on all three rungs —
+`build & unit tests` and `integration tests` — and neither job carries an `if:` or a `needs:` of its own, so
+neither can be skipped. A skipped `coverage` therefore still always sits behind a required check that is red
+or cancelled. The hole stays closed; the rule above is what says so, and the rule is why this paragraph
+exists rather than a diff nobody re-read.
 
 **CodeQL is deliberately NOT required, and that row was re-read rather than carried forward** — neither
 string appears in any of the three rulesets, and GitHub answered `isRequired: false` for both of them on

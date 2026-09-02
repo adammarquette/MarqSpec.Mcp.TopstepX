@@ -72,6 +72,14 @@ any environment is not a test, it is a comment that costs a CI minute.
   back as the *stale seeded instance*, not the row the statement wrote. gh#387 found three tests that had
   been passing on exactly that. Clear the tracker after seeding, or read back through a second context.
 
+## This tier is counted
+
+CI collects coverage here as well as in the unit tier, and the `coverage` gate enforces its floor on the
+**merged** figure (gh#431). So a suite that lives here is scored like one that lives in `…​.Tests` — which
+it was not between gh#387 and gh#431, when the write-path suites moved down here and the gate went on
+reading only the unit report. That does **not** change where a test belongs: the section at the top of this
+file is still the only rule for that, and a test does not move tier to move a number.
+
 ## Reading a failure
 
 When this suite goes red, say **which of the two it is** in the issue: the code is wrong, or the expectation

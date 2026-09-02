@@ -64,8 +64,12 @@ Stated rather than papered over -- and it costs nothing that decides anything, b
 LINE COVERAGE ONLY. Branch is reported, never gated.
 
 A SECOND, SEPARATE BRANCH DISCREPANCY, MEASURED RATHER THAN REASONED (gh#431). The per-tier LINE figures
-here reproduce coverlet's own `<coverage>` root exactly -- 4554/8127 unit, 5133/8127 integration, the
-same 56.0% the gh#431 issue quotes. The per-tier BRANCH figures do not, and cannot: coverlet's root
+here reproduce coverlet's own `<coverage>` root exactly -- 4554/8127 unit, 5133/8127 integration on the
+container run below, 4550/8127 and 5133/8127 on CI run 33584086404, the same 56.0% the gh#431 issue
+quotes. SINCE gh#435 THAT SENTENCE IS ASSERTED ON EVERY RUN rather than claimed here: it was this file's
+strongest claim and nothing observed it, which is why the two unit figures in this file could differ by
+four without anything noticing. See check_against_root(). The per-tier BRANCH figures do not, and cannot:
+coverlet's root
 declares `branches-valid="1905"` while the sum over every `<line branch="True" condition-coverage=...>`
 it writes is **1885**, covered 1353 against 1349. Twenty branch points, four of them covered, are counted
 in the summary and appear nowhere in the detail, so no parser can recover them; reading the detail is the
@@ -88,6 +92,20 @@ this gate exists to stop, and it would drop it toward a NUMBER THAT STILL PASSES
 required to share at least one source file, which is the cheap guard against the two reports disagreeing
 about how a path is spelled -- disjoint file sets would make the "merge" a sum, inflating the denominator
 and quietly turning the union back into an average.
+
+AND THE FLOOR HAS TO BE CLOSE ENOUGH TO THE MEASUREMENT TO FIRE (gh#435). gh#431 left the floor at 40
+against a merged 91.0%, correctly -- that card forbade touching it -- and a gate 51 points below what it
+guards will not fire before somebody notices by other means, which is worse than no gate because it is
+trusted. Its reviewer measured the exact hole: a zero-test integration tier still yields merged 56.0% and
+still passes, so THE gh#387 EVENT CLEARS THE GATE BUILT IN RESPONSE TO IT. The floor is 85 since gh#435;
+the measurement, the headroom and what ordinary variance costs are recorded beside MINIMUM_LINE_COVERAGE
+in `.github/workflows/ci.yml`, which is where the number is configured.
+
+PROVEN ABLE TO FAIL, by `scripts/check-coverage-floor-selftest.sh`, which runs in the `coverage` job
+directly after this gate. Every guard above -- the floor, the missing report, the unset threshold, the
+disjoint file sets, the parse assertion -- has a fixture there that it is required to REJECT IN ITS OWN
+WORDS, plus a sound fixture it is required to ACCEPT at a stated figure. Rejections alone are all
+satisfied by `exit 1`; an acceptance alone is satisfied by `exit 0`; neither half is the gate.
 """
 
 from __future__ import annotations
@@ -104,12 +122,65 @@ def normalise(path: str) -> str:
     return path.replace("\\", "/").lstrip("/")
 
 
+def check_against_root(report: str, root, lines) -> list[str]:
+    """Require the parse of ONE document to reproduce that document's own `<coverage>` root.
+
+    Returns a list of human-readable problems; empty means the parse agrees with the report.
+
+    THIS IS THE ONLY THING THAT OBSERVES THE HEADER'S STRONGEST CLAIM, and an under-read is
+    invisible without it: dropping lines shrinks the numerator and the denominator TOGETHER, so
+    the reported rate MOVES IN THE FLATTERING DIRECTION while coverage falls. Measured on the
+    fixture `check-coverage-floor-selftest.sh` builds for exactly this: a report whose uncovered
+    lines stop being read reports **higher** than the document it came from, and every earlier
+    version of this gate accepted it silently. The same class as the `branch="True"` bug two
+    functions below -- a parser reading a document it does not own, with nobody checking.
+
+    LINES ONLY, DELIBERATELY, and not because branches are less important. Cobertura's branch
+    detail CANNOT reproduce its own root and the header records the measurement: coverlet declares
+    `branches-valid="1905"` while the sum over the `<line branch="True">` elements it writes is
+    1885, twenty branch points counted in the summary and absent from the detail. Asserting that
+    equality would make this gate unable to PASS, which is the same defect as one unable to fail
+    wearing the fix's clothes. The floor is on line coverage only; so is this.
+
+    THE COMPARISON IS AGAINST THE DEDUPLICATED PARSE, which is the parse the merge uses. Cobertura
+    emits every line TWICE -- once under `<class><lines>` and once under the method that owns it --
+    so a count of raw `<line>` elements is exactly double. Measured on run 33584086404: 16 254 raw
+    elements, 8 127 distinct `(file, line)` pairs, and `lines-valid="8127"` on both tiers' roots,
+    with `lines-covered` 4550 / 5133 matching the distinct covered counts exactly. `(class, file,
+    line)` is 8 127 as well -- no two classes in either report claim the same line -- and no source
+    file appears under more than one of the three `<package>` elements. That last one is the known
+    way this could legitimately differ: a file compiled into two assemblies is counted twice by the
+    root and once by a `(file, line)` key, and the union across those assemblies is the answer we
+    want. If that day comes, this fails RED naming the file rather than drifting silently, which is
+    the direction to fail in.
+    """
+    problems = []
+    parsed = {
+        "lines-valid": len(lines),
+        "lines-covered": sum(1 for hits in lines.values() if hits > 0),
+    }
+    for attribute, count in parsed.items():
+        declared = root.get(attribute)
+        if declared is None:
+            problems.append(f"{report}: its <coverage> root declares no {attribute}, so this parse is "
+                            f"checked against nothing (parsed {count}).")
+            continue
+        if int(declared) != count:
+            problems.append(f"{report}: parsed {attribute}={count}, but its own <coverage> root declares "
+                            f"{attribute}={declared}.")
+    return problems
+
+
 def read_tier(directory: str):
-    """Union one tier's own reports. Returns (lines, branches, files, report_count).
+    """Union one tier's own reports. Returns (lines, branches, files, report_count, problems).
 
     `lines` maps (file, line) -> hits; `branches` maps (file, line) -> (covered, total).
     A tier normally emits one report, but coverlet emits one per test assembly, so this
     unions within a tier by the same rules it unions across them.
+
+    `problems` is per DOCUMENT rather than per tier, because the root that a parse has to
+    reproduce is the root of the document it parsed; summing two roots would double-count
+    every line two reports share, which is the same mistake as averaging two rates.
     """
     found = sorted(glob.glob(os.path.join(directory, "**", "coverage.cobertura.xml"), recursive=True))
     lines: dict[tuple[str, int], int] = {}
@@ -131,15 +202,19 @@ def read_tier(directory: str):
         seen.add(digest)
         reports.append(path)
 
+    problems: list[str] = []
     for report in reports:
         root = ET.parse(report).getroot()
+        # Per document, so the assertion below compares like with like. Merged straight into the
+        # tier's dicts afterwards -- the second loop costs one pass over a dict, not over the XML.
+        own_lines: dict[tuple[str, int], int] = {}
         for klass in root.iter("class"):
             filename = normalise(klass.get("filename", ""))
             for line in klass.iter("line"):
                 number = int(line.get("number", 0))
                 key = (filename, number)
                 hits = int(line.get("hits", 0))
-                lines[key] = max(lines.get(key, 0), hits)
+                own_lines[key] = max(own_lines.get(key, 0), hits)
 
                 # `condition-coverage` reads e.g. `50% (1/2)`. Absent on a non-branch line.
                 # COVERLET WRITES `branch="True"`, CAPITALISED -- .NET's bool formatting, not XML's
@@ -152,8 +227,12 @@ def read_tier(directory: str):
                     prior = branches.get(key, (0, 0))
                     branches[key] = (max(prior[0], covered), max(prior[1], total))
 
+        problems.extend(check_against_root(report, root, own_lines))
+        for key, hits in own_lines.items():
+            lines[key] = max(lines.get(key, 0), hits)
+
     files = {filename for filename, _ in lines}
-    return lines, branches, files, len(reports)
+    return lines, branches, files, len(reports), problems
 
 
 def rates(lines, branches) -> tuple[float, float, int, int, int, int]:
@@ -187,7 +266,16 @@ def main(argv: list[str]) -> int:
     failed = False
 
     for name, directory in tiers:
-        lines, branches, files, report_count = read_tier(directory)
+        lines, branches, files, report_count, problems = read_tier(directory)
+        # ASSERTED BEFORE THE FIGURES ARE USED, and it does not short-circuit the floor: a run with
+        # both faults reports both, because `failed` accumulates and the floor is still evaluated on
+        # every run where the parse agrees. A guard that made the floor unreachable would be the same
+        # defect this card exists to remove, wearing the fix's clothes.
+        for problem in problems:
+            print(f"::error::Parse mismatch in the '{name}' tier. {problem} An under-read shrinks the "
+                  "numerator and the denominator together, so the reported rate RISES while coverage "
+                  "falls; see check_against_root() in scripts/check-coverage-floor.py.")
+            failed = True
         if not report_count:
             listing = "\n".join(sorted(glob.glob(os.path.join(directory, "**", "*"), recursive=True))[:40])
             print(f"::error::No cobertura report for the '{name}' tier under {directory}. That job must run "

@@ -132,7 +132,9 @@ so a tip that has not moved is an absence of evidence — and until gh#438 the n
 the claim's: an empty claim points at `origin/develop`, so its "tip age" was how long **develop** had been
 quiet. Two live claims were called *"presumed abandoned and fair game"* on that reading. **Announcing is now
 what converts quiet into a takeover, and the script enforces it**: post `TAKEOVER-ANNOUNCED: <branch>` on the
-issue, wait the notice hour, and re-run — a branch that moved in between keeps its claim.
+issue, wait the notice hour, and re-run — a branch that moved in between keeps its claim. The token has to
+**open** the comment and come from an account with write access, and an edited comment is refused: the
+stream is public, and a quoted recipe is not an announcement (PR #441 review).
 
 ### 5. Two reviewers, split verdict
 

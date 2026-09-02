@@ -42,7 +42,9 @@ back saying what is missing, and it gets re-scored.
 3. `In Progress` quiet ≥ 4 hours — **announce, then come back an hour later**. Quiet is not abandoned: the
    claim ref only moves when someone pushes, and nothing obliges a session to. Post
    `TAKEOVER-ANNOUNCED: <branch>` on the issue, and re-run `claim.sh <id> --check` after the notice hour —
-   it reads for that line, and it refuses the takeover if the branch moved in between. Do not re-dispatch on
+   it reads for that line, and it refuses the takeover if the branch moved in between. Post the token as the
+   **first thing in the comment**, from an account with write access, and do not edit it afterwards — the
+   script refuses all three, and a refusal costs one re-post. Do not re-dispatch on
    a `--check` you have not re-run (gh#438: two live claims were reported *"presumed abandoned and fair
    game"* off a `develop` commit neither session wrote)
 4. Ready `Todo`, oldest first

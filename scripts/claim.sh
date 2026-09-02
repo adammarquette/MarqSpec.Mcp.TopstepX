@@ -43,6 +43,20 @@
 #   * the taker posts `TAKEOVER-ANNOUNCED: <branch>` on the issue, and waits out the notice period;
 #   * ANY push to that branch inside the notice window defends the claim, and this refuses the takeover.
 #
+# THE ANNOUNCEMENT IS A CONTROL PLANE, AND THIS REPOSITORY IS PUBLIC -- anyone may comment on an issue
+# here. Four conditions keep that stream from being the control plane (PR #441 review):
+#
+#   1. the token must OPEN the comment, so prose quoting it announces nothing -- this script's own printed
+#      recipe, and the paragraphs in AGENTS.md and CONTRIBUTING.md that spell the token out to explain it;
+#   2. the author must hold write access, which is what authorAssociation answers;
+#   3. the comment must not have been EDITED, because createdAt starts the notice clock and an edit would
+#      let that clock date text added afterwards;
+#   4. the branch name must END where the needle does, or announcing `feature/50_x` also arms `feature/50`.
+#
+# ALL FOUR FAIL CLOSED. A wrong refusal costs the taker one re-post; a wrong acceptance costs somebody else
+# their work. That is the opposite direction from issue-link's stripper, where refusing blocks a legitimate
+# pull request -- ask which way the specific construct fails, every time (platform.md, gh#142).
+#
 # The token matters. "A comment naming the branch" would be satisfied by the CLAIMANT: issue #293's own
 # session posted `Claimed. Working on feature/293_...` on its own card, which would have authorised a
 # takeover of a claim that had just announced itself.
@@ -72,6 +86,12 @@ STALE_AFTER_HOURS=4
 # enough that a genuinely dead claim is recoverable within a session.
 ANNOUNCE_NOTICE_HOURS=1
 ANNOUNCE_TOKEN="TAKEOVER-ANNOUNCED:"
+# WHO may arm a takeover. This repository is PUBLIC with issues enabled, so the comment stream is a surface
+# anyone can write to, and the announcement is a control plane: it is the only thing that turns quiet into a
+# permitted takeover. Association is GitHub's own answer to "does this account have write access here" --
+# every other value (CONTRIBUTOR, FIRST_TIME_CONTRIBUTOR, NONE, and a null we could not read) is a stranger.
+# Space-delimited so the membership test below is a literal containment check rather than a pattern.
+TRUSTED_ASSOCIATIONS="OWNER MEMBER COLLABORATOR"
 
 die() { printf '\033[31m%s\033[0m\n' "$*" >&2; exit 1; }
 warn() { printf '\033[33m%s\033[0m\n' "$*" >&2; }
@@ -191,7 +211,20 @@ if [ -n "$CLAIMED" ]; then
   LAST_MOVE_EPOCH=0          # 0 means UNKNOWN, and unknown is never stale.
   AGE_H=""
   AGE_SOURCE=""
-  ACT_ISO="$(gh api "repos/${REPO_SLUG}/activity?per_page=1&ref=${BRANCH_REF}" --jq '.[0].timestamp' 2>/dev/null || true)"
+  # THE READ THAT DECIDES AN AGE IS CHECKED ON ITS OWN LINE, like `ls-remote` above and the comments read
+  # below (gh#126). This used to be `... 2>/dev/null || true`, which made an API error indistinguishable from
+  # "this ref has no activity recorded" — both arrived as an empty string. It failed closed, so it was an
+  # advisory rather than a finding on PR #441, but it was the third instance of the shape in one file and the
+  # only one that swallowed. The two answers now reach the verdict as different states, and the verdict says
+  # which, because "I could not look" is a transient a re-run fixes and "nothing recorded" is not.
+  ACT_ISO=""
+  ACT_UNREADABLE=false
+  ASTATUS=0
+  ACT_ISO="$(gh api "repos/${REPO_SLUG}/activity?per_page=1&ref=${BRANCH_REF}" --jq '.[0].timestamp')" || ASTATUS=$?
+  if [ "$ASTATUS" -ne 0 ]; then
+    ACT_ISO=""
+    ACT_UNREADABLE=true
+  fi
   [ "$ACT_ISO" = "null" ] && ACT_ISO=""
   if [ -n "$ACT_ISO" ]; then
     LAST_MOVE_EPOCH="$(date -u -d "$ACT_ISO" +%s 2>/dev/null || echo 0)"
@@ -212,7 +245,25 @@ if [ -n "$CLAIMED" ]; then
   [ "$LAST_MOVE_EPOCH" -gt 0 ] && AGE_H=$(( (NOW_EPOCH - LAST_MOVE_EPOCH) / 3600 ))
 
   if [ -z "$AGE_H" ]; then
-    note "  neither the ref's own activity nor a commit of its own could be read."
+    # WHICH of the two, because they are different problems and the old swallow made them one string.
+    if $ACT_UNREADABLE; then
+      note "  the activity read FAILED (gh exited $ASTATUS) — this is 'I could not look', not 'nothing"
+      note "  recorded'. It is transient: re-run. A read that did not happen decides nothing (gh#126)."
+    else
+      note "  the ref has no activity recorded, and it carries no commit of its own to date instead."
+    fi
+    #
+    # UNKNOWN IS TERMINAL, AND THAT IS A DECISION RATHER THAN A MISSING `else` (PR #441 review, advisory 2).
+    # The reviewer's case for routing it into announce-and-wait is a fair one: refusing forever on evidence
+    # we do not have is itself an unearned verdict, and the occupied-tree refusal documents an escape hatch
+    # where this offers none. It is declined for a reason specific to this branch: THE DEFENCE IS THE SAME
+    # READ THAT FAILED. `defended` is decided by comparing the ref's last movement against the announcement,
+    # so where the age is unreadable a live claimant's push cannot be seen either — announce-and-wait here
+    # would run its hour and permit a takeover NOBODY COULD CONTEST, which is a worse failure than the one it
+    # fixes. The escape hatch is therefore re-running, and the reason it suffices is measured: activity is
+    # retained to repository creation (oldest record 2026-08-21T22:49:42Z, the repo's own created_at), so no
+    # claim ages out of the window and UNKNOWN is only ever a transient read failure. If that endpoint ever
+    # becomes persistently unreadable for a caller, this needs a route out and it is a card, not a patch here.
     CLAIM_STATE=unknown
     CLAIM_REASON="${BRANCH_NAME}'s age could not be read, and an unread claim is a claim"
   else
@@ -230,17 +281,77 @@ if [ -n "$CLAIMED" ]; then
       # not an empty one, and the difference is the entire verdict.
       COMMENTS=""
       CSTATUS=0
+      # Four fields, because the verdict needs three facts about a comment and not only its text: WHEN it was
+      # posted (the notice clock), WHO posted it (write access), and whether the body has been EDITED since --
+      # an edited comment's createdAt no longer dates the text being matched, which would let a taker post
+      # something innocuous, wait out the notice, then edit the token in against a backdated clock.
+      # Both added fields default to the UNTRUSTED value when the API answers something unexpected: a null
+      # association reads as NONE, and anything but an explicit false reads as edited.
       COMMENTS="$(gh issue view "$ID" --json comments \
-        --jq '.comments[] | (.createdAt + "\t" + (.body | gsub("[\r\n]+"; " ")))')" || CSTATUS=$?
+        --jq '.comments[] | (.createdAt + "\t" + (.authorAssociation // "NONE") + "\t"
+              + (if .includesCreatedEdit == false then "false" else "true" end) + "\t"
+              + (.body | gsub("[\r\n]+"; " ")))')" || CSTATUS=$?
       if [ "$CSTATUS" -ne 0 ]; then
         CLAIM_STATE=unknown
         CLAIM_REASON="#$ID's comments could not be read (gh exited $CSTATUS), and a takeover may not rest on a read that did not happen"
       else
         # Pure filtering of a value already in hand, whose read status was checked above — so `|| true` here
-        # hides nothing (the same shape, and the same reasoning, as CLAIMED above). grep's stdin is a pipe,
-        # so its 2 ("could not look") is not reachable.
+        # hides nothing (the same shape, and the same reasoning, as CLAIMED above).
+        #
+        # This was `grep -F "$ANNOUNCE_TOKEN $BRANCH_NAME"` over the body alone, which armed a takeover on ANY
+        # account's comment and on the token appearing ANYWHERE inside one — a pasted copy of this script's
+        # own recipe included, and the paragraphs in AGENTS.md and CONTRIBUTING.md that spell the token out to
+        # explain it. This repository is public, so that stream is writable by strangers. Found by review on
+        # PR #441 (gh#438). Four conditions now, and every one FAILS CLOSED: a rejected announcement leaves
+        # the claim standing and costs the taker one re-post, while a wrongly accepted one is the claim theft
+        # the whole mechanism exists to prevent.
+        #
+        # No ERE interval expressions, and no regex is ever run over the comment body or the branch name:
+        # both reach `index()` as literals, so a branch carrying regex metacharacters cannot change what is
+        # matched, and the program behaves the same on the mawk /usr/bin/awk resolves to (platform.md, gh#142).
         ANN_ISO="$(printf '%s\n' "$COMMENTS" \
-          | grep -F "${ANNOUNCE_TOKEN} ${BRANCH_NAME}" | awk '{print $1}' | sort | tail -n1 || true)"
+          | awk -F '\t' \
+                -v tok="$ANNOUNCE_TOKEN" \
+                -v br="$BRANCH_NAME" \
+                -v trusted="$TRUSTED_ASSOCIATIONS" '
+              {
+                if (NF < 4) next          # not a comment record; the read itself is checked above
+                created = $1; assoc = $2; edited = $3
+                # Body is fields 4..NF rejoined: only newlines were flattened, so a body carrying a literal
+                # tab still splits here, and keeping $4 alone would truncate the text being tested.
+                body = $4
+                for (i = 5; i <= NF; i++) body = body "\t" $i
+
+                # 1. WHO. Padded both sides so OWNER cannot match inside some longer association.
+                if (index(" " trusted " ", " " assoc " ") == 0) next
+                # 2. NOT EDITED, so createdAt still dates the text matched below.
+                if (edited != "false") next
+
+                # 3. The token must OPEN the comment. Leading whitespace is forgiven — the recipe is printed
+                #    indented and a body may begin with a blank line — but nothing else may precede it, which
+                #    is what tells an announcement apart from prose quoting one.
+                sub(/^[ \t]+/, "", body)
+                if (index(body, tok) != 1) next
+                rest = substr(body, length(tok) + 1)
+                sub(/^[ \t]+/, "", rest)
+
+                # 4. Then the branch, which house style writes in BACKTICKS as often as bare — the gh#293
+                #    comment this mechanism is modelled on backticks it. Requiring one form silently refuses
+                #    the other, which is fail-closed but is still a correct announcement being ignored.
+                tick = 0
+                if (substr(rest, 1, 1) == "`") { tick = 1; rest = substr(rest, 2) }
+                if (index(rest, br) != 1) next
+                rest = substr(rest, length(br) + 1)
+                if (tick) {
+                  if (substr(rest, 1, 1) != "`") next   # opened a span it never closed: not this branch
+                  rest = substr(rest, 2)
+                }
+                # 5. The name must END there, or announcing `feature/50_x` also arms `feature/50`.
+                if (rest != "" && rest !~ /^[ \t]/) next
+
+                print created
+              }
+            ' | sort | tail -n1 || true)"
         ANN_EPOCH=0
         [ -n "$ANN_ISO" ] && ANN_EPOCH="$(date -u -d "$ANN_ISO" +%s 2>/dev/null || echo 0)"
 
@@ -251,12 +362,15 @@ if [ -n "$CLAIMED" ]; then
           # printed beneath a STOP block is the contradiction this card exists to remove.
           if [ -z "$OCCUPIED" ]; then
             note ""
-            note "  To start the clock, post this on #$ID. The token is what tells a takeover apart from the"
+            note "  To start the clock, post this on #$ID as the FIRST thing in a comment, from an"
+            note "  account with write access. The token is what tells a takeover apart from the"
             note "  claimant's own status comments — issue #293's session posted one naming its own branch:"
             note ""
             note "    ${ANNOUNCE_TOKEN} ${BRANCH_NAME}"
             note ""
             note "  then re-run after ${ANNOUNCE_NOTICE_HOURS}h. Any push to that branch meanwhile defends it."
+            note "  Quoting it inside other prose does not announce anything, and neither does editing it in"
+            note "  afterwards — an edited comment is refused, because its timestamp would predate its text."
           fi
         elif [ $(( (NOW_EPOCH - ANN_EPOCH) / 3600 )) -lt "$ANNOUNCE_NOTICE_HOURS" ]; then
           CLAIM_STATE=notice

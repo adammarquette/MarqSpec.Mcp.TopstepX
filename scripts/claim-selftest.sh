@@ -62,6 +62,19 @@
 #   the string "fair game" appears nowhere                       every case, asserted centrally
 #   quiet + no announcement -> refuse                            case 4
 #   announcement must carry the token AND the branch name        case 4 (the body names the branch, no token)
+#
+#   -- the announcement is a control plane on a PUBLIC repo; PR #441's review found the matcher answered
+#      "is the token MENTIONED" where the verdict needs "was it USED". Every row below fails CLOSED.
+#   token must OPEN the comment (mention is not use)             case 12 (prose quoting the recipe)
+#   author association in OWNER MEMBER COLLABORATOR              case 11 (NONE, otherwise identical to 7)
+#   an EDITED comment is refused (createdAt would predate it)    case 13
+#   the branch name must END where the needle does               case 14 (`feature/50_x` must not arm
+#                                                                 `feature/50`)
+#   leading whitespace forgiven, so the printed recipe works     case 15 (the indented paste, PERMITTED)
+#   the branch name may be backticked, as house style writes it  case 16 (PERMITTED — advisory 3)
+#
+#   activity read FAILING is not the read reporting NOTHING      case 1 (fails) vs case 17 (returns none);
+#                                                                 both UNKNOWN, different diagnostics
 #   announcement younger than the notice period -> refuse        case 5
 #   ref moved after the announcement -> refuse (defended)        case 6
 #   announced, notice elapsed, unmoved -> permit                 case 7
@@ -147,6 +160,12 @@ iso_ago() { # iso_ago <hours> | iso_ago <minutes>m
     *)  date -u -d "$spec hours ago" +%Y-%m-%dT%H:%M:%SZ ;;
   esac
 }
+
+# One comment record, in exactly the shape claim.sh's --jq projection emits:
+#   createdAt <TAB> authorAssociation <TAB> includesCreatedEdit <TAB> body-with-newlines-flattened
+# Built here rather than spelled per fixture so the suite has ONE notion of that record: when the projection
+# grows a field, this function and the fake `gh` are the only places that know it.
+comment() { printf '%s\t%s\t%s\t%s' "$1" "$2" "$3" "$4"; }
 
 # ONE repository for all ten cases, not ten. claim.sh matches claims on `/<id>_`, so ten claims for ten
 # distinct issue ids coexist in one checkout — which is also the arrangement it actually meets. Ten separate
@@ -347,7 +366,7 @@ start_case
 L="quiet 9h, nothing announced"
 add_worked_claim "feature/500_a-quiet-claim"
 export FGH_TITLE="a quiet claim" FGH_LABELS="" FGH_TIP_DATE="$(iso_ago 9)" FGH_ACTIVITY="none" \
-  FGH_COMMENTS="$(iso_ago 8)	Claimed. Working on feature/500_a-quiet-claim in .worktrees/500_a-quiet-claim" FGH_PRS=""
+  FGH_COMMENTS="$(comment "$(iso_ago 8)" OWNER false "Claimed. Working on feature/500_a-quiet-claim in .worktrees/500_a-quiet-claim")" FGH_PRS=""
 run_claim 500 --check
 if assert_universal "$L" \
   && expect_says "$L" \
@@ -365,7 +384,7 @@ start_case
 L="announced 10 minutes ago, inside the notice period"
 add_worked_claim "feature/501_announced-just-now"
 export FGH_TITLE="announced just now" FGH_TIP_DATE="$(iso_ago 9)" FGH_ACTIVITY="$(iso_ago 9)" \
-  FGH_COMMENTS="$(iso_ago 10m)	TAKEOVER-ANNOUNCED: feature/501_announced-just-now — tip is 9h old" FGH_PRS=""
+  FGH_COMMENTS="$(comment "$(iso_ago 10m)" OWNER false "TAKEOVER-ANNOUNCED: feature/501_announced-just-now — tip is 9h old")" FGH_PRS=""
 run_claim 501 --check
 if assert_universal "$L" \
   && expect_says "$L" 'the notice period is' \
@@ -382,7 +401,7 @@ start_case
 L="announced 9h ago, ref moved 6h ago — defended"
 add_worked_claim "feature/502_defended"
 export FGH_TITLE="defended" FGH_TIP_DATE="$(iso_ago 6)" FGH_ACTIVITY="$(iso_ago 6)" \
-  FGH_COMMENTS="$(iso_ago 9)	TAKEOVER-ANNOUNCED: feature/502_defended — taking this over" FGH_PRS=""
+  FGH_COMMENTS="$(comment "$(iso_ago 9)" OWNER false "TAKEOVER-ANNOUNCED: feature/502_defended — taking this over")" FGH_PRS=""
 run_claim 502 --check
 if assert_universal "$L" \
   && expect_says "$L" 'moved after the takeover was announced' \
@@ -399,7 +418,7 @@ start_case
 L="announced 5h ago, unmoved 13h — the takeover is permitted"
 add_worked_claim "feature/503_really-abandoned"
 export FGH_TITLE="really abandoned" FGH_TIP_DATE="$(iso_ago 13)" FGH_ACTIVITY="$(iso_ago 13)" \
-  FGH_COMMENTS="$(iso_ago 5)	TAKEOVER-ANNOUNCED: feature/503_really-abandoned — no push in 13h" FGH_PRS=""
+  FGH_COMMENTS="$(comment "$(iso_ago 5)" OWNER false "TAKEOVER-ANNOUNCED: feature/503_really-abandoned — no push in 13h")" FGH_PRS=""
 run_claim 503 --check
 if assert_universal "$L" \
   && expect_says "$L" 'MAY be taken over on' \
@@ -454,6 +473,135 @@ if assert_universal "$L" \
     fail_case "$L — UNCLAIMED printed under a STOP block"
   else
     ok "case 10  $L"
+  fi
+fi
+
+# ---------------------------------------------------------------------------
+# 11. A STRANGER MAY NOT ARM A TAKEOVER. Identical to case 7 in every respect except the association: quiet
+#     13h, announced 5h ago, token opening the comment. This repository is PUBLIC with issues enabled, so
+#     before PR #441's review the comment stream was the control plane and anyone could write to it.
+# ---------------------------------------------------------------------------
+start_case
+L="announced by an account with no write access"
+add_worked_claim "feature/505_untrusted-announcer"
+export FGH_TITLE="untrusted announcer" FGH_TIP_DATE="$(iso_ago 13)" FGH_ACTIVITY="$(iso_ago 13)" \
+  FGH_COMMENTS="$(comment "$(iso_ago 5)" NONE false "TAKEOVER-ANNOUNCED: feature/505_untrusted-announcer — mine now")" FGH_PRS=""
+run_claim 505 --check
+if assert_universal "$L" \
+  && expect_says "$L" 'nothing has been announced on the issue' \
+  && expect_status "$L" 3; then
+  ok "case 11  $L"
+fi
+
+# ---------------------------------------------------------------------------
+# 12. QUOTING THE RECIPE IS NOT ANNOUNCING. The token appears in the body, but after prose — which is what a
+#     pasted copy of claim.sh's own output looks like, and what AGENTS.md and CONTRIBUTING.md look like where
+#     they spell the token out to explain it. The old unanchored `grep -F` armed on every one of those.
+# ---------------------------------------------------------------------------
+start_case
+L="the token quoted inside prose, not opening the comment"
+add_worked_claim "feature/506_quoted-recipe"
+export FGH_TITLE="quoted recipe" FGH_TIP_DATE="$(iso_ago 13)" FGH_ACTIVITY="$(iso_ago 13)" \
+  FGH_COMMENTS="$(comment "$(iso_ago 5)" OWNER false "Ran claim.sh here and it printed TAKEOVER-ANNOUNCED: feature/506_quoted-recipe — recording its output, not claiming anything")" FGH_PRS=""
+run_claim 506 --check
+if assert_universal "$L" \
+  && expect_says "$L" 'nothing has been announced on the issue' \
+  && expect_status "$L" 3; then
+  ok "case 12  $L"
+fi
+
+# ---------------------------------------------------------------------------
+# 13. AN EDITED COMMENT DATES NOTHING. The notice clock reads createdAt, and a body can be rewritten after
+#     that. Without this, a taker posts something innocuous, waits out the notice, and edits the token in
+#     against a timestamp that predates the text — the whole notice period, bypassed in one edit.
+# ---------------------------------------------------------------------------
+start_case
+L="announced by editing a comment posted earlier"
+add_worked_claim "feature/507_edited-announcement"
+export FGH_TITLE="edited announcement" FGH_TIP_DATE="$(iso_ago 13)" FGH_ACTIVITY="$(iso_ago 13)" \
+  FGH_COMMENTS="$(comment "$(iso_ago 5)" OWNER true "TAKEOVER-ANNOUNCED: feature/507_edited-announcement — edited in after the fact")" FGH_PRS=""
+run_claim 507 --check
+if assert_universal "$L" \
+  && expect_says "$L" 'nothing has been announced on the issue' \
+  && expect_status "$L" 3; then
+  ok "case 13  $L"
+fi
+
+# ---------------------------------------------------------------------------
+# 14. ONE BRANCH'S ANNOUNCEMENT MAY NOT ARM ANOTHER. The claim is `feature/508_prefix`; the announcement names
+#     `feature/508_prefix-longer`, a different branch whose name CONTAINS the claim's. A prefix match answers
+#     yes to that, which is why condition 4 requires the name to end where the needle does.
+# ---------------------------------------------------------------------------
+start_case
+L="the announcement names a longer branch that this one is a prefix of"
+add_worked_claim "feature/508_prefix"
+export FGH_TITLE="prefix confusion" FGH_TIP_DATE="$(iso_ago 13)" FGH_ACTIVITY="$(iso_ago 13)" \
+  FGH_COMMENTS="$(comment "$(iso_ago 5)" OWNER false "TAKEOVER-ANNOUNCED: feature/508_prefix-longer — a different branch entirely")" FGH_PRS=""
+run_claim 508 --check
+if assert_universal "$L" \
+  && expect_says "$L" 'nothing has been announced on the issue' \
+  && expect_status "$L" 3; then
+  ok "case 14  $L"
+fi
+
+# ---------------------------------------------------------------------------
+# 15. AND THE INDENTED PASTE MUST STILL WORK. claim.sh prints its recipe indented four spaces, so the obvious
+#     way to announce is to copy that line verbatim. Four refusals above would all be satisfied by a condition
+#     that rejected everything; this is the one that keeps the leading-whitespace forgiveness alive, and it is
+#     the shape a real taker actually posts.
+# ---------------------------------------------------------------------------
+start_case
+L="the recipe pasted with its indentation — permitted"
+add_worked_claim "feature/509_indented-recipe"
+export FGH_TITLE="indented recipe" FGH_TIP_DATE="$(iso_ago 13)" FGH_ACTIVITY="$(iso_ago 13)" \
+  FGH_COMMENTS="$(comment "$(iso_ago 5)" OWNER false "    TAKEOVER-ANNOUNCED: feature/509_indented-recipe")" FGH_PRS=""
+run_claim 509 --check
+if assert_universal "$L" \
+  && expect_says "$L" 'MAY be taken over on' \
+  && expect_status "$L" 0; then
+  ok "case 15  $L"
+fi
+
+# ---------------------------------------------------------------------------
+# 16. HOUSE STYLE BACKTICKS BRANCH NAMES, AND AN ANNOUNCEMENT IN IT MUST COUNT. PR #441's review, advisory 3:
+#     the matcher required the token and a bare branch adjacent, so ``TAKEOVER-ANNOUNCED: `feature/x` `` --
+#     the form this repository writes by habit, and the form the gh#293 comment the mechanism is modelled on
+#     actually used -- announced nothing, waited the hour, and was told nothing had been announced.
+#     Fail-closed and recoverable, and still a correct announcement being ignored.
+# ---------------------------------------------------------------------------
+start_case
+L="the branch name backticked, as house style writes it — permitted"
+add_worked_claim "feature/510_backticked-announcement"
+export FGH_TITLE="backticked announcement" FGH_TIP_DATE="$(iso_ago 13)" FGH_ACTIVITY="$(iso_ago 13)" \
+  FGH_COMMENTS="$(comment "$(iso_ago 5)" OWNER false "TAKEOVER-ANNOUNCED: \`feature/510_backticked-announcement\` — no push in 13h")" FGH_PRS=""
+run_claim 510 --check
+if assert_universal "$L" \
+  && expect_says "$L" 'MAY be taken over on' \
+  && expect_status "$L" 0; then
+  ok "case 16  $L"
+fi
+
+# ---------------------------------------------------------------------------
+# 17. "I COULD NOT LOOK" IS NOT "NOTHING RECORDED". Case 1 is the read FAILING; this is the read SUCCEEDING
+#     and returning no activity. Both end at UNKNOWN — correctly, since neither dates the claim — but they
+#     are different problems, and until PR #441's advisory 2 the `2>/dev/null || true` on that read collapsed
+#     them into one string. One is transient and a re-run fixes it; the other is not.
+# ---------------------------------------------------------------------------
+start_case
+L="the activity read succeeds and reports nothing, which is not a read failure"
+add_empty_claim "feature/511_no-activity-recorded"
+export FGH_TITLE="no activity recorded" FGH_LABELS="" FGH_TIP_DATE="$(iso_ago 13)" FGH_ACTIVITY="none" \
+  FGH_COMMENTS="" FGH_PRS=""
+run_claim 511 --check
+if assert_universal "$L" \
+  && expect_says "$L" \
+       'no activity recorded' \
+       'age could not be read' \
+  && expect_status "$L" 3; then
+  if grep -q 'activity read FAILED' "$COMBINED"; then
+    fail_case "$L — reported a read failure for a read that succeeded and returned nothing"
+  else
+    ok "case 17  $L"
   fi
 fi
 

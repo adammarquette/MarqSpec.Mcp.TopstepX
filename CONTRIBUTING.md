@@ -156,7 +156,14 @@ game"* on that reading, on 2026-09-02, while both worktrees held uncommitted wor
 **Announcing is what converts quiet into a takeover, and `claim.sh` now reads for it.** Post
 `TAKEOVER-ANNOUNCED: <branch>` on the issue, wait an hour, and re-run — **any push to that branch inside the
 hour defends the claim**. The token is required: a comment merely *naming* the branch is what a claimant posts
-about its own work. What still defeats this: a live session that never reads its issue. Push as you go.
+about its own work.
+
+**Three things about that comment, because it is a control plane on a public repository** (found by review
+on PR #441). The token must be the **first thing in the comment** — quoting it inside prose, as a pasted copy
+of `claim.sh`'s own output does, announces nothing. The comment must come from an account with **write
+access**; anyone can open an issue comment here. And an **edited** comment is refused, because its timestamp
+would predate the text the notice hour is being counted against. All three fail closed: a refusal costs you
+one re-post. What still defeats this: a live session that never reads its issue. Push as you go.
 
 ### This repo is one half of a two-repo card
 

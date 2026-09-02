@@ -253,11 +253,17 @@ docker compose up -d     # the local stack: Postgres, and the server on https://
 Compose binds the server's port to `127.0.0.1` only (gh#415) — an IPv6 `localhost` resolution (`::1`) will
 not reach it; use the literal `127.0.0.1` address.
 
-That endpoint is **HTTPS and only HTTPS** (gh#416), so `docker compose up` needs a locally trusted certificate
-and a password for it before it will start — [`README.md`](README.md#run-it) has the three commands. Compose
-refuses to render without `Kestrel__Certificates__Default__Password`, which is the one setting here with no
-default, because it unlocks a private key. `certs/` and `.env` are gitignored; check that before your first
-commit, not after.
+That endpoint is **HTTPS and only HTTPS** (gh#416), so `docker compose up` needs a locally trusted
+certificate and a password for it before the **server** will start — [`README.md`](README.md#run-it) has the
+commands, and **read its warning first: `mkcert -install` puts a root CA in your OS trust store.**
+
+**Nothing else in the stack needs any of it.** `docker compose up -d postgres` and the `sdk` loop below run
+with no `.env` and no certificate — verified, and worth stating because the first draft of gh#416 got it
+wrong: compose interpolates the **whole file** before it selects a service, so a `${...:?}` guard on the
+certificate password failed `docker compose config postgres` and the `sdk` run loop, neither of which starts
+the server. `Kestrel__Certificates__Default__Password` therefore ships with no value rather than with a hard
+requirement; the server fails at its own startup instead. `certs/` and `.env` are gitignored; check that
+before your first commit, not after.
 
 **There is no fake gateway here, and there never has been.** The integration tier starts its own
 `timescale/timescaledb-ha` Postgres through Testcontainers

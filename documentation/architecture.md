@@ -399,9 +399,12 @@ One host, one tool registration, two ways in ([ADR-0007](adr/0007-dual-transport
   host still starts Kestrel in this mode, on an **ephemeral loopback port** it never serves from — a
   well-known one stopped a second session starting at all (gh#392).
 - **streamable HTTP** — for a deployed instance, behind a bearer token. The composed stack serves it over
-  **TLS only**, on `https://localhost:8443`, with a certificate from a **local CA** the host already trusts —
-  Claude Cowork will not register a plaintext endpoint as a connector (gh#416). TLS is confidentiality; the
-  token is still what authorises the call, and the loopback bind (gh#415) is unchanged by it.
+  **TLS only**, on `https://localhost:8443`, with a certificate from a **local CA** that must be installed
+  into the host trust store first — `mkcert -install`, a prerequisite rather than a given, see
+  [`README.md`](../README.md#run-it). A client requiring HTTPS could not connect at all before, and a bearer
+  token in clear is replayable by anyone on the path (gh#416); *Claude Cowork is reported to be such a client
+  and that report is not verified here*. TLS is confidentiality; the token is still what authorises the call,
+  and the loopback bind (gh#415) is unchanged by it.
 
 ## Degradation — what an absent dependency does
 

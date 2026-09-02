@@ -109,8 +109,12 @@ services:
 
       ASPNETCORE_ENVIRONMENT: "${ASPNETCORE_ENVIRONMENT:-Development}"
 
-      # HTTPS ONLY. Claude Cowork refuses to register a non-TLS endpoint as a connector, so the composed
-      # stack could not be used by the tool it exists to serve (gh#416).
+      # HTTPS ONLY. What is established: a client that requires HTTPS could not connect to this stack at
+      # all, because it served nothing but plaintext -- and a bearer token sent in clear is a credential
+      # anyone on the path can replay, whatever any client demands (gh#416). What is REPORTED and NOT
+      # verified here: that Claude Cowork is such a client and refuses to register a non-TLS endpoint as a
+      # connector. gh#416 says so in its own words -- "I have not independently verified Cowork's
+      # requirement, and this issue does not rest on it" -- and neither does this file.
       #
       # THE EMPTY VALUE BELOW IS LOAD-BEARING, AND DELETING THE LINE RE-OPENS THE PLAINTEXT PORT.
       # mcr.microsoft.com/dotnet/aspnet:10.0 sets ASPNETCORE_HTTP_PORTS=8080 in the IMAGE, so merely
@@ -127,9 +131,10 @@ services:
       ASPNETCORE_HTTP_PORTS: ""
       ASPNETCORE_HTTPS_PORTS: "8443"
 
-      # The certificate is LOCALLY TRUSTED, not publicly issued -- Cowork reaches this from the same machine,
-      # so there is no public hostname to certify and no ACME challenge to answer. It comes from mkcert, a
-      # local CA installed once into the host trust store:
+      # The certificate is LOCALLY TRUSTED, not publicly issued: the maintainer scoped this to a client on
+      # the SAME MACHINE -- not Anthropic's cloud, not a LAN -- so there is no public hostname to certify and
+      # no ACME challenge to answer. A genuinely remote instance is a different operational story and is not
+      # decided here. It comes from mkcert, a local CA installed once into the host trust store:
       #
       #   mkcert -install                                                       # once, per host
       #   mkcert -cert-file ./certs/localhost.crt -key-file ./certs/localhost.key localhost 127.0.0.1 ::1
@@ -146,11 +151,29 @@ services:
       #
       # The leaf mkcert issues here expires 2028-12-02 UTC. Re-issue past that date; nothing rotates it.
       Kestrel__Certificates__Default__Path: "/https/localhost.pfx"
-      # NO DEFAULT, deliberately, and this is the one variable in this file that must not get one. A PFX
-      # password is a credential; POSTGRES_PASSWORD's and Mcp__HttpBearerToken's local defaults are tolerable
-      # because they guard a loopback port, and a default that unlocks a private key is not the same kind of
-      # thing. The `:?` makes compose refuse to render rather than fall back. THIS REPOSITORY IS PUBLIC.
-      Kestrel__Certificates__Default__Password: "${Kestrel__Certificates__Default__Password:?set it in .env -- see .env.example. There is deliberately no default: this unlocks a private key.}"
+      # NO VALUE SHIPS HERE, deliberately. A PFX password is a credential; POSTGRES_PASSWORD's and
+      # Mcp__HttpBearerToken's local defaults are tolerable because a loopback port is what they guard, and a
+      # default that unlocks a private key is not the same kind of thing. THIS REPOSITORY IS PUBLIC.
+      #
+      # `:-` AND NOT `:?`, AND THAT IS A CORRECTION RATHER THAN A PREFERENCE. Compose interpolates the WHOLE
+      # FILE before it selects a service, so a `:?` here failed commands that never start this one --
+      # measured with no `.env`: `docker compose config postgres` exited 1 with a certificate error, and so
+      # did `docker compose -f docker-compose.yml -f docker-compose.dev.yml config sdk`, which is the repo's
+      # documented test loop and, per docker-compose.dev.yml, the only way to run the suite on a host where
+      # Application Control blocks fresh assemblies. `docker compose up -d postgres` is also the command the
+      # server's own startup warning prints. Scoping it to this service was tried and does not exist: an
+      # `env_file` entry with `required: true` failed BOTH of those commands identically.
+      #
+      # So the requirement is enforced where it belongs -- at the server's own startup -- and the two
+      # failures are written down here because one of them is misleading:
+      #
+      #   certs/ empty or absent  ->  FileNotFoundException naming /https/localhost.pfx. Clear; do the setup.
+      #   PFX present, password unset or wrong
+      #                           ->  CryptographicException: "The certificate data cannot be read with the
+      #                               provided password, the password may be incorrect." An UNSET password
+      #                               arrives as an empty one and produces exactly this, so "may be
+      #                               incorrect" also means "may be missing". Check .env before the PFX.
+      Kestrel__Certificates__Default__Password: "${Kestrel__Certificates__Default__Password:-}"
 
       Logging__LogLevel__Default: "${Logging__LogLevel__Default:-Information}"
     volumes:

@@ -2332,6 +2332,20 @@ public sealed class TradeTapeRecorderTests
     }
 
     /// <summary>
+    /// Bound for <see cref="WaitUntil"/>'s poll on a multi-source predicate that has no single
+    /// completion to await.
+    /// </summary>
+    /// <remarks>
+    /// 15s is not a tuned number — it is a large multiple of every delay this repro could produce
+    /// deliberately (see PR body for gh#407), kept finite only so a genuine hang still fails inside
+    /// a single CI job rather than timing the whole run out. It is a different quantity from
+    /// <see cref="BackgroundServiceTestSupport.DefaultCompletionBudget"/>, which races a real
+    /// completion signal rather than polling; the two happen to share a value today, not a meaning,
+    /// and either may need to change without the other.
+    /// </remarks>
+    private static readonly TimeSpan _multiSourcePollBudget = TimeSpan.FromSeconds(15);
+
+    /// <summary>
     /// Polls an arbitrary predicate built from hub/tape/database state that some background
     /// continuation of the recorder under test is expected to make true.
     /// </summary>
@@ -2366,18 +2380,13 @@ public sealed class TradeTapeRecorderTests
     /// own store round-trips slower, it does not make unrelated test collections contend harder
     /// for the ThreadPool.
     /// </para>
-    /// <para>
-    /// 15s is not a tuned number — it is a large multiple of every delay this repro could produce
-    /// deliberately (see PR body), kept finite only so a genuine hang still fails inside a single
-    /// CI job rather than timing the whole run out.
-    /// </para>
     /// </remarks>
     private static async Task WaitUntil(
         Func<bool> condition,
         string? because = null,
         [CallerArgumentExpression(nameof(condition))] string? conditionExpression = null)
     {
-        using CancellationTokenSource timeout = new(TimeSpan.FromSeconds(15));
+        using CancellationTokenSource timeout = new(_multiSourcePollBudget);
         try
         {
             while (!condition())

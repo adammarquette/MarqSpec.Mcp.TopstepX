@@ -641,6 +641,42 @@ said no", never as "a link broke". Beside [`check-doc-links.sh`](../../scripts/c
     wants the verdict, because the working session has no incentive to comply. **What still defeats it is
     stated in the script rather than papered over**: a live session that never reads its issue still loses
     its claim, and only a cross-machine registry closes that (a new card and an ADR, out of scope on gh#438).
+  - **The announcement is a control plane, and this repository is public — so the comment stream is an input
+    anyone can write to.** Review on PR #441 found the first version reading it with an unanchored
+    `grep -F` over the body alone: no author check, and the token matched **anywhere** in a comment. Two
+    ways that arms a takeover without anyone announcing one. A stranger comments, since issues are open to
+    every account. Or nobody does anything hostile at all and the token simply *appears* — a pasted copy of
+    `claim.sh`'s own printed recipe, or the paragraphs in `AGENTS.md` and `CONTRIBUTING.md` that spell it
+    out to explain it. **A control plane whose vocabulary is also its documentation cannot be matched
+    loosely.** Four conditions now, and the direction is the point: the token must OPEN the comment, the
+    author must hold write access, the comment must not have been edited (its `createdAt` would otherwise
+    date text added later, and the notice hour is counted from it), and the branch name must END where the
+    needle does, or announcing `feature/50_x` also arms `feature/50`. **Every one fails CLOSED** — a wrong
+    refusal costs the taker one re-post, a wrong acceptance costs somebody else their work — which is the
+    opposite of `issue-link`'s stripper, where refusing blocks a legitimate pull request. *Ask which
+    direction the specific construct fails in*: same rule, opposite answer, one section apart.
+  - **And the same matcher was too TIGHT at the other end, which is the half a fail-closed bug hides.** It
+    required the token and a *bare* branch name adjacent, and this repository backticks branch names by
+    habit — the gh#293 comment the whole mechanism is modelled on backticks its own. So the house form
+    announced nothing, waited the notice hour and was told nothing had been announced. Fail-closed, and
+    still a correct announcement being ignored. **One `grep -F` was answering two questions**; both ends
+    are now cases (12 and 16).
+  - **The activity read swallowed its status, and that is the FOURTH instance of the family** tabulated
+    under [Constraints that bite in CI](#constraints-that-bite-in-ci) — cite that table rather than
+    re-deriving it. `2>/dev/null || true` made an API error and *"this ref has no activity recorded"* the
+    same empty string. It failed closed, which is why it was an advisory rather than a finding, but the
+    same file already checks its other two reads on their own lines with a gh#126 comment saying why. The
+    two answers now reach the verdict as different states and the run says which, because one is a
+    transient a re-run fixes and the other is not.
+  - **UNKNOWN stays terminal, and the reason is specific rather than an omission.** Review argued it should
+    route into announce-and-wait, since refusing forever on evidence you do not have is itself an unearned
+    verdict — the mirror of the defect the card is about. Declined, because **the defence is the same read
+    that failed**: `defended` compares the ref's last movement against the announcement, so where the age
+    is unreadable a live claimant's push cannot be seen either, and announce-and-wait would run its hour
+    and permit a takeover nobody could contest. Re-running is the escape hatch, and it suffices *because
+    activity is retained to repository creation* — so UNKNOWN is only ever a transient read failure. A
+    persistently unreadable endpoint would need a real route out, and that is a card. **Say which and why
+    in the script**: a terminal branch a reader has to infer from a missing `else` is the thing to avoid.
   - **It is hermetic, and slow where processes are expensive.** One disposable repository under `mktemp -d`
     and a fake `gh` on `PATH` that exits 97 on any call shape `claim.sh` does not make, so no token and no
     network. On the runner it is seconds; on a Windows checkout it measured **5m49s**, almost all of it

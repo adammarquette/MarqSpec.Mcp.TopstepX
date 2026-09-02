@@ -79,6 +79,13 @@ the only reason the default token is tolerable; publish it wider and you set a r
 (gh#415) — TLS does not license widening it. The certificate covers `localhost`, `127.0.0.1` and `::1`, so
 either literal works where the name does not.
 
+**Postgres's own port carries the identical shape** (gh#421): `5432` also binds `127.0.0.1` only, and
+`POSTGRES_PASSWORD` keeps its `changeme-local` default for the same reason — the bind, not the value, is what
+makes it tolerable. The asymmetry worth naming: the bearer token authenticates nothing at the venue and has
+never had a value worth rotating, while a database password **owns the schema** — the bar cache, the trade
+tape, coverage ledgers and indicator projections. Widening either bind means setting a real credential in the
+same change.
+
 `Kestrel__Certificates__Default__Password` is the one setting that ships with **no value** — it unlocks a
 private key, and this repository is public. It is **not** enforced by compose, and that is deliberate:
 compose interpolates the whole file before it picks a service, so a hard requirement here broke

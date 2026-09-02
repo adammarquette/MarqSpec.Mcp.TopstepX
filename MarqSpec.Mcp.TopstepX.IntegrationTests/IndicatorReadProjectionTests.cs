@@ -424,6 +424,13 @@ public sealed class IndicatorReadProjectionTests : IAsyncLifetime
     /// transaction is rolled back rather than committed: nothing here writes a row, and neither the setting
     /// nor an accidental write may leak into the next test on this shared container.
     /// </remarks>
+    /// <exception cref="Xunit.Sdk.XunitException">
+    /// The forcing below did not reach the session the query runs on. This is the one thing that makes the
+    /// test above able to see its case at all -- without it, the fixture is the tenth one gh#432 warned
+    /// about, red today only by an accident of a plan this small table happens to get. Asserted rather than
+    /// merely relied on, the same discipline the QA contract already requires of a <c>DbCommandInterceptor</c>:
+    /// "assert the interceptor actually fired -- one that never did passes by exercising nothing."
+    /// </exception>
     private async Task<IReadOnlyList<(string Indicator, int Period)>> StoredPairsUnderHashAggregateAsync()
     {
         await using IDbContextTransaction probe = await _database.Database
@@ -432,6 +439,13 @@ public sealed class IndicatorReadProjectionTests : IAsyncLifetime
             "SET LOCAL enable_sort = off; SET LOCAL enable_indexscan = off; "
             + "SET LOCAL enable_indexonlyscan = off; SET LOCAL enable_bitmapscan = off;",
             CancellationToken.None);
+
+        string indexScan = (await _database.Database
+            .SqlQuery<string>($"SELECT current_setting('enable_indexscan') AS \"Value\"")
+            .ToListAsync(CancellationToken.None)).Single();
+        indexScan.Should().Be("off", "the plan-forcing above must actually be in effect on this session, "
+            + "or the query below runs under whatever plan Postgres would have picked anyway and this test "
+            + "stops testing the case it exists for");
 
         IReadOnlyList<(string Indicator, int Period)> pairs = await StoredPairsAsync();
 
@@ -500,10 +514,14 @@ public sealed class IndicatorReadProjectionTests : IAsyncLifetime
     /// no <c>ORDER BY</c> is free to come back in whatever order a HashAggregate plan produces, so ordering
     /// only the in-memory result would still be pairing an unordered fetch with a sort that has to be
     /// re-proven correct by inspection; asking the database for the order it is already computing states
-    /// the intent where the next reader meets it and needs no comparer of its own. Every name in the closed
-    /// vocabulary (<see cref="MarketData.IndicatorCatalog"/>) is a fixed, lowercase, unaccented identifier,
-    /// so the database's default collation orders them identically to <see cref="StringComparer.Ordinal"/>;
-    /// nothing here depends on a locale-sensitive comparison.
+    /// the intent where the next reader meets it and needs no comparer of its own. This depends on the
+    /// database's collation, not on the vocabulary being simple: <c>pg_database.datcollate</c> is
+    /// <c>C.UTF-8</c> with <c>datlocprovider = 'c'</c> on the <c>timescale/timescaledb-ha:pg17</c> image this
+    /// suite runs (measured, not assumed), and <c>Indicator</c> carries no column-level collation override
+    /// -- so the ordering is a raw byte comparison, identical to <see cref="StringComparer.Ordinal"/> for
+    /// any string, hyphens (<c>bb-lower</c>, <c>macd-signal</c>) included. A vocabulary-shaped argument (all
+    /// lowercase, all ASCII) would still be wrong for punctuation under most locale-aware collations and
+    /// would silently stop holding the moment either changed; this does not turn on either.
     /// </remarks>
     private async Task<IReadOnlyList<(string Indicator, int Period)>> StoredPairsAsync()
     {

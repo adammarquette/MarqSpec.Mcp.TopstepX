@@ -29,9 +29,9 @@ services:
       # Exposed so `dotnet ef` and a local run can reach it without entering the network -- that reason is
       # unchanged by binding the address below; only which interfaces can reach it changes.
       #
-      # The bind address is EXPLICIT, matching the server's port two services down. A bare "5432:5432"
+      # The bind address is EXPLICIT, matching the server's port one service down. A bare "5432:5432"
       # publishes on 0.0.0.0 AND [::] -- every interface the host has -- which is what this line did until
-      # gh#421, one service down from the same defect gh#415 fixed on 8080/8443. Unlike the MCP endpoint there
+      # gh#421, the same defect gh#415 fixed on 8080/8443. Unlike the MCP endpoint there
       # is no bearer token in front of this port at all, and a database credential is not read-only: it owns
       # the schema.
       - "127.0.0.1:5432:5432"

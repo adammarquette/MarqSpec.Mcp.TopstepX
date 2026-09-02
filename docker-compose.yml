@@ -14,11 +14,27 @@ services:
     image: timescale/timescaledb-ha:pg17
     environment:
       POSTGRES_USER: "${POSTGRES_USER:-topstepx}"
+      # Defaulted so `docker compose up` works out of the box, the same local-development convenience as
+      # Mcp__HttpBearerToken. Acceptable ONLY because the port below is bound to 127.0.0.1 -- the two are a
+      # COUPLING, not independent choices: widening the bind means setting a real password in the same change.
+      #
+      # The asymmetry with the bearer token, stated rather than assumed: the token authenticates nothing at
+      # the venue and has never had a value worth rotating, while this credential OWNS THE SCHEMA -- it can
+      # read, write or drop the bar cache, the trade tape, coverage ledgers and indicator projections. The
+      # loopback bind is the whole of what makes the default tolerable, and it is tolerable for the same
+      # reason the token's is: nothing off this machine can present it (gh#421).
       POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:-changeme-local}"
       POSTGRES_DB: "${POSTGRES_DB:-topstepx_mcp}"
     ports:
-      # Exposed so `dotnet ef` and a local run can reach it without entering the network.
-      - "5432:5432"
+      # Exposed so `dotnet ef` and a local run can reach it without entering the network -- that reason is
+      # unchanged by binding the address below; only which interfaces can reach it changes.
+      #
+      # The bind address is EXPLICIT, matching the server's port two services down. A bare "5432:5432"
+      # publishes on 0.0.0.0 AND [::] -- every interface the host has -- which is what this line did until
+      # gh#421, one service down from the same defect gh#415 fixed on 8080/8443. Unlike the MCP endpoint there
+      # is no bearer token in front of this port at all, and a database credential is not read-only: it owns
+      # the schema.
+      - "127.0.0.1:5432:5432"
     volumes:
       - postgres-data:/home/postgres/pgdata/data
     healthcheck:

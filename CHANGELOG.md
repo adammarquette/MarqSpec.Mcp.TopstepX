@@ -44,6 +44,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   token stays, because the two are a coupling and widening the bind means setting a real token in the same
   change. IPv6 `::1` is no longer bound either — a client that resolves `localhost` to `::1` without falling
   back to IPv4 will need the literal `127.0.0.1` address (gh#415).
+- The composed Postgres is no longer published on every interface either — the same defect one service down,
+  onto the store the MCP endpoint reads. `docker-compose.yml`'s `5432` entry was the same bare
+  `- "5432:5432"` shape, behind `POSTGRES_PASSWORD` defaulting to `changeme-local` in this **public**
+  repository, and unlike the MCP endpoint there is no bearer token in front of it at all — a database
+  credential is not read-only, it owns the schema. The port now binds `127.0.0.1` explicitly
+  (`docker compose config` resolves `host_ip: 127.0.0.1` with no `[::]` companion); `POSTGRES_PASSWORD`'s
+  default stays for the same coupling reason as the bearer token's — the bind, not the value, is what makes
+  it tolerable (gh#421).
 
 ### Changed
 

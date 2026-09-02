@@ -251,7 +251,9 @@ docker compose up -d     # the local stack: Postgres, and the server on https://
 ```
 
 Compose binds the server's port to `127.0.0.1` only (gh#415) — an IPv6 `localhost` resolution (`::1`) will
-not reach it; use the literal `127.0.0.1` address.
+not reach it; use the literal `127.0.0.1` address. Postgres's `5432` is bound the same way (gh#421), which is
+what `dotnet ef` and any local tool reach; `POSTGRES_PASSWORD`'s compose default is tolerable for the same
+reason the bearer token's is — the bind, not the value.
 
 That endpoint is **HTTPS and only HTTPS** (gh#416), so `docker compose up` needs a locally trusted
 certificate and a password for it before the **server** will start — [`README.md`](README.md#run-it) has the

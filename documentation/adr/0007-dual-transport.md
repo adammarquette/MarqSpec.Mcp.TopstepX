@@ -68,6 +68,7 @@ difference between the two entry points is a handful of lines.
 | [2026-08-30](#update-2026-08-30--the-stdio-listener-takes-an-ephemeral-port) | The listener stdio starts no longer takes a well-known port, so two sessions can run at once |
 | [2026-09-01](#update-2026-09-01--not-exposed-by-default-was-not-true-of-the-composed-stack) | The composed HTTP port is bound to loopback, which is what the default token always assumed |
 | [2026-09-01](#update-2026-09-01--the-composed-endpoint-is-tls-only-behind-a-local-ca) | The composed endpoint is HTTPS on 8443 and nothing else, behind a certificate from a local CA |
+| [2026-09-01](#update-2026-09-01--the-composed-postgres-was-the-wall-left-standing) | The composed Postgres is bound to loopback too, closing the exposure the two updates above deferred |
 
 ## Update (2026-08-22) — starting is not the same as being ready
 
@@ -400,7 +401,7 @@ answers `401` with `WWW-Authenticate: Bearer`, exactly as the 2026-08-22 update 
 confidentiality on the wire; the token is authorisation, and neither substitutes for the other. The **loopback
 bind is untouched** — the resolved mapping is still `host_ip: 127.0.0.1` — and TLS is not a licence to widen
 it: the default token's tolerability still rests on loopback, exactly as gh#415 recorded. The stdio path is
-untouched. And the composed Postgres is still published the same way it always was, which is gh#421.
+untouched. And the composed Postgres is now bound loopback too, closed by gh#421 below rather than left open.
 
 ### One sentence above is superseded
 
@@ -420,3 +421,64 @@ port presents. The `image` gate drives the container over stdin with `docker run
 port, so a green `image` says nothing about any of this — the same sentence the update above had to write, for
 the same reason. `Dockerfile`'s `EXPOSE` moved to 8443 to stop naming a port nothing binds; `EXPOSE` publishes
 nothing and no gate reads it.
+
+## Update (2026-09-01) — the composed Postgres was the wall left standing
+
+Both updates above narrowed the MCP endpoint and left one sentence unfinished each time: *"the composed
+Postgres is still published the same way it always was, which is gh#421."* This is that card, filed as the
+blocking finding in PR #419's own review after that PR's ADR text claimed the exposure already had an owner
+when no such issue existed.
+
+`docker-compose.yml`'s Postgres `ports` entry was the identical bare `- "5432:5432"` shape 8080 used to carry,
+behind `POSTGRES_PASSWORD` defaulting to `changeme-local` in this **public** repository. The asymmetry with
+the MCP endpoint is the reason this could not simply inherit gh#415's closing sentence rather than restate it:
+there is no bearer token in front of 5432 at all, and a database credential is not read-only — it is the owner
+of the schema, covering the bar cache, the trade tape, coverage ledgers and indicator projections, where the
+MCP token guards reads alone.
+
+**The port now binds explicitly: `- "127.0.0.1:5432:5432"`.** Resolved with no `.env` present:
+
+```console
+$ docker compose config postgres
+services:
+  postgres:
+    ...
+    ports:
+      - mode: ingress
+        host_ip: 127.0.0.1
+        target: 5432
+        published: "5432"
+        protocol: tcp
+    ...
+```
+
+One `ports` entry, `host_ip: 127.0.0.1`, no `[::]` companion — the same shape gh#415 established for 8443, and
+the same command this record already uses as evidence rather than a green run, since nothing in CI observes
+which interface a port binds to.
+
+**`POSTGRES_PASSWORD`'s default stays, and the reasoning is made rather than inherited.** The bind is what
+makes it tolerable, exactly as it is for `Mcp__HttpBearerToken` — widening either means setting a real
+credential in the same change. `docker-compose.yml`, `.env.example`, `README.md` and `CONTRIBUTING.md` all
+say so in those terms now, and name the asymmetry above rather than assume the bearer-token argument transfers
+unexamined a second time.
+
+**Reachability was measured, not assumed**, because the standing complaint against this stack is a claim that
+did not survive contact with the thing it described. `dotnet ef database update`, run from the host against a
+Postgres container published exactly as compose now publishes it (`127.0.0.1:<port>:5432`, no `.env`,
+overriding only `ConnectionStrings__Default` to point at the loopback address), applied all five pending
+migrations cleanly. The documented `docker compose -f docker-compose.yml -f docker-compose.dev.yml run --rm
+sdk dotnet --version` loop was run against this change with no `.env` present and answered `10.0.302` — the
+loop a sibling PR broke without anyone noticing until review.
+
+**`docker-compose.dev.yml` cannot reintroduce the open bind.** It declares no `ports` for `postgres` at all —
+the `sdk` service it adds has none of its own network exposure — so no documented `-f … -f …` combination
+touches this line.
+
+The Testcontainers integration tier is unaffected, confirmed rather than assumed: nothing under
+`MarqSpec.Mcp.TopstepX.IntegrationTests` names port `5432` or a fixed host port anywhere, because
+Testcontainers starts its own Postgres and binds whatever the daemon hands it.
+
+**What this does not change.** The bearer token, the TLS bind on 8443 and the certificate are untouched —
+settled by gh#415 and gh#416. The schema, the healthcheck and the volume are untouched. And the sentence this
+record now corrects is the last of the three deferrals gh#415's and gh#416's updates each left pointing here;
+none of ADR-0007's open exposures point forward any longer.

@@ -12,9 +12,11 @@
   <ItemGroup>
     <PackageReference Include="coverlet.collector" />
     <PackageReference Include="FluentAssertions" />
-    <PackageReference Include="Microsoft.Extensions.Configuration" />
-    <PackageReference Include="Microsoft.Extensions.Configuration.EnvironmentVariables" />
-    <PackageReference Include="Microsoft.Extensions.Configuration.UserSecrets" />
+    <!--
+      Microsoft.Extensions.Configuration, .EnvironmentVariables, .UserSecrets and .Options are NOT listed:
+      the ASP.NET Core framework reference below carries all four, and NuGet fails the build (NU1510) on a
+      package reference the shared framework already supplies.
+    -->
     <!-- FakeTimeProvider. A fill drops bars that have not closed yet, so "now" has to be placeable. -->
     <PackageReference Include="Microsoft.Extensions.TimeProvider.Testing" />
     <PackageReference Include="Microsoft.NET.Test.Sdk" />
@@ -29,7 +31,39 @@
   </ItemGroup>
 
   <ItemGroup>
+    <!--
+      The write-path suites that moved down here in gh#387 drive the MCP tool types, which live in the host —
+      an ASP.NET Core app. Reaching them needs the framework reference, the same one the unit project carries
+      for its composition-root test.
+    -->
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!--
+      ONE SOURCE, COMPILED INTO BOTH TEST ASSEMBLIES, rather than a second copy.
+
+      `CountingGateway` is the hand-written `IMarketDataGateway` double the Coding contract names, and gh#387
+      split its callers across the two tiers: the guard suites that never reach a store stayed in the unit
+      project, and the suites that write moved here. Copying it would leave two doubles free to drift, and a
+      venue double that answers differently in one tier than the other is the kind of fixture defect that
+      passes both suites while proving nothing. Linked rather than moved, because the unit tier still has the
+      majority of its callers.
+    -->
+    <Compile Include="..\MarqSpec.Mcp.TopstepX.Tests\MarketData\CountingGateway.cs"
+             Link="CountingGateway.cs" />
+    <!--
+      `BackgroundServiceTestSupport` is linked for the same reason, and one more: gh#407 replaced a fixed 2 s
+      wall-clock budget here after it flaked across three unrelated sessions. A second copy is a second place
+      for that budget to come back.
+    -->
+    <Compile Include="..\MarqSpec.Mcp.TopstepX.Tests\MarketData\BackgroundServiceTestSupport.cs"
+             Link="BackgroundServiceTestSupport.cs" />
+  </ItemGroup>
+
+  <ItemGroup>
     <ProjectReference Include="..\MarqSpec.Mcp.TopstepX\MarqSpec.Mcp.TopstepX.csproj" />
+    <ProjectReference Include="..\MarqSpec.Mcp.TopstepX.Domain\MarqSpec.Mcp.TopstepX.Domain.csproj" />
     <ProjectReference Include="..\MarqSpec.Mcp.TopstepX.Data\MarqSpec.Mcp.TopstepX.Data.csproj" />
   </ItemGroup>
 

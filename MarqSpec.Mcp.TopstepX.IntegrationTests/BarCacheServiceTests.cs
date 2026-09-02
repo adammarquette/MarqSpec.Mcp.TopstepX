@@ -5,39 +5,58 @@ using MarqSpec.Mcp.TopstepX.Data.Entities;
 using MarqSpec.Mcp.TopstepX.Domain;
 using MarqSpec.Mcp.TopstepX.Domain.MarketData;
 using MarqSpec.Mcp.TopstepX.MarketData;
+using MarqSpec.Mcp.TopstepX.Tests.MarketData;
 using MarqSpec.Mcp.TopstepX.Tools;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using Microsoft.Extensions.Time.Testing;
 
-namespace MarqSpec.Mcp.TopstepX.Tests.MarketData;
+namespace MarqSpec.Mcp.TopstepX.IntegrationTests;
 
 /// <summary>
 /// Cache-aside: what it costs, and when it costs nothing.
 /// </summary>
 /// <remarks>
-/// These pin the property the whole design exists to provide. They run against an in-memory store rather than
-/// a container because the claim is about <i>logic</i> — which buckets are asked for — and a suite that has to
-/// wait for Docker to prove it is a suite people skip. The schema-level claims (hypertable, HNSW index, CHECK
-/// constraints, real upsert semantics) belong to the integration tier, which an in-memory provider could not
-/// prove anything about.
+/// <para>
+/// These pin the property the whole design exists to provide, and the claim they pin is still one about
+/// <i>logic</i> — <b>which buckets are asked for</b>, and how few of them a second read asks for again.
+/// </para>
+/// <para>
+/// <b>They are here because there is no longer anywhere else to run them (gh#387).</b> Every one of them
+/// reaches a write, and a write is now <c>UpsertBarsSql</c> and <c>RecordCoverageSql</c> — two
+/// <c>ON CONFLICT … DO UPDATE</c> statements the store resolves against the row it has actually
+/// committed. The in-memory second implementation that used to stand in for them existed <i>only</i> to keep
+/// this suite in the unit tier, and it decided insert-versus-update in this process rather than in the
+/// store — so what it counted as a write was not what the store counts as one. It is gone; proving the
+/// cache-aside claim now means executing the real statement, and the container is what executes it.
+/// </para>
 /// </remarks>
-public sealed class BarCacheServiceTests : IDisposable
+[Collection(SeriesStoreCollection.Name)]
+public sealed class BarCacheServiceTests : IAsyncLifetime
 {
     private static readonly InstrumentId _es = new("ES");
 
+    private readonly SeriesStoreFixture _fixture;
+
     private readonly TopstepXDbContext _database;
 
-    public BarCacheServiceTests() =>
-        _database = new TopstepXDbContext(
-            new DbContextOptionsBuilder<TopstepXDbContext>()
-                .UseInMemoryDatabase(Guid.NewGuid().ToString())
-                .ConfigureWarnings(w => w.Ignore(Microsoft.EntityFrameworkCore.Diagnostics
-                    .InMemoryEventId.TransactionIgnoredWarning))
-                .Options);
+    /// <param name="fixture">The shared container.</param>
+    public BarCacheServiceTests(SeriesStoreFixture fixture)
+    {
+        _fixture = fixture;
+        _database = fixture.CreateContext();
+    }
 
-    public void Dispose() => _database.Dispose();
+    /// <inheritdoc />
+    public Task InitializeAsync() => _fixture.ResetAsync();
+
+    /// <inheritdoc />
+    public Task DisposeAsync()
+    {
+        _database.Dispose();
+        return Task.CompletedTask;
+    }
 
     /// <summary>A Tuesday mid-session, so every bucket in the window is one the venue owes us.</summary>
     private static DateTimeOffset SessionStart =>
@@ -91,8 +110,19 @@ public sealed class BarCacheServiceTests : IDisposable
     /// <param name="contractId">The contract to record, or <see langword="null"/> for a pre-migration row.</param>
     /// <param name="resolutionMinutes">The resolution to seed them under.</param>
     /// <remarks>
+    /// <para>
     /// A test that needs a store which is <i>almost</i> healed — every bucket attributed except one — cannot be
     /// built out of the legacy seeder alone, and the one unattributed bucket is the whole subject of gh#412.
+    /// </para>
+    /// <para>
+    /// <b>The tracker is cleared afterwards, and that is what makes the assertions mean anything (gh#387).</b>
+    /// These rows go in through the change tracker, while the heal under test writes with
+    /// <c>ON CONFLICT … DO UPDATE</c> — SQL the tracker never sees. Left tracked, a later read of
+    /// <c>_database.Bars</c> is answered from the identity map with the <i>seeded</i> instance, so a test
+    /// asserting that the contract was healed would be reading the null it wrote itself. The in-memory
+    /// implementation this suite used to run on mutated the tracked entity in place, so the stale copy was the
+    /// healed copy and three tests here had been passing on that.
+    /// </para>
     /// </remarks>
     private async Task SeedRowsAsync(
         IEnumerable<Bar> bars, string? contractId, int resolutionMinutes = 5)
@@ -116,6 +146,7 @@ public sealed class BarCacheServiceTests : IDisposable
         }
 
         await _database.SaveChangesAsync();
+        _database.ChangeTracker.Clear();
     }
 
     private (BarCacheService Cache, CountingGateway Gateway) Build(
@@ -292,8 +323,9 @@ public sealed class BarCacheServiceTests : IDisposable
         await cache.GetBarsAsync(
             _es, 5, new BarRange(SessionStart, SessionStart.AddHours(1)), CancellationToken.None);
 
-        _database.Bars.Should().NotBeEmpty();
-        _database.Bars.Should().AllSatisfy(b => b.ContractId.Should().Be("CON.F.US.TEST.Z26"));
+        List<BarRecord> stored = await _database.Bars.ToListAsync();
+        stored.Should().NotBeEmpty();
+        stored.Should().AllSatisfy(b => b.ContractId.Should().Be("CON.F.US.TEST.Z26"));
     }
 
     [Fact]
@@ -332,7 +364,8 @@ public sealed class BarCacheServiceTests : IDisposable
         gateway.BarRequests.Should().BeGreaterThan(
             0, "a bucket with no recorded contract must be re-asked for, not treated as already answered");
         result.Bars.Should().OnlyContain(b => b.ContractId != null);
-        _database.Bars.Should().AllSatisfy(b => b.ContractId.Should().Be("CON.F.US.TEST.Z26"));
+        (await _database.Bars.ToListAsync())
+            .Should().AllSatisfy(b => b.ContractId.Should().Be("CON.F.US.TEST.Z26"));
     }
 
     [Fact]
@@ -366,7 +399,7 @@ public sealed class BarCacheServiceTests : IDisposable
             "the empty answer to the first read is memoised permanently, so the heal is bounded to one "
             + "request per range rather than one per read");
         gateway.ContractRequests.Should().Be(1);
-        _database.Bars.Should().AllSatisfy(
+        (await _database.Bars.ToListAsync()).Should().AllSatisfy(
             b => b.ContractId.Should().BeNull("the venue answered nothing, so nothing was guessed"));
     }
 
@@ -488,11 +521,13 @@ public sealed class BarCacheServiceTests : IDisposable
         gateway.BarRequests.Should().Be(2, "the first page is answered non-empty; the narrowed second is not");
 
         // The provenance the venue would not restate is left absent, not invented from the neighbours.
-        _database.Bars
+        (await _database.Bars
             .Where(b => b.BucketStart < SessionStart.AddMinutes(30))
+            .ToListAsync())
             .Should().AllSatisfy(b => b.ContractId.Should().BeNull());
-        _database.Bars
+        (await _database.Bars
             .Where(b => b.BucketStart >= SessionStart.AddMinutes(30))
+            .ToListAsync())
             .Should().AllSatisfy(b => b.ContractId.Should().Be("CON.F.US.TEST.Z26"));
     }
 

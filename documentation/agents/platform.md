@@ -68,9 +68,15 @@ The root contract's six apply here unchanged. Four land specifically on the pipe
     document** rather than stated, on lines only: an under-read shrinks numerator and denominator together,
     so the rate moves **up** while coverage falls, and extending the same assertion to *branches* would make
     the gate unable to **pass** (the root's `1905` against the detail's `1885`). Both directions are pinned by
-    [`check-coverage-floor-selftest.sh`](../../scripts/check-coverage-floor-selftest.sh), whose central case
-    runs the gh#387 shape **red at 85 and green at 40** — that pair pins the *number*, where either half
-    alone pins only the comparison. **Raising a gate's strictness and proving it can still fail are one card.**
+    [`check-coverage-floor-selftest.sh`](../../scripts/check-coverage-floor-selftest.sh).
+    **And a self-test that passes the gate its own literals proves the SCRIPT can fail, never the
+    DEPLOYMENT** — the round-one suite ran the gh#387 shape red at 85 and green at 40 and was still **13/13
+    green with `ci.yml` set back to 40**, in the step named *"Prove the coverage gate can still fail"*. The
+    card's own defect, recurring inside its fix. A gate's *configured* value is a separate assertion from its
+    logic: this one now reads `MINIMUM_LINE_COVERAGE` out of the workflow and requires both that it is at or
+    above the ratchet and that the real gate **at that value** rejects a dead tier. **Ask what a self-test's
+    fixtures are allowed to vary — anything they supply themselves is a thing the deployment can still get
+    wrong.**
 - **No live credentials in a test run that does not need them.** `release.yml` passed real API secrets into an
   unfiltered `dotnet test`. That integration tests mostly did not execute was an accident of hardcoded skip
   strings, not a design. Live-credentialed runs are opt-in, tagged, and never on the release path.

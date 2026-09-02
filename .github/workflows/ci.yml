@@ -336,11 +336,14 @@ jobs:
       # Two runs on two SHAs, figures identical to the line -- run-to-run variance on an unchanged tree is
       # ZERO here, which is what makes the headroom a budget for CODE CHANGE rather than for flake.
       #
-      # HEADROOM: 6.0 points, which is 490 of the 8127 lines (1.0pp = 81 lines). Sized against the largest
-      # single-file loss the tree can suffer: TradeTapeRecorder.cs is the biggest file in the report at 515
-      # instrumented lines, 415 of them covered, so every test touching it disappearing costs 5.1pp and
-      # still does not trip this floor. The gh#387 shape costs 35.0pp and trips it by 29. That gap -- one
-      # whole file's worth of ordinary variance absorbed, a tier's worth refused -- is the choice.
+      # HEADROOM: 6.0 points, which is 490 of the 8127 lines (1.0pp = 81 lines). Two ways to size it, and the
+      # second is the one to quote (PR #436's reviewer):
+      #   * GROWTH -- 576 wholly-untested new lines can land before 85 trips (7398 / (8127 + 576) = 85.0%).
+      #     That is the shape ordinary work actually takes: a feature arrives, its tests arrive later.
+      #   * LOSS -- TradeTapeRecorder.cs is the biggest file in the report at 515 instrumented lines, 415 of
+      #     them covered, so every test touching it disappearing costs 5.1pp and still does not trip.
+      # The gh#387 shape costs 35.0pp and trips this floor by 29. That gap -- a whole file's worth of
+      # ordinary variance absorbed in either direction, a tier's worth refused -- is the choice.
       #
       # Do not set it AT the measurement. 91 goes red on the next PR that adds a file, and a floor that
       # trips on ordinary variance is worse than a low one: it gets lowered, and then it is a report again.
@@ -396,16 +399,23 @@ jobs:
       - name: Enforce the coverage floor
         run: python3 scripts/check-coverage-floor.py unit=TestResults/unit integration=TestResults/integration
 
-      # gh#435, and the same argument as the four self-tests in the `docs` job. This gate had none, and it
+      # gh#435, and the same argument as the three self-tests in the `docs` job. This gate had none, and it
       # had spent its whole life unable to fail on the event it was built for: the floor sat 51 points below
       # the figure it guards, and the strongest claim in its header -- that its parse reproduces coverlet's
       # own root -- was observed by nothing, in the one direction that is FLATTERING. An under-read shrinks
       # numerator and denominator together, so the rate rises while coverage falls.
       #
       # Runs the REAL gate against fixture trees whose faults are known and requires it to reject each BY
-      # NAME AND BY EXIT CODE, and to accept two sound ones at a stated figure. Its central case is the
+      # NAME AND BY EXIT CODE, and to accept three sound ones at a stated figure. Its central case is the
       # gh#387 shape run TWICE -- red at this floor, green at the 40 it replaced -- so the VALUE above is
-      # what fails, not merely the presence of a comparison, and walking it back reddens this step.
+      # what fails, not merely the presence of a comparison.
+      #
+      # AND IT READS THE VALUE ABOVE OUT OF THIS FILE, which is what makes "walking the floor back reddens
+      # this step" a fact rather than a claim. Every other case passes its own literal, so the suite shipped
+      # for review at PR #436 stayed 13/13 GREEN with MINIMUM_LINE_COVERAGE set back to 40 -- a suite proving
+      # the SCRIPT can fail, in a step labelled as proving the DEPLOYMENT can. Its `deployed-floor` cases now
+      # assert the shipped number is at or above the ratchet AND that the real gate, run at THAT number,
+      # rejects a tier which executed nothing. Lowering the line above reddens both, independently.
       #
       # Ordered after the real run so a genuine coverage regression is reported first. It reads no artifact
       # and writes nothing back into the tree; every fixture lives under `mktemp -d` and dies on EXIT.

@@ -256,7 +256,16 @@ def main(argv: list[str]) -> int:
         print("::error::MINIMUM_LINE_COVERAGE is not set. It is the floor; defaulting it to 0 would make "
               "this gate unable to fail.")
         return 2
-    floor = int(os.environ["MINIMUM_LINE_COVERAGE"])
+    # NAMED, NOT A TRACEBACK (gh#435, from review). An empty or whitespace value already failed CLOSED --
+    # `int("")` raises and the step goes red -- but it went red as a stack trace, which reads as a BROKEN GATE
+    # rather than as a broken configuration. A reader who cannot tell those apart deletes the step.
+    raw = os.environ["MINIMUM_LINE_COVERAGE"]
+    try:
+        floor = int(raw.strip())
+    except ValueError:
+        print(f"::error::MINIMUM_LINE_COVERAGE is {raw!r}, which is not an integer percentage. It is the "
+              "floor; this gate will not guess one.")
+        return 2
     tiers = [arg.split("=", 1) for arg in argv[1:]]
 
     merged_lines: dict[tuple[str, int], int] = {}

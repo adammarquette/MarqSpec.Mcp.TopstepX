@@ -38,8 +38,22 @@
 # present, the integration tier's report internally consistent and carrying zero hits -- twice: red at the
 # floor this card sets, and GREEN at the floor it replaced. That pair is the card. Neither run alone says
 # anything: the red one is satisfied by any floor above the merged figure, and the green one is satisfied by
-# any floor below it. Together they say the NUMBER is what fires, and they fail the moment someone lowers it
-# back toward the merged figure of a broken tree.
+# any floor below it. Together they say the NUMBER is what fires rather than the presence of a comparison.
+#
+# AND WHAT IT DOES NOT PIN, WHICH IS THE DEPLOYED VALUE. Every case above passes its OWN literal on the
+# command line, and `run_gate` unsets MINIMUM_LINE_COVERAGE, so all of them stay green with `ci.yml` set back
+# to 40 -- measured in the review of PR #436: 13/13, exit 0, with the old floor in the environment. A suite
+# that proves the SCRIPT can fail, labelled as proving the DEPLOYMENT can, is this card's own defect
+# recurring inside its fix, in the step whose entire purpose is to demonstrate failure. So `deployed-floor`
+# reads the value CI actually ships out of `.github/workflows/ci.yml` and asserts BOTH halves:
+#
+#   * that it is still at or above the ratchet (`RATCHET_MINIMUM` below), naming both numbers; and
+#   * that the REAL gate, run at THAT value, rejects the gh#387 fixture -- a behavioural assertion which
+#     holds whatever the literal is, and which is what makes "walking the floor back reddens this step" a
+#     fact rather than a claim.
+#
+# The first is a duplicated literal on purpose: lowering the ratchet becomes a deliberate two-file edit with
+# a red run in between, which is what the word RATCHET means. The second needs no literal at all.
 #
 # THE INTERPRETER IS RESOLVED AND THEN TESTED, not read off PATH (gh#126's rule, in a shape that bites on
 # Windows). `python3` on a stock Windows box is the Microsoft Store app-execution alias: it EXISTS on PATH,
@@ -70,24 +84,38 @@
 #   | `<tier>=<dir>` is the required argument shape | `usage` |
 #   | `(file, line)` is the key, so a doubly-emitted line counts once | `sound` (every fixture line is emitted twice) |
 #   | the floor is still reachable when the parse agrees | `sound` + `floor-breach` |
+#   | a malformed threshold is named, not a traceback | `malformed-floor` |
+#   | **the floor `ci.yml` DEPLOYS is the ratcheted one** | `deployed-floor/at-or-above-the-ratchet` |
+#   | **the deployed floor rejects a tier that ran nothing** | `deployed-floor/rejects-a-dead-tier` |
 #
 # MUTATED BEFORE IT WAS BELIEVED (platform.md: run a text-matching gate before believing its diagnostics).
-# Nine mutations of `check-coverage-floor.py`, each run against this suite unchanged, on Python 3.11.15:
+# Thirteen mutations, each run against this suite unchanged, on Python 3.11.15. Ten of the gate, and THREE OF
+# `ci.yml` -- because the last three are the only ones that exercise what this suite says about the
+# deployment rather than about the script:
 #
 #   | Mutation | Cases that go red |
 #   |---|---|
-#   | `if merged_line < floor:` -> `if False:` | floor-breach, floor-is-load-bearing/red (2) |
+#   | `if merged_line < floor:` -> `if False:` | floor-breach, floor-is-load-bearing/red, deployed-floor/rejects-a-dead-tier (3) |
 #   | `problems.extend(check_against_root(...))` -> `extend([])` | the three parse cases + no-verdict-printed (4) |
 #   | the `MINIMUM_LINE_COVERAGE not in environ` guard removed | unset-floor, **as exit 1 rather than 2** (1) |
+#   | the malformed-floor `try/except` removed | malformed-floor, **as exit 1 rather than 2** (1) |
 #   | `if not report_count:` -> `if False:` | missing-report (1) |
-#   | parsed `lines-valid` counts raw elements (`2 * len`) | 8, `sound` first — the dedup is what makes the assertion true |
+#   | parsed `lines-valid` counts raw elements (`2 * len`) | 9, `sound` first — the dedup is what makes the assertion true |
 #   | the assertion extended to `branches-valid` | branch-root-differs (1) — the tightening this suite forbids |
-#   | `main()` replaced by `return 0` after the arg checks | 10 of 13; `usage` and `unset-floor` return earlier |
+#   | `main()` replaced by `return 0` after the arg checks | 11 of 16; `usage`, `unset-floor` and `malformed-floor` return earlier |
 #   | `if not shared:` -> `if False:` | disjoint-tiers (1) |
 #   | a stray `print(..., file=sys.stderr)` on the success path | the three green cases, by BYTE COUNT (3) |
+#   | **`ci.yml`'s floor walked back to `40`** | BOTH deployed-floor cases, independently (2) |
+#   | **`ci.yml`'s `MINIMUM_LINE_COVERAGE:` line deleted** | deployed-floor, naming the absent assignment (1) |
+#   | **a SECOND `MINIMUM_LINE_COVERAGE:` added to `ci.yml`** | deployed-floor, naming both lines (1) |
 #
-# The third row is the one worth reading twice: the mutant still exits non-zero, on the same fixture, for a
-# different reason. A suite asserting only "it failed" would have passed it.
+# Rows three and four are the ones worth reading twice: the mutant still exits non-zero, on the same fixture,
+# for a different reason. A suite asserting only "it failed" would have passed both.
+#
+# And the eleventh row is the one this suite shipped for review WITHOUT (PR #436, round one). It was 13/13
+# green with the old floor deployed, and three separate comments -- here, in `ci.yml` and in `platform.md` --
+# said walking the floor back would redden this step. It would not have. **A claim about failing is a claim
+# that has to be run, and the run has to touch the thing the claim is about.**
 #
 # FIXTURE ARITHMETIC, so a needle can name a whole figure rather than a substring of one. Two source files
 # of 100 lines each, 200 lines per tier. `unit` covers all of `Alpha.cs`; `integration` covers 80 lines of
@@ -130,6 +158,16 @@ info "interpreter: $PY ($("$PY" --version 2>&1))"
 
 FIXTURES="$(mktemp -d)"
 trap 'rm -rf "$FIXTURES"' EXIT
+
+# The ratchet, and the workflow that has to still carry it. Raise RATCHET_MINIMUM in the same commit that
+# raises `ci.yml`'s MINIMUM_LINE_COVERAGE; never lower either. See the header for why this literal is here.
+RATCHET_MINIMUM=85
+CI_WORKFLOW="$REPO_ROOT/.github/workflows/ci.yml"
+if [ ! -f "$CI_WORKFLOW" ]; then
+  red "  MISSING  $CI_WORKFLOW"
+  red "NOTHING HAS BEEN CHECKED about the floor this repository actually deploys."
+  exit 1
+fi
 
 failures=0
 cases=0
@@ -355,6 +393,36 @@ expect_green() {
   ok "  ok    $name — accepted, stated its figure, and wrote nothing to stderr"
 }
 
+# Reads MINIMUM_LINE_COVERAGE out of the workflow and leaves it in DEPLOYED_FLOOR, or reports the fault and
+# leaves it empty. A READ THAT DECIDES A VERDICT, so it is assigned on its own line and its status checked,
+# and "no assignment in the file" (grep 1) is told apart from "could not look" (grep 2+) -- platform.md's
+# first constraint. `MINIMUM_LINE_COVERAGE` appears a dozen times in that file's PROSE; only the YAML
+# assignment shape matches, and finding more than one is itself a fault, because two places stating one
+# number are two numbers.
+DEPLOYED_FLOOR=""
+read_deployed_floor() {
+  local hits status=0 count
+  hits="$(grep -nE '^[[:space:]]+MINIMUM_LINE_COVERAGE:[[:space:]]*[0-9]+[[:space:]]*$' "$CI_WORKFLOW")" || status=$?
+  if [ "$status" -ge 2 ]; then
+    red "  FAIL  deployed-floor: could not READ $CI_WORKFLOW (grep exit $status). That is not the same as"
+    red "        finding no floor in it, and it must never be reported as such."
+    return 1
+  fi
+  if [ "$status" -eq 1 ]; then
+    red "  FAIL  deployed-floor: $CI_WORKFLOW declares no 'MINIMUM_LINE_COVERAGE: <int>'. The gate refuses"
+    red "        to run without one, so CI would be red — but nothing here would have said why."
+    return 1
+  fi
+  count="$(printf '%s\n' "$hits" | wc -l)"
+  if [ "$count" -ne 1 ]; then
+    red "  FAIL  deployed-floor: $count MINIMUM_LINE_COVERAGE assignments in $CI_WORKFLOW, expected 1."
+    printf '%s\n' "$hits" | sed -e 's/^/          /' >&2
+    return 1
+  fi
+  DEPLOYED_FLOOR="$(printf '%s\n' "$hits" | sed -e 's/.*MINIMUM_LINE_COVERAGE:[[:space:]]*//' -e 's/[[:space:]]*$//')"
+  return 0
+}
+
 # ---------------------------------------------------------------------------------------------------------
 # Cases
 # ---------------------------------------------------------------------------------------------------------
@@ -392,6 +460,38 @@ run_gate 40 "unit=$FIXTURES/gh387/unit" "integration=$FIXTURES/gh387/integration
 expect_green "floor-is-load-bearing/green-at-the-old-floor" \
   "Line coverage 50.0% (floor 40%)"
 
+# 3b. THE FLOOR THIS REPOSITORY ACTUALLY DEPLOYS, which nothing above touches. Every case here passes its own
+#     literal and `run_gate` unsets the variable, so the whole suite stays green with `ci.yml` set back to 40
+#     -- measured, 13/13 and exit 0, in the review of PR #436. A suite proving the SCRIPT can fail, labelled
+#     as proving the DEPLOYMENT can, is this card's own defect recurring inside its fix.
+cases=$((cases + 1))
+if read_deployed_floor; then
+  if [ "$DEPLOYED_FLOOR" -lt "$RATCHET_MINIMUM" ]; then
+    red "  FAIL  deployed-floor/at-or-above-the-ratchet: $CI_WORKFLOW deploys MINIMUM_LINE_COVERAGE:"
+    red "        $DEPLOYED_FLOOR, below the ratchet of $RATCHET_MINIMUM. The floor is a measurement raised as"
+    red "        coverage rises and NEVER lowered to make a build pass. Lowering it is a decision that edits"
+    red "        RATCHET_MINIMUM in this file too, in the same commit, deliberately."
+    failures=$((failures + 1))
+  else
+    ok "  ok    deployed-floor/at-or-above-the-ratchet — ci.yml deploys $DEPLOYED_FLOOR, ratchet $RATCHET_MINIMUM"
+  fi
+else
+  failures=$((failures + 1))
+fi
+
+# The behavioural half, which needs no literal at all: whatever `ci.yml` carries, the REAL gate run at THAT
+# value must reject a tier that executed nothing. This is the sentence the workflow comment makes -- "walking
+# the floor back reddens this step" -- turned into a run. At 40 it fails here, naming the deployed number.
+if [ -n "$DEPLOYED_FLOOR" ]; then
+  run_gate "$DEPLOYED_FLOOR" "unit=$FIXTURES/gh387/unit" "integration=$FIXTURES/gh387/integration"
+  expect_red "deployed-floor/rejects-a-dead-tier" 1 \
+    "::error::Merged line coverage 50.0% is below the ${DEPLOYED_FLOOR}% floor."
+else
+  # Reached only when the read above already failed, so the run is red either way -- but a case that
+  # vanishes without saying so is how a suite quietly shrinks. Say it.
+  red "  SKIP  deployed-floor/rejects-a-dead-tier: no floor was read, so it could not be run."
+fi
+
 # 4. A tier whose directory holds no cobertura report is an ERROR NAMED FOR THAT TIER, never a tier dropped
 #    -- dropping one is the gh#387 regression itself, and it drops toward a number that still passes. The
 #    listing is asserted too: without it the diagnostic cannot be acted on.
@@ -407,6 +507,13 @@ expect_red "missing-report" 1 \
 run_gate unset "unit=$FIXTURES/sound/unit" "integration=$FIXTURES/sound/integration"
 expect_red "unset-floor" 2 \
   "::error::MINIMUM_LINE_COVERAGE is not set."
+
+# 5b. A threshold that is PRESENT but not a number is NAMED. It already failed closed -- `int("")` raises and
+#     the step goes red -- but as a traceback, which reads as a broken gate rather than as a broken
+#     configuration, and a reader who cannot tell those apart deletes the step. (Advisory on PR #436.)
+run_gate "   " "unit=$FIXTURES/sound/unit" "integration=$FIXTURES/sound/integration"
+expect_red "malformed-floor" 2 \
+  "::error::MINIMUM_LINE_COVERAGE is '   ', which is not an integer percentage."
 
 # 6. THE UNDER-READ, in the direction that flatters. The unit report's detail carries only Alpha's 100
 #    covered lines while its root still declares the 200 it was written with -- which is what a parser that

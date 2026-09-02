@@ -360,6 +360,85 @@ public sealed class IndicatorReadProjectionTests : IAsyncLifetime
             + "series stops re-replaying and the paragraph this test pins is describing nothing");
     }
 
+    [Fact]
+    public async Task StoredPairs_AreOrderedByIndicatorThenPeriod_WhenOneIndicatorIsStoredAtTwoPeriods()
+    {
+        // gh#432. StoredPairsAsync's query is an unordered SELECT DISTINCT, and its client-side sort orders
+        // by indicator name only -- so two rows that share a name and differ only in period are never
+        // compared to each other, and come back in whatever order the database happened to hand them.
+        //
+        // A single-element fixture cannot observe that: with one row there is no tie for an incomplete sort
+        // to mis-order. This file's own dominant idiom manufactures one instead -- warm at rsiPeriod 3, then
+        // read at rsiPeriod 19. ReconcileAsync (IndicatorProjector.cs:278) deliberately leaves a stored row
+        // the new catalogue does not own standing rather than deleting it, so (rsi, 3) survives sitting
+        // beside the freshly projected (rsi, 19). Every other pair keeps the same period across both
+        // catalogues, so rsi is the only tie -- exactly the shape the helper cannot resolve today.
+        //
+        // Period 19, not the file's usual 5: on the twelve rows this fixture seeds, Postgres's planner
+        // prefers an index scan over the composite index on (Instrument, ResolutionMinutes, Indicator,
+        // Period, BucketStart), which returns pre-sorted rows for free regardless of which two periods tie
+        // -- 3-and-5 included. StoredPairsUnderHashAggregateAsync forces the Seq Scan + HashAggregate plan
+        // the store gets once an index scan is no longer the cheaper way to deduplicate, and 3-and-19 is the
+        // pair verified (repeated fresh-container runs, not a single lucky one) to land in different
+        // HashAggregate buckets in an order that is NOT already ascending on this build -- 3-and-5 happened
+        // to still come out sorted even under that forced plan. Either pair is equally a tie; 19 is the one
+        // that actually exercises the missing comparison instead of passing by looking like it does.
+        await WarmAsync(Catalog(rsiPeriod: 3));
+
+        IndicatorCacheService indicators = Cache(Catalog(rsiPeriod: 19));
+        bool projected = await indicators.EnsureProjectedAsync("test", _es, Resolution, CancellationToken.None);
+
+        projected.Should().BeTrue("rsi at period 19 has never been computed for this series");
+
+        IReadOnlyList<(string Indicator, int Period)> pairs = await StoredPairsUnderHashAggregateAsync();
+
+        pairs.Should().Contain(("rsi", 3)).And.Contain(("rsi", 19),
+            "the tie this test exists to create -- one indicator name stored at two periods at once -- must "
+            + "actually be present, or the assertion below is not testing the case it is named for");
+
+        // Asserted as a PROPERTY -- the sequence equals its own sort by (indicator, period) -- rather than as
+        // a literal list. The shipped catalogue's other members (atr, sma, ema, the three Bollinger bands,
+        // the three MACD lines, vwap) are not this test's concern and would make a literal brittle to a
+        // catalogue change; what this test pins is that no two rows are ever out of order relative to each
+        // other, which a literal naming only the tied pair would not check for the untied rows either.
+        List<(string Indicator, int Period)> orderedByIndicatorThenPeriod =
+            [.. pairs.OrderBy(p => p.Indicator, StringComparer.Ordinal).ThenBy(p => p.Period)];
+
+        pairs.Should().Equal(
+            orderedByIndicatorThenPeriod,
+            "the sort must be total: two rows sharing an indicator name still have a period, and that period "
+            + "must break the tie so the sequence the helper returns is already in its own sorted order");
+    }
+
+    /// <summary>
+    /// Calls <see cref="StoredPairsAsync"/> under a planner shape forced onto Seq Scan + HashAggregate for
+    /// the <c>DISTINCT</c> -- the shape <c>IndicatorValues</c> gets once it holds enough rows that an index
+    /// scan is no longer the cheaper way to deduplicate.
+    /// </summary>
+    /// <returns>The pairs, fetched under that plan.</returns>
+    /// <remarks>
+    /// On the handful of rows this fixture seeds, Postgres's own cost model instead picks an index scan over
+    /// the composite index on <c>(Instrument, ResolutionMinutes, Indicator, Period, BucketStart)</c>, which
+    /// returns rows pre-sorted by (Indicator, Period) for free -- an accident of a plan a real store outgrows,
+    /// not the sort this test means to exercise. The settings are session-scoped (<c>SET LOCAL</c>) and the
+    /// transaction is rolled back rather than committed: nothing here writes a row, and neither the setting
+    /// nor an accidental write may leak into the next test on this shared container.
+    /// </remarks>
+    private async Task<IReadOnlyList<(string Indicator, int Period)>> StoredPairsUnderHashAggregateAsync()
+    {
+        await using IDbContextTransaction probe = await _database.Database
+            .BeginTransactionAsync(CancellationToken.None);
+        await _database.Database.ExecuteSqlRawAsync(
+            "SET LOCAL enable_sort = off; SET LOCAL enable_indexscan = off; "
+            + "SET LOCAL enable_indexonlyscan = off; SET LOCAL enable_bitmapscan = off;",
+            CancellationToken.None);
+
+        IReadOnlyList<(string Indicator, int Period)> pairs = await StoredPairsAsync();
+
+        await probe.RollbackAsync(CancellationToken.None);
+        return pairs;
+    }
+
     // ── Scaffolding ──────────────────────────────────────────────────────────────────────────────────
 
     private static BarSessionCalendar Calendar() => BarSessionCalendar.Parse("16:00", []);
@@ -411,7 +490,21 @@ public sealed class IndicatorReadProjectionTests : IAsyncLifetime
     }
 
     /// <summary>The distinct <c>(Indicator, Period)</c> pairs the store holds for the seeded series.</summary>
-    /// <returns>The pairs, ordered.</returns>
+    /// <returns>The pairs, ordered by indicator name and then by period -- a total order. Two rows that
+    /// share an indicator name (a period the current catalogue no longer owns, left standing by
+    /// <c>ReconcileAsync</c>, beside the one it now computes) are broken apart by period rather than left
+    /// in whatever order the database happened to return them.</returns>
+    /// <remarks>
+    /// The order is stated in the query -- <c>SELECT DISTINCT indicator, period ... ORDER BY indicator,
+    /// period</c> -- rather than imposed afterwards on the materialised list. A <c>SELECT DISTINCT</c> with
+    /// no <c>ORDER BY</c> is free to come back in whatever order a HashAggregate plan produces, so ordering
+    /// only the in-memory result would still be pairing an unordered fetch with a sort that has to be
+    /// re-proven correct by inspection; asking the database for the order it is already computing states
+    /// the intent where the next reader meets it and needs no comparer of its own. Every name in the closed
+    /// vocabulary (<see cref="MarketData.IndicatorCatalog"/>) is a fixed, lowercase, unaccented identifier,
+    /// so the database's default collation orders them identically to <see cref="StringComparer.Ordinal"/>;
+    /// nothing here depends on a locale-sensitive comparison.
+    /// </remarks>
     private async Task<IReadOnlyList<(string Indicator, int Period)>> StoredPairsAsync()
     {
         var held = await _database.IndicatorValues
@@ -420,9 +513,11 @@ public sealed class IndicatorReadProjectionTests : IAsyncLifetime
                 && v.ResolutionMinutes == Resolution)
             .Select(v => new { v.Indicator, v.Period })
             .Distinct()
+            .OrderBy(v => v.Indicator)
+            .ThenBy(v => v.Period)
             .ToListAsync();
 
-        return [.. held.Select(v => (v.Indicator, v.Period)).OrderBy(p => p.Item1, StringComparer.Ordinal)];
+        return [.. held.Select(v => (v.Indicator, v.Period))];
     }
 
     private static IndicatorCatalog Catalog(int rsiPeriod) =>

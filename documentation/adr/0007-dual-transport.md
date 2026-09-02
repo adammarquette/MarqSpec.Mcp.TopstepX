@@ -401,7 +401,7 @@ answers `401` with `WWW-Authenticate: Bearer`, exactly as the 2026-08-22 update 
 confidentiality on the wire; the token is authorisation, and neither substitutes for the other. The **loopback
 bind is untouched** — the resolved mapping is still `host_ip: 127.0.0.1` — and TLS is not a licence to widen
 it: the default token's tolerability still rests on loopback, exactly as gh#415 recorded. The stdio path is
-untouched. And the composed Postgres is now bound loopback too, closed by gh#421 below rather than left open.
+untouched. And the composed Postgres is still published the same way it always was, which is gh#421.
 
 ### One sentence above is superseded
 
@@ -424,10 +424,11 @@ nothing and no gate reads it.
 
 ## Update (2026-09-01) — the composed Postgres was the wall left standing
 
-Both updates above narrowed the MCP endpoint and left one sentence unfinished each time: *"the composed
-Postgres is still published the same way it always was, which is gh#421."* This is that card, filed as the
-blocking finding in PR #419's own review after that PR's ADR text claimed the exposure already had an owner
-when no such issue existed.
+Both updates above narrowed the MCP endpoint and each left the same exposure standing behind it, in different
+words. This is that card, filed as the blocking finding in PR #419's own review after that PR's ADR text
+claimed the exposure already had an owner when no such issue existed. **Which two sentences, and what they now
+mean, is stated precisely below** rather than paraphrased here — this is where the same failure gh#421 exists
+to fix would reappear if it were.
 
 `docker-compose.yml`'s Postgres `ports` entry was the identical bare `- "5432:5432"` shape 8080 used to carry,
 behind `POSTGRES_PASSWORD` defaulting to `changeme-local` in this **public** repository. The asymmetry with
@@ -463,12 +464,17 @@ say so in those terms now, and name the asymmetry above rather than assume the b
 unexamined a second time.
 
 **Reachability was measured, not assumed**, because the standing complaint against this stack is a claim that
-did not survive contact with the thing it described. `dotnet ef database update`, run from the host against a
-Postgres container published exactly as compose now publishes it (`127.0.0.1:<port>:5432`, no `.env`,
-overriding only `ConnectionStrings__Default` to point at the loopback address), applied all five pending
-migrations cleanly. The documented `docker compose -f docker-compose.yml -f docker-compose.dev.yml run --rm
-sdk dotnet --version` loop was run against this change with no `.env` present and answered `10.0.302` — the
-loop a sibling PR broke without anyone noticing until review.
+did not survive contact with the thing it described. **The composed `postgres` service itself was not
+started for this**: the host's real `5432` was already held by an unrelated container from a different,
+already-running checkout of this same stack, predating this fix and still bound `0.0.0.0`/`[::]` — a live
+instance of the very defect this update closes, left running rather than touched, since stopping another
+checkout's stack was outside this card. So `dotnet ef database update` was run from the host against a
+Postgres container published on `127.0.0.1:5433:5432` — the identical publish mechanism `docker compose`
+resolves for `5432` above, differing only in the host number Docker had free — with no `.env`, overriding
+only `ConnectionStrings__Default` to point at that loopback address. It applied all five pending migrations
+cleanly. The documented `docker compose -f docker-compose.yml -f docker-compose.dev.yml run --rm sdk dotnet
+--version` loop, which does not touch `5432` at all, was run directly against this change with no `.env`
+present and answered `10.0.302` — the loop a sibling PR broke without anyone noticing until review.
 
 **`docker-compose.dev.yml` cannot reintroduce the open bind.** It declares no `ports` for `postgres` at all —
 the `sdk` service it adds has none of its own network exposure — so no documented `-f … -f …` combination
@@ -479,6 +485,24 @@ The Testcontainers integration tier is unaffected, confirmed rather than assumed
 Testcontainers starts its own Postgres and binds whatever the daemon hands it.
 
 **What this does not change.** The bearer token, the TLS bind on 8443 and the certificate are untouched —
-settled by gh#415 and gh#416. The schema, the healthcheck and the volume are untouched. And the sentence this
-record now corrects is the last of the three deferrals gh#415's and gh#416's updates each left pointing here;
-none of ADR-0007's open exposures point forward any longer.
+settled by gh#415 and gh#416. The schema, the healthcheck and the volume are untouched.
+
+### Two sentences above are superseded
+
+The 2026-09-01 update titled *"not exposed by default was not true of the composed stack"* reads, in its own
+**"What this does not do"** paragraph:
+
+> And it leaves the composed Postgres published the same way it always was: the same one-line shape on
+> `- "5432:5432"`, carrying the same market data behind another public default. That is gh#421's card,
+> deliberately not folded in here.
+
+And the 2026-09-01 update titled *"the composed endpoint is TLS-only, behind a local CA"* reads, in its own
+**"What this does not change"** paragraph:
+
+> And the composed Postgres is still published the same way it always was, which is gh#421.
+
+Both are false as of this update. The port now binds `127.0.0.1` explicitly, the resolved config is pasted
+above, and gh#421 is closed rather than deferred. Neither sentence is edited in place, for the same reason the
+2026-08-30 update's `ASPNETCORE_HTTP_PORTS` parenthesis was not: a reader who lands on either one first is
+better served by a sentence that is visibly wrong and points here than by a silent rewrite that erases the
+history of what this stack actually exposed, for how long.

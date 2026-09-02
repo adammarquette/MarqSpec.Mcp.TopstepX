@@ -509,7 +509,7 @@ by mutation, not as a description of the workflow files.**
 |---|---|---|---|---|
 | `build & unit tests` | required | required | required | `ci.yml` |
 | `integration tests` | required | required | required | `ci.yml` |
-| `docs` | required | required | required | `ci.yml` — six steps since gh#293, see below |
+| `docs` | required | required | required | `ci.yml` — seven steps since gh#438, see below |
 | `coverage` | required | required | required | `ci.yml` |
 | `no-order-path` | required | required | required | `ci.yml` |
 | `paced-paging` | required | required | required | `ci.yml` — added by gh#72 |
@@ -548,12 +548,15 @@ for all ten contexts required on that rung, `image` included, and `false` for bo
 at `main`; the rulesets are what stop that refusal depending on one job. A single content gate that stops one
 rung short is also a question every future reader has to re-derive.
 
-### `docs` is six steps
+### `docs` is seven steps
 
-**`docs` is one status context running six steps, so a red `docs` is not necessarily a broken link**
-(gh#160, gh#182, gh#293) — the required-context count is unchanged, and the row above says so. **Update that row and
+**`docs` is one status context running seven steps, so a red `docs` is not necessarily a broken link**
+(gh#160, gh#182, gh#293, gh#438) — the required-context count is unchanged, and the row above says so. **Update that row and
 this count together whenever a step is added**; the count is the only thing telling a reader that a red
-`docs` has six possible causes. Beside [`check-doc-links.sh`](../../scripts/check-doc-links.sh) and
+`docs` has seven possible causes. **And one of the seven is not a documentation check at all** —
+[`claim-selftest.sh`](../../scripts/claim-selftest.sh) rides here because `docs` is already required on all
+three rungs, the same argument as everything else in this job; read a red `docs` as "one of seven scripts
+said no", never as "a link broke". Beside [`check-doc-links.sh`](../../scripts/check-doc-links.sh) and
 [`check-doc-links-selftest.sh`](../../scripts/check-doc-links-selftest.sh) it runs:
 
 - [`check-doc-sizes.sh`](../../scripts/check-doc-sizes.sh), which re-measures every row of every `~tok` table
@@ -619,6 +622,29 @@ this count together whenever a step is added**; the count is the only thing tell
   the self-test assembles its dangling fixtures at run time rather than spelling them. The price, stated
   because it is real: no tracked file may *spell* an id that does not resolve here, so writing about a
   sibling repository's id means describing it instead.
+- [`claim-selftest.sh`](../../scripts/claim-selftest.sh) (gh#438), which guards
+  [`claim.sh`](../../scripts/claim.sh) — a **local** tool, not a merge gate, and the only step here that says
+  nothing about the commit under test. It earns the slot because `claim.sh` decides whether two sessions
+  share a worktree, and it had no self-test at all while the five above did. Three things worth carrying:
+  - **A liveness signal has to be written by the thing whose liveness it claims to measure.** `claim.sh`
+    aged a claim by the committer date of the commit its branch points at — but a claim is pushed *empty*,
+    so that commit is `origin/develop`'s. The number measured **how long `develop` had been quiet**. On
+    2026-09-02 it called two live claims *"presumed abandoned and fair game"* off `298bf47`, a merge commit
+    neither session wrote. A claim could therefore be **born stale**: pushed while `develop` was quiet four
+    hours, it read as abandoned the second it was created. **Ask whose act writes the number**, not only
+    whether the number is fresh.
+  - **A threshold cannot fix a signal nobody is obliged to write, and moving it only moves the number.** The
+    window stayed at 4 hours. What changed is that quiet stopped being a *verdict*: an unmoved ref is an
+    absence of evidence, so the takeover now requires a `TAKEOVER-ANNOUNCED: <branch>` comment the script
+    **reads**, a notice hour, and a ref that did not move in between. Root `AGENTS.md` had required
+    announcing all along and nothing enforced it — the fix is to charge the obligation to the party that
+    wants the verdict, because the working session has no incentive to comply. **What still defeats it is
+    stated in the script rather than papered over**: a live session that never reads its issue still loses
+    its claim, and only a cross-machine registry closes that (a new card and an ADR, out of scope on gh#438).
+  - **It is hermetic, and slow where processes are expensive.** One disposable repository under `mktemp -d`
+    and a fake `gh` on `PATH` that exits 97 on any call shape `claim.sh` does not make, so no token and no
+    network. On the runner it is seconds; on a Windows checkout it measured **5m49s**, almost all of it
+    process spawning — run it alone there, the way `check-doc-links.sh` already has to be.
 
 All of it rides in the one job **because `docs` is already required on all three rungs**, so none of it
 needed a ruleset write and [the table above](#what-is-required-and-what-only-reports) does not change — the

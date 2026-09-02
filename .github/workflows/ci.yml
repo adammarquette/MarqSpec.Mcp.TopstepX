@@ -108,6 +108,22 @@ jobs:
       - name: Prove the requirement-id gate can still fail
         run: ./scripts/check-requirement-ids-selftest.sh
 
+      # gh#438. `scripts/claim.sh` is the tool every agent uses to claim work, and it had no self-test while
+      # the five gates above did. It told a coordinator that two LIVE claims were "presumed abandoned and
+      # fair game" -- off `298bf47`, a commit on `develop` that neither session wrote, because a claim is
+      # pushed EMPTY and its tip is therefore the base branch's. Nothing in the repository could have caught
+      # that, and what it licenses is gh#88: two sessions in one worktree, one commit, tests green.
+      #
+      # It rides in `docs` for the same reason everything else here does: `docs` is already required on all
+      # three rungs, so this needs no ruleset write, and a new context nobody adds is a check that only ever
+      # reports (gh#26). It is not a documentation check, and this comment is the only thing saying so.
+      #
+      # HERMETIC: one disposable repository under `mktemp -d` with a fake `gh` on PATH, so it makes no API
+      # call and needs no token. Ordered last because it guards a local tool rather than a property of the
+      # commit under test — a real doc fault should be reported first.
+      - name: Prove the claim script can still tell a live claim from a dead one
+        run: ./scripts/claim-selftest.sh
+
   # ADR-0002's enforcement. Its own job rather than a step inside build-test, so a failure reads as "the
   # read-only boundary was crossed" rather than as a build break -- and so it is a required check in its own
   # right, which a step buried in another job cannot be.

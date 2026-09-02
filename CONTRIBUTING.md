@@ -140,12 +140,23 @@ scripts/claim.sh <issue-id>          # check + worktree + branch + push, in one 
 scripts/claim.sh <issue-id> --check  # report only
 ```
 
+**Read its exit status, not its prose.** `0` means proceed — free, or a takeover permitted; `3` means it
+declined; `1` means a read that decides the verdict could not be made. It prints exactly one line beginning
+`VERDICT: `, and that line is the answer (gh#438).
+
 **Match on `/<id>_`, not `_<id>_`.** The separator before the id is a slash. A pattern anchored on an underscore
 matches nothing and reports every claimed issue as free — worse than no check, because it fails in the direction
 that permits the collision.
 
-A claim whose branch tip has not moved for **4 hours** is presumed abandoned and is fair game. **Before taking
-one over, say so on the issue**, naming the branch.
+A claim quiet for **4 hours** is a *question*, not an abandonment (gh#438). Nothing obliges a session to push,
+so quiet is an absence of evidence — and an empty claim points at `origin/develop`, so what the old rule aged
+was **develop's** last merge rather than the claim. Two live claims were called *"presumed abandoned and fair
+game"* on that reading, on 2026-09-02, while both worktrees held uncommitted work.
+
+**Announcing is what converts quiet into a takeover, and `claim.sh` now reads for it.** Post
+`TAKEOVER-ANNOUNCED: <branch>` on the issue, wait an hour, and re-run — **any push to that branch inside the
+hour defends the claim**. The token is required: a comment merely *naming* the branch is what a claimant posts
+about its own work. What still defeats this: a live session that never reads its issue. Push as you go.
 
 ### This repo is one half of a two-repo card
 

@@ -123,10 +123,16 @@ take it. Two kinds, which clear differently — so say which:
 ### 4. An agent stalls or dies mid-work
 
 A card in `In Progress` looks identical whether the work is live or the session died. **The column is not the
-signal — the branch tip is**, and the threshold is already set: root [`AGENTS.md`](../AGENTS.md) makes a tip
-unmoved for **4 hours** fair game, and `scripts/claim.sh` reads exactly that. Do not invent a second threshold
-for the board. **Say so on the issue first**, naming the branch — announcing is what makes a wrong call
-recoverable.
+signal — the claim ref's own last movement is**, and the threshold is already set: root
+[`AGENTS.md`](../AGENTS.md) makes a claim quiet for **4 hours** a *question*, and `scripts/claim.sh` reads
+exactly that. Do not invent a second threshold for the board.
+
+**Quiet is not abandoned, and the script no longer says it is** (gh#438). Nothing obliges a session to push,
+so a tip that has not moved is an absence of evidence — and until gh#438 the number being read was not even
+the claim's: an empty claim points at `origin/develop`, so its "tip age" was how long **develop** had been
+quiet. Two live claims were called *"presumed abandoned and fair game"* on that reading. **Announcing is now
+what converts quiet into a takeover, and the script enforces it**: post `TAKEOVER-ANNOUNCED: <branch>` on the
+issue, wait the notice hour, and re-run — a branch that moved in between keeps its claim.
 
 ### 5. Two reviewers, split verdict
 

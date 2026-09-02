@@ -1,3 +1,4 @@
+using System.Data;
 using FluentAssertions;
 using MarqSpec.Mcp.TopstepX.Configuration;
 using MarqSpec.Mcp.TopstepX.Data;
@@ -8,11 +9,14 @@ using MarqSpec.Mcp.TopstepX.MarketData;
 using MarqSpec.Mcp.TopstepX.Tests.MarketData;
 using MarqSpec.Mcp.TopstepX.Tools;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Storage;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using Microsoft.Extensions.Time.Testing;
 
-namespace MarqSpec.Mcp.TopstepX.Tests.Tools;
+namespace MarqSpec.Mcp.TopstepX.IntegrationTests;
+
+
 
 /// <summary>
 /// Where each number in a snapshot's <c>indicators</c> map actually came from (gh#286).
@@ -41,8 +45,19 @@ namespace MarqSpec.Mcp.TopstepX.Tests.Tools;
 /// serializer's ignore condition does not reach inside a dictionary and the catalogue tells callers to test
 /// exactly that. <c>PayloadNullWireShapeTests</c> pins that half against the real options.
 /// </para>
+/// <para>
+/// <b>This tier, because the fixture is a write.</b> These cases used to run in the unit tier against
+/// <c>Microsoft.EntityFrameworkCore.InMemory</c>, which had no <c>ON CONFLICT</c> and was therefore served
+/// by a second implementation of every write, kept in product code for the tests alone. Those stand-ins are
+/// gone (gh#387), so seeding the nine bars and projecting the indicators over them now runs the real
+/// statements — <c>UpsertBarsSql</c>, <c>RecordCoverageSql</c> and <c>UpsertValuesSql</c> — and only
+/// Postgres executes those. The claim here is about which stored row an as-of read lands on, so it is a
+/// claim about rows the store actually holds, and there is now one way to put them there.
+/// </para>
 /// </remarks>
-public sealed class SnapshotIndicatorProvenanceTests : IDisposable
+/// <param name="fixture">The shared container.</param>
+[Collection(SeriesStoreCollection.Name)]
+public sealed class SnapshotIndicatorProvenanceTests(SeriesStoreFixture fixture) : IAsyncLifetime
 {
     private const string Expiring = "CON.F.US.EP.U26";
     private const string NewFront = "CON.F.US.EP.Z26";
@@ -81,17 +96,18 @@ public sealed class SnapshotIndicatorProvenanceTests : IDisposable
     /// </remarks>
     private const decimal NewFrontVwap = 140m;
 
-    private readonly TopstepXDbContext _database;
+    private readonly SeriesStoreFixture _fixture = fixture;
+    private readonly TopstepXDbContext _database = fixture.CreateContext();
 
-    public SnapshotIndicatorProvenanceTests() =>
-        _database = new TopstepXDbContext(
-            new DbContextOptionsBuilder<TopstepXDbContext>()
-                .UseInMemoryDatabase(Guid.NewGuid().ToString())
-                .ConfigureWarnings(w => w.Ignore(Microsoft.EntityFrameworkCore.Diagnostics
-                    .InMemoryEventId.TransactionIgnoredWarning))
-                .Options);
+    /// <inheritdoc />
+    public Task InitializeAsync() => _fixture.ResetAsync();
 
-    public void Dispose() => _database.Dispose();
+    /// <inheritdoc />
+    public Task DisposeAsync()
+    {
+        _database.Dispose();
+        return Task.CompletedTask;
+    }
 
     private static DateTimeOffset SessionStart =>
         MarketClock.FromMarket(new DateOnly(2026, 8, 18), new TimeOnly(9, 0)).ToUniversalTime();
@@ -383,8 +399,20 @@ public sealed class SnapshotIndicatorProvenanceTests : IDisposable
         CountingGateway gateway = new([]);
 
         IndicatorProjector projector = new(_database, catalog, NullLogger<IndicatorProjector>.Instance);
-        await projector.ProjectAsync("test", new InstrumentId("ES"), 5, SessionStart, CancellationToken.None);
-        await _database.SaveChangesAsync();
+
+        // WRAPPED IN THE TRANSACTION PRODUCTION USES (gh#387). The projector refuses to run outside one --
+        // it writes its values with a statement the store runs as it is sent, while its removals wait for
+        // SaveChanges -- and that guard used to be skipped for the in-memory provider, so this seeding helper
+        // had never once run the shape the server runs. RepeatableRead is restated by hand because
+        // SeriesUnitOfWork, which states it once for production, is internal.
+        await using (IDbContextTransaction seed = await _database.Database
+            .BeginTransactionAsync(IsolationLevel.RepeatableRead, CancellationToken.None))
+        {
+            await projector.ProjectAsync(
+                "test", new InstrumentId("ES"), 5, SessionStart, CancellationToken.None);
+            await _database.SaveChangesAsync();
+            await seed.CommitAsync(CancellationToken.None);
+        }
 
         BarCacheService cache = new(
             _database, gateway, calendar, projector, clock, NullLogger<BarCacheService>.Instance);

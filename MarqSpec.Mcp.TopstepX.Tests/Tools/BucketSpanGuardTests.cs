@@ -43,6 +43,14 @@ namespace MarqSpec.Mcp.TopstepX.Tests.Tools;
 /// configuration alone would have closed one of the two reproductions below and left the other exactly where
 /// it was.
 /// </para>
+/// <para>
+/// <b>Half of the acceptance criterion is not in this file.</b> Everything here refuses, and a refusal never
+/// reaches a store — which is what lets these keep running on the in-memory provider with no container. The
+/// case that proves the guard does not <i>over</i>-reject has to serve an ordinary request instead, and
+/// serving one now runs the real <c>ON CONFLICT … DO UPDATE</c> bar and coverage writes, so it moved down to
+/// <c>MarqSpec.Mcp.TopstepX.IntegrationTests.BucketSpanGuardServedReadTests</c> (gh#387). Read the two
+/// together: a guard proven only to refuse is a guard nobody has checked for over-reach.
+/// </para>
 /// </remarks>
 public sealed class BucketSpanGuardTests : IDisposable
 {
@@ -257,17 +265,6 @@ public sealed class BucketSpanGuardTests : IDisposable
             .WithMessage("*" + (LookbackAtTheCap + 1).ToString(CultureInfo.InvariantCulture) + "*")
             .WithMessage("*250004*")
             .WithMessage("*250000*");
-    }
-
-    [Fact]
-    public async Task AnOrdinaryReadStillAnswers()
-    {
-        // The other half of the acceptance criterion: nothing changes for a request that was always fine.
-        BarTools tools = WithRowCap(5_000);
-
-        ToolPayloads.BarSeries series = await tools.GetLatestBars("ES", 5, 10, CancellationToken.None);
-
-        series.Bars.Should().HaveCount(10, "forty five-minute bars were seeded and ten were asked for");
     }
 
     // ── The drift guard ──────────────────────────────────────────────────────────────────────────────

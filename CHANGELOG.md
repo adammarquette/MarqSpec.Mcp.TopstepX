@@ -27,6 +27,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Every write path has one implementation again.** `BarCacheService`, `IndicatorProjector` and
+  `FootprintProjector` each carried a second, in-memory version of their write — roughly 200 lines of shipped
+  code no production process ever executed — kept only so the unit suite's `Microsoft.EntityFrameworkCore.InMemory`
+  provider had something to run. The consequence reached callers: the two paths disagreed about what a write
+  count *meant*, one returning rows attempted and the other rows affected, and that number is reported as
+  `fetchedBuckets` on `get_bars`. **It is now, unambiguously, the count the store reports.** The four
+  `ON CONFLICT … DO UPDATE` statements and `SeriesUnitOfWork`'s `RepeatableRead` transaction are no longer
+  conditional on the provider, and the suites that exercise them run against a real Postgres. No statement's
+  behaviour changed (gh#387).
 - `get_market_snapshot` reads its whole indicator map for a resolution in one query instead of eleven
   `get_indicator_at` calls, each of which had gone back to `Bars` for its bucket's contract. A default call
   cost **60** database statements, **44** of them that block; it now costs **18**, with the block down to one

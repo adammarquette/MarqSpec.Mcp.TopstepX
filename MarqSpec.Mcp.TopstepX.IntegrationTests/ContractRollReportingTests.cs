@@ -1,3 +1,4 @@
+using System.Data;
 using FluentAssertions;
 using MarqSpec.Mcp.TopstepX.Configuration;
 using MarqSpec.Mcp.TopstepX.Data;
@@ -8,36 +9,53 @@ using MarqSpec.Mcp.TopstepX.MarketData;
 using MarqSpec.Mcp.TopstepX.Tests.MarketData;
 using MarqSpec.Mcp.TopstepX.Tools;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Storage;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using Microsoft.Extensions.Time.Testing;
 
-namespace MarqSpec.Mcp.TopstepX.Tests.Tools;
+namespace MarqSpec.Mcp.TopstepX.IntegrationTests;
+
+
 
 /// <summary>
 /// What a caller is told when the window it asked for contains a contract roll (gh#42).
 /// </summary>
 /// <remarks>
+/// <para>
 /// The rule the whole surface follows: <b>bars are observations and are returned with the seam named; nothing
 /// derived from bars is computed across one.</b> Both halves are visible in the payload, because an agent that
 /// cannot see the roll will read a 40-point bookkeeping gap as a market event and act on it.
+/// </para>
+/// <para>
+/// <b>This tier, because seeding the store is now a write.</b> These cases used to run in the unit tier
+/// against <c>Microsoft.EntityFrameworkCore.InMemory</c>, which served them through a second implementation
+/// of every write that existed only for that provider. Those stand-ins are gone (gh#387), so filling the
+/// store the tools read means executing the real statements — <c>UpsertBarsSql</c>, <c>RecordCoverageSql</c>
+/// and the projection's <c>UpsertValuesSql</c>, each an <c>ON CONFLICT … DO UPDATE</c> that Postgres alone
+/// understands. A roll is something the store holds rather than something the tools compute, so the answers
+/// below are only as true as the rows underneath them, and those rows now have exactly one way in.
+/// </para>
 /// </remarks>
-public sealed class ContractRollReportingTests : IDisposable
+/// <param name="fixture">The shared container.</param>
+[Collection(SeriesStoreCollection.Name)]
+public sealed class ContractRollReportingTests(SeriesStoreFixture fixture) : IAsyncLifetime
 {
     private const string Expiring = "CON.F.US.EP.U26";
     private const string NewFront = "CON.F.US.EP.Z26";
 
-    private readonly TopstepXDbContext _database;
+    private readonly SeriesStoreFixture _fixture = fixture;
+    private readonly TopstepXDbContext _database = fixture.CreateContext();
 
-    public ContractRollReportingTests() =>
-        _database = new TopstepXDbContext(
-            new DbContextOptionsBuilder<TopstepXDbContext>()
-                .UseInMemoryDatabase(Guid.NewGuid().ToString())
-                .ConfigureWarnings(w => w.Ignore(Microsoft.EntityFrameworkCore.Diagnostics
-                    .InMemoryEventId.TransactionIgnoredWarning))
-                .Options);
+    /// <inheritdoc />
+    public Task InitializeAsync() => _fixture.ResetAsync();
 
-    public void Dispose() => _database.Dispose();
+    /// <inheritdoc />
+    public Task DisposeAsync()
+    {
+        _database.Dispose();
+        return Task.CompletedTask;
+    }
 
     private static DateTimeOffset SessionStart =>
         MarketClock.FromMarket(new DateOnly(2026, 8, 18), new TimeOnly(9, 0)).ToUniversalTime();
@@ -383,8 +401,20 @@ public sealed class ContractRollReportingTests : IDisposable
         (_wrapped, _calendar, _catalog, _clock, _gateway) = (wrapped, calendar, catalog, clock, gateway);
 
         IndicatorProjector projector = new(_database, catalog, NullLogger<IndicatorProjector>.Instance);
-        await projector.ProjectAsync("test", new InstrumentId("ES"), 5, SessionStart, CancellationToken.None);
-        await _database.SaveChangesAsync();
+
+        // WRAPPED IN THE TRANSACTION PRODUCTION USES (gh#387). The projector refuses to run outside one --
+        // it writes its values with a statement the store runs as it is sent, while its removals wait for
+        // SaveChanges -- and that guard used to be skipped for the in-memory provider, so this seeding helper
+        // had never once run the shape the server runs. RepeatableRead is restated by hand because
+        // SeriesUnitOfWork, which states it once for production, is internal.
+        await using (IDbContextTransaction seed = await _database.Database
+            .BeginTransactionAsync(IsolationLevel.RepeatableRead, CancellationToken.None))
+        {
+            await projector.ProjectAsync(
+                "test", new InstrumentId("ES"), 5, SessionStart, CancellationToken.None);
+            await _database.SaveChangesAsync();
+            await seed.CommitAsync(CancellationToken.None);
+        }
 
         BarCacheService cache = new(
             _database, gateway, calendar, projector, clock, NullLogger<BarCacheService>.Instance);

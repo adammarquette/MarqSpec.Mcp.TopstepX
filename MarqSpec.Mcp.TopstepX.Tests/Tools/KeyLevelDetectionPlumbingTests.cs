@@ -40,6 +40,16 @@ namespace MarqSpec.Mcp.TopstepX.Tests.Tools;
 /// at all — the table that never held a row was dropped under gh#276 — so there is no key for one to fall
 /// out of.
 /// </para>
+/// <para>
+/// <b>One case is not here — see <c>KeyLevelDetectionStoreTests</c> in the integration project.</b> The
+/// coverage was not deleted, it moved tiers. Every case below either refuses at the tool boundary or reads
+/// levels off the seeded bars, so none of them reaches a write and the in-memory provider is still honest
+/// about them. The snapshot case — a configured lookback <c>get_market_snapshot</c>'s own fixed window
+/// cannot satisfy — composes the whole snapshot, which reads its indicators through
+/// <c>IndicatorCacheService</c>, and serving that read now <i>writes</i>: the second, in-memory-only
+/// implementation of the projection was deleted under gh#387, so the real <c>ON CONFLICT … DO UPDATE</c> is
+/// the only route left and it needs a real Postgres.
+/// </para>
 /// </remarks>
 public sealed class KeyLevelDetectionPlumbingTests : IDisposable
 {
@@ -403,29 +413,6 @@ public sealed class KeyLevelDetectionPlumbingTests : IDisposable
             11, "and the left edge alone does not say how many bars the window needed");
     }
 
-    [Fact]
-    public async Task AConfiguredLookbackTheSnapshotsFixedWindowCannotSatisfy_DoesNotBreakTheSnapshot()
-    {
-        // THE BLOCKING REVIEW FINDING. `get_market_snapshot` detects over a fixed `max(barCount, 200)` and
-        // exposes NEITHER `pivotLookback` NOR `lookbackBars`. A configured lookback of 100 is legal on its
-        // own range -- `[Range(1, 1_000)]`, and options validation passes it -- so bounding the lookback
-        // against the requested window made the server boot clean and then fail EVERY snapshot call, with
-        // advice to change two arguments this tool does not have.
-        //
-        // A refusal a caller cannot act on is an outage, not a refusal. So the snapshot answers, and the
-        // level set explains itself.
-        (_, SnapshotTools snapshot) = Compose(Detection(pivotLookback: 100));
-
-        ToolPayloads.MarketSnapshot result =
-            await snapshot.GetMarketSnapshot("ES", [5], 100, CancellationToken.None);
-
-        ToolPayloads.LevelSet levels = result.PerResolution.Should().ContainSingle().Subject.Levels;
-
-        levels.Levels.Should().BeEmpty();
-        levels.DetectedOverBars.Should().Be(Bars);
-        levels.Detection.PivotLookback.Should().Be(100);
-    }
-
     // ── The answer reports the detection it actually ran under ───────────────────────────────────
 
     [Fact]
@@ -599,7 +586,13 @@ public sealed class KeyLevelDetectionPlumbingTests : IDisposable
     /// The snapshot is composed here rather than in its own fixture because it is the tool that reaches
     /// <c>GetKeyLevels</c> with a window <i>it</i> chose — a fixed <c>max(barCount, 200)</c> — and with
     /// neither detection argument. A bound on the requested window is invisible from
-    /// <c>get_key_levels</c>'s own tests and fatal here, which is how the earlier revision got through.
+    /// <c>get_key_levels</c>'s own tests and fatal there, which is how the earlier revision got through.
+    /// <para>
+    /// <b>The case that drives it is in <c>KeyLevelDetectionStoreTests</c> now (gh#387)</b> — the snapshot
+    /// reads its indicators through <c>IndicatorCacheService</c>, and serving that read writes, which the
+    /// in-memory provider can no longer be asked to do. The composition is kept whole so the two tiers build
+    /// the same object graph out of the same builder rather than two that can drift.
+    /// </para>
     /// </remarks>
     private (KeyLevelTools KeyLevels, SnapshotTools Snapshot) Compose(KeyLevelDetectionOptions detection)
     {

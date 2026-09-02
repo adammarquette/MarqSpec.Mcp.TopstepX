@@ -1,3 +1,4 @@
+using System.Data;
 using FluentAssertions;
 using MarqSpec.Mcp.TopstepX.Configuration;
 using MarqSpec.Mcp.TopstepX.Data;
@@ -5,19 +6,32 @@ using MarqSpec.Mcp.TopstepX.Data.Entities;
 using MarqSpec.Mcp.TopstepX.Domain;
 using MarqSpec.Mcp.TopstepX.Domain.MarketData;
 using MarqSpec.Mcp.TopstepX.MarketData;
+using MarqSpec.Mcp.TopstepX.Tests.MarketData;
 using MarqSpec.Mcp.TopstepX.Tools;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Storage;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using Microsoft.Extensions.Time.Testing;
 
-namespace MarqSpec.Mcp.TopstepX.Tests.MarketData;
+namespace MarqSpec.Mcp.TopstepX.IntegrationTests;
+
+
 
 /// <summary>
 /// A read of an indicator the store holds no values for projects it from the bars already cached, without
 /// an operator and without the venue (gh#246).
 /// </summary>
 /// <remarks>
+/// <para>
+/// <b>This tier, and only this tier.</b> Every case below fills the store before it reads it, and a fill is a
+/// write path. Proving any of these claims therefore means executing the real statements — the bar upsert's
+/// <c>ON CONFLICT … DO UPDATE</c> (<c>UpsertBarsSql</c>), the coverage ledger's (<c>RecordCoverageSql</c>)
+/// and the projection's value write (<c>UpsertValuesSql</c>) — under the one <c>RepeatableRead</c>
+/// transaction <see cref="SeriesUnitOfWork"/> now always opens. The in-memory stand-ins that used to serve
+/// these tests in the unit tier were a second implementation of every write, executed by no production
+/// process, and they were deleted (gh#387). What is left runs against a real Postgres or it does not run.
+/// </para>
 /// <para>
 /// <b>What "an indicator was added to the catalogue" looks like from the store.</b> The membership of
 /// <see cref="IndicatorCatalog"/> is fixed at compile time and only the <i>periods</i> are configurable, so
@@ -33,23 +47,24 @@ namespace MarqSpec.Mcp.TopstepX.Tests.MarketData;
 /// makes. The counter assertions below are the second, weaker check; the constructor is the first.
 /// </para>
 /// </remarks>
-public sealed class IndicatorReadProjectionTests : IDisposable
+[Collection(SeriesStoreCollection.Name)]
+public sealed class IndicatorReadProjectionTests : IAsyncLifetime
 {
     private const int Resolution = 5;
     private const int SeededBars = 40;
 
     private static readonly InstrumentId _es = new("ES");
 
+    private readonly SeriesStoreFixture _fixture;
     private readonly TopstepXDbContext _database;
     private readonly CountingGateway _gateway;
     private readonly FakeTimeProvider _clock;
 
-    public IndicatorReadProjectionTests()
+    /// <param name="fixture">The shared container.</param>
+    public IndicatorReadProjectionTests(SeriesStoreFixture fixture)
     {
-        _database = new TopstepXDbContext(
-            new DbContextOptionsBuilder<TopstepXDbContext>()
-                .UseInMemoryDatabase(Guid.NewGuid().ToString())
-                .Options);
+        _fixture = fixture;
+        _database = fixture.CreateContext();
 
         _gateway = new CountingGateway(Bars(0, SeededBars));
 
@@ -57,7 +72,15 @@ public sealed class IndicatorReadProjectionTests : IDisposable
         _clock = new FakeTimeProvider(Bucket(SeededBars).AddMinutes(Resolution));
     }
 
-    public void Dispose() => _database.Dispose();
+    /// <inheritdoc />
+    public Task InitializeAsync() => _fixture.ResetAsync();
+
+    /// <inheritdoc />
+    public Task DisposeAsync()
+    {
+        _database.Dispose();
+        return Task.CompletedTask;
+    }
 
     /// <summary>A Tuesday mid-session, so every bucket is one the venue owed us.</summary>
     private static DateTimeOffset SessionStart =>
@@ -139,9 +162,18 @@ public sealed class IndicatorReadProjectionTests : IDisposable
         ToolPayloads.IndicatorSeries fromRead = await tools.GetIndicators(
             "ES", Resolution, "rsi", Bucket(0), Bucket(SeededBars), CancellationToken.None);
 
+        // WRAPPED IN THE TRANSACTION PRODUCTION USES (gh#387). The projector refuses to run outside one --
+        // it writes its values with a statement the store runs as it is sent, while its removals wait for
+        // SaveChanges -- and that guard used to be skipped for the in-memory provider, so this seeding helper
+        // had never once run the shape the server runs. RepeatableRead is restated by hand because
+        // SeriesUnitOfWork, which states it once for production, is internal.
+        await using IDbContextTransaction replay = await _database.Database
+            .BeginTransactionAsync(IsolationLevel.RepeatableRead, CancellationToken.None);
+
         int changed = await new IndicatorProjector(_database, wider, NullLogger<IndicatorProjector>.Instance)
             .ProjectAsync("test", _es, Resolution, _clock.GetUtcNow(), CancellationToken.None);
         await _database.SaveChangesAsync();
+        await replay.CommitAsync(CancellationToken.None);
 
         changed.Should().Be(0, "a replay over the same bars reproduces the same numbers, so it rewrites none");
         fromRead.Values.Should().NotBeEmpty("otherwise the empty diff above would prove nothing");

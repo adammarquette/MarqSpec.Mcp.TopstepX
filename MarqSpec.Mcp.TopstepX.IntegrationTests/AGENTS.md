@@ -23,6 +23,16 @@ What genuinely needs a real database:
   Place the other transaction with a `DbCommandInterceptor` rather than with threads: two units of work merely
   started at the same time hit the ordering by luck, and a concurrency test nobody has seen red is worth
   nothing. **Assert the interceptor actually fired** — one that never did passes by exercising nothing.
+- **Any write path** (gh#387). Every write is one `ON CONFLICT … DO UPDATE` statement, and the second
+  implementation that used to let the in-memory provider stand in for it is deleted — so a test that fills,
+  projects or records coverage runs here, on [`SeriesStoreFixture`](SeriesStoreFixture.cs), or nowhere.
+
+**The line: a test that reaches a store belongs here; one that refuses before reaching a store stays in
+`…​.Tests`.** That is why the guard suites are *split* rather than moved — `ResolutionGuardTests` keeps its
+eighteen rejections, and its one "a valid one still answers" case lives here as
+`ResolutionGuardServedReadTests`. Splitting is the price of keeping the cheap tier cheap, and the measurement
+says pay it: a container costs **~8 s to start and migrate** (image pulled) against a unit tier that runs
+1,071 tests in **~3 s**.
 
 ## Independence
 
@@ -51,6 +61,16 @@ any environment is not a test, it is a comment that costs a CI minute.
   production proves something about a database nobody deploys.
 - One container per collection, not per test. Startup dominates otherwise.
 - Let the container pick its port. A fixed port turns two parallel runs into a confusing bind failure.
+- **Two fixtures, differing in what they promise about the rows.** [`SchemaFixture`](SchemaFixture.cs) shares
+  one database and never empties it — those claims are about the schema, not its contents.
+  [`SeriesStoreFixture`](SeriesStoreFixture.cs) empties every table between tests, because the suites gh#387
+  moved down each assume a store nobody else has written to. Its table list is read off the EF model, never
+  written down: a hand-maintained list goes stale *silently*, staying green while one table leaks rows into
+  the next test.
+- **Seed through the tracker and you will assert against the tracker.** The writes are raw SQL the change
+  tracker never sees, so a row seeded with `Add`/`SaveChanges` and then re-read from the same context comes
+  back as the *stale seeded instance*, not the row the statement wrote. gh#387 found three tests that had
+  been passing on exactly that. Clear the tracker after seeding, or read back through a second context.
 
 ## Reading a failure
 

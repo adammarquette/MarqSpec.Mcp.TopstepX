@@ -78,9 +78,7 @@ public sealed class FootprintProjector(
                 "A bar size must be positive.");
         }
 
-        bool relational = _database.Database.IsRelational();
-
-        if (relational && _database.Database.CurrentTransaction is null)
+        if (_database.Database.CurrentTransaction is null)
         {
             throw new InvalidOperationException(
                 "A footprint projection pass writes its cells with one statement the store runs as it is "
@@ -104,7 +102,7 @@ public sealed class FootprintProjector(
                 && c.ResolutionMinutes == resolutionMinutes);
 
         Dictionary<(DateTimeOffset Bucket, decimal Price), FootprintCellRecord> existing =
-            await (relational ? cells.AsNoTracking() : cells)
+            await cells.AsNoTracking()
                 .ToDictionaryAsync(c => (c.BucketStart, c.Price), cancellationToken)
                 .ConfigureAwait(false);
 
@@ -118,11 +116,8 @@ public sealed class FootprintProjector(
 
         int written = pending.Count == 0
             ? 0
-            : relational
-                ? await WriteInStoreAsync(
-                    venue, instrument, resolutionMinutes, pending, now, cancellationToken)
-                    .ConfigureAwait(false)
-                : WriteInMemory(venue, instrument, resolutionMinutes, pending, existing, now);
+            : await WriteAsync(venue, instrument, resolutionMinutes, pending, now, cancellationToken)
+                .ConfigureAwait(false);
 
         int removed = await ReconcileAsync(
             venue, instrument, resolutionMinutes, stored.Count, existing, produced, cancellationToken)
@@ -363,7 +358,18 @@ public sealed class FootprintProjector(
         long BuyVolume,
         long SellVolume);
 
-    private async Task<int> WriteInStoreAsync(
+    /// <summary>Writes the cells this pass found the store does not already hold.</summary>
+    /// <param name="venue">The venue.</param>
+    /// <param name="instrument">The instrument.</param>
+    /// <param name="resolutionMinutes">The bar size in minutes.</param>
+    /// <param name="pending">The cells to write.</param>
+    /// <param name="now">The instant this pass runs at.</param>
+    /// <param name="cancellationToken">The caller's cancellation token.</param>
+    /// <returns>
+    /// <b>How many rows the store reports it wrote or revised</b> — the statement's own row count, never
+    /// <c>pending.Count</c> (gh#387).
+    /// </returns>
+    private async Task<int> WriteAsync(
         string venue,
         InstrumentId instrument,
         int resolutionMinutes,
@@ -398,39 +404,5 @@ public sealed class FootprintProjector(
         return await _database.Database
             .ExecuteSqlRawAsync(UpsertCellsSql, parameters, cancellationToken)
             .ConfigureAwait(false);
-    }
-
-    private int WriteInMemory(
-        string venue,
-        InstrumentId instrument,
-        int resolutionMinutes,
-        List<PendingCell> pending,
-        Dictionary<(DateTimeOffset Bucket, decimal Price), FootprintCellRecord> existing,
-        DateTimeOffset now)
-    {
-        foreach (PendingCell cell in pending)
-        {
-            if (existing.TryGetValue((cell.BucketStart, cell.Price), out FootprintCellRecord? row))
-            {
-                row.BuyVolume = cell.BuyVolume;
-                row.SellVolume = cell.SellVolume;
-                row.RecordedAt = now;
-                continue;
-            }
-
-            _database.FootprintCells.Add(new FootprintCellRecord
-            {
-                Venue = venue,
-                Instrument = instrument.Symbol,
-                ResolutionMinutes = resolutionMinutes,
-                BucketStart = cell.BucketStart,
-                Price = cell.Price,
-                BuyVolume = cell.BuyVolume,
-                SellVolume = cell.SellVolume,
-                RecordedAt = now,
-            });
-        }
-
-        return pending.Count;
     }
 }

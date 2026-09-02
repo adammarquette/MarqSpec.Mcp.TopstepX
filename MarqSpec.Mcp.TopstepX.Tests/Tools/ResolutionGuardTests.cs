@@ -44,6 +44,14 @@ namespace MarqSpec.Mcp.TopstepX.Tests.Tools;
 /// <c>Blank</c> both throw and say what to add. A marker attribute would close it properly, and costs more
 /// than it buys while the surface is six methods.
 /// </para>
+/// <para>
+/// <b>The case that proves the guard does not over-reject is not in this file.</b> Everything here refuses,
+/// and a refusal never reaches a store — which is what lets these keep running on the in-memory provider with
+/// no container. Showing that a <i>valid</i> resolution still answers means serving the read, and serving one
+/// now runs the real <c>ON CONFLICT … DO UPDATE</c> bar and coverage writes, so it moved down to
+/// <c>MarqSpec.Mcp.TopstepX.IntegrationTests.ResolutionGuardServedReadTests</c> (gh#387). Read the two
+/// together: a guard proven only to refuse is a guard nobody has checked for over-reach.
+/// </para>
 /// </remarks>
 public sealed class ResolutionGuardTests : IDisposable
 {
@@ -290,17 +298,6 @@ public sealed class ResolutionGuardTests : IDisposable
 
         _gateway.BarRequests.Should().Be(0, "the set is judged before the first slice is read");
         _gateway.ContractRequests.Should().Be(0, "and before the contract behind it is resolved");
-    }
-
-    [Fact]
-    public async Task AValidResolution_StillAnswers()
-    {
-        // The other half of the acceptance criterion: nothing changes for a resolution that is fine.
-        ToolPayloads.BarSeries series =
-            await _bars.GetLatestBars("ES", 5, 10, CancellationToken.None);
-
-        series.ResolutionMinutes.Should().Be(5);
-        series.Bars.Should().HaveCount(10, "forty five-minute bars were seeded and ten were asked for");
     }
 
     // ── The other end of the same axis (gh#81) ───────────────────────────────────────────────────────

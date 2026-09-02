@@ -21,6 +21,18 @@ namespace MarqSpec.Mcp.TopstepX.Tests.MarketData;
 internal static class BackgroundServiceTestSupport
 {
     /// <summary>
+    /// Default bound for <see cref="AwaitCompletionAsync"/> when a caller does not supply its own.
+    /// </summary>
+    /// <remarks>
+    /// This races a real completion signal (<see cref="Task.WhenAny(Task[])"/> against
+    /// <c>executeTask</c>), so it is not a poll interval and is a different quantity from
+    /// <c>TradeTapeRecorderTests._multiSourcePollBudget</c>, which bounds spinning a predicate with
+    /// no single completion to await. Both happen to be 15s today; that is coincidence, not a
+    /// relationship, and each may change independently.
+    /// </remarks>
+    internal static readonly TimeSpan DefaultCompletionBudget = TimeSpan.FromSeconds(15);
+
+    /// <summary>
     /// Awaits <paramref name="executeTask"/> to reach any terminal state (completed, faulted, or
     /// canceled) without observing or rethrowing its exception — the same semantics as polling
     /// <c>ExecuteTask.IsCompleted</c>, just reacting to the real completion instead of a poll.
@@ -30,7 +42,7 @@ internal static class BackgroundServiceTestSupport
         TimeSpan? timeout = null,
         [CallerArgumentExpression(nameof(executeTask))] string? taskExpression = null)
     {
-        TimeSpan budget = timeout ?? TimeSpan.FromSeconds(15);
+        TimeSpan budget = timeout ?? DefaultCompletionBudget;
         Task winner = await Task.WhenAny(executeTask, Task.Delay(budget));
 
         winner.Should().BeSameAs(

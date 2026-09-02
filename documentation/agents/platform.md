@@ -34,49 +34,24 @@ The root contract's six apply here unchanged. Four land specifically on the pipe
   from `MarqSpec.Client.ProjectX`, the same route as the inherited coverage floor of `43`, and neither
   resolved here (gh#182). The floor `ci.yml` enforces is a measurement of this suite, ratcheted upward.
 - **A gate can also fail to be a gate by measuring the wrong population, and that failure is silent because
-  the gate still passes** (gh#431). `coverage` read the **unit** job's report alone. gh#387 then moved the
-  write-path suites into the integration tier and deleted the EF-InMemory second implementation the unit
-  tier needed to run them; the tests kept running, the lines stopped being counted, and the reported figure
-  fell from 64.4 % / 80.7 % to **56.0 % / 71.1 %** with nothing about what is tested changed. Above the 40 %
-  floor throughout, so nothing was red — a number that had simply stopped describing the repository, falling
-  in the direction that invites the conclusion *testing was reduced*. It now reads **both** tiers and gates
-  the **merged** figure, and the choice is argued beside `MINIMUM_LINE_COVERAGE` and at length in
-  [`check-coverage-floor.py`](../../scripts/check-coverage-floor.py)'s header rather than in a pull-request
-  body. Three things generalise past this gate; the rest, including the merge rules and cobertura's own
-  1905-against-1885 branch discrepancy, is in that header:
-  - **It moved out of the workflow into a tracked script**, because an inline `shell: python3 {0}` step can
-    only be run locally by *copying* it — measuring a copy and reporting it as the shipped text. gh#142 had
-    to extract `branch-policy.yml`'s stripper before its numbers meant anything. Same rule as the closing
-    line of this section.
-  - **Merging is a union, never an average of rates** — averaging two roots' `line-rate` double-counts every
-    line both tiers walk, and these two overlap on 2 285 of 8 127 instrumented lines. Cobertura's **branch**
-    detail cannot be unioned exactly at all, so that figure is a per-line maximum and a lower bound, stated
-    in the output. It costs nothing that decides anything: **the floor is on line coverage only.**
-  - **Coverage is an execution counter and cannot see what a covered line DOES.** This card was asked to
-    make a mutation of `UpsertBarsSql`'s `ON CONFLICT` visible in the reported figure. **It is not, and no
-    gate can make it so** — measured: `BarCacheService.cs` lines 522–542, the whole `private const string`,
-    are instrumented in *neither* tier, a compile-time constant carrying no sequence point. What catches
-    that mutation is the integration test going red (7 of 196). What the gate *can* see, and what gh#387
-    broke, is whether the lines that **execute** it are counted: the call site at `BarCacheService.cs:680`
-    reads **0 hits** in the unit report and **85** in the integration one. **Ask what a proposed signal
-    counts before writing an acceptance criterion in terms of it.**
-  - **And it left the floor 51 points under the figure it guards, so the event above still passed** (gh#435).
-    40 against a merged 91.0 %: measured on that PR's own artifacts, a zero-test integration tier merges to
-    **56.0 % and goes green**. Ratcheted to **85** — six points, sized so the largest file in the report
-    losing all its coverage (`TradeTapeRecorder.cs`, 5.1 pp) is absorbed and a tier contributing nothing
-    (−35.0 pp) is not. The header's claim that the parse reproduces coverlet's own root is now **asserted per
-    document** rather than stated, on lines only: an under-read shrinks numerator and denominator together,
-    so the rate moves **up** while coverage falls, and extending the same assertion to *branches* would make
-    the gate unable to **pass** (the root's `1905` against the detail's `1885`). Both directions are pinned by
-    [`check-coverage-floor-selftest.sh`](../../scripts/check-coverage-floor-selftest.sh).
-    **And a self-test that passes the gate its own literals proves the SCRIPT can fail, never the
-    DEPLOYMENT** — the round-one suite ran the gh#387 shape red at 85 and green at 40 and was still **13/13
-    green with `ci.yml` set back to 40**, in the step named *"Prove the coverage gate can still fail"*. The
-    card's own defect, recurring inside its fix. A gate's *configured* value is a separate assertion from its
-    logic: this one now reads `MINIMUM_LINE_COVERAGE` out of the workflow and requires both that it is at or
-    above the ratchet and that the real gate **at that value** rejects a dead tier. **Ask what a self-test's
-    fixtures are allowed to vary — anything they supply themselves is a thing the deployment can still get
-    wrong.**
+  the gate still passes** (gh#431). `coverage` read only the unit tier's report; when gh#387 moved suites to
+  the integration tier the lines they exercise stopped being counted while every test kept running, so the
+  reported figure quietly fell and nothing went red. It now reads and merges every tier, and why merging was
+  chosen over a floor per tier — including the merge rules and cobertura's own branch-detail discrepancy — is
+  argued beside `MINIMUM_LINE_COVERAGE` in `ci.yml` and at length in
+  [`check-coverage-floor.py`](../../scripts/check-coverage-floor.py)'s header, not here. **Ask what a
+  proposed signal counts before writing an acceptance criterion in terms of it**: a mutation this card was
+  asked to make visible in the figure touched code no cobertura report instruments at all — that header's
+  "WHAT LINE COVERAGE CAN AND CANNOT SEE" section is what was actually measured.
+  - **Raising a gate's strictness and proving it can still fail are one card** (gh#435). The floor was left
+    far under the figure it guards, so the event above would still have passed; it was ratcheted, sized
+    against the largest ordinary loss the tree can take, in the same header. Whether it can still fail is
+    proven by [`check-coverage-floor-selftest.sh`](../../scripts/check-coverage-floor-selftest.sh), wired into
+    the `coverage` job beside its siblings. **And a self-test that passes the gate its own literals proves the
+    script can fail, never the deployment** — the first version did exactly that, staying green even with
+    `ci.yml`'s own floor walked back, because it never read the value CI actually deploys. **Ask what a
+    self-test's fixtures are allowed to vary — anything they supply themselves is a thing the deployment can
+    still get wrong.**
 - **No live credentials in a test run that does not need them.** `release.yml` passed real API secrets into an
   unfiltered `dotnet test`. That integration tests mostly did not execute was an accident of hardcoded skip
   strings, not a design. Live-credentialed runs are opt-in, tagged, and never on the release path.

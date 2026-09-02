@@ -93,6 +93,7 @@ and quietly turning the union back into an average.
 from __future__ import annotations
 
 import glob
+import hashlib
 import os
 import sys
 import xml.etree.ElementTree as ET
@@ -110,9 +111,25 @@ def read_tier(directory: str):
     A tier normally emits one report, but coverlet emits one per test assembly, so this
     unions within a tier by the same rules it unions across them.
     """
-    reports = sorted(glob.glob(os.path.join(directory, "**", "coverage.cobertura.xml"), recursive=True))
+    found = sorted(glob.glob(os.path.join(directory, "**", "coverage.cobertura.xml"), recursive=True))
     lines: dict[tuple[str, int], int] = {}
     branches: dict[tuple[str, int], tuple[int, int]] = {}
+    seen: set[str] = set()
+    reports = []
+
+    # DEDUPLICATED BY CONTENT, so the count this returns is evidence rather than noise. The uploaded results
+    # directory holds the collector's staging copy as well as the final report --
+    # `_<machine>_<timestamp>/In/<machine>/coverage.cobertura.xml` beside `<guid>/coverage.cobertura.xml` --
+    # and on the runner the two are BYTE-IDENTICAL (measured, run 33583653752, both 1 639 264 bytes, both
+    # `lines-covered="4550"`). The union was already immune to the duplicate; the printed report count was
+    # not, and read as two tiers' worth of independent evidence when it is one document twice.
+    for path in found:
+        with open(path, "rb") as handle:
+            digest = hashlib.sha256(handle.read()).hexdigest()
+        if digest in seen:
+            continue
+        seen.add(digest)
+        reports.append(path)
 
     for report in reports:
         root = ET.parse(report).getroot()
@@ -216,7 +233,7 @@ def main(argv: list[str]) -> int:
     summary = (f"Line coverage {merged_line:.1f}% (floor {floor}%) · branch {merged_branch:.1f}% "
                f"· merged over {names}")
     table = "\n".join([
-        "| tier | line | branch | lines covered/valid | files | reports |",
+        "| tier | line | branch | lines covered/valid | files | distinct reports |",
         "|---|---:|---:|---:|---:|---:|",
         *rows,
     ])

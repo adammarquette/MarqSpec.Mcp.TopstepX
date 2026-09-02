@@ -31,22 +31,30 @@ back saying what is missing, and it gets re-scored.
 - Not `epic` — those decompose; they are not implemented
 - Not `backlog` unless the issue itself says its trigger has fired
 - Not `safety-critical` scored below 4 — re-score first
-- [`scripts/claim.sh`](../../scripts/claim.sh) `<id> --check` is free, or the 4-hour stale-tip rule applies
-  **and** the takeover has been announced on the issue
+- [`scripts/claim.sh`](../../scripts/claim.sh) `<id> --check` **exits 0**. It exits 3 when it declines, so
+  read the status rather than the prose (gh#438)
 
 **Pick order**, so two coordinator sessions do not thrash:
 
 1. `In Review` whose current head has no reviewer verdict, or the named SHA is behind HEAD — launch a reviewer
 2. Changes-requested or a merge conflict — card to `Todo`, re-dispatch the implementer on the **same**
    claim. Red CI is the same re-dispatch.
-3. `In Progress` whose branch tip is stale ≥ 4 hours — announce on the issue, then re-claim
+3. `In Progress` quiet ≥ 4 hours — **announce, then come back an hour later**. Quiet is not abandoned: the
+   claim ref only moves when someone pushes, and nothing obliges a session to. Post
+   `TAKEOVER-ANNOUNCED: <branch>` on the issue, and re-run `claim.sh <id> --check` after the notice hour —
+   it reads for that line, and it refuses the takeover if the branch moved in between. Do not re-dispatch on
+   a `--check` you have not re-run (gh#438: two live claims were reported *"presumed abandoned and fair
+   game"* off a `develop` commit neither session wrote)
 4. Ready `Todo`, oldest first
 
 Several issues may be in flight. Each gets its own worktree via `scripts/claim.sh`. **Never `cd` into someone
 else's tree.**
 
-Do not invent a second stall threshold. The column is not the signal — the branch tip is, and the threshold is
-already set ([root contract](../../AGENTS.md); [board case 4](../project-board-workflow.md#4-an-agent-stalls-or-dies-mid-work)).
+Do not invent a second stall threshold. The column is not the signal — the **claim ref's own last movement**
+is, and the threshold is already set ([root contract](../../AGENTS.md);
+[board case 4](../project-board-workflow.md#4-an-agent-stalls-or-dies-mid-work)). The notice hour after an
+announcement is not a second threshold: it is how long the one threshold's answer has to be left standing
+before it may be acted on.
 
 ## How you dispatch
 

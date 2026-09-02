@@ -279,9 +279,13 @@ jobs:
   # Coverage was collected and uploaded before this, and never evaluated. An artifact nobody reads is a report,
   # not a gate.
   #
-  # The floor is 43% because the unit suite MEASURES 45.7% line / 46.5% branch today. It is set just under
-  # reality so it catches a regression now, and is meant to be RAISED as coverage improves. Never lower it to
-  # accommodate a drop; that converts the gate back into a report.
+  # The floor is a MEASUREMENT of this suite, set just under reality so it catches a regression now, and
+  # RAISED as coverage rises. Never lower it to accommodate a drop; that converts the gate back into a
+  # report. The current value and the headroom under it are on MINIMUM_LINE_COVERAGE below, which is where
+  # the number lives -- this block used to state a second, stale copy of both ("the floor is 43% because the
+  # unit suite MEASURES 45.7% line / 46.5% branch"), three lines above the block gh#431 rewrote, describing
+  # a floor that had been 40 and a measurement that had been the unit tier's alone. TWO PLACES STATING ONE
+  # NUMBER IS TWO NUMBERS; this one now points rather than repeats (gh#435).
   #
   # NOTHING IN THIS REPOSITORY ASKS FOR MORE THAN THAT, and this comment used to say otherwise. It claimed
   # the PRD asked for 95%/90% and cited a requirement id for it; the id was MarqSpec.Client.ProjectX's and
@@ -314,11 +318,32 @@ jobs:
       # for a reason that had nothing to do with this code.
       #
       # The tool-surface suite (the closed instrument list, the read caps, the closed indicator vocabulary)
-      # brought the real figure to 43.4%. The floor sits at 40 rather than 43 deliberately: a floor set at
+      # brought the real figure to 43.4%, and the floor sat at 40 rather than 43 deliberately: a floor set at
       # the current number goes red on the next ordinary refactor, which teaches people that red is normal.
       #
       # It is a RATCHET. Raise it when coverage rises; never lower it to make a build pass. The mass still
       # uncovered is the tool layer, which becomes end-to-end testable when the venue adapter lands (gh#13).
+      #
+      # RATCHETED 40 -> 85 AT gh#435, AND THE OLD VALUE WAS THE WHOLE DEFECT. gh#431 moved the measured
+      # figure to 91.0% and left the floor at 40 because that card forbade touching it; a gate 51 points
+      # below what it guards does not fire before somebody notices by other means, and it is worse than no
+      # gate because it is trusted. PR #434's reviewer measured the hole exactly: a zero-test integration
+      # tier still merges to 56.0% and still passes, so THE gh#387 EVENT CLEARED THE GATE BUILT FOR IT.
+      # Reproduced on that run's own artifacts before this line was touched, and red at 85.
+      #
+      # THE MEASUREMENT, on run 33584086404's uploaded reports and again on run 33584332205 (develop at
+      # 298bf47): merged 91.0%, 7398 of 8127 instrumented lines, per tier 56.0% unit and 63.2% integration.
+      # Two runs on two SHAs, figures identical to the line -- run-to-run variance on an unchanged tree is
+      # ZERO here, which is what makes the headroom a budget for CODE CHANGE rather than for flake.
+      #
+      # HEADROOM: 6.0 points, which is 490 of the 8127 lines (1.0pp = 81 lines). Sized against the largest
+      # single-file loss the tree can suffer: TradeTapeRecorder.cs is the biggest file in the report at 515
+      # instrumented lines, 415 of them covered, so every test touching it disappearing costs 5.1pp and
+      # still does not trip this floor. The gh#387 shape costs 35.0pp and trips it by 29. That gap -- one
+      # whole file's worth of ordinary variance absorbed, a tier's worth refused -- is the choice.
+      #
+      # Do not set it AT the measurement. 91 goes red on the next PR that adds a file, and a floor that
+      # trips on ordinary variance is worse than a low one: it gets lowered, and then it is a report again.
       #
       # WHAT THE NUMBER IS MEASURED OVER, AND WHY (gh#431). It is the MERGED coverage of every tier -- the
       # fraction of this repository's lines that SOME test executes -- and not one floor per tier. The
@@ -342,7 +367,7 @@ jobs:
       # line and branch figure beside the merged one, on every run, so a fast tier going thin is legible.
       # Reported per tier, gated on the merge. Read scripts/check-coverage-floor.py's header before changing
       # any of this -- in particular for what line coverage cannot see, which is what a covered line DOES.
-      MINIMUM_LINE_COVERAGE: 40
+      MINIMUM_LINE_COVERAGE: 85
     steps:
       # The gate is a tracked script rather than an inline `shell: python3 {0}` step since gh#431, so this
       # job now needs the tree. NO `fetch-depth: 0`: it installs no SDK, builds nothing and reads no git
@@ -370,6 +395,22 @@ jobs:
       # gh#387 regression itself, and it drops toward a number that still passes.
       - name: Enforce the coverage floor
         run: python3 scripts/check-coverage-floor.py unit=TestResults/unit integration=TestResults/integration
+
+      # gh#435, and the same argument as the four self-tests in the `docs` job. This gate had none, and it
+      # had spent its whole life unable to fail on the event it was built for: the floor sat 51 points below
+      # the figure it guards, and the strongest claim in its header -- that its parse reproduces coverlet's
+      # own root -- was observed by nothing, in the one direction that is FLATTERING. An under-read shrinks
+      # numerator and denominator together, so the rate rises while coverage falls.
+      #
+      # Runs the REAL gate against fixture trees whose faults are known and requires it to reject each BY
+      # NAME AND BY EXIT CODE, and to accept two sound ones at a stated figure. Its central case is the
+      # gh#387 shape run TWICE -- red at this floor, green at the 40 it replaced -- so the VALUE above is
+      # what fails, not merely the presence of a comparison, and walking it back reddens this step.
+      #
+      # Ordered after the real run so a genuine coverage regression is reported first. It reads no artifact
+      # and writes nothing back into the tree; every fixture lives under `mktemp -d` and dies on EXIT.
+      - name: Prove the coverage gate can still fail
+        run: ./scripts/check-coverage-floor-selftest.sh
 
   # This repository ships a CONTAINER, not a NuGet package -- it is an application. The template's pack job
   # was replaced wholesale rather than adapted, because "pack an app" is a job that succeeds and produces

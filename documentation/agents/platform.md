@@ -60,6 +60,17 @@ The root contract's six apply here unchanged. Four land specifically on the pipe
     broke, is whether the lines that **execute** it are counted: the call site at `BarCacheService.cs:680`
     reads **0 hits** in the unit report and **85** in the integration one. **Ask what a proposed signal
     counts before writing an acceptance criterion in terms of it.**
+  - **And it left the floor 51 points under the figure it guards, so the event above still passed** (gh#435).
+    40 against a merged 91.0 %: measured on that PR's own artifacts, a zero-test integration tier merges to
+    **56.0 % and goes green**. Ratcheted to **85** — six points, sized so the largest file in the report
+    losing all its coverage (`TradeTapeRecorder.cs`, 5.1 pp) is absorbed and a tier contributing nothing
+    (−35.0 pp) is not. The header's claim that the parse reproduces coverlet's own root is now **asserted per
+    document** rather than stated, on lines only: an under-read shrinks numerator and denominator together,
+    so the rate moves **up** while coverage falls, and extending the same assertion to *branches* would make
+    the gate unable to **pass** (the root's `1905` against the detail's `1885`). Both directions are pinned by
+    [`check-coverage-floor-selftest.sh`](../../scripts/check-coverage-floor-selftest.sh), whose central case
+    runs the gh#387 shape **red at 85 and green at 40** — that pair pins the *number*, where either half
+    alone pins only the comparison. **Raising a gate's strictness and proving it can still fail are one card.**
 - **No live credentials in a test run that does not need them.** `release.yml` passed real API secrets into an
   unfiltered `dotnet test`. That integration tests mostly did not execute was an accident of hardcoded skip
   strings, not a design. Live-credentialed runs are opt-in, tagged, and never on the release path.

@@ -104,10 +104,10 @@
 #                                                                the mutation now, including replaced ones
 #   condition 5 holds on the OUTER path, not only the bare one  case 20 — flips-on: no-C5, alone
 #     -- NO CASE 21½: the INNER path gets no condition-5 fixture, and that is a decision, not a gap. Condition
-#        5 is one expression reached identically by bare, inner-span and outer-span (claim.sh:361-362); cases
-#        14 and 20 already exercise that one line, and a third fixture on the inner path would run it a third
-#        time and pin nothing new. If condition 5 ever forks per path, the inner path stops being covered by
-#        the other two and needs its own case (gh#443).
+#        5 (the `rest !~ /^[ \t]/` check) is one expression reached identically by bare, inner-span and
+#        outer-span; cases 14 and 20 already exercise that one expression, and a third fixture on the inner
+#        path would run it a third time and pin nothing new. If condition 5 ever forks per path, the inner
+#        path stops being covered by the other two and needs its own case (gh#443).
 #   nested spans are refused (the `!outer` guard)               case 21 — flips-on: no-nest. Asserted in a
 #                                                                comment and tested by nothing until here
 #   an INNER span must close too, in the REFUSE direction       case 22 — flips-on: no-INc. Case 16 pins the
@@ -293,8 +293,10 @@ assert_universal() {
   if [ "$n" -ne 1 ]; then
     fail_case "$label — one output, one verdict" \
       "Expected exactly 1 line matching '^VERDICT: '; found $n." \
-      "claim.sh:159 and :192 already apply that rule to two of its exits. gh#438 is the third: the run that" \
-      "started this card printed 'presumed abandoned and fair game' and 'NOT yours to take' fourteen lines apart."
+      "section 1's OCCUPIED block and section 2's CLAIMED block already apply that rule to two of its exits" \
+      "(both defer to the single section-4 verdict rather than printing their own). gh#438 is the third: the" \
+      "run that started this card printed 'presumed abandoned and fair game' and 'NOT yours to take' fourteen" \
+      "lines apart."
     return 1
   fi
   if grep -qi 'fair game' "$COMBINED"; then
@@ -507,7 +509,7 @@ fi
 
 # ---------------------------------------------------------------------------
 # 10. NO CLAIM BRANCH, BUT THE TREE IS OCCUPIED. "Nothing pushed" is not "free to take" — this is the exit
-#     claim.sh:162 already covered, kept as a case so the rewrite cannot lose it.
+#     section 1's OCCUPIED block already covered, kept as a case so the rewrite cannot lose it.
 # ---------------------------------------------------------------------------
 start_case
 L="no claim branch pushed, but the tree here is occupied"

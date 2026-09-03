@@ -103,6 +103,11 @@
 #                                                                row below it is why. Rows are written after
 #                                                                the mutation now, including replaced ones
 #   condition 5 holds on the OUTER path, not only the bare one  case 20 — flips-on: no-C5, alone
+#     -- NO CASE 21½: the INNER path gets no condition-5 fixture, and that is a decision, not a gap. Condition
+#        5 is one expression reached identically by bare, inner-span and outer-span (claim.sh:361-362); cases
+#        14 and 20 already exercise that one line, and a third fixture on the inner path would run it a third
+#        time and pin nothing new. If condition 5 ever forks per path, the inner path stops being covered by
+#        the other two and needs its own case (gh#443).
 #   nested spans are refused (the `!outer` guard)               case 21 — flips-on: no-nest. Asserted in a
 #                                                                comment and tested by nothing until here
 #   an INNER span must close too, in the REFUSE direction       case 22 — flips-on: no-INc. Case 16 pins the

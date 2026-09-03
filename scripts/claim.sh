@@ -359,6 +359,19 @@ if [ -n "$CLAIMED" ]; then
                   rest = substr(rest, 2)
                 }
                 # 5. The name must END there, or announcing `feature/50_x` also arms `feature/50`.
+                #
+                #    ONE EXPRESSION, REACHED IDENTICALLY BY ALL THREE PATHS. Bare, inner-span and outer-span
+                #    all converge on the same `rest` by the time control reaches this line, and nothing above
+                #    forks on `outer` or `inner` past line 360 -- so this is not the bare rule agreeing with
+                #    two others, it is the SAME line evaluated three times over three different `rest` values.
+                #    That is why the suite pins it from two paths and stops (case 14, bare; case 20, outer): a
+                #    third fixture on the inner path would run this identical expression a third time and pin
+                #    nothing new. Ruled explicitly, not by omission, in the round-four review of PR 441
+                #    (gh#438, recorded at gh#443).
+                #
+                #    THE DAY THIS STOPS HOLDING -- e.g. a future rule makes the end-of-name check differ for a
+                #    closed span versus bare text -- the two fixtures no longer cover the third path, and it
+                #    needs its own case rather than trusting the other two to still speak for it.
                 if (rest != "" && rest !~ /^[ \t]/) next
 
                 print created

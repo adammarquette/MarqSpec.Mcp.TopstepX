@@ -586,9 +586,25 @@ info: Microsoft.Hosting.Lifetime[0]
 `netstat` during that run showed `TCP 127.0.0.1:5000 ... LISTENING` and `TCP [::1]:5000 ... LISTENING`, and
 nothing on `0.0.0.0` or `[::]` — Kestrel's own `localhost` default is already loopback-only, so nothing here
 had to bind it there deliberately. `curl` against `/mcp` with no `Authorization` header, and again with the
-wrong token, both answered `401`; with the configured token, `initialize`, a full `tools/list` (sixteen
-tools) and a `list_instruments` call all answered normally, the absent-database warning firing exactly as it
-does under stdio and nothing else needing to be running.
+wrong token, both answered `401`; with the configured token, `initialize`, a full `tools/list` (**eighteen**
+tools — counted from this run's own response, `grep -o` over the distinct `"name"` fields, and cross-checked
+against eighteen `[McpServerTool(...)]` attributes across `Tools/*.cs`) and a `list_instruments` call all
+answered normally, the absent-database warning firing exactly as it does under stdio and nothing else needing
+to be running. This paragraph first shipped saying "sixteen," carried from the count in the 2026-08-23 update
+above rather than read off this run's own reply — the exact mistake this record exists to warn against
+elsewhere on this page, committed while writing about it.
+
+**The 2026-08-23 update's own "16 tools both times" is left alone, deliberately, and this is why.** It reads
+`Measured both sides, same image build, Docker Engine 29.6.2: … stdin held open until tools/list answers
+0 → 0, 16 tools both times` — a dated report of one real run against the image built that day, when sixteen
+was the true count. `get_contract_roll`, `get_footprint` and `get_volume_profile` did not exist yet. That is
+a different kind of sentence than the ones this page supersedes elsewhere: those made a claim that reads as
+still-true today and is not (the loopback universality, the `ASPNETCORE_HTTP_PORTS` parenthesis); this one is
+a fact about a specific build on a specific date, correct then and correct now as a record of what that build
+answered. Editing "16" to "18" there would misreport that measurement — no run that day saw eighteen — and a
+supersede note would flag a sentence that was never wrong. Left as a number that no longer describes the
+shipped tool catalogue, on purpose, the same way a timestamped log line is not edited when the thing it
+logged changes later.
 
 **One of the two traps gh#444 named is not what the code does, and the measurement is worth keeping because
 the issue's own reasoning about it was plausible and wrong.** It warned that `KeyLevels__Source` "has no

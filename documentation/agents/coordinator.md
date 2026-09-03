@@ -27,7 +27,7 @@ back saying what is missing, and it gets re-scored.
 
 - Open issue on #5, column `Todo` (or a kickback / stall / conflict that needs an implementer again)
 - Why, Scope, Acceptance criteria present
-- One `work:*` matching the issue's actual scope, not merely present — nothing else checks this (gh#448)
+- One `work:*` matching the issue's actual scope (not merely present, gh#448), and one `Work Estimate`
 - Not `epic` — those decompose; they are not implemented
 - Not `backlog` unless the issue itself says its trigger has fired
 - Not `safety-critical` scored below 4 — re-score first

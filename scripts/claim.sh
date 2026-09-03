@@ -471,10 +471,10 @@ info "  base     : origin/${BASE_BRANCH}"
 # 4. ONE OUTPUT, ONE VERDICT.
 # ---------------------------------------------------------------------------
 # Everything above prints EVIDENCE. This prints the single line an agent acts on, and it is the only line in
-# the file matching `^VERDICT: `. The rule is the one claim.sh:159 and :192 already applied to two exits;
-# gh#438 is the third they had not reached, where "presumed abandoned and fair game" and "NOT yours to take"
-# were printed fourteen lines apart — and a session on another machine, where the occupied-tree check can see
-# nothing, was given only the first of those.
+# the file matching `^VERDICT: `. The rule is the one section 1's OCCUPIED block and section 2's CLAIMED block
+# already applied to two exits; gh#438 is the third they had not reached, where "presumed abandoned and fair
+# game" and "NOT yours to take" were printed fourteen lines apart — and a session on another machine, where the
+# occupied-tree check can see nothing, was given only the first of those.
 #
 # THE OCCUPIED TREE OUTRANKS EVERY REMOTE READING. That failure corrupts history (gh#88) rather than merely
 # duplicating effort, and it is the check that saved both of gh#438's live sessions.

@@ -95,7 +95,8 @@ knowing which is which:
 
 | What is wrong | What the server says |
 |---|---|
-| no certificate at `certs/localhost.pfx` | `FileNotFoundException: Could not find file '/https/localhost.pfx'` — clear |
+| no certificate at `certs/localhost.pfx`, under `docker compose up` | `FileNotFoundException: Could not find file '/https/localhost.pfx'` — clear: the container's mount is empty, so make the certificate. |
+| `Kestrel__Certificates__Default__Path=/https/localhost.pfx` reused **outside** compose | `/https/localhost.pfx` is a path inside the container's read-only mount, not a path on your machine, so this is never "no certificate" — it is the wrong kind of path. The message even looks identical on Linux/macOS; on Windows it is `DirectoryNotFoundException: Could not find a part of the path 'C:\https\localhost.pfx'`, because `/https/...` resolves against the current drive. Either way, point `Kestrel__Certificates__Default__Path` at a certificate on **this host** instead — see [below](#the-http-transport-without-compose). |
 | certificate present, password unset or wrong | `The certificate data cannot be read with the provided password, the password may be incorrect` — an **unset** password arrives as an empty one, so *"may be incorrect"* also means *"may be missing"*. Check `.env` before you suspect the PFX. |
 
 `certs/` and `.env` are gitignored. Nothing rotates the certificate; mkcert's leaf lasts about two years.
@@ -122,6 +123,45 @@ still real and `list_instruments` / `get_market_session` answer normally; with n
 say so. Each absent dependency produces a refusal naming the fix, rather than a dead process an MCP client
 would report as a bare transport failure ([ADR-0007](documentation/adr/0007-dual-transport.md)). So you can
 register it first and configure it after.
+
+### The HTTP transport without compose
+
+There is a third way to run this beside `docker compose up` and the stdio registration above: the **HTTP
+transport on its own**, with `dotnet run` and nothing composed around it. It is supported, and it needs less
+than the composed stack does — no `.env`, no certificate, no Postgres, no ProjectX credentials:
+
+```bash
+Mcp__Transport=Http Mcp__HttpBearerToken=$(openssl rand -hex 24) \
+  dotnet run --project MarqSpec.Mcp.TopstepX
+```
+
+Measured on this branch with nothing else running: it logs `Now listening on: http://localhost:5000`, and
+that is loopback-only — `netstat` shows `127.0.0.1:5000` and `[::1]:5000`, nothing on `0.0.0.0` or `[::]`,
+because Kestrel's own `localhost` default is already loopback-only and nothing here has to bind it there on
+purpose. `curl` against `/mcp` with no `Authorization` header, or the wrong token, both get `401`; with the
+right one, `initialize`, a full `tools/list` and a `list_instruments` call all answer normally, with the
+absent-database warning firing exactly as it does under stdio.
+
+Two things this recipe deliberately does **not** carry over from `docker compose up`:
+
+- **No TLS.** The composed endpoint's HTTPS on `:8443` is gh#416's answer to one client's requirement, not
+  something the HTTP transport itself demands — only the bearer token is required
+  ([ADR-0007](documentation/adr/0007-dual-transport.md)). Naming `ASPNETCORE_HTTPS_PORTS` and
+  `Kestrel__Certificates__Default__Path=/https/localhost.pfx` here — carrying the composed `.env` values over
+  literally — does not add TLS, it reproduces the container-path trap in the table above: point
+  `Kestrel__Certificates__Default__Path` at a certificate on **this host** if you want one, never at
+  `/https/...`.
+- **No override for `KeyLevels__Source`.** It is not needed: the option's C# default is already
+  `HeikinAshiBody`, and .NET's configuration binder leaves it alone when the key is absent rather than
+  resetting it — measured above, starting cleanly with nothing set for it. Setting the variable to something
+  real is fine; setting it to a typo is the one way to fail here, and the failure is an unhandled
+  `System.FormatException` naming the bad value, not a friendly sentence — see
+  [ADR-0007](documentation/adr/0007-dual-transport.md)'s 2026-09-03 update for the measurement.
+
+What this mode is **not**: it is not TLS, it is not reachable by Claude Cowork (which refuses a non-TLS
+endpoint), and it carries no real venue credential or database by default. It exists for testing and
+debugging the HTTP transport itself — with `curl`, the MCP inspector, or a client that accepts plaintext
+loopback HTTP — without standing up the composed stack to do it.
 
 **Two credential facts that are not guessable from the field names**, and both of which cost real debugging
 time in the sibling repo:

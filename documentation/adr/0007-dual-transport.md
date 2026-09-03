@@ -70,6 +70,7 @@ difference between the two entry points is a handful of lines.
 | [2026-09-01](#update-2026-09-01--the-composed-endpoint-is-tls-only-behind-a-local-ca) | The composed endpoint is HTTPS on 8443 and nothing else, behind a certificate from a local CA |
 | [2026-09-01](#update-2026-09-01--the-composed-postgres-was-the-wall-left-standing) | The composed Postgres is bound to loopback too, closing the exposure the two updates above deferred |
 | [2026-09-03](#update-2026-09-03--the-ephemeral-loopback-sentence-is-false-inside-the-image) | The stdio ephemeral-loopback claim is wired to the container behaviour that contradicts it, and the inherited variable is kept on measurement |
+| [2026-09-03](#update-2026-09-03--the-http-transport-is-supported-outside-compose-too) | The HTTP transport is a supported way to run this outside compose too, on its own narrower recipe — and one of the two traps a reader was warned about is not what the code does |
 
 ## Update (2026-08-22) — starting is not the same as being ready
 
@@ -561,3 +562,68 @@ nothing is published for a stdio container and `MapMcp` sits inside the `Http` b
 no MCP route to anyone. That is read off `Program.cs`, not measured. The collision half — separate network
 namespaces, so two containers cannot contend the way two host processes did — is in the 2026-09-01 paragraph
 already.
+
+## Update (2026-09-03) — the HTTP transport is supported outside compose too
+
+gh#444 asked the question this record's Context section left open: is `Mcp__Transport=Http` behind a plain
+`dotnet run` — no compose, no container — a supported way to run this, or is the HTTP transport scoped to
+"a deployed instance", with the composed stack **being** that deployment.
+
+**Yes, and it needs less than the composed stack does.** Measured on this branch, Windows 11, with no `.env`
+anywhere, no Postgres running, and no ProjectX credentials:
+
+```console
+$ Mcp__Transport=Http Mcp__HttpBearerToken=local-test-token dotnet run --project MarqSpec.Mcp.TopstepX
+...
+warn: startup[0]
+      The database is not reachable, so cached market data and observations are unavailable. ...
+info: Microsoft.Hosting.Lifetime[14]
+      Now listening on: http://localhost:5000
+info: Microsoft.Hosting.Lifetime[0]
+      Application started. Press Ctrl+C to shut down.
+```
+
+`netstat` during that run showed `TCP 127.0.0.1:5000 ... LISTENING` and `TCP [::1]:5000 ... LISTENING`, and
+nothing on `0.0.0.0` or `[::]` — Kestrel's own `localhost` default is already loopback-only, so nothing here
+had to bind it there deliberately. `curl` against `/mcp` with no `Authorization` header, and again with the
+wrong token, both answered `401`; with the configured token, `initialize`, a full `tools/list` (sixteen
+tools) and a `list_instruments` call all answered normally, the absent-database warning firing exactly as it
+does under stdio and nothing else needing to be running.
+
+**One of the two traps gh#444 named is not what the code does, and the measurement is worth keeping because
+the issue's own reasoning about it was plausible and wrong.** It warned that `KeyLevels__Source` "has no
+application default" and that an unset value "binds to Unknown and fails startup by design." That is not what
+was measured: `KeyLevelDetectionOptions.Source` carries a C# property initializer of
+`PivotSource.HeikinAshiBody`, and `Microsoft.Extensions.Configuration`'s binder leaves a bound property
+**untouched** when its key is absent from configuration entirely, rather than overwriting it with the enum's
+zero value — so the `dotnet run` above, naming only the two variables shown, starts cleanly with `Source`
+already `HeikinAshiBody`, every `ValidateOnStart` check (`KeyLevelDetectionOptions` included) having passed to
+reach `Application started` at all. The failure the issue described is real for a **different** input: a key
+that is *present* and **unparseable** — `KeyLevels__Source=Bogus`, measured here, does fail startup, but not
+through the friendly `ValidationResult` sentence `KeyLevelDetectionOptions.Validate` writes for exactly this
+case. The configuration binder throws first, so what reaches the console is a raw, unhandled
+`System.FormatException: Bogus is not a valid value for PivotSource` under `Hosting failed to start` — a
+worse message than the one the code was written to produce, and reachable only by setting the variable wrong,
+never by leaving it out. **"Unset" is not one condition**: absent, empty, and mistyped bind differently, and
+only running each one, not reading the option's own remarks, says which produces which failure.
+
+**The other named trap is real, and this recipe avoids it by not needing TLS at all.** The composed stack's
+HTTPS on 8443 is gh#416's answer to one client's TLS requirement, layered onto the HTTP transport rather than
+a property the transport itself demands — `ConfigureServices` requires nothing of a `Http` transport but the
+bearer token. Naming `ASPNETCORE_HTTPS_PORTS` and `Kestrel__Certificates__Default__Path=/https/localhost.pfx`
+here — carrying the composed values over literally, the mistake an operator reusing a sourced `.env` would
+make — reproduces the trap rather than TLS: `/https/...` is a path inside the container's read-only mount and
+does not exist on a host filesystem at all. Measured on Windows, with those two variables set and nothing
+else changed: `DirectoryNotFoundException: Could not find a part of the path 'C:\https\localhost.pfx'` —
+`/https/...` resolves against the current drive there — a different exception than the container's own
+`FileNotFoundException` naming `/https/localhost.pfx` recorded in the 2026-09-01 TLS update above, but the
+identical cause on both: a container path asked for outside the container. Wanting TLS on this path means
+pointing `Kestrel__Certificates__Default__Path` at a certificate that exists **on this host**, made the same
+way `README.md`'s compose recipe already makes one — never at `/https/...`.
+
+**What this does not change.** The composed stack is still the only supported way to reach this server from
+Cowork, and still the only one carrying TLS, a real Postgres and a real venue credential. This update adds a
+narrower mode beside it — no TLS, no database, no venue credential, a bearer token the operator names
+themselves rather than the compose default — for testing and debugging the HTTP transport directly, without
+standing up the composed stack to do it. The recipe is in `README.md`, which also now distinguishes the
+container-path failure above from a genuinely missing certificate under compose.

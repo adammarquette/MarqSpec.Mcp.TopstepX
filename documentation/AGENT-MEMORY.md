@@ -57,6 +57,45 @@ at one this rule's own pull request retires.
 
 ## Practices to follow
 
+- **[2026-09-03] A clean `git status` and the issue author field both look like evidence of "who did what,"
+  and neither is — one lesson, not two (gh#438, PR #441).** This entry covers **neither** gh#88 (the recovery
+  once two sessions land in one commit) **nor** gh#438 (how a pushed branch's tip age is read) — it covers the
+  decision that precedes both: how a session decides a tree is free, or who acted, before either mechanism
+  ever engages.
+  - **Signal 1 — a clean `git status` does not mean the worktree is free.** `marqspec-mcp-topstepx-d1`, about
+    to work PR #441's review, checked its tree first: clean status, branch synced, reflog quiet for three
+    minutes — and reasonably read that as "the previous session finished." It had not: it was working from
+    **scratchpad copies outside the worktree**, a normal and careful way to run mutation experiments, and one
+    that leaves the tree itself untouched. Every local signal said "free" while the tree was live. Caught
+    only because the *next* session, opening `claim.sh`, found fields (`authorAssociation`,
+    `includesCreatedEdit`) it had never written and **checked the tree instead of editing it** — had it run
+    `git add -A` and committed, the other session's work would have published under its own message, silently,
+    and green.
+    - **Recommended check: treat "a worktree exists at all" as occupancy, regardless of cleanliness** — what
+      `scripts/claim.sh`'s occupied-worktree check already does on the machine that holds it, and what saved
+      two other claims this same day (gh#438). **Rejected: mtime spread over the branch's files instead of
+      `git status`** — narrower than "clean," but still reads the tree, not the session, and a scratchpad-copy
+      session touches no tracked file either. **Also rejected: asking on the issue before entering any
+      worktree you did not create** — correct in principle, but slower than a local stat call and only as
+      good as whether anyone answers.
+  - **Signal 2 — the author field cannot discriminate sessions, and that is attribution, not a tool defect.**
+    Every agent here authenticates as the maintainer. Measured 2026-09-02 by `marqspec-mcp-topstepx-d7`
+    (`gh issue list --state all --limit 200 --author adammarquette`, restricted to 392..442): **24** issues
+    attributed to `adammarquette`, **7** actually filed by that session (392, 394, 396, 398, 400, 415, 416),
+    **17** false positives (402, 404, 407, 408, 412, 414, 420, 421, 422, 424, 426, 431, 432, 435, 438, 439,
+    **442 — this issue itself**) — a 3.4x overstatement. The false positives **interleave with the true ones
+    across the whole range**, so no heuristic over the field recovers the true set: it is not a noisy signal,
+    it is no signal. The account field is *accurate* — all 24 really were opened by that login. It is the
+    inference from account to **session** that has no support.
+    - **Recommended check: reflog, worktree registration, file mtimes, or process parentage** — something
+      that observes the session's own activity rather than the account every session authenticates as. None
+      of these substitutes for "who filed this"; they answer "what is live right now," which is the question
+      that actually matters when deciding whether to act on a tree or a claim.
+  - **Both sessions behaved correctly, and the entry has to say so.** Scratchpad mutation testing is the
+    right way to run that experiment; reading the author field is the field doing exactly what it says. The
+    gap is a missing signal, not a lapse — an entry that reads as carelessness teaches the next, genuinely
+    careful agent the wrong lesson.
+
 - **[2026-08-28] A restore can backdate a source file's mtime, MSBuild skips the compile, and `dotnet test`
   scores a stale binary with a plausible `Total:` (gh#302).** Found by PR #298's author (gh#286) with a
   `Copy-Item` restore: the timestamp went **backwards**, the compile was skipped, and the host ran the

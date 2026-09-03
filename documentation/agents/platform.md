@@ -665,20 +665,28 @@ said no", never as "a link broke". Beside [`check-doc-links.sh`](../../scripts/c
     backticked *branch* still refused `` `TAKEOVER-ANNOUNCED: <branch>` `` wrapped as one span — **the form
     all four contracts that tell an agent to announce actually render in their markdown source**, and an
     agent copies raw markdown rather than rendered output. So the documented form announced nothing. Both
-    placements are now accepted (cases 16 and 18) and nested spans are not. **When a matcher is widened for
-    readability, re-run the case that pins what it was tightened against**: case 19 is prefix confusion
-    routed through the new outer span, because each forgiveness is a fresh chance to re-open condition 5.
-  - **And that case was PINNED BY ACCIDENT, which only the mutation showed.** It was written for condition 5
-    and reads like it tests condition 5 — but with condition 5 deleted it stays red, because the *span must
-    close* rule refuses it one line earlier. The ledger row would have claimed coverage the case did not
-    provide, on a security condition, in the file whose whole subject is claims that cannot observe what
-    they assert. It is now relabelled to the rule it actually pins — a real decision nothing else covered —
-    and a second case supplies condition 5 on that path: span opened and closed correctly, trailing text
-    butted against it. Mutating condition 5 now flips exactly those two, and neither the positive nor the
-    span case moves. **This is `check-doc-sizes-selftest.sh`'s lesson meeting a second gate**: coverage owed
-    to a fixture's incidental shape rather than its intent is coverage the table cannot see it lacks, and
-    the only thing that tells them apart is running the mutant. Write the row *after* the mutation, never
-    from the case's name.
+    placements are now accepted (cases 16 and 18) and nested spans are not (case 21). **When a matcher is
+    widened for readability, add a case per new path and per new rule** — the widening brought three
+    decisions with it (the outer close, the `!outer` nesting guard, condition 5 on the outer path) and each
+    needed its own fixture, because each forgiveness is a fresh chance to re-open what an earlier one closed.
+  - **That case was pinned by accident — and the RELABEL was unverified too, which is the finding worth
+    keeping.** It was written for condition 5; with condition 5 deleted it stayed red, so it was relabelled
+    to the *span must close* rule. It did not pin that either. Under whole-block mutation of every decision
+    in the matcher it read **`flips-on: NOTHING`**: the fixture carried both a closing backtick and a
+    `-longer` suffix, so two rules were competing to refuse it and neither was exposed. Delete one and the
+    other still catches it. **Refused by the conjunction, pinned by neither.**
+
+    The rule stated at the end of this bullet — *write the row after the mutation, never from the case's
+    name* — was applied to the replacement row and **not to the row it replaced**. Three instances of one
+    pattern on a single card, each decided by reading a fixture rather than running it: mention-versus-use,
+    the original label, the relabel. **A rule that is applied only to new rows is not yet a practice.**
+
+    Two mechanics generalise. **Blank the whole block, not the guard**: deleting `if (…) next` and leaving
+    its `rest = substr(rest, 2)` behind is a different program, and that mistake produced one confidently
+    wrong reading here before it was caught. And **a fixture that trips two rules pins neither** — strip it
+    to the single property under test, which is what makes `flips-on:` a measurement instead of a hope.
+    This is `check-doc-sizes-selftest.sh`'s lesson meeting a second gate: coverage owed to a fixture's
+    incidental shape rather than its intent is coverage the table cannot see it lacks.
   - **The activity read swallowed its status, and that is the FOURTH instance of the family** tabulated
     under [Constraints that bite in CI](#constraints-that-bite-in-ci) — cite that table rather than
     re-deriving it. `2>/dev/null || true` made an API error and *"this ref has no activity recorded"* the

@@ -94,14 +94,27 @@
 #   leading whitespace forgiven, so the printed recipe works     case 15 (the indented paste, PERMITTED)
 #   the branch name may be backticked, as house style writes it  case 16 (PERMITTED — advisory 3)
 #   the WHOLE token may be backticked, as the contracts render  case 18 (PERMITTED — round-3 advisory)
-#   an outer span must CLOSE after the branch it opened on      case 19 — written for condition 5 and
-#                                                                pinned it BY ACCIDENT: mutate condition
-#                                                                5 and 19 stays green, because this rule
-#                                                                refuses it one line earlier. Relabelled
-#                                                                to what it tests; found by mutating,
-#                                                                not by reading (platform.md)
-#   condition 5 holds on the OUTER path, not only the bare one  case 20 (mutate condition 5 -> 14 and 20
-#                                                                go green together, nothing else moves)
+#   an outer span must CLOSE after the branch it opened on      case 19 — flips-on: no-OUTc. Written for
+#                                                                condition 5, pinned it BY ACCIDENT, was
+#                                                                relabelled to this rule — AND THE RELABEL
+#                                                                WAS UNVERIFIED TOO: the old fixture carried
+#                                                                a closing tick AND a -longer suffix, so two
+#                                                                rules competed and it pinned NOTHING. The
+#                                                                row below it is why. Rows are written after
+#                                                                the mutation now, including replaced ones
+#   condition 5 holds on the OUTER path, not only the bare one  case 20 — flips-on: no-C5, alone
+#   nested spans are refused (the `!outer` guard)               case 21 — flips-on: no-nest. Asserted in a
+#                                                                comment and tested by nothing until here
+#   an INNER span must close too, in the REFUSE direction       case 22 — flips-on: no-INc. Case 16 pins the
+#                                                                same rule in the PERMIT direction; a rule
+#                                                                pinned one way only is how the tighten/widen
+#                                                                asymmetry got in twice on this card
+#
+#   Every `flips-on` above is a MEASUREMENT — whole-block mutation of each decision in the matcher, each
+#   fixture run against every mutant, recorded after the run and never from the case's name. `no-OUTc` and
+#   `no-INc` blank the WHOLE `if (outer)` / `if (inner)` block: deleting only the guard leaves its `rest =
+#   substr(rest, 2)` behind, which is a different program and answers a question nobody asked. That mistake
+#   produced one wrong reading here before it was caught.
 #
 #   activity read FAILING is not the read reporting NOTHING      case 1 (fails) vs case 17 (returns none);
 #                                                                 both UNKNOWN, different diagnostics
@@ -656,17 +669,20 @@ if assert_universal "$L" \
 fi
 
 # ---------------------------------------------------------------------------
-# 19. THE OUTER SPAN MUST CLOSE AFTER THE BRANCH. Written first as a condition-5 case and it was PINNED BY
-#     ACCIDENT -- it stays refused with condition 5 deleted, because this rule catches it one line earlier.
-#     Caught by mutating condition 5 rather than by reading, which is the platform.md warning about coverage
-#     owed to a fixture's incidental shape rather than its intent. Relabelled to what it actually tests,
-#     which is a real decision nothing else pinned; case 20 is the one written for condition 5.
+# 19. THE OUTER SPAN MUST CLOSE AFTER THE BRANCH. Written first as a condition-5 case; it pinned condition 5
+#     BY ACCIDENT, was relabelled to this rule -- and THE RELABEL WAS UNVERIFIED TOO, which is the finding
+#     that matters. The first fixture carried BOTH a closing backtick and a `-longer` suffix, so the outer
+#     rule and condition 5 were competing to refuse it and neither was exposed: `flips-on: NOTHING` under
+#     whole-block mutation of every rule in the matcher. The rule this file adds -- write the row AFTER the
+#     mutation, never from the case's name -- was applied to the replacement row and not to the row it
+#     replaced. The fixture below drops the suffix so only the missing closing backtick refuses it, and it
+#     is measured: `flips-on: no-OUTc`, and nothing else moves.
 # ---------------------------------------------------------------------------
 start_case
 L="a whole-token span that never closes after the branch"
 add_worked_claim "feature/513_prefix"
 export FGH_TITLE="span never closed" FGH_TIP_DATE="$(iso_ago 13)" FGH_ACTIVITY="$(iso_ago 13)" \
-  FGH_COMMENTS="$(comment "$(iso_ago 5)" OWNER false "\`TAKEOVER-ANNOUNCED: feature/513_prefix-longer\` — a different branch")" FGH_PRS=""
+  FGH_COMMENTS="$(comment "$(iso_ago 5)" OWNER false "\`TAKEOVER-ANNOUNCED: feature/513_prefix taking this")" FGH_PRS=""
 run_claim 513 --check
 if assert_universal "$L" \
   && expect_says "$L" 'nothing has been announced on the issue' \
@@ -691,6 +707,42 @@ if assert_universal "$L" \
   && expect_says "$L" 'nothing has been announced on the issue' \
   && expect_status "$L" 3; then
   ok "case 20  $L"
+fi
+
+# ---------------------------------------------------------------------------
+# 21. NESTED SPANS ARE REFUSED -- which the matcher ASSERTS in a comment and, until this case, nothing tested.
+#     The `!outer` guard is the whole of that assertion, and whole-block mutation found it pinned by nothing:
+#     unconditionally allowing an inner tick inside an outer one flips this input and no other. Prose is not
+#     a fixture (platform.md), and this is the third rule in this matcher whose only evidence was its own
+#     comment. Measured: `flips-on: no-nest`.
+# ---------------------------------------------------------------------------
+start_case
+L="nested backtick spans announce nothing"
+add_worked_claim "feature/515_nested"
+export FGH_TITLE="nested spans" FGH_TIP_DATE="$(iso_ago 13)" FGH_ACTIVITY="$(iso_ago 13)" \
+  FGH_COMMENTS="$(comment "$(iso_ago 5)" OWNER false "\`TAKEOVER-ANNOUNCED: \`feature/515_nested\`\`")" FGH_PRS=""
+run_claim 515 --check
+if assert_universal "$L" \
+  && expect_says "$L" 'nothing has been announced on the issue' \
+  && expect_status "$L" 3; then
+  ok "case 21  $L"
+fi
+
+# ---------------------------------------------------------------------------
+# 22. AND THE INNER SPAN MUST CLOSE TOO. Case 16 pins that rule in the PERMIT direction -- delete the inner
+#     close and 16 goes red -- but nothing pinned the refusal, and a rule pinned in one direction only is
+#     how the tighten/widen asymmetry got in twice on this card already. Measured: `flips-on: no-INc`.
+# ---------------------------------------------------------------------------
+start_case
+L="a backticked branch whose span never closes"
+add_worked_claim "feature/516_inner-unclosed"
+export FGH_TITLE="inner span never closed" FGH_TIP_DATE="$(iso_ago 13)" FGH_ACTIVITY="$(iso_ago 13)" \
+  FGH_COMMENTS="$(comment "$(iso_ago 5)" OWNER false "TAKEOVER-ANNOUNCED: \`feature/516_inner-unclosed taking this")" FGH_PRS=""
+run_claim 516 --check
+if assert_universal "$L" \
+  && expect_says "$L" 'nothing has been announced on the issue' \
+  && expect_status "$L" 3; then
+  ok "case 22  $L"
 fi
 
 info ""

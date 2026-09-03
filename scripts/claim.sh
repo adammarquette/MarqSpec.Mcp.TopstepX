@@ -330,20 +330,32 @@ if [ -n "$CLAIMED" ]; then
                 # 3. The token must OPEN the comment. Leading whitespace is forgiven — the recipe is printed
                 #    indented and a body may begin with a blank line — but nothing else may precede it, which
                 #    is what tells an announcement apart from prose quoting one.
+                #
+                #    BACKTICKS ARE MARKUP, NOT PART OF THE TOKEN, and there are two places to put them. The
+                #    documents that tell an agent to announce all render `TAKEOVER-ANNOUNCED: <branch>` as one
+                #    span, and an agent copies raw markdown rather than rendered output; the printed recipe
+                #    and the gh#293 comment instead backtick the branch alone. Refusing either is
+                #    fail-closed at one re-post, and is still a correct announcement being ignored — the same
+                #    argument as PR #441 advisory 3, which is the reason both forms are taken here.
                 sub(/^[ \t]+/, "", body)
+                outer = 0
+                if (substr(body, 1, 1) == "`") { outer = 1; body = substr(body, 2) }
                 if (index(body, tok) != 1) next
                 rest = substr(body, length(tok) + 1)
                 sub(/^[ \t]+/, "", rest)
 
-                # 4. Then the branch, which house style writes in BACKTICKS as often as bare — the gh#293
-                #    comment this mechanism is modelled on backticks it. Requiring one form silently refuses
-                #    the other, which is fail-closed but is still a correct announcement being ignored.
-                tick = 0
-                if (substr(rest, 1, 1) == "`") { tick = 1; rest = substr(rest, 2) }
+                # 4. Then the branch, optionally backticked ITSELF — but not inside an outer span too, which
+                #    is nested markup and no form anything here writes.
+                inner = 0
+                if (!outer && substr(rest, 1, 1) == "`") { inner = 1; rest = substr(rest, 2) }
                 if (index(rest, br) != 1) next
                 rest = substr(rest, length(br) + 1)
-                if (tick) {
+                if (inner) {
                   if (substr(rest, 1, 1) != "`") next   # opened a span it never closed: not this branch
+                  rest = substr(rest, 2)
+                }
+                if (outer) {
+                  if (substr(rest, 1, 1) != "`") next   # the whole-token span must close after the branch
                   rest = substr(rest, 2)
                 }
                 # 5. The name must END there, or announcing `feature/50_x` also arms `feature/50`.

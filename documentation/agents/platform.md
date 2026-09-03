@@ -661,6 +661,24 @@ said no", never as "a link broke". Beside [`check-doc-links.sh`](../../scripts/c
     announced nothing, waited the notice hour and was told nothing had been announced. Fail-closed, and
     still a correct announcement being ignored. **One `grep -F` was answering two questions**; both ends
     are now cases (12 and 16).
+  - **Then the same tighten/widen asymmetry appeared one level up, in the round that fixed it.** Forgiving a
+    backticked *branch* still refused `` `TAKEOVER-ANNOUNCED: <branch>` `` wrapped as one span — **the form
+    all four contracts that tell an agent to announce actually render in their markdown source**, and an
+    agent copies raw markdown rather than rendered output. So the documented form announced nothing. Both
+    placements are now accepted (cases 16 and 18) and nested spans are not. **When a matcher is widened for
+    readability, re-run the case that pins what it was tightened against**: case 19 is prefix confusion
+    routed through the new outer span, because each forgiveness is a fresh chance to re-open condition 5.
+  - **And that case was PINNED BY ACCIDENT, which only the mutation showed.** It was written for condition 5
+    and reads like it tests condition 5 — but with condition 5 deleted it stays red, because the *span must
+    close* rule refuses it one line earlier. The ledger row would have claimed coverage the case did not
+    provide, on a security condition, in the file whose whole subject is claims that cannot observe what
+    they assert. It is now relabelled to the rule it actually pins — a real decision nothing else covered —
+    and a second case supplies condition 5 on that path: span opened and closed correctly, trailing text
+    butted against it. Mutating condition 5 now flips exactly those two, and neither the positive nor the
+    span case moves. **This is `check-doc-sizes-selftest.sh`'s lesson meeting a second gate**: coverage owed
+    to a fixture's incidental shape rather than its intent is coverage the table cannot see it lacks, and
+    the only thing that tells them apart is running the mutant. Write the row *after* the mutation, never
+    from the case's name.
   - **The activity read swallowed its status, and that is the FOURTH instance of the family** tabulated
     under [Constraints that bite in CI](#constraints-that-bite-in-ci) — cite that table rather than
     re-deriving it. `2>/dev/null || true` made an API error and *"this ref has no activity recorded"* the

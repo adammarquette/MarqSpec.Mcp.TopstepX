@@ -163,7 +163,10 @@ on PR #441). The token must be the **first thing in the comment** — quoting it
 of `claim.sh`'s own output does, announces nothing. The comment must come from an account with **write
 access**; anyone can open an issue comment here. And an **edited** comment is refused, because its timestamp
 would predate the text the notice hour is being counted against. All three fail closed: a refusal costs you
-one re-post. What still defeats this: a live session that never reads its issue. Push as you go.
+one re-post. **Backticks are markup, not part of the token** — `` `TAKEOVER-ANNOUNCED: <branch>` ``, a
+backticked branch alone, and the bare form all count, so copying the line out of this document or out of
+the script's own printed recipe both work. What still defeats this: a live session that never reads its
+issue. Push as you go.
 
 ### This repo is one half of a two-repo card
 

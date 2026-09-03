@@ -594,17 +594,16 @@ to be running. This paragraph first shipped saying "sixteen," carried from the c
 above rather than read off this run's own reply — the exact mistake this record exists to warn against
 elsewhere on this page, committed while writing about it.
 
-**The 2026-08-23 update's own "16 tools both times" is left alone, deliberately, and this is why.** It reads
-`Measured both sides, same image build, Docker Engine 29.6.2: … stdin held open until tools/list answers
-0 → 0, 16 tools both times` — a dated report of one real run against the image built that day, when sixteen
-was the true count. `get_contract_roll`, `get_footprint` and `get_volume_profile` did not exist yet. That is
-a different kind of sentence than the ones this page supersedes elsewhere: those made a claim that reads as
-still-true today and is not (the loopback universality, the `ASPNETCORE_HTTP_PORTS` parenthesis); this one is
-a fact about a specific build on a specific date, correct then and correct now as a record of what that build
-answered. Editing "16" to "18" there would misreport that measurement — no run that day saw eighteen — and a
-supersede note would flag a sentence that was never wrong. Left as a number that no longer describes the
-shipped tool catalogue, on purpose, the same way a timestamped log line is not edited when the thing it
-logged changes later.
+**The 2026-08-23 update's own "16 tools both times" is left alone, and here only what is established is
+said about it.** It reads `Measured both sides, same image build, Docker Engine 29.6.2: … stdin held open
+until tools/list answers 0 → 0, 16 tools both times`. The source tree at `08c96da`, the commit that wrote
+that sentence, already carried eighteen `[McpServerTool(...)]` attributes — the same count `origin/develop`
+carries today — so the discrepancy is not tool growth since. **Why that run reported sixteen against a tree
+that already declared eighteen is not accounted for here.** Neither number in this record is edited on the
+strength of a guess: the count above is corrected because this run itself was re-measured and read eighteen;
+`:160`'s count is left as printed because nothing here re-ran gh#98's measurement, and a plausible-sounding
+cause is exactly the kind of claim this paragraph exists to avoid asserting unchecked. Open question, tracked
+separately — not this card's to resolve.
 
 **One of the two traps gh#444 named is not what the code does, and the measurement is worth keeping because
 the issue's own reasoning about it was plausible and wrong.** It warned that `KeyLevels__Source` "has no

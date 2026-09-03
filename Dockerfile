@@ -49,9 +49,10 @@ ENV DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=false
 # address is always named inside the image, so stdio binds a fixed 8080 on every container interface rather
 # than 127.0.0.1:0 (gh#446; ADR-0007's 2026-09-03 update).
 #
-# That is not an exposure. Nothing is published for a stdio container, and MapMcp sits inside the Http branch
-# of Program.cs, so the listener answers no MCP route to anyone; each container has its own network namespace
-# besides, so two of them cannot collide the way two host processes did in gh#392.
+# That is not an exposure -- read off Program.cs, not measured. Nothing is published for a stdio container,
+# and MapMcp sits inside the Http branch of Program.cs, so the listener answers no MCP route to anyone; each
+# container has its own network namespace besides, so two of them cannot collide the way two host processes
+# did in gh#392.
 #
 # Clearing it here was measured and REJECTED. `ASPNETCORE_HTTP_PORTS=""` does give stdio a loopback ephemeral
 # port -- but under Mcp__Transport=Http it drops Kestrel to its own default, http://localhost:5000, which
@@ -60,8 +61,11 @@ ENV DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=false
 # HTTP transport is supported outside compose, as a side effect of a change about something else.
 # docker-compose.yml sets ASPNETCORE_HTTP_PORTS: "" explicitly, which is where that override belongs.
 
-# Documentary only -- EXPOSE publishes nothing, and the port is decided by ASPNETCORE_HTTPS_PORTS in
-# docker-compose.yml. 8443 rather than 8080 because the composed server is HTTPS-only since gh#416, and a
-# number that no longer matches the one thing that binds it is how a reader learns to distrust the file.
+# Documentary only -- EXPOSE publishes nothing. 8443 is right for the deployment this image supports:
+# docker-compose.yml sets ASPNETCORE_HTTPS_PORTS=8443 and clears ASPNETCORE_HTTP_PORTS above, because the
+# composed server has been HTTPS-only since gh#416. Outside compose, with no ASPNETCORE_* override, the
+# inherited ASPNETCORE_HTTP_PORTS=8080 named above is what actually binds -- measured, fresh build, `docker
+# run -i` with no compose: "Now listening on: http://[::]:8080" -- and EXPOSE still says 8443 for that case
+# too. A bare `docker run` is not the deployment this number describes.
 EXPOSE 8443
 ENTRYPOINT ["dotnet", "MarqSpec.Mcp.TopstepX.dll"]

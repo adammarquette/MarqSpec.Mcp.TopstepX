@@ -69,6 +69,7 @@ difference between the two entry points is a handful of lines.
 | [2026-09-01](#update-2026-09-01--not-exposed-by-default-was-not-true-of-the-composed-stack) | The composed HTTP port is bound to loopback, which is what the default token always assumed |
 | [2026-09-01](#update-2026-09-01--the-composed-endpoint-is-tls-only-behind-a-local-ca) | The composed endpoint is HTTPS on 8443 and nothing else, behind a certificate from a local CA |
 | [2026-09-01](#update-2026-09-01--the-composed-postgres-was-the-wall-left-standing) | The composed Postgres is bound to loopback too, closing the exposure the two updates above deferred |
+| [2026-09-03](#update-2026-09-03--the-ephemeral-loopback-sentence-is-false-inside-the-image) | The stdio ephemeral-loopback claim is wired to the container behaviour that contradicts it, and the inherited variable is kept on measurement |
 
 ## Update (2026-08-22) — starting is not the same as being ready
 
@@ -506,3 +507,57 @@ above, and gh#421 is closed rather than deferred. Neither sentence is edited in 
 2026-08-30 update's `ASPNETCORE_HTTP_PORTS` parenthesis was not: a reader who lands on either one first is
 better served by a sentence that is visibly wrong and points here than by a silent rewrite that erases the
 history of what this stack actually exposed, for how long.
+
+## Update (2026-09-03) — the ephemeral loopback sentence is false inside the image
+
+Nothing here is new behaviour. **This page already recorded the container case** — the 2026-09-01 TLS update
+did it, with the measurement, in the paragraph beginning *"That base-image variable has a second
+consequence"*. What it never did was point the sentence that contradicts it at that paragraph, so a reader
+arriving at the 2026-08-30 update takes a claim the shipped image does not satisfy and carries it away intact
+(gh#446).
+
+### One more sentence above is superseded
+
+The 2026-08-30 update reads:
+
+> loopback rather than any interface, because nothing should reach this listener at all
+
+**Inside the image, neither half of that holds.** `mcr.microsoft.com/dotnet/aspnet:10.0` bakes
+`ASPNETCORE_HTTP_PORTS=8080` into its environment and the `Dockerfile` never clears it, so an address is
+always named, `HasExplicitAddress` returns true, `ConfigureDefaultBinding` returns early, and a stdio
+container binds a **fixed** port on **every** container interface. Measured, Docker 29.7.2, image built from
+this branch: `Now listening on: http://[::]:8080`.
+
+**The rule the sentence illustrates is unchanged** — on a host, where nothing names an address, stdio still
+takes `127.0.0.1:0`, which is what gh#392 was about and what `TransportBindingTests` pins. Only its
+universality was wrong. As with the `ASPNETCORE_HTTP_PORTS` parenthesis superseded above, the sentence is
+**not edited in place**, for the reason this page gives about itself: a reader who lands on it first is better
+served by a claim that is visibly wrong and points here than by a silent rewrite.
+
+### Why the variable is not simply cleared
+
+`ENV ASPNETCORE_HTTP_PORTS=""` in the runtime stage is the obvious fix and it was **measured and rejected**.
+Four runs, same freshly built image, the only variable being that setting and the transport:
+
+| transport | `ASPNETCORE_HTTP_PORTS` | binds |
+|---|---|---|
+| stdio | inherited `8080` | `http://[::]:8080` — fixed, every interface |
+| stdio | `""` | `http://127.0.0.1:43245` — loopback, ephemeral |
+| Http | inherited `8080` | `http://[::]:8080` — reachable through `-p` |
+| **Http** | **`""`** | **`http://localhost:5000`** |
+
+The last row decides it. Cleared, the HTTP transport drops to Kestrel's own default, and `localhost` inside a
+container is unreachable from outside **whatever `-p` mapping is given** — a server that starts, logs
+cheerfully, and accepts nothing. So the change fixes the transport that serves nothing and silently breaks the
+one that serves everything. It would also answer **gh#444** — *whether the HTTP transport is supported outside
+compose* — as a side effect of a pull request about something else, and in the worst available direction: not
+with an error, but with a container that looks healthy.
+
+`docker-compose.yml` sets `ASPNETCORE_HTTP_PORTS: ""` explicitly for the composed HTTPS path, which is where
+that override belongs — on the deployment that knows which transport it is running.
+
+**Why this is not an exposure** now lives in the `Dockerfile`, beside the variable, rather than only here:
+nothing is published for a stdio container and `MapMcp` sits inside the `Http` branch, so the listener answers
+no MCP route to anyone. That is read off `Program.cs`, not measured. The collision half — separate network
+namespaces, so two containers cannot contend the way two host processes did — is in the 2026-09-01 paragraph
+already.

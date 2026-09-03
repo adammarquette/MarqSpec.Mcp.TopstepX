@@ -29,21 +29,42 @@
 # shapes claim.sh makes and hard-errors (exit 97) on any other -- a fake that silently answers a call the
 # script did not used to make is how a self-test stops testing the script in front of it. What that fake
 # cannot pin is the two `--jq` expressions claim.sh sends to the real API, since the fake returns canned
-# answers for those call shapes rather than evaluating them. Both were therefore run once by hand against
-# this repository and are recorded here rather than argued:
+# answers for those call shapes rather than evaluating them. **The fake cannot pin these fields, so this
+# transcript is the only thing that does.** Both were therefore run by hand against this repository, by
+# extracting the expression out of `scripts/claim.sh` itself rather than retyping it, and are recorded here
+# rather than argued. Re-run them when either expression changes -- a recorded claim that no longer describes
+# what ships is the exact species this card exists to close, and this block was stale once already (PR #441
+# round 3: it recorded the two-field projection after the shipped one had grown to four).
 #
 #   $ gh api "repos/adammarquette/.../activity?per_page=1&ref=refs/heads/feature/438_bug-platform-..." \
 #       --jq '.[0].timestamp'
-#   2026-09-02T19:16:56Z          <- the moment the claim ref was PUSHED, six minutes before this was written
+#   2026-09-02T22:19:55Z          <- the moment the claim ref was PUSHED, which an empty claim's tip cannot say
 #
-#   $ gh issue view 293 --json comments --jq '.comments[] | (.createdAt + "\t" + (.body|gsub("[\r\n]+";" ")))'
-#   2026-08-28T09:06:08Z	One datum for this card's **decision 2**, ...
-#   2026-08-28T20:05:21Z	Claimed. Working on `feature/293_docs-platform-check-doc-links-sh-s-sort-u-is-loa` ...
+#   $ gh issue view 293 --json comments --jq "$(the four-field projection at claim.sh's comments read)"
+#   2026-08-28T09:06:08Z	OWNER	false	One datum for this card's **decision 2**, measured while doing gh#271 (
+#   2026-08-28T20:05:21Z	OWNER	false	Claimed. Working on `feature/293_docs-platform-check-doc-links-sh-s-sor
+#   2026-08-28T20:13:08Z	OWNER	false	Measurement and decision, recorded here so #312 does not become the onl
 #
-# That second line is also why the announcement needs a token rather than a mention: #293's own claiming
+# FOUR fields, and the live API supplies all four: createdAt, authorAssociation, includesCreatedEdit, body.
+# The two added ones carry the security properties conditions 1-3 rest on, so "the API returns them at all"
+# is not a detail -- if `gh` ever dropped includesCreatedEdit, every announcement would read as edited and
+# every takeover would be refused forever: fail-closed, but silently.
+#
+# AND includesCreatedEdit MEANS WHAT CONDITION 3 ASSUMES -- measured, not assumed, against independent ground
+# truth. REST exposes created_at and updated_at, so `created_at != updated_at` answers "was this edited"
+# without needing to edit anything. Compared over every comment on the nine issues in this repository holding
+# at least one edited comment (#117 #190 #195 #202 #287 #290 #362 #423 #441), on 2026-09-02:
+#
+#   71 comments compared -- 13 EDITED by both, 58 clean by both, **0 disagreements in either direction**.
+#
+# The denominator is pinned at those 71: that population only grows. The direction that would matter is REST
+# saying edited while includesCreatedEdit says clean, which is the hole; there were none.
+#
+# That second #293 line is also why the announcement needs a token rather than a mention: #293's own claiming
 # session posted a comment naming its own branch, so "a comment naming the branch" would have been satisfied
-# by the claimant, authorising a takeover of a claim that had just announced itself. The branch-name match is
-# done in shell, where these cases reach it; only the flattening is jq's.
+# by the claimant, authorising a takeover of a claim that had just announced itself. Note it is `OWNER` and
+# unedited -- it passes conditions 1 and 2 and is refused only because it does not OPEN with the token, which
+# is condition 3 doing the work the token was introduced for. Case 4 pins it.
 #
 # DECISION LEDGER — every decision claim.sh's liveness read makes, beside the case that kills it. Adding a
 # decision without adding a row is then the same visible omission the ledger exists to catch
@@ -72,6 +93,15 @@
 #                                                                 `feature/50`)
 #   leading whitespace forgiven, so the printed recipe works     case 15 (the indented paste, PERMITTED)
 #   the branch name may be backticked, as house style writes it  case 16 (PERMITTED — advisory 3)
+#   the WHOLE token may be backticked, as the contracts render  case 18 (PERMITTED — round-3 advisory)
+#   an outer span must CLOSE after the branch it opened on      case 19 — written for condition 5 and
+#                                                                pinned it BY ACCIDENT: mutate condition
+#                                                                5 and 19 stays green, because this rule
+#                                                                refuses it one line earlier. Relabelled
+#                                                                to what it tests; found by mutating,
+#                                                                not by reading (platform.md)
+#   condition 5 holds on the OUTER path, not only the bare one  case 20 (mutate condition 5 -> 14 and 20
+#                                                                go green together, nothing else moves)
 #
 #   activity read FAILING is not the read reporting NOTHING      case 1 (fails) vs case 17 (returns none);
 #                                                                 both UNKNOWN, different diagnostics
@@ -603,6 +633,64 @@ if assert_universal "$L" \
   else
     ok "case 17  $L"
   fi
+fi
+
+# ---------------------------------------------------------------------------
+# 18. THE FORM THE CONTRACTS THEMSELVES RENDER. PR #441's round-3 review: condition 4 forgave a backticked
+#     BRANCH, but `TAKEOVER-ANNOUNCED: <branch>` wrapped as ONE span -- which is exactly what AGENTS.md,
+#     CONTRIBUTING.md, coordinator.md and project-board-workflow.md all write in their markdown source -- was
+#     refused. An agent copies raw markdown, not rendered output, so the documented form announced nothing.
+#     The mirror of advisory 3, and taken for the same reason: fail-closed is still a correct announcement
+#     being ignored.
+# ---------------------------------------------------------------------------
+start_case
+L="the whole token backticked, as the four contracts render it — permitted"
+add_worked_claim "feature/512_whole-token-backticked"
+export FGH_TITLE="whole token backticked" FGH_TIP_DATE="$(iso_ago 13)" FGH_ACTIVITY="$(iso_ago 13)" \
+  FGH_COMMENTS="$(comment "$(iso_ago 5)" OWNER false "\`TAKEOVER-ANNOUNCED: feature/512_whole-token-backticked\` — no push in 13h")" FGH_PRS=""
+run_claim 512 --check
+if assert_universal "$L" \
+  && expect_says "$L" 'MAY be taken over on' \
+  && expect_status "$L" 0; then
+  ok "case 18  $L"
+fi
+
+# ---------------------------------------------------------------------------
+# 19. THE OUTER SPAN MUST CLOSE AFTER THE BRANCH. Written first as a condition-5 case and it was PINNED BY
+#     ACCIDENT -- it stays refused with condition 5 deleted, because this rule catches it one line earlier.
+#     Caught by mutating condition 5 rather than by reading, which is the platform.md warning about coverage
+#     owed to a fixture's incidental shape rather than its intent. Relabelled to what it actually tests,
+#     which is a real decision nothing else pinned; case 20 is the one written for condition 5.
+# ---------------------------------------------------------------------------
+start_case
+L="a whole-token span that never closes after the branch"
+add_worked_claim "feature/513_prefix"
+export FGH_TITLE="span never closed" FGH_TIP_DATE="$(iso_ago 13)" FGH_ACTIVITY="$(iso_ago 13)" \
+  FGH_COMMENTS="$(comment "$(iso_ago 5)" OWNER false "\`TAKEOVER-ANNOUNCED: feature/513_prefix-longer\` — a different branch")" FGH_PRS=""
+run_claim 513 --check
+if assert_universal "$L" \
+  && expect_says "$L" 'nothing has been announced on the issue' \
+  && expect_status "$L" 3; then
+  ok "case 19  $L"
+fi
+
+# ---------------------------------------------------------------------------
+# 20. AND CONDITION 5 ON THE OUTER PATH, WHICH IS WHAT 19 WAS SUPPOSED TO BE. The span opens and closes
+#     correctly around the right branch, and then there is trailing text butted straight against it. Only
+#     condition 5 refuses this: delete it and this case goes green while every other case stays green.
+#     Widening a matcher for readability is a fresh chance to re-open what an earlier condition closed, so
+#     each new path gets its own condition-5 case rather than trusting the bare one to cover them.
+# ---------------------------------------------------------------------------
+start_case
+L="the span closes correctly but the name does not end there"
+add_worked_claim "feature/514_trailing"
+export FGH_TITLE="trailing after the span" FGH_TIP_DATE="$(iso_ago 13)" FGH_ACTIVITY="$(iso_ago 13)" \
+  FGH_COMMENTS="$(comment "$(iso_ago 5)" OWNER false "\`TAKEOVER-ANNOUNCED: feature/514_trailing\`x")" FGH_PRS=""
+run_claim 514 --check
+if assert_universal "$L" \
+  && expect_says "$L" 'nothing has been announced on the issue' \
+  && expect_status "$L" 3; then
+  ok "case 20  $L"
 fi
 
 info ""

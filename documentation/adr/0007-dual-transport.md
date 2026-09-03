@@ -603,7 +603,7 @@ that already declared eighteen is not accounted for here.** Neither number in th
 strength of a guess: the count above is corrected because this run itself was re-measured and read eighteen;
 `:160`'s count is left as printed because nothing here re-ran gh#98's measurement, and a plausible-sounding
 cause is exactly the kind of claim this paragraph exists to avoid asserting unchecked. Open question, tracked
-separately — not this card's to resolve.
+separately as gh#460 — not this card's to resolve.
 
 **One of the two traps gh#444 named is not what the code does, and the measurement is worth keeping because
 the issue's own reasoning about it was plausible and wrong.** It warned that `KeyLevels__Source` "has no

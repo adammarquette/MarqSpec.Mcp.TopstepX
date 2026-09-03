@@ -13,6 +13,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-09-03
+
+A **minor** bump rather than a patch: the composed MCP endpoint is HTTPS-only and every local client's
+URL changes once, which is breaking for them even though nothing here can trade. It also carries the
+`0.2.1` fix, which was written up but never tagged — folded in here rather than cut retroactively, so
+there is one release to date rather than two, one of them wrong.
+
 ### Security
 
 - **BREAKING for local clients.** The composed MCP endpoint is now **HTTPS only**, on
@@ -128,10 +135,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   so no predicate can tell one's leftover from the other's listen. ADR-0016 already calls that deployment
   wrong; refusing the second recorder outright is gh#404 (gh#382).
 
-## [0.2.1] - 2026-08-30
-
-### Fixed
-
 - The stdio transport no longer holds the framework's default port. `WebApplication` starts Kestrel under both
   transports ([ADR-0007](documentation/adr/0007-dual-transport.md)), and under stdio it was taking
   `http://localhost:5000` for a listener that serves nothing — so a second stdio session could not start, and
@@ -201,7 +204,7 @@ First tagged release. Read-only MCP server over the ProjectX/TopstepX gateway: c
 projections, contract-aware series, observations with semantic search, fifteen tools on stdio and streamable
 HTTP. The tag was re-cut after the first publish failed on an uppercase image reference (gh#115).
 
-[Unreleased]: https://github.com/adammarquette/MarqSpec.Mcp.TopstepX/compare/v0.2.1...HEAD
-[0.2.1]: https://github.com/adammarquette/MarqSpec.Mcp.TopstepX/compare/v0.2.0...v0.2.1
+[Unreleased]: https://github.com/adammarquette/MarqSpec.Mcp.TopstepX/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/adammarquette/MarqSpec.Mcp.TopstepX/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/adammarquette/MarqSpec.Mcp.TopstepX/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/adammarquette/MarqSpec.Mcp.TopstepX/releases/tag/v0.1.0

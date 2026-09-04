@@ -124,9 +124,54 @@ say so. Each absent dependency produces a refusal naming the fix, rather than a 
 would report as a bare transport failure ([ADR-0007](documentation/adr/0007-dual-transport.md)). So you can
 register it first and configure it after.
 
+### The stdio transport in the container
+
+The image's own entrypoint speaks **stdio**. [`Dockerfile`](Dockerfile) pins no transport, and it is
+`docker-compose.yml` setting `Mcp__Transport: "Http"` that makes the composed stack the exception — so the
+published image is already the thing an MCP client launches, and it needs neither compose nor the SDK:
+
+```bash
+docker pull ghcr.io/adammarquette/marqspec.mcp.topstepx:0.2.0
+claude mcp add topstepx -- docker run --rm -i ghcr.io/adammarquette/marqspec.mcp.topstepx:0.2.0
+```
+
+Or build the image instead of pulling it — `docker build -t marqspec-mcp-topstepx:local .` — and register
+that tag. Both were measured for the paragraphs below and behaved identically.
+
+**`-i` is not optional, and omitting it looks like success.** Without it the container is handed an
+already-closed stdin: the stdio transport reads EOF before the handshake and the host stops before it ever
+serves. Since gh#76 that is a clean **exit 0** with an empty stdout — no crash and no non-zero code to search
+for — and the explanation is the container's *last* log line, printed underneath a Kestrel
+`TaskCanceledException` that is expected on this path and is not the fault:
+
+```
+info: startup[0]
+      Shutdown was requested before the server finished starting, so it stopped without listening. On stdio
+      this is what `docker run` WITHOUT `-i` looks like: stdin is closed before the handshake, so there is
+      no client to serve. Pass `-i` (or start the server from an MCP client, which holds stdin open) ...
+```
+
+**`Now listening on: http://[::]:8080` is expected here, and it is not the HTTP transport.**
+`mcr.microsoft.com/dotnet/aspnet:10.0` bakes `ASPNETCORE_HTTP_PORTS=8080` into the image, so inside a
+container an address is always named and `WebApplication`'s Kestrel binds it under either transport
+([ADR-0007](documentation/adr/0007-dual-transport.md)). Nothing is served there — your session is the pipe —
+and the command above publishes no port at all. `EXPOSE 8443` in the `Dockerfile` describes the composed
+deployment rather than this one.
+
+**Do not reach for `--entrypoint`.** It *replaces* the image's entrypoint rather than adding to it, so the
+container that runs is no longer this server: an image whose entrypoint named an assembly that did not exist
+once passed a smoke step that way, at exit 0 (gh#67). Check whatever you are checking against the entrypoint
+that ships.
+
+This is the shape CI runs on every pull request —
+[`scripts/check-image-entrypoint.sh`](scripts/check-image-entrypoint.sh) drives `docker run --rm -i`,
+publishes no port, and asserts the `tools/list` reply *before* it reads the exit code. And as with the local
+process above, the container carries no database and no credentials until you give it some, and starts
+anyway.
+
 ### The HTTP transport without compose
 
-There is a third way to run this beside `docker compose up` and the stdio registration above: the **HTTP
+There is a further way to run this beside `docker compose up` and the two stdio launches above: the **HTTP
 transport on its own**, with `dotnet run` and nothing composed around it. It is supported, and it needs less
 than the composed stack does — no `.env`, no certificate, no Postgres, no ProjectX credentials:
 

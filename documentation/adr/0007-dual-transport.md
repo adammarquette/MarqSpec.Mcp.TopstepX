@@ -628,8 +628,12 @@ mistyped value binds to `Unknown` and is refused by `Validate`; neither route do
 `KeyLevelSourceBindingTests` now, along with what does reach the validator — an explicit `Unknown`; any
 **numeral**, `0` and `99` alike, because the binder parses an enum through `Enum.Parse` and never asks whether
 the number is defined; and a key present with a JSON **`null`**, which the binder writes as the enum's zero
-rather than leaving alone. The first correction named only `Unknown`, and its review caught the numerals — the
-same shape of error, one iteration later — so this paragraph's measurement is no longer the only record of it.
+rather than leaving alone. The correction was itself wrong twice before it held — "exactly one route", then
+"four shapes" — and each time the error was the claim of completeness: reviewing the second found that a
+**comma-separated list** is OR-ed together, so `HeikinAshiBody,Body` binds as `HighLow` and boots, refused by
+nothing. The remarks now describe the split the binder makes — what `Enum.Parse` can read binds, whatever it
+means, and only `IsServable` stands behind it — rather than enumerate outcomes. Closing the comma case would
+take string binding, declined in that record and tracked as gh#468.
 
 **The other named trap is real, and this recipe avoids it by not needing TLS at all.** The composed stack's
 HTTPS on 8443 is gh#416's answer to one client's TLS requirement, layered onto the HTTP transport rather than

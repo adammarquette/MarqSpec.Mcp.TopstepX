@@ -22,15 +22,16 @@ namespace MarqSpec.Mcp.TopstepX.Tests.Configuration;
 /// fails startup by design" as a trap an operator meets, which only running it disproved.
 /// </para>
 /// <para>
-/// The binder splits on the <b>shape</b> of the value, not on whether it is in the vocabulary. An
-/// <b>absent</b> key never reaches <c>Unknown</c> at all — the binder leaves a bound property alone when
-/// its key is missing, so the property initializer's <see cref="PivotSource.HeikinAshiBody"/> stands. A
-/// <b>name</b> outside the vocabulary never reaches <c>Validate</c> — the binder throws first. A
-/// <b>numeral</b> binds whatever it is, because <c>Enum.Parse</c> accepts any integer, defined or not. A key
-/// present with a <b>JSON <c>null</c></b> is not absent: the binder writes the enum's zero over the
-/// initializer. So <c>Unknown</c>, <c>0</c>, <c>99</c> and <c>null</c> all arrive at <c>Validate</c>, and it
-/// is what refuses them. The first correction of this claim named <c>Unknown</c> alone, and was wrong in the
-/// same way its subject was.
+/// The binder splits on whether <c>Enum.Parse</c> can <b>read</b> the value, not on whether it means
+/// anything. An <b>absent</b> key never reaches <c>Unknown</c> at all — the binder leaves a bound property
+/// alone when its key is missing, so the property initializer's <see cref="PivotSource.HeikinAshiBody"/>
+/// stands. A value it <b>cannot read</b> — a name outside the vocabulary, an empty string — never reaches
+/// <c>Validate</c>: the binder throws first. A value it <b>can</b> read binds as whatever it makes of it, and
+/// only <c>IsServable</c> stands behind that: <c>Unknown</c>, any numeral, defined or not, and a JSON
+/// <c>null</c> arrive at <c>Validate</c> and are refused there — and a <b>comma-separated list</b> is OR-ed
+/// together, so <c>HeikinAshiBody,Body</c> binds as <see cref="PivotSource.HighLow"/> and boots. Three
+/// corrections of the original claim each enumerated the outcomes and each missed one; these tests pin the
+/// mechanism instead.
 /// </para>
 /// <para>
 /// These pin the boundary rather than the wording of any one sentence, because the defect was a claim about
@@ -49,13 +50,27 @@ public sealed class KeyLevelSourceBindingTests
         options.Source.Should().Be(PivotSource.HeikinAshiBody);
     }
 
-    /// <summary>A named source is honoured, so the default is a default rather than a hard-wiring.</summary>
-    [Fact]
-    public void Source_IsHonoured_WhenTheValueNamesAKnownSource()
+    /// <summary>
+    /// Whatever the binder reads as a known source is accepted, however it was spelled: a name in any case,
+    /// a signed numeral — and a <b>comma-separated list</b>, which <c>Enum.Parse</c> ORs together without
+    /// asking whether the enum is <c>[Flags]</c>, so two sources named together bind as a third. That last
+    /// row is accepted and known, not endorsed: the server boots on it and serves from a source nobody
+    /// named, and the sentence in the option's remarks that says so is pinned here (gh#468).
+    /// </summary>
+    /// <param name="configured">The configured value.</param>
+    /// <param name="bound">What it binds to.</param>
+    [Theory]
+    [InlineData("HighLow", PivotSource.HighLow)]
+    [InlineData("highlow", PivotSource.HighLow)]
+    [InlineData("+2", PivotSource.Body)]
+    [InlineData("HeikinAshiBody,Body", PivotSource.HighLow)]
+    public void Source_IsAccepted_WhenWhatTheBinderReadsIsAKnownSource_ACommaListIncluded(
+        string configured,
+        PivotSource bound)
     {
-        KeyLevelDetectionOptions options = Bind("HighLow");
+        KeyLevelDetectionOptions options = Bind(configured);
 
-        options.Source.Should().Be(PivotSource.HighLow);
+        options.Source.Should().Be(bound);
     }
 
     /// <summary>
@@ -78,16 +93,19 @@ public sealed class KeyLevelSourceBindingTests
     }
 
     /// <summary>
-    /// What the binder lets through and <c>Validate</c> refuses: <c>Unknown</c> by name, and any numeral —
-    /// <c>0</c> binds as <c>Unknown</c>, and <c>99</c> as a value the enum does not define. The rendered
-    /// value pins that the numeral arrived as itself rather than being coerced to something in range.
+    /// What the binder lets through and <c>Validate</c> refuses: <c>Unknown</c> by name, padded or not, and
+    /// any numeral outside the enum — <c>0</c> binds as <c>Unknown</c>, <c>99</c> and <c>-1</c> as values
+    /// the enum does not define. The rendered value pins that the numeral arrived as itself rather than
+    /// being coerced to something in range.
     /// </summary>
     /// <param name="configured">The configured value.</param>
     /// <param name="rendered">How the refusal names it, which is how it bound.</param>
     [Theory]
     [InlineData("Unknown", "Unknown")]
+    [InlineData(" Unknown ", "Unknown")]
     [InlineData("0", "Unknown")]
     [InlineData("99", "99")]
+    [InlineData("-1", "-1")]
     public void Validate_RefusesWhatTheBinderLetsThrough_NamingTheKnownSources(string configured, string rendered)
     {
         // Honouring any of these picks a price series by accident: `KeyLevels.PivotPrices` reads anything it
@@ -120,9 +138,10 @@ public sealed class KeyLevelSourceBindingTests
 
     /// <summary>
     /// The refusal must explain how its input actually arrives. It used to say an unset or mistyped value
-    /// binds to <c>Unknown</c> — the claim gh#459 was filed for — and its first correction said only an
-    /// explicit <c>Unknown</c> could reach it, which told an operator who had set <c>99</c> that their case
-    /// could not produce the message they were reading.
+    /// binds to <c>Unknown</c> — the claim gh#459 was filed for — then that only an explicit <c>Unknown</c>
+    /// could reach it, then that four shapes could and nothing else; each was a completeness claim and each
+    /// was wrong. It now names the mechanism — what the binder can read binds, a comma list included — and
+    /// blames neither an unset nor a mistyped value.
     /// </summary>
     /// <param name="configured">The configured value.</param>
     [Theory]
@@ -134,6 +153,7 @@ public sealed class KeyLevelSourceBindingTests
         string message = CaptureRefusal(configured);
 
         message.Should().Contain("numeral");
+        message.Should().Contain("comma-separated");
         message.Should().Contain("JSON null");
         message.Should().NotContain("unset");
         message.Should().NotContain("mistyped");

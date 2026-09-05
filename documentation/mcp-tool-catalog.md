@@ -426,7 +426,9 @@ configuration is `HeikinAshiBody` — it smooths single-bar noise into structure
 left and 15 right, a zone width of 0.5 ATR, a floor of 0.5, a width cap of 2.5% and a level cap of 12;
 `.env.example` carries the section. Those are Bjorgum's *Key Levels* calibration, adopted whole by gh#232 and
 implemented by gh#245. A source outside `HeikinAshiBody | Body | HighLow` is an error listing the three, from
-a call **and** from configuration, where `Unknown` is what an unset or mistyped value binds to.
+a call **and** from configuration — where an unset key keeps `HeikinAshiBody`, a name outside the three fails
+in the configuration binder before that message exists, and `Unknown`, any numeral or a JSON `null` binds and
+is refused by it (gh#459).
 
 **Per-call detection parameters are sound here only because nothing stores a level** — [ADR-0013](adr/0013-levels-are-computed-on-read.md). ADR-0006
 forbids the same freedom for indicators, whose storage key is `(Indicator, Period)`: a parameter the key

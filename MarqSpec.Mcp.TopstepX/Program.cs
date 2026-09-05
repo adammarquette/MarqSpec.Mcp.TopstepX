@@ -319,9 +319,11 @@ public static class Program
             .ValidateOnStart();
 
         // The detection defaults get_key_levels falls back to. Validated on start, and the Unknown check is
-        // an IValidatableObject on the type rather than a lambda here -- Unknown = 0 is what a mistyped or
-        // absent value binds to, and a server that boots on one answers every level call from a source
-        // nobody chose.
+        // an IValidatableObject on the type rather than a lambda here. Unknown is NOT what an absent or
+        // mistyped value binds to -- an absent key leaves the HeikinAshiBody initializer standing and a bad
+        // name fails in the binder (gh#459) -- but an explicit Unknown, any numeral or a JSON null binds and
+        // reaches the check, and a server that boots on one answers every level call from a source nobody
+        // chose.
         services.AddOptions<KeyLevelDetectionOptions>()
             .Bind(builder.Configuration.GetSection(KeyLevelDetectionOptions.SectionName))
             .ValidateDataAnnotations()

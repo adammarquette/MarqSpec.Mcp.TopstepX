@@ -123,10 +123,10 @@ it before starting, and add dated entries only when nothing formal fits.
   worktrees, plus `bin/` and `obj/`; an unscoped `grep -r` reads all of that too, so it both risks timing out
   and — worse — returns a count that reads as careful evidence while being inflated by everything nested
   nearby. `git grep` reads only the current worktree's tracked files, excluding nested checkouts and build
-  output **by construction**, not by an `--exclude-dir` list the next nesting spot outruns. Verified at
-  `f0c723ef2d471861c8c1f30415cac98fa9be6b04`: `git grep -c 'ConfigureDefaultBinding'` found **4** tracked
-  files; an unscoped `grep -r` for the same term found **16**, 12 of them under `bin/`/`obj/` from one
-  `dotnet build` (gh#456). **Never quote a worktree count** — it moves with every `claim.sh`.
+  output **by construction**, not by an `--exclude-dir` list the next nesting spot outruns. Illustrated by the
+  `bin`/`obj` half alone, with no worktree needed: one `dotnet build` in an otherwise clean tree adds **12**
+  files a search term's unscoped `grep -r` reads and `git grep` does not (gh#456). **Never quote a worktree
+  count here** — it moves with every `claim.sh`.
 
 *Every line here is paid by every agent in every session. Keep it small: anything role- or subtree-specific
 belongs in its contract, and anything with a formal home belongs there rather than restated here.*

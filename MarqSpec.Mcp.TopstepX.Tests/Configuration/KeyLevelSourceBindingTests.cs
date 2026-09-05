@@ -93,7 +93,8 @@ public sealed class KeyLevelSourceBindingTests
     /// <summary>
     /// A key present with a JSON <c>null</c> is not an absent key, and it is not a name
     /// <see cref="PivotSources.Resolve(string)"/> recognises either — it is refused on the same terms as any
-    /// other unresolved value, rendered as the empty name <c>Resolve</c> treats a null as.
+    /// other unresolved value. It is the one case with its own rendering: <see cref="Validate"/> writes the
+    /// bare word <c>null</c> rather than quoting it as a value it read, so the rendering is asserted here.
     /// </summary>
     [Fact]
     public void Validate_RefusesAJsonNull_WhichIsNotAnAbsentKeyAndDoesNotResolve()
@@ -102,7 +103,54 @@ public sealed class KeyLevelSourceBindingTests
             new MemoryStream(Encoding.UTF8.GetBytes("""{ "KeyLevels": { "Source": null } }"""))));
 
         bind.Should().Throw<OptionsValidationException>()
+            .WithMessage("*__Source is null,*")
             .WithMessage("*HeikinAshiBody, Body, HighLow*");
+    }
+
+    /// <summary>
+    /// The refusal's explanatory half, which nothing else reads.
+    /// </summary>
+    /// <remarks>
+    /// <b>This assertion is the reason the message stopped being wrong.</b> The sentence beside the value has
+    /// been false four times — gh#459 filed for it, then twice more as that card was corrected, then a fifth
+    /// shape (gh#468) that no wording had covered — and each time the value and the source list stayed
+    /// perfectly true beside it. Asserting those two catches nothing: they are produced by
+    /// <see cref="PivotSources.KnownNames"/> and by the input, and they hold no matter what the prose claims.
+    /// So this reads the prose, and it reads it for the <b>mechanism</b> the message now names rather than for
+    /// a list of the shapes it refuses — the enumeration is exactly what gh#468 stopped making, and a needle
+    /// tied to one would have to be rewritten by the next author who correctly stopped enumerating.
+    /// </remarks>
+    [Fact]
+    public void TheRefusal_ExplainsMatchingByName_AndBlamesNeitherAnUnsetNorAMistypedValue()
+    {
+        string message = CaptureRefusal("Bogus");
+
+        message.Should().Contain("Matching is by name");
+        message.Should().Contain("trimmed and case-insensitive");
+        message.Should().Contain("Leaving the key out keeps the " + nameof(PivotSource.HeikinAshiBody));
+        message.Should().NotContain("unset");
+        message.Should().NotContain("mistyped");
+    }
+
+    /// <summary>
+    /// The refusal <see cref="Validate"/> writes for <paramref name="configured"/>, or a failure naming it if
+    /// it was not refused at all.
+    /// </summary>
+    /// <param name="configured">The value for <c>KeyLevels__Source</c>.</param>
+    /// <returns>The message an operator reads at startup.</returns>
+    private static string CaptureRefusal(string configured)
+    {
+        try
+        {
+            Bind(configured);
+        }
+        catch (OptionsValidationException exception)
+        {
+            return exception.Message;
+        }
+
+        throw new InvalidOperationException(
+            "'" + configured + "' was expected to be refused by Validate and was not.");
     }
 
     /// <summary>Binds with <c>KeyLevels:Source</c> present and set to <paramref name="configured"/>.</summary>

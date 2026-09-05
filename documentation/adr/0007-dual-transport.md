@@ -71,7 +71,7 @@ difference between the two entry points is a handful of lines.
 | [2026-09-01](#update-2026-09-01--the-composed-postgres-was-the-wall-left-standing) | The composed Postgres is bound to loopback too, closing the exposure the two updates above deferred |
 | [2026-09-03](#update-2026-09-03--the-ephemeral-loopback-sentence-is-false-inside-the-image) | The stdio ephemeral-loopback claim is wired to the container behaviour that contradicts it, and the inherited variable is kept on measurement |
 | [2026-09-03](#update-2026-09-03--the-http-transport-is-supported-outside-compose-too) | The HTTP transport is a supported way to run this outside compose too, on its own narrower recipe — and one of the two traps a reader was warned about is not what the code does |
-| [2026-09-05](#update-2026-09-05--the-tree-behind-160-was-never-committed-so-the-hypothesis-cannot-be-tested) | Closes gh#460: the stale-image hypothesis for `:160`'s 16 is neither confirmed nor refuted, because no commit or CI log spans the gap between that measurement and this repository's own first commit |
+| [2026-09-05](#update-2026-09-05--the-tree-behind-line-160-is-real-and-it-held-15-not-18) | Closes gh#460: the tree behind `:160` is on `origin/main`, not lost, and it held 15 tools that day — a one-tool gap, not the three the first reading of `develop` alone implied |
 
 ## Update (2026-08-22) — starting is not the same as being ready
 
@@ -160,6 +160,8 @@ not exist, and it risks a hang that `scripts/check-image-entrypoint.sh` hard-bou
 Measured both sides, same image build, Docker Engine 29.6.2: no stdin **139 → 0** (3 runs each); stdin held
 open until `tools/list` answers **0 → 0**, 16 tools both times. The healthy exit code is therefore no longer
 transport-dependent — but the image gate still does not read exit codes, for the reasons in its own header.
+(Narrowed below: the 2026-09-05 update found the source tree that day held 15 tools, not 18 — a one-tool gap
+against a real, still-inspectable tree, not three tools against one that no longer exists.)
 
 ## Update (2026-08-23) — the image gate does read the exit code
 
@@ -680,93 +682,129 @@ themselves rather than the compose default — for testing and debugging the HTT
 standing up the composed stack to do it. The recipe is in `README.md`, which also now distinguishes the
 container-path failure above from a genuinely missing certificate under compose.
 
-## Update (2026-09-05) — the tree behind line 160 was never committed, so the hypothesis cannot be tested
+## Update (2026-09-05) — the tree behind line 160 is real, and it held 15, not 18
 
-gh#460 asked the question the update above deferred: is `:160`'s "16 tools both times" a defensible count
-against *some* artifact, and if the leading hypothesis is a stale Docker image — built before that day's
-source changes, so the container genuinely answered 16 while the tree already held 18 — does it hold. **It is
-neither confirmed nor refuted, and the reason is stronger than "nothing here re-ran the measurement": the tree
-state the hypothesis is about was never committed to this repository at all**, so there is no artifact left to
-check it against.
+gh#460 asked whether `:160`'s "16 tools both times" is a defensible count, with the stale-image hypothesis
+recorded as unverified. **A first pass at this section concluded the tree the measurement was taken against
+was never committed to this repository at all, scoped entirely to `origin/develop`. That conclusion was wrong
+and review caught it before it shipped** — `develop`'s own history begins at a root commit, but this
+repository's history does not, and the tree behind `:160` is on a branch that still carries it.
 
-**This repository's own git history does not reach back far enough.** The commit the update above and gh#460
-both point at as the one that "wrote" `:160` is not a commit near the event — it is the **root** of this
-repository's entire history:
+**Three roots, not one.** `git rev-list --max-parents=0 --all` names `3c3a8bc`, `08c96da` and `2566500`, and
+the third is dated to the second of this repository's own creation:
 
 ```console
-$ git rev-list --parents -1 08c96da7133dd101717e1d169c136cbbbe2eca99
+$ git rev-list --max-parents=0 --all
+3c3a8bcb7e235c693c1c9c1867a48282dbe80a9f
 08c96da7133dd101717e1d169c136cbbbe2eca99
+256650096f052dce9c0d018c84a753730f63c05e
 
-$ git log -1 --format="author=%ad committer=%cd" --date=iso-strict 08c96da7133dd101717e1d169c136cbbbe2eca99
-author=2026-08-29T19:31:49-05:00 committer=2026-08-29T19:37:00-05:00
+$ git log -1 --format="%H %ad %s" --date=iso-strict 256650096f052dce9c0d018c84a753730f63c05e
+256650096f052dce9c0d018c84a753730f63c05e 2026-08-21T17:49:42-05:00 Initial commit
 
-$ git show 08c96da7133dd101717e1d169c136cbbbe2eca99 --stat | tail -1
- 274 files changed, 62610 insertions(+)
-
-$ git log --oneline origin/develop | tail -1
-08c96da fix(mcp): name the window before indicator warmup finishes
-```
-
-One line of `git rev-list --parents` naming only itself is a root commit — no earlier commit exists in this
-repository to `git show` a prior tree from. Yet the GitHub repository and its issue tracker predate that
-commit by over a week, and the "16 tools" measurement was taken while closing an issue that was itself opened
-and closed entirely inside that gap:
-
-```console
 $ gh repo view adammarquette/MarqSpec.Mcp.TopstepX --json createdAt
 {"createdAt":"2026-08-21T22:49:42Z"}
-
-$ gh issue view 76 --json createdAt,closedAt
-{"createdAt":"2026-08-23T15:37:38Z","closedAt":"2026-08-23T20:55:34Z"}
 ```
 
-Whatever the developer's local source tree looked like on 2026-08-23, when the sentence at `:160` says the
-measurement was taken, was never a git commit — the entire span from the repository's creation to the root
-commit six days later left no trace in this history for anything to be checked against. `08c96da` already
-carries the full ADR text through the 2026-08-23 update, eighteen `[McpServerTool(...)]` attributes included,
-in the same 274-file commit that first introduced the file.
+`2566500` sits on `origin/main` and `origin/staging`, both carrying dense, continuous history from it through
+2026-08-23 and well beyond. `08c96da` — the commit the earlier draft of this section, and gh#460 itself, both
+treated as the beginning of the record — is a second root, reachable only from `origin/develop`.
 
-**Nor is there a CI log to substitute for the missing commit.** The measurement reads "Docker Desktop 29.6.2
-on one developer machine" — manual and local, not a runner — and `.github/workflows/ci.yml` has no history
-before `08c96da` either, having arrived in the same root commit. No `image` job, and no gate of any kind,
-existed anywhere in this repository's history on 2026-08-23 to have logged a build that day. The issue's own
-suggested places to look — the image build history, the `image` gate's logs for that day — do not exist for
-this repository to have kept.
-
-**The tool count is re-run rather than copied from gh#460 or from the update above:**
+**The day of the measurement is not a gap on `origin/main`.** It carries a commit for essentially every hour of
+2026-08-23, gh#76's own fix among them — the change the 2026-08-23 update above describes ("A shutdown
+requested before startup finishes is now honoured as a shutdown"):
 
 ```console
-$ git grep -c '\[McpServerTool(' 08c96da7133dd101717e1d169c136cbbbe2eca99 -- 'MarqSpec.Mcp.TopstepX/Tools/*.cs'
-08c96da...:MarqSpec.Mcp.TopstepX/Tools/AccountTools.cs:4
-08c96da...:MarqSpec.Mcp.TopstepX/Tools/MarketDataTools.cs:8
-08c96da...:MarqSpec.Mcp.TopstepX/Tools/ObservationTools.cs:2
-08c96da...:MarqSpec.Mcp.TopstepX/Tools/ReferenceTools.cs:3
-08c96da...:MarqSpec.Mcp.TopstepX/Tools/SnapshotTools.cs:1
-                                                  → 18
+$ git log -1 --format="%H %ad %s" --date=iso-strict eac06a9f9af39e9271f82df8dcd9843f4b561148
+eac06a9f9af39e9271f82df8dcd9843f4b561148 2026-08-23T14:49:02-05:00 fix(code): treat a shutdown requested during startup as a clean stop
+```
 
-$ git grep -c '\[McpServerTool(' f0c723ef2d471861c8c1f30415cac98fa9be6b04 -- 'MarqSpec.Mcp.TopstepX/Tools/*.cs'
-f0c723e...:MarqSpec.Mcp.TopstepX/Tools/AccountTools.cs:4
-f0c723e...:MarqSpec.Mcp.TopstepX/Tools/BarTools.cs:2
-f0c723e...:MarqSpec.Mcp.TopstepX/Tools/ContractRollTools.cs:1
-f0c723e...:MarqSpec.Mcp.TopstepX/Tools/IndicatorTools.cs:2
-f0c723e...:MarqSpec.Mcp.TopstepX/Tools/KeyLevelTools.cs:1
-f0c723e...:MarqSpec.Mcp.TopstepX/Tools/ObservationTools.cs:2
-f0c723e...:MarqSpec.Mcp.TopstepX/Tools/ReferenceTools.cs:3
-f0c723e...:MarqSpec.Mcp.TopstepX/Tools/SnapshotTools.cs:1
-f0c723e...:MarqSpec.Mcp.TopstepX/Tools/TapeTools.cs:2
+The tool count at that exact commit, and at `origin/main`'s last commit for that date:
+
+```console
+$ git grep -c '\[McpServerTool(' eac06a9f9af39e9271f82df8dcd9843f4b561148 -- 'MarqSpec.Mcp.TopstepX/Tools/*.cs'
+eac06a9...:MarqSpec.Mcp.TopstepX/Tools/AccountTools.cs:4
+eac06a9...:MarqSpec.Mcp.TopstepX/Tools/MarketDataTools.cs:5
+eac06a9...:MarqSpec.Mcp.TopstepX/Tools/ObservationTools.cs:2
+eac06a9...:MarqSpec.Mcp.TopstepX/Tools/ReferenceTools.cs:3
+eac06a9...:MarqSpec.Mcp.TopstepX/Tools/SnapshotTools.cs:1
+                                                  → 15
+
+$ git log -1 --format="%H %ad %s" --date=iso-strict 57a90974275b6c2f76aa25df9758253ca8fc78a4
+57a90974275b6c2f76aa25df9758253ca8fc78a4 2026-08-23T18:02:21-05:00 fix(platform): build the release image reference once, and evaluate it in CI
+
+$ git grep -c '\[McpServerTool(' 57a90974275b6c2f76aa25df9758253ca8fc78a4 -- 'MarqSpec.Mcp.TopstepX/Tools/*.cs'
+57a90974...:MarqSpec.Mcp.TopstepX/Tools/AccountTools.cs:4
+57a90974...:MarqSpec.Mcp.TopstepX/Tools/MarketDataTools.cs:5
+57a90974...:MarqSpec.Mcp.TopstepX/Tools/ObservationTools.cs:2
+57a90974...:MarqSpec.Mcp.TopstepX/Tools/ReferenceTools.cs:3
+57a90974...:MarqSpec.Mcp.TopstepX/Tools/SnapshotTools.cs:1
+                                                  → 15
+```
+
+**Fifteen, both at the fix and at the last commit `origin/main` carries for that date — not eighteen, and not
+sixteen either.** The tree the measurement was taken against held one fewer tool than `:160` reports, not three
+fewer than this record's later count of eighteen.
+
+**Nor is the CI half missing on that branch.** `.github/workflows/ci.yml` already declared an `image` job by
+that evening, and the runs from that day are still listed:
+
+```console
+$ git ls-tree --name-only 57a90974275b6c2f76aa25df9758253ca8fc78a4 .github/workflows/
+.github/workflows/AGENTS.md
+.github/workflows/CLAUDE.md
+.github/workflows/branch-policy.yml
+.github/workflows/ci.yml
+.github/workflows/codeql.yml
+.github/workflows/release.yml
+
+$ git grep -n 'image:' 57a90974275b6c2f76aa25df9758253ca8fc78a4 -- .github/workflows/ci.yml
+57a90974...:.github/workflows/ci.yml:236:  image:
+
+$ gh api "repos/adammarquette/MarqSpec.Mcp.TopstepX/actions/runs?created=2026-08-23" --jq '.total_count'
+648
+```
+
+The measurement itself still reads "Docker Desktop 29.6.2 on one developer machine" — manual and local — so
+none of those 648 runs is necessarily it; what the count establishes is that this branch's CI existed and ran
+that day, not that it is silent.
+
+**The growth to eighteen is real, on `origin/main`, five and six days later — not on 2026-08-23 at all:**
+
+```console
+$ git log -1 --format="%H %ad %s" --date=iso-strict 55e2c3cf14d17ba90926aa33914a4ce86f42d71b
+55e2c3cf14d17ba90926aa33914a4ce86f42d71b 2026-08-28T19:30:38-05:00 feat(mcp): get_footprint and get_volume_profile
+$ git grep -c '\[McpServerTool(' 55e2c3cf14d17ba90926aa33914a4ce86f42d71b -- 'MarqSpec.Mcp.TopstepX/Tools/*.cs'
+55e2c3cf...:MarqSpec.Mcp.TopstepX/Tools/AccountTools.cs:4
+55e2c3cf...:MarqSpec.Mcp.TopstepX/Tools/MarketDataTools.cs:7
+55e2c3cf...:MarqSpec.Mcp.TopstepX/Tools/ObservationTools.cs:2
+55e2c3cf...:MarqSpec.Mcp.TopstepX/Tools/ReferenceTools.cs:3
+55e2c3cf...:MarqSpec.Mcp.TopstepX/Tools/SnapshotTools.cs:1
+                                                  → 17
+
+$ git log -1 --format="%H %ad %s" --date=iso-strict da87b224f02c3e4d4ed5e9b2588054bf6b962198
+da87b224f02c3e4d4ed5e9b2588054bf6b962198 2026-08-29T18:17:54-05:00 feat(mcp): add get_contract_roll for the tape changeover
+$ git grep -c '\[McpServerTool(' da87b224f02c3e4d4ed5e9b2588054bf6b962198 -- 'MarqSpec.Mcp.TopstepX/Tools/*.cs'
+da87b224...:MarqSpec.Mcp.TopstepX/Tools/AccountTools.cs:4
+da87b224...:MarqSpec.Mcp.TopstepX/Tools/MarketDataTools.cs:8
+da87b224...:MarqSpec.Mcp.TopstepX/Tools/ObservationTools.cs:2
+da87b224...:MarqSpec.Mcp.TopstepX/Tools/ReferenceTools.cs:3
+da87b224...:MarqSpec.Mcp.TopstepX/Tools/SnapshotTools.cs:1
                                                   → 18
 ```
 
-Eighteen at the root commit, eighteen at `origin/develop`'s `f0c723e` (2026-09-05) — the file layout moved
-(`MarketDataTools.cs`'s eight attributes are now split across `BarTools.cs`, `ContractRollTools.cs`,
-`IndicatorTools.cs`, `KeyLevelTools.cs` and `TapeTools.cs`) but the total did not, independently confirming
-the zero-growth reading above rather than repeating it.
+`da87b224`'s per-file counts (4, 8, 2, 3, 1) match `08c96da`'s exactly, and `08c96da` is authored an hour
+later the same evening — `develop`'s root is very nearly a snapshot of this state, not a commit eighteen
+arrived at with no traceable path. `get_contract_roll`, `get_footprint` and `get_volume_profile` did **not**
+predate the 2026-08-23 measurement: PR #458's second draft said so and was right, and was refuted against
+`08c96da` — the wrong commit for the question, because `develop`'s line is not where 2026-08-23 lives.
 
-**Verdict: not accounted for, and not accountable — pinned to why rather than left as a shrug.** The
-stale-image hypothesis names a Docker image built from a source tree that predates a set of later source
-changes. Testing that claim needs a commit boundary between "the tree the image was built from" and "the tree
-that added the missing tools," and this repository never recorded one: the entire pre-history between its
-creation and its first commit was squashed into a single 274-file commit before any of it reached git, and the
-measurement itself never touched CI. **The hypothesis is not established to hold**, so no separate gate-question
-card follows from it (the instruction that would have required one). This closes gh#460; nothing else on this
-page is revisited.
+**Verdict: the gap is real, it is one tool, and it is against a tree this repository still has.** `:160`
+reports sixteen; every commit `origin/main` carries for 2026-08-23, from the gh#76 fix through the end of that
+date, holds fifteen. Whether the missing one is a stale image built from a local change never committed that
+day, a tool present only in whatever was measured and never committed at all, or a miscount in the manual
+verification is **not established** — the measurement itself was never CI, so no log of that specific run
+exists to consult, on `main` or anywhere else. What is no longer true is that there is nothing to check the
+claim against: there is, and checking it narrows three tools of unexplained growth to one. This closes gh#460
+with that narrower, correctly-scoped open question in place of the wider one; nothing else on this page is
+revisited.

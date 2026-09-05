@@ -144,11 +144,12 @@ serves. Since gh#76 that is a clean **exit 0** with an empty stdout — no crash
 for — and the explanation is the container's *last* log line, printed underneath a Kestrel
 `TaskCanceledException` that is expected on this path and is not the fault:
 
+The line is 412 characters and is quoted whole below rather than wrapped, so a phrase copied from either
+side still finds the other:
+
 ```
 info: startup[0]
-      Shutdown was requested before the server finished starting, so it stopped without listening. On stdio
-      this is what `docker run` WITHOUT `-i` looks like: stdin is closed before the handshake, so there is
-      no client to serve. Pass `-i` (or start the server from an MCP client, which holds stdin open) ...
+      Shutdown was requested before the server finished starting, so it stopped without listening. On stdio this is what `docker run` WITHOUT `-i` looks like: stdin is closed before the handshake, so there is no client to serve. Pass `-i` (or start the server from an MCP client, which holds stdin open) to keep a session. No background service faulted on the way here, so this exit code is not covering for one.
 ```
 
 **`Now listening on: http://[::]:8080` is expected here, and it is not the HTTP transport.**

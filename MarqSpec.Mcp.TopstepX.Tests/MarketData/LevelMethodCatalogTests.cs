@@ -114,7 +114,7 @@ public sealed class LevelMethodCatalogTests
     {
         // A name the catalogue serves but the tool description does not list is a method an agent
         // cannot discover. Both the tool [Description] and the methods-parameter one must name them.
-        MethodInfo method = typeof(MarketDataTools).GetMethod(nameof(MarketDataTools.GetKeyLevels))!;
+        MethodInfo method = typeof(KeyLevelTools).GetMethod(nameof(KeyLevelTools.GetKeyLevels))!;
         string tool = method.GetCustomAttribute<DescriptionAttribute>()?.Description ?? string.Empty;
         string parameter = method.GetParameters().Single(p => p.Name == "methods")
             .GetCustomAttribute<DescriptionAttribute>()?.Description ?? string.Empty;

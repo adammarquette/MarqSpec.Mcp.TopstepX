@@ -14,11 +14,27 @@ services:
     image: timescale/timescaledb-ha:pg17
     environment:
       POSTGRES_USER: "${POSTGRES_USER:-topstepx}"
+      # Defaulted so `docker compose up` works out of the box, the same local-development convenience as
+      # Mcp__HttpBearerToken. Acceptable ONLY because the port below is bound to 127.0.0.1 -- the two are a
+      # COUPLING, not independent choices: widening the bind means setting a real password in the same change.
+      #
+      # The asymmetry with the bearer token, stated rather than assumed: the token authenticates nothing at
+      # the venue and has never had a value worth rotating, while this credential OWNS THE SCHEMA -- it can
+      # read, write or drop the bar cache, the trade tape, coverage ledgers and indicator projections. The
+      # loopback bind is the whole of what makes the default tolerable, and it is tolerable for the same
+      # reason the token's is: nothing off this machine can present it (gh#421).
       POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:-changeme-local}"
       POSTGRES_DB: "${POSTGRES_DB:-topstepx_mcp}"
     ports:
-      # Exposed so `dotnet ef` and a local run can reach it without entering the network.
-      - "5432:5432"
+      # Exposed so `dotnet ef` and a local run can reach it without entering the network -- that reason is
+      # unchanged by binding the address below; only which interfaces can reach it changes.
+      #
+      # The bind address is EXPLICIT, matching the server's port one service down. A bare "5432:5432"
+      # publishes on 0.0.0.0 AND [::] -- every interface the host has -- which is what this line did until
+      # gh#421, the same defect gh#415 fixed on 8080/8443. Unlike the MCP endpoint there
+      # is no bearer token in front of this port at all, and a database credential is not read-only: it owns
+      # the schema.
+      - "127.0.0.1:5432:5432"
     volumes:
       - postgres-data:/home/postgres/pgdata/data
     healthcheck:
@@ -58,8 +74,13 @@ services:
       #
       # The token is REQUIRED whenever the HTTP transport is on (ADR-0007) and startup fails without one --
       # an endpoint carrying balances, positions and trade history is a data leak even though nothing here can
-      # trade. Defaulting it here is a local-development convenience for a port published to localhost, and
-      # this value is in a public repository: change it before this stack is reachable from anywhere else.
+      # trade. This value is in a public repository.
+      #
+      # Defaulting it is a local-development convenience, and it is acceptable ONLY because the port below is
+      # bound to 127.0.0.1. That is a COUPLING, not two independent choices: widening the bind address means
+      # setting a real token in the same change. The sentence here used to assert the port was "published to
+      # localhost" while the mapping published it to every interface, which is how the assumption survived
+      # unexamined (gh#415).
       Mcp__HttpBearerToken: "${Mcp__HttpBearerToken:-changeme-local}"
 
       MarketData__SessionCloseCentral: "${MarketData__SessionCloseCentral:-16:00}"
@@ -103,10 +124,90 @@ services:
       Embeddings__Model: "${Embeddings__Model:-embed-v4.0}"
 
       ASPNETCORE_ENVIRONMENT: "${ASPNETCORE_ENVIRONMENT:-Development}"
-      ASPNETCORE_HTTP_PORTS: "8080"
+
+      # HTTPS ONLY. What is established: a client that requires HTTPS could not connect to this stack at
+      # all, because it served nothing but plaintext -- and a bearer token sent in clear is a credential
+      # anyone on the path can replay, whatever any client demands (gh#416). What is REPORTED and NOT
+      # verified here: that Claude Cowork is such a client and refuses to register a non-TLS endpoint as a
+      # connector. gh#416 says so in its own words -- "I have not independently verified Cowork's
+      # requirement, and this issue does not rest on it" -- and neither does this file.
+      #
+      # THE EMPTY VALUE BELOW IS LOAD-BEARING, AND DELETING THE LINE RE-OPENS THE PLAINTEXT PORT.
+      # mcr.microsoft.com/dotnet/aspnet:10.0 sets ASPNETCORE_HTTP_PORTS=8080 in the IMAGE, so merely
+      # ceasing to name it here leaves the base image's value in the environment. Measured: with only
+      # ASPNETCORE_HTTPS_PORTS: "8443" set, the server reported BOTH `Now listening on: http://[::]:8080`
+      # and `https://[::]:8443` -- a plaintext MCP endpoint still serving, from a variable this file no
+      # longer mentioned. The override has to be explicit.
+      #
+      # A surviving plaintext port is a port to reach by mistake, and the mistake leaks balances, positions
+      # and trade history. 8443 rather than 8080 so the scheme and the number agree and a URL cannot be half
+      # right: the old plaintext one is not quietly reused under a new scheme. Measured on the wrong scheme
+      # at the right port -- http:// against 8443 -- the client gets `The underlying connection was closed`,
+      # which is a diagnosis nobody enjoys; moving the number keeps anyone from meeting it.
+      ASPNETCORE_HTTP_PORTS: ""
+      ASPNETCORE_HTTPS_PORTS: "8443"
+
+      # The certificate is LOCALLY TRUSTED, not publicly issued: the maintainer scoped this to a client on
+      # the SAME MACHINE -- not Anthropic's cloud, not a LAN -- so there is no public hostname to certify and
+      # no ACME challenge to answer. A genuinely remote instance is a different operational story and is not
+      # decided here. It comes from mkcert, a local CA installed once into the host trust store:
+      #
+      #   mkcert -install                                                       # once, per host
+      #   mkcert -cert-file ./certs/localhost.crt -key-file ./certs/localhost.key localhost 127.0.0.1 ::1
+      #   openssl pkcs12 -export -out ./certs/localhost.pfx \
+      #     -inkey ./certs/localhost.key -in ./certs/localhost.crt \
+      #     -certfile "$(mkcert -CAROOT)/rootCA.pem" -passout "pass:$Kestrel__Certificates__Default__Password"
+      #   rm ./certs/localhost.key                                              # the PFX carries it, encrypted
+      #
+      # NOT `dotnet dev-certs`, and the reason is measured rather than aesthetic: that certificate is a
+      # self-signed LEAF carrying `basicConstraints: CA:FALSE`, so OpenSSL cannot use it as a trust anchor at
+      # all. A Node-based MCP client refused it with `UNABLE_TO_VERIFY_LEAF_SIGNATURE`, and kept refusing it
+      # with NODE_EXTRA_CA_CERTS pointed straight at the certificate -- there is no client-side setting that
+      # rescues it. mkcert issues a leaf from a real CA, which both trust stores can anchor on. See ADR-0007.
+      #
+      # The leaf mkcert issues here expires 2028-12-02 UTC. Re-issue past that date; nothing rotates it.
+      Kestrel__Certificates__Default__Path: "/https/localhost.pfx"
+      # NO VALUE SHIPS HERE, deliberately. A PFX password is a credential; POSTGRES_PASSWORD's and
+      # Mcp__HttpBearerToken's local defaults are tolerable because a loopback port is what they guard, and a
+      # default that unlocks a private key is not the same kind of thing. THIS REPOSITORY IS PUBLIC.
+      #
+      # `:-` AND NOT `:?`, AND THAT IS A CORRECTION RATHER THAN A PREFERENCE. Compose interpolates the WHOLE
+      # FILE before it selects a service, so a `:?` here failed commands that never start this one --
+      # measured with no `.env`: `docker compose config postgres` exited 1 with a certificate error, and so
+      # did `docker compose -f docker-compose.yml -f docker-compose.dev.yml config sdk`, which is the repo's
+      # documented test loop and, per docker-compose.dev.yml, the only way to run the suite on a host where
+      # Application Control blocks fresh assemblies. `docker compose up -d postgres` is also the command the
+      # server's own startup warning prints. Scoping it to this service was tried and does not exist: an
+      # `env_file` entry with `required: true` failed BOTH of those commands identically.
+      #
+      # So the requirement is enforced where it belongs -- at the server's own startup -- and the two
+      # failures are written down here because one of them is misleading:
+      #
+      #   certs/ empty or absent  ->  FileNotFoundException naming /https/localhost.pfx. Clear; do the setup.
+      #   PFX present, password unset or wrong
+      #                           ->  CryptographicException: "The certificate data cannot be read with the
+      #                               provided password, the password may be incorrect." An UNSET password
+      #                               arrives as an empty one and produces exactly this, so "may be
+      #                               incorrect" also means "may be missing". Check .env before the PFX.
+      Kestrel__Certificates__Default__Password: "${Kestrel__Certificates__Default__Password:-}"
+
       Logging__LogLevel__Default: "${Logging__LogLevel__Default:-Information}"
+    volumes:
+      # The DIRECTORY, not the file. Docker creates a missing bind source as a directory, so mounting
+      # ./certs/localhost.pfx directly would silently manufacture a directory of that name and Kestrel would
+      # fail on it obscurely; mounting the directory leaves the failure as a FileNotFoundException naming
+      # /https/localhost.pfx, which says what to do. Read-only: the server never writes a certificate.
+      - "./certs:/https:ro"
     ports:
-      - "8080:8080"
+      # The bind address is EXPLICIT, and the whole defence depends on it. A bare "8443:8443" publishes on
+      # 0.0.0.0 -- every interface the host has -- which is what this file did on 8080 while the comment above
+      # claimed localhost. Three defaults composed into an exposure nobody chose: the transport is Http here,
+      # the token defaults, and the port was open to the network. Anything that could route to the host could
+      # read balances, positions and trade history with a token published in a public repository (gh#415).
+      #
+      # TLS does not replace this bind and does not license widening it. It is confidentiality on the wire;
+      # the token is authorisation, and loopback is what makes the token's local default tolerable.
+      - "127.0.0.1:8443:8443"
 
 volumes:
   postgres-data:

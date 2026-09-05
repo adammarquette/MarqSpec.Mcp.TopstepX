@@ -85,7 +85,14 @@ public static class BarGapDetector
     /// <summary>
     /// Finds the ranges of a window the store is missing, coalescing adjacent missing buckets.
     /// </summary>
-    /// <param name="storedBucketStarts">The bucket starts the store already holds. Order does not matter.</param>
+    /// <param name="storedBucketStarts">
+    /// The bucket starts the store holds <b>and can attribute</b> — a bar carrying a recorded contract. Order
+    /// does not matter.
+    /// </param>
+    /// <param name="unattributedBucketStarts">
+    /// The bucket starts the store holds with <b>no recorded contract</b>. Order does not matter, and a bucket
+    /// named here is reported missing <i>whether or not the calendar expects it</i> — see the remarks.
+    /// </param>
     /// <param name="window">The window to cover.</param>
     /// <param name="barSize">The bar size.</param>
     /// <param name="calendar">The session calendar deciding which buckets count.</param>
@@ -94,21 +101,58 @@ public static class BarGapDetector
     /// bucket — which is the case a cache-aside read must handle with <b>zero</b> gateway calls.
     /// </returns>
     /// <remarks>
+    /// <para>
     /// Coalescing is across <i>expected</i> buckets, not clock time: a Friday-evening-to-Sunday-evening stretch
     /// contains no expected buckets at all, so a gap either side of it stays two ranges only if real data sits
     /// between them. Two missing buckets separated purely by a weekend merge into one range, and fetching that
     /// range costs one paged request rather than two.
+    /// </para>
+    /// <para>
+    /// <b>The unattributed buckets are enumerated too, on top of the calendar's grid (gh#412).</b> Every other
+    /// bucket in this pass is chosen by asking the calendar what the venue owed; these are chosen by what the
+    /// store is actually <i>holding</i>, which is why they are passed in rather than derived. A bucket the
+    /// calendar does not expect but the store nonetheless has would otherwise never be enumerated, never be
+    /// re-asked for, and so never heal: the caller's window keeps an unattributed run in it forever and reports
+    /// its contract span as <c>Unknown</c> on every read. That is a permanently degraded answer rather than a
+    /// visible fetch, which is the worse direction to fail in. A bucket the store holds <i>with</i> a contract
+    /// is not enumerated off-grid: it lacks nothing, and admitting it would break the run coalescing this
+    /// method's saving depends on.
+    /// </para>
+    /// <para>
+    /// Such a bucket is <b>representable by construction</b>, which is the whole reason this is not a calendar
+    /// problem: the calendar is <i>configuration</i> and the write path does not consult it, so a corrected
+    /// session close or a holiday declared after the fact moves the grid under rows already written. No claim
+    /// is made here about a venue publishing outside its own session — the 16:30 Central bucket the fixtures
+    /// use is a constructed demonstration, not an observation of a live store.
+    /// </para>
+    /// <para>
+    /// The bound is the one <see cref="ExpectedBuckets"/> uses — a bucket counts only when it opens at or after
+    /// the window's start and closes at or before its end — so a missing range never reaches past the window
+    /// the caller asked about.
+    /// </para>
+    /// <para>
+    /// <b>Precondition, stated rather than enforced:</b> an unattributed bucket start is assumed to sit on the
+    /// same <paramref name="barSize"/> grid the expected buckets use — the fixed UTC grid
+    /// <see cref="AlignUp"/> describes. Nothing here re-aligns one, so a misaligned start would produce a
+    /// missing range that is itself misaligned. It holds today because a bucket start is part of the bars
+    /// table's primary key and is only ever written from an aligned fetch. It is not checked because a check
+    /// could only guess what to do with a violation, and rounding one would ask the venue for a bucket nobody
+    /// stored while leaving the row that provoked it untouched.
+    /// </para>
     /// </remarks>
     public static IReadOnlyList<BarRange> FindMissing(
         IReadOnlyCollection<DateTimeOffset> storedBucketStarts,
+        IReadOnlyCollection<DateTimeOffset> unattributedBucketStarts,
         BarRange window,
         TimeSpan barSize,
         BarSessionCalendar calendar)
     {
         ArgumentNullException.ThrowIfNull(storedBucketStarts);
+        ArgumentNullException.ThrowIfNull(unattributedBucketStarts);
 
-        IReadOnlyList<DateTimeOffset> expected = ExpectedBuckets(window, barSize, calendar);
-        if (expected.Count == 0)
+        IReadOnlyList<DateTimeOffset> candidates = WithUnattributed(
+            ExpectedBuckets(window, barSize, calendar), unattributedBucketStarts, window, barSize);
+        if (candidates.Count == 0)
         {
             return [];
         }
@@ -119,7 +163,7 @@ public static class BarGapDetector
         DateTimeOffset? runStart = null;
         DateTimeOffset runEnd = default;
 
-        foreach (DateTimeOffset bucket in expected)
+        foreach (DateTimeOffset bucket in candidates)
         {
             if (stored.Contains(bucket))
             {
@@ -142,6 +186,48 @@ public static class BarGapDetector
         }
 
         return missing;
+    }
+
+    /// <summary>
+    /// Merges the buckets the store holds unattributed into the calendar's expected grid, ascending.
+    /// </summary>
+    /// <param name="expected">The calendar-expected buckets, ascending.</param>
+    /// <param name="unattributedBucketStarts">The bucket starts the store holds with no recorded contract.</param>
+    /// <param name="window">The window to cover.</param>
+    /// <param name="barSize">The bar size.</param>
+    /// <returns>The union, ascending and distinct.</returns>
+    /// <remarks>
+    /// A bucket the calendar already expects is a no-op here — it is in the grid already, and an unattributed
+    /// bucket is absent from the stored set anyway, so it is reported missing either way. The only thing this
+    /// adds is the off-grid one, which is the whole of gh#412. The result is <b>sorted</b> rather than appended,
+    /// because the coalescing loop reads its input as an ascending sequence: an out-of-order bucket would split
+    /// one run into two and cost a second venue request for nothing.
+    /// </remarks>
+    private static IReadOnlyList<DateTimeOffset> WithUnattributed(
+        IReadOnlyList<DateTimeOffset> expected,
+        IReadOnlyCollection<DateTimeOffset> unattributedBucketStarts,
+        BarRange window,
+        TimeSpan barSize)
+    {
+        if (unattributedBucketStarts.Count == 0)
+        {
+            return expected;
+        }
+
+        HashSet<DateTimeOffset> union = [.. expected];
+        bool added = false;
+        foreach (DateTimeOffset bucket in unattributedBucketStarts)
+        {
+            // Written as a subtraction rather than "bucket + barSize <= window.End" on purpose: both operands
+            // are representable instants, so the difference is always a valid TimeSpan, while the addition can
+            // overflow on a bucket near the end of the calendar -- the same hazard AlignUp names.
+            if (bucket >= window.Start && window.End - bucket >= barSize)
+            {
+                added |= union.Add(bucket);
+            }
+        }
+
+        return added ? [.. union.Order()] : expected;
     }
 
     /// <summary>

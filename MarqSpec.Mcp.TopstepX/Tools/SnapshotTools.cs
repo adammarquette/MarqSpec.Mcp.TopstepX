@@ -9,18 +9,35 @@ namespace MarqSpec.Mcp.TopstepX.Tools;
 /// The composed read — everything about one instrument in one call.
 /// </summary>
 /// <remarks>
+/// <para>
 /// This exists because the common question is not "what is the RSI"; it is "what is this market doing". Asked
 /// through the single-purpose tools that is five or six round trips, each of which the caller has to sequence
 /// correctly and none of which is interesting on its own.
+/// </para>
+/// <para>
+/// <b>Three market-data tool types, not one</b> (gh#414). A snapshot is a bar read, a batched indicator read
+/// and a level detection, and naming them separately is what makes that legible in the constructor: this type
+/// cannot reach a footprint cache or the tape-availability holder, because it never asks the tape anything.
+/// </para>
 /// </remarks>
+/// <param name="bars">The bar read each slice opens with.</param>
+/// <param name="indicators">The batched indicator read each slice composes.</param>
+/// <param name="keyLevels">The level detection each slice closes with.</param>
+/// <param name="reference">The session and instrument reference the snapshot is framed by.</param>
+/// <param name="names">The catalogue's key set, built from the catalogue rather than from the query.</param>
+/// <param name="clock">The anchor a slice with no bars falls back to.</param>
 [McpServerToolType]
 public sealed class SnapshotTools(
-    MarketDataTools marketData,
+    BarTools bars,
+    IndicatorTools indicators,
+    KeyLevelTools keyLevels,
     ReferenceTools reference,
     IndicatorCatalogNames names,
     TimeProvider clock)
 {
-    private readonly MarketDataTools _marketData = marketData;
+    private readonly BarTools _bars = bars;
+    private readonly IndicatorTools _indicators = indicators;
+    private readonly KeyLevelTools _keyLevels = keyLevels;
     private readonly ReferenceTools _reference = reference;
     private readonly IndicatorCatalogNames _names = names;
     private readonly TimeProvider _clock = clock;
@@ -145,7 +162,7 @@ public sealed class SnapshotTools(
         // cost their fetch and their projection.
         foreach (int resolution in ResolveResolutions(resolutionMinutes))
         {
-            ToolPayloads.BarSeries series = await _marketData
+            ToolPayloads.BarSeries series = await _bars
                 .GetLatestBars(symbol, resolution, barCount, cancellationToken)
                 .ConfigureAwait(false);
 
@@ -159,12 +176,24 @@ public sealed class SnapshotTools(
                 ? series.Bars[^1].T
                 : _clock.GetUtcNow();
 
+            // ONE query for the whole map, not eleven -- and not twenty-two, which is what it was once each
+            // read went back to Bars for its bucket's contract. A default snapshot cost 60 statements and 44
+            // of them were this block (gh#388). What the batch must not do is collapse the PROVENANCE with
+            // the queries: it groups by (Indicator, Period) and takes each group's own latest bucket, so the
+            // eleven readings still disagree about bucket and contract wherever they legitimately do.
+            IReadOnlyDictionary<string, ToolPayloads.IndicatorReading> readings = await _indicators
+                .GetLatestIndicatorReadings(symbol, resolution, asOf, cancellationToken)
+                .ConfigureAwait(false);
+
+            // The KEY SET is still the catalogue's, walked here rather than taken from the query's results.
+            // A name the store holds no row for has to arrive as a key with a null under it, and a map built
+            // from what came BACK would simply not have the key -- which is the one distinction gh#286's
+            // contract turns on, and exactly what a join loses if nobody is watching for it.
             Dictionary<string, ToolPayloads.IndicatorReading?> indicators = [];
             foreach (string name in _names.Names)
             {
-                ToolPayloads.IndicatorReading reading = await _marketData
-                    .GetIndicatorAt(symbol, resolution, name, asOf, cancellationToken)
-                    .ConfigureAwait(false);
+                ToolPayloads.IndicatorReading? reading =
+                    readings.TryGetValue(name, out ToolPayloads.IndicatorReading? found) ? found : null;
 
                 // THE WHOLE READING TRAVELS, not reading.Value. The anchor above is one moment for the slice,
                 // but it is where each read STOPPED, not where its value was computed -- an as-of read takes
@@ -179,10 +208,10 @@ public sealed class SnapshotTools(
                 // yet". The second is the answer here -- and it stays the MAP'S null rather than becoming the
                 // reading's own {} form, because the SDK's ignore condition does not reach inside a
                 // dictionary and `indicators.x === null` is the test the catalogue has always given callers.
-                indicators[name] = reading.Value is null ? null : reading;
+                indicators[name] = reading?.Value is null ? null : reading;
             }
 
-            ToolPayloads.LevelSet levels = await _marketData
+            ToolPayloads.LevelSet levels = await _keyLevels
                 .GetKeyLevels(symbol, resolution, Math.Max(barCount, 200), cancellationToken: cancellationToken)
                 .ConfigureAwait(false);
 

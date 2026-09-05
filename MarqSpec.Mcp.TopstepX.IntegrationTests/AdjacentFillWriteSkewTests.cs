@@ -236,7 +236,7 @@ public sealed class AdjacentFillWriteSkewTests(SchemaFixture fixture)
         result.SeriesRewritten.Should().Be(
             1,
             "the raced series still holds the seam, so the rebuild must rewrite it — a confirming rebuild "
-            + "would be 0, and that is the unit-tier pin");
+            + "would be 0, and that is the pin beside this one");
         result.ValuesChanged.Should().BeGreaterThan(0, "the heal changed values, not merely walked the series");
 
         IReadOnlyDictionary<Key, decimal> healed = await ValuesAsync(venue, symbol);

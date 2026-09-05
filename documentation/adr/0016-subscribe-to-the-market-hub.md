@@ -77,6 +77,7 @@ decides that one host speaks stdio and streamable HTTP; grep it for `signalr`, `
 | [2026-08-29](#update-2026-08-29--the-recorder-defends-re-subscribe-and-writes-tapecoverage) | The recorder re-subscribes on `Connected` and writes `TapeCoverage` from lifecycle (gh#217) |
 | [2026-08-29](#update-2026-08-29--live-tape-health-is-read-at-the-point-of-use) | Live tape health, written from lifecycle and required by footprint tools (gh#218) |
 | [2026-08-30](#update-2026-08-30--a-failed-open-persist-drops-the-subscribe) | A store fault after a confirmed subscribe drops the venue subscription (gh#376) |
+| [2026-08-31](#update-2026-08-31--one-recorder-per-instrument-is-a-claim-not-a-convention) | "Two subscribers on one tape" becomes a store-backed claim the second recorder is refused (gh#404) |
 
 ## Update (2026-08-28) — the standing choice is reversed
 
@@ -267,6 +268,144 @@ that never reached the store is never written as a closed range. A drop while th
 in flight can still close that listen if the persist then lands. Tools refuse while not Listening.
 A later successful restore opens a new range at the new subscribe time and does not cover the hole.
 
+## Update (2026-08-31) — one recorder per instrument is a claim, not a convention
+
+The rule this record has stated since the reversal — **two subscribers on one tape double every
+volume, and a doubled delta looks like order flow** — was prose. Nothing enforced it. The recorder
+starts whenever the transport is HTTP and `MarketData__RecordTape` is on, however many processes
+that describes: a rolling redeploy, a restart overlapping a still-draining container, an operator
+who left the switch on in two places. gh#382 removed one *consequence* of that gap (a second start
+deleting the first's still-open coverage rows) and said so in its own docstring; it could not
+remove the condition, because two processes configured for the same instrument resolve the same
+front contract and no predicate on `(Venue, Instrument, ContractId)` can tell "my leftover" from
+"their live listen".
+
+**A recorder now takes an exclusive claim on each instrument before it subscribes, and a recorder
+that cannot get one does not subscribe** (gh#404).
+
+### The mechanism: a store-backed claim, not an advisory lock
+
+`TapeLeases` (data dictionary §10) is a row per `(Venue, Instrument)` carrying an owner, a
+generation, and an expiry the holder renews. The store is chosen because **the store is the only
+thing two processes share** — the alternative, a Postgres advisory lock, would work in the
+deployment and not in the unit suite, whose in-memory provider has no equivalent, and a rule only
+the deployment can exercise is a rule nothing defends. `TapeLease` is a first-class type for the
+same reason `TapeCoverageLedger` is (gh#390): two recorders are two instances over one store, so
+every case below is a unit test with no hub and no `BackgroundService` behind it.
+
+**The claim is its own table on purpose.** It is not signalled through `TapeCoverage`, and not
+through `BarCoverage`, whose row means "the venue answered this range and had nothing" — a claim
+about the venue, not about which process is running. An availability signal riding on a row whose
+documented meaning is a data fact is indistinguishable from that fact.
+
+### The granularity: per `(Venue, Instrument)`
+
+**Not per store.** An operator running two recorders partitioned by `MarketData__Instruments` is a
+supported deployment, and it is the one gh#382 exists to protect; a whole-store claim would outlaw
+it, turning a legitimate configuration into a refusal. What is refused is only the overlap that
+doubles volume: the *same* instrument in two processes. The same product at two venues stays two
+claims, for the same reason it is two series everywhere else in this repository.
+
+### The refusal: it declines, it does not fault, and it does not give up
+
+A refused recorder logs, marks that instrument's tape health, and **does not throw**.
+`Program.AnyFaulted` reads a faulted `ExecuteTask` (gh#76), so a refusal that threw would take the
+host down over a configuration an operator can fix without losing the reads the process is still
+perfectly able to serve.
+
+**It also stays up and asks again**, every renew interval, for each instrument it was refused. That
+is not a refinement; without it the claim makes things worse. A rolling redeploy starts the new
+container while the old one is still draining, so the new one is refused every instrument — and if
+that were final it would quit, the old container would then finish draining and delete its rows,
+and **nothing would be recording, permanently**. A tape gap has no backfill, so a silent stop is a
+worse failure than the double-recording this record is trying to prevent. The retry also bounds the
+crash case: a process that dies leaves its row behind mid-term, so a container returning seconds
+later is refused, and it takes over when the term lapses rather than never.
+
+The recorder does **not** try to recognise its own predecessor to shortcut that wait. No identity
+earns it: a container id changes on every redeploy so it is not stable, and a host name or a
+configured name is shared by two containers on one host so it is not unique — and a key that is
+wrong in the second direction hands one tape to two writers, which is the whole failure. Waiting
+out at most one term is the cheaper mistake.
+
+`TapeAvailability` gains `HeldByAnotherRecorder`, distinct from every `NeverStarted` answer. The
+switch being off and someone else already recording are different situations with different fixes,
+and an operator told to turn `RecordTape` on when it is already on twice will turn it on a third
+time. Refusals are held apart from the transient per-instrument health the connection lifecycle
+writes, because a process-wide non-listening write clears those — and a refusal cleared by the
+next reconnect would let a claimed instrument look like an ordinary not-yet-subscribed tape.
+
+### Expiry and takeover: read, never assumed
+
+A crashed holder must not strand the tape, so a claim carries an expiry and its holder renews at a
+third of it. Two renewals may be lost — a store blip, a slow write — before anything lapses. A
+claim whose expiry **has passed** is reclaimable on the next start; a claim whose expiry has not is
+**held**, however quiet its holder has gone. *A missing number is missing, never a default*: an
+unanswered heartbeat is not evidence of a free tape, and a store that cannot be read at all yields
+a refusal rather than a grant. The absence of a row is the only free state, and a clean stop
+deletes its own row so a redeploy does not wait out the expiry for nothing.
+
+The reclaim is the one place a claim could itself create the failure it exists to refuse, so it is
+**one conditional update, not a read and a hopeful write**: `Generation` is a concurrency token, two
+starts reclaiming one expired row race the same generation, exactly one update matches, and the
+loser re-reads and is refused.
+
+That leaves the case this record cares about most: **a holder merely paused past its expiry, taken
+over while it is still subscribed.**
+
+Standing down at the next renewal is *not* sufficient, and it is worth being exact about why. The
+renewal only reports the loss at the next tick, so "stand down when you notice" leaves both
+processes writing for up to one renew interval — a third of the term. That window is not harmless.
+`Trades.Sequence` is a per-process counter seeded once from the stored maximum, so a print written
+by both processes takes a **different key in each** and the primary key does not collapse it: the
+row lands twice. A footprint over that window then reports doubled volume and a doubled delta as an
+ordinary answer, which is precisely the failure named at the top of this record, arriving through
+the mechanism written to prevent it. There is no vendor print id to deduplicate on, and the
+alternative natural key — time, price, size, direction — cannot tell two genuine one-lot buys on
+one tick apart, so collapsing on it would silently drop real prints.
+
+So the holder does not wait to be told. **Its own expiry is the last instant it stores a print**,
+checked per print against the print's receipt, because that expiry is the earliest instant anyone
+else could be holding the claim. A paused process therefore stops writing without needing to
+discover anything, and against one clock the overlap is not bounded but empty. When the renewal
+does report the loss, the holder drops the subscription, closes that listen's coverage range **at
+the handover the replacement recorded** — never at the instant it noticed, which would claim a
+window the replacement claims too — and reports `HeldByAnotherRecorder` at the point of use.
+
+**What remains open is clock skew between hosts, and it has no mitigation in this repository.**
+Both processes compare their own clock to one stored expiry, so a taker running more than a term
+ahead of the holder can acquire while the holder still believes it is inside its term; no local
+mechanism fixes that, because it needs one clock. The generation check still leaves exactly one
+*owner* — what skew can produce is a second *writer*, and those are not the same property.
+
+**Those duplicate prints are counted.** An earlier draft of this record claimed they fall outside
+the retiring holder's coverage and so are not reported as volume. That was wrong twice over, and
+the correction is worth keeping visible because the claim is tempting. First, the duplicates are
+written *inside* the holder's own term — the fence permits them, because on that holder's clock the
+term has not run out — and the retiring range covers its term, so no close value moves them
+outside it. Second, and more fundamental, **nothing downstream reads by coverage in the sense that
+claim needs**: `FootprintProjector` aggregates every `Trades` row for the instrument with no
+coverage join and no time predicate, and coverage enters only at `VolumeProfileService.ConfineAsync`,
+which trims the reported *window* rather than which prints built a cell. `Trades` has no link to a
+coverage range, so "an unreferenced row" is not a state a print can be in. With `Sequence` a
+per-process counter the two copies do not collapse either.
+
+So under skew beyond one term the failure at the top of this record is reachable: doubled volume
+and a doubled delta, reported as an ordinary answer. **The only mitigation is one clock** — run the
+recorder on a single host, or keep hosts synchronised. This is the residual, stated plainly rather
+than argued away, and it is pinned by a test so it cannot quietly be re-read as fixed.
+
+What *is* guaranteed is narrower and worth stating separately: the retiring holder closes its range
+using **its own clock only** — the last instant it was both entitled to write and still listening —
+so a replacement's clock can never decide how much coverage this process claims, and the range
+never extends over a window in which this process had unsubscribed and stored nothing.
+
+### What this does not do
+
+It does not deduplicate prints a past double-recording already wrote, and it does not change the
+discard predicate — the claim simply runs *before* it, so a refused start never reaches it and can
+no longer supersede a live listen. It says nothing about quotes, depth or the user hub.
+
 ## Follow-ups
 
 - gh#215 — tape, coverage and footprint tables. Schema-only; landed.
@@ -276,3 +415,8 @@ A later successful restore opens a new range at the new subscribe time and does 
   defended here after Client#87, because a missed print cannot be backfilled.
 - gh#218 — live tape health, required by the tape tools. Landed.
 - gh#376 — a failed open persist after a confirmed subscribe drops that subscription. Landed.
+- gh#382 — the crash-leftover discard is scoped to the instruments a start records. Landed; it made
+  the collision survivable, and gh#404 is what makes it illegal.
+- gh#390 — the coverage ledger is its own type. Landed.
+- gh#404 — a store-backed per-instrument claim refuses a second concurrent recorder. Landed; recorded
+  in the update above.

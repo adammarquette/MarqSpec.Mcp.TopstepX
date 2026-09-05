@@ -235,6 +235,10 @@ once per catalogue change. `rebuild-indicators` already does it on demand for an
 - **`IndicatorCacheService` is scoped, and the lifetime is load-bearing.** It memoises which series it found
   complete, so `get_market_snapshot`'s eleven `get_indicator_at` calls per resolution cost one probe rather
   than eleven. A singleton would remember the answer past the fill that invalidated it.
+  **[2026-08-31] The snapshot no longer makes those eleven calls** — gh#388 replaced them with one query per
+  `(instrument, resolution)` returning the latest row for every `(Indicator, Period)` at once. The memo still
+  earns its lifetime: the batched read triggers the same `EnsureProjectedAsync`, and the slice reads its bars
+  and its levels through the same scope. The **argument** above is what changed, not the decision.
 
 ## Decision log
 

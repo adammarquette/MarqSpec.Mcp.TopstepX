@@ -1,3 +1,4 @@
+using System.Data;
 using FluentAssertions;
 using MarqSpec.Mcp.TopstepX.Configuration;
 using MarqSpec.Mcp.TopstepX.Data;
@@ -5,25 +6,38 @@ using MarqSpec.Mcp.TopstepX.Data.Entities;
 using MarqSpec.Mcp.TopstepX.Domain;
 using MarqSpec.Mcp.TopstepX.Domain.MarketData;
 using MarqSpec.Mcp.TopstepX.MarketData;
+using MarqSpec.Mcp.TopstepX.Tests.MarketData;
 using MarqSpec.Mcp.TopstepX.Tools;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Storage;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using Microsoft.Extensions.Time.Testing;
 using ModelContextProtocol;
 
-namespace MarqSpec.Mcp.TopstepX.Tests.MarketData;
+namespace MarqSpec.Mcp.TopstepX.IntegrationTests;
 
 /// <summary>
 /// A covered tape with no stored cells is projected on the next footprint or volume-profile
 /// read, without the venue (gh#366).
 /// </summary>
 /// <remarks>
+/// <para>
 /// The trigger is on-read, the same shape as <see cref="IndicatorCacheService"/> (ADR-0014).
 /// Ingest is not taken: <c>TradeTapeRecorder</c> still writes <c>Trades</c> only.
 /// The venue is unreachable from this path by construction — the cache service takes no gateway.
+/// </para>
+/// <para>
+/// <b>This tier, and only this tier.</b> Every case below serves its read by <i>writing</i> — the
+/// replay the cache service triggers goes out as the real <c>UpsertCellsSql</c>, an
+/// <c>ON CONFLICT … DO UPDATE</c> no in-memory provider has, inside the one <c>RepeatableRead</c>
+/// transaction <c>SeriesUnitOfWork</c> now always opens. The stand-in that used to serve this suite
+/// in the unit tier was a second implementation of that write, executed by no production process,
+/// and it was deleted (gh#387). What is left runs against a real Postgres or it does not run.
+/// </para>
 /// </remarks>
-public sealed class FootprintReadProjectionTests : IDisposable
+[Collection(SeriesStoreCollection.Name)]
+public sealed class FootprintReadProjectionTests : IAsyncLifetime
 {
     private const string Venue = "test";
     private const string Front = "CON.F.US.EP.U26";
@@ -37,18 +51,30 @@ public sealed class FootprintReadProjectionTests : IDisposable
     private static readonly DateTimeOffset _bucket1430 = new(2026, 8, 18, 14, 30, 0, TimeSpan.Zero);
     private static readonly DateTimeOffset _recorded = new(2026, 8, 18, 15, 0, 0, TimeSpan.Zero);
 
-    private readonly TopstepXDbContext _database = new(
-        new DbContextOptionsBuilder<TopstepXDbContext>()
-            .UseInMemoryDatabase(Guid.NewGuid().ToString())
-            .Options);
+    private readonly SeriesStoreFixture _fixture;
+    private readonly TopstepXDbContext _database;
 
     private readonly FakeTimeProvider _clock = new(_sixteen);
     private readonly TapeAvailabilityHolder _tape = new();
     private readonly CountingGateway _gateway = new([]);
 
-    public FootprintReadProjectionTests() => _tape.Set(TapeAvailability.Listening());
+    /// <param name="fixture">The shared container.</param>
+    public FootprintReadProjectionTests(SeriesStoreFixture fixture)
+    {
+        _fixture = fixture;
+        _database = fixture.CreateContext();
+        _tape.Set(TapeAvailability.Listening());
+    }
 
-    public void Dispose() => _database.Dispose();
+    /// <inheritdoc />
+    public Task InitializeAsync() => _fixture.ResetAsync();
+
+    /// <inheritdoc />
+    public Task DisposeAsync()
+    {
+        _database.Dispose();
+        return Task.CompletedTask;
+    }
 
     [Fact]
     public async Task CoveredTapeWithNoCells_ServesFootprintCellsOnTheRead()
@@ -108,9 +134,7 @@ public sealed class FootprintReadProjectionTests : IDisposable
 
         _clock.Advance(TimeSpan.FromHours(1));
 
-        int changed = await new FootprintProjector(_database, NullLogger<FootprintProjector>.Instance)
-            .ProjectAsync(Venue, _es, FiveMinutes, _clock.GetUtcNow(), CancellationToken.None);
-        await _database.SaveChangesAsync();
+        int changed = await ProjectAsync();
 
         changed.Should().Be(0, "a replay over the same tape reproduces the same numbers, so it rewrites none");
 
@@ -171,9 +195,7 @@ public sealed class FootprintReadProjectionTests : IDisposable
 
         _clock.Advance(TimeSpan.FromHours(1));
 
-        int changed = await new FootprintProjector(_database, NullLogger<FootprintProjector>.Instance)
-            .ProjectAsync(Venue, _es, FiveMinutes, _clock.GetUtcNow(), CancellationToken.None);
-        await _database.SaveChangesAsync();
+        int changed = await ProjectAsync();
 
         changed.Should().Be(0, "once the print is in the cells a confirming rebuild writes nothing");
 
@@ -207,7 +229,38 @@ public sealed class FootprintReadProjectionTests : IDisposable
             + "and a merged 10/5 would be a wrong number");
     }
 
-    private MarketDataTools Tools()
+    /// <summary>Replays the whole tape by hand, in the transaction the projector demands.</summary>
+    /// <returns>How many rows the pass changed — written, updated, or removed.</returns>
+    /// <remarks>
+    /// <para>
+    /// The reads above reach <c>ProjectAsync</c> through <see cref="FootprintCacheService"/>, which wraps it
+    /// in <c>SeriesUnitOfWork</c>. The two confirming rebuilds below call it directly, so they have to open
+    /// the same transaction themselves: the projector refuses outright without one, because the cells it
+    /// writes leave as one statement the store runs as it is sent while the cells the tape no longer
+    /// justifies are removed through the change tracker and wait for <c>SaveChanges</c>.
+    /// </para>
+    /// <para>
+    /// <b>Those two calls never ran inside that transaction before.</b> The in-memory provider had none for
+    /// the guard to find, so it was skipped and the direct passes ran in a shape no host process uses
+    /// (gh#387). <c>SeriesUnitOfWork</c> is internal to the host, so the level it states is restated here —
+    /// <see cref="IsolationLevel.RepeatableRead"/>, the same level the concurrency suites next door open by
+    /// hand for the same reason.
+    /// </para>
+    /// </remarks>
+    private async Task<int> ProjectAsync()
+    {
+        await using IDbContextTransaction transaction = await _database.Database
+            .BeginTransactionAsync(IsolationLevel.RepeatableRead, CancellationToken.None);
+
+        int changed = await new FootprintProjector(_database, NullLogger<FootprintProjector>.Instance)
+            .ProjectAsync(Venue, _es, FiveMinutes, _clock.GetUtcNow(), CancellationToken.None);
+        await _database.SaveChangesAsync();
+        await transaction.CommitAsync();
+
+        return changed;
+    }
+
+    private TapeTools Tools()
     {
         IOptions<MarketDataOptions> options = Options.Create(new MarketDataOptions
         {
@@ -217,26 +270,20 @@ public sealed class FootprintReadProjectionTests : IDisposable
         });
 
         BarSessionCalendar calendar = BarSessionCalendar.Parse("16:00", []);
-        IndicatorCatalog catalog = new(
-            Options.Create(new IndicatorOptions { AtrPeriod = 3, RsiPeriod = 3 }), calendar);
-        IndicatorProjector projector = new(_database, catalog, NullLogger<IndicatorProjector>.Instance);
 
-        return new MarketDataTools(
-            new BarCacheService(
-                _database, _gateway, calendar, projector, _clock, NullLogger<BarCacheService>.Instance),
+        return new TapeTools(
+            new InstrumentResolver(new InstrumentRegistry(options), new StoreAvailabilityHolder()),
             _database,
-            new InstrumentRegistry(options),
-            catalog,
-            new IndicatorCacheService(
-                _database, catalog, projector, _clock, NullLogger<IndicatorCacheService>.Instance),
-            new LevelMethodCatalog(calendar),
             _gateway,
             new ToolGuards(options),
-            new StoreAvailabilityHolder(),
-            _clock,
-            Options.Create(new KeyLevelDetectionOptions()),
+            _tape,
             new VolumeProfileService(_database),
-            _tape);
+            new VolumeFrontReader(new TapeVolumeFrontService(_database, _gateway, calendar)),
+            new FootprintCacheService(
+                _database,
+                new FootprintProjector(_database, NullLogger<FootprintProjector>.Instance),
+                _clock,
+                NullLogger<FootprintCacheService>.Instance));
     }
 
     private async Task SeedTapeAsync(params TradeRecord[] trades)

@@ -114,8 +114,11 @@ it before starting, and add dated entries only when nothing formal fits.
   Already mixed? The recovery, tree-identity check included, is in
   [`AGENT-MEMORY.md`](documentation/AGENT-MEMORY.md).
 - **Claim before you start — `scripts/claim.sh <issue-id>`.** The **pushed** branch is the claim; a local
-  worktree is invisible to parallel sessions. A tip unmoved for 4 hours is fair game — say so on the issue
-  first.
+  worktree is invisible to parallel sessions. A claim quiet for 4 hours is **not** abandoned — nothing obliges
+  you to push, so quiet is an absence of evidence (gh#438). Taking one over means posting
+  `TAKEOVER-ANNOUNCED: <branch>` on the issue and re-running an hour later; `claim.sh` reads for that line and
+  refuses until it is there. It must **open** the comment and come from an account with **write access** —
+  quoting the token in prose announces nothing. **Any push inside that hour defends your claim.**
 
 *Every line here is paid by every agent in every session. Keep it small: anything role- or subtree-specific
 belongs in its contract, and anything with a formal home belongs there rather than restated here.*

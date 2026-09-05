@@ -97,7 +97,7 @@ public sealed class VolumeKeyLevelPlumbingTests : IDisposable
         levels.Levels.Should().BeEmpty();
     }
 
-    private MarketDataTools Tools()
+    private KeyLevelTools Tools()
     {
         IOptions<MarketDataOptions> market = Options.Create(new MarketDataOptions
         {
@@ -110,23 +110,15 @@ public sealed class VolumeKeyLevelPlumbingTests : IDisposable
         IndicatorCatalog indicators = new(
             Options.Create(new IndicatorOptions { AtrPeriod = 3 }), calendar);
         CountingGateway gateway = new([]);
-        FakeTimeProvider clock = new(_start.AddHours(2));
-        IndicatorProjector projector = new(_database, indicators, NullLogger<IndicatorProjector>.Instance);
-        BarCacheService cache = new(
-            _database, gateway, calendar, projector, clock, NullLogger<BarCacheService>.Instance);
 
-        return new MarketDataTools(
-            cache,
+        return new KeyLevelTools(
+            new InstrumentResolver(new InstrumentRegistry(market), new StoreAvailabilityHolder()),
             _database,
-            new InstrumentRegistry(market),
             indicators,
-            new IndicatorCacheService(
-                _database, indicators, projector, clock, NullLogger<IndicatorCacheService>.Instance),
             new LevelMethodCatalog(calendar),
             gateway,
             new ToolGuards(market),
-            new StoreAvailabilityHolder(),
-            clock,
+            new VolumeProfileService(_database),
             Options.Create(new KeyLevelDetectionOptions
             {
                 Source = PivotSource.HighLow,
@@ -136,8 +128,7 @@ public sealed class VolumeKeyLevelPlumbingTests : IDisposable
                 MinSignificance = 0m,
                 MaxZoneWidthPercent = 100m,
                 MaxLevels = 1_000,
-            }),
-            new VolumeProfileService(_database));
+            }));
     }
 
     private void SeedBars()

@@ -44,6 +44,14 @@ namespace MarqSpec.Mcp.TopstepX.Tests.Tools;
 /// <c>Blank</c> both throw and say what to add. A marker attribute would close it properly, and costs more
 /// than it buys while the surface is six methods.
 /// </para>
+/// <para>
+/// <b>The case that proves the guard does not over-reject is not in this file.</b> Everything here refuses,
+/// and a refusal never reaches a store — which is what lets these keep running on the in-memory provider with
+/// no container. Showing that a <i>valid</i> resolution still answers means serving the read, and serving one
+/// now runs the real <c>ON CONFLICT … DO UPDATE</c> bar and coverage writes, so it moved down to
+/// <c>MarqSpec.Mcp.TopstepX.IntegrationTests.ResolutionGuardServedReadTests</c> (gh#387). Read the two
+/// together: a guard proven only to refuse is a guard nobody has checked for over-reach.
+/// </para>
 /// </remarks>
 public sealed class ResolutionGuardTests : IDisposable
 {
@@ -52,7 +60,11 @@ public sealed class ResolutionGuardTests : IDisposable
 
     private readonly TopstepXDbContext _database;
     private readonly CountingGateway _gateway;
-    private readonly MarketDataTools _marketData;
+    private readonly BarTools _bars;
+    private readonly IndicatorTools _indicators;
+    private readonly KeyLevelTools _keyLevels;
+    private readonly TapeTools _tape;
+    private readonly ContractRollTools _roll;
     private readonly SnapshotTools _snapshot;
     private readonly BarCacheService _cache;
     private readonly IndicatorCatalog _catalog;
@@ -105,10 +117,18 @@ public sealed class ResolutionGuardTests : IDisposable
         _cache = new BarCacheService(
             _database, _gateway, calendar, projector, _clock, NullLogger<BarCacheService>.Instance);
 
-        _marketData = new MarketDataTools(
-            _cache,
+        // Five market-data tool types now, not one (gh#414). The sweep below walks the surface by
+        // reflection and maps a declaring type to an instance, so EVERY one of them has to be built here --
+        // a type the map cannot build throws by name rather than dropping out of the sweep.
+        InstrumentResolver resolver = new(new InstrumentRegistry(options), new StoreAvailabilityHolder());
+        ToolGuards guards = new(options);
+        VolumeFrontReader front = new(new TapeVolumeFrontService(_database, _gateway, calendar));
+
+        _bars = new BarTools(resolver, _cache, guards, _clock);
+
+        _indicators = new IndicatorTools(
+            resolver,
             _database,
-            new InstrumentRegistry(options),
             _catalog,
             new IndicatorCacheService(
                 _database,
@@ -116,16 +136,40 @@ public sealed class ResolutionGuardTests : IDisposable
                 new IndicatorProjector(_database, _catalog, NullLogger<IndicatorProjector>.Instance),
                 _clock,
                 NullLogger<IndicatorCacheService>.Instance),
+            _gateway,
+            guards);
+
+        _keyLevels = new KeyLevelTools(
+            resolver,
+            _database,
+            _catalog,
             new LevelMethodCatalog(calendar),
             _gateway,
-            new ToolGuards(options),
-            new StoreAvailabilityHolder(),
-            _clock,
-            Options.Create(new KeyLevelDetectionOptions()),
-            new VolumeProfileService(_database));
+            guards,
+            new VolumeProfileService(_database),
+            Options.Create(new KeyLevelDetectionOptions()));
+
+        _tape = new TapeTools(
+            resolver,
+            _database,
+            _gateway,
+            guards,
+            new TapeAvailabilityHolder(),
+            new VolumeProfileService(_database),
+            front,
+            new FootprintCacheService(
+                _database,
+                new FootprintProjector(_database, NullLogger<FootprintProjector>.Instance),
+                _clock,
+                NullLogger<FootprintCacheService>.Instance));
+
+        _roll = new ContractRollTools(
+            resolver, _database, _gateway, new LevelMethodCatalog(calendar), front, _clock);
 
         _snapshot = new SnapshotTools(
-            _marketData,
+            _bars,
+            _indicators,
+            _keyLevels,
             new ReferenceTools(new InstrumentRegistry(options), calendar, _gateway, options, _clock),
             new IndicatorCatalogNames(_catalog),
             _clock);
@@ -187,7 +231,7 @@ public sealed class ResolutionGuardTests : IDisposable
         // The reported symptom. TimeSpan.FromMinutes(0) reached BarGapDetector.AlignDown and left the tool
         // boundary as an ArgumentOutOfRangeException -- an unhandled fault where a tool error belongs.
         Func<Task> call = () =>
-            _marketData.GetLatestBars("ES", resolutionMinutes, 10, CancellationToken.None);
+            _bars.GetLatestBars("ES", resolutionMinutes, 10, CancellationToken.None);
 
         (await call.Should().ThrowAsync<McpException>()).WithMessage("*resolutionMinutes*");
     }
@@ -200,7 +244,7 @@ public sealed class ResolutionGuardTests : IDisposable
         // Worse than a crash: this one never threw. The query matched no row and the tool answered
         // { value: null } -- "cannot measure", which is what a genuine warm-up gap says. An impossible
         // timeframe and an honest absence must not be the same reply.
-        Func<Task> call = () => _marketData.GetIndicatorAt(
+        Func<Task> call = () => _indicators.GetIndicatorAt(
             "ES", resolutionMinutes, "atr", Bucket(SeededBars), CancellationToken.None);
 
         (await call.Should().ThrowAsync<McpException>()).WithMessage("*resolutionMinutes*");
@@ -214,7 +258,7 @@ public sealed class ResolutionGuardTests : IDisposable
         // The same silence in a different shape: no bars matched, so it returned an empty level set. Nothing
         // in "no levels here" tells the caller the timeframe it asked for cannot exist.
         Func<Task> call = () =>
-            _marketData.GetKeyLevels("ES", resolutionMinutes, 100, cancellationToken: CancellationToken.None);
+            _keyLevels.GetKeyLevels("ES", resolutionMinutes, 100, cancellationToken: CancellationToken.None);
 
         (await call.Should().ThrowAsync<McpException>()).WithMessage("*resolutionMinutes*");
     }
@@ -254,17 +298,6 @@ public sealed class ResolutionGuardTests : IDisposable
 
         _gateway.BarRequests.Should().Be(0, "the set is judged before the first slice is read");
         _gateway.ContractRequests.Should().Be(0, "and before the contract behind it is resolved");
-    }
-
-    [Fact]
-    public async Task AValidResolution_StillAnswers()
-    {
-        // The other half of the acceptance criterion: nothing changes for a resolution that is fine.
-        ToolPayloads.BarSeries series =
-            await _marketData.GetLatestBars("ES", 5, 10, CancellationToken.None);
-
-        series.ResolutionMinutes.Should().Be(5);
-        series.Bars.Should().HaveCount(10, "forty five-minute bars were seeded and ten were asked for");
     }
 
     // ── The other end of the same axis (gh#81) ───────────────────────────────────────────────────────
@@ -313,7 +346,7 @@ public sealed class ResolutionGuardTests : IDisposable
         // outside DateTime's range -- a raw ArgumentOutOfRangeException where a tool error belongs. It
         // survives gh#69's guard for the one reason that guard cannot help with: the value is positive.
         Func<Task> call = () =>
-            _marketData.GetLatestBars("ES", resolutionMinutes, 10, CancellationToken.None);
+            _bars.GetLatestBars("ES", resolutionMinutes, 10, CancellationToken.None);
 
         (await call.Should().ThrowAsync<McpException>()).WithMessage("*resolutionMinutes*");
     }
@@ -323,7 +356,7 @@ public sealed class ResolutionGuardTests : IDisposable
     {
         // The boundary from the servable side. A ceiling that also refuses the coarsest bar it claims to
         // serve is a ceiling one minute lower, and nothing in the error would say so.
-        Func<Task> call = () => _marketData.GetLatestBars("ES", 10_080, 10, CancellationToken.None);
+        Func<Task> call = () => _bars.GetLatestBars("ES", 10_080, 10, CancellationToken.None);
 
         await call.Should().NotThrowAsync();
     }
@@ -338,7 +371,7 @@ public sealed class ResolutionGuardTests : IDisposable
         // is the whole finding -- it is what carries a pair that is legal on both axes past a calendar neither
         // axis knows about, and it puts the real boundary near 26,400 weekly bars rather than 62,500. Nothing
         // about this request is out of range on either axis taken alone.
-        MarketDataTools capped = WithRowCap(1_000_000);
+        BarTools capped = WithRowCap(1_000_000);
 
         Func<Task> call = () => capped.GetLatestBars("ES", 10_080, 62_500, CancellationToken.None);
 
@@ -365,10 +398,10 @@ public sealed class ResolutionGuardTests : IDisposable
             .WithMessage("*-1000000*");
     }
 
-    /// <summary>Rebuilds the market-data tools against a different row cap.</summary>
+    /// <summary>Rebuilds the bar tools against a different row cap.</summary>
     /// <param name="maxRows">The cap to build against.</param>
     /// <returns>The tools.</returns>
-    private MarketDataTools WithRowCap(int maxRows)
+    private BarTools WithRowCap(int maxRows)
     {
         IOptions<MarketDataOptions> capped = Options.Create(new MarketDataOptions
         {
@@ -377,24 +410,11 @@ public sealed class ResolutionGuardTests : IDisposable
             SessionCloseCentral = "16:00",
         });
 
-        return new MarketDataTools(
+        return new BarTools(
+            new InstrumentResolver(new InstrumentRegistry(capped), new StoreAvailabilityHolder()),
             _cache,
-            _database,
-            new InstrumentRegistry(capped),
-            _catalog,
-            new IndicatorCacheService(
-                _database,
-                _catalog,
-                new IndicatorProjector(_database, _catalog, NullLogger<IndicatorProjector>.Instance),
-                _clock,
-                NullLogger<IndicatorCacheService>.Instance),
-            new LevelMethodCatalog(BarSessionCalendar.Parse("16:00", [])),
-            _gateway,
             new ToolGuards(capped),
-            new StoreAvailabilityHolder(),
-            _clock,
-            Options.Create(new KeyLevelDetectionOptions()),
-            new VolumeProfileService(_database));
+            _clock);
     }
 
     // ── The drift guard ──────────────────────────────────────────────────────────────────────────────
@@ -418,7 +438,7 @@ public sealed class ResolutionGuardTests : IDisposable
 
         List<MethodInfo> takingAResolution =
         [
-            .. typeof(MarketDataTools).Assembly.GetTypes()
+            .. typeof(BarTools).Assembly.GetTypes()
                 .Where(t => t.GetCustomAttribute<McpServerToolTypeAttribute>() is not null)
                 .SelectMany(t => t.GetMethods(Surface))
                 .Where(m => m.GetCustomAttribute<McpServerToolAttribute>() is not null)
@@ -459,7 +479,11 @@ public sealed class ResolutionGuardTests : IDisposable
     /// <param name="type">The tool type the sweep found.</param>
     /// <returns>An instance to invoke.</returns>
     private object Instance(Type type) =>
-        type == typeof(MarketDataTools) ? _marketData
+        type == typeof(BarTools) ? _bars
+        : type == typeof(IndicatorTools) ? _indicators
+        : type == typeof(KeyLevelTools) ? _keyLevels
+        : type == typeof(TapeTools) ? _tape
+        : type == typeof(ContractRollTools) ? _roll
         : type == typeof(SnapshotTools) ? _snapshot
         : throw new InvalidOperationException(
             type.Name + " takes a resolutionMinutes and this fixture cannot build it. Add it here rather "

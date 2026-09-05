@@ -140,12 +140,33 @@ scripts/claim.sh <issue-id>          # check + worktree + branch + push, in one 
 scripts/claim.sh <issue-id> --check  # report only
 ```
 
+**Read its exit status, not its prose.** `0` means proceed — free, or a takeover permitted; `3` means it
+declined; `1` means a read that decides the verdict could not be made. It prints exactly one line beginning
+`VERDICT: `, and that line is the answer (gh#438).
+
 **Match on `/<id>_`, not `_<id>_`.** The separator before the id is a slash. A pattern anchored on an underscore
 matches nothing and reports every claimed issue as free — worse than no check, because it fails in the direction
 that permits the collision.
 
-A claim whose branch tip has not moved for **4 hours** is presumed abandoned and is fair game. **Before taking
-one over, say so on the issue**, naming the branch.
+A claim quiet for **4 hours** is a *question*, not an abandonment (gh#438). Nothing obliges a session to push,
+so quiet is an absence of evidence — and an empty claim points at `origin/develop`, so what the old rule aged
+was **develop's** last merge rather than the claim. Two live claims were called *"presumed abandoned and fair
+game"* on that reading, on 2026-09-02, while both worktrees held uncommitted work.
+
+**Announcing is what converts quiet into a takeover, and `claim.sh` now reads for it.** Post
+`TAKEOVER-ANNOUNCED: <branch>` on the issue, wait an hour, and re-run — **any push to that branch inside the
+hour defends the claim**. The token is required: a comment merely *naming* the branch is what a claimant posts
+about its own work.
+
+**Three things about that comment, because it is a control plane on a public repository** (found by review
+on PR #441). The token must be the **first thing in the comment** — quoting it inside prose, as a pasted copy
+of `claim.sh`'s own output does, announces nothing. The comment must come from an account with **write
+access**; anyone can open an issue comment here. And an **edited** comment is refused, because its timestamp
+would predate the text the notice hour is being counted against. All three fail closed: a refusal costs you
+one re-post. **Backticks are markup, not part of the token** — `` `TAKEOVER-ANNOUNCED: <branch>` ``, a
+backticked branch alone, and the bare form all count, so copying the line out of this document or out of
+the script's own printed recipe both work. What still defeats this: a live session that never reads its
+issue. Push as you go.
 
 ### This repo is one half of a two-repo card
 
@@ -247,8 +268,25 @@ that phrase named has never existed.
 
 ```bash
 dotnet test              # unit + integration; needs a Docker daemon, no credentials
-docker compose up -d     # the local stack: Postgres, and the server on :8080
+docker compose up -d     # the local stack: Postgres, and the server on https://localhost:8443
 ```
+
+Compose binds the server's port to `127.0.0.1` only (gh#415) — an IPv6 `localhost` resolution (`::1`) will
+not reach it; use the literal `127.0.0.1` address. Postgres's `5432` is bound the same way (gh#421), which is
+what `dotnet ef` and any local tool reach; `POSTGRES_PASSWORD`'s compose default is tolerable for the same
+reason the bearer token's is — the bind, not the value.
+
+That endpoint is **HTTPS and only HTTPS** (gh#416), so `docker compose up` needs a locally trusted
+certificate and a password for it before the **server** will start — [`README.md`](README.md#run-it) has the
+commands, and **read its warning first: `mkcert -install` puts a root CA in your OS trust store.**
+
+**Nothing else in the stack needs any of it.** `docker compose up -d postgres` and the `sdk` loop below run
+with no `.env` and no certificate — verified, and worth stating because the first draft of gh#416 got it
+wrong: compose interpolates the **whole file** before it selects a service, so a `${...:?}` guard on the
+certificate password failed `docker compose config postgres` and the `sdk` run loop, neither of which starts
+the server. `Kestrel__Certificates__Default__Password` therefore ships with no value rather than with a hard
+requirement; the server fails at its own startup instead. `certs/` and `.env` are gitignored; check that
+before your first commit, not after.
 
 **There is no fake gateway here, and there never has been.** The integration tier starts its own
 `timescale/timescaledb-ha` Postgres through Testcontainers

@@ -33,13 +33,78 @@ Requires Docker and the .NET 10 SDK.
 
 ```bash
 cp .env.example .env       # then fill in ProjectX__ApiKey / ProjectX__ApiSecret / ProjectX__DataTier
-docker compose up -d       # Postgres (TimescaleDB + pgvector) and the HTTP server on :8080
 ```
 
-`docker compose up` is the **HTTP** transport on `:8080`, not stdio. Calls need
-`Authorization: Bearer <Mcp__HttpBearerToken>` — compose defaults that token to `changeme-local`, the same
-local convenience as `POSTGRES_PASSWORD` and `ProjectX__DataTier:-Simulated`. Change the token before the
-port is reachable from anywhere but localhost.
+**Read this before running the next block — it changes your machine, not just this directory.** The composed
+endpoint is HTTPS, so it needs a certificate your host trusts, and the only way to get one locally is to
+trust a **local certificate authority**. `mkcert -install` **writes a new root CA into your operating
+system's trust store**. Until it is removed, anything that CA signs is trusted by every application reading
+that store, and whoever holds its private key — `mkcert -CAROOT` prints the directory, so guard it — can
+mint a certificate for **any** name. It is the standard tool for this and the change is reversible:
+**`mkcert -uninstall`** removes the CA again. It is a decision, not a step.
+
+`mkcert` ships with nothing here and is not part of the .NET SDK, so install it first:
+
+```bash
+winget install FiloSottile.mkcert     # Windows.  macOS: brew install mkcert.  Linux: see the mkcert README
+```
+
+```bash
+# TLS, once per host.
+mkcert -install            # <-- writes a root CA to the OS trust store; `mkcert -uninstall` reverses it
+mkcert -cert-file ./certs/localhost.crt -key-file ./certs/localhost.key localhost 127.0.0.1 ::1
+openssl rand -hex 24       # put it in .env as Kestrel__Certificates__Default__Password
+openssl pkcs12 -export -out ./certs/localhost.pfx \
+  -inkey ./certs/localhost.key -in ./certs/localhost.crt \
+  -certfile "$(mkcert -CAROOT)/rootCA.pem" -passout "pass:<that value>"
+rm ./certs/localhost.key   # the PFX carries the key, encrypted
+
+docker compose up -d       # Postgres (TimescaleDB + pgvector) and the HTTPS server on :8443
+```
+
+**Only the server needs any of that.** `docker compose up -d postgres` and the containerised test loop under
+[Local development](CONTRIBUTING.md#local-development) render and run with **no `.env` and no certificate** —
+verified, because compose interpolates the whole file before it picks a service and an earlier draft of this
+change broke both.
+
+`docker compose up` is the **HTTPS** transport on `:8443`, not stdio and **not plaintext**: a client that
+requires HTTPS could not connect at all before, and a bearer token sent in clear is a credential anyone on the
+path can replay (gh#416). *The maintainer reports that Claude Cowork is such a client and refuses to register
+a non-TLS endpoint as a connector; that report is **not** independently verified here, and nothing above
+depends on it.* There is no HTTP port beside it. Calls need
+`Authorization: Bearer <Mcp__HttpBearerToken>`; TLS is confidentiality on the wire and the token is still what
+authorises the call. Compose defaults that token to `changeme-local`, the same local convenience as
+`POSTGRES_PASSWORD` and `ProjectX__DataTier:-Simulated`. **Compose binds that port to `127.0.0.1`**, which is
+the only reason the default token is tolerable; publish it wider and you set a real token in the same change
+(gh#415) — TLS does not license widening it. The certificate covers `localhost`, `127.0.0.1` and `::1`, so
+either literal works where the name does not.
+
+**Postgres's own port carries the identical shape** (gh#421): `5432` also binds `127.0.0.1` only, and
+`POSTGRES_PASSWORD` keeps its `changeme-local` default for the same reason — the bind, not the value, is what
+makes it tolerable. The asymmetry worth naming: the bearer token authenticates nothing at the venue and has
+never had a value worth rotating, while a database password **owns the schema** — the bar cache, the trade
+tape, coverage ledgers and indicator projections. Widening either bind means setting a real credential in the
+same change.
+
+`Kestrel__Certificates__Default__Password` is the one setting that ships with **no value** — it unlocks a
+private key, and this repository is public. It is **not** enforced by compose, and that is deliberate:
+compose interpolates the whole file before it picks a service, so a hard requirement here broke
+`docker compose up -d postgres` and the containerised test loop, neither of which needs a certificate.
+The server fails at its own startup instead, and one of the two messages is misleading, so it is worth
+knowing which is which:
+
+| What is wrong | What the server says |
+|---|---|
+| no certificate at `certs/localhost.pfx`, under `docker compose up` | `FileNotFoundException: Could not find file '/https/localhost.pfx'` — clear: the container's mount is empty, so make the certificate. |
+| `Kestrel__Certificates__Default__Path=/https/localhost.pfx` reused **outside** compose | `/https/localhost.pfx` is a path inside the container's read-only mount, not a path on your machine, so this is never "no certificate" — it is the wrong kind of path. The message even looks identical on Linux/macOS; on Windows it is `DirectoryNotFoundException: Could not find a part of the path 'C:\https\localhost.pfx'`, because `/https/...` resolves against the current drive. Either way, point `Kestrel__Certificates__Default__Path` at a certificate on **this host** instead — see [below](#the-http-transport-without-compose). |
+| certificate present, password unset or wrong | `The certificate data cannot be read with the provided password, the password may be incorrect` — an **unset** password arrives as an empty one, so *"may be incorrect"* also means *"may be missing"*. Check `.env` before you suspect the PFX. |
+
+`certs/` and `.env` are gitignored. Nothing rotates the certificate; mkcert's leaf lasts about two years.
+
+**`dotnet dev-certs` is not a substitute**, and the reason is measured rather than stylistic: it issues a
+self-signed *leaf*, which OpenSSL cannot use as a trust anchor, so an OpenSSL-based client rejects it with
+`UNABLE_TO_VERIFY_LEAF_SIGNATURE` and no client-side setting fixes that. See
+[ADR-0007](documentation/adr/0007-dual-transport.md).
 
 Register a **stdio** client against a locally launched process:
 
@@ -58,6 +123,90 @@ still real and `list_instruments` / `get_market_session` answer normally; with n
 say so. Each absent dependency produces a refusal naming the fix, rather than a dead process an MCP client
 would report as a bare transport failure ([ADR-0007](documentation/adr/0007-dual-transport.md)). So you can
 register it first and configure it after.
+
+### The stdio transport in the container
+
+The image's own entrypoint speaks **stdio**. [`Dockerfile`](Dockerfile) pins no transport, and it is
+`docker-compose.yml` setting `Mcp__Transport: "Http"` that makes the composed stack the exception — so the
+published image is already the thing an MCP client launches, and it needs neither compose nor the SDK:
+
+```bash
+docker pull ghcr.io/adammarquette/marqspec.mcp.topstepx:0.2.0
+claude mcp add topstepx -- docker run --rm -i ghcr.io/adammarquette/marqspec.mcp.topstepx:0.2.0
+```
+
+Or build the image instead of pulling it — `docker build -t marqspec-mcp-topstepx:local .` — and register
+that tag. Both were measured for the paragraphs below and behaved identically.
+
+**`-i` is not optional, and omitting it looks like success.** Without it the container is handed an
+already-closed stdin: the stdio transport reads EOF before the handshake and the host stops before it ever
+serves. Since gh#76 that is a clean **exit 0** with an empty stdout — no crash and no non-zero code to search
+for — and the explanation is the container's *last* log line, printed underneath a Kestrel
+`TaskCanceledException` that is expected on this path and is not the fault:
+
+```
+info: startup[0]
+      Shutdown was requested before the server finished starting, so it stopped without listening. On stdio
+      this is what `docker run` WITHOUT `-i` looks like: stdin is closed before the handshake, so there is
+      no client to serve. Pass `-i` (or start the server from an MCP client, which holds stdin open) ...
+```
+
+**`Now listening on: http://[::]:8080` is expected here, and it is not the HTTP transport.**
+`mcr.microsoft.com/dotnet/aspnet:10.0` bakes `ASPNETCORE_HTTP_PORTS=8080` into the image, so inside a
+container an address is always named and `WebApplication`'s Kestrel binds it under either transport
+([ADR-0007](documentation/adr/0007-dual-transport.md)). Nothing is served there — your session is the pipe —
+and the command above publishes no port at all. `EXPOSE 8443` in the `Dockerfile` describes the composed
+deployment rather than this one.
+
+**Do not reach for `--entrypoint`.** It *replaces* the image's entrypoint rather than adding to it, so the
+container that runs is no longer this server: an image whose entrypoint named an assembly that did not exist
+once passed a smoke step that way, at exit 0 (gh#67). Check whatever you are checking against the entrypoint
+that ships.
+
+This is the shape CI runs on every pull request —
+[`scripts/check-image-entrypoint.sh`](scripts/check-image-entrypoint.sh) drives `docker run --rm -i`,
+publishes no port, and asserts the `tools/list` reply *before* it reads the exit code. And as with the local
+process above, the container carries no database and no credentials until you give it some, and starts
+anyway.
+
+### The HTTP transport without compose
+
+There is a further way to run this beside `docker compose up` and the two stdio launches above: the **HTTP
+transport on its own**, with `dotnet run` and nothing composed around it. It is supported, and it needs less
+than the composed stack does — no `.env`, no certificate, no Postgres, no ProjectX credentials:
+
+```bash
+Mcp__Transport=Http Mcp__HttpBearerToken=$(openssl rand -hex 24) \
+  dotnet run --project MarqSpec.Mcp.TopstepX
+```
+
+Measured on this branch with nothing else running: it logs `Now listening on: http://localhost:5000`, and
+that is loopback-only — `netstat` shows `127.0.0.1:5000` and `[::1]:5000`, nothing on `0.0.0.0` or `[::]`,
+because Kestrel's own `localhost` default is already loopback-only and nothing here has to bind it there on
+purpose. `curl` against `/mcp` with no `Authorization` header, or the wrong token, both get `401`; with the
+right one, `initialize`, a full `tools/list` and a `list_instruments` call all answer normally, with the
+absent-database warning firing exactly as it does under stdio.
+
+Two things this recipe deliberately does **not** carry over from `docker compose up`:
+
+- **No TLS.** The composed endpoint's HTTPS on `:8443` is gh#416's answer to one client's requirement, not
+  something the HTTP transport itself demands — only the bearer token is required
+  ([ADR-0007](documentation/adr/0007-dual-transport.md)). Naming `ASPNETCORE_HTTPS_PORTS` and
+  `Kestrel__Certificates__Default__Path=/https/localhost.pfx` here — carrying the composed `.env` values over
+  literally — does not add TLS, it reproduces the container-path trap in the table above: point
+  `Kestrel__Certificates__Default__Path` at a certificate on **this host** if you want one, never at
+  `/https/...`.
+- **No override for `KeyLevels__Source`.** It is not needed: the option's C# default is already
+  `HeikinAshiBody`, and .NET's configuration binder leaves it alone when the key is absent rather than
+  resetting it — measured above, starting cleanly with nothing set for it. Setting the variable to something
+  real is fine; setting it to a typo is the one way to fail here, and the failure is an unhandled
+  `System.FormatException` naming the bad value, not a friendly sentence — see
+  [ADR-0007](documentation/adr/0007-dual-transport.md)'s 2026-09-03 update for the measurement.
+
+What this mode is **not**: it is not TLS, it is not reachable by Claude Cowork (which refuses a non-TLS
+endpoint), and it carries no real venue credential or database by default. It exists for testing and
+debugging the HTTP transport itself — with `curl`, the MCP inspector, or a client that accepts plaintext
+loopback HTTP — without standing up the composed stack to do it.
 
 **Two credential facts that are not guessable from the field names**, and both of which cost real debugging
 time in the sibling repo:
@@ -145,11 +294,10 @@ same observation, and the cache asks the vendor for the weekend forever.
 [`CONTRIBUTING.md`](CONTRIBUTING.md) — branching, claiming, commits, and the Definition of Done. Work is
 issue-first and tracked on the [project board](https://github.com/users/adammarquette/projects/5).
 
-## License
+## Notice
 
-Copyright (c) 2026 Adam Marquette. All rights reserved. See [`NOTICE`](NOTICE). Not affiliated with,
-endorsed by, or sponsored by ProjectX, TopstepX or Topstep. Trademarks belong to their owners and are
-used only to identify what is being integrated with.
+See [`NOTICE`](NOTICE). Not affiliated with, endorsed by, or sponsored by ProjectX, TopstepX or Topstep.
+Trademarks belong to their owners and are used only to identify what is being integrated with.
 
 ---
 

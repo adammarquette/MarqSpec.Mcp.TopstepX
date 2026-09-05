@@ -3,7 +3,7 @@
 **Status:** Accepted · **Date:** 2026-08-26 · **Deciders:** Adam (operator)
 **Relates to:** PRD `R-3`, `R-3.1`, `R-3.2` · [data dictionary](../data-dictionary.md) *§4 `PriceLevels`* ·
 the mirror image of [ADR-0006](0006-indicators-as-projections.md), which it does **not** reopen · gh#232,
-gh#247 · `Domain/MarketData/KeyLevels.cs`, `Tools/MarketDataTools.cs`
+gh#247 · `Domain/MarketData/KeyLevels.cs`, `Tools/KeyLevelTools.cs`
 
 ## Context
 
@@ -105,7 +105,7 @@ rather than summed from the two medians. It cannot remove anything else, and tha
 incidental:
 
 - `LevelSet` reports `Contracts` and `DetectedOverBars`, and **both are derived from the loaded bars** —
-  `ToolPayloads.ToCoverage(bars)` and `detectable.Count` in `MarketDataTools.GetKeyLevels`. A cached level
+  `ToolPayloads.ToCoverage(bars)` and `detectable.Count` in `KeyLevelTools.GetKeyLevels`. A cached level
   set cannot answer either.
 - Detection is confined to the front contract by `ContractRollDetector.Newest(bars)` (`R-3.5`,
   [ADR-0011](0011-contract-roll-boundary.md)), which also needs the bars.

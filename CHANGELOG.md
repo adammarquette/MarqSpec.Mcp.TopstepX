@@ -13,9 +13,127 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.2.1] - 2026-08-30
+## [0.3.0] - 2026-09-03
+
+A **minor** bump rather than a patch: the composed MCP endpoint is HTTPS-only and every local client's
+URL changes once, which is breaking for them even though nothing here can trade. It also carries the
+`0.2.1` fix, which was written up but never tagged — folded in here rather than cut retroactively, so
+there is one release to date rather than two, one of them wrong.
+
+### Security
+
+- **BREAKING for local clients.** The composed MCP endpoint is now **HTTPS only**, on
+  `https://localhost:8443/mcp`, and there is no plaintext port beside it — a client that requires HTTPS could
+  not connect at all before, and a bearer token sent in clear is replayable by anyone on the path. (Claude
+  Cowork is *reported* to be such a client; that report is not independently verified here and nothing rests
+  on it.)
+  Every local client's URL changes, once, from `http://localhost:8080/mcp`. `docker compose up` now needs a
+  locally trusted certificate and `Kestrel__Certificates__Default__Password` in `.env` — the one setting in
+  the stack that ships with **no value**, because it unlocks a private key and this repository is public. It
+  is not enforced by compose: compose interpolates the whole file before selecting a service, so a `${...:?}`
+  guard on it broke `docker compose up -d postgres` and the containerised test loop, neither of which needs a
+  certificate. `docker compose up -d postgres` and the `sdk` loop still run with no `.env` at all. The
+  certificate comes from **mkcert**, a local CA installed into the host trust store with `mkcert -install`
+  (reversible with `mkcert -uninstall`) — a machine-wide change the README now states before the command —
+  and not from
+  `dotnet dev-certs`: that one issues a self-signed leaf (`CA:FALSE`) which OpenSSL cannot anchor on, so an
+  OpenSSL-based client rejects it and no client-side setting fixes that. Removing `ASPNETCORE_HTTP_PORTS` was
+  not enough on its own — the ASP.NET base image sets it to 8080, so compose overrides it to empty
+  explicitly. The loopback bind and the bearer token are both unchanged: TLS is confidentiality on the wire,
+  not authorisation, and not a licence to widen the bind
+  ([ADR-0007](documentation/adr/0007-dual-transport.md), gh#416 — gh#422 is a duplicate of it).
+- The composed MCP endpoint is no longer published on every interface. `docker-compose.yml`'s `ports` entry
+  was a bare `- "8080:8080"`, which Docker maps on `0.0.0.0` and `[::]` — every interface the host has — while
+  [ADR-0007](documentation/adr/0007-dual-transport.md) asserted the HTTP path was "not exposed by default".
+  Compose also sets `Mcp__Transport: "Http"` and defaults `Mcp__HttpBearerToken` to `changeme-local`, a value
+  committed to this **public** repository, so anything able to route to the host could read balances,
+  positions and trade history on the default token. The port now binds `127.0.0.1` explicitly; the default
+  token stays, because the two are a coupling and widening the bind means setting a real token in the same
+  change. IPv6 `::1` is no longer bound either — a client that resolves `localhost` to `::1` without falling
+  back to IPv4 will need the literal `127.0.0.1` address (gh#415).
+- The composed Postgres is no longer published on every interface either — the same defect one service down,
+  onto the store the MCP endpoint reads. `docker-compose.yml`'s `5432` entry was the same bare
+  `- "5432:5432"` shape, behind `POSTGRES_PASSWORD` defaulting to `changeme-local` in this **public**
+  repository, and unlike the MCP endpoint there is no bearer token in front of it at all — a database
+  credential is not read-only, it owns the schema. The port now binds `127.0.0.1` explicitly
+  (`docker compose config` resolves `host_ip: 127.0.0.1` with no `[::]` companion); `POSTGRES_PASSWORD`'s
+  default stays for the same coupling reason as the bearer token's — the bind, not the value, is what makes
+  it tolerable (gh#421).
+
+### Changed
+
+- **Every write path has one implementation again.** `BarCacheService`, `IndicatorProjector` and
+  `FootprintProjector` each carried a second, in-memory version of their write — roughly 200 lines of shipped
+  code no production process ever executed — kept only so the unit suite's `Microsoft.EntityFrameworkCore.InMemory`
+  provider had something to run. The consequence reached callers: the two paths disagreed about what a write
+  count *meant*, one returning rows attempted and the other rows affected, and that number is reported as
+  `fetchedBuckets` on `get_bars`. **It is now, unambiguously, the count the store reports.** The four
+  `ON CONFLICT … DO UPDATE` statements and `SeriesUnitOfWork`'s `RepeatableRead` transaction are no longer
+  conditional on the provider, and the suites that exercise them run against a real Postgres. No statement's
+  behaviour changed (gh#387).
+- `get_market_snapshot` reads its whole indicator map for a resolution in one query instead of eleven
+  `get_indicator_at` calls, each of which had gone back to `Bars` for its bucket's contract. A default call
+  cost **60** database statements, **44** of them that block; it now costs **18**, with the block down to one
+  statement per resolution. **The payload is unchanged** — every reading keeps its own `value`, `bucketStart`
+  and `contractId`, which just past a contract roll legitimately differ between entries, and cannot-measure is
+  still the map's own `null`. `get_indicator_at` is untouched (gh#388).
+
+### Added
+
+- **A second concurrent tape recorder is refused rather than tolerated.** A start now takes a store-backed
+  claim on each instrument — a `TapeLeases` row keyed `(Venue, Instrument)` — **before** it subscribes and
+  before it discards crash leftovers, so two processes configured for the same instrument no longer both
+  write prints and double every volume ([ADR-0016](documentation/adr/0016-subscribe-to-the-market-hub.md)).
+  The refused recorder declines cleanly — it does not subscribe, does not fault its `ExecuteTask`, and still
+  serves every read — and reports the new `HeldByAnotherRecorder` tape reason naming the holder, distinct
+  from "the switch is off". **It also stays up and re-attempts** every claim it was refused, so a rolling
+  redeploy does not end with the arriving container quitting and the draining one releasing its rows, which
+  would leave nothing recording at all. **The split-by-instrument deployment is unaffected**, because the
+  claim is per instrument and not per store. A claim whose expiry has passed is reclaimable, so a crash
+  strands the tape for at most one term rather than indefinitely; a quiet holder whose expiry has *not*
+  passed is still the holder; and a holder **stores no print past its own claim's expiry**, so a takeover
+  does not leave two processes writing the same prints under different `Sequence` keys. A retiring holder
+  closes its coverage range on its own clock, so a replacement's clock cannot extend what this process
+  claims. **Not closed, and with no mitigation in the server:** two hosts whose clocks differ by more than
+  the claim's term can still both write, and those duplicate prints **are** counted as volume — the
+  footprint projection reads every stored print for an instrument with no coverage join. Run the recorder on
+  one host, or keep hosts synchronised (gh#404).
 
 ### Fixed
+
+- A legacy bar carrying no `ContractId` at a bucket the **session calendar does not expect** now heals like
+  any other. The read-path heal (gh#402) reaches a bucket by way of `BarGapDetector.FindMissing`, which walked
+  only the calendar's expected grid — so a null off that grid was in neither set the read path knows about,
+  was never asked for, and never healed. A row can sit off that grid by construction rather than by accident:
+  the session close and the holiday list are **configuration**, and the write path does not consult them, so
+  correcting a close or declaring a holiday late moves the grid under rows already written. The cost was not
+  vendor traffic but a **degraded answer**: one unattributed run beside a recorded one makes the window
+  `Unknown`, so a single unhealable off-grid null pinned `get_key_levels` and `get_market_snapshot` at *cannot
+  tell whether this window spans a roll*, on every read, over bars that were all one contract. `FindMissing`
+  now enumerates the buckets the store holds **unattributed** on top of the expected ones — sorted into the
+  sequence, so a run still coalesces around them. A bucket the store holds *with* a contract is still not
+  enumerated off-grid, so gh#408's accepted cost does not grow, and no `ContractId` is guessed anywhere: the
+  venue is asked, and a bar it will not restate keeps its null and its honest `Unknown`. The 16:30 Central
+  bucket the tests use is a constructed demonstration of an off-grid bucket, not an observation of a live
+  store ([ADR-0011](documentation/adr/0011-contract-roll-boundary.md), gh#412).
+
+- A missing bar range wider than one venue page is no longer re-fetched on every read. The range is fetched in
+  pages and the "venue answered empty" memo is written **per page slice**, while the lookup dropped a range
+  only when a *single* memo contained it whole — so N page-memos never answered the N-page range they came
+  from, and it cost N paced vendor pages on every read, forever. The containment test is now made against the
+  **union** of the unexpired memos. It bites hardest on the read-path contract heal (gh#402), whose population
+  is everything written before the `ContractId` migration and therefore multi-page by construction: two days
+  of one-minute bars measured three pages per read before, three once in total after. A genuine gap between
+  two memos is still covered by neither, and a range is still never split around a covered sub-range (gh#408).
+
+- A starting recorder no longer discards every still-open `TapeCoverage` row in the store. The crash-leftover
+  discard now names the venue and the instruments that start resolved a front contract for, so two HTTP
+  recorders against one store **split by `MarketData__Instruments`** stop wiping each other's coverage ledger.
+  An open row for an instrument this process does not record is left alone: it may still be owned, and a
+  coverage range has no backfill. Two recorders configured for the **same** instrument — a rolling redeploy,
+  or a restart overlapping a still-draining container — still collide: they resolve the same front contract,
+  so no predicate can tell one's leftover from the other's listen. ADR-0016 already calls that deployment
+  wrong; refusing the second recorder outright is gh#404 (gh#382).
 
 - The stdio transport no longer holds the framework's default port. `WebApplication` starts Kestrel under both
   transports ([ADR-0007](documentation/adr/0007-dual-transport.md)), and under stdio it was taking
@@ -86,7 +204,7 @@ First tagged release. Read-only MCP server over the ProjectX/TopstepX gateway: c
 projections, contract-aware series, observations with semantic search, fifteen tools on stdio and streamable
 HTTP. The tag was re-cut after the first publish failed on an uppercase image reference (gh#115).
 
-[Unreleased]: https://github.com/adammarquette/MarqSpec.Mcp.TopstepX/compare/v0.2.1...HEAD
-[0.2.1]: https://github.com/adammarquette/MarqSpec.Mcp.TopstepX/compare/v0.2.0...v0.2.1
+[Unreleased]: https://github.com/adammarquette/MarqSpec.Mcp.TopstepX/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/adammarquette/MarqSpec.Mcp.TopstepX/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/adammarquette/MarqSpec.Mcp.TopstepX/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/adammarquette/MarqSpec.Mcp.TopstepX/releases/tag/v0.1.0

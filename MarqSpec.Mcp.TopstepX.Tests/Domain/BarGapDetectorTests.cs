@@ -39,7 +39,7 @@ public sealed class BarGapDetectorTests
         IReadOnlyList<DateTimeOffset> expected =
             BarGapDetector.ExpectedBuckets(window, _fiveMinutes, Calendar());
 
-        BarGapDetector.FindMissing(expected, window, _fiveMinutes, Calendar()).Should().BeEmpty();
+        BarGapDetector.FindMissing(expected, [], window, _fiveMinutes, Calendar()).Should().BeEmpty();
     }
 
     [Fact]
@@ -49,7 +49,7 @@ public sealed class BarGapDetectorTests
         // this ever returns a range, the cache asks the vendor for the weekend on every single call, forever.
         BarRange window = new(Central(2026, 8, 22, 0, 0), Central(2026, 8, 23, 12, 0));
 
-        BarGapDetector.FindMissing([], window, _fiveMinutes, Calendar()).Should().BeEmpty();
+        BarGapDetector.FindMissing([], [], window, _fiveMinutes, Calendar()).Should().BeEmpty();
     }
 
     [Fact]
@@ -63,7 +63,7 @@ public sealed class BarGapDetectorTests
         List<DateTimeOffset> stored = [.. expected.Where((_, i) => i is < 4 or > 6)];
 
         IReadOnlyList<BarRange> missing =
-            BarGapDetector.FindMissing(stored, window, _fiveMinutes, Calendar());
+            BarGapDetector.FindMissing(stored, [], window, _fiveMinutes, Calendar());
 
         missing.Should().ContainSingle();
         missing[0].Start.Should().Be(expected[4]);
@@ -79,7 +79,7 @@ public sealed class BarGapDetectorTests
 
         List<DateTimeOffset> stored = [.. expected.Where((_, i) => i is not (2 or 8))];
 
-        BarGapDetector.FindMissing(stored, window, _fiveMinutes, Calendar()).Should().HaveCount(2);
+        BarGapDetector.FindMissing(stored, [], window, _fiveMinutes, Calendar()).Should().HaveCount(2);
     }
 
     [Fact]
@@ -91,7 +91,7 @@ public sealed class BarGapDetectorTests
         BarRange window = new(Central(2026, 8, 21, 15, 30), Central(2026, 8, 24, 9, 30));
 
         IReadOnlyList<BarRange> missing =
-            BarGapDetector.FindMissing([], window, _fiveMinutes, Calendar());
+            BarGapDetector.FindMissing([], [], window, _fiveMinutes, Calendar());
 
         missing.Should().ContainSingle();
         missing[0].Start.Should().Be(Central(2026, 8, 21, 15, 30));
@@ -130,6 +130,115 @@ public sealed class BarGapDetectorTests
 
         a.Should().Be(b);
         a.Minute.Should().Be(5);
+    }
+
+    [Fact]
+    public void FindMissing_ReportsAnUnattributedBucketTheCalendarDoesNotExpect()
+    {
+        // gh#412. 16:30 Central is inside the 16:00-17:00 maintenance window, so the calendar does not expect
+        // it. That is a constructed bucket, not an observed one; what makes an off-grid row real is that the
+        // calendar is CONFIGURATION and the write path does not consult it, so any change to the session close
+        // or the holiday list strands rows already written. A row the store holds but cannot attribute is
+        // missing PROVENANCE even though it is not missing prices, so it has to be enumerated on top of the
+        // grid or it is never asked for again.
+        //
+        // Mid-sequence deliberately: the expected buckets either side are stored, so the run this produces is
+        // closed by the "stored" branch of the loop rather than falling out of its tail. An implementation
+        // that appended the off-grid buckets instead of sorting them into the sequence would report the wrong
+        // range here and still look right at the end of a window.
+        BarRange window = new(Central(2026, 8, 18, 9, 0), Central(2026, 8, 19, 9, 0));
+        DateTimeOffset offGrid = Central(2026, 8, 18, 16, 30);
+        IReadOnlyList<DateTimeOffset> stored =
+            BarGapDetector.ExpectedBuckets(window, _fiveMinutes, Calendar());
+
+        IReadOnlyList<BarRange> missing =
+            BarGapDetector.FindMissing(stored, [offGrid], window, _fiveMinutes, Calendar());
+
+        missing.Should().ContainSingle();
+        missing[0].Start.Should().Be(offGrid);
+        missing[0].End.Should().Be(offGrid + _fiveMinutes);
+    }
+
+    [Fact]
+    public void FindMissing_MergesAnOffGridUnattributedBucketIntoTheRunAroundIt()
+    {
+        // The off-grid buckets are SORTED into the grid, not appended to it, and this is the test that can
+        // tell the difference. The coalescing loop reads its input as one ascending sequence, so an appended
+        // 16:30 arriving after 17:00 splits what is really one run into two ranges -- a second paced venue
+        // request, and a range whose start runs backwards past the one before it.
+        //
+        // 17:00 is the first bucket of the evening session, left unstored here so there IS a run for the
+        // off-grid bucket to merge into.
+        BarRange window = new(Central(2026, 8, 18, 9, 0), Central(2026, 8, 19, 9, 0));
+        DateTimeOffset offGrid = Central(2026, 8, 18, 16, 30);
+        DateTimeOffset reopen = Central(2026, 8, 18, 17, 0);
+        List<DateTimeOffset> stored =
+            [.. BarGapDetector.ExpectedBuckets(window, _fiveMinutes, Calendar()).Where(b => b != reopen)];
+
+        IReadOnlyList<BarRange> missing =
+            BarGapDetector.FindMissing(stored, [offGrid], window, _fiveMinutes, Calendar());
+
+        missing.Should().ContainSingle("the off-grid bucket and the reopen are one coalesced run");
+        missing[0].Start.Should().Be(offGrid);
+        missing[0].End.Should().Be(reopen + _fiveMinutes);
+    }
+
+    [Fact]
+    public void FindMissing_ReportsAnUnattributedBucketAtTheCloseItself()
+    {
+        // The boundary the test above cannot reach. 16:00 is the FIRST bucket the calendar stops expecting --
+        // it sits immediately after 15:55, which is stored -- so it exercises the transition out of the grid
+        // rather than a bucket sitting comfortably inside a closed stretch. Off by one either way and this is
+        // the case that moves.
+        BarRange window = new(Central(2026, 8, 18, 9, 0), Central(2026, 8, 19, 9, 0));
+        DateTimeOffset atTheClose = Central(2026, 8, 18, 16, 0);
+        IReadOnlyList<DateTimeOffset> stored =
+            BarGapDetector.ExpectedBuckets(window, _fiveMinutes, Calendar());
+
+        stored.Should().NotContain(atTheClose, "a bucket must close inside its session to be expected");
+
+        IReadOnlyList<BarRange> missing =
+            BarGapDetector.FindMissing(stored, [atTheClose], window, _fiveMinutes, Calendar());
+
+        missing.Should().ContainSingle();
+        missing[0].Start.Should().Be(atTheClose);
+    }
+
+    [Fact]
+    public void FindMissing_IgnoresAnAttributedBucketTheCalendarDoesNotExpect()
+    {
+        // The guard on the two above, and the thing that keeps gh#408's accepted cost from growing. A bar the
+        // venue published off the grid AND stamped with a contract is complete: it lacks nothing, so it must
+        // not be enumerated. Admitting every off-grid stored bucket would also break the coalescing this
+        // detector's whole saving rests on -- a stored bucket CLOSES a run, so one attributed bar inside a
+        // maintenance window would split a run that today merges across it, and cost a second venue request.
+        BarRange window = new(Central(2026, 8, 18, 9, 0), Central(2026, 8, 19, 9, 0));
+        IReadOnlyList<DateTimeOffset> stored =
+            [.. BarGapDetector.ExpectedBuckets(window, _fiveMinutes, Calendar()), Central(2026, 8, 18, 16, 30)];
+
+        BarGapDetector.FindMissing(stored, [], window, _fiveMinutes, Calendar()).Should().BeEmpty();
+    }
+
+    [Fact]
+    public void FindMissing_IgnoresAnUnattributedBucketOutsideTheWindow()
+    {
+        // The caller hands over what the store holds; the detector is still answering about ONE window. A
+        // range reaching past the window's end is a fetch the caller never asked for, and on the last bucket
+        // of a window it is the difference between one bar and one bar plus a bar that is still forming.
+        BarRange window = new(Central(2026, 8, 18, 9, 0), Central(2026, 8, 18, 10, 0));
+        IReadOnlyList<DateTimeOffset> stored =
+            BarGapDetector.ExpectedBuckets(window, _fiveMinutes, Calendar());
+
+        IReadOnlyList<BarRange> missing = BarGapDetector.FindMissing(
+            stored,
+            [Central(2026, 8, 18, 8, 55), Central(2026, 8, 18, 9, 58)],
+            window,
+            _fiveMinutes,
+            Calendar());
+
+        missing.Should().BeEmpty(
+            "one bucket opens before the window and the other would close after it, so neither is this "
+            + "window's to answer for");
     }
 
     [Fact]

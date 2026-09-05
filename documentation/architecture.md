@@ -77,9 +77,13 @@ path (gh#69).
 
 `BarCacheService.GetBarsAsync(instrument, resolution, window)`:
 
-1. **Read** stored bars for the window.
+1. **Read** the stored bucket starts for the window, split by whether the row records the contract that
+   produced it. A bucket carrying no `ContractId` is *not* counted as held: the venue is re-asked and the
+   upsert heals it ([ADR-0011](adr/0011-contract-roll-boundary.md), gh#402).
 2. **Ask the calendar** which buckets the venue was expected to publish — `BarGapDetector.ExpectedBuckets`
-   over `BarSessionCalendar`.
+   over `BarSessionCalendar` — **plus** the unattributed buckets from step 1, which are enumerated even when
+   the calendar does not expect them. Off the grid they would otherwise never be asked for, and the window
+   would report its contract span as `Unknown` for good (gh#412).
 3. **Diff.** Nothing missing ⇒ return. **Zero vendor calls** (R-1.3).
 4. **Consult the coverage ledger.** A range the vendor previously answered empty is treated as covered, so a
    genuine hole is not re-requested forever.
@@ -145,7 +149,7 @@ registered on the MCP server itself, so *every* `tools/call` passes through it �
 covered by having been registered rather than by its author remembering a `try`. It translates a
 `StoreContentionException`, a `DbUpdateException` and a bare `NpgsqlException` into an `McpException` stating
 the condition and its SqlState; it catches nothing else, so an `InvalidOperationException` — the projector's
-whole-series guard among them — still propagates as the defect it is. Before it, `MarketDataTools.ReadAsync`
+whole-series guard among them — still propagates as the defect it is. Before it, `BarTools.ReadAsync`
 was the only translation on the surface, and the thirteen tools that never call it had none: a `23505` from
 two overlapping fills reached a caller of `get_bars` as a raw `DbUpdateException` (gh#89).
 
@@ -268,8 +272,23 @@ before they read**, which is what makes them cache-aside rather than merely cach
    while never writing a value.
 3. **Nothing missing ⇒ return**, opening no transaction — on every series except the short-run one
    ADR-0014's consequences describe, where *nothing missing* is never reached. The answer is memoised for
-   the life of the request scope, so `get_market_snapshot`'s eleven `get_indicator_at` calls per resolution
-   cost **one** probe.
+   the life of the request scope, so a snapshot covering several resolutions pays **one** probe per
+   `(instrument, resolution)` however many times that series is read.
+
+**`get_market_snapshot` reads the whole indicator map for a resolution in ONE query** —
+`IndicatorTools.GetLatestIndicatorReadings`, which groups by `(Indicator, Period)`, takes each group's own
+latest bucket at or before the anchor, and joins the bar at *that* bucket for the `ContractId`. It composed
+eleven `get_indicator_at` calls until gh#388, and each of those paid a second round trip to `Bars` for the
+contract of the bucket it had just found: **44** statements of a default call's **60**, now **2** of **18**,
+measured on Postgres in `SnapshotQueryCountTests`.
+
+**The collapse is bounded by provenance, not by convenience.** Warm-up restarts at every contract seam
+(`R-2.7`), so just past a roll the eleven readings legitimately sit on different buckets and different
+contracts — which is what gh#286 put `bucketStart` and `contractId` on each reading for. One bucket
+broadcast across the map would attribute a number to the wrong contract, so
+`SnapshotIndicatorProvenanceTests` compares the map against eleven separate `get_indicator_at` calls across
+a roll rather than asserting its shape. `get_indicator_at` itself is unchanged, and stays the single-purpose
+tool.
 4. **Otherwise replay the whole series** through the same `IndicatorProjector` inside the same
    `SeriesUnitOfWork` the fill path uses — never a window around what was asked for (`R-2.13`).
 
@@ -379,7 +398,13 @@ One host, one tool registration, two ways in ([ADR-0007](adr/0007-dual-transport
   the protocol frame, and it surfaces as a confusing handshake error rather than as a logging problem. The
   host still starts Kestrel in this mode, on an **ephemeral loopback port** it never serves from — a
   well-known one stopped a second session starting at all (gh#392).
-- **streamable HTTP** — for a deployed instance, behind a bearer token.
+- **streamable HTTP** — for a deployed instance, behind a bearer token. The composed stack serves it over
+  **TLS only**, on `https://localhost:8443`, with a certificate from a **local CA** that must be installed
+  into the host trust store first — `mkcert -install`, a prerequisite rather than a given, see
+  [`README.md`](../README.md#run-it). A client requiring HTTPS could not connect at all before, and a bearer
+  token in clear is replayable by anyone on the path (gh#416); *Claude Cowork is reported to be such a client
+  and that report is not verified here*. TLS is confidentiality; the token is still what authorises the call,
+  and the loopback bind (gh#415) is unchanged by it.
 
 ## Degradation — what an absent dependency does
 
@@ -525,7 +550,22 @@ dating today's pick. It does not fetch bars and does not write a roll row.
   ([ADR-0016](adr/0016-subscribe-to-the-market-hub.md)). The first first-party `BackgroundService` records
   prints to `Trades` (gh#216) only when the transport is HTTP **and** `MarketData__RecordTape` is on —
   choosing HTTP is not consent. It re-subscribes on every transition into `Connected` and writes
-  `TapeCoverage` from that lifecycle (gh#217); `Connected` is not listening. Live tape health is a
+  `TapeCoverage` from that lifecycle (gh#217); `Connected` is not listening. That ledger is its own
+  type, `TapeCoverageLedger` — the service keeps the subscription lifecycle and the print pipeline and
+  calls it — because five of one release's six defects landed in that half while it had no name (gh#390).
+  **One recorder per instrument is enforced, not assumed** (gh#404): a start takes a store-backed
+  claim on each instrument — `TapeLeases`, keyed `(Venue, Instrument)` so a deployment split by
+  `MarketData__Instruments` stays legal — before it subscribes and before it discards crash
+  leftovers. A start that cannot get one declines cleanly rather than faulting `ExecuteTask`, and
+  **stays up re-attempting**, so a rolling redeploy does not end with the arriving process quitting
+  and the draining one releasing its claim — nothing recording is worse than recording twice, and a
+  tape gap has no backfill. A lapsed claim is reclaimable, so a crash strands the tape for at most
+  one term. A holder **writes no print past its own claim's expiry**, which is the earliest instant
+  a replacement could exist, and closes its coverage range at the handover rather than at the
+  moment it noticed; waiting to be told would leave both processes writing under different
+  `Sequence` keys, which is doubled volume rather than a collapsed duplicate. Clock skew beyond one
+  term is the acknowledged residual (ADR-0016).
+  Live tape health is a
   mutable holder written from that same lifecycle and read at the point of use (gh#218) — the opposite
   of the store probe, which is set once at startup and never re-probed. `get_footprint` and
   `get_volume_profile` refuse when **that instrument's** tape is not listening, with a sentence naming the fix. It resolves the
@@ -533,5 +573,6 @@ dating today's pick. It does not fetch bars and does not write a roll row.
   stay out of this phase, and there is still no `get_quote`.
 - **No REST poller.** Bar, contract and account fetches stay caused by a tool call. The tape recorder is a push
   subscriber, not a background poll of a quote endpoint the venue does not have. A second stdio process must
-  not subscribe to the same tape (ADR-0016).
+  not subscribe to the same tape, and a second HTTP one is refused a claim rather than trusted not to
+  (ADR-0016, gh#404).
 - **No LLM.** This server hands an agent numbers. The reasoning happens in the client.

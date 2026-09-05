@@ -5,13 +5,11 @@ using MarqSpec.Mcp.TopstepX.Data.Entities;
 using MarqSpec.Mcp.TopstepX.Domain;
 using MarqSpec.Mcp.TopstepX.Domain.MarketData;
 using MarqSpec.Mcp.TopstepX.MarketData;
-using Microsoft.EntityFrameworkCore;
-using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using Microsoft.Extensions.Time.Testing;
 
-namespace MarqSpec.Mcp.TopstepX.Tests.MarketData;
+namespace MarqSpec.Mcp.TopstepX.IntegrationTests;
 
 /// <summary>
 /// What the rebuild verb leaves in the change tracker as it walks the store.
@@ -28,21 +26,39 @@ namespace MarqSpec.Mcp.TopstepX.Tests.MarketData;
 /// Not a correctness bug, which is why it is pinned here rather than argued about: it is the <b>repair</b>
 /// verb, run over the whole store, degrading worst exactly where the store is largest.
 /// </para>
+/// <para>
+/// <b>This tier since gh#387.</b> The claim itself is about the change tracker rather than about any one
+/// provider, but there is no longer a provider that can be asked. A rebuild opens a <c>RepeatableRead</c>
+/// transaction per series and the projection writes its values with the real <c>UpsertValuesSql</c>
+/// (<c>ON CONFLICT … DO UPDATE</c>); the second, in-memory-only write that used to serve the unit tier — and
+/// which put its rows through the very change tracker these tests measure — has been deleted. Running the
+/// verb at all now means running it against a real store.
+/// </para>
 /// </remarks>
-public sealed class IndicatorRebuilderTrackingTests : IDisposable
+[Collection(SeriesStoreCollection.Name)]
+public sealed class IndicatorRebuilderTrackingTests : IAsyncLifetime
 {
     private const string Venue = "test";
 
+    private readonly SeriesStoreFixture _fixture;
     private readonly TopstepXDbContext _database;
 
-    public IndicatorRebuilderTrackingTests() =>
-        _database = new TopstepXDbContext(
-            new DbContextOptionsBuilder<TopstepXDbContext>()
-                .UseInMemoryDatabase(Guid.NewGuid().ToString())
-                .ConfigureWarnings(w => w.Ignore(InMemoryEventId.TransactionIgnoredWarning))
-                .Options);
+    /// <param name="fixture">The shared container.</param>
+    public IndicatorRebuilderTrackingTests(SeriesStoreFixture fixture)
+    {
+        _fixture = fixture;
+        _database = fixture.CreateContext();
+    }
 
-    public void Dispose() => _database.Dispose();
+    /// <inheritdoc />
+    public Task InitializeAsync() => _fixture.ResetAsync();
+
+    /// <inheritdoc />
+    public Task DisposeAsync()
+    {
+        _database.Dispose();
+        return Task.CompletedTask;
+    }
 
     private static DateTimeOffset SessionStart =>
         MarketClock.FromMarket(new DateOnly(2026, 8, 18), new TimeOnly(9, 0)).ToUniversalTime();

@@ -200,7 +200,8 @@ Two things this recipe deliberately does **not** carry over from `docker compose
   `HeikinAshiBody`, and .NET's configuration binder leaves it alone when the key is absent rather than
   resetting it — measured above, starting cleanly with nothing set for it. Setting the variable to something
   real is fine; setting it to a typo is the one way to fail here, and the failure is an unhandled
-  `System.FormatException` naming the bad value, not a friendly sentence — see
+  `System.InvalidOperationException` naming the key and the bad value, wrapping a `System.FormatException` —
+  not the friendly sentence the option writes for a bad source, which a typo never reaches (gh#459). See
   [ADR-0007](documentation/adr/0007-dual-transport.md)'s 2026-09-03 update for the measurement.
 
 What this mode is **not**: it is not TLS, it is not reachable by Claude Cowork (which refuses a non-TLS

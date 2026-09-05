@@ -636,16 +636,27 @@ falsified. gh#468 closed the hole itself rather than describing it more precisel
 same reason a typo now is: none of them is a name `Resolve` reads as one of the three.
 `KeyLevelSourceBindingTests` pins that boundary.
 
-### Two paragraphs above are superseded
+### One paragraph above is superseded in part
 
-The binder-throws behaviour the "one of the two traps" paragraph measured — `KeyLevels__Source=Bogus` failing
-with `System.InvalidOperationException: Failed to convert configuration value 'Bogus' at 'KeyLevels:Source'`,
-never through `KeyLevelDetectionOptions.Validate`'s friendly sentence — was true of the `PivotSource`-typed
-enum binding measured that day. It no longer is: gh#468 rebound `Source` as a string, so `Enum.Parse` never
-runs on it and the binder never throws for it. `Bogus` now reaches `Validate` exactly as typed, exactly like
-every other unresolved value, and fails with the friendly sentence this ADR originally expected to see. **The
-rule "unset is not one condition" survives unchanged** — an absent key still leaves `HeikinAshiBody` standing,
-which nothing else here changed.
+**One** paragraph is affected, not two — "one of the two traps" is a single paragraph carrying two claims that
+no longer describe this server. The rest of it stands, the absent-key measurement it was written for included,
+which is why the record is corrected rather than struck.
+
+**The binder-throws measurement is gone.** `KeyLevels__Source=Bogus` failing with
+`System.InvalidOperationException: Failed to convert configuration value 'Bogus' at 'KeyLevels:Source'`, never
+through `KeyLevelDetectionOptions.Validate`'s friendly sentence, was true of the `PivotSource`-typed enum
+binding measured that day. It no longer is: gh#468 rebound `Source` as a string, so `Enum.Parse` never runs on
+it and the binder never throws for it. `Bogus` now reaches `Validate` exactly as typed, exactly like every
+other unresolved value, and fails with the friendly sentence this ADR originally expected to see.
+
+**The rule "unset is not one condition" survives reduced, not unchanged**, and the first draft of this
+subsection claimed otherwise. It named three conditions that bind differently — absent, empty, mistyped — and
+two of them have merged: an empty string and a typo are now the same kind of thing, a string
+`PivotSources.Resolve` does not read as a name, failing identically through `Validate`.
+`KeyLevelSourceBindingTests` carries them as two rows of one theory under one expectation, which is where that
+merge is visible rather than inferred. What survives is the half the rule was written for: **absent is still
+its own condition**, because the binder leaves a bound property untouched when its key is missing, so
+`HeikinAshiBody` stands where an empty string would now be refused.
 
 **The other named trap is real, and this recipe avoids it by not needing TLS at all.** The composed stack's
 HTTPS on 8443 is gh#416's answer to one client's TLS requirement, layered onto the HTTP transport rather than

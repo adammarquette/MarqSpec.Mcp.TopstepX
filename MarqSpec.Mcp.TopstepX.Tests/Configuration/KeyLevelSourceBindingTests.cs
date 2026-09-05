@@ -16,27 +16,20 @@ namespace MarqSpec.Mcp.TopstepX.Tests.Configuration;
 /// </summary>
 /// <remarks>
 /// <para>
-/// <b>The file used to assert, three times, that an unset or mistyped value binds to
-/// <see cref="PivotSource.Unknown"/> and is refused by <c>Validate</c>. Neither half was true</b> (gh#459),
-/// and the sentences were believed: gh#444 was written from them and named "unset <c>KeyLevels__Source</c>
-/// fails startup by design" as a trap an operator meets, which only running it disproved.
+/// <b>This file used to pin an enum-binding boundary that let a comma-separated list OR itself onto a real
+/// source and boot</b> (gh#468, found reviewing PR #467): <c>Enum.Parse</c> read <c>HeikinAshiBody,Body</c>
+/// as <c>1 | 2</c>, <see cref="PivotSource.HighLow"/>, without ever consulting <c>[Flags]</c>, and only
+/// <c>IsServable</c> stood behind whatever it produced. gh#468 closed that by binding
+/// <see cref="KeyLevelDetectionOptions.Source"/> as a string and resolving it in
+/// <see cref="KeyLevelDetectionOptions.Validate"/> through the same
+/// <see cref="PivotSources.Resolve(string)"/> a call's <c>pivotSource</c> already goes through. There is now
+/// one door, not two: the binder never refuses a string, so every value — absent key excepted — is decided by
+/// whether <c>Resolve</c> recognises it, trimmed and case-insensitive, as one of the three names.
 /// </para>
 /// <para>
-/// The binder splits on whether <c>Enum.Parse</c> can <b>read</b> the value, not on whether it means
-/// anything. An <b>absent</b> key never reaches <c>Unknown</c> at all — the binder leaves a bound property
-/// alone when its key is missing, so the property initializer's <see cref="PivotSource.HeikinAshiBody"/>
-/// stands. A value it <b>cannot read</b> — a name outside the vocabulary, an empty string — never reaches
-/// <c>Validate</c>: the binder throws first. A value it <b>can</b> read binds as whatever it makes of it, and
-/// only <c>IsServable</c> stands behind that: <c>Unknown</c>, any numeral, defined or not, and a JSON
-/// <c>null</c> arrive at <c>Validate</c> and are refused there — and a <b>comma-separated list</b> is OR-ed
-/// together, so <c>HeikinAshiBody,Body</c> binds as <see cref="PivotSource.HighLow"/> and boots. Three
-/// corrections of the original claim each enumerated the outcomes and each missed one; these tests pin the
-/// mechanism instead.
-/// </para>
-/// <para>
-/// These pin the boundary rather than the wording of any one sentence, because the defect was a claim about
-/// <i>which component refuses</i>. The last test is the exception: it reads the message, because a message
-/// that explains the mechanism wrongly is what made this a card instead of a comment fix.
+/// That collapses the binder-versus-validator split this file used to pin. A numeral, a comma list and
+/// <c>Unknown</c> are refused for the same reason now — <c>Resolve</c> never reads any of them as a name — so
+/// these tests pin the boundary <c>Resolve</c> draws rather than enumerate the ways to reach it.
 /// </para>
 /// </remarks>
 public sealed class KeyLevelSourceBindingTests
@@ -47,131 +40,69 @@ public sealed class KeyLevelSourceBindingTests
     {
         KeyLevelDetectionOptions options = BindWith(builder => { });
 
-        options.Source.Should().Be(PivotSource.HeikinAshiBody);
+        options.Source.Should().Be(nameof(PivotSource.HeikinAshiBody));
     }
 
     /// <summary>
-    /// Whatever the binder reads as a known source is accepted, however it was spelled: a name in any case,
-    /// a signed numeral — and a <b>comma-separated list</b>, which <c>Enum.Parse</c> ORs together without
-    /// asking whether the enum is <c>[Flags]</c>, so two sources named together bind as a third. That last
-    /// row is accepted and known, not endorsed: the server boots on it and serves from a source nobody
-    /// named, and the sentence in the option's remarks that says so is pinned here (gh#468).
+    /// A configured name <see cref="PivotSources.Resolve(string)"/> recognises is accepted, however it was
+    /// cased or padded — the same tolerance a call's <c>pivotSource</c> already gets.
     /// </summary>
     /// <param name="configured">The configured value.</param>
-    /// <param name="bound">What it binds to.</param>
+    /// <param name="resolved">What it resolves to.</param>
     [Theory]
     [InlineData("HighLow", PivotSource.HighLow)]
     [InlineData("highlow", PivotSource.HighLow)]
-    [InlineData("+2", PivotSource.Body)]
-    [InlineData("HeikinAshiBody,Body", PivotSource.HighLow)]
-    public void Source_IsAccepted_WhenWhatTheBinderReadsIsAKnownSource_ACommaListIncluded(
+    [InlineData(" HeikinAshiBody ", PivotSource.HeikinAshiBody)]
+    [InlineData("Body", PivotSource.Body)]
+    public void Source_IsAccepted_WhenPivotSourcesResolveRecognisesTheConfiguredName(
         string configured,
-        PivotSource bound)
+        PivotSource resolved)
     {
         KeyLevelDetectionOptions options = Bind(configured);
 
-        options.Source.Should().Be(bound);
+        PivotSources.Resolve(options.Source).Should().Be(resolved);
     }
 
     /// <summary>
-    /// A name outside the vocabulary fails in the binder, before <c>Validate</c> runs — which is why the
-    /// friendly message cannot be what an operator sees for a typo. An empty string is a bad name, not an
-    /// absent key.
+    /// Everything <see cref="PivotSources.Resolve(string)"/> does not read as one of the three names is
+    /// refused at startup with the friendly message — a name outside the vocabulary, an empty string,
+    /// <c>Unknown</c> itself (defined, but not servable), a numeral (no longer a back door: <c>Resolve</c>
+    /// matches names, not <c>Enum.Parse</c>'s numeric conversion), and — the case that was silently OR-ed
+    /// into a real source before this card — a comma-separated list naming two of the three.
     /// </summary>
     /// <param name="configured">The configured value.</param>
     [Theory]
     [InlineData("Bogus")]
     [InlineData("")]
-    public void Binding_Fails_BeforeValidateRuns_WhenTheValueIsANameOutsideTheVocabulary(string configured)
+    [InlineData("Unknown")]
+    [InlineData(" Unknown ")]
+    [InlineData("0")]
+    [InlineData("99")]
+    [InlineData("-1")]
+    [InlineData("HeikinAshiBody,Body")]
+    [InlineData("Body, HighLow")]
+    public void Validate_Refuses_WhenPivotSourcesResolveDoesNotRecogniseTheConfiguredName(string configured)
     {
-        Action bind = () => Bind(configured);
-
-        bind.Should()
-            .Throw<InvalidOperationException>()
-            .WithMessage("*KeyLevels:Source*")
-            .WithInnerException<FormatException>();
-    }
-
-    /// <summary>
-    /// What the binder lets through and <c>Validate</c> refuses: <c>Unknown</c> by name, padded or not, and
-    /// any numeral outside the enum — <c>0</c> binds as <c>Unknown</c>, <c>99</c> and <c>-1</c> as values
-    /// the enum does not define. The rendered value pins that the numeral arrived as itself rather than
-    /// being coerced to something in range.
-    /// </summary>
-    /// <param name="configured">The configured value.</param>
-    /// <param name="rendered">How the refusal names it, which is how it bound.</param>
-    [Theory]
-    [InlineData("Unknown", "Unknown")]
-    [InlineData(" Unknown ", "Unknown")]
-    [InlineData("0", "Unknown")]
-    [InlineData("99", "99")]
-    [InlineData("-1", "-1")]
-    public void Validate_RefusesWhatTheBinderLetsThrough_NamingTheKnownSources(string configured, string rendered)
-    {
-        // Honouring any of these picks a price series by accident: `KeyLevels.PivotPrices` reads anything it
-        // does not recognise as Heikin-Ashi, so a server that booted on one would answer every level call
-        // from a source nobody chose, with nothing to see. The rule is an IValidatableObject on the options
-        // type, so it travels with the value rather than living in a lambda at the composition root that a
-        // second binder could miss.
         Action bind = () => Bind(configured);
 
         bind.Should().Throw<OptionsValidationException>()
-            .WithMessage("*'" + rendered + "'*")
+            .WithMessage("*'" + configured + "'*")
             .WithMessage("*HeikinAshiBody, Body, HighLow*");
     }
 
     /// <summary>
-    /// A key present with a JSON <c>null</c> is not an absent key. The binder writes the enum's zero over
-    /// the initializer, so it lands in <c>Validate</c> as <c>Unknown</c> — found while isolating the absent
-    /// case above, where shadowing an exported variable with a null did not read as "not set".
+    /// A key present with a JSON <c>null</c> is not an absent key, and it is not a name
+    /// <see cref="PivotSources.Resolve(string)"/> recognises either — it is refused on the same terms as any
+    /// other unresolved value, rendered as the empty name <c>Resolve</c> treats a null as.
     /// </summary>
     [Fact]
-    public void Validate_RefusesAJsonNull_WhichBindsAsUnknownRatherThanAsAbsent()
+    public void Validate_RefusesAJsonNull_WhichIsNotAnAbsentKeyAndDoesNotResolve()
     {
         Action bind = () => BindWith(builder => builder.Configuration.AddJsonStream(
             new MemoryStream(Encoding.UTF8.GetBytes("""{ "KeyLevels": { "Source": null } }"""))));
 
         bind.Should().Throw<OptionsValidationException>()
-            .WithMessage("*'Unknown'*")
             .WithMessage("*HeikinAshiBody, Body, HighLow*");
-    }
-
-    /// <summary>
-    /// The refusal must explain how its input actually arrives. It used to say an unset or mistyped value
-    /// binds to <c>Unknown</c> — the claim gh#459 was filed for — then that only an explicit <c>Unknown</c>
-    /// could reach it, then that four shapes could and nothing else; each was a completeness claim and each
-    /// was wrong. It now names the mechanism — what the binder can read binds, a comma list included — and
-    /// blames neither an unset nor a mistyped value.
-    /// </summary>
-    /// <param name="configured">The configured value.</param>
-    [Theory]
-    [InlineData("Unknown")]
-    [InlineData("0")]
-    [InlineData("99")]
-    public void TheRefusal_SaysHowItsInputArrives_AndNoLongerBlamesAnUnsetOrMistypedValue(string configured)
-    {
-        string message = CaptureRefusal(configured);
-
-        message.Should().Contain("numeral");
-        message.Should().Contain("comma-separated");
-        message.Should().Contain("JSON null");
-        message.Should().NotContain("unset");
-        message.Should().NotContain("mistyped");
-    }
-
-    private static string CaptureRefusal(string configured)
-    {
-        try
-        {
-            Bind(configured);
-        }
-        catch (OptionsValidationException exception)
-        {
-            return exception.Message;
-        }
-
-        throw new InvalidOperationException(
-            "'" + configured + "' was expected to be refused by Validate and was not.");
     }
 
     /// <summary>Binds with <c>KeyLevels:Source</c> present and set to <paramref name="configured"/>.</summary>

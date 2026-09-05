@@ -199,13 +199,13 @@ Two things this recipe deliberately does **not** carry over from `docker compose
 - **No override for `KeyLevels__Source`.** It is not needed: the option's C# default is already
   `HeikinAshiBody`, and .NET's configuration binder leaves it alone when the key is absent rather than
   resetting it — measured above, starting cleanly with nothing set for it. Setting the variable to something
-  real is fine. Setting it wrong is refused only when the binder cannot read it, or what it read is outside
-  the vocabulary: a typo is an unhandled `System.InvalidOperationException` naming the key and the bad
-  value, wrapping a `System.FormatException` — not the friendly sentence the option writes for a bad
-  source, which a typo never reaches; `Unknown` or a bare number binds and *does* reach that sentence; and
-  a comma-separated list is OR-ed together, so `HeikinAshiBody,Body` binds as `HighLow` and boots (gh#459;
-  closing that is gh#468). See [ADR-0007](documentation/adr/0007-dual-transport.md)'s 2026-09-03
-  update for the measurement.
+  real is fine. `Source` binds as a **string**, not the `PivotSource` enum (gh#468): every other value — a
+  typo, an empty string, `Unknown`, a bare number, a comma-separated list — reaches the same friendly startup
+  refusal, because whether the server boots turns on one question only, whether `PivotSources.Resolve` reads
+  it, trimmed and case-insensitive, as one of the three names. String binding is what closed the comma case:
+  `Enum.Parse` used to OR `HeikinAshiBody,Body` onto `HighLow`, a real source, and boot on it. See
+  [ADR-0007](documentation/adr/0007-dual-transport.md)'s 2026-09-03 update for the measurement that first
+  found the gap this closed.
 
 What this mode is **not**: it is not TLS, it is not reachable by Claude Cowork (which refuses a non-TLS
 endpoint), and it carries no real venue credential or database by default. It exists for testing and

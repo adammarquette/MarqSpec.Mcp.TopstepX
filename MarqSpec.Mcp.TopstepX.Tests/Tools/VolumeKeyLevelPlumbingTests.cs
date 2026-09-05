@@ -121,7 +121,7 @@ public sealed class VolumeKeyLevelPlumbingTests : IDisposable
             new VolumeProfileService(_database),
             Options.Create(new KeyLevelDetectionOptions
             {
-                Source = PivotSource.HighLow,
+                Source = nameof(PivotSource.HighLow),
                 PivotLookback = 2,
                 PivotRightLookback = 2,
                 ZoneAtrMultiple = 0.5m,

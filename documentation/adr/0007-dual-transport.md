@@ -623,17 +623,29 @@ the code was written to produce, and reachable only by setting the variable wron
 **"Unset" is not one condition**: absent, empty, and mistyped bind differently, and only running each one,
 not reading the option's own remarks, says which produces which failure.
 
-**The option's remarks have since been corrected** (gh#459). They asserted, in three places, that an unset or
-mistyped value binds to `Unknown` and is refused by `Validate`; neither route does. Both are pinned by
-`KeyLevelSourceBindingTests` now, along with what does reach the validator — an explicit `Unknown`; any
-**numeral**, `0` and `99` alike, because the binder parses an enum through `Enum.Parse` and never asks whether
-the number is defined; and a key present with a JSON **`null`**, which the binder writes as the enum's zero
-rather than leaving alone. The correction was itself wrong twice before it held — "exactly one route", then
-"four shapes" — and each time the error was the claim of completeness: reviewing the second found that a
-**comma-separated list** is OR-ed together, so `HeikinAshiBody,Body` binds as `HighLow` and boots, refused by
-nothing. The remarks now describe the split the binder makes — what `Enum.Parse` can read binds, whatever it
-means, and only `IsServable` stands behind it — rather than enumerate outcomes. Closing the comma case would
-take string binding, declined in that record and tracked as gh#468.
+**The option's remarks have since been corrected twice, then closed** (gh#459, gh#468). They first asserted,
+in three places, that an unset or mistyped value binds to `Unknown` and is refused by `Validate`; neither
+route does. A second correction described the binder's actual split instead — what `Enum.Parse` can read
+binds, whatever it means, and only `IsServable` stands behind it — and named the case that split still let
+through: `Enum.Parse` ORs a comma-separated list together whether or not the enum is `[Flags]`, so
+`HeikinAshiBody,Body` bound as `HighLow` and booted, refused by nothing. Both corrections were themselves
+wrong before they held — "exactly one route", then "four shapes" — each an enumeration one more case
+falsified. gh#468 closed the hole itself rather than describing it more precisely: `Source` now binds as a
+**string** and is resolved in `Validate` through `PivotSources.Resolve` — the same resolver a call's
+`pivotSource` already goes through — so a numeral, a comma-separated list and `Unknown` are refused for the
+same reason a typo now is: none of them is a name `Resolve` reads as one of the three.
+`KeyLevelSourceBindingTests` pins that boundary.
+
+### Two paragraphs above are superseded
+
+The binder-throws behaviour the "one of the two traps" paragraph measured — `KeyLevels__Source=Bogus` failing
+with `System.InvalidOperationException: Failed to convert configuration value 'Bogus' at 'KeyLevels:Source'`,
+never through `KeyLevelDetectionOptions.Validate`'s friendly sentence — was true of the `PivotSource`-typed
+enum binding measured that day. It no longer is: gh#468 rebound `Source` as a string, so `Enum.Parse` never
+runs on it and the binder never throws for it. `Bogus` now reaches `Validate` exactly as typed, exactly like
+every other unresolved value, and fails with the friendly sentence this ADR originally expected to see. **The
+rule "unset is not one condition" survives unchanged** — an absent key still leaves `HeikinAshiBody` standing,
+which nothing else here changed.
 
 **The other named trap is real, and this recipe avoids it by not needing TLS at all.** The composed stack's
 HTTPS on 8443 is gh#416's answer to one client's TLS requirement, layered onto the HTTP transport rather than

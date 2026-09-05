@@ -102,11 +102,11 @@ services:
       # Detection defaults for get_key_levels. Source, PivotLookback and PivotRightLookback are also
       # per-call arguments on the tool; the width, the floor and the two caps are settable only here,
       # so every level this server reports is sized and filtered alike (ADR-0013). An unset Source keeps
-      # HeikinAshiBody. A wrong one is refused at startup only when the binder cannot read it (a bad name)
-      # or what it read is outside the vocabulary (Unknown, an undefined number); a comma-separated list is
-      # OR-ed together and can land on a real source and BOOT -- gh#459, and gh#468 for closing it. The
-      # window is 20 left / 15 right — Bjorgum's calibration, adopted by gh#245 — matching
-      # KeyLevelDetectionOptions and the catalogue.
+      # HeikinAshiBody. Source binds as a string and is refused at startup unless PivotSources.Resolve
+      # reads it, trimmed and case-insensitive, as one of the three names -- gh#468 closed the
+      # comma-separated list that used to OR itself onto a real source (HeikinAshiBody,Body -> HighLow)
+      # and boot on it. The window is 20 left / 15 right — Bjorgum's calibration, adopted by gh#245 —
+      # matching KeyLevelDetectionOptions and the catalogue.
       KeyLevels__Source: "${KeyLevels__Source:-HeikinAshiBody}"
       KeyLevels__PivotLookback: "${KeyLevels__PivotLookback:-20}"
       KeyLevels__PivotRightLookback: "${KeyLevels__PivotRightLookback:-15}"

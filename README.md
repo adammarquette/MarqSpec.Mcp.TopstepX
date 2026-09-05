@@ -166,8 +166,9 @@ that ships.
 This is the shape CI runs on every pull request —
 [`scripts/check-image-entrypoint.sh`](scripts/check-image-entrypoint.sh) drives `docker run --rm -i`,
 publishes no port, and asserts the `tools/list` reply *before* it reads the exit code. And as with the local
-process above, the container carries no database and no credentials until you give it some, and starts
-anyway.
+process above, the container carries no database and no credentials until you give it some — from inside the
+container that means an address reachable in **its own** network namespace, never the host's `localhost` —
+and starts anyway.
 
 ### The HTTP transport without compose
 

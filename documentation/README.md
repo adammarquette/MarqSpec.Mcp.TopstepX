@@ -52,7 +52,7 @@ rather than reword it.
 | [`work-estimate-rubric.md`](work-estimate-rubric.md) | 1.0K | You are setting a `Work Estimate` on an issue. |
 | [`agents/README.md`](agents/README.md) | 1.0K | You are wearing a role hat. **This row prices the index, not the route it serves** — each contract behind it is a separate read, and the index prices all five in its own gated `~tok` column (gh#178). Reviewer, Platform and Coordinator contracts **never auto-load**; open them yourself. |
 | [`../CONTRIBUTING.md`](../CONTRIBUTING.md) | 5.0K | Branching, claiming, commits, PRs, and the Definition of Done. |
-| [`../AGENTS.md`](../AGENTS.md) | 2.4K | Loads automatically. The non-negotiables and the role routing table. |
+| [`../AGENTS.md`](../AGENTS.md) | 2.7K | Loads automatically. The non-negotiables and the role routing table. |
 
 ## Decisions — [`adr/`](adr/README.md)
 

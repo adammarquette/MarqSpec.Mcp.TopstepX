@@ -426,12 +426,14 @@ configuration is `HeikinAshiBody` — it smooths single-bar noise into structure
 left and 15 right, a zone width of 0.5 ATR, a floor of 0.5, a width cap of 2.5% and a level cap of 12;
 `.env.example` carries the section. Those are Bjorgum's *Key Levels* calibration, adopted whole by gh#232 and
 implemented by gh#245. A source outside `HeikinAshiBody | Body | HighLow` is an error listing the three, from
-a call **and** from configuration — with one asymmetry (gh#459). A call's `pivotSource` is matched by name
-against the three and nothing else. A configured value goes through the binder, which accepts whatever
-`Enum.Parse` can read: an unset key keeps `HeikinAshiBody`; a name it cannot read fails startup in the binder
-before that message exists; `Unknown`, an undefined numeral or a JSON `null` binds and is refused by it; and a
-**comma-separated list is OR-ed together**, so `HeikinAshiBody,Body` binds as `HighLow` and is served, with
-`detection` reporting the source that ran as the only trace. Closing that case is gh#468.
+a call **and** from configuration, on the same terms (gh#459, gh#468). A call's `pivotSource` is matched by
+name against the three and nothing else. A configured value binds as a **string** and is resolved the same
+way, through `PivotSources.Resolve`: an unset key keeps `HeikinAshiBody`, and every other value — a typo, an
+empty string, `Unknown`, a numeral, a comma-separated list — reaches startup validation exactly as typed and
+is refused unless `Resolve` reads it, trimmed and case-insensitive, as one of the three names. `Source` used
+to bind as the `PivotSource` enum instead, through `Enum.Parse`, which OR-ed a comma-separated list onto
+whichever real source the bits happened to name — `HeikinAshiBody,Body` bound as `HighLow` and was served,
+with `detection` reporting the source that ran as the only trace. String binding is what closed it.
 
 **Per-call detection parameters are sound here only because nothing stores a level** — [ADR-0013](adr/0013-levels-are-computed-on-read.md). ADR-0006
 forbids the same freedom for indicators, whose storage key is `(Indicator, Period)`: a parameter the key

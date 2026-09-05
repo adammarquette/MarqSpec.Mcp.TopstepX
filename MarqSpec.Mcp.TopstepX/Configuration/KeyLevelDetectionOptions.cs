@@ -68,7 +68,7 @@ public sealed class KeyLevelDetectionOptions : IValidatableObject
     public int PivotRightLookback { get; init; } = 15;
 
     /// <summary>
-    /// Which price on a bar a pivot is measured from.
+    /// Which price on a bar a pivot is measured from, by name.
     /// </summary>
     /// <remarks>
     /// <para>
@@ -78,43 +78,39 @@ public sealed class KeyLevelDetectionOptions : IValidatableObject
     /// on intraday futures bars, where a single spike would otherwise anchor a level nobody traded twice.
     /// </para>
     /// <para>
-    /// <see cref="PivotSource.Unknown"/> is refused at startup by <see cref="Validate"/> rather than
-    /// tolerated as "unset": honouring a zero would pick a price series by accident, which is the whole
-    /// reason the enum reserves it.
+    /// <b>Bound as a string and resolved in <see cref="Validate"/> through
+    /// <see cref="PivotSources.Resolve(string)"/> — the same resolver a call's <c>pivotSource</c> already
+    /// goes through — rather than as the <see cref="PivotSource"/> enum.</b> Binding this as the enum let
+    /// <c>Microsoft.Extensions.Configuration</c> decide what counted as a value, and that converter is
+    /// <c>Enum.Parse</c> with no <c>[Flags]</c> check: it OR-ed a comma-separated list onto whichever real
+    /// source the bits happened to name, so <c>HeikinAshiBody,Body</c> bound as <c>1 | 2</c> —
+    /// <see cref="PivotSource.HighLow"/> — and the server booted and answered every <c>get_key_levels</c>
+    /// call from a source nobody named, the <c>detection</c> block on every level payload being the only
+    /// trace (gh#468, found reviewing PR #467). That risk was weighed once already against a smaller set of
+    /// typos and declined, on the grounds that a validator has no business parsing an enum and that the
+    /// seam would become stringly-typed (gh#459) — but <see cref="PivotSources.Resolve(string)"/> already
+    /// lives in <c>Domain</c> for exactly this resolution, so routing through it here spends no new
+    /// layering, and a comma list silently choosing an unnamed source at boot outweighs the seam it costs to
+    /// close.
     /// </para>
     /// <para>
-    /// <b>What reaches that validator is decided by the configuration binder, and the split is whether
-    /// <c>Enum.Parse</c> can read the value — not whether the value means anything.</b> This paragraph has
-    /// claimed a complete list of outcomes three times and been wrong three times (gh#459), so it now
-    /// describes the mechanism. An <b>absent</b> key never becomes <c>Unknown</c> at all: the binder leaves
-    /// a bound property untouched when its key is missing, so the initializer below stands and nothing is
-    /// refused. A value the binder <b>cannot read</b> — a name outside the vocabulary, an empty string —
-    /// never reaches <see cref="Validate"/>: it throws
-    /// <c>InvalidOperationException: Failed to convert configuration value 'Bogus' at 'KeyLevels:Source'</c>,
-    /// wrapping a <see cref="FormatException"/>, before validation runs. A value it <b>can</b> read binds as
-    /// whatever <c>Enum.Parse</c> makes of it, and only <see cref="PivotSources.IsServable(PivotSource)"/>
-    /// stands behind that: a name in any case; a numeral, sign included, defined or not, so <c>0</c> arrives
-    /// as <c>Unknown</c> and <c>99</c> as <c>(PivotSource)99</c>; a JSON <c>null</c>, written as
-    /// <c>default(PivotSource)</c> over the initializer, which is <c>Unknown</c> again; and a
-    /// <b>comma-separated list</b>, OR-ed together whether or not the enum is <c>[Flags]</c>, so
-    /// <c>HeikinAshiBody,Body</c> is <c>1 | 2</c> — <see cref="PivotSource.HighLow"/>, servable, and the
-    /// server <b>boots and serves from a source nobody named</b>, the <c>detection</c> block on every level
-    /// payload being the only trace. <see cref="Validate"/> refuses what lands outside the vocabulary and
-    /// nothing else. Every case named here is pinned by <c>KeyLevelSourceBindingTests</c>.
+    /// <b>An absent key leaves this initializer's default standing</b>, exactly as it did when this was
+    /// enum-typed. Every other string — however cased, padded, numeral, empty, or a comma-separated list —
+    /// reaches <see cref="Validate"/> unchanged, and whether the server boots turns on one question only:
+    /// does <see cref="PivotSources.Resolve(string)"/> read it, trimmed and case-insensitive, as one of the
+    /// three names. Nothing short of that is a source — not a number, because <c>Resolve</c> matches names
+    /// rather than parsing <see cref="PivotSource"/>'s underlying values; not a list, because it matches the
+    /// whole trimmed string against one name at a time. <c>KeyLevelSourceBindingTests</c> pins that
+    /// boundary rather than any one input that lands on either side of it.
     /// </para>
     /// <para>
-    /// That is a deliberate disposition rather than an omission, and it is now made against one more known
-    /// case. The binder's own message already names the section, the key, the offending value and the
-    /// target type; making the friendly message reachable for a typo would mean binding this as a string and
-    /// parsing it here — putting enum parsing in a validator and giving the seam a stringly-typed shape — or
-    /// hanging a configuration concern on a <c>Domain</c> enum, which the layering does not allow. String
-    /// binding is also the only thing that closes the comma case, since
-    /// <see cref="PivotSources.Resolve(string)"/> already refuses <c>"Body,HighLow"</c>, <c>"0"</c> and
-    /// <c>"Unknown"</c> alike; whether to pay that price is gh#468, not this record. What is owed here
-    /// is that nothing claims the boundary is somewhere it is not.
+    /// <b>Nullable, honestly:</b> a key present with a JSON <c>null</c> is not an absent key, and the binder
+    /// writes that null over this initializer rather than leaving it standing. <see cref="Validate"/> sends
+    /// it through <see cref="PivotSources.Resolve(string)"/> exactly as any other unresolved string, since
+    /// <c>Resolve</c> already treats a null name as the empty one it is not going to match.
     /// </para>
     /// </remarks>
-    public PivotSource Source { get; init; } = PivotSource.HeikinAshiBody;
+    public string? Source { get; init; } = nameof(PivotSource.HeikinAshiBody);
 
     /// <summary>
     /// A zone's full width, in ATR multiples. Half an ATR by default.
@@ -232,10 +228,20 @@ public sealed class KeyLevelDetectionOptions : IValidatableObject
     /// These options as the detection record <c>Domain</c> takes.
     /// </summary>
     /// <returns>The configured defaults.</returns>
+    /// <remarks>
+    /// <b>Never throws.</b> A <see cref="Source"/> that does not resolve falls through as
+    /// <see cref="PivotSource.Unknown"/> rather than raising here, exactly as an in-range-but-wrong enum
+    /// value used to flow through before this bound as a string — because this method has a second reader
+    /// besides the composition root: <c>KeyLevelTools.ResolveDetection</c> calls it on every
+    /// <c>get_key_levels</c> request and checks the result with its own
+    /// <see cref="PivotSources.IsServable(PivotSource)"/> door, on the reasoning that a value which somehow
+    /// reached this type without going through <see cref="Validate"/> should not be trusted a second time
+    /// either. Throwing here would take that door away.
+    /// </remarks>
     public KeyLevelOptions Defaults() =>
         new(
             PivotLookback,
-            Source,
+            TryResolveSource(out PivotSource resolved) ? resolved : PivotSource.Unknown,
             ZoneAtrMultiple,
             MinSignificance,
             PivotRightLookback,
@@ -243,13 +249,10 @@ public sealed class KeyLevelDetectionOptions : IValidatableObject
             MaxLevels);
 
     /// <summary>
-    /// Refuses a bound source outside the vocabulary — <c>Unknown</c> however it arrived, and any numeral the
-    /// enum does not define. It is the only check behind the binder, which accepts whatever
-    /// <c>Enum.Parse</c> can read, a comma-separated list OR-ed onto a real source included (see
-    /// <see cref="Source"/>).
+    /// Refuses a configured source <see cref="PivotSources.Resolve(string)"/> does not recognise.
     /// </summary>
     /// <param name="validationContext">The validation context.</param>
-    /// <returns>One result when the configured source is not servable, otherwise none.</returns>
+    /// <returns>One result when the configured source does not resolve, otherwise none.</returns>
     /// <remarks>
     /// <b>On the type rather than in a <c>.Validate(...)</c> lambda at the composition root</b>, so the rule
     /// travels with the value and a second place that binds this section cannot bind it unchecked.
@@ -259,16 +262,15 @@ public sealed class KeyLevelDetectionOptions : IValidatableObject
     /// </remarks>
     public IEnumerable<ValidationResult> Validate(ValidationContext validationContext)
     {
-        if (!PivotSources.IsServable(Source))
+        if (!TryResolveSource(out _))
         {
+            string rendered = Source is null ? "null" : "'" + Source + "'";
             yield return new ValidationResult(
-                SectionName + "__Source is '" + Source + "', which is not a pivot source. Known sources: "
-                + PivotSources.KnownNames + ". Unknown is refused rather than honoured — a zero default "
-                + "would pick a price series by accident. Leaving the key out keeps the "
-                + nameof(PivotSource.HeikinAshiBody) + " default. A value the binder can read — a name, a "
-                + "numeral, a comma-separated list of either, or a JSON null — binds as whatever it means, "
-                + "and this check is all that stands behind it; one it cannot read fails in the binder "
-                + "before this runs.",
+                SectionName + "__Source is " + rendered + ", which is not a pivot source. Known sources: "
+                + PivotSources.KnownNames + ". Matching is by name, trimmed and case-insensitive, against "
+                + "exactly those three — a numeral, a comma-separated list and " + nameof(PivotSource.Unknown)
+                + " itself are refused on the same terms as a plain typo. Leaving the key out keeps the "
+                + nameof(PivotSource.HeikinAshiBody) + " default.",
                 [nameof(Source)]);
         }
 
@@ -281,6 +283,29 @@ public sealed class KeyLevelDetectionOptions : IValidatableObject
                     + "would drop a requested method from a score without saying it was absent.",
                     [nameof(Weights)]);
             }
+        }
+    }
+
+    /// <summary>
+    /// Whether <see cref="Source"/> resolves, without throwing for the ordinary case where it does not.
+    /// </summary>
+    /// <param name="source">The resolved source, or <see cref="PivotSource.Unknown"/> when it did not.</param>
+    /// <returns><see langword="true"/> when <see cref="PivotSources.Resolve(string)"/> recognised it.</returns>
+    /// <remarks>
+    /// A <see langword="yield return"/> cannot sit inside a <c>try</c> block that has a <c>catch</c>, so
+    /// <see cref="Validate"/> calls this instead of catching <see cref="KeyNotFoundException"/> itself.
+    /// </remarks>
+    private bool TryResolveSource(out PivotSource source)
+    {
+        try
+        {
+            source = PivotSources.Resolve(Source);
+            return true;
+        }
+        catch (KeyNotFoundException)
+        {
+            source = PivotSource.Unknown;
+            return false;
         }
     }
 }

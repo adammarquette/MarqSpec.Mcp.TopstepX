@@ -687,50 +687,50 @@ container-path failure above from a genuinely missing certificate under compose.
 ## Update (2026-09-05) — the "16 tools both times" sentence has a real tree behind it, and it held 15, not 18
 
 gh#460 asked whether the 2026-08-23 update's "16 tools both times" sentence is a defensible count, with the
-stale-image hypothesis recorded as unverified. **Two things were wrong in earlier drafts of this section,
-caught in two review rounds, and both are recorded here rather than smoothed over.** The first draft concluded
-the tree the measurement was taken against was never committed to this repository at all — wrong, because it
-scoped the search to `origin/develop` alone, whose history begins at a root commit that this repository's
-history does not. The second draft corrected that but then asserted where commits live rather than checking:
-it named `origin/main` as home to two commits that, on the published record, resolve nowhere. Both are fixed
-below, this time against what a fresh clone can actually reach — verified with `git branch -r --contains` and
-`git merge-base --is-ancestor` before any commit is named as living on a branch.
+stale-image hypothesis recorded as unverified. **Three earlier drafts of this section were each wrong in a
+different way, across three review rounds, and the fourth found the reason the second and third corrections
+never held: every one of them was written from a shallow clone.**
 
-**Two roots, not one — read against the remote, not against this working copy.** `git rev-list --max-parents=0
---all` prints a third sha, `3c3a8bc`, that a fresh clone never sees: it is the parentless commit git creates
-to hold the untracked files of a local `stash@{0}` on this machine (`git for-each-ref --contains 3c3a8bc…`
-names only `refs/stash`; `git log -1` on it reads `untracked files on develop: … 2026-08-30`), not a root of
-this repository's history. `--remotes=origin` is what a clone can actually resolve:
+The first draft concluded the tree the measurement was taken against was never committed to this repository at
+all, having scoped the search to `origin/develop` alone. The second and third drafts corrected the scope but
+not the checkout: `git rev-list --max-parents=0` in this working copy names `08c96da` as a second, parentless
+root, and every command run against it inherited that. It is not a property of the repository — it is one line
+in this working copy:
+
+```console
+$ git rev-parse --is-shallow-repository
+true
+$ cat "$(git rev-parse --git-common-dir)/shallow"
+08c96da7133dd101717e1d169c136cbbbe2eca99
+```
+
+A shallow boundary makes git report the grafted commit as parentless and truncates every history walk that
+passes through it — no ref selection escapes it, because the truncation is in the object graph, not in which
+refs are read. Re-derived instead in a plain clone (`git clone
+https://github.com/adammarquette/MarqSpec.Mcp.TopstepX.git`, confirmed `git rev-parse
+--is-shallow-repository` → `false`), cross-checked against the GitHub API rather than only against git:
 
 ```console
 $ git rev-list --max-parents=0 --remotes=origin
-08c96da7133dd101717e1d169c136cbbbe2eca99
 256650096f052dce9c0d018c84a753730f63c05e
 
-$ git log -1 --format="%H %ad %s" --date=iso-strict 256650096f052dce9c0d018c84a753730f63c05e
-256650096f052dce9c0d018c84a753730f63c05e 2026-08-21T17:49:42-05:00 Initial commit
+$ git rev-list --parents -1 08c96da7133dd101717e1d169c136cbbbe2eca99
+08c96da7133dd101717e1d169c136cbbbe2eca99 8677fbac83945fed530356ee692392030ecbf9f4
+
+$ gh api repos/adammarquette/MarqSpec.Mcp.TopstepX/commits/08c96da7133dd101717e1d169c136cbbbe2eca99 --jq '[.parents[].sha]'
+["8677fbac83945fed530356ee692392030ecbf9f4"]
 
 $ gh repo view adammarquette/MarqSpec.Mcp.TopstepX --json createdAt
 {"createdAt":"2026-08-21T22:49:42Z"}
 ```
 
-`2566500`, the older of the two, is dated to the second of this repository's own creation. It sits on
-`origin/main` and `origin/staging`, both carrying dense history from it through 2026-08-23.
-`08c96da` is a second root — and it is **not** "reachable only from `origin/develop`", the earlier draft's
-claim:
+**One root, not two: `2566500`, "Initial commit", dated to the second of this repository's own creation.**
+`08c96da` is an ordinary commit with a parent — it never was a second history joining a first, and the
+"disjoint roots" and "the point where they join" language two earlier drafts built on that reading is retracted
+rather than repeated.
 
-```console
-$ git merge-base --is-ancestor 08c96da7133dd101717e1d169c136cbbbe2eca99 origin/main;     echo $?   # 0
-$ git merge-base --is-ancestor 08c96da7133dd101717e1d169c136cbbbe2eca99 origin/staging;  echo $?   # 0
-```
-
-It is an ancestor of `main`, `staging` and `develop` alike — the point where this repository's two disjoint
-roots join, consistent with the review round that first found them.
-
-**The day of the measurement is not a gap on `origin/main`.** gh#76's own fix — the change the 2026-08-23
-update above describes ("A shutdown requested before startup finishes is now honoured as a shutdown") — and
-the tool count at it and at two later commits the same date, ending at `origin/main`'s actual last commit for
-2026-08-23:
+**The day of the measurement, read without a shallow horizon.** gh#76's own fix, and the tool count at it and
+at `origin/main`'s **actual** last commit for 2026-08-23 — not the commit a truncated log mistook for last:
 
 ```console
 $ git log -1 --format="%H %ad %s" --date=iso-strict eac06a9f9af39e9271f82df8dcd9843f4b561148
@@ -744,20 +744,22 @@ eac06a9...:MarqSpec.Mcp.TopstepX/Tools/SnapshotTools.cs:1
                                                   → 15
 
 $ git log --since=2026-08-23T00:00:00-05:00 --until=2026-08-24T00:00:00-05:00 --format="%H %ad %s" --date=iso-strict origin/main | head -1
-8452af79befb7ccc1faf27baaef34f386b4a6157 2026-08-23T21:26:43-05:00 Merge pull request #129 from adammarquette/staging
-$ git grep -c '\[McpServerTool(' 8452af79befb7ccc1faf27baaef34f386b4a6157 -- 'MarqSpec.Mcp.TopstepX/Tools/*.cs'
-8452af79...: (same five files, same five counts)                    → 15
+786561e9d4888010535a2a4d5d76bbf66b1217f6 2026-08-23T22:08:18-05:00 docs(platform): record that a read deciding a write is fatal when it fails
+$ git grep -c '\[McpServerTool(' 786561e9d4888010535a2a4d5d76bbf66b1217f6 -- 'MarqSpec.Mcp.TopstepX/Tools/*.cs'
+786561e9...: (same five files, same five counts)                    → 15
+
+$ git rev-list --count --since=2026-08-23T00:00:00-05:00 --until=2026-08-24T00:00:00-05:00 origin/main
+90
 ```
 
-**Fifteen at the fix and fifteen at the last commit `origin/main` carries for that date — not eighteen, and
-not sixteen either.** The tree the measurement was taken against held one fewer tool than the sentence
-reports, not three fewer than this record's later count of eighteen.
+`origin/main` carries **ninety** commits for 2026-08-23 — not the handful a shallow log could see — and every
+one of them sits between two commits that hold fifteen tools.
 
 **Nor is the CI half missing on that branch.** By that evening `.github/workflows/ci.yml` already declared an
 `image` job, and the runs from that day are still listed:
 
 ```console
-$ git ls-tree --name-only 8452af79befb7ccc1faf27baaef34f386b4a6157 .github/workflows/
+$ git ls-tree --name-only 786561e9d4888010535a2a4d5d76bbf66b1217f6 .github/workflows/
 .github/workflows/AGENTS.md
 .github/workflows/CLAUDE.md
 .github/workflows/branch-policy.yml
@@ -765,8 +767,8 @@ $ git ls-tree --name-only 8452af79befb7ccc1faf27baaef34f386b4a6157 .github/workf
 .github/workflows/codeql.yml
 .github/workflows/release.yml
 
-$ git grep -n 'image:' 8452af79befb7ccc1faf27baaef34f386b4a6157 -- .github/workflows/ci.yml
-8452af79...:.github/workflows/ci.yml:236:  image:
+$ git grep -n 'image:' 786561e9d4888010535a2a4d5d76bbf66b1217f6 -- .github/workflows/ci.yml
+786561e9...:.github/workflows/ci.yml:236:  image:
 
 $ gh api "repos/adammarquette/MarqSpec.Mcp.TopstepX/actions/runs?created=2026-08-23" --jq '.total_count'
 648
@@ -776,57 +778,49 @@ The measurement itself still reads "Docker Desktop 29.6.2 on one developer machi
 none of those 648 runs is necessarily it; what the count establishes is that this branch's CI existed and ran
 that day, not that it is silent.
 
-**The published record does not resolve the growth to eighteen, and the earlier draft asserted that it did.**
-It named two commits as being "on `origin/main`, five and six days later." Neither is — and on a fresh clone
-that never fetched them, the commands below do not print nothing, they error on an unknown object; the "(no
-output)" transcript below is what this checkout, which still holds them locally, actually printed:
+**The growth to eighteen resolves exactly, on the published record, to two ordinary commits — the earlier
+drafts' "the record cannot resolve it" and "a six-day hole" were both artifacts of the same shallow horizon:**
 
 ```console
-$ git branch -r --contains 55e2c3cf14d17ba90926aa33914a4ce86f42d71b     # (no output)
-$ git branch -r --contains da87b224f02c3e4d4ed5e9b2588054bf6b962198     # (no output)
-$ git merge-base --is-ancestor 55e2c3cf14d17ba90926aa33914a4ce86f42d71b origin/main; echo $?   # 1
-$ git for-each-ref --contains 55e2c3cf14d17ba90926aa33914a4ce86f42d71b --format='%(refname)'
-refs/heads/feature/222_feat-mcp-get-footprint-and-get-volume-profile
-refs/tmp/pr324-review
-$ git for-each-ref --contains da87b224f02c3e4d4ed5e9b2588054bf6b962198 --format='%(refname)'
-refs/heads/feature/349_feat-mcp-get-contract-roll-when-a-symbol-rolled
-```
-
-Both exist only as local, unpushed branch tips in this checkout — the API still serves the shas (GitHub
-retains them behind PR refs), but `git clone` fetches `refs/heads/*` on the remote, and no remote head reaches
-either one. **On the published record, `origin/main` carries nothing at all between the last commit of
-2026-08-23 and the second root:**
-
-```console
-$ git rev-list --count --since=2026-08-24T00:00:00-05:00 --until=2026-08-29T19:00:00-05:00 origin/main
-0
 $ git log --full-history -S'[McpServerTool(' --format='%H %ad %s' --date=iso-strict origin/main -- 'MarqSpec.Mcp.TopstepX/Tools/*.cs'
-08c96da7133dd101717e1d169c136cbbbe2eca99 2026-08-29T19:31:49-05:00 fix(mcp): name the window before indicator warmup finishes
+9436b285f229922cef6015c5780f2366f4581640 2026-08-29T18:17:54-05:00 feat(mcp): add get_contract_roll for the tape changeover
+dd5b79bb2f39bb2e5817ec019e132e999f12b22d 2026-08-28T19:30:38-05:00 feat(mcp): get_footprint and get_volume_profile
 d671aaf199d3c2176d7e19849c62fb0d0be83b28 2026-08-22T01:30:27-05:00 feat(code): the venue seam, the cache-aside read path, and the MCP tool surface
+
+$ git grep -c '\[McpServerTool(' dd5b79bb2f39bb2e5817ec019e132e999f12b22d -- 'MarqSpec.Mcp.TopstepX/Tools/*.cs'
+dd5b79bb...: (4, 7, 2, 3, 1)                                          → 17
+$ git grep -c '\[McpServerTool(' 9436b285f229922cef6015c5780f2366f4581640 -- 'MarqSpec.Mcp.TopstepX/Tools/*.cs'
+9436b285...: (4, 8, 2, 3, 1)                                          → 18
 ```
 
-The count steps 15 → 18 in one jump, at `08c96da`, six days after the last commit `origin/main` carries for
-2026-08-23. What this checkout additionally retains — not reproducible from a fresh clone, and not claimed to
-be part of the published record — is that the jump did not happen in one step on the machine that made it:
-`55e2c3cf` (2026-08-28T19:30:38-05:00, "get_footprint and get_volume_profile") brings `MarketDataTools.cs`
-from 5 to 7 attributes (total 17), and `da87b224` (2026-08-29T18:17:54-05:00, "add get_contract_roll for the
-tape changeover") brings it from 7 to 8 (total 18) — an hour before `08c96da`, whose per-file counts (4, 8, 2,
-3, 1) match `da87b224`'s exactly. `get_contract_roll`, `get_footprint` and `get_volume_profile` did **not**
-predate the 2026-08-23 measurement: PR #458's second draft said so and was right, and was refuted against
-`08c96da` — the wrong commit for the question, because `08c96da` is dated six days later, whichever branch is
-asked. That much survives even reading only what `origin/main` publishes: the six-day gap is real there too,
-and nothing on the published record puts these three tools before 2026-08-23.
+**Two earlier drafts of this section named these same two additions under different shas — `55e2c3cf` and
+`da87b224` — and, once their branch was found unpushed, demoted them to "not part of the published record."
+That demotion was wrong.** `55e2c3cf` and `da87b224` are this checkout's pre-rebase copies of `dd5b79bb` and
+`9436b285` — identical author timestamps, subjects and per-file counts — retained locally from whatever fetch
+first brought them in, then orphaned when the branches carrying them were rebased before merging. A plain
+clone never receives a commit's superseded pre-rebase copy at all:
 
-**Verdict: the gap is real, it is one tool, and it is against a tree this repository still has.** The sentence
-reports sixteen; every commit `origin/main` carries for 2026-08-23, from the gh#76 fix through the end of that
-date, holds fifteen. Whether the missing one is a stale image built from a local change never committed that
-day, a tool present only in whatever was measured and never committed at all, or a miscount in the manual
-verification is **not established** — the measurement itself was never CI, so no log of that specific run
-exists to consult, on `main` or anywhere else. What is no longer true is that there is nothing to check the
-claim against: there is, and checking it narrows three tools of unexplained growth to one, on a tree a fresh
-clone can still verify even where this checkout's two intermediate commits cannot. This closes gh#460 with
-that narrower, correctly-scoped open question in place of the wider one; nothing else on this page is
-revisited.
+```console
+$ git cat-file -t 55e2c3cf14d17ba90926aa33914a4ce86f42d71b
+fatal: git cat-file: could not get object info
+$ git cat-file -t da87b224f02c3e4d4ed5e9b2588054bf6b962198
+fatal: git cat-file: could not get object info
+```
+
+— not because the growth they showed was unreal, but because git does not publish a rewritten commit's
+earlier copy under its old sha. `get_contract_roll`, `get_footprint` and `get_volume_profile` did **not**
+predate the 2026-08-23 measurement: PR #458's second draft said so and was right, all along, under whichever
+shas the eventual rebase produced.
+
+**Verdict: the gap is real, it is one tool, and the tree behind it is the ordinary, continuous published
+history of `origin/main`.** The sentence reports sixteen; every one of the ninety commits `origin/main`
+carries for 2026-08-23 holds fifteen. Whether the missing one is a stale image built from a local change never
+committed that day, a tool present only in whatever was measured and never committed at all, or a miscount in
+the manual verification is **not established** — the measurement itself was never CI, so no log of that
+specific run exists to consult, on `main` or anywhere else. What this draft adds past the last two: the record
+is not a six-day hole followed by an unresolved jump — `origin/main` is continuous throughout, and the growth
+to eighteen resolves to two named, dated, ordinary commits five and six days after the measurement. This
+closes gh#460; nothing else on this page is revisited.
 
 ### The 2026-09-03 account of this sentence is superseded
 

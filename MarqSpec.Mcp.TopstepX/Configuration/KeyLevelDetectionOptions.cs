@@ -268,7 +268,7 @@ public sealed class KeyLevelDetectionOptions : IValidatableObject
             yield return new ValidationResult(
                 SectionName + "__Source is " + rendered + ", which is not a pivot source. Known sources: "
                 + PivotSources.KnownNames + ". Matching is by name, trimmed and case-insensitive, against "
-                + "exactly those three — a numeral, a comma-separated list and " + nameof(PivotSource.Unknown)
+                + "exactly those names — a numeral, a comma-separated list and " + nameof(PivotSource.Unknown)
                 + " itself are refused on the same terms as a plain typo. Leaving the key out keeps the "
                 + nameof(PivotSource.HeikinAshiBody) + " default.",
                 [nameof(Source)]);

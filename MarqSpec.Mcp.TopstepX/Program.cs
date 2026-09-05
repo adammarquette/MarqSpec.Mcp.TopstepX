@@ -320,10 +320,12 @@ public static class Program
 
         // The detection defaults get_key_levels falls back to. Validated on start, and the Unknown check is
         // an IValidatableObject on the type rather than a lambda here. Unknown is NOT what an absent or
-        // mistyped value binds to -- an absent key leaves the HeikinAshiBody initializer standing and a bad
-        // name fails in the binder (gh#459) -- but an explicit Unknown, any numeral or a JSON null binds and
-        // reaches the check, and a server that boots on one answers every level call from a source nobody
-        // chose.
+        // mistyped value binds to -- an absent key leaves the HeikinAshiBody initializer standing, and a name
+        // the binder cannot read fails there (gh#459). Whatever Enum.Parse CAN read binds as it is -- Unknown,
+        // a numeral, a JSON null, a comma list OR-ed together -- and this validation is all that stands
+        // behind it: it refuses what lands outside the vocabulary and nothing else, so a list that ORs onto
+        // a real source boots (gh#468). A server that booted on Unknown would answer every level call
+        // from a source nobody chose.
         services.AddOptions<KeyLevelDetectionOptions>()
             .Bind(builder.Configuration.GetSection(KeyLevelDetectionOptions.SectionName))
             .ValidateDataAnnotations()

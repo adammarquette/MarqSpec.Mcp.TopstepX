@@ -83,29 +83,35 @@ public sealed class KeyLevelDetectionOptions : IValidatableObject
     /// reason the enum reserves it.
     /// </para>
     /// <para>
-    /// <b>What reaches that validator is decided by the configuration binder, and it splits on the shape of
-    /// the value rather than on the vocabulary</b> — this paragraph has said otherwise twice (gh#459). An
-    /// <b>absent</b> key never becomes <c>Unknown</c> at all: the binder leaves a bound property untouched
-    /// when its key is missing, so the initializer below stands and nothing is refused. A <b>name outside
-    /// the vocabulary</b> never reaches <see cref="Validate"/>: the binder throws
+    /// <b>What reaches that validator is decided by the configuration binder, and the split is whether
+    /// <c>Enum.Parse</c> can read the value — not whether the value means anything.</b> This paragraph has
+    /// claimed a complete list of outcomes three times and been wrong three times (gh#459), so it now
+    /// describes the mechanism. An <b>absent</b> key never becomes <c>Unknown</c> at all: the binder leaves
+    /// a bound property untouched when its key is missing, so the initializer below stands and nothing is
+    /// refused. A value the binder <b>cannot read</b> — a name outside the vocabulary, an empty string —
+    /// never reaches <see cref="Validate"/>: it throws
     /// <c>InvalidOperationException: Failed to convert configuration value 'Bogus' at 'KeyLevels:Source'</c>,
-    /// wrapping a <see cref="FormatException"/>, before validation runs — and an empty string behaves as a
-    /// bad name rather than as absent. A <b>numeral</b> binds whatever it is: the binder converts an enum
-    /// through <c>Enum.Parse</c>, which accepts any integer, defined or not, so <c>0</c> arrives here as
-    /// <c>Unknown</c> and <c>99</c> as <c>(PivotSource)99</c>. And a key <b>present with a JSON
-    /// <c>null</c></b> is not read as absent: the binder writes <c>default(PivotSource)</c> over the
-    /// initializer, which is <c>Unknown</c> again. <see cref="Validate"/> refuses all four. The first
-    /// correction of this paragraph named an explicit <c>Unknown</c> as the only route — the defect it was
-    /// correcting, one iteration later — and the review of that correction surfaced the numerals; the null
-    /// was found writing the test that isolates the absent case. Measured on all eight and pinned by
-    /// <c>KeyLevelSourceBindingTests</c>.
+    /// wrapping a <see cref="FormatException"/>, before validation runs. A value it <b>can</b> read binds as
+    /// whatever <c>Enum.Parse</c> makes of it, and only <see cref="PivotSources.IsServable(PivotSource)"/>
+    /// stands behind that: a name in any case; a numeral, sign included, defined or not, so <c>0</c> arrives
+    /// as <c>Unknown</c> and <c>99</c> as <c>(PivotSource)99</c>; a JSON <c>null</c>, written as
+    /// <c>default(PivotSource)</c> over the initializer, which is <c>Unknown</c> again; and a
+    /// <b>comma-separated list</b>, OR-ed together whether or not the enum is <c>[Flags]</c>, so
+    /// <c>HeikinAshiBody,Body</c> is <c>1 | 2</c> — <see cref="PivotSource.HighLow"/>, servable, and the
+    /// server <b>boots and serves from a source nobody named</b>, the <c>detection</c> block on every level
+    /// payload being the only trace. <see cref="Validate"/> refuses what lands outside the vocabulary and
+    /// nothing else. Every case named here is pinned by <c>KeyLevelSourceBindingTests</c>.
     /// </para>
     /// <para>
-    /// That is a deliberate disposition rather than an omission. The binder's own message already names the
-    /// section, the key, the offending value and the target type; making the friendly message reachable for a
-    /// typo would mean binding this as a string and parsing it here — putting enum parsing in a validator and
-    /// giving the seam a stringly-typed shape — or hanging a configuration concern on a <c>Domain</c> enum,
-    /// which the layering does not allow. What is owed is that nothing here claims otherwise.
+    /// That is a deliberate disposition rather than an omission, and it is now made against one more known
+    /// case. The binder's own message already names the section, the key, the offending value and the
+    /// target type; making the friendly message reachable for a typo would mean binding this as a string and
+    /// parsing it here — putting enum parsing in a validator and giving the seam a stringly-typed shape — or
+    /// hanging a configuration concern on a <c>Domain</c> enum, which the layering does not allow. String
+    /// binding is also the only thing that closes the comma case, since
+    /// <see cref="PivotSources.Resolve(string)"/> already refuses <c>"Body,HighLow"</c>, <c>"0"</c> and
+    /// <c>"Unknown"</c> alike; whether to pay that price is gh#468, not this record. What is owed here
+    /// is that nothing claims the boundary is somewhere it is not.
     /// </para>
     /// </remarks>
     public PivotSource Source { get; init; } = PivotSource.HeikinAshiBody;
@@ -237,9 +243,10 @@ public sealed class KeyLevelDetectionOptions : IValidatableObject
             MaxLevels);
 
     /// <summary>
-    /// Refuses a source outside the vocabulary — an explicitly configured <c>Unknown</c>, any numeral, which
-    /// the binder converts without asking whether the enum defines it, or a JSON <c>null</c>, which it binds
-    /// as the enum's zero rather than leaving alone (see <see cref="Source"/>).
+    /// Refuses a bound source outside the vocabulary — <c>Unknown</c> however it arrived, and any numeral the
+    /// enum does not define. It is the only check behind the binder, which accepts whatever
+    /// <c>Enum.Parse</c> can read, a comma-separated list OR-ed onto a real source included (see
+    /// <see cref="Source"/>).
     /// </summary>
     /// <param name="validationContext">The validation context.</param>
     /// <returns>One result when the configured source is not servable, otherwise none.</returns>
@@ -257,10 +264,11 @@ public sealed class KeyLevelDetectionOptions : IValidatableObject
             yield return new ValidationResult(
                 SectionName + "__Source is '" + Source + "', which is not a pivot source. Known sources: "
                 + PivotSources.KnownNames + ". Unknown is refused rather than honoured — a zero default "
-                + "would pick a price series by accident. It only reaches this check when the key is "
-                + "present: as Unknown by name, as any numeral, or as a JSON null. Leaving the key out keeps "
-                + "the " + nameof(PivotSource.HeikinAshiBody) + " default, and a name outside the vocabulary "
-                + "fails in the configuration binder before this runs.",
+                + "would pick a price series by accident. Leaving the key out keeps the "
+                + nameof(PivotSource.HeikinAshiBody) + " default. A value the binder can read — a name, a "
+                + "numeral, a comma-separated list of either, or a JSON null — binds as whatever it means, "
+                + "and this check is all that stands behind it; one it cannot read fails in the binder "
+                + "before this runs.",
                 [nameof(Source)]);
         }
 

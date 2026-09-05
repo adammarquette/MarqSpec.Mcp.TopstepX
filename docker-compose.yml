@@ -101,9 +101,10 @@ services:
 
       # Detection defaults for get_key_levels. Source, PivotLookback and PivotRightLookback are also
       # per-call arguments on the tool; the width, the floor and the two caps are settable only here,
-      # so every level this server reports is sized and filtered alike (ADR-0013). An unset Source
-      # binds to Unknown and FAILS STARTUP. The window is 20 left / 15 right — Bjorgum's calibration,
-      # adopted by gh#245 — matching KeyLevelDetectionOptions and the catalogue.
+      # so every level this server reports is sized and filtered alike (ADR-0013). An unset Source keeps
+      # HeikinAshiBody; a wrong one FAILS STARTUP -- in the binder for a bad name, in the option's own
+      # validation for Unknown or a bare number (gh#459). The window is 20 left / 15 right — Bjorgum's
+      # calibration, adopted by gh#245 — matching KeyLevelDetectionOptions and the catalogue.
       KeyLevels__Source: "${KeyLevels__Source:-HeikinAshiBody}"
       KeyLevels__PivotLookback: "${KeyLevels__PivotLookback:-20}"
       KeyLevels__PivotRightLookback: "${KeyLevels__PivotRightLookback:-15}"

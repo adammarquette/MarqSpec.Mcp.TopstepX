@@ -83,14 +83,22 @@ public sealed class KeyLevelDetectionOptions : IValidatableObject
     /// reason the enum reserves it.
     /// </para>
     /// <para>
-    /// <b>It reaches that validator by exactly one route — an explicit <c>KeyLevels__Source=Unknown</c></b>,
-    /// and this paragraph used to say otherwise (gh#459). An <b>absent</b> key never becomes
-    /// <c>Unknown</c> at all: the configuration binder leaves a bound property untouched when its key is
-    /// missing, so the initializer below stands and nothing is refused. A <b>mistyped</b> one never reaches
-    /// <c>Validate</c> either: the binder throws
+    /// <b>What reaches that validator is decided by the configuration binder, and it splits on the shape of
+    /// the value rather than on the vocabulary</b> — this paragraph has said otherwise twice (gh#459). An
+    /// <b>absent</b> key never becomes <c>Unknown</c> at all: the binder leaves a bound property untouched
+    /// when its key is missing, so the initializer below stands and nothing is refused. A <b>name outside
+    /// the vocabulary</b> never reaches <see cref="Validate"/>: the binder throws
     /// <c>InvalidOperationException: Failed to convert configuration value 'Bogus' at 'KeyLevels:Source'</c>,
-    /// wrapping a <see cref="FormatException"/>, before validation runs — and an empty string behaves as
-    /// mistyped rather than as absent. Measured on all four, gh#459.
+    /// wrapping a <see cref="FormatException"/>, before validation runs — and an empty string behaves as a
+    /// bad name rather than as absent. A <b>numeral</b> binds whatever it is: the binder converts an enum
+    /// through <c>Enum.Parse</c>, which accepts any integer, defined or not, so <c>0</c> arrives here as
+    /// <c>Unknown</c> and <c>99</c> as <c>(PivotSource)99</c>. And a key <b>present with a JSON
+    /// <c>null</c></b> is not read as absent: the binder writes <c>default(PivotSource)</c> over the
+    /// initializer, which is <c>Unknown</c> again. <see cref="Validate"/> refuses all four. The first
+    /// correction of this paragraph named an explicit <c>Unknown</c> as the only route — the defect it was
+    /// correcting, one iteration later — and the review of that correction surfaced the numerals; the null
+    /// was found writing the test that isolates the absent case. Measured on all eight and pinned by
+    /// <c>KeyLevelSourceBindingTests</c>.
     /// </para>
     /// <para>
     /// That is a deliberate disposition rather than an omission. The binder's own message already names the
@@ -229,8 +237,9 @@ public sealed class KeyLevelDetectionOptions : IValidatableObject
             MaxLevels);
 
     /// <summary>
-    /// Refuses a source outside the vocabulary — in practice an explicitly configured <c>Unknown</c>, which
-    /// is the only way one arrives here (see <see cref="Source"/>).
+    /// Refuses a source outside the vocabulary — an explicitly configured <c>Unknown</c>, any numeral, which
+    /// the binder converts without asking whether the enum defines it, or a JSON <c>null</c>, which it binds
+    /// as the enum's zero rather than leaving alone (see <see cref="Source"/>).
     /// </summary>
     /// <param name="validationContext">The validation context.</param>
     /// <returns>One result when the configured source is not servable, otherwise none.</returns>
@@ -248,10 +257,10 @@ public sealed class KeyLevelDetectionOptions : IValidatableObject
             yield return new ValidationResult(
                 SectionName + "__Source is '" + Source + "', which is not a pivot source. Known sources: "
                 + PivotSources.KnownNames + ". Unknown is refused rather than honoured — a zero default "
-                + "would pick a price series by accident. It only reaches this check when it is set "
-                + "explicitly: leaving the key out keeps the " + nameof(PivotSource.HeikinAshiBody)
-                + " default, and a value outside the vocabulary fails in the configuration binder before "
-                + "this runs.",
+                + "would pick a price series by accident. It only reaches this check when the key is "
+                + "present: as Unknown by name, as any numeral, or as a JSON null. Leaving the key out keeps "
+                + "the " + nameof(PivotSource.HeikinAshiBody) + " default, and a name outside the vocabulary "
+                + "fails in the configuration binder before this runs.",
                 [nameof(Source)]);
         }
 

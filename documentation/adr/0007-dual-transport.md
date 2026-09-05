@@ -625,8 +625,11 @@ not reading the option's own remarks, says which produces which failure.
 
 **The option's remarks have since been corrected** (gh#459). They asserted, in three places, that an unset or
 mistyped value binds to `Unknown` and is refused by `Validate`; neither route does. Both are pinned by
-`KeyLevelSourceBindingTests` now, along with the one route that does reach the validator — an explicitly
-configured `Unknown` — so this paragraph's measurement no longer has to be the only record of it.
+`KeyLevelSourceBindingTests` now, along with what does reach the validator — an explicit `Unknown`; any
+**numeral**, `0` and `99` alike, because the binder parses an enum through `Enum.Parse` and never asks whether
+the number is defined; and a key present with a JSON **`null`**, which the binder writes as the enum's zero
+rather than leaving alone. The first correction named only `Unknown`, and its review caught the numerals — the
+same shape of error, one iteration later — so this paragraph's measurement is no longer the only record of it.
 
 **The other named trap is real, and this recipe avoids it by not needing TLS at all.** The composed stack's
 HTTPS on 8443 is gh#416's answer to one client's TLS requirement, layered onto the HTTP transport rather than

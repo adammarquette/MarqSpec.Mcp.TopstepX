@@ -515,25 +515,4 @@ public sealed class CompositionRootTests
         provider.GetRequiredService<IOptions<KeyLevelDetectionOptions>>().Value.Defaults()
             .Should().Be(new KeyLevelOptions(20, PivotSource.HeikinAshiBody, 0.5m, 0.5m, 15, 2.5m, 12));
     }
-
-    [Theory]
-    [InlineData("Unknown")]
-    [InlineData("0")]
-    public void AnUnsetConfiguredPivotSource_FailsValidation_RatherThanBootingOnIt(string configuredSource)
-    {
-        // Unknown = 0 is what a mistyped or absent value binds to, so honouring it picks a price series by
-        // accident -- and `KeyLevels.PivotPrices` reads anything it does not recognise as Heikin-Ashi, so
-        // the server would answer every level call from a source nobody chose, with nothing to see. The rule
-        // is an IValidatableObject on the options type, so it travels with the value rather than living in a
-        // lambda at this composition root that a second binder could miss.
-        Dictionary<string, string?> configured = new() { ["KeyLevels:Source"] = configuredSource };
-
-        using ServiceProvider provider = Build(configured, new McpOptions { Transport = McpTransport.Stdio });
-
-        Func<KeyLevelDetectionOptions> read =
-            () => provider.GetRequiredService<IOptions<KeyLevelDetectionOptions>>().Value;
-
-        read.Should().Throw<OptionsValidationException>()
-            .WithMessage("*HeikinAshiBody, Body, HighLow*");
-    }
 }

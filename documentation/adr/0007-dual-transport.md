@@ -604,10 +604,11 @@ that sentence, already carried eighteen `[McpServerTool(...)]` attributes — th
 carries today — so the discrepancy is not tool growth since. **Why that run reported sixteen against a tree
 that already declared eighteen is not accounted for here.** Neither number in this record is edited on the
 strength of a guess: the count above is corrected because this run itself was re-measured and read eighteen;
-The "16 tools both times" sentence's count is left as printed because nothing here re-ran that measurement,
-and a plausible-sounding
-cause is exactly the kind of claim this paragraph exists to avoid asserting unchecked. Open question, tracked
-separately as gh#460 — not this card's to resolve.
+the "16 tools both times" sentence's count is left as printed because nothing here re-ran that measurement,
+and a plausible-sounding cause is exactly the kind of claim this paragraph exists to avoid asserting
+unchecked. Open question, tracked separately as gh#460 — not this card's to resolve. (Superseded below: the
+2026-09-05 update found `eac06a9`, not `08c96da`, wrote this sentence, and the tree at `eac06a9` held fifteen
+— the discrepancy this paragraph says is not tool growth since is exactly that.)
 
 **One of the two traps gh#444 named is not what the code does, and the measurement is worth keeping because
 the issue's own reasoning about it was plausible and wrong.** It warned that `KeyLevels__Source` "has no
@@ -695,12 +696,14 @@ it named `origin/main` as home to two commits that, on the published record, res
 below, this time against what a fresh clone can actually reach — verified with `git branch -r --contains` and
 `git merge-base --is-ancestor` before any commit is named as living on a branch.
 
-**Three roots, not one.** `git rev-list --max-parents=0 --all` names `3c3a8bc`, `08c96da` and `2566500`, and
-the third is dated to the second of this repository's own creation:
+**Two roots, not one — read against the remote, not against this working copy.** `git rev-list --max-parents=0
+--all` prints a third sha, `3c3a8bc`, that a fresh clone never sees: it is the parentless commit git creates
+to hold the untracked files of a local `stash@{0}` on this machine (`git for-each-ref --contains 3c3a8bc…`
+names only `refs/stash`; `git log -1` on it reads `untracked files on develop: … 2026-08-30`), not a root of
+this repository's history. `--remotes=origin` is what a clone can actually resolve:
 
 ```console
-$ git rev-list --max-parents=0 --all
-3c3a8bcb7e235c693c1c9c1867a48282dbe80a9f
+$ git rev-list --max-parents=0 --remotes=origin
 08c96da7133dd101717e1d169c136cbbbe2eca99
 256650096f052dce9c0d018c84a753730f63c05e
 
@@ -711,7 +714,8 @@ $ gh repo view adammarquette/MarqSpec.Mcp.TopstepX --json createdAt
 {"createdAt":"2026-08-21T22:49:42Z"}
 ```
 
-`2566500` sits on `origin/main` and `origin/staging`, both carrying dense history from it through 2026-08-23.
+`2566500`, the older of the two, is dated to the second of this repository's own creation. It sits on
+`origin/main` and `origin/staging`, both carrying dense history from it through 2026-08-23.
 `08c96da` is a second root — and it is **not** "reachable only from `origin/develop`", the earlier draft's
 claim:
 
@@ -773,7 +777,9 @@ none of those 648 runs is necessarily it; what the count establishes is that thi
 that day, not that it is silent.
 
 **The published record does not resolve the growth to eighteen, and the earlier draft asserted that it did.**
-It named two commits as being "on `origin/main`, five and six days later." Neither is:
+It named two commits as being "on `origin/main`, five and six days later." Neither is — and on a fresh clone
+that never fetched them, the commands below do not print nothing, they error on an unknown object; the "(no
+output)" transcript below is what this checkout, which still holds them locally, actually printed:
 
 ```console
 $ git branch -r --contains 55e2c3cf14d17ba90926aa33914a4ce86f42d71b     # (no output)
@@ -811,6 +817,17 @@ predate the 2026-08-23 measurement: PR #458's second draft said so and was right
 asked. That much survives even reading only what `origin/main` publishes: the six-day gap is real there too,
 and nothing on the published record puts these three tools before 2026-08-23.
 
+**Verdict: the gap is real, it is one tool, and it is against a tree this repository still has.** The sentence
+reports sixteen; every commit `origin/main` carries for 2026-08-23, from the gh#76 fix through the end of that
+date, holds fifteen. Whether the missing one is a stale image built from a local change never committed that
+day, a tool present only in whatever was measured and never committed at all, or a miscount in the manual
+verification is **not established** — the measurement itself was never CI, so no log of that specific run
+exists to consult, on `main` or anywhere else. What is no longer true is that there is nothing to check the
+claim against: there is, and checking it narrows three tools of unexplained growth to one, on a tree a fresh
+clone can still verify even where this checkout's two intermediate commits cannot. This closes gh#460 with
+that narrower, correctly-scoped open question in place of the wider one; nothing else on this page is
+revisited.
+
 ### The 2026-09-03 account of this sentence is superseded
 
 The 2026-09-03 update's paragraph beginning *"The 2026-08-23 update's own '16 tools both times' is left
@@ -822,15 +839,5 @@ alone"* reads:
 
 Both halves are wrong. `08c96da` did not write that sentence; `eac06a9`, on `origin/main`, wrote it, six days
 earlier. And the discrepancy **is** tool growth since — the tree at `eac06a9` held fifteen, not eighteen. Left
-standing rather than rewritten, per this page's own convention; the paragraph above corrects it.
-
-**Verdict: the gap is real, it is one tool, and it is against a tree this repository still has.** The sentence
-reports sixteen; every commit `origin/main` carries for 2026-08-23, from the gh#76 fix through the end of that
-date, holds fifteen. Whether the missing one is a stale image built from a local change never committed that
-day, a tool present only in whatever was measured and never committed at all, or a miscount in the manual
-verification is **not established** — the measurement itself was never CI, so no log of that specific run
-exists to consult, on `main` or anywhere else. What is no longer true is that there is nothing to check the
-claim against: there is, and checking it narrows three tools of unexplained growth to one, on a tree a fresh
-clone can still verify even where this checkout's two intermediate commits cannot. This closes gh#460 with
-that narrower, correctly-scoped open question in place of the wider one; nothing else on this page is
-revisited.
+standing rather than rewritten, per this page's own convention; the paragraph above corrects it, and the
+paragraph itself now carries a pointer to here.

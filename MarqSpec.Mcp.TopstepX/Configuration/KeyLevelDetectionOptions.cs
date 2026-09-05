@@ -79,8 +79,25 @@ public sealed class KeyLevelDetectionOptions : IValidatableObject
     /// </para>
     /// <para>
     /// <see cref="PivotSource.Unknown"/> is refused at startup by <see cref="Validate"/> rather than
-    /// tolerated as "unset". It is what a missing or mistyped value binds to, so honouring it would pick a
-    /// price series by accident — which is the whole reason the enum reserves zero for it.
+    /// tolerated as "unset": honouring a zero would pick a price series by accident, which is the whole
+    /// reason the enum reserves it.
+    /// </para>
+    /// <para>
+    /// <b>It reaches that validator by exactly one route — an explicit <c>KeyLevels__Source=Unknown</c></b>,
+    /// and this paragraph used to say otherwise (gh#459). An <b>absent</b> key never becomes
+    /// <c>Unknown</c> at all: the configuration binder leaves a bound property untouched when its key is
+    /// missing, so the initializer below stands and nothing is refused. A <b>mistyped</b> one never reaches
+    /// <c>Validate</c> either: the binder throws
+    /// <c>InvalidOperationException: Failed to convert configuration value 'Bogus' at 'KeyLevels:Source'</c>,
+    /// wrapping a <see cref="FormatException"/>, before validation runs — and an empty string behaves as
+    /// mistyped rather than as absent. Measured on all four, gh#459.
+    /// </para>
+    /// <para>
+    /// That is a deliberate disposition rather than an omission. The binder's own message already names the
+    /// section, the key, the offending value and the target type; making the friendly message reachable for a
+    /// typo would mean binding this as a string and parsing it here — putting enum parsing in a validator and
+    /// giving the seam a stringly-typed shape — or hanging a configuration concern on a <c>Domain</c> enum,
+    /// which the layering does not allow. What is owed is that nothing here claims otherwise.
     /// </para>
     /// </remarks>
     public PivotSource Source { get; init; } = PivotSource.HeikinAshiBody;
@@ -212,7 +229,8 @@ public sealed class KeyLevelDetectionOptions : IValidatableObject
             MaxLevels);
 
     /// <summary>
-    /// Refuses a source outside the vocabulary — including the <c>Unknown</c> an unset value binds to.
+    /// Refuses a source outside the vocabulary — in practice an explicitly configured <c>Unknown</c>, which
+    /// is the only way one arrives here (see <see cref="Source"/>).
     /// </summary>
     /// <param name="validationContext">The validation context.</param>
     /// <returns>One result when the configured source is not servable, otherwise none.</returns>
@@ -229,8 +247,11 @@ public sealed class KeyLevelDetectionOptions : IValidatableObject
         {
             yield return new ValidationResult(
                 SectionName + "__Source is '" + Source + "', which is not a pivot source. Known sources: "
-                + PivotSources.KnownNames + ". Unknown is what an unset or mistyped value binds to, so it is "
-                + "refused rather than honoured — a zero default would pick a price series by accident.",
+                + PivotSources.KnownNames + ". Unknown is refused rather than honoured — a zero default "
+                + "would pick a price series by accident. It only reaches this check when it is set "
+                + "explicitly: leaving the key out keeps the " + nameof(PivotSource.HeikinAshiBody)
+                + " default, and a value outside the vocabulary fails in the configuration binder before "
+                + "this runs.",
                 [nameof(Source)]);
         }
 

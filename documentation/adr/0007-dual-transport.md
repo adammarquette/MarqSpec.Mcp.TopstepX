@@ -616,11 +616,17 @@ already `HeikinAshiBody`, every `ValidateOnStart` check (`KeyLevelDetectionOptio
 reach `Application started` at all. The failure the issue described is real for a **different** input: a key
 that is *present* and **unparseable** — `KeyLevels__Source=Bogus`, measured here, does fail startup, but not
 through the friendly `ValidationResult` sentence `KeyLevelDetectionOptions.Validate` writes for exactly this
-case. The configuration binder throws first, so what reaches the console is a raw, unhandled
-`System.FormatException: Bogus is not a valid value for PivotSource` under `Hosting failed to start` — a
-worse message than the one the code was written to produce, and reachable only by setting the variable wrong,
-never by leaving it out. **"Unset" is not one condition**: absent, empty, and mistyped bind differently, and
-only running each one, not reading the option's own remarks, says which produces which failure.
+case. The configuration binder throws first, so what reaches the console under `Hosting failed to start` is
+`System.InvalidOperationException: Failed to convert configuration value 'Bogus' at 'KeyLevels:Source'`,
+wrapping `System.FormatException: Bogus is not a valid value for PivotSource` — a worse message than the one
+the code was written to produce, and reachable only by setting the variable wrong, never by leaving it out.
+**"Unset" is not one condition**: absent, empty, and mistyped bind differently, and only running each one,
+not reading the option's own remarks, says which produces which failure.
+
+**The option's remarks have since been corrected** (gh#459). They asserted, in three places, that an unset or
+mistyped value binds to `Unknown` and is refused by `Validate`; neither route does. Both are pinned by
+`KeyLevelSourceBindingTests` now, along with the one route that does reach the validator — an explicitly
+configured `Unknown` — so this paragraph's measurement no longer has to be the only record of it.
 
 **The other named trap is real, and this recipe avoids it by not needing TLS at all.** The composed stack's
 HTTPS on 8443 is gh#416's answer to one client's TLS requirement, layered onto the HTTP transport rather than

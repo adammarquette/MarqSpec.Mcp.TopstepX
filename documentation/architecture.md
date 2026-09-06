@@ -423,6 +423,11 @@ One host, one tool registration, two ways in ([ADR-0007](adr/0007-dual-transport
   the protocol frame, and it surfaces as a confusing handshake error rather than as a logging problem. The
   host still starts Kestrel in this mode, on an **ephemeral loopback port** it never serves from — a
   well-known one stopped a second session starting at all (gh#392).
+  **Console logging is the floor, not the ceiling** — where the lines go *beyond* the console is
+  [ADR-0019](adr/0019-otlp-as-the-telemetry-boundary.md): logs, traces and metrics leave the host as **OTLP and
+  in no other form**, behind a collector the host never names, so the backend is a deployment edit rather than
+  a code change. It is off unless `Otel__Endpoint` is set, and **no console exporter is ever registered** under
+  either transport — under stdio that would corrupt the protocol frame rather than merely add noise (R-5.5).
 - **streamable HTTP** — for a deployed instance, behind a bearer token. The composed stack serves it over
   **TLS only**, on `https://localhost:8443`, with a certificate from a **local CA** that must be installed
   into the host trust store first — `mkcert -install`, a prerequisite rather than a given, see
@@ -441,6 +446,7 @@ carrying the fix, rather than a dead process (ADR-0007):
 | Database | The tool list, `list_instruments`, `get_market_session`, `search_contracts` | Anything reading bars, indicators, levels or observations |
 | Credentials | Everything served from the store, plus session and instrument reference | Contract resolution, account reads, and any cache miss |
 | Embedding key | Recording and searching observations — search matches text instead of meaning | Nothing |
+| OTLP endpoint | Everything — no exporter is registered, no background exporter thread runs, and nothing warns about a collector that is not there | Nothing; the server simply emits no telemetry ([ADR-0019](adr/0019-otlp-as-the-telemetry-boundary.md)) |
 
 The reason is the transport. An MCP client launches this as a child process, so a process that exits is
 reported as a transport failure and says nothing about *why* — the operator is told the server is broken when

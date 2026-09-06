@@ -45,7 +45,10 @@ public static class RollingVolumeWeightedAveragePrice
         }
 
         // A rolling sum, as MovingAverages.Simple uses: each bar's notional and volume enter and leave the
-        // window exactly once, so this is O(n) and exact in decimal rather than merely close.
+        // window exactly once, so this is O(n). It is not bit-exact against a full-window resum -- the
+        // add-then-subtract can drift a little at decimal's 28-digit limit -- but it is deterministic: the
+        // projection always recomputes each contract run from its first bar, so the same bars always give
+        // the same result.
         decimal notional = 0m;
         long volume = 0L;
         for (int i = 0; i < bars.Count; i++)

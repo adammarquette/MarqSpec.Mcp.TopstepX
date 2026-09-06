@@ -15,9 +15,10 @@ namespace MarqSpec.Mcp.TopstepX.Tests.MarketData;
 /// <remarks>
 /// <para>
 /// ADR-0011 claims the roll guard sits on the shared path so that <b>a new indicator inherits the rule rather
-/// than remembering it</b>. That is a claim about indicators nobody has written yet, so it cannot be pinned by
-/// naming the ones that exist: a test listing today's eleven would stay green on the day someone adds a
-/// twelfth that computes straight through a roll.
+/// than remembering it</b>. That is a claim about indicators nobody had written yet, so it cannot be pinned
+/// by naming the ones that exist: a test that lists today's members stays green on the day a new one
+/// computes straight through a roll. The twelfth, <c>vwap-rolling</c>, arrived exactly that way under
+/// gh#495, and this sweep needed no update.
 /// </para>
 /// <para>
 /// So this walks <see cref="IndicatorCatalog.All"/> — the closed vocabulary the projection and the tool
@@ -27,9 +28,10 @@ namespace MarqSpec.Mcp.TopstepX.Tests.MarketData;
 /// </para>
 /// <para>
 /// <b>The second sweep asserts a result, and until gh#285 it asserted only <c>NotThrow</c> over thirty
-/// bars.</b> Two of the eleven declared a warm-up of 35 — <c>macd-signal</c> and <c>macd-histogram</c>, both
-/// <c>MacdSlowPeriod</c> 26 + <c>Macd.SignalPeriod</c> 9 — and both answered that fixture with 0 non-null
-/// values out of 30, so it passed for them because nothing was computed rather than because something was.
+/// bars.</b> Two of the catalogue's members declared a warm-up of 35 — <c>macd-signal</c> and
+/// <c>macd-histogram</c>, both <c>MacdSlowPeriod</c> 26 + <c>Macd.SignalPeriod</c> 9 — and both answered
+/// that fixture with 0 non-null values out of 30, so it passed for them because nothing was computed rather
+/// than because something was.
 /// A <c>Compute</c> that returned a list of nulls for every member would have passed it too. The fixture is
 /// now <see cref="RunLength"/> bars, derived from the catalogue rather than chosen, and the sweep counts
 /// values; <see cref="TheValueSweepGoesRed_WhenAnIndicatorComputesNothing"/> is the run that proves it can
@@ -229,7 +231,7 @@ public sealed class IndicatorCatalogRollTests
     public void TheValueSweepGoesRed_WhenAnIndicatorComputesNothing()
     {
         // The red half of the sweep above. Without it, the sweep is a gate nobody has watched fail — and for
-        // two of eleven members it was already inert without anything going red to say so (gh#285).
+        // two of the catalogue's members it was already inert without anything going red to say so (gh#285).
         AllNullIndicator mute = new();
         IReadOnlyList<Bar> clean = SingleContract(RunLength(Catalog()));
 

@@ -15,6 +15,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **[ADR-0021](documentation/adr/0021-a-non-loopback-instance-is-supported.md) — a non-loopback instance is
+  supported, in one shape, and each of the three same-machine couplings has a named replacement.** ADR-0007's
+  2026-09-01 TLS update scoped the composed endpoint to a client on the same machine and left a remote
+  instance "not decided here"; Anthropic's connector documentation says Cowork reaches a connector from
+  Anthropic's infrastructure, so that scoping cannot serve the client it was built for. The record names the
+  replacements the maintainer decided on the AWS epic: bind `[::]:8080` inside a VPC with the security group
+  in loopback's role, reached only through an Application Load Balancer; **OAuth 2.1 with Amazon
+  Cognito-issued tokens** in place of the static bearer token, which stays the local and compose mode only;
+  an ACM certificate at the load balancer in place of the mkcert leaf, plaintext inside the VPC. gh#415's
+  coupling is restated as *a target group in front of 8080 ⇒ the OAuth mode must be configured, never the
+  static token*. What it assumes about the connector dialog — pending gh#510 — is written as assumptions, and
+  the topology itself is left to gh#511. No code, no compose change: the local shape is unchanged and now
+  scoped rather than wrong (gh#445, gh#509).
 - **`period` on `get_indicators` and `get_indicator_at` — an optional *selector*, not a computation
   input.** Omit it and you get the indicator's primary period, exactly as before; pass one the operator
   configured and you get that series. Any other period is an **error listing the configured ones**, with the

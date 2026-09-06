@@ -72,6 +72,7 @@ difference between the two entry points is a handful of lines.
 | [2026-09-03](#update-2026-09-03--the-ephemeral-loopback-sentence-is-false-inside-the-image) | The stdio ephemeral-loopback claim is wired to the container behaviour that contradicts it, and the inherited variable is kept on measurement |
 | [2026-09-03](#update-2026-09-03--the-http-transport-is-supported-outside-compose-too) | The HTTP transport is a supported way to run this outside compose too, on its own narrower recipe — and one of the two traps a reader was warned about is not what the code does |
 | [2026-09-05](#update-2026-09-05--the-16-tools-both-times-sentence-has-a-real-tree-behind-it-and-it-held-15-not-18) | Closes gh#460: the tree behind the "16 tools both times" sentence is real, on `origin/main`, and held 15 tools that day — a one-tool gap, not the three a first reading of `develop` alone implied |
+| [2026-09-06](#update-2026-09-06--the-remote-instance-is-decided-in-adr-0021) | The remote instance the 2026-09-01 TLS update left undecided is decided in ADR-0021 — the "same machine" scoping is superseded, the TLS decision and the composed shape are not |
 
 ## Update (2026-08-22) — starting is not the same as being ready
 
@@ -840,3 +841,35 @@ Both halves are wrong. `08c96da` did not write that sentence; `eac06a9`, on `ori
 earlier. And the discrepancy **is** tool growth since — the tree at `eac06a9` held fifteen, not eighteen. Left
 standing rather than rewritten, per this page's own convention; the paragraph above corrects it, and the
 paragraph itself now carries a pointer to here.
+
+## Update (2026-09-06) — the remote instance is decided, in ADR-0021
+
+The 2026-09-01 update titled *"the composed endpoint is TLS-only, behind a local CA"* settled the composed
+endpoint on a premise it named, and then named what it did not settle:
+
+> the client reaches the endpoint **from the same machine** — not Anthropic's cloud, not a LAN — so there is
+> no public hostname to certify and no ACME challenge to answer; and **gh#415's loopback bind stays**, so TLS
+> is added beside it rather than instead of it. A genuinely remote instance is a different operational story
+> and is not decided here.
+
+**The second sentence is now answered, and the first is superseded as a scoping.** gh#445's trigger fired on
+2026-09-03 when Anthropic's connector documentation was read: a remote MCP connector is reached from
+Anthropic's infrastructure for every Claude client, Cowork included, so a client "on the same machine" is not
+a shape a Cowork connector can be registered against at all — loopback is unroutable from there, and a mkcert
+leaf is trusted by nobody but the host that minted its CA. gh#509 then made a remote instance a requirement
+rather than a hypothesis, and [ADR-0021](0021-a-non-loopback-instance-is-supported.md) records the decision:
+**a non-loopback instance is supported, in one shape** — bind `[::]:8080` inside a VPC with the security group
+in loopback's role, reached only through an Application Load Balancer; **OAuth 2.1 with Cognito-issued tokens**
+in place of the static bearer token, which stays the local and compose mode only; **an ACM certificate at the
+load balancer** in place of the mkcert leaf, plaintext inside the VPC. gh#415's coupling survives there in the
+form a deployment can check: *a target group in front of 8080 ⇒ the OAuth mode must be configured, never the
+static token.*
+
+**What is unchanged on this page.** The TLS decision stands on its own terms — brokerage reads have no
+business crossing a network in plaintext whatever any client wants, and that reasoning never depended on
+Cowork. The composed stack is untouched: `127.0.0.1:8443`, the default token, the local CA, and every sentence
+above coupling the three are still the correct description of the same-machine shape, which is still the only
+shape `docker compose up` produces. "Reported, not verified" stays on the Cowork requirement until gh#524
+registers the staging endpoint and measures it. The quoted sentences are not edited in place, for the reason
+this page gives about itself: a reader who lands on them first is better served by a scoping that is visibly
+superseded and points at the record that superseded it.

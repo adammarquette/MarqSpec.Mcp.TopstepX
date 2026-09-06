@@ -44,14 +44,21 @@ The server serves OHLCV bars for a futures instrument at a requested resolution 
   a history of asking, so a second recording is an update by design and not a way to dodge the error.
 - **R-1.8** Bar timestamps are stored in UTC. The gateway returns timestamps with no kind; they are UTC, and
   inferring local shifts every bar by the operator's offset.
-- **R-1.9** The supported resolutions are **every whole number of minutes from 1 to 10,080 — one minute to one
-  week** — deliberately. Resolution is a per-call parameter rather than configuration, so an agent is never
+- **R-1.9** The supported resolutions are **every whole number of minutes from 1 to 1,379 — one minute up to
+  one minute short of a session** — deliberately. Resolution is a per-call parameter rather than configuration,
+  so an agent is never
   blocked on a config change to look at a timeframe nobody anticipated, and no tool advertises a resolution list
   because the range is contiguous. **Both ends are refused at the boundary**, as a *caller error the server
   names* rather than as a timeframe the server lacks, and on every tool that takes a resolution rather than only
   the ones that also validate a window (gh#69, gh#81). The ceiling is a bound on *meaning*, not on arithmetic:
-  above a week a timeframe is a calendar month or a quarter, whose length in minutes is not fixed, so no minute
-  count expresses one. It is also not by itself sufficient — the look-back reach is four bar spans per bar
+  a session is 24 hours less the venue's one-hour maintenance window, so a bucket 1,380 minutes wide or wider
+  can never **close inside** one and is therefore never an expected bucket (`R-1.2`). A bar of a session's
+  length or longer is not a coarse resolution at all — it is a **session bar**, defined on the trade date
+  rather than on the bucket grid, and the day and the week are the two that used to sit inside the old 10,080
+  ceiling and answer with an *empty series* rather than an error. They are refused now, and the refusal names
+  the session-bar tools (`R-1.12`, gh#496) rather than leaving a caller to read "coarser than the largest bar"
+  as "this market has no daily data" (gh#498). It is also not by itself sufficient — the look-back reach is
+  four bar spans per bar
   asked for, so a resolution and a count each inside its own bound can still name a window that starts before
   the calendar does, and that pair is refused too (gh#81). **Neither is the row cap sufficient**: `MaxRows` and
   `BarGapDetector.MaxBucketsPerPass` bound the same quantity from two sides — the first operator-configurable
@@ -60,10 +67,13 @@ The server serves OHLCV bars for a futures instrument at a requested resolution 
   below the boundary or being shortened to fit (gh#96). **Nor is any bound on *size* sufficient**, which is
   the same lesson a third time: a window at the far end of the calendar spans *zero* buckets, clears every cap
   above at the default configuration, and still overflowed the bucket-grid arithmetic below the boundary — so
-  the window's **end** is bounded too, by R-5.4 (gh#110). A timeframe is fetched from the venue independently,
-  never derived from a finer one: a bar derived from an incomplete set of constituents is indistinguishable
-  from a real one, which R-2.3's rule forbids in the indicator path and which is no more acceptable here.
-  See [ADR-0010](adr/0010-per-call-resolutions-fetched-not-derived.md).
+  the window's **end** is bounded too, by R-5.4 (gh#110). A **bar** timeframe is fetched from the venue
+  independently, never derived from a finer one: a bar derived from an incomplete set of constituents is
+  indistinguishable from a real one, which R-2.3's rule forbids in the indicator path and which is no more
+  acceptable here. `R-1.12` is the one exception and it is granted on exactly those terms — a session bar has
+  no vendor unit to fetch, so it is derived behind a completeness guard that emits **no** bar rather than a
+  partial one. See [ADR-0010](adr/0010-per-call-resolutions-fetched-not-derived.md) and
+  [ADR-0019](adr/0019-session-bars-derived-complete-or-absent.md).
 - **R-1.10** Those pages are **paced** to the vendor's documented allowance for the history endpoint —
   **50 requests / 30 seconds**, one allowance shared by the whole process. A cold year of five-minute bars is
   106 pages back to back, which breaches inside the first window; the client's 429 retry recovers from a
@@ -75,6 +85,19 @@ The server serves OHLCV bars for a futures instrument at a requested resolution 
   because each one is a real observation of a real contract
   ([ADR-0011](adr/0011-contract-roll-boundary.md)). Bars stored before this was recorded carry **no**
   contract, and that absence is reported rather than guessed at.
+- **R-1.12** A **session bar** is derived from stored base bars and **exists only when every expected base
+  bucket is stored, from one contract**; otherwise it is **absent with a stated reason**, never a partial bar.
+  A session is a named slice of the trade date `R-1.2`'s calendar already models, stated in Central
+  wall-clock time — shipped as `full` 17:00→16:00, `rth` 08:30→15:00, `asia` 17:00→02:00 and `europe`
+  02:00→08:30, each with its own base resolution, which must divide 60 so the wall-clock boundaries land on
+  the stored UTC bucket grid under both standard and daylight time. Expected is decided by the same session
+  calendar `R-1.2` uses, so a holiday and the maintenance window cost nothing. The reasons are a closed
+  vocabulary a caller can act on — incomplete, with the expected and missing counts; the window spans a
+  contract roll (`R-1.11`); the base bars carry no contract; the session has not closed — and the base
+  resolution is recorded on the stored bar so the series is reproducible (`R-2.2`). This is the one exception
+  to `R-1.9`'s never-derive rule, and it is granted only because it carries the completeness guard that rule
+  demands: the vendor has no `rth`, `asia` or `europe` bar unit to fetch. A session read never reaches the
+  vendor. See [ADR-0019](adr/0019-session-bars-derived-complete-or-absent.md) (gh#496, gh#498).
 
 ## R-2 — Pre-computed indicators
 

@@ -78,17 +78,33 @@ page against either**, so check it against the code, never against another docum
   caller must write. **Every entry below names its own form** — this page is read by lookup, and a reader who
   lands on one entry should not have to have read this bullet. `PayloadNullWireShapeTests` pins both forms
   against the real serializer options, so the statements here fail a build rather than drift (gh#85).
-- **`resolutionMinutes` is caller-chosen, and every resolution from `1` to `10080` — one minute to one week —
-  is servable.** No tool enumerates supported timeframes, because the range is contiguous rather than a list —
+- **`resolutionMinutes` is caller-chosen, and every resolution from `1` to `1379` — one minute up to one
+  minute short of a session — is servable.** No tool enumerates supported timeframes, because the range is
+  contiguous rather than a list —
   each resolution is an independent cached series fetched from the venue, never derived from a finer one
   ([ADR-0010](adr/0010-per-call-resolutions-fetched-not-derived.md)). **Both ends are refused**, by every tool
   that takes a resolution and with the offending value named. Zero and negative used to be refused only by the
   tools that also validate a window; on the other four a `0` arrived as a raw `ArgumentOutOfRangeException` or,
   worse, as an empty series — a caller's mistake wearing the shape of a quiet market (gh#69). The ceiling
   arrived later, for the same fault at the other end: `2147483647` overflowed the look-back arithmetic and
-  faulted, while sailing past that guard because it is positive (gh#81). Above a week a timeframe is a calendar
-  month or a quarter, whose length in minutes is not fixed, so nothing above the ceiling is a bar anyone could
-  be asking for. **Two cross-axis pairs are refused alongside it.** `get_latest_bars` reaches back four bar
+  faulted, while sailing past that guard because it is positive (gh#81). **The ceiling was 10,080 until
+  gh#498 and it admitted two values that were never servable** — the day at `1440` and the week at `10080`.
+  A session is 24 hours less the venue's one-hour maintenance window, so a bucket 1,380 minutes wide or wider
+  can never *close inside* one, is therefore never an expected bucket, and `get_bars` at `1440` answered with
+  an **empty series** and `venueRequests: 0` — a question of the wrong shape wearing the face of a market that
+  printed nothing. Both are refused now, and the refusal says where the answer lives rather than only saying
+  no:
+
+  > resolutionMinutes 1440 is coarser than the largest bar this server serves, 1379 minutes, one minute short
+  > of a session (24 hours less the venue's one-hour maintenance window). A bucket that long or longer can
+  > never close inside a single session, so it is a session bar rather than a bar resolution. The day and the
+  > week are not unavailable and they are not out of range; ask the session-bar tools (gh#496) for them.
+
+  **A bar of a session's length or longer is a session bar, not a coarse resolution**: it is defined on the
+  CME trade date rather than on the bucket grid, and it is served by the session-bars tools of gh#496 —
+  arriving in gh#500 — over the four named sessions `full`, `rth`, `asia` and `europe`
+  ([ADR-0019](adr/0019-session-bars-derived-complete-or-absent.md), `R-1.12`). **Two cross-axis pairs are
+  refused alongside it.** `get_latest_bars` reaches back four bar
   spans per bar wanted **plus four days** (`ToolGuards.LookbackWindow`), so a coarse resolution and a big
   count — each inside its own bound — can name a window that **starts before the calendar does**, and that is
   an error naming both rather than a fault (gh#81). The
@@ -105,7 +121,7 @@ page against either**, so check it against the code, never against another docum
   **two bar spans plus three days**, because the grid is aligned *up* from the window's start, the gap
   detector tests one bucket beyond the last it yields, and the session calendar maps an evening bucket onto
   the *next* trade date. So the last servable `toUtc` is `9999-12-28T23:57:59.9999999Z` at one-minute bars and
-  `9999-12-14T23:59:59.9999999Z` at the weekly ceiling. The refusal names **both** the `toUtc` passed and the
+  `9999-12-27T02:01:59.9999999Z` at the 1,379-minute ceiling. The refusal names **both** the `toUtc` passed and the
   last one that would have been accepted, and — like every other bound here — it **refuses rather than moving
   the end back for you**, because a series short at one end is indistinguishable from a complete one.
 - **Nothing is derived across a contract roll.** A series is keyed by the venue-neutral symbol and the front

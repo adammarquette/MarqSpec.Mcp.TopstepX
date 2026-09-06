@@ -39,13 +39,16 @@ public static class SessionBarAggregator
     /// <returns>One outcome per trade date, in the order they were asked for.</returns>
     /// <exception cref="ArgumentNullException">An argument is <see langword="null"/>.</exception>
     /// <exception cref="ArgumentException">
-    /// The bars are not strictly ascending, or the calendar carries no such session on one of the trade dates.
+    /// The bars are not strictly ascending, the calendar carries no such session on one of the trade dates,
+    /// or it expects no base bucket at all inside one of their windows.
     /// </exception>
     /// <remarks>
-    /// A trade date the calendar does not trade is a <b>caller bug</b>, not an absent bar: an absence is a
-    /// statement about a session that exists, and manufacturing one for a Saturday would say nothing a caller
-    /// could act on. <see cref="SessionWindows.TradeDatesIn"/> and
-    /// <see cref="SessionWindows.LastClosedTradeDates"/> only ever hand back dates that trade.
+    /// Both refusals are <b>caller bugs</b> rather than absent bars, because an absence is a statement about
+    /// a session that exists. Manufacturing one for a Saturday, or for a definition whose window holds no
+    /// bucket to expect, says nothing a caller could act on — and calling the latter <c>Incomplete</c> would
+    /// be worse than saying nothing, since that reason promises the missing buckets can be fetched.
+    /// <see cref="SessionWindows.TradeDatesIn"/> and <see cref="SessionWindows.LastClosedTradeDates"/> only
+    /// ever hand back dates that trade, and <see cref="SessionWindows.Validate"/> refuses such a definition.
     /// </remarks>
     public static IReadOnlyList<SessionBarOutcome> Aggregate(
         IReadOnlyList<Bar> bars,
@@ -75,30 +78,50 @@ public static class SessionBarAggregator
                     nameof(tradeDates));
             }
 
-            outcomes.Add(AggregateOne(bars, calendar, window, baseSize, tradeDate));
+            outcomes.Add(AggregateOne(bars, calendar, definition, window, baseSize, tradeDate));
         }
 
         return outcomes;
     }
 
     /// <summary>The outcome for one trade date whose window is already resolved.</summary>
+    /// <exception cref="ArgumentException">
+    /// The calendar expects no base bucket at all inside the window — a broken definition, not an absence.
+    /// </exception>
     private static SessionBarOutcome AggregateOne(
         IReadOnlyList<Bar> bars,
         BarSessionCalendar calendar,
+        SessionDefinition definition,
         BarRange window,
         TimeSpan baseSize,
         DateOnly tradeDate)
     {
         HashSet<DateTimeOffset> expected = [.. BarGapDetector.ExpectedBuckets(window, baseSize, calendar)];
 
+        // A window the calendar expects NOTHING inside is a broken definition, and it is refused on the same
+        // terms as a trade date that does not trade. Reporting it as `Incomplete` would be vacuously true and
+        // actively harmful: `Incomplete` promises a caller that fetching the missing buckets fixes it, and
+        // there are none to fetch, so the caller would ask the venue for nothing forever. SessionWindows
+        // .Validate refuses such a definition; Aggregate does not call it, so this stays reachable.
+        if (expected.Count == 0)
+        {
+            throw new ArgumentException(
+                "The calendar expects no base bucket inside the '" + definition.Name + "' window on "
+                + tradeDate.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture) + " ("
+                + window.Start.ToString("O", CultureInfo.InvariantCulture) + " to "
+                + window.End.ToString("O", CultureInfo.InvariantCulture) + " at "
+                + definition.BaseResolutionMinutes.ToString(CultureInfo.InvariantCulture)
+                + " minutes), so there is no session to be complete or absent. Run the definition through "
+                + "SessionWindows.Validate, which refuses this one.",
+                nameof(definition));
+        }
+
         // Set membership, not a count: a bar the calendar does not expect is ignored, never summed and never
         // allowed to stand in for one that is missing.
         List<Bar> inside = [.. bars.Where(bar => expected.Contains(bar.OpenTime))];
 
-        // `inside` cannot exceed `expected` — the bars are strictly ascending, so no two share a bucket. The
-        // zero-expected case falls in here too: a definition the calendar leaves no room for is an absence,
-        // not a bar built from nothing.
-        if (expected.Count == 0 || inside.Count != expected.Count)
+        // `inside` cannot exceed `expected` — the bars are strictly ascending, so no two share a bucket.
+        if (inside.Count != expected.Count)
         {
             return SessionBarOutcome.Absent(
                 tradeDate, SessionBarAbsence.Incomplete, expected.Count, expected.Count - inside.Count);

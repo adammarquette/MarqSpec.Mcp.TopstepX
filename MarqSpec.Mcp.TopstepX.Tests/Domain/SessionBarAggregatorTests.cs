@@ -281,18 +281,23 @@ public sealed class SessionBarAggregatorTests
     }
 
     [Fact]
-    public void Aggregate_IsAbsent_WhenTheCalendarExpectsNoBucketAtAll()
+    public void Aggregate_RefusesADefinition_WhenTheCalendarExpectsNoBucketAtAll()
     {
         BarSessionCalendar calendar = Calendar();
-        DateOnly tradeDate = new(2026, 8, 18);
 
         // A definition SessionWindows.Validate would refuse: a half-hour window on a 60-minute base leaves
-        // the calendar no bucket to expect. The window resolves, so the aggregation runs — and answers with
-        // an absence rather than a bar assembled from nothing, or an index off the end of an empty series.
+        // the calendar no bucket to expect. The window itself resolves, so the aggregation reaches this.
+        //
+        // It is a caller bug, not an absence. `Incomplete` would be vacuously true — the store does not hold
+        // every expected bucket, because there are none — and it promises the caller that fetching the
+        // missing buckets fixes it, so a caller acting on it would ask the venue for nothing forever.
         SessionDefinition tooShort = new("tooshort", new TimeOnly(8, 30), new TimeOnly(9, 0), 60);
 
-        SessionBarAggregator.Aggregate([], calendar, tooShort, [tradeDate])
-            .Should().Equal(SessionBarOutcome.Absent(tradeDate, SessionBarAbsence.Incomplete, 0, 0));
+        Action act = () =>
+            SessionBarAggregator.Aggregate([], calendar, tooShort, [new DateOnly(2026, 8, 18)]);
+
+        act.Should().Throw<ArgumentException>()
+            .WithMessage("*tooshort*").WithMessage("*2026-08-18*").WithMessage("*no base bucket*");
     }
 
     [Fact]

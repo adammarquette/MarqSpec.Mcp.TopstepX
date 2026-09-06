@@ -14,9 +14,10 @@ namespace MarqSpec.Mcp.TopstepX.Tests.MarketData;
 /// <para>
 /// The sibling of <see cref="IndicatorCatalogRollTests"/>, one guard over, and it exists for the same reason:
 /// <see cref="IndicatorGuard"/>'s remarks claim both preconditions sit on the shared path so that <b>a new
-/// indicator inherits them rather than remembering them</b>. That is a claim about indicators nobody has
-/// written yet, so listing today's eleven cannot pin it — a test naming them stays green on the day someone
-/// adds a twelfth that computes straight through a shuffle.
+/// indicator inherits them rather than remembering them</b>. That is a claim about indicators nobody had
+/// written yet, so listing today's members by name cannot pin it — a test that lists them stays green on
+/// the day a new one computes straight through a shuffle. The twelfth, <c>vwap-rolling</c>, arrived exactly
+/// that way under gh#495, and this sweep needed no update.
 /// </para>
 /// <para>
 /// <b>The sweep is necessary and not sufficient, and that is measured rather than assumed.</b>
@@ -39,8 +40,8 @@ namespace MarqSpec.Mcp.TopstepX.Tests.MarketData;
 /// </para>
 /// <para>
 /// <b>Its other half asserts that values come back, and until gh#285 nothing in this tier did.</b> That
-/// sweep's fixture was <c>Spliced().Take(30)</c> — thirty bars, against two of the catalogue's eleven
-/// members that declared a warm-up of 35: <c>macd-signal</c> and <c>macd-histogram</c>, both
+/// sweep's fixture was <c>Spliced().Take(30)</c> — thirty bars, against two of the catalogue's members
+/// that declared a warm-up of 35: <c>macd-signal</c> and <c>macd-histogram</c>, both
 /// <c>MacdSlowPeriod + Macd.SignalPeriod</c> = 26 + 9. Both answered it with 0 non-null values out of 30, so
 /// for those two it passed because nothing was computed rather than because something was. The hole that
 /// left is the twelfth indicator whose warm-up arithmetic is wrong: it returns all-nulls forever, it does

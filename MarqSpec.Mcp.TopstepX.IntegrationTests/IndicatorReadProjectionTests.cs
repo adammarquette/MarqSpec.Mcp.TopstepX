@@ -238,8 +238,9 @@ public sealed class IndicatorReadProjectionTests : IAsyncLifetime
     {
         // get_market_snapshot asks GetIndicatorAt once per catalogue name per resolution -- a dozen times
         // over the same series at the shipped catalogue, and more as names are added -- and every one of
-        // those would otherwise re-ask the store whether the series is complete. The scope is the request, and within it a series that was complete stays complete:
-        // nothing writes a bar without projecting over it in the same unit of work.
+        // those would otherwise re-ask the store whether the series is complete. The scope is the request,
+        // and within it a series that was complete stays complete: nothing writes a bar without projecting
+        // over it in the same unit of work.
         await WarmAsync(Catalog(rsiPeriod: 3));
 
         IndicatorCacheService indicators = Cache(Catalog(rsiPeriod: 3));

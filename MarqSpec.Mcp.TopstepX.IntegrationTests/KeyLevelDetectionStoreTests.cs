@@ -129,7 +129,7 @@ public sealed class KeyLevelDetectionStoreTests(SeriesStoreFixture fixture) : IA
         int maxLevels = 1_000) =>
         new()
         {
-            Source = source,
+            Source = source.ToString(),
             PivotLookback = pivotLookback,
             ZoneAtrMultiple = zoneAtrMultiple,
             MinSignificance = minSignificance,

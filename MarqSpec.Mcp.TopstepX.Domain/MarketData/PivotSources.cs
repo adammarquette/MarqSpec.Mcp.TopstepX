@@ -9,8 +9,8 @@ namespace MarqSpec.Mcp.TopstepX.Domain.MarketData;
 /// Three call sites need the same answer — the detection guard in <see cref="KeyLevels"/>, the options
 /// validation that runs at startup, and the tool that resolves a caller's name — and a source rejected at two
 /// of them is not rejected: the third is the one that picks a price series by accident. <c>Unknown = 0</c> is
-/// what a field left unset binds to, so the value that must never be honoured is exactly the value that
-/// arrives when nobody chose one.
+/// <c>default(PivotSource)</c> — what a field nobody assigned holds — so the value that must never be
+/// honoured is exactly the value that arrives when nobody chose one.
 /// </para>
 /// <para>
 /// <b>Derived from the enum rather than written out</b>, so a fourth source added to

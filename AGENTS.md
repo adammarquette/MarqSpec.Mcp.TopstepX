@@ -119,6 +119,26 @@ it before starting, and add dated entries only when nothing formal fits.
   `TAKEOVER-ANNOUNCED: <branch>` on the issue and re-running an hour later; `claim.sh` reads for that line and
   refuses until it is there. It must **open** the comment and come from an account with **write access** —
   quoting the token in prose announces nothing. **Any push inside that hour defends your claim.**
+- **Search with `git grep`, never an unscoped `grep -r`.** This checkout sits beside other sessions'
+  worktrees, plus `bin/` and `obj/`; an unscoped `grep -r` reads all of that too, so it both risks timing out
+  and — worse — returns a count that reads as careful evidence while being inflated by everything nested
+  nearby. `git grep` reads only the current worktree's tracked files, excluding nested checkouts and build
+  output **by construction**, not by an `--exclude-dir` list the next nesting spot outruns. Illustrated by the
+  `bin`/`obj` half alone, with no worktree needed: measured at `f0c723ef2d471861c8c1f30415cac98fa9be6b04` on
+  a single term, one `dotnet build` in an otherwise clean tree added **12** files an unscoped `grep -r` read
+  that `git grep` did not — a different term moves the number, not the shape (gh#456). **Never quote a
+  worktree count here** — it moves with every `claim.sh`.
+- **Before trusting a history count or a "root commit" claim, check whether the checkout is shallow.**
+  `git rev-parse --is-shallow-repository`, then read `$(git rev-parse --git-common-dir)/shallow` for the graft
+  points — a worktree has none of its own, it inherits the common dir's. Scoping the walk with `--remotes=origin`
+  or `--branches` does not escape it: the graft sits below ref selection, so every ref stops at the same
+  boundary. The failure is silent and plausible, not a timeout — a grafted commit reports as parentless and a
+  truncated count reads as complete. This checkout **was** one, grafted at `08c96da`, until the maintainer ran
+  `git fetch --unshallow` on 2026-09-06: at `4fb3832` the shallow walk counted **100** commits where the full
+  one counts **460**, and `08c96da` showed no parent where it has `8677fba`. Measure history in an unshallowed
+  clone — `--unshallow` on the shared checkout is the maintainer's call, since it rewrites shared object state
+  under every concurrent session; a throwaway `git clone` outside the repo is anyone's. Same family as the
+  `git grep` trap above; its remedy does not cover this one (gh#477, gh#485).
 
 *Every line here is paid by every agent in every session. Keep it small: anything role- or subtree-specific
 belongs in its contract, and anything with a formal home belongs there rather than restated here.*

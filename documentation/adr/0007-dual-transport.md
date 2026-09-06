@@ -71,6 +71,7 @@ difference between the two entry points is a handful of lines.
 | [2026-09-01](#update-2026-09-01--the-composed-postgres-was-the-wall-left-standing) | The composed Postgres is bound to loopback too, closing the exposure the two updates above deferred |
 | [2026-09-03](#update-2026-09-03--the-ephemeral-loopback-sentence-is-false-inside-the-image) | The stdio ephemeral-loopback claim is wired to the container behaviour that contradicts it, and the inherited variable is kept on measurement |
 | [2026-09-03](#update-2026-09-03--the-http-transport-is-supported-outside-compose-too) | The HTTP transport is a supported way to run this outside compose too, on its own narrower recipe — and one of the two traps a reader was warned about is not what the code does |
+| [2026-09-05](#update-2026-09-05--the-16-tools-both-times-sentence-has-a-real-tree-behind-it-and-it-held-15-not-18) | Closes gh#460: the tree behind the "16 tools both times" sentence is real, on `origin/main`, and held 15 tools that day — a one-tool gap, not the three a first reading of `develop` alone implied |
 
 ## Update (2026-08-22) — starting is not the same as being ready
 
@@ -159,6 +160,8 @@ not exist, and it risks a hang that `scripts/check-image-entrypoint.sh` hard-bou
 Measured both sides, same image build, Docker Engine 29.6.2: no stdin **139 → 0** (3 runs each); stdin held
 open until `tools/list` answers **0 → 0**, 16 tools both times. The healthy exit code is therefore no longer
 transport-dependent — but the image gate still does not read exit codes, for the reasons in its own header.
+(Narrowed below: the 2026-09-05 update found the source tree that day held 15 tools, not 18 — a one-tool gap
+against a real, still-inspectable tree, not three tools against one that no longer exists.)
 
 ## Update (2026-08-23) — the image gate does read the exit code
 
@@ -601,9 +604,11 @@ that sentence, already carried eighteen `[McpServerTool(...)]` attributes — th
 carries today — so the discrepancy is not tool growth since. **Why that run reported sixteen against a tree
 that already declared eighteen is not accounted for here.** Neither number in this record is edited on the
 strength of a guess: the count above is corrected because this run itself was re-measured and read eighteen;
-`:160`'s count is left as printed because nothing here re-ran that measurement, and a plausible-sounding
-cause is exactly the kind of claim this paragraph exists to avoid asserting unchecked. Open question, tracked
-separately as gh#460 — not this card's to resolve.
+the "16 tools both times" sentence's count is left as printed because nothing here re-ran that measurement,
+and a plausible-sounding cause is exactly the kind of claim this paragraph exists to avoid asserting
+unchecked. Open question, tracked separately as gh#460 — not this card's to resolve. (Superseded below: the
+2026-09-05 update found `eac06a9`, not `08c96da`, wrote this sentence, and the tree at `eac06a9` held fifteen
+— the discrepancy this paragraph says is not tool growth since is exactly that.)
 
 **One of the two traps gh#444 named is not what the code does, and the measurement is worth keeping because
 the issue's own reasoning about it was plausible and wrong.** It warned that `KeyLevels__Source` "has no
@@ -616,11 +621,47 @@ already `HeikinAshiBody`, every `ValidateOnStart` check (`KeyLevelDetectionOptio
 reach `Application started` at all. The failure the issue described is real for a **different** input: a key
 that is *present* and **unparseable** — `KeyLevels__Source=Bogus`, measured here, does fail startup, but not
 through the friendly `ValidationResult` sentence `KeyLevelDetectionOptions.Validate` writes for exactly this
-case. The configuration binder throws first, so what reaches the console is a raw, unhandled
-`System.FormatException: Bogus is not a valid value for PivotSource` under `Hosting failed to start` — a
-worse message than the one the code was written to produce, and reachable only by setting the variable wrong,
-never by leaving it out. **"Unset" is not one condition**: absent, empty, and mistyped bind differently, and
-only running each one, not reading the option's own remarks, says which produces which failure.
+case. The configuration binder throws first, so what reaches the console under `Hosting failed to start` is
+`System.InvalidOperationException: Failed to convert configuration value 'Bogus' at 'KeyLevels:Source'`,
+wrapping `System.FormatException: Bogus is not a valid value for PivotSource` — a worse message than the one
+the code was written to produce, and reachable only by setting the variable wrong, never by leaving it out.
+**"Unset" is not one condition**: absent, empty, and mistyped bind differently, and only running each one,
+not reading the option's own remarks, says which produces which failure.
+
+**The option's remarks have since been corrected twice, then closed** (gh#459, gh#468). They first asserted,
+in three places, that an unset or mistyped value binds to `Unknown` and is refused by `Validate`; neither
+route does. A second correction described the binder's actual split instead — what `Enum.Parse` can read
+binds, whatever it means, and only `IsServable` stands behind it — and named the case that split still let
+through: `Enum.Parse` ORs a comma-separated list together whether or not the enum is `[Flags]`, so
+`HeikinAshiBody,Body` bound as `HighLow` and booted, refused by nothing. Both corrections were themselves
+wrong before they held — "exactly one route", then "four shapes" — each an enumeration one more case
+falsified. gh#468 closed the hole itself rather than describing it more precisely: `Source` now binds as a
+**string** and is resolved in `Validate` through `PivotSources.Resolve` — the same resolver a call's
+`pivotSource` already goes through — so a numeral, a comma-separated list and `Unknown` are refused for the
+same reason a typo now is: none of them is a name `Resolve` reads as one of the three.
+`KeyLevelSourceBindingTests` pins that boundary.
+
+### One paragraph above is superseded in part
+
+**One** paragraph is affected, not two — "one of the two traps" is a single paragraph carrying two claims that
+no longer describe this server. The rest of it stands, the absent-key measurement it was written for included,
+which is why the record is corrected rather than struck.
+
+**The binder-throws measurement is gone.** `KeyLevels__Source=Bogus` failing with
+`System.InvalidOperationException: Failed to convert configuration value 'Bogus' at 'KeyLevels:Source'`, never
+through `KeyLevelDetectionOptions.Validate`'s friendly sentence, was true of the `PivotSource`-typed enum
+binding measured that day. It no longer is: gh#468 rebound `Source` as a string, so `Enum.Parse` never runs on
+it and the binder never throws for it. `Bogus` now reaches `Validate` exactly as typed, exactly like every
+other unresolved value, and fails with the friendly sentence this ADR originally expected to see.
+
+**The rule "unset is not one condition" survives reduced, not unchanged**, and the first draft of this
+subsection claimed otherwise. It named three conditions that bind differently — absent, empty, mistyped — and
+two of them have merged: an empty string and a typo are now the same kind of thing, a string
+`PivotSources.Resolve` does not read as a name, failing identically through `Validate`.
+`KeyLevelSourceBindingTests` carries them as two rows of one theory under one expectation, which is where that
+merge is visible rather than inferred. What survives is the half the rule was written for: **absent is still
+its own condition**, because the binder leaves a bound property untouched when its key is missing, so
+`HeikinAshiBody` stands where an empty string would now be refused.
 
 **The other named trap is real, and this recipe avoids it by not needing TLS at all.** The composed stack's
 HTTPS on 8443 is gh#416's answer to one client's TLS requirement, layered onto the HTTP transport rather than
@@ -642,3 +683,160 @@ narrower mode beside it — no TLS, no database, no venue credential, a bearer t
 themselves rather than the compose default — for testing and debugging the HTTP transport directly, without
 standing up the composed stack to do it. The recipe is in `README.md`, which also now distinguishes the
 container-path failure above from a genuinely missing certificate under compose.
+
+## Update (2026-09-05) — the "16 tools both times" sentence has a real tree behind it, and it held 15, not 18
+
+gh#460 asked whether the 2026-08-23 update's "16 tools both times" sentence is a defensible count, with the
+stale-image hypothesis recorded as unverified. **Three earlier drafts of this section were each wrong in a
+different way, across three review rounds, and the fourth found the reason the second and third corrections
+never held: every one of them was written from a shallow clone.**
+
+The first draft concluded the tree the measurement was taken against was never committed to this repository at
+all, having scoped the search to `origin/develop` alone. The second and third drafts corrected the scope but
+not the checkout: `git rev-list --max-parents=0` in this working copy names `08c96da` as a second, parentless
+root, and every command run against it inherited that. It is not a property of the repository — it is one line
+in this working copy:
+
+```console
+$ git rev-parse --is-shallow-repository
+true
+$ cat "$(git rev-parse --git-common-dir)/shallow"
+08c96da7133dd101717e1d169c136cbbbe2eca99
+```
+
+(Superseded 2026-09-06: the block above records what this working copy showed on 2026-09-05 and no longer
+reproduces — the maintainer ran `git fetch --unshallow` on the shared checkout that day, so both commands now
+return `false` and no such file, and `08c96da` shows its parent `8677fba`. The record stands as the reason the
+second and third drafts went wrong; the state it describes does not — gh#485, gh#487.)
+
+A shallow boundary makes git report the grafted commit as parentless and truncates every history walk that
+passes through it — no ref selection escapes it, because the truncation is in the object graph, not in which
+refs are read. Re-derived instead in a plain clone (`git clone
+https://github.com/adammarquette/MarqSpec.Mcp.TopstepX.git`, confirmed `git rev-parse
+--is-shallow-repository` → `false`), cross-checked against the GitHub API rather than only against git:
+
+```console
+$ git rev-list --max-parents=0 --remotes=origin
+256650096f052dce9c0d018c84a753730f63c05e
+
+$ git rev-list --parents -1 08c96da7133dd101717e1d169c136cbbbe2eca99
+08c96da7133dd101717e1d169c136cbbbe2eca99 8677fbac83945fed530356ee692392030ecbf9f4
+
+$ gh api repos/adammarquette/MarqSpec.Mcp.TopstepX/commits/08c96da7133dd101717e1d169c136cbbbe2eca99 --jq '[.parents[].sha]'
+["8677fbac83945fed530356ee692392030ecbf9f4"]
+
+$ gh repo view adammarquette/MarqSpec.Mcp.TopstepX --json createdAt
+{"createdAt":"2026-08-21T22:49:42Z"}
+```
+
+**One root, not two: `2566500`, "Initial commit", dated to the second of this repository's own creation.**
+`08c96da` is an ordinary commit with a parent — it never was a second history joining a first, and the
+"disjoint roots" and "the point where they join" language two earlier drafts built on that reading is retracted
+rather than repeated.
+
+**The day of the measurement, read without a shallow horizon.** gh#76's own fix, and the tool count at it and
+at `origin/main`'s **actual** last commit for 2026-08-23 — not the commit a truncated log mistook for last:
+
+```console
+$ git log -1 --format="%H %ad %s" --date=iso-strict eac06a9f9af39e9271f82df8dcd9843f4b561148
+eac06a9f9af39e9271f82df8dcd9843f4b561148 2026-08-23T14:49:02-05:00 fix(code): treat a shutdown requested during startup as a clean stop
+$ git grep -c '\[McpServerTool(' eac06a9f9af39e9271f82df8dcd9843f4b561148 -- 'MarqSpec.Mcp.TopstepX/Tools/*.cs'
+eac06a9...:MarqSpec.Mcp.TopstepX/Tools/AccountTools.cs:4
+eac06a9...:MarqSpec.Mcp.TopstepX/Tools/MarketDataTools.cs:5
+eac06a9...:MarqSpec.Mcp.TopstepX/Tools/ObservationTools.cs:2
+eac06a9...:MarqSpec.Mcp.TopstepX/Tools/ReferenceTools.cs:3
+eac06a9...:MarqSpec.Mcp.TopstepX/Tools/SnapshotTools.cs:1
+                                                  → 15
+
+$ git log --since=2026-08-23T00:00:00-05:00 --until=2026-08-24T00:00:00-05:00 --format="%H %ad %s" --date=iso-strict origin/main | head -1
+786561e9d4888010535a2a4d5d76bbf66b1217f6 2026-08-23T22:08:18-05:00 docs(platform): record that a read deciding a write is fatal when it fails
+$ git grep -c '\[McpServerTool(' 786561e9d4888010535a2a4d5d76bbf66b1217f6 -- 'MarqSpec.Mcp.TopstepX/Tools/*.cs'
+786561e9...: (same five files, same five counts)                    → 15
+
+$ git rev-list --count --since=2026-08-23T00:00:00-05:00 --until=2026-08-24T00:00:00-05:00 origin/main
+90
+```
+
+`origin/main` carries **ninety** commits for 2026-08-23 — not the handful a shallow log could see — and every
+one of them sits between two commits that hold fifteen tools.
+
+**Nor is the CI half missing on that branch.** By that evening `.github/workflows/ci.yml` already declared an
+`image` job, and the runs from that day are still listed:
+
+```console
+$ git ls-tree --name-only 786561e9d4888010535a2a4d5d76bbf66b1217f6 .github/workflows/
+.github/workflows/AGENTS.md
+.github/workflows/CLAUDE.md
+.github/workflows/branch-policy.yml
+.github/workflows/ci.yml
+.github/workflows/codeql.yml
+.github/workflows/release.yml
+
+$ git grep -n 'image:' 786561e9d4888010535a2a4d5d76bbf66b1217f6 -- .github/workflows/ci.yml
+786561e9...:.github/workflows/ci.yml:236:  image:
+
+$ gh api "repos/adammarquette/MarqSpec.Mcp.TopstepX/actions/runs?created=2026-08-23" --jq '.total_count'
+648
+```
+
+The measurement itself still reads "Docker Desktop 29.6.2 on one developer machine" — manual and local — so
+none of those 648 runs is necessarily it; what the count establishes is that this branch's CI existed and ran
+that day, not that it is silent.
+
+**The growth to eighteen resolves exactly, on the published record, to two ordinary commits — the earlier
+drafts' "the record cannot resolve it" and "a six-day hole" were both artifacts of the same shallow horizon:**
+
+```console
+$ git log --full-history -S'[McpServerTool(' --format='%H %ad %s' --date=iso-strict origin/main -- 'MarqSpec.Mcp.TopstepX/Tools/*.cs'
+9436b285f229922cef6015c5780f2366f4581640 2026-08-29T18:17:54-05:00 feat(mcp): add get_contract_roll for the tape changeover
+dd5b79bb2f39bb2e5817ec019e132e999f12b22d 2026-08-28T19:30:38-05:00 feat(mcp): get_footprint and get_volume_profile
+d671aaf199d3c2176d7e19849c62fb0d0be83b28 2026-08-22T01:30:27-05:00 feat(code): the venue seam, the cache-aside read path, and the MCP tool surface
+
+$ git grep -c '\[McpServerTool(' dd5b79bb2f39bb2e5817ec019e132e999f12b22d -- 'MarqSpec.Mcp.TopstepX/Tools/*.cs'
+dd5b79bb...: (4, 7, 2, 3, 1)                                          → 17
+$ git grep -c '\[McpServerTool(' 9436b285f229922cef6015c5780f2366f4581640 -- 'MarqSpec.Mcp.TopstepX/Tools/*.cs'
+9436b285...: (4, 8, 2, 3, 1)                                          → 18
+```
+
+**Two earlier drafts of this section named these same two additions under different shas — `55e2c3cf` and
+`da87b224` — and, once their branch was found unpushed, demoted them to "not part of the published record."
+That demotion was wrong.** `55e2c3cf` and `da87b224` are this checkout's pre-rebase copies of `dd5b79bb` and
+`9436b285` — identical author timestamps, subjects and per-file counts — retained locally from whatever fetch
+first brought them in, then orphaned when the branches carrying them were rebased before merging. A plain
+clone never receives a commit's superseded pre-rebase copy at all:
+
+```console
+$ git cat-file -t 55e2c3cf14d17ba90926aa33914a4ce86f42d71b
+fatal: git cat-file: could not get object info
+$ git cat-file -t da87b224f02c3e4d4ed5e9b2588054bf6b962198
+fatal: git cat-file: could not get object info
+```
+
+— not because the growth they showed was unreal, but because git does not publish a rewritten commit's
+earlier copy under its old sha. `get_contract_roll`, `get_footprint` and `get_volume_profile` did **not**
+predate the 2026-08-23 measurement: PR #458's second draft said so and was right, all along, under whichever
+shas the eventual rebase produced.
+
+**Verdict: the gap is real, it is one tool, and the tree behind it is the ordinary, continuous published
+history of `origin/main`.** The sentence reports sixteen; every one of the ninety commits `origin/main`
+carries for 2026-08-23 holds fifteen. Whether the missing one is a stale image built from a local change never
+committed that day, a tool present only in whatever was measured and never committed at all, or a miscount in
+the manual verification is **not established** — the measurement itself was never CI, so no log of that
+specific run exists to consult, on `main` or anywhere else. What this draft adds past the last two: the record
+is not a six-day hole followed by an unresolved jump — `origin/main` is continuous throughout, and the growth
+to eighteen resolves to two named, dated, ordinary commits five and six days after the measurement. This
+closes gh#460; nothing else on this page is revisited.
+
+### The 2026-09-03 account of this sentence is superseded
+
+The 2026-09-03 update's paragraph beginning *"The 2026-08-23 update's own '16 tools both times' is left
+alone"* reads:
+
+> The source tree at `08c96da`, the commit that wrote that sentence, already carried eighteen
+> `[McpServerTool(...)]` attributes — the same count `origin/develop` carries today — so the discrepancy is
+> not tool growth since.
+
+Both halves are wrong. `08c96da` did not write that sentence; `eac06a9`, on `origin/main`, wrote it, six days
+earlier. And the discrepancy **is** tool growth since — the tree at `eac06a9` held fifteen, not eighteen. Left
+standing rather than rewritten, per this page's own convention; the paragraph above corrects it, and the
+paragraph itself now carries a pointer to here.

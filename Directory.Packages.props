@@ -72,6 +72,34 @@
     <PackageVersion Include="Microsoft.Extensions.Options.ConfigurationExtensions" Version="10.0.11" />
   </ItemGroup>
 
+  <ItemGroup Label="Telemetry">
+    <!--
+      OTLP is the telemetry boundary (ADR-0019). Referenced from the HOST ONLY: `Domain` references nothing
+      and may read no clock, store or config singleton (ADR-0006), and an `ActivitySource` there would be all
+      three at once; `Data` stores what it is handed. The instrumentation packages are subscriptions to
+      sources that already exist — ASP.NET Core's, HttpClient's, the runtime's, Npgsql's and the MCP SDK's
+      `Experimental.ModelContextProtocol` — so nothing here is a second telemetry system.
+
+      One line pins the OpenTelemetry SDK and its exporter together on purpose: the exporter, the hosting
+      extensions and the three instrumentation packages ship from one repository on one version train, and a
+      mixed set is how a `TracerProviderBuilder` overload resolves against an SDK that does not have it.
+
+      DELIBERATELY ABSENT: OpenTelemetry.Exporter.Console. There is no configuration under which writing
+      telemetry to stdout is safe in this host — under stdio stdout IS the protocol frame (R-5.5) — so there
+      is no flag and no package (ADR-0019, invariant 4).
+    -->
+    <PackageVersion Include="OpenTelemetry.Extensions.Hosting" Version="1.18.0" />
+    <PackageVersion Include="OpenTelemetry.Exporter.OpenTelemetryProtocol" Version="1.18.0" />
+    <PackageVersion Include="OpenTelemetry.Instrumentation.AspNetCore" Version="1.18.0" />
+    <PackageVersion Include="OpenTelemetry.Instrumentation.Http" Version="1.18.0" />
+    <PackageVersion Include="OpenTelemetry.Instrumentation.Runtime" Version="1.18.0" />
+    <!--
+      Npgsql's own OpenTelemetry bridge, versioned with Npgsql rather than with the SDK above: it is the
+      provider's package, and it tracks the driver it instruments.
+    -->
+    <PackageVersion Include="Npgsql.OpenTelemetry" Version="10.0.3" />
+  </ItemGroup>
+
   <ItemGroup Label="Test stack">
     <PackageVersion Include="Microsoft.NET.Test.Sdk" Version="18.9.0" />
     <PackageVersion Include="xunit" Version="2.9.3" />
@@ -94,6 +122,12 @@
       still need a real Postgres; an in-memory provider would pass a suite that proves nothing about them.
     -->
     <PackageVersion Include="Microsoft.EntityFrameworkCore.InMemory" Version="10.0.11" />
+    <!--
+      The in-memory span and metric exporters, for the unit tier only. The telemetry claims worth pinning are
+      about what an exported span CARRIES — and, more sharply, what it must never carry (ADR-0019) — so they
+      are asserted against real exported activities rather than against the builder that produced them.
+    -->
+    <PackageVersion Include="OpenTelemetry.Exporter.InMemory" Version="1.18.0" />
   </ItemGroup>
 
 </Project>

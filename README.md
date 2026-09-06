@@ -128,9 +128,11 @@ register it first and configure it after.
 
 The image's own entrypoint speaks **stdio**. [`Dockerfile`](Dockerfile) pins no transport, and it is
 `docker-compose.yml` setting `Mcp__Transport: "Http"` that makes the composed stack the exception — so the
-published image is already the thing an MCP client launches, and it needs neither compose nor the SDK. The
-recipe tracks `latest` rather than pinning a release: an unread literal here would go stale the moment the
-next tag is cut, silently, and nothing in this repository re-reads a version written into prose (gh#471):
+published image is already the thing an MCP client launches, and it needs neither compose nor the SDK — the
+`docker pull` below is there on purpose, front-loading the ~362 MB fetch so an MCP client's first launch does
+not stall waiting on it. The recipe tracks `latest` rather than pinning a release: an unread literal here
+would go stale the moment the next tag is cut, silently, and nothing in this repository re-reads a version
+written into prose (gh#471):
 
 ```bash
 docker pull ghcr.io/adammarquette/marqspec.mcp.topstepx:latest

@@ -292,12 +292,16 @@ catalogue's instances against the stored `DISTINCT (Indicator, Period)`, the rec
 pairs, and the replay walks them — so a period a caller can select is, by construction, one the projection
 writes and one the reconcile maintains. The set widened; nothing about the trigger changed.
 
-**Two numbers in this record are now conditional on the catalogue's size.** The measurements above were taken
-against eleven indicators at one period each, so the 8.3 s cold replay and the probe timings are quoted
-elsewhere as *"at the shipped catalogue"*: every additional configured period is one more series inside the
-same replay, and the probe's `DISTINCT` returns one row per instance rather than per name. The probe's bar-count
-cap likewise follows the largest **configured** warm-up, so it is still flat in the series length and no longer
-fixed by the shipped periods. The short-run residue in the consequences above is reachable at a lower bar count
+**Two numbers in this record are now conditional on the catalogue's size**, and neither is restated here —
+the measurements above stand as taken. They were taken against eleven indicators at one period each, before
+`vwap-rolling` and before additional periods were configurable. The **8.3 s cold replay** is quoted elsewhere
+as *"at the shipped catalogue"* ([architecture](../architecture.md) *The indicator read*,
+[tool catalogue](../mcp-tool-catalog.md) *`get_indicators`*, `R-2.13`), because every additional configured
+period is one more series inside the same replay. The **probe timings** — 4.3 ms and 11.2 ms in the
+consequences above — carry the same qualification, and the architecture document states it beside them: the
+probe's `DISTINCT` returns one row per configured instance rather than one per name, so its result set grows
+with what an operator adds. The probe's bar-count cap likewise follows the largest **configured** warm-up, so
+it is still flat in the series length and no longer fixed by the shipped periods. The short-run residue in the consequences above is reachable at a lower bar count
 for the same reason.
 
 ## Follow-ups

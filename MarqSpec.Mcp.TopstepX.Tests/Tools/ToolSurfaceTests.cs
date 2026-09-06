@@ -255,7 +255,7 @@ public sealed class ToolSurfaceTests
         Catalog().KnownNames.Should().BeEquivalentTo(
         [
             "atr", "bb-lower", "bb-middle", "bb-upper", "ema",
-            "macd", "macd-histogram", "macd-signal", "rsi", "sma", "vwap",
+            "macd", "macd-histogram", "macd-signal", "rsi", "sma", "vwap", "vwap-rolling",
         ]);
     }
 

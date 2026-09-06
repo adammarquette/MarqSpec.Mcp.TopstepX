@@ -45,6 +45,7 @@ public sealed class IndicatorCatalog
             new BollingerUpperIndicator(o.BollingerPeriod),
             new BollingerMiddleIndicator(o.BollingerPeriod),
             new BollingerLowerIndicator(o.BollingerPeriod),
+            new RollingVwapIndicator(o.RollingVwapPeriods()[0]),
         ];
 
         _byName = indicators.ToDictionary(i => i.Name, StringComparer.Ordinal);

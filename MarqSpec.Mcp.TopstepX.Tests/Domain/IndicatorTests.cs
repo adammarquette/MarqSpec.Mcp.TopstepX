@@ -382,6 +382,84 @@ public sealed class IndicatorTests
         compute.Should().Throw<ArgumentException>().WithMessage("*ascending*");
     }
 
+    // ── Rolling VWAP ─────────────────────────────────────────────────────────────────────────────────
+
+    [Fact]
+    public void RollingVwap_IsNull_UntilThePeriodIsSatisfied()
+    {
+        IReadOnlyList<Bar> bars =
+        [
+            Bar(0, 12m, 9m, 9m, 1),
+            Bar(1, 15m, 12m, 12m, 2),
+            Bar(2, 18m, 15m, 15m, 3),
+            Bar(3, 21m, 18m, 18m, 4),
+        ];
+
+        IReadOnlyList<decimal?> rollingVwap = RollingVolumeWeightedAveragePrice.Compute(bars, 3);
+
+        rollingVwap.Should().HaveCount(4);
+        rollingVwap[0].Should().BeNull();
+        rollingVwap[1].Should().BeNull();
+        rollingVwap[2].Should().NotBeNull();
+        rollingVwap[3].Should().NotBeNull();
+    }
+
+    [Fact]
+    public void RollingVwap_WeightsTypicalPriceByVolume_OverTheTrailingWindow()
+    {
+        // H/L/C chosen so the typical price (H + L + C) / 3 is exact: 12/9/9 -> 10, 15/12/12 -> 13,
+        // 18/15/15 -> 16, 21/18/18 -> 19. Volumes 1, 2, 3, 4.
+        IReadOnlyList<Bar> bars =
+        [
+            Bar(0, 12m, 9m, 9m, 1),
+            Bar(1, 15m, 12m, 12m, 2),
+            Bar(2, 18m, 15m, 15m, 3),
+            Bar(3, 21m, 18m, 18m, 4),
+        ];
+
+        IReadOnlyList<decimal?> rollingVwap = RollingVolumeWeightedAveragePrice.Compute(bars, 3);
+
+        // Window over bars 0-2: (10*1 + 13*2 + 16*3) / (1+2+3) = 84 / 6 = 14.
+        rollingVwap[2].Should().Be(14m);
+
+        // Window over bars 1-3: (13*2 + 16*3 + 19*4) / (2+3+4) = 150 / 9 = 16.666666666666666666666666667.
+        // Compared as the exact decimal the division yields, not an approximation.
+        rollingVwap[3].Should().Be(150m / 9m);
+    }
+
+    [Fact]
+    public void RollingVwap_IsNull_WhenTheWindowHasNoVolume()
+    {
+        IReadOnlyList<Bar> bars =
+        [
+            Bar(0, 12m, 9m, 9m, 0),
+            Bar(1, 15m, 12m, 12m, 0),
+            Bar(2, 18m, 15m, 15m, 0),
+        ];
+
+        IReadOnlyList<decimal?> rollingVwap = RollingVolumeWeightedAveragePrice.Compute(bars, 3);
+
+        rollingVwap.Should().AllSatisfy(v => v.Should().BeNull());
+    }
+
+    [Fact]
+    public void RollingVwap_RefusesATransposedSeries()
+    {
+        // The exact-typical-price fixture from RollingVwap_WeightsTypicalPriceByVolume_OverTheTrailingWindow,
+        // two bars exchanged. The rolling sum is order-dependent because each bar enters and leaves the
+        // window on its own timestamp-derived position, so disorder changes which bars sit in a given window.
+        IReadOnlyList<Bar> bars =
+        [
+            Bar(0, 12m, 9m, 9m, 1),
+            Bar(1, 15m, 12m, 12m, 2),
+            Bar(2, 18m, 15m, 15m, 3),
+        ];
+
+        Action compute = () => RollingVolumeWeightedAveragePrice.Compute(Transposed(bars, 0, 1), 2);
+
+        compute.Should().Throw<ArgumentException>().WithMessage("*ascending*");
+    }
+
     // ── Decimal maths ────────────────────────────────────────────────────────────────────────────────
 
     [Theory]
@@ -422,6 +500,7 @@ public sealed class IndicatorTests
         new BollingerUpperIndicator(20).Name.Should().Be("bb-upper");
         new BollingerMiddleIndicator(20).Name.Should().Be("bb-middle");
         new BollingerLowerIndicator(20).Name.Should().Be("bb-lower");
+        new RollingVwapIndicator(20).Name.Should().Be("vwap-rolling");
     }
 
     [Fact]

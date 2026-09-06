@@ -122,9 +122,9 @@ something nobody named, and the payload is the only trace. Refusing names the mi
   instances rather than the number of names. The scan is the same scan; the diff walks a longer list.
 - **Cold replay grows with the instance count.** Every additional period is one more series inside the same
   whole-series replay. **The shipped default is unchanged** — no `Indicators__Additional*Periods` is set, so a
-  default deployment computes exactly what it computed before, plus `vwap-rolling`. The 8.3 s figure is
-  therefore now quoted **"at the shipped catalogue"** everywhere it appears, because it is no longer a property
-  of the history kept alone.
+  default deployment computes exactly what it computed before, plus `vwap-rolling`. The 8.3 s figure is no
+  longer a property of the history kept alone, so wherever it is stated as this path's cost the qualification
+  **"at the shipped catalogue; grows with the number of configured series"** accompanies it.
 - **[ADR-0014](0014-indicators-are-projected-on-read-too.md)'s short-run residue is reachable at a lower bar
   count.** That record describes a series whose every contract run is shorter than the warm-up re-replaying on
   every read. A larger configured period raises the warm-up it is measured against, so a series that was past

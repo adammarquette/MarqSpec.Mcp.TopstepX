@@ -310,8 +310,8 @@ and **2** whatever the catalogue grows to, because the collapsed read is one que
 contracts — which is what gh#286 put `bucketStart` and `contractId` on each reading for. One bucket
 broadcast across the map would attribute a number to the wrong contract, so
 `SnapshotIndicatorProvenanceTests` compares the map against one `get_indicator_at` call per catalogue name
-across a roll rather than asserting its shape. `get_indicator_at` itself is unchanged, and stays the single-purpose
-tool.
+across a roll rather than asserting its shape. `get_indicator_at` was unchanged by that collapse, and stays
+the single-purpose tool.
 4. **Otherwise replay the whole series** through the same `IndicatorProjector` inside the same
    `SeriesUnitOfWork` the fill path uses — never a window around what was asked for (`R-2.13`).
 

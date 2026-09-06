@@ -66,13 +66,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (gh#526); Grafana alerting is additive until a dated `## Update` says otherwise (gh#532, gh#533).
 - **Two hosting keys, documented and compose-forwarded: `Logging__Console__FormatterName` and
   `ASPNETCORE_FORWARDEDHEADERS_ENABLED`.** Both are built into the framework — no logging library, no
-  request-logging middleware, no OpenTelemetry — and both default to today's behaviour (`simple` /
-  `false`), so an existing deployment is unaffected. Measured under the compose stack: `json` turns the
-  startup line into one JSON object per event, which is what CloudWatch Logs Insights and alerting in the
-  AWS deployment (gh#509) want; with the forwarded-headers switch on, a request carrying `X-Forwarded-For`
-  is seen by the framework as arriving from the forwarded address rather than the load balancer's own —
-  `.env.example`'s new "Hosting" section quotes both measurements verbatim and states that a human's view
-  of a caller's address in that deployment is the ALB's own access logs, not this application (gh#515).
+  request-logging middleware — and both default to today's behaviour (`simple` / `false`), so an existing
+  deployment is unaffected. Measured under the compose stack: `simple` writes each event as a header line
+  plus an indented message line, which CloudWatch would ingest as two unattributed events; `json` turns the
+  same event into one JSON object, which is what the AWS deployment (gh#509) will set once it exists.
+  Enabling the forwarded-headers switch clears the framework's loopback-only proxy restriction, so a request
+  carrying `X-Forwarded-For` is trusted from whatever reaches the listener — measured here as a spoof, curl on
+  the docker host with no proxy anywhere in the path — and what will make that safe in the AWS deployment is
+  that only the ALB can reach a Fargate task at all. `.env.example`'s new "Hosting" section quotes both
+  measurements verbatim and states that a human will look up a caller's address there in the ALB's own access
+  logs, not this application (gh#515).
 
 ## [0.3.1] - 2026-09-06
 

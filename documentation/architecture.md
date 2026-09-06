@@ -434,7 +434,10 @@ One host, one tool registration, two ways in ([ADR-0007](adr/0007-dual-transport
   [`README.md`](../README.md#run-it). A client requiring HTTPS could not connect at all before, and a bearer
   token in clear is replayable by anyone on the path (gh#416); *Claude Cowork is reported to be such a client
   and that report is not verified here*. TLS is confidentiality; the token is still what authorises the call,
-  and the loopback bind (gh#415) is unchanged by it.
+  and the loopback bind (gh#415) is unchanged by it. That is the **same-machine** shape; the remote one — a
+  VPC behind an Application Load Balancer, OAuth 2.1 with Cognito-issued tokens in place of the static token,
+  an ACM certificate in place of the local CA — is
+  [ADR-0021](adr/0021-a-non-loopback-instance-is-supported.md), and is never compose with one line widened.
 
 ## Degradation — what an absent dependency does
 

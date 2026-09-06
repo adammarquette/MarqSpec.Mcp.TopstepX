@@ -77,7 +77,11 @@ authorises the call. Compose defaults that token to `changeme-local`, the same l
 `POSTGRES_PASSWORD` and `ProjectX__DataTier:-Simulated`. **Compose binds that port to `127.0.0.1`**, which is
 the only reason the default token is tolerable; publish it wider and you set a real token in the same change
 (gh#415) — TLS does not license widening it. The certificate covers `localhost`, `127.0.0.1` and `::1`, so
-either literal works where the name does not.
+either literal works where the name does not. All of that is the **same-machine** shape, and it is the only
+one compose produces; an instance reachable from anywhere else — Claude's cloud included — is a different
+artefact with all three of bind, token and certificate replaced at once, decided in
+[ADR-0021](documentation/adr/0021-a-non-loopback-instance-is-supported.md), never this stack with a wider
+port.
 
 **Postgres's own port carries the identical shape** (gh#421): `5432` also binds `127.0.0.1` only, and
 `POSTGRES_PASSWORD` keeps its `changeme-local` default for the same reason — the bind, not the value, is what

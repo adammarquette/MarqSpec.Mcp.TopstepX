@@ -98,7 +98,8 @@ page against either**, so check it against the code, never against another docum
   > resolutionMinutes 1440 is coarser than the largest bar this server serves, 1379 minutes, one minute short
   > of a session (24 hours less the venue's one-hour maintenance window). A bucket that long or longer can
   > never close inside a single session, so it is a session bar rather than a bar resolution. The day and the
-  > week are not unavailable and they are not out of range; ask the session-bar tools (gh#496) for them.
+  > week are not unavailable and they are not out of range; ask the session-bar tools (gh#496,
+  > arriving in gh#500) for them.
 
   **A bar of a session's length or longer is a session bar, not a coarse resolution**: it is defined on the
   CME trade date rather than on the bucket grid, and it is served by the session-bars tools of gh#496 —

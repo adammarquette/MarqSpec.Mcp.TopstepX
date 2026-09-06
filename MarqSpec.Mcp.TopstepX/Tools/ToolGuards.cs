@@ -299,7 +299,8 @@ public sealed class ToolGuards(IOptions<MarketDataOptions> options)
                 + " minutes, one minute short of a session (24 hours less the venue's one-hour maintenance "
                 + "window). A bucket that long or longer can never close inside a single session, "
                 + "so it is a session bar rather than a bar resolution. The day and the week are not "
-                + "unavailable and they are not out of range; ask the session-bar tools (gh#496) for them.")
+                + "unavailable and they are not out of range; ask the session-bar tools (gh#496, arriving in "
+                + "gh#500) for them.")
             : resolutionMinutes;
     }
 

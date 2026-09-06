@@ -382,6 +382,17 @@ FodyWeavers.xsd
 .env.*
 !.env.example
 
+# The TLS material docker-compose.yml mounts at /https (gh#416). `*.pfx` was already ignored by the template
+# above; *.key, *.crt and *.pem were NOT, and mkcert writes a private key in the clear before it is packed.
+# A private key committed to a PUBLIC repository is not undone by deleting it -- the object stays in history.
+# The directory is ignored outright rather than by extension, so nothing new dropped in there is a decision
+# somebody has to remember to make.
+# Checked before adding: `git ls-files '*.pem' '*.key' '*.crt' '*.pfx'` matches nothing tracked.
+certs/
+*.key
+*.crt
+*.pem
+
 # Local pack output
 artifacts/
 

@@ -260,8 +260,15 @@ public static class Program
     /// </para>
     /// <para>
     /// <b>An explicitly named address still wins</b>, under either transport — <c>ASPNETCORE_URLS</c>,
-    /// <c>ASPNETCORE_HTTP_PORTS</c> (which <c>docker-compose.yml</c> uses to place the composed server on
-    /// 8080) and <c>ASPNETCORE_HTTPS_PORTS</c>. A default that overrode them would not be a default.
+    /// <c>ASPNETCORE_HTTP_PORTS</c> and <c>ASPNETCORE_HTTPS_PORTS</c> (which <c>docker-compose.yml</c> uses
+    /// to place the composed server on 8443, over TLS, since gh#416 — it named <c>ASPNETCORE_HTTP_PORTS</c>
+    /// and 8080 until then). A default that overrode any of them would not be a default.
+    /// </para>
+    /// <para>
+    /// Worth knowing while reading the three variables above: <c>mcr.microsoft.com/dotnet/aspnet:10.0</c>
+    /// sets <c>ASPNETCORE_HTTP_PORTS=8080</c> in the image, so inside the container an address is <i>always</i>
+    /// named and this method's stdio default never applies. Outside it — a client launching
+    /// <c>dotnet run</c> — nothing names one and the ephemeral loopback address is what gh#392 needs.
     /// </para>
     /// </remarks>
     public static void ConfigureDefaultBinding(WebApplicationBuilder builder, McpTransport transport)
@@ -468,15 +475,34 @@ public static class Program
         // answer past the fill that invalidated it (gh#246).
         services.AddScoped<IndicatorCacheService>();
 
+        // The two collaborators the market-data tool types share, and the reason they are collaborators
+        // rather than a base class (gh#414). InstrumentResolver holds the symbol lookup and the
+        // store-availability check every one of those tools takes; VolumeFrontReader holds the front-month
+        // read that get_footprint, get_volume_profile and get_contract_roll all publish. Injected, neither
+        // InstrumentRegistry nor TapeVolumeFrontService is reachable from any tool type at all -- which is
+        // the boundary the compiler now holds and a partial class could not.
+        //
+        // The resolver is a singleton because both of its dependencies are; the front reader is scoped
+        // because TapeVolumeFrontService takes the DbContext.
+        services.AddSingleton<InstrumentResolver>();
+        services.AddScoped<VolumeFrontReader>();
+
         // The tool types themselves. The SDK activates a tool per call with ActivatorUtilities, which resolves
         // constructor parameters from DI but does NOT recursively activate unregistered types -- so a tool that
-        // composes another tool (SnapshotTools takes MarketDataTools and ReferenceTools) fails at CALL time
-        // with "unable to resolve service", while startup and tools/list both look perfectly healthy.
+        // composes another tool (SnapshotTools takes BarTools, IndicatorTools, KeyLevelTools and
+        // ReferenceTools) fails at CALL time with "unable to resolve service", while startup and tools/list
+        // both look perfectly healthy.
         //
         // Registering them explicitly is what makes that a startup-time guarantee rather than a per-tool
-        // surprise the first time someone calls the one composed tool.
+        // surprise the first time someone calls the one composed tool. Five market-data types now instead of
+        // one (gh#414): the guarantee is per TYPE, so splitting the type multiplied the number of
+        // registrations this comment is about rather than weakening what any one of them promises.
         services.AddScoped<ReferenceTools>();
-        services.AddScoped<MarketDataTools>();
+        services.AddScoped<BarTools>();
+        services.AddScoped<IndicatorTools>();
+        services.AddScoped<KeyLevelTools>();
+        services.AddScoped<TapeTools>();
+        services.AddScoped<ContractRollTools>();
         services.AddScoped<AccountTools>();
         services.AddScoped<SnapshotTools>();
         services.AddScoped<ObservationTools>();

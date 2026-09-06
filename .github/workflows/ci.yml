@@ -108,6 +108,22 @@ jobs:
       - name: Prove the requirement-id gate can still fail
         run: ./scripts/check-requirement-ids-selftest.sh
 
+      # gh#438. `scripts/claim.sh` is the tool every agent uses to claim work, and it had no self-test while
+      # the five gates above did. It told a coordinator that two LIVE claims were "presumed abandoned and
+      # fair game" -- off `298bf47`, a commit on `develop` that neither session wrote, because a claim is
+      # pushed EMPTY and its tip is therefore the base branch's. Nothing in the repository could have caught
+      # that, and what it licenses is gh#88: two sessions in one worktree, one commit, tests green.
+      #
+      # It rides in `docs` for the same reason everything else here does: `docs` is already required on all
+      # three rungs, so this needs no ruleset write, and a new context nobody adds is a check that only ever
+      # reports (gh#26). It is not a documentation check, and this comment is the only thing saying so.
+      #
+      # HERMETIC: one disposable repository under `mktemp -d` with a fake `gh` on PATH, so it makes no API
+      # call and needs no token. Ordered last because it guards a local tool rather than a property of the
+      # commit under test — a real doc fault should be reported first.
+      - name: Prove the claim script can still tell a live claim from a dead one
+        run: ./scripts/claim-selftest.sh
+
   # ADR-0002's enforcement. Its own job rather than a step inside build-test, so a failure reads as "the
   # read-only boundary was crossed" rather than as a build break -- and so it is a required check in its own
   # right, which a step buried in another job cannot be.
@@ -255,11 +271,17 @@ jobs:
       #
       # ubuntu-latest ships a Docker daemon, which is what lets this be a REQUIRED check rather than a manual
       # ritual. Category!=Live keeps the opt-in real-venue tier out; it never gates a merge.
+      #
+      # `--collect:"XPlat Code Coverage"` since gh#431. gh#387 moved the write-path suites down here and the
+      # `coverage` job read only the unit job's report, so those lines stopped being counted -- the reported
+      # figure fell 64.4% -> 56.0% line for no change in what is tested. This tier is instrumented so the
+      # gate can merge it; see `coverage` below for why merged rather than a floor per tier.
       - name: Integration tests (Testcontainers Postgres)
         run: >-
           dotnet test MarqSpec.Mcp.TopstepX.IntegrationTests/MarqSpec.Mcp.TopstepX.IntegrationTests.csproj
           --configuration Release --no-build --filter "Category!=Live"
           --logger "trx;LogFileName=integration-tests.trx"
+          --collect:"XPlat Code Coverage"
           --results-directory ./TestResults
 
       - name: Upload integration test results
@@ -273,9 +295,13 @@ jobs:
   # Coverage was collected and uploaded before this, and never evaluated. An artifact nobody reads is a report,
   # not a gate.
   #
-  # The floor is 43% because the unit suite MEASURES 45.7% line / 46.5% branch today. It is set just under
-  # reality so it catches a regression now, and is meant to be RAISED as coverage improves. Never lower it to
-  # accommodate a drop; that converts the gate back into a report.
+  # The floor is a MEASUREMENT of this suite, set just under reality so it catches a regression now, and
+  # RAISED as coverage rises. Never lower it to accommodate a drop; that converts the gate back into a
+  # report. The current value and the headroom under it are on MINIMUM_LINE_COVERAGE below, which is where
+  # the number lives -- this block used to state a second, stale copy of both ("the floor is 43% because the
+  # unit suite MEASURES 45.7% line / 46.5% branch"), three lines above the block gh#431 rewrote, describing
+  # a floor that had been 40 and a measurement that had been the unit tier's alone. TWO PLACES STATING ONE
+  # NUMBER IS TWO NUMBERS; this one now points rather than repeats (gh#435).
   #
   # NOTHING IN THIS REPOSITORY ASKS FOR MORE THAN THAT, and this comment used to say otherwise. It claimed
   # the PRD asked for 95%/90% and cited a requirement id for it; the id was MarqSpec.Client.ProjectX's and
@@ -284,9 +310,23 @@ jobs:
   # hygiene, the pipeline and the release path OUTSIDE the numbered requirements deliberately, so there is no
   # id here to point at and adding one would contradict it. A floor set at an aspiration fails every build
   # from the first one and gets disabled rather than satisfied, which is reason enough on its own.
+  #
+  # IT READS BOTH TIERS SINCE gh#431, AND MERGES THEM INTO ONE FIGURE. The decision and the argument against
+  # the alternative are recorded on MINIMUM_LINE_COVERAGE below and at length in
+  # scripts/check-coverage-floor.py's header -- beside the floor, so the next reader meets them where the
+  # number is configured rather than in a pull-request body.
+  #
+  # `needs:` GREW A JOB, SO THE SKIP ARGUMENT IS RE-RUN HERE, per documentation/agents/platform.md's rule
+  # that the argument is a property of the `needs:` list rather than of the job. GitHub counts a SKIPPED
+  # required check as satisfied, so a downstream required job is only safe while it cannot be skipped with
+  # everything blocking green. `coverage` now needs `build-test` and `integration-test`, which report
+  # `build & unit tests` and `integration tests`; BOTH are themselves required contexts on all three rungs,
+  # and neither carries an `if:` or a `needs:` of its own, so neither can be skipped. A skipped `coverage`
+  # therefore always sits behind a required check that is red or cancelled, and a cancelled required check
+  # blocks too (gh#26). Adding a job to this list that is NOT itself a required context re-opens the hole.
   coverage:
     name: coverage
-    needs: build-test
+    needs: [build-test, integration-test]
     runs-on: ubuntu-latest
     env:
       # SET FROM A MEASUREMENT, not inherited. The template arrived carrying 43 -- the number from the repo
@@ -294,48 +334,109 @@ jobs:
       # for a reason that had nothing to do with this code.
       #
       # The tool-surface suite (the closed instrument list, the read caps, the closed indicator vocabulary)
-      # brought the real figure to 43.4%. The floor sits at 40 rather than 43 deliberately: a floor set at
+      # brought the real figure to 43.4%, and the floor sat at 40 rather than 43 deliberately: a floor set at
       # the current number goes red on the next ordinary refactor, which teaches people that red is normal.
       #
       # It is a RATCHET. Raise it when coverage rises; never lower it to make a build pass. The mass still
       # uncovered is the tool layer, which becomes end-to-end testable when the venue adapter lands (gh#13).
-      MINIMUM_LINE_COVERAGE: 40
+      #
+      # RATCHETED 40 -> 85 AT gh#435, AND THE OLD VALUE WAS THE WHOLE DEFECT. gh#431 moved the measured
+      # figure to 91.0% and left the floor at 40 because that card forbade touching it; a gate 51 points
+      # below what it guards does not fire before somebody notices by other means, and it is worse than no
+      # gate because it is trusted. PR #434's reviewer measured the hole exactly: a zero-test integration
+      # tier still merges to 56.0% and still passes, so THE gh#387 EVENT CLEARED THE GATE BUILT FOR IT.
+      # Reproduced on that run's own artifacts before this line was touched, and red at 85.
+      #
+      # THE MEASUREMENT, on run 33584086404's uploaded reports and again on run 33584332205 (develop at
+      # 298bf47): merged 91.0%, 7398 of 8127 instrumented lines, per tier 56.0% unit and 63.2% integration.
+      # Two runs on two SHAs, figures identical to the line -- run-to-run variance on an unchanged tree is
+      # ZERO here, which is what makes the headroom a budget for CODE CHANGE rather than for flake.
+      #
+      # HEADROOM: 6.0 points, which is 490 of the 8127 lines (1.0pp = 81 lines). Two ways to size it, and the
+      # second is the one to quote (PR #436's reviewer):
+      #   * GROWTH -- 576 wholly-untested new lines can land before 85 trips (7398 / (8127 + 576) = 85.0%).
+      #     That is the shape ordinary work actually takes: a feature arrives, its tests arrive later.
+      #   * LOSS -- TradeTapeRecorder.cs is the biggest file in the report at 515 instrumented lines, 415 of
+      #     them covered, so every test touching it disappearing costs 5.1pp and still does not trip.
+      # The gh#387 shape costs 35.0pp and trips this floor by 29. That gap -- a whole file's worth of
+      # ordinary variance absorbed in either direction, a tier's worth refused -- is the choice.
+      #
+      # Do not set it AT the measurement. 91 goes red on the next PR that adds a file, and a floor that
+      # trips on ordinary variance is worse than a low one: it gets lowered, and then it is a report again.
+      #
+      # WHAT THE NUMBER IS MEASURED OVER, AND WHY (gh#431). It is the MERGED coverage of every tier -- the
+      # fraction of this repository's lines that SOME test executes -- and not one floor per tier. The
+      # decision was forced by gh#387, which moved the write-path suites into the integration tier and
+      # deleted the EF-InMemory second implementation the unit tier needed to run them; the gate read only
+      # the unit report, so the figure fell 64.4% -> 56.0% line and 80.7% -> 71.1% branch while nothing about
+      # what is tested had changed. A number that falls when testing improves invites exactly the wrong
+      # conclusion, and the reviewer who measured that drop also proved the inverse on `develop`: those lines
+      # were COUNTED there while a mutation to them changed nothing.
+      #
+      # Merging was chosen because "what does this repository test" is the sentence the reader of a coverage
+      # number acts on, and it is the sentence that had become false. Two numbers do not repair it: a reader
+      # cannot combine them, since the union of two line sets is not a function of the two rates over them.
+      #
+      # A floor per tier was DECLINED, and its argument -- that a slow tier's coverage can mask a gap in a
+      # fast one -- is answered rather than ignored. It would need a second threshold invented from nothing,
+      # where this one is a measurement ratcheted upward; the integration tier's standalone figure is low by
+      # design, because gh#387 gave it the store-shaped suites and not the indicator library; and line
+      # coverage cannot see a deleted redundant test WITHIN a tier either, so per-tier floors do not buy the
+      # property the worry asks for. What does buy it costs no threshold: the gate PRINTS each tier's own
+      # line and branch figure beside the merged one, on every run, so a fast tier going thin is legible.
+      # Reported per tier, gated on the merge. Read scripts/check-coverage-floor.py's header before changing
+      # any of this -- in particular for what line coverage cannot see, which is what a covered line DOES.
+      MINIMUM_LINE_COVERAGE: 85
     steps:
+      # The gate is a tracked script rather than an inline `shell: python3 {0}` step since gh#431, so this
+      # job now needs the tree. NO `fetch-depth: 0`: it installs no SDK, builds nothing and reads no git
+      # history, which is platform.md's actual test -- MinVer is not in play here.
+      - uses: actions/checkout@v7
+
       - uses: actions/download-artifact@v8
         with:
           name: unit-test-results
-          path: ./TestResults
+          path: ./TestResults/unit
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: integration-test-results
+          path: ./TestResults/integration
 
       # Parsed with an XML parser rather than grep. The first draft grepped for line-rate and exited 2 on its
       # first run: cobertura carries line-rate on <coverage>, <package> AND <class>, so "the first match" is
       # both fragile and not obviously the root. Parsing the document says what it means.
+      #
+      # It reads the per-<line> elements rather than the root's line-rate, because merging two tiers means
+      # taking the UNION of the lines they execute; averaging two roots' rates double-counts every line both
+      # tiers walk, which is most of them. Naming each tier on the command line is what makes a missing
+      # report an ERROR FOR THAT TIER by name instead of a tier silently dropped -- dropping one is the
+      # gh#387 regression itself, and it drops toward a number that still passes.
       - name: Enforce the coverage floor
-        shell: python3 {0}
-        run: |
-          import glob, os, sys, xml.etree.ElementTree as ET
+        run: python3 scripts/check-coverage-floor.py unit=TestResults/unit integration=TestResults/integration
 
-          floor = int(os.environ["MINIMUM_LINE_COVERAGE"])
-          reports = glob.glob("TestResults/**/coverage.cobertura.xml", recursive=True)
-
-          if not reports:
-              found = "\n".join(sorted(glob.glob("TestResults/**/*", recursive=True))[:40]) or "(nothing)"
-              print("::error::No cobertura report found. The unit test job must run with "
-                    '--collect:"XPlat Code Coverage".')
-              print(f"Artifact contained:\n{found}")
-              sys.exit(1)
-
-          root = ET.parse(reports[0]).getroot()
-          line = float(root.get("line-rate", 0)) * 100
-          branch = float(root.get("branch-rate", 0)) * 100
-
-          summary = f"Line coverage {line:.1f}% (floor {floor}%) · branch {branch:.1f}%"
-          print(summary)
-          with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as handle:
-              handle.write(f"### {summary}\n")
-
-          if line < floor:
-              print(f"::error::Line coverage {line:.1f}% is below the {floor}% floor.")
-              sys.exit(1)
+      # gh#435, and the same argument as the three self-tests in the `docs` job. This gate had none, and it
+      # had spent its whole life unable to fail on the event it was built for: the floor sat 51 points below
+      # the figure it guards, and the strongest claim in its header -- that its parse reproduces coverlet's
+      # own root -- was observed by nothing, in the one direction that is FLATTERING. An under-read shrinks
+      # numerator and denominator together, so the rate rises while coverage falls.
+      #
+      # Runs the REAL gate against fixture trees whose faults are known and requires it to reject each BY
+      # NAME AND BY EXIT CODE, and to accept three sound ones at a stated figure. Its central case is the
+      # gh#387 shape run TWICE -- red at this floor, green at the 40 it replaced -- so the VALUE above is
+      # what fails, not merely the presence of a comparison.
+      #
+      # AND IT READS THE VALUE ABOVE OUT OF THIS FILE, which is what makes "walking the floor back reddens
+      # this step" a fact rather than a claim. Every other case passes its own literal, so the suite shipped
+      # for review at PR #436 stayed 13/13 GREEN with MINIMUM_LINE_COVERAGE set back to 40 -- a suite proving
+      # the SCRIPT can fail, in a step labelled as proving the DEPLOYMENT can. Its `deployed-floor` cases now
+      # assert the shipped number is at or above the ratchet AND that the real gate, run at THAT number,
+      # rejects a tier which executed nothing. Lowering the line above reddens both, independently.
+      #
+      # Ordered after the real run so a genuine coverage regression is reported first. It reads no artifact
+      # and writes nothing back into the tree; every fixture lives under `mktemp -d` and dies on EXIT.
+      - name: Prove the coverage gate can still fail
+        run: ./scripts/check-coverage-floor-selftest.sh
 
   # This repository ships a CONTAINER, not a NuGet package -- it is an application. The template's pack job
   # was replaced wholesale rather than adapted, because "pack an app" is a job that succeeds and produces

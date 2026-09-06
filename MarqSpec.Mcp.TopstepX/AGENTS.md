@@ -44,9 +44,17 @@ Test-first: the failing test goes in the same PR, written before the implementat
 
 - xUnit + FluentAssertions (pinned `< 8.0.0` — v8 is commercially licensed). **No mocking library**: seams are
   filled with real objects, `FakeTimeProvider` for the clock, and hand-written `IMarketDataGateway` doubles for
-  the venue — `CountingGateway` here, `SeriesGateway` in the integration project. **The client package ships no
+  the venue — `CountingGateway`, `SeriesGateway` in the integration project. **The client package ships no
   fake**, so write the double the test needs. Re-adding a mocking library is a deliberate decision, not a
-  default (gh#32).
+  default (gh#32). `CountingGateway.cs` is **compiled into both test assemblies from one source**, linked by
+  the integration csproj: gh#387 split its callers across the tiers, and two copies of a venue double are two
+  doubles free to disagree.
+- **A test that writes does not live here** (gh#387). Every write is one `ON CONFLICT … DO UPDATE` statement,
+  and the second implementation that used to let the in-memory provider stand in for it is deleted — so a test
+  that fills, projects or records coverage goes in the integration project, on `SeriesStoreFixture`. What stays
+  here is everything that answers *without reaching a store*: the domain, the pure projections, the tool guards
+  that refuse before they open a connection. **The unit tier needs no container and must stay that way** — it
+  runs 1,000-odd tests in about three seconds, and a container costs ~8 s before the first assertion.
 - Name a test for the behaviour it pins, not the method it calls. `Rsi_IsFifty_WhenTheWindowIsFlat` says what
   breaks; `RsiTest3` does not.
 - **Indicators get fixture tests with hand-checked numbers**, not round-trips through the implementation. A

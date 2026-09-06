@@ -117,9 +117,7 @@ public sealed class IndicatorProjector(
         // whole-series guard below, and it cannot fire as shipped for the same reason: both call sites go
         // through SeriesUnitOfWork. It fires when a third one is added, which is the only way to get this
         // wrong.
-        bool relational = _database.Database.IsRelational();
-
-        if (relational && _database.Database.CurrentTransaction is null)
+        if (_database.Database.CurrentTransaction is null)
         {
             throw new InvalidOperationException(
                 "A projection pass writes its values with one statement the store runs as it is sent, and "
@@ -154,16 +152,13 @@ public sealed class IndicatorProjector(
                 && v.Instrument == instrument.Symbol
                 && v.ResolutionMinutes == resolutionMinutes);
 
-        // AsNoTracking ON THE RELATIONAL PATH, and it is not tidiness (gh#103's identity-map finding). These
-        // rows are written by SQL the change tracker never sees, so a tracked copy is a stale entity the
-        // identity map would hand back to the next read of IndicatorValues in the same scope in preference to
-        // the row it just read. It is also what the perf note on the bar read above says: a whole series in
-        // the tracker is re-examined by every subsequent SaveChanges.
-        //
-        // NOT on the in-memory path, where the write below IS the change tracker and a no-tracking read
-        // would hand it entities nothing is watching.
+        // AsNoTracking, and it is not tidiness (gh#103's identity-map finding). These rows are written by SQL
+        // the change tracker never sees, so a tracked copy is a stale entity the identity map would hand back
+        // to the next read of IndicatorValues in the same scope in preference to the row it just read. It is
+        // also what the perf note on the bar read above says: a whole series in the tracker is re-examined by
+        // every subsequent SaveChanges.
         Dictionary<(string Indicator, int Period, DateTimeOffset Bucket), IndicatorValueRecord> existing =
-            await (relational ? values.AsNoTracking() : values)
+            await values.AsNoTracking()
                 .ToDictionaryAsync(v => (v.Indicator, v.Period, v.BucketStart), cancellationToken)
                 .ConfigureAwait(false);
 
@@ -191,11 +186,8 @@ public sealed class IndicatorProjector(
 
         int written = pending.Count == 0
             ? 0
-            : relational
-                ? await WriteInStoreAsync(
-                    venue, instrument, resolutionMinutes, pending, now, cancellationToken)
-                    .ConfigureAwait(false)
-                : WriteInMemory(venue, instrument, resolutionMinutes, pending, existing, now);
+            : await WriteAsync(venue, instrument, resolutionMinutes, pending, now, cancellationToken)
+                .ConfigureAwait(false);
 
         int removed = await ReconcileAsync(
             venue, instrument, resolutionMinutes, stored.Count, existing, produced, cancellationToken)
@@ -225,7 +217,7 @@ public sealed class IndicatorProjector(
     /// <param name="resolutionMinutes">The bar size in minutes.</param>
     /// <param name="barsRead">How many bars this pass loaded — the claim the guard below checks.</param>
     /// <param name="existing">
-    /// Every stored value for the series. Untracked on the relational path, which changes nothing here:
+    /// Every stored value for the series. Untracked, which changes nothing here:
     /// <c>Remove</c> attaches an untracked row as <c>Deleted</c> and the statement it produces is the same
     /// <c>DELETE</c> by key.
     /// </param>
@@ -449,7 +441,19 @@ public sealed class IndicatorProjector(
         DateTimeOffset BucketStart,
         decimal Value);
 
-    private async Task<int> WriteInStoreAsync(
+    /// <summary>Writes the values this pass found the store does not already hold.</summary>
+    /// <param name="venue">The venue.</param>
+    /// <param name="instrument">The instrument.</param>
+    /// <param name="resolutionMinutes">The bar size in minutes.</param>
+    /// <param name="pending">The values to write.</param>
+    /// <param name="now">The instant this pass runs at.</param>
+    /// <param name="cancellationToken">The caller's cancellation token.</param>
+    /// <returns>
+    /// <b>How many rows the store reports it wrote or revised</b> — the statement's own row count, never
+    /// <c>pending.Count</c>. There is no skip-unchanged <c>WHERE</c> on this statement, so the two agree
+    /// today; the contract is the store's number, so they still agree if one is ever added (gh#387).
+    /// </returns>
+    private async Task<int> WriteAsync(
         string venue,
         InstrumentId instrument,
         int resolutionMinutes,
@@ -484,55 +488,6 @@ public sealed class IndicatorProjector(
         return await _database.Database
             .ExecuteSqlRawAsync(UpsertValuesSql, parameters, cancellationToken)
             .ConfigureAwait(false);
-    }
-
-    /// <summary>
-    /// The same write against a provider with no <c>ON CONFLICT</c> — the unit tier's in-memory store.
-    /// </summary>
-    /// <remarks>
-    /// It has no transactions and no snapshots either, so the race the relational path exists to survive is
-    /// not merely absent here, it is unrepresentable. This is the merge that was the only implementation
-    /// before gh#133, kept as it was.
-    /// </remarks>
-    /// <param name="venue">The venue.</param>
-    /// <param name="instrument">The instrument.</param>
-    /// <param name="resolutionMinutes">The bar size in minutes.</param>
-    /// <param name="pending">The values to write.</param>
-    /// <param name="existing">Every stored value for the series, tracked.</param>
-    /// <param name="now">The instant this pass runs at.</param>
-    /// <returns>How many rows were written.</returns>
-    private int WriteInMemory(
-        string venue,
-        InstrumentId instrument,
-        int resolutionMinutes,
-        List<PendingValue> pending,
-        Dictionary<(string Indicator, int Period, DateTimeOffset Bucket), IndicatorValueRecord> existing,
-        DateTimeOffset now)
-    {
-        foreach (PendingValue value in pending)
-        {
-            if (existing.TryGetValue(
-                (value.Indicator, value.Period, value.BucketStart), out IndicatorValueRecord? row))
-            {
-                row.Value = value.Value;
-                row.RecordedAt = now;
-                continue;
-            }
-
-            _database.IndicatorValues.Add(new IndicatorValueRecord
-            {
-                Venue = venue,
-                Instrument = instrument.Symbol,
-                ResolutionMinutes = resolutionMinutes,
-                Indicator = value.Indicator,
-                Period = value.Period,
-                BucketStart = value.BucketStart,
-                Value = value.Value,
-                RecordedAt = now,
-            });
-        }
-
-        return pending.Count;
     }
 
     /// <summary>Maps a stored row to the domain bar the indicators compute over.</summary>

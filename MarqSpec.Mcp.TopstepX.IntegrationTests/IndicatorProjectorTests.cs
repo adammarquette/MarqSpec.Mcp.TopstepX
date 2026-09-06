@@ -1,3 +1,4 @@
+using System.Data;
 using FluentAssertions;
 using MarqSpec.Mcp.TopstepX.Configuration;
 using MarqSpec.Mcp.TopstepX.Data;
@@ -6,10 +7,11 @@ using MarqSpec.Mcp.TopstepX.Domain;
 using MarqSpec.Mcp.TopstepX.Domain.MarketData;
 using MarqSpec.Mcp.TopstepX.MarketData;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Storage;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 
-namespace MarqSpec.Mcp.TopstepX.Tests.MarketData;
+namespace MarqSpec.Mcp.TopstepX.IntegrationTests;
 
 /// <summary>
 /// The projection, and specifically the claim that a confirming rebuild changes nothing.
@@ -25,21 +27,44 @@ namespace MarqSpec.Mcp.TopstepX.Tests.MarketData;
 /// Found by running <c>rebuild-indicators</c> against a live container for the first time: 8,777 values
 /// written, then 8,777 again with nothing changed in between.
 /// </para>
+/// <para>
+/// <b>This tier, because proving any of that now means executing the real write.</b> The suite used to run in
+/// the unit tier, where the projection took a second implementation that merged its values through the change
+/// tracker instead of sending <c>UpsertValuesSql</c>'s <c>ON CONFLICT … DO UPDATE</c>. So the column whose
+/// scale every claim here turns on did not exist while the suite ran: nothing rounded to
+/// <c>numeric(18,8)</c>, and a value could not fail to compare equal to itself after a round trip because it
+/// never made one. That stand-in was deleted in gh#387, and the only store left is this one.
+/// </para>
+/// <para>
+/// <see cref="IndicatorProjector.ProjectAsync"/> also refuses outside a transaction now, which the stand-in's
+/// provider had no way to give it — see <see cref="ProjectOnePassAsync"/>.
+/// </para>
 /// </remarks>
-public sealed class IndicatorProjectorTests : IDisposable
+[Collection(SeriesStoreCollection.Name)]
+public sealed class IndicatorProjectorTests : IAsyncLifetime
 {
     private const string Venue = "test";
     private static readonly InstrumentId _es = new("ES");
 
+    private readonly SeriesStoreFixture _fixture;
     private readonly TopstepXDbContext _database;
 
-    public IndicatorProjectorTests() =>
-        _database = new TopstepXDbContext(
-            new DbContextOptionsBuilder<TopstepXDbContext>()
-                .UseInMemoryDatabase(Guid.NewGuid().ToString())
-                .Options);
+    /// <param name="fixture">The shared container.</param>
+    public IndicatorProjectorTests(SeriesStoreFixture fixture)
+    {
+        _fixture = fixture;
+        _database = fixture.CreateContext();
+    }
 
-    public void Dispose() => _database.Dispose();
+    /// <inheritdoc />
+    public Task InitializeAsync() => _fixture.ResetAsync();
+
+    /// <inheritdoc />
+    public Task DisposeAsync()
+    {
+        _database.Dispose();
+        return Task.CompletedTask;
+    }
 
     private static DateTimeOffset SessionStart =>
         MarketClock.FromMarket(new DateOnly(2026, 8, 18), new TimeOnly(9, 0)).ToUniversalTime();
@@ -51,6 +76,39 @@ public sealed class IndicatorProjectorTests : IDisposable
             Options.Create(new IndicatorOptions { AtrPeriod = 3, RsiPeriod = 3 }), calendar);
 
         return new IndicatorProjector(_database, catalog, NullLogger<IndicatorProjector>.Instance);
+    }
+
+    /// <summary>Runs one projection pass the way every call site in the product runs one.</summary>
+    /// <param name="projector">The projection.</param>
+    /// <param name="now">The instant the pass runs at, stamped on the rows it changes.</param>
+    /// <returns>How many rows the pass changed.</returns>
+    /// <remarks>
+    /// <para>
+    /// A pass writes its values with a statement the store executes as it is sent, and removes the ones the
+    /// bars no longer justify through the change tracker, which waits for the caller's <c>SaveChanges</c>.
+    /// Outside a transaction the first commits on its own and the second does not, so
+    /// <see cref="IndicatorProjector.ProjectAsync"/> refuses rather than half-committing.
+    /// <c>SeriesUnitOfWork</c> is the shape both product call sites use: one
+    /// <see cref="IsolationLevel.RepeatableRead"/> transaction around the pass and the save, committed
+    /// together. This is that shape and nothing more.
+    /// </para>
+    /// <para>
+    /// The tests below called straight into the pass with no transaction at all, which the tier they used to
+    /// run in silently permitted (gh#387) — so the unit of work every one of them describes was never the one
+    /// any of them exercised.
+    /// </para>
+    /// </remarks>
+    private async Task<int> ProjectOnePassAsync(IndicatorProjector projector, DateTimeOffset now)
+    {
+        await using IDbContextTransaction transaction = await _database.Database
+            .BeginTransactionAsync(IsolationLevel.RepeatableRead, CancellationToken.None);
+
+        int changed = await projector.ProjectAsync(Venue, _es, 5, now, CancellationToken.None);
+
+        await _database.SaveChangesAsync();
+        await transaction.CommitAsync();
+
+        return changed;
     }
 
     /// <summary>
@@ -92,11 +150,9 @@ public sealed class IndicatorProjectorTests : IDisposable
         await SeedBarsAsync(40);
         IndicatorProjector projector = Projector();
 
-        int first = await projector.ProjectAsync(Venue, _es, 5, SessionStart, CancellationToken.None);
-        await _database.SaveChangesAsync();
+        int first = await ProjectOnePassAsync(projector, SessionStart);
 
-        int second = await projector.ProjectAsync(
-            Venue, _es, 5, SessionStart.AddHours(1), CancellationToken.None);
+        int second = await ProjectOnePassAsync(projector, SessionStart.AddHours(1));
 
         first.Should().BeGreaterThan(0, "the first pass has values to write");
         second.Should().Be(0, "nothing changed, so a rebuild must produce an empty diff");
@@ -110,11 +166,9 @@ public sealed class IndicatorProjectorTests : IDisposable
         await SeedBarsAsync(40);
         IndicatorProjector projector = Projector();
 
-        await projector.ProjectAsync(Venue, _es, 5, SessionStart, CancellationToken.None);
-        await _database.SaveChangesAsync();
+        await ProjectOnePassAsync(projector, SessionStart);
 
-        await projector.ProjectAsync(Venue, _es, 5, SessionStart.AddDays(1), CancellationToken.None);
-        await _database.SaveChangesAsync();
+        await ProjectOnePassAsync(projector, SessionStart.AddDays(1));
 
         List<DateTimeOffset> stamps = await _database.IndicatorValues
             .Select(v => v.RecordedAt).Distinct().ToListAsync();
@@ -129,8 +183,7 @@ public sealed class IndicatorProjectorTests : IDisposable
         // that cannot compare equal to itself after a round trip.
         await SeedBarsAsync(40);
 
-        await Projector().ProjectAsync(Venue, _es, 5, SessionStart, CancellationToken.None);
-        await _database.SaveChangesAsync();
+        await ProjectOnePassAsync(Projector(), SessionStart);
 
         List<decimal> values = await _database.IndicatorValues.Select(v => v.Value).ToListAsync();
 
@@ -147,16 +200,14 @@ public sealed class IndicatorProjectorTests : IDisposable
         await SeedBarsAsync(40);
         IndicatorProjector projector = Projector();
 
-        await projector.ProjectAsync(Venue, _es, 5, SessionStart, CancellationToken.None);
-        await _database.SaveChangesAsync();
+        await ProjectOnePassAsync(projector, SessionStart);
 
         BarRecord last = await _database.Bars.OrderBy(b => b.BucketStart).LastAsync();
         last.Close += 25m;
         last.High += 25m;
         await _database.SaveChangesAsync();
 
-        int written = await projector.ProjectAsync(
-            Venue, _es, 5, SessionStart.AddHours(1), CancellationToken.None);
+        int written = await ProjectOnePassAsync(projector, SessionStart.AddHours(1));
 
         written.Should().BeGreaterThan(0, "a moved close changes the indicators derived from it");
     }
@@ -178,8 +229,7 @@ public sealed class IndicatorProjectorTests : IDisposable
         // it was never computed.
         await SeedRolledBarsAsync();
 
-        await Projector().ProjectAsync(Venue, _es, 5, SessionStart, CancellationToken.None);
-        await _database.SaveChangesAsync();
+        await ProjectOnePassAsync(Projector(), SessionStart);
 
         Dictionary<DateTimeOffset, decimal> atr = await _database.IndicatorValues
             .Where(v => v.Indicator == "atr")
@@ -203,11 +253,9 @@ public sealed class IndicatorProjectorTests : IDisposable
         await SeedRolledBarsAsync();
         IndicatorProjector projector = Projector();
 
-        int first = await projector.ProjectAsync(Venue, _es, 5, SessionStart, CancellationToken.None);
-        await _database.SaveChangesAsync();
+        int first = await ProjectOnePassAsync(projector, SessionStart);
 
-        int second = await projector.ProjectAsync(
-            Venue, _es, 5, SessionStart.AddHours(1), CancellationToken.None);
+        int second = await ProjectOnePassAsync(projector, SessionStart.AddHours(1));
 
         first.Should().BeGreaterThan(0);
         second.Should().Be(0);
@@ -233,8 +281,7 @@ public sealed class IndicatorProjectorTests : IDisposable
         await SeedRolledBarsAsync(withProvenance: false);
         IndicatorProjector projector = Projector();
 
-        await projector.ProjectAsync(Venue, _es, 5, SessionStart, CancellationToken.None);
-        await _database.SaveChangesAsync();
+        await ProjectOnePassAsync(projector, SessionStart);
 
         (await AtrAsync()).Should().ContainKey(Bucket(4))
             .WhoseValue.Should().Be(15.33333333m, "the legacy series really does splice across the roll");
@@ -246,8 +293,7 @@ public sealed class IndicatorProjectorTests : IDisposable
 
         await _database.SaveChangesAsync();
 
-        await projector.ProjectAsync(Venue, _es, 5, SessionStart.AddHours(1), CancellationToken.None);
-        await _database.SaveChangesAsync();
+        await ProjectOnePassAsync(projector, SessionStart.AddHours(1));
 
         Dictionary<DateTimeOffset, decimal> atr = await AtrAsync();
 
@@ -283,8 +329,7 @@ public sealed class IndicatorProjectorTests : IDisposable
 
         await _database.SaveChangesAsync();
 
-        await Projector().ProjectAsync(Venue, _es, 5, SessionStart, CancellationToken.None);
-        await _database.SaveChangesAsync();
+        await ProjectOnePassAsync(Projector(), SessionStart);
 
         IndicatorValueRecord? survivor = await _database.IndicatorValues
             .FirstOrDefaultAsync(v => v.Indicator == "atr" && v.Period == 99);
@@ -325,8 +370,7 @@ public sealed class IndicatorProjectorTests : IDisposable
 
         await _database.SaveChangesAsync();
 
-        await Projector().ProjectAsync(Venue, _es, 5, SessionStart, CancellationToken.None);
-        await _database.SaveChangesAsync();
+        await ProjectOnePassAsync(Projector(), SessionStart);
 
         IndicatorValueRecord? survivor = await _database.IndicatorValues.FirstOrDefaultAsync(
             v => v.Venue == venue
@@ -348,22 +392,30 @@ public sealed class IndicatorProjectorTests : IDisposable
         // with no bars left are the purest form of a number nothing justifies, so the pass must reach them
         // rather than return early.
         await SeedRolledBarsAsync(withProvenance: true);
-        await Projector().ProjectAsync(Venue, _es, 5, SessionStart, CancellationToken.None);
-        await _database.SaveChangesAsync();
+        await ProjectOnePassAsync(Projector(), SessionStart);
 
         (await AtrAsync()).Should().NotBeEmpty("the fixture has to produce something for this to be a test");
 
         _database.Bars.RemoveRange(await _database.Bars.ToListAsync());
         await _database.SaveChangesAsync();
 
-        await Projector().ProjectAsync(Venue, _es, 5, SessionStart.AddHours(1), CancellationToken.None);
-        await _database.SaveChangesAsync();
+        await ProjectOnePassAsync(Projector(), SessionStart.AddHours(1));
 
         (await AtrAsync()).Should().BeEmpty();
     }
 
+    /// <summary>Every stored ATR(3) value for the series, by bucket.</summary>
+    /// <returns>The values.</returns>
+    /// <remarks>
+    /// <b><c>AsNoTracking</c>, and it is load-bearing rather than tidy (gh#387).</b> A projection pass reads
+    /// the stored values untracked and hands them to <c>Remove</c>, which attaches each as <c>Deleted</c>. If
+    /// this read had tracked the same rows first, the pass would meet a second instance of a key the identity
+    /// map already holds and throw. The in-memory branch this suite used to run on read them <i>tracked</i>,
+    /// so the two instances were one and the collision could not arise.
+    /// </remarks>
     private async Task<Dictionary<DateTimeOffset, decimal>> AtrAsync() =>
         await _database.IndicatorValues
+            .AsNoTracking()
             .Where(v => v.Indicator == "atr" && v.Period == 3)
             .ToDictionaryAsync(v => v.BucketStart, v => v.Value);
 

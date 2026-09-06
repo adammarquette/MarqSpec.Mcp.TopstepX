@@ -74,9 +74,13 @@ public static class ToolPayloads
     public enum ContractSpan
     {
         /// <summary>
-        /// <b>Cannot tell.</b> At least some of these bars carry no recorded contract, so whether a roll falls
-        /// inside the window is unknown — <i>not</i> known to be absent. Treat comparisons across the window
-        /// as unsafe. Refetching the range records the provenance and resolves it.
+        /// <b>Cannot tell.</b> At least one run in the window carries no recorded contract, and the recorded
+        /// runs — if any — never disagree, so whether the gap was a continuation of that contract or a second
+        /// one nobody stamped is unknown, <i>not</i> known to be absent. Treat comparisons across the window
+        /// as unsafe. Refetching the range records the provenance and resolves it. <b>This is not the same as
+        /// "no roll":</b> two <i>recorded</i> runs that disagree are reported as <see cref="SpansRoll"/>
+        /// instead, even when an unattributed run also sits somewhere in the window — a roll the store can
+        /// prove outranks a gap it cannot explain (gh#402).
         /// </summary>
         Unknown = 0,
 
@@ -84,10 +88,13 @@ public static class ToolPayloads
         SingleContract = 1,
 
         /// <summary>
-        /// <b>The window crosses a roll.</b> The bars either side of the seam belong to different quarters,
+        /// <b>The window crosses a roll the store can prove.</b> At least two runs carry different
+        /// <i>recorded</i> contract ids, and the bars either side of that seam belong to different quarters,
         /// which do not trade at the same price — the gap between them is routinely tens of points and is a
         /// bookkeeping event, not market movement. A high from the expiring contract is not a level the
-        /// contract in front has ever reached.
+        /// contract in front has ever reached. An unattributed run elsewhere in the window does <i>not</i>
+        /// downgrade this to <see cref="Unknown"/>: two disagreeing recorded ids are proof of a roll whichever
+        /// other runs sit beside them (gh#402).
         /// </summary>
         SpansRoll = 2,
     }
@@ -282,14 +289,20 @@ public static class ToolPayloads
     /// <param name="Levels">The zones, ordered by price.</param>
     /// <param name="Contracts">
     /// Which contracts the requested lookback covered. A <c>span</c> of <c>SpansRoll</c> is why
-    /// <paramref name="DetectedOverBars"/> can be smaller than the lookback that was asked for.
+    /// <paramref name="DetectedOverBars"/> can be smaller than the lookback that was asked for — and so is a
+    /// <c>span</c> of <c>Unknown</c>, which confines detection the same way but for a <i>different</i> reason:
+    /// a run with no recorded contract (typically pre-migration history) means nobody can tell whether that
+    /// gap was a continuation of the contract beside it or a second one nobody stamped — it is NOT a statement
+    /// that there was no roll, only that the store cannot prove one. Two recorded contracts that disagree are
+    /// still <c>SpansRoll</c> even when an unattributed run also sits in the window (gh#402).
     /// </param>
     /// <param name="DetectedOverBars">
     /// How many bars detection actually ran over. <b>Detection is confined to the contract in front</b>: a
     /// level built from the expiring quarter's bars sits at a price the current contract has never traded, and
     /// an agent reading it cannot tell that from a level price is about to reach. When the lookback spans a
-    /// roll this is therefore fewer bars than requested, and it is reported rather than implied — silently
-    /// halving the history behind a level changes how much weight it deserves.
+    /// roll — or crosses rows with no recorded contract — this is therefore fewer bars than requested, and it
+    /// is reported rather than implied — silently halving the history behind a level changes how much weight
+    /// it deserves. <see cref="ContractCoverage.Span"/> on <see cref="Contracts"/> says which of the two it was.
     /// </param>
     /// <param name="Detection">
     /// The detection this answer was actually produced by. <b>Reported for the same reason
@@ -787,14 +800,24 @@ public static class ToolPayloads
     {
         IReadOnlyList<ContractSegment> segments = ContractRollDetector.Segment(bars);
 
-        // More than one run is a seam whichever way the provenance falls -- an unrecorded run beside a
-        // recorded one is still two things that must not be read as one contract. A SINGLE run is only
-        // SingleContract when its provenance is actually known; otherwise the honest answer is that nobody
-        // can tell, which is the whole reason this is not a boolean.
+        // A PROVEN roll outranks an unattributed run (gh#402 review). Two runs whose contract ids are
+        // RECORDED and DIFFERENT are a roll the store is certain of -- [U26][null][Z26] is still SpansRoll,
+        // because the null in the middle does not undo what the other two runs already establish. Only when
+        // the known contracts (if any) never disagree does an unattributed run downgrade the answer to
+        // Unknown: nobody can tell whether that gap was a continuation or a second contract nobody stamped.
+        // Getting this order backwards -- treating ANY null as "cannot tell", checked before asking whether
+        // two different contracts are already on record -- silently swallows a real roll into Unknown, which
+        // is worse than the bug gh#402 was filed about: it teaches a caller to read a genuine bookkeeping gap
+        // as market movement rather than merely under-explaining a truncation.
+        List<string> distinctKnownContracts =
+            [.. segments.Select(static s => s.ContractId).OfType<string>().Distinct(StringComparer.Ordinal)];
+        bool hasUnattributedRun = segments.Any(static s => s.ContractId is null);
+
         ContractSpan span = segments.Count switch
         {
             0 => ContractSpan.Unknown,
-            1 when segments[0].ContractId is null => ContractSpan.Unknown,
+            _ when distinctKnownContracts.Count >= 2 => ContractSpan.SpansRoll,
+            _ when hasUnattributedRun => ContractSpan.Unknown,
             1 => ContractSpan.SingleContract,
             _ => ContractSpan.SpansRoll,
         };

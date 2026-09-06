@@ -271,6 +271,39 @@ namespace MarqSpec.Mcp.TopstepX.Data.Migrations
                     b.ToTable("TapeCoverage", (string)null);
                 });
 
+            modelBuilder.Entity("MarqSpec.Mcp.TopstepX.Data.Entities.TapeLeaseRecord", b =>
+                {
+                    b.Property<string>("Venue")
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
+                    b.Property<string>("Instrument")
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)");
+
+                    b.Property<DateTimeOffset>("AcquiredAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<DateTimeOffset>("ExpiresAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<long>("Generation")
+                        .IsConcurrencyToken()
+                        .HasColumnType("bigint");
+
+                    b.Property<DateTimeOffset>("HeartbeatAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("OwnerId")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
+                    b.HasKey("Venue", "Instrument");
+
+                    b.ToTable("TapeLeases", (string)null);
+                });
+
             modelBuilder.Entity("MarqSpec.Mcp.TopstepX.Data.Entities.TradeRecord", b =>
                 {
                     b.Property<string>("Venue")

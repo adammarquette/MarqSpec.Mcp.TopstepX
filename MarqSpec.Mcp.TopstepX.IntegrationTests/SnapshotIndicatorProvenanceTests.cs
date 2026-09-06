@@ -1,3 +1,4 @@
+using System.Data;
 using FluentAssertions;
 using MarqSpec.Mcp.TopstepX.Configuration;
 using MarqSpec.Mcp.TopstepX.Data;
@@ -8,11 +9,14 @@ using MarqSpec.Mcp.TopstepX.MarketData;
 using MarqSpec.Mcp.TopstepX.Tests.MarketData;
 using MarqSpec.Mcp.TopstepX.Tools;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Storage;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using Microsoft.Extensions.Time.Testing;
 
-namespace MarqSpec.Mcp.TopstepX.Tests.Tools;
+namespace MarqSpec.Mcp.TopstepX.IntegrationTests;
+
+
 
 /// <summary>
 /// Where each number in a snapshot's <c>indicators</c> map actually came from (gh#286).
@@ -41,8 +45,19 @@ namespace MarqSpec.Mcp.TopstepX.Tests.Tools;
 /// serializer's ignore condition does not reach inside a dictionary and the catalogue tells callers to test
 /// exactly that. <c>PayloadNullWireShapeTests</c> pins that half against the real options.
 /// </para>
+/// <para>
+/// <b>This tier, because the fixture is a write.</b> These cases used to run in the unit tier against
+/// <c>Microsoft.EntityFrameworkCore.InMemory</c>, which had no <c>ON CONFLICT</c> and was therefore served
+/// by a second implementation of every write, kept in product code for the tests alone. Those stand-ins are
+/// gone (gh#387), so seeding the nine bars and projecting the indicators over them now runs the real
+/// statements — <c>UpsertBarsSql</c>, <c>RecordCoverageSql</c> and <c>UpsertValuesSql</c> — and only
+/// Postgres executes those. The claim here is about which stored row an as-of read lands on, so it is a
+/// claim about rows the store actually holds, and there is now one way to put them there.
+/// </para>
 /// </remarks>
-public sealed class SnapshotIndicatorProvenanceTests : IDisposable
+/// <param name="fixture">The shared container.</param>
+[Collection(SeriesStoreCollection.Name)]
+public sealed class SnapshotIndicatorProvenanceTests(SeriesStoreFixture fixture) : IAsyncLifetime
 {
     private const string Expiring = "CON.F.US.EP.U26";
     private const string NewFront = "CON.F.US.EP.Z26";
@@ -57,6 +72,13 @@ public sealed class SnapshotIndicatorProvenanceTests : IDisposable
     private const int RollAt = 6;
 
     private const int TotalBars = 9;
+
+    /// <summary>How many indicators the catalogue computes, and therefore how many keys the map carries.</summary>
+    /// <remarks>
+    /// Stated rather than read off the catalogue, so a batched read that quietly dropped a name — the join's
+    /// natural failure — is a red test rather than a smaller map that agrees with itself.
+    /// </remarks>
+    private const int IndicatorCount = 11;
 
     /// <summary>ATR(3) over the expiring run, hand-checked.</summary>
     /// <remarks>
@@ -74,17 +96,18 @@ public sealed class SnapshotIndicatorProvenanceTests : IDisposable
     /// </remarks>
     private const decimal NewFrontVwap = 140m;
 
-    private readonly TopstepXDbContext _database;
+    private readonly SeriesStoreFixture _fixture = fixture;
+    private readonly TopstepXDbContext _database = fixture.CreateContext();
 
-    public SnapshotIndicatorProvenanceTests() =>
-        _database = new TopstepXDbContext(
-            new DbContextOptionsBuilder<TopstepXDbContext>()
-                .UseInMemoryDatabase(Guid.NewGuid().ToString())
-                .ConfigureWarnings(w => w.Ignore(Microsoft.EntityFrameworkCore.Diagnostics
-                    .InMemoryEventId.TransactionIgnoredWarning))
-                .Options);
+    /// <inheritdoc />
+    public Task InitializeAsync() => _fixture.ResetAsync();
 
-    public void Dispose() => _database.Dispose();
+    /// <inheritdoc />
+    public Task DisposeAsync()
+    {
+        _database.Dispose();
+        return Task.CompletedTask;
+    }
 
     private static DateTimeOffset SessionStart =>
         MarketClock.FromMarket(new DateOnly(2026, 8, 18), new TimeOnly(9, 0)).ToUniversalTime();
@@ -128,6 +151,77 @@ public sealed class SnapshotIndicatorProvenanceTests : IDisposable
         // anchor produced two readings fifteen minutes and one contract apart.
         atr.BucketStart.Should().NotBe(vwap.BucketStart);
         atr.ContractId.Should().NotBe(vwap.ContractId);
+    }
+
+    [Fact]
+    public async Task EveryReadingInTheMap_IsTheOneGetIndicatorAtWouldHaveReturned_AcrossARoll()
+    {
+        // The equivalence the batched read has to keep (gh#388). The snapshot used to COMPOSE eleven
+        // get_indicator_at calls, so per-indicator provenance was true by construction; it now composes ONE
+        // query per (instrument, resolution) that returns the latest row for every (Indicator, Period) at
+        // once, with the ContractId folded in. Collapsing eleven as-of reads into one join is exactly where
+        // a bucket -- or worse, a contract -- gets attributed to the wrong indicator, and the resulting
+        // number is plausible and is acted on. So the two shapes are compared here rather than trusted:
+        // the fixture spans a roll, so the eleven readings genuinely disagree about both bucket and
+        // contract, and an implementation that broadcast one bucket across the map goes red.
+        (SnapshotTools snapshot, IndicatorTools indicators) = await ComposeBothAsync();
+
+        ToolPayloads.MarketSnapshot payload =
+            await snapshot.GetMarketSnapshot("ES", [5], TotalBars, CancellationToken.None);
+
+        ToolPayloads.ResolutionSnapshot slice = payload.PerResolution.Should().ContainSingle().Subject;
+
+        // The anchor the slice read at, reconstructed the way the tool does it: the last bar's bucket.
+        DateTimeOffset asOf = slice.Bars[^1].T;
+
+        slice.Indicators.Should().HaveCount(
+            IndicatorCount, "the whole catalogue is keyed unconditionally, measured or not");
+
+        foreach ((string name, ToolPayloads.IndicatorReading? composed) in slice.Indicators)
+        {
+            ToolPayloads.IndicatorReading single =
+                await indicators.GetIndicatorAt("ES", 5, name, asOf, CancellationToken.None);
+
+            if (single.Value is null)
+            {
+                composed.Should().BeNull(
+                    "{0} cannot measure at the anchor, and the single-purpose tool's `{{}}` reading is "
+                    + "published in this map as the map's own null",
+                    name);
+                continue;
+            }
+
+            composed.Should().NotBeNull(
+                "{0} has a stored row at or before the anchor, so the snapshot must carry it too", name);
+
+            composed!.Value.Should().Be(single.Value, "{0}'s number must be the same number", name);
+            composed.BucketStart.Should().Be(
+                single.BucketStart,
+                "{0} must be attributed to the bucket its own as-of read lands on, not to the slice's anchor "
+                + "and not to another indicator's bucket",
+                name);
+            composed.ContractId.Should().Be(
+                single.ContractId,
+                "{0} must be attributed to the contract its own bucket belongs to -- a reading carrying the "
+                + "wrong contract is the failure this card is scored on",
+                name);
+        }
+
+        // And the comparison has to have had something to catch. A map whose eleven readings all sat on one
+        // bucket would satisfy every assertion above against an implementation that broadcast one bucket.
+        slice.Indicators.Values
+            .Where(r => r is not null)
+            .Select(r => r!.BucketStart)
+            .Distinct()
+            .Should()
+            .HaveCountGreaterThan(1, "the fixture spans a roll, so the readings sit on different buckets");
+
+        slice.Indicators.Values
+            .Where(r => r is not null)
+            .Select(r => r!.ContractId)
+            .Distinct()
+            .Should()
+            .HaveCountGreaterThan(1, "and on different contracts");
     }
 
     [Fact]
@@ -241,7 +335,21 @@ public sealed class SnapshotIndicatorProvenanceTests : IDisposable
     /// the snapshot, because that is how the container wires it — a test that handed the snapshot a clock of
     /// its own could pass with the composition root still giving the real one to everything else.
     /// </remarks>
-    private async Task<SnapshotTools> ComposeAsync(DateTimeOffset? now = null)
+    private async Task<SnapshotTools> ComposeAsync(DateTimeOffset? now = null) =>
+        (await ComposeBothAsync(now)).Snapshot;
+
+    /// <summary>
+    /// The same composition, with the single-purpose tool handed back beside the composed one.
+    /// </summary>
+    /// <param name="now">The moment every part of the composition agrees is <i>now</i>.</param>
+    /// <returns>The snapshot tool and the market-data tool it composes.</returns>
+    /// <remarks>
+    /// Both come out of <b>one</b> wiring, sharing the store, the catalogue and the clock, because the claim
+    /// is that the two shapes agree — and two independently wired tools could agree by having been given the
+    /// same fixture twice while disagreeing about the same one.
+    /// </remarks>
+    private async Task<(SnapshotTools Snapshot, IndicatorTools Indicators)> ComposeBothAsync(
+        DateTimeOffset? now = null)
     {
         for (int i = 0; i < TotalBars; i++)
         {
@@ -291,30 +399,59 @@ public sealed class SnapshotIndicatorProvenanceTests : IDisposable
         CountingGateway gateway = new([]);
 
         IndicatorProjector projector = new(_database, catalog, NullLogger<IndicatorProjector>.Instance);
-        await projector.ProjectAsync("test", new InstrumentId("ES"), 5, SessionStart, CancellationToken.None);
-        await _database.SaveChangesAsync();
+
+        // WRAPPED IN THE TRANSACTION PRODUCTION USES (gh#387). The projector refuses to run outside one --
+        // it writes its values with a statement the store runs as it is sent, while its removals wait for
+        // SaveChanges -- and that guard used to be skipped for the in-memory provider, so this seeding helper
+        // had never once run the shape the server runs. RepeatableRead is restated by hand because
+        // SeriesUnitOfWork, which states it once for production, is internal.
+        await using (IDbContextTransaction seed = await _database.Database
+            .BeginTransactionAsync(IsolationLevel.RepeatableRead, CancellationToken.None))
+        {
+            await projector.ProjectAsync(
+                "test", new InstrumentId("ES"), 5, SessionStart, CancellationToken.None);
+            await _database.SaveChangesAsync();
+            await seed.CommitAsync(CancellationToken.None);
+        }
 
         BarCacheService cache = new(
             _database, gateway, calendar, projector, clock, NullLogger<BarCacheService>.Instance);
 
-        MarketDataTools marketData = new(
-            cache,
+        InstrumentResolver resolver = new(new InstrumentRegistry(wrapped), new StoreAvailabilityHolder());
+        ToolGuards guards = new(wrapped);
+
+        // THE ONE INSTANCE BOTH SHAPES GO THROUGH. The claim is that the batched map and the eleven
+        // as-of reads agree, and after gh#414 those two live on the same type -- so handing the snapshot a
+        // second IndicatorTools would let them agree by having been given the same fixture twice while
+        // disagreeing about the same one, which is the trap this fixture's own remarks name.
+        IndicatorTools indicators = new(
+            resolver,
             _database,
-            new InstrumentRegistry(wrapped),
             catalog,
             new IndicatorCacheService(
                 _database, catalog, projector, clock, NullLogger<IndicatorCacheService>.Instance),
-            new LevelMethodCatalog(calendar),
             gateway,
-            new ToolGuards(wrapped),
-            new StoreAvailabilityHolder(),
-            clock,
-            Options.Create(new KeyLevelDetectionOptions()),
-            new VolumeProfileService(_database));
+            guards);
 
         ReferenceTools reference = new(
             new InstrumentRegistry(wrapped), calendar, gateway, wrapped, clock);
 
-        return new SnapshotTools(marketData, reference, new IndicatorCatalogNames(catalog), clock);
+        SnapshotTools snapshot = new(
+            new BarTools(resolver, cache, guards, clock),
+            indicators,
+            new KeyLevelTools(
+                resolver,
+                _database,
+                catalog,
+                new LevelMethodCatalog(calendar),
+                gateway,
+                guards,
+                new VolumeProfileService(_database),
+                Options.Create(new KeyLevelDetectionOptions())),
+            reference,
+            new IndicatorCatalogNames(catalog),
+            clock);
+
+        return (snapshot, indicators);
     }
 }

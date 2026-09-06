@@ -5,9 +5,10 @@
 [ADR-0005](adr/0005-session-aware-gap-detection.md) (`BarCoverage`),
 [ADR-0006](adr/0006-indicators-as-projections.md) (`IndicatorValues`),
 [ADR-0011](adr/0011-contract-roll-boundary.md) (`Bars.ContractId`),
-gh#215 (`Trades`, `TapeCoverage`, `FootprintCells`)
+gh#215 (`Trades`, `TapeCoverage`, `FootprintCells`),
+gh#404 (`TapeLeases`)
 
-One Postgres database, eight tables — §4 is a retired number, not a ninth. Entities live in
+One Postgres database, nine tables — §4 is a retired number, not a tenth. Entities live in
 `MarqSpec.Mcp.TopstepX.Data/Entities/`; the schema is whatever the migrations say, and this page is kept in
 lockstep with them in the same PR.
 
@@ -53,13 +54,20 @@ seam is now recorded, and a read that would cross it says so instead of splicing
 quarters differ by tens of points, and everything derived from a spliced series inherits that gap as though it
 were market movement.
 
-**It is nullable, and it is never backfilled.** Every row written before the column existed carries null. The
-contract was not captured at the time and cannot be recovered from anything stored here — bucket, prices and
-volume look the same whichever quarter produced them. It could be *inferred* from the expiry month a contract
-id encodes plus a front-month convention, and that is exactly the plausible-wrong-number failure the column
-was added to stop. So **null means unknown**: an unrecorded run adjacent to a recorded one is reported as a
-roll boundary, because the two are not known to be the same contract. The only remedy is to delete those rows
-and refetch them.
+**It is nullable, and it is never backfilled by guessing.** Every row written before the column existed
+carries null. The contract was not captured at the time and cannot be recovered from anything stored here —
+bucket, prices and volume look the same whichever quarter produced them. It could be *inferred* from the
+expiry month a contract id encodes plus a front-month convention, and that is exactly the
+plausible-wrong-number failure the column was added to stop. So **null means unknown, not a claim about
+whether a roll happened**: an unrecorded run adjacent to a single recorded contract reports `Unknown` — cannot
+tell — rather than being folded into it or promoted to a roll on its own. It does not, however, erase a roll
+the store can already prove: two runs whose contract id is recorded and different are `SpansRoll` even when an
+unattributed run sits beside or between them ([ADR-0011](adr/0011-contract-roll-boundary.md), gh#402). A read
+that touches a null bucket re-asks the venue and the existing upsert overwrites it, so provenance heals on its
+own the next time something reads that range — including a bucket the session calendar does not expect, which
+the venue does sometimes publish and which otherwise pinned the window's span at `Unknown` for good
+([ADR-0011](adr/0011-contract-roll-boundary.md), gh#412). It is bounded by what the venue will still restate;
+deleting and refetching by hand is no longer the only remedy.
 
 **Deliberately no retention policy.** This is a record, not a pipeline.
 
@@ -139,6 +147,13 @@ null for settled history (a hole in 2024 will not fill in). **Null means *never*
 write assigns it unconditionally rather than preserving whatever is stored, or a range that has settled since
 it was first asked about would keep the expiry it was given while it was still recent and be re-fetched
 forever.
+
+**One answer can be several rows, and a lookup must union them.** A range is fetched in pages, and the memo is
+written per page slice, so a three-page empty answer leaves three abutting rows and no single one of them
+covers the range. A lookup that asks whether one row contains the range answers "no" forever and re-fetches
+every page on every read (gh#408); the containment test is made against the union of the unexpired rows, with
+touching rows merged — half-open slices abut exactly — and a genuine gap between two rows still covering
+nothing.
 
 Index: `(Instrument, ResolutionMinutes, RangeStart, RangeEnd)` — the shape of every coverage lookup.
 
@@ -295,7 +310,17 @@ row from a crash is discarded on the next HTTP start that will record, before a 
 opens — not on a stdio, switch-off, or missing-venue-client start that can still serve
 tools — so two sentinels cannot merge across an outage. Those other starts leave the row;
 a still-open row is coverage only while that instrument is Listening, so a leftover cannot
-claim coverage after death. Opening a new listen retires any other still-open row for that
+claim coverage after death. That discard is **scoped to the venue and instruments the
+start resolved a front contract for** — the set it is about to subscribe, at every
+contract, so a leftover written before a roll does not survive it. An open row for any
+other instrument is left alone: a second recorder split by `MarketData__Instruments`
+may still be listening under it, and a deleted range cannot be rebuilt, while a foreign
+sentinel cannot reach this process's answers because that instrument is not Listening
+here (gh#382). Two recorders on the **same** instrument are not separated by this and
+cannot be: they resolve the same front contract, so the starting one would still supersede
+the running one's open row. That is why **the claim in §10 is taken before this discard
+runs**: a start that does not hold an instrument drops it before the discard is scoped, so
+it never reaches a row it does not own (gh#404). Opening a new listen retires any other still-open row for that
 contract. A store fault **after** a confirmed subscribe is not a refused subscribe (`R-5.7`, gh#376):
 the venue subscription is dropped so prints cannot land without a ledger row — including
 every print queued since the subscribe was *attempted*, because the venue can print while
@@ -304,8 +329,10 @@ is discarded, so a listen that never reached the store cannot be written as a cl
 A drop while the persist is still in flight still closes that listen if the persist then
 lands. A later successful restore opens a new range at the new subscribe time and does not
 cover that hole. A hub that reports `Connected` with no confirmed subscribe
-is not a range. The intended contract set is held by the recorder; a roll still changes that
-set, which is why `ContractId` is in the key.
+is not a range. Every rule above belongs to one type — `TapeCoverageLedger`, extracted so
+this state machine has a name and its invariants one place to be stated (gh#390); the
+recorder holds the hub, the intended contract set and the print pipeline, and calls it. A
+roll still changes that set, which is why `ContractId` is in the key.
 
 **The range is half-open, `[RangeStart, RangeEnd)`.** Closed ranges written adjacently either overlap by one
 instant or leave a hole, and both are invisible until a profile reports a window that was never covered. An
@@ -343,6 +370,68 @@ Not a hypertable. The tape is the high-volume series; this is its projection, re
 these cells plus §8 (`R-9`, gh#221). The host reads the cells and the listening ledger and calls Domain;
 nothing here is written for that answer. A window that spans a roll or a listening hole is confined to
 the newest contiguous run of one contract, and the reported window is that run, not the ask.
+
+## §10 `TapeLeases` — who is allowed to record
+
+| Column | Type | Note |
+|---|---|---|
+| `Venue` `Instrument` | | PK |
+| `OwnerId` | `varchar(64)` | the holding process, new on every start |
+| `Generation` | `bigint` | concurrency token; bumped on acquire and takeover |
+| `AcquiredAt` `HeartbeatAt` `ExpiresAt` | `timestamptz` | |
+
+Not market data — the one table here that records something about *this system* rather than about
+the market. It exists because ADR-0016's rule that two subscribers on one tape double every volume
+was prose that nothing enforced: a recorder takes a claim on each instrument **before** it
+subscribes and before it runs the §8 discard, and one that cannot get a claim does not subscribe
+and does not fault its host (gh#404).
+
+**Keyed per `(Venue, Instrument)`, not per store.** Two recorders split by
+`MarketData__Instruments` are a supported deployment that §8's discard already protects; a
+whole-store claim would outlaw it. Only the overlap that doubles volume is refused.
+
+**A row is held until its `ExpiresAt` has passed**, whatever its holder is doing — a quiet holder
+is a holder, and an unreadable store refuses rather than granting. The absence of a row is the only
+free state: a clean stop deletes its own, so a redeploy does not wait out the expiry. The holder
+renews at a third of the time to live, so two lost renewals are survivable. `Generation` makes the
+takeover of a lapsed row one conditional update, so two starts reclaiming it leave one holder and
+not two; the loser re-reads and is refused.
+
+**A refusal is re-attempted, not final.** A start that is refused stays up and asks again on the
+renew cadence. Without that, a rolling redeploy ends with the arriving container quitting and the
+draining one deleting its row — nothing recording, permanently, and a tape gap has no backfill.
+That is worse than the double-recording the claim prevents.
+
+**A holder writes only inside its own term.** `ExpiresAt` is the earliest instant anyone else may
+hold the claim, so it is the latest instant this process stores a print — checked per print,
+against the print's receipt. Waiting to be told instead would leave both processes writing for up
+to one renew interval after a handover, and `Trades.Sequence` is a per-process counter, so the same
+print takes a different key in each and lands **twice** rather than collapsing. A holder that is
+taken over closes its coverage range at the **handover**, never at the instant it noticed, so no
+two ranges claim one window.
+
+**A retiring holder closes its range on its own clock**, at the last instant it was both entitled
+to write and still listening — never at the acquisition the replacement stamped, which is at or
+after this holder's expiry and, if the clocks disagree, arbitrarily past it. Another host cannot
+decide how much coverage this process claims, and the range never spans a window in which this
+process had unsubscribed and stored nothing.
+
+**The residual is clock skew, and it has no mitigation here.** Both processes compare their own
+clock to one stored expiry, so a taker running more than one term ahead can acquire while the
+holder still believes it is inside its term. Only one process is ever the *owner* — the generation
+check guarantees that — but two can briefly be *writers*, and **those duplicate prints are
+counted**. They are written inside the holder's own term, so the retiring range covers them; and
+§9's projection reads every §7 row for the instrument with no coverage join and no time predicate,
+so coverage would not exclude them in any case — there is no link from a print to a range, and
+"unreferenced row" is not a state a print can be in. `Sequence` is per process, so the two copies
+do not collapse. Run the recorder on one host, or keep hosts synchronised.
+
+**This is not signalled through §3 or §8.** A `BarCoverage` row means the venue answered a range
+and had nothing, and a `TapeCoverage` row means a subscription was listening; both are facts about
+the market and the tape, not about which process is running. Putting "someone else holds this" on
+either would make an availability signal indistinguishable from a data fact.
+
+Not a hypertable, and not a time series at all — at most one row per instrument per venue.
 
 ---
 *Changing an entity or a migration? Update the section above in the same PR. A data dictionary that lags the

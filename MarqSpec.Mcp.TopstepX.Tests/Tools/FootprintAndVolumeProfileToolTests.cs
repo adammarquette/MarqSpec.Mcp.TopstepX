@@ -23,9 +23,19 @@ namespace MarqSpec.Mcp.TopstepX.Tests.Tools;
 /// The MCP surface over stored footprint cells and volume profile (gh#222).
 /// </summary>
 /// <remarks>
+/// <para>
 /// Coverage and cells are seeded the way gh#220 / gh#221 proved them — the recorder is not built.
 /// Live tape health is a holder this fixture Sets: Listening for the stored-read path,
 /// and not-listening for the gh#218 refusal.
+/// </para>
+/// <para>
+/// <b>Two cases are not here — see <c>FootprintAndVolumeProfileStoreTests</c> in the integration project.</b>
+/// The coverage was not deleted, it moved tiers. Everything below is decided at the tool boundary or off
+/// rows this fixture inserts directly, so none of it reaches a write path. The two volume-front cases carry
+/// prints in <c>Trades</c>, and a read over stored prints triggers <c>FootprintCacheService</c>'s on-read
+/// replay — a real <c>ON CONFLICT … DO UPDATE</c> whose in-memory stand-in was deleted under gh#387, leaving
+/// a real Postgres as the only thing that can serve them.
+/// </para>
 /// </remarks>
 public sealed class FootprintAndVolumeProfileToolTests : IDisposable
 {
@@ -50,7 +60,7 @@ public sealed class FootprintAndVolumeProfileToolTests : IDisposable
             .Options);
 
     private readonly TapeAvailabilityHolder _tape = new();
-    private readonly MarketDataTools _tools;
+    private readonly TapeTools _tools;
 
     public FootprintAndVolumeProfileToolTests()
     {
@@ -62,30 +72,23 @@ public sealed class FootprintAndVolumeProfileToolTests : IDisposable
         });
 
         BarSessionCalendar calendar = BarSessionCalendar.Parse("16:00", []);
-        IndicatorCatalog catalog = new(
-            Options.Create(new IndicatorOptions { AtrPeriod = 3, RsiPeriod = 3 }), calendar);
         FakeTimeProvider clock = new(_sixteen);
         CountingGateway gateway = new([]);
-        IndicatorProjector projector = new(_database, catalog, NullLogger<IndicatorProjector>.Instance);
-        BarCacheService cache = new(
-            _database, gateway, calendar, projector, clock, NullLogger<BarCacheService>.Instance);
 
         _tape.Set(TapeAvailability.Listening());
-        _tools = new MarketDataTools(
-            cache,
+        _tools = new TapeTools(
+            new InstrumentResolver(new InstrumentRegistry(options), new StoreAvailabilityHolder()),
             _database,
-            new InstrumentRegistry(options),
-            catalog,
-            new IndicatorCacheService(
-                _database, catalog, projector, clock, NullLogger<IndicatorCacheService>.Instance),
-            new LevelMethodCatalog(calendar),
             gateway,
             new ToolGuards(options),
-            new StoreAvailabilityHolder(),
-            clock,
-            Options.Create(new KeyLevelDetectionOptions()),
+            _tape,
             new VolumeProfileService(_database),
-            _tape);
+            new VolumeFrontReader(new TapeVolumeFrontService(_database, gateway, calendar)),
+            new FootprintCacheService(
+                _database,
+                new FootprintProjector(_database, NullLogger<FootprintProjector>.Instance),
+                clock,
+                NullLogger<FootprintCacheService>.Instance));
     }
 
     public void Dispose() => _database.Dispose();
@@ -200,42 +203,6 @@ public sealed class FootprintAndVolumeProfileToolTests : IDisposable
     }
 
     [Fact]
-    public async Task AWindowWithNoTapeAtAll_Refuses_RatherThanReturningAnEmptyAnswer()
-    {
-        // Prints that would name a volume-front must not turn a no-tape window
-        // into a payload. front is not a consolation prize (R-9.6, gh#346).
-        await SeedTradesAsync(
-            Trade(Central(2026, 8, 18, 10, 0), 1, Expiring, 80, TradeDirection.Buy));
-
-        Func<Task> footprint = () => _tools.GetFootprint(
-            "ES", FiveMinutes, _ten, _sixteen, CancellationToken.None);
-        Func<Task> profile = () => _tools.GetVolumeProfile(
-            "ES", FiveMinutes, _ten, _sixteen, CancellationToken.None);
-
-        await footprint.Should().ThrowAsync<McpException>().WithMessage("*no tape*");
-        await profile.Should().ThrowAsync<McpException>().WithMessage("*no tape*");
-    }
-
-    [Fact]
-    public async Task Front_NamesBothAnswers_WhenTapeVolumeAndTheGatewayDisagree()
-    {
-        await SeedCoverageAsync(Coverage(Front, _fourteen, _sixteen));
-        await SeedCellsAsync(Cell(_bucket1430, 5000m, buy: 4, sell: 1));
-        await SeedTradesAsync(
-            Trade(Central(2026, 8, 18, 10, 0), 1, Front, 20, TradeDirection.Buy),
-            Trade(Central(2026, 8, 19, 10, 0), 2, Front, 10, TradeDirection.Sell),
-            Trade(Central(2026, 8, 19, 10, 1), 3, Expiring, 80, TradeDirection.Unknown));
-
-        ToolPayloads.FootprintSeries footprint = await _tools.GetFootprint(
-            "ES", FiveMinutes, _fourteen, _sixteen, CancellationToken.None);
-        ToolPayloads.VolumeProfileSeries profile = await _tools.GetVolumeProfile(
-            "ES", FiveMinutes, _fourteen, _sixteen, CancellationToken.None);
-
-        AssertDisagreement(footprint.Front);
-        AssertDisagreement(profile.Front);
-    }
-
-    [Fact]
     public async Task Front_UsedIsNone_WhenTheTapeHasNoUniqueFront_AndTheGatewayIsNotSubstituted()
     {
         await SeedCoverageAsync(Coverage(Front, _fourteen, _sixteen));
@@ -304,8 +271,8 @@ public sealed class FootprintAndVolumeProfileToolTests : IDisposable
     [Fact]
     public void BothTools_AreRegistered_AndTheirDescriptionsStateTheForwardOnlyLimitAndNullForms()
     {
-        MethodInfo footprint = typeof(MarketDataTools).GetMethod(nameof(MarketDataTools.GetFootprint))!;
-        MethodInfo profile = typeof(MarketDataTools).GetMethod(nameof(MarketDataTools.GetVolumeProfile))!;
+        MethodInfo footprint = typeof(TapeTools).GetMethod(nameof(TapeTools.GetFootprint))!;
+        MethodInfo profile = typeof(TapeTools).GetMethod(nameof(TapeTools.GetVolumeProfile))!;
 
         footprint.GetCustomAttribute<McpServerToolAttribute>().Should().NotBeNull();
         profile.GetCustomAttribute<McpServerToolAttribute>().Should().NotBeNull();
@@ -321,19 +288,6 @@ public sealed class FootprintAndVolumeProfileToolTests : IDisposable
             description.Should().MatchRegex("(?i)listen");
             description.Should().MatchRegex("(?i)tape-volume|volume-front");
         }
-    }
-
-    private static void AssertDisagreement(ToolPayloads.VolumeFrontInfo front)
-    {
-        front.Used.Should().Be(TapeVolumeFrontRead.UsedTapeVolume);
-        front.Agree.Should().BeFalse();
-        front.TapeContractId.Should().Be(Expiring);
-        front.TapeSessionDate.Should().Be(new DateOnly(2026, 8, 19));
-        front.GatewayContractId.Should().Be(GatewaySelected);
-        front.Changeover.Should().NotBeNull();
-        front.Changeover!.SessionDate.Should().Be(new DateOnly(2026, 8, 19));
-        front.Changeover.FromContractId.Should().Be(Front);
-        front.Changeover.ToContractId.Should().Be(Expiring);
     }
 
     private static void AssertUnusedGateway(ToolPayloads.VolumeFrontInfo front)
@@ -362,9 +316,6 @@ public sealed class FootprintAndVolumeProfileToolTests : IDisposable
         _database.Trades.AddRange(trades);
         await _database.SaveChangesAsync();
     }
-
-    private static DateTimeOffset Central(int year, int month, int day, int hour, int minute) =>
-        MarketClock.FromMarket(new DateOnly(year, month, day), new TimeOnly(hour, minute));
 
     private static TradeRecord Trade(
         DateTimeOffset when,

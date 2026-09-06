@@ -17,6 +17,14 @@ namespace MarqSpec.Mcp.TopstepX.MarketData;
 /// How many buckets this call wrote or revised from the venue's answer. Reported rather than logged so that
 /// a test, and a caller, can actually observe what a question cost.
 /// <para>
+/// <b>It is the number the store reports, and there is now exactly one of them (gh#387).</b> Until this was
+/// settled the field had two definitions: the relational write returned the statement's rows-affected, while
+/// the in-memory write kept for the unit tier returned the rows it had <i>attempted</i>. The skip-unchanged
+/// <c>WHERE</c> on the bar upsert can make the first smaller than the second, so
+/// the tier that could observe this field cheaply was the tier reading a number production never produces.
+/// The second implementation is gone; what a caller reads here is what the store did.
+/// </para>
+/// <para>
 /// <b>Zero no longer proves the read touched no venue.</b> It did before the serialization retry: a second
 /// attempt re-derives against the winner's committed state, so the buckets it would have written are already
 /// there and it writes none — after a real fetch. <see cref="VenueRequests"/> is the exact test for "served
@@ -30,6 +38,16 @@ public sealed record BarReadResult(
     IReadOnlyList<Bar> Bars,
     int FetchedBuckets,
     int VenueRequests);
+
+/// <summary>One stored bucket, and whether the row standing in it says which contract produced it.</summary>
+/// <param name="BucketStart">When the bucket opens.</param>
+/// <param name="HasContract">Whether <c>ContractId</c> is recorded.</param>
+/// <remarks>
+/// A named type rather than an anonymous one so the projection is a documented shape rather than a shape the
+/// query happens to have: the read that produces it is the one deciding what gets re-asked for, and the two
+/// sets it splits into mean different things (gh#412).
+/// </remarks>
+internal sealed record BucketProvenance(DateTimeOffset BucketStart, bool HasContract);
 
 /// <summary>
 /// Serves bars from the store, reaching the venue only for what is genuinely missing (ADR-0005).
@@ -133,20 +151,39 @@ public sealed class BarCacheService
         DateTimeOffset now = _clock.GetUtcNow();
         string venue = _gateway.VenueId;
 
-        // 1. What the store already holds.
-        List<DateTimeOffset> storedBuckets = await _database.Bars
+        // 1. What the store already holds, split by whether it can say WHICH CONTRACT produced it. A bucket
+        // present but carrying no provenance (written before migration 20260823074908_AddBarContractId, or
+        // backfilled by a gateway that has since started stamping one) is treated as though the store did not
+        // have it at all: the alternative, leaving it "found", means FindMissing never asks the venue again
+        // and the row keeps ContractId == null forever (gh#402). This is not a guess at which contract it was
+        // -- the venue is asked again, exactly as for a genuinely missing bucket, and the ordinary upsert
+        // below already overwrites "ContractId" from whatever the venue answers with.
+        //
+        // The unattributed ones are carried SEPARATELY rather than merely omitted, because omitting them is
+        // only half the heal: FindMissing walks the calendar's expected grid, so a null sitting OFF that grid
+        // is absent from both sets and is therefore never enumerated at all -- never asked for, never healed,
+        // and permanently downgrading the window's reported contract span to Unknown (gh#412). Naming them
+        // lets the detector enumerate them on top of the grid. One query, both sets: the split is done here
+        // rather than in two round-trips.
+        List<BucketProvenance> storedRows = await _database.Bars
             .Where(b => b.Venue == venue
                 && b.Instrument == instrument.Symbol
                 && b.ResolutionMinutes == resolutionMinutes
                 && b.BucketStart >= window.Start
                 && b.BucketStart < window.End)
-            .Select(b => b.BucketStart)
+            .Select(b => new BucketProvenance(b.BucketStart, b.ContractId != null))
             .ToListAsync(cancellationToken)
             .ConfigureAwait(false);
 
-        // 2 & 3. Which buckets the venue owed us, minus what we have.
-        IReadOnlyList<BarRange> missing =
-            BarGapDetector.FindMissing(storedBuckets, window, barSize, _calendar);
+        List<DateTimeOffset> storedBuckets =
+            [.. storedRows.Where(static r => r.HasContract).Select(static r => r.BucketStart)];
+        List<DateTimeOffset> unattributedBuckets =
+            [.. storedRows.Where(static r => !r.HasContract).Select(static r => r.BucketStart)];
+
+        // 2 & 3. Which buckets the venue owed us -- plus the ones it evidently published off the calendar's
+        // grid and we cannot attribute -- minus what we have.
+        IReadOnlyList<BarRange> missing = BarGapDetector.FindMissing(
+            storedBuckets, unattributedBuckets, window, barSize, _calendar);
 
         // 4. Ranges the venue has already told us are empty are not missing, they are answered.
         IReadOnlyList<BarRange> outstanding = await ExcludeCoveredAsync(
@@ -264,20 +301,83 @@ public sealed class BarCacheService
             return missing;
         }
 
-        // A range is dropped only when a single coverage row contains it whole. Partial containment is left
-        // alone deliberately: splitting a range around a covered sub-range would produce a swarm of tiny
-        // fetches, and re-asking for a slightly wider window is the cheaper error.
+        // THE ROWS ARE UNIONED BEFORE THEY ARE CONSULTED, AND THAT IS THE WHOLE FIX (gh#408).
+        //
+        // A range is fetched in pages of VenuePageSizeBars and the memo is written PER PAGE SLICE, so a
+        // three-page range the venue answers empty leaves three adjacent rows and no single one of them
+        // contains the range. Asking `covered.Any(row contains range)` therefore answered "no" forever, and
+        // the range cost three paced pages on EVERY read -- which is not an exotic case for the population
+        // this path serves: a legacy null-contract run is everything written before migration
+        // 20260823074908, so a missing run wider than one page is the ordinary shape, and the bound
+        // ADR-0011 records ("one request per range, not one per read") was false for exactly it.
+        //
+        // Adjacent slices touch exactly -- one ends where the next begins -- so their union is contiguous and
+        // is the range. Merging touching rows is sound rather than convenient: each was independently
+        // answered EMPTY by the venue, so their union was answered empty too.
+        //
+        // What this deliberately does NOT do is split a range around a covered sub-range. Partial containment
+        // is still left alone, for the reason it always was: splitting would produce a swarm of tiny fetches,
+        // and re-asking for a slightly wider window is the cheaper error. Only the containment TEST changed,
+        // from one row to the union of the rows.
+        IReadOnlyList<BarRange> answered = Union(covered);
+
         List<BarRange> outstanding = [];
         foreach (BarRange range in missing)
         {
-            bool answered = covered.Any(c => c.RangeStart <= range.Start && c.RangeEnd >= range.End);
-            if (!answered)
+            if (!answered.Any(a => a.Start <= range.Start && a.End >= range.End))
             {
                 outstanding.Add(range);
             }
         }
 
         return outstanding;
+    }
+
+    /// <summary>
+    /// Merges coverage rows into the maximal ranges they cover between them.
+    /// </summary>
+    /// <param name="covered">The unexpired coverage rows. Order does not matter.</param>
+    /// <returns>The merged ranges, ascending and non-overlapping.</returns>
+    /// <remarks>
+    /// <b>Touching rows merge, not merely overlapping ones.</b> The half-open convention makes one page slice
+    /// end at the instant the next begins, so a strict overlap test would leave every paged answer in as many
+    /// pieces as it was fetched in — which is the defect this exists to close, restated.
+    /// </remarks>
+    private static IReadOnlyList<BarRange> Union(IReadOnlyCollection<BarCoverageRecord> covered)
+    {
+        List<BarRange> merged = [];
+        DateTimeOffset start = default;
+        DateTimeOffset end = default;
+        bool open = false;
+
+        foreach (BarCoverageRecord row in covered.OrderBy(c => c.RangeStart).ThenBy(c => c.RangeEnd))
+        {
+            if (open && row.RangeStart <= end)
+            {
+                if (row.RangeEnd > end)
+                {
+                    end = row.RangeEnd;
+                }
+
+                continue;
+            }
+
+            if (open)
+            {
+                merged.Add(new BarRange(start, end));
+            }
+
+            start = row.RangeStart;
+            end = row.RangeEnd;
+            open = true;
+        }
+
+        if (open)
+        {
+            merged.Add(new BarRange(start, end));
+        }
+
+        return merged;
     }
 
     /// <summary>One venue answer, held until the transaction that will store it opens.</summary>
@@ -400,26 +500,6 @@ public sealed class BarCacheService
     }
 
     /// <summary>
-    /// Writes one venue answer, revising the buckets already stored.
-    /// </summary>
-    /// <returns>How many buckets were written or revised.</returns>
-    /// <remarks>
-    /// Two implementations because the choice between an insert and an update is a fact about the
-    /// <b>store</b>, not about this process (gh#103) — and the in-memory provider the unit tier runs on has
-    /// no <c>ON CONFLICT</c> to leave it to.
-    /// </remarks>
-    private Task<int> UpsertAsync(
-        string venue,
-        InstrumentId instrument,
-        int resolutionMinutes,
-        IReadOnlyList<Bar> bars,
-        DateTimeOffset now,
-        CancellationToken cancellationToken) =>
-        _database.Database.IsRelational()
-            ? UpsertInStoreAsync(venue, instrument, resolutionMinutes, bars, now, cancellationToken)
-            : UpsertInMemoryAsync(venue, instrument, resolutionMinutes, bars, now, cancellationToken);
-
-    /// <summary>
     /// The bar write, as one statement the store resolves against the row it has committed.
     /// </summary>
     /// <remarks>
@@ -493,7 +573,26 @@ public sealed class BarCacheService
                 && b.BucketStart >= first
                 && b.BucketStart <= last);
 
-    private async Task<int> UpsertInStoreAsync(
+    /// <summary>
+    /// Writes one venue answer, revising the buckets already stored.
+    /// </summary>
+    /// <param name="venue">The venue.</param>
+    /// <param name="instrument">The instrument.</param>
+    /// <param name="resolutionMinutes">The bar size in minutes.</param>
+    /// <param name="bars">The bars the venue answered with.</param>
+    /// <param name="now">The instant this write runs at.</param>
+    /// <param name="cancellationToken">The caller's cancellation token.</param>
+    /// <returns>
+    /// <b>How many buckets the store reports it wrote or revised</b> — the statement's own row count, never
+    /// this process's prediction of it. The two differ in exactly the case gh#103 is about, and the
+    /// difference reaches a caller as <see cref="BarReadResult.FetchedBuckets"/>.
+    /// </returns>
+    /// <remarks>
+    /// One implementation, because the choice between an insert and an update is a fact about the
+    /// <b>store</b>, not about this process (gh#103), and there is no longer a second provider to serve
+    /// (gh#387).
+    /// </remarks>
+    private async Task<int> UpsertAsync(
         string venue,
         InstrumentId instrument,
         int resolutionMinutes,
@@ -583,72 +682,6 @@ public sealed class BarCacheService
     }
 
     /// <summary>
-    /// The same write against a provider with no <c>ON CONFLICT</c> — the unit tier's in-memory store.
-    /// </summary>
-    /// <remarks>
-    /// It has no transactions and no snapshots either, so the race the relational path exists to survive is
-    /// not merely absent here, it is unrepresentable. This is the merge that was the only implementation
-    /// before gh#103, kept as it was.
-    /// </remarks>
-    private async Task<int> UpsertInMemoryAsync(
-        string venue,
-        InstrumentId instrument,
-        int resolutionMinutes,
-        IReadOnlyList<Bar> bars,
-        DateTimeOffset now,
-        CancellationToken cancellationToken)
-    {
-        Dictionary<DateTimeOffset, BarRecord> existing =
-            await Overlap(venue, instrument, resolutionMinutes, bars[0].OpenTime, bars[^1].OpenTime)
-                .ToDictionaryAsync(b => b.BucketStart, cancellationToken)
-                .ConfigureAwait(false);
-
-        int written = 0;
-
-        foreach (Bar bar in bars)
-        {
-            if (existing.TryGetValue(bar.OpenTime, out BarRecord? row))
-            {
-                if (Unchanged(row, bar))
-                {
-                    continue;
-                }
-
-                // A revision. The venue restates bars after the fact, which is precisely why the write is an
-                // upsert keyed on the bucket rather than an append.
-                row.Open = bar.Open;
-                row.High = bar.High;
-                row.Low = bar.Low;
-                row.Close = bar.Close;
-                row.Volume = bar.Volume;
-                row.ContractId = bar.ContractId;
-                row.RecordedAt = now;
-            }
-            else
-            {
-                _database.Bars.Add(new BarRecord
-                {
-                    Venue = venue,
-                    Instrument = instrument.Symbol,
-                    ResolutionMinutes = resolutionMinutes,
-                    BucketStart = bar.OpenTime,
-                    Open = bar.Open,
-                    High = bar.High,
-                    Low = bar.Low,
-                    Close = bar.Close,
-                    Volume = bar.Volume,
-                    ContractId = bar.ContractId,
-                    RecordedAt = now,
-                });
-            }
-
-            written++;
-        }
-
-        return written;
-    }
-
-    /// <summary>
     /// The coverage write, as one statement the store resolves against the row it has committed.
     /// </summary>
     /// <remarks>
@@ -685,9 +718,9 @@ public sealed class BarCacheService
     /// Records that the venue answered a range <b>empty</b>, with the TTL its age earns it.
     /// </summary>
     /// <remarks>
-    /// Two implementations for the same reason the bar write has two (gh#122, gh#103): whether this is an
-    /// insert or an update is a fact about the <b>store</b> rather than about this process, and the in-memory
-    /// provider the unit tier runs on has no <c>ON CONFLICT</c> to leave it to.
+    /// One implementation for the same reason the bar write has one (gh#122, gh#103, gh#387): whether this
+    /// is an insert or an update is a fact about the <b>store</b> rather than about this process, and it is
+    /// left to the store's <c>ON CONFLICT</c> to decide.
     /// </remarks>
     private async Task RecordEmptyAsync(
         string venue,
@@ -706,18 +739,9 @@ public sealed class BarCacheService
         bool settled = range.End <= now - SettledHistoryAge;
         DateTimeOffset? expiresAt = settled ? null : now + RecentEmptyTtl;
 
-        if (_database.Database.IsRelational())
-        {
-            await RecordEmptyInStoreAsync(
-                venue, instrument, resolutionMinutes, range, now, expiresAt, cancellationToken)
-                .ConfigureAwait(false);
-        }
-        else
-        {
-            await RecordEmptyInMemoryAsync(
-                venue, instrument, resolutionMinutes, range, now, expiresAt, cancellationToken)
-                .ConfigureAwait(false);
-        }
+        await RecordCoverageAsync(
+            venue, instrument, resolutionMinutes, range, now, expiresAt, cancellationToken)
+            .ConfigureAwait(false);
 
         _logger.LogDebug(
             "The venue returned no bars for {Instrument} {Resolution}m over {From:o}..{To:o}; recorded as "
@@ -729,7 +753,7 @@ public sealed class BarCacheService
             settled ? "permanently" : "briefly");
     }
 
-    private async Task RecordEmptyInStoreAsync(
+    private async Task RecordCoverageAsync(
         string venue,
         InstrumentId instrument,
         int resolutionMinutes,
@@ -764,55 +788,5 @@ public sealed class BarCacheService
         await _database.Database
             .ExecuteSqlRawAsync(RecordCoverageSql, parameters, cancellationToken)
             .ConfigureAwait(false);
-    }
-
-    /// <summary>
-    /// The same write against a provider with no <c>ON CONFLICT</c> — the unit tier's in-memory store.
-    /// </summary>
-    /// <remarks>
-    /// It has no transactions and no snapshots either, so the race the relational path exists to survive is
-    /// not merely absent here, it is unrepresentable. This is the read-then-write that was the only
-    /// implementation before gh#122, kept as it was.
-    /// </remarks>
-    private async Task RecordEmptyInMemoryAsync(
-        string venue,
-        InstrumentId instrument,
-        int resolutionMinutes,
-        BarRange range,
-        DateTimeOffset now,
-        DateTimeOffset? expiresAt,
-        CancellationToken cancellationToken)
-    {
-        // An EXPIRED row for this exact range is filtered out of the covered set, so it is invisible to the
-        // caller -- but it is still in the table, and inserting over it is a primary-key violation. Refresh
-        // rather than insert: the ledger tracks the latest answer for a range, not a history of asking.
-        BarCoverageRecord? existing = await _database.BarCoverage
-            .FirstOrDefaultAsync(
-                c => c.Venue == venue
-                    && c.Instrument == instrument.Symbol
-                    && c.ResolutionMinutes == resolutionMinutes
-                    && c.RangeStart == range.Start
-                    && c.RangeEnd == range.End,
-                cancellationToken)
-            .ConfigureAwait(false);
-
-        if (existing is not null)
-        {
-            existing.RecordedAt = now;
-            existing.ExpiresAt = expiresAt;
-        }
-        else
-        {
-            _database.BarCoverage.Add(new BarCoverageRecord
-            {
-                Venue = venue,
-                Instrument = instrument.Symbol,
-                ResolutionMinutes = resolutionMinutes,
-                RangeStart = range.Start,
-                RangeEnd = range.End,
-                RecordedAt = now,
-                ExpiresAt = expiresAt,
-            });
-        }
     }
 }

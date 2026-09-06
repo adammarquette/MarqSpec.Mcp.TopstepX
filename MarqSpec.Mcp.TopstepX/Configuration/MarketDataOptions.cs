@@ -88,8 +88,16 @@ public sealed class MarketDataOptions
     /// recorder therefore starts only when the transport is HTTP <i>and</i> this switch is on.
     /// </para>
     /// <para>
-    /// Two subscribers on one tape is the failure this exists to prevent. Leave it off on any
-    /// process that is not the single long-lived HTTP instance meant to hold the subscription.
+    /// Two subscribers on one tape is the failure this exists to prevent. Leaving this on in two
+    /// places is now <i>refused</i> rather than tolerated: a start takes an exclusive
+    /// per-instrument claim before it subscribes, the second is refused and records nothing, and a
+    /// holder writes no print past its own claim's expiry (gh#404). What the claim cannot rule out
+    /// is two hosts whose clocks differ by more than the claim's term: each compares its own clock
+    /// to one stored expiry, so a taker running far enough ahead can acquire while the holder still
+    /// believes it is inside its term, and both write. <b>Those duplicates are counted as
+    /// volume</b> — the footprint projection reads every stored print for the instrument, with no
+    /// coverage join — so the claim does not make this switch safe to leave on twice. Set it on the
+    /// one process meant to record. The claim is the backstop, not the configuration.
     /// </para>
     /// </remarks>
     public bool RecordTape { get; init; }

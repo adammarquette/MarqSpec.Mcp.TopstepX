@@ -6,6 +6,7 @@ using MarqSpec.Mcp.TopstepX.Domain.MarketData;
 using MarqSpec.Mcp.TopstepX.MarketData;
 using MarqSpec.Mcp.TopstepX.Tools;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using Microsoft.Extensions.Time.Testing;
 using ModelContextProtocol;
@@ -123,9 +124,9 @@ public sealed class StoreFaultBoundaryTests(SchemaFixture fixture)
             "FROM \"IndicatorValues\"", venue, DeleteOneStrayFromAnotherConnectionAsync, times: 2);
 
         await using TopstepXDbContext loserStore = _fixture.CreateContext(straddle);
-        MarketDataTools tools = Tools(loserStore, venue, ConcurrencyHarness.Bars(50, 60));
+        Family tools = Tools(loserStore, venue, ConcurrencyHarness.Bars(50, 60));
 
-        Func<Task> call = () => ThroughTheBoundary(token => tools.GetBars(
+        Func<Task> call = () => ThroughTheBoundary(token => tools.Bars.GetBars(
             ConcurrencyHarness.Symbol,
             ConcurrencyHarness.ResolutionMinutes,
             ConcurrencyHarness.Bucket(50),
@@ -258,9 +259,9 @@ public sealed class StoreFaultBoundaryTests(SchemaFixture fixture)
                 .UseNpgsql(gone.ConnectionString, npgsql => npgsql.UseVector())
                 .Options);
 
-        MarketDataTools tools = Tools(missingStore, ConcurrencyHarness.Venue(), []);
+        Family tools = Tools(missingStore, ConcurrencyHarness.Venue(), []);
 
-        Func<Task> call = () => ThroughTheBoundary(token => tools.GetIndicators(
+        Func<Task> call = () => ThroughTheBoundary(token => tools.Indicators.GetIndicators(
             ConcurrencyHarness.Symbol,
             ConcurrencyHarness.ResolutionMinutes,
             "atr",
@@ -294,9 +295,9 @@ public sealed class StoreFaultBoundaryTests(SchemaFixture fixture)
         string venue = ConcurrencyHarness.Venue();
 
         await using TopstepXDbContext store = _fixture.CreateContext();
-        MarketDataTools tools = Tools(store, venue, ConcurrencyHarness.Bars(0, 20));
+        Family tools = Tools(store, venue, ConcurrencyHarness.Bars(0, 20));
 
-        Func<Task> call = () => ThroughTheBoundary(token => tools.GetBars(
+        Func<Task> call = () => ThroughTheBoundary(token => tools.Bars.GetBars(
             ConcurrencyHarness.Symbol,
             ConcurrencyHarness.ResolutionMinutes,
             ConcurrencyHarness.Bucket(0),
@@ -336,28 +337,41 @@ public sealed class StoreFaultBoundaryTests(SchemaFixture fixture)
         await boundary(null!, CancellationToken.None);
     }
 
-    private MarketDataTools Tools(TopstepXDbContext store, string venue, IReadOnlyList<Bar> available)
+    /// <summary>The two market-data tool types these cases drive a faulting store through.</summary>
+    /// <param name="Bars">The bar tools — get_bars is the read a 23505 arrived through.</param>
+    /// <param name="Indicators">The indicator tools — the second read the boundary has to cover.</param>
+    /// <remarks>
+    /// Two types where one used to do (gh#414). The point of these cases is that the fault is translated at
+    /// the CALL-TOOL boundary rather than per tool, so driving two separate types through it is a slightly
+    /// stronger version of the same claim than driving two methods of one type was.
+    /// </remarks>
+    private sealed record Family(BarTools Bars, IndicatorTools Indicators);
+
+    private Family Tools(TopstepXDbContext store, string venue, IReadOnlyList<Bar> available)
     {
         StoreAvailabilityHolder holder = new();
         holder.Set(StoreAvailability.Available());
 
-        return new MarketDataTools(
-            ConcurrencyHarness.Cache(store, venue, available, Now),
-            store,
-            ConcurrencyHarness.Registry(),
-            ConcurrencyHarness.Catalog(),
-            ConcurrencyHarness.Indicators(store),
-            new LevelMethodCatalog(BarSessionCalendar.Parse("16:00", [])),
-            new SeriesGateway(venue, available),
-            new ToolGuards(Options.Create(new MarketDataOptions
-            {
-                Instruments = ConcurrencyHarness.Symbol + "," + ConcurrencyHarness.RebuildSymbol,
-                MaxRows = 5_000,
-                SessionCloseCentral = "16:00",
-            })),
-            holder,
-            new FakeTimeProvider(Now),
-            Options.Create(new KeyLevelDetectionOptions()),
-            new VolumeProfileService(store));
+        InstrumentResolver resolver = new(ConcurrencyHarness.Registry(), holder);
+        ToolGuards guards = new(Options.Create(new MarketDataOptions
+        {
+            Instruments = ConcurrencyHarness.Symbol + "," + ConcurrencyHarness.RebuildSymbol,
+            MaxRows = 5_000,
+            SessionCloseCentral = "16:00",
+        }));
+
+        return new Family(
+            new BarTools(
+                resolver,
+                ConcurrencyHarness.Cache(store, venue, available, Now),
+                guards,
+                new FakeTimeProvider(Now)),
+            new IndicatorTools(
+                resolver,
+                store,
+                ConcurrencyHarness.Catalog(),
+                ConcurrencyHarness.Indicators(store),
+                new SeriesGateway(venue, available),
+                guards));
     }
 }

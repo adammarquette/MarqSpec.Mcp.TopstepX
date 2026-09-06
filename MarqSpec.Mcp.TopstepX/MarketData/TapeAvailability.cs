@@ -19,6 +19,12 @@ public enum TapeUnavailableReason
 
     /// <summary>The recorder stopped after having run.</summary>
     Stopped = 4,
+
+    /// <summary>
+    /// Another process holds this instrument's tape claim, so this recorder did not subscribe —
+    /// or stood down when its own claim was taken over (gh#404).
+    /// </summary>
+    HeldByAnotherRecorder = 5,
 }
 
 /// <summary>
@@ -112,6 +118,76 @@ public sealed class TapeAvailability
         new(
             TapeUnavailableReason.Stopped,
             "The trade-tape recorder stopped. Prints will not be recorded until the process restarts.");
+
+    /// <summary>Another process holds this instrument's tape claim.</summary>
+    /// <param name="holder">The owner recorded on the claim row.</param>
+    /// <param name="expiresAt">When that claim lapses unless the holder renews it.</param>
+    /// <returns>An unavailable marker naming the holder.</returns>
+    /// <remarks>
+    /// Distinct from every <see cref="TapeUnavailableReason.NeverStarted"/> answer on purpose. The
+    /// switch being off and someone else already recording are different situations with different
+    /// fixes, and an operator told "turn RecordTape on" when it is already on twice will turn it on
+    /// a third time (gh#404).
+    /// </remarks>
+    public static TapeAvailability HeldByAnotherRecorder(string holder, DateTimeOffset expiresAt)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(holder);
+        return new TapeAvailability(
+            TapeUnavailableReason.HeldByAnotherRecorder,
+            $"Another recorder (owner {holder}) holds this instrument's tape claim until "
+            + $"{expiresAt:u} unless it renews. Two recorders on one instrument would double every "
+            + "volume, so this one did not subscribe. Stop the other process, or split "
+            + "MarketData__Instruments so each records different instruments.");
+    }
+
+    /// <summary>
+    /// This process held the claim and lost it: another start took it over while this one was
+    /// past its expiry, and this recorder stood down rather than staying a second writer.
+    /// </summary>
+    /// <returns>An unavailable marker.</returns>
+    /// <remarks>
+    /// The same reason as <see cref="HeldByAnotherRecorder(string, DateTimeOffset)"/> and a
+    /// different sentence: no owner is named, because a renewal that fails proves the claim is not
+    /// this process's without proving whose it now is, and naming a guess would be worse than
+    /// naming nobody.
+    /// </remarks>
+    public static TapeAvailability ClaimTakenOver() =>
+        new(
+            TapeUnavailableReason.HeldByAnotherRecorder,
+            "Another recorder took this instrument's tape claim, so this one stopped recording it "
+            + "rather than doubling every volume. Only one process may record an instrument: stop "
+            + "the second, or split MarketData__Instruments, then restart.");
+
+    /// <summary>
+    /// This process held the claim and could not renew it before it expired, so it gave the
+    /// instrument up rather than recording under a claim it can no longer show.
+    /// </summary>
+    /// <returns>An unavailable marker.</returns>
+    /// <remarks>
+    /// The same reason as <see cref="ClaimTakenOver"/> — this process does not hold the claim —
+    /// and a different sentence, because nobody necessarily took it. Telling an operator to go and
+    /// stop a second recorder that does not exist sends them after the wrong thing; the fault here
+    /// is between this process and the store.
+    /// </remarks>
+    public static TapeAvailability ClaimLapsed() =>
+        new(
+            TapeUnavailableReason.HeldByAnotherRecorder,
+            "This recorder could not renew its tape claim on this instrument before the claim "
+            + "expired, so it stopped recording rather than writing without one — another process "
+            + "is entitled to the tape from that moment. Check the database, then restart.");
+
+    /// <summary>The claim could not be read, so ownership is unknown and nothing was subscribed.</summary>
+    /// <returns>An unavailable marker.</returns>
+    /// <remarks>
+    /// An unreadable claim is not a free one. Recording on the assumption that silence means
+    /// nobody is there is exactly the doubled tape this claim exists to prevent, so the honest
+    /// answer is that the recorder did not start and why.
+    /// </remarks>
+    public static TapeAvailability NeverStartedBecauseTheClaimIsUnreadable() =>
+        new(
+            TapeUnavailableReason.NeverStarted,
+            "The tape claim could not be read, so this recorder cannot tell whether another "
+            + "process holds it and did not subscribe. Check the database, then restart.");
 
     /// <summary>
     /// Throws unless the tape is listening.

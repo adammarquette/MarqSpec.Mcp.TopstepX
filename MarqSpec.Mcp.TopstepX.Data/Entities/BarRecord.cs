@@ -67,9 +67,13 @@ public sealed class BarRecord
     /// absence is left visible instead (ADR-0011).
     /// </para>
     /// <para>
-    /// Null therefore means <b>unknown</b>, never "the same contract as the row beside it". An unrecorded run
-    /// adjacent to a recorded one is reported as a roll boundary, because the two are not known to be the same
-    /// contract.
+    /// Null therefore means <b>unknown</b>, never "the same contract as the row beside it" — an unrecorded run
+    /// adjacent to a single recorded contract reports <c>ContractSpan.Unknown</c> ("cannot tell"), not a
+    /// promotion to a roll on its own. It does not erase a roll the store can already prove, either: two runs
+    /// whose contract id is recorded and different are a roll (<c>SpansRoll</c>) even when an unattributed run
+    /// sits beside or between them (ADR-0011, gh#402). A read that touches a null bucket re-asks the venue and
+    /// the existing upsert overwrites it, so this heals on its own rather than only by deleting and refetching
+    /// by hand.
     /// </para>
     /// <para>
     /// Not <c>required</c>, unlike its siblings: a required member would make the unknown state

@@ -25,9 +25,17 @@ namespace MarqSpec.Mcp.TopstepX.Data.Migrations
             // plausible wrong number is the exact failure this column exists to prevent.
             //
             // So the existing rows stay NULL, meaning UNKNOWN. Unknown is not "the same contract as the row
-            // beside it": an unrecorded run adjacent to a recorded one is reported as a roll boundary,
-            // because the two are not known to be the same contract. An operator who wants provenance on old
-            // history deletes those rows and refetches them.
+            // beside it": nobody can tell whether an unrecorded run is a continuation of the contract beside
+            // it or a second one nobody stamped, so it reports ContractSpan.Unknown -- "cannot tell" -- rather
+            // than being folded into SingleContract. It is NOT reported as a roll boundary on its own: a roll
+            // the store CAN prove -- two recorded, different contract ids -- still reports SpansRoll even
+            // when an unattributed run sits beside or between them; the null does not erase what the other
+            // two runs already establish (gh#402).
+            //
+            // As of gh#402, an operator does not have to delete and refetch old rows by hand: an ordinary
+            // cache-aside read re-asks the venue for any bucket still carrying NULL and the existing upsert
+            // overwrites it, so provenance heals on its own the next time something reads that range --
+            // bounded to buckets the calendar still expects and the venue still restates.
             // ---------------------------------------------------------------------------------------------
             migrationBuilder.AddColumn<string>(
                 name: "ContractId",

@@ -32,10 +32,12 @@ namespace MarqSpec.Mcp.TopstepX.Tests;
 /// <c>127.0.0.1:0</c> because "a fixed port would make these tests unable to run beside anything else".
 /// </para>
 /// <para>
-/// <b>What the last three tests are for.</b> The first two would pass against a fix that simply hard-wired
-/// port 0 everywhere, which would silently break the deployed server: <c>docker-compose.yml</c> sets
-/// <c>ASPNETCORE_HTTP_PORTS: 8080</c>, and an operator naming an address means it under either transport. A
-/// default is only a default if something explicit still beats it.
+/// <b>What the last four tests are for.</b> The first two would pass against a fix that simply hard-wired
+/// port 0 everywhere, which would silently break the deployed server: <c>docker-compose.yml</c> names
+/// <c>ASPNETCORE_HTTPS_PORTS: 8443</c> for the composed server since gh#416's TLS move, and an operator
+/// naming an address means it under either transport, on any of the three keys the framework reads one
+/// from. A default is only a default if something explicit still beats it — on <b>every</b> key, not just
+/// the ones an earlier pass happened to write a case for (gh#444).
 /// </para>
 /// </remarks>
 public sealed class TransportBindingTests
@@ -117,6 +119,23 @@ public sealed class TransportBindingTests
 
         builder.Configuration[WebHostDefaults.ServerUrlsKey].Should().BeNullOrEmpty(
             "an explicitly named port is the address, and nothing should be layered over it");
+    }
+
+    [Fact]
+    public void ExplicitHttpsPortsSurvive_UnderStdio()
+    {
+        // The third key HasExplicitAddress reads, and the one gh#444 found reachable and unasserted:
+        // ASPNETCORE_HTTPS_PORTS is exactly as much an explicit address as ASPNETCORE_HTTP_PORTS is, and
+        // docker-compose.yml has named it (rather than the HTTP key) for the composed server since gh#416's
+        // TLS move. A default that yielded to only two of the three keys would not be a default -- it would
+        // be a default that happened to survive the cases someone thought to write.
+        WebApplicationBuilder builder = NewBuilder();
+        builder.Configuration[WebHostDefaults.HttpsPortsKey] = "8443";
+
+        Program.ConfigureDefaultBinding(builder, McpTransport.Stdio);
+
+        builder.Configuration[WebHostDefaults.ServerUrlsKey].Should().BeNullOrEmpty(
+            "an explicitly named HTTPS port is the address, and nothing should be layered over it");
     }
 
     [Fact]

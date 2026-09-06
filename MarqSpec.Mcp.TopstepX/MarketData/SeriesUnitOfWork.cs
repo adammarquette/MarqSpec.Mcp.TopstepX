@@ -150,31 +150,18 @@ internal static class SeriesUnitOfWork
         Func<CancellationToken, Task<T>> body,
         CancellationToken cancellationToken)
     {
-        // The in-memory provider used by the unit tier has no transactions, so this is conditional. What is
-        // not conditional is that the body runs exactly once per attempt.
-        IDbContextTransaction? transaction = database.Database.IsRelational()
-            ? await database.Database
-                .BeginTransactionAsync(Isolation, cancellationToken)
-                .ConfigureAwait(false)
-            : null;
+        // UNCONDITIONAL since gh#387. It used to be skipped when the provider had none -- the unit tier's
+        // in-memory store -- which meant the isolation level this whole type exists to state was absent from
+        // every test that ran through it. There is no such provider now: everything that reaches here holds
+        // a real transaction, and the body runs exactly once per attempt.
+        await using IDbContextTransaction transaction = await database.Database
+            .BeginTransactionAsync(Isolation, cancellationToken)
+            .ConfigureAwait(false);
 
-        try
-        {
-            T result = await body(cancellationToken).ConfigureAwait(false);
+        T result = await body(cancellationToken).ConfigureAwait(false);
 
-            if (transaction is not null)
-            {
-                await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
-            }
+        await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
 
-            return result;
-        }
-        finally
-        {
-            if (transaction is not null)
-            {
-                await transaction.DisposeAsync().ConfigureAwait(false);
-            }
-        }
+        return result;
     }
 }

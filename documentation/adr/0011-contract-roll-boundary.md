@@ -91,8 +91,12 @@ shape this record exists to refuse, appearing on the field added to prevent it. 
 and `SpansRoll`, with `Unknown = 0` — the same closed-vocabulary idiom `AccountStage` and `VenueSide` already
 use here, where a near-miss resolves to `Unknown` rather than to a guess ([ADR-0008](0008-numeric-only-tool-payloads.md)).
 
-More than one run is `SpansRoll` whichever way the provenance falls: an unrecorded run beside a recorded one is
-still two things that must not be read as one contract.
+More than one run is `SpansRoll` only when the store can back it: at least two runs carry *different recorded*
+contract ids. An unrecorded run does not, on its own, prove a second contract — beside a single known one it
+is `Unknown`, because the two are not *known* to be the same contract either. It also does not erase a roll
+the store already proved: two different recorded ids anywhere in the window stay `SpansRoll` even when an
+unattributed run sits between or beside them — a roll the store can prove outranks a gap it cannot explain
+(see the [2026-08-31 update](#update-2026-08-31--a-proven-roll-outranks-an-unattributed-run), gh#402).
 
 ### Report on the bars, refuse on the derivation — one rule, not two
 
@@ -117,6 +121,8 @@ can tell that a roll happened.
 |---|---|
 | [2026-08-23](#update-2026-08-23--the-reconcile-has-a-precondition-and-nothing-stated-it) | The reconcile's precondition is named and enforced: one snapshot, and the whole series ([gh#73](https://github.com/adammarquette/MarqSpec.Mcp.TopstepX/issues/73)) |
 | [2026-08-29](#update-2026-08-29--the-roll-event-is-a-tool) | `get_contract_roll` reports the tape changeover; no roll table ([gh#349](https://github.com/adammarquette/MarqSpec.Mcp.TopstepX/issues/349)) |
+| [2026-08-31](#update-2026-08-31--a-proven-roll-outranks-an-unattributed-run) | A roll two runs already prove is not downgraded to `Unknown` by a null run elsewhere in the window, and legacy `NULL` rows heal on read instead of only by manual delete-and-refetch ([gh#402](https://github.com/adammarquette/MarqSpec.Mcp.TopstepX/issues/402)) |
+| [2026-09-01](#update-2026-09-01--the-heal-follows-the-store-not-only-the-calendar) | The heal reaches a null bucket the calendar does not expect, so one off-grid legacy row no longer pins a window at `Unknown` forever ([gh#412](https://github.com/adammarquette/MarqSpec.Mcp.TopstepX/issues/412)) |
 
 ## Alternatives considered
 
@@ -188,13 +194,24 @@ most wants to look at just after a roll.
 
 ## Consequences
 
-- **Existing rows carry `NULL`, permanently.** The migration adds a nullable column and does nothing else. The
-  contract was never captured at write time and cannot be recovered from anything the store holds — the
-  bucket, the prices and the volume look the same whichever quarter produced them. **Backfill is impossible
-  without guessing, so it is not done.**
-- **An unrecorded run beside a recorded one is reported as a seam.** That is not a defect: they are not
-  *known* to be the same contract. Every store carrying pre-existing history is in this state until those rows
-  are deleted and refetched, which is the only remedy and is deliberately manual.
+- **Existing rows carry `NULL` until a read re-fetches them — not permanently.** The migration added a
+  nullable column and did nothing else: the contract was never captured at write time and is not recoverable
+  from anything the row itself holds — the bucket, the prices and the volume look the same whichever quarter
+  produced them, so backfilling by guessing is not done. `gh#402` closed the other half instead:
+  `BarCacheService` treats a bucket carrying no recorded contract as though the store did not have it, so an
+  ordinary cache-aside read re-asks the venue and the existing upsert overwrites the null — no schema change,
+  no guessed provenance, no manual step. It heals only what a read actually touches: a bucket the venue no
+  longer restates keeps its `NULL` regardless of how many reads pass over it. The calendar's grid is **no
+  longer** a second bound on that — `FindMissing` enumerates the buckets the store holds unattributed on top
+  of the expected ones, so an off-grid null is asked for like any other (see the
+  [2026-08-31](#update-2026-08-31--a-proven-roll-outranks-an-unattributed-run) and
+  [2026-09-01](#update-2026-09-01--the-heal-follows-the-store-not-only-the-calendar) updates).
+- **An unrecorded run beside a recorded one is reported as `Unknown`, not folded into a known contract.**
+  That is not a defect: they are not *known* to be the same contract, so `SingleContract` would be a guess.
+  Nor is it promoted to `SpansRoll` on its own — that is reserved for what the store CAN prove: two runs whose
+  contract id is recorded and different. A null run does not erase a roll the store already proved, either:
+  two different recorded ids anywhere in the window stay `SpansRoll` even when an unattributed run sits beside
+  or between them (`gh#402`).
 - **A store whose bars are *all* unrecorded behaves exactly as before.** One run of unknown provenance is
   still one run, so nothing is refused and no existing deployment loses a tool.
 - **Indicators are absent for `WarmupBars` after every roll.** ATR(14) genuinely cannot measure the new
@@ -324,3 +341,144 @@ bars in a short window, every resolution together — a per-size pick would repo
 `asOfUtc` omits `gatewayContractId` and `agree` rather than dating today's venue answer. This is
 how a caller decides whether Q-1's successor — re-keying bars by contract id — is worth a
 migration. The keying decision itself is unchanged.
+
+## Update (2026-08-31) — a proven roll outranks an unattributed run
+
+Bars written before the migration this record introduced carry `ContractId = NULL` forever, because
+`BarCacheService` only re-fetched what `BarGapDetector.FindMissing` reported as genuinely missing, and a
+bucket the store already holds is never missing. A block of legacy rows sitting between two attributed runs
+of the *same* contract was therefore a permanent, self-inflicted seam — and worse, `ToCoverage` reported
+`span: SpansRoll` for it, byte-identical to a genuine quarterly roll, because the classification rule this
+record stated ("more than one run is `SpansRoll` whichever way the provenance falls") did not distinguish a
+seam the store could prove from one it could only fail to explain (gh#402).
+
+**The read path now heals what it touches.** `BarCacheService` excludes a bucket with no recorded contract
+from what it considers already stored, so `BarGapDetector.FindMissing` reports it missing and the existing
+upsert — which already writes `ContractId` in the same statement as the OHLCV, per §1 — overwrites the null
+the next time a read reaches that range. No schema change, no guessed provenance: the venue is asked again,
+exactly as for a bucket that was never fetched at all. As first shipped this did not reach a bucket outside
+the calendar's expected grid — **corrected 2026-09-01, below** — and it still does not reach one a venue page
+omits without restating, so `NULL` is not eliminated on a schedule, only on the reads that happen to touch it.
+
+**The classification rule is corrected, not relaxed.** The first attempt at this fix read *any* unattributed
+run in the window as proof that nothing could be concluded, which flipped the defect the other way: a window
+holding a genuine roll — two runs with *different recorded* contract ids — plus one legacy unattributed run
+anywhere inside it now reported `Unknown` instead of `SpansRoll`, and this record's own new prose would have
+told a caller that meant "probably one contract." That is the unsafe direction — a real bookkeeping gap read
+as market movement — and a review on the PR caught it before merge. The rule is now: two recorded, different
+contract ids anywhere in the window are `SpansRoll` regardless of what else sits beside them; only when the
+known contracts (zero or one of them) never disagree does an unattributed run downgrade the answer to
+`Unknown`. §3's classification rule and the Consequences section above are corrected in place to state this
+version rather than the one first shipped; `ContractRollDetector.Segment` and `Newest` are untouched by
+either attempt — the segmentation was always right, only `ToCoverage`'s summary of it was not.
+
+**Update (2026-08-31, gh#408) — what bounds the re-ask, and the one run that is paid forever.** Putting a
+vendor call behind a read needs a bound, and this record asserted one without pinning it. The bound is
+`RecordEmptyAsync`: a legacy range the venue answers **empty** is memoised, and because every such range is
+older than `SettledHistoryAge` the memo carries **no expiry at all**. Both halves are now tests, each shown
+red against a deliberately broken bound — the memo write removed; `SettledHistoryAge` lengthened past the
+fixture — rather than argued.
+
+**Pinning it found that it was false as stated, and the gap was in the read, not the write.** A range is
+fetched in pages of `VenuePageSizeBars` and the memo is written **per page slice**, while `ExcludeCoveredAsync`
+dropped a range only when a *single* coverage row contained it whole. N page-memos never contain the N-page
+range they came from; their union does, and nothing computed the union — so a missing run wider than one page
+cost N paced pages on **every** read, forever. That is not an exotic case for the population this heal serves:
+a legacy null-contract run is by construction everything written before the migration above, so multi-page is
+the *ordinary* shape, and two days of one-minute bars measured three pages per read, flat. The containment
+test is now made against the **union** of the unexpired rows — touching rows merged, because half-open slices
+abut exactly, and each was independently answered empty so their union was too. A genuine gap between two rows
+is still not covered by either, which is the guard that keeps this from becoming a span from the earliest
+start to the latest end. Ranges are still never *split* around a covered sub-range; only the containment test
+changed. With that, the bound reads: **one request per page, once — not one per read.**
+
+The paragraph above says the heal does not reach "a bucket a venue page omits without restating". That shape
+was measured, and it is **two** shapes, not one:
+
+- **A retention edge inside a page converges** — in two requests, not never. The first page is answered
+  non-empty, so no memo is written for the buckets it omitted; but `BarGapDetector.FindMissing` coalesces only
+  across *expected* buckets, so the second read asks for the narrowed run alone, that run is answered empty,
+  and it earns exactly the permanent memo the first read could not. **Converges is not heals**: those buckets
+  keep `ContractId = NULL`, because the venue will not restate them and nothing here guesses. What terminates
+  is the asking, not the absence.
+- **A venue bar the calendar does not expect, sitting inside a coalesced missing run, does not converge.** The
+  run spans a stretch the calendar excludes — a maintenance window — the venue publishes one bar inside it,
+  the page holding that bar therefore comes back non-empty and earns no memo, and the expected buckets around
+  it stay missing. The cost is the **whole run in pages, on every read**, not one page: a range is asked whole,
+  so the pages either side that *are* memoised empty are re-asked with it. The same two-day, one-minute
+  fixture measures three pages per read.
+
+**The second is accepted, not fixed.** A memo over buckets a *non-empty* page omitted would record "the venue
+has nothing here", permanently, over a range the venue did answer for — so one transient omission would freeze
+a genuine hole that nothing ever fetches again. That trades a paced, `VenueRequests`-visible traffic cost for
+a silently absent bar, which is the direction this repository does not go, and the cost being N pages rather
+than one does not change that direction. What separates it from the multi-page defect fixed above is its
+**cause**: that one was a read-side arithmetic error on memos the venue's own answers had earned, and it
+afflicted the ordinary population; this one needs a calendar that disagrees with the venue about when it
+trades, which is a misconfiguration rather than a steady state. **The remedy is the calendar** — a run should
+not be coalesced across a stretch the venue actually trades — not a ledger taught to say something the venue
+did not, and not a retry counter and a state machine on a read path. Both shapes are pinned by tests, so the
+accepted cost is characterised rather than rediscovered.
+
+## Update (2026-09-01) — the heal follows the store, not only the calendar
+
+The heal above walked `BarGapDetector.FindMissing`, and `FindMissing` walked the buckets the **calendar
+expected**. A legacy `NULL` sitting off that grid was therefore in neither set the read path knows about: not
+"stored", because gh#402 deliberately excludes an unattributed row from stored; and not "expected", because
+the calendar says the venue was shut. It was never enumerated, never asked for, and never healed (gh#412).
+
+**A row can sit off the store's own grid, and that is a certainty of the design rather than a claim about
+the venue.** `SessionCloseCentral` and `Holidays` are **configuration**
+([ADR-0005](0005-session-aware-gap-detection.md)), and the write path stores whatever the venue answers with —
+it does not consult the calendar. So the grid moves under rows already written: a corrected session close, a
+holiday declared after the fact, a product whose close differs from the equity-index default. Every row that
+was on-grid when it was written is off-grid the moment the configuration changes, and an unattributed one
+among them is then unhealable for good.
+
+**What is deliberately *not* claimed.** gh#408's fixture constructs a bar at 16:30 Central to exercise this
+path, and every "measurement" around it — here and in PR #410 — is a **request count against that fixture**.
+**Nobody has looked at a live store.** This record therefore does not assert that any venue publishes at 16:30,
+nor that any deployed store holds such a row today; gh#408's own shipped test comment reads a venue/calendar
+disagreement the other way — *"a misconfiguration rather than a steady state, and the remedy is the calendar"* —
+and that reading stands untouched for the shape it was written about. 16:30 survives below as the **constructed
+demonstration** the fixtures use, chosen because this calendar plainly does not expect it.
+
+**Its cost is the one this repository ranks worst.** The two shapes gh#408 accepted both fail toward paced,
+`VenueRequests`-visible vendor traffic. This one fails toward a reading a caller takes as ordinary: by this
+record's own classification rule, one unattributed run beside a recorded one makes the window `Unknown`, so a
+single unhealable off-grid null downgrades `get_key_levels` and `get_market_snapshot` to *cannot tell whether
+this window spans a roll* — permanently, on every read, over bars that are in fact all one contract.
+
+**`FindMissing` now enumerates the unattributed buckets on top of the expected grid.** The buckets the store
+holds without provenance are passed in beside the ones it holds with, and merged — sorted, not appended, since
+the coalescing loop reads one ascending sequence — into the calendar's list before the diff. It stays a pure
+function of its arguments: the extra set is *handed* to `Domain`, not read out of a store by it.
+
+- **A bucket the store holds *with* a contract is still not enumerated off-grid.** It lacks nothing, and a
+  stored bucket **closes** a coalesced run: admitting it would split runs that today merge across a closed
+  stretch and cost a venue request for nothing. That also leaves gh#408's accepted cost exactly where it was.
+- **Nothing is guessed.** The venue is asked for the bucket and the ordinary upsert writes whatever it
+  answers with. A venue that will not restate the bar leaves the `NULL` in place, and the window keeps saying
+  `Unknown` — which is then the true answer rather than an artefact of where the calendar drew its grid.
+- **`ToCoverage` is untouched**, and so is everything gh#402 settled about it. This record changes which rows
+  reach it, not how it reads them.
+
+**Why not correct the calendar instead**, which the 2026-08-31 sibling shape names as its remedy. It is the
+right remedy *there*: a calendar that disagrees with the venue about when it trades is a misconfiguration, and
+correcting it is how you stop paying for one. It is not the remedy *here*, for two reasons.
+
+**It cannot close this class, because it is what opens it.** The calendar is configuration, so correcting one
+moves the grid under rows already written — which is exactly how an unattributed row ends up off-grid in the
+first place. A remedy that re-creates the defect every time it is applied is not a remedy for it.
+
+**And there is nothing here to correct.** Making 16:00–17:00 Central expected would need an observation that
+the venue trades then, and none exists — the 16:30 bar is a fixture. Editing a calendar on a fixture's say-so
+turns every genuinely closed bucket in that hour into a permanent hole the cache re-requests forever: a
+calendar edited to make a symptom go away is a worse defect than the one it closes. The heal here is keyed on
+what the store is **holding**, which is a fact the store can actually check.
+
+The third candidate, **reporting the unattributed run's cause rather than healing it**, was rejected because
+it leaves the answer degraded: the caller would learn *why* it says `Unknown`, which is not the same as being
+told the span the bars justify.
+
+*Assisted-by: Claude Opus 5 (Claude Code)*

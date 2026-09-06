@@ -43,6 +43,14 @@ namespace MarqSpec.Mcp.TopstepX.Tests.Tools;
 /// configuration alone would have closed one of the two reproductions below and left the other exactly where
 /// it was.
 /// </para>
+/// <para>
+/// <b>Half of the acceptance criterion is not in this file.</b> Everything here refuses, and a refusal never
+/// reaches a store — which is what lets these keep running on the in-memory provider with no container. The
+/// case that proves the guard does not <i>over</i>-reject has to serve an ordinary request instead, and
+/// serving one now runs the real <c>ON CONFLICT … DO UPDATE</c> bar and coverage writes, so it moved down to
+/// <c>MarqSpec.Mcp.TopstepX.IntegrationTests.BucketSpanGuardServedReadTests</c> (gh#387). Read the two
+/// together: a guard proven only to refuse is a guard nobody has checked for over-reach.
+/// </para>
 /// </remarks>
 public sealed class BucketSpanGuardTests : IDisposable
 {
@@ -121,7 +129,7 @@ public sealed class BucketSpanGuardTests : IDisposable
         // Reproduction 1. Legal on every axis the boundary checked: MaxRows is 300,000, its own [Range] tops
         // out at 1,000,000, and the window spans exactly 300,000 one-minute buckets -- so ValidateWindow's
         // `buckets > MaxRows` is false and the read went on to fault inside BarGapDetector.ExpectedBuckets.
-        MarketDataTools tools = WithRowCap(300_000);
+        BarTools tools = WithRowCap(300_000);
         DateTimeOffset from = SessionStart;
 
         Func<Task> call = () => tools.GetBars(
@@ -145,7 +153,7 @@ public sealed class BucketSpanGuardTests : IDisposable
         // and the window still needs 4 x 100,000 + 5,760 = 405,760 buckets, because the look-back reaches
         // four bar spans per bar wanted plus four days. Bounding MaxRows against MaxBucketsPerPass would
         // leave this exactly as it was.
-        MarketDataTools tools = WithRowCap(100_000);
+        BarTools tools = WithRowCap(100_000);
 
         Func<Task> call = () => tools.GetLatestBars("ES", 1, 100_000, CancellationToken.None);
 
@@ -259,17 +267,6 @@ public sealed class BucketSpanGuardTests : IDisposable
             .WithMessage("*250000*");
     }
 
-    [Fact]
-    public async Task AnOrdinaryReadStillAnswers()
-    {
-        // The other half of the acceptance criterion: nothing changes for a request that was always fine.
-        MarketDataTools tools = WithRowCap(5_000);
-
-        ToolPayloads.BarSeries series = await tools.GetLatestBars("ES", 5, 10, CancellationToken.None);
-
-        series.Bars.Should().HaveCount(10, "forty five-minute bars were seeded and ten were asked for");
-    }
-
     // ── The drift guard ──────────────────────────────────────────────────────────────────────────────
 
     [Fact]
@@ -285,12 +282,11 @@ public sealed class BucketSpanGuardTests : IDisposable
         // that permits "threw something" would have been green through both.
         const BindingFlags Surface = BindingFlags.Public | BindingFlags.Instance | BindingFlags.DeclaredOnly;
 
-        MarketDataTools marketData = WithRowCap(1_000_000);
-        SnapshotTools snapshot = SnapshotFor(marketData, 1_000_000);
+        Family family = FamilyWithRowCap(1_000_000);
 
         List<MethodInfo> takingAResolution =
         [
-            .. typeof(MarketDataTools).Assembly.GetTypes()
+            .. typeof(BarTools).Assembly.GetTypes()
                 .Where(t => t.GetCustomAttribute<McpServerToolTypeAttribute>() is not null)
                 .SelectMany(t => t.GetMethods(Surface))
                 .Where(m => m.GetCustomAttribute<McpServerToolAttribute>() is not null)
@@ -304,11 +300,7 @@ public sealed class BucketSpanGuardTests : IDisposable
         {
             _gateway.ResetCounters();
 
-            object instance = tool.DeclaringType! == typeof(MarketDataTools) ? marketData
-                : tool.DeclaringType! == typeof(SnapshotTools) ? snapshot
-                : throw new InvalidOperationException(
-                    tool.DeclaringType!.Name + " takes a resolutionMinutes and this fixture cannot build it. "
-                    + "Add it here rather than narrowing the sweep -- the sweep is the point.");
+            object instance = family.Instance(tool.DeclaringType!);
 
             Exception? thrown = await Capture(() => Invoke(tool, instance));
 
@@ -330,10 +322,22 @@ public sealed class BucketSpanGuardTests : IDisposable
         }
     }
 
-    /// <summary>Builds the market-data tools against a given row cap.</summary>
+    /// <summary>Builds the bar tools against a given row cap.</summary>
     /// <param name="maxRows">The cap to build against.</param>
     /// <returns>The tools.</returns>
-    private MarketDataTools WithRowCap(int maxRows)
+    private BarTools WithRowCap(int maxRows) => FamilyWithRowCap(maxRows).Bars;
+
+    /// <summary>
+    /// Builds every tool type the reflection sweep can land on, against a given row cap.
+    /// </summary>
+    /// <param name="maxRows">The cap to build against.</param>
+    /// <returns>The family.</returns>
+    /// <remarks>
+    /// Five market-data types now, not one (gh#414). The sweep maps a declaring type to an instance, so
+    /// every one of them has to be buildable here — <see cref="Family.Instance"/> throws by name for a type
+    /// that is not, rather than letting it drop out of the sweep.
+    /// </remarks>
+    private Family FamilyWithRowCap(int maxRows)
     {
         IOptions<MarketDataOptions> capped = Options.Create(new MarketDataOptions
         {
@@ -342,10 +346,15 @@ public sealed class BucketSpanGuardTests : IDisposable
             SessionCloseCentral = "16:00",
         });
 
-        return new MarketDataTools(
-            _cache,
+        InstrumentResolver resolver = new(new InstrumentRegistry(capped), new StoreAvailabilityHolder());
+        ToolGuards guards = new(capped);
+        VolumeFrontReader front = new(new TapeVolumeFrontService(_database, _gateway, _calendar));
+
+        BarTools bars = new(resolver, _cache, guards, _clock);
+
+        IndicatorTools indicators = new(
+            resolver,
             _database,
-            new InstrumentRegistry(capped),
             _catalog,
             new IndicatorCacheService(
                 _database,
@@ -353,33 +362,75 @@ public sealed class BucketSpanGuardTests : IDisposable
                 new IndicatorProjector(_database, _catalog, NullLogger<IndicatorProjector>.Instance),
                 _clock,
                 NullLogger<IndicatorCacheService>.Instance),
+            _gateway,
+            guards);
+
+        KeyLevelTools keyLevels = new(
+            resolver,
+            _database,
+            _catalog,
             new LevelMethodCatalog(_calendar),
             _gateway,
-            new ToolGuards(capped),
-            new StoreAvailabilityHolder(),
-            _clock,
-            Options.Create(new KeyLevelDetectionOptions()),
-            new VolumeProfileService(_database));
-    }
+            guards,
+            new VolumeProfileService(_database),
+            Options.Create(new KeyLevelDetectionOptions()));
 
-    /// <summary>Builds the composed tool over the same row cap.</summary>
-    /// <param name="marketData">The market-data tools it composes.</param>
-    /// <param name="maxRows">The cap to build against.</param>
-    /// <returns>The snapshot tool.</returns>
-    private SnapshotTools SnapshotFor(MarketDataTools marketData, int maxRows)
-    {
-        IOptions<MarketDataOptions> capped = Options.Create(new MarketDataOptions
-        {
-            Instruments = "ES,NQ",
-            MaxRows = maxRows,
-            SessionCloseCentral = "16:00",
-        });
+        TapeTools tape = new(
+            resolver,
+            _database,
+            _gateway,
+            guards,
+            new TapeAvailabilityHolder(),
+            new VolumeProfileService(_database),
+            front,
+            new FootprintCacheService(
+                _database,
+                new FootprintProjector(_database, NullLogger<FootprintProjector>.Instance),
+                _clock,
+                NullLogger<FootprintCacheService>.Instance));
 
-        return new SnapshotTools(
-            marketData,
+        ContractRollTools roll = new(
+            resolver, _database, _gateway, new LevelMethodCatalog(_calendar), front, _clock);
+
+        SnapshotTools snapshot = new(
+            bars,
+            indicators,
+            keyLevels,
             new ReferenceTools(new InstrumentRegistry(capped), _calendar, _gateway, capped, _clock),
             new IndicatorCatalogNames(_catalog),
             _clock);
+
+        return new Family(bars, indicators, keyLevels, tape, roll, snapshot);
+    }
+
+    /// <summary>Every tool type this fixture can hand the sweep.</summary>
+    /// <param name="Bars">The bar tools.</param>
+    /// <param name="Indicators">The indicator tools.</param>
+    /// <param name="KeyLevels">The key-level tools.</param>
+    /// <param name="Tape">The tape tools.</param>
+    /// <param name="Roll">The contract-roll tools.</param>
+    /// <param name="Snapshot">The composed snapshot tool.</param>
+    private sealed record Family(
+        BarTools Bars,
+        IndicatorTools Indicators,
+        KeyLevelTools KeyLevels,
+        TapeTools Tape,
+        ContractRollTools Roll,
+        SnapshotTools Snapshot)
+    {
+        /// <summary>Hands back the instance for a declaring type, or says what has to be added here.</summary>
+        /// <param name="type">The tool type the sweep found.</param>
+        /// <returns>An instance to invoke.</returns>
+        public object Instance(Type type) =>
+            type == typeof(BarTools) ? Bars
+            : type == typeof(IndicatorTools) ? Indicators
+            : type == typeof(KeyLevelTools) ? KeyLevels
+            : type == typeof(TapeTools) ? Tape
+            : type == typeof(ContractRollTools) ? Roll
+            : type == typeof(SnapshotTools) ? Snapshot
+            : throw new InvalidOperationException(
+                type.Name + " takes a resolutionMinutes and this fixture cannot build it. "
+                + "Add it here rather than narrowing the sweep -- the sweep is the point.");
     }
 
     /// <summary>Runs a call and hands back whatever it threw, if anything.</summary>

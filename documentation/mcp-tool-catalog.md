@@ -267,8 +267,8 @@ the caller knows what it got.
 
 ### `get_indicator_at(symbol, resolutionMinutes, indicator, asOfUtc)`
 One value, as of a moment — at or **before** it, never after. **Cache-aside on exactly the terms
-`get_indicators` states above**, including the first-read cost (or the probe, once HTTP warmup has finished that series): this is the read `get_market_snapshot`
-composes, and the probe behind it is memoised per request, so eleven indicator reads over one series cost one.
+`get_indicators` states above**, including the first-read cost (or the probe, once HTTP warmup has finished that series);
+the probe behind it is memoised per request, so several reads over one series cost one.
 
 Returns `{ value, bucketStart, contractId }`.
 
@@ -307,7 +307,12 @@ omitted `pivotLookback` asks for a very different detection than it used to.
 sits at a price the current contract has never traded, and it reads exactly like a level price is
 about to reach. So when the requested lookback spans a roll, `detectedOverBars` is smaller than the
 lookback asked for — reported rather than implied, because silently halving the history behind a level
-changes how much weight it deserves.
+changes how much weight it deserves. **The same truncation, for a different reason, happens over rows
+with no recorded contract** — history cached before this server tracked provenance (`gh#402`). Read
+`contracts.span` to tell the two apart: `SpansRoll` means the store holds two DIFFERENT recorded
+contracts — a genuine roll — even when an unattributed run also sits in the window; `Unknown` means at
+least one run's contract was never recorded and the known ones never disagree, which is genuinely
+*cannot tell*, not a statement that there was no roll.
 
 **One resolution per call**, and `lookbackBars` defaults to 500 — its description said *"500 is a reasonable
 default"* while the schema required it, until gh#70. This page described an array of timeframes and no
@@ -433,12 +438,18 @@ level.
 **An empty `levels` is answered, never refused, and `detection` is what makes it readable.** It reports all
 seven parameters that produced the answer, for the same reason `get_indicators` reports the `period` it
 computed at: a caller that omitted an argument does not otherwise know what ran. Read it beside
-`detectedOverBars` — those two together separate the five ways a level set comes back empty.
+`detectedOverBars` — those two together separate the six ways a level set comes back empty.
 
 - **Too few bars.** Detection needs `pivotLookback + pivotRightLookback + 1` bars to find even one pivot, and
   it runs over what the **store** holds cut back to the contract in front — which can be far less than
   `lookbackBars` asked for. `detectedOverBars` is that number.
-- **A roll inside the window**, which is the same case arriving a different way; `contracts.span` names it.
+- **A roll inside the window**, which is the same case arriving a different way; `contracts.span` of
+  `SpansRoll` names it — reported whenever the store holds two DIFFERENT recorded contracts, even if an
+  unattributed run also sits in the window.
+- **Unattributed rows confining the window the same way a roll does**, but for a store reason rather than a
+  market one: history cached before this server recorded provenance, with no second recorded contract to
+  prove a roll either way. `contracts.span` of `Unknown` names this one instead — it is genuinely *cannot
+  tell*, not a claim that there was no roll, and the two are not interchangeable (`gh#402`).
 - **`Body` legitimately finding nothing.** On a continuous intraday series a bar opens at the previous close,
   so a body high ties with its neighbour's on every bar and no candidate dominates its window (measured on
   gh#247). A property of the source, not of the market.

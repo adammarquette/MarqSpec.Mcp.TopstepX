@@ -1,3 +1,4 @@
+using System.Runtime.CompilerServices;
 using FluentAssertions;
 using MarqSpec.Client.ProjectX.Api.Models;
 using MarqSpec.Mcp.TopstepX.Configuration;
@@ -16,6 +17,7 @@ using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using Microsoft.Extensions.Time.Testing;
+using ModelContextProtocol;
 
 namespace MarqSpec.Mcp.TopstepX.Tests.MarketData;
 
@@ -293,7 +295,7 @@ public sealed class TradeTapeRecorderTests
             recorder.ExecuteTask!.IsFaulted.Should().BeFalse(
                 "a faulted ExecuteTask is what Program.AnyFaulted reads");
 
-            MarketDataTools tools = Tools(database, tape);
+            TapeTools tools = Tools(database, tape);
             DateTimeOffset from = new(2026, 8, 18, 14, 0, 0, TimeSpan.Zero);
             DateTimeOffset to = new(2026, 8, 18, 16, 0, 0, TimeSpan.Zero);
 
@@ -404,7 +406,7 @@ public sealed class TradeTapeRecorderTests
 
             await SeedEsCellAsync(database, listenStart);
 
-            MarketDataTools tools = Tools(database, tape);
+            TapeTools tools = Tools(database, tape);
             DateTimeOffset to = listenStart.AddHours(2);
 
             ToolPayloads.FootprintSeries payload = await tools.GetFootprint(
@@ -446,7 +448,7 @@ public sealed class TradeTapeRecorderTests
 
             await SeedEsCellAsync(database, listenStart);
 
-            MarketDataTools tools = Tools(database, tape);
+            TapeTools tools = Tools(database, tape);
             DateTimeOffset to = listenStart.AddHours(2);
 
             ToolPayloads.FootprintSeries payload = await tools.GetFootprint(
@@ -494,6 +496,146 @@ public sealed class TradeTapeRecorderTests
         }
     }
 
+    [Fact]
+    public async Task ASecondRecordersStart_DoesNotDeleteTheOpenRowOfAnInstrumentItDoesNotRecord()
+    {
+        // Two HTTP recorders with RecordTape on, split by MarketData__Instruments, against one
+        // store. A is listening on ES; B records only NQ. B's start must discard its own NQ
+        // leftover and leave A's ES row alone — an unscoped discard deletes every open row in
+        // the table, and A then takes the empty-ledger refusal gh#365 closed while it is still
+        // writing prints (gh#382). The coverage range is not recoverable: there is no
+        // market-tape backfill (ADR-0016).
+        string sharedStore = Guid.NewGuid().ToString();
+        DateTimeOffset nqLeftoverStart = new(2026, 8, 1, 12, 0, 0, TimeSpan.Zero);
+        (TradeTapeRecorder recorderA, FakeMarketHub hubA, TopstepXDbContext database, ServiceProvider servicesA, FakeTimeProvider clock) =
+            Build(
+                McpTransport.Http,
+                recordTape: true,
+                instruments: "ES",
+                gateway: new PerInstrumentGateway(),
+                sharedDatabaseName: sharedStore);
+
+        await using (servicesA)
+        await using (database)
+        {
+            TapeAvailabilityHolder tapeA = servicesA.GetRequiredService<TapeAvailabilityHolder>();
+
+            database.TapeCoverage.Add(new TapeCoverageRecord
+            {
+                Venue = "test",
+                Instrument = "NQ",
+                ContractId = "CON.F.US.ENQ.Z26",
+                RangeStart = nqLeftoverStart,
+                RangeEnd = TapeCoverageRecord.StillListeningEnd,
+                RecordedAt = nqLeftoverStart,
+            });
+            await database.SaveChangesAsync();
+
+            await recorderA.StartAsync(CancellationToken.None);
+            await WaitUntil(() => hubA.TradeSubscriptions.Count > 0 && tapeA.For("ES").IsListening);
+
+            DateTimeOffset listenStart = clock.GetUtcNow();
+            CoverageRows(database).Should().ContainSingle(row =>
+                row.Instrument == "ES"
+                && row.RangeStart == listenStart
+                && row.RangeEnd == TapeCoverageRecord.StillListeningEnd);
+
+            await SeedEsCellAsync(database, listenStart);
+
+            (TradeTapeRecorder recorderB, FakeMarketHub hubB, _, ServiceProvider servicesB, _) =
+                Build(
+                    McpTransport.Http,
+                    recordTape: true,
+                    instruments: "NQ",
+                    gateway: new PerInstrumentGateway(),
+                    sharedDatabaseName: sharedStore);
+
+            await using (servicesB)
+            {
+                TapeAvailabilityHolder tapeB = servicesB.GetRequiredService<TapeAvailabilityHolder>();
+
+                await recorderB.StartAsync(CancellationToken.None);
+                await WaitUntil(() => hubB.TradeSubscriptions.Count > 0 && tapeB.For("NQ").IsListening);
+
+                IReadOnlyList<TapeCoverageRecord> rows = CoverageRows(database);
+
+                rows.Should().ContainSingle(
+                    row => row.Instrument == "ES"
+                        && row.RangeStart == listenStart
+                        && row.RangeEnd == TapeCoverageRecord.StillListeningEnd,
+                    "a recorder that does not record ES must not delete the ES recorder's open listen");
+
+                rows.Should().NotContain(
+                    row => row.Instrument == "NQ" && row.RangeStart == nqLeftoverStart,
+                    "B's own leftover from a previous run is still a crash leftover it supersedes");
+
+                rows.Should().ContainSingle(
+                    row => row.Instrument == "NQ"
+                        && row.RangeStart == listenStart
+                        && row.RangeEnd == TapeCoverageRecord.StillListeningEnd);
+
+                tapeA.For("ES").IsListening.Should().BeTrue();
+
+                TapeTools tools = Tools(database, tapeA);
+                ToolPayloads.FootprintSeries payload = await tools.GetFootprint(
+                    "ES", 5, listenStart, listenStart.AddHours(2), CancellationToken.None);
+
+                payload.Covered.Start.Should().Be(listenStart);
+                payload.Cells.Should().NotBeEmpty();
+
+                await recorderB.StopAsync(CancellationToken.None);
+            }
+
+            await recorderA.StopAsync(CancellationToken.None);
+        }
+    }
+
+    [Fact]
+    public async Task ALeftoverOnARolledAwayContract_IsStillDiscarded_ForAnInstrumentThisStartRecords()
+    {
+        // The discard is scoped by (Venue, Instrument), not by the front contract, and this is the
+        // case that pins it: a crash before a roll leaves an open row on the contract that was in
+        // front then. Keyed on ContractId too, that row survives every later start — and the
+        // Listening guard is per instrument (VolumeProfileService.IsListening), so it would read
+        // as coverage to 9999 on a contract nothing is subscribed to (gh#382).
+        DateTimeOffset leftoverStart = new(2026, 8, 1, 12, 0, 0, TimeSpan.Zero);
+        (TradeTapeRecorder recorder, FakeMarketHub hub, TopstepXDbContext database, ServiceProvider services, FakeTimeProvider clock) =
+            Build(McpTransport.Http, recordTape: true);
+
+        await using (services)
+        await using (database)
+        {
+            database.TapeCoverage.Add(new TapeCoverageRecord
+            {
+                Venue = "test",
+                Instrument = "ES",
+                ContractId = "CON.F.US.TEST.U26",
+                RangeStart = leftoverStart,
+                RangeEnd = TapeCoverageRecord.StillListeningEnd,
+                RecordedAt = leftoverStart,
+            });
+            await database.SaveChangesAsync();
+
+            await recorder.StartAsync(CancellationToken.None);
+            await WaitUntil(() => hub.TradeSubscriptions.Count > 0);
+
+            DateTimeOffset listenStart = clock.GetUtcNow();
+            IReadOnlyList<TapeCoverageRecord> rows = CoverageRows(database);
+
+            rows.Should().NotContain(
+                row => row.ContractId == "CON.F.US.TEST.U26",
+                "a leftover written before a roll is still this process's own, and would otherwise "
+                + "claim coverage to 9999 on a contract nothing is listening to");
+            rows.Should().ContainSingle(row =>
+                row.Instrument == "ES"
+                && row.ContractId == "CON.F.US.TEST.Z26"
+                && row.RangeStart == listenStart
+                && row.RangeEnd == TapeCoverageRecord.StillListeningEnd);
+
+            await recorder.StopAsync(CancellationToken.None);
+        }
+    }
+
     [Theory]
     [InlineData(McpTransport.Stdio, true)]
     [InlineData(McpTransport.Http, false)]
@@ -517,7 +659,9 @@ public sealed class TradeTapeRecorderTests
             await SeedStillListeningAsync(database, leftoverStart);
 
             await recorder.StartAsync(CancellationToken.None);
-            await WaitUntil(() => recorder.ExecuteTask?.IsCompleted == true);
+            // ExecuteTask completion is a real, awaitable signal here — no poll needed, and
+            // bounded so a hang (the regression this test pins) still fails fast (gh#407).
+            await BackgroundServiceTestSupport.AwaitCompletionAsync(recorder.ExecuteTask!);
 
             CoverageRows(database).Should().ContainSingle(
                 row => row.RangeStart == leftoverStart
@@ -588,7 +732,7 @@ public sealed class TradeTapeRecorderTests
 
                 httpTape.For("ES").IsListening.Should().BeTrue();
 
-                MarketDataTools tools = Tools(database, httpTape);
+                TapeTools tools = Tools(database, httpTape);
                 DateTimeOffset to = listenStart.AddHours(2);
 
                 ToolPayloads.FootprintSeries payload = await tools.GetFootprint(
@@ -617,7 +761,9 @@ public sealed class TradeTapeRecorderTests
             await SeedStillListeningAsync(database, leftoverStart);
 
             await recorder.StartAsync(CancellationToken.None);
-            await WaitUntil(() => recorder.ExecuteTask?.IsCompleted == true);
+            // ExecuteTask completion is a real, awaitable signal here — no poll needed, and
+            // bounded so a hang (the regression this test pins) still fails fast (gh#407).
+            await BackgroundServiceTestSupport.AwaitCompletionAsync(recorder.ExecuteTask!);
 
             CoverageRows(database).Should().ContainSingle(
                 row => row.RangeStart == leftoverStart
@@ -675,7 +821,7 @@ public sealed class TradeTapeRecorderTests
 
             await SeedEsCellAsync(database, listenStart);
 
-            MarketDataTools tools = Tools(database, tape);
+            TapeTools tools = Tools(database, tape);
             DateTimeOffset to = listenStart.AddHours(2);
 
             ToolPayloads.FootprintSeries payload = await tools.GetFootprint(
@@ -854,7 +1000,7 @@ public sealed class TradeTapeRecorderTests
                 && row.RangeEnd == TapeCoverageRecord.StillListeningEnd);
 
             await SeedEsCellAsync(database, listenB);
-            MarketDataTools tools = Tools(database, tape);
+            TapeTools tools = Tools(database, tape);
             ToolPayloads.FootprintSeries payload = await tools.GetFootprint(
                 "ES", 5, listenB, listenB.AddHours(2), CancellationToken.None);
 
@@ -968,7 +1114,7 @@ public sealed class TradeTapeRecorderTests
             recorder.RecordedPrints.Should().Be(0, "prints must not land after the subscription is dropped");
 
             await SeedEsCellAsync(database, _receipt);
-            MarketDataTools tools = Tools(database, tape);
+            TapeTools tools = Tools(database, tape);
             Func<Task> footprint = () => tools.GetFootprint(
                 "ES", 5, _receipt, _receipt.AddHours(2), CancellationToken.None);
 
@@ -1016,7 +1162,7 @@ public sealed class TradeTapeRecorderTests
                 && row.RangeEnd == TapeCoverageRecord.StillListeningEnd);
 
             await SeedEsCellAsync(database, restoreStart);
-            MarketDataTools tools = Tools(database, tape);
+            TapeTools tools = Tools(database, tape);
             ToolPayloads.FootprintSeries payload = await tools.GetFootprint(
                 "ES", 5, failedListen, failedListen.AddHours(2), CancellationToken.None);
 
@@ -1071,7 +1217,7 @@ public sealed class TradeTapeRecorderTests
                 row.RangeStart == restoreStart
                 && row.RangeEnd == TapeCoverageRecord.StillListeningEnd);
 
-            MarketDataTools tools = Tools(database, tape);
+            TapeTools tools = Tools(database, tape);
             Func<Task<ToolPayloads.FootprintSeries>> footprint = () => tools.GetFootprint(
                 "ES", 5, _receipt, _receipt.AddHours(2), CancellationToken.None);
 
@@ -1132,7 +1278,7 @@ public sealed class TradeTapeRecorderTests
                 && row.RangeEnd == TapeCoverageRecord.StillListeningEnd);
 
             await SeedEsCellAsync(database, restoreStart);
-            MarketDataTools tools = Tools(database, tape);
+            TapeTools tools = Tools(database, tape);
             ToolPayloads.FootprintSeries payload = await tools.GetFootprint(
                 "ES", 5, failedListen, failedListen.AddHours(2), CancellationToken.None);
 
@@ -1348,7 +1494,9 @@ public sealed class TradeTapeRecorderTests
             TapeAvailabilityHolder tape = services.GetRequiredService<TapeAvailabilityHolder>();
 
             await recorder.StartAsync(CancellationToken.None);
-            await WaitUntil(() => recorder.ExecuteTask?.IsCompleted == true);
+            // ExecuteTask completion is a real, awaitable signal here — no poll needed, and
+            // bounded so a hang (the regression this test pins) still fails fast (gh#407).
+            await BackgroundServiceTestSupport.AwaitCompletionAsync(recorder.ExecuteTask!);
 
             tape.Value.IsListening.Should().BeFalse();
             tape.Value.Reason.Should().Be(TapeUnavailableReason.NeverStarted);
@@ -1356,6 +1504,601 @@ public sealed class TradeTapeRecorderTests
 
             await recorder.StopAsync(CancellationToken.None);
         }
+    }
+
+    [Fact]
+    public async Task ASecondRecorderOnTheSameInstrument_DoesNotSubscribe_AndNamesTheOtherHolder()
+    {
+        // The card. Two subscribers on one tape double every volume, and a doubled delta looks
+        // like order flow rather than like a bug (ADR-0016). gh#382 made the collision survivable
+        // by scoping the discard; it did not make it illegal. The claim does (gh#404).
+        string sharedStore = Guid.NewGuid().ToString();
+        (TradeTapeRecorder first, FakeMarketHub firstHub, TopstepXDbContext database, ServiceProvider firstServices, FakeTimeProvider clock) =
+            Build(McpTransport.Http, recordTape: true, sharedDatabaseName: sharedStore);
+
+        await using (firstServices)
+        await using (database)
+        {
+            TapeAvailabilityHolder firstTape = firstServices.GetRequiredService<TapeAvailabilityHolder>();
+
+            await first.StartAsync(CancellationToken.None);
+            await WaitUntil(() => firstHub.TradeSubscriptions.Count > 0 && firstTape.For("ES").IsListening);
+
+            DateTimeOffset listenStart = clock.GetUtcNow();
+
+            (TradeTapeRecorder second, FakeMarketHub secondHub, _, ServiceProvider secondServices, _) =
+                Build(McpTransport.Http, recordTape: true, sharedDatabaseName: sharedStore);
+
+            await using (secondServices)
+            {
+                TapeAvailabilityHolder secondTape = secondServices.GetRequiredService<TapeAvailabilityHolder>();
+
+                await second.StartAsync(CancellationToken.None);
+                await WaitUntil(
+                    () => secondTape.For("ES").Reason == TapeUnavailableReason.HeldByAnotherRecorder,
+                    "a second recorder on a claimed instrument is refused");
+
+                secondHub.TradeSubscriptions.Should().BeEmpty(
+                    "the second recorder must not subscribe to a tape another process is recording");
+                second.RecordedPrints.Should().Be(0);
+
+                secondTape.For("ES").Explanation.Should().Contain("Another recorder");
+
+                second.ExecuteTask!.IsFaulted.Should().BeFalse(
+                    "Program.AnyFaulted reads a faulted ExecuteTask; a refusal must not take the host down (gh#76)");
+                second.ExecuteTask!.IsCompleted.Should().BeFalse(
+                    "it stays up to retry: quitting would leave nothing recording once the holder drains");
+
+                // The first recorder is untouched: still listening, still covered.
+                firstTape.For("ES").IsListening.Should().BeTrue();
+                CoverageRows(database).Should().ContainSingle(row =>
+                    row.Instrument == "ES"
+                    && row.RangeStart == listenStart
+                    && row.RangeEnd == TapeCoverageRecord.StillListeningEnd,
+                    "the refused start never reached the discard, so it cannot supersede a live listen");
+
+                await second.StopAsync(CancellationToken.None);
+            }
+
+            await first.StopAsync(CancellationToken.None);
+        }
+    }
+
+    [Fact]
+    public async Task ARefusedRecorder_TakesOverWhenTheHolderReleases_SoARollingRedeployKeepsRecording()
+    {
+        // The rolling redeploy, end to end and overlapping. The new container starts while the old
+        // one is still draining and is refused; the old one then exits and deletes its row. If the
+        // refusal were final, *nothing* would be recording from that moment on — permanently, and
+        // a tape gap has no backfill. That is a worse outcome than the double-recording this card
+        // set out to prevent, so a refusal is re-attempted on the renewal cadence (gh#404).
+        string sharedStore = Guid.NewGuid().ToString();
+        (TradeTapeRecorder draining, FakeMarketHub drainingHub, TopstepXDbContext database, ServiceProvider drainingServices, _) =
+            Build(McpTransport.Http, recordTape: true, sharedDatabaseName: sharedStore);
+
+        await using (drainingServices)
+        await using (database)
+        {
+            TapeAvailabilityHolder drainingTape = drainingServices.GetRequiredService<TapeAvailabilityHolder>();
+            await draining.StartAsync(CancellationToken.None);
+            await WaitUntil(() => drainingHub.TradeSubscriptions.Count > 0 && drainingTape.For("ES").IsListening);
+
+            (TradeTapeRecorder arriving, FakeMarketHub arrivingHub, _, ServiceProvider arrivingServices, FakeTimeProvider arrivingClock) =
+                Build(McpTransport.Http, recordTape: true, sharedDatabaseName: sharedStore);
+
+            await using (arrivingServices)
+            {
+                TapeAvailabilityHolder arrivingTape = arrivingServices.GetRequiredService<TapeAvailabilityHolder>();
+
+                await arriving.StartAsync(CancellationToken.None);
+                await WaitUntil(
+                    () => arrivingTape.For("ES").Reason == TapeUnavailableReason.HeldByAnotherRecorder,
+                    "the old container still holds the claim");
+                arrivingHub.TradeSubscriptions.Should().BeEmpty();
+
+                // The old container finishes draining and exits, releasing its claim.
+                await draining.StopAsync(CancellationToken.None);
+                await WaitUntil(() => LeaseRows(database).Count == 0);
+
+                arrivingClock.Advance(TapeLease.DefaultTimeToLive / 3);
+
+                await WaitUntil(
+                    () => arrivingHub.TradeSubscriptions.Count > 0 && arrivingTape.For("ES").IsListening,
+                    "the refused recorder re-attempts and takes the freed claim, rather than "
+                    + "leaving the tape unrecorded forever");
+
+                arrivingTape.For("ES").IsListening.Should().BeTrue(
+                    "the recorded refusal is cleared once the claim is actually held");
+                LeaseRows(database).Should().ContainSingle(row => row.Instrument == "ES");
+
+                CoverageRows(database).Should().Contain(row =>
+                    row.RangeEnd == TapeCoverageRecord.StillListeningEnd,
+                    "the arriving recorder opens its own listen once it holds the claim");
+
+                await arriving.StopAsync(CancellationToken.None);
+            }
+        }
+    }
+
+    [Fact]
+    public async Task TheSplitByInstrumentDeployment_StillStartsBothRecorders()
+    {
+        // The claim is per (Venue, Instrument), so the deployment gh#382 protects stays legal. A
+        // whole-store claim would have outlawed it, which is why the granularity is written down.
+        string sharedStore = Guid.NewGuid().ToString();
+        (TradeTapeRecorder es, FakeMarketHub esHub, TopstepXDbContext database, ServiceProvider esServices, _) =
+            Build(
+                McpTransport.Http,
+                recordTape: true,
+                instruments: "ES",
+                gateway: new PerInstrumentGateway(),
+                sharedDatabaseName: sharedStore);
+
+        await using (esServices)
+        await using (database)
+        {
+            TapeAvailabilityHolder esTape = esServices.GetRequiredService<TapeAvailabilityHolder>();
+            await es.StartAsync(CancellationToken.None);
+            await WaitUntil(() => esHub.TradeSubscriptions.Count > 0 && esTape.For("ES").IsListening);
+
+            (TradeTapeRecorder nq, FakeMarketHub nqHub, _, ServiceProvider nqServices, _) =
+                Build(
+                    McpTransport.Http,
+                    recordTape: true,
+                    instruments: "NQ",
+                    gateway: new PerInstrumentGateway(),
+                    sharedDatabaseName: sharedStore);
+
+            await using (nqServices)
+            {
+                TapeAvailabilityHolder nqTape = nqServices.GetRequiredService<TapeAvailabilityHolder>();
+                await nq.StartAsync(CancellationToken.None);
+                await WaitUntil(
+                    () => nqHub.TradeSubscriptions.Count > 0 && nqTape.For("NQ").IsListening,
+                    "a recorder that records different instruments is not the collision being refused");
+
+                esTape.For("ES").IsListening.Should().BeTrue();
+                LeaseRows(database).Should().HaveCount(2);
+
+                await nq.StopAsync(CancellationToken.None);
+            }
+
+            await es.StopAsync(CancellationToken.None);
+        }
+    }
+
+    [Fact]
+    public async Task APartlyRefusedRecorder_RecordsWhatItHolds_AndPicksUpTheRestWhenItFrees()
+    {
+        // A refusal is per instrument, so a start that loses one keeps the others. The one it lost
+        // is not abandoned either.
+        string sharedStore = Guid.NewGuid().ToString();
+        (TradeTapeRecorder nqOnly, FakeMarketHub nqHub, TopstepXDbContext database, ServiceProvider nqServices, _) =
+            Build(
+                McpTransport.Http,
+                recordTape: true,
+                instruments: "NQ",
+                gateway: new PerInstrumentGateway(),
+                sharedDatabaseName: sharedStore);
+
+        await using (nqServices)
+        await using (database)
+        {
+            TapeAvailabilityHolder nqTape = nqServices.GetRequiredService<TapeAvailabilityHolder>();
+            await nqOnly.StartAsync(CancellationToken.None);
+            await WaitUntil(() => nqHub.TradeSubscriptions.Count > 0 && nqTape.For("NQ").IsListening);
+
+            (TradeTapeRecorder both, FakeMarketHub bothHub, _, ServiceProvider bothServices, FakeTimeProvider bothClock) =
+                Build(
+                    McpTransport.Http,
+                    recordTape: true,
+                    instruments: "ES,NQ",
+                    gateway: new PerInstrumentGateway(),
+                    sharedDatabaseName: sharedStore);
+
+            await using (bothServices)
+            {
+                TapeAvailabilityHolder bothTape = bothServices.GetRequiredService<TapeAvailabilityHolder>();
+                await both.StartAsync(CancellationToken.None);
+
+                await WaitUntil(
+                    () => bothTape.For("ES").IsListening
+                        && bothTape.For("NQ").Reason == TapeUnavailableReason.HeldByAnotherRecorder,
+                    "ES was free and NQ was not, and one refusal does not refuse the other");
+
+                bothHub.TradeSubscriptions.Should().ContainSingle()
+                    .Which.Should().Be("CON.F.US.EP.Z26");
+
+                await nqOnly.StopAsync(CancellationToken.None);
+                bothClock.Advance(TapeLease.DefaultTimeToLive / 3);
+
+                await WaitUntil(
+                    () => bothTape.For("NQ").IsListening,
+                    "the instrument it was refused is re-attempted, not written off");
+                bothHub.TradeSubscriptions.Should().HaveCount(2);
+
+                await both.StopAsync(CancellationToken.None);
+            }
+        }
+    }
+
+    [Fact]
+    public async Task ACrashedHoldersClaim_RefusesARestartSecondsLater_ThenLapsesAndIsTakenOver()
+    {
+        // The realistic crash: the dead process left its row behind mid-term, because a crash
+        // skips the release. A container coming back seconds later is therefore refused — and the
+        // point of the retry tick is that this is a bounded gap of at most one term, not a
+        // permanent stop. Both halves are asserted here; a fixture that seeds a claim which
+        // expired an hour ago tests only the easy half.
+        (TradeTapeRecorder recorder, FakeMarketHub hub, TopstepXDbContext database, ServiceProvider services, FakeTimeProvider clock) =
+            Build(McpTransport.Http, recordTape: true);
+
+        await using (services)
+        await using (database)
+        {
+            DateTimeOffset crashedAt = _receipt - TimeSpan.FromSeconds(5);
+            database.TapeLeases.Add(new TapeLeaseRecord
+            {
+                Venue = "test",
+                Instrument = "ES",
+                OwnerId = "a-process-that-crashed",
+                Generation = 7,
+                AcquiredAt = crashedAt,
+                HeartbeatAt = crashedAt,
+                ExpiresAt = crashedAt + TapeLease.DefaultTimeToLive,
+            });
+            await database.SaveChangesAsync();
+
+            TapeAvailabilityHolder tape = services.GetRequiredService<TapeAvailabilityHolder>();
+            await recorder.StartAsync(CancellationToken.None);
+
+            await WaitUntil(
+                () => tape.For("ES").Reason == TapeUnavailableReason.HeldByAnotherRecorder,
+                "the crashed holder's term has not run out yet, and a quiet holder is still a holder");
+            hub.TradeSubscriptions.Should().BeEmpty();
+            LeaseRows(database).Should().ContainSingle(row => row.OwnerId == "a-process-that-crashed");
+
+            // The term runs out with nobody renewing it.
+            clock.Advance(TapeLease.DefaultTimeToLive);
+
+            await WaitUntil(
+                () => hub.TradeSubscriptions.Count > 0 && tape.For("ES").IsListening,
+                "a lapsed claim is reclaimable on the retry tick, or one crash silences the tape "
+                + "until an operator finds the row by hand");
+
+            LeaseRows(database).Should().ContainSingle(row =>
+                row.Instrument == "ES"
+                && row.OwnerId != "a-process-that-crashed"
+                && row.Generation == 8);
+
+            await recorder.StopAsync(CancellationToken.None);
+        }
+    }
+
+    [Fact]
+    public async Task ARecorderWhoseClaimIsTakenOver_ClosesItsRangeOnItsOwnClock_NotTheReplacements()
+    {
+        // A takeover is only reachable once the holder's term has run out, so the replacement
+        // stamps AcquiredAt at or after that expiry — and if the two clocks disagree, arbitrarily
+        // far past it. Closing the retiring range at that value lets another host's clock decide
+        // how much coverage this process claims, and extends the range over a window in which this
+        // process had already unsubscribed and stored nothing. A covered window with no prints
+        // reads as "the market was quiet", which is the absence-versus-coverage confusion gh#365
+        // and gh#376 exist to prevent.
+        //
+        // The close is therefore this process's own arithmetic: the last instant it was both
+        // entitled to write — the same expiry the fence uses — and still listening.
+        TimeSpan timeToLive = TapeLease.DefaultTimeToLive;
+        (TradeTapeRecorder recorder, FakeMarketHub hub, TopstepXDbContext database, ServiceProvider services, FakeTimeProvider clock) =
+            Build(McpTransport.Http, recordTape: true, leaseTimeToLive: timeToLive);
+
+        await using (services)
+        await using (database)
+        {
+            TapeAvailabilityHolder tape = services.GetRequiredService<TapeAvailabilityHolder>();
+            await recorder.StartAsync(CancellationToken.None);
+            await WaitUntil(() => hub.TradeSubscriptions.Count > 0 && tape.For("ES").IsListening);
+
+            DateTimeOffset listenStart = clock.GetUtcNow();
+            DateTimeOffset term = listenStart + timeToLive;
+
+            hub.Raise(Print(Utc(13, 45, 0), TradeLogType.Buy, price: 5000m));
+            await WaitUntil(() => recorder.RecordedPrints == 1, "the recorder is genuinely recording");
+
+            // A replacement on a clock running a term and a half ahead. TryAcquireAsync only takes
+            // a lapsed row and stamps AcquiredAt from its own clock, so this is the shape a real
+            // skewed taker writes: at or after this holder's expiry, never before it.
+            DateTimeOffset foreignHandover = term + TimeSpan.FromSeconds(60);
+            database.ChangeTracker.Clear();
+            TapeLeaseRecord row = database.TapeLeases.Single();
+            row.OwnerId = "the-process-that-took-over";
+            row.Generation++;
+            row.AcquiredAt = foreignHandover;
+            row.ExpiresAt = foreignHandover + timeToLive;
+            await database.SaveChangesAsync();
+
+            // A print in the window this process still believes is its own.
+            hub.Raise(Print(Utc(13, 45, 10), TradeLogType.Buy, price: 5001m));
+            await WaitUntil(() => recorder.RecordedPrints == 2);
+
+            DateTimeOffset noticed = listenStart + timeToLive / 3;
+            clock.Advance(timeToLive / 3);
+
+            await WaitUntil(
+                () => tape.For("ES").Reason == TapeUnavailableReason.HeldByAnotherRecorder,
+                "a renewal that finds the row taken is a loss, and the loser stands down");
+
+            hub.TradeSubscriptions.Should().BeEmpty(
+                "the evicted recorder drops the venue subscription rather than doubling the tape");
+
+            TapeCoverageRecord range = CoverageRows(database).Should().ContainSingle().Subject;
+            range.RangeStart.Should().Be(listenStart);
+            range.RangeEnd.Should().Be(noticed,
+                "it stopped listening here, and that is earlier than its own expiry");
+            range.RangeEnd.Should().NotBe(foreignHandover,
+                "another host's clock must not decide how much coverage this process claims");
+            range.RangeEnd.Should().BeOnOrBefore(term,
+                "it was never entitled to write past its own expiry, so it cannot claim past it");
+
+            recorder.ExecuteTask!.IsFaulted.Should().BeFalse();
+
+            await recorder.StopAsync(CancellationToken.None);
+        }
+    }
+
+    [Fact]
+    public async Task ASkewedTakeover_LeavesItsOverlapPrintsInsideACoveredRange_TheKnownResidual()
+    {
+        // The residual, pinned so nobody re-reads it as fixed. A replacement whose clock runs more
+        // than a term ahead can take the claim while this process still believes it is inside its
+        // own term, so both write for a while. The fence cannot see that — it compares this
+        // process's clock to an expiry this process wrote — and no close value moves those prints
+        // out of the retiring range, because they were written inside the term the range covers.
+        //
+        // Nothing downstream saves it either: FootprintProjector reads every Trades row for the
+        // instrument with no coverage join and no time predicate, so a duplicate is aggregated
+        // into a cell whatever the ledger says. Sequence is per process, so the two copies take
+        // different keys and do not collapse. The only mitigation is one clock.
+        TimeSpan timeToLive = TapeLease.DefaultTimeToLive;
+        (TradeTapeRecorder recorder, FakeMarketHub hub, TopstepXDbContext database, ServiceProvider services, FakeTimeProvider clock) =
+            Build(McpTransport.Http, recordTape: true, leaseTimeToLive: timeToLive);
+
+        await using (services)
+        await using (database)
+        {
+            TapeAvailabilityHolder tape = services.GetRequiredService<TapeAvailabilityHolder>();
+            await recorder.StartAsync(CancellationToken.None);
+            await WaitUntil(() => hub.TradeSubscriptions.Count > 0 && tape.For("ES").IsListening);
+
+            DateTimeOffset listenStart = clock.GetUtcNow();
+            DateTimeOffset term = listenStart + timeToLive;
+
+            database.ChangeTracker.Clear();
+            TapeLeaseRecord row = database.TapeLeases.Single();
+            row.OwnerId = "a-recorder-whose-clock-runs-ahead";
+            row.Generation++;
+            row.AcquiredAt = term + TimeSpan.FromSeconds(60);
+            row.ExpiresAt = term + timeToLive;
+            await database.SaveChangesAsync();
+
+            // This process has been replaced already and cannot tell. It keeps recording.
+            hub.Raise(Print(Utc(13, 45, 5), TradeLogType.Buy, price: 5002m));
+            await WaitUntil(() => recorder.RecordedPrints == 1,
+                "the fence reads this process's own term, which has not run out, so it stores");
+
+            clock.Advance(timeToLive / 3);
+            await WaitUntil(
+                () => tape.For("ES").Reason == TapeUnavailableReason.HeldByAnotherRecorder);
+
+            TapeCoverageRecord range = CoverageRows(database).Should().ContainSingle().Subject;
+            TradeRecord overlap = TradeRows(database).Should().ContainSingle().Subject;
+
+            overlap.RecordedAt.Should().BeOnOrAfter(range.RangeStart);
+            overlap.RecordedAt.Should().BeBefore(range.RangeEnd,
+                "the overlap print sits INSIDE the retiring range — this is the residual, not a "
+                + "safety property: a reader counts it, and if the replacement stored the same "
+                + "print it is counted twice. Only a synchronised clock prevents it");
+
+            await recorder.StopAsync(CancellationToken.None);
+        }
+    }
+
+    [Fact]
+    public async Task APausedHolderPastItsTerm_StoresNoPrint_EvenBeforeItsRenewalHasReturned()
+    {
+        // The case the fence exists for, and the one the issue named: a holder that is merely
+        // paused past its expiry — a stall, a store that has stopped answering — while another
+        // start is already entitled to take over. Standing down at the next tick is not enough,
+        // because the tick is exactly what is not happening. Here the renewal is held inside the
+        // store, so the recorder is past its term and has been told nothing at all; a print
+        // arriving now must still not be stored.
+        //
+        // It also pins the design point that makes that possible: the fence reads no lock, so it
+        // answers while the renewal holds the lease gate.
+        TaskCompletionSource hold = new();
+        TaskCompletionSource renewalStarted = new();
+        CollectingLogger logger = new();
+        TimeSpan timeToLive = TapeLease.DefaultTimeToLive;
+
+        (TradeTapeRecorder recorder, FakeMarketHub hub, TopstepXDbContext database, ServiceProvider services, FakeTimeProvider clock) =
+            Build(
+                McpTransport.Http,
+                recordTape: true,
+                logger: logger,
+                extraInterceptor: new HoldingLeaseRenewalInterceptor(hold, renewalStarted),
+                leaseTimeToLive: timeToLive);
+
+        await using (services)
+        await using (database)
+        {
+            TapeAvailabilityHolder tape = services.GetRequiredService<TapeAvailabilityHolder>();
+            await recorder.StartAsync(CancellationToken.None);
+            await WaitUntil(() => hub.TradeSubscriptions.Count > 0 && tape.For("ES").IsListening);
+
+            hub.Raise(Print(Utc(13, 45, 0), TradeLogType.Buy, price: 5000m));
+            await WaitUntil(() => recorder.RecordedPrints == 1, "a print inside the term is stored");
+
+            // The term runs out. The renewal tick fires and gets stuck in the store, which is what
+            // a paused holder looks like from the outside.
+            clock.Advance(timeToLive);
+            await renewalStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+            hub.Raise(Print(Utc(13, 45, 10), TradeLogType.Buy, price: 5001m));
+
+            await WaitUntil(
+                () => logger.Warnings.Any(warning => warning.Contains(
+                    "after this recorder\'s tape claim expired", StringComparison.Ordinal)),
+                "the print is refused by the claim, not merely delayed");
+
+            recorder.RecordedPrints.Should().Be(1,
+                "the earliest instant another process may hold this claim is the latest instant "
+                + "this one may write, so a print past the term is not stored at all");
+            TradeRows(database).Should().ContainSingle();
+
+            hold.TrySetResult();
+            await recorder.StopAsync(CancellationToken.None);
+        }
+    }
+
+    [Fact]
+    public async Task AHolderThatCannotRenewBeforeItsTermRunsOut_ClosesAtItsExpiry_NotAtWhenItNoticed()
+    {
+        // Two things nothing else reaches.
+        //
+        // First the store-outage forfeit: the renewals fail, the term runs out, and the holder
+        // gives the instrument up rather than recording without a claim it can show. Nothing else
+        // in the suite makes a renewal throw.
+        //
+        // Second, and the reason this test exists: it is the only path where the notice lands
+        // *after* the expiry, so it is the only one that discriminates the two halves of the
+        // close. Everywhere else the holder notices while still inside its term and the close is
+        // the notice, which a broken clamp would also produce. Here the range must stop at the
+        // expiry — the same instant the fence stopped storing prints — because the window between
+        // the expiry and the notice is one this recorder was already dropping prints in. Claiming
+        // it would publish a covered window with nothing in it, which reads as a quiet market
+        // rather than as an absence: the confusion gh#365 and gh#376 exist to prevent.
+        TimeSpan timeToLive = TapeLease.DefaultTimeToLive;
+        CollectingLogger logger = new();
+        (TradeTapeRecorder recorder, FakeMarketHub hub, TopstepXDbContext database, ServiceProvider services, FakeTimeProvider clock) =
+            Build(
+                McpTransport.Http,
+                recordTape: true,
+                logger: logger,
+                extraInterceptor: new RefusingLeaseRenewalInterceptor(),
+                leaseTimeToLive: timeToLive);
+
+        await using (services)
+        await using (database)
+        {
+            TapeAvailabilityHolder tape = services.GetRequiredService<TapeAvailabilityHolder>();
+            await recorder.StartAsync(CancellationToken.None);
+            await WaitUntil(() => hub.TradeSubscriptions.Count > 0 && tape.For("ES").IsListening);
+
+            DateTimeOffset listenStart = clock.GetUtcNow();
+            DateTimeOffset term = listenStart + timeToLive;
+
+            // The store stops taking renewals and the term runs out before the loop next wakes,
+            // so the notice is strictly later than the expiry.
+            DateTimeOffset noticed = listenStart + timeToLive + TimeSpan.FromSeconds(10);
+            clock.Advance(timeToLive + TimeSpan.FromSeconds(10));
+
+            await WaitUntil(
+                () => !tape.For("ES").IsListening,
+                "a holder that cannot show it still holds the claim gives the instrument up");
+
+            hub.TradeSubscriptions.Should().BeEmpty(
+                "it stops listening rather than recording under a claim it cannot renew");
+
+            TapeCoverageRecord range = CoverageRows(database).Should().ContainSingle().Subject;
+            range.RangeStart.Should().Be(listenStart);
+            range.RangeEnd.Should().Be(term,
+                "the range stops where the fence stopped storing prints, not where the loop "
+                + "happened to wake up");
+            range.RangeEnd.Should().NotBe(noticed,
+                "the window between the expiry and the notice held no stored print, so claiming "
+                + "it would report an absence as a quiet market");
+
+            tape.For("ES").Explanation.Should().Contain("renew",
+                "nobody necessarily took this claim — it lapsed — and sending an operator to hunt "
+                + "a second recorder that does not exist is the wrong instruction");
+
+            recorder.ExecuteTask!.IsFaulted.Should().BeFalse();
+
+            await recorder.StopAsync(CancellationToken.None);
+        }
+    }
+
+    [Fact]
+    public async Task ACleanStop_ReleasesTheClaim_SoARedeployDoesNotWaitOutTheTimeToLive()
+    {
+        string sharedStore = Guid.NewGuid().ToString();
+        (TradeTapeRecorder stopping, FakeMarketHub stoppingHub, TopstepXDbContext database, ServiceProvider stoppingServices, _) =
+            Build(McpTransport.Http, recordTape: true, sharedDatabaseName: sharedStore);
+
+        await using (stoppingServices)
+        await using (database)
+        {
+            TapeAvailabilityHolder tape = stoppingServices.GetRequiredService<TapeAvailabilityHolder>();
+            await stopping.StartAsync(CancellationToken.None);
+            await WaitUntil(() => stoppingHub.TradeSubscriptions.Count > 0 && tape.For("ES").IsListening);
+
+            await stopping.StopAsync(CancellationToken.None);
+            await WaitUntil(() => LeaseRows(database).Count == 0);
+        }
+
+        (TradeTapeRecorder next, FakeMarketHub nextHub, TopstepXDbContext nextDatabase, ServiceProvider nextServices, _) =
+            Build(McpTransport.Http, recordTape: true, sharedDatabaseName: sharedStore);
+
+        await using (nextServices)
+        await using (nextDatabase)
+        {
+            TapeAvailabilityHolder tape = nextServices.GetRequiredService<TapeAvailabilityHolder>();
+            await next.StartAsync(CancellationToken.None);
+            await WaitUntil(
+                () => nextHub.TradeSubscriptions.Count > 0 && tape.For("ES").IsListening,
+                "a rolling redeploy must not have to wait out a claim nobody holds");
+
+            await next.StopAsync(CancellationToken.None);
+        }
+    }
+
+    [Theory]
+    [InlineData(McpTransport.Stdio, true)]
+    [InlineData(McpTransport.Http, false)]
+    public async Task AStartThatWillNotRecord_ClaimsNothing_SoItCannotLockOutTheRecorder(
+        McpTransport transport,
+        bool recordTape)
+    {
+        // A Cowork stdio child and a switch-off HTTP instance both still serve tools against the
+        // same store. Neither subscribes, so neither may take a claim the recording process needs
+        // — the same reason they do not run the coverage discard (gh#378).
+        (TradeTapeRecorder recorder, _, TopstepXDbContext database, ServiceProvider services, _) =
+            Build(transport, recordTape);
+
+        await using (services)
+        await using (database)
+        {
+            await recorder.StartAsync(CancellationToken.None);
+            // ExecuteTask completion is a real, awaitable signal here — no poll needed, and
+            // bounded so a hang (the regression this test pins) still fails fast (gh#407).
+            await BackgroundServiceTestSupport.AwaitCompletionAsync(recorder.ExecuteTask!);
+
+            LeaseRows(database).Should().BeEmpty();
+
+            await recorder.StopAsync(CancellationToken.None);
+        }
+    }
+
+    private static List<TradeRecord> TradeRows(TopstepXDbContext database)
+    {
+        database.ChangeTracker.Clear();
+        return [.. database.Trades.OrderBy(row => row.RecordedAt).ThenBy(row => row.Sequence)];
+    }
+
+    private static List<TapeLeaseRecord> LeaseRows(TopstepXDbContext database)
+    {
+        database.ChangeTracker.Clear();
+        return [.. database.TapeLeases.OrderBy(row => row.Instrument)];
     }
 
     private static DateTime Utc(int hour, int minute, int second) =>
@@ -1426,7 +2169,7 @@ public sealed class TradeTapeRecorderTests
         await database.SaveChangesAsync();
     }
 
-    private static MarketDataTools Tools(TopstepXDbContext database, TapeAvailabilityHolder tape)
+    private static TapeTools Tools(TopstepXDbContext database, TapeAvailabilityHolder tape)
     {
         IOptions<MarketDataOptions> options = Options.Create(new MarketDataOptions
         {
@@ -1435,29 +2178,22 @@ public sealed class TradeTapeRecorderTests
             SessionCloseCentral = "16:00",
         });
         BarSessionCalendar calendar = BarSessionCalendar.Parse("16:00", []);
-        IndicatorCatalog catalog = new(
-            Options.Create(new IndicatorOptions { AtrPeriod = 3, RsiPeriod = 3 }), calendar);
         FakeTimeProvider clock = new(new DateTimeOffset(2026, 8, 18, 16, 0, 0, TimeSpan.Zero));
         CountingGateway gateway = new([]);
-        IndicatorProjector projector = new(database, catalog, NullLogger<IndicatorProjector>.Instance);
-        BarCacheService cache = new(
-            database, gateway, calendar, projector, clock, NullLogger<BarCacheService>.Instance);
 
-        return new MarketDataTools(
-            cache,
+        return new TapeTools(
+            new InstrumentResolver(new InstrumentRegistry(options), new StoreAvailabilityHolder()),
             database,
-            new InstrumentRegistry(options),
-            catalog,
-            new IndicatorCacheService(
-                database, catalog, projector, clock, NullLogger<IndicatorCacheService>.Instance),
-            new LevelMethodCatalog(calendar),
             gateway,
             new ToolGuards(options),
-            new StoreAvailabilityHolder(),
-            clock,
-            Options.Create(new KeyLevelDetectionOptions()),
+            tape,
             new VolumeProfileService(database, tape),
-            tape);
+            new VolumeFrontReader(new TapeVolumeFrontService(database, gateway, calendar)),
+            new FootprintCacheService(
+                database,
+                new FootprintProjector(database, NullLogger<FootprintProjector>.Instance),
+                clock,
+                NullLogger<FootprintCacheService>.Instance));
     }
 
     private static TradeUpdate Print(
@@ -1492,7 +2228,8 @@ public sealed class TradeTapeRecorderTests
             ILogger<TradeTapeRecorder>? logger = null,
             bool registerHub = true,
             SaveChangesInterceptor? extraInterceptor = null,
-            string? sharedDatabaseName = null)
+            string? sharedDatabaseName = null,
+            TimeSpan? leaseTimeToLive = null)
     {
         FakeMarketHub hub = new();
         FakeTimeProvider clock = new(_receipt);
@@ -1546,7 +2283,8 @@ public sealed class TradeTapeRecorderTests
             clock,
             logger ?? NullLogger<TradeTapeRecorder>.Instance,
             tape,
-            channelCapacity);
+            channelCapacity,
+            leaseTimeToLive ?? TapeLease.DefaultTimeToLive);
 
         return (recorder, hub, database, provider, clock);
     }
@@ -1593,9 +2331,62 @@ public sealed class TradeTapeRecorderTests
         }
     }
 
-    private static async Task WaitUntil(Func<bool> condition, string? because = null)
+    /// <summary>
+    /// Bound for <see cref="WaitUntil"/>'s poll on a multi-source predicate that has no single
+    /// completion to await.
+    /// </summary>
+    /// <remarks>
+    /// 15s is not a tuned number — it is a large multiple of every delay this repro could produce
+    /// deliberately (see PR body for gh#407), kept finite only so a genuine hang still fails inside
+    /// a single CI job rather than timing the whole run out. It is a different quantity from
+    /// <see cref="BackgroundServiceTestSupport.DefaultCompletionBudget"/>, which races a real
+    /// completion signal rather than polling; the two happen to share a value today, not a meaning,
+    /// and either may need to change without the other.
+    /// </remarks>
+    private static readonly TimeSpan _multiSourcePollBudget = TimeSpan.FromSeconds(15);
+
+    /// <summary>
+    /// Polls an arbitrary predicate built from hub/tape/database state that some background
+    /// continuation of the recorder under test is expected to make true.
+    /// </summary>
+    /// <remarks>
+    /// This budget used to be a real 2 seconds (gh#407). That was long enough for the recorder's
+    /// own work — nothing in <c>TradeTapeRecorder</c> waits on real wall-clock time to react to a
+    /// reconnect; both its channels post continuations off the calling thread by design
+    /// (<c>AllowSynchronousContinuations = false</c>), which is correct for the product but means
+    /// resuming them costs a ThreadPool hop. Under xUnit's full-suite parallel load that hop
+    /// queues behind everything every other concurrently-running test collection is doing, and
+    /// that queueing delay is not bounded by anything this test, or the recorder, controls — it
+    /// flaked on three unrelated branches that never touched this file.
+    /// <para>
+    /// A completion-shaped condition (<c>ExecuteTask?.IsCompleted</c>) has a real signal and does
+    /// not belong here — those call sites now use
+    /// <see cref="BackgroundServiceTestSupport.AwaitCompletionAsync"/>, which awaits the real
+    /// completion instead of polling but keeps a bound so a hang still fails with a message
+    /// instead of taking the whole test host down (that is what an earlier, unbounded version of
+    /// this same fix did — see PR body). What is left in this poll are the multi-source
+    /// predicates — the two at
+    /// gh#407's own repro (<c>SubscribeAttempts</c>, a logged error, and <c>IsListening</c>,
+    /// mutated independently by the hub double, the logger double and the recorder's lifecycle
+    /// channel) and others like it. For those there is no single completion to await: the only
+    /// point where all of that state is known to have settled is inside the recorder's private
+    /// <c>_lifecycle</c> channel, which exposes no test-observable event without a product change
+    /// this card puts out of scope. A budget is what is left for that shape, not a universal
+    /// property of every <c>WaitUntil</c> call in this file.
+    /// </para>
+    /// <para>
+    /// It is the mutation, not the poll interval, that gh#387's slower relational provider will
+    /// change, so widening this budget stays correct once that lands: gh#387 makes the recorder's
+    /// own store round-trips slower, it does not make unrelated test collections contend harder
+    /// for the ThreadPool.
+    /// </para>
+    /// </remarks>
+    private static async Task WaitUntil(
+        Func<bool> condition,
+        string? because = null,
+        [CallerArgumentExpression(nameof(condition))] string? conditionExpression = null)
     {
-        using CancellationTokenSource timeout = new(TimeSpan.FromSeconds(2));
+        using CancellationTokenSource timeout = new(_multiSourcePollBudget);
         try
         {
             while (!condition())
@@ -1603,9 +2394,12 @@ public sealed class TradeTapeRecorderTests
                 await Task.Delay(10, timeout.Token);
             }
         }
-        catch (OperationCanceledException) when (because is not null)
+        catch (OperationCanceledException exception) when (exception.CancellationToken == timeout.Token)
         {
-            throw new InvalidOperationException($"Timed out waiting: {because}");
+            throw new InvalidOperationException(
+                because is null
+                    ? $"Timed out waiting for: {conditionExpression}"
+                    : $"Timed out waiting: {because} ({conditionExpression})");
         }
     }
 
@@ -1657,6 +2451,53 @@ public sealed class TradeTapeRecorderTests
             BarRange window,
             CancellationToken cancellationToken) =>
             Task.FromResult<IReadOnlyList<VenueTrade>>([]);
+    }
+
+    /// <summary>Refuses every tape-claim renewal, so a holder's term runs out under it.</summary>
+    private sealed class RefusingLeaseRenewalInterceptor : SaveChangesInterceptor
+    {
+        public override ValueTask<InterceptionResult<int>> SavingChangesAsync(
+            DbContextEventData eventData,
+            InterceptionResult<int> result,
+            CancellationToken cancellationToken = default)
+        {
+            // Only the renewal: an acquire adds the row and a release deletes it.
+            bool renewing = eventData.Context?.ChangeTracker.Entries<TapeLeaseRecord>()
+                .Any(entry => entry.State == EntityState.Modified) == true;
+            if (renewing)
+            {
+                throw new InvalidOperationException("the store refused the claim renewal");
+            }
+
+            return base.SavingChangesAsync(eventData, result, cancellationToken);
+        }
+    }
+
+    /// <summary>
+    /// Holds a tape-claim renewal inside the store, so the recorder sits past its own term with
+    /// nothing yet told to it — a paused holder, from the outside.
+    /// </summary>
+    private sealed class HoldingLeaseRenewalInterceptor(
+        TaskCompletionSource hold,
+        TaskCompletionSource started) : SaveChangesInterceptor
+    {
+        public override async ValueTask<InterceptionResult<int>> SavingChangesAsync(
+            DbContextEventData eventData,
+            InterceptionResult<int> result,
+            CancellationToken cancellationToken = default)
+        {
+            // Only the renewal: an acquire adds the row and a release deletes it.
+            bool renewing = eventData.Context?.ChangeTracker.Entries<TapeLeaseRecord>()
+                .Any(entry => entry.State == EntityState.Modified) == true;
+            if (renewing)
+            {
+                started.TrySetResult();
+                await hold.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
+            }
+
+            return await base.SavingChangesAsync(eventData, result, cancellationToken)
+                .ConfigureAwait(false);
+        }
     }
 
     /// <summary>Holds persist so the bounded channel can fill in a test.</summary>

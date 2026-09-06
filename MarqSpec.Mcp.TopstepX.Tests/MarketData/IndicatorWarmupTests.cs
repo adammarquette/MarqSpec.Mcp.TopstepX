@@ -24,6 +24,15 @@ namespace MarqSpec.Mcp.TopstepX.Tests.MarketData;
 /// <c>Program.AnyFaulted</c> reads, and would turn an ordinary stdio EOF into a crash (gh#76).
 /// </para>
 /// <para>
+/// <b>The cases where a warmup actually WRITES are not here — see <c>IndicatorWarmupStoreTests</c> in the
+/// integration project.</b> The coverage was not deleted, it moved tiers. What is left is the set that must
+/// <i>not</i> replay — stdio, HTTP with the switch off, a warmup that throws, an unreachable store — and each
+/// asserts an empty <c>IndicatorValues</c>, so none of them reaches a store. The replaying cases do, and the
+/// second, in-memory-only implementation of that write was deleted under gh#387: it returned
+/// <c>pending.Count</c> where the store returns rows actually affected, which is the very number
+/// <c>ValuesChanged</c> is read off. They need a real Postgres now.
+/// </para>
+/// <para>
 /// The numbers a warmup writes are the same numbers a subsequent <c>rebuild-indicators</c> would
 /// write: a confirming rebuild is an empty diff (<c>R-2.2</c>).
 /// </para>
@@ -52,7 +61,10 @@ public sealed class IndicatorWarmupTests
         await using (database)
         {
             await warmup.StartAsync(CancellationToken.None);
-            await WaitUntil(() => warmup.ExecuteTask?.IsCompleted == true);
+
+            // ExecuteTask completion is a real, awaitable signal — no poll needed, and bounded
+            // so a hang still fails fast rather than taking the test host down (gh#407).
+            await BackgroundServiceTestSupport.AwaitCompletionAsync(warmup.ExecuteTask!);
 
             database.IndicatorValues.Should().BeEmpty(
                 "stdio, or HTTP with the switch off, must not replay — a Cowork child would stall");
@@ -60,51 +72,6 @@ public sealed class IndicatorWarmupTests
             warmup.ExecuteTask!.IsFaulted.Should().BeFalse();
 
             await warmup.StopAsync(CancellationToken.None);
-        }
-    }
-
-    [Fact]
-    public async Task WarmupWritesTheSeries_WhenHttpAndTheSwitchAreOn()
-    {
-        (IndicatorWarmup warmup, TopstepXDbContext database, ServiceProvider services) =
-            Build(McpTransport.Http, warmIndicators: true, seedBars: true);
-
-        await using (services)
-        await using (database)
-        {
-            await warmup.StartAsync(CancellationToken.None);
-            await WaitUntil(() => warmup.ExecuteTask?.IsCompleted == true);
-
-            database.IndicatorValues.Count(v => v.Instrument == "ES").Should().BeGreaterThan(0);
-            warmup.ExecuteTask.Should().NotBeNull();
-            warmup.ExecuteTask!.IsFaulted.Should().BeFalse();
-
-            await warmup.StopAsync(CancellationToken.None);
-        }
-    }
-
-    [Fact]
-    public async Task ValuesAfterWarmup_MatchASubsequentRebuild_EmptyDiff()
-    {
-        (IndicatorWarmup warmup, TopstepXDbContext database, ServiceProvider services) =
-            Build(McpTransport.Http, warmIndicators: true, seedBars: true);
-
-        await using (services)
-        await using (database)
-        {
-            await warmup.StartAsync(CancellationToken.None);
-            await WaitUntil(() => warmup.ExecuteTask?.IsCompleted == true);
-            await warmup.StopAsync(CancellationToken.None);
-
-            database.IndicatorValues.Should().NotBeEmpty("warmup must have written before the confirming rebuild");
-
-            using IServiceScope scope = services.CreateScope();
-            IndicatorRebuildResult second = await scope.ServiceProvider
-                .GetRequiredService<IndicatorRebuilder>()
-                .RebuildAsync(null, CancellationToken.None);
-
-            second.ValuesChanged.Should().Be(0, "the same bars justify the same values (R-2.2)");
-            second.SeriesRewritten.Should().Be(0, "a confirming rebuild is not a heal");
         }
     }
 
@@ -125,7 +92,10 @@ public sealed class IndicatorWarmupTests
         await using (database)
         {
             await warmup.StartAsync(CancellationToken.None);
-            await WaitUntil(() => warmup.ExecuteTask?.IsCompleted == true);
+
+            // ExecuteTask completion is a real, awaitable signal — no poll needed, and bounded
+            // so a hang still fails fast rather than taking the test host down (gh#407).
+            await BackgroundServiceTestSupport.AwaitCompletionAsync(warmup.ExecuteTask!);
 
             warmup.ExecuteTask.Should().NotBeNull();
             warmup.ExecuteTask!.IsFaulted.Should().BeFalse(
@@ -153,7 +123,10 @@ public sealed class IndicatorWarmupTests
         await using (database)
         {
             await warmup.StartAsync(CancellationToken.None);
-            await WaitUntil(() => warmup.ExecuteTask?.IsCompleted == true);
+
+            // ExecuteTask completion is a real, awaitable signal — no poll needed, and bounded
+            // so a hang still fails fast rather than taking the test host down (gh#407).
+            await BackgroundServiceTestSupport.AwaitCompletionAsync(warmup.ExecuteTask!);
 
             warmup.ExecuteTask.Should().NotBeNull();
             warmup.ExecuteTask!.IsFaulted.Should().BeFalse(
@@ -259,15 +232,6 @@ public sealed class IndicatorWarmupTests
         }
 
         database.SaveChanges();
-    }
-
-    private static async Task WaitUntil(Func<bool> condition)
-    {
-        using CancellationTokenSource timeout = new(TimeSpan.FromSeconds(2));
-        while (!condition())
-        {
-            await Task.Delay(10, timeout.Token);
-        }
     }
 
     /// <summary>Captures <see cref="LogLevel.Error"/> so a swallowed warmup failure is visible.</summary>

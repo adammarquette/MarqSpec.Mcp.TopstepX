@@ -40,6 +40,16 @@ namespace MarqSpec.Mcp.TopstepX.Tests.Tools;
 /// at all — the table that never held a row was dropped under gh#276 — so there is no key for one to fall
 /// out of.
 /// </para>
+/// <para>
+/// <b>One case is not here — see <c>KeyLevelDetectionStoreTests</c> in the integration project.</b> The
+/// coverage was not deleted, it moved tiers. Every case below either refuses at the tool boundary or reads
+/// levels off the seeded bars, so none of them reaches a write and the in-memory provider is still honest
+/// about them. The snapshot case — a configured lookback <c>get_market_snapshot</c>'s own fixed window
+/// cannot satisfy — composes the whole snapshot, which reads its indicators through
+/// <c>IndicatorCacheService</c>, and serving that read now <i>writes</i>: the second, in-memory-only
+/// implementation of the projection was deleted under gh#387, so the real <c>ON CONFLICT … DO UPDATE</c> is
+/// the only route left and it needs a real Postgres.
+/// </para>
 /// </remarks>
 public sealed class KeyLevelDetectionPlumbingTests : IDisposable
 {
@@ -185,7 +195,7 @@ public sealed class KeyLevelDetectionPlumbingTests : IDisposable
         (narrow.Top - narrow.Bottom).Should().Be(5m);
         (wide.Top - wide.Bottom).Should().Be(15m);
 
-        typeof(MarketDataTools).GetMethod(nameof(MarketDataTools.GetKeyLevels))!
+        typeof(KeyLevelTools).GetMethod(nameof(KeyLevelTools.GetKeyLevels))!
             .GetParameters().Select(p => p.Name)
             .Should().NotContain("zoneAtrMultiple",
                 "the width is server-wide so that two levels this server reports can be compared");
@@ -207,7 +217,7 @@ public sealed class KeyLevelDetectionPlumbingTests : IDisposable
         admitted.Levels.Should().ContainSingle().Which.Significance.Should().Be(0.4m);
         filtered.Levels.Should().BeEmpty();
 
-        typeof(MarketDataTools).GetMethod(nameof(MarketDataTools.GetKeyLevels))!
+        typeof(KeyLevelTools).GetMethod(nameof(KeyLevelTools.GetKeyLevels))!
             .GetParameters().Select(p => p.Name)
             .Should().NotContain("minSignificance");
     }
@@ -403,29 +413,6 @@ public sealed class KeyLevelDetectionPlumbingTests : IDisposable
             11, "and the left edge alone does not say how many bars the window needed");
     }
 
-    [Fact]
-    public async Task AConfiguredLookbackTheSnapshotsFixedWindowCannotSatisfy_DoesNotBreakTheSnapshot()
-    {
-        // THE BLOCKING REVIEW FINDING. `get_market_snapshot` detects over a fixed `max(barCount, 200)` and
-        // exposes NEITHER `pivotLookback` NOR `lookbackBars`. A configured lookback of 100 is legal on its
-        // own range -- `[Range(1, 1_000)]`, and options validation passes it -- so bounding the lookback
-        // against the requested window made the server boot clean and then fail EVERY snapshot call, with
-        // advice to change two arguments this tool does not have.
-        //
-        // A refusal a caller cannot act on is an outage, not a refusal. So the snapshot answers, and the
-        // level set explains itself.
-        (_, SnapshotTools snapshot) = Compose(Detection(pivotLookback: 100));
-
-        ToolPayloads.MarketSnapshot result =
-            await snapshot.GetMarketSnapshot("ES", [5], 100, CancellationToken.None);
-
-        ToolPayloads.LevelSet levels = result.PerResolution.Should().ContainSingle().Subject.Levels;
-
-        levels.Levels.Should().BeEmpty();
-        levels.DetectedOverBars.Should().Be(Bars);
-        levels.Detection.PivotLookback.Should().Be(100);
-    }
-
     // ── The answer reports the detection it actually ran under ───────────────────────────────────
 
     [Fact]
@@ -588,7 +575,7 @@ public sealed class KeyLevelDetectionPlumbingTests : IDisposable
     /// <summary>Builds the market-data tools over the seeded fixture, at a given detection configuration.</summary>
     /// <param name="detection">The detection defaults to build against.</param>
     /// <returns>The tools.</returns>
-    private MarketDataTools Tools(KeyLevelDetectionOptions detection) => Compose(detection).MarketData;
+    private KeyLevelTools Tools(KeyLevelDetectionOptions detection) => Compose(detection).KeyLevels;
 
     /// <summary>
     /// Builds the market-data tools <b>and the composed snapshot over the same store</b>.
@@ -599,9 +586,15 @@ public sealed class KeyLevelDetectionPlumbingTests : IDisposable
     /// The snapshot is composed here rather than in its own fixture because it is the tool that reaches
     /// <c>GetKeyLevels</c> with a window <i>it</i> chose — a fixed <c>max(barCount, 200)</c> — and with
     /// neither detection argument. A bound on the requested window is invisible from
-    /// <c>get_key_levels</c>'s own tests and fatal here, which is how the earlier revision got through.
+    /// <c>get_key_levels</c>'s own tests and fatal there, which is how the earlier revision got through.
+    /// <para>
+    /// <b>The case that drives it is in <c>KeyLevelDetectionStoreTests</c> now (gh#387)</b> — the snapshot
+    /// reads its indicators through <c>IndicatorCacheService</c>, and serving that read writes, which the
+    /// in-memory provider can no longer be asked to do. The composition is kept whole so the two tiers build
+    /// the same object graph out of the same builder rather than two that can drift.
+    /// </para>
     /// </remarks>
-    private (MarketDataTools MarketData, SnapshotTools Snapshot) Compose(KeyLevelDetectionOptions detection)
+    private (KeyLevelTools KeyLevels, SnapshotTools Snapshot) Compose(KeyLevelDetectionOptions detection)
     {
         if (!_database.Bars.Any())
         {
@@ -631,31 +624,41 @@ public sealed class KeyLevelDetectionPlumbingTests : IDisposable
         BarCacheService cache = new(
             _database, gateway, calendar, projector, clock, NullLogger<BarCacheService>.Instance);
 
-        MarketDataTools marketData = new(
-            cache,
+        InstrumentResolver resolver = new(new InstrumentRegistry(market), new StoreAvailabilityHolder());
+        ToolGuards guards = new(market);
+
+        KeyLevelTools keyLevels = new(
+            resolver,
             _database,
-            new InstrumentRegistry(market),
             indicators,
-            // gh#246's read-projection seam. Nothing here reads an indicator -- get_key_levels computes ATR
-            // from the bars it just loaded rather than from the store -- but the tool takes it, and the
-            // snapshot composed below DOES read indicators through it.
-            new IndicatorCacheService(
-                _database, indicators, projector, clock, NullLogger<IndicatorCacheService>.Instance),
             new LevelMethodCatalog(calendar),
             gateway,
-            new ToolGuards(market),
-            new StoreAvailabilityHolder(),
-            clock,
-            Options.Create(detection),
-            new VolumeProfileService(_database));
+            guards,
+            new VolumeProfileService(_database),
+            Options.Create(detection));
+
+        // gh#246's read-projection seam. get_key_levels does not touch it -- it computes ATR from the bars
+        // it just loaded rather than from the store, which is why KeyLevelTools no longer takes an
+        // IndicatorCacheService at all (gh#414) -- but the snapshot composed below DOES read indicators
+        // through it, so it is built here for IndicatorTools rather than dropped.
+        IndicatorTools indicatorTools = new(
+            resolver,
+            _database,
+            indicators,
+            new IndicatorCacheService(
+                _database, indicators, projector, clock, NullLogger<IndicatorCacheService>.Instance),
+            gateway,
+            guards);
 
         SnapshotTools snapshot = new(
-            marketData,
+            new BarTools(resolver, cache, guards, clock),
+            indicatorTools,
+            keyLevels,
             new ReferenceTools(new InstrumentRegistry(market), calendar, gateway, market, clock),
             new IndicatorCatalogNames(indicators),
             clock);
 
-        return (marketData, snapshot);
+        return (keyLevels, snapshot);
     }
 
     private void Seed()

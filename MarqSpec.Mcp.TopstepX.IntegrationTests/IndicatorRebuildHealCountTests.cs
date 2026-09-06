@@ -4,13 +4,11 @@ using MarqSpec.Mcp.TopstepX.Data;
 using MarqSpec.Mcp.TopstepX.Data.Entities;
 using MarqSpec.Mcp.TopstepX.Domain.MarketData;
 using MarqSpec.Mcp.TopstepX.MarketData;
-using Microsoft.EntityFrameworkCore;
-using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using Microsoft.Extensions.Time.Testing;
 
-namespace MarqSpec.Mcp.TopstepX.Tests.MarketData;
+namespace MarqSpec.Mcp.TopstepX.IntegrationTests;
 
 /// <summary>
 /// <c>rebuild-indicators</c> reports how many series it rewrote — ADR-0012's cheap side channel (gh#348).
@@ -23,11 +21,20 @@ namespace MarqSpec.Mcp.TopstepX.Tests.MarketData;
 /// </para>
 /// <para>
 /// The seam fixture below plants the two scars <c>AdjacentFillWriteSkewTests</c> names: ATR absent at the
-/// join, VWAP present and wrong. The race that produces those scars needs a real snapshot and lives in the
-/// integration tier; the count this verb returns does not.
+/// join, VWAP present and wrong. Planted rather than raced, which is what keeps the two suites distinct —
+/// that one drives the race and shows the scars are what a race really leaves, and this one asks only what
+/// the heal count reports once they are there.
+/// </para>
+/// <para>
+/// <b>This tier since gh#387.</b> The suite used to run in the unit tier, where the projection took a second
+/// write that merged its values through the change tracker rather than sending <c>UpsertValuesSql</c>'s
+/// <c>ON CONFLICT … DO UPDATE</c>, and the rebuild's per-series transaction was skipped for want of a
+/// provider that had one. That stand-in has been deleted, so the count this verb returns is only observable
+/// by running the verb against a real store — the store it counts rows in.
 /// </para>
 /// </remarks>
-public sealed class IndicatorRebuildHealCountTests : IDisposable
+[Collection(SeriesStoreCollection.Name)]
+public sealed class IndicatorRebuildHealCountTests : IAsyncLifetime
 {
     /// <summary>The bucket the two adjacent fills meet at, matching <c>AdjacentFillWriteSkewTests</c>.</summary>
     private const int Seam = 20;
@@ -37,16 +44,25 @@ public sealed class IndicatorRebuildHealCountTests : IDisposable
 
     private const string Venue = "test";
 
+    private readonly SeriesStoreFixture _fixture;
     private readonly TopstepXDbContext _database;
 
-    public IndicatorRebuildHealCountTests() =>
-        _database = new TopstepXDbContext(
-            new DbContextOptionsBuilder<TopstepXDbContext>()
-                .UseInMemoryDatabase(Guid.NewGuid().ToString())
-                .ConfigureWarnings(w => w.Ignore(InMemoryEventId.TransactionIgnoredWarning))
-                .Options);
+    /// <param name="fixture">The shared container.</param>
+    public IndicatorRebuildHealCountTests(SeriesStoreFixture fixture)
+    {
+        _fixture = fixture;
+        _database = fixture.CreateContext();
+    }
 
-    public void Dispose() => _database.Dispose();
+    /// <inheritdoc />
+    public Task InitializeAsync() => _fixture.ResetAsync();
+
+    /// <inheritdoc />
+    public Task DisposeAsync()
+    {
+        _database.Dispose();
+        return Task.CompletedTask;
+    }
 
     private static DateTimeOffset SessionStart =>
         MarketClock.FromMarket(new DateOnly(2026, 8, 18), new TimeOnly(9, 0)).ToUniversalTime();
@@ -147,8 +163,9 @@ public sealed class IndicatorRebuildHealCountTests : IDisposable
     public async Task TheAdjacentFillSeamScars_IncrementTheRewroteCount_WhenRebuildHealsThem()
     {
         // The two scars AdjacentFillWriteSkewTests names on one bucket: a smoothed indicator goes absent at
-        // the join, and a session-anchored one stays present and wrong. Planted rather than raced — the race
-        // is unrepresentable on the in-memory provider, and this test is about the count the heal returns.
+        // the join, and a session-anchored one stays present and wrong. Planted rather than raced -- driving
+        // the race is that suite's job, and this one is about the count the heal returns rather than about
+        // how the seam came to be there.
         Seed("ES", End);
 
         await Rebuilder().RebuildAsync("ES", CancellationToken.None);

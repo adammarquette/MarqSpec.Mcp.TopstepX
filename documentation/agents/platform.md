@@ -33,6 +33,25 @@ The root contract's six apply here unchanged. Four land specifically on the pipe
   stated one.** That figure and the requirement id `ci.yml` cited for it both came in with the scaffolding
   from `MarqSpec.Client.ProjectX`, the same route as the inherited coverage floor of `43`, and neither
   resolved here (gh#182). The floor `ci.yml` enforces is a measurement of this suite, ratcheted upward.
+- **A gate can also fail to be a gate by measuring the wrong population, and that failure is silent because
+  the gate still passes** (gh#431). `coverage` read only the unit tier's report; when gh#387 moved suites to
+  the integration tier the lines they exercise stopped being counted while every test kept running, so the
+  reported figure quietly fell and nothing went red. It now reads and merges every tier, and why merging was
+  chosen over a floor per tier — including the merge rules and cobertura's own branch-detail discrepancy — is
+  argued beside `MINIMUM_LINE_COVERAGE` in `ci.yml` and at length in
+  [`check-coverage-floor.py`](../../scripts/check-coverage-floor.py)'s header, not here. **Ask what a
+  proposed signal counts before writing an acceptance criterion in terms of it**: a mutation this card was
+  asked to make visible in the figure touched code no cobertura report instruments at all — that header's
+  "WHAT LINE COVERAGE CAN AND CANNOT SEE" section is what was actually measured.
+  - **Raising a gate's strictness and proving it can still fail are one card** (gh#435). The floor was left
+    far under the figure it guards, so the event above would still have passed; it was ratcheted, sized
+    against the largest ordinary loss the tree can take, in the same header. Whether it can still fail is
+    proven by [`check-coverage-floor-selftest.sh`](../../scripts/check-coverage-floor-selftest.sh), wired into
+    the `coverage` job beside its siblings. **And a self-test that passes the gate its own literals proves the
+    script can fail, never the deployment** — the first version did exactly that, staying green even with
+    `ci.yml`'s own floor walked back, because it never read the value CI actually deploys. **Ask what a
+    self-test's fixtures are allowed to vary — anything they supply themselves is a thing the deployment can
+    still get wrong.**
 - **No live credentials in a test run that does not need them.** `release.yml` passed real API secrets into an
   unfiltered `dotnet test`. That integration tests mostly did not execute was an accident of hardcoded skip
   strings, not a design. Live-credentialed runs are opt-in, tagged, and never on the release path.
@@ -490,7 +509,7 @@ by mutation, not as a description of the workflow files.**
 |---|---|---|---|---|
 | `build & unit tests` | required | required | required | `ci.yml` |
 | `integration tests` | required | required | required | `ci.yml` |
-| `docs` | required | required | required | `ci.yml` — six steps since gh#293, see below |
+| `docs` | required | required | required | `ci.yml` — seven steps since gh#438, see below |
 | `coverage` | required | required | required | `ci.yml` |
 | `no-order-path` | required | required | required | `ci.yml` |
 | `paced-paging` | required | required | required | `ci.yml` — added by gh#72 |
@@ -529,12 +548,15 @@ for all ten contexts required on that rung, `image` included, and `false` for bo
 at `main`; the rulesets are what stop that refusal depending on one job. A single content gate that stops one
 rung short is also a question every future reader has to re-derive.
 
-### `docs` is six steps
+### `docs` is seven steps
 
-**`docs` is one status context running six steps, so a red `docs` is not necessarily a broken link**
-(gh#160, gh#182, gh#293) — the required-context count is unchanged, and the row above says so. **Update that row and
+**`docs` is one status context running seven steps, so a red `docs` is not necessarily a broken link**
+(gh#160, gh#182, gh#293, gh#438) — the required-context count is unchanged, and the row above says so. **Update that row and
 this count together whenever a step is added**; the count is the only thing telling a reader that a red
-`docs` has six possible causes. Beside [`check-doc-links.sh`](../../scripts/check-doc-links.sh) and
+`docs` has seven possible causes. **And one of the seven is not a documentation check at all** —
+[`claim-selftest.sh`](../../scripts/claim-selftest.sh) rides here because `docs` is already required on all
+three rungs, the same argument as everything else in this job; read a red `docs` as "one of seven scripts
+said no", never as "a link broke". Beside [`check-doc-links.sh`](../../scripts/check-doc-links.sh) and
 [`check-doc-links-selftest.sh`](../../scripts/check-doc-links-selftest.sh) it runs:
 
 - [`check-doc-sizes.sh`](../../scripts/check-doc-sizes.sh), which re-measures every row of every `~tok` table
@@ -600,6 +622,91 @@ this count together whenever a step is added**; the count is the only thing tell
   the self-test assembles its dangling fixtures at run time rather than spelling them. The price, stated
   because it is real: no tracked file may *spell* an id that does not resolve here, so writing about a
   sibling repository's id means describing it instead.
+- [`claim-selftest.sh`](../../scripts/claim-selftest.sh) (gh#438), which guards
+  [`claim.sh`](../../scripts/claim.sh) — a **local** tool, not a merge gate, and the only step here that says
+  nothing about the commit under test. It earns the slot because `claim.sh` decides whether two sessions
+  share a worktree, and it had no self-test at all while the five above did. Three things worth carrying:
+  - **A liveness signal has to be written by the thing whose liveness it claims to measure.** `claim.sh`
+    aged a claim by the committer date of the commit its branch points at — but a claim is pushed *empty*,
+    so that commit is `origin/develop`'s. The number measured **how long `develop` had been quiet**. On
+    2026-09-02 it called two live claims *"presumed abandoned and fair game"* off `298bf47`, a merge commit
+    neither session wrote. A claim could therefore be **born stale**: pushed while `develop` was quiet four
+    hours, it read as abandoned the second it was created. **Ask whose act writes the number**, not only
+    whether the number is fresh.
+  - **A threshold cannot fix a signal nobody is obliged to write, and moving it only moves the number.** The
+    window stayed at 4 hours. What changed is that quiet stopped being a *verdict*: an unmoved ref is an
+    absence of evidence, so the takeover now requires a `TAKEOVER-ANNOUNCED: <branch>` comment the script
+    **reads**, a notice hour, and a ref that did not move in between. Root `AGENTS.md` had required
+    announcing all along and nothing enforced it — the fix is to charge the obligation to the party that
+    wants the verdict, because the working session has no incentive to comply. **What still defeats it is
+    stated in the script rather than papered over**: a live session that never reads its issue still loses
+    its claim, and only a cross-machine registry closes that (a new card and an ADR, out of scope on gh#438).
+  - **The announcement is a control plane, and this repository is public — so the comment stream is an input
+    anyone can write to.** Review on PR #441 found the first version reading it with an unanchored
+    `grep -F` over the body alone: no author check, and the token matched **anywhere** in a comment. Two
+    ways that arms a takeover without anyone announcing one. A stranger comments, since issues are open to
+    every account. Or nobody does anything hostile at all and the token simply *appears* — a pasted copy of
+    `claim.sh`'s own printed recipe, or the paragraphs in `AGENTS.md` and `CONTRIBUTING.md` that spell it
+    out to explain it. **A control plane whose vocabulary is also its documentation cannot be matched
+    loosely.** Four conditions now, and the direction is the point: the token must OPEN the comment, the
+    author must hold write access, the comment must not have been edited (its `createdAt` would otherwise
+    date text added later, and the notice hour is counted from it), and the branch name must END where the
+    needle does, or announcing `feature/50_x` also arms `feature/50`. **Every one fails CLOSED** — a wrong
+    refusal costs the taker one re-post, a wrong acceptance costs somebody else their work — which is the
+    opposite of `issue-link`'s stripper, where refusing blocks a legitimate pull request. *Ask which
+    direction the specific construct fails in*: same rule, opposite answer, one section apart.
+  - **And the same matcher was too TIGHT at the other end, which is the half a fail-closed bug hides.** It
+    required the token and a *bare* branch name adjacent, and this repository backticks branch names by
+    habit — the gh#293 comment the whole mechanism is modelled on backticks its own. So the house form
+    announced nothing, waited the notice hour and was told nothing had been announced. Fail-closed, and
+    still a correct announcement being ignored. **One `grep -F` was answering two questions**; both ends
+    are now cases (12 and 16).
+  - **Then the same tighten/widen asymmetry appeared one level up, in the round that fixed it.** Forgiving a
+    backticked *branch* still refused `` `TAKEOVER-ANNOUNCED: <branch>` `` wrapped as one span — **the form
+    all four contracts that tell an agent to announce actually render in their markdown source**, and an
+    agent copies raw markdown rather than rendered output. So the documented form announced nothing. Both
+    placements are now accepted (cases 16 and 18) and nested spans are not (case 21). **When a matcher is
+    widened for readability, add a case per new path and per new rule** — the widening brought three
+    decisions with it (the outer close, the `!outer` nesting guard, condition 5 on the outer path) and each
+    needed its own fixture, because each forgiveness is a fresh chance to re-open what an earlier one closed.
+  - **That case was pinned by accident — and the RELABEL was unverified too, which is the finding worth
+    keeping.** It was written for condition 5; with condition 5 deleted it stayed red, so it was relabelled
+    to the *span must close* rule. It did not pin that either. Under whole-block mutation of every decision
+    in the matcher it read **`flips-on: NOTHING`**: the fixture carried both a closing backtick and a
+    `-longer` suffix, so two rules were competing to refuse it and neither was exposed. Delete one and the
+    other still catches it. **Refused by the conjunction, pinned by neither.**
+
+    The rule stated at the end of this bullet — *write the row after the mutation, never from the case's
+    name* — was applied to the replacement row and **not to the row it replaced**. Three instances of one
+    pattern on a single card, each decided by reading a fixture rather than running it: mention-versus-use,
+    the original label, the relabel. **A rule that is applied only to new rows is not yet a practice.**
+
+    Two mechanics generalise. **Blank the whole block, not the guard**: deleting `if (…) next` and leaving
+    its `rest = substr(rest, 2)` behind is a different program, and that mistake produced one confidently
+    wrong reading here before it was caught. And **a fixture that trips two rules pins neither** — strip it
+    to the single property under test, which is what makes `flips-on:` a measurement instead of a hope.
+    This is `check-doc-sizes-selftest.sh`'s lesson meeting a second gate: coverage owed to a fixture's
+    incidental shape rather than its intent is coverage the table cannot see it lacks.
+  - **The activity read swallowed its status, and that is the FOURTH instance of the family** tabulated
+    under [Constraints that bite in CI](#constraints-that-bite-in-ci) — cite that table rather than
+    re-deriving it. `2>/dev/null || true` made an API error and *"this ref has no activity recorded"* the
+    same empty string. It failed closed, which is why it was an advisory rather than a finding, but the
+    same file already checks its other two reads on their own lines with a gh#126 comment saying why. The
+    two answers now reach the verdict as different states and the run says which, because one is a
+    transient a re-run fixes and the other is not.
+  - **UNKNOWN stays terminal, and the reason is specific rather than an omission.** Review argued it should
+    route into announce-and-wait, since refusing forever on evidence you do not have is itself an unearned
+    verdict — the mirror of the defect the card is about. Declined, because **the defence is the same read
+    that failed**: `defended` compares the ref's last movement against the announcement, so where the age
+    is unreadable a live claimant's push cannot be seen either, and announce-and-wait would run its hour
+    and permit a takeover nobody could contest. Re-running is the escape hatch, and it suffices *because
+    activity is retained to repository creation* — so UNKNOWN is only ever a transient read failure. A
+    persistently unreadable endpoint would need a real route out, and that is a card. **Say which and why
+    in the script**: a terminal branch a reader has to infer from a missing `else` is the thing to avoid.
+  - **It is hermetic, and slow where processes are expensive.** One disposable repository under `mktemp -d`
+    and a fake `gh` on `PATH` that exits 97 on any call shape `claim.sh` does not make, so no token and no
+    network. On the runner it is seconds; on a Windows checkout it measured **5m49s**, almost all of it
+    process spawning — run it alone there, the way `check-doc-links.sh` already has to be.
 
 All of it rides in the one job **because `docs` is already required on all three rungs**, so none of it
 needed a ruleset write and [the table above](#what-is-required-and-what-only-reports) does not change — the
@@ -916,6 +1023,14 @@ advisory were re-examined rather than assumed away:
 skip would then have nothing red beneath it, and `image` would go green on an image nobody built. The same
 holds for `coverage`. The argument is a property of the `needs:` list rather than of the job, so a change
 to either list re-runs it in this section, in the same PR.
+
+**And one has changed since, so here it is re-run rather than assumed** (gh#431). `coverage` now needs
+**`[build-test, integration-test]`** rather than `build-test` alone, because it merges both tiers' reports.
+Both added and existing entries report contexts that are themselves required on all three rungs —
+`build & unit tests` and `integration tests` — and neither job carries an `if:` or a `needs:` of its own, so
+neither can be skipped. A skipped `coverage` therefore still always sits behind a required check that is red
+or cancelled. The hole stays closed; the rule above is what says so, and the rule is why this paragraph
+exists rather than a diff nobody re-read.
 
 **CodeQL is deliberately NOT required, and that row was re-read rather than carried forward** — neither
 string appears in any of the three rulesets, and GitHub answered `isRequired: false` for both of them on

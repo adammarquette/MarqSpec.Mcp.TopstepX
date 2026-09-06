@@ -16,7 +16,7 @@ namespace MarqSpec.Mcp.TopstepX.Tools;
 /// <b>Registered as a call-tool filter, not called from a tool.</b> Every <c>tools/call</c> goes through the
 /// SDK's filter pipeline, so a tool added tomorrow is covered by having been registered rather than by its
 /// author remembering a <c>try</c>. That is the gh#69 lesson stated as wiring: a rule enforced in three of
-/// four places is not a rule, and <c>MarketDataTools.ReadAsync</c> — the only place that translated anything
+/// four places is not a rule, and <c>BarTools.ReadAsync</c> — the only place that translated anything
 /// — is reached by exactly two of the fifteen tools on this surface.
 /// </para>
 /// <para>

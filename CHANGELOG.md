@@ -134,7 +134,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   defined on the CME trade date rather than on the bucket grid, and the session-bars tools will serve it
   (gh#496, arriving in gh#500). **This is breaking for any caller passing 1,440 to 10,080** — it now gets a
   tool error where it used to get `[]` (gh#498,
-  [ADR-0019](documentation/adr/0019-session-bars-derived-complete-or-absent.md), `R-1.9`).
+  [ADR-0022](documentation/adr/0022-session-bars-derived-complete-or-absent.md), `R-1.9`).
 
 ## [0.3.1] - 2026-09-06
 

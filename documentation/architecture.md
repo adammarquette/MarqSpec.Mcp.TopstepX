@@ -75,7 +75,7 @@ and a timeframe is fetched from the venue rather than derived from a finer one â
 Zero and negative are refused at the tool boundary by `ToolGuards.ValidateResolution` and never reach this
 path (gh#69); so is a bucket of a session's length or longer, which can never close inside one session and is
 a **session bar** rather than a resolution (`R-1.12`,
-[ADR-0019](adr/0019-session-bars-derived-complete-or-absent.md), gh#498).
+[ADR-0022](adr/0022-session-bars-derived-complete-or-absent.md), gh#498).
 
 `BarCacheService.GetBarsAsync(instrument, resolution, window)`:
 

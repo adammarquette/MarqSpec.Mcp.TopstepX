@@ -66,7 +66,7 @@ public static class SessionBarAggregator
     /// and is wrong: its high and low are only the thirteen 5-minute buckets that happened to start on the
     /// half hour, and its volume is a fraction of the session's. Read at
     /// <see cref="SessionDefinition.BaseResolutionMinutes"/>, which is why that number is configuration
-    /// stored with the row rather than an implementation detail (ADR-0019, gh#499).
+    /// stored with the row rather than an implementation detail (ADR-0022, gh#499).
     /// </para>
     /// </remarks>
     public static IReadOnlyList<SessionBarOutcome> Aggregate(

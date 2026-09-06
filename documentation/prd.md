@@ -73,7 +73,7 @@ The server serves OHLCV bars for a futures instrument at a requested resolution 
   acceptable here. `R-1.12` is the one exception and it is granted on exactly those terms — a session bar has
   no vendor unit to fetch, so it is derived behind a completeness guard that emits **no** bar rather than a
   partial one. See [ADR-0010](adr/0010-per-call-resolutions-fetched-not-derived.md) and
-  [ADR-0019](adr/0019-session-bars-derived-complete-or-absent.md).
+  [ADR-0022](adr/0022-session-bars-derived-complete-or-absent.md).
 - **R-1.10** Those pages are **paced** to the vendor's documented allowance for the history endpoint —
   **50 requests / 30 seconds**, one allowance shared by the whole process. A cold year of five-minute bars is
   106 pages back to back, which breaches inside the first window; the client's 429 retry recovers from a
@@ -97,7 +97,7 @@ The server serves OHLCV bars for a futures instrument at a requested resolution 
   resolution is recorded on the stored bar so the series is reproducible (`R-2.2`). This is the one exception
   to `R-1.9`'s never-derive rule, and it is granted only because it carries the completeness guard that rule
   demands: the vendor has no `rth`, `asia` or `europe` bar unit to fetch. A session read never reaches the
-  vendor. See [ADR-0019](adr/0019-session-bars-derived-complete-or-absent.md) (gh#496, gh#498).
+  vendor. See [ADR-0022](adr/0022-session-bars-derived-complete-or-absent.md) (gh#496, gh#498).
 
 ## R-2 — Pre-computed indicators
 

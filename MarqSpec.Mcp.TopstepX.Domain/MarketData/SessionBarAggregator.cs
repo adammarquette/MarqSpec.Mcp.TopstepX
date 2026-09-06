@@ -32,7 +32,11 @@ public static class SessionBarAggregator
     /// <summary>
     /// Aggregates one session bar per requested trade date.
     /// </summary>
-    /// <param name="bars">The stored base bars, in strictly ascending open-time order. May span trade dates.</param>
+    /// <param name="bars">
+    /// The stored base bars, in strictly ascending open-time order. May span trade dates. They MUST have been
+    /// read at <see cref="SessionDefinition.BaseResolutionMinutes"/>: a <see cref="Bar"/> carries no
+    /// resolution, so this type cannot check it and does not.
+    /// </param>
     /// <param name="calendar">The session calendar deciding which buckets the venue owed.</param>
     /// <param name="definition">The session being aggregated.</param>
     /// <param name="tradeDates">The trade dates to answer for.</param>
@@ -43,12 +47,27 @@ public static class SessionBarAggregator
     /// or it expects no base bucket at all inside one of their windows.
     /// </exception>
     /// <remarks>
+    /// <para>
     /// Both refusals are <b>caller bugs</b> rather than absent bars, because an absence is a statement about
     /// a session that exists. Manufacturing one for a Saturday, or for a definition whose window holds no
     /// bucket to expect, says nothing a caller could act on — and calling the latter <c>Incomplete</c> would
     /// be worse than saying nothing, since that reason promises the missing buckets can be fetched.
     /// <see cref="SessionWindows.TradeDatesIn"/> and <see cref="SessionWindows.LastClosedTradeDates"/> only
     /// ever hand back dates that trade, and <see cref="SessionWindows.Validate"/> refuses such a definition.
+    /// </para>
+    /// <para>
+    /// <b>The caller owns the base resolution, because nothing here can check it.</b> A <see cref="Bar"/>
+    /// carries its open time and not its size, so a series read at the wrong resolution is indistinguishable
+    /// from one read at the right one. Coarser than
+    /// <see cref="SessionDefinition.BaseResolutionMinutes"/> is safe by accident — the expected instants are
+    /// mostly not bucket starts of that series, so the outcome is <see cref="SessionBarAbsence.Incomplete"/>.
+    /// <b>Finer is not.</b> A 5-minute series handed in for <c>rth</c> at a 30-minute base contains all
+    /// thirteen expected instants, so it passes the completeness check and yields a bar that looks complete
+    /// and is wrong: its high and low are only the thirteen 5-minute buckets that happened to start on the
+    /// half hour, and its volume is a fraction of the session's. Read at
+    /// <see cref="SessionDefinition.BaseResolutionMinutes"/>, which is why that number is configuration
+    /// stored with the row rather than an implementation detail (ADR-0019, gh#499).
+    /// </para>
     /// </remarks>
     public static IReadOnlyList<SessionBarOutcome> Aggregate(
         IReadOnlyList<Bar> bars,

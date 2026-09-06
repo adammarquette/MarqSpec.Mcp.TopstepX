@@ -50,7 +50,12 @@ public sealed class SessionWindowsTests
         Action act = () => SessionWindows.Validate(
             new SessionDefinition("bad", new TimeOnly(15, 0), new TimeOnly(17, 30), 30), Calendar());
 
-        act.Should().Throw<ArgumentException>().WithMessage("*session*");
+        // "*session*" would pass against every other rule Validate enforces -- the name, the base and the
+        // grid all say "session" too. The offsets from the open are what identifies THIS rule: 15:00 is 22h
+        // into the session and 17:30 is half an hour into the next one, so the pair runs backwards.
+        act.Should().Throw<ArgumentException>()
+            .WithMessage("*run forwards*", "the rule broken is the one about direction")
+            .WithMessage("*22:00:00 to 00:30:00*", "and the message shows the pair as offsets from the open");
     }
 
     [Fact]
@@ -107,7 +112,11 @@ public sealed class SessionWindowsTests
         Action act = () => SessionWindows.Validate(
             new SessionDefinition("empty", new TimeOnly(10, 0), new TimeOnly(10, 0), 30), Calendar());
 
-        act.Should().Throw<ArgumentException>().WithMessage("*session*");
+        // Same rule as the maintenance-window case, reached by the degenerate route: 10:00 is 17h into the
+        // session, so both boundaries land on the same instant and the window is empty rather than backwards.
+        act.Should().Throw<ArgumentException>()
+            .WithMessage("*run forwards*", "the rule broken is the one about direction")
+            .WithMessage("*17:00:00 to 17:00:00*", "and both offsets are the same instant");
     }
 
     [Fact]

@@ -91,6 +91,50 @@ public sealed class SessionWindowsTests
     }
 
     [Fact]
+    public void Validate_RefusesABoundaryOffTheWallClockGrid_WhenTheSessionOpenIsNotOnIt()
+    {
+        // `BarGapDetector.AlignUp` anchors buckets on a fixed UTC-midnight grid, so the property that has to
+        // hold is that each boundary's WALL-CLOCK instant lands on that grid -- not that its offset from the
+        // session open does. The two agree only when the open is itself on the grid, which the shipped 16:00
+        // close makes true and an operator's 13:20 close does not.
+        //
+        // A 13:20 close reopens at 14:20, so 14:20 -> 13:20 is 0h -> 23h measured from the open: on the base
+        // grid in that coordinate and off it in UTC. Its window is [19:20Z, 18:20Z), whose expected buckets
+        // begin at 20:00Z, so the session's first forty minutes would sit outside a bar claiming the
+        // session's own bounds.
+        Action offTheHour = () => SessionWindows.Validate(
+            new SessionDefinition("day", new TimeOnly(14, 20), new TimeOnly(13, 20), 60),
+            BarSessionCalendar.Parse("13:20", []));
+
+        offTheHour.Should().Throw<ArgumentException>()
+            .WithMessage("*grid*", "the rule broken is the one about the stored UTC bucket grid")
+            .WithMessage("*14:20*", "and the message names the boundary that breaks it");
+
+        // The same failure at a 30-minute base: a 16:15 close reopens at 17:15, so 08:45 is 15h30m into the
+        // session -- on the 30-minute grid measured from the open, and a quarter-hour off it in UTC.
+        Action offTheHalfHour = () => SessionWindows.Validate(
+            new SessionDefinition("x", new TimeOnly(8, 45), new TimeOnly(15, 15), 30),
+            BarSessionCalendar.Parse("16:15", []));
+
+        offTheHalfHour.Should().Throw<ArgumentException>()
+            .WithMessage("*grid*").WithMessage("*08:45*");
+    }
+
+    [Fact]
+    public void Validate_AcceptsAWallClockAlignedDefinition_OnAnOddCalendar()
+    {
+        // The rule is about the grid, not about the calendar. The same 13:20 close that refuses
+        // 14:20 -> 13:20 admits 15:00 -> 13:00, because both of those boundaries are on the hour and so land
+        // on the UTC bucket grid under either offset. Measured from the 14:20 open the pair is 40m -> 22h40m,
+        // which the offset-coordinate rule this replaced would have refused.
+        Action act = () => SessionWindows.Validate(
+            new SessionDefinition("day", new TimeOnly(15, 0), new TimeOnly(13, 0), 60),
+            BarSessionCalendar.Parse("13:20", []));
+
+        act.Should().NotThrow();
+    }
+
+    [Fact]
     public void Validate_RefusesAnEmptyOrUppercaseName()
     {
         // The name is a storage key, like IIndicator.Name: renaming or case-shifting it orphans every row

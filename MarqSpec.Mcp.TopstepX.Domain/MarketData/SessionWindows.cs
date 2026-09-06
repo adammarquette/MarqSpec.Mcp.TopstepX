@@ -31,10 +31,26 @@ public static partial class SessionWindows
     /// The definition breaks a rule; the message names which one.
     /// </exception>
     /// <remarks>
+    /// <para>
     /// The base resolution has to divide the hour because Central is a whole-hour UTC offset: a wall-clock
     /// boundary on a grid that divides the hour lands on the stored UTC grid under both CST and CDT. A
     /// 120-minute base would not — 17:00 Central is 22:00Z in summer and 23:00Z in winter, and only one of
     /// those is on a 120-minute UTC grid.
+    /// </para>
+    /// <para>
+    /// <b>The boundary rule is stated in wall-clock, not in the offset coordinate the rest of this file uses.</b>
+    /// <see cref="BarGapDetector.AlignUp"/> anchors buckets on a fixed UTC-midnight grid, so what has to hold
+    /// is that each boundary's own instant lands on that grid: each boundary's <b>minutes past the hour is a
+    /// multiple of the base, which divides 60</b>, so the boundary lands on the UTC bucket grid under both
+    /// offsets. Measuring the same thing as an offset from the session open agrees only when the open is
+    /// itself on the grid — true of the shipped 16:00 close, false of an operator's 13:20 one, where
+    /// 14:20 -&gt; 13:20 at a 60-minute base reads as a clean 0h -&gt; 23h and resolves to a window whose first
+    /// forty minutes no bucket covers.
+    /// </para>
+    /// <para>
+    /// The direction, the session-length bound and "at least one base bucket long" stay in the offset
+    /// coordinate, because those are statements about the session rather than about the stored grid.
+    /// </para>
     /// </remarks>
     public static void Validate(SessionDefinition definition, BarSessionCalendar calendar)
     {
@@ -72,12 +88,37 @@ public static partial class SessionWindows
                 nameof(definition));
         }
 
-        TimeSpan @base = TimeSpan.FromMinutes(definition.BaseResolutionMinutes);
-        if (start.Ticks % @base.Ticks != 0 || end.Ticks % @base.Ticks != 0 || end - start < @base)
+        // The grid rule is asked of the WALL-CLOCK boundaries, not of their offsets from the open: buckets are
+        // anchored on a fixed UTC-midnight grid, and the two coordinates coincide only when the open is itself
+        // on that grid. Central is a whole-hour UTC offset and the base divides 60, so a boundary lands on the
+        // stored grid under both CST and CDT exactly when its minutes past the hour are a multiple of the base.
+        int baseMinutes = definition.BaseResolutionMinutes;
+        if (definition.StartCentral.Minute % baseMinutes != 0 || definition.EndCentral.Minute % baseMinutes != 0)
+        {
+            TimeOnly offending = definition.StartCentral.Minute % baseMinutes != 0
+                ? definition.StartCentral
+                : definition.EndCentral;
+
+            throw new ArgumentException(
+                "Both of a session's boundaries must land on the stored UTC bucket grid: the base divides 60"
+                + " and Central is a whole-hour UTC offset, so a boundary's minutes past the hour must be a"
+                + " multiple of the base. '" + definition.Name + "' has "
+                + offending.ToString("HH:mm", CultureInfo.InvariantCulture) + " on a "
+                + baseMinutes.ToString(CultureInfo.InvariantCulture) + "-minute base, which does not.",
+                nameof(definition));
+        }
+
+        // Unreachable while both boundaries are on the grid — the gap between two grid points is a multiple of
+        // the base, and the ordering rule above already made it positive. It stays because the rule it states
+        // is the session's, not the grid's, and a later change to either rule must not silently admit a
+        // session shorter than the bar it is built from.
+        TimeSpan @base = TimeSpan.FromMinutes(baseMinutes);
+        if (end - start < @base)
         {
             throw new ArgumentException(
-                "Both of a session's boundaries must sit on its base-resolution grid, and '"
-                + definition.Name + "' has at least one that does not.",
+                "A session must be at least one base bucket long, and '" + definition.Name + "' runs "
+                + (end - start).ToString(null, CultureInfo.InvariantCulture) + " on a "
+                + baseMinutes.ToString(CultureInfo.InvariantCulture) + "-minute base.",
                 nameof(definition));
         }
     }

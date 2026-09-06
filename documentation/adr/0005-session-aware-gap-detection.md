@@ -94,6 +94,10 @@ sync problem for a handful of dates a year.
 
 ## Decision log
 
+| Update | What changed |
+|---|---|
+| [2026-09-06](#update-2026-09-06--the-calendar-also-defines-session-windows) | The same trade-date model now also defines **session windows**: `SessionWindows` (gh#498) reads this calendar to place a `SessionDefinition` in UTC, and adds the base-resolution and boundary rules that keep those windows on the stored bucket grid. What is derived from them is [ADR-0022](0022-session-bars-derived-complete-or-absent.md) |
+
 ## Update (2026-09-06) — the calendar also defines session windows
 
 **Nothing about gap detection changes.** `BarSessionCalendar` still decides whether a bucket was expected,
@@ -114,12 +118,21 @@ definition as an **offset from the trade date's open** for that last reason — 
 (17:00→02:00) is simply 0h→9h and needs no "spans midnight" case, while a definition that would straddle the
 maintenance window runs backwards and is refused by the same comparison.
 
-**One new rule, and it is about the stored grid rather than about sessions.** A session's base resolution must
-divide 60. Central is a whole-hour UTC offset, so a wall-clock boundary on an hour-dividing grid lands on the
-stored UTC bucket grid under **both** CST and CDT; a 120-minute base would not, since 17:00 Central is 22:00Z
-in summer and 23:00Z in winter. `SessionWindows.Validate` refuses a definition that breaks it — the same
-fail-at-startup posture the *Consequences* above take for a malformed session close, and for the same reason:
-a session definition decides what counts as a complete bar.
+**Two new rules, and both are about the stored grid rather than about sessions.** A session's base resolution
+must divide 60, and **each boundary's minutes past the hour is a multiple of the base, which divides 60, so the
+boundary lands on the UTC bucket grid under both offsets**. Central is a whole-hour UTC offset, so a wall-clock
+boundary on an hour-dividing grid lands on the stored UTC bucket grid under **both** CST and CDT; a 120-minute
+base would not, since 17:00 Central is 22:00Z in summer and 23:00Z in winter.
+
+The boundary rule is stated in **wall-clock** rather than in the offset coordinate the rest of `SessionWindows`
+uses, because `BarGapDetector.AlignUp` anchors buckets on a fixed UTC-midnight grid rather than on the session
+open. The two coordinates agree only when the open is itself on the grid — true of the 16:00 close shipped
+here, false of an operator's 13:20 one, where `14:20 → 13:20` at a 60-minute base reads as a clean 0h → 23h
+from the open and resolves to a window whose first forty minutes no bucket covers.
+
+`SessionWindows.Validate` refuses a definition that breaks either — the same fail-at-startup posture the
+*Consequences* above take for a malformed session close, and for the same reason: a session definition decides
+what counts as a complete bar.
 
 What is *derived* from those windows — and the completeness guard that decides whether a session bar exists at
 all — is [ADR-0022](0022-session-bars-derived-complete-or-absent.md), not this record.

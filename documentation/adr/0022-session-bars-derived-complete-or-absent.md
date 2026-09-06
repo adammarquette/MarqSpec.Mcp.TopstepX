@@ -72,7 +72,8 @@ daily data.
 The configuration binding and the startup validation arrive with the storage slice, not this one: today
 `SessionDefinition.Defaults` is a static list and `SessionBarAggregator.Aggregate` does not call
 `SessionWindows.Validate`, which is why the aggregator still refuses a window the calendar expects no bucket
-inside rather than trusting that validation already ran.
+inside — or one whose expected buckets do not cover it end to end — rather than trusting that validation
+already ran.
 
 `SessionDefinition` is a name, a start, an end and a **base resolution**, and the shipped defaults are `full`
 17:00→16:00 at a 60-minute base, `rth` 08:30→15:00 at 30, `asia` 17:00→02:00 at 30 and `europe` 02:00→08:30 at
@@ -85,11 +86,21 @@ mean the same thing under CST and CDT — a definition carrying a UTC offset is 
 is the failure ADR-0005 already refuses for the session close.
 
 `SessionWindows.Validate` refuses a definition against the calendar it will be resolved on: the name must be a
-storage key, the **base resolution must divide 60**, both boundaries must sit on that base grid, and the
-window must run forwards inside the session measured from its open. The base rule is the one that is not
-obvious. Central is a whole-hour UTC offset, so a base that divides the hour lands on the stored UTC bucket
-grid under **both** offsets; a 120-minute base does not — 17:00 Central is 22:00Z in summer and 23:00Z in
-winter, and only one of those is on a 120-minute grid.
+storage key, the **base resolution must divide 60**, **each boundary's minutes past the hour is a multiple of
+the base, which divides 60, so the boundary lands on the UTC bucket grid under both offsets**, and the window
+must run forwards inside the session measured from its open. The grid rules are the ones that are not obvious.
+Central is a whole-hour UTC offset, so a base that divides the hour lands on the stored UTC bucket grid under
+**both** offsets; a 120-minute base does not — 17:00 Central is 22:00Z in summer and 23:00Z in winter, and
+only one of those is on a 120-minute grid.
+
+The boundary half is asked of the **wall-clock** time rather than of its offset from the session open, because
+`BarGapDetector.AlignUp` anchors buckets on a fixed UTC-midnight grid. The two coordinates coincide only when
+the open is itself on the grid — true of the shipped 16:00 close, false of an operator's 13:20 one, where
+`14:20 → 13:20` at a 60-minute base is a clean 0h → 23h from the open and resolves to `[19:20Z, 18:20Z)`,
+whose expected buckets run 20:00Z to 17:00Z and leave the session's first forty and last twenty minutes in no
+bucket at all. Because `Aggregate` does not call `Validate`, it re-checks the same property where it can see
+it: beside the empty-grid refusal it requires the expected buckets to **cover the window end to end**, and
+otherwise refuses rather than emitting a bar that carries the session's bounds while missing an hour of it.
 
 **3. A session bar exists if and only if every expected base bucket is stored, from one contract. Otherwise it
 is absent, with a stated reason.**

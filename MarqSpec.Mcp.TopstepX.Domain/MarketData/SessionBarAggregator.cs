@@ -44,14 +44,16 @@ public static class SessionBarAggregator
     /// <exception cref="ArgumentNullException">An argument is <see langword="null"/>.</exception>
     /// <exception cref="ArgumentException">
     /// The bars are not strictly ascending, the calendar carries no such session on one of the trade dates,
-    /// or it expects no base bucket at all inside one of their windows.
+    /// or the buckets it expects inside one of their windows are absent altogether or do not cover the window
+    /// end to end.
     /// </exception>
     /// <remarks>
     /// <para>
-    /// Both refusals are <b>caller bugs</b> rather than absent bars, because an absence is a statement about
-    /// a session that exists. Manufacturing one for a Saturday, or for a definition whose window holds no
-    /// bucket to expect, says nothing a caller could act on — and calling the latter <c>Incomplete</c> would
-    /// be worse than saying nothing, since that reason promises the missing buckets can be fetched.
+    /// Every one of these refusals is a <b>caller bug</b> rather than an absent bar, because an absence is a
+    /// statement about a session that exists. Manufacturing one for a Saturday, or for a definition whose
+    /// window holds no bucket to expect — or whose buckets leave part of the session uncovered — says nothing
+    /// a caller could act on, and calling either of the latter two <c>Incomplete</c> would be worse than
+    /// saying nothing, since that reason promises the missing buckets can be fetched.
     /// <see cref="SessionWindows.TradeDatesIn"/> and <see cref="SessionWindows.LastClosedTradeDates"/> only
     /// ever hand back dates that trade, and <see cref="SessionWindows.Validate"/> refuses such a definition.
     /// </para>
@@ -105,7 +107,8 @@ public static class SessionBarAggregator
 
     /// <summary>The outcome for one trade date whose window is already resolved.</summary>
     /// <exception cref="ArgumentException">
-    /// The calendar expects no base bucket at all inside the window — a broken definition, not an absence.
+    /// The calendar expects no base bucket at all inside the window, or the buckets it expects do not cover
+    /// the window end to end — a broken definition either way, not an absence.
     /// </exception>
     private static SessionBarOutcome AggregateOne(
         IReadOnlyList<Bar> bars,
@@ -115,14 +118,14 @@ public static class SessionBarAggregator
         TimeSpan baseSize,
         DateOnly tradeDate)
     {
-        HashSet<DateTimeOffset> expected = [.. BarGapDetector.ExpectedBuckets(window, baseSize, calendar)];
+        IReadOnlyList<DateTimeOffset> grid = BarGapDetector.ExpectedBuckets(window, baseSize, calendar);
 
         // A window the calendar expects NOTHING inside is a broken definition, and it is refused on the same
         // terms as a trade date that does not trade. Reporting it as `Incomplete` would be vacuously true and
         // actively harmful: `Incomplete` promises a caller that fetching the missing buckets fixes it, and
         // there are none to fetch, so the caller would ask the venue for nothing forever. SessionWindows
         // .Validate refuses such a definition; Aggregate does not call it, so this stays reachable.
-        if (expected.Count == 0)
+        if (grid.Count == 0)
         {
             throw new ArgumentException(
                 "The calendar expects no base bucket inside the '" + definition.Name + "' window on "
@@ -134,6 +137,29 @@ public static class SessionBarAggregator
                 + "SessionWindows.Validate, which refuses this one.",
                 nameof(definition));
         }
+
+        // The buckets have to cover the window END TO END, not merely fall inside it. `BarGapDetector.AlignUp`
+        // anchors buckets on a fixed UTC-midnight grid, so a boundary off that grid leaves a sliver of the
+        // session in no bucket at all -- and the bar built from what remains would still carry the SESSION's
+        // bounds and call itself complete, which is a wrong number wearing an ordinary face rather than a
+        // rough one. SessionWindows.Validate refuses such a definition; Aggregate does not call it, so this
+        // stays reachable.
+        if (grid[0] != window.Start || grid[^1] + baseSize != window.End)
+        {
+            throw new ArgumentException(
+                "The calendar's bucket grid does not cover the '" + definition.Name + "' session on "
+                + tradeDate.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture) + ": the window runs "
+                + window.Start.ToString("O", CultureInfo.InvariantCulture) + " to "
+                + window.End.ToString("O", CultureInfo.InvariantCulture) + " and the buckets expected at "
+                + definition.BaseResolutionMinutes.ToString(CultureInfo.InvariantCulture)
+                + " minutes run " + grid[0].ToString("O", CultureInfo.InvariantCulture) + " to "
+                + grid[^1].ToString("O", CultureInfo.InvariantCulture)
+                + ", so part of the session falls in no bucket. This definition would not pass "
+                + "SessionWindows.Validate.",
+                nameof(definition));
+        }
+
+        HashSet<DateTimeOffset> expected = [.. grid];
 
         // Set membership, not a count: a bar the calendar does not expect is ignored, never summed and never
         // allowed to stand in for one that is missing.

@@ -60,13 +60,19 @@ that takes a resolution refuses 1,380 and above with the value named:
 > resolutionMinutes 1440 is coarser than the largest bar this server serves, 1379 minutes, one minute short of
 > a session (24 hours less the venue's one-hour maintenance window). A bucket that long or longer can never
 > close inside a single session, so it is a session bar rather than a bar resolution. The day and the week are
-> not unavailable and they are not out of range; ask the session-bar tools (gh#496) for them.
+> not unavailable and they are not out of range; ask the session-bar tools (gh#496, arriving in gh#500)
+> for them.
 
 **The refusal names where the answer lives**, because refusing silently would swap one wrong answer for a
 second: a caller reading "coarser than the largest bar" with nothing after it concludes the market has no
 daily data.
 
-**2. Four named sessions, stated in Central wall-clock time, validated at startup.**
+**2. Four named sessions, stated in Central wall-clock time, validated at startup (gh#499).**
+
+The configuration binding and the startup validation arrive with the storage slice, not this one: today
+`SessionDefinition.Defaults` is a static list and `SessionBarAggregator.Aggregate` does not call
+`SessionWindows.Validate`, which is why the aggregator still refuses a window the calendar expects no bucket
+inside rather than trusting that validation already ran.
 
 `SessionDefinition` is a name, a start, an end and a **base resolution**, and the shipped defaults are `full`
 17:00→16:00 at a 60-minute base, `rth` 08:30→15:00 at 30, `asia` 17:00→02:00 at 30 and `europe` 02:00→08:30 at
@@ -110,10 +116,17 @@ storage slice.
 **5. The base resolution is configuration, not an implementation detail, because that is what makes the stored
 series reproducible.**
 
-An `rth` bar aggregated from 30-minute bars and one aggregated from 5-minute bars are not guaranteed to be the
-same number: the two grids expect different buckets, so they can disagree about completeness on the same day.
-Naming the base in the definition, and recording it on the row, is what stops the value depending on what the
-store happened to hold ([ADR-0006](0006-indicators-as-projections.md)).
+An `rth` bar aggregated from 30-minute bars and one aggregated from 5-minute bars are not the same number,
+and the failure is worse than a disagreement about completeness. A `Bar` carries an open time and not a size,
+so `SessionBarAggregator.Aggregate` cannot tell which grid it was handed. A **coarser** series than the
+definition's base is caught by accident — most of the expected instants are not its bucket starts, so the
+outcome is `Incomplete`. A **finer** one is not caught at all: 5-minute bars for `rth` at a 30-minute base
+contain all thirteen expected instants, pass the completeness guard, and produce a bar that looks complete
+while its high, low and volume come from the thirteen buckets that happened to start on the half hour — a
+thirteenth of the session, wearing the ordinary face this record exists to refuse. That is why the base is
+**configuration** rather than an argument, and why gh#499 stores it on the row: it is the only place the
+resolution a session bar was built from can be stated, since the bars themselves cannot state it
+([ADR-0006](0006-indicators-as-projections.md)).
 
 **6. Indicators over a session series are projected by the same projector, minus `vwap`.**
 
@@ -192,6 +205,15 @@ invalidated by every base write, which is more machinery than recomputing the ab
   calendar expects the buckets that close inside the session and not the ones that do not, so the series is
   legal, complete by its own rule, and not a session. Nothing here refuses it, and this sentence exists so the
   next reader knows that was a decision rather than an oversight.
+- **The ceiling itself has that residue — 1,379 is inside the range this record left servable.** A bucket of
+  nearly a session's length is expected only when the bucket grid — anchored at the .NET epoch, not at the
+  session open — lands within a minute of 17:00 Central, which is a coincidence rather than a rule and
+  happens on a handful of scattered trade dates a decade. On every other one, `get_bars` at 1,379 and through
+  its neighbourhood still answers an **empty series with `venueRequests: 0`** — the exact shape this record
+  abolished at 1,440, moved by one minute rather than removed. The refusal is drawn at the session's length
+  because that is the line the *definition* of a session bar supports, and nothing above it can ever be a bar;
+  refusing 1,379 as well needs a rule separating "coarse but honest" from "coarse and misaligned", and that
+  rule is **gh#538**, not this record.
 
 ## Follow-ups
 
@@ -205,5 +227,6 @@ invalidated by every base write, which is more machinery than recomputing the ab
   metals will need it before equity index does.
 - **A session slice on `get_market_snapshot`.** Deliberately out of gh#496; worth revisiting once the session
   tools have been used.
-- **A refusal for partial-coverage resolutions**, the residue named in *Consequences*. It needs a rule that
-  distinguishes "coarse but honest" from "coarse and misaligned", and nobody has written one.
+- **A refusal for partial-coverage resolutions (gh#538)**, the residue named in *Consequences* — the
+  neighbourhood below the ceiling, 1,379 included, that still answers empty with `venueRequests: 0`. It needs
+  a rule that distinguishes "coarse but honest" from "coarse and misaligned", and nobody has written one.

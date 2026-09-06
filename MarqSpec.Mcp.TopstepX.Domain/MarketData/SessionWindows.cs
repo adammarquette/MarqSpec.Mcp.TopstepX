@@ -196,7 +196,12 @@ public static partial class SessionWindows
         // Start one day ahead of the market date: the session of the date after `now` can already have closed
         // when `now` sits in the evening leg that opened it.
         DateOnly cursor = MarketClock.MarketDate(now).AddDays(1);
-        DateOnly floor = cursor.AddDays(-((count * 4) + 14));
+
+        // The floor is inclusive, so the walk examines `span` days, not `span - 1`. Stated once and used by
+        // both the bound and the refusal, because a message quoting a different number than the code walked
+        // is a message that sends the next reader looking for a bug that is not there.
+        int span = (count * 4) + 15;
+        DateOnly floor = cursor.AddDays(-(span - 1));
 
         List<DateOnly> found = [];
         for (DateOnly candidate = cursor; candidate >= floor && found.Count < count; candidate = candidate.AddDays(-1))
@@ -214,7 +219,7 @@ public static partial class SessionWindows
                 count,
                 "The calendar carries only " + found.Count.ToString(CultureInfo.InvariantCulture)
                 + " closed '" + definition.Name + "' session(s) in the "
-                + ((count * 4) + 14).ToString(CultureInfo.InvariantCulture)
+                + span.ToString(CultureInfo.InvariantCulture)
                 + " calendar days before " + now.ToString("O", CultureInfo.InvariantCulture) + ".");
         }
 
@@ -236,6 +241,14 @@ public static partial class SessionWindows
     /// Places one Central wall-clock boundary on a calendar day: the previous one when it belongs to the
     /// evening leg, the trade date itself otherwise.
     /// </summary>
+    /// <remarks>
+    /// A daylight-saving Sunday can never receive an evening-leg boundary: the transition is at 02:00 and
+    /// <see cref="BarSessionCalendar.SessionOpen"/> — the close plus the maintenance window, 17:00 on the
+    /// shipped calendar — is many hours past it, so the wall-clock time this resolves is neither skipped nor
+    /// ambiguous. That guarantee is the <i>calendar's</i>, not this method's: an operator closing before
+    /// about 03:00 would put the reopen inside the transition, and <see cref="MarketClock.FromMarket"/>
+    /// resolves a skipped or doubled wall-clock time to the standard offset without saying so.
+    /// </remarks>
     private static DateTimeOffset BoundaryFor(BarSessionCalendar calendar, DateOnly tradeDate, TimeOnly central)
     {
         DateOnly day = central >= calendar.SessionOpen ? tradeDate.AddDays(-1) : tradeDate;

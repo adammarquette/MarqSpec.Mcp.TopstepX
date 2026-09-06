@@ -35,9 +35,9 @@ operator is told, all merged onto `develop` since `[0.3.0]` without a release of
   found the deeper hole (gh#468, gh#459).
 - Agent-facing contract entries: `git grep` over an unscoped `grep -r` in the root contract (gh#456); a
   third signal recorded for when a report cannot witness its own success (gh#461); this checkout being a
-  shallow clone, corrected from present to past tense once the growth chain was re-derived from a full
-  clone (gh#477, gh#485); and a note on ADR-0007 that its console block is a past state of the working
-  copy it was written against (gh#487).
+  shallow clone, corrected from present to past tense once the maintainer unshallowed the shared checkout
+  on 2026-09-06 (gh#477, gh#485); and a note on ADR-0007 that its console block is a past state of the
+  working copy it was written against, from before that same unshallow (gh#487).
 
 ### Fixed
 

@@ -210,6 +210,15 @@ public sealed class SessionWindowsTests
     }
 
     [Fact]
+    public void LastClosedTradeDates_ReturnsTheSingleLastClosedSession_WhenCountIsOne()
+    {
+        // One is the case every "the last session" caller asks for, and the smallest walk the bound admits.
+        // Tuesday's RTH runs 13:30Z to 20:00Z and `now` is inside it, so the answer is Monday.
+        SessionWindows.LastClosedTradeDates(Calendar(), Shipped("rth"), Utc(2026, 8, 18, 17, 0), 1)
+            .Should().Equal(new DateOnly(2026, 8, 17));
+    }
+
+    [Fact]
     public void LastClosedTradeDates_Refuses_WhenTheCalendarRunsOut()
     {
         // Every day the bounded walk can reach is a declared holiday, so there is no closed session to

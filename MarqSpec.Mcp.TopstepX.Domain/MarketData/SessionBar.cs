@@ -17,7 +17,10 @@ namespace MarqSpec.Mcp.TopstepX.Domain.MarketData;
 /// </remarks>
 public enum SessionBarAbsence
 {
-    /// <summary>Unset. Never a reason the aggregator states — a zero default here would name a cause by accident.</summary>
+    /// <summary>
+    /// Unset. Never a reason the aggregator states — a zero default here would name a cause by accident —
+    /// and <see cref="SessionBarOutcome.Absent"/> refuses it rather than passing it on.
+    /// </summary>
     Unknown = 0,
 
     /// <summary>The store does not hold every base bucket the calendar expects inside the session window.</summary>
@@ -114,11 +117,33 @@ public sealed record SessionBarOutcome(
 
     /// <summary>An absent session, with the reason stated.</summary>
     /// <param name="tradeDate">The trade date.</param>
-    /// <param name="reason">Why there is no session bar.</param>
+    /// <param name="reason">
+    /// Why there is no session bar. Never <see cref="SessionBarAbsence.Unknown"/>: that member is the
+    /// vocabulary's zero, meaning <i>no reason was stated</i>, not a reason a producer may give.
+    /// </param>
     /// <param name="expectedBuckets">How many base buckets the calendar expected.</param>
     /// <param name="missingBuckets">How many of them the store did not hold.</param>
     /// <returns>The outcome.</returns>
+    /// <exception cref="ArgumentOutOfRangeException">
+    /// <paramref name="reason"/> is <see cref="SessionBarAbsence.Unknown"/>.
+    /// </exception>
+    /// <remarks>
+    /// An absence carrying <see cref="SessionBarAbsence.Unknown"/> would say there is no bar and say nothing
+    /// a caller could act on — the bare null the reason vocabulary exists to replace. It is a producer bug
+    /// rather than a fourth kind of absence, so it faults here instead of travelling downstream.
+    /// </remarks>
     public static SessionBarOutcome Absent(
-        DateOnly tradeDate, SessionBarAbsence reason, int expectedBuckets, int missingBuckets) =>
-        new(tradeDate, null, reason, expectedBuckets, missingBuckets);
+        DateOnly tradeDate, SessionBarAbsence reason, int expectedBuckets, int missingBuckets)
+    {
+        if (reason == SessionBarAbsence.Unknown)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(reason),
+                reason,
+                "An absent session states why: SessionBarAbsence.Unknown is the vocabulary's unset zero, not "
+                + "a reason. Use Incomplete, SpansRoll, ProvenanceUnknown or NotClosed.");
+        }
+
+        return new SessionBarOutcome(tradeDate, null, reason, expectedBuckets, missingBuckets);
+    }
 }

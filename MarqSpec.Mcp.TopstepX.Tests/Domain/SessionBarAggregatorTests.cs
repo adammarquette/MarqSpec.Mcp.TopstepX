@@ -323,4 +323,18 @@ public sealed class SessionBarAggregatorTests
                 "subset " + mask.ToString(CultureInfo.InvariantCulture) + " is missing a bucket");
         }
     }
+
+    [Fact]
+    public void Absent_RefusesTheUnknownReason()
+    {
+        // `Unknown` is the vocabulary's zero -- "no reason was stated" -- so it is the one member a producer
+        // may never hand in. An outcome carrying it is absent AND silent about why, which is precisely the
+        // shape SessionBarOutcome exists to make impossible: the caller is told there is no bar and given
+        // nothing to act on, the bare null the reason replaced. A caller bug, so it faults rather than
+        // becoming a fourth absence.
+        Action act = () =>
+            SessionBarOutcome.Absent(new DateOnly(2026, 8, 18), SessionBarAbsence.Unknown, 13, 13);
+
+        act.Should().Throw<ArgumentOutOfRangeException>().WithParameterName("reason");
+    }
 }

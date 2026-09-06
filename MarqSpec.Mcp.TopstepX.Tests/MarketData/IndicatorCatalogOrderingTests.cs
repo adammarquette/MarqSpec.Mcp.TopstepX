@@ -55,8 +55,13 @@ public sealed class IndicatorCatalogOrderingTests
     private static DateTimeOffset SessionStart =>
         MarketClock.FromMarket(new DateOnly(2026, 8, 18), new TimeOnly(9, 0)).ToUniversalTime();
 
-    private static IndicatorCatalog Catalog() =>
-        new(Options.Create(new IndicatorOptions()), BarSessionCalendar.Parse("16:00", []));
+    /// <summary>The catalogue, optionally widened with an additional EMA period.</summary>
+    /// <param name="additionalEmaPeriods">The <c>Indicators__AdditionalEmaPeriods</c> list, or none.</param>
+    /// <returns>The catalogue.</returns>
+    private static IndicatorCatalog Catalog(string? additionalEmaPeriods = null) =>
+        new(
+            Options.Create(new IndicatorOptions { AdditionalEmaPeriods = additionalEmaPeriods }),
+            BarSessionCalendar.Parse("16:00", []));
 
     /// <summary>Sixty bars under one contract, with two adjacent bars exchanged in the middle.</summary>
     /// <remarks>
@@ -112,10 +117,15 @@ public sealed class IndicatorCatalogOrderingTests
         return false;
     }
 
-    [Fact]
-    public void EveryConfiguredIndicator_RefusesATransposedSeries()
+    [Theory]
+    [InlineData(null)]
+    [InlineData("3")]
+    public void EveryConfiguredIndicator_RefusesATransposedSeries(string? additionalEmaPeriods)
     {
-        IndicatorCatalog catalog = Catalog();
+        // The second case widens the catalogue with an additional EMA period (gh#495). The guard is claimed
+        // to sit on the SHARED path, so an instance built at a period nobody wrote a test for must inherit
+        // it -- and a widened catalogue is now the ordinary way instances appear that no line of code names.
+        IndicatorCatalog catalog = Catalog(additionalEmaPeriods);
 
         catalog.All.Should().NotBeEmpty("the sweep must actually cover something");
 

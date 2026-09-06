@@ -181,7 +181,8 @@ public sealed class IndicatorTools(
     }
 
     /// <summary>
-    /// Reads the latest value of every catalogue indicator as of one moment, in a single statement.
+    /// Reads the latest value of every catalogue indicator, at its PRIMARY period, as of one moment, in a
+    /// single statement.
     /// </summary>
     /// <param name="symbol">The instrument symbol.</param>
     /// <param name="resolutionMinutes">The bar size in minutes.</param>
@@ -218,10 +219,13 @@ public sealed class IndicatorTools(
     /// equivalence above is proven where it is cheap and the translation is proven where it is real.
     /// </para>
     /// <para>
-    /// <b>Filtered to the catalogue's names, matched to the catalogue's periods after materialisation.</b>
-    /// A period moved in configuration leaves rows behind under the old one, and those are a different
-    /// series rather than a stale copy of this one — handing an <c>ATR(14)</c> to a caller who asked for the
-    /// configured <c>ATR(3)</c> is the same wrong-attribution failure in another dimension.
+    /// <b>Filtered to the catalogue's names, matched to the catalogue's PRIMARY periods after
+    /// materialisation.</b> A period moved in configuration leaves rows behind under the old one, and those
+    /// are a different series rather than a stale copy of this one — handing an <c>ATR(14)</c> to a caller
+    /// who asked for the configured <c>ATR(3)</c> is the same wrong-attribution failure in another
+    /// dimension. An ADDITIONAL period is that same distinction reached from the other side: it is stored,
+    /// and it is a different series under the same name, so it belongs to the reads that SELECT a period
+    /// rather than to a map whose key is only the name.
     /// </para>
     /// <para>
     /// <b>AsNoTracking</b> for the reason every read of <c>IndicatorValues</c> here is: the rows are written
@@ -245,7 +249,9 @@ public sealed class IndicatorTools(
 
         string venue = _venue;
         string instrumentSymbol = instrument.Symbol;
-        string[] names = [.. _catalog.All.Select(i => i.Name)];
+        // THE NAMES, not the instances. The catalogue holds one instance per configured (name, period), so
+        // projecting All would repeat a name once per period it is computed at -- the same filter, longer.
+        string[] names = [.. _catalog.KnownNames];
 
         IQueryable<IndicatorValueRecord> series = _database.IndicatorValues
             .AsNoTracking()
@@ -295,7 +301,13 @@ public sealed class IndicatorTools(
 
         Dictionary<string, ToolPayloads.IndicatorReading> readings = new(StringComparer.Ordinal);
 
-        foreach (IIndicator indicator in _catalog.All)
+        // PRIMARIES, NOT All. This map is keyed by NAME, and the catalogue holds one instance per configured
+        // (name, period) -- so walking All would write readings[name] once per configured period and let the
+        // LAST one win. A server with an additional EMA configured would then publish the additional window's
+        // number under `ema` while get_indicators and get_indicator_at answered with the primary's: one key,
+        // two windows, and nothing in the payload saying which. The primary is what every caller reading this
+        // map has always been given, and it stays that.
+        foreach (IIndicator indicator in _catalog.Primaries)
         {
             var row = rows.FirstOrDefault(r =>
                 string.Equals(r.Indicator, indicator.Name, StringComparison.Ordinal)

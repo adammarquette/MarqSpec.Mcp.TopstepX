@@ -42,8 +42,19 @@ public sealed class IndicatorCatalogWarmupTests
     private static DateTimeOffset SessionStart =>
         MarketClock.FromMarket(new DateOnly(2026, 8, 18), new TimeOnly(9, 0)).ToUniversalTime();
 
-    private static IndicatorCatalog Catalog() =>
-        new(Options.Create(new IndicatorOptions()), BarSessionCalendar.Parse("16:00", []));
+    /// <summary>The catalogue, optionally widened with an additional EMA period.</summary>
+    /// <param name="additionalEmaPeriods">The <c>Indicators__AdditionalEmaPeriods</c> list, or none.</param>
+    /// <returns>The catalogue.</returns>
+    /// <remarks>
+    /// Period <b>3</b>, and small deliberately: EMA's smoothing factor at 3 is <c>2 / 4</c>, exactly
+    /// <c>0.5</c> in <c>decimal</c>, and this suite derives nothing from the additional instance except that
+    /// it obeys the same formula as every other member. A long additional period would instead widen
+    /// <see cref="ProbeLength"/>'s job without measuring anything new.
+    /// </remarks>
+    private static IndicatorCatalog Catalog(string? additionalEmaPeriods = null) =>
+        new(
+            Options.Create(new IndicatorOptions { AdditionalEmaPeriods = additionalEmaPeriods }),
+            BarSessionCalendar.Parse("16:00", []));
 
     /// <summary>One contiguous run of one contract, sawtoothing over five prices.</summary>
     private static IReadOnlyList<Bar> SingleContract(int count) =>
@@ -100,10 +111,19 @@ public sealed class IndicatorCatalogWarmupTests
             + ". The declared minimum is then not the bar at which Compute first yields a value.");
     }
 
-    [Fact]
-    public void EveryConfiguredIndicator_NonNullCountEqualsBarsMinusWarmupBarsPlusOne()
+    [Theory]
+    [InlineData(null)]
+    [InlineData("3")]
+    public void EveryConfiguredIndicator_NonNullCountEqualsBarsMinusWarmupBarsPlusOne(
+        string? additionalEmaPeriods)
     {
-        AssertNonNullCountMatchesWarmup(Catalog().All, SingleContract(ProbeLength));
+        // THE SECOND CASE IS AN ADDITIONAL PERIOD, and it is here because the sweep walks All. Since gh#495
+        // that list is one instance per configured (name, period) rather than one per name, so a widened
+        // catalogue puts an ema(3) beside the ema(20) -- a member with a warm-up NO OTHER instance of its
+        // name has. The formula has to hold for it too, or the additional period an operator asked for
+        // reports its first value at a bar the fetch window was never sized to reach.
+        AssertNonNullCountMatchesWarmup(
+            Catalog(additionalEmaPeriods).All, SingleContract(ProbeLength));
     }
 
     [Fact]

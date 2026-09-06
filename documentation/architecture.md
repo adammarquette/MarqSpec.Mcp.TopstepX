@@ -278,7 +278,10 @@ all walk; `IndicatorCatalog.Primaries` — exactly one per name — is what keys
    *configured* period rather than the shipped one, and one
    `DISTINCT (Indicator, Period)` over the series' stored values, which returns one row per configured
    instance rather than per name. Two aggregates, and they are the whole cost
-   of a warm read: **4.3 ms** at 2,000 bars, **11.2 ms** at 70,000. The cap is why the first half does not
+   of a warm read: **4.3 ms** at 2,000 bars, **11.2 ms** at 70,000, **measured at the shipped catalogue** —
+   eleven indicators at one period each, before `vwap-rolling` and before additional periods were configurable.
+   Read them on the same terms as the 8.3 s below: the `DISTINCT` returns a row per configured instance, so
+   the second aggregate's result set grows with what an operator adds. The cap is why the first half does not
    grow with the series — the only thing that count decides is `WarmupBars <= bars` for each catalogue member,
    and any number at or above the largest warm-up answers every one of those identically.
 2. **Diff against the catalogue.** A pair is *missing* only when the stored bars reach its

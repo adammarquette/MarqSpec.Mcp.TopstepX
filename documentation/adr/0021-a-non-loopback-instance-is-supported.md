@@ -59,8 +59,9 @@ compose file's comments.
 
 Hostnames: **`topstepx-mcp.marqspec.com`** for production and **`topstepx-mcp.staging.marqspec.com`** for
 staging, one load balancer per environment (gh#511). The `staging.` spelling is gh#509's; its review left
-`stage.` open as the maintainer's to confirm in gh#519, so a document quoting one spelling before that
-confirmation should cite this paragraph rather than assert the name.
+`stage.` open as the maintainer's to confirm in gh#519, so until then the names above are the epic's working
+spelling rather than a settled fact — a document quoting one should cite this paragraph **and its caveat**
+rather than assert the name as confirmed.
 
 ### Token — OAuth 2.1, Cognito-issued; the static token stays local
 

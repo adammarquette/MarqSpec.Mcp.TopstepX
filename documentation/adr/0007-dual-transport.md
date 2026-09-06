@@ -290,6 +290,10 @@ decision: the client reaches the endpoint **from the same machine** — not Anth
 is no public hostname to certify and no ACME challenge to answer; and **gh#415's loopback bind stays**, so TLS
 is added beside it rather than instead of it. A genuinely remote instance is a different operational story and
 is not decided here.
+(Superseded as a scoping 2026-09-06: the remote instance is decided in
+[ADR-0021](0021-a-non-loopback-instance-is-supported.md) — a VPC behind a load balancer, OAuth 2.1 in place of
+the static token, ACM in place of the local CA. The "same machine" clause describes the composed shape only;
+the loopback bind and the TLS decision above are unchanged — see the 2026-09-06 update below.)
 
 **There was nothing to build on.** gh#416 swept `docker-compose.yml`, `docker-compose.dev.yml`, `Dockerfile`
 and `.env.example` for `https|tls|ssl|certificate|Kestrel__Certificates|ASPNETCORE_URLS|HTTPS_PORTS` and found
@@ -852,7 +856,8 @@ endpoint on a premise it named, and then named what it did not settle:
 > is added beside it rather than instead of it. A genuinely remote instance is a different operational story
 > and is not decided here.
 
-**The second sentence is now answered, and the first is superseded as a scoping.** gh#445's trigger fired on
+**The last sentence is now answered, and the "same machine" clause is superseded as a scoping — the
+loopback-bind clause beside it is not; compose still binds `127.0.0.1`.** gh#445's trigger fired on
 2026-09-03 when Anthropic's connector documentation was read: a remote MCP connector is reached from
 Anthropic's infrastructure for every Claude client, Cowork included, so a client "on the same machine" is not
 a shape a Cowork connector can be registered against at all — loopback is unroutable from there, and a mkcert
@@ -870,6 +875,8 @@ business crossing a network in plaintext whatever any client wants, and that rea
 Cowork. The composed stack is untouched: `127.0.0.1:8443`, the default token, the local CA, and every sentence
 above coupling the three are still the correct description of the same-machine shape, which is still the only
 shape `docker compose up` produces. "Reported, not verified" stays on the Cowork requirement until gh#524
-registers the staging endpoint and measures it. The quoted sentences are not edited in place, for the reason
-this page gives about itself: a reader who lands on them first is better served by a scoping that is visibly
-superseded and points at the record that superseded it.
+registers the staging endpoint and measures it. The quoted sentences are not edited in place; a bracketed
+pointer now sits directly under them, in the shape the 2026-08-23 and 2026-09-05 updates already carry, for
+the reason this page gives about itself: a reader who lands on them first is better served by a scoping that
+is visibly superseded and points at the record that superseded it than by a silent rewrite — and the
+2026-09-03 update exists because this page once left such a sentence standing with no pointer at all.

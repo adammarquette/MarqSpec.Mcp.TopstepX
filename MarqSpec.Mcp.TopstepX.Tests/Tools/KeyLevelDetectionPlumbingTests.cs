@@ -36,9 +36,11 @@ namespace MarqSpec.Mcp.TopstepX.Tests.Tools;
 /// </para>
 /// <para>
 /// <b>Per-call detection parameters are sound here because nothing stores a level</b> (ADR-0013). ADR-0006's
-/// ban on per-call indicator parameters is about a storage key that cannot see them; there is no level store
-/// at all — the table that never held a row was dropped under gh#276 — so there is no key for one to fall
-/// out of.
+/// ban on ad-hoc per-call indicator parameters is about a storage key that cannot see them; there is no level
+/// store at all — the table that never held a row was dropped under gh#276 — so there is no key for one to
+/// fall out of. An indicator call may still SELECT among the periods the catalogue is configured for
+/// (ADR-0018), because the indicator key carries the period; that is a lookup along a stored column, and
+/// there is no stored column here to look one up along.
 /// </para>
 /// <para>
 /// <b>One case is not here — see <c>KeyLevelDetectionStoreTests</c> in the integration project.</b> The

@@ -79,7 +79,7 @@ it is read alongside rows a window already selected, never searched on.
 | Column | Type | Note |
 |---|---|---|
 | `Venue` `Instrument` `ResolutionMinutes` | | PK |
-| `Indicator` | `varchar(32)` | PK · lowercase stable name — `atr`, `rsi`, `macd-signal` |
+| `Indicator` | `varchar(32)` | PK · lowercase stable name — `atr`, `rsi`, `macd-signal`, `vwap-rolling` |
 | `Period` | `integer` | PK · part of identity; ATR(14) and ATR(3) are different numbers |
 | `BucketStart` | `timestamptz` | PK · the hypertable's time dimension |
 | `Value` | `numeric(18,8)` | |
@@ -89,7 +89,15 @@ Nothing here is authoritative — every row is reproducible from §1, and that i
 replay reaching for the ATR behind a past decision should find the number that was actually used.
 
 `Period` is `0` for indicators that take none (VWAP is anchored, not windowed), which keeps them from colliding
-with a windowed indicator of the same name.
+with a windowed indicator of the same name. A VWAP with a lookback is a **different calculation**, so it is a
+different name — `vwap-rolling`, at its own period — rather than `vwap` at a non-zero one.
+
+**One name can have several periods here, and every one of them was configured.** Each indicator has a PRIMARY
+period (`Indicators__*Period`) and may have additional ones (`Indicators__Additional*Periods`); the catalogue
+owns every `(Indicator, Period)` instance, and the projection, the read-time probe and the reconcile all walk
+that same set. That is what makes `period` on `get_indicators` a **selection** rather than a computation
+([ADR-0018](adr/0018-period-selection-among-configured-periods.md)): the key carries the period, so a
+selectable one always names rows this store's own projection wrote.
 
 Index: `(Instrument, ResolutionMinutes, Indicator, Period, BucketStart)` — the shape of every read.
 
@@ -172,9 +180,11 @@ constrained, indexed table with no pending purpose. Migration `20260827071708_Dr
 its four CHECK constraints and its index.
 
 **Levels are still computed on every `get_key_levels` call and returned**, and now there is no level store at
-all rather than an empty one. That is what keeps per-call detection parameters sound: ADR-0006 bans the same
-freedom for indicators because their storage key is `(Indicator, Period)`, and here there is no key for a
-parameter to fall out of.
+all rather than an empty one. That is what keeps per-call detection parameters sound: ADR-0006 bans **ad-hoc**
+per-call parameters for indicators because their storage key is `(Indicator, Period)`, and here there is no key
+for a parameter to fall out of. An indicator call may still **select** among the configured periods
+([ADR-0018](adr/0018-period-selection-among-configured-periods.md)) — that is the one parameter the key
+carries, which is exactly why it is not the same freedom.
 
 **The number is retired, not reused.** §5 and §6 keep theirs — `ObservationRecord`, `EmbeddingRecord` and
 [ADR-0009](adr/0009-cohere-embeddings.md) cite them by number, and renumbering would silently repoint every

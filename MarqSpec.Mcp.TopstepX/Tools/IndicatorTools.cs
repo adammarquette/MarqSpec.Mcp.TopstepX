@@ -12,7 +12,8 @@ namespace MarqSpec.Mcp.TopstepX.Tools;
 
 /// <summary>
 /// <c>get_indicators</c>, <c>get_indicator_at</c>, and the internal batched read
-/// <c>get_market_snapshot</c> composes instead of calling <see cref="GetIndicatorAt"/> eleven times over.
+/// <c>get_market_snapshot</c> composes instead of calling <see cref="GetIndicatorAt"/> once per catalogue
+/// name.
 /// </summary>
 /// <remarks>
 /// One of the five tool types gh#414 split <c>MarketDataTools</c> into: six dependencies where the one type
@@ -175,7 +176,7 @@ public sealed class IndicatorTools(
         DateTimeOffset asOf = asOfUtc.ToUniversalTime();
 
         // The same cache-aside trigger get_indicators is on (gh#246). This is the read get_market_snapshot
-        // composes, eleven times per resolution, so it is the one that would have gone on reporting
+        // composed once per catalogue name per resolution, so it is the one that would have gone on reporting
         // cannot-measure over bars that measure perfectly well.
         await EnsureProjectedAsync(instrument, resolutionMinutes, cancellationToken).ConfigureAwait(false);
 
@@ -228,19 +229,22 @@ public sealed class IndicatorTools(
     /// <para>
     /// <b>Not a tool, and deliberately not the shape <see cref="GetIndicatorAt"/> has.</b> That one answers
     /// about one indicator and stays exactly as it was; this exists because
-    /// <c>get_market_snapshot</c> asked it eleven times per resolution and paid two statements for each —
-    /// the value, then a second round trip to <c>Bars</c> for the <c>ContractId</c> of the bucket it had
-    /// just found. A default snapshot cost <b>60</b> statements, <b>44</b> of them this block (gh#388).
+    /// <c>get_market_snapshot</c> asked it once per catalogue name per resolution and paid two statements for
+    /// each — the value, then a second round trip to <c>Bars</c> for the <c>ContractId</c> of the bucket it
+    /// had just found. Against the eleven names the catalogue held then, a default snapshot cost <b>60</b>
+    /// statements, <b>44</b> of them this block (gh#388). This shape is <b>two</b> however many names there
+    /// are.
     /// </para>
     /// <para>
     /// <b>Per-indicator provenance is what the collapse must not lose, and it is the whole risk.</b> The
     /// anchor is one moment for the slice, but warm-up restarts at every contract seam (<c>R-2.7</c>), so
-    /// just past a roll the eleven readings legitimately sit on different buckets and different contracts.
+    /// just past a roll the readings legitimately sit on different buckets and different contracts.
     /// So this groups by <c>(Indicator, Period)</c> and takes each group's own latest bucket — never one
     /// bucket broadcast across the map — and joins the contract to <i>that</i> row's bucket. A reading
     /// attributed to the wrong contract is a plausible number that is acted on, which is why
-    /// <c>SnapshotIndicatorProvenanceTests</c> compares this map against eleven separate
-    /// <see cref="GetIndicatorAt"/> calls across a roll rather than asserting the shape looks right.
+    /// <c>SnapshotIndicatorProvenanceTests</c> compares this map against one separate
+    /// <see cref="GetIndicatorAt"/> call per catalogue name across a roll rather than asserting the shape
+    /// looks right.
     /// </para>
     /// <para>
     /// <b>Ordinary LINQ rather than the <c>DISTINCT ON</c> the store would enjoy</b>, because raw SQL is
@@ -275,7 +279,7 @@ public sealed class IndicatorTools(
         DateTimeOffset asOf = asOfUtc.ToUniversalTime();
 
         // The same cache-aside trigger get_indicators and get_indicator_at are on (gh#246). It memoises per
-        // scope, so the eleven reads this replaces already paid it once rather than eleven times.
+        // scope, so the per-name reads this replaces already paid it once rather than once each.
         await EnsureProjectedAsync(instrument, resolutionMinutes, cancellationToken).ConfigureAwait(false);
 
         string venue = _venue;

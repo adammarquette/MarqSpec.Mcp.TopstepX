@@ -13,6 +13,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`period` on `get_indicators` and `get_indicator_at` — an optional *selector*, not a computation
+  input.** Omit it and you get the indicator's primary period, exactly as before; pass one the operator
+  configured and you get that series. Any other period is an **error listing the configured ones**, with the
+  primary labelled, rather than an empty series a caller would read as *cannot measure*. `vwap` refuses a
+  period at all — it is anchored to the session, not to a window — and for `macd`, `macd-signal` and
+  `macd-histogram` the period is the **slow** length. The refusal happens before the store is touched, so a
+  rejected call cannot trigger a whole-series replay.
+  [ADR-0018](documentation/adr/0018-period-selection-among-configured-periods.md) records why selection is
+  safe where an ad-hoc per-call period is not: the storage key carries `Period`, and the catalogue's own
+  instance set drives the projection, the read-time probe, the reconcile and `rebuild-indicators` alike
+  (gh#495, `R-2.12`).
+- **Additional periods per indicator** — `Indicators__AdditionalAtrPeriods`, `…RsiPeriods`, `…SmaPeriods`,
+  `…EmaPeriods`, `…MacdSlowPeriods`, `…BollingerPeriods` and `…RollingVwapPeriods`, each a comma-separated
+  list, empty by default. The existing singular `Indicators__*Period` keys are unchanged and stay each
+  indicator's **primary**, so a deployment that sets none of the new keys computes exactly what it computed
+  before. A list that does not parse, falls out of range, repeats a value, or repeats that indicator's
+  primary is refused **at startup**, naming the key and the value — `(Indicator, Period)` is a storage key,
+  and two instances sharing one would overwrite each other on every bar.
+- **`vwap-rolling`** — the volume-weighted average price over the trailing `period` bars, configured by
+  `Indicators__RollingVwapPeriod` (20 by default). It is a **new name rather than `vwap` at a period**
+  because it is a different calculation: a session anchor is not a lookback window. `get_market_snapshot`'s
+  `indicators{}` map gains it as a key, and keeps reporting each name at its **primary** period only.
+
 ## [0.3.1] - 2026-09-06
 
 Carries the `KeyLevels__Source` fail-closed fix and a set of documentation corrections to what an

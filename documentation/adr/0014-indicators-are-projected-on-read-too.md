@@ -4,7 +4,9 @@
 **Relates to:** PRD `R-2.1`, `R-2.5`, `R-2.12`, `R-2.13` ·
 [architecture](../architecture.md) *The indicator read* ·
 refines [ADR-0006](0006-indicators-as-projections.md), whose parameterisation rule it explicitly does
-**not** reopen · rests on [ADR-0012](0012-fills-are-not-serialised.md)'s measurements · gh#246 ·
+**not** reopen — the per-call-period sentence below is narrowed by
+[ADR-0018](0018-period-selection-among-configured-periods.md) ·
+rests on [ADR-0012](0012-fills-are-not-serialised.md)'s measurements · gh#246 ·
 `MarketData/IndicatorCacheService.cs`
 
 ## Context
@@ -268,6 +270,35 @@ pays at start, so the first read is a probe. That is true only after
 still walking. A read in that window is still today's first-read path — the 8.3 s
 replay, or `StoreContentionException` after two `40001`s. The tool descriptions and
 the catalogue now say so, the way the update above already did.
+
+## Update (2026-09-06) — selection among configured periods is allowed; ad-hoc computation is not
+
+*"The sentence to read twice"* above says a per-call period remains forbidden.
+**[ADR-0018](0018-period-selection-among-configured-periods.md) narrows that sentence, and only that
+sentence** (gh#495).
+
+The reasoning it gives — *"a value computed under a period the key cannot see would be served for another"* —
+is sound and is about a period **the key cannot see**. The key sees this one: `Period` is a column of
+`(Venue, Instrument, ResolutionMinutes, Indicator, Period, BucketStart)`. What the sentence was protecting
+against, once separated, is a caller naming a number nobody computed — and that is the closed vocabulary's
+problem, answered by **refusing** rather than by forbidding the argument.
+
+So `get_indicators` and `get_indicator_at` now take an optional `period` that **selects** among the
+`(name, period)` instances the catalogue is configured for; omitted means the primary; anything else is an
+error listing the configured periods with the primary labelled, never an empty series (`R-2.3`).
+
+**This record's own mechanism is what makes that safe, which is why it rests here.** The probe diffs the
+catalogue's instances against the stored `DISTINCT (Indicator, Period)`, the reconcile is scoped to those same
+pairs, and the replay walks them — so a period a caller can select is, by construction, one the projection
+writes and one the reconcile maintains. The set widened; nothing about the trigger changed.
+
+**Two numbers in this record are now conditional on the catalogue's size.** The measurements above were taken
+against eleven indicators at one period each, so the 8.3 s cold replay and the probe timings are quoted
+elsewhere as *"at the shipped catalogue"*: every additional configured period is one more series inside the
+same replay, and the probe's `DISTINCT` returns one row per instance rather than per name. The probe's bar-count
+cap likewise follows the largest **configured** warm-up, so it is still flat in the series length and no longer
+fixed by the shipped periods. The short-run residue in the consequences above is reachable at a lower bar count
+for the same reason.
 
 ## Follow-ups
 

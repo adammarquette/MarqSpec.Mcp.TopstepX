@@ -87,10 +87,10 @@ so here is what the code actually does rather than what the shape of the problem
 vendor pages and writes fifteen hundred bars still projects once.
 
 **Each pass recomputes the whole stored series.** `ProjectAsync` loads every bar for
-`(Venue, Instrument, ResolutionMinutes)` — not the window, not the newly-arrived buckets — and recomputes all
-eleven indicators from the start. It has to: seeding from a moving window would make a value depend on how much
-history happened to be loaded, which is the property [ADR-0006](0006-indicators-as-projections.md) exists to
-protect.
+`(Venue, Instrument, ResolutionMinutes)` — not the window, not the newly-arrived buckets — and recomputes
+every configured `(name, period)` instance from the start. It has to: seeding from a moving window would make
+a value depend on how much history happened to be loaded, which is the property
+[ADR-0006](0006-indicators-as-projections.md) exists to protect.
 
 So the cost of a pass scales with the **length of the series**, and a series only grows. Resolution drives that
 length directly. Per hour of covered span:

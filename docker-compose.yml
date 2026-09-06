@@ -98,6 +98,14 @@ services:
       Indicators__EmaPeriod: "${Indicators__EmaPeriod:-20}"
       Indicators__MacdSlowPeriod: "${Indicators__MacdSlowPeriod:-26}"
       Indicators__BollingerPeriod: "${Indicators__BollingerPeriod:-20}"
+      Indicators__RollingVwapPeriod: "${Indicators__RollingVwapPeriod:-20}"
+      Indicators__AdditionalAtrPeriods: "${Indicators__AdditionalAtrPeriods:-}"
+      Indicators__AdditionalRsiPeriods: "${Indicators__AdditionalRsiPeriods:-}"
+      Indicators__AdditionalSmaPeriods: "${Indicators__AdditionalSmaPeriods:-}"
+      Indicators__AdditionalEmaPeriods: "${Indicators__AdditionalEmaPeriods:-}"
+      Indicators__AdditionalMacdSlowPeriods: "${Indicators__AdditionalMacdSlowPeriods:-}"
+      Indicators__AdditionalBollingerPeriods: "${Indicators__AdditionalBollingerPeriods:-}"
+      Indicators__AdditionalRollingVwapPeriods: "${Indicators__AdditionalRollingVwapPeriods:-}"
 
       # Detection defaults for get_key_levels. Source, PivotLookback and PivotRightLookback are also
       # per-call arguments on the tool; the width, the floor and the two caps are settable only here,

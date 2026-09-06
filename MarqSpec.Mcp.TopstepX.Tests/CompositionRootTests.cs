@@ -515,4 +515,25 @@ public sealed class CompositionRootTests
         provider.GetRequiredService<IOptions<KeyLevelDetectionOptions>>().Value.Defaults()
             .Should().Be(new KeyLevelOptions(20, PivotSource.HeikinAshiBody, 0.5m, 0.5m, 15, 2.5m, 12));
     }
+
+    [Fact]
+    public void TheHost_RefusesToStart_WhenAnAdditionalMacdSlowPeriodIsNotAboveTheFastLength()
+    {
+        // MACD's fast length is fixed at 12 (IndicatorOptions' remarks), so a configured additional slow
+        // period of 12 or less would throw the first time IndicatorCatalog tried to build a MacdLineIndicator
+        // from it -- a boot-time refusal that names the setting is the alternative to a first-call crash.
+        Dictionary<string, string?> configured = new()
+        {
+            ["Indicators:AdditionalMacdSlowPeriods"] = "12",
+        };
+
+        Action start = () =>
+        {
+            using ServiceProvider provider = Build(configured, new McpOptions { Transport = McpTransport.Stdio });
+            _ = provider.GetRequiredService<IOptions<IndicatorOptions>>().Value;
+        };
+
+        start.Should().Throw<OptionsValidationException>()
+            .WithMessage("*Indicators__AdditionalMacdSlowPeriods*");
+    }
 }

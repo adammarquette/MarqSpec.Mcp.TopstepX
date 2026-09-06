@@ -13,6 +13,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-09-06
+
+Carries the `KeyLevels__Source` fail-closed fix and a set of documentation corrections to what an
+operator is told, all merged onto `develop` since `[0.3.0]` without a release of their own.
+
+### Changed
+
+- **`KeyLevels__Source` now binds as a string and resolves by name, through the same
+  `PivotSources.Resolve` a call's `pivotSource` argument already goes through, rather than as the
+  `PivotSource` enum.** Binding it as the enum let `Microsoft.Extensions.Configuration`'s converter —
+  plain `Enum.Parse`, no `[Flags]` check — decide what counted as a value, and that converter OR-ed a
+  comma-separated list onto whichever real source the bits happened to name: `HeikinAshiBody,Body` bound
+  as `1 | 2`, which is `PivotSource.HighLow`, and the server booted and answered every `get_key_levels`
+  call from a source nobody named — the `detection` block on the payload was the only trace. **A numeral
+  (`1`, `2`, `3`) or a comma-separated list that booted before is refused at startup now**, with a
+  `ValidationResult` naming the three known sources by name. Fail-closed and deliberate: nothing here can
+  trade either way, but an operator whose configuration relied on either shape now sees the server refuse
+  to start rather than serve from a source nobody chose. A plain typo reaches that same friendly message
+  now too, rather than a raw binder exception — which is what this card started out fixing, before review
+  found the deeper hole (gh#468, gh#459).
+- Agent-facing contract entries: `git grep` over an unscoped `grep -r` in the root contract (gh#456); a
+  third signal recorded for when a report cannot witness its own success (gh#461); this checkout being a
+  shallow clone, corrected from present to past tense once the growth chain was re-derived from a full
+  clone (gh#477, gh#485); and a note on ADR-0007 that its console block is a past state of the working
+  copy it was written against (gh#487).
+
+### Fixed
+
+- The `KeyLevels__Source` class remarks and the `Validate` refusal message said where the value is
+  checked, and they were wrong; both now describe the mechanism rather than a list of shapes (gh#459).
+- The container recipe states the networking constraint its stdio example depends on (gh#464).
+- The container recipe's 412-character shutdown line in the README is unwrapped, so it is searchable
+  (gh#470).
+- The container recipe tracks `latest` rather than pinning `:0.2.0`, with the reason stated (gh#471).
+- The container recipe's `docker pull` step states why it pulls before it runs (gh#472).
+- ADR-0007's "16 tools" figure is pinned to the tree that actually held 15 (gh#460).
+
 ## [0.3.0] - 2026-09-03
 
 A **minor** bump rather than a patch: the composed MCP endpoint is HTTPS-only and every local client's
@@ -204,7 +241,8 @@ First tagged release. Read-only MCP server over the ProjectX/TopstepX gateway: c
 projections, contract-aware series, observations with semantic search, fifteen tools on stdio and streamable
 HTTP. The tag was re-cut after the first publish failed on an uppercase image reference (gh#115).
 
-[Unreleased]: https://github.com/adammarquette/MarqSpec.Mcp.TopstepX/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/adammarquette/MarqSpec.Mcp.TopstepX/compare/v0.3.1...HEAD
+[0.3.1]: https://github.com/adammarquette/MarqSpec.Mcp.TopstepX/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/adammarquette/MarqSpec.Mcp.TopstepX/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/adammarquette/MarqSpec.Mcp.TopstepX/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/adammarquette/MarqSpec.Mcp.TopstepX/releases/tag/v0.1.0

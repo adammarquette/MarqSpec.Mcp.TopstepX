@@ -128,6 +128,17 @@ it before starting, and add dated entries only when nothing formal fits.
   a single term, one `dotnet build` in an otherwise clean tree added **12** files an unscoped `grep -r` read
   that `git grep` did not — a different term moves the number, not the shape (gh#456). **Never quote a
   worktree count here** — it moves with every `claim.sh`.
+- **Before trusting a history count or a "root commit" claim in this checkout, check whether it is shallow.**
+  `git rev-parse --is-shallow-repository`, then read `$(git rev-parse --git-common-dir)/shallow` for the graft
+  points — a worktree has no `shallow` file of its own, it inherits the common dir's. Scoping the walk with
+  `--remotes=origin` or `--branches` does not escape it: the graft sits below ref selection, so every ref you
+  can name still stops at the same boundary. That failure is silent and plausible, not a timeout — a grafted
+  commit reports as parentless and a truncated count reads as complete — which is what makes it worse than an
+  error. Pinned at `4fb3832`: this checkout's `08c96da` shows no parent and `origin/develop` walks **100**
+  commits; a fresh clone of the same sha shows parent `8677fba` and **460**. Measure history for real in an
+  unshallowed clone — `git fetch --unshallow` on the shared checkout is the maintainer's call, since it
+  rewrites shared object state under every concurrent session, while a throwaway `git clone` outside the repo
+  is anyone's. Same family as the `git grep` trap above; its remedy does not cover this one (gh#477).
 
 *Every line here is paid by every agent in every session. Keep it small: anything role- or subtree-specific
 belongs in its contract, and anything with a formal home belongs there rather than restated here.*

@@ -233,6 +233,12 @@ time in the sibling repo:
   exception: it defaults `Simulated`, the same local convenience as `Mcp__HttpBearerToken:-changeme-local`,
   so `docker compose up` with credentials and no tier does not fail startup.
 
+Two hosting knobs behind this transport, both configuration only (gh#515): `Logging__Console__FormatterName=json`
+switches the console to one JSON object per line, which is what the AWS deployment sets for CloudWatch Logs
+Insights. `ASPNETCORE_FORWARDEDHEADERS_ENABLED=true` makes `HttpContext.Connection.RemoteIpAddress` the caller's
+own address behind a load balancer rather than the ALB's, where client IPs for a human are the ALB's own access
+logs, not this application's console.
+
 Full configuration catalogue: [`.env.example`](.env.example). Real secrets are never committed; this repository
 is public.
 

@@ -203,6 +203,12 @@ services:
       Kestrel__Certificates__Default__Password: "${Kestrel__Certificates__Default__Password:-}"
 
       Logging__LogLevel__Default: "${Logging__LogLevel__Default:-Information}"
+
+      # Hosting (gh#515). Both default to today's unchanged behaviour -- plaintext console logging and no
+      # forwarded-headers middleware -- and are the AWS deployment's (gh#509) values to flip, not this stack's.
+      # See .env.example for what each does and what was measured.
+      Logging__Console__FormatterName: "${Logging__Console__FormatterName:-simple}"
+      ASPNETCORE_FORWARDEDHEADERS_ENABLED: "${ASPNETCORE_FORWARDEDHEADERS_ENABLED:-false}"
     volumes:
       # The DIRECTORY, not the file. Docker creates a missing bind source as a directory, so mounting
       # ./certs/localhost.pfx directly would silently manufacture a directory of that name and Kestrel would

@@ -360,7 +360,9 @@ The order endpoints — place, modify, cancel, close — exist and work. **This 
   `Retry-After` was on it.
 - **Contract roll.** `Q-1` was resolved by ADR-0011 (every bar records its contract; nothing derived crosses a
   seam), which deferred *which contract to fetch a historical range from*. The measurement above (gh#494)
-  settles that the vendor can answer for an expired contract; the policy itself is gh#497's epic and its ADR.
+  settles that the vendor can answer for an expired contract; the policy is
+  [ADR-0020](../../adr/0020-historical-contract-selection.md) (gh#497): history from the volume-decided front
+  contract per trade date, the present from the venue's pick.
 
 ## Links
 

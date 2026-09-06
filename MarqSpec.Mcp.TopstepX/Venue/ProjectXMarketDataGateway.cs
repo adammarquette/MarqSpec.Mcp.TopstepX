@@ -361,12 +361,6 @@ public sealed class ProjectXMarketDataGateway : IMarketDataGateway
     }
 
     /// <summary>
-    /// The exchange's futures month codes in calendar order, so the index is the month less one.
-    /// </summary>
-    /// <remarks><c>I</c> and <c>L</c> are absent by convention, being confusable with digits.</remarks>
-    private const string MonthCodes = "FGHJKMNQUVXZ";
-
-    /// <summary>
     /// The sort rank of a contract id's expiry, as <c>CON.F.US.{code}.{MYY}</c>.
     /// </summary>
     /// <param name="contractId">The venue contract id.</param>
@@ -375,49 +369,23 @@ public sealed class ProjectXMarketDataGateway : IMarketDataGateway
     /// </returns>
     /// <remarks>
     /// <para>
-    /// <b>Year first, then month.</b> The id's own string order compares the month letter before the year,
-    /// and the month letters happen to ascend alphabetically in calendar order — so a string sort agrees
-    /// with expiry order inside one calendar year and <b>inverts across one</b>. Every December,
-    /// <c>Z25</c> sorts after <c>H26</c>, <c>M26</c> and <c>U26</c>: last, exactly when it is the front month.
+    /// The reading is <see cref="ContractExpiry"/>'s, in <c>Domain</c>, since gh#502: the month table and
+    /// the year-first order live there, where the contract month cycle and the historical contract policy
+    /// need them too (ADR-0020). What this keeps is the rank's <i>value</i> — the two-digit year the id
+    /// carries, times twelve, plus the month — so the order is <see cref="ContractExpiry.Rank"/>'s exactly
+    /// and the number is the one this method has always answered. The rank is ordinal within a century,
+    /// which is all a two-digit year can support.
     /// </para>
     /// <para>
     /// <b>Null is "cannot order", never a rank.</b> An invented rank would be indistinguishable from one that
     /// was read, and it would decide which contract every bar is fetched for. The caller places unknown
     /// deliberately; see <see cref="InFrontMonthOrder"/>.
     /// </para>
-    /// <para>
-    /// The rank is ordinal within a century, which is all a two-digit year can support. A four-digit year is
-    /// a change of id shape and returns null rather than a guess — the strictness is the point, because a
-    /// shape change should degrade to "cannot read" rather than to a wrong order nothing would notice.
-    /// </para>
     /// </remarks>
-    public static int? ExpiryRank(string contractId)
-    {
-        if (string.IsNullOrWhiteSpace(contractId))
-        {
-            return null;
-        }
-
-        string expiry = contractId.Split('.')[^1];
-        if (expiry.Length != 3)
-        {
-            return null;
-        }
-
-        int month = MonthCodes.IndexOf(expiry[0], StringComparison.Ordinal) + 1;
-        if (month == 0)
-        {
-            return null;
-        }
-
-        return int.TryParse(
-            expiry[1..],
-            System.Globalization.NumberStyles.None,
-            System.Globalization.CultureInfo.InvariantCulture,
-            out int year)
-            ? (year * 12) + month
+    public static int? ExpiryRank(string contractId) =>
+        ContractExpiry.TryParseContractId(contractId, out ContractExpiry expiry)
+            ? expiry.Rank - (ContractExpiry.Century * 12)
             : null;
-    }
 
     /// <summary>
     /// Runs a vendor call, translating its failures into one exception type with the vendor's numeric code.

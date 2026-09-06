@@ -83,13 +83,20 @@ public static partial class SessionWindows
     }
 
     /// <summary>
-    /// The UTC window a trade date's session occupies, or <see langword="null"/> when the calendar carries no
-    /// such session.
+    /// The absolute window a trade date's session occupies, or <see langword="null"/> when the calendar
+    /// carries no such session.
     /// </summary>
     /// <param name="calendar">The calendar.</param>
     /// <param name="definition">The definition.</param>
     /// <param name="tradeDate">The trade date.</param>
-    /// <returns>The half-open window <c>[open, close)</c> in UTC, or <see langword="null"/>.</returns>
+    /// <returns>
+    /// The half-open window <c>[open, close)</c>, or <see langword="null"/>. Both bounds come from
+    /// <see cref="MarketClock.FromMarket"/> and so carry the <b>market's</b> UTC offset, not zero — the same
+    /// instants a UTC window would name, written in the coordinate the session was stated in. A caller
+    /// putting them on the wire or into a field named for UTC normalises first, the way
+    /// <see cref="SessionBarAggregator"/> does with <c>ToUniversalTime</c>: <see cref="DateTimeOffset"/>
+    /// equality compares instants, so the difference is invisible to a test and visible to a reader.
+    /// </returns>
     /// <exception cref="ArgumentNullException">An argument is null.</exception>
     /// <remarks>
     /// Each boundary is placed on the previous calendar day when its wall-clock time is at or after the

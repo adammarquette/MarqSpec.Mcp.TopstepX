@@ -245,7 +245,7 @@ public sealed class ResolutionGuardTests : IDisposable
         // { value: null } -- "cannot measure", which is what a genuine warm-up gap says. An impossible
         // timeframe and an honest absence must not be the same reply.
         Func<Task> call = () => _indicators.GetIndicatorAt(
-            "ES", resolutionMinutes, "atr", Bucket(SeededBars), CancellationToken.None);
+            "ES", resolutionMinutes, "atr", Bucket(SeededBars), cancellationToken: CancellationToken.None);
 
         (await call.Should().ThrowAsync<McpException>()).WithMessage("*resolutionMinutes*");
     }

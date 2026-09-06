@@ -137,7 +137,7 @@ public sealed class IndicatorReadProjectionTests : IAsyncLifetime
         _gateway.ResetCounters();
 
         ToolPayloads.IndicatorSeries series = await tools.GetIndicators(
-            "ES", Resolution, "rsi", Bucket(0), Bucket(SeededBars), CancellationToken.None);
+            "ES", Resolution, "rsi", Bucket(0), Bucket(SeededBars), cancellationToken: CancellationToken.None);
 
         series.Period.Should().Be(5, "the read must answer under the period the catalogue is configured for");
         series.Values.Should().NotBeEmpty(
@@ -160,7 +160,7 @@ public sealed class IndicatorReadProjectionTests : IAsyncLifetime
         IndicatorTools tools = Tools(wider);
 
         ToolPayloads.IndicatorSeries fromRead = await tools.GetIndicators(
-            "ES", Resolution, "rsi", Bucket(0), Bucket(SeededBars), CancellationToken.None);
+            "ES", Resolution, "rsi", Bucket(0), Bucket(SeededBars), cancellationToken: CancellationToken.None);
 
         // WRAPPED IN THE TRANSACTION PRODUCTION USES (gh#387). The projector refuses to run outside one --
         // it writes its values with a statement the store runs as it is sent, while its removals wait for
@@ -215,7 +215,7 @@ public sealed class IndicatorReadProjectionTests : IAsyncLifetime
 
         IndicatorTools tools = Tools(Catalog(rsiPeriod: 3));
         ToolPayloads.IndicatorSeries series = await tools.GetIndicators(
-            "ES", Resolution, "macd-signal", Bucket(0), Bucket(6), CancellationToken.None);
+            "ES", Resolution, "macd-signal", Bucket(0), Bucket(6), cancellationToken: CancellationToken.None);
 
         series.Values.Should().BeEmpty("thirty-four bars are needed and six are stored");
     }
@@ -311,7 +311,7 @@ public sealed class IndicatorReadProjectionTests : IAsyncLifetime
         _gateway.ResetCounters();
 
         ToolPayloads.IndicatorReading reading = await tools.GetIndicatorAt(
-            "ES", Resolution, "rsi", Bucket(SeededBars), CancellationToken.None);
+            "ES", Resolution, "rsi", Bucket(SeededBars), cancellationToken: CancellationToken.None);
 
         reading.Value.Should().NotBeNull();
         _gateway.BarRequests.Should().Be(0);

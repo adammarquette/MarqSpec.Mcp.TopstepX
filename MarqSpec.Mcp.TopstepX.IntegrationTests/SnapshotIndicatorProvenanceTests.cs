@@ -180,7 +180,8 @@ public sealed class SnapshotIndicatorProvenanceTests(SeriesStoreFixture fixture)
         foreach ((string name, ToolPayloads.IndicatorReading? composed) in slice.Indicators)
         {
             ToolPayloads.IndicatorReading single =
-                await indicators.GetIndicatorAt("ES", 5, name, asOf, CancellationToken.None);
+                await indicators.GetIndicatorAt(
+                    "ES", 5, name, asOf, cancellationToken: CancellationToken.None);
 
             if (single.Value is null)
             {

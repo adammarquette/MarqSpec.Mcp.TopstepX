@@ -103,7 +103,8 @@ public sealed class ContractRollReportingTests(SeriesStoreFixture fixture) : IAs
         Family tools = await BuildAsync(rollAt: 4, total: 8);
 
         ToolPayloads.IndicatorSeries series =
-            await tools.Indicators.GetIndicators("ES", 5, "atr", Bucket(0), Bucket(8), CancellationToken.None);
+            await tools.Indicators.GetIndicators(
+                "ES", 5, "atr", Bucket(0), Bucket(8), cancellationToken: CancellationToken.None);
 
         series.Contracts.Span.Should().Be(ToolPayloads.ContractSpan.SpansRoll);
         series.Contracts.Segments.Should().HaveCount(2);
@@ -116,7 +117,8 @@ public sealed class ContractRollReportingTests(SeriesStoreFixture fixture) : IAs
         Family tools = await BuildAsync(rollAt: 4, total: 8);
 
         ToolPayloads.IndicatorReading reading =
-            await tools.Indicators.GetIndicatorAt("ES", 5, "atr", Bucket(7), CancellationToken.None);
+            await tools.Indicators.GetIndicatorAt(
+                "ES", 5, "atr", Bucket(7), cancellationToken: CancellationToken.None);
 
         reading.Value.Should().Be(4m, "the new contract's own range, hand-checked: (4+4+4)/3");
         reading.ContractId.Should().Be(NewFront);

@@ -1,10 +1,13 @@
 using FluentAssertions;
 using MarqSpec.Mcp.TopstepX.Configuration;
+using MarqSpec.Mcp.TopstepX.Data;
 using MarqSpec.Mcp.TopstepX.Domain;
 using MarqSpec.Mcp.TopstepX.Domain.MarketData;
 using MarqSpec.Mcp.TopstepX.MarketData;
 using MarqSpec.Mcp.TopstepX.Tests.MarketData;
 using MarqSpec.Mcp.TopstepX.Tools;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using Microsoft.Extensions.Time.Testing;
 using ModelContextProtocol;
@@ -19,8 +22,11 @@ namespace MarqSpec.Mcp.TopstepX.Tests.Tools;
 /// the parts whose failure modes are silent: an empty series where a symbol was misspelled, or a truncated one
 /// where a window was too wide.
 /// </remarks>
-public sealed class ToolSurfaceTests
+public sealed class ToolSurfaceTests : IDisposable
 {
+    /// <summary>The empty in-memory stores the period refusals were built over, for disposal.</summary>
+    private readonly List<TopstepXDbContext> _stores = [];
+
     private static readonly DateTimeOffset _tuesdayMidSession =
         MarketClock.FromMarket(new DateOnly(2026, 8, 18), new TimeOnly(9, 30)).ToUniversalTime();
 
@@ -274,6 +280,141 @@ public sealed class ToolSurfaceTests
         {
             Action compute = () => indicator.Compute(tooShort);
             compute.Should().NotThrow(indicator.Name);
+        }
+    }
+
+    // ── The period a caller selects among the configured ones ───────────────────────────────────
+
+    /// <summary>
+    /// An EMA configured at two windows, so a refusal has more than one period to list.
+    /// </summary>
+    /// <remarks>
+    /// The list is what makes the refusal useful: told only that 200 is wrong, a caller has no way to find
+    /// out what IS readable except by guessing, and a guess that happened to match nothing would come back
+    /// as an empty series.
+    /// </remarks>
+    private static IndicatorOptions PeriodOptions() =>
+        new() { EmaPeriod = 20, AdditionalEmaPeriods = "10" };
+
+    /// <summary>
+    /// The indicator tool over an EMPTY store, beside the cache service whose probe count the refusals
+    /// are measured against.
+    /// </summary>
+    /// <returns>The tool and its cache service.</returns>
+    /// <remarks>
+    /// <b>Empty deliberately, and that is the assertion rather than a shortcut.</b> A refusal that ran after
+    /// <c>EnsureProjectedAsync</c> would replay a whole series to serve a call it was always going to reject,
+    /// so the store is left with nothing in it and <see cref="IndicatorCacheService.Probes"/> says whether
+    /// the read reached it at all. No container is needed for the same reason
+    /// <c>ResolutionGuardTests</c> needs none: a refusal never writes.
+    /// </remarks>
+    private (IndicatorTools Tools, IndicatorCacheService Cache) Indicators()
+    {
+        TopstepXDbContext database = new(
+            new DbContextOptionsBuilder<TopstepXDbContext>()
+                .UseInMemoryDatabase(Guid.NewGuid().ToString())
+                .Options);
+
+        _stores.Add(database);
+
+        MarketDataOptions o = Options();
+        IOptions<MarketDataOptions> wrapped = Microsoft.Extensions.Options.Options.Create(o);
+        BarSessionCalendar calendar = BarSessionCalendar.Parse(o.SessionCloseCentral, o.HolidayList());
+
+        IndicatorCatalog catalog = new(
+            Microsoft.Extensions.Options.Options.Create(PeriodOptions()), calendar);
+
+        IndicatorCacheService cache = new(
+            database,
+            catalog,
+            new IndicatorProjector(database, catalog, NullLogger<IndicatorProjector>.Instance),
+            new FakeTimeProvider(_tuesdayMidSession),
+            NullLogger<IndicatorCacheService>.Instance);
+
+        IndicatorTools tools = new(
+            new InstrumentResolver(new InstrumentRegistry(wrapped), new StoreAvailabilityHolder()),
+            database,
+            catalog,
+            cache,
+            new CountingGateway([]),
+            new ToolGuards(wrapped));
+
+        return (tools, cache);
+    }
+
+    [Fact]
+    public async Task GetIndicators_RefusesAnUnconfiguredPeriod_ListingTheConfiguredOnes_BeforeTouchingTheStore()
+    {
+        // An empty series is what a period nobody configured would read back as, and an empty series is
+        // indistinguishable from a market that produced none -- so the refusal has to name what IS readable.
+        (IndicatorTools tools, IndicatorCacheService cache) = Indicators();
+
+        Func<Task> read = () => tools.GetIndicators(
+            "ES",
+            5,
+            "ema",
+            _tuesdayMidSession,
+            _tuesdayMidSession.AddHours(1),
+            200,
+            cancellationToken: CancellationToken.None);
+
+        (await read.Should().ThrowAsync<McpException>())
+            .Which.Message.Should().Contain("Configured periods")
+            .And.Contain("20 (primary)")
+            .And.Contain("10");
+
+        cache.Probes.Should().Be(
+            0,
+            "the refusal runs BEFORE the cache-aside trigger, so a period this server never computes cannot "
+            + "make it replay a whole series to serve a call it was always going to reject");
+    }
+
+    [Fact]
+    public async Task GetIndicators_RefusesAPeriodOnVwap()
+    {
+        // VWAP is anchored to the session, not to a window. Accepting a period would tell a caller the
+        // argument means something here, and a windowed VWAP is `vwap-rolling` -- a different calculation
+        // under a different name.
+        (IndicatorTools tools, IndicatorCacheService cache) = Indicators();
+
+        Func<Task> read = () => tools.GetIndicators(
+            "ES",
+            5,
+            "vwap",
+            _tuesdayMidSession,
+            _tuesdayMidSession.AddHours(1),
+            20,
+            cancellationToken: CancellationToken.None);
+
+        (await read.Should().ThrowAsync<McpException>())
+            .Which.Message.Should().Contain("takes no period").And.Contain("Omit period");
+
+        cache.Probes.Should().Be(0);
+    }
+
+    [Fact]
+    public async Task GetIndicatorAt_RefusesAnUnconfiguredPeriod()
+    {
+        // The as-of read is the one get_market_snapshot composes, and it answers cannot-measure when it
+        // matches no row -- so an unconfigured period reaching the store here would come back as a plausible
+        // absence rather than as a mistake.
+        (IndicatorTools tools, IndicatorCacheService cache) = Indicators();
+
+        Func<Task> read = () => tools.GetIndicatorAt(
+            "ES", 5, "ema", _tuesdayMidSession, 200, cancellationToken: CancellationToken.None);
+
+        (await read.Should().ThrowAsync<McpException>())
+            .Which.Message.Should().Contain("Configured periods").And.Contain("20 (primary)");
+
+        cache.Probes.Should().Be(0);
+    }
+
+    /// <inheritdoc />
+    public void Dispose()
+    {
+        foreach (TopstepXDbContext store in _stores)
+        {
+            store.Dispose();
         }
     }
 }

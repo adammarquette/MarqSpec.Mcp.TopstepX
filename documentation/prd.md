@@ -304,6 +304,22 @@ The server serves OHLCV bars for a futures instrument at a requested resolution 
   ([ADR-0011](adr/0011-contract-roll-boundary.md)). There is no historical tape before
   recording began. An unknown instrument is an error (R-5.3). A symbol with no changeover
   omits it rather than guessing a date. No `why` on the wire (ADR-0008).
+- **R-5.10** **Traces, metrics and logs are exported over OTLP when a collector is configured, and the host
+  emits none when one is not.** Configured means `Otel__Endpoint`; that one key is the whole switch. With it
+  set, the sources already emitting are subscribed and exported — per-request MCP spans, the store's, the
+  venue's HTTP calls', ASP.NET Core's and the runtime's — behind **one exporter and one trace id**, so a slow
+  call leads to its own log lines and back. The host names an endpoint, optional headers, a protocol and a
+  service name, and **never a backend**: a backend swap is a deployment edit, not a code change
+  ([ADR-0019](adr/0019-otlp-as-the-telemetry-boundary.md)). With it unset **nothing is registered** — no
+  provider, no background exporter thread, no retry queue and no warning about a collector that is not there.
+  That is the default and it is a supported state, not a degraded one, on the same terms as an absent
+  embedding key (R-6.3): every tool answers exactly as it does today. **R-5.5 is unaffected and untouchable
+  by this**: no console exporter is registered under either transport, behind no flag and in no environment,
+  because telemetry written to stdout under stdio does not degrade a trace, it corrupts the protocol frame.
+  A malformed endpoint, protocol or header list **refuses at startup naming the key**, since the alternative
+  is a failure on a background thread that reads as an absence of telemetry — indistinguishable from the
+  supported unconfigured state. **No header value reaches a span or a log attribute**, the exporter's own
+  `Otel__Headers` included: it carries the backend's token, and this repository is public (R-7.1).
 
 ## R-6 — Observations
 

@@ -428,6 +428,10 @@ One host, one tool registration, two ways in ([ADR-0007](adr/0007-dual-transport
   in no other form**, behind a collector the host never names, so the backend is a deployment edit rather than
   a code change. It is off unless `Otel__Endpoint` is set, and **no console exporter is ever registered** under
   either transport — under stdio that would corrupt the protocol frame rather than merely add noise (R-5.5).
+  The wiring is `ConfigureTelemetry`, called beside `ConfigureLogging` and returning before it registers
+  anything when no endpoint is named; what it subscribes to is what was already emitting — the MCP SDK's
+  `Experimental.ModelContextProtocol` spans and meter, Npgsql's, ASP.NET Core's, HttpClient's and the
+  runtime's — so no log site changed and no source is this repository's own yet (`R-5.10`, gh#536).
 - **streamable HTTP** — for a deployed instance, behind a bearer token. The composed stack serves it over
   **TLS only**, on `https://localhost:8443`, with a certificate from a **local CA** that must be installed
   into the host trust store first — `mkcert -install`, a prerequisite rather than a given, see

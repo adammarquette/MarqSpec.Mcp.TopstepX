@@ -134,6 +134,22 @@ services:
       Embeddings__ApiKey: "${Embeddings__ApiKey:-}"
       Embeddings__Model: "${Embeddings__Model:-embed-v4.0}"
 
+      # Telemetry (ADR-0019). ALL FOUR ARE PURE FORWARDING, and Otel__Endpoint's empty default is the
+      # feature rather than a placeholder: with it unset the server registers no telemetry at all, so a
+      # `docker compose up` that asks for nothing pays nothing and starts nothing that dials out.
+      #
+      # NO VALUE SHIPS FOR Otel__Headers, and that is the PFX password's rule rather than
+      # Mcp__HttpBearerToken's: it carries a hosted collector's TOKEN, sent off this machine, so a loopback
+      # bind is not what would make a default tolerable. THIS REPOSITORY IS PUBLIC.
+      #
+      # The other two default to the application's own defaults, so the composed server and a bare
+      # `dotnet run` describe themselves identically to a collector. The collector that receives any of this
+      # is gh#535 and is not a service in this file yet.
+      Otel__Endpoint: "${Otel__Endpoint:-}"
+      Otel__Headers: "${Otel__Headers:-}"
+      Otel__Protocol: "${Otel__Protocol:-grpc}"
+      Otel__ServiceName: "${Otel__ServiceName:-marqspec-mcp-topstepx}"
+
       ASPNETCORE_ENVIRONMENT: "${ASPNETCORE_ENVIRONMENT:-Development}"
 
       # HTTPS ONLY. What is established: a client that requires HTTPS could not connect to this stack at

@@ -50,6 +50,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `Indicators__RollingVwapPeriod` (20 by default). It is a **new name rather than `vwap` at a period**
   because it is a different calculation: a session anchor is not a lookback window. `get_market_snapshot`'s
   `indicators{}` map gains it as a key, and keeps reporting each name at its **primary** period only.
+- **OpenTelemetry traces, metrics and logs over OTLP — off unless `Otel__Endpoint` is set.** Set it to a
+  collector's endpoint and this server exports all three signals behind **one exporter and one trace id**: a
+  span per `tools/call` from the MCP SDK's `Experimental.ModelContextProtocol` source, the Npgsql and
+  HttpClient calls beneath it, ASP.NET Core's requests, the runtime's meters, and every log line the ~60
+  existing `ILogger<T>` sites already write — now stamped with the trace and span id that lead from a slow
+  call to its own log lines and back. **No call site changed and no source here is this repository's own**;
+  everything below was already emitting and going unread. Three more keys tune it and none of them names a
+  backend: `Otel__Headers` (the collector's token, in OTLP's `key=value` form), `Otel__Protocol` (`grpc` for a
+  collector's 4317, `http` for its 4318) and `Otel__ServiceName` (`marqspec-mcp-topstepx`). A malformed
+  endpoint, protocol or header list is refused **at startup, naming the key** — the alternative is a throw on
+  a background thread that arrives as an absence of telemetry.
+  **Leave `Otel__Endpoint` unset and nothing at all is registered**: no provider, no background exporter
+  thread, no retry queue, and no warning about a collector that is not there. That is the default and it is a
+  supported state, which is what keeps a stdio session on a laptop — where the collector is not there and
+  cannot be — exactly as quiet as it was. **There is no console exporter under either transport, behind no
+  flag and in no environment**, and the package is not referenced: stdout under stdio is the protocol frame,
+  so telemetry written there corrupts the handshake rather than adding noise (`R-5.5`). The stderr console
+  logger is untouched. `/health` is filtered out of tracing on the path name ahead of gh#513 landing it — a
+  probe every 30 seconds is 2,880 spans a day that say nothing. `service.version` comes from the assembly, so
+  per [ADR-0001](documentation/adr/0001-tag-driven-versioning.md) it reads `0.0.0-alpha.0` inside the
+  published image until gh#513's `Deployment__Version` arrives.
+  ([ADR-0019](documentation/adr/0019-otlp-as-the-telemetry-boundary.md), `R-5.10`, gh#532, gh#534.)
 - **[ADR-0019](documentation/adr/0019-otlp-as-the-telemetry-boundary.md) — OTLP is the telemetry boundary.**
   A decision record only; **no behaviour changes with it**. It settles the six questions the observability
   epic's implementing cards would otherwise each have answered separately: OpenTelemetry attached to the

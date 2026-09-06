@@ -53,22 +53,31 @@ public sealed class IndicatorTools(
     /// <param name="indicator">The indicator name.</param>
     /// <param name="fromUtc">The window start, inclusive.</param>
     /// <param name="toUtc">The window end, exclusive.</param>
+    /// <param name="period">
+    /// Which configured period to read, or <see langword="null"/> for the indicator's primary one.
+    /// </param>
     /// <param name="cancellationToken">The caller's cancellation token.</param>
     /// <returns>The values.</returns>
     [McpServerTool(ReadOnly = true, Idempotent = true, Title = "Get indicators")]
     [Description(
         "Reads an indicator series from a local cache. The VENDOR IS NEVER CALLED: every value is computed "
         + "from bars this server already holds. A series the cache has no values for — after an indicator is "
-        + "added or a period is changed — is computed and stored by the first read that asks for it, which "
-        + "for a year of 5-minute bars costs about eight seconds once. An HTTP process with "
+        + "added or a period is changed — is computed and stored by the first read that asks for it. At the "
+        + "shipped catalogue that costs about eight seconds once for a year of 5-minute bars, and it grows "
+        + "with the number of series the operator configures: every additional period is one more series in "
+        + "the same replay. An HTTP process with "
         + "MarketData__WarmIndicators on starts that replay at boot (stdio never does). A read that arrives "
-        + "before warmup finishes that series still pays the eight seconds, or can contend with it; once "
+        + "before warmup finishes that series still pays that cost, or can contend with it; once "
         + "that series is written, the first read is a probe. "
         + "Known "
         + "indicators: atr, rsi, sma, ema, macd, macd-signal, "
         + "macd-histogram, vwap, vwap-rolling, bb-upper, bb-middle, bb-lower. An unknown name is an error "
         + "listing these, "
-        + "because a typo that returned no data would read as 'no signal'. Buckets where the indicator could "
+        + "because a typo that returned no data would read as 'no signal'. Each name is computed at its "
+        + "primary configured period and, where the operator configured them, at additional periods; pass "
+        + "period to select one. A long period needs that many bars inside ONE contract run before it "
+        + "measures, so a freshly configured ema at 200 reads as ABSENT until the current contract has 200 "
+        + "stored bars. Buckets where the indicator could "
         + "not yet measure are ABSENT rather than zero. Values are never smoothed across a contract roll, so "
         + "expect a run of absent values just after one; `contracts.span` says whether the window contains a "
         + "roll — and Unknown there means the provenance was never recorded, not that there was none.")]
@@ -78,11 +87,20 @@ public sealed class IndicatorTools(
         [Description("The indicator name, e.g. rsi.")] string indicator,
         [Description("Window start, ISO-8601 UTC, inclusive.")] DateTimeOffset fromUtc,
         [Description("Window end, ISO-8601 UTC, exclusive.")] DateTimeOffset toUtc,
-        CancellationToken cancellationToken)
+        [Description("Which configured period to read, e.g. 200. Omit for the indicator's primary configured "
+            + "period, which is also the one get_market_snapshot reports. Only periods the operator configured "
+            + "are readable: any other is an error listing the configured ones, never an empty series. Not "
+            + "accepted for vwap, which is anchored to the session. For macd, macd-signal and macd-histogram this "
+            + "is the SLOW length.")] int? period = null,
+        CancellationToken cancellationToken = default)
     {
         InstrumentId instrument = _resolver.Resolve(symbol);
         BarRange window = _guards.ValidateWindow(fromUtc, toUtc, resolutionMinutes);
-        IIndicator resolved = ResolveIndicator(indicator);
+
+        // BEFORE EnsureProjectedAsync, and that ordering is the point. A period this server does not compute
+        // is refused without the read ever reaching the store, so a mistyped window cannot make a whole
+        // series replay to serve a call that was always going to be rejected.
+        IIndicator resolved = ResolveIndicator(indicator, period);
 
         // Cache-aside, the way bars already are: a value the catalogue computes and the store does not hold
         // is projected from the bars already cached before the read runs. No vendor traffic either way --
@@ -117,6 +135,9 @@ public sealed class IndicatorTools(
     /// <param name="resolutionMinutes">The bar size in minutes.</param>
     /// <param name="indicator">The indicator name.</param>
     /// <param name="asOfUtc">The moment.</param>
+    /// <param name="period">
+    /// Which configured period to read, or <see langword="null"/> for the indicator's primary one.
+    /// </param>
     /// <param name="cancellationToken">The caller's cancellation token.</param>
     /// <returns>The value, or a null value meaning cannot measure.</returns>
     [McpServerTool(ReadOnly = true, Idempotent = true, Title = "Get indicator as of")]
@@ -124,7 +145,8 @@ public sealed class IndicatorTools(
         "Reads one indicator value as of a moment, from the same local cache get_indicators reads, and on "
         + "the same terms: no vendor call, and a series with no stored values is computed by the first read "
         + "that needs it — or at HTTP startup when MarketData__WarmIndicators is on, once warmup has "
-        + "finished that series. A read before then is still the first-read cost. Returns the value at or "
+        + "finished that series. A read before then is still the first-read cost. period selects among the "
+        + "operator's configured periods on the same terms as get_indicators. Returns the value at or "
         + "BEFORE that moment, never after — "
         + "a later value is information the market did not have. Cannot-measure DROPS the `value` KEY instead "
         + "of sending null, so the whole reading arrives as `{}`: test whether the key is THERE, never "
@@ -136,11 +158,20 @@ public sealed class IndicatorTools(
         [Description("The bar size in minutes.")] int resolutionMinutes,
         [Description("The indicator name, e.g. atr.")] string indicator,
         [Description("The moment, ISO-8601 UTC.")] DateTimeOffset asOfUtc,
-        CancellationToken cancellationToken)
+        [Description("Which configured period to read, e.g. 200. Omit for the indicator's primary configured "
+            + "period, which is also the one get_market_snapshot reports. Only periods the operator configured "
+            + "are readable: any other is an error listing the configured ones, never an empty series. Not "
+            + "accepted for vwap, which is anchored to the session. For macd, macd-signal and macd-histogram this "
+            + "is the SLOW length.")] int? period = null,
+        CancellationToken cancellationToken = default)
     {
         InstrumentId instrument = _resolver.Resolve(symbol);
         ToolGuards.ValidateResolution(resolutionMinutes);
-        IIndicator resolved = ResolveIndicator(indicator);
+
+        // Refused before the store is touched, for the reason get_indicators states — and here the stakes are
+        // higher: this read answers cannot-measure when it matches no row, so an unconfigured period that
+        // reached the query would come back as an honest-looking absence.
+        IIndicator resolved = ResolveIndicator(indicator, period);
         DateTimeOffset asOf = asOfUtc.ToUniversalTime();
 
         // The same cache-aside trigger get_indicators is on (gh#246). This is the read get_market_snapshot
@@ -323,8 +354,20 @@ public sealed class IndicatorTools(
         return readings;
     }
 
-    private IIndicator ResolveIndicator(string name) =>
-        ExceptionTranslation.Try(() => _catalog.Resolve(name), static ex => ex is KeyNotFoundException);
+    /// <summary>The catalogue's refusal, as this surface's refusal.</summary>
+    /// <param name="name">The indicator name.</param>
+    /// <param name="period">The chosen period, or <see langword="null"/> for the primary.</param>
+    /// <returns>The instance the read will answer from.</returns>
+    /// <remarks>
+    /// Both refusals the catalogue raises — an unknown name, and a period nobody configured — are
+    /// <see cref="KeyNotFoundException"/>, and both are the caller's mistake rather than a fault, so both
+    /// cross the boundary as an <c>McpException</c> carrying the catalogue's own message. The message names
+    /// what IS configured, because the alternative answer to either is an empty series and an empty series
+    /// is indistinguishable from a market that produced none.
+    /// </remarks>
+    private IIndicator ResolveIndicator(string name, int? period) =>
+        ExceptionTranslation.Try(
+            () => _catalog.Resolve(name, period), static ex => ex is KeyNotFoundException);
 
     /// <summary>
     /// Reports which contracts produced the bars underneath a window, without loading the bars themselves.

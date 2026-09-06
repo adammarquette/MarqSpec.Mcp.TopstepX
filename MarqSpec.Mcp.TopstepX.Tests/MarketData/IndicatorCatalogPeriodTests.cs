@@ -234,6 +234,27 @@ public sealed class IndicatorCatalogPeriodTests
     }
 
     [Fact]
+    public void Resolve_AcceptsAPeriodOnVwapRolling()
+    {
+        IndicatorCatalog catalog = Catalog(new IndicatorOptions
+        {
+            RollingVwapPeriod = 20,
+            AdditionalRollingVwapPeriods = "10",
+        });
+
+        // The other side of Resolve_RefusesAPeriodOnVwap, and the pair is the point. `vwap` is anchored to
+        // the session and refuses a period; `vwap-rolling` IS a window, so a refusal that keyed on the name
+        // looking VWAP-ish -- a prefix match, or a check on the string rather than on the anchored instance
+        // -- would make every additional rolling window unreachable while every test about `vwap` stayed
+        // green.
+        catalog.Resolve("vwap-rolling", 10).Period.Should().Be(10);
+        catalog.PeriodsFor("vwap-rolling").Should().Equal([20, 10]);
+
+        catalog.Resolve("vwap-rolling", null).Should().BeSameAs(
+            catalog.Resolve("vwap-rolling"), "omitting the period still asks for the primary window");
+    }
+
+    [Fact]
     public void MacdLegs_ShareEachAdditionalSlowPeriod()
     {
         IndicatorCatalog catalog = WideCatalog();
@@ -264,7 +285,7 @@ public sealed class IndicatorCatalogPeriodTests
     }
 
     [Fact]
-    public void Catalog_RefusesADuplicateInstance_EvenWhenOptionsWereBuiltByHand()
+    public void ADuplicatePeriod_IsRefusedByTheOptions_BeforeTheCatalogueSeesIt()
     {
         // Options.Create bypasses ValidateOnStart, so a test — the only caller that can — may hand the
         // catalogue a list boot would have refused. Repeating the primary in the additional list is the shape

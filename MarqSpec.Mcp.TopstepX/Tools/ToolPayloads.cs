@@ -154,7 +154,11 @@ public static class ToolPayloads
     /// <param name="Symbol">The normalised instrument.</param>
     /// <param name="ResolutionMinutes">The bar size.</param>
     /// <param name="Indicator">The indicator name.</param>
-    /// <param name="Period">The period it was computed at.</param>
+    /// <param name="Period">
+    /// The period that RAN — the primary when <c>period</c> was omitted, and the selected one otherwise. A
+    /// name can be configured at several windows, so this is what says which of them the values below belong
+    /// to; two readings from different periods are not comparable.
+    /// </param>
     /// <param name="Values">
     /// The values, ascending. Buckets where the indicator could not measure <b>have no entry at all</b> —
     /// <see cref="IndicatorPoint.V"/> is not nullable and there is no <c>{ t, v: null }</c> point. So this is

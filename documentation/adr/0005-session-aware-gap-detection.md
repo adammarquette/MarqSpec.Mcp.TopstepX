@@ -122,7 +122,7 @@ fail-at-startup posture the *Consequences* above take for a malformed session cl
 a session definition decides what counts as a complete bar.
 
 What is *derived* from those windows — and the completeness guard that decides whether a session bar exists at
-all — is [ADR-0019](0019-session-bars-derived-complete-or-absent.md), not this record.
+all — is [ADR-0022](0022-session-bars-derived-complete-or-absent.md), not this record.
 
 ## Follow-ups
 

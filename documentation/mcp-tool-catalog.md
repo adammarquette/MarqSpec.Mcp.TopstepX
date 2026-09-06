@@ -104,7 +104,7 @@ page against either**, so check it against the code, never against another docum
   **A bar of a session's length or longer is a session bar, not a coarse resolution**: it is defined on the
   CME trade date rather than on the bucket grid, and it is served by the session-bars tools of gh#496 —
   arriving in gh#500 — over the four named sessions `full`, `rth`, `asia` and `europe`
-  ([ADR-0019](adr/0019-session-bars-derived-complete-or-absent.md), `R-1.12`). **Two cross-axis pairs are
+  ([ADR-0022](adr/0022-session-bars-derived-complete-or-absent.md), `R-1.12`). **Two cross-axis pairs are
   refused alongside it.** `get_latest_bars` reaches back four bar
   spans per bar wanted **plus four days** (`ToolGuards.LookbackWindow`), so a coarse resolution and a big
   count — each inside its own bound — can name a window that **starts before the calendar does**, and that is

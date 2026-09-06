@@ -1,4 +1,4 @@
-# ADR-0019: Session bars are derived from stored base bars — complete, or absent with a reason
+# ADR-0022: Session bars are derived from stored base bars — complete, or absent with a reason
 
 **Status:** Accepted · **Date:** 2026-09-06 · **Deciders:** Adam (operator)
 **Relates to:** PRD `R-1.9` (corrected by this record), `R-1.12` (new) ·

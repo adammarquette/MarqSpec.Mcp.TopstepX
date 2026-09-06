@@ -301,6 +301,36 @@ public sealed class SessionBarAggregatorTests
     }
 
     [Fact]
+    public void Aggregate_RefusesADefinition_WhoseExpectedBucketsDoNotCoverTheWindow()
+    {
+        // A definition SessionWindows.Validate refuses, reached the way the empty-window one above is: the
+        // aggregator does not call Validate, so it may not assume it ran.
+        //
+        // A 13:20 close reopens at 14:20, so this window is [2026-08-17 19:20Z, 2026-08-18 18:20Z) -- a full
+        // 23 hours. But AlignUp anchors buckets on the UTC-midnight grid, so the expected buckets run
+        // 20:00Z .. 17:00Z: 22 of them, with the session's first forty and last twenty minutes outside every
+        // one. Storing all 22 would otherwise yield a SessionBar carrying the SESSION's bounds, an open taken
+        // from the 20:00Z bucket and BaseBucketCount 22 -- an hour of the session missing from a bar that
+        // calls itself complete.
+        BarSessionCalendar calendar = BarSessionCalendar.Parse("13:20", []);
+        SessionDefinition day = new("day", new TimeOnly(14, 20), new TimeOnly(13, 20), 60);
+        DateOnly tradeDate = new(2026, 8, 18); // Tuesday, CDT (UTC-5).
+
+        List<Bar> bars =
+        [
+            .. Enumerable.Range(0, 22).Select(i => new Bar(
+                Utc(2026, 8, 17, 20, 0).AddHours(i), 100m + i, 105m + i, 95m + i, 101m + i, 10, Front))
+        ];
+
+        Action act = () => SessionBarAggregator.Aggregate(bars, calendar, day, [tradeDate]);
+
+        act.Should().Throw<ArgumentException>()
+            .WithMessage("*does not cover*", "the grid leaves part of the session in no bucket at all")
+            .WithMessage("*2026-08-18*", "and the message names the trade date")
+            .WithMessage("*SessionWindows.Validate*", "which is where the definition should have been caught");
+    }
+
+    [Fact]
     public void Aggregate_NeverProducesAPartialBar()
     {
         BarSessionCalendar calendar = Calendar();

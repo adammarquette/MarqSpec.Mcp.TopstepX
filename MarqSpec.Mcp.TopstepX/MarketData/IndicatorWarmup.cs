@@ -8,7 +8,7 @@ namespace MarqSpec.Mcp.TopstepX.MarketData;
 
 /// <summary>
 /// Replays stored indicator series at process start so the first tool read is a probe, not an 8.3 s
-/// projection (ADR-0014, gh#350).
+/// projection (at the shipped catalogue; grows with the number of configured series) (ADR-0014, gh#350).
 /// </summary>
 /// <remarks>
 /// <para>

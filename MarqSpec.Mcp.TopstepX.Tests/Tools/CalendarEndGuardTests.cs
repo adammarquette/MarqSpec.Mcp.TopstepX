@@ -166,23 +166,28 @@ public sealed class CalendarEndGuardTests : IDisposable
     public void TheBoundMovesWithTheResolution()
     {
         // The headroom is two bar spans plus three days, so it is not a fixed instant: at the coarsest bar
-        // this server serves -- one week -- two spans is a fortnight, and the last servable end is seventeen
-        // days before the end of the calendar rather than three. Hand-computed: 9999-12-31T23:59:59.9999999Z
-        // less 17 days is 9999-12-14T23:59:59.9999999Z.
+        // this server serves -- 1,379 minutes, one minute short of a session (gh#498) -- two spans is
+        // 2,758 minutes, and the last servable end is nearly five days before the end of the calendar rather
+        // than three. Hand-computed: 9999-12-31T23:59:59.9999999Z less three days is
+        // 9999-12-28T23:59:59.9999999Z, less 2,758 minutes (1 day, 21 h 58 m) is
+        // 9999-12-27T02:01:59.9999999Z.
         ToolGuards guards = Guards();
-        DateTimeOffset last = new DateTimeOffset(9999, 12, 14, 23, 59, 59, TimeSpan.Zero)
+        DateTimeOffset last = new DateTimeOffset(9999, 12, 27, 2, 1, 59, TimeSpan.Zero)
             .AddTicks(9_999_999);
 
+        // Seven bars wide at the ceiling -- inside every size cap, so the END is the only thing on trial.
+        TimeSpan sevenBars = TimeSpan.FromMinutes(7 * ToolGuards.MaxResolutionMinutes);
+
         BarRange window = guards.ValidateWindow(
-            last - TimeSpan.FromDays(7), last, ToolGuards.MaxResolutionMinutes);
+            last - sevenBars, last, ToolGuards.MaxResolutionMinutes);
 
         window.End.Should().Be(last, "exactly at the bound is servable, as it is at every other cap here");
 
         Action past = () => guards.ValidateWindow(
-            last - TimeSpan.FromDays(7), last.AddTicks(1), ToolGuards.MaxResolutionMinutes);
+            last - sevenBars, last.AddTicks(1), ToolGuards.MaxResolutionMinutes);
 
         past.Should().Throw<McpException>()
-            .WithMessage("*9999-12-14T23:59:59.9999999*", "the refusal names the bound it moved past");
+            .WithMessage("*9999-12-27T02:01:59.9999999*", "the refusal names the bound it moved past");
     }
 
     // ── The same axis on the instant-taking tool ─────────────────────────────────────────────────────

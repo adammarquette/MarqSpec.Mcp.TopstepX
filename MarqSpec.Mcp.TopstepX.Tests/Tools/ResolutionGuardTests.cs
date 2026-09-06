@@ -338,7 +338,7 @@ public sealed class ResolutionGuardTests : IDisposable
 
     [Theory]
     [InlineData(int.MaxValue)]
-    [InlineData(10_081)]
+    [InlineData(ToolGuards.MaxResolutionMinutes + 1)]
     public async Task GetLatestBars_RefusesAResolutionPastTheCeiling(int resolutionMinutes)
     {
         // The reported symptom. `barSize.Ticks * wanted * 4` is long arithmetic in an UNCHECKED context: at
@@ -355,8 +355,10 @@ public sealed class ResolutionGuardTests : IDisposable
     public async Task AResolutionAtTheCeiling_StillAnswers()
     {
         // The boundary from the servable side. A ceiling that also refuses the coarsest bar it claims to
-        // serve is a ceiling one minute lower, and nothing in the error would say so.
-        Func<Task> call = () => _bars.GetLatestBars("ES", 10_080, 10, CancellationToken.None);
+        // serve is a ceiling one minute lower, and nothing in the error would say so. THE CEILING itself,
+        // by the constant, so the case cannot drift off the boundary when the constant moves (gh#498).
+        Func<Task> call = () =>
+            _bars.GetLatestBars("ES", ToolGuards.MaxResolutionMinutes, 10, CancellationToken.None);
 
         await call.Should().NotThrowAsync();
     }
@@ -366,14 +368,15 @@ public sealed class ResolutionGuardTests : IDisposable
     {
         // The ceiling alone does NOT close this bug, and this is the proof. MaxRows is operator
         // configuration -- [Range(1, 1_000_000)] on MarketDataOptions -- and the reach is FOUR bar spans per
-        // bar asked for. At a weekly bar, exactly at the ceiling, 62,500 bars SPAN about 1,200 years, so they
-        // REACH about 4,800: past year one, and `end - reach` throws exactly the way int.MaxValue did. The 4x
-        // is the whole finding -- it is what carries a pair that is legal on both axes past a calendar neither
-        // axis knows about, and it puts the real boundary near 26,400 weekly bars rather than 62,500. Nothing
-        // about this request is out of range on either axis taken alone.
+        // bar asked for. THE CEILING here, by the constant: at 1,379 minutes, 500,000 bars SPAN about 1,311
+        // years, so they REACH about 5,245 -- past year one, and `end - reach` throws exactly the way
+        // int.MaxValue did. The 4x is the whole finding: it is what carries a pair that is legal on both axes
+        // past a calendar neither axis knows about, and it puts the real boundary near 193,000 bars rather
+        // than 500,000. Nothing about this request is out of range on either axis taken alone.
         BarTools capped = WithRowCap(1_000_000);
 
-        Func<Task> call = () => capped.GetLatestBars("ES", 10_080, 62_500, CancellationToken.None);
+        Func<Task> call = () =>
+            capped.GetLatestBars("ES", ToolGuards.MaxResolutionMinutes, 500_000, CancellationToken.None);
 
         (await call.Should().ThrowAsync<McpException>()).WithMessage("*resolutionMinutes*");
 
@@ -390,12 +393,50 @@ public sealed class ResolutionGuardTests : IDisposable
         // UNCHECKED cast. A negative count makes the product negative, so `reach > end.UtcTicks` is false and
         // `(long)reach` wraps -- reintroducing, inside the new guard, the raw fault this guard exists to
         // remove. Not reachable through a tool today because ValidateCount runs first, but LookbackWindow is
-        // public static and its only stated defence is a <param> comment saying "already validated".
-        Action size = () => ToolGuards.LookbackWindow(Bucket(SeededBars), 10_080, -1_000_000);
+        // public static and its only stated defence is a <param> comment saying "already validated". The
+        // resolution is THE CEILING, by the constant -- the sign of the count is what is on trial here, and
+        // the coarsest servable bar is where the product is largest (gh#498).
+        Action size = () =>
+            ToolGuards.LookbackWindow(Bucket(SeededBars), ToolGuards.MaxResolutionMinutes, -1_000_000);
 
         size.Should().Throw<McpException>()
             .WithMessage("*count*")
             .WithMessage("*-1000000*");
+    }
+
+    // ── A session-length bar is not a bar resolution at all (gh#498) ─────────────────────────────────
+
+    [Theory]
+    [InlineData(1_380)]
+    [InlineData(1_440)]
+    [InlineData(10_080)]
+    public async Task ADailyResolution_IsRefused_NamingSessionBars(int resolutionMinutes)
+    {
+        // The day and the week were INSIDE the old ceiling and answered with an empty series. A session runs
+        // 24 hours less the venue's one-hour maintenance window -- 1,380 minutes -- and
+        // BarSessionCalendar.IsExpectedBucket only ever expects a bucket that closes at or before the
+        // session's close, while BarGapDetector.AlignUp anchors buckets on a fixed UTC-midnight grid. So no
+        // bucket of 1,380 minutes or more is ever expected, every one of them is a gap that is never a bar,
+        // and get_bars at 1440 returned [] with nothing said. An empty series where the question was simply
+        // the wrong shape is the failure this repository refuses to commit: it is refused at the boundary,
+        // and the refusal names where the answer actually lives.
+        //
+        // 1,380 is the session's own length -- the first value past the ceiling, and the boundary case.
+        Func<Task> call = () =>
+            _bars.GetLatestBars("ES", resolutionMinutes, 10, CancellationToken.None);
+
+        (await call.Should().ThrowAsync<McpException>())
+            .WithMessage("*resolutionMinutes*", "the refusal names the parameter the caller can change")
+            .WithMessage(
+                "*" + resolutionMinutes.ToString(CultureInfo.InvariantCulture) + "*",
+                "and the value that was asked for")
+            .WithMessage(
+                "*session bar*",
+                "and says what a bar this long IS, so the caller is not left thinking it is unavailable");
+
+        // Refused before any store or venue work, like every other guard on this boundary.
+        _gateway.BarRequests.Should().Be(0, "the resolution is judged before the first page is read");
+        _gateway.ContractRequests.Should().Be(0, "and before the contract behind it is resolved");
     }
 
     /// <summary>Rebuilds the bar tools against a different row cap.</summary>

@@ -28,6 +28,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   static token*. What it assumes about the connector dialog — pending gh#510 — is written as assumptions, and
   the topology itself is left to gh#511. No code, no compose change: the local shape is unchanged and now
   scoped rather than wrong (gh#445, gh#509).
+- **The Domain can name a product's listed expiries and decide which contract's bars belong to a trade
+  date.** `ContractExpiry` reads the venue's `MYY` code and orders expiries year-first; `ContractMonthCycle`
+  (`HMUZ`, `GJMQVZ`, every month) names the `depth` nearest listed expiries for a trade date, year-aware
+  across December; `HistoricalContractPolicy.Decide` keeps, per trade date, the bars of the contract with the
+  most volume — a trade date the store already holds keeps its contract, a tie goes to the nearer expiry, and
+  a bar outside every session groups under its UTC date. All three are pure. The gateway's `ExpiryRank` now
+  delegates to `ContractExpiry` with its values unchanged.
+  [ADR-0020](documentation/adr/0020-historical-contract-selection.md) records the policy this is the first
+  half of — history fetched from the contract that was front at the time, decided by volume; the present
+  from the venue's pick — and marks the roll-policy question
+  [ADR-0011](documentation/adr/0011-contract-roll-boundary.md) deferred as decided. The fetch flow, the
+  registry facts, the per-contract ledger and the `reselect-bars` verb follow in gh#503–#506 (gh#497,
+  gh#502).
 - **`period` on `get_indicators` and `get_indicator_at` — an optional *selector*, not a computation
   input.** Omit it and you get the indicator's primary period, exactly as before; pass one the operator
   configured and you get that series. Any other period is an **error listing the configured ones**, with the

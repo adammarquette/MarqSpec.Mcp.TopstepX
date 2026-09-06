@@ -27,7 +27,7 @@ Three assemblies, layered so the pure part stays pure:
 
 | Project | Depends on | Holds |
 |---|---|---|
-| `…​.Domain` | **nothing** | `Bar`, `InstrumentId`, `InstrumentSpec`, `IIndicator` and `ILevelMethod` + implementations, `BarSessionCalendar`, `BarGapDetector`, `KeyLevels`, `SessionLevels`, `PivotLevels`, `VolumeLevels`, `TradeDirection`, `FootprintAggregator`, `VolumeProfileAggregator`, `TapeVolumeFront` |
+| `…​.Domain` | **nothing** | `Bar`, `InstrumentId`, `InstrumentSpec`, `IIndicator` and `ILevelMethod` + implementations, `BarSessionCalendar`, `BarGapDetector`, `KeyLevels`, `SessionLevels`, `PivotLevels`, `VolumeLevels`, `TradeDirection`, `FootprintAggregator`, `VolumeProfileAggregator`, `TapeVolumeFront`, `ContractExpiry`, `ContractMonthCycle`, `HistoricalContractPolicy` |
 | `…​.Data` | Domain | Entities, `DbContext`, migrations |
 | `MarqSpec.Mcp.TopstepX` | Domain, Data, the venue client | Tools, transports, cache-aside services, the ProjectX adapter, composition root |
 

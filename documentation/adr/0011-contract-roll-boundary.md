@@ -123,6 +123,7 @@ can tell that a roll happened.
 | [2026-08-29](#update-2026-08-29--the-roll-event-is-a-tool) | `get_contract_roll` reports the tape changeover; no roll table ([gh#349](https://github.com/adammarquette/MarqSpec.Mcp.TopstepX/issues/349)) |
 | [2026-08-31](#update-2026-08-31--a-proven-roll-outranks-an-unattributed-run) | A roll two runs already prove is not downgraded to `Unknown` by a null run elsewhere in the window, and legacy `NULL` rows heal on read instead of only by manual delete-and-refetch ([gh#402](https://github.com/adammarquette/MarqSpec.Mcp.TopstepX/issues/402)) |
 | [2026-09-01](#update-2026-09-01--the-heal-follows-the-store-not-only-the-calendar) | The heal reaches a null bucket the calendar does not expect, so one off-grid legacy row no longer pins a window at `Unknown` forever ([gh#412](https://github.com/adammarquette/MarqSpec.Mcp.TopstepX/issues/412)) |
+| [2026-09-06](#update-2026-09-06--the-deferred-roll-policy-question-is-decided) | The roll-policy question deferred below is decided by [ADR-0020](0020-historical-contract-selection.md): history is fetched from the volume-decided front contract per trade date ([gh#502](https://github.com/adammarquette/MarqSpec.Mcp.TopstepX/issues/502)) |
 
 ## Alternatives considered
 
@@ -236,7 +237,10 @@ most wants to look at just after a roll.
   provenance is not wrong — the bars really did come from that contract — but the series then reports three or
   more runs where the market had one roll. The runs are honest and the reconciliation keeps the derived values
   consistent with them; choosing *which* contract to fetch a historical range from is the roll-policy question
-  this record defers along with option (1).
+  this record defers along with option (1). **Decided 2026-09-06** by
+  [ADR-0020](0020-historical-contract-selection.md): a historical range is fetched from the contract that
+  carried the most volume on each trade date, so a backfill no longer interleaves — see the update at the end
+  of this record. Option (1) stays deferred on the terms above.
 - **Every affected payload grows by one small object.** The contract is deliberately *not* repeated on each
   bar: a 500-bar answer would carry it 500 times for a fact that changes once a quarter.
 
@@ -482,3 +486,26 @@ it leaves the answer degraded: the caller would learn *why* it says `Unknown`, w
 told the span the bars justify.
 
 *Assisted-by: Claude Opus 5 (Claude Code)*
+
+## Update (2026-09-06) — the deferred roll-policy question is decided
+
+The Consequences above defer *which contract to fetch a historical range from*, and the defect that deferral
+left in place was measured on the live server the day this update was written: a January window of hourly
+MES answered two bars of volume 2 and 5, both on `CON.F.US.MES.U26` — the contract the venue marked active in
+September, fetched for a month in which nobody traded it. The provenance was honest and the series was wrong.
+
+**[ADR-0020](0020-historical-contract-selection.md) decides it** (gh#497, gh#502). The present is still
+fetched from the venue's pick, anchored on the store's trailing run of that contract; history is fetched from
+whichever listed contract carried the most volume on each trade date, decided by a pure
+`HistoricalContractPolicy` over candidates a `ContractMonthCycle` constructs and the gateway confirms by id.
+The gh#494 probe established the vendor serves an expired contract's hourly history in full, which is what
+made the policy possible. Nothing this record decided moves: bars still record their contract, nothing
+derived crosses a seam, every payload still says when a window spans one. What changes is that a cold year
+now carries **one seam per roll** rather than the interleaving the bullet above describes.
+
+Two of this record's other deferrals are untouched. Keying by contract id (gh#353) stays a migration for
+later, with the new one-seam-per-roll history as one of its trigger measurements. The back-adjusted derived
+view (gh#354) becomes the named remedy for the warm-up absences that one seam per roll still produces — 4, 6
+and 12 times a year on the three products the epic was raised for — and it stays derived, never stored.
+
+*Assisted-by: Claude Fable 5.1 (Claude Code)*

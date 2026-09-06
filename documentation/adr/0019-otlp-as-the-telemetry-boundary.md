@@ -16,7 +16,8 @@ telemetry it produces is a console log stream. Under `Mcp__Transport=Http` that 
 plaintext console — `ConfigureLogging` returns before touching the providers. Under stdio it is the same
 console rewired to stderr, which is `R-5.5` in code. Nothing traces a tool call, nothing counts a cache miss,
 and a slow `get_market_snapshot` on a deployed instance is a log line with no duration and no correlation to
-the venue call or the store query underneath it. gh#515 makes those lines JSON for CloudWatch and scopes
+the venue call or the store query underneath it. gh#515 makes a JSON console formatter available and
+documented, default unchanged, leaving the flip to `json` to the AWS task definition (gh#509), and scopes
 OpenTelemetry out **by name**; epic gh#532 is what it scoped out, and this record is that epic's Phase 0.
 
 The gap was measured on 2026-09-06 and is recorded in gh#532's body. Four facts from it shape everything

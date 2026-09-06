@@ -259,10 +259,25 @@ Detail, including why keying by contract id and back-adjustment were both reject
 before they read**, which is what makes them cache-aside rather than merely cached
 ([ADR-0014](adr/0014-indicators-are-projected-on-read-too.md)).
 
+**Which series a read answers from is `IndicatorCatalog.Resolve(name, period)`, and it resolves before the
+store is touched.** The catalogue owns every configured `(name, period)` instance: each indicator's singular
+`Indicators__*Period` is its **primary**, and `Indicators__Additional*Periods` adds more. An omitted `period`
+means the primary; a configured one selects that instance; anything else is refused, listing the configured
+periods with the primary labelled — never an empty series
+([ADR-0018](adr/0018-period-selection-among-configured-periods.md), `R-2.12`). `vwap` refuses a period
+outright, being anchored rather than windowed; a VWAP with a lookback is `vwap-rolling`, a separate member of
+the vocabulary. **Resolving first is the point of the ordering**: a period this server does not compute is
+rejected without the read ever reaching `EnsureProjectedAsync`, so a rejected call cannot make a whole series
+replay. `IndicatorCatalog.All` — every instance — is what the projection, the probe's diff and the reconcile
+all walk; `IndicatorCatalog.Primaries` — exactly one per name — is what keys `get_market_snapshot`'s
+`indicators{}` map.
+
 `IndicatorCacheService.EnsureProjectedAsync(venue, instrument, resolution)`:
 
-1. **Probe** — a bar count **capped at the largest warm-up in the catalogue**, and one
-   `DISTINCT (Indicator, Period)` over the series' stored values. Two aggregates, and they are the whole cost
+1. **Probe** — a bar count **capped at the largest warm-up in the catalogue**, which follows the largest
+   *configured* period rather than the shipped one, and one
+   `DISTINCT (Indicator, Period)` over the series' stored values, which returns one row per configured
+   instance rather than per name. Two aggregates, and they are the whole cost
    of a warm read: **4.3 ms** at 2,000 bars, **11.2 ms** at 70,000. The cap is why the first half does not
    grow with the series — the only thing that count decides is `WarmupBars <= bars` for each catalogue member,
    and any number at or above the largest warm-up answers every one of those identically.
@@ -277,17 +292,22 @@ before they read**, which is what makes them cache-aside rather than merely cach
 
 **`get_market_snapshot` reads the whole indicator map for a resolution in ONE query** —
 `IndicatorTools.GetLatestIndicatorReadings`, which groups by `(Indicator, Period)`, takes each group's own
-latest bucket at or before the anchor, and joins the bar at *that* bucket for the `ContractId`. It composed
+latest bucket at or before the anchor, joins the bar at *that* bucket for the `ContractId`, and then matches
+the rows against `Primaries`. **That match is what keeps the map keyed by name honest**: walking `All` would
+write one entry per configured period and let the last win, publishing a name at a window nothing in the
+payload states. It composed
 eleven `get_indicator_at` calls until gh#388, and each of those paid a second round trip to `Bars` for the
-contract of the bucket it had just found: **44** statements of a default call's **60**, now **2** of **18**,
-measured on Postgres in `SnapshotQueryCountTests`.
+contract of the bucket it had just found: **44** statements of a default call's **60** — measured on
+Postgres in `SnapshotQueryCountTests` against the eleven names the catalogue held then — now **2** of **18**,
+and **2** whatever the catalogue grows to, because the collapsed read is one query per
+`(instrument, resolution)` rather than one per indicator.
 
 **The collapse is bounded by provenance, not by convenience.** Warm-up restarts at every contract seam
-(`R-2.7`), so just past a roll the eleven readings legitimately sit on different buckets and different
+(`R-2.7`), so just past a roll the readings legitimately sit on different buckets and different
 contracts — which is what gh#286 put `bucketStart` and `contractId` on each reading for. One bucket
 broadcast across the map would attribute a number to the wrong contract, so
-`SnapshotIndicatorProvenanceTests` compares the map against eleven separate `get_indicator_at` calls across
-a roll rather than asserting its shape. `get_indicator_at` itself is unchanged, and stays the single-purpose
+`SnapshotIndicatorProvenanceTests` compares the map against one `get_indicator_at` call per catalogue name
+across a roll rather than asserting its shape. `get_indicator_at` itself is unchanged, and stays the single-purpose
 tool.
 4. **Otherwise replay the whole series** through the same `IndicatorProjector` inside the same
    `SeriesUnitOfWork` the fill path uses — never a window around what was asked for (`R-2.13`).
@@ -296,8 +316,10 @@ tool.
 same statement `IndicatorRebuilder` makes. Every bar a projection needs is already stored.
 
 **The first read of a cold series pays for the replay, once** — about **8.3 s** for a year of five-minute
-bars, measured, against **106 paced venue pages and roughly a minute of sleeping** for the `get_bars` call
-that put those bars there. It is not capped: a cap would hand the caller back the operator step this path
+bars **at the shipped catalogue**, measured, against **106 paced venue pages and roughly a minute of
+sleeping** for the `get_bars` call that put those bars there. It grows with the number of configured
+`(name, period)` instances, not only with the history kept: every additional period is one more series inside
+the same replay. It is not capped: a cap would hand the caller back the operator step this path
 exists to remove, and only on the largest series. An HTTP process with `MarketData__WarmIndicators` on
 moves that cost to start via `IndicatorRebuilder` (gh#350). HTTP is not consent; stdio never warms — a
 Cowork child would stall the handshake. The tool descriptions say so.

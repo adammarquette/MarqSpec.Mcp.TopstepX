@@ -156,14 +156,15 @@ public sealed class SnapshotIndicatorProvenanceTests(SeriesStoreFixture fixture)
     [Fact]
     public async Task EveryReadingInTheMap_IsTheOneGetIndicatorAtWouldHaveReturned_AcrossARoll()
     {
-        // The equivalence the batched read has to keep (gh#388). The snapshot used to COMPOSE eleven
-        // get_indicator_at calls, so per-indicator provenance was true by construction; it now composes ONE
-        // query per (instrument, resolution) that returns the latest row for every (Indicator, Period) at
-        // once, with the ContractId folded in. Collapsing eleven as-of reads into one join is exactly where
-        // a bucket -- or worse, a contract -- gets attributed to the wrong indicator, and the resulting
-        // number is plausible and is acted on. So the two shapes are compared here rather than trusted:
-        // the fixture spans a roll, so the eleven readings genuinely disagree about both bucket and
-        // contract, and an implementation that broadcast one bucket across the map goes red.
+        // The equivalence the batched read has to keep (gh#388). The snapshot used to COMPOSE one
+        // get_indicator_at call per catalogue name, so per-indicator provenance was true by construction; it
+        // now composes ONE query per (instrument, resolution) that returns the latest row for every
+        // (Indicator, Period) at once, with the ContractId folded in. Collapsing every as-of read into one
+        // join is exactly where a bucket -- or worse, a contract -- gets attributed to the wrong indicator,
+        // and the resulting number is plausible and is acted on. So the two shapes are compared here rather
+        // than trusted: the fixture spans a roll, so the readings genuinely disagree about both bucket and
+        // contract, and an implementation that broadcast one bucket across the map goes red. The comparison
+        // walks the catalogue rather than a literal count, so it does not go stale as names are added.
         (SnapshotTools snapshot, IndicatorTools indicators) = await ComposeBothAsync();
 
         ToolPayloads.MarketSnapshot payload =
@@ -208,7 +209,7 @@ public sealed class SnapshotIndicatorProvenanceTests(SeriesStoreFixture fixture)
                 name);
         }
 
-        // And the comparison has to have had something to catch. A map whose eleven readings all sat on one
+        // And the comparison has to have had something to catch. A map whose readings all sat on one
         // bucket would satisfy every assertion above against an implementation that broadcast one bucket.
         slice.Indicators.Values
             .Where(r => r is not null)
@@ -421,7 +422,7 @@ public sealed class SnapshotIndicatorProvenanceTests(SeriesStoreFixture fixture)
         InstrumentResolver resolver = new(new InstrumentRegistry(wrapped), new StoreAvailabilityHolder());
         ToolGuards guards = new(wrapped);
 
-        // THE ONE INSTANCE BOTH SHAPES GO THROUGH. The claim is that the batched map and the eleven
+        // THE ONE INSTANCE BOTH SHAPES GO THROUGH. The claim is that the batched map and the per-name
         // as-of reads agree, and after gh#414 those two live on the same type -- so handing the snapshot a
         // second IndicatorTools would let them agree by having been given the same fixture twice while
         // disagreeing about the same one, which is the trap this fixture's own remarks name.

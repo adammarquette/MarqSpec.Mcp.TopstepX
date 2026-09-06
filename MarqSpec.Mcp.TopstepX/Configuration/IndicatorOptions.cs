@@ -16,6 +16,8 @@ namespace MarqSpec.Mcp.TopstepX.Configuration;
 /// two parameterisations be written under one key, where they become indistinguishable — a chart would show
 /// them spliced together with no seam visible anywhere. If a configurable fast length is ever wanted, it goes
 /// in the indicator's <i>name</i>, and ADR-0006 is superseded rather than quietly reinterpreted.
+/// <b>The period is not one of those parameters</b> — the key names it in a column — which is why the lists
+/// below are read as a SELECTION set rather than as ad-hoc computation inputs (ADR-0018).
 /// </para>
 /// <para>
 /// <b>Additional periods are additive, and the singular key stays primary.</b> Each indicator above keeps its

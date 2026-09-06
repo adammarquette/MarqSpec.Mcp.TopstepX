@@ -227,7 +227,7 @@ The recent window, which is what an agent actually asks for. Same shape as `get_
 four days** (`ToolGuards.LookbackWindow`), and a coarse resolution with a large `count` is refused for
 reaching back past the start of the calendar — one of the cross-axis pairs above.
 
-### `get_indicators(symbol, resolutionMinutes, indicator, fromUtc, toUtc)`
+### `get_indicators(symbol, resolutionMinutes, indicator, fromUtc, toUtc, period?)`
 A stored indicator series, **filled on demand from bars this server already holds**.
 
 **Cache-aside, and the vendor is never called.** A value is computed when its bar is written *and* on the
@@ -237,9 +237,11 @@ next read, with no operator running anything (gh#246,
 [ADR-0014](adr/0014-indicators-are-projected-on-read-too.md), `R-2.1`).
 
 **That first read replays the whole stored series and is slow in proportion to the history kept** — about
-**8.3 seconds** for a year of five-minute bars, measured; every read after it pays a probe of a few
-milliseconds. It is **not** capped, because capping it would return the operator step this removes. For scale:
-the `get_bars` call that fetched that year spent about a *minute* on paced vendor pages. An HTTP process with
+**8.3 seconds** for a year of five-minute bars **at the shipped catalogue**, measured; it grows with the
+number of `(indicator, period)` instances the operator configures, because every additional period is one
+more series in the same replay. Every read after it pays a probe of a few milliseconds. It is **not** capped,
+because capping it would return the operator step this removes. For scale: the `get_bars` call that fetched
+that year spent about a *minute* on paced vendor pages. An HTTP process with
 `MarketData__WarmIndicators` on starts that replay at boot (stdio never does — a Cowork child would stall the
 handshake). A read that arrives before warmup finishes that series still pays the 8.3 s, or can contend with
 the warmup pass. Once that series is written, the first read is a probe. `rebuild-indicators` remains the
@@ -255,20 +257,41 @@ Returns `{ symbol, resolutionMinutes, indicator, period, values: [{ t, v }], con
 signal: pair each `v` with its own `t` rather than with a bar at the same index.
 
 `indicator` is a **closed vocabulary**, held in `IndicatorCatalog` and named in full by the tool's own
-description. An unknown name **errors and lists the known ones** rather than returning an empty series — a
-typo must not read as "no data".
+description — `atr`, `rsi`, `sma`, `ema`, `macd`, `macd-signal`, `macd-histogram`, `vwap`, `vwap-rolling`,
+`bb-upper`, `bb-middle`, `bb-lower`. An unknown name **errors and lists the known ones** rather than returning
+an empty series — a typo must not read as "no data".
+
+**`vwap-rolling` is the volume-weighted average price over the trailing `period` bars**, and it is a separate
+member rather than `vwap` at a period because it is a different calculation: `vwap` is anchored to the
+session, and a lookback window is not a parameterisation of an anchor. Different calculation, different name,
+different storage key (`R-2.6`, [ADR-0018](adr/0018-period-selection-among-configured-periods.md)).
 
 MACD's fast and signal lengths (12, 9) and Bollinger's width (2σ) are **fixed**, not configurable. The storage
 key carries one period, and a parameter it cannot see would make two parameterisations indistinguishable once
-stored.
+stored. **The period is not such a parameter** — the key names it in a column
+([ADR-0018](adr/0018-period-selection-among-configured-periods.md)).
 
-**`period` is not an argument.** It is fixed per indicator by the catalogue and *returned* in the payload so
-the caller knows what it got.
+**`period` SELECTS among the periods this server is configured to compute; it never asks for a new one.**
+Omit it for the indicator's **primary** period — the singular `Indicators__*Period`, and the one
+`get_market_snapshot` reports. Pass one of the operator's `Indicators__Additional*Periods` to read that
+series instead. It is still *returned* in the payload, so a caller that omitted it knows what it got.
 
-### `get_indicator_at(symbol, resolutionMinutes, indicator, asOfUtc)`
+**Any other period is an error, never an empty series**, and the message names what is configured:
+
+> Indicator 'ema' is not computed at period 200. Configured periods for ema: 20 (primary), 50. A period this
+> server does not compute would read back as an empty series, which is indistinguishable from a market that
+> produced none.
+
+The **name** is checked first, so a caller who typed `stochastic` is told the name is unknown rather than sent
+looking for a period key that does not exist. `vwap` **refuses a period at all** — it is anchored to the
+session, not to a window — rather than accepting and ignoring one. For `macd`, `macd-signal` and
+`macd-histogram` the period is the **SLOW** length.
+
+### `get_indicator_at(symbol, resolutionMinutes, indicator, asOfUtc, period?)`
 One value, as of a moment — at or **before** it, never after. **Cache-aside on exactly the terms
 `get_indicators` states above**, including the first-read cost (or the probe, once HTTP warmup has finished that series);
-the probe behind it is memoised per request, so several reads over one series cost one.
+the probe behind it is memoised per request, so several reads over one series cost one. `period` selects among
+the configured periods on exactly the terms `get_indicators` states, refusal message included.
 
 Returns `{ value, bucketStart, contractId }`.
 
@@ -436,11 +459,14 @@ whichever real source the bits happened to name — `HeikinAshiBody,Body` bound 
 with `detection` reporting the source that ran as the only trace. String binding is what closed it.
 
 **Per-call detection parameters are sound here only because nothing stores a level** — [ADR-0013](adr/0013-levels-are-computed-on-read.md). ADR-0006
-forbids the same freedom for indicators, whose storage key is `(Indicator, Period)`: a parameter the key
+forbids **ad-hoc** parameters for indicators, whose storage key is `(Indicator, Period)`: a parameter the key
 cannot see leaves two parameterisations indistinguishable once written, spliced into one series with no seam
-visible anywhere. There is no level store to key at all — the table that never held a row was dropped under
-gh#276 — and [ADR-0013](adr/0013-levels-are-computed-on-read.md) names the one condition that reverses this, which is the moment anything stores a
-level.
+visible anywhere. The one indicator parameter the key *does* see — the period — is selectable among the
+configured ones, which is [ADR-0018](adr/0018-period-selection-among-configured-periods.md) and not a
+weakening of this: a selection names an existing family or is refused. There is no level store to key at all —
+the table that never held a row was dropped under gh#276 — and
+[ADR-0013](adr/0013-levels-are-computed-on-read.md) names the one condition that reverses this, which is the
+moment anything stores a level.
 
 **An empty `levels` is answered, never refused, and `detection` is what makes it readable.** It reports all
 seven parameters that produced the answer, for the same reason `get_indicators` reports the `period` it
@@ -640,6 +666,13 @@ it where a `null` reaches the wire spelled `null`. Every indicator this server c
 is the test, and it means *cannot measure*. An **absent** key would mean this server does not compute that
 indicator at all — a different statement, and not one you should expect to see.
 
+**The map is keyed by NAME, and each entry is that name's PRIMARY period** — the singular
+`Indicators__*Period`, the same one `get_indicators` answers with when `period` is omitted. Additional
+configured periods are **not** here, and this payload is unchanged by them
+([ADR-0018](adr/0018-period-selection-among-configured-periods.md)): one key cannot carry two windows without
+saying which, so a second window is `get_indicators` or `get_indicator_at` with `period`. Nothing in this map
+states a period — read it from the tool that names it rather than inferring one.
+
 **A non-null entry is a reading, not a number** — `{ value, bucketStart, contractId }`, the same shape
 `get_indicator_at` returns, and **that is a breaking change to this tool's payload** (gh#286).
 `indicators.atr` was `2`; it is now `{ "value": 2, "bucketStart": "…", "contractId": "…" }`. The `null` half
@@ -816,6 +849,7 @@ not from whether its type is nullable, so `string? symbol` with no `= null` is n
 | `get_bars` | a `fromCache` field | never on `BarSeries` — and the one an agent would reach for, reading falsy `undefined` every call | gh#48 |
 | `get_bars` | `fetchedBuckets` ≡ `venueRequests` as evidence | only `venueRequests == 0` proves the store served it | gh#73 |
 | `get_indicators` | `period` is a parameter | never was; fixed per indicator, and returned | gh#48 |
+| `get_indicators` · `get_indicator_at` | `period` is not a parameter | since gh#495 it is an optional *selector* among the operator's configured periods — omitted means the primary, an unconfigured one is refused listing them, and nothing ad hoc is computed ([ADR-0018](adr/0018-period-selection-among-configured-periods.md)) | gh#495 |
 | `get_indicator_at` | cannot-measure is `{ value: null }` | it is `{}` | gh#85 |
 | `get_market_snapshot` | the run of absent values after a roll arrives as `null` in `indicators{}` | that map is one **as-of read** per indicator, not one entry per bucket, so it answers with the newest row at or before the anchor — on the **expiring** contract just after a seam. Measured: `atr` came back at the pre-seam `2` where the contract in front was ranging `4` | gh#286 |
 | `get_orders` | `fromUtc`/`toUtc` optional, as described | required on the wire — the documented way to read the working book was refused before reaching any code | gh#70 |

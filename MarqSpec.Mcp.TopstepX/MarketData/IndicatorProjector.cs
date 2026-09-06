@@ -413,8 +413,10 @@ public sealed class IndicatorProjector(
     /// that comparison is made at the column's own scale.
     /// </para>
     /// <para>
-    /// <b>Arrays rather than a row per value</b>: a whole series times eleven indicators is tens of thousands
-    /// of rows, and four parameters each would exceed the protocol's parameter limit many times over.
+    /// <b>Arrays rather than a row per value</b>: a whole series times every configured
+    /// <c>(name, period)</c> instance is tens of thousands of rows — more, now that an operator can configure
+    /// additional periods — and four parameters each would exceed the protocol's parameter limit many times
+    /// over.
     /// </para>
     /// </remarks>
     private const string UpsertValuesSql = """

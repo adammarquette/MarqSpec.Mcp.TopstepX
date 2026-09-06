@@ -29,6 +29,15 @@ namespace MarqSpec.Mcp.TopstepX.MarketData;
 /// name over a different window, with nothing in the payload saying so. <see cref="KnownNames"/> is the
 /// vocabulary and is unchanged by any amount of widening.
 /// </para>
+/// <para>
+/// <b>Why selecting a period is safe at all is ADR-0018.</b> Every row a caller's <c>period</c> can reach was
+/// written by the projection walking <see cref="All"/>, under exactly
+/// <c>(Venue, Instrument, ResolutionMinutes, Indicator, Period, BucketStart)</c> — and the read-time probe,
+/// the reconcile's scope and <c>rebuild-indicators</c> iterate that same set. So a selectable period can
+/// never be one the store could hold values for that nothing computes, nor one computed that nothing can
+/// read. Selection is a lookup along a column the key already carries; ad-hoc per-call computation stays
+/// forbidden by ADR-0006.
+/// </para>
 /// </remarks>
 public sealed class IndicatorCatalog
 {

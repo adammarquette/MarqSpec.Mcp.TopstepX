@@ -2,6 +2,9 @@
 
 **Status:** Accepted · **Date:** 2026-08-21 · **Deciders:** Adam (operator)
 **Relates to:** PRD `R-2` · [architecture](../architecture.md) *The indicator projection* ·
+the parameterisation rule below is narrowed by
+[ADR-0018](0018-period-selection-among-configured-periods.md) — selection among configured periods is
+allowed, ad-hoc computation is not ·
 `Domain/MarketData/IIndicator.cs`
 
 ## Context
@@ -77,6 +80,7 @@ and can be pinned by fixture tests shared with `trading-copilot` — which is wh
 | [2026-08-23](#update-2026-08-23--seeding-is-per-contract-not-per-series) | Seeding is per contract segment rather than per stored series ([ADR-0011](0011-contract-roll-boundary.md)) |
 | [2026-08-23](#update-2026-08-23--a-rebuild-is-a-unit-of-work-not-a-loop-of-statements) | The rebuild verb is transactional per series, and it is a class a test can run |
 | [2026-08-26](#update-2026-08-26--a-read-is-a-trigger-too-and-the-key-is-untouched) | A read projects what the catalogue has outrun ([ADR-0014](0014-indicators-are-projected-on-read-too.md)) |
+| [2026-09-06](#update-2026-09-06--selection-among-configured-periods-is-allowed-ad-hoc-computation-is-not) | A call may **select** among the periods the catalogue is configured for ([ADR-0018](0018-period-selection-among-configured-periods.md)) |
 
 ## Update (2026-08-23) — the empty-diff claim was false in practice
 
@@ -181,3 +185,31 @@ than reinterpreted.
 a `(Indicator, Period)` pair with no rows. **Correcting an indicator's arithmetic leaves every pair present**,
 so no read will ever recompute it, and the verb is now how a *forced* replay happens. That, ADR-0012's
 accepted write skew, and warming ahead of the first caller are what it is for.
+
+## Update (2026-09-06) — selection among configured periods is allowed; ad-hoc computation is not
+
+The parameterisation section above, and the 2026-08-26 update that repeats it, both say a per-call period is
+forbidden. **[ADR-0018](0018-period-selection-among-configured-periods.md) narrows that to the half this
+record was actually arguing, and the other half is now allowed** (gh#495).
+
+The section's subject is *a parameter the storage key cannot see*: MACD's fast length, Bollinger's width. Two
+parameterisations under one key are indistinguishable once written, and that is untouched — a configurable
+fast length still goes in the **name**. **But the key carries the period.** `(Venue, Instrument,
+ResolutionMinutes, Indicator, Period, BucketStart)` names it in a column, so the period is precisely the
+parameter this hazard does not reach.
+
+The second worry those sentences carry is different and is about the **closed vocabulary**, not the key: a
+caller naming a number nobody computed reads back an empty series, and an empty series is indistinguishable
+from a market that produced none. A vocabulary is closed by **refusing**, which is what the catalogue now
+does — a period it is not configured for is an error listing the configured ones, with the primary labelled.
+
+So `get_indicators` and `get_indicator_at` take an optional `period` that **selects** among the periods an
+operator configured (`Indicators__*Period` plus `Indicators__Additional*Periods`); omitted means the primary.
+**Ad-hoc per-call computation stays forbidden** for exactly the reasons this record gives — seeding from a
+requested window is refused by the second property above, and computing one honestly is the whole-series
+replay per call. Selection is a lookup along a column the key already carries; nothing new is computed to
+serve it.
+
+**Everything else here holds unchanged.** `IIndicator.Compute` is still pure, a pass still seeds from the
+start of each contract run, a rebuild is still a replay, and the empty-diff property is untouched — the
+projection walks a longer list of `(name, period)` instances, not a different algorithm.

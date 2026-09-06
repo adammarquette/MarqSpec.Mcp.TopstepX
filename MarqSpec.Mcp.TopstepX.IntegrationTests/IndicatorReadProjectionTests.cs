@@ -236,9 +236,9 @@ public sealed class IndicatorReadProjectionTests : IAsyncLifetime
     [Fact]
     public async Task OneSeriesIsProbedOncePerScope_HoweverManyIndicatorsAreRead()
     {
-        // get_market_snapshot asks GetIndicatorAt once per indicator per resolution -- eleven times over the
-        // same series -- and every one of those would otherwise re-ask the store whether the series is
-        // complete. The scope is the request, and within it a series that was complete stays complete:
+        // get_market_snapshot asks GetIndicatorAt once per catalogue name per resolution -- a dozen times
+        // over the same series at the shipped catalogue, and more as names are added -- and every one of
+        // those would otherwise re-ask the store whether the series is complete. The scope is the request, and within it a series that was complete stays complete:
         // nothing writes a bar without projecting over it in the same unit of work.
         await WarmAsync(Catalog(rsiPeriod: 3));
 
@@ -274,7 +274,8 @@ public sealed class IndicatorReadProjectionTests : IAsyncLifetime
     [Fact]
     public async Task AColdRead_IncrementsTheProcessReplayCounterOnce_EvenAcrossElevenCallsInOneScope()
     {
-        // get_market_snapshot asks get_indicator_at eleven times over one series. The scope memo already
+        // get_market_snapshot asks get_indicator_at once per catalogue name over one series; the eleven below
+        // are a round number standing for that. The scope memo already
         // collapses those to one replay; the process counter must follow that, not the call count, and it
         // must outlive the scope so a later request can read it without scraping a log (gh#347).
         await WarmAsync(Catalog(rsiPeriod: 3));

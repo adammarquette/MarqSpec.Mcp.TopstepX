@@ -30,6 +30,12 @@ namespace MarqSpec.Mcp.TopstepX.Configuration;
 /// explicitly. It also names the condition that would bring it back: the moment anything stores a level,
 /// every field below becomes part of that level's identity.
 /// </para>
+/// <para>
+/// <b>The one indicator parameter that IS per-call is the period, and it is not a counter-example.</b> The
+/// indicator key carries <c>Period</c> in a column, so a call SELECTS among the periods the catalogue is
+/// configured for and any other is refused (ADR-0018). Nothing there is computed ad hoc, and nothing here
+/// could be selected among — there is no stored set of level parameterisations to choose from.
+/// </para>
 /// </remarks>
 public sealed class KeyLevelDetectionOptions : IValidatableObject
 {

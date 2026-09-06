@@ -77,8 +77,8 @@ public sealed class IndicatorCacheService(
     /// Series this scope has already found complete.
     /// </summary>
     /// <remarks>
-    /// <c>get_market_snapshot</c> asks <c>get_indicator_at</c> once per indicator per resolution — eleven
-    /// reads of one series — and without this each would re-ask the store the same question. The scope is one
+    /// <c>get_market_snapshot</c> asks <c>get_indicator_at</c> once per indicator per resolution — one read
+    /// of one series per catalogue name — and without this each would re-ask the store the same question. The scope is one
     /// request, and within it a series found complete stays complete: the only thing that writes a bar
     /// projects over it in the same unit of work, so there is no way for the answer to change underneath a
     /// request that is not itself the fill that changed it.

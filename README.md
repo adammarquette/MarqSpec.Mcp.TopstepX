@@ -222,6 +222,20 @@ endpoint), and it carries no real venue credential or database by default. It ex
 debugging the HTTP transport itself — with `curl`, the MCP inspector, or a client that accepts plaintext
 loopback HTTP — without standing up the composed stack to do it.
 
+**Telemetry is off here, and everywhere, until you name a collector.** Set `Otel__Endpoint` — a collector's
+`http://host:4317` for OTLP over gRPC, or its `:4318` with `Otel__Protocol=http` — and this server exports
+traces, metrics and logs over OTLP: a span per `tools/call` tagged `mcp.method.name`, the Npgsql and
+HttpClient calls beneath it, ASP.NET Core's requests, the runtime's meters, and every existing log line
+stamped with the trace id that ties them together. `Otel__Headers` carries a backend token in OTLP's
+`key=value` form when the collector wants one; `Otel__ServiceName` names the process (`marqspec-mcp-topstepx`
+by default). **Leave `Otel__Endpoint` unset and nothing is registered at all** — no exporter, no background
+thread, no warning about a collector that is not there — which is why a stdio session on a laptop, where no
+collector exists, is unchanged by any of this. There is **no console exporter under either transport**, on
+purpose and behind no flag: under stdio stdout is the protocol frame, and telemetry written there breaks the
+handshake rather than the trace. See
+[ADR-0019](documentation/adr/0019-otlp-as-the-telemetry-boundary.md); the local `grafana/otel-lgtm` stack
+that receives it is gh#535.
+
 **Two credential facts that are not guessable from the field names**, and both of which cost real debugging
 time in the sibling repo:
 

@@ -704,6 +704,11 @@ $ cat "$(git rev-parse --git-common-dir)/shallow"
 08c96da7133dd101717e1d169c136cbbbe2eca99
 ```
 
+(Superseded 2026-09-06: the block above records what this working copy showed on 2026-09-05 and no longer
+reproduces — the maintainer ran `git fetch --unshallow` on the shared checkout that day, so both commands now
+return `false` and no such file, and `08c96da` shows its parent `8677fba`. The record stands as the reason the
+second and third drafts went wrong; the state it describes does not — gh#485, gh#487.)
+
 A shallow boundary makes git report the grafted commit as parentless and truncates every history walk that
 passes through it — no ref selection escapes it, because the truncation is in the object graph, not in which
 refs are read. Re-derived instead in a plain clone (`git clone

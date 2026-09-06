@@ -1,3 +1,4 @@
+using System.Reflection;
 using MarqSpec.Client.ProjectX.DependencyInjection;
 using MarqSpec.Mcp.TopstepX.Configuration;
 using MarqSpec.Mcp.TopstepX.Data;
@@ -9,6 +10,12 @@ using MarqSpec.Mcp.TopstepX.Venue;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
+using OpenTelemetry;
+using OpenTelemetry.Exporter;
+using OpenTelemetry.Logs;
+using OpenTelemetry.Metrics;
+using OpenTelemetry.Resources;
+using OpenTelemetry.Trace;
 
 namespace MarqSpec.Mcp.TopstepX;
 
@@ -19,6 +26,29 @@ public static class Program
     /// Where the stdio transport listens when nothing names an address: loopback, port assigned by the OS.
     /// </summary>
     private const string StdioLoopbackAddress = "http://127.0.0.1:0";
+
+    /// <summary>
+    /// The MCP SDK's own activity source and meter — one name, carrying both.
+    /// </summary>
+    /// <remarks>
+    /// Read off <c>ModelContextProtocol.Core</c> 2.2.0's assembly rather than assumed, and it is called
+    /// <i>Experimental</i> because it is: per-request spans tagged <c>mcp.method.name</c>,
+    /// <c>mcp.session.id</c> and <c>mcp.protocol.version</c>, plus <c>mcp.server.session.duration</c>, all of
+    /// which may be renamed on an SDK bump. ADR-0019 accepts that — subscribing is nearly free — and names
+    /// gh#536's app-owned instruments as the stable surface a dashboard should be built on instead.
+    /// </remarks>
+    private const string McpTelemetryName = "Experimental.ModelContextProtocol";
+
+    /// <summary>Npgsql's meter. Its activity source is subscribed by the driver's own extension.</summary>
+    private const string NpgsqlTelemetryName = "Npgsql";
+
+    /// <summary>
+    /// The health probe's path — the one request not worth a span.
+    /// </summary>
+    /// <remarks>
+    /// A path name rather than a reference to an endpoint, because there is no endpoint yet: gh#513 owns it.
+    /// </remarks>
+    private const string HealthProbePath = "/health";
 
     /// <summary>Runs the server, or a CLI verb.</summary>
     /// <param name="args">Command-line arguments.</param>
@@ -33,6 +63,14 @@ public static class Program
             ?? new McpOptions();
 
         ConfigureLogging(builder, mcp.Transport);
+
+        // Beside ConfigureLogging and after it, because it is the same subject seen from further out: the
+        // console is where lines go, this is where they go BEYOND the console (ADR-0019). Bound here rather
+        // than resolved from DI for the same reason McpOptions is — the providers have to be wired before
+        // Build(), and there is no container yet.
+        ConfigureTelemetry(
+            builder,
+            builder.Configuration.GetSection(OtelOptions.SectionName).Get<OtelOptions>() ?? new OtelOptions());
 
         // Before Build(), because it is the builder that carries the address into Kestrel (gh#392).
         ConfigureDefaultBinding(builder, mcp.Transport);
@@ -237,6 +275,173 @@ public static class Program
     }
 
     /// <summary>
+    /// Subscribes the sources that already exist and exports them as OTLP — or, with no endpoint configured,
+    /// does nothing at all.
+    /// </summary>
+    /// <param name="builder">The host builder.</param>
+    /// <param name="otel">The telemetry settings, already bound from the <c>Otel</c> section.</param>
+    /// <remarks>
+    /// <para>
+    /// <b>OTLP and no other form (ADR-0019).</b> Traces, metrics and logs leave this host over one exporter,
+    /// to a collector that decides which backend they reach — so a backend swap is a deployment edit rather
+    /// than a code change, and the words Loki, Tempo, Prometheus and CloudWatch appear nowhere below.
+    /// </para>
+    /// <para>
+    /// <b>Nothing here writes a source of its own.</b> Every signal is a subscription to something that is
+    /// already emitting and going unread: the MCP SDK's <c>Experimental.ModelContextProtocol</c> activity
+    /// source and meter, Npgsql's, ASP.NET Core's, HttpClient's and the runtime's. App-owned meters and spans
+    /// — cache hit/miss, venue calls, hub reconnects — are gh#536, and they are the surface a dashboard that
+    /// must not break is built on: the SDK's is named <i>Experimental</i> and its instrument names may move on
+    /// a bump.
+    /// </para>
+    /// <para>
+    /// <b>Logs go through <see cref="ILogger{TCategoryName}"/> exactly as they already do.</b> The
+    /// OpenTelemetry logging provider attaches to the factory, so not one of the ~60 log sites changes, and
+    /// each record written while one of those spans is current is stamped with its trace and span id. That
+    /// stamp is the whole point — it is what lets a slow span lead to its log lines and back.
+    /// </para>
+    /// <para>
+    /// <b>NO CONSOLE EXPORTER, UNDER ANY TRANSPORT, BEHIND NO FLAG.</b> Under stdio stdout IS the protocol
+    /// frame (R-5.5), so telemetry written there does not degrade the trace — it corrupts the handshake, and
+    /// surfaces as an opaque protocol error naming neither telemetry nor stdout. The package is not
+    /// referenced either (ADR-0019, invariant 4).
+    /// </para>
+    /// <para>
+    /// <b>An absent endpoint returns before anything is registered.</b> Not a disabled exporter and not a
+    /// provider with no processor: no exporter thread, no retry queue, no startup warning about a collector
+    /// that is not there. That is ADR-0007's degradation rule applied to a fourth dependency, and it is what
+    /// keeps a stdio session on a laptop exactly as quiet as it is today.
+    /// </para>
+    /// </remarks>
+    public static void ConfigureTelemetry(WebApplicationBuilder builder, OtelOptions otel)
+    {
+        ArgumentNullException.ThrowIfNull(builder);
+        ArgumentNullException.ThrowIfNull(otel);
+
+        if (!otel.IsConfigured)
+        {
+            return;
+        }
+
+        Uri endpoint = otel.ResolveEndpoint();
+        OtlpExportProtocol protocol = otel.ResolveProtocol();
+        string headers = otel.Headers;
+        string serviceName = otel.ResolveServiceName();
+        string serviceVersion = ServiceVersion();
+
+        // One local, applied to all three exporters, so a protocol or a header set can never be right for
+        // traces and wrong for logs.
+        void ConfigureExporter(OtlpExporterOptions options)
+        {
+            options.Endpoint = endpoint;
+            options.Protocol = protocol;
+
+            if (!string.IsNullOrWhiteSpace(headers))
+            {
+                options.Headers = headers;
+            }
+        }
+
+        builder.Services.AddOpenTelemetry()
+            .ConfigureResource(resource => resource.AddService(
+                serviceName: serviceName,
+                serviceVersion: serviceVersion))
+            .WithTracing(tracing =>
+            {
+                tracing
+                    .AddSource(McpTelemetryName)
+                    .AddAspNetCoreInstrumentation(options => options.Filter = IsTraced)
+                    .AddHttpClientInstrumentation();
+
+                // FULLY QUALIFIED, and it has to be. `AddNpgsql` is also the name of EF Core's
+                // IServiceCollection extension, whose namespace is imported at the top of this file, so the
+                // unqualified call binds to that one and fails asking for a connection string — an error that
+                // names a parameter this line has no business having.
+                Npgsql.TracerProviderBuilderExtensions.AddNpgsql(tracing);
+
+                tracing.AddOtlpExporter(ConfigureExporter);
+            })
+            .WithMetrics(metrics =>
+            {
+                metrics
+                    .AddMeter(McpTelemetryName)
+                    .AddAspNetCoreInstrumentation()
+                    .AddHttpClientInstrumentation()
+                    .AddRuntimeInstrumentation();
+
+                // The driver's own subscription rather than a bare AddMeter(NpgsqlTelemetryName): it starts
+                // Npgsql's metrics reporter as well as listening to the meter, and a meter nothing reports to
+                // exports an empty set that reads exactly like an idle pool.
+                Npgsql.MeterProviderBuilderExtensions.AddNpgsqlInstrumentation(metrics);
+
+                metrics.AddOtlpExporter(ConfigureExporter);
+            });
+
+        builder.Logging.AddOpenTelemetry(logging =>
+        {
+            // Scopes and parsed state are what make a log record searchable beside the span it belongs to.
+            // Without them a record arrives as a rendered sentence and the structured fields the call site
+            // already passed — the instrument, the resolution, the window — are gone.
+            logging.IncludeScopes = true;
+            logging.ParseStateValues = true;
+
+            logging.AddOtlpExporter(ConfigureExporter);
+        });
+    }
+
+    /// <summary>Whether an ASP.NET Core request is worth a span.</summary>
+    /// <param name="context">The incoming request.</param>
+    /// <returns><see langword="false"/> for the health probe, <see langword="true"/> for everything else.</returns>
+    /// <remarks>
+    /// <para>
+    /// One exclusion, and it is a volume argument rather than a privacy one: a load balancer probes
+    /// <c>/health</c> every 30 seconds, which is 2,880 spans a day carrying no information, arriving in the
+    /// same search results and on the same bill as the tool calls somebody is looking for.
+    /// </para>
+    /// <para>
+    /// <b>Matched on the exact path, not a prefix.</b> A prefix match would silently swallow a future
+    /// <c>/health/detail</c> — an endpoint whose whole purpose would be to be worth reading. gh#513 owns the
+    /// endpoint itself and has not landed; this lands on the path name now so it is already in place when the
+    /// endpoint arrives, rather than being the thing everyone forgets afterwards.
+    /// </para>
+    /// </remarks>
+    private static bool IsTraced(HttpContext context) =>
+        !context.Request.Path.Equals(HealthProbePath, StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>The <c>service.version</c> resource attribute.</summary>
+    /// <returns>The assembly's informational version, without build metadata.</returns>
+    /// <remarks>
+    /// <para>
+    /// <b>The assembly's own stamp, and it is present rather than meaningful.</b> ADR-0001 makes the tag the
+    /// version and nothing declares one in a file; the container build never sees the repository's history, so
+    /// inside the published image this reads <c>0.0.0-alpha.0</c> by decision, with the release number carried
+    /// by the image tag and <c>org.opencontainers.image.version</c> instead.
+    /// </para>
+    /// <para>
+    /// <b>gh#513's <c>Deployment__Version</c> is what will make it mean something on a deployed instance</b>,
+    /// and it is deliberately not read here: that section does not exist yet, and a configuration key this
+    /// server reads while no document describes it and <c>docker-compose.yml</c> does not forward it is a
+    /// setting that silently does nothing in a container — the exact defect <c>.env.example</c>'s own header
+    /// warns about. It is one line to add when that card lands.
+    /// </para>
+    /// </remarks>
+    private static string ServiceVersion()
+    {
+        string? informational = typeof(Program).Assembly
+            .GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion;
+
+        if (string.IsNullOrWhiteSpace(informational))
+        {
+            return typeof(Program).Assembly.GetName().Version?.ToString() ?? "0.0.0";
+        }
+
+        // MinVer appends "+<sha>" build metadata. A resource attribute is a grouping key, and a version that
+        // changes with every commit groups nothing.
+        int metadata = informational.IndexOf('+', StringComparison.Ordinal);
+        return metadata < 0 ? informational : informational[..metadata];
+    }
+
+    /// <summary>
     /// Gives the stdio transport an ephemeral loopback address, unless one has been named explicitly.
     /// </summary>
     /// <param name="builder">The host builder.</param>
@@ -327,6 +532,14 @@ public static class Program
         // that booted on an unresolved source would answer every level call from a source nobody chose.
         services.AddOptions<KeyLevelDetectionOptions>()
             .Bind(builder.Configuration.GetSection(KeyLevelDetectionOptions.SectionName))
+            .ValidateDataAnnotations()
+            .ValidateOnStart();
+
+        // Validated on start so a malformed endpoint, protocol or header list refuses at boot NAMING THE KEY,
+        // rather than at export time on a background thread — where the failure is a silent absence of
+        // telemetry, which is indistinguishable from the supported unconfigured state (ADR-0019).
+        services.AddOptions<OtelOptions>()
+            .Bind(builder.Configuration.GetSection(OtelOptions.SectionName))
             .ValidateDataAnnotations()
             .ValidateOnStart();
 

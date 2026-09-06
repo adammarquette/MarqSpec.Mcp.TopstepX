@@ -69,13 +69,18 @@ The market-hub subscription — and the standing choice it reversed — is
 
 ## Reference — [`wiki/`](wiki/index.md)
 
-External domain knowledge: the vendor API, market sessions and settlement. **Ingested reference, not repo
-truth** — when the wiki and a repo document disagree, the repo document wins. Route through
-[`wiki/index.md`](wiki/index.md); never sweep the folder.
+External domain knowledge: the vendor API, market sessions and settlement, and how the indicators and levels
+are constructed. **Ingested reference, not repo truth** — when the wiki and a repo document disagree, the repo
+document wins. Route through [`wiki/index.md`](wiki/index.md); never sweep the folder.
 
 [`wiki/pages/projectx-gateway-api.md`](wiki/pages/projectx-gateway-api.md) is the highest-value page in this
 repository. Read it before writing anything that touches the gateway — it records behaviours that each cost
 real debugging time to find and none of which are guessable from the API's shape.
+
+[`wiki/pages/technical-indicator-definitions.md`](wiki/pages/technical-indicator-definitions.md) is the one to
+open before changing an indicator or reconciling one of our numbers against a chart. It records which of ours
+are Wilder-smoothed and which are not — a difference that makes two *correct* implementations disagree, which
+is how a reconciliation turns into a wrong fix.
 
 ## What is not here
 

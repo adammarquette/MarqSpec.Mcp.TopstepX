@@ -37,6 +37,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `Indicators__RollingVwapPeriod` (20 by default). It is a **new name rather than `vwap` at a period**
   because it is a different calculation: a session anchor is not a lookback window. `get_market_snapshot`'s
   `indicators{}` map gains it as a key, and keeps reporting each name at its **primary** period only.
+- **[ADR-0019](documentation/adr/0019-otlp-as-the-telemetry-boundary.md) — OTLP is the telemetry boundary.**
+  A decision record only; **no behaviour changes with it**. It settles the six questions the observability
+  epic's implementing cards would otherwise each have answered separately: OpenTelemetry attached to the
+  existing `ILogger<T>` rather than a logging library, since that is the only path giving logs, traces and
+  metrics **one exporter and one trace id**; a single OTLP exporter with no backend named anywhere in the
+  host, the same boundary shape as [ADR-0003](documentation/adr/0003-client-as-package.md); **silence unless
+  `Otel__Endpoint` is set**, because a default of `localhost:4317` would make every stdio session dial a
+  collector that is not there; **no console exporter under any configuration**, since stdout under stdio is
+  the protocol frame (`R-5.5`); and no header value in a span or log attribute, with the embedding-key
+  redaction test as the model. It also **decides where the stack runs**: `grafana/otel-lgtm` behind an
+  off-by-default compose profile locally, and **Grafana Cloud via an OTLP collector sidecar** on Fargate —
+  self-hosting Loki, Tempo and Grafana on EFS is recorded as considered and rejected for adding three more
+  stateful services to a stream already nervous about one (gh#525). CloudWatch alarms stay the paging path
+  (gh#526); Grafana alerting is additive until a dated `## Update` says otherwise (gh#532, gh#533).
 
 ## [0.3.1] - 2026-09-06
 

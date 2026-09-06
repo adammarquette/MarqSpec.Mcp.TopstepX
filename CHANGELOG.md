@@ -111,6 +111,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   that only the ALB can reach a Fargate task at all. `.env.example`'s new "Hosting" section quotes both
   measurements verbatim and states that a human will look up a caller's address there in the ALB's own access
   logs, not this application (gh#515).
+- **The Domain session model**, with no tool surface yet: `SessionDefinition` (a named Central wall-clock
+  slice of the trade date, shipped as `full` 17:00→16:00 at a 60-minute base, `rth` 08:30→15:00 at 30,
+  `asia` 17:00→02:00 at 30 and `europe` 02:00→08:30 at 30), `SessionWindows` (definition plus calendar to
+  the absolute UTC bounds of one trade date's session, and the validation that a base resolution divides 60
+  so wall-clock boundaries land on the stored UTC grid under both offsets), and `SessionBarAggregator` with
+  `SessionBar`, `SessionBarAbsence` and `SessionBarOutcome` — which yields a session bar **only** when every
+  expected base bucket is stored from one contract, and otherwise an absence with its reason
+  (`Incomplete` with the expected and missing counts, `SpansRoll`, `ProvenanceUnknown`), never a partial bar
+  (gh#498, `R-1.12`).
+
+### Changed
+
+- **`get_bars`, `get_latest_bars` and `get_market_snapshot` now refuse a `resolutionMinutes` of 1,380 or
+  more** — as does every other tool that takes one, since the rule lives in `ToolGuards.ValidateResolution`
+  rather than in a tool. `ToolGuards.MaxResolutionMinutes` was 10,080 and admitted the day and the week, neither of which
+  has ever been servable: the session calendar expects a bucket only when it **closes inside** its session,
+  and a session is 24 hours less the venue's one-hour maintenance window — so `get_bars` at `1440` answered
+  with an **empty series** and `venueRequests: 0`, which is indistinguishable from a market that printed
+  nothing. The ceiling is now **1,379**, one minute short of a session, and the refusal names where the
+  answer lives rather than only saying no: a bar of a session's length or longer is a **session bar**,
+  defined on the CME trade date rather than on the bucket grid, and the session-bars tools serve it
+  (gh#496). **This is breaking for any caller passing 1,440 to 10,080** — it now gets a tool error where it
+  used to get `[]` (gh#498, [ADR-0019](documentation/adr/0019-session-bars-derived-complete-or-absent.md),
+  `R-1.9`).
 
 ## [0.3.1] - 2026-09-06
 

@@ -69,11 +69,13 @@ joins the discounted budget by being written rather than by somebody remembering
 ## The cache-aside read — the only genuinely interesting path
 
 **`resolution` is chosen by the caller, not by configuration.** There is no supported-resolution list: every
-whole number of minutes from **1 to 10,080** is servable (`R-1.9`), each becomes an independent cached series,
+whole number of minutes from **1 to 1,379** is servable (`R-1.9`), each becomes an independent cached series,
 and a timeframe is fetched from the venue rather than derived from a finer one —
 [ADR-0010](adr/0010-per-call-resolutions-fetched-not-derived.md).
 Zero and negative are refused at the tool boundary by `ToolGuards.ValidateResolution` and never reach this
-path (gh#69).
+path (gh#69); so is a bucket of a session's length or longer, which can never close inside one session and is
+a **session bar** rather than a resolution (`R-1.12`,
+[ADR-0019](adr/0019-session-bars-derived-complete-or-absent.md), gh#498).
 
 `BarCacheService.GetBarsAsync(instrument, resolution, window)`:
 

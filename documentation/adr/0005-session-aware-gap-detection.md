@@ -92,6 +92,38 @@ sync problem for a handful of dates a year.
 - The ledger can be wrong in the safe direction (a range marked covered that later gains data) and its TTL is
   the recovery path. A forced re-fetch verb is worth adding when that first bites.
 
+## Decision log
+
+## Update (2026-09-06) — the calendar also defines session windows
+
+**Nothing about gap detection changes.** `BarSessionCalendar` still decides whether a bucket was expected,
+`BarGapDetector` still diffs only expected buckets against the store, the `BarCoverage` ledger is untouched,
+and the zero-vendor-request test still passes for the same reason it always did.
+
+What is added is a **second reader** of the same trade-date model. `SessionWindows` (gh#498) turns a
+`SessionDefinition` — a name, a Central wall-clock start and end, and a base resolution — into the absolute
+UTC bounds of one trade date's session, using this calendar's `TradeDateFor`, its session close and its
+maintenance window. The four shipped sessions are `full` 17:00→16:00, `rth` 08:30→15:00, `asia` 17:00→02:00
+and `europe` 02:00→08:30.
+
+**It is the same model read at a finer grain, which is why it belongs here rather than in a calendar of its
+own.** Every rule in the Decision above already applies to a session window and is not restated by it:
+Sunday evening belongs to Monday, a declared holiday closes its own session *and* the evening before it, and
+the boundaries are Central wall-clock rather than a fixed UTC offset. `SessionWindows` expresses each
+definition as an **offset from the trade date's open** for that last reason — in that coordinate `asia`
+(17:00→02:00) is simply 0h→9h and needs no "spans midnight" case, while a definition that would straddle the
+maintenance window runs backwards and is refused by the same comparison.
+
+**One new rule, and it is about the stored grid rather than about sessions.** A session's base resolution must
+divide 60. Central is a whole-hour UTC offset, so a wall-clock boundary on an hour-dividing grid lands on the
+stored UTC bucket grid under **both** CST and CDT; a 120-minute base would not, since 17:00 Central is 22:00Z
+in summer and 23:00Z in winter. `SessionWindows.Validate` refuses a definition that breaks it — the same
+fail-at-startup posture the *Consequences* above take for a malformed session close, and for the same reason:
+a session definition decides what counts as a complete bar.
+
+What is *derived* from those windows — and the completeness guard that decides whether a session bar exists at
+all — is [ADR-0019](0019-session-bars-derived-complete-or-absent.md), not this record.
+
 ## Follow-ups
 
 - gh#7 — the read path, the ledger, and the zero-call test.

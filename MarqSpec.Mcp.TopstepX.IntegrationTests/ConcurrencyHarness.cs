@@ -174,6 +174,16 @@ public sealed class CapturingLogger<T> : ILogger<T>
     /// <summary>Every message logged, formatted, in order.</summary>
     public List<string> Messages { get; } = [];
 
+    /// <summary>
+    /// The subset of <see cref="Messages"/> logged at <see cref="LogLevel.Warning"/> or above, in order.
+    /// </summary>
+    /// <remarks>
+    /// Kept apart because the level is part of the claim for some cases: a run that found nothing has to say
+    /// so <b>louder</b> than its ordinary counters, or it reads like a run that found nothing wrong. A
+    /// predicate over <see cref="Messages"/> alone would be green on a line logged at Information.
+    /// </remarks>
+    public List<string> Warnings { get; } = [];
+
     /// <inheritdoc />
     public IDisposable? BeginScope<TState>(TState state)
         where TState : notnull => null;
@@ -190,7 +200,14 @@ public sealed class CapturingLogger<T> : ILogger<T>
         Func<TState, Exception?, string> formatter)
     {
         ArgumentNullException.ThrowIfNull(formatter);
-        Messages.Add(formatter(state, exception));
+
+        string message = formatter(state, exception);
+        Messages.Add(message);
+
+        if (logLevel >= LogLevel.Warning)
+        {
+            Warnings.Add(message);
+        }
     }
 }
 

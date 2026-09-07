@@ -81,6 +81,14 @@ public sealed class ReselectArgumentsTests
 
         extra.Should().Throw<ArgumentException>()
             .Which.Message.Should().Contain("reselect-bars <symbol> <fromUtc> <toUtc>");
+
+        // NOTHING HERE PROMISES THE VERB ITSELF IS PRESENT, so the empty array is reachable and the count it
+        // reports has to survive it. "was given -1 arguments" reads as a defect in the parser rather than as
+        // a command line the operator can correct.
+        Action nothing = () => ReselectArguments.Parse([], Registry);
+
+        nothing.Should().Throw<ArgumentException>()
+            .Which.Message.Should().NotContain("-1", "an argument count is never negative");
     }
 
     [Fact]

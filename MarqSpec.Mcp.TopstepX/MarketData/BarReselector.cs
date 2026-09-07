@@ -115,8 +115,10 @@ public sealed class BarReselector(
     /// <param name="window">The window the operator named.</param>
     /// <param name="cancellationToken">The caller's cancellation token.</param>
     /// <returns>What the run revised, removed and declined to decide.</returns>
-    /// <exception cref="InvalidOperationException">
-    /// The plan would degrade for the whole window — see <c>BarCacheService.ReselectWindowAsync</c>.
+    /// <exception cref="ReselectPlanException">
+    /// The plan would degrade for the whole window — see <c>BarCacheService.ReselectWindowAsync</c>. It can
+    /// be thrown on the <i>second</i> series of a run, by which point the first has already committed its
+    /// own unit of work; the per-series log lines are what say how far the run got.
     /// </exception>
     public async Task<BarReselectResult> ReselectAsync(
         InstrumentId instrument,
@@ -149,6 +151,27 @@ public sealed class BarReselector(
         // resolutions reads the same way twice.
         List<StoredSeries> series =
             [.. found.OrderBy(static s => s.Venue, StringComparer.Ordinal).ThenBy(static s => s.ResolutionMinutes)];
+
+        if (series.Count == 0)
+        {
+            // LOUDER THAN THE ORDINARY SUMMARY, because the counters cannot tell these two apart. "0 bars
+            // revised, 0 removed, 0 trade dates changed" is what a window that was already correct reports,
+            // and it is also what a mistyped year reports -- and the second one has looked at nothing. A
+            // plausible number standing in for a missing one is the failure this server refuses everywhere
+            // else, so the absence is stated rather than counted.
+            _logger.LogWarning(
+                "Reselect found no stored series for {Instrument} inside {From}..{To} (asked "
+                + "{AskedFrom}..{AskedTo}): nothing to re-decide. Check the symbol and the dates -- a window "
+                + "nothing was ever fetched for reports the same counters as a window that was already "
+                + "correct.",
+                instrument.Symbol,
+                effective.Start,
+                effective.End,
+                window.Start,
+                window.End);
+
+            return new BarReselectResult(0, 0, 0, 0, 0, 0, 0, 0, effective);
+        }
 
         int revised = 0;
         int removed = 0;

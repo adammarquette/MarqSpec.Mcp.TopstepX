@@ -1286,9 +1286,11 @@ public sealed class BarCacheService
     /// The policy's selections ascending by trade date, how many history requests they cost, and how many
     /// slices had no listed candidate and were therefore skipped.
     /// </returns>
-    /// <exception cref="InvalidOperationException">
+    /// <exception cref="ReselectPlanException">
     /// The plan would degrade for the whole window — the venue lists no contracts, the instrument is not
-    /// served, or the front's expiry does not read against the product's cycle.
+    /// served, or the front's expiry does not read against the product's cycle. A narrow type rather than a
+    /// bare <see cref="InvalidOperationException"/> because the verb's exit code turns on it, and EF Core
+    /// raises that base type for its own defects.
     /// </exception>
     /// <remarks>
     /// <para>
@@ -1355,7 +1357,7 @@ public sealed class BarCacheService
 
         if (contracts.Count == 0)
         {
-            throw new InvalidOperationException(
+            throw new ReselectPlanException(
                 "The venue returned no contracts for '" + instrument.Symbol
                 + "', so there is no front to plan its history against and no candidate that could carry a "
                 + "trade date. Nothing is rewritten. If this instrument is definitely listed, check "
@@ -1367,7 +1369,7 @@ public sealed class BarCacheService
 
         if (!_registry.IsServed(instrument.Symbol))
         {
-            throw new InvalidOperationException(
+            throw new ReselectPlanException(
                 "'" + instrument.Symbol + "' is not one this server serves, so there is no contract month "
                 + "cycle to re-decide its history against and the only plan available is the venue's own "
                 + "pick, " + front + ". A read degrades to that and says so; a rewrite must not, because it "
@@ -1380,7 +1382,7 @@ public sealed class BarCacheService
         if (!ContractExpiry.TryParseContractId(front, out ContractExpiry frontExpiry)
             || !cycle.Contains(frontExpiry.MonthCode))
         {
-            throw new InvalidOperationException(
+            throw new ReselectPlanException(
                 "The venue front for '" + instrument.Symbol + "' is '" + front + "', whose expiry does not "
                 + "read against the " + cycle.Code + " cycle. Every candidate this window would be "
                 + "re-decided against is constructed from that cycle, so the plan would be a guess. Nothing "

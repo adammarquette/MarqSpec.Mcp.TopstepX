@@ -32,10 +32,17 @@ public static class ReselectExit
     public const int RefusedArgument = 2;
 
     /// <summary>
-    /// The plan degraded for the whole window — an unserved instrument, an unreadable front, a front outside
-    /// its own listing cycle. The command line was right and the answer still is not available, so this is
-    /// an environment to fix rather than a typo, and nothing was rewritten.
+    /// <b>The run stopped.</b> The command line was right and the window still was not re-decided, so this
+    /// is an environment to fix rather than a typo — the store was unreachable or the migration dropped its
+    /// connection, or a plan degraded for a whole window (the venue lists no contracts, the instrument is
+    /// not served, its front does not read against the product's cycle).
     /// </summary>
+    /// <remarks>
+    /// <b>It does not mean nothing was written.</b> The reselector commits one unit of work per resolution
+    /// series, so a degradation on the second series exits 3 with the first already committed — and the
+    /// migration itself can degrade partway through. <b>Read the per-series log lines</b> to see how far the
+    /// run got; the summary line is not printed when a series throws.
+    /// </remarks>
     public const int Degraded = 3;
 
     /// <summary>
@@ -53,9 +60,12 @@ public static class ReselectExit
         // one: the parse runs before MigrateAsync, so a 2 means the run never started.
         ArgumentException => RefusedArgument,
 
-        // InvalidOperationException is what BarCacheService.ReselectWindowAsync throws when the whole read
-        // would degrade, naming the reason.
-        InvalidOperationException => Degraded,
+        // ReselectPlanException and NOT its base InvalidOperationException. EF Core raises that base type
+        // for its own defects -- an untranslatable LINQ expression, an entity with no key, a sequence
+        // expected to hold one element -- and every one of those is a bug in this repository. Matching the
+        // base would hand an operator "the plan degraded" and a tidy 3 for a fault that may already have
+        // committed a series.
+        ReselectPlanException => Degraded,
 
         _ => throw new ArgumentOutOfRangeException(
             nameof(exception),

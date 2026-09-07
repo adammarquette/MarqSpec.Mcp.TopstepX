@@ -35,11 +35,12 @@ public sealed class ReselectExitTests
     [Fact]
     public void AWholeReadDegradation_ExitsThree()
     {
-        // BarCacheService.ReselectWindowAsync throws InvalidOperationException naming the reason when the
-        // plan would degrade for the whole window -- an unserved instrument, an unreadable front, a front
-        // outside its own listing cycle. Distinct from 2 because the command line was RIGHT and the answer
-        // still is not available: the operator has an environment to fix, not a typo.
-        ReselectExit.From(new InvalidOperationException("The front month could not be read."))
+        // BarCacheService.ReselectWindowAsync throws ReselectPlanException naming the reason when the plan
+        // would degrade for a whole window -- an unserved instrument, an unreadable front, a front outside
+        // its own listing cycle. Distinct from 2 because the command line was RIGHT and the answer still is
+        // not available: the operator has an environment to fix, not a typo. It does NOT mean nothing was
+        // written -- one unit of work per series, so an earlier series may have committed.
+        ReselectExit.From(new ReselectPlanException("The front month could not be read."))
             .Should().Be(3);
 
         ReselectExit.Degraded.Should().Be(3);
@@ -55,5 +56,22 @@ public sealed class ReselectExitTests
         Func<int> classify = () => ReselectExit.From(new TimeoutException("The venue did not answer."));
 
         classify.Should().Throw<ArgumentOutOfRangeException>();
+    }
+
+    [Fact]
+    public void APlainInvalidOperationException_IsNotADegradation()
+    {
+        // EF CORE RAISES InvalidOperationException FOR ITS OWN DEFECTS -- an untranslatable LINQ expression,
+        // a tracked entity with no key, a sequence that was expected to hold exactly one element. Every one
+        // of those is a bug inside the reselector, and matching the base type would report it to an operator
+        // as "the venue plan degraded, nothing was rewritten" with a tidy exit 3 -- when in fact a series
+        // may well have committed and the defect is in this repository, not in their environment.
+        //
+        // So only the seam's own type counts. This is the case that stops the match being widened back.
+        Func<int> classify = () => ReselectExit.From(
+            new InvalidOperationException("Sequence contains no elements."));
+
+        classify.Should().Throw<ArgumentOutOfRangeException>(
+            "only ReselectPlanException means the plan degraded for the whole window");
     }
 }

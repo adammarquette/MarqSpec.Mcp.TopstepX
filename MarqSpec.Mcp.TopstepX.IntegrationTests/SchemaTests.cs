@@ -556,6 +556,72 @@ public sealed class SchemaTests(SchemaFixture fixture)
         count.Should().Be(1);
     }
 
+    [Fact]
+    public async Task SessionIndicatorValues_IsAPlainTable_WithTheSessionKey()
+    {
+        // The session flavour of IndicatorValues: the same projection, keyed by session name instead of by
+        // resolution. A session series is one row per indicator per day — a few hundred a year — so it is a
+        // plain table like SessionBars, and the absence of a Timescale block in the migration IS the
+        // decision. It carries no retention for the reason IndicatorValues carries none: an observation that
+        // cited a number must stay checkable against the number that was actually used.
+        long tables = await ScalarAsync(
+            "SELECT count(*) FROM information_schema.tables "
+            + "WHERE table_schema = 'public' AND table_name = 'SessionIndicatorValues';");
+        tables.Should().Be(1);
+
+        long hypertables = await ScalarAsync(
+            "SELECT count(*) FROM timescaledb_information.hypertables "
+            + "WHERE hypertable_name = 'SessionIndicatorValues';");
+        hypertables.Should().Be(0);
+
+        long retention = await ScalarAsync(
+            "SELECT count(*) FROM timescaledb_information.jobs "
+            + "WHERE proc_name = 'policy_retention' "
+            + "AND hypertable_name = 'SessionIndicatorValues';");
+        retention.Should().Be(0);
+
+        // Six key columns, and Session sits exactly where ResolutionMinutes sits in IndicatorValues.
+        foreach (string column in
+            new[] { "Venue", "Instrument", "Session", "Indicator", "Period", "BucketStart" })
+        {
+            long inKey = await PrimaryKeyColumnsAsync("SessionIndicatorValues", column);
+            inKey.Should().Be(1, "'{0}' is part of the identity of a session indicator value", column);
+        }
+
+        long resolutionInKey = await PrimaryKeyColumnsAsync("SessionIndicatorValues", "ResolutionMinutes");
+        resolutionInKey.Should().Be(0);
+
+        // BucketStart is the session's OpenUtc, an instant — not the trade date SessionBars keys on. The
+        // unique (Venue, Instrument, Session, OpenUtc) index over there is what makes that sound.
+        long bucketStartTyped = await ScalarAsync(
+            "SELECT count(*) FROM information_schema.columns "
+            + "WHERE table_name = 'SessionIndicatorValues' AND column_name = 'BucketStart' "
+            + "AND data_type = 'timestamp with time zone';");
+        bucketStartTyped.Should().Be(1);
+
+        // The store's one price type, so a value read back compares against a freshly computed one.
+        long valueTyped = await ScalarAsync(
+            "SELECT count(*) FROM information_schema.columns "
+            + "WHERE table_name = 'SessionIndicatorValues' AND column_name = 'Value' "
+            + "AND numeric_precision = 18 AND numeric_scale = 8;");
+        valueTyped.Should().Be(1);
+
+        // No ContractId: a read joins SessionBars on OpenUtc for the provenance, so carrying a second copy
+        // here would be a column that can disagree with the row it describes.
+        long contractId = await ScalarAsync(
+            "SELECT count(*) FROM information_schema.columns "
+            + "WHERE table_name = 'SessionIndicatorValues' AND column_name = 'ContractId';");
+        contractId.Should().Be(0);
+
+        // The read-shaped index, asserted by its columns rather than by its name: EF truncates an index
+        // name this long to Postgres' 63-character limit, and the name is not the claim.
+        long readIndex = await ScalarAsync(
+            "SELECT count(*) FROM pg_indexes WHERE tablename = 'SessionIndicatorValues' "
+            + "AND indexdef LIKE "
+            + "'%(\"Instrument\", \"Session\", \"Indicator\", \"Period\", \"BucketStart\")%';");
+        readIndex.Should().Be(1);
+    }
+
     private static SessionBarRecord NewSessionBar(
         string instrument,
         DateOnly tradeDate,

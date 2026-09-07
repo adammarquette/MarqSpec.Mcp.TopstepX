@@ -55,6 +55,11 @@ public sealed class TopstepXDbContext(DbContextOptions<TopstepXDbContext> option
     /// <summary>Completed named sessions, an aggregate over <see cref="Bars"/> (ADR-0022).</summary>
     public DbSet<SessionBarRecord> SessionBars => Set<SessionBarRecord>();
 
+    /// <summary>Pre-computed indicator values over <see cref="SessionBars"/>, the session flavour of
+    /// <see cref="IndicatorValues"/>.</summary>
+    public DbSet<SessionIndicatorValueRecord> SessionIndicatorValues =>
+        Set<SessionIndicatorValueRecord>();
+
     /// <summary>Agent-recorded observations — original data, as is the tape.</summary>
     public DbSet<ObservationRecord> Observations => Set<ObservationRecord>();
 
@@ -187,6 +192,42 @@ public sealed class TopstepXDbContext(DbContextOptions<TopstepXDbContext> option
 
             // The shape of every read: one instrument, one session, a window ending at the close.
             entity.HasIndex(s => new { s.Instrument, s.Session, s.CloseUtc });
+        });
+
+        modelBuilder.Entity<SessionIndicatorValueRecord>(entity =>
+        {
+            entity.ToTable("SessionIndicatorValues");
+
+            // IndicatorValues' key with Session where ResolutionMinutes sits, and BucketStart is the
+            // session's OpenUtc: SessionBars' unique (Venue, Instrument, Session, OpenUtc) index means
+            // exactly one session bar per opening, so exactly one bar for a value here to belong to.
+            entity.HasKey(v => new
+            {
+                v.Venue,
+                v.Instrument,
+                v.Session,
+                v.Indicator,
+                v.Period,
+                v.BucketStart,
+            });
+
+            entity.Property(v => v.Venue).HasMaxLength(64);
+            entity.Property(v => v.Instrument).HasMaxLength(32);
+
+            // 16, matching SessionBarRecord.Session: the same name, and a width that disagreed would refuse
+            // a session the bar store accepted.
+            entity.Property(v => v.Session).HasMaxLength(16);
+            entity.Property(v => v.Indicator).HasMaxLength(32);
+            entity.Property(v => v.Value).HasColumnType(PriceColumnType);
+
+            entity.HasIndex(v => new
+            {
+                v.Instrument,
+                v.Session,
+                v.Indicator,
+                v.Period,
+                v.BucketStart,
+            });
         });
 
         modelBuilder.Entity<TradeRecord>(entity =>

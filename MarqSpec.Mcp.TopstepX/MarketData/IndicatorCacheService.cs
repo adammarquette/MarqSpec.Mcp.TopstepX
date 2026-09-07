@@ -289,7 +289,7 @@ public sealed class IndicatorCacheService(
         // reading it as a cold miss would say the cache had lost a series it still has.
         string outcome = stored.Count == 0 ? CacheOutcome.Miss : CacheOutcome.Partial;
 
-        string what = instrument.Symbol + " " + resolutionMinutes.ToString(CultureInfo.InvariantCulture) + "m";
+        string what = new SeriesKey.Resolution(venue, instrument.Symbol, resolutionMinutes).Describe();
 
         _readTriggeredReplays.RecordReplay();
 

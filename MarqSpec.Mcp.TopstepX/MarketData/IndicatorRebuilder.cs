@@ -1,4 +1,3 @@
-using System.Globalization;
 using MarqSpec.Mcp.TopstepX.Data;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
@@ -186,7 +185,7 @@ public sealed class IndicatorRebuilder(
         CancellationToken cancellationToken) =>
         SeriesUnitOfWork.RunAsync(
             _database,
-            instrument + " " + resolutionMinutes.ToString(CultureInfo.InvariantCulture) + "m",
+            new SeriesKey.Resolution(venue, instrument, resolutionMinutes).Describe(),
             async token =>
             {
                 int changed = await _projector

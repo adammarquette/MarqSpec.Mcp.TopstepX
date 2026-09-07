@@ -1,8 +1,10 @@
+using System.Diagnostics;
 using System.Globalization;
 using MarqSpec.Mcp.TopstepX.Data;
 using MarqSpec.Mcp.TopstepX.Data.Entities;
 using MarqSpec.Mcp.TopstepX.Domain;
 using MarqSpec.Mcp.TopstepX.Domain.MarketData;
+using MarqSpec.Mcp.TopstepX.Telemetry;
 using MarqSpec.Mcp.TopstepX.Venue;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
@@ -100,6 +102,7 @@ public sealed class BarCacheService
     private readonly IndicatorProjector _projector;
     private readonly TimeProvider _clock;
     private readonly ILogger<BarCacheService> _logger;
+    private readonly HostTelemetry _telemetry;
 
     /// <summary>Creates the service.</summary>
     /// <param name="database">The store.</param>
@@ -108,13 +111,18 @@ public sealed class BarCacheService
     /// <param name="projector">The indicator projection, run in the same unit of work as a bar write.</param>
     /// <param name="clock">The clock. Injected so a test can place "now" precisely against a session.</param>
     /// <param name="logger">The logger.</param>
+    /// <param name="telemetry">
+    /// The app-owned meter and activity source. Optional only so hand-built tests that do not care about it
+    /// keep compiling; the composition root always supplies the singleton.
+    /// </param>
     public BarCacheService(
         TopstepXDbContext database,
         IMarketDataGateway gateway,
         BarSessionCalendar calendar,
         IndicatorProjector projector,
         TimeProvider clock,
-        ILogger<BarCacheService> logger)
+        ILogger<BarCacheService> logger,
+        HostTelemetry? telemetry = null)
     {
         _database = database;
         _gateway = gateway;
@@ -122,6 +130,7 @@ public sealed class BarCacheService
         _projector = projector;
         _clock = clock;
         _logger = logger;
+        _telemetry = telemetry ?? new HostTelemetry();
     }
 
     /// <summary>
@@ -146,6 +155,11 @@ public sealed class BarCacheService
             throw new ArgumentOutOfRangeException(
                 nameof(resolutionMinutes), resolutionMinutes, "A resolution must be positive.");
         }
+
+        // The child span the whole tool-call trace hangs this read off (gh#536). Opened before the first
+        // query so the store round trips are inside it, and disposed by the `using` however the read ends.
+        using Activity? span = _telemetry.StartCacheRead(
+            CacheSeries.Bars, instrument.Symbol, resolutionMinutes);
 
         TimeSpan barSize = TimeSpan.FromMinutes(resolutionMinutes);
         DateTimeOffset now = _clock.GetUtcNow();
@@ -192,8 +206,32 @@ public sealed class BarCacheService
         int fetched = 0;
         int requests = 0;
 
+        // WHAT THIS READ COST, decided here and reported once at the end.
+        //
+        // `hit` is the exact statement "the venue was not reached": every bucket the calendar expected is
+        // stored and attributed, or every hole in it has already been answered empty. That is the cache's
+        // central claim (R-1.1, R-1.3) and until now it was observable only as VenueRequests == 0 inside a
+        // test.
+        //
+        // The split between `miss` and `partial` is whether the store held ANYTHING for this window. A cold
+        // window and a window that grew are different operational facts, and collapsing them would make an
+        // ordinary live instrument -- which is always a little behind -- read as a cache that is not working.
+        string outcome = outstanding.Count == 0
+            ? CacheOutcome.Hit
+            : storedRows.Count == 0 ? CacheOutcome.Miss : CacheOutcome.Partial;
+
         if (outstanding.Count > 0)
         {
+            // WHY those ranges were outstanding, at the granularity the detector actually distinguishes.
+            // `unattributed` is the gh#402/gh#412 heal -- buckets present but carrying no contract id, re-asked
+            // so the row can be stamped -- and it is worth telling apart from an ordinary hole because it is a
+            // one-off migration cost rather than a market fact.
+            string reason = storedRows.Count == 0
+                ? GapReason.Absent
+                : unattributedBuckets.Count > 0 ? GapReason.Unattributed : GapReason.Gap;
+
+            _telemetry.GapFilled(instrument.Symbol, resolutionMinutes, reason, outstanding.Count);
+
             // THE VENUE IS CALLED FIRST, AND OUTSIDE THE TRANSACTION.
             //
             // The pacer sits inside the gateway page loop, so a cold year of five-minute bars is 106 pages at
@@ -265,6 +303,8 @@ public sealed class BarCacheService
             .OrderBy(b => b.BucketStart)
             .ToListAsync(cancellationToken)
             .ConfigureAwait(false);
+
+        _telemetry.CacheRead(CacheSeries.Bars, instrument.Symbol, resolutionMinutes, outcome);
 
         return new BarReadResult([.. rows.Select(IndicatorProjector.ToBar)], fetched, requests);
     }

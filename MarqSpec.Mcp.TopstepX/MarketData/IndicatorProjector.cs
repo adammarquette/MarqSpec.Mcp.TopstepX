@@ -3,6 +3,7 @@ using MarqSpec.Mcp.TopstepX.Data;
 using MarqSpec.Mcp.TopstepX.Data.Entities;
 using MarqSpec.Mcp.TopstepX.Domain;
 using MarqSpec.Mcp.TopstepX.Domain.MarketData;
+using MarqSpec.Mcp.TopstepX.Telemetry;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using Npgsql;
@@ -60,14 +61,20 @@ namespace MarqSpec.Mcp.TopstepX.MarketData;
 /// <param name="database">The store.</param>
 /// <param name="catalog">The indicators to project.</param>
 /// <param name="logger">The logger.</param>
+/// <param name="telemetry">
+/// The app-owned meter. Optional only so hand-built tests that do not care about it keep compiling; the
+/// composition root always supplies the singleton.
+/// </param>
 public sealed class IndicatorProjector(
     TopstepXDbContext database,
     IndicatorCatalog catalog,
-    ILogger<IndicatorProjector> logger)
+    ILogger<IndicatorProjector> logger,
+    HostTelemetry? telemetry = null)
 {
     private readonly TopstepXDbContext _database = database;
     private readonly IndicatorCatalog _catalog = catalog;
     private readonly ILogger<IndicatorProjector> _logger = logger;
+    private readonly HostTelemetry _telemetry = telemetry ?? new HostTelemetry();
 
     /// <summary>
     /// Recomputes every configured indicator for one series and writes the values that changed.
@@ -188,6 +195,21 @@ public sealed class IndicatorProjector(
             ? 0
             : await WriteAsync(venue, instrument, resolutionMinutes, pending, now, cancellationToken)
                 .ConfigureAwait(false);
+
+        // COUNTED PER INDICATOR, from what this pass decided to write rather than from the statement's row
+        // count. The two differ only where the store resolved a conflict against a value a concurrent pass
+        // had already committed, and `pending` is the honest answer to "what did this projection produce" --
+        // which is the question an operator watching a catalogue addition roll through is asking.
+        //
+        // A CONFIRMING PASS RECORDS NOTHING, because `pending` is empty for it. That is the point: an empty
+        // diff is what proves indicators are reproducible projections (ADR-0006), and a rebuild that showed
+        // up here as a spike would say the opposite.
+        foreach (IGrouping<string, PendingValue> byIndicator in pending.GroupBy(
+            value => value.Indicator, StringComparer.Ordinal))
+        {
+            _telemetry.IndicatorProjected(
+                byIndicator.Key, instrument.Symbol, resolutionMinutes, byIndicator.Count());
+        }
 
         int removed = await ReconcileAsync(
             venue, instrument, resolutionMinutes, stored.Count, existing, produced, cancellationToken)

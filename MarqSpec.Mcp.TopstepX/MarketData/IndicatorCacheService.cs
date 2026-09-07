@@ -1,7 +1,9 @@
+using System.Diagnostics;
 using System.Globalization;
 using MarqSpec.Mcp.TopstepX.Data;
 using MarqSpec.Mcp.TopstepX.Domain;
 using MarqSpec.Mcp.TopstepX.Domain.MarketData;
+using MarqSpec.Mcp.TopstepX.Telemetry;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 
@@ -57,13 +59,18 @@ namespace MarqSpec.Mcp.TopstepX.MarketData;
 /// The process-lifetime count of read-opened replays. Optional only so hand-built tests that do not
 /// care about it keep compiling; the composition root always supplies the singleton.
 /// </param>
+/// <param name="telemetry">
+/// The app-owned meter and activity source. Optional on the same terms as
+/// <paramref name="readTriggeredReplays"/>, and always supplied in the composition root.
+/// </param>
 public sealed class IndicatorCacheService(
     TopstepXDbContext database,
     IndicatorCatalog catalog,
     IndicatorProjector projector,
     TimeProvider clock,
     ILogger<IndicatorCacheService> logger,
-    IndicatorReadProjectionCounter? readTriggeredReplays = null)
+    IndicatorReadProjectionCounter? readTriggeredReplays = null,
+    HostTelemetry? telemetry = null)
 {
     private readonly TopstepXDbContext _database = database;
     private readonly IndicatorCatalog _catalog = catalog;
@@ -72,6 +79,7 @@ public sealed class IndicatorCacheService(
     private readonly ILogger<IndicatorCacheService> _logger = logger;
     private readonly IndicatorReadProjectionCounter _readTriggeredReplays =
         readTriggeredReplays ?? new IndicatorReadProjectionCounter();
+    private readonly HostTelemetry _telemetry = telemetry ?? new HostTelemetry();
 
     /// <summary>
     /// Series this scope has already found complete.
@@ -155,9 +163,16 @@ public sealed class IndicatorCacheService(
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(venue);
 
+        // ONE SPAN AND ONE MEASUREMENT PER READ, including the memoised ones. The scope memo below is a store
+        // optimisation; a caller that asked twice was served twice, and a rate that fell because a memo was
+        // added would read as traffic that stopped (gh#536).
+        using Activity? span = _telemetry.StartCacheRead(
+            CacheSeries.Indicators, instrument.Symbol, resolutionMinutes);
+
         (string, string, int) key = (venue, instrument.Symbol, resolutionMinutes);
         if (_complete.Contains(key))
         {
+            Hit(instrument, resolutionMinutes);
             return false;
         }
 
@@ -186,6 +201,12 @@ public sealed class IndicatorCacheService(
         if (bars == 0)
         {
             _complete.Add(key);
+
+            // NOT a miss. There is nothing to project FROM, so the store already holds every value the bars
+            // justify -- which is none of them -- and `R-2.3` makes that absence a fact rather than a gap.
+            // Counting it as a miss would report a permanent stream of misses for every symbol nobody has
+            // ever fetched.
+            Hit(instrument, resolutionMinutes);
             return false;
         }
 
@@ -215,8 +236,14 @@ public sealed class IndicatorCacheService(
         if (missing.Count == 0)
         {
             _complete.Add(key);
+            Hit(instrument, resolutionMinutes);
             return false;
         }
+
+        // A series the store holds NO values for is a miss; one it holds some of is a partial. The second is
+        // the ordinary shape after a catalogue addition or a period move, and reading it as a cold miss
+        // would say the cache had lost a series it still has.
+        string outcome = stored.Count == 0 ? CacheOutcome.Miss : CacheOutcome.Partial;
 
         string what = instrument.Symbol + " " + resolutionMinutes.ToString(CultureInfo.InvariantCulture) + "m";
 
@@ -250,6 +277,11 @@ public sealed class IndicatorCacheService(
 
         Projections++;
         _complete.Add(key);
+        _telemetry.CacheRead(CacheSeries.Indicators, instrument.Symbol, resolutionMinutes, outcome);
         return true;
     }
+
+    private void Hit(InstrumentId instrument, int resolutionMinutes) =>
+        _telemetry.CacheRead(
+            CacheSeries.Indicators, instrument.Symbol, resolutionMinutes, CacheOutcome.Hit);
 }

@@ -35,7 +35,14 @@ namespace MarqSpec.Mcp.TopstepX.Tests;
 /// needs no container and must stay that way; a collector is a compose-stack measurement, recorded on the
 /// pull request, not a test dependency.
 /// </para>
+/// <para>
+/// <b>In <see cref="HostTelemetryCollection"/> because a <c>TracerProvider</c> built here subscribes to
+/// <c>MarqSpec.Mcp.TopstepX</c> process-wide.</b> An <see cref="System.Diagnostics.ActivityListener"/> is
+/// global, so while one of these tests holds a provider, a suite asserting that nothing listens to the
+/// app-owned source sees one that does — and fails somewhere else entirely (gh#536).
+/// </para>
 /// </remarks>
+[Collection(HostTelemetryCollection.Name)]
 public sealed class TelemetryCompositionTests
 {
     /// <summary>An endpoint that parses and is never dialled — no test here exports anything real.</summary>

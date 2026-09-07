@@ -96,8 +96,10 @@ The server serves OHLCV bars for a futures instrument at a requested resolution 
   contract roll (`R-1.11`); the base bars carry no contract; the session has not closed — and the base
   resolution is recorded on the stored bar so the series is reproducible (`R-2.2`). This is the one exception
   to `R-1.9`'s never-derive rule, and it is granted only because it carries the completeness guard that rule
-  demands: the vendor has no `rth`, `asia` or `europe` bar unit to fetch. A session read never reaches the
-  vendor. See [ADR-0022](adr/0022-session-bars-derived-complete-or-absent.md) (gh#496, gh#498).
+  demands: the vendor has no `rth`, `asia` or `europe` bar unit to fetch. A session-**indicator** read never
+  reaches the vendor; a session-**bar** read reaches it only through the base series' cache-aside path, and
+  opens no fetch of its own. See [ADR-0022](adr/0022-session-bars-derived-complete-or-absent.md) (gh#496,
+  gh#498, gh#499).
 
 ## R-2 — Pre-computed indicators
 

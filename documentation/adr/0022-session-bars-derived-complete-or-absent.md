@@ -226,6 +226,36 @@ invalidated by every base write, which is more machinery than recomputing the ab
   refusing 1,379 as well needs a rule separating "coarse but honest" from "coarse and misaligned", and that
   rule is **gh#538**, not this record.
 
+## Update (2026-09-07) — what a session-bar read costs
+
+**§7 is about session-*indicator* reads, and the heading says so; it was being read as a claim about session
+**bars**, which it is not.** A session-indicator read projects over stored session bars and fetches nothing,
+so *never reaches the vendor* is exact there. A session-**bar** read is not free in the same way, and gh#499's
+service is where that becomes visible.
+
+`SessionBarService.GetAsync` opens **no fetch of its own** — the sentence §7 actually needs — but it makes one
+`BarCacheService.GetBarsAsync` call at the definition's base resolution over the window covering every closed
+trade date it was asked about, and **that** path is cache-aside: it diffs the calendar's expected buckets
+against the store, consults the `BarCoverage` ledger, and pages the venue for what is still missing
+([ADR-0005](0005-session-aware-gap-detection.md)). So a warm base series answers with `venueRequests: 0` — the
+ordinary case, and the one the zero-vendor-request tests pin — and a cold one pays the base series' ordinary
+fetch. The result carries `FetchedBuckets` and `VenueRequests` for exactly this reason: they are the *base*
+series' numbers, not the session series', because nothing here fetches a session bar.
+
+**The covering window includes the overnight, and that is a real cost rather than a rounding error.** One call
+rather than one per date means the window spans from the first closed session's open to the last one's close,
+and the calendar expects buckets right around the clock apart from the maintenance hour — so `rth` over a week
+fills the seventeen-odd overnight hours between each pair of sessions too. It is still the right trade: those
+buckets are the same rows every other reader of that instrument wants, `BarGapDetector` coalesces a run of
+missing ones into a single paged range whether or not a session boundary sits inside it, and the ranges the
+venue answers empty are memoised. One call per date would buy a narrower first fetch and pay a round trip per
+date, forever.
+
+**Nothing in the Decision changes.** The completeness rule, the closed vocabulary of absences, the storage
+model and §7's own claim about indicator reads all stand; what is corrected is a reading of §7 that the
+storage slice made easy to reach. `documentation/prd.md`'s `R-1.12` and `documentation/architecture.md`'s
+*session read* section are scoped to match (gh#499).
+
 ## Follow-ups
 
 - **Cross-check the derived `full` series against the vendor's `Day` unit.** gh#494's boundary measurement is

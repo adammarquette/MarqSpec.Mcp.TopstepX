@@ -315,7 +315,7 @@ The hypertable is **conditional**, following [ADR-0004](adr/0004-one-postgres-ti
 
 Index: `(Instrument, ContractId, TradeTimeUtc)` — the shape of every read.
 
-**Volume-front is a read over this table, not a filter and not a tenth table** (gh#219). Per
+**Volume-front is a read over this table, not a filter and not an eleventh table** (gh#219). Per
 `(instrument, contract)` per session, total `Size`. The highest-volume contract is the tape's
 front; the session it overtook the previous one is the changeover. `Unknown` direction still
 counts as size — unlike §9, which refuses it so an unstated side cannot look like a buy. Both
@@ -403,7 +403,7 @@ tape yields empty cells, not a fabricated profile. **Two reads that need the con
 
 Not a hypertable. The tape is the high-volume series; this is its projection, rebuildable.
 
-**A volume profile is not a tenth table.** Point of control and the 70% value area are an aggregate over
+**A volume profile is not an eleventh table.** Point of control and the 70% value area are an aggregate over
 these cells plus §8 (`R-9`, gh#221). The host reads the cells and the listening ledger and calls Domain;
 nothing here is written for that answer. A window that spans a roll or a listening hole is confined to
 the newest contiguous run of one contract, and the reported window is that run, not the ask.
@@ -521,8 +521,9 @@ size, so nothing downstream could tell an `rth` bar built from 30-minute bars fr
 — and the finer one is the dangerous case, because it passes the completeness guard and produces a bar whose
 high, low and volume come from a thirteenth of the session. This row is the only place the definition that
 produced it can be stated, so a row whose pair disagrees with the definition standing today is **discarded and
-rebuilt, never served**. The discard is unscoped by date on purpose: a changed definition invalidates the whole
-series, not the window the current call happens to ask about.
+rebuilt, never served**. The discard is scoped to one venue, one instrument and one session name, and is
+*unscoped by date* on purpose: a changed definition invalidates that whole series, not the window the current
+call happens to ask about.
 
 **No absence column, and no session coverage ledger.** An incomplete session is not stored at all — no row, no
 marker, no ledger — and its absence is re-derived from the base series on every read. A stored absence would go

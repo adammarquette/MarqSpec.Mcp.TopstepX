@@ -310,12 +310,21 @@ public sealed class IndicatorProjectorTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task Reconciling_LeavesAnotherPeriodsRowsAlone()
+    public async Task Reconciling_SweepsAPeriodTheCatalogueNoLongerComputes()
     {
-        // The over-delete guard. The storage key is (Indicator, Period), and ATR(14) and ATR(3) are different
-        // numbers under different keys -- a projection configured for one has no standing to delete the
-        // other's rows. Deleting "everything this pass did not write" would quietly erase a series the
-        // operator changed a period away from, which is a data-loss bug wearing a cleanup's clothes.
+        // THIS TEST USED TO ASSERT THE OPPOSITE, and gh#571 is why it was turned around.
+        //
+        // The old reading was that a projection configured for ATR(3) has no standing over ATR(14)'s rows, so
+        // sweeping them would be data loss wearing a cleanup's clothes. The half that argument got right is
+        // still enforced, one test down: the sweep reaches only the series it projected, on all four of
+        // venue, instrument, resolution and bucket.
+        //
+        // The half it got wrong is that ATR(99) here is not "another series" at all -- it is THIS series,
+        // under a window nothing computes any more. No pass will ever recompute it, so no replay can confirm
+        // it and none can correct it: it is the one row rebuild-indicators reports an empty diff over. That
+        // is precisely what ADR-0006 forbids the store to hold, and it reads back as an ordinary number.
+        // Getting it back costs one config line and one rebuild, because it is reproducible from the bars;
+        // leaving it costs a number nobody can account for.
         await SeedRolledBarsAsync(withProvenance: true);
 
         _database.IndicatorValues.Add(new IndicatorValueRecord
@@ -332,13 +341,19 @@ public sealed class IndicatorProjectorTests : IAsyncLifetime
 
         await _database.SaveChangesAsync();
 
+        // The pass reads its values UNTRACKED and hands them to Remove. A row still tracked from the seed
+        // would be a second instance of a key the identity map already holds (gh#387).
+        _database.ChangeTracker.Clear();
+
         await ProjectOnePassAsync(Projector(), SessionStart);
 
         IndicatorValueRecord? survivor = await _database.IndicatorValues
+            .AsNoTracking()
             .FirstOrDefaultAsync(v => v.Indicator == "atr" && v.Period == 99);
 
-        survivor.Should().NotBeNull();
-        survivor!.Value.Should().Be(42m);
+        survivor.Should().BeNull(
+            "the catalogue no longer computes ATR(99), so nothing can reproduce this number and the store "
+            + "must not keep serving it as though something could");
     }
 
     [Theory]

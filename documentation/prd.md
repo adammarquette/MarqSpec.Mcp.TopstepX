@@ -197,10 +197,17 @@ The server serves OHLCV bars for a futures instrument at a requested resolution 
   contract, where a tenure holds about twenty-one on MCL and about sixty-four on MES, and even a 50-period
   daily only fills in the last stretch of an MES quarter and never on MCL. That is a real limit of a
   per-contract series and not a defect; a continuous back-adjusted series is the remedy, and it is gh#354's.
-- **R-2.8** A projection **removes stored values the current bars no longer justify**, for the indicators
-  and periods it is configured to produce. Until segmenting, a bucket could only move from *not computable* to
-  *computable*, so an upsert-only projection was safe; a contract seam moves the boundary the other way, and a
-  value left standing is a number the bars cannot account for. A confirming rebuild still removes nothing.
+- **R-2.8** A projection **removes every stored value for the series it projected that the current bars and
+  catalogue cannot account for**, and reports the kinds apart. Until segmenting, a bucket could only move from
+  *not computable* to *computable*, so an upsert-only projection was safe; a contract seam moves the boundary
+  the other way, and a value left standing is a number the bars cannot account for. Two further kinds are
+  swept for the same reason (gh#571): a value under an `(Indicator, Period)` pair the catalogue **no longer
+  computes**, and a value whose `BucketStart` has **no bar**. Neither is reproducible from `Bars`, so no
+  replay can confirm or correct it and `rebuild-indicators` reports an empty diff over it — while it reads
+  back as an ordinary number. The three counts are logged separately, and the two orphan kinds at
+  *Information*: one total cannot tell an operator whether a configuration change or a bar delete caused it.
+  **`rebuild-indicators` walks the union of the series in `Bars` and in `IndicatorValues`**, or a series whose
+  last bar was deleted is never visited again. A confirming rebuild still removes nothing.
 - **R-2.9** A projection removes **only** values it read the bars for. Its two reads — the bars, then the
   values standing over them — are **one snapshot of the store**, so a pass cannot delete what a concurrent
   write justified between them; and a pass that finds it read less than the whole series **refuses** rather

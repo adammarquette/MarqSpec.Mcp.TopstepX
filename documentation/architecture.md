@@ -561,8 +561,22 @@ the stored series, so a bucket could only move from *not computable* to *computa
 the other way — a bucket that had a value can correctly have none — and a row nothing rewrites is a row that
 stays. There is **no foreign key** between `Bars` and `IndicatorValues` (a projection is not a child row), so
 deleting bars alone would orphan their values rather than remove them; the reconciliation is what actually
-reaches them. It is scoped to the `(Indicator, Period)` pairs the catalogue computes, so a series the operator
-merely configured a period away from is left alone rather than erased.
+reaches them.
+
+It removes **three kinds of row, counted and logged apart** (gh#571): *unjustified* — the pair is computed and
+the bucket has a bar, but the pass produced nothing there, which is the contract seam above; *retired* — the
+`(Indicator, Period)` pair is one the catalogue no longer computes; *orphaned* — the `BucketStart` has no bar.
+The second used to be skipped, to keep a period change from erasing the previous window's rows; that is
+reversed, because such a row is not another series but **this** one under a window nothing recomputes — no
+replay can confirm or correct it, and it reads back as an ordinary number
+([ADR-0006](adr/0006-indicators-as-projections.md)). The two orphan kinds log at *Information*: one total
+cannot say whether a configuration change or a bar delete caused it. The classification costs no extra query —
+it is over the bars and values the pass already read.
+
+**A read does not sweep.** `get_indicators` projects only when its probe finds a *configured* pair missing
+([ADR-0014](adr/0014-indicators-are-projected-on-read-too.md)), so under a narrowed catalogue no pass runs and
+the retired rows stand — unreachable, since the read refuses a period the catalogue does not carry — until a
+fill or `rebuild-indicators` visits the series.
 
 It is **not** scoped by bucket range, and that is only sound because a pass reads the whole series — true at
 both call sites, and until gh#73 guaranteed by nothing. So the claim is checked rather than trusted: a pass
@@ -579,7 +593,10 @@ series regardless of which range it fetched. That is the substance of the retry 
 `rebuild-indicators` runs the same projection over every stored series and is **transactional per series**, at
 the same isolation level, for the same reason. The series is the unit of work because a rebuild is idempotent
 per series; one snapshot held across the whole run would be pinned for its length and would discard everything
-on a late failure.
+on a late failure. **"Every stored series" is the union of the series in `Bars` and in `IndicatorValues`** —
+read off `Bars` alone, a series whose every bar had been deleted was in no worklist and the verb reported an
+empty diff over the rows that most needed it (gh#571). On a store with no orphans the second list is a subset
+of the first, so the union is the first and a confirming rebuild is still `(0, 0)`.
 
 Its job is now **correction rather than repair** (`R-2.5`). A read self-heals only what the probe can see — a
 `(Indicator, Period)` pair with no rows — so **correcting an indicator's arithmetic leaves every pair present

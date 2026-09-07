@@ -387,13 +387,17 @@ public sealed class IndicatorPeriodSelectionTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task APeriodRemovedFromTheList_LeavesItsRowsStanding()
+    public async Task APeriodRemovedFromTheList_LeavesItsRowsStanding_UntilAPassRuns()
     {
-        // Documents the reconcile scope rather than asking for a different one. Reconciliation removes what
-        // the CATALOGUE no longer justifies over the bars it can see, and a period dropped from the list
-        // leaves rows nothing reads -- the same shape Reconciling_LeavesAnotherPeriodsRowsAlone pins from
-        // the projector's side. Nothing here is load-bearing for a caller: the read refuses the period, so
-        // the standing rows are unreachable rather than servable.
+        // Documents WHERE THE HEAL COMES FROM, and it is not the read. Since gh#571 a projection pass sweeps
+        // rows under a (Indicator, Period) pair the catalogue no longer computes -- but a READ only projects
+        // when the probe finds a configured pair MISSING (ADR-0014), and under the narrower catalogue every
+        // configured pair is present. So the read runs no pass, sweeps nothing, and the dropped window's rows
+        // stand until a fill or `rebuild-indicators` visits the series.
+        //
+        // Nothing here is load-bearing for a caller either way: the read refuses the period, so the standing
+        // rows are unreachable rather than servable. What this pins is that the sweep is not wired into the
+        // probe -- a read that swept would delete on the strength of a catalogue it never projected with.
         Composed composed = await ComposeAsync(
             read: new IndicatorOptions { EmaPeriod = PrimaryEma },
             warmWith: new IndicatorOptions { EmaPeriod = PrimaryEma, AdditionalEmaPeriods = "3" });

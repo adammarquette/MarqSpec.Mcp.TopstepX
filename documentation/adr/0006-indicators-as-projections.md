@@ -81,6 +81,7 @@ and can be pinned by fixture tests shared with `trading-copilot` — which is wh
 | [2026-08-23](#update-2026-08-23--a-rebuild-is-a-unit-of-work-not-a-loop-of-statements) | The rebuild verb is transactional per series, and it is a class a test can run |
 | [2026-08-26](#update-2026-08-26--a-read-is-a-trigger-too-and-the-key-is-untouched) | A read projects what the catalogue has outrun ([ADR-0014](0014-indicators-are-projected-on-read-too.md)) |
 | [2026-09-06](#update-2026-09-06--selection-among-configured-periods-is-allowed-ad-hoc-computation-is-not) | A call may **select** among the periods the catalogue is configured for ([ADR-0018](0018-period-selection-among-configured-periods.md)) |
+| [2026-09-07](#update-2026-09-07--a-row-nothing-recomputes-is-not-protected-data-it-is-an-orphan) | The reconcile sweeps retired `(Indicator, Period)` pairs and bucketless values, and the rebuild walks the values table too |
 
 ## Update (2026-08-23) — the empty-diff claim was false in practice
 
@@ -213,3 +214,55 @@ serve it.
 **Everything else here holds unchanged.** `IIndicator.Compute` is still pure, a pass still seeds from the
 start of each contract run, a rebuild is still a replay, and the empty-diff property is untouched — the
 projection walks a longer list of `(name, period)` instances, not a different algorithm.
+
+## Update (2026-09-07) — a row nothing recomputes is not protected data, it is an orphan
+
+The 2026-08-23 update above says the reconcile is "scoped to the `(Indicator, Period)` pairs the catalogue
+computes so a series left behind by a period change is not swept up with it". **That scope was protecting the
+wrong thing, and gh#571 reverses it.**
+
+The argument for it was real: ATR(14) and ATR(3) are different numbers under different keys, so a projection
+configured for one has no standing to delete the other's rows, and sweeping them would be data loss wearing a
+cleanup's clothes. The half that is right is kept — a pass still reaches **only the series it projected**, on
+venue, instrument, resolution and bucket alike, and `Reconciling_ReachesOnlyTheSeriesItProjected` still pins
+all four.
+
+The half that is wrong is that a retired pair's rows are not *another series*. They are **this** series, under
+a window nothing computes any more. This record's third property says a stored value "is never authoritative
+— every row is reproducible from `Bars`". A row under a pair the catalogue has dropped is the one row that is
+not: no pass recomputes it, so no replay can confirm it and none can correct it, and `rebuild-indicators`
+reports an **empty diff** over exactly the rows that need one. It reads back as an ordinary number, at the
+right scale, in the right column, computed under a window the operator stopped maintaining — the plausible
+number this repository exists to refuse.
+
+Deleting it is also cheap to undo, because reproducibility runs both ways: restore the configuration line,
+replay, and the numbers come back identical. Keeping it is not undoable at all — nothing can ever tell whether
+it is still right.
+
+**A second orphan had no path to a sweep at all.** There is no foreign key from `IndicatorValues` to `Bars`
+([ADR-0011](0011-contract-roll-boundary.md) §2 rejected one deliberately), so deleting bars orphans the values
+over them. A *partial* delete was already handled — the pass produces nothing at those buckets and the
+reconcile removes them. Deleting a series' **last** bar was not: `rebuild-indicators` enumerated the series to
+replay from `Bars`, and a series with no bars is not in that list, so nothing visited it again. The verb now
+walks the **union** of the two tables' series.
+
+The pass therefore removes three kinds of row and **counts and logs them apart** — unjustified (the warm-up at
+a contract seam), retired (a pair the catalogue dropped), orphaned (a bucket with no bar). One number cannot
+tell an operator whether their configuration change or their bar delete caused it, and those have different
+follow-ups. The two new kinds are reported at **Information**, not Debug: a store admitting it held numbers
+nothing could reproduce is not routine bookkeeping.
+
+**The empty-diff property is untouched.** A store with no orphans has nothing to sweep, so a confirming
+rebuild is still `(0, 0)` — including now that the rebuild walks the values table, since on such a store that
+list is a subset of the bars' list.
+
+**A read still does not sweep**, and that is deliberate. `get_indicators` projects only when its probe finds a
+*configured* pair missing ([ADR-0014](0014-indicators-are-projected-on-read-too.md)); under a narrowed
+catalogue every configured pair is present, so no pass runs. The rows stand until a fill or the verb visits
+the series, and they are unreachable meanwhile because the read refuses a period the catalogue does not carry.
+Wiring the sweep into the probe would let a read delete on the strength of a catalogue it never projected
+with.
+
+**`SessionIndicatorValues` is out of reach here.** gh#571's scope asks for the same rule over the session
+shape through `ISeriesTables`; neither exists yet — they arrive with gh#501, which is still open. That half
+lands with it.

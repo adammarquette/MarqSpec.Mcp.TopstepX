@@ -74,6 +74,12 @@ public sealed class IndicatorRebuilder(
     /// series is the natural unit of work; one snapshot held across every series would be pinned for the
     /// length of the run, and a failure at the end would throw away everything before it for no gain.
     /// </para>
+    /// <para>
+    /// <b>"Every stored series" means the union of <c>Bars</c> and <c>IndicatorValues</c></b> (gh#571). Read
+    /// off <c>Bars</c> alone — which is what it did — a series whose every bar has been deleted is not in the
+    /// list, so its values are never visited and the verb reports an empty diff over the one set of rows that
+    /// most needs it.
+    /// </para>
     /// </remarks>
     public async Task<IndicatorRebuildResult> RebuildAsync(string? onlyInstrument, CancellationToken cancellationToken)
     {
@@ -83,11 +89,35 @@ public sealed class IndicatorRebuilder(
         // Every (instrument, resolution) the store actually holds, rather than every configured one: a
         // resolution nobody has fetched has nothing to rebuild, and asking for it would be a no-op that looks
         // like a result.
-        var series = await _database.Bars
+        var barSeries = await _database.Bars
             .Select(b => new { b.Venue, b.Instrument, b.ResolutionMinutes })
             .Distinct()
             .ToListAsync(cancellationToken)
             .ConfigureAwait(false);
+
+        // AND EVERY SERIES THE VALUES TABLE HOLDS, WHICH IS NOT THE SAME LIST (gh#571). There is no foreign
+        // key from IndicatorValues to Bars (ADR-0011 §2), so deleting a series' last bar leaves its values
+        // standing -- and a series with no bars is not in the list above, so the verb an operator runs to
+        // repair the store walked straight past it and reported an empty diff. Every one of those rows is a
+        // number nothing can reproduce, which is what ADR-0006 forbids the store to hold.
+        //
+        // On a store with no orphans this adds nothing: a series with values has bars, so the second list is
+        // a subset of the first and the union is the first. The cost is one DISTINCT over the values table,
+        // once per run of a verb that then replays every series in the store.
+        var valueSeries = await _database.IndicatorValues
+            .Select(v => new { v.Venue, v.Instrument, v.ResolutionMinutes })
+            .Distinct()
+            .ToListAsync(cancellationToken)
+            .ConfigureAwait(false);
+
+        // Ordered, so a run walks the store the same way twice. Anonymous types of the same shape in one
+        // assembly are one type with structural equality, so Union deduplicates on the three fields.
+        var series = barSeries
+            .Union(valueSeries)
+            .OrderBy(s => s.Venue, StringComparer.Ordinal)
+            .ThenBy(s => s.Instrument, StringComparer.Ordinal)
+            .ThenBy(s => s.ResolutionMinutes)
+            .ToList();
 
         int total = 0;
         int rewritten = 0;

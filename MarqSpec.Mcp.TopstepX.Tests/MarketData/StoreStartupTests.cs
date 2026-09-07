@@ -2,6 +2,7 @@ using FluentAssertions;
 using MarqSpec.Mcp.TopstepX.MarketData;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Time.Testing;
+using ModelContextProtocol;
 
 namespace MarqSpec.Mcp.TopstepX.Tests.MarketData;
 
@@ -101,6 +102,43 @@ public sealed class StoreStartupTests
             .And.Contain("5432")
             .And.Contain("topstepx_mcp")
             .And.Contain("user=topstepx");
+    }
+
+    /// <summary>
+    /// The coordinates reach only the log. <see cref="StoreAvailability.Require"/> turns
+    /// <see cref="StoreAvailability.Explanation"/> into the <see cref="McpException"/> every store-requiring
+    /// tool call answers with, and under ADR-0021's non-loopback instance the caller holding that bearer token
+    /// is not necessarily the operator who should learn the database's host, port, name and username
+    /// (PR #548 review, gh#551).
+    /// </summary>
+    [Fact]
+    public async Task TheCallerFacingException_NamesTheFixButNotTheCoordinates()
+    {
+        CollectingLogger logger = new();
+
+        StoreAvailability result = await StoreStartup.ReachAsync(
+            _ => Task.FromResult(false),
+            Fallback,
+            TimeSpan.Zero,
+            new FakeTimeProvider(),
+            logger,
+            CancellationToken.None);
+
+        string warning = logger.Lines.Should().ContainSingle(line => line.Level == LogLevel.Warning)
+            .Subject.Message;
+
+        warning.Should().Contain("host=localhost")
+            .And.Contain("port=5432")
+            .And.Contain("database=topstepx_mcp")
+            .And.Contain("user=topstepx");
+
+        McpException thrown = result.Invoking(static r => r.Require()).Should().Throw<McpException>().Which;
+
+        thrown.Message.Should().NotContain("host=localhost")
+            .And.NotContain("port=5432")
+            .And.NotContain("database=topstepx_mcp")
+            .And.NotContain("user=topstepx");
+        thrown.Message.Should().Contain("ConnectionStrings__Default");
     }
 
     /// <summary>Nothing credential-shaped reaches any line, at any level, on the unreachable path.</summary>
@@ -203,12 +241,22 @@ public sealed class StoreStartupTests
     /// The bound is a bound. A store that never arrives degrades the server rather than holding startup open,
     /// and the warning still names the target.
     /// </summary>
+    /// <remarks>
+    /// The elapsed-time assertion is the one that pins the clamp
+    /// (<c>delay = backoff &lt; remaining ? backoff : remaining</c>): with every probe synchronous, the fake
+    /// clock advances by nothing but the delays between them, so the total elapsed at completion is bounded by
+    /// the configured wait only because the last delay is clamped to what remains of it. Deleting the clamp
+    /// (mutating the ternary to <c>delay = backoff</c>) lets the final, uncapped backoff overshoot the ten
+    /// second bound and turns this assertion red — confirmed locally by making that edit, watching this test
+    /// fail, and reverting it (gh#551).
+    /// </remarks>
     [Fact]
     public async Task ANonZeroWait_GivesUpAtTheBound_AndStillNamesTheTarget()
     {
         int probes = 0;
         CollectingLogger logger = new();
         FakeTimeProvider clock = new();
+        DateTimeOffset start = clock.GetUtcNow();
 
         Task<StoreAvailability> pending = StoreStartup.ReachAsync(
             _ =>
@@ -226,6 +274,11 @@ public sealed class StoreStartupTests
 
         result.IsAvailable.Should().BeFalse();
         probes.Should().BeGreaterThan(1, "a non-zero bound means more than the single probe wait=0 makes");
+
+        (clock.GetUtcNow() - start).Should().BeLessOrEqualTo(
+            TimeSpan.FromSeconds(10),
+            "every probe here is synchronous, so the fake clock advances only by the delays between "
+            + "attempts -- the clamp is what keeps their sum from overshooting the bound");
 
         string warning = logger.Lines.Should().ContainSingle(line => line.Level == LogLevel.Warning)
             .Subject.Message;

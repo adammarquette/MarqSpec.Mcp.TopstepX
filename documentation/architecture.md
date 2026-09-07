@@ -478,7 +478,7 @@ carrying the fix, rather than a dead process (ADR-0007):
 
 | Absent | What still works | What refuses |
 |---|---|---|
-| Database | The tool list, `list_instruments`, `get_market_session`, `search_contracts` | Anything reading bars, indicators, levels or observations. The warning **names the target** — `host`, `port`, `database`, `user`, never the password — and `Store__StartupWaitSeconds` bounds how long startup retries first (gh#514) |
+| Database | The tool list, `list_instruments`, `get_market_session`, `search_contracts` | Anything reading bars, indicators, levels or observations, with an `McpException` naming the fix — start the store, or set `ConnectionStrings__Default`. The **log** names the target too — `host`, `port`, `database`, `user`, never the password — but the caller does not (gh#551). `Store__StartupWaitSeconds` bounds how long startup retries first (gh#514) |
 | Credentials | Everything served from the store, plus session and instrument reference | Contract resolution, account reads, and any cache miss |
 | Embedding key | Recording and searching observations — search matches text instead of meaning | Nothing |
 | OTLP endpoint | Everything — no exporter is registered, no background exporter thread runs, and nothing warns about a collector that is not there | Nothing; the server simply emits no telemetry ([ADR-0019](adr/0019-otlp-as-the-telemetry-boundary.md)) |
@@ -490,19 +490,28 @@ the truth is that Postgres is not running.
 **Degrading is not the same as degrading blind, and it is not the same as degrading early.** Two properties of
 the database row are load-bearing once this runs somewhere without an operator watching (gh#514):
 
-- **The warning names the target.** `Program` substitutes a `Host=localhost` connection string when
-  `ConnectionStrings__Default` is unset, so a task whose secret never landed and a database that is genuinely
-  down produce the same sentence unless the sentence says which host it tried. `StoreStartup.DescribeTarget`
-  reduces the string to host, port, database and user through `NpgsqlConnectionStringBuilder` — **never the
-  password, and never the string itself**, including on the branch where it does not parse. Validating the
-  connection string instead is the wrong fix: the supported plain `dotnet run` HTTP recipe starts with no
-  database by design, so refusing an unset one would break a documented mode.
+- **The warning names the target — and the target stops at the warning.** `Program` substitutes a
+  `Host=localhost` connection string when `ConnectionStrings__Default` is unset, so a task whose secret never
+  landed and a database that is genuinely down produce the same sentence unless the sentence says which host
+  it tried. `StoreStartup.DescribeTarget` reduces the string to host, port, database and user through
+  `NpgsqlConnectionStringBuilder` — **never the password, and never the string itself**, including on the
+  branch where it does not parse. Validating the connection string instead is the wrong fix: the supported
+  plain `dotnet run` HTTP recipe starts with no database by design, so refusing an unset one would break a
+  documented mode. Those four coordinates reach the **log** `StoreStartup.ReachAsync` writes; they do not
+  reach `StoreAvailability.Explanation`, which `Require()` turns into the `McpException` every store-requiring
+  tool call answers with. Under stdio the caller is the operator reading the log, so the distinction is moot;
+  under ADR-0021's non-loopback instance a bearer-token holder is not necessarily the operator, and PR #548's
+  review caught the coordinates reaching that caller unremarked — fixed as gh#551. The exception still names
+  the fix — start the store, or set `ConnectionStrings__Default` — just not where it looked.
 - **The wait is bounded and off by default.** `Store__StartupWaitSeconds` (0..600, `ValidateOnStart`) is `0`
   everywhere but a deployment that needs it. Compose gates the server on a `pg_isready` health check and so
   never does; an orchestrator with no cross-service ordering — the AWS target of ADR-0021 (PR #540) — can put
   the server at the migration before Postgres answers at all, where one probe leaves the task degraded for its
   whole life, healthy and serving refusals. A non-zero bound retries with backoff capped at five seconds,
-  announcing each attempt at Information against the same target, and then degrades exactly as before.
+  announcing each attempt at Information against the same target, and then degrades exactly as before. **The
+  bound governs the delay between probes, not a probe in flight**, so wall-clock time can exceed it by about
+  one probe's duration — measured at 10.6 s against a 10 s bound on PR #548 — which matters when an
+  orchestrator's own start-up grace period is sized against this value (gh#551).
 
 The one thing that still fails hard is a migration that fails against a database which **did** answer. That is
 a defect here, not an environment fact, and serving reads against an unverified schema is worse than not

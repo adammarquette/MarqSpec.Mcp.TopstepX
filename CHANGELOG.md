@@ -230,6 +230,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   log line at any level. Validation was rejected as the fix: the documented plain `dotnet run` HTTP recipe
   starts with no database by design, so refusing an unset connection string would break a supported mode
   (gh#514, gh#509).
+- **The store-unreachable `McpException` no longer names the database's host, port, name or user** — only the
+  fix, "start it" or set `ConnectionStrings__Default`. PR #548's review found the four coordinates it had just
+  added to the warning also reached every store-requiring tool call through `StoreAvailability.Require()`,
+  which is harmless under stdio (the caller is the operator) but not under ADR-0021's non-loopback instance,
+  where a bearer-token holder is not necessarily the operator. The coordinates still reach the **log** line
+  unchanged. Also from that review: an elapsed-time assertion now pins the startup wait's deadline clamp — a
+  test that stayed green when the clamp was deleted — and `MigrateAsync` threads `app.Lifetime
+  .ApplicationStopping` into the wait instead of `CancellationToken.None`, rather than leaving a 600-second
+  uncancellable wait resting on an ordering no comment enforced. Nit: the give-up warning no longer reads
+  "after 1 attempts" (gh#551).
 
 ## [0.3.1] - 2026-09-06
 

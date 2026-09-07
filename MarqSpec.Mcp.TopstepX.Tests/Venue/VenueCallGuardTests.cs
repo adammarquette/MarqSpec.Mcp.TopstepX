@@ -133,9 +133,27 @@ public sealed class VenueCallGuardTests
         // The `operation` tag is a storage key in every backend already scraping it. A gateway method that
         // invented its own string would start a series no dashboard names and no reviewer priced, so the
         // vocabulary is the closed list and this is what keeps it closed.
+        //
+        // THIS READS THE GATEWAY. It used to assert a count against a literal beside it, which made the
+        // closedness a claim about this test's own list rather than about ProjectXMarketDataGateway --
+        // a gateway that invented a string passed, because nothing here ever looked at it (gh#559).
+        // GatewayOperationScan walks the compiled body, including the state machines an async method is
+        // compiled into, and reports the operation at every VenueCallGuard.RunAsync call site.
+        IReadOnlyList<string> named = GatewayOperationScan.OperationsNamedBy(
+            typeof(ProjectXMarketDataGateway), VenueOperation.All);
+
+        named.Should().NotBeEmpty(
+            "the scan must reach the gateway's call sites at all, or the comparison below is between two "
+            + "empty sets and passes forever");
+
         VenueOperation.All.Should().OnlyHaveUniqueItems();
-        VenueOperation.All.Should().HaveCount(7,
-            "one per read on IMarketDataGateway — a new read adds a value here in the same change");
+
+        // Set equality, BOTH directions. Left to right: an operation the gateway names that the vocabulary
+        // does not know -- the failure this exists for. Right to left: a vocabulary value no call site names,
+        // which is a value a dashboard filters on and never sees, and the shape a deleted read leaves behind.
+        named.Distinct().Should().BeEquivalentTo(
+            VenueOperation.All,
+            "the closed vocabulary is exactly what ProjectXMarketDataGateway asks VenueCallGuard for");
     }
 
     /// <summary>Subscribes to one <see cref="ActivitySource"/> INSTANCE and records what it starts.</summary>

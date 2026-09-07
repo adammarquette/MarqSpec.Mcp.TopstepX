@@ -446,6 +446,37 @@ public sealed class BarReselectorTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task AWindowTheStoreHoldsNoSeriesIn_SaysSoAtWarning()
+    {
+        // A MISTYPED YEAR IS THE FAILURE THIS CATCHES. Reported among the ordinary run lines, "0 bars
+        // revised, 0 removed, 0 trade dates changed" over a window nothing was ever fetched for is
+        // indistinguishable from the same counters over a window that was already correct -- and the
+        // operator concludes the store agrees with the venue when in fact nothing was looked at. That is a
+        // plausible answer standing in for a missing one, which this server refuses everywhere else.
+        await SeedWindowAsync(Front, Thin);
+
+        CapturingLogger<BarReselector> logger = new();
+        CountingGateway gateway = Venue(FatLiquid(), ThinFront());
+
+        BarRange wrongYear = new(Market(2027, 6, 16, 9), Market(2027, 6, 16, 10));
+
+        BarReselectResult result = await Reselector(gateway, logger).ReselectAsync(_mes, wrongYear, default);
+
+        result.BarsRevised.Should().Be(0);
+        result.BarsRemoved.Should().Be(0);
+        result.TradeDatesChanged.Should().Be(0);
+        gateway.BarRequests.Should().Be(0, "a window the store holds no series in asks the venue nothing");
+
+        logger.Warnings.Should().Contain(
+            message => message.Contains("nothing to re-decide", StringComparison.Ordinal),
+            "the level is the claim: a run that found no series must not read as a run that found nothing "
+            + "wrong");
+
+        List<BarRecord> stored = await StoredAsync(Window.Start, Window.End);
+        stored.Should().OnlyContain(row => row.ContractId == Front, "the June window is not this window");
+    }
+
+    [Fact]
     public async Task AWholeReadDegradation_ThrowsNamingTheReason()
     {
         // A read degrades to the venue's own pick and says so in a warning, because serving something is
@@ -459,7 +490,11 @@ public sealed class BarReselectorTests : IAsyncLifetime
 
         Func<Task> reselect = () => Reselector(gateway).ReselectAsync(_mes, Window, default);
 
-        await reselect.Should().ThrowAsync<InvalidOperationException>()
+        // THE NARROW TYPE. EF Core raises InvalidOperationException for its own defects -- an untranslatable
+        // LINQ expression, a sequence expected to hold one element -- so a base-type assertion here would go
+        // green on a bug inside the reselector, and the verb that maps this to exit 3 would tell an operator
+        // their venue plan degraded when the fault was in this repository (gh#506 review).
+        await reselect.Should().ThrowAsync<ReselectPlanException>()
             .Where(exception => exception.Message.Contains("MES", StringComparison.Ordinal))
             .Where(exception => exception.Message.Contains("ProjectX__DataTier", StringComparison.Ordinal));
 

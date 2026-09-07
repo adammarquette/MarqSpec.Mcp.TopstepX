@@ -72,9 +72,14 @@ public sealed record ReselectArguments(InstrumentId Instrument, BarRange Window)
         // for while looking as though it obeyed.
         if (args.Length != 4)
         {
+            // Clamped at zero: `Parse([])` is reachable -- nothing in this method promises the verb itself is
+            // present -- and "was given -1 arguments" reads as a bug in the parser rather than as a command
+            // line the operator can fix.
+            int given = Math.Max(0, args.Length - 1);
+
             throw new ArgumentException(
                 "The reselect-bars verb takes exactly three arguments and was given "
-                + (args.Length - 1).ToString(CultureInfo.InvariantCulture) + ". Usage: " + Usage + ".",
+                + given.ToString(CultureInfo.InvariantCulture) + ". Usage: " + Usage + ".",
                 nameof(args));
         }
 
@@ -91,22 +96,45 @@ public sealed record ReselectArguments(InstrumentId Instrument, BarRange Window)
                 nameof(args));
         }
 
-        // THE SAME HORIZON THE TOOL SURFACE REFUSES ON, and it is a calendar fact rather than a tool-surface
-        // policy: an evening instant belongs to the NEXT trade date, and past this bound that is a date
-        // DateOnly cannot hold (gh#110). The reselector widens the window to whole trade dates through
-        // exactly that calendar, so an instant admitted here would surface as an
-        // ArgumentOutOfRangeException from inside a verb that has already migrated the store.
-        if (to > Tools.ToolGuards.CalendarHorizon)
-        {
-            throw new ArgumentException(
-                "toUtc " + to.ToString("O", CultureInfo.InvariantCulture)
-                + " is past the last instant this server's session calendar can reason about, "
-                + Tools.ToolGuards.CalendarHorizon.ToString("O", CultureInfo.InvariantCulture)
-                + ". Move it back.",
-                nameof(args));
-        }
+        Horizon(to, "toUtc");
 
         return new ReselectArguments(instrument, new BarRange(from, to));
+    }
+
+    /// <summary>Refuses an instant the session calendar cannot reason about.</summary>
+    /// <param name="instant">The instant.</param>
+    /// <param name="ask">The argument name the operator can actually change.</param>
+    /// <exception cref="ArgumentException"><paramref name="instant"/> is past the calendar's horizon.</exception>
+    /// <remarks>
+    /// <para>
+    /// <b>Delegated to <c>ToolGuards.ValidateInstant</c> so the bound and its explanation have one
+    /// definition.</b> The sentence is a long one — an evening instant belongs to the <i>next</i> trade date,
+    /// whose close is a Central wall-clock time converted back to UTC, and past the horizon those are dates
+    /// <see cref="DateOnly"/> cannot hold (gh#110) — and a second copy of it here would be free to drift from
+    /// the tool surface's while describing the same calendar.
+    /// </para>
+    /// <para>
+    /// <b>The exception type is translated, and that is the whole reason for the wrapper.</b> The guard
+    /// throws <c>McpException</c>, which is the MCP tool-surface type; out of a command-line process it says
+    /// nothing, and the verb's exit-code mapping turns only <see cref="ArgumentException"/> into "you asked
+    /// for something wrong". The message is carried across verbatim.
+    /// </para>
+    /// <para>
+    /// This matters here rather than only at the tool boundary because the reselector widens the window to
+    /// whole trade dates through exactly that calendar: an instant admitted here surfaces as an
+    /// <see cref="ArgumentOutOfRangeException"/> from inside a verb that has already migrated the store.
+    /// </para>
+    /// </remarks>
+    private static void Horizon(DateTimeOffset instant, string ask)
+    {
+        try
+        {
+            Tools.ToolGuards.ValidateInstant(instant, ask);
+        }
+        catch (ModelContextProtocol.McpException ex)
+        {
+            throw new ArgumentException(ex.Message, nameof(instant), ex);
+        }
     }
 
     /// <summary>Resolves the symbol against the served list, or refuses naming both.</summary>

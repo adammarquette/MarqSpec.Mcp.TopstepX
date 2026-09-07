@@ -950,22 +950,62 @@ public static class Program
 
     private static async Task<int> RebuildIndicatorsAsync(WebApplication app, string[] args)
     {
-        using IServiceScope scope = app.Services.CreateScope();
-        IServiceProvider sp = scope.ServiceProvider;
+        try
+        {
+            using IServiceScope scope = app.Services.CreateScope();
+            IServiceProvider sp = scope.ServiceProvider;
 
-        // The loop itself lives in IndicatorRebuilder rather than here, so the verb can be run by a test. A
-        // private static in the composition root cannot be, and this verb shipped in Phase 2 having never
-        // been executed anywhere.
-        string? only = args.Length > 1 ? args[1] : null;
+            // The loop itself lives in IndicatorRebuilder rather than here, so the verb can be run by a
+            // test. A private static in the composition root cannot be, and this verb shipped in Phase 2
+            // having never been executed anywhere.
+            string? only = args.Length > 1 ? args[1] : null;
 
-        await sp.GetRequiredService<IndicatorRebuilder>()
-            .RebuildAsync(only, CancellationToken.None)
-            .ConfigureAwait(false);
+            await sp.GetRequiredService<IndicatorRebuilder>()
+                .RebuildAsync(only, CancellationToken.None)
+                .ConfigureAwait(false);
 
-        return 0;
+            return 0;
+        }
+        finally
+        {
+            await ShutDownLoggingAsync(app).ConfigureAwait(false);
+        }
     }
 
     private static async Task<int> ReselectBarsAsync(WebApplication app, string[] args)
+    {
+        try
+        {
+            return await RunReselectAsync(app, args).ConfigureAwait(false);
+        }
+        finally
+        {
+            await ShutDownLoggingAsync(app).ConfigureAwait(false);
+        }
+    }
+
+    /// <summary>
+    /// Disposes the host a verb ran inside, so its report is not lost at process exit.
+    /// </summary>
+    /// <param name="app">The built host.</param>
+    /// <returns>A task.</returns>
+    /// <remarks>
+    /// <para>
+    /// <b>A verb returns from <c>Main</c> without ever calling <c>RunAsync</c>, so nothing else shuts the
+    /// host down.</b> The console logger writes from a background thread through a queue, and the OTLP
+    /// exporter batches on a timer; both flush on dispose and neither is guaranteed to have flushed when the
+    /// process exits on its own. The whole report of these verbs is log lines — the rebuild's counts, the
+    /// reselect's per-series numbers and its summary — so losing the tail is losing the answer, and it is
+    /// exactly the last lines, the summary among them, that a truncated queue drops.
+    /// </para>
+    /// <para>
+    /// In a <c>finally</c> around each verb body, and therefore on the refusal paths too: an operator who
+    /// mistyped a symbol needs the line saying so at least as much as one whose run succeeded.
+    /// </para>
+    /// </remarks>
+    private static ValueTask ShutDownLoggingAsync(WebApplication app) => app.DisposeAsync();
+
+    private static async Task<int> RunReselectAsync(WebApplication app, string[] args)
     {
         // Both singletons, so they are taken from the root provider rather than from a scope: this runs
         // before the migration, and a scoped DbContext resolved here would be one nothing has verified a
@@ -999,10 +1039,16 @@ public static class Program
 
         if (!store.IsAvailable)
         {
-            // The same class of fact as a degraded read, and reported as one: the command line was right and
-            // the window still was not re-decided. Serving the tool surface degraded is a decision about
-            // READS -- a verb whose only purpose is to write has nothing to offer past this point.
-            logger.LogError("reselect-bars cannot run: {Reason}", store.Explanation);
+            // Said in the verb's own terms rather than by quoting the tool surface's sentence: degrading is a
+            // decision about READS -- the server starts, and the tools that need no store still answer. A
+            // verb whose only purpose is to write has nothing to offer past this point, and the reason it
+            // stopped is the operator's next step.
+            logger.LogError(
+                "reselect-bars cannot run: the store is unreachable or its migration did not complete "
+                + "({Reason}). This verb only writes, so it stops here rather than degrading; nothing in the "
+                + "window was re-decided. Bring the database up and run it again.",
+                store.Explanation);
+
             return ReselectExit.Degraded;
         }
 
@@ -1022,12 +1068,20 @@ public static class Program
                 .ReselectAsync(parsed.Instrument, parsed.Window, CancellationToken.None)
                 .ConfigureAwait(false);
         }
-        catch (InvalidOperationException ex)
+        catch (ReselectPlanException ex)
         {
-            logger.LogError("reselect-bars could not re-decide the window: {Reason}", ex.Message);
+            // THE NARROW TYPE, not its base InvalidOperationException: EF Core raises that base for its own
+            // defects, and catching it here would dress a bug in this repository up as a degraded venue plan
+            // -- with a tidy exit 3, on a run that may already have committed an earlier series.
+            logger.LogError(
+                "reselect-bars could not re-decide the window: {Reason} Any series logged above this line "
+                + "was committed before the run stopped.",
+                ex.Message);
+
             return ReselectExit.From(ex);
         }
 
         return ReselectExit.Ok;
     }
+
 }

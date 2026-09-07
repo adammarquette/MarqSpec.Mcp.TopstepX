@@ -236,7 +236,8 @@ budget than it believes.
 
 **`venueRequests` counts history requests — bar fetches — and nothing else**, so its zero is narrower than
 "no vendor traffic". Since gh#504 a read whose gaps the empty-range memo covers resolves the instrument's
-contract candidates first, and that `Contract/search` is unpaced and counted nowhere — stated in
+contract candidates first, and that `Contract/search` is unpaced and not counted in `venueRequests`: it is visible only on the platform meter, as
+`venue_calls_total{operation="resolve_contracts"}` — stated in
 [architecture, step 4](architecture.md#the-cache-aside-read--the-only-genuinely-interesting-path). So
 `venueRequests == 0` proves **no bars were fetched**, not that the vendor went untouched, and such a read is
 venue-dependent: with the venue down it raises rather than answering from the store. The error runs the same

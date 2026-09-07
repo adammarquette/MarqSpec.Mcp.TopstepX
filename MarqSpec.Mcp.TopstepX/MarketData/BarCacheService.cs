@@ -31,7 +31,7 @@ namespace MarqSpec.Mcp.TopstepX.MarketData;
 /// attempt re-derives against the winner's committed state, so the buckets it would have written are already
 /// there and it writes none — after a real fetch. <see cref="VenueRequests"/> is the exact test for <i>no
 /// bar fetch</i>, and it stays truthful on that path — but that is narrower than "served entirely from the
-/// store": since gh#504 a read the empty-range memo covers still makes one uncounted contract search.
+/// store": since gh#504 a read the empty-range memo covers still makes one contract search that venueRequests does not count.
 /// </para>
 /// </param>
 /// <param name="VenueRequests">

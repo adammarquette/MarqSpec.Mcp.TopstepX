@@ -424,7 +424,7 @@ public sealed class ToolSchemaTests
             + "empty (R-1.7), and a write that loses a serialization race (gh#73). Offered alone it "
             + "undercounts venue traffic and never overcounts it. Name `{2}` beside it: `{2} == 0` is the "
             + "exact test for no bar fetch -- narrower than \"served entirely from the store\", since a "
-            + "memo-covered read still makes one uncounted contract search (gh#504). Current text: \"{3}\"",
+            + "memo-covered read still makes one contract search venueRequests does not count (gh#504). Current text: \"{3}\"",
             tool,
             AmbiguousCounter,
             ExactTest,

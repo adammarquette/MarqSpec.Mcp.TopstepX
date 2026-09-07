@@ -3,6 +3,8 @@ using MarqSpec.Mcp.TopstepX.Data;
 using MarqSpec.Mcp.TopstepX.Data.Entities;
 using MarqSpec.Mcp.TopstepX.Domain.MarketData;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Npgsql;
 
 namespace MarqSpec.Mcp.TopstepX.IntegrationTests;
@@ -152,6 +154,81 @@ public sealed class SchemaTests(SchemaFixture fixture)
             + "WHERE table_name = 'Bars' AND column_name = 'ContractId' AND is_nullable = 'YES';");
 
         nullable.Should().Be(1);
+    }
+
+    [Fact]
+    public async Task BarCoverage_IsKeyedByContract()
+    {
+        // gh#504. The ledger no longer answers "did the venue have bars for this range?" but "did contract C
+        // have bars for this range?" — so the contract is IN the key, and one row per range can no longer
+        // hold two contracts' answers.
+        //
+        // The asymmetry with ABarsContractId_IsNullableSoUnknownProvenanceIsRepresentable above is the point:
+        // a bar with no contract is an honest unknown — something measured, whose provenance was never
+        // captured — but a coverage row is a CLAIM, and a claim with no contract claims nothing. Nullable
+        // there, NOT NULL here, both for the same reason.
+        long keyColumns = await ScalarAsync(
+            "SELECT count(*) FROM pg_index i "
+            + "JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = ANY(i.indkey) "
+            + "WHERE i.indrelid = '\"BarCoverage\"'::regclass AND i.indisprimary;");
+        keyColumns.Should().Be(
+            6,
+            "the key is (Venue, Instrument, ResolutionMinutes, ContractId, RangeStart, RangeEnd)");
+
+        long contractInKey = await ScalarAsync(
+            "SELECT count(*) FROM pg_index i "
+            + "JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = ANY(i.indkey) "
+            + "WHERE i.indrelid = '\"BarCoverage\"'::regclass AND i.indisprimary "
+            + "AND a.attname = 'ContractId';");
+        contractInKey.Should().Be(1, "a sixth column of some other name would not make the ledger per contract");
+
+        // column_default IS NULL is load-bearing, not incidental tidiness: EF emits DEFAULT '' on a new NOT
+        // NULL string column, and a lingering empty-string default is a placeholder contract id waiting to be
+        // written. A missing value is never a default.
+        long column = await ScalarAsync(
+            "SELECT count(*) FROM information_schema.columns "
+            + "WHERE table_name = 'BarCoverage' AND column_name = 'ContractId' "
+            + "AND data_type = 'character varying' AND character_maximum_length = 64 "
+            + "AND is_nullable = 'NO' AND column_default IS NULL;");
+        column.Should().Be(1, "the column is varchar(64), NOT NULL, and carries no default");
+    }
+
+    [Fact]
+    public async Task TheMigration_EmptiesTheLedger_SoAnOldSingleContractMemoCannotHideANewFront()
+    {
+        // The hazard in its exact form: a SETTLED row (ExpiresAt NULL — believed forever) written under the
+        // old meaning, stamped by nothing, over a range the per-contract policy must now ask other contracts
+        // about. Left in place it answers "empty" for a front contract that was never asked, and it does so
+        // permanently.
+        //
+        // Only observable on a fresh database: the shared fixture is already at head, so there is nothing
+        // there for the migration to have found.
+        await using TopstepXDbContext throwaway =
+            await _fixture.CreateEmptyDatabaseAsync("ledger_" + Guid.NewGuid().ToString("N"));
+
+        // The revision immediately before BarCoverageIsPerContract. Database.MigrateAsync() has no
+        // target overload, so this goes through the migrator directly.
+        await throwaway.GetService<IMigrator>().MigrateAsync("20260901010238_AddTapeLease");
+
+        await throwaway.Database.ExecuteSqlRawAsync(
+            """
+            INSERT INTO "BarCoverage" ("Venue", "Instrument", "ResolutionMinutes", "RangeStart", "RangeEnd",
+                                       "RecordedAt", "ExpiresAt")
+            VALUES ('test', 'MEMO', 5, TIMESTAMPTZ '2026-01-05 00:00:00+00',
+                    TIMESTAMPTZ '2026-01-06 00:00:00+00', TIMESTAMPTZ '2026-01-06 00:00:00+00', NULL);
+            """);
+
+        // Counted with raw SQL, never through the DbSet: the model already carries ContractId, so a LINQ read
+        // would select a column the pre-migration table does not have.
+        long before = await CountLedgerRowsAsync(throwaway);
+        before.Should().Be(1, "the row was seeded in the pre-migration shape");
+
+        await throwaway.Database.MigrateAsync();
+
+        long after = await CountLedgerRowsAsync(throwaway);
+        after.Should().Be(
+            0,
+            "a surviving row would answer \"empty\" forever for a front contract that was never asked");
     }
 
     [Fact]
@@ -431,6 +508,13 @@ public sealed class SchemaTests(SchemaFixture fixture)
             SellVolume = sell,
             RecordedAt = DateTimeOffset.UtcNow,
         };
+
+    /// <summary>Counts the ledger without going through the model, whose shape the row may not yet have.</summary>
+    private static async Task<long> CountLedgerRowsAsync(TopstepXDbContext database) =>
+        await database.Database
+            // No trailing semicolon: EF composes this into a subquery, and one there is a syntax error.
+            .SqlQueryRaw<long>("SELECT count(*) AS \"Value\" FROM \"BarCoverage\"")
+            .SingleAsync();
 
     private async Task<long> ScalarAsync(string sql, params (string Name, object Value)[] parameters)
     {

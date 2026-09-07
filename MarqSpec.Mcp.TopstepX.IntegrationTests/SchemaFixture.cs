@@ -1,6 +1,7 @@
 using MarqSpec.Mcp.TopstepX.Data;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Diagnostics;
+using Npgsql;
 using Testcontainers.PostgreSql;
 
 namespace MarqSpec.Mcp.TopstepX.IntegrationTests;
@@ -44,6 +45,42 @@ public sealed class SchemaFixture : IAsyncLifetime
             .UseNpgsql(ConnectionString, npgsql => npgsql.UseVector())
             .AddInterceptors(interceptors)
             .Options);
+
+    /// <summary>
+    /// Creates a second, empty database on the same server and opens an <b>unmigrated</b> context on it.
+    /// </summary>
+    /// <param name="name">
+    /// The database name. Must be unique on the server; a caller-generated id is expected.
+    /// </param>
+    /// <returns>The context on the new database. The caller disposes it.</returns>
+    /// <remarks>
+    /// <para>
+    /// Deliberately not the shared database. That one is already at head by the time any test runs, so a
+    /// migration's <i>effect on the rows it found</i> cannot be observed there: there is nothing to migrate
+    /// and nothing that predates it. A claim of the form "this migration deletes what was there" is only
+    /// testable on a database that can still be walked up to the revision before it, seeded in the old shape,
+    /// and then migrated the rest of the way.
+    /// </para>
+    /// <para>
+    /// <c>CREATE DATABASE</c> cannot run inside a transaction, so it goes through a plain connection rather
+    /// than the context. The container is thrown away with the collection, so the extra database is not
+    /// dropped.
+    /// </para>
+    /// </remarks>
+    public async Task<TopstepXDbContext> CreateEmptyDatabaseAsync(string name)
+    {
+        await using (NpgsqlConnection connection = new(ConnectionString))
+        {
+            await connection.OpenAsync();
+            await using NpgsqlCommand create = new($"CREATE DATABASE \"{name}\";", connection);
+            await create.ExecuteNonQueryAsync();
+        }
+
+        NpgsqlConnectionStringBuilder builder = new(ConnectionString) { Database = name };
+        return new TopstepXDbContext(new DbContextOptionsBuilder<TopstepXDbContext>()
+            .UseNpgsql(builder.ConnectionString, npgsql => npgsql.UseVector())
+            .Options);
+    }
 
     /// <inheritdoc />
     public async Task InitializeAsync()

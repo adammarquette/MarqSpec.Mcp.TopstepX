@@ -134,14 +134,23 @@ public sealed class TopstepXDbContext(DbContextOptions<TopstepXDbContext> option
                 c.Venue,
                 c.Instrument,
                 c.ResolutionMinutes,
+                c.ContractId,
                 c.RangeStart,
                 c.RangeEnd,
             });
 
             entity.Property(c => c.Venue).HasMaxLength(64);
             entity.Property(c => c.Instrument).HasMaxLength(32);
+            entity.Property(c => c.ContractId).HasMaxLength(64);
 
-            entity.HasIndex(c => new { c.Instrument, c.ResolutionMinutes, c.RangeStart, c.RangeEnd });
+            entity.HasIndex(c => new
+            {
+                c.Instrument,
+                c.ResolutionMinutes,
+                c.ContractId,
+                c.RangeStart,
+                c.RangeEnd,
+            });
         });
 
         modelBuilder.Entity<TradeRecord>(entity =>

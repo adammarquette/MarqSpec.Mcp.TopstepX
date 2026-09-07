@@ -15,7 +15,16 @@ namespace MarqSpec.Mcp.TopstepX.MarketData;
 /// agrees with costs nothing and counts as nothing — the skip-unchanged <c>WHERE</c> on the bar statement
 /// sees to that — so this is the number of buckets whose numbers or provenance genuinely moved.
 /// </param>
-/// <param name="BarsRemoved">Rows inside the window the winner does not restate, and which were deleted.</param>
+/// <param name="BarsRemoved">
+/// Rows inside the effective window that <b>another contract</b> held and the winner does not restate, and
+/// which were therefore deleted.
+/// </param>
+/// <param name="UnattributedRemoved">
+/// Rows deleted that carried <b>no</b> contract id at all — written before the provenance migration, or
+/// backfilled by a gateway that was not yet stamping one (gh#402). Counted apart from
+/// <paramref name="BarsRemoved"/> because folding the two together would tell an operator that a contract
+/// lost buckets it never held.
+/// </param>
 /// <param name="TradeDatesChanged">
 /// Trade dates whose stored contract before the run differs from the winner after it, compared against the
 /// first attributed bucket the store held for the date.
@@ -32,14 +41,21 @@ namespace MarqSpec.Mcp.TopstepX.MarketData;
 /// </param>
 /// <param name="SlicesSkipped">Slices no cycle candidate was listed for, and which were therefore not re-decided.</param>
 /// <param name="VenueRequests">History requests this run issued — every candidate's pages, and nothing else.</param>
+/// <param name="EffectiveWindow">
+/// The window that was actually re-decided: the union of the whole trade dates the operator's window
+/// intersects. Reported because it is not the window they typed, and every other number here is about this
+/// one.
+/// </param>
 public sealed record BarReselectResult(
     int BarsRevised,
     int BarsRemoved,
+    int UnattributedRemoved,
     int TradeDatesChanged,
     int Ties,
     int SeriesSkipped,
     int SlicesSkipped,
-    int VenueRequests);
+    int VenueRequests,
+    BarRange EffectiveWindow);
 
 /// <summary>
 /// Re-decides which contract each stored bar in an operator-named window belongs to — the
@@ -110,18 +126,19 @@ public sealed class BarReselector(
         ArgumentNullException.ThrowIfNull(window);
 
         DateTimeOffset now = _clock.GetUtcNow();
+        BarRange effective = EffectiveWindowFor(window);
 
-        // Every resolution the store actually holds INSIDE the window, rather than every configured one: a
-        // resolution nobody has fetched for these dates has no provenance to re-decide, and asking for it
-        // would be a venue round trip that looks like a result.
+        // Every resolution the store actually holds INSIDE the effective window, rather than every
+        // configured one: a resolution nobody has fetched for these dates has no provenance to re-decide,
+        // and asking for it would be a venue round trip that looks like a result.
         //
         // A named record rather than an anonymous type because this projection is the run's unit of work --
         // what gets its own transaction, its own counters and its own log line.
         List<StoredSeries> found = await _database.Bars
             .AsNoTracking()
             .Where(b => b.Instrument == instrument.Symbol
-                && b.BucketStart >= window.Start
-                && b.BucketStart < window.End)
+                && b.BucketStart >= effective.Start
+                && b.BucketStart < effective.End)
             .Select(b => new StoredSeries(b.Venue, b.ResolutionMinutes))
             .Distinct()
             .ToListAsync(cancellationToken)
@@ -135,6 +152,7 @@ public sealed class BarReselector(
 
         int revised = 0;
         int removed = 0;
+        int unattributed = 0;
         int datesChanged = 0;
         int ties = 0;
         int seriesSkipped = 0;
@@ -147,18 +165,26 @@ public sealed class BarReselector(
             // window wider than one pass is skipped rather than trimmed: the window is the operator's
             // statement of what they mean to rewrite, and silently reselecting the first part of it would
             // report a number about a smaller question than the one they asked.
-            long buckets = (window.End - window.Start).Ticks / TimeSpan.FromMinutes(s.ResolutionMinutes).Ticks;
+            //
+            // COUNTED AS WALL-CLOCK SPAN OVER THE BAR SIZE, where BarGapDetector counts the buckets the
+            // CALENDAR expects -- so this over-estimates by every maintenance window, weekend and holiday
+            // the span covers, roughly a third of it. Deliberately the conservative direction: this bound
+            // exists to stop a run that would enumerate too much, and refusing slightly early is a worse
+            // error message, while admitting slightly late is the unbounded pass the cap is for. Asking the
+            // calendar instead would mean enumerating the very grid the cap is meant to avoid enumerating.
+            long buckets =
+                (effective.End - effective.Start).Ticks / TimeSpan.FromMinutes(s.ResolutionMinutes).Ticks;
 
             if (buckets > BarGapDetector.MaxBucketsPerPass)
             {
                 _logger.LogWarning(
-                    "Skipping {Instrument} {Resolution}m: {From}..{To} spans {Buckets} buckets at this "
-                    + "resolution, over the {Cap} a single pass will enumerate. Narrow the window or "
+                    "Skipping {Instrument} {Resolution}m: {From}..{To} spans at most {Buckets} buckets at "
+                    + "this resolution, over the {Cap} a single pass will enumerate. Narrow the window or "
                     + "reselect this resolution on its own.",
                     instrument.Symbol,
                     s.ResolutionMinutes,
-                    window.Start,
-                    window.End,
+                    effective.Start,
+                    effective.End,
                     buckets,
                     BarGapDetector.MaxBucketsPerPass);
 
@@ -167,14 +193,14 @@ public sealed class BarReselector(
             }
 
             (IReadOnlyList<TradeDateSelection> selections, int requests, int skipped) = await _cache
-                .ReselectWindowAsync(instrument, s.ResolutionMinutes, window, now, cancellationToken)
+                .ReselectWindowAsync(instrument, s.ResolutionMinutes, effective, now, cancellationToken)
                 .ConfigureAwait(false);
 
             venueRequests += requests;
             slicesSkipped += skipped;
 
             SeriesOutcome outcome = await ReselectSeriesAsync(
-                s, instrument, window, selections, now, cancellationToken).ConfigureAwait(false);
+                s, instrument, effective, selections, now, cancellationToken).ConfigureAwait(false);
 
             // The series is committed and this context will never look at it again, so let it go. Safe here
             // and nowhere else in this class: RunAsync has returned, and `series` holds projections.
@@ -182,34 +208,44 @@ public sealed class BarReselector(
 
             revised += outcome.BarsRevised;
             removed += outcome.BarsRemoved;
+            unattributed += outcome.UnattributedRemoved;
             datesChanged += outcome.TradeDatesChanged;
             ties += outcome.Ties;
 
             _logger.LogInformation(
                 "Reselected {Instrument} {Resolution}m over {From}..{To}: {Revised} bars revised, "
-                + "{Removed} removed, {Dates} trade dates changed, {Ties} decided by a tie, "
-                + "{Coverage} coverage claims dropped, {Requests} venue requests.",
+                + "{Removed} removed, {Unattributed} unattributed rows removed, {Dates} trade dates "
+                + "changed, {Ties} decided by a tie, {Coverage} coverage claims dropped, {Requests} venue "
+                + "requests.",
                 instrument.Symbol,
                 s.ResolutionMinutes,
-                window.Start,
-                window.End,
+                effective.Start,
+                effective.End,
                 outcome.BarsRevised,
                 outcome.BarsRemoved,
+                outcome.UnattributedRemoved,
                 outcome.TradeDatesChanged,
                 outcome.Ties,
                 outcome.CoverageRemoved,
                 requests);
         }
 
+        // BOTH WINDOWS, and the pair is the point: the operator sees the range they typed beside the range
+        // that was actually re-decided, so a widening they did not expect is a line they can read rather
+        // than a surprise in the row counts.
         _logger.LogInformation(
-            "Reselect complete for {Instrument} over {From}..{To}: {Revised} bars revised, {Removed} "
+            "Reselect complete for {Instrument}: asked {AskedFrom}..{AskedTo}, re-decided whole trade dates "
+            + "{From}..{To}. {Revised} bars revised, {Removed} removed, {Unattributed} unattributed rows "
             + "removed, {Dates} trade dates changed, {Ties} decided by a tie, {SeriesSkipped} series "
             + "skipped, {SlicesSkipped} slices skipped, {Requests} venue requests over {Series} series.",
             instrument.Symbol,
             window.Start,
             window.End,
+            effective.Start,
+            effective.End,
             revised,
             removed,
+            unattributed,
             datesChanged,
             ties,
             seriesSkipped,
@@ -218,7 +254,56 @@ public sealed class BarReselector(
             series.Count - seriesSkipped);
 
         return new BarReselectResult(
-            revised, removed, datesChanged, ties, seriesSkipped, slicesSkipped, venueRequests);
+            revised,
+            removed,
+            unattributed,
+            datesChanged,
+            ties,
+            seriesSkipped,
+            slicesSkipped,
+            venueRequests,
+            effective);
+    }
+
+    /// <summary>
+    /// The union of the whole trade dates an operator's window intersects.
+    /// </summary>
+    /// <param name="window">The window the operator named.</param>
+    /// <returns>The window that is actually re-decided.</returns>
+    /// <remarks>
+    /// <para>
+    /// <b>An operator types a window; the policy decides a trade date.</b> Taken literally, a window covering
+    /// part of a day would re-decide the whole day from part of its volume and then rewrite only the part —
+    /// leaving one contract, then another, then the first again <i>inside a single day</i>, which is the
+    /// interleaving <c>HistoricalContractPolicy</c> exists to forbid. <c>ContractRollDetector</c> would cut
+    /// that day into three segments and every indicator would warm again at each seam, on a day nothing
+    /// rolled. So the window is widened to whole sessions and everything happens over the wider one.
+    /// </para>
+    /// <para>
+    /// <b>It only ever widens.</b> The bounds are taken from the calendar and then clamped against the asked
+    /// window, because a window that begins or ends inside a maintenance gap has no session bound of its own
+    /// to grow to — the fallback names a date whose close can sit <i>before</i> the instant asked about, and
+    /// shrinking an operator's window is the one thing this must never do.
+    /// </para>
+    /// <para>
+    /// A bucket the calendar places outside every session takes its UTC date, exactly as <c>Decide</c> groups
+    /// it — so the two agree about which day a maintenance-window bucket belongs to.
+    /// </para>
+    /// </remarks>
+    private BarRange EffectiveWindowFor(BarRange window)
+    {
+        DateOnly first = TradeDateOf(window.Start);
+        DateOnly last = TradeDateOf(window.End.AddTicks(-1));
+
+        // A session opens at the reopen on the PREVIOUS calendar day and closes on the trade date itself.
+        DateTimeOffset open = MarketClock
+            .FromMarket(first.AddDays(-1), _calendar.SessionOpen)
+            .ToUniversalTime();
+        DateTimeOffset close = MarketClock.FromMarket(last, _calendar.SessionClose).ToUniversalTime();
+
+        return new BarRange(
+            open < window.Start ? open : window.Start,
+            close > window.End ? close : window.End);
     }
 
     /// <summary>Writes one series' re-decision, and re-projects over it.</summary>
@@ -286,7 +371,7 @@ public sealed class BarReselector(
                         series.Venue, instrument, series.ResolutionMinutes, winnerBars, now, token)
                         .ConfigureAwait(false);
 
-                int removed = await RemoveLosersAsync(
+                (int removed, int unattributed) = await RemoveLosersAsync(
                     series, instrument, window, before, winners, winnerBars, token).ConfigureAwait(false);
 
                 // EVERY CLAIM THAT TOUCHES THE WINDOW GOES, for every contract -- on OVERLAP rather than on
@@ -304,12 +389,14 @@ public sealed class BarReselector(
                     .ExecuteDeleteAsync(token)
                     .ConfigureAwait(false);
 
-                // Saved BEFORE projecting, and the ordering is load-bearing: the projector reads the series
-                // back with a query, and a query does not see rows that are only tracked.
-                if (_database.ChangeTracker.HasChanges())
-                {
-                    await _database.SaveChangesAsync(token).ConfigureAwait(false);
-                }
+                // NO SAVE IS NEEDED HERE, and saying so is the point of the comment. GetBarsAsync saves
+                // before projecting because ApplyAsync can leave tracked work, and the projector reads the
+                // series back with a query that would not see it. Every write above is immediate -- one
+                // ExecuteSqlRaw for the winners, ExecuteDelete for the losers and the coverage claims -- so
+                // the store has already applied all of it inside this transaction and the projector's own
+                // queries, including the reconcile's bar count, see exactly what was written. Copying the
+                // guarded SaveChanges from the read path would have been a no-op asserting an ordering it
+                // does not enforce; the day a tracked write is added here, it goes back with its argument.
 
                 // UNCONDITIONAL, and the read path's `if (written > 0)` guard is deliberately not copied. A
                 // pass whose upserts were all no-ops can still have DELETED rows, and indicator values left
@@ -320,7 +407,7 @@ public sealed class BarReselector(
 
                 await _database.SaveChangesAsync(token).ConfigureAwait(false);
 
-                return new SeriesOutcome(revised, removed, datesChanged, ties, coverage);
+                return new SeriesOutcome(revised, removed, unattributed, datesChanged, ties, coverage);
             },
             _logger,
             cancellationToken).ConfigureAwait(false);
@@ -336,7 +423,11 @@ public sealed class BarReselector(
     /// <param name="winners">The contract each trade date was decided for.</param>
     /// <param name="winnerBars">Every bar the winners answered, so a restated bucket can be told apart.</param>
     /// <param name="cancellationToken">The caller's cancellation token.</param>
-    /// <returns>How many rows were deleted.</returns>
+    /// <returns>
+    /// How many rows another contract held, and how many carried no contract id at all. Reported apart
+    /// because they are different facts: the first is a contract losing a bucket it held, the second is a
+    /// row from before the provenance migration that nothing can attribute.
+    /// </returns>
     /// <remarks>
     /// <para>
     /// <b>Decided in memory, deleted by an explicit list.</b> The trade date a bucket belongs to is a session
@@ -357,7 +448,7 @@ public sealed class BarReselector(
     /// carrying all of them is a parameter list nobody sized.
     /// </para>
     /// </remarks>
-    private async Task<int> RemoveLosersAsync(
+    private async Task<(int Removed, int Unattributed)> RemoveLosersAsync(
         StoredSeries series,
         InstrumentId instrument,
         BarRange window,
@@ -368,14 +459,20 @@ public sealed class BarReselector(
     {
         HashSet<DateTimeOffset> restated = [.. winnerBars.Select(static bar => bar.OpenTime)];
 
-        List<DateTimeOffset> losers =
+        List<StoredBucket> going =
         [
             .. before
                 .Where(row => winners.TryGetValue(TradeDateOf(row.BucketStart), out string? winner)
                     && !string.Equals(row.ContractId, winner, StringComparison.Ordinal)
-                    && !restated.Contains(row.BucketStart))
-                .Select(static row => row.BucketStart),
+                    && !restated.Contains(row.BucketStart)),
         ];
+
+        // Counted from the pre-read rather than from the statement, because the store reports one number for
+        // rows the two cases have to be told apart in. The two lists are disjoint and their sum is what the
+        // deletes below report, which is asserted by the arithmetic rather than hoped for: every row here is
+        // either attributed or it is not.
+        int unattributed = going.Count(static row => row.ContractId is null);
+        List<DateTimeOffset> losers = [.. going.Select(static row => row.BucketStart)];
 
         int removed = 0;
 
@@ -394,7 +491,7 @@ public sealed class BarReselector(
                 .ConfigureAwait(false);
         }
 
-        return removed;
+        return (removed - unattributed, unattributed);
     }
 
     /// <summary>
@@ -454,10 +551,16 @@ public sealed class BarReselector(
 
     /// <summary>What one series contributed to the run's counters.</summary>
     /// <param name="BarsRevised">Rows the winner's upsert changed.</param>
-    /// <param name="BarsRemoved">Rows the winner does not restate, and which were deleted.</param>
+    /// <param name="BarsRemoved">Rows another contract held that the winner does not restate.</param>
+    /// <param name="UnattributedRemoved">Rows carrying no contract id that the winner does not restate.</param>
     /// <param name="TradeDatesChanged">Trade dates that changed hands.</param>
     /// <param name="Ties">Trade dates whose top volume was shared.</param>
     /// <param name="CoverageRemoved">Coverage claims overlapping the window that were dropped.</param>
     private sealed record SeriesOutcome(
-        int BarsRevised, int BarsRemoved, int TradeDatesChanged, int Ties, int CoverageRemoved);
+        int BarsRevised,
+        int BarsRemoved,
+        int UnattributedRemoved,
+        int TradeDatesChanged,
+        int Ties,
+        int CoverageRemoved);
 }

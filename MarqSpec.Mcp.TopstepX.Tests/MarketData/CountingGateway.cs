@@ -161,6 +161,19 @@ public sealed class CountingGateway : IMarketDataGateway
     /// </remarks>
     public ISet<string> Unlisted { get; } = new HashSet<string>(StringComparer.Ordinal);
 
+    /// <summary>
+    /// When set, a bar request answers with every bar the contract holds rather than only those inside the
+    /// requested slice.
+    /// </summary>
+    /// <remarks>
+    /// Real venues do this — a page boundary, or a vendor rounding the range outward — and
+    /// <c>ConcurrencyHarness.SeriesGateway</c> already models it for the fill path. It matters to any caller
+    /// that <b>slices</b> a window and then groups the answers: bars for one trade date can then come back
+    /// from two different slices, and a caller deciding per slice sees that date twice (gh#506). Off by
+    /// default, so every existing case answers exactly as it always did.
+    /// </remarks>
+    public bool AnswersBeyondTheSlice { get; set; }
+
     /// <inheritdoc />
     /// <remarks>
     /// <b>It lists everything it holds, front first</b> — not the front alone. A double that lists one
@@ -246,7 +259,7 @@ public sealed class CountingGateway : IMarketDataGateway
         IReadOnlyList<Bar> bars =
         [
             .. available.Values
-                .Where(b => window.Contains(b.OpenTime))
+                .Where(b => AnswersBeyondTheSlice || window.Contains(b.OpenTime))
                 .OrderBy(b => b.OpenTime)
                 .Select(b => b with { ContractId = contractId }),
         ];

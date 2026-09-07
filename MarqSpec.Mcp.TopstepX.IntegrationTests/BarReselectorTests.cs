@@ -66,8 +66,22 @@ public sealed class BarReselectorTests : IAsyncLifetime
     /// <summary>The instant the operator runs the verb at — two months past the window, so nothing forms.</summary>
     private static DateTimeOffset Now => Market(2026, 8, 18, 12);
 
-    /// <summary>The one-hour, twelve-bucket window the cases below reselect.</summary>
+    /// <summary>
+    /// The one-hour, twelve-bucket window the cases below <b>ask</b> for — deliberately a clipping one.
+    /// </summary>
+    /// <remarks>
+    /// It covers part of one trade date and no whole one, which is the shape an operator actually types. What
+    /// gets re-decided is <see cref="Session"/>, and the difference between the two is the subject of
+    /// <c>AClippingWindow_IsWidenedToWholeTradeDates_SoNoDayIsSpliced</c>.
+    /// </remarks>
     private static BarRange Window => new(JuneStart, JuneStart.AddHours(1));
+
+    /// <summary>The whole session <see cref="Window"/> falls inside — the effective window.</summary>
+    /// <remarks>
+    /// A literal, and the two ends are the calendar's own: the session for trade date 2026-06-16 opens at
+    /// 17:00 Central the evening before and closes at 16:00 Central on the day.
+    /// </remarks>
+    private static BarRange Session => new(Market(2026, 6, 15, 17), Market(2026, 6, 16, 16));
 
     /// <summary>The session calendar every fixture here shares.</summary>
     private static BarSessionCalendar Calendar => BarSessionCalendar.Parse("16:00", []);
@@ -80,6 +94,38 @@ public sealed class BarReselectorTests : IAsyncLifetime
     {
         _database.Dispose();
         return Task.CompletedTask;
+    }
+
+    [Fact]
+    public async Task AClippingWindow_IsWidenedToWholeTradeDates_SoNoDayIsSpliced()
+    {
+        // AN OPERATOR TYPES A WINDOW; THE POLICY DECIDES A TRADE DATE. Taken literally, an hour-long window
+        // re-decides the whole of 2026-06-16 from one hour of volume and then rewrites only that hour --
+        // leaving U26 … M26 … U26 inside a single day, which is exactly the interleaving
+        // HistoricalContractPolicy exists to forbid. ContractRollDetector would cut the day into three
+        // segments, every indicator would warm again at each seam, and TradeDatesChanged would report that
+        // the date had moved when most of it had not.
+        //
+        // So the effective window is the union of the whole trade dates the asked window intersects, and
+        // everything -- plan, fetch, decision, upsert, delete and count -- happens over that.
+        await SeedManyAsync(Front, SessionBars(Thin));
+
+        CountingGateway gateway = Venue(SessionBars(Fat), SessionBars(Thin));
+        BarReselectResult result = await Reselector(gateway).ReselectAsync(_mes, Window, default);
+
+        result.EffectiveWindow.Start.Should().Be(Session.Start, "the session opens the evening before");
+        result.EffectiveWindow.End.Should().Be(Session.End);
+
+        List<BarRecord> day = await StoredAsync(Session.Start, Session.End);
+        day.Should().HaveCount(276, "twenty-three hours of five-minute buckets");
+        day.Should().OnlyContain(
+            row => row.ContractId == Liquid, "the whole trade date went to the contract that carried it");
+
+        IReadOnlyList<ContractSegment> segments =
+            ContractRollDetector.Segment([.. day.Select(IndicatorProjector.ToBar)]);
+        segments.Should().ContainSingle("nothing rolled on 2026-06-16, so the day is one run");
+
+        result.TradeDatesChanged.Should().Be(1);
     }
 
     [Fact]
@@ -160,11 +206,13 @@ public sealed class BarReselectorTests : IAsyncLifetime
         // touch is a bucket only the loser answered: left standing, that row keeps a thin contract's numbers
         // inside a window the store now says belongs to another contract.
         //
-        // And the window is the whole authority. The row seeded an hour past its end is the SAME trade date
-        // and the same loser -- deleting it would be revising provenance on the strength of not having
-        // looked, which is the argument SessionBarService's reconcile makes for an explicit list.
+        // And the EFFECTIVE window is the whole authority. The row seeded on the next trade date belongs to
+        // a day this run never re-decided -- deleting it would be revising provenance on the strength of not
+        // having looked, which is the argument SessionBarService's reconcile makes for an explicit list. It
+        // has to be another trade date rather than merely another hour, because an hour outside the asked
+        // window is still inside the effective one.
         await SeedWindowAsync(Front, Thin);
-        await SeedBarAsync(Front, Thin(JuneStart.AddHours(2)));
+        await SeedBarAsync(Front, Thin(Market(2026, 6, 17, 9)));
 
         CountingGateway gateway = Venue(Bars(Fat).Take(11), ThinFront());
         BarReselectResult result = await Reselector(gateway).ReselectAsync(_mes, Window, default);
@@ -176,9 +224,92 @@ public sealed class BarReselectorTests : IAsyncLifetime
         inside.Should().HaveCount(11);
         inside.Should().OnlyContain(row => row.ContractId == Liquid);
 
-        List<BarRecord> outside = await StoredAsync(JuneStart.AddHours(2), JuneStart.AddHours(3));
+        List<BarRecord> outside = await StoredAsync(Market(2026, 6, 17, 9), Market(2026, 6, 17, 10));
         outside.Should().ContainSingle();
-        outside[0].ContractId.Should().Be(Front, "a row outside the window was never re-decided");
+        outside[0].ContractId.Should().Be(Front, "a row outside the effective window was never re-decided");
+    }
+
+    [Fact]
+    public async Task AnUnattributedBucketTheWinnerDoesNotRestate_IsCountedApart()
+    {
+        // A bucket with no contract id is not a loser, it is a row written before the provenance migration
+        // (gh#402). It goes for the same reason a loser's does -- the winner does not restate it, and it
+        // would sit inside a re-decided day carrying numbers nobody can attribute -- but folding it into
+        // barsRemoved would report an operator that a contract lost buckets it never held.
+        await SeedWindowAsync(Front, Thin);
+        await SeedBarAsync(null, Thin(JuneStart.AddMinutes(65)));
+
+        CountingGateway gateway = Venue(FatLiquid(), ThinFront());
+        BarReselectResult result = await Reselector(gateway).ReselectAsync(_mes, Window, default);
+
+        result.UnattributedRemoved.Should().Be(1, "the bucket the migration could not attribute");
+        result.BarsRemoved.Should().Be(0, "no contract lost a bucket it actually held");
+
+        List<BarRecord> stored = await StoredAsync(Session.Start, Session.End);
+        stored.Should().HaveCount(12);
+        stored.Should().OnlyContain(row => row.ContractId == Liquid);
+    }
+
+    [Fact]
+    public async Task ASliceWithNoListedCandidate_IsSkipped_AndCounted()
+    {
+        // A March window on HMUZ at depth two names H26 and M26, and this venue lists neither. The read path
+        // falls back to the venue's own pick and keeps serving; a rewrite must not, because attributing a
+        // trade date to a contract chosen by degradation is worse than leaving the rows alone. The slice is
+        // skipped, counted, and the venue is never asked for a bar.
+        BarRange march = new(Market(2026, 3, 17, 9), Market(2026, 3, 17, 10));
+        await SeedBarAsync(Front, Thin(march.Start));
+
+        CountingGateway gateway = new(
+            new Dictionary<string, IEnumerable<Bar>>(StringComparer.Ordinal) { [Front] = [] }, Front);
+
+        BarReselectResult result = await Reselector(gateway).ReselectAsync(_mes, march, default);
+
+        result.SlicesSkipped.Should().Be(1);
+        result.BarsRevised.Should().Be(0);
+        result.BarsRemoved.Should().Be(0);
+        gateway.BarRequests.Should().Be(0, "a slice nobody could answer properly is never fetched");
+
+        List<BarRecord> stored = await StoredAsync(march.Start, march.End);
+        stored.Should().ContainSingle();
+        stored[0].ContractId.Should().Be(Front, "the row is left exactly as it was");
+    }
+
+    [Fact]
+    public async Task ACandidateChangeOnAHolidayEve_StillDecidesEachTradeDateOnce()
+    {
+        // The planner cuts a window where the cycle's nearest candidate moves, and on a holiday eve that cut
+        // lands at UTC midnight rather than at a session open -- because TradeDateFor answers nothing for a
+        // declared holiday and the UTC-date fallback stands in. A venue that answers a little beyond the
+        // slice it was asked for (a page boundary, a vendor rounding outward -- the behaviour
+        // ConcurrencyHarness already models) then puts bars for the SAME fallback date on both sides of that
+        // cut. Deciding per slice yields two selections for one trade date, and the run dies assembling its
+        // own winners dictionary.
+        //
+        // So the candidates are merged across every slice of the window and the policy is asked once.
+        BarSessionCalendar holidayEve = BarSessionCalendar.Parse("16:00", ["2026-07-01"]);
+        BarRange straddling = new(Market(2026, 6, 30, 9), Market(2026, 7, 2, 10));
+
+        await SeedManyAsync(Front, Bars(Thin, Market(2026, 6, 30, 9), 12));
+
+        CountingGateway gateway = Venue(
+            Bars(Fat, Market(2026, 6, 30, 9), 12),
+            [.. Bars(Thin, Market(2026, 6, 30, 9), 12), .. Bars(Thin, Market(2026, 7, 1, 9), 12)]);
+        gateway.AnswersBeyondTheSlice = true;
+
+        BarReselectResult result = await Reselector(gateway, calendar: holidayEve)
+            .ReselectAsync(_mes, straddling, default);
+
+        result.BarsRevised.Should().Be(24, "June the thirtieth changes hands, and July the first is new");
+
+        List<BarRecord> june = await StoredAsync(Market(2026, 6, 30, 9), Market(2026, 6, 30, 10));
+        june.Should().HaveCount(12);
+        june.Should().OnlyContain(row => row.ContractId == Liquid);
+
+        List<BarRecord> holiday = await StoredAsync(Market(2026, 7, 1, 9), Market(2026, 7, 1, 10));
+        holiday.Should().HaveCount(12);
+        holiday.Should().OnlyContain(
+            row => row.ContractId == Front, "only one candidate answered the holiday's buckets");
     }
 
     [Fact]
@@ -274,9 +405,9 @@ public sealed class BarReselectorTests : IAsyncLifetime
         // from outside it is the ordinary shape rather than the exotic one. Losing a claim outside the
         // window costs one re-ask; keeping a permanent one inside it costs the window.
         await SeedWindowAsync(Front, Thin);
-        await SeedCoverageAsync(Liquid, JuneStart.AddHours(-1), JuneStart.AddMinutes(10));
+        await SeedCoverageAsync(Liquid, Market(2026, 6, 15, 12), Market(2026, 6, 15, 18));
         await SeedCoverageAsync(Front, JuneStart.AddMinutes(20), JuneStart.AddMinutes(30));
-        await SeedCoverageAsync(Front, JuneStart.AddHours(2), JuneStart.AddHours(3));
+        await SeedCoverageAsync(Front, Market(2026, 6, 17, 9), Market(2026, 6, 17, 10));
 
         CountingGateway gateway = Venue(FatLiquid(), ThinFront());
         BarReselectResult result = await Reselector(gateway).ReselectAsync(_mes, Window, default);
@@ -290,7 +421,7 @@ public sealed class BarReselectorTests : IAsyncLifetime
             .ToListAsync();
 
         claims.Should().ContainSingle("only the claim that misses the window entirely survives");
-        claims[0].RangeStart.Should().Be(JuneStart.AddHours(2));
+        claims[0].RangeStart.Should().Be(Market(2026, 6, 17, 9));
     }
 
     [Fact]
@@ -342,7 +473,21 @@ public sealed class BarReselectorTests : IAsyncLifetime
     /// <param name="shape">What each bucket holds.</param>
     /// <returns>The bars, ascending.</returns>
     private static IEnumerable<Bar> Bars(Func<DateTimeOffset, Bar> shape) =>
-        Enumerable.Range(0, 12).Select(i => shape(JuneStart.AddMinutes(5 * i)));
+        Bars(shape, JuneStart, 12);
+
+    /// <summary>A run of five-minute buckets, each shaped by a builder.</summary>
+    /// <param name="shape">What each bucket holds.</param>
+    /// <param name="from">The first bucket.</param>
+    /// <param name="count">How many buckets.</param>
+    /// <returns>The bars, ascending.</returns>
+    private static IEnumerable<Bar> Bars(Func<DateTimeOffset, Bar> shape, DateTimeOffset from, int count) =>
+        Enumerable.Range(0, count).Select(i => shape(from.AddMinutes(5 * i)));
+
+    /// <summary>Every five-minute bucket of the whole session, each shaped by a builder.</summary>
+    /// <param name="shape">What each bucket holds.</param>
+    /// <returns>The bars, ascending.</returns>
+    private static IEnumerable<Bar> SessionBars(Func<DateTimeOffset, Bar> shape) =>
+        Bars(shape, Session.Start, (int)((Session.End - Session.Start).TotalMinutes / 5));
 
     /// <summary>The winner's twelve buckets.</summary>
     /// <returns>The bars.</returns>
@@ -365,10 +510,32 @@ public sealed class BarReselectorTests : IAsyncLifetime
             },
             Front);
 
+    /// <summary>One stored row, at the fixture's venue and resolution.</summary>
+    /// <param name="contractId">The contract the row is attributed to, or <see langword="null"/> for a row
+    /// written before the provenance migration.</param>
+    /// <param name="bar">The numbers the row holds.</param>
+    /// <returns>The row.</returns>
+    private static BarRecord Row(string? contractId, Bar bar) =>
+        new()
+        {
+            Venue = "test",
+            Instrument = _mes.Symbol,
+            ResolutionMinutes = 5,
+            BucketStart = bar.OpenTime,
+            Open = bar.Open,
+            High = bar.High,
+            Low = bar.Low,
+            Close = bar.Close,
+            Volume = bar.Volume,
+            ContractId = contractId,
+            RecordedAt = JuneStart,
+        };
+
     /// <summary>The indicator catalogue every projection here shares.</summary>
+    /// <param name="calendar">The calendar the case is built on.</param>
     /// <returns>The catalogue.</returns>
-    private static IndicatorCatalog Catalog() =>
-        new(Options.Create(new IndicatorOptions { AtrPeriod = 3, RsiPeriod = 3 }), Calendar);
+    private static IndicatorCatalog Catalog(BarSessionCalendar? calendar = null) =>
+        new(Options.Create(new IndicatorOptions { AtrPeriod = 3, RsiPeriod = 3 }), calendar ?? Calendar);
 
     /// <summary>The registry every service here shares.</summary>
     /// <returns>The registry.</returns>
@@ -442,15 +609,34 @@ public sealed class BarReselectorTests : IAsyncLifetime
         _database.ChangeTracker.Clear();
     }
 
-    /// <summary>Seeds a run of bars under one contract id.</summary>
+    /// <summary>Seeds a run of bars under one contract id, one statement at a time.</summary>
     /// <param name="contractId">The contract the rows are attributed to.</param>
     /// <param name="bars">The bars.</param>
-    private async Task SeedBarsAsync(string contractId, IEnumerable<Bar> bars)
+    private async Task SeedBarsAsync(string? contractId, IEnumerable<Bar> bars)
     {
         foreach (Bar bar in bars)
         {
             await SeedBarAsync(contractId, bar);
         }
+    }
+
+    /// <summary>Seeds a long run of bars in one round trip.</summary>
+    /// <param name="contractId">The contract the rows are attributed to.</param>
+    /// <param name="bars">The bars.</param>
+    /// <remarks>
+    /// A whole session is 276 five-minute buckets, and seeding those one <c>SaveChanges</c> at a time is 276
+    /// round trips against a container the whole collection shares. The tracker is still cleared afterwards,
+    /// for the reason <see cref="SeedBarAsync"/> gives.
+    /// </remarks>
+    private async Task SeedManyAsync(string? contractId, IEnumerable<Bar> bars)
+    {
+        foreach (Bar bar in bars)
+        {
+            _database.Bars.Add(Row(contractId, bar));
+        }
+
+        await _database.SaveChangesAsync();
+        _database.ChangeTracker.Clear();
     }
 
     /// <summary>Seeds the whole window under one contract id.</summary>
@@ -467,22 +653,9 @@ public sealed class BarReselectorTests : IAsyncLifetime
     /// the reads under test are ordinary queries; left tracked, the identity map would answer them with the
     /// instance this method wrote rather than with the row the store holds.
     /// </remarks>
-    private async Task SeedBarAsync(string contractId, Bar bar)
+    private async Task SeedBarAsync(string? contractId, Bar bar)
     {
-        _database.Bars.Add(new BarRecord
-        {
-            Venue = "test",
-            Instrument = _mes.Symbol,
-            ResolutionMinutes = 5,
-            BucketStart = bar.OpenTime,
-            Open = bar.Open,
-            High = bar.High,
-            Low = bar.Low,
-            Close = bar.Close,
-            Volume = bar.Volume,
-            ContractId = contractId,
-            RecordedAt = JuneStart,
-        });
+        _database.Bars.Add(Row(contractId, bar));
 
         await _database.SaveChangesAsync();
         _database.ChangeTracker.Clear();
@@ -509,17 +682,22 @@ public sealed class BarReselectorTests : IAsyncLifetime
     /// <summary>Builds the reselector around a venue double the case already holds.</summary>
     /// <param name="gateway">The venue double.</param>
     /// <param name="logger">A logger, when the case needs to read what the run said it did.</param>
+    /// <param name="calendar">The session calendar, when the case declares a holiday.</param>
     /// <returns>The reselector.</returns>
-    private BarReselector Reselector(CountingGateway gateway, ILogger<BarReselector>? logger = null)
+    private BarReselector Reselector(
+        CountingGateway gateway,
+        ILogger<BarReselector>? logger = null,
+        BarSessionCalendar? calendar = null)
     {
         FakeTimeProvider clock = new(Now);
-        BarSessionCalendar calendar = Calendar;
-        IndicatorProjector projector = new(_database, Catalog(), NullLogger<IndicatorProjector>.Instance);
+        BarSessionCalendar sessions = calendar ?? Calendar;
+        IndicatorProjector projector =
+            new(_database, Catalog(sessions), NullLogger<IndicatorProjector>.Instance);
 
         BarCacheService cache = new(
             _database,
             gateway,
-            calendar,
+            sessions,
             projector,
             Registry(),
             new ContractDirectory(clock),
@@ -530,7 +708,7 @@ public sealed class BarReselectorTests : IAsyncLifetime
             _database,
             cache,
             projector,
-            calendar,
+            sessions,
             clock,
             logger ?? NullLogger<BarReselector>.Instance);
     }

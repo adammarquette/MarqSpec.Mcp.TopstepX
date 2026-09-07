@@ -24,14 +24,19 @@ public sealed class GitHubOidcStack : Stack
         : base(scope, id, props)
     {
         // The L1 rather than the L2 `OpenIdConnectProvider`: the L2 is a custom resource — a Lambda and a
-        // role with wildcard permissions — from before CloudFormation supported the type natively. AWS has
-        // verified GitHub's issuer against trusted CAs since 2023 and ignores these thumbprints; they are
-        // GitHub's published intermediates, listed because the property is still required in some regions.
+        // role with wildcard permissions — from before CloudFormation supported the type natively.
+        //
+        // NO THUMBPRINT LIST, by decision (gh#518, ADR-0023's 2026-09-07 trust entries). AWS has verified
+        // GitHub's issuer against its own trusted CA library since 2023 and ignores the property for it;
+        // the first draft listed GitHub's two published intermediates anyway, "because the property is
+        // still required in some regions". A 40-hex-character literal nobody re-verifies reads exactly like
+        // a current one after the CA rotates, and the template test refuses one. If a region's CloudFormation
+        // rejects the omission at gh#519's first deploy, that is a loud failure with the property's name in
+        // it -- the fix is a dated entry and the list back, not a quiet edit.
         var provider = new CfnOIDCProvider(this, "GitHub", new CfnOIDCProviderProps
         {
             Url = $"https://{Issuer}",
             ClientIdList = ["sts.amazonaws.com"],
-            ThumbprintList = ["6938fd4d98bab03faadb97b34396831e3780aea1", "1c58a3a8518e8759bf075b76b750d4f2df264fcd"],
         });
 
         // Staging: the release path (a `v*` tag) AND the workflow_dispatch redeploy/rollback path, which
@@ -47,6 +52,15 @@ public sealed class GitHubOidcStack : Stack
 
         // Production: the environment claim, which both workflows carry because both production jobs
         // declare `environment: aws-production` — and behind it the reviewer rule that is the approval.
+        // The environment is a GitHub SETTING: scripts/bootstrap.sh creates it with the maintainer as its
+        // required reviewer, and the template test reads that script's list so this name cannot drift
+        // from the one the script creates.
+        //
+        // Neither role binds `job_workflow_ref`, by decision (ADR-0023, 2026-09-07). That claim carries the
+        // workflow FILE PATH and the ref it ran at (`…/.github/workflows/deploy.yml@refs/heads/main`), so
+        // it changes on every rename of a workflow file and would need its own wildcard on the ref half;
+        // the `sub` above already binds the same run to a tag, a branch or an environment, which is the
+        // property the pipeline actually depends on.
         DeployRole(provider, "production", new Dictionary<string, object>
         {
             ["StringEquals"] = new Dictionary<string, object>
@@ -59,6 +73,12 @@ public sealed class GitHubOidcStack : Stack
 
     private void DeployRole(CfnOIDCProvider provider, string envName, IDictionary<string, object> conditions)
     {
+        // The pseudo-parameters rather than this stack's `Account` and `Region`: under a concrete
+        // environment those resolve to LITERALS in the template, so the synthesised OIDC stack would carry
+        // whatever account `cdk.json` named -- the documentation placeholder today, a real id after gh#519.
+        // Built from `AWS::AccountId` and `AWS::Region`, the same template deploys into whichever account
+        // the credentials belong to, and no account id exists in a tracked or generated file (template-tested).
+        var (partition, account, region) = (Aws.PARTITION, Aws.ACCOUNT_ID, Aws.REGION);
         var statements = new List<PolicyStatement>
         {
             // The deploy itself is the CDK assuming its own bootstrap roles (deploy, file-publishing,
@@ -67,7 +87,7 @@ public sealed class GitHubOidcStack : Stack
             {
                 Sid = "AssumeCdkBootstrapRoles",
                 Actions = ["sts:AssumeRole"],
-                Resources = [$"arn:{Partition}:iam::{Account}:role/cdk-hnb659fds-*-role-{Account}-{Region}"],
+                Resources = [$"arn:{partition}:iam::{account}:role/cdk-hnb659fds-*-role-{account}-{region}"],
             }),
             // The deployed digest and version, as the written history (ADR-0023 §5 and its 2026-09-07
             // entry): the EnvironmentStack OWNS the two SSM parameters and writes them from its own
@@ -78,14 +98,14 @@ public sealed class GitHubOidcStack : Stack
             {
                 Sid = "ReadDeploymentHistory",
                 Actions = ["ssm:GetParameter"],
-                Resources = [$"arn:{Partition}:ssm:{Region}:{Account}:parameter/topstepx-mcp/{envName}/*"],
+                Resources = [$"arn:{partition}:ssm:{region}:{account}:parameter/topstepx-mcp/{envName}/*"],
             }),
             // gh#521's deployment check reads the deploy-check client's secret at run time (gh#517 creates it).
             new(new PolicyStatementProps
             {
                 Sid = "ReadDeployCheckSecret",
                 Actions = ["secretsmanager:GetSecretValue"],
-                Resources = [$"arn:{Partition}:secretsmanager:{Region}:{Account}:secret:topstepx-mcp/{envName}/deploy-check-*"],
+                Resources = [$"arn:{partition}:secretsmanager:{region}:{account}:secret:topstepx-mcp/{envName}/deploy-check-*"],
             }),
         };
 
@@ -96,13 +116,13 @@ public sealed class GitHubOidcStack : Stack
             {
                 Sid = "StartStoreBackup",
                 Actions = ["backup:StartBackupJob"],
-                Resources = [$"arn:{Partition}:backup:{Region}:{Account}:backup-vault:{EnvironmentStack.BackupVaultName(envName)}"],
+                Resources = [$"arn:{partition}:backup:{region}:{account}:backup-vault:{EnvironmentStack.BackupVaultName(envName)}"],
             }));
             statements.Add(new PolicyStatement(new PolicyStatementProps
             {
                 Sid = "PassStoreBackupRole",
                 Actions = ["iam:PassRole"],
-                Resources = [$"arn:{Partition}:iam::{Account}:role/{EnvironmentStack.BackupRoleName(envName)}"],
+                Resources = [$"arn:{partition}:iam::{account}:role/{EnvironmentStack.BackupRoleName(envName)}"],
             }));
         }
 

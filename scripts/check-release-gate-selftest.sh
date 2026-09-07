@@ -11,7 +11,7 @@
 # state gh#108 was filed for, one layer down.
 #
 # So the real script is run against fixtures whose faults are known, on every CI run, and is required to
-# reject each one -- AND against one that is genuinely sound, which it is required to accept. Five rejections
+# reject each one -- AND against one that is genuinely sound, which it is required to accept. Six rejections
 # alone would all be satisfied by `exit 1`, i.e. by a gate that says no to everything, which is exactly as
 # useless as one that says yes to everything and rather harder to notice.
 #
@@ -49,9 +49,12 @@ trap 'rm -rf "$FIXTURES"' EXIT
 
 failures=0
 
-# Runs the REAL gate against a fixture and requires it to reject it, saying why.
+# Runs the REAL gate against a fixture and requires it to reject it, saying why. Every needle after the
+# directory must appear in the output: one names the fault, and a case that needs to show the gate ALSO said
+# the right thing about a neighbour (case 6) passes the neighbour's line as a further needle.
 expect_red() {
-  local label="$1" dir="$2" needle="$3" out status=0
+  local label="$1" dir="$2" needle out status=0
+  shift 2
 
   out="$(bash "$GATE" "$dir" 2>&1)" || status=$?
 
@@ -63,19 +66,21 @@ expect_red() {
     return
   fi
 
-  case "$out" in
-    *"$needle"*)
-      ok "rejected  $label"
-      ;;
-    *)
-      red "SELF-TEST FAILED  $label"
-      info "  It exited $status, but never said: \"$needle\""
-      info "  Exit status alone is also what 'gh is required' and 'gh is not authenticated' produce, so this"
-      info "  does not show the fixture's own fault was the reason."
-      printf '%s\n' "$out" | sed 's/^/  | /'
-      failures=$((failures + 1))
-      ;;
-  esac
+  for needle in "$@"; do
+    case "$out" in
+      *"$needle"*) ;;
+      *)
+        red "SELF-TEST FAILED  $label"
+        info "  It exited $status, but never said: \"$needle\""
+        info "  Exit status alone is also what 'gh is required' and 'gh is not authenticated' produce, so this"
+        info "  does not show the fixture's own fault was the reason."
+        printf '%s\n' "$out" | sed 's/^/  | /'
+        failures=$((failures + 1))
+        return
+        ;;
+    esac
+  done
+  ok "rejected  $label"
 }
 
 # 1. The gh#108 shape as it looks BEFORE anyone creates the environment: a job that asks for an approval from
@@ -149,8 +154,34 @@ expect_red "an unresolved mapping leaking into the next file" \
   "$FIXTURES/leak" \
   'mapping with no `name:` under it'
 
-# 6. AND IT MUST STILL SAY YES. A gate that rejects everything is exactly as useless as one that accepts
-#    everything, and every case above is a rejection -- so `exit 1` would satisfy all five. This one feeds it
+# 6. Two environments, one of them sound. The shape gh#518 puts the repository in: the deploy workflows name
+#    `production` (the GHCR publish approval, real and protected) AND `aws-production` (the deploy approval),
+#    and until the maintainer runs bootstrap.sh the second does not exist. The gate must name THE ONE THAT
+#    IS MISSING -- not merely go red, and not go red about the one that is fine -- and its count must say one
+#    of two, so a red run on a two-environment workflow set sends the reader to the right setting. Three
+#    needles: the missing one by its whole quoted name, the sound one reported PROTECTED on the same run, and
+#    the tally. A fixture whose second environment EXISTS without a reviewer is the blind spot stated in the
+#    header; this is the nearest shape a fixture can reach without administration: write.
+mkdir -p "$FIXTURES/two"
+cat > "$FIXTURES/two/release.yml" <<'YAML'
+jobs:
+  gate:
+    name: Await release approval
+    runs-on: ubuntu-latest
+    environment: production
+  deploy-production:
+    name: Deploy production
+    runs-on: ubuntu-latest
+    environment: gh518-selftest-second-environment-that-must-not-exist
+YAML
+expect_red "two environments where one is sound and the other does not exist" \
+  "$FIXTURES/two" \
+  'The environment "gh518-selftest-second-environment-that-must-not-exist" does not exist' \
+  'PROTECTED    production' \
+  '1 of 2 environment(s) would not stop an unattended publish'
+
+# 7. AND IT MUST STILL SAY YES. A gate that rejects everything is exactly as useless as one that accepts
+#    everything, and every case above is a rejection -- so `exit 1` would satisfy all six. This one feeds it
 #    the mapping form of `environment:` naming the REAL, protected environment and requires a pass, which also
 #    keeps that spelling covered: no workflow in this repo uses it today, so nothing else would notice if it
 #    stopped being understood.
@@ -192,4 +223,4 @@ if [ "$failures" -gt 0 ]; then
   exit 1
 fi
 
-ok "ok  check-release-gate.sh rejected all 5 bad fixtures, each for its own stated reason, and accepted the sound one."
+ok "ok  check-release-gate.sh rejected all 6 bad fixtures, each for its own stated reason, and accepted the sound one."

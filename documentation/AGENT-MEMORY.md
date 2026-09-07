@@ -370,6 +370,22 @@ at one this rule's own pull request retires.
   commit reworded them — and it went **red on correct text** twice, on backticks and on `e.g. ES`.
   `SerializationFailureTests` (gh#73)'s interceptor also matched EF's write batches, spending both firings in
   attempt one and leaving the retry unopposed. The reviewer found all four, not the author (gh#87).
+- **[2026-09-07] Tightening a constructor signature breaks `develop` from a branch that never conflicted with
+  yours (gh#572).** gh#562 made `telemetry` required on `BarCacheService`, `IndicatorCacheService`,
+  `FootprintCacheService` and `IndicatorProjector`, threading it through every construction site **on its
+  base**; gh#500 added session-bar suites against the old optional signature. Both were green, neither
+  touched the other's files, Git merged both happily — and `develop` went red with `CS7036` across two test
+  projects. **A required-parameter change is incompatible with any construction site added in parallel, and
+  no textual conflict warns you.** Before merging a signature tightening, `git grep` for the type's
+  construction sites **on `origin/develop` as it stands now**, not on the base you branched from, and check
+  the open PRs for suites that build it. The same shape covers a new required interface member and a
+  narrowed return type.
+  **The fix landed through gh#505's PR #569, not through gh#572's own** — #569 was building on the same red
+  `develop` and had to repair the identical two files to compile at all, so it carried the repair with it and
+  gh#572's PR arrived redundant and conflicting. That is the second half of the lesson: **a red `develop` is
+  repaired by whichever branch notices first, and every other branch is already carrying the same edit.**
+  Before opening a fix for a broken shared base, check whether an in-flight PR has absorbed it; before
+  rebasing one, expect your own hunks to come back as conflicts that resolve **to `develop`'s side**.
 
 ## Notes & communications
 

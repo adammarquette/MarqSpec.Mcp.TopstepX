@@ -9,6 +9,8 @@ using MarqSpec.Mcp.TopstepX.MarketData;
 using MarqSpec.Mcp.TopstepX.Telemetry;
 using MarqSpec.Mcp.TopstepX.Tests.MarketData;
 using MarqSpec.Mcp.TopstepX.Venue;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using Microsoft.Extensions.Time.Testing;
@@ -40,6 +42,17 @@ public sealed class HistoricalContractSelectionTests : IAsyncLifetime
     /// <summary>The contract that was front a roll ago.</summary>
     private const string Previous = "CON.F.US.MES.H26";
 
+    /// <summary>
+    /// The contract that carried June's volume — the front's nearer neighbour on the quarterly cycle.
+    /// </summary>
+    /// <remarks>
+    /// A June trade date on <c>HMUZ</c> at depth two names <c>M26</c> and <c>U26</c>: the contract that was
+    /// actually trading, and the one the venue marks active <i>today</i>. That pairing is the whole subject —
+    /// the venue's pick answers a June range with a thin, entirely plausible series, and the policy has to
+    /// prefer the fat one.
+    /// </remarks>
+    private const string Liquid = "CON.F.US.MES.M26";
+
     private static readonly InstrumentId _mes = new("MES");
 
     private readonly SeriesStoreFixture _fixture;
@@ -68,6 +81,35 @@ public sealed class HistoricalContractSelectionTests : IAsyncLifetime
     /// <summary>A Tuesday mid-session, so every bucket seeded below is one the venue owed us.</summary>
     private static DateTimeOffset SessionStart =>
         MarketClock.FromMarket(new DateOnly(2026, 8, 18), new TimeOnly(9, 0)).ToUniversalTime();
+
+    /// <summary>The instant the reads below are made at. A literal, three hours past the seeded run.</summary>
+    private static DateTimeOffset Now => SessionStart.AddHours(3);
+
+    /// <summary>
+    /// A Tuesday mid-session in <b>June</b> — the range the venue's own pick answers wrongly.
+    /// </summary>
+    /// <remarks>
+    /// June, deliberately. On <c>HMUZ</c> at depth two a June trade date names <c>M26</c> and <c>U26</c>, so
+    /// the venue front is one of the two candidates and can be shown <i>losing</i> rather than merely being
+    /// absent from the set. A literal, and not derived from <see cref="SessionStart"/> minus
+    /// <see cref="BarCacheService.PresentHorizon"/>.
+    /// </remarks>
+    private static DateTimeOffset HistoryStart => Market(2026, 6, 16, 9);
+
+    /// <summary>A Tuesday mid-session in March, whose candidates the venue below lists none of.</summary>
+    private static DateTimeOffset UnlistedStart => Market(2026, 3, 17, 9);
+
+    /// <summary>The session calendar every fixture here shares.</summary>
+    private static BarSessionCalendar Calendar => BarSessionCalendar.Parse("16:00", []);
+
+    /// <summary>A market-time instant, on the hour.</summary>
+    /// <param name="year">The year.</param>
+    /// <param name="month">The month.</param>
+    /// <param name="day">The day.</param>
+    /// <param name="hour">The hour, Central.</param>
+    /// <returns>The instant, in UTC.</returns>
+    private static DateTimeOffset Market(int year, int month, int day, int hour) =>
+        MarketClock.FromMarket(new DateOnly(year, month, day), new TimeOnly(hour, 0)).ToUniversalTime();
 
     [Fact]
     public async Task TheTenureStart_IsTheTrailingRunOfTheFront_NotItsEarliestBucket()
@@ -127,6 +169,328 @@ public sealed class HistoricalContractSelectionTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task AWarmStore_FetchesThePresentFromTheVenueFrontOnly_WithZeroContractLookups()
+    {
+        // THE COST GUARD. Every poll this server actually serves lands here, and the whole hybrid is only
+        // affordable because this path is byte-identical to what it was before ADR-0020: the same pages, the
+        // same requests++, and NOT ONE contract lookup. A present band that quietly resolved its candidates
+        // would put a vendor call on the hottest read for a question the venue's own pick already answers.
+        //
+        // The store's trailing run of the front is what anchors it. Seeded here, so the band starts at
+        // SessionStart rather than at the seven-day horizon -- which is the difference between this read
+        // being present-band by measurement and being present-band by luck.
+        await SeedTenureAnchorAsync();
+
+        CountingGateway gateway = Venue(new Dictionary<string, IEnumerable<Bar>>(StringComparer.Ordinal)
+        {
+            [Front] = Series(SessionStart, 24, 5, 1_000),
+            [Liquid] = [],
+        });
+
+        BarCacheService cache = BuildAround(gateway, Now);
+
+        BarReadResult result = await cache.GetBarsAsync(
+            _mes, 5, new BarRange(SessionStart, SessionStart.AddHours(2)), CancellationToken.None);
+
+        result.Bars.Should().HaveCount(24);
+        gateway.BarRequests.Should().Be(
+            1,
+            "the second hour is one page on the venue's own pick -- the count this read cost before ADR-0020 "
+            + "and the count it must still cost");
+        result.VenueRequests.Should().Be(1);
+        gateway.ContractLookups.Should().Be(
+            0, "nothing in the present band is a constructed expiry, so nothing needs confirming by id");
+
+        (await _database.Bars
+            .AsNoTracking()
+            .Where(b => b.BucketStart >= SessionStart.AddHours(1))
+            .ToListAsync())
+            .Should().AllSatisfy(b => b.ContractId.Should().Be(Front));
+    }
+
+    [Fact]
+    public async Task ARangeBeforeTheFrontsTenure_IsFetchedFromEveryCandidate_AndStoresTheHigherVolumeOne()
+    {
+        // The defect, and the fix, in one read. Measured through the live server on 2026-09-06, a January
+        // window answered two hourly bars carrying volume 2 and 5 on the venue-active contract while the
+        // contract that was actually trading answered a full session. Nothing errored; the series was
+        // contiguous, the prices were real, and a year of history was a year of the thinnest listed month.
+        //
+        // So the range is asked of EVERY candidate the cycle names for its trade date, and the answer with
+        // the volume is the one that is stored. Both candidates really answer here -- the front is thin, not
+        // absent -- because an absent front would let a "first non-empty wins" implementation pass.
+        await SeedTenureAnchorAsync();
+
+        CountingGateway gateway = Venue(new Dictionary<string, IEnumerable<Bar>>(StringComparer.Ordinal)
+        {
+            [Front] = Series(HistoryStart, 12, 5, 10),
+            [Liquid] = Series(HistoryStart, 12, 5, 5_000),
+        });
+
+        BarCacheService cache = BuildAround(gateway, Now);
+
+        await cache.GetBarsAsync(
+            _mes, 5, new BarRange(HistoryStart, HistoryStart.AddHours(1)), CancellationToken.None);
+
+        gateway.BarRequests.Should().Be(
+            2, "one page each for the two candidates a June trade date names on a quarterly cycle");
+        gateway.ContractLookups.Should().Be(
+            2, "a constructed expiry is a guess until the venue confirms it by id");
+
+        List<BarRecord> stored = await StoredAsync(HistoryStart, HistoryStart.AddHours(1));
+
+        stored.Should().HaveCount(12);
+        stored.Should().AllSatisfy(b => b.ContractId.Should().Be(Liquid));
+        stored.Should().AllSatisfy(b => b.Volume.Should().Be(
+            5_000, "the winner's bars are stored, not the loser's numbers under the winner's id"));
+    }
+
+    [Fact]
+    public async Task TheWinnerCanChangeMidRange_AndTheSeamFallsOnTheTradeDate()
+    {
+        // A roll happens INSIDE a range, and the policy decides per trade date rather than per range -- so
+        // one fetch has to be able to store two contracts, and the seam has to land where the market's day
+        // turns rather than where the clock's does. 17:00 Central opens the next trade date, so a bar opening
+        // at 17:00 on the Tuesday belongs to Wednesday's session and to whichever contract traded it.
+        //
+        // A seam placed at UTC midnight, or at the range's midpoint, would satisfy "two segments" just as
+        // well -- which is why the instant is asserted rather than the count.
+        await SeedTenureAnchorAsync();
+
+        BarRange window = new(Market(2026, 6, 16, 9), Market(2026, 6, 17, 9));
+        DateTimeOffset seam = Market(2026, 6, 16, 17);
+        IReadOnlyList<DateTimeOffset> grid =
+            BarGapDetector.ExpectedBuckets(window, TimeSpan.FromHours(1), Calendar);
+
+        CountingGateway gateway = Venue(new Dictionary<string, IEnumerable<Bar>>(StringComparer.Ordinal)
+        {
+            [Liquid] = grid.Select(b => Flat(b, b < seam ? 5_000 : 1)),
+            [Front] = grid.Select(b => Flat(b, b < seam ? 1 : 5_000)),
+        });
+
+        BarCacheService cache = BuildAround(gateway, Now);
+
+        BarReadResult result = await cache.GetBarsAsync(_mes, 60, window, CancellationToken.None);
+
+        IReadOnlyList<ContractSegment> segments = ContractRollDetector.Segment(result.Bars);
+
+        segments.Should().HaveCount(2, "one range, two trade-date runs, two contracts");
+        segments[0].ContractId.Should().Be(Liquid);
+        segments[1].ContractId.Should().Be(Front);
+        segments[1].FirstBucket.Should().Be(
+            seam, "the trade date turns at the session open, and that is where the winner may change");
+
+        List<BarRecord> stored = await StoredAsync(window.Start, window.End, 60);
+
+        stored.Where(b => b.BucketStart < seam).Should().AllSatisfy(b => b.ContractId.Should().Be(Liquid));
+        stored.Where(b => b.BucketStart >= seam).Should().AllSatisfy(b => b.ContractId.Should().Be(Front));
+    }
+
+    [Fact]
+    public async Task AThinCandidate_NeverBeatsALiquidOne_EvenWhenItIsTheVenueFront()
+    {
+        // The venue's active flag is a fact about NOW, and this read is about June. The front answers -- it
+        // is listed, it is asked, and it hands back a full twelve bars -- and it still loses, because what
+        // decides a historical trade date is volume and nothing else. An implementation that preferred the
+        // front on any tie, or that stopped at the first candidate with bars, passes every other case here.
+        await SeedTenureAnchorAsync();
+
+        CountingGateway gateway = Venue(new Dictionary<string, IEnumerable<Bar>>(StringComparer.Ordinal)
+        {
+            [Front] = Series(HistoryStart, 12, 5, 10),
+            [Liquid] = Series(HistoryStart, 12, 5, 5_000),
+        });
+
+        BarRange window = new(HistoryStart, HistoryStart.AddHours(1));
+
+        // Asserted rather than assumed: a front that answered nothing would make this test about an absence.
+        (await gateway.GetBarsAsync(Front, window, TimeSpan.FromMinutes(5), CancellationToken.None))
+            .Should().HaveCount(12, "the front is thin over this range, not silent");
+        gateway.ResetCounters();
+
+        BarCacheService cache = BuildAround(gateway, Now);
+
+        BarReadResult result = await cache.GetBarsAsync(_mes, 5, window, CancellationToken.None);
+
+        result.Bars.Should().AllSatisfy(b => b.ContractId.Should().Be(Liquid));
+        (await StoredAsync(window.Start, window.End))
+            .Should().NotContain(b => b.ContractId == Front, "the venue's pick lost this range on volume");
+    }
+
+    [Fact]
+    public async Task ACandidateTheVenueDoesNotKnow_IsDropped_AndNoCandidateFallsBackToTheFront_Loudly()
+    {
+        // Both halves of the degradation rule. A March trade date names H26 and M26; this venue lists
+        // neither, so both are dropped -- and a slice with nothing left to ask must NOT become a slice that
+        // reports a quiet market. It falls back to today's behaviour, the venue's own pick, and says so.
+        //
+        // And it earns NO permanent memo. A memo written under the front for a range the front was never the
+        // right contract for is exactly the shape gh#504 closed: an "empty" recorded on behalf of contracts
+        // nobody asked. Re-asking is the acceptable cost; a permanent hole is not.
+        await SeedTenureAnchorAsync();
+
+        CountingGateway gateway = Venue(new Dictionary<string, IEnumerable<Bar>>(StringComparer.Ordinal)
+        {
+            [Front] = [],
+        });
+
+        CapturingLogger<BarCacheService> log = new();
+        BarCacheService cache = BuildAround(gateway, Now, log);
+
+        await cache.GetBarsAsync(
+            _mes, 5, new BarRange(UnlistedStart, UnlistedStart.AddHours(1)), CancellationToken.None);
+
+        gateway.ContractLookups.Should().Be(
+            2, "both constructed March expiries are existence-checked before either is fetched");
+        gateway.BarRequests.Should().Be(
+            1, "nothing survived the check, so the slice is fetched from the venue's pick exactly as before");
+
+        log.Messages.Should().ContainMatch(
+            "*no listed candidate*",
+            "a degraded answer that says nothing is indistinguishable from a correct one");
+
+        (await _database.BarCoverage.AsNoTracking().ToListAsync()).Should().BeEmpty(
+            "a slice nobody could answer for records no permanent claim that it is empty");
+    }
+
+    [Fact]
+    public async Task AllCandidatesEmpty_RecordsOnePermanentMemoPerContract()
+    {
+        // "Empty" is a fact about a range AND a contract (gh#504), so a range every candidate answered empty
+        // leaves one memo per candidate -- not one memo, and not none. One memo would assert the emptiness on
+        // behalf of a contract nobody asked; none would put the whole candidate set back on the venue on
+        // every read, which is gh#408's unbounded cost re-opened at K times the width.
+        await SeedTenureAnchorAsync();
+
+        CountingGateway gateway = Venue(new Dictionary<string, IEnumerable<Bar>>(StringComparer.Ordinal)
+        {
+            [Front] = [],
+            [Liquid] = [],
+        });
+
+        BarCacheService cache = BuildAround(gateway, Now);
+        BarRange window = new(HistoryStart, HistoryStart.AddHours(1));
+
+        await cache.GetBarsAsync(_mes, 5, window, CancellationToken.None);
+
+        gateway.BarRequests.Should().Be(2);
+
+        List<BarCoverageRecord> memos = await _database.BarCoverage.AsNoTracking().ToListAsync();
+
+        memos.Select(m => m.ContractId).Should().BeEquivalentTo([Front, Liquid]);
+        memos.Should().AllSatisfy(m => m.ExpiresAt.Should().BeNull(
+            "June is settled history at an August clock, so an empty answer over it is believed permanently"));
+
+        gateway.ResetCounters();
+        BarReadResult second = await cache.GetBarsAsync(_mes, 5, window, CancellationToken.None);
+
+        second.VenueRequests.Should().Be(0);
+        gateway.BarRequests.Should().Be(
+            0, "every candidate of the slice has a memo covering it, so the range is answered");
+        gateway.ContractLookups.Should().Be(
+            0, "the directory remembers a positive answer for the life of the process");
+    }
+
+    [Fact]
+    public async Task OneCandidateEmpty_RecordsNoMemo_ForTheWinner()
+    {
+        // The other half of the ledger rule. A candidate that answered with bars is not a candidate that
+        // answered empty, and a memo written for the winner would claim the range holds nothing under the
+        // very contract whose bars were just stored -- which would then answer the range for every future
+        // read and hide the rest of it forever.
+        await SeedTenureAnchorAsync();
+
+        CountingGateway gateway = Venue(new Dictionary<string, IEnumerable<Bar>>(StringComparer.Ordinal)
+        {
+            [Front] = [],
+            [Liquid] = Series(HistoryStart, 12, 5, 5_000),
+        });
+
+        BarCacheService cache = BuildAround(gateway, Now);
+
+        await cache.GetBarsAsync(
+            _mes, 5, new BarRange(HistoryStart, HistoryStart.AddHours(1)), CancellationToken.None);
+
+        (await _database.BarCoverage.AsNoTracking().ToListAsync())
+            .Should().ContainSingle().Which.ContractId.Should().Be(
+                Front, "only the contract that answered nothing is recorded as having answered nothing");
+
+        (await StoredAsync(HistoryStart, HistoryStart.AddHours(1)))
+            .Should().AllSatisfy(b => b.ContractId.Should().Be(Liquid));
+    }
+
+    [Fact]
+    public async Task ATradeDateAlreadyHeld_IsNotInterleaved()
+    {
+        // ADR-0020 part 5, and ADR-0011's interleaving consequence discharged. A trade date the store already
+        // holds attributed bars for keeps its contract, even when another candidate carried more volume that
+        // day -- because a read that re-decided history would splice a second contract into the middle of a
+        // day already recorded, and ContractRollDetector reports contiguous RUNS: a contract that reappears
+        // after another is a third segment, which is what a backfill under the wrong month looks like.
+        //
+        // Rewriting a defective run is an operator's decision and has its own verb (reselect-bars, gh#506).
+        await SeedTenureAnchorAsync();
+
+        BarRange window = new(Market(2026, 6, 16, 9), Market(2026, 6, 16, 16));
+        DateTimeOffset held = Market(2026, 6, 16, 13);
+        IReadOnlyList<DateTimeOffset> grid =
+            BarGapDetector.ExpectedBuckets(window, TimeSpan.FromHours(1), Calendar);
+
+        // The first four hours of the June session, already stored under the venue's pick -- the thin run an
+        // operator's store carries from before this record.
+        foreach (DateTimeOffset bucket in grid.Where(b => b < held))
+        {
+            await SeedBucketAsync(Front, 60, bucket, 10);
+        }
+
+        CountingGateway gateway = Venue(new Dictionary<string, IEnumerable<Bar>>(StringComparer.Ordinal)
+        {
+            [Front] = grid.Where(b => b >= held).Select(b => Flat(b, 10)),
+            [Liquid] = grid.Where(b => b >= held).Select(b => Flat(b, 5_000)),
+        });
+
+        BarCacheService cache = BuildAround(gateway, Now);
+
+        BarReadResult result = await cache.GetBarsAsync(_mes, 60, window, CancellationToken.None);
+
+        ContractRollDetector.Segment(result.Bars).Should().ContainSingle(
+            "the trade date keeps the contract the store already attributed it to, so the day is one run");
+
+        (await StoredAsync(window.Start, window.End, 60))
+            .Should().AllSatisfy(b => b.ContractId.Should().Be(Front));
+    }
+
+    [Fact]
+    public async Task EveryHandBuiltCache_ServesItsOwnInstrumentThroughTheFetchPath()
+    {
+        // The behavioural half of the reflection assertion below (gh#505 review). A registry built from
+        // different options than the instrument the fixture then reads answers CycleFor with
+        // KeyNotFoundException, and the fetch flow now asks it on every read that owes the venue anything --
+        // so the mistake arrives as a thrown tool call rather than as a wrong number.
+        //
+        // ConcurrencyHarness serves TWO symbols: ES for everything and MNQ for the rebuild test, which needs
+        // its own instrument because rebuild-indicators filters by instrument rather than by venue. Asserted
+        // through a real read on the second one, and on the absence of the degradation warning an unserved
+        // instrument earns -- a read that fell back would otherwise pass by fetching exactly as it does now.
+        string venue = ConcurrencyHarness.Venue();
+        CapturingLogger<BarCacheService> log = new();
+
+        BarCacheService cache = ConcurrencyHarness.Cache(
+            _database, venue, ConcurrencyHarness.Bars(0, 4), ConcurrencyHarness.Bucket(8), log);
+
+        BarReadResult result = await cache.GetBarsAsync(
+            ConcurrencyHarness.RebuildInstrument,
+            ConcurrencyHarness.ResolutionMinutes,
+            ConcurrencyHarness.Window(0, 4),
+            CancellationToken.None);
+
+        result.Bars.Should().NotBeEmpty("the read has to reach the fetch, or it asks the registry nothing");
+        log.Messages.Should().NotContainMatch(
+            "*not one this server serves*",
+            "the harness configures MNQ, so the cache it hands out must carry the registry that knows it");
+    }
+
+    [Fact]
     public void EveryHandBuiltCache_CarriesARegistryServingItsOwnInstrument()
     {
         // A registry is only useful for the instruments it was configured with: CycleFor and
@@ -156,14 +520,124 @@ public sealed class HistoricalContractSelectionTests : IAsyncLifetime
     /// <returns>The registry.</returns>
     /// <remarks>
     /// Read off the field because the service exposes no registry, and it should not: nothing outside the
-    /// fetch flow has a reason to ask it for one. The alternative — a behavioural assertion — cannot be
-    /// written until the fetch actually consults the registry, and the mistake this catches is one that would
-    /// then throw rather than answer wrongly. Reflection is the cheap proof available today.
+    /// fetch flow has a reason to ask it for one. The behavioural assertion that could not be written when
+    /// this was added — the fetch did not yet consult the registry — now exists beside it as
+    /// <c>EveryHandBuiltCache_ServesItsOwnInstrumentThroughTheFetchPath</c>; this one is kept because it
+    /// names the two registry questions directly and fails by <i>name</i> if the field is ever renamed,
+    /// which is the right failure direction for a coupling nobody should introduce quietly.
     /// </remarks>
     private static InstrumentRegistry RegistryOf(BarCacheService cache) =>
         (InstrumentRegistry)typeof(BarCacheService)
             .GetField("_registry", BindingFlags.Instance | BindingFlags.NonPublic)!
             .GetValue(cache)!;
+
+    /// <summary>A flat bar carrying one volume — the only number these cases decide anything on.</summary>
+    /// <param name="bucket">When the bucket opens.</param>
+    /// <param name="volume">The volume.</param>
+    /// <returns>The bar.</returns>
+    private static Bar Flat(DateTimeOffset bucket, long volume) =>
+        new(bucket, 100m, 101m, 99m, 100.5m, volume);
+
+    /// <summary>A run of flat bars at one resolution, all carrying the same volume.</summary>
+    /// <param name="from">The first bucket.</param>
+    /// <param name="count">How many buckets.</param>
+    /// <param name="minutes">The bar size in minutes.</param>
+    /// <param name="volume">The volume every bar carries.</param>
+    /// <returns>The bars, ascending.</returns>
+    private static IEnumerable<Bar> Series(DateTimeOffset from, int count, int minutes, long volume) =>
+        Enumerable.Range(0, count).Select(i => Flat(from.AddMinutes(minutes * i), volume));
+
+    /// <summary>A venue listing several expiries of MES, with <see cref="Front"/> the active one.</summary>
+    /// <param name="byContract">The bars each listed contract holds.</param>
+    /// <returns>The double.</returns>
+    private static CountingGateway Venue(IReadOnlyDictionary<string, IEnumerable<Bar>> byContract) =>
+        new(byContract, Front);
+
+    /// <summary>The stored rows of a window, read past the tracker.</summary>
+    /// <param name="from">The window start.</param>
+    /// <param name="to">The window end, exclusive.</param>
+    /// <param name="resolutionMinutes">The resolution.</param>
+    /// <returns>The rows, ascending.</returns>
+    /// <remarks>
+    /// <b><c>AsNoTracking</c>, and it is not tidiness.</b> The bars are written by an
+    /// <c>ON CONFLICT … DO UPDATE</c> statement the change tracker never sees, so a tracked read is answered
+    /// from the identity map with whatever this context seeded rather than with the row the statement wrote.
+    /// </remarks>
+    private async Task<List<BarRecord>> StoredAsync(
+        DateTimeOffset from, DateTimeOffset to, int resolutionMinutes = 5) =>
+        await _database.Bars
+            .AsNoTracking()
+            .Where(b => b.ResolutionMinutes == resolutionMinutes
+                && b.BucketStart >= from
+                && b.BucketStart < to)
+            .OrderBy(b => b.BucketStart)
+            .ToListAsync();
+
+    /// <summary>
+    /// Seeds the shape that puts the present band at <see cref="SessionStart"/>, so a June or March window
+    /// is history by measurement rather than by the seven-day fallback.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Two runs, and both are load-bearing. The <see cref="Previous"/> bucket in July is what makes the
+    /// front's <b>trailing</b> run start in August: <c>T(F)</c> is the earliest front bucket <i>after</i> the
+    /// latest bucket that is not the front's, so without it a front bar seeded anywhere earlier — which
+    /// several cases below do seed — would drag the present band back over the range under test and the case
+    /// would pass by testing the present path.
+    /// </para>
+    /// <para>
+    /// Every instant here is a literal. Derived from <see cref="BarCacheService.PresentHorizon"/> these would
+    /// move with the constant, and the cases that exist to catch a change to it would follow it and stay
+    /// green.
+    /// </para>
+    /// </remarks>
+    private async Task SeedTenureAnchorAsync()
+    {
+        await SeedAsync(Previous, 5, Market(2026, 7, 14, 9), 1);
+        await SeedAsync(Front, 5, SessionStart, 12);
+    }
+
+    /// <summary>Seeds one bucket under one contract id, at a stated volume.</summary>
+    /// <param name="contractId">The contract the row is attributed to.</param>
+    /// <param name="resolutionMinutes">The resolution.</param>
+    /// <param name="bucket">The bucket start.</param>
+    /// <param name="volume">The volume.</param>
+    private async Task SeedBucketAsync(
+        string contractId, int resolutionMinutes, DateTimeOffset bucket, long volume)
+    {
+        _database.Bars.Add(new BarRecord
+        {
+            Venue = "test",
+            Instrument = _mes.Symbol,
+            ResolutionMinutes = resolutionMinutes,
+            BucketStart = bucket,
+            Open = 100m,
+            High = 101m,
+            Low = 99m,
+            Close = 100.5m,
+            Volume = volume,
+            ContractId = contractId,
+            RecordedAt = SessionStart,
+        });
+
+        await _database.SaveChangesAsync();
+        _database.ChangeTracker.Clear();
+    }
+
+    /// <summary>Seeds a run of buckets under one contract id, from an instant.</summary>
+    /// <param name="contractId">The contract the rows are attributed to.</param>
+    /// <param name="resolutionMinutes">The resolution to seed under.</param>
+    /// <param name="from">The first bucket.</param>
+    /// <param name="count">How many buckets the run holds.</param>
+    private async Task SeedAsync(
+        string contractId, int resolutionMinutes, DateTimeOffset from, int count)
+    {
+        for (int i = 0; i < count; i++)
+        {
+            await SeedBucketAsync(
+                contractId, resolutionMinutes, from.AddMinutes(i * resolutionMinutes), 1_000);
+        }
+    }
 
     /// <summary>Seeds a run of buckets under one contract id.</summary>
     /// <param name="contractId">The contract the rows are attributed to.</param>
@@ -202,18 +676,25 @@ public sealed class HistoricalContractSelectionTests : IAsyncLifetime
     /// <summary>Builds the cache over a venue listing both the front and the contract behind it.</summary>
     /// <param name="now">The instant to read at.</param>
     /// <returns>The service.</returns>
-    private BarCacheService Build(DateTimeOffset now)
-    {
-        CountingGateway gateway = new(
-            new Dictionary<string, IEnumerable<Bar>>(StringComparer.Ordinal)
+    private BarCacheService Build(DateTimeOffset now) =>
+        BuildAround(
+            Venue(new Dictionary<string, IEnumerable<Bar>>(StringComparer.Ordinal)
             {
                 [Front] = [],
                 [Previous] = [],
-            },
-            Front);
+            }),
+            now);
 
+    /// <summary>Builds the cache around a venue double the test already holds.</summary>
+    /// <param name="gateway">The venue double.</param>
+    /// <param name="now">The instant to read at.</param>
+    /// <param name="logger">A logger, when the case needs to read what the fetch said it did.</param>
+    /// <returns>The service.</returns>
+    private BarCacheService BuildAround(
+        CountingGateway gateway, DateTimeOffset now, ILogger<BarCacheService>? logger = null)
+    {
         FakeTimeProvider clock = new(now);
-        BarSessionCalendar calendar = BarSessionCalendar.Parse("16:00", []);
+        BarSessionCalendar calendar = Calendar;
 
         IndicatorCatalog catalog = new(
             Options.Create(new IndicatorOptions { AtrPeriod = 3, RsiPeriod = 3 }), calendar);
@@ -236,7 +717,7 @@ public sealed class HistoricalContractSelectionTests : IAsyncLifetime
             new InstrumentRegistry(market),
             new ContractDirectory(clock),
             clock,
-            NullLogger<BarCacheService>.Instance,
+            logger ?? NullLogger<BarCacheService>.Instance,
             _telemetry);
     }
 }

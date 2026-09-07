@@ -581,12 +581,19 @@ public sealed class BarCacheServiceTests : IAsyncLifetime
     public async Task AVenueListingTwoExpiries_StillCoversFromTheFrontsMemo()
     {
         // gh#504 from the other side, and the guard on gh#408 staying closed. THE CANDIDATE SET IS THE FRONT
-        // CONTRACT ALONE in this slice -- #505 is what widens it to the policy's per-range candidates -- and
-        // the venue's whole resolved listing is NOT that set. The venue lists two expiries of one product
-        // during a roll window (InFrontMonthOrder), while FetchAsync asks contracts[0] and stamps
-        // contracts[0]: a second listed contract can therefore never acquire a memo of its own, `All` over
-        // the listing can never be satisfied, and every previously-empty settled range is re-fetched on EVERY
-        // read -- which is precisely the unbounded per-read cost gh#408 closed.
+        // CONTRACT ALONE HERE, and under gh#505 that is a measurement rather than a simplification: this
+        // window sits three days behind SettledNow, well inside the seven-day PresentHorizon, and the store
+        // holds no run of the front to anchor the band on -- so T(F) falls back to `now - PresentHorizon`
+        // and the whole range is PRESENT BAND. The present band is the venue's own pick by definition
+        // (ADR-0020 section 1), so the front is the only contract this read consults, and it is the only one
+        // whose memo can answer.
+        //
+        // The venue's whole resolved listing is still NOT the candidate set. It lists two expiries of one
+        // product through a roll window (InFrontMonthOrder), while the present band asks and stamps exactly
+        // one: a second listed contract can therefore never acquire a memo of its own, `All` over the
+        // listing can never be satisfied, and every previously-empty settled range would be re-fetched on
+        // EVERY read -- precisely the unbounded per-read cost gh#408 closed. What gh#505 widened is the
+        // HISTORICAL band, which this window is not in.
         //
         // RED against a candidate set taken from the whole listing: the H27 leg has no memo of its own, the
         // range is left outstanding, and this read costs a paced page.

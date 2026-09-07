@@ -66,6 +66,95 @@ public sealed class ContractRollReportingTests(SeriesStoreFixture fixture) : IAs
 
     private static DateTimeOffset Bucket(int index) => SessionStart.AddMinutes(5 * index);
 
+    /// <summary>The four expiries a year of an equity index trades, oldest first.</summary>
+    private static readonly string[] _year =
+        ["CON.F.US.EP.H26", "CON.F.US.EP.M26", "CON.F.US.EP.U26", "CON.F.US.EP.Z26"];
+
+    /// <summary>A market-time instant, on the hour.</summary>
+    /// <param name="year">The year.</param>
+    /// <param name="month">The month.</param>
+    /// <param name="day">The day.</param>
+    /// <param name="hour">The hour, Central.</param>
+    /// <returns>The instant, in UTC.</returns>
+    private static DateTimeOffset Market(int year, int month, int day, int hour) =>
+        MarketClock.FromMarket(new DateOnly(year, month, day), new TimeOnly(hour, 0)).ToUniversalTime();
+
+    /// <summary>The contract that carried the volume on a trade date — the changeovers, as literals.</summary>
+    /// <param name="tradeDate">The trade date.</param>
+    /// <returns>The contract id.</returns>
+    /// <remarks>
+    /// Stated per <b>trade date</b> rather than per instant, so every changeover falls on a session boundary
+    /// by construction. A switch placed mid-session would split one trade date's volume between two contracts
+    /// and the policy — which decides per trade date — would answer with whichever half was larger, making
+    /// the seam an artefact of the fixture.
+    /// </remarks>
+    private static string Reigning(DateOnly tradeDate) =>
+        tradeDate < new DateOnly(2026, 3, 16) ? _year[0]
+        : tradeDate < new DateOnly(2026, 6, 16) ? _year[1]
+        : tradeDate < new DateOnly(2026, 9, 16) ? _year[2]
+        : _year[3];
+
+    [Fact]
+    public async Task AYearOfHistory_ReportsOneSegmentPerRoll_InExpiryOrder()
+    {
+        // ADR-0011 named the defect and deferred the fix: a backfill after a roll stamps old buckets with
+        // TODAY's contract, so a year of "history" fetched from contracts[0] reports one long run of the
+        // newest expiry -- or, once older bars are healed in, three and four runs of contracts interleaved.
+        // The machinery to describe a roll was built and had nothing true to describe.
+        //
+        // Under ADR-0020 the year is fetched per trade date from whichever listed contract carried the
+        // volume, so the store holds FOUR contiguous runs in expiry order, each starting at the changeover
+        // the volume names. That is the whole epic, observed from the tool a caller actually holds.
+        //
+        // Nothing is seeded: the store is cold and the bars arrive through the real fetch, because a seeded
+        // store would assert what this test itself wrote.
+        BarRange window = new(Market(2026, 1, 6, 9), Market(2026, 12, 29, 9));
+        BarSessionCalendar calendar = BarSessionCalendar.Parse("16:00", []);
+        IReadOnlyList<DateTimeOffset> grid =
+            BarGapDetector.ExpectedBuckets(window, TimeSpan.FromHours(1), calendar);
+
+        // Each contract serves the whole year it could be asked about, thin outside its reign and fat inside
+        // it -- so no candidate is ever chosen for having been the only one to answer.
+        Dictionary<string, IEnumerable<Bar>> byContract = new(StringComparer.Ordinal);
+        foreach (string contractId in _year)
+        {
+            byContract[contractId] =
+            [
+                .. grid.Select(bucket =>
+                {
+                    DateOnly tradeDate = calendar.TradeDateFor(bucket)
+                        ?? DateOnly.FromDateTime(bucket.UtcDateTime);
+                    long volume = string.Equals(Reigning(tradeDate), contractId, StringComparison.Ordinal)
+                        ? 5_000
+                        : 1;
+                    return new Bar(bucket, 100m, 101m, 99m, 100.5m, volume);
+                }),
+            ];
+        }
+
+        Family tools = await ComposeAsync(
+            new CountingGateway(byContract, _year[3]), window.End.AddHours(2), maxRows: 20_000);
+
+        ToolPayloads.BarSeries series =
+            await tools.Bars.GetBars("ES", 60, window.Start, window.End, CancellationToken.None);
+
+        series.Contracts.Span.Should().Be(ToolPayloads.ContractSpan.SpansRoll);
+        series.Contracts.Segments.Select(s => s.ContractId).Should().Equal(
+            _year,
+            "four contiguous runs in expiry order -- a contract reappearing after another would be a fifth "
+            + "segment, and interleaving is exactly what a backfill under the wrong front month looks like");
+
+        foreach (ToolPayloads.ContractSegmentInfo segment in series.Contracts.Segments)
+        {
+            DateOnly first = calendar.TradeDateFor(segment.FirstBucket)
+                ?? DateOnly.FromDateTime(segment.FirstBucket.UtcDateTime);
+
+            Reigning(first).Should().Be(
+                segment.ContractId,
+                "each run starts on the trade date the volume moved, not on a calendar month boundary");
+        }
+    }
+
     [Fact]
     public async Task GetBars_ReportsTheRollBoundaryInThePayload()
     {
@@ -390,24 +479,10 @@ public sealed class ContractRollReportingTests(SeriesStoreFixture fixture) : IAs
     {
         await _database.SaveChangesAsync();
 
-        MarketDataOptions options = new()
-        {
-            Instruments = "ES,NQ",
-            MaxRows = 5_000,
-            SessionCloseCentral = "16:00",
-        };
-        IOptions<MarketDataOptions> wrapped = Options.Create(options);
-
-        BarSessionCalendar calendar = BarSessionCalendar.Parse("16:00", []);
-        IndicatorCatalog catalog = new(
-            Options.Create(new IndicatorOptions { AtrPeriod = 3, RsiPeriod = 3 }), calendar);
-        FakeTimeProvider clock = new(Bucket(total).AddHours(2));
-        CountingGateway gateway = new([]);
-
-        (_wrapped, _calendar, _catalog, _clock, _gateway) = (wrapped, calendar, catalog, clock, gateway);
+        Prepare(new CountingGateway([]), Bucket(total).AddHours(2), maxRows: 5_000);
 
         IndicatorProjector projector =
-            new(_database, catalog, NullLogger<IndicatorProjector>.Instance, _telemetry);
+            new(_database, _catalog!, NullLogger<IndicatorProjector>.Instance, _telemetry);
 
         // WRAPPED IN THE TRANSACTION PRODUCTION USES (gh#387). The projector refuses to run outside one --
         // it writes its values with a statement the store runs as it is sent, while its removals wait for
@@ -422,6 +497,65 @@ public sealed class ContractRollReportingTests(SeriesStoreFixture fixture) : IAs
             await _database.SaveChangesAsync();
             await seed.CommitAsync(CancellationToken.None);
         }
+
+        return Compose(projector, detection);
+    }
+
+    /// <summary>
+    /// Composes the tools over a venue the case supplies, and seeds <b>nothing</b>.
+    /// </summary>
+    /// <param name="gateway">The venue double, which for a roll needs a series per contract.</param>
+    /// <param name="now">The instant to read at.</param>
+    /// <param name="maxRows">The row cap the guards enforce.</param>
+    /// <returns>The tools.</returns>
+    /// <remarks>
+    /// The overload above builds its own <c>CountingGateway</c> from nothing and seeds the store by hand,
+    /// which fixes every case on it at one contract and at bars this fixture wrote itself. A case about
+    /// <b>which contract a range is fetched from</b> cannot be expressed that way: the answer has to arrive
+    /// through the real fetch, from a venue listing more than one expiry (ADR-0020, gh#505).
+    /// </remarks>
+    private Task<Family> ComposeAsync(CountingGateway gateway, DateTimeOffset now, int maxRows)
+    {
+        Prepare(gateway, now, maxRows);
+
+        return Task.FromResult(
+            Compose(
+                new IndicatorProjector(_database, _catalog!, NullLogger<IndicatorProjector>.Instance, _telemetry)));
+    }
+
+    /// <summary>Fixes the options, calendar, catalogue, clock and venue this composition runs on.</summary>
+    /// <param name="gateway">The venue double.</param>
+    /// <param name="now">The instant to read at.</param>
+    /// <param name="maxRows">The row cap the guards enforce.</param>
+    private void Prepare(CountingGateway gateway, DateTimeOffset now, int maxRows)
+    {
+        MarketDataOptions options = new()
+        {
+            Instruments = "ES,NQ",
+            MaxRows = maxRows,
+            SessionCloseCentral = "16:00",
+        };
+        IOptions<MarketDataOptions> wrapped = Options.Create(options);
+
+        BarSessionCalendar calendar = BarSessionCalendar.Parse("16:00", []);
+        IndicatorCatalog catalog = new(
+            Options.Create(new IndicatorOptions { AtrPeriod = 3, RsiPeriod = 3 }), calendar);
+        FakeTimeProvider clock = new(now);
+
+        (_wrapped, _calendar, _catalog, _clock, _gateway) = (wrapped, calendar, catalog, clock, gateway);
+    }
+
+    /// <summary>Builds the three tool types over the prepared composition.</summary>
+    /// <param name="projector">The projection, shared with whatever seeded the store.</param>
+    /// <param name="detection">The key-level detection window, when a case states its own.</param>
+    /// <returns>The tools.</returns>
+    private Family Compose(IndicatorProjector projector, KeyLevelDetectionOptions? detection = null)
+    {
+        IOptions<MarketDataOptions> wrapped = _wrapped!;
+        BarSessionCalendar calendar = _calendar!;
+        IndicatorCatalog catalog = _catalog!;
+        FakeTimeProvider clock = _clock!;
+        CountingGateway gateway = _gateway!;
 
         BarCacheService cache = new(
             _database,

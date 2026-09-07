@@ -564,6 +564,17 @@ filter and front-month sort. The tape answers the same question by volume. Per
 The highest-volume contract is the tape's front; the session it overtook the previous front is
 the changeover, with the print time it flipped. `Unknown` direction still counts as size.
 
+**A historical contract is a third route, and it is a lookup rather than a search.**
+`FindContractAsync(instrument, expiry)` builds `CON.F.US.{product}.{MYY}` from the registry's
+product code and the expiry, asks the venue for that **exact id**, and applies the same
+product-code and tick-size match-or-refuse the search path does. It answers `null` when the
+venue does not list the id — not listed yet, or dropped — because search returns only the
+*active* expiry, so a past front month cannot be discovered and has to be constructed and
+confirmed (ADR-0020, gh#494). The registry carries each product's listing cycle and candidate
+depth for the construction; `ContractDirectory`, a singleton, memoises the answer per id — a
+positive for the process, a negative for an hour. The lookup draws on the venue's 200 / 60 s
+pool, not the 50 / 30 s history allowance, so it is not paced by `VenueRequestPacer`.
+
 **They disagree during a roll, by design, and neither is dropped.** A read that compares them
 names both, says the tape is the volume-front, and does not rewrite `Bars` or substitute the
 gateway when the tape has no unique winner. Choosing the front is a read-time decision: both

@@ -2423,6 +2423,13 @@ public sealed class TradeTapeRecorderTests
                 [new VenueContract(contract, instrument, true, 0.25m, 12.50m)]);
         }
 
+        /// <summary>Lists nothing by id — this fill is about subscriptions, not historical contracts.</summary>
+        public Task<VenueContract?> FindContractAsync(
+            InstrumentId instrument,
+            ContractExpiry expiry,
+            CancellationToken cancellationToken) =>
+            Task.FromResult<VenueContract?>(null);
+
         public Task<IReadOnlyList<Bar>> GetBarsAsync(
             string contractId,
             BarRange window,

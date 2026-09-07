@@ -2,6 +2,7 @@ using FluentAssertions;
 using MarqSpec.Client.ProjectX.Api.Models;
 using MarqSpec.Mcp.TopstepX.Configuration;
 using MarqSpec.Mcp.TopstepX.Domain;
+using MarqSpec.Mcp.TopstepX.Domain.MarketData;
 using MarqSpec.Mcp.TopstepX.MarketData;
 using MarqSpec.Mcp.TopstepX.Venue;
 
@@ -67,6 +68,56 @@ public sealed class ContractResolutionTests
     public void AMalformedContractIdMatchesNothing(string contractId)
     {
         ProjectXMarketDataGateway.HasProductCode(contractId, "EP").Should().BeFalse();
+    }
+
+    // ── Building an id, the inverse of reading one ───────────────────────────────────────────────────
+
+    [Theory]
+    [InlineData("EP", "U26", "CON.F.US.EP.U26")]
+    [InlineData("MES", "Z25", "CON.F.US.MES.Z25")]
+    [InlineData("MCLE", "V26", "CON.F.US.MCLE.V26")]
+    [InlineData("GCE", "G27", "CON.F.US.GCE.G27")]
+    public void AContractIdIsBuiltFromTheProductCodeAndExpiry_AndMatchesHasProductCode(
+        string productCode,
+        string expiryCode,
+        string expected)
+    {
+        // The venue's search returns only the ACTIVE expiry (gh#494), so a historical candidate cannot be
+        // discovered -- it has to be CONSTRUCTED here and confirmed by id. Construction and the check that
+        // guards every search result must therefore agree exactly: an id this method builds and
+        // HasProductCode then rejects would be a candidate the gateway refuses to believe its own answer
+        // about.
+        ContractExpiry.TryParse(expiryCode, out ContractExpiry expiry).Should().BeTrue();
+
+        string id = ProjectXMarketDataGateway.ContractIdFor(productCode, expiry);
+
+        id.Should().Be(expected);
+        ProjectXMarketDataGateway.HasProductCode(id, productCode).Should().BeTrue();
+        ProjectXMarketDataGateway.ExpiryRank(id).Should().Be(expiry.Rank - (ContractExpiry.Century * 12));
+    }
+
+    [Fact]
+    public void ABuiltMicroIdDoesNotMatchTheFullSizeProductCode()
+    {
+        // The awkward correct input for the pair above: building the micro's id must not produce something
+        // the full-size check accepts. Same tenfold error as the search path, arriving by construction.
+        ContractExpiry.TryParse("U26", out ContractExpiry expiry).Should().BeTrue();
+
+        string micro = ProjectXMarketDataGateway.ContractIdFor("MES", expiry);
+
+        ProjectXMarketDataGateway.HasProductCode(micro, "EP").Should().BeFalse();
+        ProjectXMarketDataGateway.HasProductCode(micro, "MES").Should().BeTrue();
+    }
+
+    [Fact]
+    public void AContractIdCannotBeBuiltWithoutAProductCode()
+    {
+        // A blank product code would build CON.F.US..U26 -- an id whose product segment is empty, which the
+        // venue answers nothing for and which reads as an ordinary miss rather than as the caller's mistake.
+        ContractExpiry.TryParse("U26", out ContractExpiry expiry).Should().BeTrue();
+
+        FluentActions.Invoking(() => ProjectXMarketDataGateway.ContractIdFor("  ", expiry))
+            .Should().Throw<ArgumentException>();
     }
 
     // ── The registry's half of the contract ──────────────────────────────────────────────────────────

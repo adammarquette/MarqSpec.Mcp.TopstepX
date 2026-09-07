@@ -176,6 +176,72 @@ public sealed class ProjectXMarketDataGateway : IMarketDataGateway
             .ThenBy(c => c.Id, StringComparer.Ordinal);
 
     /// <inheritdoc />
+    /// <remarks>
+    /// <para>
+    /// <b>Not paced by the history pacer, and deliberately so.</b> The vendor counts
+    /// <c>History/retrieveBars</c> against its own tight allowance — 50 requests / 30 seconds — while every
+    /// other endpoint, this lookup included, draws on a separate pool of <b>200 requests / 60 seconds</b>
+    /// (see <see cref="VenueRequestPacer"/>). Putting the lookup through the history pacer would spend the
+    /// scarce allowance on the abundant call and slow the paging it exists to protect. What keeps the lookup
+    /// count small is <c>ContractDirectory</c>, which memoises the answer per id.
+    /// </para>
+    /// <para>
+    /// <b>The id is constructed, so the answer is checked twice over.</b> The product segment must be the one
+    /// asked for, and the tick size must match this server's table — the same match-or-refuse pair
+    /// <see cref="ResolveContractsAsync"/> applies to a search result, for the same reason: a wrong tick
+    /// silently rescales every money figure, and a contract in the wrong instrument looks entirely ordinary
+    /// on a chart.
+    /// </para>
+    /// </remarks>
+    public async Task<VenueContract?> FindContractAsync(
+        InstrumentId instrument,
+        ContractExpiry expiry,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(expiry);
+
+        string productCode = _registry.ProductCodeFor(instrument);
+        string contractId = ContractIdFor(productCode, expiry);
+
+        Contract? found = await Guarded(
+            () => _client.GetContractByIdAsync(contractId, cancellationToken),
+            "looking up contract " + contractId).ConfigureAwait(false);
+
+        if (found is null)
+        {
+            // NOT an error. An expiry the exchange has not listed yet answers exactly like this, and so does
+            // one long enough expired that the venue has dropped it. The caller decides what an absent
+            // candidate means; inventing a contract here would decide it for them, wrongly.
+            return null;
+        }
+
+        // The id was built rather than returned by the venue, so confirm the venue answered about the
+        // product that was asked for. A lengthened prefix or a redirected id would otherwise arrive as an
+        // ordinary contract in a different instrument.
+        if (!HasProductCode(found.Id, productCode))
+        {
+            throw new VenueException(
+                "Asked the venue for contract '" + contractId + "' and it answered with '" + found.Id
+                + "', which does not carry the product code '" + productCode + "' expected for '"
+                + instrument.Symbol + "'. Refusing rather than reading bars from a different instrument.");
+        }
+
+        decimal expectedTick = _registry.SpecFor(instrument).TickSize;
+        if (found.TickSize != expectedTick)
+        {
+            throw new VenueException(
+                "Contract '" + found.Id + "' matches the product code for '" + instrument.Symbol
+                + "' but reports a tick size of "
+                + found.TickSize.ToString(System.Globalization.CultureInfo.InvariantCulture)
+                + " where this server expects "
+                + expectedTick.ToString(System.Globalization.CultureInfo.InvariantCulture)
+                + ". Refusing rather than pricing this instrument on the wrong scale.");
+        }
+
+        return ProjectXMapping.ToContract(found, instrument);
+    }
+
+    /// <inheritdoc />
     public async Task<IReadOnlyList<Bar>> GetBarsAsync(
         string contractId,
         BarRange window,
@@ -358,6 +424,41 @@ public sealed class ProjectXMarketDataGateway : IMarketDataGateway
         // the venue ever lengthens the prefix.
         string[] segments = contractId.Split('.');
         return segments.Length >= 2 && string.Equals(segments[^2], productCode, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// Builds a venue contract id from a product code and an expiry, as <c>CON.F.US.{code}.{MYY}</c>.
+    /// </summary>
+    /// <param name="productCode">
+    /// The venue's product segment, from <c>InstrumentRegistry.ProductCodeFor</c>. ES is <c>EP</c>, NQ is
+    /// <c>ENQ</c> — the code is not derivable from the symbol, which is why this takes it rather than an
+    /// <see cref="InstrumentId"/>: the registry is an instance dependency and this is the exact inverse of
+    /// <see cref="HasProductCode"/>.
+    /// </param>
+    /// <param name="expiry">The expiry the contract is named for.</param>
+    /// <returns>The id the venue would use for that contract.</returns>
+    /// <exception cref="ArgumentException"><paramref name="productCode"/> is blank.</exception>
+    /// <exception cref="ArgumentNullException"><paramref name="expiry"/> is null.</exception>
+    /// <remarks>
+    /// <para>
+    /// <b>Construction is the only route to a historical contract.</b> Search and available-contracts return
+    /// only the active expiry (gh#494), so an expired candidate cannot be discovered — it is built here and
+    /// confirmed by <see cref="FindContractAsync"/>. The pair must agree exactly: an id this builds and
+    /// <see cref="HasProductCode"/> then rejects would be a candidate the gateway refuses to believe its own
+    /// answer about, and <c>ContractResolutionTests</c> pins the round trip.
+    /// </para>
+    /// <para>
+    /// <b>A blank product code is refused rather than concatenated.</b> It would build <c>CON.F.US..U26</c>,
+    /// an id the venue answers nothing for — and an absent answer here means <i>not listed</i>, so the
+    /// caller's mistake would read back as an ordinary market fact.
+    /// </para>
+    /// </remarks>
+    public static string ContractIdFor(string productCode, ContractExpiry expiry)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(productCode);
+        ArgumentNullException.ThrowIfNull(expiry);
+
+        return "CON.F.US." + productCode + "." + expiry.Code;
     }
 
     /// <summary>

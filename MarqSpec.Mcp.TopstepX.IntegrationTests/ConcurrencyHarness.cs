@@ -237,6 +237,26 @@ public sealed class SeriesGateway(
     }
 
     /// <inheritdoc />
+    /// <remarks>
+    /// This fill lists exactly one contract, so the only id it knows is <paramref name="contractId"/> — any
+    /// other expiry answers null, which is what "the venue does not list this" looks like. A fill that needs
+    /// several listed expiries wants <c>CountingGateway</c>'s per-contract constructor instead.
+    /// </remarks>
+    public Task<VenueContract?> FindContractAsync(
+        InstrumentId instrument,
+        ContractExpiry expiry,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(expiry);
+
+        bool listed = ContractExpiry.TryParseContractId(contractId, out ContractExpiry mine)
+            && mine == expiry;
+
+        return Task.FromResult<VenueContract?>(
+            listed ? new VenueContract(contractId, instrument, true, 0.25m, 12.50m) : null);
+    }
+
+    /// <inheritdoc />
     public Task<IReadOnlyList<Bar>> GetBarsAsync(
         string contractId,
         BarRange window,

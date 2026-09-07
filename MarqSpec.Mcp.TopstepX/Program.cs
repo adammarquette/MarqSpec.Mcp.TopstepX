@@ -644,6 +644,12 @@ public static class Program
         // Both branches use one lifetime deliberately. A lifetime that varies with configuration means the
         // container is a different shape in the configured case than in the unconfigured one, which is how
         // this got shipped: everything that ran locally ran unconfigured.
+        // SINGLETON, and registered on BOTH branches. It memoises "does the venue list this contract id?"
+        // across scopes, for the same reason the history pacer is shared: the vendor counts the lookup pool
+        // (200 / 60s) against the credential, not against a request scope. It holds no gateway -- the scoped
+        // one is passed in per call -- so it is safe here whether the venue is configured or not (ADR-0020).
+        services.AddSingleton<ContractDirectory>();
+
         if (venue.IsConfigured && venue.DataTier != ProjectXDataTier.Unspecified)
         {
             services.AddProjectXApiClient(builder.Configuration);

@@ -41,6 +41,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   [ADR-0011](documentation/adr/0011-contract-roll-boundary.md) deferred as decided. The fetch flow, the
   registry facts, the per-contract ledger and the `reselect-bars` verb follow in gh#503–#506 (gh#497,
   gh#502).
+- **The gateway can look a contract up by its exact id, and the registry knows each product's listing
+  cycle.** `IMarketDataGateway.FindContractAsync(instrument, expiry)` builds `CON.F.US.{product}.{MYY}` from
+  the registry's product code and asks the venue for that one id — the only route to a *historical* contract,
+  since search and available-contracts return only the active expiry (gh#494). It applies the same
+  product-code and tick-size match-or-refuse the search path does, and answers `null` — never an invented
+  contract — when the venue does not list the id. `InstrumentRegistry` gains `CycleFor` and
+  `CandidateDepthFor`: `HMUZ` at depth 2 for the equity indices, `GJMQVZ` at **3** for gold because the
+  market skips October outright, `HKNUZ` at 2 for silver, every month at **3** for energy because a crude
+  contract expires before the month it is named for. Listing facts, not configuration — nothing in
+  `.env.example` or compose changes. `ContractDirectory`, a new singleton, memoises the lookup per id: a
+  positive for the life of the process, a negative for an hour, since a far-out expiry lists eventually. The
+  lookup draws on the venue's 200 / 60 s pool rather than the 50 / 30 s history allowance, so `GetBarsAsync`'s
+  paced paging is untouched. Second half of
+  [ADR-0020](documentation/adr/0020-historical-contract-selection.md); nothing fetches through it yet
+  (gh#497, gh#503).
 - **`period` on `get_indicators` and `get_indicator_at` — an optional *selector*, not a computation
   input.** Omit it and you get the indicator's primary period, exactly as before; pass one the operator
   configured and you get that series. Any other period is an **error listing the configured ones**, with the

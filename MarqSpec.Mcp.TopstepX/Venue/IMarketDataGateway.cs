@@ -42,6 +42,35 @@ public interface IMarketDataGateway
         CancellationToken cancellationToken);
 
     /// <summary>
+    /// Looks up one contract by its <b>exact</b> id, built from the instrument's product code and an expiry.
+    /// </summary>
+    /// <param name="instrument">The instrument the id is built for.</param>
+    /// <param name="expiry">The expiry the contract is named for.</param>
+    /// <param name="cancellationToken">The caller's cancellation token.</param>
+    /// <returns>
+    /// The contract, or <see langword="null"/> when the venue does not know that id. Null is <i>the venue
+    /// does not list this</i>, never a failure — an expiry far enough out has simply not listed yet.
+    /// </returns>
+    /// <remarks>
+    /// <para>
+    /// <b>This exists because search cannot answer it.</b> <see cref="ResolveContractsAsync"/> matches
+    /// fuzzily across <i>products</i> and returns only the expiry the venue marks active (gh#494, measured
+    /// 2026-09-06), so the contract that was front on a historical date is not discoverable. It has to be
+    /// constructed from the product's listing cycle and then <b>confirmed</b> here (ADR-0020) — a constructed
+    /// id is a guess until the venue answers for it, and a guess that resolves to a real contract in the
+    /// wrong instrument is the failure the product-code check exists to prevent.
+    /// </para>
+    /// <para>
+    /// An expired contract is still a contract by id: the venue answers for it with
+    /// <c>ActiveContract = false</c> and the right tick size, and it serves its full hourly history.
+    /// </para>
+    /// </remarks>
+    Task<VenueContract?> FindContractAsync(
+        InstrumentId instrument,
+        ContractExpiry expiry,
+        CancellationToken cancellationToken);
+
+    /// <summary>
     /// Retrieves historical bars for one contract over one window.
     /// </summary>
     /// <param name="contractId">The venue contract id.</param>

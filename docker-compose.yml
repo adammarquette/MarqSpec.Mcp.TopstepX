@@ -234,6 +234,14 @@ services:
       # See .env.example for what each does and what was measured.
       Logging__Console__FormatterName: "${Logging__Console__FormatterName:-simple}"
       ASPNETCORE_FORWARDEDHEADERS_ENABLED: "${ASPNETCORE_FORWARDEDHEADERS_ENABLED:-false}"
+
+      # What GET /health reports as `version` and `digest` (gh#513). Both blank here and reported as
+      # "unknown", which is the honest answer for this stack: it BUILDS FROM THE WORKING TREE rather than
+      # running a published image, so there is no tag and no digest to name. The AWS deployment's (gh#509)
+      # task definition sets them; nothing in this repository declares a version in a file (ADR-0001), which
+      # is why the value has to arrive from outside the process at all.
+      Deployment__Version: "${Deployment__Version:-}"
+      Deployment__ImageDigest: "${Deployment__ImageDigest:-}"
     volumes:
       # The DIRECTORY, not the file. Docker creates a missing bind source as a directory, so mounting
       # ./certs/localhost.pfx directly would silently manufacture a directory of that name and Kestrel would

@@ -47,6 +47,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   telemetry on AWS is cross-referenced to
   [ADR-0019](documentation/adr/0019-otlp-as-the-telemetry-boundary.md), not re-decided. ADR-0021 gains a
   dated update pointing here (gh#509, gh#511).
+- **`GET /health` — the one path that answers without a credential.** `200 application/json` with
+  `{status, store, version, digest}` and no `Authorization` header; **every other path, method and casing
+  stays behind the bearer gate**, `/healthz`, `/health/anything` and `/Health` included. A load balancer's
+  target-group probe has none to send, so without it a task in
+  [ADR-0021](documentation/adr/0021-a-non-loopback-instance-is-supported.md)'s shape answers 401 to the only
+  request that decides whether it lives. The gate stays global and deny-by-default, and the carve-out is a
+  **terminal branch rather than a mapped endpoint** — `WebApplication` runs every endpoint after every
+  middleware whatever order they were added in, so a `MapGet` in the same position is answered 401 by the
+  gate, measured. Not `MapHealthChecks`: `store` is the startup probe's answer already in hand, so a probe
+  every 30 s opens no connection, and an unavailable store is still `200` because this is liveness, not
+  readiness. `version` and `digest` come from the optional `Deployment__Version` /
+  `Deployment__ImageDigest`, `unknown` when unset — nothing here declares a version in a file
+  ([ADR-0001](documentation/adr/0001-tag-driven-versioning.md)), so a running task can only be told which
+  release it is by the deployment that started it. Nothing about the venue, the token or the connection
+  string appears in the body. `BearerTokenGate` also gets its first tests of its own (gh#513, gh#509,
+  ADR-0007's 2026-09-06 update).
 - **[ADR-0021](documentation/adr/0021-a-non-loopback-instance-is-supported.md) — a non-loopback instance is
   supported, in one shape, and each of the three same-machine couplings has a named replacement.** ADR-0007's
   2026-09-01 TLS update scoped the composed endpoint to a client on the same machine and left a remote

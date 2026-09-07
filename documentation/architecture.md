@@ -447,6 +447,30 @@ One host, one tool registration, two ways in ([ADR-0007](adr/0007-dual-transport
   The infrastructure that shape runs on — Fargate behind one load balancer per environment, Timescale on
   EFS, CDK in C#, Cognito as the issuer, OIDC deploys — is [ADR-0023](adr/0023-aws-deployment-topology.md).
 
+### The one path that answers without a credential
+
+Under HTTP the pipeline is three calls in one order: the liveness probe, then the bearer gate, then `/mcp`.
+**`GET /health` answers `200 application/json` with no `Authorization` header** — `{status, store, version,
+digest}` — and **every other path, method and casing stays behind the gate**, `/healthz` and
+`/health/anything` included. A load balancer's target-group probe has no credential to send, so without this
+a task in ADR-0021's shape answers 401 to the only request that decides whether it lives (gh#513).
+
+Two things about it are easy to undo by accident:
+
+- **It is a terminal branch, not a mapped endpoint.** `WebApplication` inserts routing ahead of every
+  middleware the composition root adds and endpoint execution after all of them, so a `MapGet("/health", …)`
+  written *before* the gate would still run *after* it and be answered 401. Registering earlier does not put
+  an endpoint earlier; short-circuiting the pipeline is what carves the path out.
+- **It reaches nothing.** `store` is the startup probe's answer, already in hand — not `MapHealthChecks`, and
+  no round trip. A probe every 30 s per task that opened a database connection would be load rather than a
+  measurement of it. An unavailable store is still `200`: this is **liveness**, and the tools needing no store
+  answer normally, so killing the task would replace a degraded server with no server.
+
+`version` and `digest` come from the optional `Deployment__Version` / `Deployment__ImageDigest`, `unknown`
+when unset. Nothing here declares a version in a file — the tag is the version
+([ADR-0001](adr/0001-tag-driven-versioning.md)) and the image build never sees `.git` — so the only honest
+source for "which release is this" is the deployment that started the task.
+
 ## Degradation — what an absent dependency does
 
 Neither the store nor the venue is required to start. Each absence becomes a **refusal at the point of use**,

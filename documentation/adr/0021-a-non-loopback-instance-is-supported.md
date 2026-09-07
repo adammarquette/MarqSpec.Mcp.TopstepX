@@ -218,6 +218,18 @@ rather than re-arguing it.
 - **Whether production goes first, and behind what** — the WAF, the EFS measurement, the alarms. gh#525,
   gh#526, gh#528, recorded on the topology ADR.
 
+## Update (2026-09-06) — the topology is recorded, in ADR-0023
+
+The header above says the topology carrying this decision *"is gh#511's record, not this one"*, and the
+first item under *What this does not decide* leaves it to gh#511. That record now exists:
+[ADR-0023](0023-aws-deployment-topology.md) — one CDK stack in C# instantiated per environment, one
+Application Load Balancer per environment, two Fargate services (the released server image by digest, the
+Timescale image by digest on EFS), Cognito in the same stack as the issuer this record decided on, GitHub
+OIDC deploy roles, and the `aws-production` environment — with every alternative rejected on the way, RDS
+and Terraform among them. Nothing here changes: the bind, token and certificate replacements stand as
+written, and ADR-0023 carries them rather than restating them. The hostname spelling stays a caveat on both
+records until gh#519 confirms it, exactly as the *Bind* section says.
+
 ## Follow-ups
 
 - gh#510 lands as a dated update on ADR-0007; when it does, a dated update here says which of the three

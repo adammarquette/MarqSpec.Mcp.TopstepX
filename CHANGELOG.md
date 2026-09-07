@@ -15,6 +15,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **[ADR-0023](documentation/adr/0023-aws-deployment-topology.md) — the AWS deployment topology.** A decision
+  record only; **no code, no workflow, no AWS resource changes with it**. It carries the shape
+  [ADR-0021](documentation/adr/0021-a-non-loopback-instance-is-supported.md) decided and records the
+  maintainer's 2026-09-06 choices on the AWS epic: one CDK stack in C# under `infra/`, in the solution and
+  synthesised in CI with no credentials, instantiated for production (`marqspec.com`) and staging
+  (`staging.marqspec.com`, a delegated zone — the spelling stays a caveat until gh#519 confirms it); one
+  Application Load Balancer per environment as the whole edge, no sidecar; **ECS Fargate with two services**
+  — the released GHCR image **by digest, never `:latest`**, and `timescale/timescaledb-ha:pg17` by digest on
+  an EFS access point, **not RDS**, which has no TimescaleDB and would make `SchemaTests` describe a database
+  nobody runs; **one server task per environment**, because MCP sessions are in memory, the tape lease is
+  per instrument and migrations run at startup — so a migration before a rollback must be additive
+  (gh#529); Amazon Cognito in the same stack as the issuer, a prefix domain by default; GitHub OIDC deploy
+  roles with no long-lived key, and a new `aws-production` environment for the production approval while
+  the staging job carries none. The review corrections are folded in with their rejected first drafts named:
+  the digest as a CloudFormation parameter rather than an unversioned `{{resolve:ssm}}` that would not
+  redeploy, `RemovalPolicy.RETAIN` on everything stateful, the staging OIDC role trusting `refs/heads/main`
+  as well as `v*` tags, and a two-container backup task because the Timescale image has no AWS CLI. EC2 +
+  EBS is the named escalation if gh#525's EFS measurement crosses the threshold that card states first;
+  telemetry on AWS is cross-referenced to
+  [ADR-0019](documentation/adr/0019-otlp-as-the-telemetry-boundary.md), not re-decided. ADR-0021 gains a
+  dated update pointing here (gh#509, gh#511).
 - **[ADR-0021](documentation/adr/0021-a-non-loopback-instance-is-supported.md) — a non-loopback instance is
   supported, in one shape, and each of the three same-machine couplings has a named replacement.** ADR-0007's
   2026-09-01 TLS update scoped the composed endpoint to a client on the same machine and left a remote

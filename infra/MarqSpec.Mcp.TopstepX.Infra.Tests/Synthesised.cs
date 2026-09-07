@@ -163,6 +163,48 @@ public sealed record Synthesised(Template Template, JsonObject Json)
     public static IReadOnlyDictionary<string, JsonNode?> SecretsOf(JsonObject container) =>
         (container["Secrets"]?.AsArray() ?? [])
             .ToDictionary(s => s!["Name"]!.GetValue<string>(), s => s!["ValueFrom"]);
+
+    /// <summary>
+    /// The Secrets Manager name behind a task-definition <c>ValueFrom</c>, which CloudFormation shapes as
+    /// <c>Fn::Join ["", [{Ref: &lt;secret&gt;}, ":key::"]]</c> — the <c>Ref</c> is the ARN, so the name has
+    /// to be read off the secret resource it points at.
+    /// </summary>
+    public string SecretNameOf(JsonNode? valueFrom)
+    {
+        var parts = valueFrom?["Fn::Join"]?[1]?.AsArray()
+            ?? throw new InvalidOperationException($"Not a JSON-key valueFrom: {Text(valueFrom)}");
+        var logicalId = parts.Select(LogicalIdOf).FirstOrDefault(id => id is not null)
+            ?? throw new InvalidOperationException($"No Ref inside {Text(valueFrom)}");
+        return Properties(Resources("AWS::SecretsManager::Secret")[logicalId])["Name"]!.GetValue<string>();
+    }
+
+    /// <summary>Every statement of every inline <c>AWS::IAM::Policy</c> and every role's embedded policies.</summary>
+    public IEnumerable<JsonObject> PolicyStatements()
+    {
+        foreach (var policy in Resources("AWS::IAM::Policy").Values)
+        {
+            foreach (var statement in Properties(policy)["PolicyDocument"]!["Statement"]!.AsArray())
+            {
+                yield return statement!.AsObject();
+            }
+        }
+
+        foreach (var role in Resources("AWS::IAM::Role").Values)
+        {
+            foreach (var policy in Properties(role)["Policies"]?.AsArray() ?? [])
+            {
+                foreach (var statement in policy!["PolicyDocument"]!["Statement"]!.AsArray())
+                {
+                    yield return statement!.AsObject();
+                }
+            }
+        }
+    }
+
+    public static IReadOnlyList<string> ActionsOf(JsonObject statement) =>
+        statement["Action"] is JsonArray array
+            ? array.Select(a => a!.GetValue<string>()).ToList()
+            : [statement["Action"]!.GetValue<string>()];
 }
 
 /// <summary>One security-group ingress rule, whatever CloudFormation shape it came from.</summary>

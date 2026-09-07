@@ -7,6 +7,7 @@ using MarqSpec.Mcp.TopstepX.Domain.MarketData;
 using MarqSpec.Mcp.TopstepX.MarketData;
 using MarqSpec.Mcp.TopstepX.Tests.MarketData;
 using MarqSpec.Mcp.TopstepX.Tools;
+using MarqSpec.Mcp.TopstepX.Venue;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
@@ -564,6 +565,49 @@ public sealed class BarCacheServiceTests : IAsyncLifetime
             .Should().ContainSingle().Which.ContractId.Should().Be(
                 "CON.F.US.TEST.Z26",
                 "the contract that was asked is the contract the answer belongs to");
+    }
+
+    [Fact]
+    public async Task AnEmptyContractUniverse_RefusesEvenACoveredRange()
+    {
+        // gh#504, and the one behaviour change outside the roll case. An EMPTY contract universe is what the
+        // wrong ProjectX__DataTier looks like on this gateway -- it answers with no contracts rather than
+        // with an error -- and a range the ledger already held as covered used to be served quietly out of
+        // that universe. A silent empty answer from the wrong tier is exactly the shape the repo forbids: an
+        // absent number handed back as an ordinary one, with nothing saying the question was never asked.
+        //
+        // With no candidates there is nobody who could have answered the range empty, so it stays outstanding
+        // and reaches FetchAsync's existing refusal, which names the setting.
+        //
+        // RED against a build with `candidates.Count > 0 &&` deleted from ExcludeCoveredAsync: `All` over an
+        // empty candidate set is vacuously true, the range is dropped as covered, nothing is fetched and the
+        // read returns an empty series with no exception at all.
+        (BarCacheService cache, CountingGateway gateway) = Build([], SettledNow);
+        gateway.ListsTheInstrument = false;
+        BarRange window = new(SessionStart, SessionStart.AddHours(1));
+
+        // A covering, unexpired memo -- permanent, so no clock arrangement is holding this up. Seeded through
+        // the tracker, so the tracker is cleared afterwards for the reason SeedRowsAsync gives.
+        _database.BarCoverage.Add(new BarCoverageRecord
+        {
+            Venue = "test",
+            Instrument = _es.Symbol,
+            ResolutionMinutes = 5,
+            ContractId = "CON.F.US.TEST.Z26",
+            RangeStart = window.Start,
+            RangeEnd = window.End,
+            RecordedAt = SessionStart,
+            ExpiresAt = null,
+        });
+        await _database.SaveChangesAsync();
+        _database.ChangeTracker.Clear();
+
+        Func<Task> read = () => cache.GetBarsAsync(_es, 5, window, CancellationToken.None);
+
+        (await read.Should().ThrowAsync<VenueException>(
+            "a venue that lists no contracts cannot have answered anything, so a covered range is refused "
+            + "loudly rather than served from a universe that is empty because the tier is wrong"))
+            .WithMessage("*ProjectX__DataTier*");
     }
 
     [Fact]

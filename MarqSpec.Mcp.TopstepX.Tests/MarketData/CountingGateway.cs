@@ -110,14 +110,26 @@ public sealed class CountingGateway : IMarketDataGateway
         ContractLookups = 0;
     }
 
+    /// <summary>
+    /// Whether the venue lists the instrument at all. Set <see langword="false"/> for the empty universe.
+    /// </summary>
+    /// <remarks>
+    /// An empty contract list is what the <b>wrong market-data tier</b> looks like on this gateway — ProjectX
+    /// answers a question about an instrument it cannot see with no contracts rather than with an error
+    /// (gh#504). It is a venue condition rather than a bar script, so it is a switch here rather than a
+    /// second double.
+    /// </remarks>
+    public bool ListsTheInstrument { get; set; } = true;
+
     /// <inheritdoc />
     public Task<IReadOnlyList<VenueContract>> ResolveContractsAsync(
         InstrumentId instrument,
         CancellationToken cancellationToken)
     {
         ContractRequests++;
-        IReadOnlyList<VenueContract> contracts =
-            [new VenueContract(_frontContractId, instrument, true, 0.25m, 12.50m)];
+        IReadOnlyList<VenueContract> contracts = ListsTheInstrument
+            ? [new VenueContract(_frontContractId, instrument, true, 0.25m, 12.50m)]
+            : [];
         return Task.FromResult(contracts);
     }
 

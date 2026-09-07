@@ -375,8 +375,9 @@ at one this rule's own pull request retires.
   `FootprintCacheService` and `IndicatorProjector`, threading it through every construction site **on its
   base**; gh#500 added session-bar suites against the old optional signature. Both were green, neither
   touched the other's files, Git merged both happily — and `develop` went red with `CS7036` across two test
-  projects. **A required-parameter change is incompatible with any construction site added in parallel, and
-  no textual conflict warns you.** Before merging a signature tightening, `git grep` for the type's
+  projects **at `abd6ea0`**, where the three errors stay reproducible now that the branch has moved on.
+  **A required-parameter change is incompatible with any construction site added in parallel, and no
+  textual conflict warns you.** Before merging a signature tightening, `git grep` for the type's
   construction sites **on `origin/develop` as it stands now**, not on the base you branched from, and check
   the open PRs for suites that build it. The same shape covers a new required interface member and a
   narrowed return type.

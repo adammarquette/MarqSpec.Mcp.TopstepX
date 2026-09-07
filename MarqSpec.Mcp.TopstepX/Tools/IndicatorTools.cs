@@ -215,10 +215,17 @@ public sealed class IndicatorTools(
         // bar at its bucket is the answer -- and without it, two readings either side of a roll are two
         // numbers with nothing saying they measure different instruments.
         //
-        // The bar is now GUARANTEED to be there, because the filter above only served a value that had one,
-        // so a null here means exactly what ToolPayloads says it means: the bar's provenance was never
-        // recorded. It used to be able to mean "there is no bar", which is a different fact wearing the same
-        // null (gh#577).
+        // A bar stood at this bucket when the filter above served the value, so a null here means what
+        // ToolPayloads says it means: the bar's provenance was never recorded. Before gh#577 it could also
+        // mean "there is no bar" — a different fact wearing the same null — and that was the STANDING state
+        // of every orphan, on every read, until a pass swept it.
+        //
+        // NOT A GUARANTEE, because this is two statements rather than one: a delete landing between them
+        // leaves the number with a null contract again. That is the old answer, reached now only through a
+        // race that has to interleave with a single read, instead of being what the path returned for as long
+        // as the rows stood. Narrowing it further would mean reading the value and its bar in one statement
+        // or one transaction, and neither is worth a transaction on the hot read path for a null that is
+        // already documented as ambiguous.
         string? contractId = await bars
             .Where(b => b.BucketStart == row.BucketStart)
             .Select(b => b.ContractId)

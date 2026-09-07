@@ -1,3 +1,4 @@
+using System.Collections;
 using System.Diagnostics;
 using System.Net;
 using System.Net.Sockets;
@@ -152,7 +153,11 @@ public sealed class TelemetryCompositionTests
         //
         // ONE TEST FOR BOTH SIGNALS, deliberately. They are two lines in one method and they are deleted or
         // mistyped by the same edit; splitting them would double the fixture and pin nothing extra.
-        List<Activity> spans = [];
+        // SPANS UNDER A LOCK, METRICS NOT, and the asymmetry is the point: this provider's ActivityListener is
+        // process-global, so any suite in another xUnit collection that serves a request or makes one exports
+        // ITS spans into this collection too, from its own thread (gh#591). Nothing writes the metric list but
+        // the ForceFlush below, on this thread — the in-memory metric reader has no timer of its own.
+        ExportedSpans spans = new();
         List<Metric> metrics = [];
 
         using ServiceProvider provider = Build(
@@ -189,7 +194,7 @@ public sealed class TelemetryCompositionTests
         // reachable", which is a compose-stack fact and not this test's claim.
         meters.ForceFlush();
 
-        spans.Should().Contain(
+        spans.Snapshot().Should().Contain(
             span => span.Source.Name == HostTelemetry.Name,
             "ConfigureTelemetry must AddSource(HostTelemetry.Name), or every venue and cache-aside span this "
             + "repository owns is dropped silently");
@@ -215,7 +220,7 @@ public sealed class TelemetryCompositionTests
         const string EmbeddingKey = "embedding-key-that-must-never-be-traced";
         const string VenueKey = "venue-key-that-must-never-be-traced";
 
-        List<Activity> exported = [];
+        ExportedSpans exported = new();
 
         using ServiceProvider provider = Build(
             new Dictionary<string, string?>
@@ -229,9 +234,10 @@ public sealed class TelemetryCompositionTests
             alsoRegister: services => services.ConfigureOpenTelemetryTracerProvider(
                 tracing => tracing.AddInMemoryExporter(exported)));
 
-        // Resolving it is what subscribes the ActivityListener. The container owns it; disposing it here would
-        // shut the pipeline down before the request that is the point of the test.
-        _ = provider.GetRequiredService<TracerProvider>();
+        // Resolving it is what subscribes the ActivityListener. The container owns it, and it is disposed
+        // BELOW rather than here: shutting the pipeline down before the request would leave nothing to assert
+        // over, and leaving it running past the assertion is the race gh#591 was filed for.
+        TracerProvider tracer = provider.GetRequiredService<TracerProvider>();
 
         using TcpListener listener = new(IPAddress.Loopback, 0);
         listener.Start();
@@ -251,11 +257,26 @@ public sealed class TelemetryCompositionTests
 
         await served;
 
-        exported.Should().NotBeEmpty(
+        // DRAINED BEFORE READ, AND READ FROM A SNAPSHOT — the two halves of gh#591, and neither is a timeout.
+        //
+        // Disposing the provider shuts the pipeline down: the process-global ActivityListener is unsubscribed,
+        // so no further span — this test's, or one another suite happens to be emitting — can be exported into
+        // `exported` after this line. The container disposes it moments later anyway, so this pays nothing; it
+        // only moves the shutdown to BEFORE the assertion instead of after it.
+        //
+        // The snapshot is what makes the race IMPOSSIBLE rather than unlikely: it is taken under the same lock
+        // every exporter write takes, so even a span already inside the exporter when Dispose was called
+        // cannot be appended while the loop below is walking. Enumerating the live collection and hoping the
+        // pipeline is quiet is exactly what reddened two unrelated pull requests.
+        tracer.Dispose();
+
+        IReadOnlyList<Activity> spans = exported.Snapshot();
+
+        spans.Should().NotBeEmpty(
             "the HttpClient instrumentation must be subscribed at all, or this test asserts over an empty list "
             + "and passes forever");
 
-        foreach (Activity activity in exported)
+        foreach (Activity activity in spans)
         {
             activity.DisplayName.Should().NotContain(EmbeddingKey).And.NotContain(VenueKey);
 
@@ -291,6 +312,118 @@ public sealed class TelemetryCompositionTests
         // that works.
         options.Filter!(RequestFor("POST", "/mcp")).Should().BeTrue();
         options.Filter!(RequestFor("GET", "/healthz")).Should().BeTrue();
+    }
+
+    /// <summary>
+    /// The collection an in-memory span exporter writes into — every write and every read under one lock.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>A bare <see cref="List{T}"/> here is a race, not a slow machine (gh#591).</b> A provider built by
+    /// <see cref="Build"/> subscribes a <b>process-global</b> <see cref="ActivityListener"/> to
+    /// <c>Microsoft.AspNetCore</c> and <c>System.Net.Http</c>. Every span any suite in <i>another</i> xUnit
+    /// collection produces while one of these tests holds a provider is therefore exported into that test's
+    /// collection as well, appended <b>from that suite's thread</b> — and
+    /// <see cref="List{T}"/> enumerated under a concurrent <c>Add</c> throws
+    /// <see cref="InvalidOperationException"/> ("Collection was modified"). Measured on the full unit suite in
+    /// Release: <b>33</b> spans arrived where <see cref="NoRequestHeaderReachesASpanAttribute"/> made
+    /// <b>one</b> request, 32 of them foreign — chiefly the real Kestrel host and real
+    /// <see cref="System.Net.Http.HttpClient"/> that <c>HealthEndpointTests</c>, <c>OAuthBearerGateTests</c>
+    /// and <c>ProtectedResourceMetadataTests</c> run.
+    /// </para>
+    /// <para>
+    /// <b><see cref="HostTelemetryCollection"/> cannot close this and is not meant to.</b> It serialises the
+    /// suites that <i>subscribe</i> a listener; the writers here are the suites that merely <i>emit</i>, which
+    /// is every suite that touches HTTP.
+    /// </para>
+    /// <para>
+    /// <see cref="GetEnumerator"/> hands back a snapshot too, so a later assertion written as a bare
+    /// <c>foreach</c> over this collection is safe by construction rather than by remembering to call
+    /// <see cref="Snapshot"/>.
+    /// </para>
+    /// </remarks>
+    private sealed class ExportedSpans : ICollection<Activity>
+    {
+        private readonly Lock _gate = new();
+        private readonly List<Activity> _spans = [];
+
+        /// <summary>How many spans have been exported so far.</summary>
+        public int Count
+        {
+            get
+            {
+                lock (_gate)
+                {
+                    return _spans.Count;
+                }
+            }
+        }
+
+        /// <summary>Always <see langword="false"/> — the exporter writes to this.</summary>
+        public bool IsReadOnly => false;
+
+        /// <summary>The spans exported so far, as a list the exporter cannot append to.</summary>
+        /// <returns>A copy taken under the same lock every write takes.</returns>
+        public IReadOnlyList<Activity> Snapshot()
+        {
+            lock (_gate)
+            {
+                return [.. _spans];
+            }
+        }
+
+        /// <summary>Records one exported span.</summary>
+        /// <param name="item">The span the exporter is handing over.</param>
+        public void Add(Activity item)
+        {
+            lock (_gate)
+            {
+                _spans.Add(item);
+            }
+        }
+
+        /// <summary>Drops every span recorded so far.</summary>
+        public void Clear()
+        {
+            lock (_gate)
+            {
+                _spans.Clear();
+            }
+        }
+
+        /// <summary>Whether a span has been exported.</summary>
+        /// <param name="item">The span to look for.</param>
+        /// <returns><see langword="true"/> if it is present.</returns>
+        public bool Contains(Activity item) => Snapshot().Contains(item);
+
+        /// <summary>Copies the exported spans into an array.</summary>
+        /// <param name="array">The destination.</param>
+        /// <param name="arrayIndex">Where in the destination to start.</param>
+        public void CopyTo(Activity[] array, int arrayIndex)
+        {
+            lock (_gate)
+            {
+                _spans.CopyTo(array, arrayIndex);
+            }
+        }
+
+        /// <summary>Removes one exported span.</summary>
+        /// <param name="item">The span to remove.</param>
+        /// <returns><see langword="true"/> if it was present.</returns>
+        public bool Remove(Activity item)
+        {
+            lock (_gate)
+            {
+                return _spans.Remove(item);
+            }
+        }
+
+        /// <summary>Enumerates a snapshot, never the live list.</summary>
+        /// <returns>An enumerator over a copy.</returns>
+        public IEnumerator<Activity> GetEnumerator() => Snapshot().GetEnumerator();
+
+        /// <inheritdoc/>
+        IEnumerator IEnumerable.GetEnumerator() => GetEnumerator();
     }
 
     private static HttpContext RequestFor(string method, string path)

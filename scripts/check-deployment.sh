@@ -250,25 +250,43 @@ esac
 #     + '[' -z SENTINEL-CLIENT-SECRET-zz93q ']'
 #
 # `${#VAR}` traces the NUMBER (`+ '[' 28 -eq 0 ']'`) and is exactly equivalent to `-z`, which is defined as
-# "the length is zero" — so nothing about the check changed, only what a trace can see. There is no
-# unset-safe spelling of `${#VAR}` and every alternative — `${!name-}`, `${VAR-}`, an assignment carrying a
-# default — expands the value, which is the thing being avoided. So `set -u` is off for exactly these lines,
-# and the three variables are known to be set afterwards.
+# "the length is zero" — so nothing about the check changed, only what a trace can see.
+#
+# `${VAR+x}` FIRST, AND THAT PAIR IS UNSET-SAFE. This block briefly turned `set -u` off instead, under a
+# comment claiming no unset-safe spelling of `${#VAR}` existed; the review of gh#521 supplied one, and the
+# claim was simply wrong. `${VAR+x}` expands to `x` when the variable is set and to nothing when it is not —
+# never to the value, at either end — so the `||` reaches `${#VAR}` only on a variable that is set, and `-u`
+# never fires. The trace is `+ '[' -z x ']'` then `+ '[' 28 -eq 0 ']'`. Worth keeping as a rule rather than
+# as a fix: **`${VAR+x}` is how you ask whether a secret is set without asking what it is**, and it removes
+# the need to relax `-u` in a script whose whole subject is what leaks.
 MISSING=""
-set +u
-if [ "${#MCP_CHECK_CLIENT_ID}" -eq 0 ]; then
+if [ -z "${MCP_CHECK_CLIENT_ID+x}" ] || [ "${#MCP_CHECK_CLIENT_ID}" -eq 0 ]; then
   MISSING="MCP_CHECK_CLIENT_ID"
-elif [ "${#MCP_CHECK_CLIENT_SECRET}" -eq 0 ]; then
+elif [ -z "${MCP_CHECK_CLIENT_SECRET+x}" ] || [ "${#MCP_CHECK_CLIENT_SECRET}" -eq 0 ]; then
   MISSING="MCP_CHECK_CLIENT_SECRET"
-elif [ "${#MCP_CHECK_TOKEN_URL}" -eq 0 ]; then
+elif [ -z "${MCP_CHECK_TOKEN_URL+x}" ] || [ "${#MCP_CHECK_TOKEN_URL}" -eq 0 ]; then
   MISSING="MCP_CHECK_TOKEN_URL"
 fi
-set -u
 
+# AN EMPTY SHELL FAILS HERE, BY NAME, AND NOTHING IS SENT — which is a different fault from a wrong secret
+# and the two are worth telling apart, because the settings table in the platform contract had them the
+# wrong way round. The Cognito secrets are created as shells with every value EMPTY (ADR-0023), so an
+# unfilled one arrives here as an empty string and this check names it: assertions 1 and 2 never run, and
+# the deployment is not contacted at all, so a red run here says nothing whatever about the hostname. A
+# NON-EMPTY wrong secret is the other path: assertions 1 and 2 pass and the token endpoint answers `401`,
+# which the `NO TOKEN` arm below reports. Both measured against the fixture on 2026-09-07.
 if [ -n "$MISSING" ]; then
   die "  UNSET  $MISSING is empty or unset"
   die "The token step cannot run, so assertion 3 could only ever be skipped — and a skipped assertion in a"
-  die "gate that exits 0 is the whole failure mode this file exists to avoid. NOTHING HAS BEEN CHECKED."
+  die "gate that exits 0 is the whole failure mode this file exists to avoid. NOTHING HAS BEEN CHECKED:"
+  die "no request was made, so this says nothing at all about the deployment."
+  if [ "$MISSING" = "MCP_CHECK_CLIENT_SECRET" ]; then
+    # The likeliest cause by some way, and the one the contract used to describe wrongly.
+    die "An UNFILLED SECRET SHELL arrives exactly like this: the stack creates the Cognito client secrets"
+    die "with every value empty and gh#519 writes them by hand, so a shell nobody has filled reads as an"
+    die "empty string here. A non-empty WRONG secret is a different run — it reaches the token endpoint and"
+    die "comes back 'NO TOKEN … answered 401'."
+  fi
   usage
   exit 1
 fi

@@ -104,6 +104,12 @@ public sealed class BarCacheService
     private readonly ILogger<BarCacheService> _logger;
     private readonly HostTelemetry _telemetry;
 
+    /// <summary>The contract universe already resolved for an instrument, keyed by normalised symbol.</summary>
+    /// <remarks>
+    /// Filled by <see cref="ResolveOnceAsync"/>; see its remarks for why holding it is safe.
+    /// </remarks>
+    private readonly Dictionary<string, IReadOnlyList<VenueContract>> _contracts = [];
+
     /// <summary>Creates the service.</summary>
     /// <param name="database">The store.</param>
     /// <param name="gateway">The venue.</param>
@@ -341,6 +347,18 @@ public sealed class BarCacheService
             return missing;
         }
 
+        // Who could have answered. Resolved only now, once the ledger has produced rows there is any point
+        // attributing: a warm read left at `missing.Count == 0` above and a cold one at `covered.Count == 0`
+        // just above, so neither pays a vendor call for a question about contracts. The query itself is left
+        // UNFILTERED by contract and the filtering is done in memory -- it is the same statement
+        // SerializationFailureTests reasons about, and the row count for one key is tiny. #505 can push the
+        // filter into SQL when the candidate set stops being one.
+        IReadOnlyList<string> candidates =
+        [
+            .. (await ResolveOnceAsync(instrument, cancellationToken).ConfigureAwait(false))
+                .Select(c => c.ContractId),
+        ];
+
         // THE ROWS ARE UNIONED BEFORE THEY ARE CONSULTED, AND THAT IS THE WHOLE FIX (gh#408).
         //
         // A range is fetched in pages of VenuePageSizeBars and the memo is written PER PAGE SLICE, so a
@@ -355,22 +373,73 @@ public sealed class BarCacheService
         // is the range. Merging touching rows is sound rather than convenient: each was independently
         // answered EMPTY by the venue, so their union was answered empty too.
         //
+        // THE ROWS ARE UNIONED PER CONTRACT, AND A RANGE IS ANSWERED ONLY WHEN EVERY CANDIDATE ANSWERED IT
+        // (gh#504). "Empty" is a fact about a range AND the contract that was asked, so rows belonging to
+        // different contracts are different claims and unioning ACROSS them invents one nobody made -- the
+        // expiring front's silence over a window the incoming front covers would hide real bars forever. A
+        // candidate with no rows of its own therefore answers nothing, which is why this is `All` over the
+        // candidates rather than `Any` over the rows.
+        //
+        // An EMPTY candidate set answers nothing at all, deliberately. That is the wrong-data-tier universe
+        // -- this gateway returns no contracts rather than an error -- so leaving the range outstanding sends
+        // it to FetchAsync's VenueException naming ProjectX__DataTier. A hole reported as covered because the
+        // venue returned no contracts is an absent number served as an ordinary answer; a loud error is the
+        // better failure.
+        //
         // What this deliberately does NOT do is split a range around a covered sub-range. Partial containment
         // is still left alone, for the reason it always was: splitting would produce a swarm of tiny fetches,
-        // and re-asking for a slightly wider window is the cheaper error. Only the containment TEST changed,
-        // from one row to the union of the rows.
-        IReadOnlyList<BarRange> answered = Union(covered);
-
+        // and re-asking for a slightly wider window is the cheaper error.
         List<BarRange> outstanding = [];
         foreach (BarRange range in missing)
         {
-            if (!answered.Any(a => a.Start <= range.Start && a.End >= range.End))
+            bool answered = candidates.Count > 0 && candidates.All(id =>
+                Union([.. covered.Where(c => string.Equals(c.ContractId, id, StringComparison.Ordinal))])
+                    .Any(a => a.Start <= range.Start && a.End >= range.End));
+
+            if (!answered)
             {
                 outstanding.Add(range);
             }
         }
 
         return outstanding;
+    }
+
+    /// <summary>
+    /// Resolves the contracts that can answer for an instrument, at most once per instrument per scope.
+    /// </summary>
+    /// <param name="instrument">The instrument.</param>
+    /// <param name="cancellationToken">Cancellation.</param>
+    /// <returns>The venue's contract universe for the instrument, front first. Possibly empty.</returns>
+    /// <remarks>
+    /// <para>
+    /// <b>The read path needs the candidates now too, and it must not pay the venue for them (gh#504).</b>
+    /// <see cref="ExcludeCoveredAsync"/> answers a range only when every candidate answered it empty, so a
+    /// call served entirely from the ledger has to know who the candidates are. Asked of the gateway each
+    /// time, that is one vendor call per read on the warm path — including each of the three reads
+    /// <c>ALegacyRangeTheVenueCannotAttribute_CostsExactlyOneVenueRequest_HoweverOftenItIsRead</c> makes,
+    /// which is the per-read cost the memo that test pins exists to remove.
+    /// </para>
+    /// <para>
+    /// <b>Memoising is safe because the lifetime is one request.</b> This service is registered scoped, and
+    /// that registration is load-bearing rather than conventional — it is the argument <c>Program.cs</c>
+    /// already makes for <c>IndicatorCacheService</c> (gh#246). A singleton would keep answering with a
+    /// universe the next roll has moved on from; a scope cannot outlive the question it was created for.
+    /// </para>
+    /// </remarks>
+    private async Task<IReadOnlyList<VenueContract>> ResolveOnceAsync(
+        InstrumentId instrument,
+        CancellationToken cancellationToken)
+    {
+        if (_contracts.TryGetValue(instrument.Symbol, out IReadOnlyList<VenueContract>? memoised))
+        {
+            return memoised;
+        }
+
+        IReadOnlyList<VenueContract> resolved =
+            await _gateway.ResolveContractsAsync(instrument, cancellationToken).ConfigureAwait(false);
+        _contracts[instrument.Symbol] = resolved;
+        return resolved;
     }
 
     /// <summary>
@@ -422,8 +491,14 @@ public sealed class BarCacheService
 
     /// <summary>One venue answer, held until the transaction that will store it opens.</summary>
     /// <param name="Slice">The range that was asked for.</param>
+    /// <param name="ContractId">The contract that was asked, and therefore whose answer this is.</param>
     /// <param name="Closed">The closed bars it answered with. Empty means the venue has none for the range.</param>
-    private sealed record FetchedSlice(BarRange Slice, IReadOnlyList<Bar> Closed);
+    /// <remarks>
+    /// The contract is carried rather than re-derived at the write, because an empty answer cannot say who
+    /// gave it: bars name their own contract, and an answer with no bars in it is precisely the one the
+    /// ledger has to attribute (gh#504).
+    /// </remarks>
+    private sealed record FetchedSlice(BarRange Slice, string ContractId, IReadOnlyList<Bar> Closed);
 
     /// <summary>
     /// Asks the venue for every outstanding range, and touches no database at all.
@@ -441,7 +516,7 @@ public sealed class BarCacheService
         CancellationToken cancellationToken)
     {
         IReadOnlyList<VenueContract> contracts =
-            await _gateway.ResolveContractsAsync(instrument, cancellationToken).ConfigureAwait(false);
+            await ResolveOnceAsync(instrument, cancellationToken).ConfigureAwait(false);
 
         if (contracts.Count == 0)
         {
@@ -499,7 +574,8 @@ public sealed class BarCacheService
                 // derived from it -- this must not depend on a venue behaving. Written as a subtraction
                 // rather than `b.OpenTime + barSize <= now` for the same reason the page walk above is:
                 // exactly equivalent, and total for a bar the venue placed at the end of the calendar.
-                slices.Add(new FetchedSlice(slice, [.. bars.Where(b => now - b.OpenTime >= barSize)]));
+                slices.Add(new FetchedSlice(
+                    slice, contract.ContractId, [.. bars.Where(b => now - b.OpenTime >= barSize)]));
                 from = to;
             }
         }
@@ -526,7 +602,8 @@ public sealed class BarCacheService
             if (slice.Closed.Count == 0)
             {
                 await RecordEmptyAsync(
-                    venue, instrument, resolutionMinutes, slice.Slice, now, cancellationToken)
+                    venue, instrument, resolutionMinutes, slice.ContractId, slice.Slice, now,
+                    cancellationToken)
                     .ConfigureAwait(false);
                 continue;
             }
@@ -744,12 +821,21 @@ public sealed class BarCacheService
     /// column, or coalescing over it — would leave a permanent claim wearing the TTL it was given back when
     /// the range was still near the present, and the range would be re-fetched on every call forever.
     /// </para>
+    /// <para>
+    /// <b><c>ContractId</c> is in the conflict target because it is in the key (gh#504).</b> That is the
+    /// first paragraph restated where it bites: the target IS the primary key, so a key that grew while this
+    /// list did not is a runtime <c>42P10</c> on the next empty answer — not a compile error, and not
+    /// anything reading the C# around it reveals.
+    /// </para>
     /// </remarks>
     private const string RecordCoverageSql = """
         INSERT INTO "BarCoverage" (
-            "Venue", "Instrument", "ResolutionMinutes", "RangeStart", "RangeEnd", "RecordedAt", "ExpiresAt")
-        VALUES (@venue, @instrument, @resolution, @rangeStart, @rangeEnd, @recorded, @expires)
-        ON CONFLICT ("Venue", "Instrument", "ResolutionMinutes", "RangeStart", "RangeEnd") DO UPDATE SET
+            "Venue", "Instrument", "ResolutionMinutes", "ContractId", "RangeStart", "RangeEnd", "RecordedAt",
+            "ExpiresAt")
+        VALUES (@venue, @instrument, @resolution, @contract, @rangeStart, @rangeEnd, @recorded, @expires)
+        ON CONFLICT (
+            "Venue", "Instrument", "ResolutionMinutes", "ContractId", "RangeStart", "RangeEnd")
+        DO UPDATE SET
             "RecordedAt" = excluded."RecordedAt",
             "ExpiresAt" = excluded."ExpiresAt"
         """;
@@ -766,6 +852,7 @@ public sealed class BarCacheService
         string venue,
         InstrumentId instrument,
         int resolutionMinutes,
+        string contractId,
         BarRange range,
         DateTimeOffset now,
         CancellationToken cancellationToken)
@@ -780,14 +867,18 @@ public sealed class BarCacheService
         DateTimeOffset? expiresAt = settled ? null : now + RecentEmptyTtl;
 
         await RecordCoverageAsync(
-            venue, instrument, resolutionMinutes, range, now, expiresAt, cancellationToken)
+            venue, instrument, resolutionMinutes, contractId, range, now, expiresAt, cancellationToken)
             .ConfigureAwait(false);
 
+        // The contract is logged because it is now part of what was claimed. "The venue had nothing" and
+        // "THAT contract had nothing" are different facts wearing the same words, and a memo whose contract
+        // is not in the log is a memo nobody can attribute afterwards.
         _logger.LogDebug(
-            "The venue returned no bars for {Instrument} {Resolution}m over {From:o}..{To:o}; recorded as "
-            + "covered ({Ttl}).",
+            "The venue returned no bars for {Instrument} {Resolution}m on {Contract} over {From:o}..{To:o}; "
+            + "recorded as covered ({Ttl}).",
             instrument.Symbol,
             resolutionMinutes,
+            contractId,
             range.Start,
             range.End,
             settled ? "permanently" : "briefly");
@@ -797,6 +888,7 @@ public sealed class BarCacheService
         string venue,
         InstrumentId instrument,
         int resolutionMinutes,
+        string contractId,
         BarRange range,
         DateTimeOffset now,
         DateTimeOffset? expiresAt,
@@ -819,6 +911,7 @@ public sealed class BarCacheService
             new("venue", NpgsqlDbType.Varchar) { Value = venue },
             new("instrument", NpgsqlDbType.Varchar) { Value = instrument.Symbol },
             new("resolution", NpgsqlDbType.Integer) { Value = resolutionMinutes },
+            new("contract", NpgsqlDbType.Varchar) { Value = contractId },
             new("rangeStart", NpgsqlDbType.TimestampTz) { Value = range.Start },
             new("rangeEnd", NpgsqlDbType.TimestampTz) { Value = range.End },
             new("recorded", NpgsqlDbType.TimestampTz) { Value = now },

@@ -497,6 +497,76 @@ public sealed class BarCacheServiceTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task AMemoStampedWithOneContract_DoesNotAnswerForAnother()
+    {
+        // gh#504, and the whole point of putting ContractId in the ledger's key. "The venue has nothing for
+        // this range" is not a fact about the range: it is a fact about the range AND the contract that was
+        // asked. An expiring front holds nothing for a window the incoming front covers, so a memo written by
+        // one contract standing in for another is a real bar the store never fetches -- an absent number
+        // served as an ordinary answer.
+        //
+        // RED against a contract-blind union: the seeded U26 memo answers the window, the front is never
+        // asked, the first read costs 0 requests and the ledger still holds one row.
+        (BarCacheService cache, CountingGateway gateway) = Build([], SettledNow);
+        BarRange window = new(SessionStart, SessionStart.AddHours(1));
+
+        // Seeded through the tracker, so the tracker is cleared afterwards for the reason SeedRowsAsync gives:
+        // the memo the read under test writes is ON CONFLICT SQL the tracker never sees, and a tracked seed
+        // would be handed back in its place.
+        _database.BarCoverage.Add(new BarCoverageRecord
+        {
+            Venue = "test",
+            Instrument = _es.Symbol,
+            ResolutionMinutes = 5,
+            ContractId = "CON.F.US.TEST.U26",
+            RangeStart = window.Start,
+            RangeEnd = window.End,
+            RecordedAt = SessionStart,
+            ExpiresAt = null,
+        });
+        await _database.SaveChangesAsync();
+        _database.ChangeTracker.Clear();
+
+        await cache.GetBarsAsync(_es, 5, window, CancellationToken.None);
+
+        gateway.BarRequests.Should().Be(
+            1, "the memo was another contract's answer, and the front was never asked");
+        (await _database.BarCoverage.AsNoTracking().ToListAsync())
+            .Select(c => c.ContractId)
+            .Should().BeEquivalentTo(
+                ["CON.F.US.TEST.U26", "CON.F.US.TEST.Z26"],
+                "the seeded memo stands, and the front's own empty answer is recorded beside it rather than "
+                + "over it");
+
+        gateway.ResetCounters();
+        BarReadResult second = await cache.GetBarsAsync(_es, 5, window, CancellationToken.None);
+
+        second.VenueRequests.Should().Be(0);
+        gateway.BarRequests.Should().Be(
+            0, "the front now has a memo of its own, so the range is answered for every candidate");
+    }
+
+    [Fact]
+    public async Task TheMemoRecordsTheContractThatAnsweredEmpty()
+    {
+        // The write half, which the test above cannot isolate: it observes that a memo was written, not what
+        // was stamped on it. An unattributed memo -- a placeholder id, or an omitted column -- asserts "empty"
+        // on behalf of every contract, which is precisely what the key exists to stop.
+        //
+        // RED against a RecordCoverageSql that omits the column: the statement's ON CONFLICT target no longer
+        // matches the primary key and the write fails outright (42P10).
+        (BarCacheService cache, _) = Build([], SettledNow);
+
+        await cache.GetBarsAsync(
+            _es, 5, new BarRange(SessionStart, SessionStart.AddHours(1)), CancellationToken.None);
+
+        (await _database.BarCoverage.AsNoTracking().ToListAsync())
+            .Should().ContainSingle().Which.ContractId.Should().Be(
+                "CON.F.US.TEST.Z26",
+                "the contract that was asked is the contract the answer belongs to");
+    }
+
+    [Fact]
     public async Task APageThatOmitsSomeOfItsOwnNullBuckets_LeavesThemNull_AndSettlesAfterOneFurtherRequest()
     {
         // gh#408 part 2, as the issue frames it: a retention edge INSIDE one page. The venue answers the range

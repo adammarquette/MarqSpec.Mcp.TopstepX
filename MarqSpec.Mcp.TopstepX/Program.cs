@@ -543,6 +543,14 @@ public static class Program
             .ValidateDataAnnotations()
             .ValidateOnStart();
 
+        // How long startup waits for a store that is not answering yet. Zero by default, which is one probe
+        // and no delay -- today's behaviour, and what every stdio launch relies on. Validated on start like
+        // its siblings so a typo is refused rather than clamped (gh#514).
+        services.AddOptions<StoreOptions>()
+            .Bind(builder.Configuration.GetSection(StoreOptions.SectionName))
+            .ValidateDataAnnotations()
+            .ValidateOnStart();
+
         services.AddOptions<McpOptions>()
             .Bind(builder.Configuration.GetSection(McpOptions.SectionName))
             .Validate(
@@ -781,13 +789,21 @@ public static class Program
         TopstepXDbContext database = scope.ServiceProvider.GetRequiredService<TopstepXDbContext>();
         ILogger logger = scope.ServiceProvider.GetRequiredService<ILoggerFactory>().CreateLogger("startup");
 
-        if (!await database.Database.CanConnectAsync().ConfigureAwait(false))
+        // The probe, the warning that names what it tried, and the bounded retry all live in StoreStartup so
+        // the credential-bearing connection string is handled somewhere a unit test can assert the password
+        // never reaches a log line (gh#514).
+        StoreAvailability reached = await StoreStartup.ReachAsync(
+            token => database.Database.CanConnectAsync(token),
+            database.Database.GetConnectionString(),
+            TimeSpan.FromSeconds(
+                scope.ServiceProvider.GetRequiredService<IOptions<StoreOptions>>().Value.StartupWaitSeconds),
+            scope.ServiceProvider.GetRequiredService<TimeProvider>(),
+            logger,
+            CancellationToken.None).ConfigureAwait(false);
+
+        if (!reached.IsAvailable)
         {
-            // One line, not a stack trace. This is the first thing a new operator meets, and the stack trace
-            // it used to print named a socket rather than the thing they need to do.
-            StoreAvailability unavailable = StoreAvailability.Unavailable("Nothing answered on the configured connection string.");
-            logger.LogWarning("{Explanation}", unavailable.Explanation);
-            return unavailable;
+            return reached;
         }
 
         try

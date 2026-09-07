@@ -73,6 +73,7 @@ difference between the two entry points is a handful of lines.
 | [2026-09-03](#update-2026-09-03--the-http-transport-is-supported-outside-compose-too) | The HTTP transport is a supported way to run this outside compose too, on its own narrower recipe — and one of the two traps a reader was warned about is not what the code does |
 | [2026-09-05](#update-2026-09-05--the-16-tools-both-times-sentence-has-a-real-tree-behind-it-and-it-held-15-not-18) | Closes gh#460: the tree behind the "16 tools both times" sentence is real, on `origin/main`, and held 15 tools that day — a one-tool gap, not the three a first reading of `develop` alone implied |
 | [2026-09-06](#update-2026-09-06--the-remote-instance-is-decided-in-adr-0021) | The remote instance the 2026-09-01 TLS update left undecided is decided in ADR-0021 — the "same machine" scoping is superseded, the TLS decision and the composed shape are not |
+| [2026-09-06](#update-2026-09-06--the-route-table-gained-a-path-that-answers-without-a-credential) | `GET /health` answers unauthenticated in front of the gate, which stays global — and ordering alone would not have carved it out |
 
 ## Update (2026-08-22) — starting is not the same as being ready
 
@@ -880,3 +881,116 @@ pointer now sits directly under them, in the shape the 2026-08-23 and 2026-09-05
 the reason this page gives about itself: a reader who lands on them first is better served by a scoping that
 is visibly superseded and points at the record that superseded it than by a silent rewrite — and the
 2026-09-03 update exists because this page once left such a sentence standing with no pointer at all.
+
+## Update (2026-09-06) — the route table gained a path that answers without a credential
+
+The 2026-08-22 update above installed the bearer gate as **global** `app.Use` middleware, and said why: an
+endpoint carrying balances, positions and trade history is a data leak even though nothing here can trade.
+Global was the right shape and it stays. What it also meant, unstated because nothing needed it yet, is that
+**every path answered 401 without the token — including one nobody can send a token from.**
+
+**An Application Load Balancer cannot present a credential.** A target-group probe is a bare `GET` from the
+load balancer itself, and [ADR-0021](0021-a-non-loopback-instance-is-supported.md) puts exactly that in front
+of this server. A task whose every path answers 401 is a task the ALB marks unhealthy and replaces, forever,
+having never served a request — the deployment that record describes could not have started at all. The same
+gap made *which release is running* unanswerable in-band: the shipped assembly is stamped `0.0.0-alpha.0` by
+decision (ADR-0001) and `serverInfo.version` goes out as `0.0.0.0`, and reading either would answer
+confidently and wrongly.
+
+**So one path is allowed past the gate, and the gate is otherwise untouched.** `GET /health` answers
+`200 application/json`:
+
+```console
+$ curl -i http://127.0.0.1:5099/health          # no Authorization header at all
+HTTP/1.1 200 OK
+Content-Type: application/json; charset=utf-8
+Server: Kestrel
+
+{"status":"ok","store":"unavailable","version":"unknown","digest":"unknown"}
+
+$ curl -i http://127.0.0.1:5099/mcp             # the same request, one path over
+HTTP/1.1 401 Unauthorized
+Server: Kestrel
+WWW-Authenticate: Bearer
+
+Unauthorized.
+```
+
+Measured on this branch, Windows 11, under the 2026-09-03 update's own recipe —
+`Mcp__Transport=Http Mcp__HttpBearerToken=… dotnet run` with no compose, no Postgres and no credentials,
+on `127.0.0.1:5099` rather than the framework default because a second session held `:5000`. `/healthz`,
+`/health/anything` and `/Health` each answered `401` in the same run: **one exact path, matched ordinally,
+`GET` only.** A prefix match would hand `/health/anything` out unauthenticated and a case-insensitive one
+would turn a path into a family; both read as tidying in a diff, so both are pinned by tests rather than by
+care.
+
+**Measured again on the composed stack**, which is the shape that exercises TLS, a real migrated Postgres and
+the two new compose variables at once — same day, an isolated project on `127.0.0.1:8543` because another
+session held `:8443`:
+
+```console
+$ curl -k -i https://127.0.0.1:8543/health          # no Authorization header at all
+HTTP/1.1 200 OK
+Content-Type: application/json; charset=utf-8
+Server: Kestrel
+
+{"status":"ok","store":"available","version":"0.4.0-probe","digest":"sha256:cafebabe"}
+```
+
+`store` reads `available` there against the plain-run `unavailable` above — the same field, two environments,
+no code between them — and `version`/`digest` are the values `.env` handed `docker-compose.yml`, which is
+what says the forwarding is real rather than documented. `/mcp` on that endpoint answered `401` with
+`WWW-Authenticate: Bearer` in the same run: **TLS is not the thing letting `/health` through, and the gate is
+untouched.**
+
+### Registering it earlier is not what carves it out, and the code reads as though it were
+
+This is the trap on this page worth the most, because the wrong version is *one word shorter* and looks
+correct:
+
+> **`WebApplication` runs every endpoint after every middleware, whatever order they were added in.** It
+> inserts `UseRouting` ahead of everything the composition root adds and `UseEndpoints` after all of it, so a
+> `MapGet("/health", …)` written *before* `UseBearerTokenGate` still executes *after* it.
+
+Measured rather than reasoned about, because reasoning is exactly what produces the broken version. With the
+terminal branch replaced by `app.MapGet("/health", () => Results.Json(new { status = "ok" }))` in the same
+position — the line above the gate, in the same method, everything else identical:
+
+```console
+$ curl -i http://127.0.0.1:5099/health
+HTTP/1.1 401 Unauthorized
+Server: Kestrel
+WWW-Authenticate: Bearer
+
+Unauthorized.
+```
+
+What works is a **terminal branch**: `MapWhen` short-circuits the pipeline for the one path it claims, so
+nothing registered after it is reached and the gate never runs for that request. The three calls in
+`Program.MapHttpTransport` read the same either way — probe, gate, `MapMcp` — and only one of the two
+orderings is real. `HealthEndpointTests` is what tells them apart, and it is also **the gate's first test of
+its own**: `BearerTokenGate` had none until this card, which is precisely the condition the 2026-08-22 update
+records the cost of.
+
+### What it deliberately does not do
+
+**It is liveness, not readiness, and `store: unavailable` is still `200`.** The 2026-08-22 update settled that
+a missing database degrades to a refusal at the point of use rather than a dead process; killing the task for
+it would contradict that decision from the outside — the tool list is real and `list_instruments`,
+`get_market_session` and `search_contracts` answer normally. The measurement above is that case: nothing was
+listening on the configured connection string.
+
+**It is not `MapHealthChecks` and it reaches nothing.** `store` is the startup probe's answer, already held in
+`StoreAvailabilityHolder`; the ALB probes every 30 s per task, and a health check that opened a database
+connection would be load rather than a measurement of it.
+
+**Nothing about the venue, the token or the connection string appears in the body.** This is the only thing on
+the server reachable with no credential and THIS REPOSITORY IS PUBLIC — the store's own unavailable
+explanation, which names the connection string and the fix, is deliberately not written there. `version` and
+`digest` come from an optional `Deployment` section (`Deployment__Version`, `Deployment__ImageDigest`),
+reported as `unknown` when unset and never validated: a probe that refused to answer over a missing stamp
+would fail a healthy task for a cosmetic reason.
+
+**The static token is unchanged, and so is the composed stack.** ADR-0021 replaces that token with
+Cognito-issued OAuth for the non-loopback instance; `/health` stays unauthenticated in that mode too, for the
+same reason it is here — the load balancer probing it has no credential under either scheme.

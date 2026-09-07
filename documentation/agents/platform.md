@@ -1296,14 +1296,37 @@ $ MCP_CHECK_CLIENT_ID=… MCP_CHECK_CLIENT_SECRET=… MCP_CHECK_TOKEN_URL=… \
 
 The two arguments are the **origin** and the release `/health` must report. The Cognito deploy-check client
 (ADR-0023 §9) arrives in the **environment and never in an argument**, because an argument is in every `ps`
-on the box; it reaches curl through a `--config` file for the same reason, written by a heredoc so `bash -x`
-does not trace it, and the token endpoint's response body is never printed on any path. The self-test
-asserts on every case, red ones included, that the secret it supplied appears in neither stream.
+on the box, and reaches curl through a `--config` file for the same reason. The token endpoint's response
+body is never printed on any path. The self-test asserts on every case, red ones included, that **neither**
+the client secret nor the bearer appears in either stream.
+
+**"A heredoc, so `bash -x` does not trace it" is the shape of a claim that is true and does not hold, and
+this paragraph made it.** The heredoc really is untraced — and the review measured the secret in the trace
+anyway, at line 45, from the `[ -z "${!name-}" ]` loop three screens *above* it, on the sound path; the
+bearer was at 249 and 250 from its own assignment. The operator that paragraph was written for — debugging
+gh#519's first red deploy with `bash -x` — would have pasted both into a public tracker. **A leak is a
+property of every line that touches the value, so a defence sited at one line is a claim about that line
+only.** It holds now because it is built three times over: the environment check is by LENGTH (`${#VAR}`
+traces a number), the token goes from the response body into the config file **through a file** and never a
+shell variable, and the heredoc stays. Re-measure after any edit — `bash -x` with sentinel values, then grep
+the trace — and note that the self-test's leak assertion watched only the *secret* until this review, so a
+gate printing the bearer passed it.
+
+**And `-q` is curl's first parameter, which is not a detail.** curl reads `$CURL_HOME/.curlrc`,
+`$XDG_CONFIG_HOME/curlrc` or `~/.curlrc` **before its arguments** unless `-q` comes first. Without it, one
+line saying `insecure` in an operator's home directory turned verification off for the whole gate: measured
+on the unmutated script, it **accepted** a self-signed certificate and printed that the certificate had
+verified. **CI could not have caught it** — a runner has no curlrc, so the property was decided by whichever
+`$HOME` the gate ran under, and this gate's real subject is an operator's machine, by hand, against staging.
+Generalise it past this script: *a gate that shells out to a tool with an ambient config file has that
+config file in its trust boundary*, and `curl`, `git`, `ssh` and `aws` all have one.
 
 **What a green run licenses, exactly.** That hostname, at the moment it ran: an unauthenticated `/health`
 naming the expected release with its store attached; an anonymous `POST /mcp` refused `401` with a
 `resource_metadata` challenge whose document names this resource byte for byte; a `client_credentials` token
-minted; and `initialize` and `tools/list` answered over a **verified** TLS connection with at least 18 tools.
+minted; and `initialize` and `tools/list` answered with at least 18 tools over a TLS connection made with
+verification **enforced** — which is a claim about the option list, held up by the self-test, rather than a
+number read off the wire (see the fifth bullet below).
 It licenses **nothing** about the venue, the embedding provider, or any tool that reaches either — the gate
 deliberately calls no tool, because a store-only deployment has to pass — and nothing about latency, load,
 or the other tasks behind the load balancer: one request reaches one of them.
@@ -1324,22 +1347,37 @@ nothing was added there.
 [`check-deployment-selftest.sh`](../../scripts/check-deployment-selftest.sh) serves the gate a fixture that
 is a correct deployment in every respect but one — a few lines of Python `http.server`, no product code —
 and requires it to reject each fault **by name**, never by exit status, since the gate also exits 1 for
-"curl is required" and for an unset variable. Eight cases: a sound one it must accept **writing zero bytes
-to stderr** (gh#239, gh#271, measured before being asserted), then a wrong version, a `/mcp` answering an
+"curl is required" and for an unset variable. Nine cases: a sound one it must accept **writing zero bytes to
+stderr** (gh#239, gh#271, measured before being asserted), then a wrong version, a `/mcp` answering an
 anonymous POST `200`, a metadata document naming somebody else's resource, seventeen tools against a floor
-of eighteen, a token endpoint answering `200` with no token in it, a self-signed certificate, and a
-plain-http token endpoint off loopback. Four things worth carrying:
+of eighteen, a token endpoint answering `200` with no token in it, a self-signed certificate, a plain-http
+token endpoint off loopback, and that same certificate again with an `insecure` curlrc in scope. **Its
+header lists what it does not cover** — roughly twenty named failures in the gate, nine pinned — so that
+nine cases are not read as the assertion list. Five things worth carrying:
 
 - **The tool count is a measurement, not a guess.** `inputSchema` is required exactly once per entry of a
   `tools/list` reply and appears in no JSON Schema vocabulary, so counting it counts tools — checked against
   a real reply from this server on 2026-09-07, twenty tools and twenty occurrences. The floor is 18 and the
   faulty fixture serves **17**, one under, because a fixture that is wildly wrong is satisfied by a gate that
   is only roughly right.
-- **Only the certificate case can prove `-k` is absent.** Every other fault is content, and a gate could be
-  checked for those over plain http forever while quietly bypassing verification. Adding `--insecure` to the
-  gate's one option list leaves seven cases green and reddens that one — and the mutant prints
-  *"the certificate chain and the host name verified"* on the way, because `%{ssl_verify_result}` comes back
-  **0** under `-k`. An assertion read off the connection cannot see the flag that defeated it.
+- **Only the two certificate cases can reach the `-k` question, and they are two questions.** Every other
+  fault is content, and a gate could be checked for those over plain http forever while quietly bypassing
+  verification. Case 7 says no `-k` is **written** in the gate — add `--insecure` to its one option list and
+  seven cases stay green while that one reddens. Case 9 says none can be **supplied** to it, which is the
+  half the first version missed entirely: delete `-q` and eight cases stay green. Deleting either leaves a
+  hole the other cannot see. **Case 9 carries a precondition** proving `CURL_HOME` is honoured at all — a
+  curlrc naming a dead proxy must stop an ordinary curl — because without it the case would pass on a
+  platform that ignores the variable, having exercised nothing. *Coverage owed to a fixture's incidental
+  shape is coverage the table cannot see it lacks.*
+- **A reassuring line about a check not performed, produced by trying to avoid one.** Assertion 4 printed
+  *"the certificate chain and the host name verified … (ssl_verify_result 0)"*, which reads as an independent
+  measurement and is not one: with verification on, a non-zero result is curl exit 60 and the run ended back
+  at assertion 1; with verification off it is 0. The number is therefore **0 on every run that reaches
+  assertion 4** — under `-k`, under a curlrc and under a clean run alike. It now states the inference
+  instead — *verification was enforced (no `-k`, and `-q` disables any curlrc) and the connection completed*
+  — with the premises held up by cases 7 and 9 rather than by the line itself, and the non-zero branch marked
+  unreachable and defensive-only in a comment. **The failure mode was the one being guarded against**: an
+  earlier draft of this section reasoned about the ordering of the assertions instead of running the flag.
 - **`MSYS_NO_PATHCONV=1` is the wrong tool here, and the sibling gates that carry it are not a precedent.**
   They hand paths to a Linux container, where MSYS rewriting `/app/…` is pure damage. This hands paths to a
   Windows `python.exe`, where the rewriting is what makes them usable — turn it off and the interpreter is

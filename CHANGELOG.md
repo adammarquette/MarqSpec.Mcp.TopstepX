@@ -48,7 +48,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   failed-retry test, there is no concurrency suite for the `SessionIndicatorValues` write, and a value stored
   under a period the catalogue was later reconfigured away from is not reconciled — a pre-existing rule of
   this projection, now true of session series too. The [tool catalogue](documentation/mcp-tool-catalog.md),
-  the PRD (`R-2.14`, `R-5.12`), the [data dictionary](documentation/data-dictionary.md) (§12), the
+  the PRD (`R-2.14`, `R-2.15`, `R-5.12`), the [data dictionary](documentation/data-dictionary.md) (§12), the
   [architecture doc](documentation/architecture.md) and
   [ADR-0006](documentation/adr/0006-indicators-as-projections.md),
   [ADR-0014](documentation/adr/0014-indicators-are-projected-on-read-too.md) and

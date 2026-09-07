@@ -521,7 +521,7 @@ after the store had been opened.
 
 ### `get_session_indicators(symbol, session, indicator, fromUtc, toUtc, period?)`
 An indicator series computed over **whole sessions** — one value per trade date, not per bar (`R-5.12`,
-`R-2.14`).
+`R-2.15`).
 
 Returns `{ symbol, session, indicator, period, values: [{ tradeDate, t, v }], contracts }`.
 
@@ -557,7 +557,7 @@ UTC bounds move with the offset.
 **Values are never smoothed across a contract roll**, so expect a run of absent trade dates just after one:
 the new contract's warm-up starts over (`R-2.7`). `contracts` reports which contracts produced the sessions
 under the window — every session in it, not only the ones carrying a value, since a warm-up date produced the
-values after it — and `contracts.span` reads `Unknown` only when no session bar could be built at all.
+values after it — and `contracts.span` reads `Unknown` only when the store holds no session bar for the window at all.
 
 `session` is the same **closed vocabulary** `get_session_bars` takes; an unknown name errors listing the
 configured ones. The window is refused on the session-bar tools' caps and in their order, before any read.

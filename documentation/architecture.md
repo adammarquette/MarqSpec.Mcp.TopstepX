@@ -96,9 +96,22 @@ a **session bar** rather than a resolution (`R-1.12`,
    instrument's contract universe, resolved at most once per instrument per request and only once the ledger
    has produced rows worth attributing — so that read now pays **one contract search** where it previously
    reached the venue not at all, and because step 5 is never entered that call is **not counted in
-   `venueRequests`**. What it buys is the roll: after one, the new front's ranges are unanswered and get
-   asked, instead of inheriting the retiring contract's permanent "empty" over a window the new front does
-   cover.
+   `venueRequests`**. The search is **not paced**: only `History/retrieveBars` goes through the pacer, and
+   every other endpoint — this one included — draws on the vendor's separate 200-per-60-seconds pool
+   ([wiki — rate limits](wiki/pages/projectx-gateway-api.md#rate-limits)), so it neither waits behind nor
+   slows the paging in step 5. **It does make a memo-covered read venue-dependent, which it was not
+   before**: with the venue down, a read the store could have answered in full raises a `VenueException`
+   where it used to succeed. Loud over quiet, deliberately — the alternative is treating a range as covered
+   on the strength of a candidate list nobody could confirm. What the search buys is the roll: after one,
+   the new front's ranges are unanswered and get asked, instead of inheriting the retiring contract's
+   permanent "empty" over a window the new front does cover.
+
+   **The candidate set is the venue-front contract alone in this slice** — `contracts[0]`, the same one step
+   5 asks and stamps. A contract this slice never fetches from can never hold a memo, so counting the
+   venue's whole listing as candidates would make "every candidate answered" unsatisfiable the moment a roll
+   window lists two expiries, and every settled empty range would be re-fetched on every read. The set is
+   carried as a *list* because gh#505 widens it — to the policy's per-range candidates, and to the fetch at
+   the same time.
 5. **Fetch** each remaining range, paged at `1000 × barSize` — the gateway caps a history call at 1000 bars and
    silently truncates past it. The pages are **paced** to the vendor's 50-per-30-seconds allowance on the
    history endpoint, shared process-wide, because a cold year of five-minute bars is 106 requests back to back

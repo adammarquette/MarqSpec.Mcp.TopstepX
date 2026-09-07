@@ -8,6 +8,7 @@ using MarqSpec.Mcp.TopstepX.Domain.MarketData;
 using MarqSpec.Mcp.TopstepX.MarketData;
 using MarqSpec.Mcp.TopstepX.Telemetry;
 using MarqSpec.Mcp.TopstepX.Tests.MarketData;
+using MarqSpec.Mcp.TopstepX.Venue;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Storage;
 using Microsoft.Extensions.Diagnostics.Metrics.Testing;
@@ -252,12 +253,16 @@ public sealed class TelemetryInstrumentTests : IAsyncLifetime
     {
         TopstepXDbContext context = _fixture.CreateContext();
 
+        FakeTimeProvider clock = new(SessionStart.AddDays(3));
+
         return new BarCacheService(
             context,
             gateway,
             _calendar,
             new IndicatorProjector(context, _catalog, NullLogger<IndicatorProjector>.Instance, _telemetry),
-            new FakeTimeProvider(SessionStart.AddDays(3)),
+            new InstrumentRegistry(Options.Create(new MarketDataOptions())),
+            new ContractDirectory(clock),
+            clock,
             NullLogger<BarCacheService>.Instance,
             _telemetry);
     }

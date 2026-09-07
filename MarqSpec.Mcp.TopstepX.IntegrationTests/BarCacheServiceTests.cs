@@ -196,7 +196,15 @@ public sealed class BarCacheServiceTests : IAsyncLifetime
             new(_database, catalog, NullLogger<IndicatorProjector>.Instance, _telemetry);
 
         return new BarCacheService(
-            _database, gateway, calendar, projector, clock, NullLogger<BarCacheService>.Instance, _telemetry);
+            _database,
+            gateway,
+            calendar,
+            projector,
+            new InstrumentRegistry(Options.Create(new MarketDataOptions())),
+            new ContractDirectory(clock),
+            clock,
+            NullLogger<BarCacheService>.Instance,
+            _telemetry);
     }
 
     [Fact]

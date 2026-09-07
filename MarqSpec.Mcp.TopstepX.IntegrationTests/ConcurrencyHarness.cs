@@ -448,15 +448,21 @@ public static class ConcurrencyHarness
         DateTimeOffset now,
         ILogger<BarCacheService>? logger = null,
         string contractId = ContractId,
-        bool answersBeyondTheSlice = false) =>
-        new(
+        bool answersBeyondTheSlice = false)
+    {
+        FakeTimeProvider clock = new(now);
+
+        return new BarCacheService(
             database,
             new SeriesGateway(venue, available, contractId, answersBeyondTheSlice),
             Calendar(),
             Projector(database),
-            new FakeTimeProvider(now),
+            new InstrumentRegistry(Options.Create(new MarketDataOptions())),
+            new ContractDirectory(clock),
+            clock,
             logger ?? NullLogger<BarCacheService>.Instance,
             Telemetry);
+    }
 
     /// <summary>The window covering a half-open bucket index range.</summary>
     /// <param name="fromIndex">The first bucket index.</param>

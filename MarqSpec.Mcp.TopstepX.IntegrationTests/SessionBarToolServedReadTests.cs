@@ -5,6 +5,7 @@ using MarqSpec.Mcp.TopstepX.Domain;
 using MarqSpec.Mcp.TopstepX.Domain.MarketData;
 using MarqSpec.Mcp.TopstepX.MarketData;
 using MarqSpec.Mcp.TopstepX.Tools;
+using MarqSpec.Mcp.TopstepX.Venue;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using Microsoft.Extensions.Time.Testing;
@@ -311,8 +312,11 @@ public sealed class SessionBarToolServedReadTests : IAsyncLifetime
             gateway,
             ConcurrencyHarness.Calendar(),
             ConcurrencyHarness.Projector(_database),
+            new InstrumentRegistry(options),
+            new ContractDirectory(clock),
             clock,
-            NullLogger<BarCacheService>.Instance);
+            NullLogger<BarCacheService>.Instance,
+            ConcurrencyHarness.Telemetry);
 
         SessionBarService sessions = new(
             _database,

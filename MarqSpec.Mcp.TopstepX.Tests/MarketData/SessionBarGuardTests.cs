@@ -5,6 +5,7 @@ using MarqSpec.Mcp.TopstepX.Domain;
 using MarqSpec.Mcp.TopstepX.Domain.MarketData;
 using MarqSpec.Mcp.TopstepX.MarketData;
 using MarqSpec.Mcp.TopstepX.Telemetry;
+using MarqSpec.Mcp.TopstepX.Venue;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
@@ -83,6 +84,8 @@ public sealed class SessionBarGuardTests : IDisposable
             gateway,
             calendar,
             new IndicatorProjector(_database, catalog, NullLogger<IndicatorProjector>.Instance, _telemetry),
+            new InstrumentRegistry(Options.Create(new MarketDataOptions())),
+            new ContractDirectory(clock),
             clock,
             NullLogger<BarCacheService>.Instance,
             _telemetry);

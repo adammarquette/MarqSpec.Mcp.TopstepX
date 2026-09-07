@@ -11,6 +11,7 @@ using MarqSpec.Mcp.TopstepX.MarketData;
 using MarqSpec.Mcp.TopstepX.Telemetry;
 using MarqSpec.Mcp.TopstepX.Tests.MarketData;
 using MarqSpec.Mcp.TopstepX.Tools;
+using MarqSpec.Mcp.TopstepX.Venue;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
@@ -114,7 +115,15 @@ public sealed class BucketSpanGuardTests : IDisposable
         IndicatorProjector projector =
             new(_database, _catalog, NullLogger<IndicatorProjector>.Instance, _telemetry);
         _cache = new BarCacheService(
-            _database, _gateway, _calendar, projector, _clock, NullLogger<BarCacheService>.Instance, _telemetry);
+            _database,
+            _gateway,
+            _calendar,
+            projector,
+            new InstrumentRegistry(Options.Create(new MarketDataOptions())),
+            new ContractDirectory(_clock),
+            _clock,
+            NullLogger<BarCacheService>.Instance,
+            _telemetry);
     }
 
     public void Dispose()

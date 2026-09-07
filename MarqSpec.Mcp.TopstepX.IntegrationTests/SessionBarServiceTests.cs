@@ -1,12 +1,15 @@
 using FluentAssertions;
+using MarqSpec.Mcp.TopstepX.Configuration;
 using MarqSpec.Mcp.TopstepX.Data;
 using MarqSpec.Mcp.TopstepX.Data.Entities;
 using MarqSpec.Mcp.TopstepX.Domain;
 using MarqSpec.Mcp.TopstepX.Domain.MarketData;
 using MarqSpec.Mcp.TopstepX.MarketData;
+using MarqSpec.Mcp.TopstepX.Venue;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Options;
 using Microsoft.Extensions.Time.Testing;
 using Npgsql;
 
@@ -651,6 +654,8 @@ public sealed class SessionBarServiceTests : IAsyncLifetime
             gateway,
             ConcurrencyHarness.Calendar(),
             ConcurrencyHarness.Projector(database),
+            new InstrumentRegistry(Options.Create(new MarketDataOptions())),
+            new ContractDirectory(clock),
             clock,
             NullLogger<BarCacheService>.Instance,
             ConcurrencyHarness.Telemetry);

@@ -11,6 +11,7 @@ using MarqSpec.Mcp.TopstepX.MarketData;
 using MarqSpec.Mcp.TopstepX.Telemetry;
 using MarqSpec.Mcp.TopstepX.Tests.MarketData;
 using MarqSpec.Mcp.TopstepX.Tools;
+using MarqSpec.Mcp.TopstepX.Venue;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
@@ -118,7 +119,15 @@ public sealed class ResolutionGuardTests : IDisposable
         IndicatorProjector projector =
             new(_database, _catalog, NullLogger<IndicatorProjector>.Instance, _telemetry);
         _cache = new BarCacheService(
-            _database, _gateway, calendar, projector, _clock, NullLogger<BarCacheService>.Instance, _telemetry);
+            _database,
+            _gateway,
+            calendar,
+            projector,
+            new InstrumentRegistry(options),
+            new ContractDirectory(_clock),
+            _clock,
+            NullLogger<BarCacheService>.Instance,
+            _telemetry);
 
         // Five market-data tool types now, not one (gh#414). The sweep below walks the surface by
         // reflection and maps a declaring type to an instance, so EVERY one of them has to be built here --

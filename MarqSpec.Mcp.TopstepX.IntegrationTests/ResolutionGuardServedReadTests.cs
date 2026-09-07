@@ -7,6 +7,7 @@ using MarqSpec.Mcp.TopstepX.MarketData;
 using MarqSpec.Mcp.TopstepX.Telemetry;
 using MarqSpec.Mcp.TopstepX.Tests.MarketData;
 using MarqSpec.Mcp.TopstepX.Tools;
+using MarqSpec.Mcp.TopstepX.Venue;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using Microsoft.Extensions.Time.Testing;
@@ -73,7 +74,15 @@ public sealed class ResolutionGuardServedReadTests : IAsyncLifetime
         IndicatorProjector projector =
             new(_database, catalog, NullLogger<IndicatorProjector>.Instance, _telemetry);
         BarCacheService cache = new(
-            _database, gateway, calendar, projector, clock, NullLogger<BarCacheService>.Instance, _telemetry);
+            _database,
+            gateway,
+            calendar,
+            projector,
+            new InstrumentRegistry(options),
+            new ContractDirectory(clock),
+            clock,
+            NullLogger<BarCacheService>.Instance,
+            _telemetry);
 
         // Only the bar tools, unlike the unit-tier fixture. That one builds all six tool types because its
         // reflection sweep can land on any of them; the single test here drives get_latest_bars and nothing

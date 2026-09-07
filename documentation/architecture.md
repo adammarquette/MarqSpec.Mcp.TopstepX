@@ -122,7 +122,7 @@ a **session bar** rather than a resolution (`R-1.12`,
    earning a memo at step 9. Two coarser conditions end the plan for the **whole read** instead — an
    instrument the registry does not serve, and a front whose expiry does not read against the cycle — and
    those are today's behaviour unchanged: every range becomes one present slice on `contracts[0]`,
-   memoisation included, under a warning naming the instrument, the front and the cycle. The existence checks are `FindContractAsync` calls: unpaced, on the vendor's general pool, and
+   memoisation included, under a warning naming the instrument and the front, and the cycle where there is one. The existence checks are `FindContractAsync` calls: unpaced, on the vendor's general pool, and
    counted on the platform meter as `venue_calls_total{operation="find_contract"}` beside
    `resolve_contracts` — **never in `venueRequests`**, which is history pages and nothing else.
 5. **Fetch** each remaining range, paged at `1000 × barSize` — the gateway caps a history call at 1000 bars and

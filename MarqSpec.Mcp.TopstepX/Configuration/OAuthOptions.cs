@@ -38,7 +38,17 @@ public sealed class OAuthOptions
     public string ClientIds { get; init; } = string.Empty;
 
     /// <summary>The one scope a token must carry. Compared as a whole entry of the space-separated claim.</summary>
-    public string RequiredScope { get; init; } = DefaultRequiredScope;
+    /// <remarks>
+    /// <b>Blank is the same as unset</b> and binds to <see cref="DefaultRequiredScope"/>. <c>.env.example</c>
+    /// lists the key with no value, as it lists every key, and <c>Mcp__OAuth__RequiredScope=</c> exported
+    /// from that file used to refuse startup while the comment beside it said it defaulted (gh#512 review).
+    /// A value with whitespace inside is still refused — the claim is space-separated and this is one entry.
+    /// </remarks>
+    public string RequiredScope
+    {
+        get;
+        init => field = string.IsNullOrWhiteSpace(value) ? DefaultRequiredScope : value;
+    } = DefaultRequiredScope;
 
     /// <summary>
     /// The public URL of the MCP endpoint, exactly as a user enters it into a connector —
@@ -108,10 +118,10 @@ public sealed class OAuthOptions
             yield return problem;
         }
 
-        if (string.IsNullOrWhiteSpace(RequiredScope) || RequiredScope.Any(char.IsWhiteSpace))
+        if (RequiredScope.Any(char.IsWhiteSpace))
         {
             yield return "Mcp__OAuth__RequiredScope must be exactly one scope, with no whitespace: the scope claim is "
-                + $"space-separated and the check is a whole-entry match. Unset it for {DefaultRequiredScope}.";
+                + $"space-separated and the check is a whole-entry match. Unset it, or leave it blank, for {DefaultRequiredScope}.";
         }
     }
 

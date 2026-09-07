@@ -1034,8 +1034,17 @@ time, a bare `WWW-Authenticate: Bearer` on refusal — and it remains the local 
 reasons ADR-0021 gives. `OAuth` makes the server a resource server: `Microsoft.AspNetCore.Authentication.JwtBearer`
 (pinned at 10.0.11 beside the framework line) validates the token against the keys discovered from
 `{Mcp__OAuth__Issuer}/.well-known/openid-configuration` — RS256 only, signed only, an `exp` required,
-lifetime with a 60 s skew, and `ValidIssuer` set explicitly to the configured string so a discovery
-document's own `issuer` is never what the check trusts.
+lifetime with a 60 s skew, and the issuer compared by an explicit `IssuerValidator` against the configured
+string, ordinally, and nothing else. **That last clause was false as first written and is true now.** The
+first draft of this update set `ValidIssuer` and said the discovery document's own `issuer` was "never what
+the check trusts"; the review measured otherwise — `JwtBearerHandler` concatenates the document's `issuer`
+into `ValidIssuers` beside the configured one, and a token whose `iss` matched the document but not the
+configuration was accepted, `200`. The trust boundary was the same in practice, since the document is
+fetched from the configured issuer and whoever controls it controls the key set too; but on a security path
+a false sentence is worse than none, and the stronger fix was one delegate rather than a corrected
+sentence. `ATokenUnderTheIssuerTheDiscoveryDocumentClaims_IsRefused_WhenItIsNotTheConfiguredOne` is the
+review's probe as a test — a stub whose document advertises a second string, a token under it — and it is
+`401` now.
 
 ### Why the Cognito claims are checked the way they are
 
@@ -1048,12 +1057,19 @@ audience check, and it runs inside the handler's `OnTokenValidated` so that no p
 authenticated without it: `token_use` is exactly `access` — an ID token from the same pool is signed by the
 same key and is not a credential for a resource server; exactly one `client_id`, and in
 `Mcp__OAuth__ClientIds`; and `Mcp__OAuth__RequiredScope` present as a **whole entry** of the space-separated
-`scope`, ordinally — `topstepx-mcp/readwrite` and `TOPSTEPX-MCP/READ` are each a different scope. The pure
-check has its own tests, and the host tests pin every negative through the pipeline: absent, malformed,
-expired, no `exp`, not yet valid, wrong and missing issuer, unlisted and missing client,
-missing/wrong/prefix/case scope, `token_use=id`, `alg: none`, a key the issuer never published under the
-published `kid` and under an unknown one, and an issuer that has gone away. Each is its own test, so a
-later loosening fails one named test rather than a vague suite.
+`scope`, ordinally — `topstepx-mcp/readwrite` and `TOPSTEPX-MCP/READ` are each a different scope. **`aud`
+is never consulted, present or absent**: a Cognito access token never carries one, so its presence is not
+evidence of anything, and a token carrying `aud` naming some other resource beside a listed `client_id` and
+the scope is accepted on those two claims (the review measured `200`, and that is the intended answer).
+Refusing any token that carries an `aud` at all would be a stricter reading of "not a Cognito access
+token"; it is not taken here because it would pin a Cognito property this update has not measured. The
+pure check has its own tests, and the host tests pin every negative through the pipeline: absent,
+malformed, expired, no `exp`, not yet valid, wrong and missing issuer, the issuer the discovery document
+claims, unlisted and missing client, missing/wrong/prefix/case scope, `token_use=id`, `alg: none`, **RS512,
+RS384, PS256 and PS512 under the published key** — `ValidAlgorithms` is the one line refusing those, and the
+review found deleting it turned no test red until these rows existed — a key the issuer never published
+under the published `kid` and under an unknown one, and an issuer that has gone away. Each is its own test,
+so a later loosening fails one named test rather than a vague suite.
 
 ### What a connector meets, in order
 
@@ -1157,6 +1173,33 @@ service with `Mcp__Auth__Mode=OAuth` and a complete OAuth section beside the sta
 to start with `OptionsValidationException: … Mcp__HttpBearerToken is set while Mcp__Auth__Mode=OAuth …`.
 **Switching compose to OAuth is not a `.env` edit**, by design — the remote instance is a different artefact
 with all three replacements in it, never this stack with one line changed.
+
+### What an unauthenticated request can write into the log, and what it cannot
+
+**The JWT bearer handler's category is filtered to `Warning` under the OAuth mode**, in the same registration
+that adds the handler. Left at the product default it logs a refused token's `iss` and `kid` **verbatim** at
+Information — `IDX10205: Issuer validation failed. Issuer: '<the token's iss>'`, `IDX10503 … The token's
+kid is: '<the token's kid>'` — and under this mode the listener is reachable from the internet, so those
+two strings are chosen by whoever sends the request. Neither is a secret; what an attacker would control is
+**the content of a log line at the default level on every unauthenticated request** — a log-injection and
+noise vector, and one an alert built on that category would fire on. The gate's own refusal line stays,
+names a claim and never quotes a value, so nothing an operator needs is lost;
+`AttackerChosenClaimValues_NeverReachALogLine` pins both strings out of every line every logger produced,
+at Trace. The static mode registers no handler and is unaffected.
+
+Two things the review measured that this update does **not** change, recorded so they are not rediscovered:
+a token sent in the **query string** (`?access_token=…`) is refused under both modes — the handler and the
+static gate read the header only, and `bearer_methods_supported: ["header"]` is accurate — but
+`Microsoft.AspNetCore.Hosting.Diagnostics` writes the full request URL at Information, token included, and
+did so before this card under the static token too; a misbehaving client is the likeliest source of an
+IdP-issued bearer in a URL, and the fix is a request-logging decision that belongs to gh#515's hosting
+work, not here. And two shapes of the belt-and-braces: an incomplete OAuth section surfaces as
+`ArgumentException: The OAuth mode cannot be installed on an incomplete section … Mcp__OAuth__Issuer is
+required …` from `UseOAuthBearerGate`, which runs before `ValidateOnStart` would have thrown
+`OptionsValidationException` — the key is named either way, and it is the same shape the static gate has
+had since 2026-08-22; and a lowercase `bearer` scheme is accepted under OAuth (RFC 6750, the handler's
+behaviour) where the static gate's ordinal `Bearer ` refuses it — not a loosening of consequence, and not
+worth a second comparison to close.
 
 ### What this does not decide
 

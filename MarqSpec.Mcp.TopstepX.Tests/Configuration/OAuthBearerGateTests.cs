@@ -10,6 +10,7 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
+using Microsoft.IdentityModel.Tokens;
 
 namespace MarqSpec.Mcp.TopstepX.Tests.Configuration;
 
@@ -316,8 +317,8 @@ public sealed class OAuthBearerGateTests
     [Fact]
     public async Task ATokenFromAnotherIssuer_IsRefused_EvenWhenSignedWithThePublishedKey()
     {
-        // The signature is right and the issuer is wrong: this is what ValidIssuer being set explicitly
-        // buys, rather than trusting whatever the discovery document says about itself.
+        // The signature is right and the issuer is wrong. ValidIssuer alone does NOT buy this on its own
+        // terms -- see the next test for what the handler also trusts and the IssuerValidator that stops it.
         await using StubIssuer issuer = await StubIssuer.StartAsync();
         await using Host host = await StartAsync(issuer.Issuer);
         string token = issuer.Mint(new TokenShape { Issuer = "https://cognito-idp.us-east-1.amazonaws.com/us-east-1_someoneElse" });
@@ -325,6 +326,37 @@ public sealed class OAuthBearerGateTests
         using HttpResponseMessage response = await host.Client.SendAsync(InitializeWith(token));
 
         ShouldBeRefused(response);
+    }
+
+    [Fact]
+    public async Task ATokenUnderTheIssuerTheDiscoveryDocumentClaims_IsRefused_WhenItIsNotTheConfiguredOne()
+    {
+        // The gh#512 review measured this returning 200: JwtBearerHandler concatenates the discovery
+        // document's own `issuer` into ValidIssuers beside the configured one, so a document that named a
+        // second string had tokens under that string accepted. The document is fetched from the configured
+        // issuer, so the trust boundary was the same in practice -- but the ADR said the document was never
+        // trusted, and it was. IssuerValidator makes the sentence true: the configured string, ordinally,
+        // and nothing else.
+        await using StubIssuer issuer = await StubIssuer.StartAsync(advertisedSuffix: "-as-the-document-says");
+        await using Host host = await StartAsync(issuer.Issuer);
+        string token = issuer.Mint(new TokenShape { Issuer = issuer.AdvertisedIssuer });
+
+        using HttpResponseMessage response = await host.Client.SendAsync(InitializeWith(token));
+
+        ShouldBeRefused(response);
+    }
+
+    [Fact]
+    public async Task ATokenUnderTheConfiguredIssuer_IsAccepted_WhateverTheDiscoveryDocumentClaims()
+    {
+        // The other half: the configured string is the whole of the check, so a document whose `issuer`
+        // disagrees does not refuse a token that carries the configured one.
+        await using StubIssuer issuer = await StubIssuer.StartAsync(advertisedSuffix: "-as-the-document-says");
+        await using Host host = await StartAsync(issuer.Issuer);
+
+        using HttpResponseMessage response = await host.Client.SendAsync(InitializeWith(issuer.Mint(issuer.Valid())));
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
     }
 
     [Fact]
@@ -429,6 +461,51 @@ public sealed class OAuthBearerGateTests
         using HttpResponseMessage response = await host.Client.SendAsync(InitializeWith(token));
 
         ShouldBeRefused(response);
+    }
+
+    [Theory]
+    [InlineData(SecurityAlgorithms.RsaSha512)]
+    [InlineData(SecurityAlgorithms.RsaSha384)]
+    [InlineData(SecurityAlgorithms.RsaSsaPssSha256)]
+    [InlineData(SecurityAlgorithms.RsaSsaPssSha512)]
+    public async Task AnotherAlgorithmUnderThePublishedKey_IsRefused(string algorithm)
+    {
+        // Signed with the issuer's real key, every claim right, only `alg` differs. Cognito signs RS256 and
+        // ValidAlgorithms is the ONE line refusing these -- the gh#512 review found that deleting it turned
+        // no test red, because the other negatives cover alg:none and unpublished keys only. These rows are
+        // that pin: widen the allow-list and they fail by name.
+        await using StubIssuer issuer = await StubIssuer.StartAsync();
+        await using Host host = await StartAsync(issuer.Issuer);
+        string token = issuer.Mint(new TokenShape { Issuer = issuer.Issuer, Signing = issuer.SignWith(algorithm) });
+
+        using HttpResponseMessage response = await host.Client.SendAsync(InitializeWith(token));
+
+        ShouldBeRefused(response);
+    }
+
+    [Fact]
+    public async Task AttackerChosenClaimValues_NeverReachALogLine()
+    {
+        // JwtBearerHandler logs a refused token's `iss` and `kid` verbatim at Information -- "IDX10205:
+        // Issuer validation failed. Issuer: '…'", "IDX10503 … The token's kid is: '…'" -- and this listener
+        // is reachable from the internet under this mode, so an unauthenticated request could write what it
+        // liked into the log at the default level. The category is filtered to Warning; this pins that
+        // both values stay out of every line every logger produced, at Trace.
+        const string attackerIssuer = "https://attacker-chosen-issuer-value-7d3b.example/x";
+        const string attackerKid = "attacker-chosen-kid-4e9a";
+        await using StubIssuer issuer = await StubIssuer.StartAsync();
+        await using Host host = await StartAsync(issuer.Issuer);
+
+        using HttpResponseMessage byIssuer = await host.Client.SendAsync(
+            InitializeWith(issuer.Mint(new TokenShape { Issuer = attackerIssuer })));
+        using HttpResponseMessage byKid = await host.Client.SendAsync(
+            InitializeWith(issuer.Mint(new TokenShape { Issuer = issuer.Issuer, Signing = StubIssuer.UnpublishedKey(attackerKid) })));
+
+        ShouldBeRefused(byIssuer);
+        ShouldBeRefused(byKid);
+        string everything = host.Logs.Everything();
+        everything.Should().NotContain(attackerIssuer);
+        everything.Should().NotContain(attackerKid);
     }
 
     [Fact]

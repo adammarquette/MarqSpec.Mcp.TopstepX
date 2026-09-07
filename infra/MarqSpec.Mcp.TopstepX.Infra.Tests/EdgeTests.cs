@@ -140,4 +140,31 @@ public sealed class EdgeTests(EnvironmentTemplates templates) : IClassFixture<En
         Synthesised.LogicalIdOf(delegation["HostedZoneId"]).Should().NotBe(zoneId, "the NS record lives in the parent zone");
         Synthesised.LogicalIdOf(delegation["ResourceRecords"]).Should().Be(zoneId, "its values are the new zone's name servers");
     }
+
+    [Fact]
+    public void Stagings_certificate_is_ordered_behind_the_delegation()
+    {
+        var t = templates.Staging;
+        var (_, cert) = t.Single("AWS::CertificateManager::Certificate");
+        var delegationId = t.Resources("AWS::Route53::RecordSet")
+            .Single(r => t.Properties(r.Value)["Type"]!.GetValue<string>() == "NS").Key;
+
+        Synthesised.DependenciesOf(cert).Should().Contain(
+            delegationId,
+            "ACM validates *.staging.marqspec.com by writing a record into a zone this same stack creates, and "
+            + "polls PUBLIC DNS for it -- which cannot resolve until the apex delegates. Both resources "
+            + "reference only the zone, so without this edge CloudFormation may create them concurrently and "
+            + "the stack sits in CREATE_IN_PROGRESS rather than failing (gh#588)");
+    }
+
+    [Fact]
+    public void Productions_certificate_is_ordered_behind_nothing()
+    {
+        var (_, cert) = templates.Production.Single("AWS::CertificateManager::Certificate");
+
+        Synthesised.DependenciesOf(cert).Should().BeEmpty(
+            "production's zone is looked up -- it already exists and is already delegated, so there is nothing "
+            + "to wait for. This is the other direction of gh#588: the staging fix must not reach the "
+            + "environment that has no delegation of its own");
+    }
 }

@@ -164,6 +164,23 @@ public sealed record Synthesised(Template Template, JsonObject Json)
     /// <summary>The JSON text of a node, for "contains" questions over an intrinsic the matchers cannot walk.</summary>
     public static string Text(JsonNode? node) => node?.ToJsonString() ?? "null";
 
+    /// <summary>
+    /// The logical ids a resource's <c>DependsOn</c> names, empty when it names none. CloudFormation admits
+    /// both a bare string and an array there, so both are normalised — a test that read only the array shape
+    /// would pass on a single dependency by never looking at it.
+    /// </summary>
+    /// <remarks>
+    /// This reads the resource, not its <c>Properties</c>: <c>DependsOn</c> is a resource attribute, and an
+    /// ordering edge is the one thing a template states nowhere else. Every other edge is implied by a
+    /// <c>Ref</c> or <c>Fn::GetAtt</c> inside the properties and needs no attribute to exist.
+    /// </remarks>
+    public static IReadOnlyList<string> DependenciesOf(JsonObject resource) => resource["DependsOn"] switch
+    {
+        JsonArray array => array.Select(d => d!.GetValue<string>()).ToList(),
+        JsonValue one => [one.GetValue<string>()],
+        _ => [],
+    };
+
     /// <summary>The container definitions of the task definition whose family carries <paramref name="familySuffix"/>.</summary>
     public (string LogicalId, JsonObject TaskDefinition, JsonArray Containers) TaskDefinition(string familySuffix)
     {

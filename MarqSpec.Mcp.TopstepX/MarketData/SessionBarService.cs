@@ -28,11 +28,17 @@ namespace MarqSpec.Mcp.TopstepX.MarketData;
 /// <param name="VenueRequests">
 /// How many requests that base read issued. Zero is the precise statement that this call reached no venue.
 /// </param>
+/// <param name="History">
+/// How the one base read's historical half was decided (gh#592). The base series' answer, like the two
+/// counters above: a session bar is derived from those bars, so a base read that fell back to the venue's own
+/// pick produces sessions aggregated over exactly that stretch — and nothing else on this payload says so.
+/// </param>
 public sealed record SessionBarReadResult(
     IReadOnlyList<SessionBar> Bars,
     IReadOnlyList<SessionBarOutcome> Absent,
     int FetchedBuckets,
-    int VenueRequests);
+    int VenueRequests,
+    HistoryCandidates History);
 
 /// <summary>
 /// Derives one session bar per closed trade date from the stored base series, and stores the complete ones
@@ -209,7 +215,13 @@ public sealed class SessionBarService
         // cost either of them.
         if (closed.Count == 0)
         {
-            return Verified(tradeDates, [], InAskedOrder(tradeDates, absences), 0, 0);
+            return Verified(
+                tradeDates,
+                [],
+                InAskedOrder(tradeDates, absences),
+                0,
+                0,
+                HistoryCandidates.NotDecidedHere);
         }
 
         DateOnly firstClosed = closed.Min();
@@ -406,7 +418,8 @@ public sealed class SessionBarService
             [.. stored.Committed.Select(ToSessionBar)],
             InAskedOrder(tradeDates, absences),
             read.FetchedBuckets,
-            read.VenueRequests);
+            read.VenueRequests,
+            read.History);
     }
 
     /// <summary>
@@ -417,6 +430,7 @@ public sealed class SessionBarService
     /// <param name="absent">The absences to serve.</param>
     /// <param name="fetchedBuckets">What the base read wrote or revised.</param>
     /// <param name="venueRequests">What the base read cost the venue.</param>
+    /// <param name="history">How the base read's historical half was decided.</param>
     /// <returns>The result.</returns>
     /// <exception cref="InvalidOperationException">A date is in neither list, or in both.</exception>
     /// <remarks>
@@ -430,7 +444,8 @@ public sealed class SessionBarService
         IReadOnlyList<SessionBar> bars,
         IReadOnlyList<SessionBarOutcome> absent,
         int fetchedBuckets,
-        int venueRequests)
+        int venueRequests,
+        HistoryCandidates history)
     {
         HashSet<DateOnly> reported = [.. bars.Select(b => b.TradeDate)];
 
@@ -459,7 +474,7 @@ public sealed class SessionBarService
             }
         }
 
-        return new SessionBarReadResult(bars, absent, fetchedBuckets, venueRequests);
+        return new SessionBarReadResult(bars, absent, fetchedBuckets, venueRequests, history);
     }
 
     /// <summary>

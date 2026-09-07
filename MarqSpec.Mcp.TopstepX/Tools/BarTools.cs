@@ -75,7 +75,8 @@ public sealed class BarTools(
             [.. result.Bars.Select(ToolPayloads.ToPoint)],
             result.FetchedBuckets,
             result.VenueRequests,
-            ToolPayloads.ToCoverage(result.Bars));
+            ToolPayloads.ToCoverage(result.Bars),
+            result.History);
     }
 
     /// <summary>Reads the most recent closed bars.</summary>
@@ -124,7 +125,8 @@ public sealed class BarTools(
             [.. tail.Select(ToolPayloads.ToPoint)],
             result.FetchedBuckets,
             result.VenueRequests,
-            ToolPayloads.ToCoverage(tail));
+            ToolPayloads.ToCoverage(tail),
+            result.History);
     }
 
     private async Task<BarReadResult> ReadAsync(

@@ -276,6 +276,77 @@ public static class HistoricalRangePlanner
     }
 
     /// <summary>
+    /// What these slices let the read tell its <b>caller</b> about how its history was decided (gh#592).
+    /// </summary>
+    /// <param name="slices">The slices this read is fetching, present and historical alike.</param>
+    /// <returns>The worst degradation among them, and every expiry that fell away.</returns>
+    /// <exception cref="ArgumentNullException"><paramref name="slices"/> is null.</exception>
+    /// <remarks>
+    /// <para>
+    /// <b>gh#570 made the narrowing visible to an operator; this makes it visible to a caller.</b> The
+    /// warning <c>BarCacheService</c> logs is not on the caller's path — an MCP client never sees a log line
+    /// — so from the wire a narrowed series and a whole one were the same object: a real series, from a real
+    /// contract, complete-looking, with nothing anywhere saying the volume decision ran over survivors rather
+    /// than over the cycle. That is the plausible-number failure this server exists to refuse, one layer up
+    /// from the bars.
+    /// </para>
+    /// <para>
+    /// <b>Derived here, from the plan, because here is the only place it exists.</b> Once the bars are stored
+    /// the fact is gone: nothing in <c>Bars</c> records that a bucket was written under a narrowed set, and
+    /// ADR-0020 §5 forbids a read from re-deciding attributed history to reconstruct it. A read that plans
+    /// nothing therefore answers <see cref="HistorySelection.NotDecidedHere"/> — not a whole cycle.
+    /// </para>
+    /// <para>
+    /// <b>Pure, and public for the reason <see cref="Coalesce"/> is</b>: it reads no store, no clock and no
+    /// venue, so the cheap tier can pin all four states directly, and this assembly declares no
+    /// <c>InternalsVisibleTo</c>.
+    /// </para>
+    /// <para>
+    /// A <b>present</b> slice constructs no candidate and can therefore drop none, so it neither degrades the
+    /// answer nor promotes it past <see cref="HistorySelection.NotDecidedHere"/> — a present-only read
+    /// decided no history at all.
+    /// </para>
+    /// </remarks>
+    public static HistoryCandidates SelectionOf(IReadOnlyList<RangeSlice> slices)
+    {
+        ArgumentNullException.ThrowIfNull(slices);
+
+        HistorySelection selection = HistorySelection.NotDecidedHere;
+        List<string> unresolved = [];
+
+        foreach (RangeSlice slice in slices)
+        {
+            if (slice.Present)
+            {
+                continue;
+            }
+
+            // The RANK is the point: one value has to stand for a whole read, and it stands for the worst
+            // thing in it. A read holding one fallen-back stretch and one clean one is not a clean read.
+            HistorySelection here = slice.FellBackToFront
+                ? HistorySelection.FellBackToTheFront
+                : slice.Unresolved.Count > 0
+                    ? HistorySelection.NarrowedByTheVenue
+                    : HistorySelection.AsTheCycleNames;
+
+            if (here > selection)
+            {
+                selection = here;
+            }
+
+            foreach (ContractExpiry expiry in slice.Unresolved)
+            {
+                if (!unresolved.Contains(expiry.Code, StringComparer.Ordinal))
+                {
+                    unresolved.Add(expiry.Code);
+                }
+            }
+        }
+
+        return new HistoryCandidates(selection, unresolved);
+    }
+
+    /// <summary>
     /// The trade date a bucket belongs to, falling back to its UTC date for a bucket the calendar places
     /// outside every session — exactly as <c>HistoricalContractPolicy</c> groups bars.
     /// </summary>

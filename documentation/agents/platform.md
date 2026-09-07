@@ -1405,7 +1405,8 @@ the one that rewrites it. What exists today:
   id and no thumbprint, and the `bootstrap.sh` lockstep on the `aws-production` name; 163 at gh#537, adding
   the OTLP collector sidecar — two containers and the sixth shell with telemetry props, one container and no
   `Otel__*` key without them, the three pipelines' composed stages, and no `arn:aws` or unrecognised
-  twelve-digit run anywhere in the template) and then
+  twelve-digit run anywhere in the template; 165 at gh#588, adding staging's certificate ordered behind
+  its `NS` delegation and production's ordered behind nothing) and then
   `cdk synth --no-lookups` **once per outbound shape** through the CLI pinned in
   `infra/package.json`. **No credential exists on the runner, by construction**: `--no-lookups` makes a
   context miss fail the synth rather than call AWS, and `infra/cdk.context.json` carries the hosted-zone

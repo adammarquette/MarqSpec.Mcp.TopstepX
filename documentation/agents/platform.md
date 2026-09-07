@@ -1099,7 +1099,7 @@ found.
 | `production` environment carries a `required_reviewers` rule | `release.yml`'s `gate` job — the only thing between a merge and a public GHCR tag | [`check-release-gate.sh`](../../scripts/check-release-gate.sh), in `ci.yml` and in `release.yml` | gh#108 |
 | `required_status_checks` on `protect-develop` / `-staging` / `-main` | every merge gate in the table above; `no-order-path` carries ADR-0002 | `bootstrap.sh` step 3, which reads the contexts back per rung | gh#26, gh#72, gh#114; and gh#125, the one that went the other way — set correctly and recorded in `bootstrap.sh`, but not in the table above |
 | ruleset `enforcement: active` | all of the above | `bootstrap.sh` step 3 | `MarqSpec.Client.ProjectX`, disabled from creation |
-| the two Cognito client secrets' **values** in `topstepx-mcp/<env>/{claude-connector,deploy-check}` | the connector login (gh#524) and `check-deployment.sh`'s `client_credentials` token (gh#521); the stack creates the shells empty and no custom resource fills them ([ADR-0023](../adr/0023-aws-deployment-topology.md), 2026-09-07 Cognito entry) | gh#521's check, but read the shape carefully — an EMPTY shell fails it at `UNSET MCP_CHECK_CLIENT_SECRET` **before any request**, naming the empty secret and saying nothing about the deployment; a non-empty WRONG secret is the other path and is the one that comes back `NO TOKEN … answered 401`. Both measured 2026-09-07; this row said the opposite until then | never; not yet deployed (gh#519 writes them by hand) |
+| the two Cognito client secrets' **values** in `topstepx-mcp/<env>/{claude-connector,deploy-check}` | the connector login (gh#524) and `check-deployment.sh`'s `client_credentials` token (gh#521); the stack creates the shells empty and no custom resource fills them ([ADR-0023](../adr/0023-aws-deployment-topology.md), 2026-09-07 Cognito entry) | gh#521's check, but read the shape carefully — an EMPTY shell fails it at `UNSET <the first empty value>` **before any request**, naming that value and saying nothing about the deployment. *Which* value depends on where the id is read from, and this repository has not settled that: `MCP_CHECK_CLIENT_ID` if both come out of the shell as ADR-0023 §"the `clientId` is duplicated into the shell" describes, `…_SECRET` if the id came from the stack output as gh#520 plans. A non-empty WRONG credential is the other path and is the one that comes back `NO TOKEN … answered 401`, after assertions 1 and 2 have passed. All measured 2026-09-07; this row said the opposite until then | never; not yet deployed (gh#519 writes them by hand) |
 
 ### The release approval gate (gh#108)
 
@@ -1306,9 +1306,10 @@ them the wrong way round** — it said an unfilled shell surfaces as a `401` fro
 2026-09-07:
 
 ```console
-$ MCP_CHECK_CLIENT_SECRET= …                       # an unfilled shell: empty, which is how it is created
-  UNSET  MCP_CHECK_CLIENT_SECRET is empty or unset
+$ MCP_CHECK_CLIENT_ID= MCP_CHECK_CLIENT_SECRET= …   # the shell as created: BOTH values empty
+  UNSET  MCP_CHECK_CLIENT_ID is empty or unset
 …  NOTHING HAS BEEN CHECKED: no request was made, so this says nothing at all about the deployment.
+AN UNFILLED SECRET SHELL ARRIVES EXACTLY LIKE THIS. …
 
 $ MCP_CHECK_CLIENT_SECRET=a-wrong-but-non-empty-secret …
   OK  /health: 200, status ok, store available, version 9.9.9-fixture
@@ -1319,9 +1320,23 @@ $ MCP_CHECK_CLIENT_SECRET=a-wrong-but-non-empty-secret …
 The empty case never reaches the network; the wrong-secret case passes assertions 1 and 2 first. **An
 operator sent to look for a `401` who is handed `UNSET` goes hunting a fault they do not have**, which is why
 this is worth two sentences rather than one — and the general form is worth more than either: *a document
-that says how a check fails is asserting a measurable thing, so measure it*. Both rows now name the path they
-describe, and the gate's own `UNSET` arm names the shell explicitly. The self-test asserts on every case, red ones included, that **neither**
-the client secret nor the bearer appears in either stream.
+that says how a check fails is asserting a measurable thing, so measure it*.
+
+**Then the correction was made narrower than the thing it corrected, which is the part worth keeping.** The
+gate's `UNSET` arm gained the paragraph above, gated on the SECRET being the missing value — and the shell it
+describes is `{"clientId":"","clientSecret":""}`, **both** empty, so an operator reading the whole document
+out of it stops at the *id* and the paragraph explaining unfilled shells did not print on an unfilled shell.
+*Its own premise was the input it did not reach.* It now fires on either name. **Which name comes first is
+not this gate's to decide, and the repository disagrees with itself about it**: ADR-0023 duplicates the
+client id into the shell so this check reads one document, which makes it `MCP_CHECK_CLIENT_ID`; gh#520 plans
+to take the id from a stack output and only the secret from Secrets Manager, which makes it
+`MCP_CHECK_CLIENT_SECRET`. That disagreement predates this gate and is not settled here — the text and the
+row are written to be true under either, which is what a document should do when the thing it describes is
+still a fork. *A conditional claim that does not state its condition is the same defect as a wrong one, one
+step further back.*
+
+The self-test asserts on every case, red ones included, that **neither** the client secret nor the bearer
+appears in either stream.
 
 **"A heredoc, so `bash -x` does not trace it" is the shape of a claim that is true and does not hold, and
 this paragraph made it.** The heredoc really is untraced — and the review measured the secret in the trace
@@ -1355,7 +1370,10 @@ deliberately calls no tool, because a store-only deployment has to pass — and 
 or the other tasks behind the load balancer: one request reaches one of them.
 
 **An https base URL is required, except on loopback**, where plain http is accepted and the TLS assertion
-prints `NOT MEASURED`. That is `OAuthOptions.IssuerProblems()`'s rule reused verbatim, and it is what makes a
+prints `NOT MEASURED`. That is `OAuthOptions.IssuerProblems()`'s rule reused — **narrower** than the
+product's, which uses `Uri.IsLoopback` and so accepts all of `127/8` where the gate accepts exactly
+`127.0.0.1`, `localhost` and `[::1]`; the difference fails closed, since `http://127.0.0.2` is refused rather
+than exempted. It is what makes a
 fixture possible at all. It does **not** forgive an unverifiable certificate on an https loopback URL, which
 is the one thing that leaves the `-k` question testable. The same rule is applied to `MCP_CHECK_TOKEN_URL`
 from **one shared classifier** rather than a second copy (gh#123): that request carries the client secret,

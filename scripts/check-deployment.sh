@@ -43,8 +43,12 @@
 #
 # THE LOOPBACK EXEMPTION, and it is the reason a self-test is possible at all. An https base URL is required
 # — EXCEPT on loopback, where plain http is accepted and assertion 4 reports itself NOT MEASURED. That is
-# `OAuthOptions.IssuerProblems()`'s rule, verbatim and for the same reason: a stub on this machine is not a
-# network, and the alternative is a gate nobody can run against a fixture. Note what the exemption does NOT
+# `OAuthOptions.IssuerProblems()`'s rule, for the same reason: a stub on this machine is not a network, and
+# the alternative is a gate nobody can run against a fixture. NARROWER than the product's, deliberately said
+# rather than called "verbatim" — that method uses `Uri.IsLoopback`, which accepts all of `127/8`, while the
+# set below is exactly `127.0.0.1`, `localhost` and `[::1]`. The difference fails CLOSED: `http://127.0.0.2`
+# is refused as NOT HTTPS rather than quietly exempted, so no run turns on it. Widen it only with a fixture
+# that needs the address. Note what the exemption does NOT
 # do — it does not relax the certificate check for an https loopback URL. `https://127.0.0.1:…` still
 # validates, which is exactly how `check-deployment-selftest.sh` proves `-k` is not being passed.
 #
@@ -280,13 +284,26 @@ if [ -n "$MISSING" ]; then
   die "The token step cannot run, so assertion 3 could only ever be skipped — and a skipped assertion in a"
   die "gate that exits 0 is the whole failure mode this file exists to avoid. NOTHING HAS BEEN CHECKED:"
   die "no request was made, so this says nothing at all about the deployment."
-  if [ "$MISSING" = "MCP_CHECK_CLIENT_SECRET" ]; then
-    # The likeliest cause by some way, and the one the contract used to describe wrongly.
-    die "An UNFILLED SECRET SHELL arrives exactly like this: the stack creates the Cognito client secrets"
-    die "with every value empty and gh#519 writes them by hand, so a shell nobody has filled reads as an"
-    die "empty string here. A non-empty WRONG secret is a different run — it reaches the token endpoint and"
-    die "comes back 'NO TOKEN … answered 401'."
-  fi
+  # EITHER of the two, and that is a fix rather than a flourish. This fired on the SECRET alone, and the
+  # shell it was written for is `{"clientId":"","clientSecret":""}` — BOTH values empty (EnvironmentStack's
+  # `Shell("DeployCheckSecret", …)`) — so an operator reading the whole document out of it arrives with the
+  # id empty too, the `elif` chain above stops at the id, and the paragraph explaining unfilled shells did
+  # not print on an unfilled shell. Its own premise was the input it did not reach.
+  #
+  # WHICH NAME COMES FIRST DEPENDS ON A READ PATH THIS SCRIPT DOES NOT CHOOSE, and the repository has not
+  # settled it: ADR-0023 duplicates the client id into the shell so this check reads one document, which
+  # makes `MCP_CHECK_CLIENT_ID` the first empty value; gh#520 plans to take the id from a stack output and
+  # only the secret from Secrets Manager, which makes it `MCP_CHECK_CLIENT_SECRET`. That disagreement is
+  # not this gate's to resolve — so the text is written to be true either way rather than betting on one.
+  case "$MISSING" in
+    MCP_CHECK_CLIENT_ID|MCP_CHECK_CLIENT_SECRET)
+      die "AN UNFILLED SECRET SHELL ARRIVES EXACTLY LIKE THIS. The stack creates topstepx-mcp/<env>/deploy-check"
+      die "as {\"clientId\":\"\",\"clientSecret\":\"\"} and gh#519 writes the values by hand, so a shell nobody"
+      die "has filled reads as empty strings here — whichever of the two you read first is the one named above."
+      die "A non-empty WRONG credential is a different run: it reaches the token endpoint and comes back"
+      die "'NO TOKEN … answered 401', after assertions 1 and 2 have already passed."
+      ;;
+  esac
   usage
   exit 1
 fi
@@ -817,6 +834,18 @@ ok "  OK  tools/list returned $TOOL_COUNT tools (the floor is $MINIMUM_TOOLS)"
 # What IS true, and what this line now states: verification was enforced (nothing here passes `-k`, and `-q`
 # means no curlrc could have), and the TLS connection completed. The premises are properties of the option
 # list above, which case 7 and case 9 of the self-test pin; the connection is the observation.
+#
+# ONE THING `-q` DOES NOT CLOSE, recorded rather than left for the next reader to find (gh#521 review).
+# `-q` disables the curlrc; it does not disable `CURL_CA_BUNDLE` or `SSL_CERT_FILE`, which an OpenSSL-linked
+# curl still reads from the environment. So "verification was enforced" means AGAINST WHATEVER TRUST STORE
+# THAT OPERATOR HAS — and an operator whose environment trusts a private CA would get a green run for a
+# certificate a connector refuses. The claim above survives it literally and is weaker than it sounds, which
+# is why this is written down. NOT MEASURED here (the machine this was written on has a Schannel curl, which
+# reads neither variable) and NOT fixed here: pinning the store means shipping or naming a CA bundle, which
+# is a decision about what this repository trusts rather than a line in a gate — a card, if the deployment
+# check ever runs anywhere but a maintainer's shell and gh#520's pipeline. It is the same shape as the
+# curlrc, one layer further out: a tool's ambient configuration is inside the trust boundary of any gate
+# that shells out to it, and `-q` closed one file of two.
 if [ "$TLS_MEASURED" -eq 0 ]; then
   note "  NOT MEASURED  $BASE_URL is plain http on loopback, so there is no certificate to verify."
   note "      This run says nothing about TLS. It is the fixture shape; a deployed hostname is https and"

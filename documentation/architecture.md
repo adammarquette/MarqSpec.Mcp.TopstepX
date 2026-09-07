@@ -308,12 +308,16 @@ operator's own session close (`R-1.12`, gh#499).
    cost neither.
 4. **One `BarCacheService.GetBarsAsync`**, at the definition's `BaseResolutionMinutes`, over the single window
    covering the first closed session's open to the last one's close — **outside the transaction below, and the
-   only step that can reach the venue.** A session read never opens a fetch of its own
-   ([ADR-0022](adr/0022-session-bars-derived-complete-or-absent.md) §7): it asks the path above for base bars,
-   and what that path costs is reported back as `FetchedBuckets` and `VenueRequests`, so zero is the precise
-   statement that this call reached no venue. The resolution is not a detail — a `Bar` carries its open time
-   and not its size, so a **finer** series passes the completeness check and yields a session bar whose
-   extremes are only the sub-buckets that happened to start on the boundary. **The one call is not free**: the
+   only step that can reach the venue.** The service **opens no fetch of its own**, and that is not the same
+   as reaching no vendor: it asks the cache-aside path above for base bars, and that path pages the venue for
+   whatever base buckets the store is missing. What it cost comes back as `FetchedBuckets` and
+   `VenueRequests`, so a warm base series answers with **zero venue requests** and a cold one does not. The
+   stronger claim — *never reaches the vendor* — belongs to a session-**indicator** read, which projects over
+   stored session bars and fetches nothing (`R-1.12`,
+   [ADR-0022](adr/0022-session-bars-derived-complete-or-absent.md) §7 and its 2026-09-07 update).
+   The base resolution is not a detail — a `Bar` carries its open time and not its size, so a **finer** series
+   passes the completeness check and yields a session bar whose extremes are only the sub-buckets that
+   happened to start on the boundary. **The one call is not free**: the
    covering window spans the overnight between sessions and the calendar expects buckets right around the clock
    apart from the maintenance hour, so a daytime session like `rth` fetches and stores the seventeen-odd
    overnight hours too. That is the right trade — the base series is shared, `BarGapDetector` coalesces a run
@@ -330,8 +334,9 @@ operator's own session close (`R-1.12`, gh#499).
    all. It reads no clock and no store, so recomputing over the same bars yields the same numbers
    ([ADR-0006](adr/0006-indicators-as-projections.md)).
 6. **One unit of work**, at `RepeatableRead` with the same single retry the path above uses:
-   (a) **discard** every row of this session name whose `(WindowCentral, BaseResolutionMinutes)` disagrees with
-   the definition standing today — scoped to the name and *unscoped by date*, because a changed definition
+   (a) **discard** every row of this instrument's session name — venue, instrument and session, all three —
+   whose `(WindowCentral, BaseResolutionMinutes)` disagrees with the definition standing today, and
+   *unscoped by date*, because a changed definition
    invalidates the whole series rather than the window this call asked about
    ([ADR-0022](adr/0022-session-bars-derived-complete-or-absent.md) §4/§5);
    (b) an **`AsNoTracking` pre-read** of the asked dates, because the write below is raw SQL the change tracker

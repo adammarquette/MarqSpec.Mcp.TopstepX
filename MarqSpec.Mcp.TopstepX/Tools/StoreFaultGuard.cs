@@ -17,14 +17,14 @@ namespace MarqSpec.Mcp.TopstepX.Tools;
 /// SDK's filter pipeline, so a tool added tomorrow is covered by having been registered rather than by its
 /// author remembering a <c>try</c>. That is the gh#69 lesson stated as wiring: a rule enforced in three of
 /// four places is not a rule, and <c>BarTools.ReadAsync</c> — the only place that translated anything
-/// — is reached by exactly two of the fifteen tools on this surface.
+/// — is reached by exactly two tools out of every one on this surface.
 /// </para>
 /// <para>
 /// <b>It therefore says only what a filter can know, which is less than one call site knows.</b> It sees an
 /// exception type and a SqlState; it does not see which unit of work was open, what shared it, or whether a
 /// write reached disk. Every sentence below is written to that limit on purpose. A message drafted from
 /// <c>BarCacheService</c>'s point of view — "the coverage ledger and the indicator projection over the same
-/// series" — is a fact about <see cref="SeriesUnitOfWork"/> being handed to fifteen tools, true today only
+/// series" — is a fact about <see cref="SeriesUnitOfWork"/> being handed to every tool, true today only
 /// because every unique key in the schema happens to be bars-family. Detail that belongs to one unit of work
 /// belongs in the exception that unit of work raises, where it is known.
 /// </para>
@@ -159,7 +159,7 @@ public static class StoreFaultGuard
         {
             // Only what a CALL-TOOL FILTER can know. Which rows, and what else shared the transaction, is a
             // fact about the unit of work the tool built -- SeriesUnitOfWork's is bars, coverage ledger and
-            // projection, but this guard is served on behalf of all fifteen tools and does not know whose
+            // projection, but this guard is served on behalf of every tool on the surface and does not know whose
             // key was hit. That detail belongs where the fact is, not in a sentence handed to every tool.
             return "Another writer committed rows this call collided on, so this call's transaction was "
                 + "rolled back and none of its own work was kept. The rows it collided on are in the store — "

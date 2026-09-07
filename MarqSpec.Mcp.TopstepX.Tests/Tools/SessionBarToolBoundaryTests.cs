@@ -26,9 +26,16 @@ namespace MarqSpec.Mcp.TopstepX.Tests.Tools;
 /// forever.
 /// </para>
 /// <para>
-/// <b>No container, and none needed (gh#387).</b> Every case here refuses, and a refusal reaches neither the
-/// store nor the venue — which is exactly what the two counter assertions on every test say. The served half,
-/// where a window the rules allow really is answered, is
+/// <b>No container, and none needed (gh#387).</b> Every case here refuses, and the two counter assertions on
+/// every test say what they measure and no more: <b>the VENUE was not reached</b>. Neither is a statement
+/// about the store, and there is no cheap honest one to make here — the in-memory provider counts no reads,
+/// and "no session bar was written" would be green under a failure too, because the raw upsert cannot run
+/// against that provider at all. A gate that passes for the wrong reason is worse than an absent one, so the
+/// store claim is left to the tier that can observe it.
+/// </para>
+/// <para>
+/// The served half, where a request the rules allow really is answered — against a real store, so a read and
+/// a write are both observable — is
 /// <c>MarqSpec.Mcp.TopstepX.IntegrationTests.SessionBarToolServedReadTests</c>: a boundary proven only to
 /// refuse is a boundary nobody has checked for over-reach.
 /// </para>
@@ -229,8 +236,10 @@ public sealed class SessionBarToolBoundaryTests : IDisposable
     /// <summary>Asserts the refusal landed before the venue was touched at all.</summary>
     private void NothingWasSpent()
     {
-        // Refused before any store or venue work, like every other guard on this boundary. The resolver runs
-        // first and touches neither, so resolver-then-guard still satisfies this.
+        // Refused before any VENUE work, like every other guard on this boundary. The resolver runs first and
+        // touches neither the venue nor the store, so resolver-then-guard still satisfies this. The store
+        // half of the claim is NOT made here -- see the class remark for why the in-memory provider cannot
+        // make it honestly.
         _gateway.BarRequests.Should().Be(0, "the request is judged before the first base page is read");
         _gateway.ContractRequests.Should().Be(0, "and before the contract behind it is resolved");
     }

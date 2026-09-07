@@ -409,7 +409,7 @@ public sealed class ToolSchemaTests
         //
         // The general class stays UNGATED, and deliberately: whether a sentence describes what its payload
         // means is not reachable by reflection, and the absent-field gate above says the same about its own
-        // prose half. This pins one retraction across all fifteen descriptions so it cannot drift back.
+        // prose half. This pins one retraction across every description on the surface so it cannot drift back.
         MethodInfo method = ToolMethods().Single(m => m.DeclaringType!.Name + "." + m.Name == tool);
         string description = method.GetCustomAttribute<DescriptionAttribute>()?.Description ?? string.Empty;
 

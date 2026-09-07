@@ -130,6 +130,66 @@ public sealed class SessionBarToolServedReadTests : IAsyncLifetime
     }
 
     /// <summary>
+    /// Reports the session still running as <c>NotClosed</c> rather than dropping it or serving it short.
+    /// </summary>
+    /// <returns>The running test.</returns>
+    /// <remarks>
+    /// <para>
+    /// <b>The only reason on this surface the clock decides</b>, and the only one <c>get_session_bars</c> can
+    /// show that <c>get_latest_session_bars</c> cannot — a window may reach into a session that has not
+    /// finished, where a count anchored on the last closed one never does. Every bucket printed so far is
+    /// present and the count of them is simply lower than the calendar expects, so a partial here would look
+    /// entirely ordinary; naming it is the whole point.
+    /// </para>
+    /// <para>
+    /// <b>Its bucket counts are both zero, and that is the honest answer rather than a missing one.</b>
+    /// Nothing is expected of a session still running, so there is no "13 expected, 4 missing" to report —
+    /// the pair says how far short of complete a session ended up, and this one has not ended. A caller
+    /// reading a low <c>missingBuckets</c> as "nearly whole" would be reading it as a progress bar, which it
+    /// is not.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public async Task GetSessionBars_ListsTheSessionInProgress_AsNotClosed()
+    {
+        // Wednesday 12:00 Central, which in August is 17:00Z: `rth` opened at 13:30Z and does not close until
+        // 20:00Z. The venue holds Tuesday whole and nothing else.
+        SessionBarTools tools = Tools(
+            RthBars(_tuesday), new FakeTimeProvider(new DateTimeOffset(2026, 8, 19, 17, 0, 0, TimeSpan.Zero)));
+
+        ToolPayloads.SessionBarSeries series = await tools.GetSessionBars(
+            "ES",
+            "rth",
+            new DateTimeOffset(2026, 8, 17, 0, 0, 0, TimeSpan.Zero),
+            new DateTimeOffset(2026, 8, 20, 0, 0, 0, TimeSpan.Zero),
+            CancellationToken.None);
+
+        // The window names the same three trade dates as the test above -- what moved is the clock, not the
+        // question -- so the closed two must answer exactly as they did there.
+        series.Bars.Should().ContainSingle().Which.TradeDate.Should().Be(
+            _tuesday, "a session in progress later in the window does not cost the closed ones their answers");
+
+        series.Absent.Select(a => a.TradeDate).Should().Equal(
+            [_monday, _wednesday], "in the order the dates were asked about");
+
+        ToolPayloads.SessionAbsence monday = series.Absent[0];
+        monday.Reason.Should().Be(
+            SessionBarAbsence.Incomplete, "Monday closed hours ago and the venue simply has no bar for it");
+        monday.ExpectedBuckets.Should().Be(13);
+        monday.MissingBuckets.Should().Be(13);
+
+        ToolPayloads.SessionAbsence wednesday = series.Absent[1];
+        wednesday.Reason.Should().Be(
+            SessionBarAbsence.NotClosed,
+            "the session is still running, which is a different fact from a session the store could not "
+            + "complete -- ask again after the close");
+        wednesday.ExpectedBuckets.Should().Be(
+            0, "nothing is expected of a session that has not ended");
+        wednesday.MissingBuckets.Should().Be(
+            0, "so the zero is not a near-complete session -- it is the absence of a completeness judgement");
+    }
+
+    /// <summary>
     /// Anchors on the last <b>closed</b> session and never on the one in progress, and settles to a free read.
     /// </summary>
     /// <returns>The running test.</returns>

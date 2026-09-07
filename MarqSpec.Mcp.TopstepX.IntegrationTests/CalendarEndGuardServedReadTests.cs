@@ -233,8 +233,13 @@ public sealed class CalendarEndGuardServedReadTests : IAsyncLifetime
                     || p.Name == "resolutionMinutes")),
         ];
 
+        // THIRTEEN, measured off the filter rather than guessed, and raised whenever the surface grows
+        // (gh#500 took it from 9 to 13 -- 9 had been stale for three tools before get_session_bars arrived).
+        // A floor left behind the surface still passes while covering less and less of it, which is the one
+        // way this sweep can rot quietly: get_latest_session_bars is deliberately NOT among the thirteen,
+        // because it takes neither an instant nor a resolution and anchors on the clock instead.
         takingAnInstant.Should().HaveCountGreaterThanOrEqualTo(
-            9, "the reflection filter must actually match the surface it is guarding");
+            13, "the reflection filter must actually match the surface it is guarding");
 
         foreach (MethodInfo tool in takingAnInstant)
         {

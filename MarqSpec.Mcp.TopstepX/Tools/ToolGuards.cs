@@ -474,4 +474,162 @@ public sealed class ToolGuards(IOptions<MarketDataOptions> options)
                 + MaxRows.ToString(System.Globalization.CultureInfo.InvariantCulture) + ".")
             : count;
     }
+
+    /// <summary>
+    /// Validates a requested session window and resolves the trade dates it wholly contains.
+    /// </summary>
+    /// <param name="fromUtc">The start, inclusive.</param>
+    /// <param name="toUtc">The end, exclusive.</param>
+    /// <param name="definition">The session being asked for.</param>
+    /// <param name="calendar">The session calendar the trade dates come from.</param>
+    /// <returns>The validated window and the trade dates inside it.</returns>
+    /// <exception cref="ArgumentNullException">An argument is <see langword="null"/>.</exception>
+    /// <exception cref="McpException">
+    /// The window is empty or inverted, ends past <see cref="CalendarHorizon"/>, spans more base buckets than
+    /// <see cref="BarGapDetector.MaxBucketsPerPass"/>, or names more trade dates than <see cref="MaxRows"/>.
+    /// </exception>
+    /// <remarks>
+    /// <para>
+    /// <b>A session window is not a bar window, so <see cref="ValidateWindow"/> cannot be reused.</b> That one
+    /// measures rows in buckets of the resolution asked for, and a session is longer than
+    /// <see cref="MaxResolutionMinutes"/> — it would refuse every call before it counted anything. Here the
+    /// rows are trade dates and the buckets are the session's base bars, so the two caps are read off two
+    /// different quantities.
+    /// </para>
+    /// <para>
+    /// <b>An over-cap window refuses and reports the real count</b>, on the same terms as every other read on
+    /// this boundary: a series shortened to fit arrives looking exactly like a complete one.
+    /// </para>
+    /// </remarks>
+    public SessionWindowPlan ValidateSessionWindow(
+        DateTimeOffset fromUtc,
+        DateTimeOffset toUtc,
+        SessionDefinition definition,
+        BarSessionCalendar calendar)
+    {
+        ArgumentNullException.ThrowIfNull(definition);
+        ArgumentNullException.ThrowIfNull(calendar);
+
+        // Same fault, same words as ValidateWindow. SessionWindows.TradeDatesIn answers an empty window with
+        // an empty list, which on this surface reads as "no session traded then" rather than "you asked for
+        // nothing" -- an absence indistinguishable from an answer.
+        if (toUtc <= fromUtc)
+        {
+            throw new McpException(
+                "The window is empty or inverted: fromUtc must be strictly before toUtc. Got "
+                + fromUtc.ToString("O", System.Globalization.CultureInfo.InvariantCulture) + " .. "
+                + toUtc.ToString("O", System.Globalization.CultureInfo.InvariantCulture) + ".");
+        }
+
+        // Representability next, and it is the END that leaves the calendar: TradeDatesIn steps one day past
+        // the window's last market date before it walks, so an end at the top of the DateOnly range faults
+        // inside the Domain rather than refusing here (gh#110's shape, on the session surface).
+        ValidateInstant(toUtc, "toUtc");
+
+        BarRange window = new(fromUtc.ToUniversalTime(), toUtc.ToUniversalTime());
+
+        // The base-bucket cap goes BEFORE the row cap here, which is the opposite of ValidateWindow's order,
+        // and the reason is that the row count is not arithmetic on this surface: it is a calendar walk over
+        // every day the window touches. The bucket span is what bounds that walk, so measuring it first is
+        // what stops a window of arbitrary width being enumerated a day at a time before anything refuses it.
+        // The base resolution is the session's own -- the buckets a session bar is derived from are what a
+        // read of it enumerates.
+        ValidateBucketSpan(window, definition.BaseResolutionMinutes, "That window");
+
+        IReadOnlyList<DateOnly> tradeDates = SessionWindows.TradeDatesIn(calendar, definition, window);
+        if (tradeDates.Count > MaxRows)
+        {
+            throw new McpException(
+                "That window names "
+                + tradeDates.Count.ToString(System.Globalization.CultureInfo.InvariantCulture)
+                + " " + definition.Name + " trade dates, over this server's cap of "
+                + MaxRows.ToString(System.Globalization.CultureInfo.InvariantCulture)
+                + " rows. Narrow the window. "
+                + "The read is refused rather than truncated, because a shortened series is indistinguishable "
+                + "from a complete one.");
+        }
+
+        return new SessionWindowPlan(window, tradeDates);
+    }
+
+    /// <summary>
+    /// Validates a requested session count and resolves the trade dates behind it.
+    /// </summary>
+    /// <param name="count">How many closed sessions the caller asked for.</param>
+    /// <param name="definition">The session being asked for.</param>
+    /// <param name="calendar">The session calendar the trade dates come from.</param>
+    /// <param name="now">The instant to look back from — the session in progress is never one of these.</param>
+    /// <returns>The trade dates, ascending, oldest first.</returns>
+    /// <exception cref="ArgumentNullException">An argument is <see langword="null"/>.</exception>
+    /// <exception cref="McpException">
+    /// The count is not positive, exceeds <see cref="MaxRows"/>, or asks for more closed sessions than the
+    /// calendar carries inside the bounded walk.
+    /// </exception>
+    /// <remarks>
+    /// <para>
+    /// <b><see cref="ValidateCount"/> is not the whole guard, and the gap is a live one.</b> It admits any
+    /// count up to <see cref="MaxRows"/> — 5,000 by default — while
+    /// <see cref="SessionWindows.LastClosedTradeDates"/> walks a bounded span of calendar days and throws a
+    /// raw <see cref="ArgumentOutOfRangeException"/> when it finds fewer sessions than that inside it. A
+    /// holiday-dense calendar is enough to reach it, and an unhandled Domain fault on a tool boundary is
+    /// exactly what these guards exist to prevent.
+    /// </para>
+    /// <para>
+    /// The refusal states the span rather than quoting the Domain's message, because a caller's exception
+    /// text is free text and this surface carries none (ADR-0008).
+    /// </para>
+    /// </remarks>
+    public IReadOnlyList<DateOnly> ValidateSessionCount(
+        int count,
+        SessionDefinition definition,
+        BarSessionCalendar calendar,
+        DateTimeOffset now)
+    {
+        ArgumentNullException.ThrowIfNull(definition);
+        ArgumentNullException.ThrowIfNull(calendar);
+
+        int wanted = ValidateCount(count);
+
+        try
+        {
+            return SessionWindows.LastClosedTradeDates(calendar, definition, now, wanted);
+        }
+        catch (ArgumentOutOfRangeException)
+        {
+            // RESTATED CONSTANT, deliberately and with the drift in view: the walk span is computed as
+            // `(count * 4) + 15` inside SessionWindows.LastClosedTradeDates, and it cannot be read back from
+            // there -- it is a local. Change it there and this number is wrong here; the two are named
+            // together so the next reader of either sees the other.
+            int span = (wanted * 4) + 15;
+
+            throw new McpException(
+                "count " + wanted.ToString(System.Globalization.CultureInfo.InvariantCulture)
+                + " asks for more closed " + definition.Name
+                + " sessions than this server walks back to ("
+                + span.ToString(System.Globalization.CultureInfo.InvariantCulture)
+                + " calendar days). Ask for fewer.");
+        }
+    }
 }
+
+/// <summary>
+/// A validated session window and the trade dates it wholly contains.
+/// </summary>
+/// <param name="Window">The window, in UTC.</param>
+/// <param name="TradeDates">
+/// The trade dates whose <b>whole</b> session lies inside <paramref name="Window"/>, ascending. Built from the
+/// calendar rather than from the store, so it never carries a duplicate.
+/// </param>
+/// <remarks>
+/// <para>
+/// Both halves are returned because both are already computed: the caller reads the dates and reports the
+/// window, and recomputing either one from the other is how the two drift apart.
+/// </para>
+/// <para>
+/// <b>A calendar walk cannot produce the same date twice</b>, so the <c>ArgumentException</c>
+/// <c>SessionBarService.GetAsync</c> throws on a duplicated trade date is unreachable from a tool that asks
+/// for its dates here. No tool catches it, and none should: a catch for an impossible fault is a catch nobody
+/// can test, and it would hide the day this list stops coming from the calendar.
+/// </para>
+/// </remarks>
+public sealed record SessionWindowPlan(BarRange Window, IReadOnlyList<DateOnly> TradeDates);

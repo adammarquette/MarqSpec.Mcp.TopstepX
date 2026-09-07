@@ -156,6 +156,93 @@ public static class ToolPayloads
         int VenueRequests,
         ContractCoverage Contracts);
 
+    /// <summary>One session's OHLCV, on the trade date it belongs to.</summary>
+    /// <param name="TradeDate">The CME trade date, the key a caller joins these on.</param>
+    /// <param name="T">
+    /// When the session opened, UTC — <c>t</c> means the same thing here as on every other series this server
+    /// returns: when the bucket opened. A session bar is a bucket one session long.
+    /// </param>
+    /// <param name="CloseUtc">
+    /// When the session closed, exclusive, UTC. Carried beside the open rather than derived, because the
+    /// span between them is a wall-clock rule that moves with the offset and is not a fixed number of hours.
+    /// </param>
+    /// <param name="O">Open.</param>
+    /// <param name="H">High.</param>
+    /// <param name="L">Low.</param>
+    /// <param name="C">Close.</param>
+    /// <param name="V">Volume over the whole session.</param>
+    /// <remarks>
+    /// Every field is always present. A session this server could not build whole is not a point with holes
+    /// in it — it is listed under <c>absent</c> with a reason, and never appears here.
+    /// </remarks>
+    public sealed record SessionBarPoint(
+        DateOnly TradeDate,
+        DateTimeOffset T,
+        DateTimeOffset CloseUtc,
+        decimal O,
+        decimal H,
+        decimal L,
+        decimal C,
+        long V);
+
+    /// <summary>Why one trade date carries no session bar.</summary>
+    /// <param name="TradeDate">The trade date that has no bar.</param>
+    /// <param name="Reason">
+    /// The cause, as a <see cref="SessionBarAbsence"/> <b>name</b> — <c>Incomplete</c>, <c>SpansRoll</c>,
+    /// <c>ProvenanceUnknown</c>, <c>NotClosed</c>. A closed vocabulary this repository defines, which is what
+    /// ADR-0008 admits on the wire; it is never vendor text, and never a number, because a caller acts on the
+    /// reason and an integer is a code nobody can read.
+    /// </param>
+    /// <param name="ExpectedBuckets">How many base buckets the calendar expected inside the session.</param>
+    /// <param name="MissingBuckets">
+    /// How many of those the store did not hold. Zero for an absence that is not about completeness — a
+    /// spliced or unattributed session is missing nothing, and a zero here does not mean the session was
+    /// nearly whole.
+    /// </param>
+    /// <remarks>
+    /// Every field is always present; none is nullable and none is omitted. <b>An absence is an answer</b>,
+    /// so a trade date that appears in neither <c>bars</c> nor <c>absent</c> means the calendar says nothing
+    /// traded that day — a different statement from "this server could not build it".
+    /// </remarks>
+    public sealed record SessionAbsence(
+        DateOnly TradeDate,
+        SessionBarAbsence Reason,
+        int ExpectedBuckets,
+        int MissingBuckets);
+
+    /// <summary>A session-bar series, what it could not build, and what it cost to produce.</summary>
+    /// <param name="Symbol">The normalised instrument.</param>
+    /// <param name="Session">The session name asked for — a storage key, lowercase and stable.</param>
+    /// <param name="BaseResolutionMinutes">
+    /// The base bar size these sessions were aggregated from. Reported because it decides what "complete"
+    /// meant: the expected-bucket counts under <c>absent</c> are counts of bars this size.
+    /// </param>
+    /// <param name="Bars">The complete sessions, ascending by trade date.</param>
+    /// <param name="Absent">
+    /// The trade dates that traded but could not be built, each with its reason. <b>Read this before reading
+    /// the bars as a series</b> — a gap here is a hole in the middle of the answer, not the end of it. A
+    /// trade date in neither list is a day the calendar says did not trade at all.
+    /// </param>
+    /// <param name="FetchedBuckets">
+    /// How many base buckets this call wrote or revised. Zero does not prove the read was free; the exact
+    /// test for "served entirely from the store" is <c>venueRequests == 0</c>.
+    /// </param>
+    /// <param name="VenueRequests">How many requests reached the venue.</param>
+    /// <param name="Contracts">
+    /// Which contracts produced these sessions. Each session bar comes from exactly one — a session whose
+    /// base bars disagreed is <c>absent</c> rather than spliced — so a roll here falls <i>between</i> two
+    /// trade dates, and <c>span</c> says whether one does.
+    /// </param>
+    public sealed record SessionBarSeries(
+        string Symbol,
+        string Session,
+        int BaseResolutionMinutes,
+        IReadOnlyList<SessionBarPoint> Bars,
+        IReadOnlyList<SessionAbsence> Absent,
+        int FetchedBuckets,
+        int VenueRequests,
+        ContractCoverage Contracts);
+
     /// <summary>An indicator series.</summary>
     /// <param name="Symbol">The normalised instrument.</param>
     /// <param name="ResolutionMinutes">The bar size.</param>
@@ -836,5 +923,103 @@ public static class ToolPayloads
             span,
             [.. segments.Select(s => new ContractSegmentInfo(
                 s.ContractId, s.FirstBucket, s.LastBucket, s.BarCount))]);
+    }
+
+    /// <summary>Maps a domain session bar to its wire shape.</summary>
+    /// <param name="bar">The session bar.</param>
+    /// <returns>The payload.</returns>
+    /// <exception cref="ArgumentNullException"><paramref name="bar"/> is <see langword="null"/>.</exception>
+    /// <remarks>
+    /// The contract id is dropped here for the reason it is dropped from <see cref="BarPoint"/>: it changes
+    /// at most once a quarter, and <see cref="ContractCoverage"/> states it once with the run it covers. The
+    /// base-bucket count goes with it — the session is complete or it is not in this list at all, so a count
+    /// per row would say the same thing on every row.
+    /// </remarks>
+    public static SessionBarPoint ToPoint(SessionBar bar)
+    {
+        ArgumentNullException.ThrowIfNull(bar);
+
+        return new SessionBarPoint(
+            bar.TradeDate, bar.OpenUtc, bar.CloseUtc, bar.Open, bar.High, bar.Low, bar.Close, bar.Volume);
+    }
+
+    /// <summary>Maps an absent session outcome to its wire shape.</summary>
+    /// <param name="outcome">The outcome. Must be absent.</param>
+    /// <returns>The payload.</returns>
+    /// <exception cref="ArgumentNullException"><paramref name="outcome"/> is <see langword="null"/>.</exception>
+    /// <exception cref="ArgumentException">The outcome is present, or carries no reason.</exception>
+    /// <remarks>
+    /// <b>It refuses rather than inventing a reason.</b> <c>bars</c> and <c>absent</c> are disjoint on the
+    /// wire, and a present outcome mapped into the second would tell a caller a complete session was a hole —
+    /// the exact confusion the two-list shape exists to prevent. <see cref="SessionBarAbsence.Unknown"/>
+    /// cannot arrive here either: <see cref="SessionBarOutcome.Absent"/> refuses it at the source.
+    /// </remarks>
+    public static SessionAbsence ToAbsence(SessionBarOutcome outcome)
+    {
+        ArgumentNullException.ThrowIfNull(outcome);
+
+        if (outcome.IsPresent || outcome.Reason is null)
+        {
+            throw new ArgumentException(
+                "Only an absent outcome has a reason to report; this one carries a bar. Map a present "
+                + "outcome with ToPoint instead.",
+                nameof(outcome));
+        }
+
+        return new SessionAbsence(
+            outcome.TradeDate, outcome.Reason.Value, outcome.ExpectedBuckets, outcome.MissingBuckets);
+    }
+
+    /// <summary>Describes which contracts produced a series of session bars.</summary>
+    /// <param name="bars">The session bars, in ascending trade-date order.</param>
+    /// <returns>The coverage, with one segment per contiguous single-contract run.</returns>
+    /// <exception cref="ArgumentNullException"><paramref name="bars"/> is <see langword="null"/>.</exception>
+    /// <remarks>
+    /// <para>
+    /// <b><see cref="ContractRollDetector"/> is not reused, and the difference is the input rather than the
+    /// rule.</b> A session bar carries exactly one contract — a session whose base bars disagreed is absent
+    /// with <see cref="SessionBarAbsence.SpansRoll"/> rather than aggregated — so there is no unattributed run
+    /// to weigh here, and the precedence question <c>ToCoverage</c> answers does not arise.
+    /// </para>
+    /// <para>
+    /// <b>No bars is <see cref="ContractSpan.Unknown"/>, never <see cref="ContractSpan.SingleContract"/>.</b>
+    /// An answer nobody could build carries no evidence about a roll, and the vocabulary has a word for that.
+    /// </para>
+    /// <para>
+    /// The segment bounds are session <b>opens</b> at both ends, matching <see cref="ToCoverage"/>: a
+    /// <c>lastBucket</c> that was a close would be the one time in this file that field meant something else.
+    /// </para>
+    /// </remarks>
+    public static ContractCoverage ToSessionCoverage(IReadOnlyList<SessionBar> bars)
+    {
+        ArgumentNullException.ThrowIfNull(bars);
+
+        if (bars.Count == 0)
+        {
+            return new ContractCoverage(ContractSpan.Unknown, []);
+        }
+
+        List<ContractSegmentInfo> segments = [];
+        int runStart = 0;
+
+        for (int i = 1; i <= bars.Count; i++)
+        {
+            if (i < bars.Count
+                && string.Equals(bars[i].ContractId, bars[runStart].ContractId, StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            segments.Add(new ContractSegmentInfo(
+                bars[runStart].ContractId,
+                bars[runStart].OpenUtc,
+                bars[i - 1].OpenUtc,
+                i - runStart));
+            runStart = i;
+        }
+
+        return new ContractCoverage(
+            segments.Count == 1 ? ContractSpan.SingleContract : ContractSpan.SpansRoll,
+            segments);
     }
 }

@@ -5,6 +5,7 @@ using MarqSpec.Mcp.TopstepX.Data;
 using MarqSpec.Mcp.TopstepX.Domain.MarketData;
 using MarqSpec.Mcp.TopstepX.Embeddings;
 using MarqSpec.Mcp.TopstepX.MarketData;
+using MarqSpec.Mcp.TopstepX.Telemetry;
 using MarqSpec.Mcp.TopstepX.Tools;
 using MarqSpec.Mcp.TopstepX.Venue;
 using Microsoft.EntityFrameworkCore;
@@ -370,6 +371,10 @@ public static class Program
             .WithTracing(tracing =>
             {
                 tracing
+                    // FIRST, and the only one of these named by this repository. The rest are subscriptions
+                    // to sources that were already emitting; this one is the venue calls and the cache-aside
+                    // reads gh#536 added, and it is the source a `tools/call` trace hangs its detail off.
+                    .AddSource(HostTelemetry.Name)
                     .AddSource(McpTelemetryName)
                     .AddAspNetCoreInstrumentation(options => options.Filter = IsTraced)
                     .AddHttpClientInstrumentation();
@@ -385,6 +390,10 @@ public static class Program
             .WithMetrics(metrics =>
             {
                 metrics
+                    // THE STABLE SURFACE. The SDK's meter below is named `Experimental` by its own authors
+                    // and may be renamed on a bump; a dashboard that must not break is built on this one
+                    // (ADR-0019 decision 6).
+                    .AddMeter(HostTelemetry.Name)
                     .AddMeter(McpTelemetryName)
                     .AddAspNetCoreInstrumentation()
                     .AddHttpClientInstrumentation()
@@ -588,6 +597,16 @@ public static class Program
             .Bind(builder.Configuration.GetSection(DeploymentOptions.SectionName));
 
         services.AddSingleton(TimeProvider.System);
+
+        // THE APP-OWNED METER AND ACTIVITY SOURCE (gh#536). A SINGLETON, and it has to be: a Meter is a
+        // process-wide publisher, and a scoped one would create a new publisher per request -- every counter
+        // starting from zero, and every subscriber having to discover a new instrument each time.
+        //
+        // REGISTERED HERE, UNCONDITIONALLY, whether or not Otel__Endpoint is set. An instrument nothing
+        // listens to costs a predicate and a return, and an ActivitySource nothing listens to returns null
+        // without allocating -- so there is no "is telemetry on" branch at any call site, and no
+        // configuration under which the counted path and the uncounted path can diverge (ADR-0019).
+        services.AddSingleton<HostTelemetry>();
 
         // Parsed once, at startup, and shared. It is a pure value, and parsing refuses a malformed session
         // close rather than guessing -- this value decides what counts as missing data.

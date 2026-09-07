@@ -7,6 +7,7 @@ using MarqSpec.Mcp.TopstepX.Data;
 using MarqSpec.Mcp.TopstepX.Data.Entities;
 using MarqSpec.Mcp.TopstepX.Domain;
 using MarqSpec.Mcp.TopstepX.Domain.MarketData;
+using MarqSpec.Mcp.TopstepX.Telemetry;
 using MarqSpec.Mcp.TopstepX.Venue;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
@@ -79,6 +80,7 @@ public sealed class TradeTapeRecorder : BackgroundService
     private readonly TimeProvider _clock;
     private readonly ILogger<TradeTapeRecorder> _logger;
     private readonly TapeAvailabilityHolder _tape;
+    private readonly HostTelemetry _telemetry;
     private readonly Channel<PendingPrint> _channel;
     private readonly Channel<LifecycleWork> _lifecycle;
     /// <summary>
@@ -130,7 +132,8 @@ public sealed class TradeTapeRecorder : BackgroundService
         InstrumentRegistry registry,
         TimeProvider clock,
         ILogger<TradeTapeRecorder> logger,
-        TapeAvailabilityHolder tape)
+        TapeAvailabilityHolder tape,
+        HostTelemetry telemetry)
         : this(
             scopes,
             market,
@@ -139,6 +142,7 @@ public sealed class TradeTapeRecorder : BackgroundService
             clock,
             logger,
             tape,
+            telemetry,
             DefaultChannelCapacity,
             TapeLease.DefaultTimeToLive)
     {
@@ -152,6 +156,13 @@ public sealed class TradeTapeRecorder : BackgroundService
     /// <param name="clock">The clock. Receipt time is taken here, not at persist.</param>
     /// <param name="logger">The logger.</param>
     /// <param name="tape">Live subscription health, written from this lifecycle.</param>
+    /// <param name="telemetry">
+    /// The app-owned meter. <b>Nothing else in the process can count this stream</b>: the market hub runs
+    /// over <c>Microsoft.AspNetCore.SignalR.Client</c>, which no instrumentation package covers, and
+    /// <c>MarqSpec.Client.ProjectX</c> 3.0.0 has no activity source of its own — so ticks, reconnects and
+    /// claim hand-offs exist as numbers only because they are counted here (ADR-0019, gh#536). On a deployed
+    /// instance a silently dead subscription looks exactly like a quiet market.
+    /// </param>
     /// <param name="channelCapacity">
     /// How many prints may wait. Tests pass 1 so a drop is reachable without a live tape.
     /// </param>
@@ -167,6 +178,7 @@ public sealed class TradeTapeRecorder : BackgroundService
         TimeProvider clock,
         ILogger<TradeTapeRecorder> logger,
         TapeAvailabilityHolder tape,
+        HostTelemetry telemetry,
         int channelCapacity,
         TimeSpan leaseTimeToLive)
     {
@@ -177,6 +189,7 @@ public sealed class TradeTapeRecorder : BackgroundService
         ArgumentNullException.ThrowIfNull(clock);
         ArgumentNullException.ThrowIfNull(logger);
         ArgumentNullException.ThrowIfNull(tape);
+        ArgumentNullException.ThrowIfNull(telemetry);
         ArgumentOutOfRangeException.ThrowIfLessThan(channelCapacity, 1);
 
         _scopes = scopes;
@@ -186,6 +199,7 @@ public sealed class TradeTapeRecorder : BackgroundService
         _clock = clock;
         _logger = logger;
         _tape = tape;
+        _telemetry = telemetry;
         _ledger = new TapeCoverageLedger(scopes, clock);
         _lease = new TapeLease(scopes, clock, leaseTimeToLive);
         _channel = Channel.CreateBounded<PendingPrint>(new BoundedChannelOptions(channelCapacity)
@@ -451,6 +465,7 @@ public sealed class TradeTapeRecorder : BackgroundService
             {
                 _refused.Remove(contractId);
                 _tape.ClearUnclaimed(attribution.Instrument);
+                _telemetry.TapeLeaseChanged(attribution.Instrument, TapeLeaseChange.Acquired);
                 continue;
             }
 
@@ -464,6 +479,7 @@ public sealed class TradeTapeRecorder : BackgroundService
             firstRefusal ??= refusal;
 
             _tape.SetUnclaimed(attribution.Instrument, refusal);
+            _telemetry.TapeLeaseChanged(attribution.Instrument, TapeLeaseChange.Refused);
             _logger.LogWarning(
                 "{Instrument} is already claimed by another recorder ({Holder}), so this one will "
                 + "not subscribe to it. Two recorders on one instrument double every volume.",
@@ -648,6 +664,7 @@ public sealed class TradeTapeRecorder : BackgroundService
             _refused.Remove(contractId);
             _attribution[contractId] = attribution;
             _tape.ClearUnclaimed(attribution.Instrument);
+            _telemetry.TapeLeaseChanged(attribution.Instrument, TapeLeaseChange.Acquired);
 
             _logger.LogInformation(
                 "The trade-tape recorder took the tape claim for {Instrument} and is starting to "
@@ -709,6 +726,11 @@ public sealed class TradeTapeRecorder : BackgroundService
         TapeAvailability outcome,
         CancellationToken cancellationToken)
     {
+        // The one place a HELD claim stops being held -- taken over, or lapsed under a store outage. Counted
+        // here rather than at each of the two call sites so the two cannot drift apart, and so a third one
+        // added later is counted by construction.
+        _telemetry.TapeLeaseChanged(instrument, TapeLeaseChange.Lost);
+
         _logger.LogError(
             "This recorder no longer holds the tape claim on {Instrument}. Dropping the "
             + "subscription rather than leaving two writers on one tape.",
@@ -792,6 +814,7 @@ public sealed class TradeTapeRecorder : BackgroundService
             && change.PreviousState != ConnectionState.Connected)
         {
             // Connected is not listening. Tools must refuse until restore completes.
+            _telemetry.TapeReconnect(TapeTransition.Connected);
             _tape.Set(TapeAvailability.ConnectedButNotSubscribed());
             _lifecycle.Writer.TryWrite(LifecycleWork.RestoreSubscriptions);
             return;
@@ -800,6 +823,7 @@ public sealed class TradeTapeRecorder : BackgroundService
         if (change.PreviousState == ConnectionState.Connected
             && change.CurrentState != ConnectionState.Connected)
         {
+            _telemetry.TapeReconnect(TapeTransition.Disconnected);
             _tape.Set(TapeAvailability.Reconnecting());
             _ledger.CloseOpenRangesAt(_clock.GetUtcNow());
             _lifecycle.Writer.TryWrite(LifecycleWork.PersistCloses);
@@ -1068,6 +1092,11 @@ public sealed class TradeTapeRecorder : BackgroundService
 
             await database.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
             Interlocked.Increment(ref _recorded);
+
+            // COUNTED WHERE THE PRINT LANDED, past the coverage gate and past the lease fence. A tick counted
+            // on arrival would make the number agree with the hub rather than with the tape, and the tape is
+            // what every footprint and volume profile is computed from.
+            _telemetry.TapeTick(attribution.Instrument);
         }
     }
 

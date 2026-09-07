@@ -4,6 +4,7 @@ using MarqSpec.Mcp.TopstepX.Configuration;
 using MarqSpec.Mcp.TopstepX.Domain;
 using MarqSpec.Mcp.TopstepX.Domain.MarketData;
 using MarqSpec.Mcp.TopstepX.MarketData;
+using MarqSpec.Mcp.TopstepX.Telemetry;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
@@ -32,6 +33,7 @@ public sealed class ProjectXMarketDataGateway : IMarketDataGateway
     private readonly IProjectXApiClient _client;
     private readonly InstrumentRegistry _registry;
     private readonly VenueRequestPacer _historyPacer;
+    private readonly VenueCallGuard _calls;
     private readonly bool _live;
     private readonly ILogger<ProjectXMarketDataGateway> _logger;
 
@@ -44,18 +46,25 @@ public sealed class ProjectXMarketDataGateway : IMarketDataGateway
     /// </param>
     /// <param name="options">The venue options, carrying the required data tier.</param>
     /// <param name="logger">The logger.</param>
+    /// <param name="telemetry">
+    /// The app-owned meter and activity source. <b>Every vendor call below is counted, timed and traced</b>,
+    /// and this is the only place in the process that can do it: <c>MarqSpec.Client.ProjectX</c> 3.0.0 has no
+    /// activity source of its own (ADR-0019, gh#536).
+    /// </param>
     public ProjectXMarketDataGateway(
         IProjectXApiClient client,
         InstrumentRegistry registry,
         VenueRequestPacer historyPacer,
         IOptions<VenueOptions> options,
-        ILogger<ProjectXMarketDataGateway> logger)
+        ILogger<ProjectXMarketDataGateway> logger,
+        HostTelemetry telemetry)
     {
         ArgumentNullException.ThrowIfNull(options);
 
         _client = client;
         _registry = registry;
         _historyPacer = historyPacer;
+        _calls = new VenueCallGuard(telemetry);
         _live = options.Value.DataTier == ProjectXDataTier.Live;
         _logger = logger;
     }
@@ -68,7 +77,8 @@ public sealed class ProjectXMarketDataGateway : IMarketDataGateway
         InstrumentId instrument,
         CancellationToken cancellationToken)
     {
-        IEnumerable<Contract> matches = await Guarded(
+        IEnumerable<Contract> matches = await _calls.RunAsync(
+            VenueOperation.ResolveContracts,
             () => _client.SearchContractsAsync(instrument.Symbol, _live, cancellationToken),
             "searching contracts for " + instrument.Symbol).ConfigureAwait(false);
 
@@ -203,7 +213,8 @@ public sealed class ProjectXMarketDataGateway : IMarketDataGateway
         string productCode = _registry.ProductCodeFor(instrument);
         string contractId = ContractIdFor(productCode, expiry);
 
-        Contract? found = await Guarded(
+        Contract? found = await _calls.RunAsync(
+            VenueOperation.FindContract,
             () => _client.GetContractByIdAsync(contractId, cancellationToken),
             "looking up contract " + contractId).ConfigureAwait(false);
 
@@ -312,7 +323,8 @@ public sealed class ProjectXMarketDataGateway : IMarketDataGateway
                 pacedPages++;
             }
 
-            IEnumerable<AggregateBar> bars = await Guarded(
+            IEnumerable<AggregateBar> bars = await _calls.RunAsync(
+                VenueOperation.GetBars,
                 () => _client.GetHistoricalBarsAsync(
                     contractId,
                     from.UtcDateTime,
@@ -349,7 +361,8 @@ public sealed class ProjectXMarketDataGateway : IMarketDataGateway
         bool onlyActive,
         CancellationToken cancellationToken)
     {
-        IEnumerable<TradingAccount> accounts = await Guarded(
+        IEnumerable<TradingAccount> accounts = await _calls.RunAsync(
+            VenueOperation.GetAccounts,
             () => _client.GetAccountsAsync(onlyActive, cancellationToken),
             "listing accounts").ConfigureAwait(false);
 
@@ -361,7 +374,8 @@ public sealed class ProjectXMarketDataGateway : IMarketDataGateway
         int accountId,
         CancellationToken cancellationToken)
     {
-        IEnumerable<Position> positions = await Guarded(
+        IEnumerable<Position> positions = await _calls.RunAsync(
+            VenueOperation.GetPositions,
             () => _client.GetOpenPositionsAsync(accountId, cancellationToken),
             "reading open positions").ConfigureAwait(false);
 
@@ -375,10 +389,12 @@ public sealed class ProjectXMarketDataGateway : IMarketDataGateway
         CancellationToken cancellationToken)
     {
         IEnumerable<Order> orders = window is null
-            ? await Guarded(
+            ? await _calls.RunAsync(
+                VenueOperation.GetOrders,
                 () => _client.GetOpenOrdersAsync(accountId, cancellationToken),
                 "reading open orders").ConfigureAwait(false)
-            : await Guarded(
+            : await _calls.RunAsync(
+                VenueOperation.GetOrders,
                 () => _client.GetOrdersAsync(
                     accountId, window.Start.UtcDateTime, window.End.UtcDateTime, cancellationToken),
                 "searching orders").ConfigureAwait(false);
@@ -394,7 +410,8 @@ public sealed class ProjectXMarketDataGateway : IMarketDataGateway
     {
         ArgumentNullException.ThrowIfNull(window);
 
-        IEnumerable<HalfTrade> trades = await Guarded(
+        IEnumerable<HalfTrade> trades = await _calls.RunAsync(
+            VenueOperation.GetTrades,
             () => _client.GetTradesAsync(
                 accountId, window.Start.UtcDateTime, window.End.UtcDateTime, cancellationToken),
             "searching trades").ConfigureAwait(false);
@@ -487,39 +504,4 @@ public sealed class ProjectXMarketDataGateway : IMarketDataGateway
         ContractExpiry.TryParseContractId(contractId, out ContractExpiry expiry)
             ? expiry.Rank - (ContractExpiry.Century * 12)
             : null;
-
-    /// <summary>
-    /// Runs a vendor call, translating its failures into one exception type with the vendor's numeric code.
-    /// </summary>
-    /// <remarks>
-    /// The vendor's own message string is deliberately not carried through: it is free text on a channel a
-    /// language model reads (ADR-0008), and the code carries the diagnostic value without the surface. What
-    /// the caller gets instead is <i>what this server was doing</i>, which is more useful anyway.
-    /// </remarks>
-    private static async Task<T> Guarded<T>(Func<Task<T>> call, string what)
-    {
-        try
-        {
-            return await call().ConfigureAwait(false);
-        }
-        catch (MarqSpec.Client.ProjectX.Exceptions.ProjectXApiException ex)
-        {
-            // The vendor's STATUS CODE, never its message string -- the code carries the
-            // diagnostic value without putting vendor free text on a channel a model reads.
-            throw ex.StatusCode is { } code
-                ? new VenueException("The gateway refused while " + what + ".", code)
-                : new VenueException("The gateway refused while " + what + ".");
-        }
-        catch (MarqSpec.Client.ProjectX.Exceptions.AuthenticationException)
-        {
-            throw new VenueException(
-                "The gateway rejected the credentials. Note that ProjectX__ApiKey is the USERNAME and "
-                + "ProjectX__ApiSecret is the API key -- putting the key in both authenticates as a user who "
-                + "does not exist, and the gateway reports that as a bare unknown error.");
-        }
-        catch (HttpRequestException ex)
-        {
-            throw new VenueException("The gateway could not be reached while " + what + ".", ex);
-        }
-    }
 }

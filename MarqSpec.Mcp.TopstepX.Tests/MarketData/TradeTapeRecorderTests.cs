@@ -7,11 +7,13 @@ using MarqSpec.Mcp.TopstepX.Data.Entities;
 using MarqSpec.Mcp.TopstepX.Domain;
 using MarqSpec.Mcp.TopstepX.Domain.MarketData;
 using MarqSpec.Mcp.TopstepX.MarketData;
+using MarqSpec.Mcp.TopstepX.Telemetry;
 using MarqSpec.Mcp.TopstepX.Tools;
 using MarqSpec.Mcp.TopstepX.Venue;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Diagnostics.Metrics.Testing;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -2211,6 +2213,193 @@ public sealed class TradeTapeRecorderTests
             Volume = 3m,
         };
 
+    // ── What the hub is worth as numbers (gh#536) ────────────────────────────────────────────────────
+    //
+    // Nothing instruments SignalR. The vendor client's market-hub stream runs over
+    // Microsoft.AspNetCore.SignalR.Client, which no instrumentation package covers, and
+    // MarqSpec.Client.ProjectX 3.0.0 has no activity source of its own — so ticks, reconnects and claim
+    // hand-offs exist as numbers only because the host counts them here. On Fargate a silently dead
+    // subscription looks exactly like a quiet market, and these three are the difference.
+
+    [Fact]
+    public async Task EveryStoredPrintCountsATapeTick_TaggedWithTheInstrumentNotTheContract()
+    {
+        using HostTelemetry telemetry = new();
+        (TradeTapeRecorder recorder, FakeMarketHub hub, TopstepXDbContext database, ServiceProvider services, _) =
+            Build(McpTransport.Http, recordTape: true, telemetry: telemetry);
+
+        using MetricCollector<long> ticks = new(
+            telemetry, HostTelemetry.Name, HostTelemetry.TapeTicksInstrument);
+
+        await using (services)
+        await using (database)
+        {
+            await recorder.StartAsync(CancellationToken.None);
+            await WaitUntil(() => hub.TradeSubscriptions.Count > 0);
+
+            hub.Raise(Print(new DateTime(2026, 8, 28, 13, 45, 0, DateTimeKind.Utc), TradeLogType.Buy, 5000.25m));
+            hub.Raise(Print(new DateTime(2026, 8, 28, 13, 45, 1, DateTimeKind.Utc), TradeLogType.Sell, 5000.50m));
+
+            await WaitUntil(() => recorder.RecordedPrints == 2);
+            await WaitUntil(() => ticks.GetMeasurementSnapshot().Count == 2);
+
+            // Counted at the point the print LANDED, not at the point it arrived: a print the fence or the
+            // coverage gate drops is not tape this server holds, and counting it would report a rate the
+            // store cannot account for.
+            ticks.GetMeasurementSnapshot().Sum(m => m.Value).Should().Be(2);
+            ticks.LastMeasurement!.Tags[HostTelemetry.SymbolTag].Should().Be("ES");
+            ticks.LastMeasurement.Tags.Values.Should().NotContain("CON.F.US.TEST.Z26");
+
+            await recorder.StopAsync(CancellationToken.None);
+        }
+    }
+
+    [Fact]
+    public async Task ADroppedPrintIsNotCountedAsATick()
+    {
+        // The channel is full and the print never reaches the store. A tick counted here would make the
+        // metric agree with the hub rather than with the tape, which is the one disagreement that matters:
+        // DroppedPrints already says the channel overflowed, and mcp.tape.ticks must stay a statement about
+        // what was RECORDED.
+        TaskCompletionSource hold = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        TaskCompletionSource started = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        using HostTelemetry telemetry = new();
+        (TradeTapeRecorder recorder, FakeMarketHub hub, TopstepXDbContext database, ServiceProvider services, _) =
+            Build(
+                McpTransport.Http,
+                recordTape: true,
+                channelCapacity: 1,
+                persistHold: hold,
+                persistStarted: started,
+                telemetry: telemetry);
+
+        using MetricCollector<long> ticks = new(
+            telemetry, HostTelemetry.Name, HostTelemetry.TapeTicksInstrument);
+
+        await using (services)
+        await using (database)
+        {
+            await recorder.StartAsync(CancellationToken.None);
+            await WaitUntil(() => hub.TradeSubscriptions.Count > 0);
+
+            hub.Raise(Print(new DateTime(2026, 8, 28, 13, 45, 0, DateTimeKind.Utc), TradeLogType.Buy, 5000.25m));
+            await started.Task;
+
+            hub.Raise(Print(new DateTime(2026, 8, 28, 13, 45, 1, DateTimeKind.Utc), TradeLogType.Buy, 5000.50m));
+            hub.Raise(Print(new DateTime(2026, 8, 28, 13, 45, 2, DateTimeKind.Utc), TradeLogType.Buy, 5000.75m));
+
+            await WaitUntil(() => recorder.DroppedPrints > 0);
+
+            ticks.GetMeasurementSnapshot().Sum(m => m.Value)
+                .Should().BeLessThan(3, "a print the channel refused was never stored");
+
+            hold.TrySetResult();
+            await recorder.StopAsync(CancellationToken.None);
+        }
+    }
+
+    [Fact]
+    public async Task AHubDropAndTheReconnectAfterItAreEachCountedOnce()
+    {
+        // The number that tells a silently dead subscription from a quiet market. Both directions are
+        // counted, because a drop with no matching reconnect is exactly the shape worth paging on, and a
+        // single "reconnects" number cannot express it.
+        using HostTelemetry telemetry = new();
+        (TradeTapeRecorder recorder, FakeMarketHub hub, TopstepXDbContext database, ServiceProvider services, _) =
+            Build(McpTransport.Http, recordTape: true, telemetry: telemetry);
+
+        using MetricCollector<long> transitions = new(
+            telemetry, HostTelemetry.Name, HostTelemetry.TapeReconnectsInstrument);
+
+        await using (services)
+        await using (database)
+        {
+            await recorder.StartAsync(CancellationToken.None);
+            await WaitUntil(() => hub.TradeSubscriptions.Count > 0);
+
+            hub.SimulateMarketDisconnect();
+            await WaitUntil(() => Counted(transitions, TapeTransition.Disconnected) == 1);
+
+            hub.SimulateMarketReconnect();
+            await WaitUntil(() => Counted(transitions, TapeTransition.Connected) >= 1);
+
+            Counted(transitions, TapeTransition.Disconnected).Should().Be(1);
+
+            // Not tagged by symbol: ONE hub carries every instrument, so attributing a reconnect to each
+            // subscribed symbol would multiply one incident by however many the deployment is configured for.
+            transitions.GetMeasurementSnapshot()
+                .Should().OnlyContain(m => !m.Tags.ContainsKey(HostTelemetry.SymbolTag));
+
+            await recorder.StopAsync(CancellationToken.None);
+        }
+    }
+
+    [Fact]
+    public async Task TakingAClaimCountsAnAcquire_AndBeingRefusedOneCountsARefusal()
+    {
+        // ADR-0016's hand-off, as a number. A refusal is not a failure — a split deployment is legal, and a
+        // rolling redeploy produces one every time — but a refusal that never turns into an acquire is a
+        // recorder that has stopped recording, and that is invisible without this.
+        string sharedStore = Guid.NewGuid().ToString();
+
+        using HostTelemetry holderTelemetry = new();
+        (TradeTapeRecorder holder, FakeMarketHub holderHub, TopstepXDbContext database, ServiceProvider holderServices, _) =
+            Build(
+                McpTransport.Http,
+                recordTape: true,
+                sharedDatabaseName: sharedStore,
+                telemetry: holderTelemetry);
+
+        using MetricCollector<long> holderChanges = new(
+            holderTelemetry, HostTelemetry.Name, HostTelemetry.TapeLeaseChangesInstrument);
+
+        await using (holderServices)
+        await using (database)
+        {
+            await holder.StartAsync(CancellationToken.None);
+            await WaitUntil(() => holderHub.TradeSubscriptions.Count > 0);
+
+            CollectedMeasurement<long> acquired = holderChanges.GetMeasurementSnapshot()
+                .Should().ContainSingle().Subject;
+            acquired.Tags[HostTelemetry.SymbolTag].Should().Be("ES");
+            acquired.Tags[HostTelemetry.ChangeTag].Should().Be(TapeLeaseChange.Acquired);
+
+            using HostTelemetry secondTelemetry = new();
+            (TradeTapeRecorder second, _, TopstepXDbContext secondDatabase, ServiceProvider secondServices, _) =
+                Build(
+                    McpTransport.Http,
+                    recordTape: true,
+                    sharedDatabaseName: sharedStore,
+                    telemetry: secondTelemetry);
+
+            using MetricCollector<long> secondChanges = new(
+                secondTelemetry, HostTelemetry.Name, HostTelemetry.TapeLeaseChangesInstrument);
+
+            await using (secondServices)
+            await using (secondDatabase)
+            {
+                await second.StartAsync(CancellationToken.None);
+                await WaitUntil(() => Counted(secondChanges, TapeLeaseChange.Refused) == 1);
+
+                CollectedMeasurement<long> refused = secondChanges.GetMeasurementSnapshot()
+                    .Should().ContainSingle().Subject;
+                refused.Tags[HostTelemetry.SymbolTag].Should().Be("ES");
+                refused.Tags[HostTelemetry.ChangeTag].Should().Be(TapeLeaseChange.Refused);
+
+                await second.StopAsync(CancellationToken.None);
+            }
+
+            await holder.StopAsync(CancellationToken.None);
+        }
+    }
+
+    /// <summary>How many measurements carry a given <c>change</c> or <c>transition</c> value.</summary>
+    private static long Counted(MetricCollector<long> collector, string value) =>
+        collector.GetMeasurementSnapshot()
+            .Where(m => m.Tags.Values.Contains(value))
+            .Sum(m => m.Value);
+
     private static (
         TradeTapeRecorder Recorder,
         FakeMarketHub Hub,
@@ -2229,7 +2418,8 @@ public sealed class TradeTapeRecorderTests
             bool registerHub = true,
             SaveChangesInterceptor? extraInterceptor = null,
             string? sharedDatabaseName = null,
-            TimeSpan? leaseTimeToLive = null)
+            TimeSpan? leaseTimeToLive = null,
+            HostTelemetry? telemetry = null)
     {
         FakeMarketHub hub = new();
         FakeTimeProvider clock = new(_receipt);
@@ -2283,6 +2473,7 @@ public sealed class TradeTapeRecorderTests
             clock,
             logger ?? NullLogger<TradeTapeRecorder>.Instance,
             tape,
+            telemetry ?? new HostTelemetry(),
             channelCapacity,
             leaseTimeToLive ?? TapeLease.DefaultTimeToLive);
 

@@ -146,8 +146,12 @@ public static class HistoricalRangePlanner
     /// trade date alone, the trade date is non-decreasing in the instant, and
     /// <c>ContractMonthCycle.CandidatesFor</c> only ever moves the nearest expiry <i>forward</i> — so
     /// "the set has changed" is false then true across the stretch and never returns. A step scan would have
-    /// to pick a granularity, and would land the cut at a step boundary rather than at the session open where
-    /// the trade date actually turns.
+    /// to pick a granularity, and would land the cut at a step boundary rather than where the trade date
+    /// actually turns — which is the session open on the last day of the outgoing month, <b>except</b> when
+    /// that turn falls inside a weekend, a declared holiday or the maintenance window: there
+    /// <c>TradeDateFor</c> answers nothing, the <c>?? DateOnly.FromDateTime(utc)</c> fallback stands in, and
+    /// the cut lands at the first UTC midnight of the new month instead. Exact in both cases, because the
+    /// search asks the same function the fetch will.
     /// </para>
     /// <para>
     /// The tie-break is <c>Rank</c> rather than set equality: a month change that does not move the nearest

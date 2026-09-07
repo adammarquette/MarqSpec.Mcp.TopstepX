@@ -457,7 +457,11 @@ public static class ConcurrencyHarness
             new SeriesGateway(venue, available, contractId, answersBeyondTheSlice),
             Calendar(),
             Projector(database),
-            new InstrumentRegistry(Options.Create(new MarketDataOptions())),
+
+            // Registry(), NOT a default one. These tests serve two symbols -- Symbol for everything and
+            // RebuildSymbol for the rebuild test -- and a registry that has never heard of the second throws
+            // KeyNotFoundException from CycleFor the moment the fetch flow asks it anything (gh#505).
+            Registry(),
             new ContractDirectory(clock),
             clock,
             logger ?? NullLogger<BarCacheService>.Instance,

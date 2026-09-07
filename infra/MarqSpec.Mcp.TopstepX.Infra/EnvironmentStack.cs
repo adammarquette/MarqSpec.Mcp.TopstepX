@@ -1,6 +1,7 @@
 using Amazon.CDK;
 using Amazon.CDK.AWS.Backup;
 using Amazon.CDK.AWS.CertificateManager;
+using Amazon.CDK.AWS.Cognito;
 using Amazon.CDK.AWS.EC2;
 using Amazon.CDK.AWS.ECS;
 using Amazon.CDK.AWS.EFS;
@@ -27,14 +28,14 @@ namespace MarqSpec.Mcp.TopstepX.Infra;
 /// <summary>
 /// One deployed environment (ADR-0023): a VPC and its four security groups in loopback's role, one
 /// Application Load Balancer as the whole edge, an ECS cluster running the released server image by digest
-/// and the Timescale store on EFS, the secret shells, the deployment history, the logs and the backup plan.
-/// Instantiated twice — production and staging — from the same class; what differs is in
-/// <see cref="EnvironmentStackProps"/> and nowhere else.
+/// and the Timescale store on EFS, the Cognito user pool that issues the tokens the server checks, the
+/// secret shells, the deployment history, the logs and the backup plan. Instantiated twice — production and
+/// staging — from the same class; what differs is in <see cref="EnvironmentStackProps"/> and nowhere else.
 /// </summary>
 /// <remarks>
-/// What is <b>not</b> here, by card: Cognito (gh#517), the alarms (gh#526), the budget and cost tags
-/// (gh#527), the WAF (gh#528), the <c>pg_dump</c> task (gh#522), the OTLP sidecar (gh#537). Each is a
-/// further construct in this same stack, filed separately so this one stays the skeleton.
+/// What is <b>not</b> here, by card: the alarms (gh#526), the budget and cost tags (gh#527), the WAF
+/// (gh#528), the <c>pg_dump</c> task (gh#522), the OTLP sidecar (gh#537). Each is a further construct in
+/// this same stack, filed separately so this one stays the skeleton. Cognito (gh#517) is here.
 /// <para>
 /// <b>Operational defaults this card took</b>, traced to neither ADR-0023 nor gh#516 and none a cost or
 /// exposure choice — named here so nobody hunts for where they were decided: the AWS Backup rule runs at
@@ -237,6 +238,18 @@ public sealed class EnvironmentStack : Stack
             "The ProjectX login: apiKey is the TopstepX USERNAME and apiSecret the API KEY -- the names are inverted from what they read like (.env.example).");
         var cohereSecret = Shell("CohereSecret", env, "cohere", """{"apiKey":""}""",
             "The Cohere key behind Embeddings__ApiKey (ADR-0009). Unset is a supported state; an empty value here leaves search on text.");
+        // The two Cognito client secrets (ADR-0023 §6, §9). CloudFormation exposes no attribute for a client
+        // secret, and the CDK's way of reading one is a Lambda-backed custom resource with a role wider than
+        // anything reviewed here -- so these are shells like the three above, and gh#519 reads each secret
+        // once with `aws cognito-idp describe-user-pool-client` and writes it here by hand. The client id
+        // is not a secret (it is a stack output) and is duplicated into the shell so the deployment check
+        // (gh#521) reads one document. `deploy-check`, not the issue's `cognito-deploy-check`: the OIDC
+        // stack (gh#516) already scopes the deploy role to `secret:topstepx-mcp/<env>/deploy-check-*`, and
+        // the name is asserted against that pattern across the two stacks rather than beside it.
+        _ = Shell("ClaudeConnectorSecret", env, "claude-connector", """{"clientId":"","clientSecret":""}""",
+            "The claude-connector app client's id and secret, pasted into the Cowork custom-connector dialog (gh#524); the secret is read once with describe-user-pool-client.");
+        _ = Shell("DeployCheckSecret", env, "deploy-check", """{"clientId":"","clientSecret":""}""",
+            "The deploy-check app client's id and secret, read at run time by the deployment check (gh#521) for a client_credentials token; never a GitHub secret.");
 
         // The written history the pipeline leaves on every deploy (ADR-0023 §5): the same two parameters
         // the task definition reads, so the history cannot say one thing while the task runs another.
@@ -255,6 +268,104 @@ public sealed class EnvironmentStack : Stack
 
         var serverLogs = LogGroupFor(env, "server");
         var postgresLogs = LogGroupFor(env, "postgres");
+
+        // ── Authorization server: Cognito ───────────────────────────────────────────────────────────────
+        // ADR-0021 decided OAuth 2.1 with Cognito-issued tokens; ADR-0023 §9 decided the issuer's shape, and
+        // this is it. The server checks a token's issuer, client id and scope against exactly what is built
+        // here, and every one of those values reaches the task as a REFERENCE to a construct below -- a
+        // literal issuer would deploy and validate against whatever it named (gh#517's 2026-09-07 addendum).
+        //
+        // No SMS anywhere: the second factor is a TOTP app, so no SNS role with sns:Publish on every resource
+        // is created. ESSENTIALS is Cognito's own default plan for a new pool and the one that carries
+        // refresh-token rotation; it is named rather than inherited so the template says it. RETAIN because
+        // the pool holds the maintainer's user (ADR-0023 §6).
+        var pool = new UserPool(this, "UserPool", new UserPoolProps
+        {
+            UserPoolName = $"topstepx-mcp-{env}",
+            // The one user is created out of band by the maintainer (gh#519), never by sign-up.
+            SelfSignUpEnabled = false,
+            SignInAliases = new SignInAliases { Email = true },
+            SignInCaseSensitive = false,
+            Mfa = Mfa.OPTIONAL,
+            MfaSecondFactor = new MfaSecondFactor { Otp = true, Sms = false },
+            EnableSmsRole = false,
+            AccountRecovery = AccountRecovery.EMAIL_ONLY,
+            FeaturePlan = FeaturePlan.ESSENTIALS,
+            RemovalPolicy = RemovalPolicy.RETAIN,
+        });
+
+        // The resource server and its one scope. The product's Mcp__OAuth__RequiredScope is
+        // `<identifier>/<scope>` (ServerConfiguration.Fixed), and the template test pins the two together.
+        var readScope = new ResourceServerScope(new ResourceServerScopeProps
+        {
+            ScopeName = "read",
+            ScopeDescription = "Read the MCP tool surface: every tool, and nothing that is not a read (ADR-0002).",
+        });
+        var resourceServer = pool.AddResourceServer("ResourceServer", new UserPoolResourceServerOptions
+        {
+            Identifier = "topstepx-mcp",
+            UserPoolResourceServerName = "topstepx-mcp",
+            Scopes = [readScope],
+        });
+
+        // The Cognito-provided prefix domain, not `auth.<root>`: a custom domain needs a certificate in
+        // us-east-1 whatever region the pool is in, plus an A record already at the parent, and the region
+        // is gh#519's (ADR-0023 §9). The custom domain stays an option the ADR records.
+        var hostedUi = pool.AddDomain("HostedUi", new UserPoolDomainOptions
+        {
+            CognitoDomain = new CognitoDomainOptions { DomainPrefix = $"topstepx-mcp-{env}" },
+        });
+
+        // Both clients are CONFIDENTIAL (a generated secret), and each gets tokens by exactly one grant.
+        // ExplicitAuthFlows carries only the refresh (AllowOnlyRefresh): no username/password, no SRP, no
+        // custom challenge -- the hosted UI's code flow is the only door for a person, and client_credentials
+        // the only one for the check. Scopes are built from the resource server's own reference, so the
+        // client is created after the server it names and the scope cannot drift from the server's identifier.
+        var connector = pool.AddClient("ClaudeConnectorClient", new UserPoolClientOptions
+        {
+            UserPoolClientName = "claude-connector",
+            GenerateSecret = true,
+            OAuth = new OAuthSettings
+            {
+                Flows = new OAuthFlows { AuthorizationCodeGrant = true, ImplicitCodeGrant = false, ClientCredentials = false },
+                Scopes = [OAuthScope.OPENID, OAuthScope.ResourceServer(resourceServer, readScope)],
+                // The Claude callback and no other: the path Anthropic's documentation names for a server
+                // registered as a pre-registered client (ADR-0021's second assumption, gh#510).
+                CallbackUrls = ["https://claude.ai/api/mcp/auth_callback"],
+            },
+            SupportedIdentityProviders = [UserPoolClientIdentityProvider.COGNITO],
+            AccessTokenValidity = Duration.Hours(1),
+            IdTokenValidity = Duration.Hours(1),
+            RefreshTokenValidity = Duration.Days(30),
+            // A refresh token used twice is a stolen one: rotation makes the second use a revocation. Setting
+            // the grace period is what enables rotation in the L2; 30 s is the middle of Cognito's 0-60 s
+            // range, so a client-side retry of one refresh call succeeds and a replay a minute later does not.
+            RefreshTokenRotationGracePeriod = Duration.Seconds(30),
+            EnableTokenRevocation = true,
+            PreventUserExistenceErrors = true,
+        });
+        var deployCheck = pool.AddClient("DeployCheckClient", new UserPoolClientOptions
+        {
+            UserPoolClientName = "deploy-check",
+            GenerateSecret = true,
+            OAuth = new OAuthSettings
+            {
+                Flows = new OAuthFlows { AuthorizationCodeGrant = false, ImplicitCodeGrant = false, ClientCredentials = true },
+                Scopes = [OAuthScope.ResourceServer(resourceServer, readScope)],
+            },
+            AccessTokenValidity = Duration.Hours(1),
+            EnableTokenRevocation = true,
+            PreventUserExistenceErrors = true,
+        });
+        AllowOnlyRefresh(connector);
+        AllowOnlyRefresh(deployCheck);
+
+        // What gh#519's runbook records, read off the stack rather than a console: the issuer, the two client
+        // ids (not secrets, ADR-0023 §6) and where the hosted UI answers. No output ever names a secret.
+        _ = new CfnOutput(this, "OAuthIssuer", new CfnOutputProps { Value = pool.UserPoolProviderUrl, Description = "Mcp__OAuth__Issuer: the pool's provider URL, exactly as it appears in a token's iss claim." });
+        _ = new CfnOutput(this, "ClaudeConnectorClientId", new CfnOutputProps { Value = connector.UserPoolClientId, Description = "The claude-connector app client id; its secret is read once with describe-user-pool-client (gh#519)." });
+        _ = new CfnOutput(this, "DeployCheckClientId", new CfnOutputProps { Value = deployCheck.UserPoolClientId, Description = "The deploy-check app client id; its secret is read once with describe-user-pool-client (gh#519)." });
+        _ = new CfnOutput(this, "HostedUiBaseUrl", new CfnOutputProps { Value = hostedUi.BaseUrl(), Description = "Where the hosted UI answers: the authorize and token endpoints hang off this origin." });
 
         // ── Store: EFS ──────────────────────────────────────────────────────────────────────────────────
         // RETAIN on the file system AND its access point: the tape is original data with no backfill
@@ -433,6 +544,10 @@ public sealed class EnvironmentStack : Stack
             // included (gh#512): echoed byte for byte as the RFC 9728 `resource`, so it is this stack's
             // hostname and nothing a person retypes.
             ["Mcp__OAuth__ResourceUrl"] = $"https://{Hostname}/mcp",
+            // The issuer and the accepted client ids are the pool's and its clients' own references (gh#517):
+            // Fn::GetAtt ProviderURL, and the two client ids joined by the comma OAuthOptions splits on.
+            ["Mcp__OAuth__Issuer"] = pool.UserPoolProviderUrl,
+            ["Mcp__OAuth__ClientIds"] = Fn.Join(",", [connector.UserPoolClientId, deployCheck.UserPoolClientId]),
             ["MarketData__RecordTape"] = recordTape.ValueAsString,
             ["MarketData__WarmIndicators"] = warmIndicators.ValueAsString,
             // The deployment stamp (gh#513): the assembly is 0.0.0-alpha.0 by decision (ADR-0001), so the
@@ -557,6 +672,14 @@ public sealed class EnvironmentStack : Stack
         });
         targetGroup.AddTarget(server);
     }
+
+    /// <summary>
+    /// Pins a client's <c>ExplicitAuthFlows</c> to the refresh alone. The L2 omits the property when every
+    /// flow is off, and an omitted property is Cognito's default — SRP, custom challenge and refresh — so
+    /// "no direct authentication" has to be said on the L1 or it is not said at all.
+    /// </summary>
+    private static void AllowOnlyRefresh(UserPoolClient client) =>
+        ((CfnUserPoolClient)client.Node.DefaultChild!).ExplicitAuthFlows = ["ALLOW_REFRESH_TOKEN_AUTH"];
 
     private CfnParameter Flag(string name, bool @default, string description) =>
         new(this, name, new CfnParameterProps

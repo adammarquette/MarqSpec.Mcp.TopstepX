@@ -39,6 +39,7 @@ set -euo pipefail
 red() { printf '\033[31m%s\033[0m\n' "$*" >&2; }
 ok() { printf '\033[32m%s\033[0m\n' "$*"; }
 info() { printf '%s\n' "$*"; }
+die() { red "$*"; exit 1; }
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 GATE="$REPO_ROOT/scripts/check-release-gate.sh"
@@ -55,6 +56,16 @@ failures=0
 expect_red() {
   local label="$1" dir="$2" needle out status=0
   shift 2
+
+  # A CASE WITH NO NEEDLE IS SATISFIED BY EXIT STATUS ALONE, which is the one thing this file's header
+  # refuses (gh#586 review). `for needle in "$@"` over zero arguments runs zero iterations and falls straight
+  # through to `ok "rejected"` -- so a future case that forgets its needle reports the gate as sound on a
+  # runner where `check-release-gate.sh` exited 1 for "gh is required" and checked nothing. All six calls
+  # below pass at least one needle today; this is what keeps it that way, and it fails the SUITE rather than
+  # the case, because a self-test that cannot assert is not a result to tally.
+  [ $# -ge 1 ] || die "SELF-TEST BROKEN  expect_red \"$label\": no needle.
+A case must name the words its own fault produces. Exit status alone is also what 'gh is required' and 'gh is
+not authenticated' produce, so a needle-less case would go green having shown nothing."
 
   out="$(bash "$GATE" "$dir" 2>&1)" || status=$?
 

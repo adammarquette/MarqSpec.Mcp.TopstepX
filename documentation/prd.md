@@ -332,6 +332,25 @@ The server serves OHLCV bars for a futures instrument at a requested resolution 
   falls back to the newest bucket that has one — the same fallback `R-2.7`'s seam already produces. A bar
   whose `ContractId` was never recorded is **not** this case: the bar is there, the number is reproducible,
   and the unknown provenance is reported as it always was.
+- **R-2.15** **A named session series is projected on exactly the terms above, by the same code path.** One
+  value per whole session, keyed `(Venue, Instrument, Session, Indicator, Period, BucketStart)` over the
+  stored session bars (`R-1.13`) where a resolution series is keyed by the bar size over the bucket grid —
+  and produced by the *same* projection, so the contract segmenting (`R-2.7`), the removal of what the bars
+  no longer justify (`R-2.8`, `R-2.9`), the serialisation retry (`R-2.10`), the snapshot rule (`R-2.11`),
+  the cold-read whole-series replay (`R-2.13`), the orphan-servability rule (`R-2.14`) and the empty diff of a
+  confirming rebuild (`R-2.2`) hold unchanged. Two code paths would be two projections free to disagree about
+  a number nobody would question, so there is one, and the only thing a series' key decides is which pair of
+  tables it reads and writes and which indicators the catalogue computes over it. **The period counts
+  sessions**, not base bars: an SMA at 20 over `rth` is twenty trading days inside one contract run, and a
+  trade date the warm-up does not reach is absent (`R-2.3`). The vocabulary is the configured catalogue
+  **minus session-anchored VWAP**, which has no intra-session volume distribution to weight when the session
+  *is* one bar; `vwap-rolling` stays and reads as an N-session rolling VWAP. That exclusion is **refused by
+  name at the tool** rather than served as an empty series (`R-5.12`), because an empty series is
+  indistinguishable from a market that produced none (`R-5.3`). A session read projects inside the same unit
+  of work that wrote its bars, so bars never commit without the values they justify, and
+  `rebuild-indicators` walks session series beside resolution ones (`R-2.5`). See
+  [ADR-0006](adr/0006-indicators-as-projections.md) and
+  [ADR-0022](adr/0022-session-bars-derived-complete-or-absent.md) (gh#501, gh#496).
 
 ## R-3 — Key levels
 
@@ -518,6 +537,24 @@ The server serves OHLCV bars for a futures instrument at a requested resolution 
   — not that the vendor went untouched: a read whose gaps the coverage ledger covers still resolves the
   instrument's contract list, so it is venue-dependent and raises with the venue down (gh#504). See
   [ADR-0022](adr/0022-session-bars-derived-complete-or-absent.md) (gh#496, gh#500).
+- **R-5.12** **`get_session_indicators`** and **`get_session_indicator_at`** read the indicator series over a
+  named session — one value per trade date, not per bar (`R-2.14`).
+  `get_session_indicators(symbol, session, indicator, fromUtc, toUtc, period?)` answers
+  `{ symbol, session, indicator, period, values, contracts }`, one `{ tradeDate, t, v }` per trade date that
+  *has* a value, ascending; `get_session_indicator_at(symbol, session, indicator, asOfUtc, period?)` answers
+  one `{ value, tradeDate, bucketStart, contractId }` from the last session that had **closed** at or before
+  that moment, so a session still in progress is never answered from and no number arrives before the market
+  had it (`R-2.4`). **Both read stored series only.** The vendor is never called and no session bar is built
+  here, so a window whose sessions `get_session_bars` or `get_latest_session_bars` never covered answers with
+  no values — a fact about what has been asked for rather than about the market — and where the sessions are
+  stored and the values are not, the read projects them first (`R-2.1`, `R-2.13`). Cannot-measure **drops the
+  `value` key** rather than sending null, so the whole reading arrives as `{}` and a caller tests key
+  presence, never `=== null` (`R-2.3`). `session` is the closed vocabulary the session-bar tools
+  take (`R-5.11`), `period` selects among the configured periods on `get_indicators`' terms and refuses any
+  other by listing them (`R-2.12`), and **`vwap` is refused by name**, naming `vwap-rolling`, where any other
+  unknown name is refused by listing the session vocabulary (`R-5.3`). They are their own tool type
+  ([ADR-0017](adr/0017-one-tool-type-per-concern.md)) and the window caps refuse rather than truncate
+  (`R-5.4`, `R-1.13`). See [ADR-0022](adr/0022-session-bars-derived-complete-or-absent.md) (gh#501, gh#496).
 
 ## R-6 — Observations
 

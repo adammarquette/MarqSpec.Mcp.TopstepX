@@ -519,6 +519,68 @@ buckets than a single pass enumerates — around 3,720 `rth` sessions at a 30-mi
 default 5,000 rows — and without that last check it would fault inside `BarGapDetector.ExpectedBuckets`
 after the store had been opened.
 
+### `get_session_indicators(symbol, session, indicator, fromUtc, toUtc, period?)`
+An indicator series computed over **whole sessions** — one value per trade date, not per bar (`R-5.12`,
+`R-2.14`).
+
+Returns `{ symbol, session, indicator, period, values: [{ tradeDate, t, v }], contracts }`.
+
+**Stored series only, and the values exist because a session read put them there.** The vendor is never
+called and nothing is derived here: a session bar exists only after `get_session_bars` or
+`get_latest_session_bars` covered that trade date, and this tool does not build one. So a window nobody has
+read sessions for answers with **no values at all** — a fact about what has been asked for rather than about
+the market. Read the sessions first, then read this. Where the sessions are stored and the values are not,
+the first read that asks for them projects and stores them, on `get_indicators`' cache-aside terms — but that
+is now the uncommon path, because a session read projects in the same unit of work that writes its bars, so
+an ordinary read here is the probe. It is still reachable: a catalogue change, or a store filled before this
+existed, both land on it.
+
+**`period` counts SESSIONS, not bars.** An `sma` at 20 over `rth` is twenty trading days, so a series needs
+that many stored sessions **inside one contract run** before it measures anything. It selects among the
+operator's configured periods on exactly the terms `get_indicators` states, refusal message included; for
+`macd`, `macd-signal` and `macd-histogram` it is the **SLOW** length.
+
+**The session vocabulary is `get_indicators`' minus `vwap`** — `atr`, `rsi`, `sma`, `ema`, `macd`,
+`macd-signal`, `macd-histogram`, `bb-upper`, `bb-middle`, `bb-lower`, `vwap-rolling`. **Asking for `vwap` is
+an error naming `vwap-rolling`**, not an empty series: session-anchored VWAP weights a session's own volume
+distribution and a session that *is* one bar has none, and
+[ADR-0022](adr/0022-session-bars-derived-complete-or-absent.md) requires the surface say so rather than omit
+it silently. Any other unknown name errors listing the vocabulary, because a typo returning no data would
+read as *no signal*.
+
+**`values[]` is not one entry per trade date in the window.** A trade date the warm-up cannot yet measure has
+no entry, and neither does one the store holds no session bar for — an incomplete session is never stored
+(`R-1.13`). Pair each `v` with its own `tradeDate` rather than with a bar at the same index. `t` is that
+session's opening instant, carried beside the trade date because the two are not interchangeable: a session's
+UTC bounds move with the offset.
+
+**Values are never smoothed across a contract roll**, so expect a run of absent trade dates just after one:
+the new contract's warm-up starts over (`R-2.7`). `contracts` reports which contracts produced the sessions
+under the window — every session in it, not only the ones carrying a value, since a warm-up date produced the
+values after it — and `contracts.span` reads `Unknown` only when no session bar could be built at all.
+
+`session` is the same **closed vocabulary** `get_session_bars` takes; an unknown name errors listing the
+configured ones. The window is refused on the session-bar tools' caps and in their order, before any read.
+
+### `get_session_indicator_at(symbol, session, indicator, asOfUtc, period?)`
+One whole-session value as of a moment, from the series `get_session_indicators` reads and on the same
+terms — no vendor call, nothing derived here, and values that exist only after a session read covered the
+trade date.
+
+Returns `{ value, tradeDate, bucketStart, contractId }`.
+
+**Answered from the last session that had CLOSED at or before that moment**, which is the one line where this
+differs from `get_indicator_at`. A session opens hours before it closes, so comparing the opening would answer
+a question asked *during* today's session with today's own still-forming number. A session in progress is
+never answered from.
+
+**Cannot-measure is the empty object `{}`, not `{ "value": null }`**, on exactly `get_indicator_at`'s terms:
+all four are fields and all four are dropped, so test `"value" in reading`. An absent value means the sessions
+were never read, or the series is shorter than the period needs — never zero and never neutral.
+
+`tradeDate` names the session the value belongs to and `contractId` the contract behind it; two readings from
+different contracts are not comparable. `period` and the `vwap` refusal are `get_session_indicators`'.
+
 ### `get_indicators(symbol, resolutionMinutes, indicator, fromUtc, toUtc, period?)`
 A stored indicator series, **filled on demand from bars this server already holds**.
 

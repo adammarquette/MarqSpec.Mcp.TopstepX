@@ -404,8 +404,16 @@ operator's own session close (`R-1.12`, gh#499).
    aggregator refused no longer has a bar the store may serve, which is exactly what a roll landing on stored
    buckets does. An explicit list rather than a sweep of the span, because a date outside the ask was not
    re-derived and deleting it would throw away a bar on the strength of not having looked;
-   (f) **save before anything reads back** — a no-op today, kept because the read-back is a *query* and a query
-   does not see rows that are only tracked;
+   (f) **save before anything reads back** — normally a no-op, since nothing in this body tracks an entity,
+   kept because both the projection and the read-back below are *queries* and a query does not see rows that
+   are only tracked;
+   (f2) **project the session series this body just wrote**, unconditionally, through the same
+   `IndicatorProjector` and inside this transaction (gh#501, `R-2.14`) — see
+   [the projection](#the-indicator-projection) for why it is not gated on *something changed* and why its
+   replay under the retry is free;
+   (f3) **save again**, because the projection is deliberately half-tracked: it writes values with a
+   statement the store runs as it is sent and removes what the bars no longer justify through the change
+   tracker, which waits for this;
    (g) **read back what this transaction committed**, `AsNoTracking`, restating the provenance pair in the
    predicate. What a caller receives is what the store holds, not what the aggregator produced — and stating
    the definition makes *a row built under a definition that no longer holds is never served* a property of
@@ -465,11 +473,14 @@ periods with the primary labelled — never an empty series
 outright, being anchored rather than windowed; a VWAP with a lookback is `vwap-rolling`, a separate member of
 the vocabulary. **Resolving first is the point of the ordering**: a period this server does not compute is
 rejected without the read ever reaching `EnsureProjectedAsync`, so a rejected call cannot make a whole series
-replay. `IndicatorCatalog.All` — every instance — is what the projection, the probe's diff and the reconcile
-all walk; `IndicatorCatalog.Primaries` — exactly one per name — is what keys `get_market_snapshot`'s
-`indicators{}` map.
+replay. `IndicatorCatalog.ForSeries(key)` — every instance *that series* carries — is what the projection,
+the probe's diff and the reconcile all walk, and all three are handed the **same** list rather than reading
+it separately; for a resolution key it is `IndicatorCatalog.All` itself, the same instance, so nothing about
+an existing series moved. `IndicatorCatalog.Primaries` — exactly one per name — is what keys
+`get_market_snapshot`'s `indicators{}` map.
 
-`IndicatorCacheService.EnsureProjectedAsync(venue, instrument, resolution)`:
+`IndicatorCacheService.EnsureProjectedAsync(key)`, where the key is a `SeriesKey` — a resolution series or a
+named session series (see [the projection](#the-indicator-projection)):
 
 1. **Probe** — the series' **newest buckets, capped at the largest warm-up in the catalogue**, which follows
    the largest *configured* period rather than the shipped one, and one
@@ -494,8 +505,10 @@ all walk; `IndicatorCatalog.Primaries` — exactly one per name — is what keys
    are not contiguous across a weekend.
 3. **Nothing missing ⇒ return**, opening no transaction — on every series except the short-run one
    ADR-0014's consequences describe, where *nothing missing* is never reached. The answer is memoised for
-   the life of the request scope, so a snapshot covering several resolutions pays **one** probe per
-   `(instrument, resolution)` however many times that series is read.
+   the life of the request scope, so a snapshot covering several resolutions pays **one** probe per series
+   key however many times that series is read. The memo is a set of `SeriesKey`s, and the key compares by
+   value *and* by runtime type — a key comparing by reference would memoise nothing, and one whose type were
+   not part of its equality would let a session named `5` collide with the five-minute series.
 
 **`get_market_snapshot` reads the whole indicator map for a resolution in ONE query** —
 `IndicatorTools.GetLatestIndicatorReadings`, which groups by `(Indicator, Period)`, takes each group's own
@@ -535,6 +548,22 @@ Cowork child would stall the handshake. The tool descriptions say so.
 write meets the winner's committed rows, and `R-2.10`'s single retry re-derives against them and writes
 nothing — so one projection lands. Nothing is serialised and no lock is taken
 ([ADR-0012](adr/0012-fills-are-not-serialised.md) measured both shapes and rejected both).
+
+**`get_session_indicators` and `get_session_indicator_at` are this same read over the other key shape**
+(`R-5.12`, gh#501). One difference before the store is touched: they resolve through
+`IndicatorCatalog.ResolveFor(key, name, period)` rather than `Resolve`, which adds a third, series-aware
+refusal to the two above — a name the catalogue computes but *this* series does not carry. Today that is
+`vwap` alone, and it is refused **by name**, naming `vwap-rolling`, rather than answered with an empty
+series, because an empty series is indistinguishable from a market that produced none
+([ADR-0022](adr/0022-session-bars-derived-complete-or-absent.md)). They then call the same
+`EnsureProjectedAsync` with a `SeriesKey.Session`, and read `SessionIndicatorValues` **joined to
+`SessionBars` on the session's opening instant** — that join is where `tradeDate` and `contractId` come
+from, since a value row carries neither. `get_session_indicator_at` compares `SessionBars.CloseUtc <=
+asOfUtc` rather than the opening, so a session still in progress is never answered from; that is the one line
+where it differs from `get_indicator_at`. Neither tool builds a session bar, so a window whose sessions
+`get_session_bars` never covered answers with no values at all — a fact about what has been asked for rather
+than about the market. The venue stays unreachable here for the reason above: the tools read the venue id
+off the gateway once and keep no gateway, exactly as `IndicatorTools` does.
 
 ## The footprint read — on-read, the same trigger, never against the vendor
 
@@ -581,6 +610,32 @@ the warm-up restarts at every roll, so the values immediately after one are **ab
 `(Venue, Instrument, ResolutionMinutes, Indicator, Period, BucketStart)` is the key. `RecordedAt` is bumped
 only when a value actually changes, so a rebuild that confirms the existing numbers leaves the timestamps alone
 and the diff is empty.
+
+**The key has a second shape, and the rule did not change** (`R-2.14`, gh#501).
+`(Venue, Instrument, Session, Indicator, Period, BucketStart)` is a *named session* series' key, in
+`SessionIndicatorValues`, with `BucketStart` the session bar's `OpenUtc`. Which of the two a pass uses is
+decided by a **`SeriesKey`** — `SeriesKey.Resolution(venue, instrument, minutes)` or
+`SeriesKey.Session(venue, instrument, name)` — and by nothing else. The key picks an **`ISeriesTables`**,
+which names the bars a pass reads and the values it writes and is the *only* thing that differs between the
+two kinds; it is built from the key inside the projector and the cache service rather than injected, because
+those constructors are hand-built at fifty-odd sites across the two test projects. Everything above the
+tables — the seeding, the contract segmenting, the rounding to the stored scale, the skip-unchanged rule, the
+reconcile and its whole-series guard — is one body of code running over whichever pair the key chose. Two
+copies would be two projections free to disagree about a number nobody would question. The vocabulary is the
+second and last difference: `IndicatorCatalog.ForSeries(key)` hands back `All` itself for a resolution key
+and `All` minus session-anchored `vwap` for a session key — a session that *is* one bar has no intra-session
+volume distribution to weight — and the compute and the reconcile are handed the same list, since a compute
+walking one list while the reconcile walked another would delete rows on every pass. `SeriesKey.Describe()`
+is also the label a series carries in an operator's log: `ES 5m`, `ES rth`.
+
+**A session read projects inside the unit of work that wrote its bars.** `SessionBarService` derives the
+sessions, upserts them, and then — unconditionally, between that write and the read-back of what it
+committed — projects the session series and saves a second time, all inside the one `SeriesUnitOfWork`
+transaction, so session bars never commit without the values they justify. It is not gated on *something
+changed*: the upsert's row count does not see a pass that only removed stale rows, and an unconditional pass
+over an unchanged series is an empty diff by ADR-0006, so the cheap answer and the correct one are the same
+call. It replays with the unit of work's serialisation retry for the same reason — a projection derives
+entirely from the bars on its own attempt's snapshot, so running it twice is free.
 
 **A pass reconciles, it does not only upsert.** It removes every value it is configured to produce that the
 current bars no longer justify. Before segmenting that could not arise: the warm-up boundary was the start of
@@ -633,7 +688,15 @@ The same whole-series sweep is why concurrent fills collide at all: it makes the
 series regardless of which range it fetched. That is the substance of the retry described above.
 
 `rebuild-indicators` runs the same projection over every stored series and is **transactional per series**, at
-the same isolation level, for the same reason. The series is the unit of work because a rebuild is idempotent
+the same isolation level, for the same reason. **Every stored series now means both kinds**: the distinct
+`(Venue, Instrument, ResolutionMinutes)` the `Bars` table holds, then the distinct
+`(Venue, Instrument, Session)` `SessionBars` holds, one transaction each (gh#501). A session series the
+correction pass could not see would be a series nothing can repair, and this verb is what an operator reaches
+for when they are trying to. The boot-time warm-up is that same class, so an HTTP process with
+`MarketData__WarmIndicators` on replays session series at start too, and pays for them. Both the rebuilder's
+per-series line and the projector's debug line now name the series as `SeriesKey.Describe()` renders it —
+`{Series}`, e.g. `ES 5m` or `ES rth` — where they carried `{Instrument}` and `{Resolution}` before, because a
+session series has no resolution to report. The series is the unit of work because a rebuild is idempotent
 per series; one snapshot held across the whole run would be pinned for its length and would discard everything
 on a late failure. **"Every stored series" is the union of the series in `Bars` and in `IndicatorValues`** —
 read off `Bars` alone, a series whose every bar had been deleted was in no worklist and the verb reported an
@@ -720,14 +783,23 @@ on a bump, so a dashboard that must not break is built on these
 
 | Instrument | Kind | Tags | Recorded by |
 |---|---|---|---|
-| `mcp.cache.reads` | counter | `series` = bars \| indicators \| footprint · `outcome` = hit \| miss \| partial · `symbol` · `resolution` | `BarCacheService`, `IndicatorCacheService`, `FootprintCacheService` |
+| `mcp.cache.reads` | counter | `series` = bars \| indicators \| footprint · `outcome` = hit \| miss \| partial · `symbol` · `resolution` **or** `session` | `BarCacheService`, `IndicatorCacheService`, `FootprintCacheService` |
 | `mcp.venue.calls` | counter | `operation` | `VenueCallGuard`, the one funnel `ProjectXMarketDataGateway` calls through |
 | `mcp.venue.call.duration` | histogram, seconds | `operation` | as above |
 | `mcp.gap.fills` | counter, ranges | `reason` = absent \| gap \| unattributed · `symbol` · `resolution` | `BarCacheService`, around `BarGapDetector` |
 | `mcp.tape.ticks` | counter, prints | `symbol` | `TradeTapeRecorder`, where the print landed |
 | `mcp.tape.reconnects` | counter | `transition` = connected \| disconnected | `TradeTapeRecorder` |
 | `mcp.tape.lease.changes` | counter | `change` = acquired \| refused \| lost · `symbol` | `TradeTapeRecorder` (ADR-0016) |
-| `mcp.indicator.projections` | counter, values | `indicator` · `symbol` · `resolution` | `IndicatorProjector` |
+| `mcp.indicator.projections` | counter, values | `indicator` · `symbol` · `resolution` **or** `session` | `IndicatorProjector` |
+
+**`resolution` and `session` are alternatives, never both, and which one a measurement carries is what says
+which kind of series it was over** (gh#501). A session series has no resolution — its window is wall-clock
+and its minutes move with daylight saving — and it is deliberately given no sentinel one, because a sentinel
+colliding with a real resolution would silently merge two series in the backend. `series` is unchanged: it
+stays the cache vocabulary (`bars`, `indicators`, `footprint`), so a session read of the indicator cache is
+`series=indicators` with a `session` tag. The resolution flavour of every one of these emits the tags it
+always did, byte for byte, because a renamed or added tag retires every stored series in every backend
+scraping it. The `cache.<series>` span carries the same pair.
 
 `operation` is a closed vocabulary too — `resolve_contracts`, `find_contract`, `get_bars`, `get_accounts`,
 `get_positions`, `get_orders`, `get_trades` — named here rather than taken from the vendor's method names, so

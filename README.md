@@ -293,11 +293,15 @@ published, and only to loopback — `docker port <lgtm container>` names one lin
 collector's OTLP ports, Tempo's query API and Prometheus are reachable only from the `server` container, over
 the compose network, by the service name `lgtm`.
 
-Open <http://localhost:3000>. The image ships two ways in unconfigured: an anonymous viewer/editor session
-(no login) and a built-in `admin` / `admin` login — both upstream defaults, not a bar lowered here. Change the
-password with `GF_SECURITY_ADMIN_PASSWORD` in `.env` before this port is reachable by anyone besides the
-operator at the keyboard; the loopback bind is what makes the shipped default tolerable meanwhile, the same
-posture as `POSTGRES_PASSWORD` and `Mcp__HttpBearerToken` above.
+Open <http://localhost:3000>. The image ships two ways in unconfigured: a built-in `admin` / `admin` login, and
+an anonymous session that needs no login at all — and that anonymous session is **Admin**, not a lesser role
+(`GF_AUTH_ANONYMOUS_ENABLED=true`, `GF_AUTH_ANONYMOUS_ORG_ROLE=Admin`, read from `/otel-lgtm/run-grafana.sh` in
+the image). Both are upstream defaults, not a bar lowered here, but together they mean **changing
+`GF_SECURITY_ADMIN_PASSWORD` alone does not lock this port down**: a visitor who never logs in already has
+Admin — measured below, every API call in "Trace → log click-through" ran with no `Authorization` header at
+all and none were refused. Set `GF_AUTH_ANONYMOUS_ENABLED=false` in `.env` to close that door; change the
+password too, since it is still the one login the image ships. The loopback bind is what makes the shipped
+defaults tolerable meanwhile, the same posture as `POSTGRES_PASSWORD` and `Mcp__HttpBearerToken` above.
 
 The one checked-in dashboard, **MarqSpec.Mcp.TopstepX**, is provisioned automatically from
 [`observability/grafana/dashboards/mcp-server.json`](observability/grafana/dashboards/mcp-server.json) — bind
@@ -305,27 +309,38 @@ mounted read-only, so editing the file and recreating `lgtm` is how it changes. 
 reads an instrument the .NET SDK's `Experimental.ModelContextProtocol` source, ASP.NET Core, HttpClient or the
 .NET runtime emits on their own (gh#536 is this repository's own meters and spans, out of scope here); the
 dashboard's own text panel says which instrument backs which panel and what breaks it on an SDK bump — read
-that before trusting a panel that has gone empty. The one exception, **Npgsql query duration**, reads a metric
-`Npgsql.OpenTelemetry` does not emit at all: it is `traces_spanmetrics_latency`, which Tempo itself derives
-from the real Npgsql spans this container receives, a second and independent instability from the SDK-name
-one.
+that before trusting a panel that has gone empty. The one exception, **Npgsql query duration**, reads Npgsql's
+own meter — `db.client.operation.duration` (`Npgsql.MeterProviderBuilderExtensions.AddNpgsqlInstrumentation`,
+subscribed by `ConfigureTelemetry` in `Program.cs`), whose Prometheus translation is
+`db_client_operation_duration_seconds`. Measured against a real container (gh#553): after one store-reading
+tool call, `db_client_operation_duration_seconds_count{service_name="marqspec-mcp-topstepx",
+db_system_name="postgresql"}` read a non-zero count. It carries the same SDK-owned-instrument caveat as the
+panels above it — on Npgsql rather than `ModelContextProtocol.Core` — not a second, independent instability
+built on a metric Tempo derives from spans.
 
 **Trace → log click-through** needs no dashboard of its own: this image provisions Loki's `trace_id` field as
 a Tempo-linked derived field out of the box, so any log line opened in Grafana Explore is already a link to
-its trace. To reproduce it by hand — verified on gh#535, one `tools/call` produced a span in Tempo and a log
-line in Loki carrying the identical id in the same second:
+its trace. Tempo's and Loki's own ports (3200, 3100) are **not published** — only Grafana's 3000 is — so
+reproducing the click-through from the host goes through Grafana's own datasource proxy instead, the same path
+the UI's Explore view uses. Verified on gh#553, from the host, with only the profile up: one `tools/call`
+produced a span in Tempo and, in the same second, a log line in Loki carrying the identical id:
 
 ```bash
-# Tempo: search for a span, note its traceID
-curl -s -G http://localhost:3200/api/search --data-urlencode 'q={span.mcp.method.name="tools/call"}'
+# Tempo, via Grafana's proxy (datasource uid "tempo"): search for a span, note its traceID
+curl -s -G http://localhost:3000/api/datasources/proxy/uid/tempo/api/search \
+  --data-urlencode 'q={span.mcp.method.name="tools/call"}'
 
-# Loki: the same trace id, as the app's own scope field
-curl -s -G http://localhost:3100/loki/api/v1/query_range \
-  --data-urlencode 'query={service_name="marqspec-mcp-topstepx"} | TraceId="<trace id from above>"'
+# Loki, via Grafana's proxy (datasource uid "loki"): the same trace id, as the app's own scope field
+curl -s -G http://localhost:3000/api/datasources/proxy/uid/loki/loki/api/v1/query_range \
+  --data-urlencode 'query={service_name="marqspec-mcp-topstepx"} | TraceId="<trace id from above>"' \
+  --data-urlencode "start=$(( ($(date +%s) - 3600) * 1000000000 ))" \
+  --data-urlencode "end=$(( $(date +%s) * 1000000000 ))"
 ```
 
-Tear down with `docker compose --profile observability down`; add `-v` only if you also want to discard
-Postgres's volume, which the profile has nothing to do with.
+Neither call above needs `-u`/`Authorization` against the image's own defaults — see the anonymous-Admin note
+above; add `-u admin:$GF_SECURITY_ADMIN_PASSWORD` once `GF_AUTH_ANONYMOUS_ENABLED=false` is set. Tear down
+with `docker compose --profile observability down`; add `-v` only if you also want to discard Postgres's
+volume, which the profile has nothing to do with.
 
 Full configuration catalogue: [`.env.example`](.env.example). Real secrets are never committed; this repository
 is public.

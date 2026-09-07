@@ -106,6 +106,17 @@ services:
       MarketData__Holidays: "${MarketData__Holidays:-}"
       MarketData__MaxRows: "${MarketData__MaxRows:-5000}"
       MarketData__Instruments: "${MarketData__Instruments:-ES,NQ}"
+      # The named sessions session bars are aggregated over. HH:mm-HH:mm in Central WALL-CLOCK time,
+      # parsed exactly; the base is the resolution each is DERIVED from and must divide 60 (ADR-0022).
+      # A bad value fails startup naming the key and the rule. These eight defaults are the shipped four.
+      MarketData__Sessions__full__Window: "${MarketData__Sessions__full__Window:-17:00-16:00}"
+      MarketData__Sessions__full__BaseResolutionMinutes: "${MarketData__Sessions__full__BaseResolutionMinutes:-60}"
+      MarketData__Sessions__rth__Window: "${MarketData__Sessions__rth__Window:-08:30-15:00}"
+      MarketData__Sessions__rth__BaseResolutionMinutes: "${MarketData__Sessions__rth__BaseResolutionMinutes:-30}"
+      MarketData__Sessions__asia__Window: "${MarketData__Sessions__asia__Window:-17:00-02:00}"
+      MarketData__Sessions__asia__BaseResolutionMinutes: "${MarketData__Sessions__asia__BaseResolutionMinutes:-30}"
+      MarketData__Sessions__europe__Window: "${MarketData__Sessions__europe__Window:-02:00-08:30}"
+      MarketData__Sessions__europe__BaseResolutionMinutes: "${MarketData__Sessions__europe__BaseResolutionMinutes:-30}"
       # Off by default: the composed server is HTTP, and HTTP is not consent to record (ADR-0016).
       MarketData__RecordTape: "${MarketData__RecordTape:-false}"
       # Off by default: HTTP is not consent to warm either (ADR-0014, gh#350).

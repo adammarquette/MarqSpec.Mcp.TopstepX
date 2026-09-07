@@ -638,6 +638,11 @@ public static class Program
             return BarSessionCalendar.Parse(options.SessionCloseCentral, options.HolidayList());
         });
 
+        // After the calendar, because it is stated against one: every definition is re-checked here against
+        // the same calendar MarketDataOptions.Validate used, so options that never went through
+        // ValidateOnStart cannot put an off-grid session into the served vocabulary (ADR-0022).
+        services.AddSingleton<SessionCatalog>();
+
         services.AddSingleton<InstrumentRegistry>();
         services.AddSingleton<IndicatorCatalog>();
         services.AddSingleton<IndicatorCatalogNames>();

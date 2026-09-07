@@ -34,12 +34,13 @@ public sealed class TradeTapeRecorderTests
 
     /// <summary>
     /// One meter for the whole suite, exactly as <c>ConcurrencyHarness.Telemetry</c> does it.
-    /// <see cref="Build"/> is called 57 times and <see cref="Tools"/> 11 more; a fresh
-    /// <see cref="HostTelemetry"/> at each site leaked up to 68 undisposed process-global
-    /// <see cref="System.Diagnostics.Metrics.Meter"/>s per run. Neither call site can wrap its
-    /// instance in a <c>using</c> — <see cref="Build"/>'s constructs the recorder under test and
-    /// <see cref="Tools"/>'s is captured by the returned <c>TapeTools</c>, so both must outlive the
-    /// helper that builds them (gh#563).
+    /// <see cref="Build"/> has 56 call sites (5 already supply and dispose their own instance via a
+    /// local <c>using</c>, so only 51 fell through to <c>telemetry ?? new HostTelemetry()</c>) and
+    /// <see cref="Tools"/> has 11, unconditionally. A fresh <see cref="HostTelemetry"/> at each of
+    /// those 62 sites leaked an undisposed process-global <see cref="System.Diagnostics.Metrics.Meter"/>
+    /// per run. Neither default can be a <c>using</c> — <see cref="Build"/>'s constructs the recorder
+    /// under test and <see cref="Tools"/>'s is captured by the returned <c>TapeTools</c>, so both must
+    /// outlive the helper that builds them (gh#563).
     /// </summary>
     private static readonly HostTelemetry _telemetry = new();
 

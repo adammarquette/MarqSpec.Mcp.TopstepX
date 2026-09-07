@@ -113,9 +113,11 @@ public sealed class SessionOptionsBindingTests
     /// A session name is a storage key, so the dictionary key itself is a rule and startup states it.
     /// </summary>
     /// <remarks>
-    /// The refusal names the entry rather than being asserted down to a property suffix: an uppercase name is
-    /// a fault of the key, not of either value under it, and the message
-    /// <see cref="SessionWindows.Validate"/> supplies says which rule it broke.
+    /// <b>The entry, with no property suffix.</b> An uppercase name is a fault of the key itself, not of
+    /// either value under it, so naming <c>__Window</c> would send an operator to a setting whose value is
+    /// fine — and the assertion is anchored on the words that follow the key, because a suffixed key
+    /// contains the unsuffixed one and would pass a looser match. The sentence saying which rule it broke
+    /// still comes from <see cref="SessionWindows.Validate"/>.
     /// </remarks>
     [Fact]
     public void AConfiguredSessionNameThatIsNotAStorageKey_FailsStartup()
@@ -128,7 +130,7 @@ public sealed class SessionOptionsBindingTests
             }));
 
         start.Should().Throw<OptionsValidationException>()
-            .WithMessage("*MarketData__Sessions__RTH*")
+            .WithMessage("*MarketData__Sessions__RTH is refused*")
             .WithMessage("*storage key*");
     }
 

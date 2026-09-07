@@ -1,5 +1,6 @@
 using System.ComponentModel.DataAnnotations;
 using System.Globalization;
+using System.Text.RegularExpressions;
 using MarqSpec.Mcp.TopstepX.Domain.MarketData;
 
 namespace MarqSpec.Mcp.TopstepX.Configuration;
@@ -39,7 +40,7 @@ public sealed class SessionOptions
 /// string split here is the smaller surface.
 /// </para>
 /// </remarks>
-public sealed class MarketDataOptions : IValidatableObject
+public sealed partial class MarketDataOptions : IValidatableObject
 {
     /// <summary>The configuration section this binds to.</summary>
     public const string SectionName = "MarketData";
@@ -334,11 +335,36 @@ public sealed class MarketDataOptions : IValidatableObject
     }
 
     /// <summary>The key an operator edits to fix a refused entry.</summary>
-    private static string KeyFor(string name, SessionOptions configured) =>
-        SectionName + "__Sessions__" + name + "__"
-        + (configured.BaseResolutionMinutes is < 1 or > 60 || 60 % configured.BaseResolutionMinutes != 0
-            ? nameof(SessionOptions.BaseResolutionMinutes)
-            : nameof(SessionOptions.Window));
+    /// <param name="name">The dictionary key — the session's name.</param>
+    /// <param name="configured">The values under it.</param>
+    /// <returns>The environment key, suffixed with the property at fault, or unsuffixed when the name is.</returns>
+    /// <remarks>
+    /// <b>The name is checked first, and a bad one names no property at all.</b> A name that is not a storage
+    /// key is a fault of the dictionary key itself, and both values under it may be perfectly good — sending
+    /// an operator to <c>__Window</c> points at a setting there is nothing wrong with, and the entry has to
+    /// be re-keyed rather than re-valued. The two rules are restated here purely to choose the suffix, the
+    /// way the remarks on <see cref="Validate"/> say; the rules themselves, and the sentence an operator
+    /// reads, still come from <see cref="SessionWindows.Validate"/>.
+    /// </remarks>
+    private static string KeyFor(string name, SessionOptions configured)
+    {
+        string entry = SectionName + "__Sessions__" + name;
+
+        if (!SessionNamePattern().IsMatch(name))
+        {
+            return entry;
+        }
+
+        return entry + "__"
+            + (configured.BaseResolutionMinutes is < 1 or > 60 || 60 % configured.BaseResolutionMinutes != 0
+                ? nameof(SessionOptions.BaseResolutionMinutes)
+                : nameof(SessionOptions.Window));
+    }
+
+    /// <summary>The session-name rule, restated to choose a key rather than to state the rule.</summary>
+    /// <returns>The pattern.</returns>
+    [GeneratedRegex("^[a-z][a-z0-9-]{0,15}$", RegexOptions.CultureInvariant)]
+    private static partial Regex SessionNamePattern();
 
     /// <summary>The refusal for a window that is not two <c>HH:mm</c> times separated by <c>-</c>.</summary>
     private static string MalformedWindowRefusal(string name, string window) =>

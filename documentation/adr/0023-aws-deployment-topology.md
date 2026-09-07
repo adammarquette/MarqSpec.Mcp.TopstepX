@@ -189,7 +189,8 @@ operation runs, and a deploy that writes the parameter and then re-runs an ident
 changes* — the old digest keeps running, silently and green. The review of 2026-09-06 caught it before any
 account existed. The SSM parameters `image-digest` and `version` **stay, as the written history** the
 pipeline writes on every deploy (gh#520), and a template test asserts the task definition's image is built
-from the parameter, never from a literal or a dynamic reference.
+from the parameter, never from a literal or a dynamic reference. *(2026-09-07: the history is now written
+by the stack itself, not by the pipeline — see the dated entry in the decision log below.)*
 
 Because the package is public, **ECS pulls it with no registry credential**; a private package would need
 `repositoryCredentials` on the task definition pointing at a Secrets Manager secret holding a GHCR token,
@@ -506,6 +507,24 @@ gh#516 decides it with the maintainer, writes the choice back here as a dated en
 to gh#527's basis, and — if the choice is shape 1 — adds the dated update on ADR-0021 in the same pull
 request. Until that entry exists, the exposure statement about the two tasks is ADR-0021's, and this record
 does not contradict it.
+
+## Update (2026-09-07) — the SSM history is written by the stack, and the pipeline only reads it
+
+Decision 5 said the SSM parameters `/topstepx-mcp/<env>/image-digest` and `/version` *stay, as the written
+history the pipeline writes on every deploy*, and decision 8 gave each deploy role `ssm:PutParameter` under
+its prefix for that write. gh#516 built it the other way, and this entry records why so gh#520 is not
+built from the sentence above: **the `EnvironmentStack` owns the two parameters as `AWS::SSM::Parameter`
+resources whose values are the stack's own `ImageDigest` and `Version` CloudFormation parameters.** Every
+`cdk deploy --parameters ImageDigest=… Version=…` therefore writes the history as part of the same stack
+operation that moves the task definition, and the history cannot say one thing while the task runs another
+— which a separate `put-parameter` before or after the deploy could (a deploy that failed after the write,
+or a write that failed after the deploy). The cost: a `put-parameter` from a workflow over a
+CloudFormation-managed parameter is drift — `ParameterAlreadyExists` on a first run, and a value the next
+stack update writes back — so **gh#520 passes the digest and version as `--parameters` and never writes SSM**,
+and the deploy roles carry `ssm:GetParameter` only (template-tested: no `ssm:PutParameter` on either).
+`deploy.yml`'s rollback still resolves a digest from the tag with `docker buildx imagetools inspect`, as
+decision 8 says; the SSM parameters are what a person reads. The maintainer may reverse this — pipeline
+writes, stack does not own — by deleting the two resources and restoring the permission, as a dated entry.
 
 ## Follow-ups
 

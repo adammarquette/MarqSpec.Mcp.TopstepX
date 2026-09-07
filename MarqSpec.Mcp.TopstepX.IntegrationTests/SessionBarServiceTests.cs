@@ -79,6 +79,10 @@ public sealed class SessionBarServiceTests : IAsyncLifetime
     /// </remarks>
     private static DateTimeOffset SettledNow => new(2026, 8, 25, 0, 0, 0, TimeSpan.Zero);
 
+    /// <summary>A clock standing at <see cref="SettledNow"/>, which a test may advance.</summary>
+    /// <returns>The clock.</returns>
+    private static FakeTimeProvider Settled() => new(SettledNow);
+
     /// <summary>
     /// Stores one complete session and reports the incomplete one as absent, with no row for it.
     /// </summary>
@@ -88,7 +92,7 @@ public sealed class SessionBarServiceTests : IAsyncLifetime
     {
         string venue = ConcurrencyHarness.Venue();
         SessionBarService service = Service(
-            _database, venue, [.. RthBars(_tuesday), .. RthBars(_wednesday, skip: 5)], SettledNow);
+            _database, venue, [.. RthBars(_tuesday), .. RthBars(_wednesday, skip: 5)], Settled());
 
         SessionBarReadResult result =
             await service.GetAsync(_es, _rth, [_tuesday, _wednesday], CancellationToken.None);
@@ -141,23 +145,39 @@ public sealed class SessionBarServiceTests : IAsyncLifetime
     /// dropped 16:00Z bucket), asks for them, and records both as covered. Because <c>SettledNow</c> is past
     /// <see cref="BarCacheService.SettledHistoryAge"/> those rows never expire, so the third read is the one
     /// that genuinely costs nothing.
+    /// <para>
+    /// <b>The clock is advanced between the reads, and that is what makes the last assertion an assertion.</b>
+    /// <c>RecordedAt</c> is stamped from the clock, so against a frozen one a rewrite lands the value the row
+    /// already held — and the check would pass with the C# pre-filter and the SQL <c>IS DISTINCT FROM</c>
+    /// guard both deleted. Moving the clock makes an unwanted rewrite visible as a moved timestamp.
+    /// </para>
     /// </remarks>
     [Fact]
     public async Task GetAsync_IssuesZeroVenueRequests_OnceTheBaseLedgerHasSettled()
     {
         string venue = ConcurrencyHarness.Venue();
+        FakeTimeProvider clock = Settled();
         SessionBarService service = Service(
-            _database, venue, [.. RthBars(_tuesday), .. RthBars(_wednesday, skip: 5)], SettledNow);
+            _database, venue, [.. RthBars(_tuesday), .. RthBars(_wednesday, skip: 5)], clock);
 
         SessionBarReadResult first =
             await service.GetAsync(_es, _rth, [_tuesday, _wednesday], CancellationToken.None);
         first.FetchedBuckets.Should().Be(25, "thirteen Tuesday buckets and twelve Wednesday ones");
 
         DateTimeOffset recordedAt = (await StoredAsync(venue)).Should().ContainSingle().Subject.RecordedAt;
+        recordedAt.Should().Be(SettledNow, "the row was written at the instant the first read ran");
+
+        clock.Advance(TimeSpan.FromHours(1));
 
         SessionBarReadResult second =
             await service.GetAsync(_es, _rth, [_tuesday, _wednesday], CancellationToken.None);
+        second.VenueRequests.Should().Be(
+            2,
+            "this is the read that finds the two holes the first one left unmemoised -- the overnight between "
+            + "the sessions, and Wednesday's dropped 16:00Z bucket -- and asks the venue for each");
         second.FetchedBuckets.Should().Be(0, "the venue has no bar for either hole, so nothing was written");
+
+        clock.Advance(TimeSpan.FromHours(1));
 
         SessionBarReadResult third =
             await service.GetAsync(_es, _rth, [_tuesday, _wednesday], CancellationToken.None);
@@ -170,7 +190,7 @@ public sealed class SessionBarServiceTests : IAsyncLifetime
         row.RecordedAt.Should().Be(
             recordedAt,
             "the session bar has not changed, so the skip-unchanged clause must leave the row alone rather "
-            + "than rewrite it with the same numbers under a new timestamp");
+            + "than rewrite it with the same numbers under a timestamp two hours later");
     }
 
     /// <summary>
@@ -181,7 +201,7 @@ public sealed class SessionBarServiceTests : IAsyncLifetime
     public async Task GetAsync_RemovesASessionBar_WhenABaseRevisionMakesItSpanARoll()
     {
         string venue = ConcurrencyHarness.Venue();
-        SessionBarService service = Service(_database, venue, RthBars(_tuesday), SettledNow);
+        SessionBarService service = Service(_database, venue, RthBars(_tuesday), Settled());
 
         await service.GetAsync(_es, _rth, [_tuesday], CancellationToken.None);
         (await StoredAsync(venue)).Should().ContainSingle();
@@ -227,12 +247,12 @@ public sealed class SessionBarServiceTests : IAsyncLifetime
         SessionDefinition hourly = new("full", new TimeOnly(17, 0), new TimeOnly(16, 0), 60);
         SessionDefinition halfHourly = hourly with { BaseResolutionMinutes = 30 };
 
-        await Service(_database, baseVenue, FullSessionBars(60), SettledNow)
+        await Service(_database, baseVenue, FullSessionBars(60), Settled())
             .GetAsync(_es, hourly, [_tuesday], CancellationToken.None);
         (await StoredAsync(baseVenue)).Should().ContainSingle()
             .Which.BaseBucketCount.Should().Be(23, "Mon 22:00Z to Tue 21:00Z is twenty-three hourly buckets");
 
-        await Service(_database, baseVenue, FullSessionBars(30), SettledNow)
+        await Service(_database, baseVenue, FullSessionBars(30), Settled())
             .GetAsync(_es, halfHourly, [_tuesday], CancellationToken.None);
 
         SessionBarRecord rebased = (await StoredAsync(baseVenue)).Should().ContainSingle(
@@ -245,18 +265,93 @@ public sealed class SessionBarServiceTests : IAsyncLifetime
         string windowVenue = ConcurrencyHarness.Venue();
         SessionDefinition shorter = _rth with { EndCentral = new TimeOnly(14, 30) };
 
-        await Service(_database, windowVenue, RthBars(_tuesday), SettledNow)
+        await Service(_database, windowVenue, RthBars(_tuesday), Settled())
             .GetAsync(_es, _rth, [_tuesday], CancellationToken.None);
         (await StoredAsync(windowVenue)).Should().ContainSingle()
             .Which.WindowCentral.Should().Be("08:30-15:00");
 
-        await Service(_database, windowVenue, RthBars(_tuesday), SettledNow)
+        await Service(_database, windowVenue, RthBars(_tuesday), Settled())
             .GetAsync(_es, shorter, [_tuesday], CancellationToken.None);
 
         SessionBarRecord rewindowed = (await StoredAsync(windowVenue)).Should().ContainSingle().Subject;
         rewindowed.WindowCentral.Should().Be("08:30-14:30");
         rewindowed.BaseBucketCount.Should().Be(12);
         rewindowed.CloseUtc.Should().Be(new DateTimeOffset(2026, 8, 18, 19, 30, 0, TimeSpan.Zero));
+    }
+
+    /// <summary>
+    /// Leaves a stored row alone for a trade date this call did not re-derive.
+    /// </summary>
+    /// <returns>The running test.</returns>
+    /// <remarks>
+    /// The reconcile removes a row whose session <b>was</b> re-derived and came back absent. A date the call
+    /// did not ask about was not re-derived at all, so deleting its row would be throwing away a bar on the
+    /// strength of not having looked — and the interior case is the one that catches a reconcile scoped to
+    /// the span between the first and last date instead of to the dates themselves.
+    /// </remarks>
+    [Fact]
+    public async Task GetAsync_KeepsARowForATradeDateItWasNotAskedAbout()
+    {
+        DateOnly monday = new(2026, 8, 17);
+
+        string venue = ConcurrencyHarness.Venue();
+        SessionBarService service = Service(
+            _database,
+            venue,
+            [.. RthBars(monday), .. RthBars(_tuesday), .. RthBars(_wednesday)],
+            Settled());
+
+        await service.GetAsync(_es, _rth, [monday, _tuesday, _wednesday], CancellationToken.None);
+        (await StoredAsync(venue)).Should().HaveCount(3);
+
+        // Outside the span: Monday and Wednesday sit either side of the only date asked for.
+        await service.GetAsync(_es, _rth, [_tuesday], CancellationToken.None);
+        (await StoredAsync(venue)).Should().HaveCount(
+            3, "neither Monday nor Wednesday was re-derived, so neither may be reconciled away");
+
+        // INSIDE the span, which is the case a window-scoped reconcile would get wrong: Tuesday sits between
+        // the two dates asked for, and this call did not look at it.
+        await service.GetAsync(_es, _rth, [monday, _wednesday], CancellationToken.None);
+        (await StoredAsync(venue)).Select(s => s.TradeDate).Should().Equal(
+            [monday, _tuesday, _wednesday],
+            "Tuesday was skipped rather than re-derived, so its row still stands on the evidence that put it "
+            + "there");
+    }
+
+    /// <summary>
+    /// Discards only the session it was asked about, leaving another session's rows on the same series.
+    /// </summary>
+    /// <returns>The running test.</returns>
+    [Fact]
+    public async Task GetAsync_DiscardsOnlyTheSessionItWasAskedAbout()
+    {
+        string venue = ConcurrencyHarness.Venue();
+        SessionDefinition full = new("full", new TimeOnly(17, 0), new TimeOnly(16, 0), 60);
+        SessionDefinition shorter = _rth with { EndCentral = new TimeOnly(14, 30) };
+
+        // Two sessions on one series, each off its own base resolution — so each gateway serves only the bars
+        // of the size its read asks for.
+        await Service(_database, venue, FullSessionBars(60), Settled())
+            .GetAsync(_es, full, [_tuesday], CancellationToken.None);
+        await Service(_database, venue, RthBars(_tuesday), Settled())
+            .GetAsync(_es, _rth, [_tuesday], CancellationToken.None);
+        (await StoredAsync(venue)).Should().HaveCount(2);
+
+        // `rth` under a definition that no longer matches the stored `rth` row. The discard is unscoped by
+        // DATE on purpose, but it must stay scoped by SESSION: `full` did not change.
+        await Service(_database, venue, RthBars(_tuesday), Settled())
+            .GetAsync(_es, shorter, [_tuesday], CancellationToken.None);
+
+        IReadOnlyList<SessionBarRecord> rows = await StoredAsync(venue);
+        rows.Should().HaveCount(2, "the rth row was replaced, not added to, and full was left alone");
+
+        SessionBarRecord survivor = rows.Should().ContainSingle(s => s.Session == "full").Subject;
+        survivor.WindowCentral.Should().Be("17:00-16:00");
+        survivor.BaseResolutionMinutes.Should().Be(60);
+        survivor.BaseBucketCount.Should().Be(23);
+
+        rows.Should().ContainSingle(s => s.Session == "rth")
+            .Which.WindowCentral.Should().Be("08:30-14:30");
     }
 
     /// <summary>
@@ -267,7 +362,7 @@ public sealed class SessionBarServiceTests : IAsyncLifetime
     public async Task GetAsync_NeverStoresASessionThatHasNotClosed()
     {
         // Wednesday 12:00 Central, which is the middle of Wednesday's rth session.
-        DateTimeOffset midSession = new(2026, 8, 19, 17, 0, 0, TimeSpan.Zero);
+        FakeTimeProvider midSession = new(new DateTimeOffset(2026, 8, 19, 17, 0, 0, TimeSpan.Zero));
 
         string venue = ConcurrencyHarness.Venue();
         SessionBarService service = Service(
@@ -302,7 +397,7 @@ public sealed class SessionBarServiceTests : IAsyncLifetime
     {
         string venue = ConcurrencyHarness.Venue();
 
-        await Service(_database, venue, RthBars(_tuesday), SettledNow)
+        await Service(_database, venue, RthBars(_tuesday), Settled())
             .GetAsync(_es, _rth, [_tuesday], CancellationToken.None);
 
         await using (TopstepXDbContext seed = _fixture.CreateContext())
@@ -315,7 +410,7 @@ public sealed class SessionBarServiceTests : IAsyncLifetime
         await using TopstepXDbContext otherStore = _fixture.CreateContext();
 
         async Task DeriveTheSameSessionAndCommit() =>
-            await Service(otherStore, venue, RthBars(_tuesday), SettledNow)
+            await Service(otherStore, venue, RthBars(_tuesday), Settled())
                 .GetAsync(_es, _rth, [_tuesday], CancellationToken.None);
 
         // AFTER the pre-read, and matched on a column only it selects. The transaction's snapshot is taken by
@@ -327,7 +422,7 @@ public sealed class SessionBarServiceTests : IAsyncLifetime
         CapturingLogger<SessionBarService> log = new();
         await using TopstepXDbContext store = _fixture.CreateContext(straddle);
 
-        SessionBarService read = Service(store, venue, RthBars(_tuesday), SettledNow, log);
+        SessionBarService read = Service(store, venue, RthBars(_tuesday), Settled(), log);
 
         Func<Task> derive = () => read.GetAsync(_es, _rth, [_tuesday], CancellationToken.None);
 
@@ -405,18 +500,21 @@ public sealed class SessionBarServiceTests : IAsyncLifetime
     /// <param name="database">The store.</param>
     /// <param name="venue">The private venue id this test owns.</param>
     /// <param name="available">The base bars the venue is willing to serve.</param>
-    /// <param name="now">The instant the read runs at.</param>
+    /// <param name="clock">
+    /// The clock the read runs against. Taken rather than made, so a test that needs two reads to happen at
+    /// <b>different</b> instants can advance it — which is the only way an unwanted rewrite of a row is
+    /// visible at all, since <c>RecordedAt</c> is stamped from here.
+    /// </param>
     /// <param name="logger">A logger, when the test needs to read what the read said it did.</param>
     /// <returns>The service.</returns>
     private static SessionBarService Service(
         TopstepXDbContext database,
         string venue,
         IEnumerable<Bar> available,
-        DateTimeOffset now,
+        FakeTimeProvider clock,
         ILogger<SessionBarService>? logger = null)
     {
         SeriesGateway gateway = new(venue, available);
-        FakeTimeProvider clock = new(now);
         BarCacheService bars = new(
             database,
             gateway,

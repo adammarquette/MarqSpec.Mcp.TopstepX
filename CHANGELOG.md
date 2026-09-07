@@ -393,9 +393,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   was never visited again. **Nothing about reproducibility moves** — a store with no orphans has nothing to
   sweep, so a confirming rebuild is still `(0, 0)` — and a **read still does not sweep**, because its probe
   only projects when a *configured* pair is missing
-  ([ADR-0014](documentation/adr/0014-indicators-are-projected-on-read-too.md)), so retired rows stand,
-  unreachable, until a fill or the verb visits the series. Existing stores can already hold both kinds; the
-  next pass over each series removes them, and no migration does (gh#571,
+  ([ADR-0014](documentation/adr/0014-indicators-are-projected-on-read-too.md)), so retired rows stand until a
+  fill or the verb visits the series — unreachable meanwhile, since a read refuses a period the catalogue does
+  not carry. **Orphaned rows are not unreachable**: their pair is configured, so the reads serve them (with a
+  null contract where a payload carries one), and for a series whose bars are *all* gone no read will ever run
+  the pass that removes them. **Run `rebuild-indicators` once after upgrading** — existing stores can already
+  hold both kinds, that verb is what reaches them, and no migration ships (gh#571,
   [ADR-0006](documentation/adr/0006-indicators-as-projections.md), `R-2.8`).
 
 - **`get_bars`, `get_latest_bars` and `get_market_snapshot` now refuse a `resolutionMinutes` of 1,380 or

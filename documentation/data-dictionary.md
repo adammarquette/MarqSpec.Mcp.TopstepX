@@ -139,10 +139,21 @@ arrives as an absence (`R-2.9`, gh#73). A pass that finds the two disagree refus
 otherwise **bounded by the series in hand**: the classification is over rows the pass already read, and costs
 no additional query.
 
-**A read does not sweep.** `get_indicators` projects only when its probe finds a *configured* pair missing
-([ADR-0014](adr/0014-indicators-are-projected-on-read-too.md)), so under a narrowed catalogue every configured
-pair is present, no pass runs, and the retired rows stand until a fill or `rebuild-indicators` visits the
-series. They are unreachable meanwhile — the read refuses a period the catalogue does not carry.
+**A read does not sweep, and the two orphan kinds differ sharply in what that costs.** `get_indicators`
+projects only when its probe finds a *configured* pair missing
+([ADR-0014](adr/0014-indicators-are-projected-on-read-too.md)), and `EnsureProjectedAsync` returns before that
+probe entirely when the series holds **no bars**. So:
+
+- **Retired rows are unreachable** while they stand — the read refuses a period the catalogue does not carry,
+  before the store is touched. They stand until a fill or `rebuild-indicators` visits the series.
+- **Orphaned rows are still served.** The pair *is* configured, so `get_indicators` returns them with no bar
+  join, `get_indicator_at` returns one with a null contract, and `get_market_snapshot` LEFT-joins §1 on
+  purpose — its comment says an inner join would turn a known number with unknown provenance into
+  *cannot-measure*, which is a different and worse answer. And for a series whose bars are **all** gone, no
+  read will ever run the pass that would remove them.
+
+**So an operator upgrading past gh#571 runs `rebuild-indicators` once.** That is the only thing that reaches
+a bar-less series, and until it runs, values over deleted bars keep answering as ordinary numbers.
 
 **The write half reaches the composite key with `ON CONFLICT … DO UPDATE`**, not by reading the values into a
 dictionary and deciding (gh#133) — a pass recomputes the whole series *its own snapshot* can see, so two fills

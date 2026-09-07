@@ -414,7 +414,7 @@ public sealed class SessionBarServiceTests : IAsyncLifetime
                 .GetAsync(_es, _rth, [_tuesday], CancellationToken.None);
 
         // AFTER the pre-read, and matched on a column only it selects. The transaction's snapshot is taken by
-        // the discard at (5a), which is a DELETE and so cannot be matched -- the interceptor watches SELECT
+        // the discard at (6a), which is a DELETE and so cannot be matched -- the interceptor watches SELECT
         // only. The pre-read is the first SELECT naming "WindowCentral", and it sits exactly between the
         // snapshot and the upsert, which is where the other read has to commit for the two to collide.
         InterleavingInterceptor straddle = InterleavingInterceptor.After(
@@ -444,6 +444,136 @@ public sealed class SessionBarServiceTests : IAsyncLifetime
         row.Close.Should().Be(113m);
         row.Volume.Should().Be(130);
         row.BaseBucketCount.Should().Be(13);
+    }
+
+    /// <summary>
+    /// Reports every trade date it was asked about in exactly one of the two lists, and never in neither.
+    /// </summary>
+    /// <returns>The running test.</returns>
+    /// <remarks>
+    /// <para>
+    /// <b>This is the contract gh#500 reads the result against.</b> A caller that finds a date in neither
+    /// list has no way to tell "no session bar, and here is why" from "not a trading day" — the two are the
+    /// same absence of evidence, and one of them is wrong. So the union of the two lists is exactly the dates
+    /// asked for, with nothing in both.
+    /// </para>
+    /// <para>
+    /// Stated as a property over the scenarios the fixtures already cover — a complete session beside an
+    /// incomplete one, a session still running, a date the calendar carries no session on, and the early
+    /// return where nothing has closed at all, which is a <b>different return statement</b> and would
+    /// otherwise be pinned by nothing.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public async Task GetAsync_ReportsEveryClosedTradeDate_InExactlyOneList()
+    {
+        // A complete session and an incomplete one.
+        await AssertEveryAskedDateIsReportedOnceAsync(
+            [.. RthBars(_tuesday), .. RthBars(_wednesday, skip: 5)], Settled(), [_tuesday, _wednesday]);
+
+        // Wednesday 12:00 Central: Tuesday has closed and Wednesday's session is still running.
+        await AssertEveryAskedDateIsReportedOnceAsync(
+            [.. RthBars(_tuesday), .. RthBars(_wednesday)],
+            new FakeTimeProvider(new DateTimeOffset(2026, 8, 19, 17, 0, 0, TimeSpan.Zero)),
+            [_tuesday, _wednesday]);
+
+        // A Saturday, which the calendar carries no session on at all.
+        await AssertEveryAskedDateIsReportedOnceAsync(
+            RthBars(_tuesday), Settled(), [_tuesday, new DateOnly(2026, 8, 22)]);
+
+        // Nothing has closed, so the store is never opened and the early return answers.
+        await AssertEveryAskedDateIsReportedOnceAsync(
+            [], new FakeTimeProvider(new DateTimeOffset(2026, 8, 18, 0, 0, 0, TimeSpan.Zero)), [_tuesday]);
+    }
+
+    /// <summary>
+    /// Serves the bar its own transaction committed, even when another connection removes the row first.
+    /// </summary>
+    /// <returns>The running test.</returns>
+    /// <remarks>
+    /// <para>
+    /// <b>The read-back has to be inside the unit of work</b>, and this is what says so. Run after the commit
+    /// it reads back, it is a fresh statement against whatever the store holds <i>now</i> — so a concurrent
+    /// deletion landing between the commit and the read leaves the trade date in neither list, which is the
+    /// absence gh#500 would read as "not a trading day". Inside the transaction the snapshot is this call's
+    /// own, taken before the other connection's delete, and the answer stays truthful to the base view this
+    /// call derived from.
+    /// </para>
+    /// <para>
+    /// <b>The row is warmed first so this read does not write it.</b> The skip-unchanged pre-filter drops the
+    /// upsert, so the transaction holds no row lock — which is what lets the other connection's
+    /// <c>DELETE</c> commit inline rather than block on this call's own uncommitted write.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public async Task GetAsync_ReadsBackItsOwnCommittedView_NotALaterDeletion()
+    {
+        string venue = ConcurrencyHarness.Venue();
+
+        await Service(_database, venue, RthBars(_tuesday), Settled())
+            .GetAsync(_es, _rth, [_tuesday], CancellationToken.None);
+        (await StoredAsync(venue)).Should().ContainSingle();
+
+        async Task DeleteTheRowFromAnotherConnection()
+        {
+            await using TopstepXDbContext other = _fixture.CreateContext();
+            await other.Database.ExecuteSqlRawAsync(
+                @"DELETE FROM ""SessionBars"" WHERE ""Venue"" = @venue",
+                new NpgsqlParameter("venue", venue));
+        }
+
+        // The read-back is the only SELECT on this path that orders by trade date: the pre-read materialises
+        // a dictionary and orders nothing, and the base series' own reads order by "BucketStart" on another
+        // table. Matched BEFORE it, so the deletion is committed by the time the statement runs.
+        InterleavingInterceptor straddle = InterleavingInterceptor.Before(
+            "ORDER BY s.\"TradeDate\"", venue, DeleteTheRowFromAnotherConnection);
+        await using TopstepXDbContext store = _fixture.CreateContext(straddle);
+
+        SessionBarReadResult result = await Service(store, venue, RthBars(_tuesday), Settled())
+            .GetAsync(_es, _rth, [_tuesday], CancellationToken.None);
+
+        straddle.Fired.Should().BeTrue(
+            "the interleaving is the test -- if the deletion never ran against the read-back, this passed by "
+            + "not exercising anything");
+
+        result.Bars.Should().ContainSingle(
+            "the read-back reads this transaction's own view, which the other connection's later delete "
+            + "cannot reach").Which.TradeDate.Should().Be(_tuesday);
+        result.Absent.Should().BeEmpty();
+
+        (await StoredAsync(venue)).Should().BeEmpty(
+            "the other connection's delete stands -- the point is that it did not turn this call's answer "
+            + "into a trade date reported in neither list");
+    }
+
+    /// <summary>
+    /// Asserts one read reports each date asked for in exactly one of its two lists.
+    /// </summary>
+    /// <param name="available">The base bars the venue is willing to serve.</param>
+    /// <param name="clock">The clock the read runs against.</param>
+    /// <param name="asked">The trade dates to ask for.</param>
+    /// <returns>The running assertion.</returns>
+    /// <remarks>
+    /// A private venue and a private context per scenario, so the four cases in one test cannot see each
+    /// other's rows.
+    /// </remarks>
+    private async Task AssertEveryAskedDateIsReportedOnceAsync(
+        IReadOnlyList<Bar> available,
+        FakeTimeProvider clock,
+        IReadOnlyList<DateOnly> asked)
+    {
+        string venue = ConcurrencyHarness.Venue();
+        await using TopstepXDbContext store = _fixture.CreateContext();
+
+        SessionBarReadResult result = await Service(store, venue, available, clock)
+            .GetAsync(_es, _rth, asked, CancellationToken.None);
+
+        result.Bars.Select(b => b.TradeDate)
+            .Concat(result.Absent.Select(a => a.TradeDate))
+            .Should().BeEquivalentTo(
+                asked,
+                "every date asked for is either a session bar or an absence with a reason, and a date in "
+                + "neither list is the silent gap a caller reads as 'not a trading day'");
     }
 
     /// <summary>The bucket a 30-minute <c>rth</c> bar opens at, as a UTC literal rather than a conversion.</summary>

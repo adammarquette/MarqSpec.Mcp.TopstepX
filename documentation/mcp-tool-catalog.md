@@ -175,8 +175,9 @@ page against either**, so check it against the code, never against another docum
 
   **How often the seam arrives is the product's listed cycle, and it bounds what a long series can
   measure.** The candidate set turns **four** times a year on MES's `HMUZ`, **six** on MGC's `GJMQVZ` and
-  **twelve** on MCL's every-month cycle — fewer on gold in practice, because the market has never given
-  October the volume. Nothing derived crosses a seam, so the first `WarmupBars` buckets of each contract
+  **twelve** on MCL's every-month cycle — fewer on gold in practice, because the market has not given
+  October the volume in the contract-year measured (gh#494). Nothing derived crosses a seam, so the first
+  `WarmupBars` buckets of each contract
   carry **no indicator value**, and an indicator whose warm-up outruns one contract's tenure **never
   produces a value at all**: a 200-period daily needs two hundred daily bars from one contract, where a
   tenure holds about twenty-one on MCL and about sixty-four on MES, and even a 50-period daily fills only in
@@ -271,8 +272,8 @@ way as `fetchedBuckets`'s — it **undercounts** venue traffic and never overcou
 **A cold *historical* window costs `venueRequests` several times over, and that is the price of the answer
 being right.** Every candidate of a historical stretch is paged through the same paced walk, so the count is
 about **K×** what a single-contract fetch of the same window would be — K is the product's candidate depth,
-**two** on the equity indices and **three** on the metals and energy, where a listed month is skipped
-outright or a contract expires before the month it is named for. Those pages are genuine history requests
+**two** on the equity indices and on silver, **three** on gold and the energy products, where a listed month
+is skipped outright or a contract expires before the month it is named for. Those pages are genuine history requests
 and are all counted, unlike the lookups above. The **present** band is untouched by this: a warm
 `get_latest_bars` issues exactly the `venueRequests` it always did, and zero contract lookups, because the
 band starts where the store's own run of the venue-front contract starts (`R-1.14`,

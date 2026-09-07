@@ -118,8 +118,11 @@ a **session bar** rather than a resolution (`R-1.12`,
    old shape did not have. This step then asks the ledger the same question per slice against that slice's
    own set — the `.Take(1)` is gone — and the two must not drift: a range answered here for a candidate the
    fetch would not have asked is a hole nothing ever fills again. A slice whose candidates **all** fell away
-   is fetched from `contracts[0]` anyway, with a warning, and is deliberately excluded from earning a memo
-   at step 9. The existence checks are `FindContractAsync` calls: unpaced, on the vendor's general pool, and
+   is fetched from `contracts[0]` anyway, with a warning naming the range, and is deliberately excluded from
+   earning a memo at step 9. Two coarser conditions end the plan for the **whole read** instead — an
+   instrument the registry does not serve, and a front whose expiry does not read against the cycle — and
+   those are today's behaviour unchanged: every range becomes one present slice on `contracts[0]`,
+   memoisation included, under a warning naming the instrument, the front and the cycle. The existence checks are `FindContractAsync` calls: unpaced, on the vendor's general pool, and
    counted on the platform meter as `venue_calls_total{operation="find_contract"}` beside
    `resolve_contracts` — **never in `venueRequests`**, which is history pages and nothing else.
 5. **Fetch** each remaining range, paged at `1000 × barSize` — the gateway caps a history call at 1000 bars and
@@ -132,11 +135,14 @@ a **session bar** rather than a resolution (`R-1.12`,
    **A present slice is that loop unchanged; a historical slice runs it once per candidate** and then
    chooses (gh#505). Every candidate's pages go through the same paced walk, so a cold historical stretch
    costs **K×** the venue requests a single-contract fetch would — K being the product's candidate depth,
-   two on the equity indices and three on the metals and energy — and every one of those pages *is* counted
+   **two on the equity indices and silver, three on gold and the energy products** — and every one of those
+   pages *is* counted
    in `venueRequests`, because every one of them is a history request. `HistoricalContractPolicy.Decide`
    then groups the answers by trade date and keeps, per date, the bars of the contract with the highest
    summed volume, ties going to the nearer expiry, and a date the store already holds an attributed bar for
-   keeping the contract it is recorded under — that pin is a second `AsNoTracking` query over the trade
+   keeping the contract it is recorded under **when that contract is one of those that answered bars for the
+   date** — a pin naming a contract the fetch has no bars from is ignored and volume decides. That pin is a
+   second `AsNoTracking` query over the trade
    dates the slices touch, asked only for a slice with more than one candidate, because with one the pin
    cannot change the answer. **Selection happens here, outside the transaction, and that ordering is
    load-bearing**: a loser's bars upserted at step 7 would have to be deleted again, and a read that rewrote
@@ -860,7 +866,7 @@ looked is the same fabrication as a `1.0` similarity on the text path. It is a p
 entry, so that null **reaches the caller as an omitted key**, not as `null` — the two forms and their tests are
 in the [tool catalogue](mcp-tool-catalog.md).
 
-## Two answers for the front month
+## Three answers for the front month
 
 Bars resolve the contract they fetch through the gateway: `ResolveContractsAsync` then
 `contracts[0]`. Search is fuzzy and often marks every hit `ActiveContract = true`, so that pick

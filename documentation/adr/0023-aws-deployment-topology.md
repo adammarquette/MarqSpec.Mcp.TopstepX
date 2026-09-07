@@ -653,10 +653,14 @@ The tag pattern is the release path and `main` is the branch `deploy.yml` is dis
 review correction, unchanged here. The principal is the provider the same stack creates
 (`Fn::GetAtt [GitHub, Arn]`), never a provider ARN literal, and the session is one hour. Two template
 tests hold it: the named one that pins those two values, and gh#518's `Every_role_is_assumable_only_…`,
-which walks every role in the stack and refuses a subject not pinned to this repository, a subject ending
-in a wildcard, and any bound claim other than `aud` and `sub` — proven by adding a third role trusting
-`repo:…:*`, which the named tests never see and the text search for `repo:*` does not match, and which
-that test alone reddened.
+which walks every role in the stack and refuses a subject not pinned to this repository, any wildcard other
+than a trailing one on a tag ref, and any bound claim other than `aud` and `sub` — proven by adding a third
+role trusting `repo:…:*`, which the named tests never see and the text search for `repo:*` does not match,
+and which that test alone reddened. That wildcard rule was **suffix-only** as gh#518 shipped it
+(`!EndsWith(":*") && !EndsWith("/*")`), so `repo:…:environment:aws-*` passed it and only the two named tests
+caught that; gh#586's review measured it and it now permits a `*` nowhere but the end of a
+`:ref:refs/tags/` subject. The role-name equivalence in the same test is what refuses a third role at all,
+so relaxing that count is what would leave these per-subject rules reading alone.
 
 **The read-back**, once gh#519 has deployed `topstepx-mcp-github-oidc`:
 
@@ -668,9 +672,12 @@ $ aws iam get-open-id-connect-provider \
 
 The first answers the document above with `Principal.Federated` resolved to the provider's ARN; the second
 answers `ClientIDList: ["sts.amazonaws.com"]`, and whatever `ThumbprintList` IAM filled in for a provider
-created without one (the next entry). **Status: not deployed** — no account exists, and the values above
-are the synthesised template's, which CI proves on every pull request and which is the only artefact this
-entry can quote today. gh#519 replaces this paragraph's "would answer" with the answer.
+created without one (the next entry). **A populated `ThumbprintList` in that answer is not drift**: IAM
+retrieves the issuer's top intermediate CA thumbprint itself when the property is omitted, so the read-back
+differing from the template on exactly that field is decision 2 working, and a `cdk diff` or a reviewer
+reading it as a resource someone edited by hand would be wrong. **Status: not deployed** — no account
+exists, and the values above are the synthesised template's, which CI proves on every pull request and
+which is the only artefact this entry can quote today. gh#519 replaces this paragraph's "would answer" with the answer.
 
 ## Update (2026-09-07) — `GitHubDeploy-production` trust: the `environment:aws-production` claim, read back with `aws iam get-role`
 
@@ -726,7 +733,12 @@ each is held by a template test (gh#518).
    a real account id after gh#519, in a generated file. Built from the pseudo-parameters the same template
    deploys into whichever account the credentials belong to, and the test refuses a twelve-digit run
    anywhere in it. `EnvironmentStack` is not changed here; whether its ARNs move the same way is gh#519's
-   call when the first real account id would otherwise land in `cdk.out`.
+   call when the first real account id would otherwise land in `cdk.out`. **And it is a bigger question than
+   the same swap**: `EnvironmentStack.cs` names neither `Stack.Account` nor `Stack.Region` anywhere, so its
+   twelve-digit literals — in the ALB access-log bucket policy and the EFS and log-group grants — are
+   **CDK's own**, written by the grant helpers rather than by this repository. Moving them means overriding
+   generated policy documents or declining the helpers, not editing two properties, which is why it is a
+   card of its own rather than a rider on this one.
 
 ## Follow-ups
 

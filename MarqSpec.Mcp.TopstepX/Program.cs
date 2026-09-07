@@ -766,6 +766,10 @@ public static class Program
         // contract that has since retired (gh#504).
         services.AddScoped<BarCacheService>();
 
+        // The reselect-bars verb (gh#506). Scoped because BarCacheService is, and it re-decides a window
+        // through that service's seam -- the only thing on this path that reaches the venue.
+        services.AddScoped<BarReselector>();
+
         // After BarCacheService, which it reads the base series through -- and which is the only thing on
         // this path that can reach the venue (ADR-0022 §7).
         services.AddScoped<SessionBarService>();

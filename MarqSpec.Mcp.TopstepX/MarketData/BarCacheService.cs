@@ -680,6 +680,19 @@ public sealed class BarCacheService
     /// <param name="missing">The ranges the read still owes, ascending.</param>
     /// <param name="now">The instant the read is happening at.</param>
     /// <param name="cancellationToken">The caller's cancellation token.</param>
+    /// <param name="forceHistoricalThrough">
+    /// A tenure start to plan against instead of the store's measured one, or <see langword="null"/> to
+    /// measure it. <see cref="ReselectWindowAsync"/> passes the window's end, which is what makes the whole
+    /// window historical: <c>HistoricalRangePlanner</c> cuts on <c>range.End &gt; tenureStart</c>, strictly,
+    /// so a tenure start at the end emits no present slice at all.
+    /// </param>
+    /// <param name="coalesce">
+    /// Whether adjacent front-only historical slices are merged into one present slice. The read path leaves
+    /// this on, because merging is what keeps its paging identical (see
+    /// <see cref="HistoricalRangePlanner.Coalesce"/>). A reselect turns it off: the merged slice is marked
+    /// <c>Present</c>, and a present slice takes the one-candidate page walk and never reaches <c>Decide</c>
+    /// — which is the whole of what a reselect is for.
+    /// </param>
     /// <returns>Each range with the slices it is to be fetched as.</returns>
     /// <remarks>
     /// <para>
@@ -702,7 +715,9 @@ public sealed class BarCacheService
         InstrumentId instrument,
         IReadOnlyList<BarRange> missing,
         DateTimeOffset now,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        DateTimeOffset? forceHistoricalThrough = null,
+        bool coalesce = true)
     {
         IReadOnlyList<VenueContract> contracts =
             await ResolveOnceAsync(instrument, cancellationToken).ConfigureAwait(false);
@@ -744,8 +759,8 @@ public sealed class BarCacheService
             return FromTheFront(missing, front);
         }
 
-        DateTimeOffset tenureStart =
-            await TenureOnceAsync(venue, instrument, front, now, cancellationToken).ConfigureAwait(false);
+        DateTimeOffset tenureStart = forceHistoricalThrough
+            ?? await TenureOnceAsync(venue, instrument, front, now, cancellationToken).ConfigureAwait(false);
 
         int depth = _registry.CandidateDepthFor(instrument);
 
@@ -756,16 +771,20 @@ public sealed class BarCacheService
 
         foreach (BarRange range in missing)
         {
-            IReadOnlyList<RangeSlice> slices = HistoricalRangePlanner.Coalesce(
-                HistoricalRangePlanner.PlanSlices(
-                    [range],
-                    tenureStart,
-                    front,
-                    _calendar,
-                    cycle,
-                    depth,
-                    expiry => listed.TryGetValue(expiry, out string? contractId) ? contractId : null),
-                front);
+            IReadOnlyList<RangeSlice> cut = HistoricalRangePlanner.PlanSlices(
+                [range],
+                tenureStart,
+                front,
+                _calendar,
+                cycle,
+                depth,
+                expiry => listed.TryGetValue(expiry, out string? contractId) ? contractId : null);
+
+            // Default coalesce keeps paging identical to the warm path; reselect passes false so each
+            // trade-date decision stays a separate slice (gh#506).
+            IReadOnlyList<RangeSlice> slices = coalesce
+                ? HistoricalRangePlanner.Coalesce(cut, front)
+                : cut;
 
             foreach (RangeSlice slice in slices)
             {
@@ -1250,6 +1269,159 @@ public sealed class BarCacheService
         return (slices, requests);
     }
 
+    /// <summary>
+    /// Re-decides who a window's bars belong to, as though the store held none of them — the seam
+    /// <c>reselect-bars</c> is built on (gh#506).
+    /// </summary>
+    /// <param name="instrument">The instrument.</param>
+    /// <param name="resolutionMinutes">The bar size in minutes.</param>
+    /// <param name="window">The window the operator named.</param>
+    /// <param name="now">The instant the run is happening at.</param>
+    /// <param name="cancellationToken">The caller's cancellation token.</param>
+    /// <returns>
+    /// The policy's selections ascending by trade date, how many history requests they cost, and how many
+    /// slices had no listed candidate and were therefore skipped.
+    /// </returns>
+    /// <exception cref="InvalidOperationException">
+    /// The plan would degrade for the whole window — the venue lists no contracts, the instrument is not
+    /// served, or the front's expiry does not read against the product's cycle.
+    /// </exception>
+    /// <remarks>
+    /// <para>
+    /// <b>It deliberately skips three things <see cref="GetBarsAsync"/> does</b>, and each omission is the
+    /// point rather than an economy. <c>BarGapDetector.FindMissing</c> would exclude every bucket the store
+    /// already holds — which is exactly the set being re-decided. <see cref="ExcludeCoveredAsync"/> would let
+    /// a live "this range is empty" memo suppress the very fetch this is trying to redo. And
+    /// <see cref="StoredContractByTradeDateAsync"/> is the pin that keeps a read from rewriting an attributed
+    /// bucket (ADR-0020 §5); discarding it <i>is</i> what a reselect means, so <c>Decide</c> is handed an
+    /// empty dictionary and every trade date goes to the volume.
+    /// </para>
+    /// <para>
+    /// <b>The whole window is planned as history</b> by passing the window's end as the tenure start, so the
+    /// store's trailing run of the venue front decides nothing here. Coalescing is off with it: a merged
+    /// front-only slice is marked present, and a present slice takes the single-candidate page walk and never
+    /// reaches the policy at all.
+    /// </para>
+    /// <para>
+    /// <b>A degradation refuses instead of falling back.</b> A read serves the venue's own pick and logs a
+    /// warning, because answering is better than not answering. This writes, and a plan built on a guess
+    /// would stamp that guess onto rows the store already held — so the three conditions
+    /// <see cref="PlanAsync"/> degrades on are checked here first and named in the refusal. The contract
+    /// universe behind the check is the memoised one, so asking twice costs one venue call.
+    /// </para>
+    /// <para>
+    /// <b>A slice with no listed candidate is skipped, never fetched from the front.</b> Falling back to the
+    /// venue's own pick is how the read path keeps serving; here it would re-attribute a trade date to a
+    /// contract chosen by degradation, which is worse than leaving the rows as they are. The count comes
+    /// back so the run can say how much of the window it declined to decide.
+    /// </para>
+    /// <para>
+    /// <b>Nothing here touches the store</b>, exactly as <see cref="FetchAsync"/> does not: the paced page
+    /// walk happens before the caller opens its transaction, so a retry costs no vendor requests.
+    /// </para>
+    /// </remarks>
+    internal async Task<(IReadOnlyList<TradeDateSelection> Selections, int Requests, int SlicesSkipped)>
+        ReselectWindowAsync(
+            InstrumentId instrument,
+            int resolutionMinutes,
+            BarRange window,
+            DateTimeOffset now,
+            CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(window);
+
+        if (resolutionMinutes <= 0)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(resolutionMinutes), resolutionMinutes, "A resolution must be positive.");
+        }
+
+        string venue = _gateway.VenueId;
+        TimeSpan barSize = TimeSpan.FromMinutes(resolutionMinutes);
+
+        IReadOnlyList<VenueContract> contracts =
+            await ResolveOnceAsync(instrument, cancellationToken).ConfigureAwait(false);
+
+        if (contracts.Count == 0)
+        {
+            throw new InvalidOperationException(
+                "The venue returned no contracts for '" + instrument.Symbol
+                + "', so there is no front to plan its history against and no candidate that could carry a "
+                + "trade date. Nothing is rewritten. If this instrument is definitely listed, check "
+                + "ProjectX__DataTier: the wrong market-data tier returns an empty universe rather than an "
+                + "error.");
+        }
+
+        string front = contracts[0].ContractId;
+
+        if (!_registry.IsServed(instrument.Symbol))
+        {
+            throw new InvalidOperationException(
+                "'" + instrument.Symbol + "' is not one this server serves, so there is no contract month "
+                + "cycle to re-decide its history against and the only plan available is the venue's own "
+                + "pick, " + front + ". A read degrades to that and says so; a rewrite must not, because it "
+                + "would stamp the fallback onto rows the store already holds. Add the symbol to "
+                + "MarketData__Instruments and run this again.");
+        }
+
+        ContractMonthCycle cycle = _registry.CycleFor(instrument);
+
+        if (!ContractExpiry.TryParseContractId(front, out ContractExpiry frontExpiry)
+            || !cycle.Contains(frontExpiry.MonthCode))
+        {
+            throw new InvalidOperationException(
+                "The venue front for '" + instrument.Symbol + "' is '" + front + "', whose expiry does not "
+                + "read against the " + cycle.Code + " cycle. Every candidate this window would be "
+                + "re-decided against is constructed from that cycle, so the plan would be a guess. Nothing "
+                + "is rewritten.");
+        }
+
+        IReadOnlyList<PlannedRange> planned = await PlanAsync(
+            venue,
+            instrument,
+            [window],
+            now,
+            cancellationToken,
+            forceHistoricalThrough: window.End,
+            coalesce: false).ConfigureAwait(false);
+
+        List<TradeDateSelection> selections = [];
+        int requests = 0;
+        int slicesSkipped = 0;
+
+        foreach (RangeSlice piece in planned.SelectMany(static range => range.Slices))
+        {
+            if (piece.FellBackToFront)
+            {
+                // No candidate the cycle names was listed, so the only contract left to ask is the venue's
+                // own pick -- by degradation rather than by the cycle. PlanAsync has already warned about
+                // it; declining to re-attribute the slice is this path's answer.
+                slicesSkipped++;
+                continue;
+            }
+
+            Dictionary<string, IReadOnlyList<Bar>> byContract = new(StringComparer.Ordinal);
+
+            foreach (string candidate in piece.Candidates)
+            {
+                List<FetchedSlice> pages = [];
+
+                requests += await PageAsync(
+                    instrument, candidate, piece.Range, barSize, now, pages, cancellationToken)
+                    .ConfigureAwait(false);
+
+                byContract[candidate] = [.. pages.SelectMany(static page => page.Closed)];
+            }
+
+            // THE EMPTY PIN IS THE WHOLE POINT. `Decide`'s contract says the caller passes none of the
+            // stored trade dates when it is meant to rewrite -- and names this verb where it says so.
+            selections.AddRange(
+                HistoricalContractPolicy.Decide(byContract, _calendar, new Dictionary<DateOnly, string>()));
+        }
+
+        return ([.. selections.OrderBy(static selection => selection.TradeDate)], requests, slicesSkipped);
+    }
+
     /// <summary>Walks one range in venue-sized pages against one contract, appending what each answered.</summary>
     /// <param name="instrument">The instrument, named only in the refusal below.</param>
     /// <param name="contractId">The contract to ask, and therefore to stamp the answer with.</param>
@@ -1598,8 +1770,15 @@ public sealed class BarCacheService
     /// One implementation, because the choice between an insert and an update is a fact about the
     /// <b>store</b>, not about this process (gh#103), and there is no longer a second provider to serve
     /// (gh#387).
+    /// <para>
+    /// <b><c>internal</c> rather than <c>private</c> for the same reason</b> (gh#506). <c>BarReselector</c>
+    /// writes the winners of a re-decided window, and that write is this one: the statement overwrites OHLCV
+    /// and <c>ContractId</c> together, and its skip-unchanged <c>WHERE</c> is what makes a winner the store
+    /// already agrees with cost nothing. A second bar-writing statement beside it would be a second
+    /// definition of both, free to disagree on the day either changes.
+    /// </para>
     /// </remarks>
-    private async Task<int> UpsertAsync(
+    internal async Task<int> UpsertAsync(
         string venue,
         InstrumentId instrument,
         int resolutionMinutes,

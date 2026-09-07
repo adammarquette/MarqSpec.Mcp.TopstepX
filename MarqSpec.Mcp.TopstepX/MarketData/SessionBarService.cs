@@ -104,6 +104,13 @@ public sealed class SessionBarService
     /// <param name="cancellationToken">The caller's cancellation token.</param>
     /// <returns>The bars, the absences, and what the base read cost.</returns>
     /// <exception cref="ArgumentNullException">An argument is <see langword="null"/>.</exception>
+    /// <exception cref="ArgumentException">
+    /// <paramref name="tradeDates"/> names a date more than once; or — from
+    /// <see cref="SessionBarAggregator.Aggregate"/> — the base bars are not strictly ascending, or the
+    /// calendar's bucket grid does not cover <paramref name="definition"/>'s window end to end. The last is a
+    /// definition <see cref="SessionWindows.Validate"/> refuses, so it reaches here only from a definition
+    /// that never went through startup validation.
+    /// </exception>
     /// <exception cref="VenueException">The base read could not resolve or reach the venue.</exception>
     /// <exception cref="StoreContentionException">Every attempt at the write lost to a concurrent one.</exception>
     public async Task<SessionBarReadResult> GetAsync(
@@ -114,6 +121,27 @@ public sealed class SessionBarService
     {
         ArgumentNullException.ThrowIfNull(definition);
         ArgumentNullException.ThrowIfNull(tradeDates);
+
+        // ONE TRADE DATE IS ONE SESSION BAR, AND IT IS REFUSED HERE RATHER THAN IN THE STORE. A repeated date
+        // produces a repeated array entry in the upsert, and Postgres rejects an ON CONFLICT DO UPDATE that
+        // would touch one row twice with a 21000 -- a cardinality violation naming a constraint, from inside a
+        // transaction, which says nothing about the caller that asked for the same day twice.
+        //
+        // REFUSED rather than quietly de-duplicated. A caller asking twice has a bug, and Distinct() would
+        // answer it as though it had not.
+        HashSet<DateOnly> asked = [];
+        foreach (DateOnly repeated in tradeDates)
+        {
+            if (!asked.Add(repeated))
+            {
+                throw new ArgumentException(
+                    "The trade date "
+                    + repeated.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture)
+                    + " was asked for more than once. One trade date is one session bar, and one write cannot "
+                    + "affect one row twice; ask for each date once.",
+                    nameof(tradeDates));
+            }
+        }
 
         DateTimeOffset now = _clock.GetUtcNow();
         string venue = _gateway.VenueId;
@@ -164,9 +192,15 @@ public sealed class SessionBarService
         // happened to start on the boundary, and its volume is a fraction of the session's. Aggregate cannot
         // check this and says so; the number lives on the definition, and it is read with it here.
         //
-        // One call rather than one per date, because the covering window is contiguous and BarGapDetector
-        // already coalesces the holes in it -- the overnight between two sessions contains no expected bucket,
-        // so it costs nothing to span.
+        // ONE CALL RATHER THAN ONE PER DATE, and it is not free: the covering window spans the overnight
+        // between the sessions, and the calendar expects buckets right around the clock apart from the one
+        // maintenance hour -- so for a daytime session like `rth` the seventeen-odd overnight hours ARE
+        // fetched and stored, and FetchedBuckets reports the larger number. That is the right trade anyway.
+        // The base series is shared, so those buckets are the same rows every other reader of this instrument
+        // wants; BarGapDetector coalesces a run of missing buckets into one paged range whether or not a
+        // session boundary sits inside it; and the ranges the venue answers empty are memoised by the base
+        // coverage ledger, so the overnight is asked for once rather than on every read. One call per date
+        // would buy a narrower first fetch and pay for it with a round trip per date, forever.
         //
         // OUTSIDE the transaction below, for the reason BarCacheService states at its own call site: the page
         // walk is paced, and holding a RepeatableRead snapshot across a minute of deliberate sleeping pins

@@ -1099,6 +1099,7 @@ found.
 | `production` environment carries a `required_reviewers` rule | `release.yml`'s `gate` job — the only thing between a merge and a public GHCR tag | [`check-release-gate.sh`](../../scripts/check-release-gate.sh), in `ci.yml` and in `release.yml` | gh#108 |
 | `required_status_checks` on `protect-develop` / `-staging` / `-main` | every merge gate in the table above; `no-order-path` carries ADR-0002 | `bootstrap.sh` step 3, which reads the contexts back per rung | gh#26, gh#72, gh#114; and gh#125, the one that went the other way — set correctly and recorded in `bootstrap.sh`, but not in the table above |
 | ruleset `enforcement: active` | all of the above | `bootstrap.sh` step 3 | `MarqSpec.Client.ProjectX`, disabled from creation |
+| the two Cognito client secrets' **values** in `topstepx-mcp/<env>/{claude-connector,deploy-check}` | the connector login (gh#524) and `check-deployment.sh`'s `client_credentials` token (gh#521); the stack creates the shells empty and no custom resource fills them ([ADR-0023](../adr/0023-aws-deployment-topology.md), 2026-09-07 Cognito entry) | nothing yet — gh#521's check is the first thing that fails on an empty shell, and it fails as a `401` from the issuer, not as "the secret is empty" | never; not yet deployed (gh#519 writes them by hand) |
 
 ### The release approval gate (gh#108)
 
@@ -1233,8 +1234,9 @@ the one that rewrites it. What exists today:
 - **What CI checks, and what a green run licenses.** After the unit tests, `build & unit tests` runs the
   template tests (107 at gh#516 — the security groups, the listeners, the health probe, the digest
   parameter, `RETAIN` on everything stateful, every `.env.example` key outside the compose-only set present
-  in the task, every credential a `valueFrom`, the two environments differing only where their props say)
-  and then `cdk synth --no-lookups` **once per outbound shape** through the CLI pinned in
+  in the task, every credential a `valueFrom`, the two environments differing only where their props say;
+  139 at gh#517, adding the Cognito pool, its two clients and the issuer and client ids reaching the task as
+  references) and then `cdk synth --no-lookups` **once per outbound shape** through the CLI pinned in
   `infra/package.json`. **No credential exists on the runner, by construction**: `--no-lookups` makes a
   context miss fail the synth rather than call AWS, and `infra/cdk.context.json` carries the hosted-zone
   and availability-zone answers under a placeholder account. A green run says the app runs, every stack
@@ -1252,11 +1254,23 @@ the one that rewrites it. What exists today:
   no default, the app refuses to synthesise without `-c outbound=…`, CI passes every value, and the choice
   is the maintainer's dated entry on ADR-0023 — when it lands, the loop in `ci.yml` collapses to one plain
   synth and the value becomes a literal in `Program.cs`.
-- **Secrets are shells.** The three `topstepx-mcp/<env>/{postgres,projectx,cohere}` secrets are created
-  with every JSON key the task definitions read and every value empty; gh#519 writes the values by hand,
-  once. **Never edit a shell's literal afterwards**: CloudFormation creates a new secret version whenever
-  the `SecretString` property changes, and that version is the live one — an edit would put an empty
-  document over a real credential. A new key is a new secret.
+- **Secrets are shells.** The five `topstepx-mcp/<env>/{postgres,projectx,cohere,claude-connector,deploy-check}`
+  secrets are created with every JSON key the task definitions and the deployment check read and every
+  value empty; gh#519 writes the values by hand, once. **Never edit a shell's literal afterwards**:
+  CloudFormation creates a new secret version whenever the `SecretString` property changes, and that
+  version is the live one — an edit would put an empty document over a real credential. A new key is a new
+  secret.
+- **The authorization server is in the stack** (gh#517, [ADR-0023](../adr/0023-aws-deployment-topology.md)
+  §9 and its 2026-09-07 Cognito entry): one user pool per environment, the `topstepx-mcp` resource server
+  with its `read` scope, the confidential `claude-connector` client on the code grant with the Claude
+  callback alone, the `deploy-check` client on `client_credentials` alone, and the Cognito prefix domain.
+  **`Mcp__OAuth__Issuer` and `Mcp__OAuth__ClientIds` reach the task as `Fn::GetAtt` and `Ref`s of those
+  constructs, and the template test refuses a string** — a literal issuer would deploy and validate against
+  whatever it named. The two client secrets are shells like the others, read once with
+  `describe-user-pool-client` and written by hand; no custom resource touches them, and the stack is
+  asserted to contain no Lambda. What is **not** measured yet — the discovery document's `S256`
+  advertisement, its tolerance of the `resource` parameter, the token-endpoint auth methods — waits for
+  gh#519's first credentialed deploy, because no pool exists to measure.
 - **The image is a digest in a parameter.** `ImageDigest` and `Version` have no default and are passed on
   `cdk deploy --parameters`; the stack writes the same two values to `/topstepx-mcp/<env>/image-digest`
   and `/version` in SSM as the written history, so the history cannot say one thing while the task runs

@@ -526,6 +526,72 @@ and the deploy roles carry `ssm:GetParameter` only (template-tested: no `ssm:Put
 decision 8 says; the SSM parameters are what a person reads. The maintainer may reverse this — pipeline
 writes, stack does not own — by deleting the two resources and restoring the permission, as a dated entry.
 
+## Update (2026-09-07) — Cognito is built in the stack; the discovery measurements wait for the first deploy
+
+gh#517 built decision 9 in `EnvironmentStack`, and this entry records the five things a reader of decision 9
+would otherwise have to reconstruct from the template.
+
+**What exists, per environment.** A user pool `topstepx-mcp-<env>` — self-sign-up off, email sign-in,
+MFA optional with a TOTP app as the only second factor (no SMS, so no SNS role appears), account recovery
+by email, the `ESSENTIALS` feature plan named because it is the one refresh-token rotation needs and is
+Cognito's own default for a new pool, `RETAIN` on both halves. The resource server `topstepx-mcp` with the
+one scope `read`, and the product's `Mcp__OAuth__RequiredScope` is now template-tested **against the
+server's identifier and scope**, not beside them. The `claude-connector` client: confidential, the
+authorization-code grant alone (PKCE is supported on that grant and the connector sends it; whether the
+discovery document *advertises* it is the measurement below), scopes `openid` and the resource server's
+`read` built from the server's own reference,
+callback `https://claude.ai/api/mcp/auth_callback` and no other, one-hour access and id tokens, thirty-day
+refresh tokens with **rotation on and a 30 s retry grace** — the middle of Cognito's 0–60 s range, so one
+client-side retry of a refresh succeeds and a replay a minute later is a revocation. The `deploy-check`
+client: confidential, `client_credentials` alone on `topstepx-mcp/read`, no callback. **Both clients carry
+`ExplicitAuthFlows: [ALLOW_REFRESH_TOKEN_AUTH]` and nothing else** — no SRP, no username/password, no custom
+challenge — set on the L1 because the L2 omits the property when every flow is off, and an omitted property
+is Cognito's default of SRP plus custom plus refresh. The hosted UI is the **Cognito prefix domain**
+`topstepx-mcp-<env>.auth.<region>.amazoncognito.com`, as decision 9 defaults; the custom domain was not
+taken, because the region is still gh#519's. Four outputs — `OAuthIssuer`, `ClaudeConnectorClientId`,
+`DeployCheckClientId`, `HostedUiBaseUrl` — and none names a secret.
+
+**The issuer and the client ids reach the task as references, and a test says so.** `Mcp__OAuth__Issuer` is
+`Fn::GetAtt [pool, ProviderURL]` and `Mcp__OAuth__ClientIds` is `Fn::Join [",", [Ref connector, Ref
+deploy-check]]`; the template test asserts those exact intrinsics and refuses a string. gh#516's
+`EnvExample.IsDeferred` dropped both names in the same pull request, so the catalogue-parity test demands
+them from here on (gh#517's 2026-09-07 addendum). A literal issuer would have deployed and validated
+against whatever it named; the test is what makes that a failed pull request rather than a quiet one.
+
+**Two more secret shells, and their names differ from gh#517's body on purpose.** The client secrets are
+`topstepx-mcp/<env>/claude-connector` and `topstepx-mcp/<env>/deploy-check`, each `{"clientId":"",
+"clientSecret":""}` and empty — **not** the issue's `cognito-claude-client` and `cognito-deploy-check`.
+`GitHubOidcStack` (gh#516) had already scoped each deploy role to
+`secret:topstepx-mcp/<env>/deploy-check-*` before the shell existed, and a template test now reads that
+pattern off the OIDC stack and the shell's name off the environment stack and requires them to agree; the
+connector's shell takes the client's own name for symmetry. **No custom resource reads a client secret**:
+CloudFormation exposes no attribute for one, the CDK's `userPoolClientSecret` is a Lambda-backed custom
+resource with a role wider than anything reviewed here, and the stack is asserted to contain no Lambda and
+no `Custom::` type. So the values are gh#519's hands, once per environment and never in a file:
+
+```console
+$ aws cognito-idp describe-user-pool-client --user-pool-id <OAuthIssuer's last segment> \
+    --client-id <DeployCheckClientId output> --query 'UserPoolClient.ClientSecret' --output text
+$ aws secretsmanager put-secret-value --secret-id topstepx-mcp/<env>/deploy-check \
+    --secret-string '{"clientId":"<DeployCheckClientId>","clientSecret":"<the value above>"}'
+```
+
+and the same pair for `claude-connector`. The `clientId` is duplicated into the shell — it is a stack output
+and not a secret (decision 6) — so gh#521's check reads one document at run time. The runbook gh#519 starts
+records the ARNs and the client ids, and carries the connector registration: what is pasted into Cowork's
+custom-connector dialog (gh#524) is the `claude-connector` client id and secret, the MCP URL
+`https://topstepx-mcp.<root>/mcp`, and nothing else — the authorization and token endpoints are discovered
+from the issuer the server's RFC 9728 document names.
+
+**What this entry does not carry, and where it lands.** Decision 9 asked gh#517 for three measurements on
+the discovery document before anything builds on it — `code_challenge_methods_supported` advertising
+`S256`, the token endpoint tolerating the RFC 8707 `resource` parameter, and
+`token_endpoint_auth_methods_supported` — and the deploy-check token being accepted by `/mcp`. **None was
+made.** No pool exists: `cdk.json` still carries the placeholder account, and creating one outside the stack
+would be the console-only configuration the platform contract refuses. They are gh#519's first credentialed
+deploy's to take, quoted on gh#517 and recorded here as a dated entry; until that entry exists, the pre-
+registered-client assumption ADR-0021 states is still an assumption, and this entry does not narrow it.
+
 ## Follow-ups
 
 - gh#516, gh#517, gh#518 build decisions 7, 9 and 8; gh#529 gates decision 4's rule. All four cite this

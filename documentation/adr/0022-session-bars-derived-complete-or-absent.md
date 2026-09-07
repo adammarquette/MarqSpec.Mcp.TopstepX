@@ -287,9 +287,20 @@ count **base** buckets, because the base buckets are what a session read enumera
 the remedies, and `documentation/prd.md` states them as `R-1.13` and `R-5.11`.
 
 **The cost story of the previous update is what a caller now sees.** `fetchedBuckets` and `venueRequests` on
-the wire are the *base* series' numbers, `venueRequests == 0` is the exact test for an answer served entirely
-from the store, and a repeat read is not immediately free: it settles to a store-only answer once the base
-ledger has recorded the venue's empty ranges, which is the read *after* the one that filled the bars.
+the wire are the *base* series' numbers, and `venueRequests == 0` is the exact test that **no bars were
+fetched** — not that the vendor went untouched. Since gh#504 a read whose gaps the empty-range memo covers
+still resolves the instrument's contract candidates, and that `Contract/search` is unpaced and not counted in
+`venueRequests`, so a settled session read is **venue-dependent**: with the venue down it raises rather than
+answering from the store. A session read's covering window spans the overnight, so the warm path is always
+that case.
+
+**A repeat read is not immediately free, and it takes three reads rather than two.** The first fetches: the
+cold covering window is one contiguous missing range, the venue answers it *with bars*, and a non-empty
+answer memoises nothing. The second discovers the ranges the venue has no bars for — the overnight legs, and
+any bucket the venue simply does not have — asks for each, and records them as covered. The third is the one
+served from the store. So the read settles to a store-only answer once the base ledger has recorded the
+venue's empty ranges, which is one read later than a caller expects
+(`SessionBarToolServedReadTests.GetLatestSessionBars_AnchorsOnTheLastClosedSession` drives all three).
 
 ## Follow-ups
 

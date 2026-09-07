@@ -123,6 +123,7 @@ public sealed class CognitoTests(EnvironmentTemplates templates) : IClassFixture
         client["AccessTokenValidity"]!.GetValue<int>().Should().Be(60);
         client["TokenValidityUnits"]!["AccessToken"]!.GetValue<string>().Should().Be("minutes");
         client["RefreshTokenRotation"]!["Feature"]!.GetValue<string>().Should().Be("ENABLED", "a refresh token used twice is a stolen one");
+        client["RefreshTokenRotation"]!["RetryGracePeriodSeconds"]!.GetValue<int>().Should().Be(30, "one client-side retry succeeds; a replay a minute later does not");
         client["EnableTokenRevocation"]!.GetValue<bool>().Should().BeTrue();
         client["PreventUserExistenceErrors"]!.GetValue<string>().Should().Be("ENABLED", "a wrong username and a wrong password answer alike");
         // The hosted UI's code grant and its refresh are the only ways this client obtains a token: no
@@ -266,12 +267,14 @@ public sealed class CognitoTests(EnvironmentTemplates templates) : IClassFixture
         var (poolId, _) = t.Single("AWS::Cognito::UserPool");
         var (connectorId, _) = Client(t, "claude-connector");
         var (deployCheckId, _) = Client(t, "deploy-check");
+        var (domainId, _) = t.Single("AWS::Cognito::UserPoolDomain");
         var outputs = t.Json["Outputs"]!.AsObject().ToDictionary(o => o.Key, o => o.Value!["Value"]);
 
         Synthesised.LogicalIdOf(outputs["OAuthIssuer"]).Should().Be(poolId);
         Synthesised.LogicalIdOf(outputs["ClaudeConnectorClientId"]).Should().Be(connectorId);
         Synthesised.LogicalIdOf(outputs["DeployCheckClientId"]).Should().Be(deployCheckId);
-        Synthesised.Text(outputs["HostedUiBaseUrl"]).Should().Contain($"topstepx-mcp-{env}").And.Contain("amazoncognito.com");
+        // The domain resource's Ref is the prefix, so the base URL is a join over the reference, not a literal.
+        Synthesised.Text(outputs["HostedUiBaseUrl"]).Should().Contain($"{{\"Ref\":\"{domainId}\"}}").And.Contain(".amazoncognito.com");
     }
 
     [Theory]

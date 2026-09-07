@@ -1297,7 +1297,9 @@ $ MCP_CHECK_CLIENT_ID=… MCP_CHECK_CLIENT_SECRET=… MCP_CHECK_TOKEN_URL=… \
 The two arguments are the **origin** and the release `/health` must report. The Cognito deploy-check client
 (ADR-0023 §9) arrives in the **environment and never in an argument**, because an argument is in every `ps`
 on the box, and reaches curl through a `--config` file for the same reason. The token endpoint's response
-body is never printed on any path. The self-test asserts on every case, red ones included, that **neither**
+body is never printed on any path. **Its secret is one of the shells gh#517 created empty** and gh#519
+writes by hand — the settings table above carries the row, and notes that this check is the first thing that
+fails on an unfilled one, as a `401` from the issuer rather than as "the secret is empty". The self-test asserts on every case, red ones included, that **neither**
 the client secret nor the bearer appears in either stream.
 
 **"A heredoc, so `bash -x` does not trace it" is the shape of a claim that is true and does not hold, and

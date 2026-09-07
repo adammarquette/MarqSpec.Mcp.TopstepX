@@ -16,17 +16,17 @@ public sealed partial class EnvironmentReuseTests(EnvironmentTemplates templates
     /// named differently differ in every id whatever their contents. The stack id is the deployment's name,
     /// not a prop, so the comparison holds it constant and lets only the props vary.
     /// </summary>
-    private static readonly Synthesised ProductionShape =
+    private static readonly Synthesised _productionShape =
         Synthesised.Environment("production", "marqspec.com", ZoneMode.Lookup, EnvironmentTemplates.FixtureShape, true, true, "topstepx-mcp");
 
-    private static readonly Synthesised StagingShape =
+    private static readonly Synthesised _stagingShape =
         Synthesised.Environment("staging", "staging.marqspec.com", ZoneMode.CreateAndDelegate, EnvironmentTemplates.FixtureShape, false, false, "topstepx-mcp");
 
     [Fact]
     public void The_two_stacks_differ_only_where_the_props_say_they_may()
     {
-        var production = Flatten(Normalise(ProductionShape.Json, "production", "marqspec.com"));
-        var staging = Flatten(Normalise(StagingShape.Json, "staging", "staging.marqspec.com"));
+        var production = Flatten(Normalise(_productionShape.Json, "production", "marqspec.com"));
+        var staging = Flatten(Normalise(_stagingShape.Json, "staging", "staging.marqspec.com"));
 
         var differing = production.Keys.Union(staging.Keys)
             .Where(path => !production.TryGetValue(path, out var p) || !staging.TryGetValue(path, out var s) || p != s)
@@ -40,8 +40,8 @@ public sealed partial class EnvironmentReuseTests(EnvironmentTemplates templates
     [Fact]
     public void The_two_stacks_have_the_same_resources_apart_from_the_zone()
     {
-        var production = ProductionShape.Json["Resources"]!.AsObject().ToDictionary(r => r.Key, r => r.Value!["Type"]!.GetValue<string>());
-        var staging = StagingShape.Json["Resources"]!.AsObject().ToDictionary(r => r.Key, r => r.Value!["Type"]!.GetValue<string>());
+        var production = _productionShape.Json["Resources"]!.AsObject().ToDictionary(r => r.Key, r => r.Value!["Type"]!.GetValue<string>());
+        var staging = _stagingShape.Json["Resources"]!.AsObject().ToDictionary(r => r.Key, r => r.Value!["Type"]!.GetValue<string>());
 
         var onlyInStaging = staging.Keys.Except(production.Keys).Select(k => staging[k]).ToList();
         var onlyInProduction = production.Keys.Except(staging.Keys).ToList();
@@ -127,9 +127,9 @@ public sealed partial class EnvironmentReuseTests(EnvironmentTemplates templates
     /// </summary>
     private static bool IsExplainedByTheZoneMode(string path)
     {
-        var stagingZone = StagingShape.Single("AWS::Route53::HostedZone").LogicalId;
-        var delegation = StagingShape.Resources("AWS::Route53::RecordSet")
-            .Single(r => StagingShape.Properties(r.Value)["Type"]!.GetValue<string>() == "NS").Key;
+        var stagingZone = _stagingShape.Single("AWS::Route53::HostedZone").LogicalId;
+        var delegation = _stagingShape.Resources("AWS::Route53::RecordSet")
+            .Single(r => _stagingShape.Properties(r.Value)["Type"]!.GetValue<string>() == "NS").Key;
 
         return path.Contains($"/Resources/{stagingZone}", StringComparison.Ordinal)
             || path.Contains($"/Resources/{delegation}", StringComparison.Ordinal)

@@ -170,12 +170,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   on or off. `observability/grafana/dashboards/mcp-server.json` is provisioned by bind mount with six panels
   — tool-call latency and rate/error by `mcp.method.name`, venue `HttpClient` latency, process memory and GC
   — built on the SDK's `Experimental.ModelContextProtocol` names ADR-0019 already flags as unstable, plus a
-  seventh, Npgsql query duration, that reads `traces_spanmetrics_latency` — a metric Tempo itself derives from
-  the real Npgsql spans, since `Npgsql.OpenTelemetry` ships no meter of its own — a second, independent
-  instability. Loki's `trace_id` field arrives pre-wired as a Tempo-linked derived field, so the click-through
-  this card documents (`{service_name="..."} | TraceId="<id>"`) needs no dashboard of its own. `GF_SECURITY_ADMIN_PASSWORD`
-  joins `.env.example`, forwarded to `lgtm` alone; unset it ships the image's own `admin`/`admin` default.
-  (gh#535, gh#534, gh#532.)
+  seventh, Npgsql query duration, built on `Npgsql`'s own meter — `db.client.operation.duration`
+  (`ConfigureTelemetry`'s `AddNpgsqlInstrumentation`), measured against a real container as the Prometheus
+  series `db_client_operation_duration_seconds_bucket`/`_count`/`_sum`, non-empty after a store read. Loki's
+  `trace_id` field arrives pre-wired as a Tempo-linked derived field; the click-through this card documents
+  runs through Grafana's own datasource proxy on the one published port, `127.0.0.1:3000`
+  (`/api/datasources/proxy/uid/<uid>/...`), never against Tempo's or Loki's own ports, which this profile does
+  not publish. `GF_SECURITY_ADMIN_PASSWORD` joins `.env.example`, forwarded to `lgtm` alone; unset it ships the
+  image's own `admin`/`admin` default — and so does anonymous access, at `ORG_ROLE=Admin`, so the password
+  alone does not lock the port down. `GF_AUTH_ANONYMOUS_ENABLED` joins `.env.example` beside it, forwarded and
+  defaulted to the image's own unchanged behaviour, as the key that does.
+  (gh#535, gh#534, gh#532, gh#553.)
 - **Two hosting keys, documented and compose-forwarded: `Logging__Console__FormatterName` and
   `ASPNETCORE_FORWARDEDHEADERS_ENABLED`.** Both are built into the framework — no logging library, no
   request-logging middleware — and both default to today's behaviour (`simple` / `false`), so an existing

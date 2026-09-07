@@ -276,14 +276,19 @@ services:
     image: grafana/otel-lgtm:0.32.1
     profiles: ["observability"]
     environment:
-      # The image ships two ways in unconfigured: anonymous viewer/editor access
+      # The image ships two ways in unconfigured: anonymous access at ORG_ROLE=Admin -- not a lesser role --
       # (GF_AUTH_ANONYMOUS_ENABLED=true, GF_AUTH_ANONYMOUS_ORG_ROLE=Admin, read from
       # docker/run-grafana.sh in grafana/docker-otel-lgtm) AND a built-in `admin` / `admin` login (the
       # image's own README). Neither is a bar lowered here -- `admin` below is exactly what the image ships
-      # when nobody sets this. Change it in `.env` before this port is reachable by anyone besides the
-      # operator at the keyboard; the loopback bind two lines down is what makes the shipped default
-      # tolerable meanwhile, the same coupling as POSTGRES_PASSWORD and Mcp__HttpBearerToken above.
+      # when nobody sets this. CHANGING THIS PASSWORD ALONE DOES NOT LOCK THE PORT DOWN (gh#553): a visitor
+      # who never logs in already has Admin through the anonymous session, forwarded below. Change both in
+      # `.env` before this port is reachable by anyone besides the operator at the keyboard; the loopback
+      # bind two lines down is what makes the shipped defaults tolerable meanwhile, the same coupling as
+      # POSTGRES_PASSWORD and Mcp__HttpBearerToken above.
       GF_SECURITY_ADMIN_PASSWORD: "${GF_SECURITY_ADMIN_PASSWORD:-admin}"
+      # Blank means the image's own default (true) -- see .env.example. Forwarding it, unset, changes
+      # nothing; set to `false` in `.env` to require the login above for every session.
+      GF_AUTH_ANONYMOUS_ENABLED: "${GF_AUTH_ANONYMOUS_ENABLED:-}"
     ports:
       # GRAFANA ONLY, loopback-only -- same posture as gh#415/gh#421 above. The collector's OTLP ports
       # (4317 grpc, 4318 http), Tempo's query API (3200) and Prometheus (9090) are deliberately NOT

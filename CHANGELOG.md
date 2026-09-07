@@ -135,6 +135,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   self-hosting Loki, Tempo and Grafana on EFS is recorded as considered and rejected for adding three more
   stateful services to a stream already nervous about one (gh#525). CloudWatch alarms stay the paging path
   (gh#526); Grafana alerting is additive until a dated `## Update` says otherwise (gh#532, gh#533).
+- **A compose `observability` profile: `grafana/otel-lgtm:0.32.1`, off by default, one dashboard.** Set
+  `Otel__Endpoint=http://lgtm:4317` and add `--profile observability` to `docker compose up` and one more
+  container starts — the collector, Loki, Tempo, Prometheus and Grafana pre-wired together, Grafana on
+  `127.0.0.1:3000` only, every other port reachable from the `server` container alone over the compose
+  network. **No `depends_on` ties `server` to `lgtm`**: the server starts identically whether the profile is
+  on or off. `observability/grafana/dashboards/mcp-server.json` is provisioned by bind mount with six panels
+  — tool-call latency and rate/error by `mcp.method.name`, venue `HttpClient` latency, process memory and GC
+  — built on the SDK's `Experimental.ModelContextProtocol` names ADR-0019 already flags as unstable, plus a
+  seventh, Npgsql query duration, that reads `traces_spanmetrics_latency` — a metric Tempo itself derives from
+  the real Npgsql spans, since `Npgsql.OpenTelemetry` ships no meter of its own — a second, independent
+  instability. Loki's `trace_id` field arrives pre-wired as a Tempo-linked derived field, so the click-through
+  this card documents (`{service_name="..."} | TraceId="<id>"`) needs no dashboard of its own. `GF_SECURITY_ADMIN_PASSWORD`
+  joins `.env.example`, forwarded to `lgtm` alone; unset it ships the image's own `admin`/`admin` default.
+  (gh#535, gh#534, gh#532.)
 - **Two hosting keys, documented and compose-forwarded: `Logging__Console__FormatterName` and
   `ASPNETCORE_FORWARDEDHEADERS_ENABLED`.** Both are built into the framework — no logging library, no
   request-logging middleware — and both default to today's behaviour (`simple` / `false`), so an existing

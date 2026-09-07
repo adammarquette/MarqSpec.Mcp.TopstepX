@@ -1,0 +1,131 @@
+{
+  "title": "MarqSpec.Mcp.TopstepX",
+  "uid": "marqspec-mcp-topstepx",
+  "schemaVersion": 39,
+  "version": 1,
+  "editable": true,
+  "tags": ["marqspec", "otel", "gh535"],
+  "timezone": "browser",
+  "time": { "from": "now-1h", "to": "now" },
+  "refresh": "30s",
+  "panels": [
+    {
+      "id": 1,
+      "type": "text",
+      "title": "Read this before the numbers below",
+      "gridPos": { "h": 7, "w": 24, "x": 0, "y": 0 },
+      "options": {
+        "mode": "markdown",
+        "content": "**Every panel on this page except \"Npgsql query duration\" reads a metric the .NET SDK's `Experimental.ModelContextProtocol` `ActivitySource`/`Meter`, ASP.NET Core, HttpClient or the .NET runtime emits on its own — none of them are this repository's own instrumentation (that is gh#536).** The `Experimental` name is the vendor's, not a hedge added here: [ADR-0019](../../documentation/adr/0019-otlp-as-the-telemetry-boundary.md) records that an SDK bump may rename or drop these, and a broken panel after upgrading `ModelContextProtocol.Core` is that risk landing, not a regression in this dashboard. Verified against a real `grafana/otel-lgtm:0.32.1` container receiving real OTLP from this server (gh#535): the instrument is `mcp_server_operation_duration_seconds` (a histogram, Prometheus's translation of the OTLP name `mcp.server.operation.duration`), labelled `mcp_method_name` (`initialize`, `tools/list`, `tools/call`, ...), and — on a `tools/call` span only — `gen_ai_tool_name` (the tool actually invoked, e.g. `get_market_session`) and `error_type` (present only when the call failed).\n\n**\"Npgsql query duration\" reads a metric no Npgsql meter produces.** `Npgsql.OpenTelemetry` 10.0.3 ships tracing only — every query is a real span (scope `Npgsql`, span name `postgresql`, kind CLIENT, carrying `db.query.text`) — and no histogram of its own. The panel instead reads `traces_spanmetrics_latency`, a metric **Tempo itself derives from those spans** inside this LGTM container (the RED-metrics pattern the image ships by default), filtered to `span_kind=\"SPAN_KIND_CLIENT\", span_name=\"postgresql\"`. It is real Postgres latency and it will not survive a `docker-otel-lgtm` bump that changes or disables that span-metrics generator, which is a second, independent instability from the SDK-name one above.\n\n**\"Venue HttpClient latency\" excludes `server_address=\"lgtm\"` on purpose.** The OTLP **gRPC** exporter used here runs over `Grpc.Net.Client`, which is itself an `HttpClient` — so this server's own spans-and-metrics export traffic to the collector shows up in the *same* `http_client_request_duration_seconds` histogram as a real ProjectX call, tagged with the collector's own address and port. Left in, the panel would mostly show this container talking to itself. Measured on this branch with no ProjectX credentials configured, so nothing here separately confirms a *venue* call reaches the panel once one exists.\n\n**Trace → log click-through**: this image provisions Loki's `trace_id` field as a Tempo-linked derived field out of the box (`docker/grafana-datasources.yaml` in `grafana/docker-otel-lgtm`), so every log line's trace id in Explore is already a link. To reproduce it by hand: run `{service_name=\"marqspec-mcp-topstepx\"} | TraceId=\"<trace id>\"` against Loki (`TraceId`, capitalised, is this server's own scope field; Loki also carries the same value as the lower-case `trace_id` label the derived field matches on) and open `http://localhost:3200/api/traces/<trace id>` against Tempo, or the same trace id pasted into Grafana Explore's Tempo tab. Verified end to end on gh#535: one `tools/call` produced a span in Tempo and, in the same second, log lines in Loki carrying the identical `trace_id`/`TraceId`."
+      }
+    },
+    {
+      "id": 2,
+      "type": "timeseries",
+      "title": "Tool-call latency by mcp.method.name (p50 / p95)",
+      "description": "Experimental.ModelContextProtocol's mcp.server.operation.duration histogram (Prometheus name mcp_server_operation_duration_seconds), one line per mcp.method.name. Unstable SDK-owned instrument name -- see the note panel above.",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 7 },
+      "fieldConfig": { "defaults": { "unit": "s" }, "overrides": [] },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "histogram_quantile(0.50, sum by (le, mcp_method_name) (rate(mcp_server_operation_duration_seconds_bucket{service_name=\"marqspec-mcp-topstepx\"}[$__rate_interval])))",
+          "legendFormat": "p50 {{mcp_method_name}}"
+        },
+        {
+          "refId": "B",
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "histogram_quantile(0.95, sum by (le, mcp_method_name) (rate(mcp_server_operation_duration_seconds_bucket{service_name=\"marqspec-mcp-topstepx\"}[$__rate_interval])))",
+          "legendFormat": "p95 {{mcp_method_name}}"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "type": "timeseries",
+      "title": "Tool-call rate and error rate",
+      "description": "Rate of mcp_server_operation_duration_seconds_count by mcp.method.name (calls/sec), and the subset carrying an error.type attribute (a failed tools/call). Same unstable SDK instrument as the latency panel.",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 7 },
+      "fieldConfig": { "defaults": { "unit": "reqps" }, "overrides": [] },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "sum by (mcp_method_name) (rate(mcp_server_operation_duration_seconds_count{service_name=\"marqspec-mcp-topstepx\"}[$__rate_interval]))",
+          "legendFormat": "calls {{mcp_method_name}}"
+        },
+        {
+          "refId": "B",
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "sum by (mcp_method_name) (rate(mcp_server_operation_duration_seconds_count{service_name=\"marqspec-mcp-topstepx\", error_type=~\".+\"}[$__rate_interval]))",
+          "legendFormat": "errors {{mcp_method_name}}"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "type": "timeseries",
+      "title": "Venue HttpClient latency (p95)",
+      "description": "OpenTelemetry.Instrumentation.Http's http.client.request.duration (Prometheus name http_client_request_duration_seconds), by server.address -- the ProjectX venue and anything else this process reaches over HttpClient. server_address=\"lgtm\" is excluded: the OTLP gRPC exporter here is itself an HttpClient and would otherwise show this container's own export traffic as if it were a venue call. Unstable SDK instrument name, same caveat as the panels above.",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 15 },
+      "fieldConfig": { "defaults": { "unit": "s" }, "overrides": [] },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "histogram_quantile(0.95, sum by (le, server_address) (rate(http_client_request_duration_seconds_bucket{service_name=\"marqspec-mcp-topstepx\", server_address!=\"lgtm\"}[$__rate_interval])))",
+          "legendFormat": "p95 {{server_address}}"
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "type": "timeseries",
+      "title": "Npgsql query duration (p95)",
+      "description": "Npgsql.OpenTelemetry ships tracing only, no meter -- this reads traces_spanmetrics_latency, the RED metric Tempo itself derives from the real Npgsql CLIENT spans (span.name=\"postgresql\") this LGTM container receives. A second, independent instability from the SDK-meter panels above: this breaks if docker-otel-lgtm's span-metrics generator changes rather than on a ModelContextProtocol.Core bump.",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 15 },
+      "fieldConfig": { "defaults": { "unit": "s" }, "overrides": [] },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(traces_spanmetrics_latency_bucket{service=\"marqspec-mcp-topstepx\", span_kind=\"SPAN_KIND_CLIENT\", span_name=\"postgresql\"}[$__rate_interval])))",
+          "legendFormat": "p95 postgresql"
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "type": "timeseries",
+      "title": "Process memory (working set)",
+      "description": "The .NET runtime instrumentation's process.memory.usage (Prometheus name dotnet_process_memory_working_set_bytes).",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 23 },
+      "fieldConfig": { "defaults": { "unit": "bytes" }, "overrides": [] },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "dotnet_process_memory_working_set_bytes{service_name=\"marqspec-mcp-topstepx\"}",
+          "legendFormat": "working set"
+        }
+      ]
+    },
+    {
+      "id": 7,
+      "type": "timeseries",
+      "title": "GC collections by generation",
+      "description": "The .NET runtime instrumentation's dotnet.gc.collections (Prometheus name dotnet_gc_collections_total), rate per generation.",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 23 },
+      "fieldConfig": { "defaults": { "unit": "cps" }, "overrides": [] },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "sum by (gc_heap_generation) (rate(dotnet_gc_collections_total{service_name=\"marqspec-mcp-topstepx\"}[$__rate_interval]))",
+          "legendFormat": "{{gc_heap_generation}}"
+        }
+      ]
+    }
+  ]
+}

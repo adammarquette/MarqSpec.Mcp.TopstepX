@@ -1,0 +1,15 @@
+# Provisioning config for the one checked-in dashboard (gh#535). Bind-mounted read-only into the
+# grafana/otel-lgtm image at /otel-lgtm/grafana/conf/provisioning/dashboards/custom.yaml -- the path the
+# image's own README documents for a custom provider, alongside the built-in RED-metrics and JVM providers
+# it ships pointed at single files under /otel-lgtm/ (docker/grafana-dashboards.yaml in grafana/docker-otel-lgtm).
+#
+# type: file + this directory means Grafana loads every dashboard JSON bind-mounted under
+# .../dashboards/custom -- today that is mcp-server.json alone.
+apiVersion: 1
+
+providers:
+  - name: "MarqSpec.Mcp.TopstepX"
+    type: file
+    options:
+      path: /otel-lgtm/grafana/conf/provisioning/dashboards/custom
+      foldersFromFilesStructure: false

@@ -233,8 +233,9 @@ thread, no warning about a collector that is not there — which is why a stdio 
 collector exists, is unchanged by any of this. There is **no console exporter under either transport**, on
 purpose and behind no flag: under stdio stdout is the protocol frame, and telemetry written there breaks the
 handshake rather than the trace. See
-[ADR-0019](documentation/adr/0019-otlp-as-the-telemetry-boundary.md); the local `grafana/otel-lgtm` stack
-that receives it is gh#535.
+[ADR-0019](documentation/adr/0019-otlp-as-the-telemetry-boundary.md); the local `grafana/otel-lgtm` stack that
+receives it is one `.env` line and a compose profile away — see
+["See what it is doing"](#see-what-it-is-doing) below.
 
 **Two credential facts that are not guessable from the field names**, and both of which cost real debugging
 time in the sibling repo:
@@ -254,6 +255,62 @@ exists, for CloudWatch Logs Insights. `ASPNETCORE_FORWARDEDHEADERS_ENABLED=true`
 ALB's — and clears the framework's loopback-only trust on that header, safe there only because the ALB is the
 sole way to reach a Fargate task. Client IPs for a human will be the ALB's own access logs, not this
 application's console.
+
+### See what it is doing
+
+`docker compose up` never starts a collector, and telemetry stays off exactly as described above. To point
+this server at a **local** one, both in one `.env`:
+
+```bash
+Otel__Endpoint=http://lgtm:4317
+```
+
+```bash
+docker compose --profile observability up -d
+```
+
+That brings up one more container, `lgtm` — [`grafana/otel-lgtm`](https://github.com/grafana/docker-otel-lgtm),
+one image carrying an OTLP collector plus Loki, Tempo, Prometheus and Grafana with the datasources pre-wired
+([ADR-0019](documentation/adr/0019-otlp-as-the-telemetry-boundary.md) decision 5, gh#535). It is
+**profile-gated and off by default**: plain `docker compose up` never starts it, and the `server` carries no
+`depends_on` on it either way, so the server starts identically whether `lgtm` exists or not. Only Grafana is
+published, and only to loopback — `docker port <lgtm container>` names one line, `127.0.0.1:3000`. The
+collector's OTLP ports, Tempo's query API and Prometheus are reachable only from the `server` container, over
+the compose network, by the service name `lgtm`.
+
+Open <http://localhost:3000>. The image ships two ways in unconfigured: an anonymous viewer/editor session
+(no login) and a built-in `admin` / `admin` login — both upstream defaults, not a bar lowered here. Change the
+password with `GF_SECURITY_ADMIN_PASSWORD` in `.env` before this port is reachable by anyone besides the
+operator at the keyboard; the loopback bind is what makes the shipped default tolerable meanwhile, the same
+posture as `POSTGRES_PASSWORD` and `Mcp__HttpBearerToken` above.
+
+The one checked-in dashboard, **MarqSpec.Mcp.TopstepX**, is provisioned automatically from
+[`observability/grafana/dashboards/mcp-server.json`](observability/grafana/dashboards/mcp-server.json) — bind
+mounted read-only, so editing the file and recreating `lgtm` is how it changes. Every panel on it, save one,
+reads an instrument the .NET SDK's `Experimental.ModelContextProtocol` source, ASP.NET Core, HttpClient or the
+.NET runtime emits on their own (gh#536 is this repository's own meters and spans, out of scope here); the
+dashboard's own text panel says which instrument backs which panel and what breaks it on an SDK bump — read
+that before trusting a panel that has gone empty. The one exception, **Npgsql query duration**, reads a metric
+`Npgsql.OpenTelemetry` does not emit at all: it is `traces_spanmetrics_latency`, which Tempo itself derives
+from the real Npgsql spans this container receives, a second and independent instability from the SDK-name
+one.
+
+**Trace → log click-through** needs no dashboard of its own: this image provisions Loki's `trace_id` field as
+a Tempo-linked derived field out of the box, so any log line opened in Grafana Explore is already a link to
+its trace. To reproduce it by hand — verified on gh#535, one `tools/call` produced a span in Tempo and a log
+line in Loki carrying the identical id in the same second:
+
+```bash
+# Tempo: search for a span, note its traceID
+curl -s -G http://localhost:3200/api/search --data-urlencode 'q={span.mcp.method.name="tools/call"}'
+
+# Loki: the same trace id, as the app's own scope field
+curl -s -G http://localhost:3100/loki/api/v1/query_range \
+  --data-urlencode 'query={service_name="marqspec-mcp-topstepx"} | TraceId="<trace id from above>"'
+```
+
+Tear down with `docker compose --profile observability down`; add `-v` only if you also want to discard
+Postgres's volume, which the profile has nothing to do with.
 
 Full configuration catalogue: [`.env.example`](.env.example). Real secrets are never committed; this repository
 is public.

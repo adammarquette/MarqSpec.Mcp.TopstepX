@@ -410,37 +410,73 @@ step "5. Published image visibility (read-only)"
 # name lowercased, the same rule scripts/image-reference.sh applies to the reference the release pushes. It
 # needs the `read:packages` scope, which `gh auth login`'s default token does NOT carry (measured on this
 # repository's maintainer token, 2026-09-07: `repo, workflow, read:org, gist, project` and a 403 from this
-# endpoint). Because nothing downstream decides on this read, a failure WARNS rather than dies -- but it warns
-# naming which failure, since "no package yet" (a repo that has never released) and "could not look" are
-# different states and only one of them is fine.
+# endpoint). Because nothing downstream decides on this read, EVERY failure in this step WARNS rather than
+# dies -- but it warns naming which failure, since "no package yet" (a repo that has never released) and
+# "could not look" are different states and only one of them is fine.
+#
+# THAT APPLIES TO BOTH READS IN THIS STEP, and until gh#586's review it did not. The owner-type read went
+# through `gh_read`, which `die`s -- so a secondary rate limit on `GET /users/<owner>`, a read the token is
+# always entitled to make, killed the whole script HERE: after steps 1-4 had already written branches, merge
+# settings, rulesets and environments, and BEFORE step 6 created a single label. A half-bootstrapped
+# repository, under a comment promising that could not happen. `gh_read`'s message was wrong for it twice
+# over -- it says "nothing further has been written" (steps 1-4 have) and explains itself in terms of a
+# whole-object PUT this step does not make.
+#
+# So it warns and SKIPS the visibility read instead. The rule the rest of this script runs on is unchanged:
+# a read that DECIDES A WRITE is fatal, because a payload assembled from state nobody observed deletes what
+# it could not see (gh#114). Nothing in this step writes anything, so there is nothing to assemble and the
+# cost of a failed read is one missing line in the report. What is NOT done is guessing the path: `users/`
+# and `orgs/` are different endpoints and the wrong one 404s, which this step would then report as "nothing
+# has been released" -- a confident wrong answer about a setting, which is the failure this whole file
+# exists to stop.
 OWNER="${REPO%%/*}"
 PACKAGE="$(printf '%s' "${REPO#*/}" | tr '[:upper:]' '[:lower:]')"
-owner_type="$(gh_read "users/$OWNER" --jq .type)" || exit 1
-case "$owner_type" in
-  Organization) PACKAGE_PATH="orgs/$OWNER/packages/container/$PACKAGE" ;;
-  *)            PACKAGE_PATH="users/$OWNER/packages/container/$PACKAGE" ;;
-esac
 
-package_status=0
-package_read="$(gh api "$PACKAGE_PATH" --jq .visibility 2>&1)" || package_status=$?
-if [ "$package_status" -eq 0 ]; then
-  if [ "$package_read" = "public" ]; then
-    ok "  ghcr.io/$(printf '%s' "$OWNER" | tr '[:upper:]' '[:lower:]')/$PACKAGE is public — ECS pulls it with no registry credential"
-  else
-    warn "  ghcr.io/$(printf '%s' "$OWNER" | tr '[:upper:]' '[:lower:]')/$PACKAGE visibility is '$package_read', not public"
-    warn "  A deployment pulling it with no registry credential FAILS at the task pull. Either make the package"
-    warn "  public again (Package settings > Danger Zone) or add repositoryCredentials to the task definition"
-    warn "  (ADR-0023 §5's fallback). This script changes neither."
-  fi
-elif printf '%s' "$package_read" | grep -q 'HTTP 404'; then
-  info "  no container package named $PACKAGE under $OWNER yet — nothing has been released; re-run after the first release"
-elif printf '%s' "$package_read" | grep -q 'read:packages'; then
-  warn "  could not read the package visibility: the token lacks the read:packages scope"
-  warn "  Grant it once with:  gh auth refresh -s read:packages   and re-run. Nothing here was verified."
+PACKAGE_PATH=""
+owner_status=0
+owner_read="$(gh api "users/$OWNER" --jq .type 2>&1)" || owner_status=$?
+if [ "$owner_status" -eq 0 ]; then
+  case "$owner_read" in
+    Organization) PACKAGE_PATH="orgs/$OWNER/packages/container/$PACKAGE" ;;
+    *)            PACKAGE_PATH="users/$OWNER/packages/container/$PACKAGE" ;;
+  esac
 else
-  warn "  could not read the package visibility (exit $package_status): gh api $PACKAGE_PATH"
-  printf '%s\n' "$package_read" | sed 's/^/  | /' >&2
-  warn "  Nothing here was verified; a read that did not succeed says nothing about the setting."
+  warn "  could not read the owner type (exit $owner_status): gh api users/$OWNER"
+  printf '%s\n' "$owner_read" | sed 's/^/  | /' >&2
+  warn "  Skipping the visibility read: users/ and orgs/ are different endpoints and guessing one would report"
+  warn "  a 404 as 'nothing has been released'. Nothing here was verified, and nothing in this step writes —"
+  warn "  steps 1-4 are applied and step 6 still runs. Re-run to fill in this line."
+fi
+
+if [ -n "$PACKAGE_PATH" ]; then
+  package_status=0
+  package_read="$(gh api "$PACKAGE_PATH" --jq .visibility 2>&1)" || package_status=$?
+  if [ "$package_status" -eq 0 ]; then
+    if [ "$package_read" = "public" ]; then
+      ok "  ghcr.io/$(printf '%s' "$OWNER" | tr '[:upper:]' '[:lower:]')/$PACKAGE is public — ECS pulls it with no registry credential"
+    else
+      warn "  ghcr.io/$(printf '%s' "$OWNER" | tr '[:upper:]' '[:lower:]')/$PACKAGE visibility is '$package_read', not public"
+      warn "  A deployment pulling it with no registry credential FAILS at the task pull. Either make the package"
+      warn "  public again (Package settings > Danger Zone) or add repositoryCredentials to the task definition"
+      warn "  (ADR-0023 §5's fallback). This script changes neither."
+    fi
+  elif printf '%s' "$package_read" | grep -q 'HTTP 404'; then
+    # NAMING THE ASSUMPTION, because "nothing has been released" is a claim and a 404 is only evidence for it
+    # under one (gh#586 review). A missing `read:packages` scope answers 403 and is caught by the branch
+    # below, so it is not what reaches here. What can still reach here is a package that EXISTS and is
+    # PRIVATE to a token that cannot see it -- 404 is what GitHub answers for "no such package" and for "not
+    # yours to know about" alike. The line says so rather than deciding for the reader.
+    info "  no container package named $PACKAGE under $OWNER — nothing has been released yet, assuming this token"
+    info "  could see one if it were there (a private package a token cannot see also answers 404; a missing"
+    info "  read:packages scope answers 403 and is reported separately). Re-run after the first release."
+  elif printf '%s' "$package_read" | grep -q 'read:packages'; then
+    warn "  could not read the package visibility: the token lacks the read:packages scope"
+    warn "  Grant it once with:  gh auth refresh -s read:packages   and re-run. Nothing here was verified."
+  else
+    warn "  could not read the package visibility (exit $package_status): gh api $PACKAGE_PATH"
+    printf '%s\n' "$package_read" | sed 's/^/  | /' >&2
+    warn "  Nothing here was verified; a read that did not succeed says nothing about the setting."
+  fi
 fi
 
 # ---------------------------------------------------------------------------

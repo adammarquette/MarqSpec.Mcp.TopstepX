@@ -21,6 +21,8 @@
   <ItemGroup>
     <PackageReference Include="ModelContextProtocol" />
     <PackageReference Include="ModelContextProtocol.AspNetCore" />
+    <!-- The OAuth mode of the HTTP gate (gh#512). Only the HTTP transport under Mcp__Auth__Mode=OAuth uses it. -->
+    <PackageReference Include="Microsoft.AspNetCore.Authentication.JwtBearer" />
     <PackageReference Include="MarqSpec.Client.ProjectX" />
 
     <!--

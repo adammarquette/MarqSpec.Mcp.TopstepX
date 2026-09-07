@@ -101,12 +101,18 @@ public sealed class StoreStartupWaitTests
                 .UseNpgsql(connection, npgsql => npgsql.UseVector())
                 .Options);
 
+        // A capturing logger, not NullLogger: gh#551's split moved the coordinates onto the log line and out
+        // of Explanation, and the negative half below (Explanation excludes them) proves nothing about the
+        // positive half without something that can show the log still carries them -- against a real
+        // Npgsql connection string, not only the unit tier's literal.
+        CapturingLogger<StoreStartupWaitTests> logger = new();
+
         StoreAvailability reached = await StoreStartup.ReachAsync(
             token => database.Database.CanConnectAsync(token),
             connection,
             TimeSpan.Zero,
             TimeProvider.System,
-            NullLogger.Instance,
+            logger,
             CancellationToken.None);
 
         reached.IsAvailable.Should().BeFalse();
@@ -115,8 +121,10 @@ public sealed class StoreStartupWaitTests
         // Require() turns Explanation into the McpException a bearer-token holder receives, and under
         // ADR-0021's non-loopback instance that holder is not necessarily the operator who should learn the
         // database's host, port, name and username. The unit tier (StoreStartupTests) pins the log side
-        // against a fake clock; this only needs to confirm neither the coordinates nor the password leak into
-        // the caller-facing text a real Npgsql connection string produces.
+        // against a fake clock; this confirms both halves against a real Npgsql connection string: the
+        // coordinates still reach the log, and neither they nor the password leak into the caller-facing text.
+        logger.Messages.Should().ContainSingle(m => m.Contains("host=localhost", StringComparison.Ordinal))
+            .Which.Should().Contain($"port={port}");
         reached.Explanation.Should().NotContain("host=localhost").And.NotContain($"port={port}");
         reached.Explanation.Should().NotContain("test-only", "the password never reaches an operator-facing line");
         reached.Explanation.Should().Contain(

@@ -592,6 +592,33 @@ info: Microsoft.Hosting.Lifetime[0]
       Application started. Press Ctrl+C to shut down.
 ```
 
+(Superseded 2026-09-06: the warn line above no longer reproduces — gh#551 moved the target's host, port, database
+and user out of `StoreAvailability.Explanation` (what a caller receives) and into the log line alone, so the
+warning now *leads* with the coordinates rather than burying them behind `...`, and the sentence quoted above
+is now the *second* clause on that line rather than the first. Re-measured on this branch with the same
+transport and token, `ConnectionStrings__Default` set to a host with nothing listening — this working copy now
+has a real Postgres container bound to the default `localhost:5432` fallback the original run relied on being
+absent, so the target had to be named explicitly to keep the claim "the store does not answer" true:
+
+```console
+$ ConnectionStrings__Default="Host=127.0.0.1;Port=59991;Database=topstepx_mcp;Username=topstepx;Password=changeme-local" \
+  Mcp__Transport=Http Mcp__HttpBearerToken=local-test-token dotnet run --project MarqSpec.Mcp.TopstepX
+...
+warn: startup[0]
+      Nothing answered at host=127.0.0.1 port=59991 database=topstepx_mcp user=topstepx. The database is not
+      reachable, so cached market data and observations are unavailable. Start it with `docker compose up -d
+      postgres`, or point ConnectionStrings__Default at a running Postgres, then restart this server. Tools
+      that need no database — list_instruments, get_market_session, search_contracts — work regardless.
+info: Microsoft.Hosting.Lifetime[14]
+      Now listening on: http://localhost:5000
+info: Microsoft.Hosting.Lifetime[0]
+      Application started. Press Ctrl+C to shut down.
+```
+
+The rest of this update's claims are unaffected: `netstat`, the `401`/`200` sequence and the eighteen-tool
+count below all measured the transport and the auth gate, neither of which this PR touches. Left standing
+rather than rewritten, per this page's own convention — gh#551.)
+
 `netstat` during that run showed `TCP 127.0.0.1:5000 ... LISTENING` and `TCP [::1]:5000 ... LISTENING`, and
 nothing on `0.0.0.0` or `[::]` — Kestrel's own `localhost` default is already loopback-only, so nothing here
 had to bind it there deliberately. `curl` against `/mcp` with no `Authorization` header, and again with the

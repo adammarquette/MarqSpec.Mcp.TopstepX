@@ -22,7 +22,7 @@ lockstep with them in the same PR.
   id. `CON.F.US.EP.U26` is one contract that quotes `ES` this quarter. On `Bars` the contract is recorded
   **beside** the key ([ADR-0011](adr/0011-contract-roll-boundary.md)). On `Trades`, `TapeCoverage` and
   `BarCoverage` it is **in** the key: a print that cannot be attributed has no meaning (gh#215), and neither
-  can an empty answer, which without a contract asserts "empty" on behalf of every contract (gh#504).
+  has an empty answer, which without a contract asserts "empty" on behalf of every contract (gh#504).
 - **`Venue` is part of every market-data key.** The same product on two venues is two series, and a future
   second venue must not silently overwrite the first.
 - **No tenancy.** `trading-copilot` scopes rows to an owner and exempts market data; here there is nothing but

@@ -250,9 +250,10 @@ public sealed class ServerTaskTests(EnvironmentTemplates templates) : IClassFixt
             actions.Should().NotContain(a => a.StartsWith("ecr:", StringComparison.Ordinal), "nothing here pulls from ECR");
             if (Synthesised.Text(statement["Resource"]) == "\"*\"")
             {
-                // ECS Exec's channel actions are the one API here with no resource-level permission at all;
-                // anything else on `*` is a decision nobody made.
-                actions.Should().OnlyContain(a => a.StartsWith("ssmmessages:", StringComparison.Ordinal),
+                // ECS Exec is the one thing here with no resource-level permission at all: its four
+                // ssmmessages channel actions, and the logs:DescribeLogGroups its session logging needs.
+                // Anything else on `*` is a decision nobody made.
+                actions.Should().OnlyContain(a => a.StartsWith("ssmmessages:", StringComparison.Ordinal) || a == "logs:DescribeLogGroups",
                     $"least privilege: {string.Join(", ", actions)} on every resource");
             }
         }

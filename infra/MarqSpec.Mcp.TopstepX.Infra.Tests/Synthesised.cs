@@ -26,10 +26,11 @@ public sealed record Synthesised(Template Template, JsonObject Json)
         ZoneMode zoneMode,
         OutboundPath outboundPath,
         bool recordTapeDefault,
-        bool warmIndicatorsDefault)
+        bool warmIndicatorsDefault,
+        string? stackId = null)
     {
         var app = new App();
-        var stack = new EnvironmentStack(app, $"topstepx-mcp-{envName}", new EnvironmentStackProps
+        var stack = new EnvironmentStack(app, stackId ?? $"topstepx-mcp-{envName}", new EnvironmentStackProps
         {
             EnvName = envName,
             RootDomain = rootDomain,

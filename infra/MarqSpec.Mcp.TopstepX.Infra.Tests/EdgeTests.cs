@@ -77,14 +77,15 @@ public sealed class EdgeTests(EnvironmentTemplates templates) : IClassFixture<En
     {
         var t = templates.For(env);
         var (_, alb) = t.Single("AWS::ElasticLoadBalancingV2::LoadBalancer");
+        // Values are read as JSON text: the bucket attribute is a `Ref`, not a string.
         var attributes = t.Properties(alb)["LoadBalancerAttributes"]!.AsArray()
-            .ToDictionary(a => a!["Key"]!.GetValue<string>(), a => a!["Value"]!.GetValue<string>());
+            .ToDictionary(a => a!["Key"]!.GetValue<string>(), a => Synthesised.Text(a!["Value"]));
 
-        int.Parse(attributes["idle_timeout.timeout_seconds"], System.Globalization.CultureInfo.InvariantCulture)
+        int.Parse(attributes["idle_timeout.timeout_seconds"].Trim('"'), System.Globalization.CultureInfo.InvariantCulture)
             .Should().BeGreaterThanOrEqualTo(600, "a Streamable HTTP response can be long-lived and the 60 s default cuts it mid-stream");
-        attributes["access_logs.s3.enabled"].Should().Be("true");
-        attributes.Should().ContainKey("access_logs.s3.bucket");
-        t.Resources("AWS::S3::Bucket").Should().NotBeEmpty();
+        attributes["access_logs.s3.enabled"].Should().Be("\"true\"");
+        var (bucketId, _) = t.Single("AWS::S3::Bucket");
+        attributes["access_logs.s3.bucket"].Should().Be($"{{\"Ref\":\"{bucketId}\"}}");
     }
 
     [Theory]
@@ -113,7 +114,9 @@ public sealed class EdgeTests(EnvironmentTemplates templates) : IClassFixture<En
 
         var alias = aliases.Should().ContainSingle().Which;
         alias["Name"]!.GetValue<string>().Should().Be($"topstepx-mcp.{root}.");
-        Synthesised.LogicalIdOf(alias["AliasTarget"]!["DNSName"]).Should().Be(albId);
+        // An ALB alias target is `dualstack.` joined onto the balancer's DNS name, so the id sits inside a join.
+        Synthesised.Text(alias["AliasTarget"]!["DNSName"]).Should().Contain($"[\"{albId}\",\"DNSName\"]");
+        Synthesised.Text(alias["AliasTarget"]!["HostedZoneId"]).Should().Contain($"[\"{albId}\",\"CanonicalHostedZoneID\"]");
     }
 
     [Fact]

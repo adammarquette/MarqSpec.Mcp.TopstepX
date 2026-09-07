@@ -354,6 +354,170 @@ public sealed class HistoricalContractSelectionTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task AVenueNegativeOnTheLiquidCandidate_IsLoud_AndReAskedAfterTheNegativeLapses()
+    {
+        // gh#570, and the whole point is that NOTHING GOES WRONG VISIBLY. A June trade date names M26 and
+        // U26; one ContractDirectory negative on M26 -- a venue hiccup, remembered for NegativeLifetime --
+        // leaves a candidate set of exactly the venue's own pick. The read then answers from the front alone,
+        // which is the pre-ADR-0020 behaviour, and until this issue said nothing at all: an operator could
+        // not tell that stretch from a genuine one-candidate cycle month.
+        //
+        // So the degradation is named, with the expiries that did not resolve, and the ledger is left able to
+        // re-ask: the contract that WAS asked earns its memo, and the dropped one earns none. That asymmetry
+        // is what makes the second read below fetch anything at all -- a range is answered only when EVERY
+        // candidate of the slice answered it (gh#504), so the memo the front holds stops covering the range
+        // the moment M26 rejoins the set.
+        await SeedTenureAnchorAsync();
+
+        // The front is silent over June rather than thin, so the stored series cannot mask the ledger claim
+        // this case is about. The thin-series half is the case below.
+        CountingGateway gateway = Venue(new Dictionary<string, IEnumerable<Bar>>(StringComparer.Ordinal)
+        {
+            [Front] = [],
+            [Liquid] = Series(HistoryStart, 12, 5, 5_000),
+        });
+
+        gateway.Unlisted.Add("M26");
+
+        FakeTimeProvider clock = new(Now);
+        CapturingLogger<BarCacheService> log = new();
+        BarCacheService cache = BuildAround(gateway, Now, log, clock);
+
+        BarRange window = new(HistoryStart, HistoryStart.AddHours(1));
+
+        await cache.GetBarsAsync(_mes, 5, window, CancellationToken.None);
+
+        gateway.ContractLookups.Should().Be(
+            2, "both of June's constructed expiries are existence-checked before either is fetched");
+        gateway.BarRequests.Should().Be(
+            1, "M26 did not resolve, so only the front survived to be asked");
+
+        // RED before the fix, and red for the RIGHT reason: the plan is identical either way, the bars are
+        // identical either way, and the only thing that was missing was anybody saying so.
+        log.Messages.Should().ContainMatch(
+            "*M26*",
+            "a candidate set narrowed by a venue negative is a degraded answer, and a degraded answer that "
+            + "names nothing is indistinguishable from a correct one");
+
+        List<BarCoverageRecord> memos = await _database.BarCoverage.AsNoTracking().ToListAsync();
+
+        memos.Should().ContainSingle().Which.ContractId.Should().Be(
+            Front, "only the contract that was actually asked can have answered nothing");
+        memos.Should().NotContain(
+            memo => memo.ContractId == Liquid,
+            "a memo for the candidate nobody could ask would answer this range for ever, and the lapse of "
+            + "the directory's negative would never be able to change the answer");
+
+        // THE RE-ASK. The negative lapses, the venue lists M26 again, and the range the front's permanent
+        // memo covers is still outstanding because M26's side of it is not.
+        gateway.Unlisted.Remove("M26");
+        clock.Advance(ContractDirectory.NegativeLifetime);
+        gateway.ResetCounters();
+
+        BarReadResult second = await cache.GetBarsAsync(_mes, 5, window, CancellationToken.None);
+
+        gateway.ContractLookups.Should().Be(
+            1, "U26's positive is permanent for the life of the process; only the stale negative is re-asked");
+        gateway.BarRequests.Should().Be(
+            2, "the slice names both candidates again, and the front's memo alone does not answer it");
+
+        second.Bars.Should().HaveCount(12);
+        second.Bars.Should().AllSatisfy(bar => bar.ContractId.Should().Be(
+            Liquid, "the volume decision ADR-0020 exists for finally ran, and the liquid contract won"));
+    }
+
+    [Fact]
+    public async Task AVenueNegativeOnTheLiquidCandidate_StoresTheFrontsThinSeries_WhichNoLaterReadRewrites()
+    {
+        // The other half of gh#570, and the one that says what this card does NOT do. When the front is thin
+        // rather than silent over the stretch, the degraded read stores its bars -- a real series, from a
+        // real contract, just not the one that carried June -- and those rows are attributed history from
+        // that moment on. A later read does not revisit them: it finds the buckets present and never reaches
+        // the venue, so the lapse of the directory's negative cannot heal what was already written.
+        //
+        // That is deliberate (ADR-0020 §5, and ATradeDateAlreadyHeld_IsNotInterleaved above): a read that
+        // re-decided attributed history would splice a second contract into the middle of a day already
+        // recorded. Rewriting a defective run is an operator's verb -- reselect-bars, gh#506 -- and this card
+        // ships no migration for rows an earlier degraded read already laid down, for the reason gh#571 gave:
+        // the rebuild pass is the remedy. What changes here is that the operator is TOLD.
+        await SeedTenureAnchorAsync();
+
+        CountingGateway gateway = Venue(new Dictionary<string, IEnumerable<Bar>>(StringComparer.Ordinal)
+        {
+            [Front] = Series(HistoryStart, 12, 5, 10),
+            [Liquid] = Series(HistoryStart, 12, 5, 5_000),
+        });
+
+        gateway.Unlisted.Add("M26");
+
+        FakeTimeProvider clock = new(Now);
+        CapturingLogger<BarCacheService> log = new();
+        BarCacheService cache = BuildAround(gateway, Now, log, clock);
+
+        BarRange window = new(HistoryStart, HistoryStart.AddHours(1));
+
+        await cache.GetBarsAsync(_mes, 5, window, CancellationToken.None);
+
+        log.Messages.Should().ContainMatch(
+            "*M26*", "the stretch was decided by default, and that is the only warning an operator will get");
+
+        (await StoredAsync(window.Start, window.End)).Should().AllSatisfy(bar => bar.ContractId.Should().Be(
+            Front, "the front was the only candidate left, so its thin series is what the store now holds"));
+
+        gateway.Unlisted.Remove("M26");
+        clock.Advance(ContractDirectory.NegativeLifetime);
+        gateway.ResetCounters();
+
+        await cache.GetBarsAsync(_mes, 5, window, CancellationToken.None);
+
+        gateway.BarRequests.Should().Be(
+            0, "every bucket is present, so the read is answered from the store and never re-asks");
+
+        (await StoredAsync(window.Start, window.End)).Should().AllSatisfy(bar => bar.ContractId.Should().Be(
+            Front, "a read does not rewrite attributed history -- reselect-bars (gh#506) is the remedy"));
+    }
+
+    [Fact]
+    public async Task AStraddlingRange_WhoseHistoricalHalfNarrowedToTheFront_IsNotFoldedIntoThePresentBand()
+    {
+        // The fold is where the silence came from. Adjacent slices that both come down to the front alone are
+        // merged into one PRESENT slice, so that a range cut at the tenure start does not silently buy a page
+        // boundary -- and a historical half whose set narrowed to the front by a venue negative satisfies
+        // that test exactly as a cycle-named one does. Merged, it stops being history at all: no candidate
+        // set, no volume decision, and no warning, for a stretch the front is not the answer for.
+        //
+        // RED before the fix at ONE bar request -- the whole four hours as one present page.
+        //
+        // The anchor is seeded at five minutes and the read is at sixty, so the store's trailing run of the
+        // front fixes T(F) at the session start while leaving the whole read outstanding: one contiguous
+        // missing range with history on one side of T(F) and the present band on the other.
+        await SeedTenureAnchorAsync();
+
+        DateTimeOffset from = Market(2026, 8, 18, 7);
+        BarRange window = new(from, Market(2026, 8, 18, 11));
+
+        CountingGateway gateway = Venue(new Dictionary<string, IEnumerable<Bar>>(StringComparer.Ordinal)
+        {
+            [Front] = Enumerable.Range(0, 4).Select(i => Flat(from.AddHours(i), 1_000)),
+        });
+
+        CapturingLogger<BarCacheService> log = new();
+        BarCacheService cache = BuildAround(gateway, Now, log);
+
+        await cache.GetBarsAsync(_mes, 60, window, CancellationToken.None);
+
+        gateway.BarRequests.Should().Be(
+            2,
+            "the two hours before the front's tenure are history whose candidate set the venue narrowed, and "
+            + "history is not the present band however identical the contract id happens to look");
+
+        log.Messages.Should().ContainMatch(
+            "*Z26*", "the August candidate the venue does not list is what narrowed the set");
+
+        (await StoredAsync(window.Start, window.End, 60)).Should().HaveCount(4);
+    }
+
+    [Fact]
     public async Task AllCandidatesEmpty_RecordsOnePermanentMemoPerContract()
     {
         // "Empty" is a fact about a range AND a contract (gh#504), so a range every candidate answered empty
@@ -815,11 +979,19 @@ public sealed class HistoricalContractSelectionTests : IAsyncLifetime
     /// <param name="gateway">The venue double.</param>
     /// <param name="now">The instant to read at.</param>
     /// <param name="logger">A logger, when the case needs to read what the fetch said it did.</param>
+    /// <param name="clock">
+    /// The clock, when the case needs to <b>move</b> it — a <c>ContractDirectory</c> negative lapses on
+    /// elapsed time, and a clock this method owns cannot be advanced from the test. Built from
+    /// <paramref name="now"/> when the case does not care.
+    /// </param>
     /// <returns>The service.</returns>
     private BarCacheService BuildAround(
-        CountingGateway gateway, DateTimeOffset now, ILogger<BarCacheService>? logger = null)
+        CountingGateway gateway,
+        DateTimeOffset now,
+        ILogger<BarCacheService>? logger = null,
+        FakeTimeProvider? clock = null)
     {
-        FakeTimeProvider clock = new(now);
+        clock ??= new FakeTimeProvider(now);
         BarSessionCalendar calendar = Calendar;
 
         IndicatorCatalog catalog = new(

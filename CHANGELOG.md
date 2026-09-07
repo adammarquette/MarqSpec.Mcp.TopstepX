@@ -388,6 +388,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **A historical slice the venue narrowed to the front alone is now loud, and stays history.** A cycle that
+  names two expiries the venue lists only one of leaves a candidate set of one, and when that one is the
+  venue's own pick the slice is — by the candidate list alone — identical to a slice the cycle genuinely
+  named the front for. So an hour-long `ContractDirectory` negative on the liquid contract (one hiccup on
+  `MES.M26`) folded the stretch into the neighbouring **present** band, stored the front's bars under it, and
+  logged nothing: the pre-ADR-0020 series for that stretch, served as an ordinary answer, with the volume
+  decision never run and nothing anywhere saying so. `RangeSlice` now carries the expiries that **did not
+  resolve**, so the caller can tell the two apart: a narrowed slice earns a `LogWarning` naming the
+  instrument, the trade dates, the expiries that fell away and what survived, and is never merged into the
+  present band. It keeps its memo — the surviving candidate really was asked — and the re-ask comes from the
+  ledger rule instead: a range is answered only when *every* candidate of the slice answered it, so the
+  dropped expiry rejoining the set after the negative lapses puts the range back on the venue. The
+  `FellBackToFront` warning now names the expiries too. **Bars a degraded read already stored are not
+  rewritten**, here or by any later read; `reselect-bars` (gh#506) is the verb for that, and no migration
+  ships for rows written before this change (gh#570).
+
 - **A projection now sweeps the two kinds of orphaned indicator value it used to leave standing, and
   `rebuild-indicators` visits the series that hold them.** `IndicatorValues` has no foreign key to `Bars`
   ([ADR-0011](documentation/adr/0011-contract-roll-boundary.md) §2), so a value can outlive both its

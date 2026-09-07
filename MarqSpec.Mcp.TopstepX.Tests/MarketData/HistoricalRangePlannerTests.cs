@@ -129,6 +129,94 @@ public sealed class HistoricalRangePlannerTests
     }
 
     [Fact]
+    public void AHistoricalSliceWhoseOnlySurvivorIsTheFront_IsNotACycleFrontSlice()
+    {
+        // THE WRONG-LOOKS-RIGHT CASE (gh#570). An August trade date names U26 and Z26 on HMUZ at depth two.
+        // A venue that lists only U26 -- one ContractDirectory negative on Z26, one hiccup, one hour -- leaves
+        // a candidate set of exactly the front, which by the SET ALONE is indistinguishable from a cycle that
+        // named the front and nothing else. Nothing throws, nothing comes back empty, and the caller folds
+        // the slice into the present band and memoises it: the pre-ADR-0020 series for that stretch, served
+        // as an ordinary answer.
+        //
+        // The two are different facts. One survived a check the other never had to take, so the planner has
+        // to record WHICH expiries did not resolve rather than leaving the caller to infer it from a set
+        // that cannot express it.
+        BarRange range = new(Utc(2026, 8, 5), Utc(2026, 8, 8));
+
+        IReadOnlyList<RangeSlice> narrowed = HistoricalRangePlanner.PlanSlices(
+            [range],
+            Utc(2026, 8, 10),
+            Front,
+            _calendar,
+            _quarterly,
+            2,
+            expiry => string.Equals(expiry.Code, "U26", StringComparison.Ordinal) ? Front : null);
+
+        narrowed.Should().ContainSingle();
+        narrowed[0].Candidates.Should().Equal(Front);
+        narrowed[0].FellBackToFront.Should().BeFalse(
+            "U26 did survive the check -- this is a narrowed set, not an empty one, and conflating the two "
+            + "would put every one-listed-candidate range back on the venue for ever");
+        narrowed[0].Unresolved.Select(expiry => expiry.Code).Should().Equal(
+            new[] { "Z26" },
+            "the caller warns with the expiries that did not resolve, and cannot name them if the planner "
+            + "drops them silently");
+        narrowed[0].IsCycleFrontSlice(Front).Should().BeFalse(
+            "the front is this slice's only candidate because the venue lists no Z26, so it must not be "
+            + "merged into the present band");
+
+        // THE CONTRAST, and the reason the distinction cannot be read off the candidate set. At depth one an
+        // August trade date names U26 alone, everything the cycle named resolved, and the slice is an
+        // ordinary one-candidate answer -- mergeable, memoisable, and rightly silent.
+        IReadOnlyList<RangeSlice> named = HistoricalRangePlanner.PlanSlices(
+            [range], Utc(2026, 8, 10), Front, _calendar, _quarterly, 1, Listed);
+
+        named.Should().ContainSingle();
+        named[0].Candidates.Should().Equal(Front);
+        named[0].Unresolved.Should().BeEmpty();
+        named[0].IsCycleFrontSlice(Front).Should().BeTrue();
+    }
+
+    [Fact]
+    public void ASliceWithNothingLeftToAsk_NamesEveryExpiryThatDidNotResolve()
+    {
+        // The fallback and the narrowing are the same fact at two strengths, so they are recorded the same
+        // way: FellBackToFront says the set emptied, Unresolved says WHAT it lost. A fallback that named
+        // nothing would make the loud half of ADR-0020's degradation rule loud about a range and silent
+        // about the contracts, which is the half an operator actually acts on.
+        BarRange range = new(Utc(2026, 3, 20), Utc(2026, 3, 25));
+
+        IReadOnlyList<RangeSlice> slices = HistoricalRangePlanner.PlanSlices(
+            [range], Utc(2026, 6, 1), Front, _calendar, _quarterly, 2, static _ => null);
+
+        slices.Should().ContainSingle();
+        slices[0].FellBackToFront.Should().BeTrue();
+        slices[0].Unresolved.Select(expiry => expiry.Code).Should().Equal("H26", "M26");
+        slices[0].IsCycleFrontSlice(Front).Should().BeFalse();
+    }
+
+    [Fact]
+    public void APresentSlice_NamesNothingUnresolved()
+    {
+        // The present band never constructs a candidate, so it can never have dropped one. Recorded here
+        // because a non-empty Unresolved on a present slice would be read by the caller as a degradation
+        // and would cost a warning on the hottest read this server serves.
+        IReadOnlyList<RangeSlice> slices = HistoricalRangePlanner.PlanSlices(
+            [new BarRange(Utc(2026, 8, 10), Utc(2026, 8, 12))],
+            Utc(2026, 8, 1),
+            Front,
+            _calendar,
+            _quarterly,
+            2,
+            static _ => null);
+
+        slices.Should().ContainSingle();
+        slices[0].Present.Should().BeTrue();
+        slices[0].Unresolved.Should().BeEmpty();
+        slices[0].IsCycleFrontSlice(Front).Should().BeTrue();
+    }
+
+    [Fact]
     public void TheSlicesCoverTheInputExactly_AndAreAscending()
     {
         // The planner sits between the gap detector and the fetch, so anything it loses is a bucket nobody

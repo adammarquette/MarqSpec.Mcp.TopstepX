@@ -27,12 +27,61 @@ namespace MarqSpec.Mcp.TopstepX.MarketData;
 /// fell back has no surviving candidate at all, is a <i>degradation</i> logged by the caller, and must earn
 /// no permanent memo. Conflating the two would make every one-listed-candidate range re-fetched forever.
 /// </para>
+/// <para>
+/// <b>Which is why the drops themselves are carried, in <see cref="RangeSlice.Unresolved"/>.</b> Between
+/// those two cases sits a third the flag cannot express: a set the venue <i>narrowed</i> to one survivor.
+/// Read off the candidate list alone it is the ordinary answer above, and when the survivor is the front it
+/// is byte-identical to it (gh#570).
+/// </para>
 /// </remarks>
 public sealed record RangeSlice(
     BarRange Range,
     IReadOnlyList<string> Candidates,
     bool Present,
-    bool FellBackToFront = false);
+    bool FellBackToFront = false)
+{
+    /// <summary>
+    /// The expiries the cycle named for this slice's trade dates that the venue does not list, nearest first.
+    /// Empty for a present slice, which constructs no candidate and can therefore drop none.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>Without this, a narrowed set and a named one are the same slice</b> (gh#570). A cycle naming two
+    /// expiries the venue lists only one of leaves a set of one — and when that one is the venue's own pick,
+    /// the slice is byte-identical to a slice the cycle genuinely named the front alone for. The first is a
+    /// degradation: the volume decision ADR-0020 exists for ran over what survived an existence check rather
+    /// than over the cycle, and the answer will change when the directory's negative lapses. The second is an
+    /// ordinary answer. Neither throws and neither comes back empty, so the difference has to be carried
+    /// rather than inferred.
+    /// </para>
+    /// <para>
+    /// It is recorded for a <see cref="FellBackToFront"/> slice too, where it names every expiry that fell
+    /// away — the same fact at full strength.
+    /// </para>
+    /// </remarks>
+    public IReadOnlyList<ContractExpiry> Unresolved { get; init; } = [];
+
+    /// <summary>
+    /// Whether this slice asks the venue's own pick and nothing else <b>because the cycle named it</b>.
+    /// </summary>
+    /// <param name="frontContractId">The contract the venue marks active.</param>
+    /// <returns>
+    /// <see langword="true"/> when the front is the whole candidate set and every expiry the cycle named for
+    /// this slice resolved to it.
+    /// </returns>
+    /// <remarks>
+    /// Two such slices side by side ask the same contract the same question, so the caller merges them and a
+    /// range cut at the tenure start buys no page boundary the old shape did not have. A slice that fell back
+    /// or whose set was <i>narrowed</i> by a venue negative is not one of these, however identical its
+    /// candidate list looks: merged into the present band it would stop being history at all — no candidate
+    /// set, no volume decision, and no warning — for a stretch the front is not the answer for.
+    /// </remarks>
+    public bool IsCycleFrontSlice(string frontContractId) =>
+        !FellBackToFront
+        && Unresolved.Count == 0
+        && Candidates.Count == 1
+        && string.Equals(Candidates[0], frontContractId, StringComparison.Ordinal);
+}
 
 /// <summary>
 /// Cuts the ranges a read still owes the venue into the present band and the historical bands, and names
@@ -116,12 +165,21 @@ public static class HistoricalRangePlanner
                     // from the venue's own pick, which is today's behaviour, and the caller logs the warning
                     // and withholds the permanent memo. A slice with nothing to ask would report a quiet
                     // market instead -- the plausible-looking absence this server exists to refuse.
-                    IReadOnlyList<string> candidates = Listed(expiries, resolveContractId);
+                    //
+                    // WHAT FELL AWAY IS CARRIED, NOT JUST WHETHER EVERYTHING DID (gh#570). A set narrowed to
+                    // one survivor is a degradation too, and when that survivor is the front the slice is
+                    // otherwise indistinguishable from one the cycle named the front alone for -- so the
+                    // caller could neither warn about it nor refuse to merge it.
+                    (IReadOnlyList<string> candidates, IReadOnlyList<ContractExpiry> unresolved) =
+                        Listed(expiries, resolveContractId);
                     slices.Add(new RangeSlice(
                         new BarRange(from, next),
                         candidates.Count > 0 ? candidates : [frontContractId],
                         Present: false,
-                        FellBackToFront: candidates.Count == 0));
+                        FellBackToFront: candidates.Count == 0)
+                    {
+                        Unresolved = unresolved,
+                    });
 
                     from = next;
                 }
@@ -214,23 +272,38 @@ public static class HistoricalRangePlanner
                 TradeDateOf(calendar, new DateTimeOffset(ticks, TimeSpan.Zero)), depth)[0].Rank > nearest.Rank;
     }
 
-    /// <summary>The venue ids for a candidate set, unlisted expiries dropped.</summary>
+    /// <summary>The venue ids for a candidate set, and the expiries that had none.</summary>
     /// <param name="expiries">The candidates, nearest first.</param>
     /// <param name="resolveContractId">The expiry-to-id lookup.</param>
-    /// <returns>The ids, nearest expiry first.</returns>
-    private static IReadOnlyList<string> Listed(
+    /// <returns>The ids and the unresolved expiries, both nearest expiry first.</returns>
+    /// <remarks>
+    /// <b>The drops are returned rather than discarded</b> (gh#570). A dropped expiry is the whole difference
+    /// between a candidate set the cycle named and one a venue negative narrowed, and the two are the same
+    /// list of ids afterwards — so the fact has to leave this method or it is gone. An expiry that resolves to
+    /// an id already in the set is <i>not</i> a drop: the venue answered for it, and two expiries mapping to
+    /// one id is the venue's business.
+    /// </remarks>
+    private static (IReadOnlyList<string> Ids, IReadOnlyList<ContractExpiry> Unresolved) Listed(
         IReadOnlyList<ContractExpiry> expiries,
         Func<ContractExpiry, string?> resolveContractId)
     {
         List<string> ids = [];
+        List<ContractExpiry> unresolved = [];
+
         foreach (ContractExpiry expiry in expiries)
         {
-            if (resolveContractId(expiry) is { } contractId && !ids.Contains(contractId, StringComparer.Ordinal))
+            if (resolveContractId(expiry) is not { } contractId)
+            {
+                unresolved.Add(expiry);
+                continue;
+            }
+
+            if (!ids.Contains(contractId, StringComparer.Ordinal))
             {
                 ids.Add(contractId);
             }
         }
 
-        return ids;
+        return (ids, unresolved);
     }
 }

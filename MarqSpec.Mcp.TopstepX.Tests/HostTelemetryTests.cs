@@ -102,7 +102,7 @@ public sealed class HostTelemetryTests
         using MetricCollector<long> calls = Collect(telemetry, HostTelemetry.VenueCallsInstrument);
 
         List<Activity> spans = [];
-        using ActivityListener listener = Listen(spans);
+        using ActivityListener listener = Listen(spans, telemetry.Activities);
 
         using (HostTelemetry.VenueCallScope scope = telemetry.VenueCall(VenueOperation.ResolveContracts))
         {
@@ -125,10 +125,10 @@ public sealed class HostTelemetryTests
         using HostTelemetry telemetry = new();
 
         List<Activity> spans = [];
-        using ActivityListener listener = Listen(spans);
+        using ActivityListener listener = Listen(spans, telemetry.Activities);
 
         using ActivitySource parentSource = new("test.parent");
-        using ActivityListener parentListener = Listen(new List<Activity>(), "test.parent");
+        using ActivityListener parentListener = Listen([], parentSource);
         using Activity? parent = parentSource.StartActivity("tools/call");
 
         parent.Should().NotBeNull("the stand-in parent has to be sampled, or this asserts nothing");
@@ -149,10 +149,10 @@ public sealed class HostTelemetryTests
         using HostTelemetry telemetry = new();
 
         List<Activity> spans = [];
-        using ActivityListener listener = Listen(spans);
+        using ActivityListener listener = Listen(spans, telemetry.Activities);
 
         using ActivitySource parentSource = new("test.parent");
-        using ActivityListener parentListener = Listen(new List<Activity>(), "test.parent");
+        using ActivityListener parentListener = Listen([], parentSource);
         using Activity? parent = parentSource.StartActivity("tools/call");
 
         using (telemetry.StartCacheRead(CacheSeries.Bars, Symbol, 15))
@@ -484,12 +484,23 @@ public sealed class HostTelemetryTests
         where T : struct =>
         new(telemetry, HostTelemetry.Name, instrument);
 
-    /// <summary>Subscribes to a source and records every activity it starts.</summary>
-    private static ActivityListener Listen(List<Activity> into, string source = HostTelemetry.Name)
+    /// <summary>Subscribes to one <see cref="ActivitySource"/> INSTANCE and records what it starts.</summary>
+    /// <param name="into">Where to put the stopped activities.</param>
+    /// <param name="source">The exact source to listen to.</param>
+    /// <returns>The listener. The caller disposes it.</returns>
+    /// <remarks>
+    /// <b>Reference equality, not <c>candidate.Name == HostTelemetry.Name</c>.</b> Every cache service falls
+    /// back to its own <c>new HostTelemetry()</c> when DI does not supply the singleton, so about a dozen
+    /// suites that never mention telemetry emit <c>cache.*</c> spans under that same name — and they run in
+    /// PARALLEL with this one, because <see cref="HostTelemetryCollection"/> only serialises the suites that
+    /// listen. Matching by name therefore let another suite's span land in this list, and a
+    /// <c>ContainSingle()</c> below saw two whenever the timing lined up (gh#536).
+    /// </remarks>
+    private static ActivityListener Listen(List<Activity> into, ActivitySource source)
     {
         ActivityListener listener = new()
         {
-            ShouldListenTo = candidate => candidate.Name == source,
+            ShouldListenTo = candidate => ReferenceEquals(candidate, source),
             Sample = (ref ActivityCreationOptions<ActivityContext> options) =>
                 ActivitySamplingResult.AllDataAndRecorded,
             ActivityStopped = into.Add,

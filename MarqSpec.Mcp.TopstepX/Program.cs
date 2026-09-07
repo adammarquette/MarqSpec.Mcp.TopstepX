@@ -766,6 +766,10 @@ public static class Program
         // contract that has since retired (gh#504).
         services.AddScoped<BarCacheService>();
 
+        // After BarCacheService, which it reads the base series through -- and which is the only thing on
+        // this path that can reach the venue (ADR-0022 §7).
+        services.AddScoped<SessionBarService>();
+
         // The tape recorder. Always registered so the container shape does not depend on the
         // switch — ExecuteAsync returns immediately unless the transport is HTTP and
         // MarketData__RecordTape is on. It takes no scoped venue client in the constructor;

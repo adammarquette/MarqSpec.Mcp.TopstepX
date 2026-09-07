@@ -1275,7 +1275,11 @@ public sealed class BarCacheService
     /// </summary>
     /// <param name="instrument">The instrument.</param>
     /// <param name="resolutionMinutes">The bar size in minutes.</param>
-    /// <param name="window">The window the operator named.</param>
+    /// <param name="window">
+    /// The window to re-decide. <b>Whole trade dates</b> — the caller widens an operator's window to the
+    /// sessions it intersects before calling this, because deciding a trade date from part of its volume and
+    /// then rewriting only that part splices the day (<c>BarReselector.EffectiveWindowFor</c>).
+    /// </param>
     /// <param name="now">The instant the run is happening at.</param>
     /// <param name="cancellationToken">The caller's cancellation token.</param>
     /// <returns>
@@ -1314,6 +1318,13 @@ public sealed class BarCacheService
     /// venue's own pick is how the read path keeps serving; here it would re-attribute a trade date to a
     /// contract chosen by degradation, which is worse than leaving the rows as they are. The count comes
     /// back so the run can say how much of the window it declined to decide.
+    /// </para>
+    /// <para>
+    /// <b>The policy is asked once for the whole window, not once per slice.</b> The planner cuts the window
+    /// where the cycle's candidate set changes, and those cuts are about contracts rather than about days —
+    /// so a venue that answers a little beyond the slice it was asked for can put one trade date's bars in
+    /// two slices, and two selections for one date is a duplicate key in every dictionary the caller builds.
+    /// The candidates' answers are merged, keyed by bucket and clipped to the window, and decided together.
     /// </para>
     /// <para>
     /// <b>Nothing here touches the store</b>, exactly as <see cref="FetchAsync"/> does not: the paced page
@@ -1385,7 +1396,15 @@ public sealed class BarCacheService
             forceHistoricalThrough: window.End,
             coalesce: false).ConfigureAwait(false);
 
-        List<TradeDateSelection> selections = [];
+        // ONE BAG FOR THE WHOLE WINDOW, filled slice by slice and decided once at the end.
+        //
+        // Deciding per slice would put the window's trade dates in as many groups as the planner happened to
+        // cut it into, and those groups can overlap: a venue that answers a little beyond the slice it was
+        // asked for -- a page boundary, a vendor rounding the range outward -- returns bars for one trade
+        // date under two different slices, and two selections for one date is a duplicate key in every
+        // dictionary the caller builds from them. The candidate ids are unique keys here, so a contract
+        // spanning two slices simply accumulates its bars.
+        Dictionary<string, Dictionary<DateTimeOffset, Bar>> byContract = new(StringComparer.Ordinal);
         int requests = 0;
         int slicesSkipped = 0;
 
@@ -1400,8 +1419,6 @@ public sealed class BarCacheService
                 continue;
             }
 
-            Dictionary<string, IReadOnlyList<Bar>> byContract = new(StringComparer.Ordinal);
-
             foreach (string candidate in piece.Candidates)
             {
                 List<FetchedSlice> pages = [];
@@ -1410,14 +1427,37 @@ public sealed class BarCacheService
                     instrument, candidate, piece.Range, barSize, now, pages, cancellationToken)
                     .ConfigureAwait(false);
 
-                byContract[candidate] = [.. pages.SelectMany(static page => page.Closed)];
-            }
+                if (!byContract.TryGetValue(candidate, out Dictionary<DateTimeOffset, Bar>? held))
+                {
+                    held = [];
+                    byContract[candidate] = held;
+                }
 
-            // THE EMPTY PIN IS THE WHOLE POINT. `Decide`'s contract says the caller passes none of the
-            // stored trade dates when it is meant to rewrite -- and names this verb where it says so.
-            selections.AddRange(
-                HistoricalContractPolicy.Decide(byContract, _calendar, new Dictionary<DateOnly, string>()));
+                foreach (Bar bar in pages.SelectMany(static page => page.Closed))
+                {
+                    // KEYED BY BUCKET, and clipped to the window. A bar the venue volunteered outside the
+                    // window is outside what the operator asked to have re-decided, and one it answered
+                    // under two slices is still one observation -- counting it twice would inflate the very
+                    // volume the winner is chosen by.
+                    if (window.Contains(bar.OpenTime))
+                    {
+                        held[bar.OpenTime] = bar;
+                    }
+                }
+            }
         }
+
+        Dictionary<string, IReadOnlyList<Bar>> decided = new(StringComparer.Ordinal);
+
+        foreach ((string candidate, Dictionary<DateTimeOffset, Bar> held) in byContract)
+        {
+            decided[candidate] = [.. held.Values.OrderBy(static bar => bar.OpenTime)];
+        }
+
+        // THE EMPTY PIN IS THE WHOLE POINT. `Decide`'s contract says the caller passes none of the stored
+        // trade dates when it is meant to rewrite -- and names this verb where it says so.
+        IReadOnlyList<TradeDateSelection> selections =
+            HistoricalContractPolicy.Decide(decided, _calendar, new Dictionary<DateOnly, string>());
 
         return ([.. selections.OrderBy(static selection => selection.TradeDate)], requests, slicesSkipped);
     }

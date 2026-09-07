@@ -142,6 +142,25 @@ public sealed class CountingGateway : IMarketDataGateway
     /// </remarks>
     public bool ListsTheInstrument { get; set; } = true;
 
+    /// <summary>
+    /// Expiry codes <see cref="FindContractAsync"/> answers <see langword="null"/> for, whatever bars this
+    /// fake holds under them.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>A venue negative is not the same thing as a contract with no bars</b> (gh#570). Leaving a contract
+    /// out of the constructor makes it unlistable <i>and</i> barless at once, so a case about what happens
+    /// when the existence check fails cannot also show the candidate that <i>would</i> have won. This switch
+    /// separates them: the bars stay scripted, and the lookup refuses.
+    /// </para>
+    /// <para>
+    /// Mutable, and deliberately: <c>ContractDirectory</c> re-asks a negative after its
+    /// <c>NegativeLifetime</c>, and the only way to pin that the re-ask changes the answer is for the venue
+    /// to change its mind mid-test.
+    /// </para>
+    /// </remarks>
+    public ISet<string> Unlisted { get; } = new HashSet<string>(StringComparer.Ordinal);
+
     /// <inheritdoc />
     /// <remarks>
     /// <b>It lists everything it holds, front first</b> — not the front alone. A double that lists one
@@ -181,6 +200,14 @@ public sealed class CountingGateway : IMarketDataGateway
         ArgumentNullException.ThrowIfNull(expiry);
 
         ContractLookups++;
+
+        if (Unlisted.Contains(expiry.Code))
+        {
+            // Counted first, then refused. The lookup DID reach the venue -- a negative costs a call exactly
+            // as a positive does, and a double that answered null for free would hide the cost the directory
+            // exists to bound.
+            return Task.FromResult<VenueContract?>(null);
+        }
 
         // Matched on the EXPIRY the id carries rather than on a constructed string: the fake has no product
         // code table, and building one here would make the double disagree with the registry about which id

@@ -113,13 +113,23 @@ a **session bar** rather than a resolution (`R-1.12`,
    `RangeSlice`es. A slice at or after the store's trailing run of the venue front is *present* and carries
    `contracts[0]` alone, which is what keeps a warm read byte-identical; an older slice is *historical* and
    carries the registry cycle's candidates for its trade dates, each **existence-checked by id** through
-   `ContractDirectory` first, unlisted ones dropped. Adjacent slices that both come down to the front alone
-   are merged back into one, so a range cut at the tenure start does not silently buy a page boundary the
-   old shape did not have. This step then asks the ledger the same question per slice against that slice's
-   own set — the `.Take(1)` is gone — and the two must not drift: a range answered here for a candidate the
-   fetch would not have asked is a hole nothing ever fills again. A slice whose candidates **all** fell away
-   is fetched from `contracts[0]` anyway, with a warning naming the range, and is deliberately excluded from
-   earning a memo at step 9. Two coarser conditions end the plan for the **whole read** instead — an
+   `ContractDirectory` first, unlisted ones dropped — and *which* ones were dropped is carried on the slice,
+   because a set the venue narrowed to one survivor is otherwise the same list of ids as a set the cycle
+   named (gh#570). Adjacent slices the **cycle** brings down to the front alone are merged back into one, so
+   a range cut at the tenure start does not silently buy a page boundary the old shape did not have; a slice
+   the venue *narrowed* to the front is not one of those and is never merged — folded into the present band
+   it would stop being history at all, for a stretch the front is not the answer for. This step then asks the
+   ledger the same question per slice against that slice's own set — the `.Take(1)` is gone — and the two
+   must not drift: a range answered here for a candidate the fetch would not have asked is a hole nothing
+   ever fills again. A slice whose candidates **all** fell away is fetched from `contracts[0]` anyway, with a
+   warning naming the range, and is deliberately excluded from earning a memo at step 9. A slice that merely
+   lost some of them is a **warning too**, naming the expiries that did not resolve and what survived: the
+   volume decision ran over the survivors rather than over the cycle, and a directory negative lapses after
+   an hour, so the same read can decide differently later. It keeps its memo — the surviving candidate really
+   was asked — and the re-ask comes from the ledger rule above instead: a range is answered only when *every*
+   candidate of the slice answered it, so the dropped one rejoining the set puts the range back on the venue.
+   Bars a degraded read already stored are **not** rewritten by a later read; `reselect-bars` (gh#506) is the
+   verb for that. Two coarser conditions end the plan for the **whole read** instead — an
    instrument the registry does not serve, and a front whose expiry does not read against the cycle — and
    those are today's behaviour unchanged: every range becomes one present slice on `contracts[0]`,
    memoisation included, under a warning naming the instrument and the front, and the cycle where there is one. The existence checks are `FindContractAsync` calls: unpaced, on the vendor's general pool, and

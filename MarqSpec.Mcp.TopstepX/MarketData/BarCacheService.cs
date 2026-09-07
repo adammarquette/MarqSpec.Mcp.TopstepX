@@ -741,20 +741,48 @@ public sealed class BarCacheService
 
             foreach (RangeSlice slice in slices)
             {
-                if (!slice.FellBackToFront)
+                if (slice.Unresolved.Count == 0)
                 {
                     continue;
                 }
 
+                string dropped = string.Join(", ", slice.Unresolved.Select(static e => e.Code));
+
+                if (slice.FellBackToFront)
+                {
+                    _logger.LogWarning(
+                        "Falling back to the venue's own pick {Front} for {Instrument} over {From}..{To}: "
+                        + "no listed candidate among the expiries the {Cycle} cycle names for those trade "
+                        + "dates ({Unresolved}). Nothing permanent is recorded about this range being empty.",
+                        front,
+                        instrument.Symbol,
+                        slice.Range.Start,
+                        slice.Range.End,
+                        cycle.Code,
+                        dropped);
+                    continue;
+                }
+
+                // A NARROWED SET IS A DEGRADATION TOO, AND UNTIL gh#570 IT WAS THE SILENT ONE. The venue
+                // lists some of the cycle's expiries and not others, so the volume decision ADR-0020 exists
+                // for ran over what survived rather than over the cycle -- and when the survivor is the front
+                // itself the answer is the pre-ADR-0020 series for that stretch, indistinguishable by its
+                // shape from a correct one. A ContractDirectory negative lapses, so the same read an hour
+                // later can decide differently; that is precisely why it has to be said out loud now.
                 _logger.LogWarning(
-                    "Falling back to the venue's own pick {Front} for {Instrument} over {From}..{To}: "
-                    + "no listed candidate among the expiries the {Cycle} cycle names for those trade "
-                    + "dates. Nothing permanent is recorded about this range being empty.",
-                    front,
+                    "The venue lists no {Unresolved} for {Instrument}, so over {From}..{To} the {Cycle} "
+                    + "cycle's candidates came down to {Candidates}. That stretch was decided among what "
+                    + "survived the existence check, not among what the cycle names: if the surviving set "
+                    + "is the venue's own pick alone, it is the pre-ADR-0020 answer. The directory's "
+                    + "negative lapses after {NegativeLifetime}, and the next read asks again; bars already "
+                    + "stored are not rewritten by a read (reselect-bars, gh#506).",
+                    dropped,
                     instrument.Symbol,
                     slice.Range.Start,
                     slice.Range.End,
-                    cycle.Code);
+                    cycle.Code,
+                    string.Join(", ", slice.Candidates),
+                    ContractDirectory.NegativeLifetime);
             }
 
             planned.Add(new PlannedRange(range, slices));
@@ -890,6 +918,15 @@ public sealed class BarCacheService
     /// <b>A slice that FELL BACK is never merged.</b> Its candidate list is the front by degradation rather
     /// than by the cycle, it earns no permanent memo, and folding it into the present band would hand it one.
     /// </para>
+    /// <para>
+    /// <b>Neither is a slice the venue NARROWED to the front</b> (gh#570). "Comes down to the front alone" was
+    /// read off the candidate list, and a cycle naming two expiries the venue lists only one of produces
+    /// exactly that list — so an hour-long directory negative on the liquid contract folded a real historical
+    /// stretch into the present band, stored the front's bars under it, and logged nothing. Merged, the slice
+    /// stops being history at all: no candidate set for the ledger to test, no volume decision, and no
+    /// warning, for a stretch the front is not the answer for. <c>IsCycleFrontSlice</c> is the test, and it
+    /// asks what the <i>cycle</i> named rather than what happened to survive.
+    /// </para>
     /// </remarks>
     private static IReadOnlyList<RangeSlice> Coalesce(IReadOnlyList<RangeSlice> slices, string front)
     {
@@ -899,8 +936,8 @@ public sealed class BarCacheService
         {
             if (merged.Count > 0
                 && merged[^1].Range.End == slice.Range.Start
-                && OnlyTheFront(merged[^1], front)
-                && OnlyTheFront(slice, front))
+                && merged[^1].IsCycleFrontSlice(front)
+                && slice.IsCycleFrontSlice(front))
             {
                 merged[^1] = new RangeSlice(
                     new BarRange(merged[^1].Range.Start, slice.Range.End), [front], Present: true);
@@ -912,15 +949,6 @@ public sealed class BarCacheService
 
         return merged;
     }
-
-    /// <summary>Whether a slice asks the venue's own pick and nothing else, and did not fall back to it.</summary>
-    /// <param name="slice">The slice.</param>
-    /// <param name="front">The contract the venue marks active.</param>
-    /// <returns><see langword="true"/> when it is the front alone, by the cycle rather than by degradation.</returns>
-    private static bool OnlyTheFront(RangeSlice slice, string front) =>
-        !slice.FellBackToFront
-        && slice.Candidates.Count == 1
-        && string.Equals(slice.Candidates[0], front, StringComparison.Ordinal);
 
     /// <summary>
     /// The trade date an instant belongs to, falling back to its UTC date outside every session — exactly as

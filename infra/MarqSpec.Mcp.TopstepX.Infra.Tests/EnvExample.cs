@@ -1,0 +1,46 @@
+namespace MarqSpec.Mcp.TopstepX.Infra.Tests;
+
+/// <summary>
+/// Reads the configuration catalogue, <c>.env.example</c>, linked into this test's output. Every key it
+/// documents is a key the server reads — except the ones the compose stack owns and the ones a later card
+/// owns, which are named here as sets so the exclusion is a diff, not a memory.
+/// </summary>
+public static class EnvExample
+{
+    /// <summary>
+    /// Keys that exist only for the compose stack and must never reach a task definition (gh#516's set,
+    /// with the two the file grew after it was filed): the Kestrel certificate keys — the container never
+    /// holds a certificate (ADR-0021); the <c>POSTGRES_*</c> keys, which are the store container's, not
+    /// the server's; the Kestrel port overrides, which a task definition must never copy (ADR-0021's rule in
+    /// two directions); the static bearer token — the deployed mode is OAuth; and the local Grafana
+    /// stack's own login, which this application never reads.
+    /// </summary>
+    public static bool IsComposeOnly(string key) =>
+        key.StartsWith("Kestrel__", StringComparison.Ordinal)
+        || key.StartsWith("POSTGRES_", StringComparison.Ordinal)
+        || key is "ASPNETCORE_HTTP_PORTS" or "ASPNETCORE_HTTPS_PORTS" or "Mcp__HttpBearerToken"
+        || key == "GF_SECURITY_ADMIN_PASSWORD";
+
+    /// <summary>
+    /// Keys a later card of the same epic owns: the <c>Otel__*</c> keys are gh#537's, whose OTLP collector
+    /// sidecar decides the endpoint the server exports to and holds the vendor token (ADR-0023 §11), so
+    /// setting them here would be a second decision about the same seam. Left unset, the server registers no
+    /// telemetry at all (ADR-0019) — the documented off state, not a broken one.
+    /// </summary>
+    public static bool IsDeferred(string key) => key.StartsWith("Otel__", StringComparison.Ordinal);
+
+    public static IReadOnlyList<string> Keys()
+    {
+        var path = Path.Combine(AppContext.BaseDirectory, ".env.example");
+        return File.ReadAllLines(path)
+            .Select(line => line.Trim())
+            .Where(line => line.Length > 0 && !line.StartsWith('#') && line.Contains('='))
+            .Select(line => line[..line.IndexOf('=', StringComparison.Ordinal)].Trim())
+            .Distinct(StringComparer.Ordinal)
+            .ToList();
+    }
+
+    /// <summary>The keys the server task must carry, in its environment or its secrets.</summary>
+    public static IReadOnlyList<string> ServerKeys() =>
+        Keys().Where(k => !IsComposeOnly(k) && !IsDeferred(k)).ToList();
+}

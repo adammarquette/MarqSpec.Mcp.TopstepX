@@ -150,11 +150,19 @@ class merely *forwards* is drawn from a closed vocabulary is not decidable here 
 **call sites**, and for the one tag where those are decidable they are decided. `VenueCallGuardTests` reads
 `ProjectXMarketDataGateway`'s **compiled body** and takes the string literal in the operation argument's own
 stack slot at every `VenueCallGuard.RunAsync` call site, tracking depth from each instruction's stack
-behaviour. The first version searched the literals *near* the call instead, and an ordinary
-`_logger.LogDebug("Issuing {Operation}", VenueOperation.GetAccounts)` above the call made it green on an
-invented operation and red on a correct one — a heuristic worded as a proof, which is the same defect this
-section is about (PR #575 review). An operation that is not a literal is now reported as unreadable rather
-than answered, because a private forwarding helper would otherwise hide every call site behind it.
+behaviour. Every call site is **either answered or refused, never skipped**: an operation forwarded from a
+parameter — a private guarding helper — or arriving through `??`, a ternary, an interpolated string or a
+`switch` expression is reported as unreadable, because a helper hides every call site behind it and a join
+hides every branch but one.
+
+**That wording is the third attempt, and the two it replaced are the point.** The first version searched the
+literals *near* the call, and an ordinary `_logger.LogDebug("Issuing {Operation}", VenueOperation.GetAccounts)`
+above it made the gate green on an invented operation and red on a correct one. The second located the
+argument by stack depth but walked linearly, and `name ?? VenueOperation.GetAccounts` — which C# lowers with
+no `br` in it — carried the fallback literal into the operation slot and answered `get_accounts` for a site
+that also named `"list_accounts"`. Both times the check was narrower than the sentence describing it, which is
+the same defect this section is about; the rule is now stated as what it decides and what it refuses (PR #575
+review).
 
 **Registered unconditionally, subscribed conditionally.** `AddSingleton<HostTelemetry>()` runs whether or not
 `Otel__Endpoint` is set; only `AddSource`/`AddMeter` are inside the endpoint check. An unlistened counter is a

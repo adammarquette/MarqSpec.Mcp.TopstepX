@@ -139,9 +139,14 @@ public sealed class VenueCallGuardTests
         // a gateway that invented a string passed, because nothing here ever looked at it (gh#559).
         // GatewayOperationScan walks the compiled body, including the state machines an async method is
         // compiled into, and reads the string in the OPERATION ARGUMENT'S OWN STACK SLOT at every
-        // VenueCallGuard.RunAsync call site -- not the literals near it. The first version of the scan did
-        // search near the call, and an ordinary logging line carrying a VenueOperation constant made it go
-        // green on an invented operation and red on a correct one (PR #575 review).
+        // VenueCallGuard.RunAsync call site -- not the literals near it. Every call site is either ANSWERED
+        // or REFUSED, never skipped, so the set below is the set the gateway names.
+        //
+        // Two earlier versions were narrower than that sentence, and both were false greens: one searched
+        // the literals near the call, which an ordinary logging line carrying a VenueOperation constant
+        // defeated in both directions; the next located the argument by stack depth but walked linearly, and
+        // `name ?? VenueOperation.GetAccounts` -- lowered with no `br` in it -- carried the fallback literal
+        // into the operation slot (PR #575 review).
         IReadOnlyList<string> named = GatewayOperationScan.OperationsNamedBy(typeof(ProjectXMarketDataGateway));
 
         named.Should().NotBeEmpty(

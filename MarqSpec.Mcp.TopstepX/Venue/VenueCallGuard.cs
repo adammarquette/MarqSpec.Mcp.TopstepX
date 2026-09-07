@@ -11,10 +11,10 @@ namespace MarqSpec.Mcp.TopstepX.Venue;
 /// <para>
 /// <b>This was <c>ProjectXMarketDataGateway.Guarded</c>, and it is here now so it has a test</b> (gh#536).
 /// The behaviour is unchanged. What moved is where it lives: a private local could only be reached by
-/// building the gateway, which needs an <c>IProjectXApiClient</c> — an interface carrying the venue's whole
-/// order surface, so writing a fake would put <c>PlaceOrderAsync</c> and its siblings into this repository to
-/// test a counter, which is precisely what ADR-0002 exists to prevent. A funnel that takes a delegate is
-/// driven by a plain lambda.
+/// building the gateway, which needs an <c>IProjectXApiClient</c> — an interface that carries the venue's
+/// whole order-transmitting surface as well as its reads, so writing a fake for it would spell those method
+/// names out inside this repository merely to test a counter, which is precisely what ADR-0002 exists to
+/// prevent. A funnel that takes a delegate is driven by a plain lambda instead.
 /// </para>
 /// <para>
 /// <b>The vendor's own message string is deliberately not carried through.</b> It is free text on a channel a

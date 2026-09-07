@@ -105,6 +105,49 @@ break. That is accepted — subscribing is nearly free and the spans are worth h
 ticks and hub reconnects are named by this repository and change only when this repository changes them. A
 dashboard that must not break is built on those.
 
+## Update — 2026-09-06: the app-owned names, and what makes them stable
+
+Decision 6 above said the app-owned meters and spans of gh#536 are the stable surface a dashboard should be
+built on. They exist now, and this records **what that surface is**, so it can be cited rather than
+rediscovered from code.
+
+One `Meter` and one `ActivitySource`, both named **`MarqSpec.Mcp.TopstepX`**, in
+`MarqSpec.Mcp.TopstepX/Telemetry/HostTelemetry.cs`. Eight instruments — `mcp.cache.reads`, `mcp.venue.calls`,
+`mcp.venue.call.duration`, `mcp.gap.fills`, `mcp.tape.ticks`, `mcp.tape.reconnects`,
+`mcp.tape.lease.changes`, `mcp.indicator.projections` — and two span names, `venue.<operation>` and
+`cache.<series>`, both children of the SDK's `tools/call`. The full table with tags is in
+[architecture](../architecture.md) *What the host measures*, which is the one place it is written down.
+
+**These names are storage keys, and are covered by the same rule as an `IIndicator`'s `Name`.** Renaming an
+instrument, or a value in one of the closed vocabularies (`series`, `outcome`, `operation`, `reason`,
+`transition`, `change`), orphans every panel and every recording rule already built on the old one — where it
+reads back as an absence rather than an error. So a rename is a deliberate change with a dashboard edit and a
+`## Update` here beside it, never a tidy-up. The SDK's `Experimental.ModelContextProtocol` names carry no such
+promise, and that asymmetry is the whole point of decision 6.
+
+**The cardinality rule is now a gate, not a guideline.** Every tag value is drawn from one of those
+vocabularies, or is an instrument symbol or a resolution; `HostTelemetryTests` enumerates the allowed tag
+keys, drives every instrument, and fails on a value shaped like a timestamp, carrying `CON.F.US.`, or
+containing a space. The reason is smaller than a bill: a `Counter<T>` keeps one accumulator per distinct tag
+set **for the life of the process**, so an unbounded tag is a leak in this server before it is a cost in a
+backend. It is also the second half of invariant 4 — a vendor's free-text message is exactly the kind of
+string that carries an account number, and `VenueCallGuard` puts a status on the span and never the sentence.
+
+**Registered unconditionally, subscribed conditionally.** `AddSingleton<HostTelemetry>()` runs whether or not
+`Otel__Endpoint` is set; only `AddSource`/`AddMeter` are inside the endpoint check. An unlistened counter is a
+predicate and a return and an unlistened `ActivitySource` returns `null` without allocating, so decision 3 is
+unweakened and there is no "is telemetry on" branch at any of the call sites to get wrong. That was the
+alternative considered and rejected here: a nullable telemetry seam threaded through seven services would
+have made the counted path and the uncounted path two different paths, and only one of them would have been
+exercised.
+
+One thing this changes about the code around it: `ProjectXMarketDataGateway.Guarded` moved out to
+`VenueCallGuard`, behaviour unchanged. A private local could only be reached by constructing the gateway,
+which needs an `IProjectXApiClient` — an interface carrying the venue's whole order surface, so a fake for it
+would put `PlaceOrderAsync` into this repository to test a counter, which is the opposite of what
+[ADR-0002](0002-read-only-venue-boundary.md) asks for.
+
+
 ## Alternatives considered
 
 **Serilog (or NLog, or any structured logging library).** The tempting one, and the one gh#515 half-chose:

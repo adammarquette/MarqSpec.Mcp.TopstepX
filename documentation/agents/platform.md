@@ -1281,6 +1281,87 @@ the one that rewrites it. What exists today:
   `infra/cdk.out/`, which is ignored. Nothing here needs an AWS profile, and a command that asks for one is
   a lookup the committed context does not cover — add the entry, do not add a credential.
 
+### The deployment check (gh#521)
+
+**A green `cdk deploy` proves CloudFormation converged, and nothing else.**
+[`check-deployment.sh`](../../scripts/check-deployment.sh) is what asks the deployed hostname itself,
+from outside it, and it is `check-image-entrypoint.sh`'s rule one layer out — assert the reply, not the
+absence of a failure. gh#416's criterion applies verbatim: *a green startup log is not evidence that a client
+can connect*.
+
+```console
+$ MCP_CHECK_CLIENT_ID=… MCP_CHECK_CLIENT_SECRET=… MCP_CHECK_TOKEN_URL=… \
+    scripts/check-deployment.sh https://topstepx-mcp.staging.marqspec.com 0.4.0
+```
+
+The two arguments are the **origin** and the release `/health` must report. The Cognito deploy-check client
+(ADR-0023 §9) arrives in the **environment and never in an argument**, because an argument is in every `ps`
+on the box; it reaches curl through a `--config` file for the same reason, written by a heredoc so `bash -x`
+does not trace it, and the token endpoint's response body is never printed on any path. The self-test
+asserts on every case, red ones included, that the secret it supplied appears in neither stream.
+
+**What a green run licenses, exactly.** That hostname, at the moment it ran: an unauthenticated `/health`
+naming the expected release with its store attached; an anonymous `POST /mcp` refused `401` with a
+`resource_metadata` challenge whose document names this resource byte for byte; a `client_credentials` token
+minted; and `initialize` and `tools/list` answered over a **verified** TLS connection with at least 18 tools.
+It licenses **nothing** about the venue, the embedding provider, or any tool that reaches either — the gate
+deliberately calls no tool, because a store-only deployment has to pass — and nothing about latency, load,
+or the other tasks behind the load balancer: one request reaches one of them.
+
+**An https base URL is required, except on loopback**, where plain http is accepted and the TLS assertion
+prints `NOT MEASURED`. That is `OAuthOptions.IssuerProblems()`'s rule reused verbatim, and it is what makes a
+fixture possible at all. It does **not** forgive an unverifiable certificate on an https loopback URL, which
+is the one thing that leaves the `-k` question testable. The same rule is applied to `MCP_CHECK_TOKEN_URL`
+from **one shared classifier** rather than a second copy (gh#123): that request carries the client secret,
+so plain http off loopback is refused before anything is sent.
+
+**Wired into `build & unit tests`, beside `cdk synth`**, and it needs no Docker. Only the **self-test** runs
+in CI — there is no deployed hostname for the gate itself to point at until gh#519 has run — so it rides in
+a job that is already required on all three rungs, no ruleset write, and
+[the required-context table](#the-required-context-table) does not change. **`docs` is still seven steps**;
+nothing was added there.
+
+[`check-deployment-selftest.sh`](../../scripts/check-deployment-selftest.sh) serves the gate a fixture that
+is a correct deployment in every respect but one — a few lines of Python `http.server`, no product code —
+and requires it to reject each fault **by name**, never by exit status, since the gate also exits 1 for
+"curl is required" and for an unset variable. Eight cases: a sound one it must accept **writing zero bytes
+to stderr** (gh#239, gh#271, measured before being asserted), then a wrong version, a `/mcp` answering an
+anonymous POST `200`, a metadata document naming somebody else's resource, seventeen tools against a floor
+of eighteen, a token endpoint answering `200` with no token in it, a self-signed certificate, and a
+plain-http token endpoint off loopback. Four things worth carrying:
+
+- **The tool count is a measurement, not a guess.** `inputSchema` is required exactly once per entry of a
+  `tools/list` reply and appears in no JSON Schema vocabulary, so counting it counts tools — checked against
+  a real reply from this server on 2026-09-07, twenty tools and twenty occurrences. The floor is 18 and the
+  faulty fixture serves **17**, one under, because a fixture that is wildly wrong is satisfied by a gate that
+  is only roughly right.
+- **Only the certificate case can prove `-k` is absent.** Every other fault is content, and a gate could be
+  checked for those over plain http forever while quietly bypassing verification. Adding `--insecure` to the
+  gate's one option list leaves seven cases green and reddens that one — and the mutant prints
+  *"the certificate chain and the host name verified"* on the way, because `%{ssl_verify_result}` comes back
+  **0** under `-k`. An assertion read off the connection cannot see the flag that defeated it.
+- **`MSYS_NO_PATHCONV=1` is the wrong tool here, and the sibling gates that carry it are not a precedent.**
+  They hand paths to a Linux container, where MSYS rewriting `/app/…` is pure damage. This hands paths to a
+  Windows `python.exe`, where the rewriting is what makes them usable — turn it off and the interpreter is
+  given `/tmp/…`, resolves it against the current drive, and reports a file that is not there. So paths reach
+  python through **argv**, which MSYS converts, never through the environment, which it does not; and
+  openssl's `/CN=…` subject is excluded by prefix with `MSYS2_ARG_CONV_EXCL` rather than by turning the whole
+  line off, which would hand that same native-Windows openssl a `/tmp` path it cannot open.
+- **`command -v python3` succeeds on a Windows checkout where no interpreter exists** — it finds the
+  WindowsApps execution alias, a stub that prints *"Python was not found"* and exits 49. The self-test
+  resolves an interpreter by **running** one, which is the gh#126 family ("tell 'no match' from 'I could not
+  look'") wearing a different hat: a probe that reads as a working detection right up to the point where
+  every case fails for a reason that is not the gate's.
+
+**What no run of it has proven yet, and cannot until gh#519.** There is no deployed instance, so the gate has
+never met a real hostname: no TLS certificate from a real issuer, no Cognito token, no `initialize` past a
+real resource server. Assertions 1 and 2 have been run against **real product code** — the host in `OAuth`
+mode on loopback answers `/health`, the `401` and the RFC 9728 document, and the gate passes both — and
+assertion 3 stops there, correctly, for want of a pool. The first run against the staging hostname is
+gh#521's own acceptance criterion and it is a human's. **The runbook**, `documentation/deployment.md`, is
+gh#519's and does not exist yet; the usage above is the interim home for it, and that section moves there
+when it does.
+
 ## Definition of done
 
 Pipeline green on `net10.0`, the one framework every project declares · the integration tier passes with no

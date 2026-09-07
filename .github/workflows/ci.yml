@@ -284,6 +284,27 @@ jobs:
           done
           ls -1 cdk.out/*.template.json
 
+      # gh#521. `scripts/check-deployment.sh` asks a DEPLOYED hostname whether it answers -- /health and the
+      # release it names, the 401 and the metadata document a connector reads before it has a token, a
+      # Cognito token, then initialize and tools/list over verified TLS. The GATE itself cannot run here:
+      # there is no deployed instance until gh#519, and pointing it at one would need a real certificate, a
+      # real pool and a stamped version, none of which a runner has.
+      #
+      # WHAT RUNS HERE IS THE SELF-TEST, and it is the whole point of the card rather than a formality: a
+      # deployment check that cannot fail is worse than none, because it is BELIEVED. It serves the real gate
+      # a fixture that is a correct deployment in exactly one wrong way -- a stale version, an unprotected
+      # /mcp, a metadata document naming somebody else, seventeen tools, a token endpoint minting nothing, a
+      # self-signed certificate, a plain-http token endpoint -- and requires it to reject each BY NAME, plus
+      # a sound one it must accept writing nothing at all to stderr. The fixture is a few lines of Python
+      # http.server; there is no product code in it, no network beyond loopback and no credential anywhere.
+      #
+      # IT RIDES IN THIS JOB for the reason everything else added here does: `build & unit tests` is already
+      # required on all three rungs, so this enforces by wiring rather than by a ruleset write, and a new
+      # context nobody adds is a check that only ever reports (gh#26). NO DOCKER -- python3, curl and openssl
+      # are all it needs, and ubuntu-latest ships all three. `docs` is untouched and is still seven steps.
+      - name: Prove the deployment check can still fail
+        run: ./scripts/check-deployment-selftest.sh
+
       - name: Upload unit test results
         if: always()
         uses: actions/upload-artifact@v7

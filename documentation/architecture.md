@@ -470,6 +470,52 @@ Two things about it are easy to undo by accident:
 when unset. Nothing here declares a version in a file — the tag is the version
 ([ADR-0001](adr/0001-tag-driven-versioning.md)) and the image build never sees `.git` — so the only honest
 source for "which release is this" is the deployment that started the task.
+### What the host measures
+
+`ConfigureTelemetry` mostly *subscribes* — to the MCP SDK's `Experimental.ModelContextProtocol` source and
+meter, Npgsql's, ASP.NET Core's, HttpClient's and the runtime's. **One `Meter` and one `ActivitySource` are
+this repository's own**, both named `MarqSpec.Mcp.TopstepX`, registered once in the composition root and
+subscribed beside the rest (`R-5.10`, gh#536). They exist because the frameworks report what *they* see and
+nothing about what this server is for: whether a read was a cache hit or a venue round trip is the number the
+cache-aside design is judged on (`R-1.1`, `R-1.3`), and the market hub runs over SignalR, which nothing
+instruments at all. They are also the **stable surface** — the SDK's names carry `Experimental` and may move
+on a bump, so a dashboard that must not break is built on these
+([ADR-0019](adr/0019-otlp-as-the-telemetry-boundary.md) decision 6).
+
+| Instrument | Kind | Tags | Recorded by |
+|---|---|---|---|
+| `mcp.cache.reads` | counter | `series` = bars \| indicators \| footprint · `outcome` = hit \| miss \| partial · `symbol` · `resolution` | `BarCacheService`, `IndicatorCacheService`, `FootprintCacheService` |
+| `mcp.venue.calls` | counter | `operation` | `VenueCallGuard`, the one funnel `ProjectXMarketDataGateway` calls through |
+| `mcp.venue.call.duration` | histogram, seconds | `operation` | as above |
+| `mcp.gap.fills` | counter, ranges | `reason` = absent \| gap \| unattributed · `symbol` · `resolution` | `BarCacheService`, around `BarGapDetector` |
+| `mcp.tape.ticks` | counter, prints | `symbol` | `TradeTapeRecorder`, where the print landed |
+| `mcp.tape.reconnects` | counter | `transition` = connected \| disconnected | `TradeTapeRecorder` |
+| `mcp.tape.lease.changes` | counter | `change` = acquired \| refused \| lost · `symbol` | `TradeTapeRecorder` (ADR-0016) |
+| `mcp.indicator.projections` | counter, values | `indicator` · `symbol` · `resolution` | `IndicatorProjector` |
+
+`operation` is a closed vocabulary too — `resolve_contracts`, `find_contract`, `get_bars`, `get_accounts`,
+`get_positions`, `get_orders`, `get_trades` — named here rather than taken from the vendor's method names, so
+a vendor rename cannot silently retire a series.
+
+Two spans sit under the SDK's `tools/call`: **`venue.<operation>`** per vendor request and
+**`cache.<series>`** per cache-aside read, which is what makes a slow tool call legible as *where* the time
+went.
+
+**Three rules hold this together, and each is a test rather than a convention.** *Every tag value is a closed
+vocabulary, an instrument symbol or a resolution* — never a timestamp, a venue contract id or vendor free
+text, because a counter keeps one accumulator per distinct tag set for the life of the process, so an
+unbounded tag is a memory leak here before it is a bill anywhere else. *The instrument names and the
+vocabulary values are storage keys*, exactly as an `IIndicator`'s `Name` is in the store: renaming one
+orphans every panel built on it, where it reads back as an absence rather than an error. And *nothing moves
+below the host* — `Domain` reads no clock, store or config singleton
+([ADR-0006](adr/0006-indicators-as-projections.md)), and a `Meter` is a process-wide singleton, which is all
+three at once.
+
+With no `Otel__Endpoint` the instruments still exist and **nothing listens**, which costs a predicate and a
+return per measurement and no allocation per span. That is why the instrumentation is unconditional at every
+call site: there is no "is telemetry on" branch to get wrong, and no configuration under which a counted path
+and an uncounted path can diverge.
+
 
 ## Degradation — what an absent dependency does
 

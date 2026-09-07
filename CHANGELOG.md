@@ -15,6 +15,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **The host counts what it is for: cache hits and misses, venue calls, gap fills, tape ticks, hub
+  reconnects and claim hand-offs.** One `Meter` and one `ActivitySource`, both named
+  `MarqSpec.Mcp.TopstepX`, registered once and subscribed by `ConfigureTelemetry` beside the framework
+  sources it already reads. Eight instruments — `mcp.cache.reads` (`series`, `outcome` = hit/miss/partial,
+  `symbol`, `resolution`), `mcp.venue.calls` and `mcp.venue.call.duration` (`operation`), `mcp.gap.fills`
+  (`reason` = absent/gap/unattributed), `mcp.tape.ticks`, `mcp.tape.reconnects` (`transition`),
+  `mcp.tape.lease.changes` (`change` = acquired/refused/lost) and `mcp.indicator.projections`
+  (`indicator`) — plus two spans under the SDK's `tools/call`, `venue.<operation>` per vendor request and
+  `cache.<series>` per cache-aside read. Whether a read was a cache hit or a venue round trip is the number
+  the cache-aside design is judged on (`R-1.1`, `R-1.3`) and it was invisible from outside the process; the
+  market hub runs over SignalR, which nothing instruments, so a silently dead subscription looked exactly
+  like a quiet market. Every tag value comes from a closed vocabulary, an instrument symbol or a resolution
+  — a unit test enumerates the keys and refuses a timestamp, a contract id or vendor free text, because a
+  counter keeps one accumulator per distinct tag set for the life of the process. Registered
+  unconditionally and subscribed only when `Otel__Endpoint` is set, so an unconfigured host is exactly as
+  quiet as before and no call site carries an "is telemetry on" branch. `ProjectXMarketDataGateway.Guarded`
+  moved out to `VenueCallGuard` unchanged, so the funnel every vendor call goes through has a test for the
+  first time. The checked-in Grafana dashboard gains a row for all eight, and its opening note no longer
+  claims the page carries nothing of this repository's own. `Domain` is untouched
+  ([ADR-0006](documentation/adr/0006-indicators-as-projections.md): a `Meter` is a process-wide singleton).
+  [ADR-0019](documentation/adr/0019-otlp-as-the-telemetry-boundary.md) gains a dated update naming these as
+  the stable surface, and [architecture](documentation/architecture.md) gains *What the host measures*
+  (gh#532, gh#536).
 - **`Store__StartupWaitSeconds` — how long startup waits for a store that is not answering yet.** `0` by
   default, which is one probe and no delay: byte for byte what every launch did before, and what compose
   wants, since its `depends_on` is a `pg_isready` health gate. It exists for a deployment with **no

@@ -11,7 +11,7 @@ namespace MarqSpec.Mcp.TopstepX.Infra.Tests;
 /// </summary>
 public sealed class StatefulResourceTests(EnvironmentTemplates templates) : IClassFixture<EnvironmentTemplates>
 {
-    private static readonly string[] StatefulTypes =
+    private static readonly string[] _statefulTypes =
     [
         "AWS::EFS::FileSystem",
         "AWS::EFS::AccessPoint",
@@ -26,7 +26,7 @@ public sealed class StatefulResourceTests(EnvironmentTemplates templates) : ICla
     public void Every_stateful_resource_is_retained_on_delete_and_on_replace(string env, string _)
     {
         var t = templates.For(env);
-        foreach (var type in StatefulTypes)
+        foreach (var type in _statefulTypes)
         {
             var resources = t.Resources(type);
             resources.Should().NotBeEmpty($"the stack owns at least one {type}");

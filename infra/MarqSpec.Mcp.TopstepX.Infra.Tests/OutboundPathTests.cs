@@ -12,7 +12,7 @@ namespace MarqSpec.Mcp.TopstepX.Infra.Tests;
 /// </summary>
 public sealed class OutboundPathTests
 {
-    private static readonly string[] EndpointServices =
+    private static readonly string[] _endpointServices =
     [
         "secretsmanager", "ssm", "ssmmessages", "logs", "elasticfilesystem", "ecr.api", "ecr.dkr",
     ];
@@ -82,7 +82,7 @@ public sealed class OutboundPathTests
         if (endpoints)
         {
             var interfaceEndpoints = vpcEndpoints.Where(e => e["VpcEndpointType"]?.GetValue<string>() == "Interface").ToList();
-            foreach (var service in EndpointServices)
+            foreach (var service in _endpointServices)
             {
                 interfaceEndpoints.Should().Contain(e => Synthesised.Text(e["ServiceName"]).Contains($".{service}\"", StringComparison.Ordinal),
                     $"the {service} API needs an interface endpoint in this shape");

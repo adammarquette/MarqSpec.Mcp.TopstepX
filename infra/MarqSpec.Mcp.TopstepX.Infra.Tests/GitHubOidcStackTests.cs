@@ -13,11 +13,11 @@ public sealed class GitHubOidcStackTests
 {
     private const string Repository = "repo:adammarquette/MarqSpec.Mcp.TopstepX";
 
-    private static readonly Synthesised Stack = Synthesised.Of(new GitHubOidcStack(new App(), "topstepx-mcp-github-oidc", new StackProps { Env = Synthesised.TestEnv }));
+    private static readonly Synthesised _stack = Synthesised.Of(new GitHubOidcStack(new App(), "topstepx-mcp-github-oidc", new StackProps { Env = Synthesised.TestEnv }));
 
     private static (JsonObject Role, JsonObject Statement) DeployRole(string name)
     {
-        var role = Stack.Resources("AWS::IAM::Role").Values.Select(Stack.Properties)
+        var role = _stack.Resources("AWS::IAM::Role").Values.Select(_stack.Properties)
             .Single(r => r["RoleName"]?.GetValue<string>() == name);
         var statement = role["AssumeRolePolicyDocument"]!["Statement"]!.AsArray().Should().ContainSingle().Which!.AsObject();
         return (role, statement);
@@ -26,11 +26,11 @@ public sealed class GitHubOidcStackTests
     [Fact]
     public void One_provider_for_github_with_the_sts_audience()
     {
-        var providers = Stack.Json["Resources"]!.AsObject()
+        var providers = _stack.Json["Resources"]!.AsObject()
             .Where(r => r.Value!["Type"]!.GetValue<string>().Contains("OIDCProvider", StringComparison.Ordinal))
             .ToList();
         var provider = providers.Should().ContainSingle().Which.Value!.AsObject();
-        var props = Stack.Properties(provider);
+        var props = _stack.Properties(provider);
         props["Url"]!.GetValue<string>().Should().Be("https://token.actions.githubusercontent.com");
         props["ClientIdList"]!.AsArray().Select(c => c!.GetValue<string>()).Should().Equal("sts.amazonaws.com");
     }
@@ -62,7 +62,7 @@ public sealed class GitHubOidcStackTests
     [Fact]
     public void Neither_role_trusts_a_wildcard_repository_or_any_branch()
     {
-        var text = Stack.Json.ToJsonString();
+        var text = _stack.Json.ToJsonString();
         text.Should().NotContain("repo:*");
         text.Should().NotContain("refs/heads/*");
         text.Should().NotContain(":ref:*");
@@ -99,7 +99,7 @@ public sealed class GitHubOidcStackTests
     [Fact]
     public void No_access_key_exists_anywhere()
     {
-        Stack.Resources("AWS::IAM::AccessKey").Should().BeEmpty();
-        Stack.Resources("AWS::IAM::User").Should().BeEmpty();
+        _stack.Resources("AWS::IAM::AccessKey").Should().BeEmpty();
+        _stack.Resources("AWS::IAM::User").Should().BeEmpty();
     }
 }

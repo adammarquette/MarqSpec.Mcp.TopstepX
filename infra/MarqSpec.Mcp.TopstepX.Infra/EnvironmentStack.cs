@@ -14,13 +14,13 @@ using Amazon.CDK.AWS.S3;
 using Amazon.CDK.AWS.ServiceDiscovery;
 using Amazon.CDK.AWS.SSM;
 using Constructs;
-using EcsSecret = Amazon.CDK.AWS.ECS.Secret;
-using SmSecret = Amazon.CDK.AWS.SecretsManager.Secret;
-using SmSecretProps = Amazon.CDK.AWS.SecretsManager.SecretProps;
 using CfnParameter = Amazon.CDK.CfnParameter;
 using CfnParameterProps = Amazon.CDK.CfnParameterProps;
+using EcsSecret = Amazon.CDK.AWS.ECS.Secret;
 using FileSystem = Amazon.CDK.AWS.EFS.FileSystem;
 using FileSystemProps = Amazon.CDK.AWS.EFS.FileSystemProps;
+using SmSecret = Amazon.CDK.AWS.SecretsManager.Secret;
+using SmSecretProps = Amazon.CDK.AWS.SecretsManager.SecretProps;
 
 namespace MarqSpec.Mcp.TopstepX.Infra;
 

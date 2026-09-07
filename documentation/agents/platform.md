@@ -1099,7 +1099,7 @@ found.
 | `production` environment carries a `required_reviewers` rule | `release.yml`'s `gate` job — the only thing between a merge and a public GHCR tag | [`check-release-gate.sh`](../../scripts/check-release-gate.sh), in `ci.yml` and in `release.yml` | gh#108 |
 | `required_status_checks` on `protect-develop` / `-staging` / `-main` | every merge gate in the table above; `no-order-path` carries ADR-0002 | `bootstrap.sh` step 3, which reads the contexts back per rung | gh#26, gh#72, gh#114; and gh#125, the one that went the other way — set correctly and recorded in `bootstrap.sh`, but not in the table above |
 | ruleset `enforcement: active` | all of the above | `bootstrap.sh` step 3 | `MarqSpec.Client.ProjectX`, disabled from creation |
-| the two Cognito client secrets' **values** in `topstepx-mcp/<env>/{claude-connector,deploy-check}` | the connector login (gh#524) and `check-deployment.sh`'s `client_credentials` token (gh#521); the stack creates the shells empty and no custom resource fills them ([ADR-0023](../adr/0023-aws-deployment-topology.md), 2026-09-07 Cognito entry) | nothing yet — gh#521's check is the first thing that fails on an empty shell, and it fails as a `401` from the issuer, not as "the secret is empty" | never; not yet deployed (gh#519 writes them by hand) |
+| the two Cognito client secrets' **values** in `topstepx-mcp/<env>/{claude-connector,deploy-check}` | the connector login (gh#524) and `check-deployment.sh`'s `client_credentials` token (gh#521); the stack creates the shells empty and no custom resource fills them ([ADR-0023](../adr/0023-aws-deployment-topology.md), 2026-09-07 Cognito entry) | gh#521's check, but read the shape carefully — an EMPTY shell fails it at `UNSET MCP_CHECK_CLIENT_SECRET` **before any request**, naming the empty secret and saying nothing about the deployment; a non-empty WRONG secret is the other path and is the one that comes back `NO TOKEN … answered 401`. Both measured 2026-09-07; this row said the opposite until then | never; not yet deployed (gh#519 writes them by hand) |
 
 ### The release approval gate (gh#108)
 
@@ -1297,9 +1297,30 @@ $ MCP_CHECK_CLIENT_ID=… MCP_CHECK_CLIENT_SECRET=… MCP_CHECK_TOKEN_URL=… \
 The two arguments are the **origin** and the release `/health` must report. The Cognito deploy-check client
 (ADR-0023 §9) arrives in the **environment and never in an argument**, because an argument is in every `ps`
 on the box, and reaches curl through a `--config` file for the same reason. The token endpoint's response
-body is never printed on any path. **Its secret is one of the shells gh#517 created empty** and gh#519
-writes by hand — the settings table above carries the row, and notes that this check is the first thing that
-fails on an unfilled one, as a `401` from the issuer rather than as "the secret is empty". The self-test asserts on every case, red ones included, that **neither**
+body is never printed on any path. **Its secret is one of the shells gh#517 created empty** and gh#519 writes
+by hand; the settings table above carries the row.
+
+**An unfilled shell and a wrong secret are two different runs, and the first version of this sentence had
+them the wrong way round** — it said an unfilled shell surfaces as a `401` from the issuer rather than as
+"the secret is empty", endorsing the same claim in the settings row. Measured against the fixture,
+2026-09-07:
+
+```console
+$ MCP_CHECK_CLIENT_SECRET= …                       # an unfilled shell: empty, which is how it is created
+  UNSET  MCP_CHECK_CLIENT_SECRET is empty or unset
+…  NOTHING HAS BEEN CHECKED: no request was made, so this says nothing at all about the deployment.
+
+$ MCP_CHECK_CLIENT_SECRET=a-wrong-but-non-empty-secret …
+  OK  /health: 200, status ok, store available, version 9.9.9-fixture
+  OK  /mcp refuses an anonymous call with 401, and the document it names claims …
+  NO TOKEN  the token endpoint answered 401
+```
+
+The empty case never reaches the network; the wrong-secret case passes assertions 1 and 2 first. **An
+operator sent to look for a `401` who is handed `UNSET` goes hunting a fault they do not have**, which is why
+this is worth two sentences rather than one — and the general form is worth more than either: *a document
+that says how a check fails is asserting a measurable thing, so measure it*. Both rows now name the path they
+describe, and the gate's own `UNSET` arm names the shell explicitly. The self-test asserts on every case, red ones included, that **neither**
 the client secret nor the bearer appears in either stream.
 
 **"A heredoc, so `bash -x` does not trace it" is the shape of a claim that is true and does not hold, and

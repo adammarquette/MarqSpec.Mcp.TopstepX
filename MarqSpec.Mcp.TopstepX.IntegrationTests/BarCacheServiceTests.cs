@@ -5,6 +5,7 @@ using MarqSpec.Mcp.TopstepX.Data.Entities;
 using MarqSpec.Mcp.TopstepX.Domain;
 using MarqSpec.Mcp.TopstepX.Domain.MarketData;
 using MarqSpec.Mcp.TopstepX.MarketData;
+using MarqSpec.Mcp.TopstepX.Telemetry;
 using MarqSpec.Mcp.TopstepX.Tests.MarketData;
 using MarqSpec.Mcp.TopstepX.Tools;
 using MarqSpec.Mcp.TopstepX.Venue;
@@ -41,6 +42,7 @@ public sealed class BarCacheServiceTests : IAsyncLifetime
     private readonly SeriesStoreFixture _fixture;
 
     private readonly TopstepXDbContext _database;
+    private readonly HostTelemetry _telemetry = new();
 
     /// <param name="fixture">The shared container.</param>
     public BarCacheServiceTests(SeriesStoreFixture fixture)
@@ -56,6 +58,7 @@ public sealed class BarCacheServiceTests : IAsyncLifetime
     public Task DisposeAsync()
     {
         _database.Dispose();
+        _telemetry.Dispose();
         return Task.CompletedTask;
     }
 
@@ -189,10 +192,11 @@ public sealed class BarCacheServiceTests : IAsyncLifetime
         IndicatorCatalog catalog = new(
             Options.Create(new IndicatorOptions { AtrPeriod = 3, RsiPeriod = 3 }), calendar);
 
-        IndicatorProjector projector = new(_database, catalog, NullLogger<IndicatorProjector>.Instance);
+        IndicatorProjector projector =
+            new(_database, catalog, NullLogger<IndicatorProjector>.Instance, _telemetry);
 
         return new BarCacheService(
-            _database, gateway, calendar, projector, clock, NullLogger<BarCacheService>.Instance);
+            _database, gateway, calendar, projector, clock, NullLogger<BarCacheService>.Instance, _telemetry);
     }
 
     [Fact]

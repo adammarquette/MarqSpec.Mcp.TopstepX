@@ -61,20 +61,17 @@ namespace MarqSpec.Mcp.TopstepX.MarketData;
 /// <param name="database">The store.</param>
 /// <param name="catalog">The indicators to project.</param>
 /// <param name="logger">The logger.</param>
-/// <param name="telemetry">
-/// The app-owned meter. Optional only so hand-built tests that do not care about it keep compiling; the
-/// composition root always supplies the singleton.
-/// </param>
+/// <param name="telemetry">The app-owned meter.</param>
 public sealed class IndicatorProjector(
     TopstepXDbContext database,
     IndicatorCatalog catalog,
     ILogger<IndicatorProjector> logger,
-    HostTelemetry? telemetry = null)
+    HostTelemetry telemetry)
 {
     private readonly TopstepXDbContext _database = database;
     private readonly IndicatorCatalog _catalog = catalog;
     private readonly ILogger<IndicatorProjector> _logger = logger;
-    private readonly HostTelemetry _telemetry = telemetry ?? new HostTelemetry();
+    private readonly HostTelemetry _telemetry = telemetry;
 
     /// <summary>
     /// Recomputes every configured indicator for one series and writes the values that changed.

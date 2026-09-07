@@ -6,6 +6,7 @@ using MarqSpec.Mcp.TopstepX.Data.Entities;
 using MarqSpec.Mcp.TopstepX.Domain;
 using MarqSpec.Mcp.TopstepX.Domain.MarketData;
 using MarqSpec.Mcp.TopstepX.MarketData;
+using MarqSpec.Mcp.TopstepX.Telemetry;
 using MarqSpec.Mcp.TopstepX.Tests.MarketData;
 using MarqSpec.Mcp.TopstepX.Tools;
 using Microsoft.EntityFrameworkCore;
@@ -59,6 +60,7 @@ public sealed class IndicatorReadProjectionTests : IAsyncLifetime
     private readonly TopstepXDbContext _database;
     private readonly CountingGateway _gateway;
     private readonly FakeTimeProvider _clock;
+    private readonly HostTelemetry _telemetry = new();
 
     /// <param name="fixture">The shared container.</param>
     public IndicatorReadProjectionTests(SeriesStoreFixture fixture)
@@ -79,6 +81,7 @@ public sealed class IndicatorReadProjectionTests : IAsyncLifetime
     public Task DisposeAsync()
     {
         _database.Dispose();
+        _telemetry.Dispose();
         return Task.CompletedTask;
     }
 
@@ -170,7 +173,8 @@ public sealed class IndicatorReadProjectionTests : IAsyncLifetime
         await using IDbContextTransaction replay = await _database.Database
             .BeginTransactionAsync(IsolationLevel.RepeatableRead, CancellationToken.None);
 
-        int changed = await new IndicatorProjector(_database, wider, NullLogger<IndicatorProjector>.Instance)
+        int changed = await new IndicatorProjector(
+            _database, wider, NullLogger<IndicatorProjector>.Instance, _telemetry)
             .ProjectAsync("test", _es, Resolution, _clock.GetUtcNow(), CancellationToken.None);
         await _database.SaveChangesAsync();
         await replay.CommitAsync(CancellationToken.None);
@@ -561,9 +565,10 @@ public sealed class IndicatorReadProjectionTests : IAsyncLifetime
             _database,
             _gateway,
             Calendar(),
-            new IndicatorProjector(_database, catalog, NullLogger<IndicatorProjector>.Instance),
+            new IndicatorProjector(_database, catalog, NullLogger<IndicatorProjector>.Instance, _telemetry),
             _clock,
-            NullLogger<BarCacheService>.Instance);
+            NullLogger<BarCacheService>.Instance,
+            _telemetry);
 
         BarReadResult warmed = await cache.GetBarsAsync(
             _es, Resolution, new BarRange(Bucket(0), Bucket(bars)), CancellationToken.None);
@@ -574,8 +579,14 @@ public sealed class IndicatorReadProjectionTests : IAsyncLifetime
     private IndicatorCacheService Cache(
         IndicatorCatalog catalog,
         IndicatorReadProjectionCounter? readTriggeredReplays = null) =>
-        new(_database, catalog, new IndicatorProjector(_database, catalog, NullLogger<IndicatorProjector>.Instance),
-            _clock, NullLogger<IndicatorCacheService>.Instance, readTriggeredReplays);
+        new(
+            _database,
+            catalog,
+            new IndicatorProjector(_database, catalog, NullLogger<IndicatorProjector>.Instance, _telemetry),
+            _clock,
+            NullLogger<IndicatorCacheService>.Instance,
+            _telemetry,
+            readTriggeredReplays);
 
     private IndicatorTools Tools(IndicatorCatalog catalog) =>
         new(

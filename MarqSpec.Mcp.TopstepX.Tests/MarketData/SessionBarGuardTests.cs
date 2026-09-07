@@ -4,6 +4,7 @@ using MarqSpec.Mcp.TopstepX.Data;
 using MarqSpec.Mcp.TopstepX.Domain;
 using MarqSpec.Mcp.TopstepX.Domain.MarketData;
 using MarqSpec.Mcp.TopstepX.MarketData;
+using MarqSpec.Mcp.TopstepX.Telemetry;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
@@ -34,8 +35,14 @@ public sealed class SessionBarGuardTests : IDisposable
             .UseInMemoryDatabase(Guid.NewGuid().ToString())
             .Options);
 
+    private readonly HostTelemetry _telemetry = new();
+
     /// <inheritdoc />
-    public void Dispose() => _database.Dispose();
+    public void Dispose()
+    {
+        _database.Dispose();
+        _telemetry.Dispose();
+    }
 
     /// <summary>
     /// Refuses a repeated trade date, naming it, rather than letting the store raise a cardinality violation.
@@ -75,9 +82,10 @@ public sealed class SessionBarGuardTests : IDisposable
             _database,
             gateway,
             calendar,
-            new IndicatorProjector(_database, catalog, NullLogger<IndicatorProjector>.Instance),
+            new IndicatorProjector(_database, catalog, NullLogger<IndicatorProjector>.Instance, _telemetry),
             clock,
-            NullLogger<BarCacheService>.Instance);
+            NullLogger<BarCacheService>.Instance,
+            _telemetry);
 
         return new SessionBarService(
             _database, bars, gateway, calendar, clock, NullLogger<SessionBarService>.Instance);

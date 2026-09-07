@@ -6,6 +6,7 @@ using MarqSpec.Mcp.TopstepX.Data.Entities;
 using MarqSpec.Mcp.TopstepX.Domain;
 using MarqSpec.Mcp.TopstepX.Domain.MarketData;
 using MarqSpec.Mcp.TopstepX.MarketData;
+using MarqSpec.Mcp.TopstepX.Telemetry;
 using MarqSpec.Mcp.TopstepX.Tools;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Diagnostics;
@@ -255,14 +256,17 @@ public sealed class SnapshotQueryCountTests(SchemaFixture fixture)
 
         await database.SaveChangesAsync();
 
+        using HostTelemetry telemetry = new();
         IndicatorCatalog catalog = new(Options.Create(new IndicatorOptions()), Calendar);
-        IndicatorProjector projector = new(database, catalog, NullLogger<IndicatorProjector>.Instance);
+        IndicatorProjector projector =
+            new(database, catalog, NullLogger<IndicatorProjector>.Instance, telemetry);
         IndicatorCacheService warm = new(
             database,
             catalog,
             projector,
             new FakeTimeProvider(Start),
-            NullLogger<IndicatorCacheService>.Instance);
+            NullLogger<IndicatorCacheService>.Instance,
+            telemetry);
 
         foreach (int resolution in new[] { 5, 60 })
         {
@@ -292,10 +296,12 @@ public sealed class SnapshotQueryCountTests(SchemaFixture fixture)
 
         SeriesGateway gateway = new(Venue, [], Contract);
 
-        IndicatorProjector projector = new(database, catalog, NullLogger<IndicatorProjector>.Instance);
+        HostTelemetry telemetry = new();
+        IndicatorProjector projector =
+            new(database, catalog, NullLogger<IndicatorProjector>.Instance, telemetry);
 
         BarCacheService cache = new(
-            database, gateway, calendar, projector, clock, NullLogger<BarCacheService>.Instance);
+            database, gateway, calendar, projector, clock, NullLogger<BarCacheService>.Instance, telemetry);
 
         InstrumentResolver resolver = new(new InstrumentRegistry(wrapped), new StoreAvailabilityHolder());
         ToolGuards guards = new(wrapped);
@@ -308,7 +314,7 @@ public sealed class SnapshotQueryCountTests(SchemaFixture fixture)
             database,
             catalog,
             new IndicatorCacheService(
-                database, catalog, projector, clock, NullLogger<IndicatorCacheService>.Instance),
+                database, catalog, projector, clock, NullLogger<IndicatorCacheService>.Instance, telemetry),
             gateway,
             guards);
 

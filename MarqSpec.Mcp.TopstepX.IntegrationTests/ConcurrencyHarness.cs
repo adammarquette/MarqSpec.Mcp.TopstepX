@@ -4,6 +4,7 @@ using MarqSpec.Mcp.TopstepX.Data;
 using MarqSpec.Mcp.TopstepX.Domain;
 using MarqSpec.Mcp.TopstepX.Domain.MarketData;
 using MarqSpec.Mcp.TopstepX.MarketData;
+using MarqSpec.Mcp.TopstepX.Telemetry;
 using MarqSpec.Mcp.TopstepX.Venue;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Diagnostics;
@@ -400,11 +401,19 @@ public static class ConcurrencyHarness
     public static InstrumentRegistry Registry() =>
         new(Options.Create(new MarketDataOptions { Instruments = Symbol + "," + RebuildSymbol }));
 
+    /// <summary>
+    /// The app-owned telemetry this harness's services are built with. One instance for the whole process,
+    /// since nothing here collects from it — the harness is about interleaving, not about telemetry. Internal
+    /// rather than private so other fixtures in this project that compose a service directly (rather than
+    /// through <see cref="Projector"/> or <see cref="Cache"/>) can build it with the same instance.
+    /// </summary>
+    internal static readonly HostTelemetry Telemetry = new();
+
     /// <summary>A projector over a context.</summary>
     /// <param name="database">The store.</param>
     /// <returns>The projector.</returns>
     public static IndicatorProjector Projector(TopstepXDbContext database) =>
-        new(database, Catalog(), NullLogger<IndicatorProjector>.Instance);
+        new(database, Catalog(), NullLogger<IndicatorProjector>.Instance, Telemetry);
 
     /// <summary>The read-time indicator projection over a context.</summary>
     /// <param name="database">The store.</param>
@@ -420,7 +429,8 @@ public static class ConcurrencyHarness
             Catalog(),
             Projector(database),
             new FakeTimeProvider(now ?? SessionStart),
-            logger ?? NullLogger<IndicatorCacheService>.Instance);
+            logger ?? NullLogger<IndicatorCacheService>.Instance,
+            Telemetry);
 
     /// <summary>A cache-aside service over a context, serving one venue's bars.</summary>
     /// <param name="database">The store.</param>
@@ -445,7 +455,8 @@ public static class ConcurrencyHarness
             Calendar(),
             Projector(database),
             new FakeTimeProvider(now),
-            logger ?? NullLogger<BarCacheService>.Instance);
+            logger ?? NullLogger<BarCacheService>.Instance,
+            Telemetry);
 
     /// <summary>The window covering a half-open bucket index range.</summary>
     /// <param name="fromIndex">The first bucket index.</param>

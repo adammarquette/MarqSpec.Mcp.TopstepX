@@ -5,6 +5,7 @@ using MarqSpec.Mcp.TopstepX.Data.Entities;
 using MarqSpec.Mcp.TopstepX.Domain;
 using MarqSpec.Mcp.TopstepX.Domain.MarketData;
 using MarqSpec.Mcp.TopstepX.MarketData;
+using MarqSpec.Mcp.TopstepX.Telemetry;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using Microsoft.Extensions.Time.Testing;
@@ -42,6 +43,7 @@ public sealed class IndicatorRebuilderTrackingTests : IAsyncLifetime
 
     private readonly SeriesStoreFixture _fixture;
     private readonly TopstepXDbContext _database;
+    private readonly HostTelemetry _telemetry = new();
 
     /// <param name="fixture">The shared container.</param>
     public IndicatorRebuilderTrackingTests(SeriesStoreFixture fixture)
@@ -57,6 +59,7 @@ public sealed class IndicatorRebuilderTrackingTests : IAsyncLifetime
     public Task DisposeAsync()
     {
         _database.Dispose();
+        _telemetry.Dispose();
         return Task.CompletedTask;
     }
 
@@ -101,7 +104,7 @@ public sealed class IndicatorRebuilderTrackingTests : IAsyncLifetime
 
         return new IndicatorRebuilder(
             _database,
-            new IndicatorProjector(_database, catalog, NullLogger<IndicatorProjector>.Instance),
+            new IndicatorProjector(_database, catalog, NullLogger<IndicatorProjector>.Instance, _telemetry),
             new InstrumentRegistry(options),
             new FakeTimeProvider(SessionStart.AddDays(1)),
             NullLogger<IndicatorRebuilder>.Instance);

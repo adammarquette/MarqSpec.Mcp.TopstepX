@@ -4,6 +4,7 @@ using MarqSpec.Mcp.TopstepX.Data;
 using MarqSpec.Mcp.TopstepX.Domain;
 using MarqSpec.Mcp.TopstepX.Domain.MarketData;
 using MarqSpec.Mcp.TopstepX.MarketData;
+using MarqSpec.Mcp.TopstepX.Telemetry;
 using MarqSpec.Mcp.TopstepX.Tests.MarketData;
 using MarqSpec.Mcp.TopstepX.Tools;
 using Microsoft.EntityFrameworkCore;
@@ -26,6 +27,8 @@ public sealed class ToolSurfaceTests : IDisposable
 {
     /// <summary>The empty in-memory stores the period refusals were built over, for disposal.</summary>
     private readonly List<TopstepXDbContext> _stores = [];
+
+    private readonly HostTelemetry _telemetry = new();
 
     private static readonly DateTimeOffset _tuesdayMidSession =
         MarketClock.FromMarket(new DateOnly(2026, 8, 18), new TimeOnly(9, 30)).ToUniversalTime();
@@ -327,9 +330,10 @@ public sealed class ToolSurfaceTests : IDisposable
         IndicatorCacheService cache = new(
             database,
             catalog,
-            new IndicatorProjector(database, catalog, NullLogger<IndicatorProjector>.Instance),
+            new IndicatorProjector(database, catalog, NullLogger<IndicatorProjector>.Instance, _telemetry),
             new FakeTimeProvider(_tuesdayMidSession),
-            NullLogger<IndicatorCacheService>.Instance);
+            NullLogger<IndicatorCacheService>.Instance,
+            _telemetry);
 
         IndicatorTools tools = new(
             new InstrumentResolver(new InstrumentRegistry(wrapped), new StoreAvailabilityHolder()),
@@ -416,5 +420,7 @@ public sealed class ToolSurfaceTests : IDisposable
         {
             store.Dispose();
         }
+
+        _telemetry.Dispose();
     }
 }

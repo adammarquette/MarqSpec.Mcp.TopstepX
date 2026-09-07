@@ -59,18 +59,15 @@ namespace MarqSpec.Mcp.TopstepX.MarketData;
 /// The process-lifetime count of read-opened replays. Optional only so hand-built tests that do not
 /// care about it keep compiling; the composition root always supplies the singleton.
 /// </param>
-/// <param name="telemetry">
-/// The app-owned meter and activity source. Optional on the same terms as
-/// <paramref name="readTriggeredReplays"/>, and always supplied in the composition root.
-/// </param>
+/// <param name="telemetry">The app-owned meter and activity source, always supplied by the composition root.</param>
 public sealed class IndicatorCacheService(
     TopstepXDbContext database,
     IndicatorCatalog catalog,
     IndicatorProjector projector,
     TimeProvider clock,
     ILogger<IndicatorCacheService> logger,
-    IndicatorReadProjectionCounter? readTriggeredReplays = null,
-    HostTelemetry? telemetry = null)
+    HostTelemetry telemetry,
+    IndicatorReadProjectionCounter? readTriggeredReplays = null)
 {
     private readonly TopstepXDbContext _database = database;
     private readonly IndicatorCatalog _catalog = catalog;
@@ -79,7 +76,7 @@ public sealed class IndicatorCacheService(
     private readonly ILogger<IndicatorCacheService> _logger = logger;
     private readonly IndicatorReadProjectionCounter _readTriggeredReplays =
         readTriggeredReplays ?? new IndicatorReadProjectionCounter();
-    private readonly HostTelemetry _telemetry = telemetry ?? new HostTelemetry();
+    private readonly HostTelemetry _telemetry = telemetry;
 
     /// <summary>
     /// Series this scope has already found complete.

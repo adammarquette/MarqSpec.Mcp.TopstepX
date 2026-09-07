@@ -573,10 +573,14 @@ replay can confirm or correct it, and it reads back as an ordinary number
 cannot say whether a configuration change or a bar delete caused it. The classification costs no extra query —
 it is over the bars and values the pass already read.
 
-**A read does not sweep.** `get_indicators` projects only when its probe finds a *configured* pair missing
-([ADR-0014](adr/0014-indicators-are-projected-on-read-too.md)), so under a narrowed catalogue no pass runs and
-the retired rows stand — unreachable, since the read refuses a period the catalogue does not carry — until a
-fill or `rebuild-indicators` visits the series.
+**A read does not sweep**, and the two orphan kinds differ in what that costs. `get_indicators` projects only
+when its probe finds a *configured* pair missing
+([ADR-0014](adr/0014-indicators-are-projected-on-read-too.md)), and `EnsureProjectedAsync` returns before that
+probe when the series holds no bars at all. **Retired** rows are unreachable while they stand — the read
+refuses a period the catalogue does not carry, before the store is touched. **Orphaned** rows are still
+served: the pair is configured, the reads do not join `Bars` for the value, and for a series whose bars are
+all gone no read will ever run the pass that removes them. So an operator upgrading past gh#571 runs
+`rebuild-indicators` once.
 
 It is **not** scoped by bucket range, and that is only sound because a pass reads the whole series — true at
 both call sites, and until gh#73 guaranteed by nothing. So the claim is checked rather than trusted: a pass

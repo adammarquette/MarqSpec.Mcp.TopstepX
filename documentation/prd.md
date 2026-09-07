@@ -207,7 +207,8 @@ The server serves OHLCV bars for a futures instrument at a requested resolution 
   back as an ordinary number. The three counts are logged separately, and the two orphan kinds at
   *Information*: one total cannot tell an operator whether a configuration change or a bar delete caused it.
   **`rebuild-indicators` walks the union of the series in `Bars` and in `IndicatorValues`**, or a series whose
-  last bar was deleted is never visited again. A confirming rebuild still removes nothing.
+  last bar was deleted is never visited again — and since no *read* ever runs a pass over a bar-less series,
+  that verb is the only thing that reaches one. A confirming rebuild still removes nothing.
 - **R-2.9** A projection removes **only** values it read the bars for. Its two reads — the bars, then the
   values standing over them — are **one snapshot of the store**, so a pass cannot delete what a concurrent
   write justified between them; and a pass that finds it read less than the whole series **refuses** rather

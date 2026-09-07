@@ -258,10 +258,20 @@ list is a subset of the bars' list.
 
 **A read still does not sweep**, and that is deliberate. `get_indicators` projects only when its probe finds a
 *configured* pair missing ([ADR-0014](0014-indicators-are-projected-on-read-too.md)); under a narrowed
-catalogue every configured pair is present, so no pass runs. The rows stand until a fill or the verb visits
-the series, and they are unreachable meanwhile because the read refuses a period the catalogue does not carry.
-Wiring the sweep into the probe would let a read delete on the strength of a catalogue it never projected
-with.
+catalogue every configured pair is present, so no pass runs, and `EnsureProjectedAsync` returns earlier still
+when the series holds no bars at all. Wiring the sweep into the probe would let a read delete on the strength
+of a catalogue it never projected with.
+
+**The two kinds are not equally harmless while they stand, and the difference is the operator-facing half of
+this record.** A **retired** row is unreachable: the read refuses a period the catalogue does not carry,
+before the store is touched. An **orphaned** row is not — its pair is configured, so `get_indicators` serves
+it with no bar join, `get_indicator_at` serves it with a null contract, and `get_market_snapshot` LEFT-joins
+the bars deliberately, on the argument that an inner join would turn a known number with unknown provenance
+into *cannot-measure*. Measured on a store with every bar deleted: 37 ATR points returned over zero bars. That
+is pre-existing and this record's sweep narrows rather than opens it — but it means **an operator upgrading
+past gh#571 must run `rebuild-indicators` once**, because for a bar-less series no read will ever run the pass
+itself. Whether the reads should instead join a bar, or the probe should treat *values held, zero bars* as a
+reason to project, is a design question raised separately rather than settled here.
 
 **`SessionIndicatorValues` is out of reach here.** gh#571's scope asks for the same rule over the session
 shape through `ISeriesTables`; neither exists yet — they arrive with gh#501, which is still open. That half

@@ -523,7 +523,9 @@ public sealed class IndicatorPeriodSelectionTests : IAsyncLifetime
     /// <b>Two catalogues, because configuration moves and the store does not.</b> What was projected and what
     /// is being read under are separate facts, and the interesting cases are exactly the ones where they
     /// disagree: a period added after the warm-up must be projected by the read that first asks for it, and a
-    /// period removed from the list must leave its rows standing rather than being reconciled away.
+    /// period removed from the list must leave its rows standing <i>as far as the read path is concerned</i>,
+    /// because a read only projects when a configured pair is missing (ADR-0014) and none is. A projection
+    /// pass — a fill, or <c>rebuild-indicators</c> — does sweep them since gh#571; no read runs one here.
     /// </para>
     /// </remarks>
     private async Task<Composed> ComposeAsync(

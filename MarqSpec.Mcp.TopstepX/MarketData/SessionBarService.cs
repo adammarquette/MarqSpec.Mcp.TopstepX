@@ -289,7 +289,7 @@ public sealed class SessionBarService
         // that gap would leave a trade date in NEITHER list.
         (int Written, List<SessionBarRecord> Committed) stored = await SeriesUnitOfWork.RunAsync(
             _database,
-            instrument.Symbol + " " + definition.Name,
+            new SeriesKey.Session(venue, instrument.Symbol, definition.Name).Describe(),
             async token =>
             {
                 // (a) DISCARD ROWS BUILT UNDER A DIFFERENT DEFINITION, and do it before reading anything.

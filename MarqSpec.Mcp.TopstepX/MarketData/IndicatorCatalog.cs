@@ -31,19 +31,26 @@ namespace MarqSpec.Mcp.TopstepX.MarketData;
 /// </para>
 /// <para>
 /// <b>Why selecting a period is safe at all is ADR-0018.</b> Every row a caller's <c>period</c> can reach was
-/// written by the projection walking <see cref="All"/>, under exactly
-/// <c>(Venue, Instrument, ResolutionMinutes, Indicator, Period, BucketStart)</c> — and the read-time probe,
-/// the reconcile's scope and <c>rebuild-indicators</c> iterate that same set. So a selectable period can
-/// never be one the store could hold values for that nothing computes, nor one computed that nothing can
-/// read. Selection is a lookup along a column the key already carries; ad-hoc per-call computation stays
-/// forbidden by ADR-0006.
+/// written by the projection walking <see cref="ForSeries"/> for that series' key — <see cref="All"/> on a
+/// resolution series, under exactly
+/// <c>(Venue, Instrument, ResolutionMinutes, Indicator, Period, BucketStart)</c>, and the same list minus
+/// session-anchored VWAP on a session series, under
+/// <c>(Venue, Instrument, Session, Indicator, Period, BucketStart)</c> — and the read-time probe, the
+/// reconcile's scope and <c>rebuild-indicators</c> iterate that same set, per key shape. So a selectable
+/// period can never be one the store could hold values for that nothing computes, nor one computed that
+/// nothing can read. Selection is a lookup along a column the key already carries; ad-hoc per-call
+/// computation stays forbidden by ADR-0006.
 /// </para>
 /// </remarks>
 public sealed class IndicatorCatalog
 {
+    /// <summary>The one name a session series has no meaning for.</summary>
+    private const string SessionAnchoredVwap = "vwap";
+
     private readonly Dictionary<string, IIndicator> _byName;
     private readonly Dictionary<(string Name, int Period), IIndicator> _byKey;
     private readonly Dictionary<string, IReadOnlyList<int>> _periodsByName;
+    private readonly IReadOnlyList<IIndicator> _forSession;
 
     /// <summary>Builds the catalogue from the configured periods.</summary>
     /// <param name="options">The indicator options.</param>
@@ -132,6 +139,12 @@ public sealed class IndicatorCatalog
 
         Primaries = primaries;
         All = all;
+
+        // Built once, in All's order, because it does not depend on WHICH session was asked about: a
+        // session series has one bar a day, and session-anchored VWAP has nothing to weight inside one.
+        // Excluded by NAME rather than by type — the name is the storage key, and it is the name a caller
+        // asks with.
+        _forSession = [.. all.Where(i => !string.Equals(i.Name, SessionAnchoredVwap, StringComparison.Ordinal))];
     }
 
     /// <summary>
@@ -220,6 +233,78 @@ public sealed class IndicatorCatalog
                 + primary.Name + ": " + DescribePeriods(_periodsByName[primary.Name])
                 + ". A period this server does not compute would read back as an empty series, which is "
                 + "indistinguishable from a market that produced none.");
+    }
+
+    /// <summary>
+    /// Every instance the projection walks for one series — <see cref="All"/> on a resolution series, and
+    /// <see cref="All"/> minus session-anchored VWAP on a session series.
+    /// </summary>
+    /// <param name="key">Which series is being projected or read.</param>
+    /// <returns>The instances, in <see cref="All"/>'s order.</returns>
+    /// <exception cref="ArgumentNullException"><paramref name="key"/> is <see langword="null"/>.</exception>
+    /// <remarks>
+    /// <para>
+    /// <b>For a resolution key this is <see cref="All"/> itself, the same instance.</b> Three consumers walk
+    /// it and have to agree by construction — what the projection computes, what the reconcile is allowed to
+    /// delete, and the read-time probe's missing set — so a list that was merely equal, re-derived per call,
+    /// would let a future reordering change a stored series that already exists.
+    /// </para>
+    /// <para>
+    /// <b>A session series has one bar a day, so <c>vwap</c> is dropped.</b> It anchors on the session, and a
+    /// session that IS one bar has no intra-session volume distribution to weight — the value would be that
+    /// bar's own typical price, dressed as an average (ADR-0022). <c>vwap-rolling</c> stays: a window over N
+    /// bars is a real number on any series, and on a session series it is an N-day rolling VWAP.
+    /// </para>
+    /// </remarks>
+    public IReadOnlyList<IIndicator> ForSeries(SeriesKey key)
+    {
+        ArgumentNullException.ThrowIfNull(key);
+
+        return key switch
+        {
+            SeriesKey.Session => _forSession,
+            _ => All,
+        };
+    }
+
+    /// <summary>
+    /// Resolves a name and a chosen period for one series, refusing a name that series has no meaning for.
+    /// </summary>
+    /// <param name="key">Which series is being read.</param>
+    /// <param name="name">The indicator name, case-insensitive on input and lowercase in storage.</param>
+    /// <param name="period">The chosen period, or <see langword="null"/> for the primary.</param>
+    /// <returns>The indicator.</returns>
+    /// <exception cref="ArgumentNullException"><paramref name="key"/> is <see langword="null"/>.</exception>
+    /// <exception cref="KeyNotFoundException">
+    /// Everything <see cref="Resolve(string, int?)"/> refuses: an unknown name, a period on <c>vwap</c>, or a
+    /// period this server does not compute.
+    /// </exception>
+    /// <exception cref="ArgumentException">
+    /// The name resolves to an indicator this series does not carry — <c>vwap</c> on a session series.
+    /// </exception>
+    /// <remarks>
+    /// <b>Refused by name rather than served as an empty series</b> (ADR-0022: the tool surface says so
+    /// rather than omitting it silently). Nothing ever writes a <c>vwap</c> row for a session series, so a
+    /// read that was allowed through would answer with no values at all — indistinguishable from a market
+    /// that produced none, which is the exact failure the closed vocabulary exists to prevent.
+    /// </remarks>
+    public IIndicator ResolveFor(SeriesKey key, string name, int? period)
+    {
+        ArgumentNullException.ThrowIfNull(key);
+
+        IIndicator resolved = Resolve(name, period);
+        IReadOnlyList<IIndicator> available = ForSeries(key);
+
+        if (key is SeriesKey.Session && !available.Contains(resolved))
+        {
+            throw new ArgumentException(
+                "'" + resolved.Name + "' anchors on the session and a one-bar session has no VWAP; on a "
+                + "session series ask for 'vwap-rolling' or one of: "
+                + string.Join(", ", available.Select(i => i.Name).Distinct(StringComparer.Ordinal)),
+                nameof(name));
+        }
+
+        return resolved;
     }
 
     /// <summary>

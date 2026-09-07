@@ -33,7 +33,7 @@ public sealed partial class EnvironmentReuseTests(EnvironmentTemplates templates
             .ToList();
 
         differing.Should().NotBeEmpty("the zone mode does change the template");
-        var unexplained = differing.Where(path => !IsExplainedByTheZoneMode(path)).ToList();
+        var unexplained = differing.Where(path => !IsExplainedByTheZoneMode(path, production, staging)).ToList();
         unexplained.Should().BeEmpty("every remaining difference is a second stack class in disguise:\n" + string.Join('\n', unexplained));
     }
 
@@ -125,16 +125,23 @@ public sealed partial class EnvironmentReuseTests(EnvironmentTemplates templates
     /// only staging owns, the references to the zone id (a context literal in production, a <c>Ref</c> in
     /// staging), and the resources that depend on the created zone.
     /// </summary>
-    private static bool IsExplainedByTheZoneMode(string path)
+    private static bool IsExplainedByTheZoneMode(string path, Dictionary<string, string> production, Dictionary<string, string> staging)
     {
         var stagingZone = _stagingShape.Single("AWS::Route53::HostedZone").LogicalId;
         var delegation = _stagingShape.Resources("AWS::Route53::RecordSet")
             .Single(r => _stagingShape.Properties(r.Value)["Type"]!.GetValue<string>() == "NS").Key;
 
+        if (path.Contains("/DependsOn", StringComparison.Ordinal))
+        {
+            // Only a dependency ON the created zone or its delegation is the zone mode's; a dependency on
+            // anything else present in one environment alone is a second stack class in disguise.
+            var value = staging.GetValueOrDefault(path) ?? production.GetValueOrDefault(path) ?? string.Empty;
+            return value.Contains(stagingZone, StringComparison.Ordinal) || value.Contains(delegation, StringComparison.Ordinal);
+        }
+
         return path.Contains($"/Resources/{stagingZone}", StringComparison.Ordinal)
             || path.Contains($"/Resources/{delegation}", StringComparison.Ordinal)
             || path.EndsWith("/HostedZoneId", StringComparison.Ordinal)
-            || path.Contains("/HostedZoneId/", StringComparison.Ordinal)
-            || path.Contains("/DependsOn", StringComparison.Ordinal);
+            || path.Contains("/HostedZoneId/", StringComparison.Ordinal);
     }
 }

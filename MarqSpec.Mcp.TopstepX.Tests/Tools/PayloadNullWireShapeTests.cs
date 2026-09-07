@@ -90,6 +90,22 @@ public sealed class PayloadNullWireShapeTests
     }
 
     [Fact]
+    public void ASessionIndicatorReading_DropsTheValueKey_WhenItCannotMeasure()
+    {
+        JsonElement reading = Wire(new ToolPayloads.SessionIndicatorReading(
+            Value: null, TradeDate: null, BucketStart: null, ContractId: null));
+
+        // FOUR nullable fields rather than three, and the wire form is the same `{}` get_indicator_at's
+        // reading takes (gh#501). A session reading carries the trade date as well as the opening instant,
+        // and adding a field to a record every one of whose properties is nullable does not change what
+        // cannot-measure looks like -- it is still an object with nothing in it, so `reading.value === null`
+        // is still `undefined === null` and still false.
+        reading.TryGetProperty("value", out _).Should().BeFalse(
+            "cannot-measure DROPS the key, so `\"value\" in reading` is the test");
+        reading.EnumerateObject().Should().BeEmpty();
+    }
+
+    [Fact]
     public void VolumeFront_OmitsAbsentAnswers_AndNeverWritesWhy()
     {
         JsonElement front = Wire(new ToolPayloads.VolumeFrontInfo(

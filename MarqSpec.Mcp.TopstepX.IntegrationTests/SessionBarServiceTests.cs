@@ -665,6 +665,7 @@ public sealed class SessionBarServiceTests : IAsyncLifetime
             bars,
             gateway,
             ConcurrencyHarness.Calendar(),
+            ConcurrencyHarness.Projector(database),
             clock,
             logger ?? NullLogger<SessionBarService>.Instance);
     }

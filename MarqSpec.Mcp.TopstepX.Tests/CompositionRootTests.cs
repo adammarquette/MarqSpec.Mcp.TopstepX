@@ -233,6 +233,7 @@ public sealed class CompositionRootTests
     [InlineData(typeof(SnapshotTools))]
     [InlineData(typeof(ObservationTools))]
     [InlineData(typeof(SessionBarTools))]
+    [InlineData(typeof(SessionIndicatorTools))]
     public void EveryToolTypeCanBeResolvedFromARequestScope(Type toolType)
     {
         // The MCP SDK activates a tool type per call from the request scope, and it resolves constructor
@@ -368,6 +369,7 @@ public sealed class CompositionRootTests
     [InlineData(typeof(ContractRollTools), typeof(VolumeFrontReader))]
     [InlineData(typeof(SnapshotTools), typeof(IndicatorCatalogNames))]
     [InlineData(typeof(SessionBarTools), typeof(SessionBarService))]
+    [InlineData(typeof(SessionIndicatorTools), typeof(SessionCatalog))]
     public void AMarketDataToolTypeFailsTheContainerBuild_WhenOneOfItsOwnDependenciesIsUnregistered(
         Type toolType,
         Type dependency)

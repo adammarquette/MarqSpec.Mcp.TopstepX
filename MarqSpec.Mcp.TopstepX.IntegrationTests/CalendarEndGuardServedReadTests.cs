@@ -242,13 +242,14 @@ public sealed class CalendarEndGuardServedReadTests : IAsyncLifetime
                     || p.Name == "resolutionMinutes")),
         ];
 
-        // THIRTEEN, measured off the filter rather than guessed, and raised whenever the surface grows
-        // (gh#500 took it from 9 to 13 -- 9 had been stale for three tools before get_session_bars arrived).
-        // A floor left behind the surface still passes while covering less and less of it, which is the one
-        // way this sweep can rot quietly: get_latest_session_bars is deliberately NOT among the thirteen,
-        // because it takes neither an instant nor a resolution and anchors on the clock instead.
+        // FIFTEEN, measured off the filter rather than guessed, and raised whenever the surface grows
+        // (gh#500 took it from 9 to 13 -- 9 had been stale for three tools before get_session_bars arrived --
+        // and gh#501's two session-indicator reads take it to 15). A floor left behind the surface still
+        // passes while covering less and less of it, which is the one way this sweep can rot quietly:
+        // get_latest_session_bars is deliberately NOT among them, because it takes neither an instant nor a
+        // resolution and anchors on the clock instead.
         takingAnInstant.Should().HaveCountGreaterThanOrEqualTo(
-            13, "the reflection filter must actually match the surface it is guarding");
+            15, "the reflection filter must actually match the surface it is guarding");
 
         foreach (MethodInfo tool in takingAnInstant)
         {
@@ -368,13 +369,34 @@ public sealed class CalendarEndGuardServedReadTests : IAsyncLifetime
         SessionBarTools sessionBars = new(
             resolver,
             new SessionBarService(
-                _database, _cache, _gateway, _calendar, _clock, NullLogger<SessionBarService>.Instance),
+                _database,
+                _cache,
+                _gateway,
+                _calendar,
+                new IndicatorProjector(_database, _catalog, NullLogger<IndicatorProjector>.Instance),
+                _clock,
+                NullLogger<SessionBarService>.Instance),
             new SessionCatalog(Defaults(), _calendar),
             _calendar,
             guards,
             _clock);
 
-        return new Family(bars, indicators, keyLevels, tape, roll, snapshot, sessionBars);
+        // get_session_indicators takes fromUtc and toUtc and get_session_indicator_at takes an asOfUtc, so
+        // both land in the sweep's filter (gh#501). Session-window arithmetic and an as-of comparison against
+        // a session CLOSE are two more places the end of the calendar can overflow, which is exactly what the
+        // sweep is for.
+        SessionIndicatorTools sessionIndicators = new(
+            resolver,
+            _database,
+            _catalog,
+            ConcurrencyHarness.Indicators(_database),
+            new SessionCatalog(Defaults(), _calendar),
+            _calendar,
+            _gateway,
+            guards);
+
+        return new Family(
+            bars, indicators, keyLevels, tape, roll, snapshot, sessionBars, sessionIndicators);
     }
 
     /// <summary>Every market-data tool type this fixture can hand the sweep.</summary>
@@ -385,6 +407,7 @@ public sealed class CalendarEndGuardServedReadTests : IAsyncLifetime
     /// <param name="Roll">The contract-roll tools.</param>
     /// <param name="Snapshot">The composed snapshot tool.</param>
     /// <param name="SessionBars">The session-bar tools.</param>
+    /// <param name="SessionIndicators">The session-indicator tools.</param>
     private sealed record Family(
         BarTools Bars,
         IndicatorTools Indicators,
@@ -392,7 +415,8 @@ public sealed class CalendarEndGuardServedReadTests : IAsyncLifetime
         TapeTools Tape,
         ContractRollTools Roll,
         SnapshotTools Snapshot,
-        SessionBarTools SessionBars)
+        SessionBarTools SessionBars,
+        SessionIndicatorTools SessionIndicators)
     {
         /// <summary>Hands back the instance for a declaring type, or says what has to be added here.</summary>
         /// <param name="type">The tool type the sweep found.</param>
@@ -405,6 +429,7 @@ public sealed class CalendarEndGuardServedReadTests : IAsyncLifetime
             : type == typeof(ContractRollTools) ? Roll
             : type == typeof(SnapshotTools) ? Snapshot
             : type == typeof(SessionBarTools) ? SessionBars
+            : type == typeof(SessionIndicatorTools) ? SessionIndicators
             : throw new InvalidOperationException(
                 type.Name + " takes an instant and this fixture cannot build it. "
                 + "Add it here rather than narrowing the sweep -- the sweep is the point.");

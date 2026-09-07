@@ -389,6 +389,13 @@ neither list because it was never asked for. Nothing else lands there: the ask i
 dates that carry a session, so a Saturday or a holiday is never asked for either, and neither list ever
 silently drops a date this server did ask about.
 
+**A window that names ZERO whole sessions is refused, not answered with two empty lists.** Nine hours of a
+trading day over a session that runs longer clips every session it touches, and left unrefused this would
+pass every other check and answer `bars: []` and `absent: []` both — the shape `ValidateWindow`'s
+empty-window refusal already exists to avoid, since it reads as "this instrument did not trade" rather than
+"the window is narrower than any session". The refusal names the window, the session, and the nearest whole
+session's bounds so the caller can widen to it (gh#568).
+
 `contracts` is built from the session bars' own contract ids, and **each session bar comes from exactly
 one** — a session whose base bars disagreed is `absent` with `SpansRoll` rather than spliced. So a roll falls
 *between* two trade dates, `segments` are maximal runs of consecutive bars sharing an id, and `firstBucket` /
@@ -432,7 +439,10 @@ is touched:
    counted in bars of the session's own base resolution rather than in sessions. The remedy is *narrow the
    window, or ask the operator for a coarser base resolution for this session*: there is no
    `resolutionMinutes` here to coarsen;
-4. more trade dates than `MaxRows`, refused naming the real count.
+4. **zero whole sessions named** — every session the window touches is clipped at an edge, refused naming
+   the window, the session, and the nearest whole session's bounds (`SessionWindows.WindowFor` on the trade
+   date the window's start falls on) so the caller can widen to it (gh#568);
+5. more trade dates than `MaxRows`, refused naming the real count.
 
 The bucket cap is measured **before** the row cap, the opposite of `get_bars`' order: the row count here is a
 calendar walk rather than arithmetic, and the bucket span is what bounds the walk.

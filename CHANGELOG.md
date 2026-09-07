@@ -388,6 +388,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **`get_session_bars` now refuses a window that clips every session it touches, rather than answering with
+  two empty lists.** A non-empty window naming zero whole trade dates — nine hours of a trading day over an
+  `rth` session that runs longer, say — passed every existing guard and answered `bars: []` and `absent: []`
+  both, which reads cold as "this instrument did not trade": the same confusion an *empty* window is already
+  refused to avoid (`ToolGuards.ValidateWindow`). `ToolGuards.ValidateSessionWindow` now refuses it too,
+  naming the window, the session, and the nearest whole session's bounds — looked up from
+  `SessionWindows.WindowFor` on the trade date the window's start falls on — so the caller can widen to it.
+  `get_latest_session_bars` is unaffected: its dates come from the closed-session walk and can never be zero.
+  The [tool catalogue](documentation/mcp-tool-catalog.md) and the PRD (`R-1.13`) are updated in the same
+  change (gh#568, gh#500).
 - **A historical slice the venue narrowed to the front alone is now loud, and stays history.** A cycle that
   names two expiries the venue lists only one of leaves a candidate set of one, and when that one is the
   venue's own pick the slice is — by the candidate list alone — identical to a slice the cycle genuinely

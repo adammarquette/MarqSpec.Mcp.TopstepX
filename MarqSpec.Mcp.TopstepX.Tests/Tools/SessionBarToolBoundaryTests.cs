@@ -188,6 +188,27 @@ public sealed class SessionBarToolBoundaryTests : IDisposable
     }
 
     [Fact]
+    public async Task AWindowThatClipsEverySession_IsRefused_NamingTheNearestWhole()
+    {
+        // gh#568: nine hours of Monday over an `rth` session that runs 13:30Z to 20:00Z clips the whole
+        // thing. Left unrefused this answers exactly like an empty window -- bars: [] and absent: [] both,
+        // reading as "ES did not trade" -- so it must be refused before the venue is touched, same as every
+        // other guard on this boundary.
+        DateTimeOffset to = MondayStart.AddHours(18);
+
+        Func<Task> call = () =>
+            _sessions.GetSessionBars("ES", "rth", MondayStart.AddHours(9), to, CancellationToken.None);
+
+        (await call.Should().ThrowAsync<McpException>())
+            .WithMessage("*no whole rth session*", "the refusal names what the window failed to contain")
+            .WithMessage(
+                "*nearest whole rth session is 2026-08-03*",
+                "and the nearest whole session the caller could widen to");
+
+        NothingWasSpent();
+    }
+
+    [Fact]
     public async Task ACountAboveMaxRows_IsRefused()
     {
         // The row cap is one cap for the whole surface, and `count` is how this tool asks for rows.

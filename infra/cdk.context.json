@@ -1,0 +1,10 @@
+{
+  "hosted-zone:account=123456789012:domainName=marqspec.com:region=us-east-1": {
+    "Id": "/hostedzone/Z0000000000000000000",
+    "Name": "marqspec.com."
+  },
+  "availability-zones:account=123456789012:region=us-east-1": [
+    "us-east-1a",
+    "us-east-1b"
+  ]
+}

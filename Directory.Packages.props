@@ -107,6 +107,19 @@
     <PackageVersion Include="Npgsql.OpenTelemetry" Version="10.0.3" />
   </ItemGroup>
 
+  <ItemGroup Label="Infrastructure">
+    <!--
+      The AWS CDK, for the `infra/` app (ADR-0023 §7). Both are jsii packages: every construct call — in the
+      app AND in the template tests — runs through a Node process the runtime spawns, so `dotnet run` and
+      `dotnet test` of those two projects need Node on PATH, while `dotnet build` does not. In v2 the
+      assertions library is the `Amazon.CDK.Assertions` NAMESPACE inside this one package; the separately
+      published `Amazon.CDK.Assertions` package is the v1 line and must not be added. Nothing under `infra/`
+      is restored by the Dockerfile, so neither package reaches the image.
+    -->
+    <PackageVersion Include="Amazon.CDK.Lib" Version="2.268.0" />
+    <PackageVersion Include="Constructs" Version="10.8.1" />
+  </ItemGroup>
+
   <ItemGroup Label="Test stack">
     <PackageVersion Include="Microsoft.NET.Test.Sdk" Version="18.9.0" />
     <PackageVersion Include="xunit" Version="2.9.3" />

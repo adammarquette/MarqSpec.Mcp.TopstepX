@@ -1,0 +1,31 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    The CDK app (ADR-0023 §7): one `EnvironmentStack` instantiated per environment, and the `GitHubOidcStack`
+    that lets GitHub Actions deploy them. It is a console application whose only output is a CloudFormation
+    template under `cdk.out/` — the CDK CLI runs it through `infra/cdk.json`.
+
+    It joins the solution so `dotnet build`, `dotnet format` (verify-no-changes), NuGetAudit and CodeQL cover
+    it exactly as they cover the product. It references NO product project and NO venue package: the read-only
+    boundary (ADR-0002) is the absence of the call, and there is nothing here that could make one. The
+    Dockerfile restores only the host project, so nothing here enters the image.
+  -->
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <IsPackable>false</IsPackable>
+    <RootNamespace>MarqSpec.Mcp.TopstepX.Infra</RootNamespace>
+    <!--
+      No documentation file: nothing consumes this assembly, and the XML-doc analyzers would otherwise ask
+      for a summary on every construct wrapper that says less than the code beside it.
+    -->
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Amazon.CDK.Lib" />
+    <PackageReference Include="Constructs" />
+  </ItemGroup>
+
+</Project>

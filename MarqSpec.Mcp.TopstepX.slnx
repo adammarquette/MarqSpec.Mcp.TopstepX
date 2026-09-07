@@ -58,6 +58,13 @@
     <File Path="documentation/wiki/index.md" />
     <File Path="documentation/wiki/SCHEMA.md" />
   </Folder>
+  <Folder Name="/infra/">
+    <File Path="infra/cdk.json" />
+    <File Path="infra/cdk.context.json" />
+    <File Path="infra/package.json" />
+    <Project Path="infra/MarqSpec.Mcp.TopstepX.Infra/MarqSpec.Mcp.TopstepX.Infra.csproj" />
+    <Project Path="infra/MarqSpec.Mcp.TopstepX.Infra.Tests/MarqSpec.Mcp.TopstepX.Infra.Tests.csproj" />
+  </Folder>
   <Project Path="MarqSpec.Mcp.TopstepX.Data/MarqSpec.Mcp.TopstepX.Data.csproj" />
   <Project Path="MarqSpec.Mcp.TopstepX.Domain/MarqSpec.Mcp.TopstepX.Domain.csproj" />
   <Project Path="MarqSpec.Mcp.TopstepX.IntegrationTests/MarqSpec.Mcp.TopstepX.IntegrationTests.csproj" />

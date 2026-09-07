@@ -154,6 +154,25 @@ public sealed class ServerTaskTests(EnvironmentTemplates templates) : IClassFixt
     }
 
     [Theory]
+    [MemberData(nameof(EnvironmentTemplates.Both), MemberType = typeof(EnvironmentTemplates))]
+    public void The_task_runs_the_oauth_mode_against_its_own_resource_url(string env, string root)
+    {
+        // ADR-0021's coupling, template-tested: a target group in front of 8080 means the OAuth mode, never
+        // the static token. The three values the stack knows itself are set here; the issuer and the client
+        // ids are Cognito's outputs and gh#517 wires them from the pool constructs. Until then the task refuses
+        // to start (an incomplete OAuth section), which is the correct state for a skeleton nobody may deploy.
+        var t = templates.For(env);
+        var container = ServerContainer(t);
+        var environment = Synthesised.EnvironmentOf(container).ToDictionary(e => e.Key, e => Synthesised.Text(e.Value));
+
+        environment["Mcp__Auth__Mode"].Should().Be("\"OAuth\"");
+        environment["Mcp__OAuth__ResourceUrl"].Should().Be($"\"https://topstepx-mcp.{root}/mcp\"", "echoed byte for byte as the RFC 9728 resource");
+        environment["Mcp__OAuth__RequiredScope"].Should().Be("\"topstepx-mcp/read\"", "ADR-0023 §9's resource server and scope");
+        environment.Should().NotContainKey("Mcp__HttpBearerToken");
+        Synthesised.SecretsOf(container).Should().NotContainKey("Mcp__HttpBearerToken");
+    }
+
+    [Theory]
     [InlineData("production", "true")]
     [InlineData("staging", "false")]
     public void The_tape_flags_are_parameters_defaulting_true_in_production_and_false_in_staging(string env, string expectedDefault)

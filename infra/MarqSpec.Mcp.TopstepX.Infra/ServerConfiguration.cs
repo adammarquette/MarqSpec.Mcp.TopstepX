@@ -32,6 +32,14 @@ public static class ServerConfiguration
     {
         // ADR-0007 / ADR-0021: the HTTP transport, plaintext on the image's own 8080, behind the ALB.
         ["Mcp__Transport"] = "Http",
+        // ADR-0021's coupling: a target group in front of 8080 means the OAuth mode, never the static token
+        // (gh#512). The issuer and the client ids are Cognito's outputs and gh#517 sets them; until then the
+        // task refuses to start on an incomplete OAuth section, which is right for a skeleton nobody may
+        // deploy. The resource URL is the stack's own hostname and is set beside these by the stack.
+        ["Mcp__Auth__Mode"] = "OAuth",
+        // ADR-0023 §9: the pool's resource server is `topstepx-mcp` and its one scope is `read`. Explicit
+        // rather than left to the product's default of the same value, so the task definition says it.
+        ["Mcp__OAuth__RequiredScope"] = "topstepx-mcp/read",
         ["ASPNETCORE_ENVIRONMENT"] = "Production",
         ["Logging__LogLevel__Default"] = "Information",
         // gh#515: one JSON object per line, so CloudWatch ingests one event per log record.
@@ -48,6 +56,16 @@ public static class ServerConfiguration
         ["MarketData__Holidays"] = "",
         ["MarketData__MaxRows"] = "5000",
         ["MarketData__Instruments"] = "ES,NQ",
+        // The four named sessions and the base resolution each is derived from (ADR-0022, gh#500), at the
+        // catalogue's defaults: Central wall-clock windows, as every session rule here is.
+        ["MarketData__Sessions__full__Window"] = "17:00-16:00",
+        ["MarketData__Sessions__full__BaseResolutionMinutes"] = "60",
+        ["MarketData__Sessions__rth__Window"] = "08:30-15:00",
+        ["MarketData__Sessions__rth__BaseResolutionMinutes"] = "30",
+        ["MarketData__Sessions__asia__Window"] = "17:00-02:00",
+        ["MarketData__Sessions__asia__BaseResolutionMinutes"] = "30",
+        ["MarketData__Sessions__europe__Window"] = "02:00-08:30",
+        ["MarketData__Sessions__europe__BaseResolutionMinutes"] = "30",
 
         ["Indicators__AtrPeriod"] = "14",
         ["Indicators__RsiPeriod"] = "14",

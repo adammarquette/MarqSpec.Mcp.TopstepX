@@ -429,6 +429,10 @@ public sealed class EnvironmentStack : Stack
         var serverEnvironment = new Dictionary<string, string>(ServerConfiguration.Fixed, StringComparer.Ordinal)
         {
             ["ProjectX__DataTier"] = dataTier.ValueAsString,
+            // The public URL of the MCP endpoint exactly as a user enters it into the connector dialog, path
+            // included (gh#512): echoed byte for byte as the RFC 9728 `resource`, so it is this stack's
+            // hostname and nothing a person retypes.
+            ["Mcp__OAuth__ResourceUrl"] = $"https://{Hostname}/mcp",
             ["MarketData__RecordTape"] = recordTape.ValueAsString,
             ["MarketData__WarmIndicators"] = warmIndicators.ValueAsString,
             // The deployment stamp (gh#513): the assembly is 0.0.0-alpha.0 by decision (ADR-0001), so the

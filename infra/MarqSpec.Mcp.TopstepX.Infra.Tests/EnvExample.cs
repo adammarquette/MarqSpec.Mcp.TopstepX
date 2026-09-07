@@ -27,9 +27,16 @@ public static class EnvExample
     /// Keys a later card of the same epic owns: the <c>Otel__*</c> keys are gh#537's, whose OTLP collector
     /// sidecar decides the endpoint the server exports to and holds the vendor token (ADR-0023 §11), so
     /// setting them here would be a second decision about the same seam. Left unset, the server registers no
-    /// telemetry at all (ADR-0019) — the documented off state, not a broken one.
+    /// telemetry at all (ADR-0019) — the documented off state, not a broken one. <c>Mcp__OAuth__Issuer</c>
+    /// and <c>Mcp__OAuth__ClientIds</c> are gh#517's: they are the Cognito pool's and its two clients' ids,
+    /// which exist only once that card's constructs do (gh#512 merged while this card was open and the parity
+    /// rule caught the five new keys; the other three — the mode, the resource URL and the scope — are the
+    /// stack's own facts and are set here). Until gh#517 lands, the task refuses to start on an incomplete
+    /// OAuth section, which is the right state for a skeleton nobody may deploy before gh#519.
     /// </summary>
-    public static bool IsDeferred(string key) => key.StartsWith("Otel__", StringComparison.Ordinal);
+    public static bool IsDeferred(string key) =>
+        key.StartsWith("Otel__", StringComparison.Ordinal)
+        || key is "Mcp__OAuth__Issuer" or "Mcp__OAuth__ClientIds";
 
     public static IReadOnlyList<string> Keys()
     {

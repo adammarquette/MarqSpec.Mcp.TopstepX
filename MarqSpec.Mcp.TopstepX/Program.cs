@@ -97,11 +97,7 @@ public static class Program
 
         if (mcp.Transport == McpTransport.Http)
         {
-            // BEFORE MapMcp, so the gate sits in front of the endpoint rather than beside it. Options
-            // validation already refuses to start the HTTP transport without a token; this is what makes that
-            // requirement mean something at request time (ADR-0007).
-            app.UseBearerTokenGate(mcp.HttpBearerToken);
-            app.MapMcp("/mcp");
+            MapHttpTransport(app, mcp.HttpBearerToken);
         }
 
         // Both transports run through the same call. The shutdown-during-startup race it absorbs is reachable
@@ -113,6 +109,31 @@ public static class Program
         // transports. Under stdio Kestrel is simply not the transport, nothing is mapped in front of it, and
         // the session runs over stdin and stdout (ADR-0007).
         return await RunHostAsync(app).ConfigureAwait(false);
+    }
+
+    /// <summary>Builds the HTTP transport's request pipeline, in the one order that is correct.</summary>
+    /// <param name="app">The built host.</param>
+    /// <param name="bearerToken">The configured token.</param>
+    /// <remarks>
+    /// One method rather than three lines inline, so the ordering is a thing a test can call. It is the
+    /// ordering that carries the whole of the carve-out, and nothing about reading the three calls tells you
+    /// that.
+    /// </remarks>
+    public static void MapHttpTransport(WebApplication app, string bearerToken)
+    {
+        ArgumentNullException.ThrowIfNull(app);
+
+        // BEFORE the gate, and it works only because it is a terminal branch rather than a mapped endpoint:
+        // `WebApplication` runs every endpoint after every middleware whatever order they were added in, so
+        // a MapGet here would be answered 401 by the gate below and never reached. An ALB target-group probe
+        // carries no credential and is what this is for (gh#513, ADR-0021).
+        app.UseHealthEndpoint();
+
+        // BEFORE MapMcp, so the gate sits in front of the endpoint rather than beside it. Options
+        // validation already refuses to start the HTTP transport without a token; this is what makes that
+        // requirement mean something at request time (ADR-0007).
+        app.UseBearerTokenGate(bearerToken);
+        app.MapMcp("/mcp");
     }
 
     /// <summary>Runs the built host, treating a shutdown asked for during startup as a shutdown.</summary>
@@ -558,6 +579,13 @@ public static class Program
                 "Mcp__HttpBearerToken is required when the HTTP transport is enabled. Nothing here can trade, "
                 + "but an open endpoint still exposes balances, positions and trade history.")
             .ValidateOnStart();
+
+        // What the liveness probe reports as `version` and `digest`. Optional, unvalidated, and defaulting to
+        // "unknown": nothing here declares a version in a file (ADR-0001), so a running task can only be told
+        // what it is by the deployment that started it — and a probe that refused to answer over a missing
+        // stamp would fail a healthy task for a cosmetic reason (gh#513).
+        services.AddOptions<DeploymentOptions>()
+            .Bind(builder.Configuration.GetSection(DeploymentOptions.SectionName));
 
         services.AddSingleton(TimeProvider.System);
 

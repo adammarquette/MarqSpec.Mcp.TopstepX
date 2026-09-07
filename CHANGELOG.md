@@ -302,8 +302,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   contract universe to know who the candidates were, which is **one contract search per request** (memoised
   for the rest of it) where such a read previously reached the venue not at all. That search is **not paced** —
   only `History/retrieveBars` goes through the pacer's 50-per-30-seconds allowance, and the search draws on
-  the separate 200-per-60-seconds pool — so it does not slow the paging, and it is not counted anywhere an
-  operator watches. **It does make a memo-covered read venue-dependent, which it was not before**: during a
+  the separate 200-per-60-seconds pool — so it does not slow the paging, and it is never counted in `venueRequests` — an operator sees it only on the
+  platform meter, as `venue_calls_total{operation="resolve_contracts"}`. **It does make a memo-covered read venue-dependent, which it was not before**: during a
   venue outage a read the store could have answered in full now fails with a `VenueException` instead of
   succeeding. That is the repository's loud-over-quiet posture and is stated here as a deliberate trade —
   the alternative is serving a range as "covered" on the strength of a candidate list nobody could confirm,

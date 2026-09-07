@@ -96,7 +96,8 @@ a **session bar** rather than a resolution (`R-1.12`,
    instrument's contract universe, resolved at most once per instrument per request and only once the ledger
    has produced rows worth attributing — so that read now pays **one contract search** where it previously
    reached the venue not at all, and because step 5 is never entered that call is **not counted in
-   `venueRequests`**. The search is **not paced**: only `History/retrieveBars` goes through the pacer, and
+   `venueRequests`** — it is counted on the platform meter, as `venue_calls_total{operation="resolve_contracts"}`
+   ([ADR-0019](adr/0019-otlp-as-the-telemetry-boundary.md)). The search is **not paced**: only `History/retrieveBars` goes through the pacer, and
    every other endpoint — this one included — draws on the vendor's separate 200-per-60-seconds pool
    ([wiki — rate limits](wiki/pages/projectx-gateway-api.md#rate-limits)), so it neither waits behind nor
    slows the paging in step 5. **It does make a memo-covered read venue-dependent, which it was not

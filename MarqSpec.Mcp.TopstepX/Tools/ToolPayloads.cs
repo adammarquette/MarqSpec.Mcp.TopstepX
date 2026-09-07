@@ -130,7 +130,8 @@ public static class ToolPayloads
     /// costs a request and returns no buckets, so this reads zero after a genuine round trip. The exact test
     /// for <i>no bar fetch</i> is <c>VenueRequests == 0</c>, and this remark claimed otherwise until gh#71.
     /// That test is narrower than "served entirely from the store": since gh#504 a read the empty-range memo
-    /// covers still makes one contract search, which nothing counts.
+    /// covers still makes one contract search, which this number does not count; the platform meter
+    /// <c>venue_calls_total{operation="resolve_contracts"}</c> does.
     /// </para>
     /// <para>
     /// The error is in the direction that matters: reading this as "free" <b>undercounts</b> venue traffic,
@@ -140,7 +141,8 @@ public static class ToolPayloads
     /// </param>
     /// <param name="VenueRequests">
     /// How many <b>history</b> requests reached the venue. A contract search issued to resolve the coverage
-    /// ledger's candidates is not one of them and is counted nowhere (gh#504).
+    /// ledger's candidates is not one of them: it is counted only by the platform meter
+    /// <c>venue_calls_total{operation="resolve_contracts"}</c>, never here (gh#504).
     /// </param>
     /// <param name="Contracts">
     /// Which contracts produced these bars. The bars are returned either way — each one is a real observation

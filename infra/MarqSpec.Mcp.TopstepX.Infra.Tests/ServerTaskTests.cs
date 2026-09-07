@@ -64,6 +64,22 @@ public sealed class ServerTaskTests(EnvironmentTemplates templates) : IClassFixt
 
     [Theory]
     [MemberData(nameof(EnvironmentTemplates.Both), MemberType = typeof(EnvironmentTemplates))]
+    public void The_data_tier_is_a_parameter_with_allowed_values_and_no_default(string env, string _)
+    {
+        // The product never defaults this: the wrong tier answers an EMPTY universe, not an error, and
+        // startup refuses it unset when credentials are present (R-7.2, .env.example). A template default
+        // would put that convenience back in front of production -- a deploy that forgot the parameter
+        // would come up green on live credentials with every contract search answering empty.
+        var t = templates.For(env);
+        var tier = t.Parameter("ProjectXDataTier").Should().NotBeNull().And.Subject!;
+        tier["Type"]!.GetValue<string>().Should().Be("String");
+        tier["AllowedValues"]!.AsArray().Select(v => v!.GetValue<string>()).Should().BeEquivalentTo(["Simulated", "Live"]);
+        tier.ContainsKey("Default").Should().BeFalse("a defaulted tier is a deploy that answers an empty universe silently");
+        Synthesised.Text(Synthesised.EnvironmentOf(ServerContainer(t))["ProjectX__DataTier"]).Should().Be("{\"Ref\":\"ProjectXDataTier\"}");
+    }
+
+    [Theory]
+    [MemberData(nameof(EnvironmentTemplates.Both), MemberType = typeof(EnvironmentTemplates))]
     public void The_deployment_stamp_and_the_ssm_history_come_from_the_same_parameters(string env, string _)
     {
         var t = templates.For(env);

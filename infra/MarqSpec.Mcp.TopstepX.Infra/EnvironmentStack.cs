@@ -35,6 +35,16 @@ namespace MarqSpec.Mcp.TopstepX.Infra;
 /// What is <b>not</b> here, by card: Cognito (gh#517), the alarms (gh#526), the budget and cost tags
 /// (gh#527), the WAF (gh#528), the <c>pg_dump</c> task (gh#522), the OTLP sidecar (gh#537). Each is a
 /// further construct in this same stack, filed separately so this one stays the skeleton.
+/// <para>
+/// <b>Operational defaults this card took</b>, traced to neither ADR-0023 nor gh#516 and none a cost or
+/// exposure choice — named here so nobody hunts for where they were decided: the AWS Backup rule runs at
+/// 22:00 UTC with a 1 h start and 4 h completion window (the ADR says only "daily, 35-day"; gh#522 may
+/// move it beside the <c>pg_dump</c> schedule); the ALB access-log bucket expires objects after 90 days
+/// (gh#528's WAF logging may revisit); the target group counts 2 healthy / 3 unhealthy probes with a 5 s
+/// timeout and a 30 s deregistration delay (gh#526's alarms may retune); the Cloud Map record's TTL is
+/// 10 s; the subnets are <c>/24</c>s on the VPC default CIDR; the HTTPS listener uses
+/// <c>SslPolicy.RECOMMENDED_TLS</c>. Each is a literal below, beside its reason where it has one.
+/// </para>
 /// </remarks>
 public sealed class EnvironmentStack : Stack
 {
@@ -114,12 +124,16 @@ public sealed class EnvironmentStack : Stack
             "MarketData__RecordTape: subscribe to the market hub and record the tape (ADR-0016). One recorder per tape: on only where the tape is meant to be recorded (gh#525's measurement switches it on and back off).");
         var warmIndicators = Flag("WarmIndicators", props.WarmIndicatorsDefault,
             "MarketData__WarmIndicators: replay stored indicator series at process start (ADR-0014).");
+        // NO DEFAULT, like the digest: the product never defaults this because the wrong tier answers an
+        // EMPTY universe rather than an error, and startup refuses it unset beside credentials (R-7.2,
+        // .env.example). A template default would put that convenience back in front of production -- a
+        // deploy that forgot `--parameters ProjectXDataTier=Live` would come up green on live credentials
+        // with every contract search answering empty. Compose is the one local-convenience exception.
         var dataTier = new CfnParameter(this, "ProjectXDataTier", new CfnParameterProps
         {
             Type = "String",
-            Description = "ProjectX__DataTier: the market-data universe the credentials are entitled to. The wrong tier answers empty, never an error (R-7.2).",
+            Description = "ProjectX__DataTier: the market-data universe the credentials are entitled to. Simulated or Live, named on every deploy; the wrong tier answers empty, never an error (R-7.2).",
             AllowedValues = ["Simulated", "Live"],
-            Default = "Simulated",
         });
 
         // ── DNS ─────────────────────────────────────────────────────────────────────────────────────────

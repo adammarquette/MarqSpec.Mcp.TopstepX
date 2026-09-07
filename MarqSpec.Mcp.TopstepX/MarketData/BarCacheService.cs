@@ -1,5 +1,4 @@
 using System.Diagnostics;
-using System.Globalization;
 using MarqSpec.Mcp.TopstepX.Data;
 using MarqSpec.Mcp.TopstepX.Data.Entities;
 using MarqSpec.Mcp.TopstepX.Domain;
@@ -371,7 +370,7 @@ public sealed class BarCacheService
 
             fetched = await SeriesUnitOfWork.RunAsync(
                 _database,
-                instrument.Symbol + " " + resolutionMinutes.ToString(CultureInfo.InvariantCulture) + "m",
+                new SeriesKey.Resolution(venue, instrument.Symbol, resolutionMinutes).Describe(),
                 async token =>
                 {
                     // One transaction spanning the bar write AND the projection over it. They must land

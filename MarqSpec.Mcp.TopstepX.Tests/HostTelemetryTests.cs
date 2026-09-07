@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Globalization;
 using System.Text.RegularExpressions;
 using FluentAssertions;
+using MarqSpec.Mcp.TopstepX.MarketData;
 using MarqSpec.Mcp.TopstepX.Telemetry;
 using MarqSpec.Mcp.TopstepX.Tools;
 using Microsoft.Extensions.Diagnostics.Metrics.Testing;
@@ -35,6 +36,9 @@ namespace MarqSpec.Mcp.TopstepX.Tests;
 public sealed class HostTelemetryTests
 {
     private const string Symbol = "ES";
+
+    /// <summary>A configured session name — what a <see cref="SeriesKey.Session"/> tags with.</summary>
+    private const string SessionName = HostTelemetryDriver.Session;
 
     /// <summary>Anything that looks like an instant. A tag value matching this is a cardinality bomb.</summary>
     private static readonly Regex _looksLikeATimestamp = new(
@@ -304,6 +308,120 @@ public sealed class HostTelemetryTests
         projections.GetMeasurementSnapshot().Should().BeEmpty();
     }
 
+    // ── The series-key overloads ─────────────────────────────────────────────────────────────────────
+
+    [Fact]
+    public void AResolutionKeyProjectionEmitsTheSameTagsAsTheIntOverload()
+    {
+        // THE NEUTRALITY PIN. Every existing panel is built on these three tag keys and these three values,
+        // and the key-taking overload is a refactor of the call site rather than a change to the series it
+        // feeds: a fourth tag, or a renamed one, retires every stored series in every backend scraping it.
+        using HostTelemetry telemetry = new();
+        using MetricCollector<long> projections = Collect(
+            telemetry, HostTelemetry.IndicatorProjectionsInstrument);
+
+        telemetry.IndicatorProjected("atr", Symbol, 5, values: 240);
+        telemetry.IndicatorProjected(
+            "atr", Symbol, new SeriesKey.Resolution("test", Symbol, 5), values: 240);
+
+        IReadOnlyList<CollectedMeasurement<long>> measured = projections.GetMeasurementSnapshot();
+        measured.Should().HaveCount(2);
+
+        measured[1].Value.Should().Be(measured[0].Value);
+        measured[1].Tags.Should().Equal(measured[0].Tags);
+
+        measured[1].Tags.Keys.Should().BeEquivalentTo(
+            [HostTelemetry.IndicatorTag, HostTelemetry.SymbolTag, HostTelemetry.ResolutionTag]);
+        measured[1].Tags[HostTelemetry.ResolutionTag].Should().Be(5);
+    }
+
+    [Fact]
+    public void ASessionKeyProjectionNamesTheSession_AndCarriesNoResolution()
+    {
+        // A session is a wall-clock window whose minutes move with daylight saving, so there is no honest
+        // number to put in `resolution` — and a sentinel would silently merge the session series into
+        // whatever real resolution it collided with.
+        using HostTelemetry telemetry = new();
+        using MetricCollector<long> projections = Collect(
+            telemetry, HostTelemetry.IndicatorProjectionsInstrument);
+
+        telemetry.IndicatorProjected("atr", Symbol, new SeriesKey.Session("test", Symbol, SessionName), values: 7);
+
+        CollectedMeasurement<long> measurement = projections.LastMeasurement!;
+        measurement.Value.Should().Be(7);
+        measurement.Tags[HostTelemetry.IndicatorTag].Should().Be("atr");
+        measurement.Tags[HostTelemetry.SymbolTag].Should().Be(Symbol);
+        measurement.Tags[HostTelemetry.SessionTag].Should().Be(SessionName);
+        measurement.Tags.Keys.Should().NotContain(HostTelemetry.ResolutionTag);
+    }
+
+    [Fact]
+    public void ACacheReadOverAResolutionKeyEmitsTheSameTagsAsTheIntOverload()
+    {
+        using HostTelemetry telemetry = new();
+        using MetricCollector<long> reads = Collect(telemetry, HostTelemetry.CacheReadsInstrument);
+
+        telemetry.CacheRead(CacheSeries.Indicators, Symbol, 5, CacheOutcome.Hit);
+        telemetry.CacheRead(
+            CacheSeries.Indicators,
+            Symbol,
+            new SeriesKey.Resolution("test", Symbol, 5),
+            CacheOutcome.Hit);
+
+        IReadOnlyList<CollectedMeasurement<long>> measured = reads.GetMeasurementSnapshot();
+        measured.Should().HaveCount(2);
+        measured[1].Tags.Should().Equal(measured[0].Tags);
+    }
+
+    [Fact]
+    public void ACacheReadOverASessionKeyNamesTheSession_AndCarriesNoResolution()
+    {
+        using HostTelemetry telemetry = new();
+        using MetricCollector<long> reads = Collect(telemetry, HostTelemetry.CacheReadsInstrument);
+
+        telemetry.CacheRead(
+            CacheSeries.Indicators,
+            Symbol,
+            new SeriesKey.Session("test", Symbol, SessionName),
+            CacheOutcome.Miss);
+
+        CollectedMeasurement<long> measurement = reads.LastMeasurement!;
+        measurement.Tags[HostTelemetry.SeriesTag].Should().Be(CacheSeries.Indicators);
+        measurement.Tags[HostTelemetry.SymbolTag].Should().Be(Symbol);
+        measurement.Tags[HostTelemetry.SessionTag].Should().Be(SessionName);
+        measurement.Tags[HostTelemetry.OutcomeTag].Should().Be(CacheOutcome.Miss);
+        measurement.Tags.Keys.Should().NotContain(HostTelemetry.ResolutionTag);
+    }
+
+    [Fact]
+    public void ACacheReadSpanOverASeriesKeyCarriesTheKeysOwnDimension()
+    {
+        using HostTelemetry telemetry = new();
+
+        List<Activity> spans = [];
+        using ActivityListener listener = Listen(spans, telemetry.Activities);
+
+        using (telemetry.StartCacheRead(
+            CacheSeries.Indicators, Symbol, new SeriesKey.Resolution("test", Symbol, 15)))
+        {
+        }
+
+        using (telemetry.StartCacheRead(
+            CacheSeries.Indicators, Symbol, new SeriesKey.Session("test", Symbol, SessionName)))
+        {
+        }
+
+        spans.Should().HaveCount(2);
+
+        spans[0].OperationName.Should().Be("cache." + CacheSeries.Indicators);
+        spans[0].GetTagItem(HostTelemetry.ResolutionTag).Should().Be(15);
+        spans[0].GetTagItem(HostTelemetry.SessionTag).Should().BeNull();
+
+        spans[1].OperationName.Should().Be("cache." + CacheSeries.Indicators);
+        spans[1].GetTagItem(HostTelemetry.SessionTag).Should().Be(SessionName);
+        spans[1].GetTagItem(HostTelemetry.ResolutionTag).Should().BeNull();
+    }
+
     // ── The cardinality gate ─────────────────────────────────────────────────────────────────────────
     //
     // What follows guards CARDINALITY, which is the failure mode that never announces itself: an unbounded
@@ -392,6 +510,11 @@ public sealed class HostTelemetryTests
             .. HostTelemetryDriver.ClosedVocabularyValues,
             HostTelemetryDriver.Symbol,
             HostTelemetryDriver.Indicator,
+
+            // A session NAME, and it is bounded the way `resolution` is rather than closed the way `series`
+            // is: MarketData__Sessions names them, so the set is whatever an operator configured. It is a
+            // lowercase word from configuration, never a wall-clock window and never a contract.
+            HostTelemetryDriver.Session,
         ];
 
         vocabulary.Should().NotBeEmpty("the vocabularies must be discovered, or this admits everything");

@@ -85,10 +85,14 @@ public sealed class IndicatorRebuilder(
         string? only = onlyInstrument?.Trim().ToUpperInvariant();
         DateTimeOffset now = _clock.GetUtcNow();
 
-        // Every (instrument, resolution) the store actually holds, rather than every configured one: a
-        // resolution nobody has fetched has nothing to rebuild, and asking for it would be a no-op that looks
-        // like a result.
-        var barSeries = await _database.Bars
+        // Every series the store actually holds, rather than every configured one: a resolution nobody has
+        // fetched has nothing to rebuild, and asking for it would be a no-op that looks like a result.
+        //
+        // An ANONYMOUS TYPE, not a ValueTuple: a tuple inside the Select translates to a Postgres row
+        // constructor Npgsql then refuses to materialise, and the in-memory provider reads one happily
+        // (gh#282). The named record per row is built below, after materialisation — and it is SeriesKey
+        // itself, which is what the walk and the log both want anyway.
+        var resolutionFromBars = await _database.Bars
             .Select(b => new { b.Venue, b.Instrument, b.ResolutionMinutes })
             .Distinct()
             .ToListAsync(cancellationToken)
@@ -103,40 +107,70 @@ public sealed class IndicatorRebuilder(
         // On a store with no orphans this adds nothing: a series with values has bars, so the second list is
         // a subset of the first and the union is the first. The cost is one DISTINCT over the values table,
         // once per run of a verb that then replays every series in the store.
-        var valueSeries = await _database.IndicatorValues
+        var resolutionFromValues = await _database.IndicatorValues
             .Select(v => new { v.Venue, v.Instrument, v.ResolutionMinutes })
+            .Distinct()
+            .ToListAsync(cancellationToken)
+            .ConfigureAwait(false);
+
+        // AND THE SESSION SERIES, on exactly the same terms (gh#501). A session series the rebuild could not
+        // see is a series nothing can repair, and `rebuild-indicators` is the command an operator reaches for
+        // when they are trying to. The values-table half is the same orphan-catch as above.
+        var sessionFromBars = await _database.SessionBars
+            .Select(s => new { s.Venue, s.Instrument, s.Session })
+            .Distinct()
+            .ToListAsync(cancellationToken)
+            .ConfigureAwait(false);
+
+        var sessionFromValues = await _database.SessionIndicatorValues
+            .Select(v => new { v.Venue, v.Instrument, v.Session })
             .Distinct()
             .ToListAsync(cancellationToken)
             .ConfigureAwait(false);
 
         // Ordered, so a run walks the store the same way twice. Anonymous types of the same shape in one
         // assembly are one type with structural equality, so Union deduplicates on the three fields.
-        var series = barSeries
-            .Union(valueSeries)
-            .OrderBy(s => s.Venue, StringComparer.Ordinal)
-            .ThenBy(s => s.Instrument, StringComparer.Ordinal)
-            .ThenBy(s => s.ResolutionMinutes)
-            .ToList();
+        List<SeriesKey> series =
+        [
+            .. resolutionFromBars
+                .Union(resolutionFromValues)
+                .OrderBy(s => s.Venue, StringComparer.Ordinal)
+                .ThenBy(s => s.Instrument, StringComparer.Ordinal)
+                .ThenBy(s => s.ResolutionMinutes)
+                .Select(SeriesKey (s) => new SeriesKey.Resolution(s.Venue, s.Instrument, s.ResolutionMinutes)),
+            .. sessionFromBars
+                .Union(sessionFromValues)
+                .OrderBy(s => s.Venue, StringComparer.Ordinal)
+                .ThenBy(s => s.Instrument, StringComparer.Ordinal)
+                .ThenBy(s => s.Session, StringComparer.Ordinal)
+                .Select(SeriesKey (s) => new SeriesKey.Session(s.Venue, s.Instrument, s.Session)),
+        ];
 
         int total = 0;
         int rewritten = 0;
         int walked = 0;
-        foreach (var s in series)
+        foreach (SeriesKey stored in series)
         {
-            if (only is not null && !string.Equals(s.Instrument, only, StringComparison.Ordinal))
+            if (only is not null && !string.Equals(stored.Instrument, only, StringComparison.Ordinal))
             {
                 continue;
             }
 
-            if (!_registry.IsServed(s.Instrument))
+            if (!_registry.IsServed(stored.Instrument))
             {
                 _logger.LogWarning(
                     "Skipping {Instrument}: it is in the store but not in MarketData__Instruments.",
-                    s.Instrument);
+                    stored.Instrument);
                 continue;
             }
 
-            int changed = await ReplaySeriesAsync(s.Venue, s.Instrument, s.ResolutionMinutes, now, cancellationToken)
+            // Through the registry, exactly as before: the projection has always queried under the symbol
+            // InstrumentRegistry.Resolve hands back rather than under the raw stored string. They agree for
+            // every row the store holds, because a row is written under a normalised symbol -- so this
+            // changes nothing and says which of the two the query uses.
+            SeriesKey key = stored with { Instrument = _registry.Resolve(stored.Instrument).Symbol };
+
+            int changed = await ReplaySeriesAsync(key, now, cancellationToken)
                 .ConfigureAwait(false);
             walked++;
             if (changed > 0)
@@ -161,11 +195,12 @@ public sealed class IndicatorRebuilder(
 
             total += changed;
 
+            // NAMED THE WAY SeriesUnitOfWork NAMES IT. The verb discards the result, so this line is the
+            // operator-visible output — and a session series has no resolution to report.
             _logger.LogInformation(
-                "Rebuilt {Count} values for {Instrument} {Resolution}m.",
+                "Rebuilt {Count} values for {Series}.",
                 changed,
-                s.Instrument,
-                s.ResolutionMinutes);
+                key.Describe());
         }
 
         _logger.LogInformation(
@@ -178,18 +213,16 @@ public sealed class IndicatorRebuilder(
     }
 
     private Task<int> ReplaySeriesAsync(
-        string venue,
-        string instrument,
-        int resolutionMinutes,
+        SeriesKey key,
         DateTimeOffset now,
         CancellationToken cancellationToken) =>
         SeriesUnitOfWork.RunAsync(
             _database,
-            new SeriesKey.Resolution(venue, instrument, resolutionMinutes).Describe(),
+            key.Describe(),
             async token =>
             {
                 int changed = await _projector
-                    .ProjectAsync(venue, _registry.Resolve(instrument), resolutionMinutes, now, token)
+                    .ProjectAsync(key, now, token)
                     .ConfigureAwait(false);
 
                 await _database.SaveChangesAsync(token).ConfigureAwait(false);

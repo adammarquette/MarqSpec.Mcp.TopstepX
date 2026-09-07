@@ -1,5 +1,6 @@
 using System.Diagnostics.Metrics;
 using System.Reflection;
+using MarqSpec.Mcp.TopstepX.MarketData;
 using MarqSpec.Mcp.TopstepX.Telemetry;
 
 namespace MarqSpec.Mcp.TopstepX.Tests;
@@ -80,6 +81,12 @@ internal static class HostTelemetryDriver
     /// <summary>The indicator name every drive uses for an <c>indicator</c> tag.</summary>
     internal const string Indicator = "atr";
 
+    /// <summary>
+    /// A configured session name — what a <see cref="SeriesKey.Session"/> tags with. Bounded like a
+    /// resolution rather than closed like <c>series</c>: <c>MarketData__Sessions</c> names them.
+    /// </summary>
+    internal const string Session = "rth";
+
     /// <summary>The resolution — and every other integer — a drive passes. Inside the tool guard's bound.</summary>
     internal const int Resolution = 5;
 
@@ -106,7 +113,7 @@ internal static class HostTelemetryDriver
 
     /// <summary>The values a drive passes for every <see cref="string"/> parameter, one drive each.</summary>
     internal static IReadOnlyList<string> Candidates { get; } =
-        [.. ClosedVocabularyValues, Symbol, Indicator];
+        [.. ClosedVocabularyValues, Symbol, Indicator, Session];
 
     /// <summary>Drives every public recording method once per candidate value and returns what was recorded.</summary>
     /// <returns>The instruments published on the meter, and every measurement the drive produced.</returns>
@@ -207,6 +214,19 @@ internal static class HostTelemetryDriver
         if (parameter.ParameterType == typeof(double))
         {
             return (double)Resolution;
+        }
+
+        if (parameter.ParameterType == typeof(SeriesKey))
+        {
+            // Drive the session flavour when the candidate IS the session name, so `session` reaches a
+            // backend and the DeclaredTagKeys bidirectional check sees it; every other candidate drives a
+            // resolution key, which is the shape every existing panel already scrapes.
+            if (string.Equals(candidate, Session, StringComparison.Ordinal))
+            {
+                return new SeriesKey.Session("test", Symbol, Session);
+            }
+
+            return new SeriesKey.Resolution("test", Symbol, Resolution);
         }
 
         throw new InvalidOperationException(

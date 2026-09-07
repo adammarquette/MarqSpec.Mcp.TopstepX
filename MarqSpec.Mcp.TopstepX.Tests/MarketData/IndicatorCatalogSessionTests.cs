@@ -82,14 +82,39 @@ public sealed class IndicatorCatalogSessionTests
             ", ",
             catalog.ForSeries(_session).Select(i => i.Name).Distinct(StringComparer.Ordinal));
 
+        // The list already names 'vwap-rolling', so naming it a second time in the prose ahead of the list
+        // reads as though it were somehow outside the vocabulary that follows.
         resolve.Should().Throw<ArgumentException>()
             .Which.Message.Should().StartWith(
-                "'vwap' anchors on the session and a one-bar session has no VWAP; on a session series ask "
-                + "for 'vwap-rolling' or one of: " + names);
+                "'vwap' anchors on the session and a one-bar session has no VWAP; ask for one of: "
+                + names + ".");
 
         // The rest of the vocabulary is untouched on a session series.
         catalog.ResolveFor(_session, "vwap-rolling", null).Name.Should().Be("vwap-rolling");
         catalog.ResolveFor(_session, "atr", null).Name.Should().Be("atr");
+    }
+
+    [Fact]
+    public void ForASeriesKindNothingHasDecidedAVocabularyFor_IsRefused()
+    {
+        // FAILING OPEN HERE IS A DATA LOSS. The reconcile deletes every stored value in the list this
+        // returns that the pass did not produce, so a third key shape inheriting All by accident would let a
+        // projection over it delete rows it has no standing over.
+        IndicatorCatalog catalog = Catalog();
+
+        Action forSeries = () => catalog.ForSeries(new StubKey("test", "ES"));
+
+        forSeries.Should().Throw<ArgumentOutOfRangeException>()
+            .Which.ParamName.Should().Be("key");
+    }
+
+    /// <summary>A series kind this catalogue has never been given a vocabulary for.</summary>
+    /// <param name="Venue">The venue.</param>
+    /// <param name="Instrument">The instrument.</param>
+    private sealed record StubKey(string Venue, string Instrument) : SeriesKey(Venue, Instrument)
+    {
+        /// <inheritdoc />
+        public override string Describe() => Instrument + " stub";
     }
 
     [Fact]

@@ -260,10 +260,20 @@ public sealed class IndicatorCatalog
     {
         ArgumentNullException.ThrowIfNull(key);
 
+        // ENUMERATED, NEVER DEFAULTED. The reconcile deletes every stored value in this list that a pass did
+        // not produce, so a key shape that inherited a vocabulary by falling through the switch would let a
+        // projection over it delete rows it has no standing over — data loss wearing a cleanup's clothes,
+        // and green. A third kind decides its own vocabulary here, deliberately.
         return key switch
         {
             SeriesKey.Session => _forSession,
-            _ => All,
+            SeriesKey.Resolution => All,
+            _ => throw new ArgumentOutOfRangeException(
+                nameof(key),
+                key.GetType().Name,
+                "This catalogue has no vocabulary for that series kind. Add its arm above rather than "
+                + "letting it inherit another kind's: the list decides what a projection computes AND what "
+                + "the reconcile may delete."),
         };
     }
 
@@ -297,10 +307,19 @@ public sealed class IndicatorCatalog
 
         if (key is SeriesKey.Session && !available.Contains(resolved))
         {
+            // THE EXPLANATION IS GATED ON THE NAME, and the general arm is written even though only `vwap`
+            // can reach it today. The VWAP sentence is a fact about one name; carried over to whatever the
+            // next exclusion turns out to be, it would explain the wrong thing with complete confidence.
+            //
+            // The list is not pre-announced either: naming 'vwap-rolling' in the prose ahead of a list that
+            // already contains it reads as though it were somehow outside the vocabulary that follows.
+            string why = string.Equals(resolved.Name, SessionAnchoredVwap, StringComparison.Ordinal)
+                ? "'" + resolved.Name + "' anchors on the session and a one-bar session has no VWAP"
+                : "'" + resolved.Name + "' is not computed on a session series";
+
             throw new ArgumentException(
-                "'" + resolved.Name + "' anchors on the session and a one-bar session has no VWAP; on a "
-                + "session series ask for 'vwap-rolling' or one of: "
-                + string.Join(", ", available.Select(i => i.Name).Distinct(StringComparer.Ordinal)),
+                why + "; ask for one of: "
+                + string.Join(", ", available.Select(i => i.Name).Distinct(StringComparer.Ordinal)) + ".",
                 nameof(name));
         }
 

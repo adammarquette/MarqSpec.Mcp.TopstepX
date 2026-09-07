@@ -524,6 +524,36 @@ return per measurement and no allocation per span. That is why the instrumentati
 call site: there is no "is telemetry on" branch to get wrong, and no configuration under which a counted path
 and an uncounted path can diverge.
 
+### Two authentication modes, one gate
+
+The gate in front of `/mcp` runs in one of two modes, selected by `Mcp__Auth__Mode`, and **it is global in
+both**: everything not positively authenticated is refused, and the only things past it are the terminal
+branches registered ahead of it. Under **`StaticToken`** — the default, the compose stack and the plain
+`dotnet run` recipe — that is `BearerTokenGate`, one shared secret compared in fixed time, byte for byte
+what it was before gh#512. Under **`OAuth`** — the non-loopback instance of
+[ADR-0021](adr/0021-a-non-loopback-instance-is-supported.md), Amazon Cognito issuing — the pipeline is four
+calls in one order: the liveness probe, the **protected-resource metadata** (a second terminal branch, for the
+same reason as the first: a connector reads it before it has a token), the **OAuth gate**, then `/mcp`.
+
+The OAuth gate is `Microsoft.AspNetCore.Authentication.JwtBearer` doing the cryptography — the signing keys
+discovered from `{issuer}/.well-known/openid-configuration`, `iss` compared byte for byte with
+`Mcp__OAuth__Issuer`, lifetime with a 60 s skew, RS256 only, signed only, `exp` required — and
+`CognitoAccessTokenPolicy` doing what the library cannot: **a Cognito access token carries `client_id` and
+`scope` and no `aud`**, so `ValidateAudience = false` is necessary and, alone, would accept every token the
+pool ever signed. The policy runs inside the handler's `OnTokenValidated`, so no principal is ever
+authenticated without it: `token_use == access` (an ID token from the same pool is signed by the same key and
+is not a credential here), exactly one `client_id` and in `Mcp__OAuth__ClientIds`, and
+`Mcp__OAuth__RequiredScope` present as a whole entry of the space-separated `scope`. A refusal is
+`401` with `WWW-Authenticate: Bearer resource_metadata="<origin>/.well-known/oauth-protected-resource/mcp",
+scope="…"`, the document there echoing `Mcp__OAuth__ResourceUrl` **as entered** — a `Uri` round trip would
+lowercase the host or drop a port, and the connector compares against what the user typed. The accepted
+principal's `sub` and `client_id` become a log scope on the request; the token is never retained and never
+logged.
+
+**Exactly one mode, checked at startup.** ADR-0021's coupling — *a target group in front of 8080 ⇒ the OAuth
+mode, never the static token* — is `McpOptions.Validate`: an incomplete OAuth section refuses naming the key,
+and both directions of two modes at once refuse, because an OAuth key beside `Mode=StaticToken` is a public
+listener on a shared secret with the OAuth keys silently ignored. Stdio reads none of it.
 
 ## Degradation — what an absent dependency does
 
@@ -536,6 +566,7 @@ carrying the fix, rather than a dead process (ADR-0007):
 | Credentials | Everything served from the store, plus session and instrument reference | Contract resolution, account reads, and any cache miss |
 | Embedding key | Recording and searching observations — search matches text instead of meaning | Nothing |
 | OTLP endpoint | Everything — no exporter is registered, no background exporter thread runs, and nothing warns about a collector that is not there | Nothing; the server simply emits no telemetry ([ADR-0019](adr/0019-otlp-as-the-telemetry-boundary.md)) |
+| OAuth issuer (`Mcp__Auth__Mode=OAuth`) | `/health` and the protected-resource metadata, neither of which consults the issuer; the process itself, which never fetches discovery at startup | **Every call to `/mcp`, and this one fails closed.** A token that cannot be verified is refused with the same `401`; nothing caches an "allow" across a discovery failure. A probe with no token never makes the server reach the issuer at all (gh#512) |
 
 The reason is the transport. An MCP client launches this as a child process, so a process that exits is
 reported as a transport failure and says nothing about *why* — the operator is told the server is broken when

@@ -73,7 +73,10 @@ path can replay (gh#416). *The maintainer reports that Claude Cowork is such a c
 a non-TLS endpoint as a connector; that report is **not** independently verified here, and nothing above
 depends on it.* There is no HTTP port beside it. Calls need
 `Authorization: Bearer <Mcp__HttpBearerToken>`; TLS is confidentiality on the wire and the token is still what
-authorises the call. Compose defaults that token to `changeme-local`, the same local convenience as
+authorises the call. That is **`Mcp__Auth__Mode=StaticToken`**, the default and the only mode this stack runs
+in — the OAuth mode is the remote instance's, and switching compose to it is refused at startup rather than
+being a `.env` edit (see [the OAuth mode](#the-oauth-mode-a-resource-server-for-the-remote-instance) below).
+Compose defaults that token to `changeme-local`, the same local convenience as
 `POSTGRES_PASSWORD` and `ProjectX__DataTier:-Simulated`. **Compose binds that port to `127.0.0.1`**, which is
 the only reason the default token is tolerable; publish it wider and you set a real token in the same change
 (gh#415) — TLS does not license widening it. The certificate covers `localhost`, `127.0.0.1` and `::1`, so
@@ -236,6 +239,62 @@ What this mode is **not**: it is not TLS, it is not reachable by Claude Cowork (
 endpoint), and it carries no real venue credential or database by default. It exists for testing and
 debugging the HTTP transport itself — with `curl`, the MCP inspector, or a client that accepts plaintext
 loopback HTTP — without standing up the composed stack to do it.
+
+### The OAuth mode — a resource server for the remote instance
+
+Everything above authenticates with **one shared secret**, `Mcp__Auth__Mode=StaticToken`, the default. The
+non-loopback instance of [ADR-0021](documentation/adr/0021-a-non-loopback-instance-is-supported.md) does not:
+it is an **OAuth 2.1 resource server**, and every call to `/mcp` carries an access token Amazon Cognito
+issued (gh#512, gh#517). The mode is selected by environment and the tool surface is identical under both:
+
+```bash
+Mcp__Transport=Http Mcp__Auth__Mode=OAuth \
+  Mcp__OAuth__Issuer=https://cognito-idp.<region>.amazonaws.com/<poolId> \
+  Mcp__OAuth__ClientIds=<connector-client-id>,<deploy-check-client-id> \
+  Mcp__OAuth__ResourceUrl=https://topstepx-mcp.staging.marqspec.com/mcp \
+  dotnet run --project MarqSpec.Mcp.TopstepX
+```
+
+**Exactly one mode.** `Mcp__HttpBearerToken` must be unset here, and an `Mcp__OAuth__*` key beside
+`Mode=StaticToken` refuses too — both directions, at startup, naming the key. That is ADR-0021's coupling (*a
+target group in front of the port ⇒ this mode, never the static token*) as a check rather than a sentence.
+
+What the server does in this mode, in the order a connector meets it. A call with no token, or a wrong one,
+gets **`401`** with `WWW-Authenticate: Bearer resource_metadata="<origin>/.well-known/oauth-protected-resource/mcp",
+scope="topstepx-mcp/read"`. That document — and the bare `/.well-known/oauth-protected-resource` — answers
+**unauthenticated** with `Mcp__OAuth__ResourceUrl` echoed **exactly as entered** (the connector compares it
+with what the user typed, path included), the issuer under `authorization_servers`, and the scope. The
+connector then discovers the issuer, runs authorization-code + PKCE, and sends the access token as a bearer.
+The server verifies it against the keys discovered from `{Issuer}/.well-known/openid-configuration` — RS256,
+signed, in date within 60 s, the issuer byte for byte — and then checks what a Cognito access token carries
+*instead of* an audience: `token_use` is `access`, `client_id` is one of `Mcp__OAuth__ClientIds`, and the
+`scope` claim carries `Mcp__OAuth__RequiredScope`. Any of those wrong is the same `401`. `/health` answers
+with no credential under this mode too — the load balancer probing it has none under either scheme.
+
+Measured on this branch with a **stub issuer** on `127.0.0.1:5077` (gh#517's Cognito pool did not exist
+yet; the stub serves a discovery document and a key set generated for the run, and mints a token shaped
+like Cognito's `client_credentials` access token), the server on `127.0.0.1:5299`:
+
+```console
+$ curl -i http://127.0.0.1:5299/mcp                                  # no Authorization header
+HTTP/1.1 401 Unauthorized
+Server: Kestrel
+WWW-Authenticate: Bearer resource_metadata="http://localhost:5299/.well-known/oauth-protected-resource/mcp", scope="topstepx-mcp/read"
+
+Unauthorized.
+
+$ curl http://127.0.0.1:5299/.well-known/oauth-protected-resource/mcp   # still no header
+{"resource":"http://localhost:5299/mcp","authorization_servers":["http://127.0.0.1:5077/stub-pool"],"scopes_supported":["topstepx-mcp/read"],"bearer_methods_supported":["header"]}
+
+$ curl -X POST http://127.0.0.1:5299/mcp -H "Authorization: Bearer $TOKEN" ... initialize ...
+HTTP/1.1 200 OK
+data: {"result":{"protocolVersion":"2024-11-05", ... "serverInfo":{"name":"MarqSpec.Mcp.TopstepX", ...
+```
+
+A `list_instruments` call answered in the same run; a token from an unlisted client, an ID token
+(`token_use=id`), a token without the scope, and the compose stack's `changeme-local` each got the `401`
+above. The refusal log names the claim and never the token. **Nothing here has been measured against a real
+Cognito pool** — the stub honours the same discovery contract, and the first real measurement is gh#517's.
 
 **Telemetry is off here, and everywhere, until you name a collector.** Set `Otel__Endpoint` — a collector's
 `http://host:4317` for OTLP over gRPC, or its `:4318` with `Otel__Protocol=http` — and this server exports

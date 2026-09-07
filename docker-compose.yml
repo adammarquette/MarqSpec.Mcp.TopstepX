@@ -89,6 +89,19 @@ services:
       # unexamined (gh#415).
       Mcp__HttpBearerToken: "${Mcp__HttpBearerToken:-changeme-local}"
 
+      # THIS STACK IS THE STATIC MODE, BY CONSTRUCTION (ADR-0007, ADR-0021, gh#512). StaticToken is the
+      # default and the mode the token default above belongs to. The OAuth keys are forwarded for parity
+      # with .env.example -- a key documented there and not forwarded here is a setting that silently does
+      # nothing in a container -- but switching this stack to OAuth is NOT a .env edit: startup refuses
+      # Mode=OAuth beside a static token, and the token default above cannot be blanked from .env. That is
+      # deliberate. A remote instance is a different artefact with bind, token and certificate all replaced
+      # at once, never this stack with one line changed; see .env.example for what each key is.
+      Mcp__Auth__Mode: "${Mcp__Auth__Mode:-StaticToken}"
+      Mcp__OAuth__Issuer: "${Mcp__OAuth__Issuer:-}"
+      Mcp__OAuth__ClientIds: "${Mcp__OAuth__ClientIds:-}"
+      Mcp__OAuth__RequiredScope: "${Mcp__OAuth__RequiredScope:-topstepx-mcp/read}"
+      Mcp__OAuth__ResourceUrl: "${Mcp__OAuth__ResourceUrl:-}"
+
       MarketData__SessionCloseCentral: "${MarketData__SessionCloseCentral:-16:00}"
       MarketData__Holidays: "${MarketData__Holidays:-}"
       MarketData__MaxRows: "${MarketData__MaxRows:-5000}"

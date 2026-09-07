@@ -38,6 +38,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   [ADR-0019](documentation/adr/0019-otlp-as-the-telemetry-boundary.md) gains a dated update naming these as
   the stable surface, and [architecture](documentation/architecture.md) gains *What the host measures*
   (gh#532, gh#536).
+- **`Mcp__Auth__Mode` — the HTTP transport authenticates in one of two modes, and the gate stays global.**
+  `StaticToken`, the default, is byte for byte what every launch did before: one shared secret,
+  `Mcp__HttpBearerToken`, compared in fixed time — the local and compose mode. `OAuth` makes the server an
+  OAuth 2.1 resource server for the non-loopback instance
+  ([ADR-0021](documentation/adr/0021-a-non-loopback-instance-is-supported.md)): every call to `/mcp` carries
+  an access token Amazon Cognito issued (`Mcp__OAuth__Issuer`), verified against the keys discovered from the
+  issuer's OpenID configuration — RS256 only, signed only, an `exp` required, 60 s skew, the issuer compared
+  byte for byte — and then checked for what a Cognito access token carries *instead of* an audience:
+  `token_use == access`, one `client_id` in `Mcp__OAuth__ClientIds`, and `Mcp__OAuth__RequiredScope`
+  (default `topstepx-mcp/read`) present as a whole entry of the `scope` claim. A refused call answers `401`
+  with `WWW-Authenticate: Bearer resource_metadata="…", scope="…"`, and the RFC 9728 document that names —
+  `/.well-known/oauth-protected-resource` and `…/mcp` — answers unauthenticated with `Mcp__OAuth__ResourceUrl`
+  echoed exactly as entered, so the connector can find the issuer before it has a token. `/health` answers
+  without a credential under both modes; every other path stays behind the gate under both. Startup refuses
+  an incomplete OAuth section naming the key, an `http` issuer off loopback, a resource URL that is not the
+  `/mcp` endpoint, and **both directions of two modes at once** — the coupling ADR-0021 stated is now a
+  check. The accepted principal's `sub` and `client_id` reach the log scope; the token never does. Stdio
+  reads none of it. Pinned by 122 unit tests against an in-process stub issuer with a key generated for the
+  run — no test reaches the network — and **not yet measured against a real Cognito pool**, which gh#517
+  builds ([ADR-0007](documentation/adr/0007-dual-transport.md) 2026-09-06 update, gh#512, gh#509).
 - **`Store__StartupWaitSeconds` — how long startup waits for a store that is not answering yet.** `0` by
   default, which is one probe and no delay: byte for byte what every launch did before, and what compose
   wants, since its `depends_on` is a `pg_isready` health gate. It exists for a deployment with **no

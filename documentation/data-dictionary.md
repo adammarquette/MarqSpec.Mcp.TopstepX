@@ -5,10 +5,12 @@
 [ADR-0005](adr/0005-session-aware-gap-detection.md) (`BarCoverage`),
 [ADR-0006](adr/0006-indicators-as-projections.md) (`IndicatorValues`),
 [ADR-0011](adr/0011-contract-roll-boundary.md) (`Bars.ContractId`),
+[ADR-0022](adr/0022-session-bars-derived-complete-or-absent.md) (`SessionBars`),
 gh#215 (`Trades`, `TapeCoverage`, `FootprintCells`),
-gh#404 (`TapeLeases`)
+gh#404 (`TapeLeases`),
+gh#499 (`SessionBars`)
 
-One Postgres database, nine tables — §4 is a retired number, not a tenth. Entities live in
+One Postgres database, ten tables — §4 is a retired number, not an eleventh. Entities live in
 `MarqSpec.Mcp.TopstepX.Data/Entities/`; the schema is whatever the migrations say, and this page is kept in
 lockstep with them in the same PR.
 
@@ -467,6 +469,74 @@ the market and the tape, not about which process is running. Putting "someone el
 either would make an availability signal indistinguishable from a data fact.
 
 Not a hypertable, and not a time series at all — at most one row per instrument per venue.
+
+## §11 `SessionBars` — the derived session series
+
+| Column | Type | Note |
+|---|---|---|
+| `Venue` | `varchar(64)` | PK |
+| `Instrument` | `varchar(32)` | PK |
+| `Session` | `varchar(16)` | PK · the definition's storage key, e.g. `rth`. Sixteen because a name must match `^[a-z][a-z0-9-]{0,15}$` |
+| `TradeDate` | `date` | PK · the CME trade date the session calendar already models ([ADR-0005](adr/0005-session-aware-gap-detection.md)) |
+| `OpenUtc` | `timestamptz` | When the session opened, inclusive. Recorded and **uniquely indexed**, never key |
+| `CloseUtc` | `timestamptz` | When the session closed, exclusive |
+| `Open` `High` `Low` `Close` | `numeric(18,8)` | The first bucket's open, the extremes, the last bucket's close |
+| `Volume` | `bigint` | Every base bucket in the window, summed |
+| `ContractId` | `varchar(64)` | **NOT NULL.** The one venue contract every base bucket came from |
+| `BaseResolutionMinutes` | `integer` | The size of the base bars this was aggregated from — provenance |
+| `BaseBucketCount` | `integer` | How many base buckets it was built from — every one the calendar expected |
+| `WindowCentral` | `varchar(11)` | The window in Central wall-clock, e.g. `08:30-15:00`. Eleven because `HH:mm-HH:mm` is exactly eleven characters |
+| `RecordedAt` | `timestamptz` | When this row was last written or revised |
+
+**A plain table, not a hypertable.** A session bar is one row per trade date, so one instrument's `rth` series
+is 250-odd rows a year and all four shipped sessions together are a thousand — a decade of them is five figures.
+§1 stores a row per minute per resolution and earns the chunking, the compression and the time-dimension
+planning [ADR-0004](adr/0004-one-postgres-timescale-pgvector.md) buys; a table this size is answered by a
+B-tree probe on its own key, and chunking it would add partitions to manage for no read it makes faster. Same
+call as §3, §8, §9 and §10, and for the same reason: the shape of every read here is a key probe over a handful
+of rows, not a scan of a time dimension.
+
+**Keyed by trade date, not by instant.** A session is identified by the CME trade date the calendar already
+models, and its UTC bounds *move*: 17:00 Central is 22:00Z in summer and 23:00Z in winter, so the instant is
+not the identity and keying on it would make one session two rows across a daylight-saving change
+([ADR-0005](adr/0005-session-aware-gap-detection.md),
+[ADR-0022](adr/0022-session-bars-derived-complete-or-absent.md)). The instants are still what a caller acts on,
+so they are recorded — and `(Venue, Instrument, Session, OpenUtc)` carries a **unique** index, which is where
+*two rows for one opening* is made unrepresentable. That index is a calendar-bug guard and nothing else: it is
+deliberately **not** the conflict target of the write, because a `DO UPDATE` aimed at it would turn the failure
+it exists to raise into a silent revision. The composite primary key is the idempotence guard, on §1's terms,
+and the write reaches it directly with one `ON CONFLICT … DO UPDATE` rather than by reading and deciding
+(gh#103).
+
+**`ContractId` is `NOT NULL` here and nullable on §1, and the asymmetry is deliberate.** On §1 null means *not
+recorded* — a bucket written before the column existed, healed the next time something reads that range. Here
+there is no unknown state to represent: a session bar exists only when every one of its base buckets came from
+one contract, and a session whose buckets carry no contract is `ProvenanceUnknown` and is **never written**. It
+is §9's inverse stated the other way round — §9 has no `ContractId` because a cell is always computed inside a
+single contract run, and this table has a non-null one for the same reason it can name the run.
+
+**`WindowCentral` and `BaseResolutionMinutes` are the definition travelling with the row**
+([ADR-0022](adr/0022-session-bars-derived-complete-or-absent.md) §4/§5). A `Bar` carries an open time and not a
+size, so nothing downstream could tell an `rth` bar built from 30-minute bars from one built from 5-minute bars
+— and the finer one is the dangerous case, because it passes the completeness guard and produces a bar whose
+high, low and volume come from a thirteenth of the session. This row is the only place the definition that
+produced it can be stated, so a row whose pair disagrees with the definition standing today is **discarded and
+rebuilt, never served**. The discard is unscoped by date on purpose: a changed definition invalidates the whole
+series, not the window the current call happens to ask about.
+
+**No absence column, and no session coverage ledger.** An incomplete session is not stored at all — no row, no
+marker, no ledger — and its absence is re-derived from the base series on every read. A stored absence would go
+stale the moment the missing base buckets arrived, and a session that heals would keep reading as missing until
+something invalidated the record; §3's ledger is the right shape for *the venue answered and had nothing*, which
+is a fact about the venue, and the wrong shape for *the store does not hold this yet*, which is a fact about §1
+that §1 already carries ([ADR-0022](adr/0022-session-bars-derived-complete-or-absent.md), its rejected
+per-session ledger).
+
+**Deliberately no retention policy**, for §1's reason: this is a record, not a pipeline.
+
+Indexes: `(Venue, Instrument, Session, OpenUtc)` **unique**, the guard above; and
+`(Instrument, Session, CloseUtc)` — the shape of every read, one instrument and one session over a window
+ending at the close.
 
 ---
 *Changing an entity or a migration? Update the section above in the same PR. A data dictionary that lags the

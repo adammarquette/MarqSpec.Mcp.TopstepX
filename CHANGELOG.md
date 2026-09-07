@@ -108,6 +108,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   release it is by the deployment that started it. Nothing about the venue, the token or the connection
   string appears in the body. `BearerTokenGate` also gets its first tests of its own (gh#513, gh#509,
   ADR-0007's 2026-09-06 update).
+- **Named sessions are configuration, and a session bar is stored as a real series keyed by trade date
+  (`R-1.12`, [ADR-0022](documentation/adr/0022-session-bars-derived-complete-or-absent.md), gh#499).**
+  `MarketData__Sessions__<name>__Window` and `__BaseResolutionMinutes` bind on the dictionary-by-name shape
+  `KeyLevels__Weights__<name>` already uses; an entry **overlays** the shipped set rather than replacing it, so
+  the four defaults — `full` 17:00-16:00 at a 60-minute base, `rth` 08:30-15:00 at 30, `asia` 17:00-02:00 at 30
+  and `europe` 02:00-08:30 at 30 — stand until a name is configured over them. A definition that does not
+  describe a servable session is **refused at startup naming the key and the rule**: a window that is not
+  exactly `HH:mm-HH:mm`, a base resolution that does not divide 60, a boundary that does not land on the UTC
+  bucket grid under both offsets, or a window that does not run forwards inside the session measured from its
+  open. Validation runs over the **effective** set — the configured entries plus every shipped
+  session nobody replaced — against the operator's own `MarketData__SessionCloseCentral`, so a moved close that
+  leaves `full` or `rth` unstatable fails the boot rather than dropping a session quietly.
+  `SessionBars` is a **plain** table — one row per trade date per session, 250-odd a year for one series — keyed
+  `(Venue, Instrument, Session, TradeDate)` because the UTC bounds move with daylight saving, with a unique
+  index on `OpenUtc` so two rows can never claim one opening, and carrying the `WindowCentral` and
+  `BaseResolutionMinutes` that produced it; a row whose pair disagrees with the definition standing today is
+  discarded and rebuilt, never served. `SessionBarService` derives one bar per **closed** trade date from the
+  stored base bars and stores the complete ones — incomplete, roll-spanning and unattributable sessions are
+  absent with a stated reason and are never written, and no absence is recorded, since it is re-derived on every
+  read. **A session read opens no fetch of its own**: it makes one `BarCacheService.GetBarsAsync` at the
+  definition's base resolution over the covering window, outside its own transaction, and reports what that base
+  read cost — zero venue requests is the ordinary answer.
+  **No tool ships with this.** Session bars are not reachable from the MCP surface until gh#500; the data
+  dictionary (§11) and the architecture doc's *session read* section describe what is stored and how.
 - **[ADR-0021](documentation/adr/0021-a-non-loopback-instance-is-supported.md) — a non-loopback instance is
   supported, in one shape, and each of the three same-machine couplings has a named replacement.** ADR-0007's
   2026-09-01 TLS update scoped the composed endpoint to a client on the same machine and left a remote

@@ -282,6 +282,85 @@ one.**
 Detail, including why keying by contract id and back-adjustment were both rejected for now:
 [ADR-0011](adr/0011-contract-roll-boundary.md).
 
+## The session read — derived, complete or absent
+
+`SessionBarService.GetAsync(instrument, definition, tradeDates)` answers a list of trade dates with one session
+bar each, or with the reason there is none. It is **not** a second cache-aside path: it derives from the base
+series the path above maintains, and the only step here that can reach the venue is one call into that path
+([ADR-0022](adr/0022-session-bars-derived-complete-or-absent.md)). The definition it derives against — a name,
+a Central window and a **base resolution** — comes from `SessionCatalog`, bound from
+`MarketData__Sessions__<name>__Window` / `__BaseResolutionMinutes` and validated at startup against the
+operator's own session close (`R-1.12`, gh#499).
+
+1. **Refuse a repeated trade date.** One trade date is one session bar, and a repeat is refused here rather
+   than in the store: a duplicated array entry makes Postgres reject the upsert with a `21000` cardinality
+   violation naming a constraint, from inside a transaction, which says nothing about the caller that asked
+   for the same day twice. Refused rather than quietly de-duplicated — a caller asking twice has a bug, and
+   `Distinct()` would answer it as though it had not.
+2. **Split into closed and not-closed, by the clock.** `SessionWindows.WindowFor` resolves each trade date's
+   window on `BarSessionCalendar` ([ADR-0005](adr/0005-session-aware-gap-detection.md)), and a window whose end
+   has not passed — or that the calendar does not carry at all, a Saturday or a holiday — is `NotClosed`.
+   **This is the one judgement `Domain` may not make**, because it needs a clock and nothing in `Domain` may
+   read one; `SessionBarAbsence.NotClosed` is merely *declared* there so both ends share one vocabulary. A bar
+   for a window still running would be the partial the whole design refuses, and an ordinary-looking one: every
+   bucket printed so far is present, and the count is simply lower than the calendar expects.
+3. **Return early when nothing has closed.** No store, no venue: a read that can only answer *not yet* must
+   cost neither.
+4. **One `BarCacheService.GetBarsAsync`**, at the definition's `BaseResolutionMinutes`, over the single window
+   covering the first closed session's open to the last one's close — **outside the transaction below, and the
+   only step that can reach the venue.** A session read never opens a fetch of its own
+   ([ADR-0022](adr/0022-session-bars-derived-complete-or-absent.md) §7): it asks the path above for base bars,
+   and what that path costs is reported back as `FetchedBuckets` and `VenueRequests`, so zero is the precise
+   statement that this call reached no venue. The resolution is not a detail — a `Bar` carries its open time
+   and not its size, so a **finer** series passes the completeness check and yields a session bar whose
+   extremes are only the sub-buckets that happened to start on the boundary. **The one call is not free**: the
+   covering window spans the overnight between sessions and the calendar expects buckets right around the clock
+   apart from the maintenance hour, so a daytime session like `rth` fetches and stores the seventeen-odd
+   overnight hours too. That is the right trade — the base series is shared, `BarGapDetector` coalesces a run
+   of missing buckets into one paged range whether or not a session boundary sits inside it, and the coverage
+   ledger memoises the ranges the venue answers empty. One call per date would buy a narrower first fetch and
+   pay a round trip per date, forever. It sits outside the transaction for the reason the fetch above does: the
+   page walk is paced, and holding a `RepeatableRead` snapshot across a minute of deliberate sleeping pins
+   `xmin` and widens every serialization window on this path — and it makes the retry free, since a second
+   attempt re-derives from the store and re-fetches nothing.
+5. **Aggregate, purely.** `SessionBarAggregator.Aggregate` asks the calendar which base buckets the window
+   expects and refuses to build anything from fewer: `Incomplete` with the expected and missing counts,
+   `SpansRoll` when the buckets came from two contracts
+   ([ADR-0011](adr/0011-contract-roll-boundary.md)), `ProvenanceUnknown` when they cannot say which contract at
+   all. It reads no clock and no store, so recomputing over the same bars yields the same numbers
+   ([ADR-0006](adr/0006-indicators-as-projections.md)).
+6. **One unit of work**, at `RepeatableRead` with the same single retry the path above uses:
+   (a) **discard** every row of this session name whose `(WindowCentral, BaseResolutionMinutes)` disagrees with
+   the definition standing today — scoped to the name and *unscoped by date*, because a changed definition
+   invalidates the whole series rather than the window this call asked about
+   ([ADR-0022](adr/0022-session-bars-derived-complete-or-absent.md) §4/§5);
+   (b) an **`AsNoTracking` pre-read** of the asked dates, because the write below is raw SQL the change tracker
+   never sees and a tracked row is a stale copy the identity map would hand the next query in this scope
+   (gh#103);
+   (c) a **C# skip-unchanged pre-filter**, which saves a write and decides nothing;
+   (d) one **`ON CONFLICT … DO UPDATE`** on the primary key `(Venue, Instrument, Session, TradeDate)`, with the
+   skip-unchanged rule restated in the statement's own `WHERE` where both sides carry the column's
+   `numeric(18,8)` (gh#37). Deliberately **not** aimed at the unique `(Venue, Instrument, Session, OpenUtc)`
+   index: that one exists to make a calendar bug fail the write, and a `DO UPDATE` on it would turn that
+   failure into a silent revision;
+   (e) **reconcile, scoped to the dates that were actually re-derived** — a date this call asked about and the
+   aggregator refused no longer has a bar the store may serve, which is exactly what a roll landing on stored
+   buckets does. An explicit list rather than a sweep of the span, because a date outside the ask was not
+   re-derived and deleting it would throw away a bar on the strength of not having looked;
+   (f) **save before anything reads back** — a no-op today, kept because the read-back is a *query* and a query
+   does not see rows that are only tracked.
+7. **Read back what was committed**, `AsNoTracking`, restating the provenance pair in the predicate. What a
+   caller receives is what the store holds, not what the aggregator produced — and because this read runs after
+   the transaction, stating the definition makes *a row built under a definition that no longer holds is never
+   served* a property of the read itself rather than of the sequence that preceded it.
+
+**An incomplete session is absent with a reason, and is never recorded** — no row, no marker, no ledger. It is
+re-derived on every read, so a session that heals simply appears on the next one
+([ADR-0022](adr/0022-session-bars-derived-complete-or-absent.md)).
+
+**No tool reaches this yet.** The session-bar tool surface is gh#500; until it lands, `SessionBarService` is
+registered and reachable only from the composition root.
+
 ## The indicator read — cache-aside on the same terms, and never against the vendor
 
 `get_indicators` and `get_indicator_at` read stored values. Since gh#246 they also **fill what is missing

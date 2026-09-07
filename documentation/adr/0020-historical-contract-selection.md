@@ -182,6 +182,15 @@ the key, not the lifetime.
   bucket, and the read path never re-fetches an attributed bucket. The thin history stays until an operator
   runs `reselect-bars` over it. This record does not heal on read, deliberately: a read that rewrites
   attributed history is the thing part 5 refuses.
+- **A degraded candidate set is reported to the caller, not only to the log** (gh#592). §2's decision can run
+  over fewer contracts than the cycle names, or over none, and the resulting series is a real one from a real
+  contract — complete-looking either way. So the read carries `history.selection` on its payload beside
+  `venueRequests`, as its own field rather than as a value of `contracts.span`, which answers the unrelated
+  roll question. It is a property of **the read that planned the fetch**: §5 forbids a later read from
+  re-deciding attributed history, and nothing stored says which candidate set chose a bucket, so a warm read
+  of the same window reports `NotDecidedHere` — "this read decided none", never "the history is whole".
+  Recovering it afterwards would need a stored fact this record does not introduce; repairing the run is
+  `reselect-bars` (gh#506).
 - **No new configuration.** `PresentHorizon` and each product's cycle and candidate depth are constants of the
   fetch flow and the registry. A knob for the horizon would make "what is history" depend on a deployment
   setting, and a knob for the cycle would let an operator list a month the exchange does not.

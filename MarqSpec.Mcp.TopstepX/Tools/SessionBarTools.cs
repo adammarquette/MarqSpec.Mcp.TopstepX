@@ -78,7 +78,13 @@ public sealed class SessionBarTools(
         + "session bar comes from exactly one, so a roll falls BETWEEN two trade dates and `contracts.span` is "
         + "SingleContract, SpansRoll or Unknown. Unknown here means NO session bar could be built at all, "
         + "which is not what it means on get_contract_roll: a session whose provenance was never recorded is "
-        + "an `absent` entry reading ProvenanceUnknown, not an Unknown span. The session name is a closed "
+        + "an `absent` entry reading ProvenanceUnknown, not an Unknown span. `history.selection` answers a "
+        + "different question again — not whether these sessions cross a roll, but whether the base bars "
+        + "underneath them were chosen from the contracts this product's cycle names: AsTheCycleNames, "
+        + "NarrowedByTheVenue (the vendor did not list some of them, so the choice ran over the survivors), "
+        + "FellBackToTheFront (it listed none, so no volume decision ran for that stretch) or NotDecidedHere "
+        + "(THIS call fetched no history — never a statement that the stored history is whole). It is "
+        + "described in full on get_bars. The session name is a closed "
         + "vocabulary: an unknown one is an error listing the configured names, never an empty series.")]
     public async Task<ToolPayloads.SessionBarSeries> GetSessionBars(
         [Description("The instrument symbol, e.g. ES.")] string symbol,

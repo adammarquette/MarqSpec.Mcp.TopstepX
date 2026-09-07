@@ -72,6 +72,23 @@ the venue does sometimes publish and which otherwise pinned the window's span at
 ([ADR-0011](adr/0011-contract-roll-boundary.md), gh#412). It is bounded by what the venue will still restate;
 deleting and refetching by hand is no longer the only remedy.
 
+**What this table does NOT record: which candidate set the bucket was chosen from** (gh#592). Under
+`R-1.14` a historical bucket is the winner of a volume decision among the expiries the product's cycle names
+— *when the venue lists them*. When it lists only some, the decision runs over the survivors, and when the
+sole survivor is the venue's own active contract the row that lands is byte-identical to the row an
+undegraded read would have written: same bucket, same prices, same `ContractId`, same `RecordedAt`. **The
+difference is not in any column here and cannot be added to one after the fact**, for the reason `ContractId`
+is never backfilled — inferring it would be the plausible-wrong-number failure a column further along.
+
+So the fact is captured where it exists, at the moment the fetch is planned, and reported on **that read's
+payload** as `history.selection`
+([tool catalogue — `history`](mcp-tool-catalog.md#history--which-contracts-the-history-was-chosen-from-r-114-gh592)).
+It is not stored, and a later read of the same window says `NotDecidedHere` rather than reconstructing it —
+[ADR-0020](adr/0020-historical-contract-selection.md) §5 forbids a read from re-deciding attributed history,
+which is the same rule that makes the fact unrecoverable in the first place. Replacing a run a degraded read
+laid down is an operator's verb, `reselect-bars` (gh#506); making this table able to answer the question
+later would be a new stored fact, its own ADR and a migration.
+
 **Deliberately no retention policy.** This is a record, not a pipeline.
 
 Index: `(Instrument, ResolutionMinutes, BucketStart)` — the shape of every read. `ContractId` is not indexed:

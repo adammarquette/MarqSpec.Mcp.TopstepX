@@ -818,6 +818,7 @@ public static class Program
         services.AddScoped<AccountTools>();
         services.AddScoped<SnapshotTools>();
         services.AddScoped<ObservationTools>();
+        services.AddScoped<SessionBarTools>();
 
         // One registration, one tool set, two ways in (ADR-0007). The transport is the only thing that
         // differs, and it is chosen here rather than by a second AddMcpServer call — registering the server

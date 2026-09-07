@@ -341,7 +341,20 @@ public sealed class CalendarEndGuardServedReadTests : IAsyncLifetime
         SnapshotTools snapshot = new(
             bars, indicators, keyLevels, Reference(), new IndicatorCatalogNames(_catalog), _clock);
 
-        return new Family(bars, indicators, keyLevels, tape, roll, snapshot);
+        // get_session_bars takes fromUtc and toUtc, so the sweep's filter lands on it and the map has to be
+        // able to build it (gh#500). ADDED HERE RATHER THAN EXCLUDED FROM THE FILTER: a session window is
+        // arithmetic over the calendar too, and the whole point of the sweep is that a tool arriving later
+        // is covered without anyone remembering this file.
+        SessionBarTools sessionBars = new(
+            resolver,
+            new SessionBarService(
+                _database, _cache, _gateway, _calendar, _clock, NullLogger<SessionBarService>.Instance),
+            new SessionCatalog(Defaults(), _calendar),
+            _calendar,
+            guards,
+            _clock);
+
+        return new Family(bars, indicators, keyLevels, tape, roll, snapshot, sessionBars);
     }
 
     /// <summary>Every market-data tool type this fixture can hand the sweep.</summary>
@@ -351,13 +364,15 @@ public sealed class CalendarEndGuardServedReadTests : IAsyncLifetime
     /// <param name="Tape">The tape tools.</param>
     /// <param name="Roll">The contract-roll tools.</param>
     /// <param name="Snapshot">The composed snapshot tool.</param>
+    /// <param name="SessionBars">The session-bar tools.</param>
     private sealed record Family(
         BarTools Bars,
         IndicatorTools Indicators,
         KeyLevelTools KeyLevels,
         TapeTools Tape,
         ContractRollTools Roll,
-        SnapshotTools Snapshot)
+        SnapshotTools Snapshot,
+        SessionBarTools SessionBars)
     {
         /// <summary>Hands back the instance for a declaring type, or says what has to be added here.</summary>
         /// <param name="type">The tool type the sweep found.</param>
@@ -369,6 +384,7 @@ public sealed class CalendarEndGuardServedReadTests : IAsyncLifetime
             : type == typeof(TapeTools) ? Tape
             : type == typeof(ContractRollTools) ? Roll
             : type == typeof(SnapshotTools) ? Snapshot
+            : type == typeof(SessionBarTools) ? SessionBars
             : throw new InvalidOperationException(
                 type.Name + " takes an instant and this fixture cannot build it. "
                 + "Add it here rather than narrowing the sweep -- the sweep is the point.");
@@ -424,6 +440,11 @@ public sealed class CalendarEndGuardServedReadTests : IAsyncLifetime
         "resolutionMinutes" => resolutionMinutes,
         "indicator" => "atr",
         "symbol" => "ES",
+
+        // A REAL session name, not the string filler. Left to Blank it would be "ES", which get_session_bars
+        // refuses on the vocabulary before it ever reaches the window arithmetic this sweep is about -- the
+        // tool would be covered by not being exercised, exactly the hole `openOnly` below closes.
+        "session" => "rth",
 
         // One tick wide, at the very end. That is the window that spans ZERO buckets and so clears every cap
         // this boundary had before this card -- the whole point of the sweep.

@@ -15,6 +15,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Indicators are projected over session series too, and two tools read them:
+  `get_session_indicators(symbol, session, indicator, fromUtc, toUtc, period?)` and
+  `get_session_indicator_at(symbol, session, indicator, asOfUtc, period?)`.** One value per **whole trading
+  session** rather than per bar, stored in a new `SessionIndicatorValues` table keyed
+  `(Venue, Instrument, Session, Indicator, Period, BucketStart)` — the resolution table's key with the
+  session name where the bar size sits, and `BucketStart` the session bar's opening instant. The windowed
+  form answers `{ symbol, session, indicator, period, values: [{ tradeDate, t, v }], contracts }`, one entry
+  per trade date that **has** a value; the as-of form answers `{ value, tradeDate, bucketStart, contractId }`
+  from the last session that had **closed** at or before the moment asked about, so a session still in
+  progress is never answered from, and **cannot-measure drops the `value` key** so the whole reading arrives
+  as `{}` — test whether the key is there, never whether it equals null. **Both read stored series only**:
+  the vendor is never called and no session bar is built here, so a window whose sessions
+  `get_session_bars` or `get_latest_session_bars` never covered answers with no values at all. **`period`
+  counts sessions** — an `sma` at 20 over `rth` is twenty trading days inside one contract run — and it
+  selects among the operator's configured periods on `get_indicators`' terms. **Asking for `vwap` on a
+  session series is an error naming `vwap-rolling`**, not an empty series: session-anchored VWAP weights a
+  session's own volume distribution and a session that *is* one bar has none. It is one projection and not
+  two — a `SeriesKey` picks which pair of tables a pass reads and writes, and the seeding, the contract
+  segmenting, the rounding, the reconcile and the whole-series guard are the same code, so the two kinds
+  cannot drift apart on a number. A session read projects inside the unit of work that writes its bars, so
+  session bars never commit without the values they justify. **Three things change for operators.**
+  `rebuild-indicators` now walks the distinct session series `SessionBars` holds as well as the resolution
+  series in `Bars`, and boot-time warm-up (`MarketData__WarmIndicators`, HTTP only) replays them too — both
+  do more work than before, in proportion to the session history kept. **The projector's and rebuilder's
+  structured-log templates now carry `{Series}`** — `ES 5m`, `ES rth` — where they carried `{Instrument}` and
+  `{Resolution}`, so a saved log query keyed on the old fields returns nothing and must be re-pointed. And
+  `mcp.cache.reads` and `mcp.indicator.projections` now carry a **`session` tag in `resolution`'s place** on
+  a session series, never both and never a sentinel resolution; `series` is unchanged and still names the
+  cache, so the resolution flavour emits exactly the tags it always did and existing panels are untouched.
+  Known limits: the fill's *bars and values commit together* rests on inspection rather than on a
+  failed-retry test, there is no concurrency suite for the `SessionIndicatorValues` write, and a value stored
+  under a period the catalogue was later reconfigured away from is not reconciled — a pre-existing rule of
+  this projection, now true of session series too. The [tool catalogue](documentation/mcp-tool-catalog.md),
+  the PRD (`R-2.14`, `R-5.12`), the [data dictionary](documentation/data-dictionary.md) (§12), the
+  [architecture doc](documentation/architecture.md) and
+  [ADR-0006](documentation/adr/0006-indicators-as-projections.md),
+  [ADR-0014](documentation/adr/0014-indicators-are-projected-on-read-too.md) and
+  [ADR-0022](documentation/adr/0022-session-bars-derived-complete-or-absent.md) — each gaining a dated
+  update — are updated in the same change (gh#501, gh#496).
 - **Session bars are reachable from the MCP surface: `get_session_bars(symbol, session, fromUtc, toUtc)` and
   `get_latest_session_bars(symbol, session, count)`.** One OHLCV bar per **whole** trading session — the day,
   the overnight, or any named slice of it — derived from the cached base series rather than fetched as a bar

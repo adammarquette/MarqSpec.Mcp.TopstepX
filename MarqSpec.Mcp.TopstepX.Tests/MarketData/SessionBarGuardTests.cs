@@ -79,22 +79,19 @@ public sealed class SessionBarGuardTests : IDisposable
         IndicatorCatalog catalog = new(
             Options.Create(new IndicatorOptions { AtrPeriod = 3, RsiPeriod = 3 }), calendar);
 
-        IndicatorProjector projector = new(_database, catalog, NullLogger<IndicatorProjector>.Instance);
+        IndicatorProjector projector = new(
+            _database, catalog, NullLogger<IndicatorProjector>.Instance, _telemetry);
 
         BarCacheService bars = new(
-<<<<<<< HEAD
             _database,
             gateway,
             calendar,
-            new IndicatorProjector(_database, catalog, NullLogger<IndicatorProjector>.Instance, _telemetry),
+            projector,
             new InstrumentRegistry(Options.Create(new MarketDataOptions())),
             new ContractDirectory(clock),
             clock,
             NullLogger<BarCacheService>.Instance,
             _telemetry);
-=======
-            _database, gateway, calendar, projector, clock, NullLogger<BarCacheService>.Instance);
->>>>>>> 33d04f8 (feat(mcp): get_session_indicators and get_session_indicator_at, projected in the session read)
 
         return new SessionBarService(
             _database, bars, gateway, calendar, projector, clock, NullLogger<SessionBarService>.Instance);

@@ -252,6 +252,13 @@ once per catalogue change. `rebuild-indicators` already does it on demand for an
 
 ## Decision log
 
+| Update | What changed |
+|---|---|
+| [2026-08-29](#update-2026-08-29--warming-on-startup-is-taken-behind-http-and-a-switch) | A hosted service replays every stored series at start, when the transport is HTTP and `MarketData__WarmIndicators` is on (gh#350) |
+| [2026-08-29](#update-2026-08-29--the-tool-surface-names-the-window-before-warmup-finishes) | A read arriving before warm-up reaches its series still pays the first-read cost, and the descriptions say so |
+| [2026-09-06](#update-2026-09-06--selection-among-configured-periods-is-allowed-ad-hoc-computation-is-not) | A call may **select** among the periods the catalogue is configured for ([ADR-0018](0018-period-selection-among-configured-periods.md)) |
+| [2026-09-07](#update-2026-09-07--the-key-gained-a-second-shape-the-rule-did-not-change) | The read-through serves a second key shape — a named session series ([ADR-0022](0022-session-bars-derived-complete-or-absent.md)) |
+
 ## Update (2026-08-29) — warming on startup is taken, behind HTTP and a switch
 
 The follow-up this record left open is now taken (gh#350). A hosted service runs
@@ -315,6 +322,31 @@ probe's `DISTINCT` returns one row per configured instance rather than one per n
 with what an operator adds. The probe's bar-count cap likewise follows the largest **configured** warm-up, so
 it is still flat in the series length and no longer fixed by the shipped periods. The short-run residue in the consequences above is reachable at a lower bar count
 for the same reason.
+
+## Update (2026-09-07) — the key gained a second shape; the rule did not change
+
+This record describes the read-through over one kind of series, named
+`(venue, instrument, resolutionMinutes)` throughout. **A second kind now goes through it, and nothing
+here needed re-deciding** (gh#501). `EnsureProjectedAsync` takes a `SeriesKey` — a resolution series over
+`Bars`, or a named session series over `SessionBars`
+([ADR-0022](0022-session-bars-derived-complete-or-absent.md)) — and the probe, the diff against the
+catalogue, the not-yet-measurable rule, the whole-series replay and the per-scope memo are the same code
+either way. What the key decides is which pair of tables the two aggregates run against and which vocabulary
+the diff is taken over (`IndicatorCatalog.ForSeries`); see
+[ADR-0006](0006-indicators-as-projections.md)'s update of the same date for why that is one projection and
+not two.
+
+**The memo is now keyed by the key itself**, which is a record comparing by value *and* by runtime type. The
+type matters: without it a session named `5` and the five-minute series would be one entry, and a read of one
+would answer *complete* for the other.
+
+**Two costs stated here move, and neither is a new rule.** Startup warming now walks session series too, so
+an HTTP process with `MarketData__WarmIndicators` on pays for them at boot as well — and the window the
+2026-08-29 update names, where a read arriving before warm-up reaches its series still pays the first-read
+cost, is that much wider. And a session read is normally *not* the trigger any more: a session fill projects
+inside the unit of work that writes its bars, so the ordinary path here is the probe. The read-triggered
+replay stays reachable, and is what an added indicator or a store filled before this existed lands on —
+which is the whole argument of this record, unchanged.
 
 ## Follow-ups
 

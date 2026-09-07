@@ -8,9 +8,10 @@
 [ADR-0022](adr/0022-session-bars-derived-complete-or-absent.md) (`SessionBars`),
 gh#215 (`Trades`, `TapeCoverage`, `FootprintCells`),
 gh#404 (`TapeLeases`),
-gh#499 (`SessionBars`)
+gh#499 (`SessionBars`),
+gh#501 (`SessionIndicatorValues`)
 
-One Postgres database, ten tables — §4 is a retired number, not an eleventh. Entities live in
+One Postgres database, eleven tables — §4 is a retired number, not a twelfth. Entities live in
 `MarqSpec.Mcp.TopstepX.Data/Entities/`; the schema is whatever the migrations say, and this page is kept in
 lockstep with them in the same PR.
 
@@ -135,6 +136,13 @@ that same set. That is what makes `period` on `get_indicators` a **selection** r
 selectable one always names rows this store's own projection wrote.
 
 Index: `(Instrument, ResolutionMinutes, Indicator, Period, BucketStart)` — the shape of every read.
+
+**§12 is this table's session flavour, and it is written by the same code.** A named session series is
+projected into `SessionIndicatorValues` under `Session` where this key carries `ResolutionMinutes`; which of
+the two a pass reads and writes is decided by a `SeriesKey` and by nothing else, so every rule stated in this
+section — the rounding, the skip-unchanged comparison, the unscoped reconcile, the whole-series guard, the
+transaction requirement — holds there unchanged (`R-2.14`, gh#501). The one difference in vocabulary is that
+a session series has no session-anchored `vwap`.
 
 **There is no `ContractId` here, and that is deliberate.** A value is always computed inside a single contract
 run — the projection never smooths across a roll ([ADR-0011](adr/0011-contract-roll-boundary.md)) — so the
@@ -621,6 +629,54 @@ per-session ledger).
 Indexes: `(Venue, Instrument, Session, OpenUtc)` **unique**, the guard above; and
 `(Instrument, Session, CloseUtc)` — the shape of every read, one instrument and one session over a window
 ending at the close.
+
+## §12 `SessionIndicatorValues` — a projection over §11
+
+| Column | Type | Note |
+|---|---|---|
+| `Venue` `Instrument` | | PK |
+| `Session` | `varchar(16)` | PK · the closed session vocabulary, same name and same width as §11 |
+| `Indicator` | `varchar(32)` | PK · lowercase stable name — `atr`, `rsi`, `macd-signal`, `vwap-rolling` |
+| `Period` | `integer` | PK · part of identity, and it counts **sessions** here — an `sma` at 20 over `rth` is twenty trading days |
+| `BucketStart` | `timestamptz` | PK · the session bar's `OpenUtc` |
+| `Value` | `numeric(18,8)` | |
+| `RecordedAt` | `timestamptz` | Bumped only when `Value` actually changes |
+
+Nothing here is authoritative — every row is reproducible from §11, on §2's terms exactly. Also no retention,
+for §2's reason: an observation citing a session's RSI should be checkable against the number actually used.
+
+**§2's table with `Session` where `ResolutionMinutes` sits, and it is not a second projection.** One
+`IndicatorProjector` writes both; a `SeriesKey` decides which pair of tables a pass reads and writes, and the
+catalogue decides what it computes over them (`R-2.14`, gh#501). So the rounding to this column's own scale,
+the skip-unchanged comparison, the contract segmenting, the unscoped reconcile, the whole-series guard and the
+transaction requirement are the same code and need no restating here. **The vocabulary is the one difference**:
+`IndicatorCatalog.ForSeries` drops session-anchored `vwap` for a session series, because a session that *is*
+one bar has no intra-session volume distribution to weight. `vwap-rolling` stays, and reads as an N-session
+rolling VWAP.
+
+**`BucketStart` is the session's `OpenUtc`, not its trade date**, and that diverges from §11's own primary key
+deliberately: a value is keyed by the instant the bar it describes begins, the way every other projection in
+this store is. §11's **unique** `(Venue, Instrument, Session, OpenUtc)` index is what makes it sound — exactly
+one session bar per opening, so exactly one bar for a value here to belong to.
+
+**There is no `ContractId` here**, on §2's and §9's reasoning: a value is always computed inside a single
+contract run, so the contract is a property of the session bar at `BucketStart` and a second copy would be a
+column free to disagree with the row it describes. `get_session_indicator_at` joins §11 on
+`(Venue, Instrument, Session, OpenUtc)` for it — and for `TradeDate`, which is not here either. That join is
+also where the as-of comparison lives: it is `SessionBars.CloseUtc <= asOfUtc`, the session's **close**, since
+this table carries no close at all and a session open hours before it ends would otherwise answer a question
+with a number still forming.
+
+**There is no foreign key to §11 either**, and the consequence is §2's: deleting session bars orphans their
+values rather than removing them, and it is the projection's reconcile that actually reaches them. A session
+read does that inside the same transaction that wrote the bars, so bars never commit without the values they
+justify.
+
+**A plain table, not a hypertable**, for §11's reason and measured on its shape: one value per trade date per
+`(Indicator, Period)`, so a year of `rth` at the shipped catalogue is a few thousand rows. Same call as §3, §8,
+§9, §10 and §11.
+
+Index: `(Instrument, Session, Indicator, Period, BucketStart)` — the shape of every read, mirroring §2's.
 
 ---
 *Changing an entity or a migration? Update the section above in the same PR. A data dictionary that lags the

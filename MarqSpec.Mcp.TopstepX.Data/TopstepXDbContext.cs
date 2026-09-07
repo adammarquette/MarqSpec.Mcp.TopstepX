@@ -52,6 +52,9 @@ public sealed class TopstepXDbContext(DbContextOptions<TopstepXDbContext> option
     /// <summary>Ranges the venue answered empty — the negative-result ledger.</summary>
     public DbSet<BarCoverageRecord> BarCoverage => Set<BarCoverageRecord>();
 
+    /// <summary>Completed named sessions, an aggregate over <see cref="Bars"/> (ADR-0022).</summary>
+    public DbSet<SessionBarRecord> SessionBars => Set<SessionBarRecord>();
+
     /// <summary>Agent-recorded observations — original data, as is the tape.</summary>
     public DbSet<ObservationRecord> Observations => Set<ObservationRecord>();
 
@@ -151,6 +154,39 @@ public sealed class TopstepXDbContext(DbContextOptions<TopstepXDbContext> option
                 c.RangeStart,
                 c.RangeEnd,
             });
+        });
+
+        modelBuilder.Entity<SessionBarRecord>(entity =>
+        {
+            entity.ToTable("SessionBars");
+
+            // Keyed on the trade date, not on OpenUtc: the session's UTC bounds move with daylight saving,
+            // so the instant is not the identity — the calendar's trade date is (ADR-0005, ADR-0022).
+            entity.HasKey(s => new { s.Venue, s.Instrument, s.Session, s.TradeDate });
+
+            entity.Property(s => s.Venue).HasMaxLength(64);
+            entity.Property(s => s.Instrument).HasMaxLength(32);
+
+            // 16 because a session name has to match ^[a-z][a-z0-9-]{0,15}$ (SessionWindows), and 11 because
+            // "HH:mm-HH:mm" is exactly eleven characters. A width nobody can derive is a width someone widens.
+            entity.Property(s => s.Session).HasMaxLength(16);
+            entity.Property(s => s.WindowCentral).HasMaxLength(11);
+
+            // NOT NULL, unlike Bars: a session whose base buckets cannot be attributed to one contract is
+            // ProvenanceUnknown and is never written, so there is no unknown state to represent.
+            entity.Property(s => s.ContractId).HasMaxLength(64);
+
+            entity.Property(s => s.Open).HasColumnType(PriceColumnType);
+            entity.Property(s => s.High).HasColumnType(PriceColumnType);
+            entity.Property(s => s.Low).HasColumnType(PriceColumnType);
+            entity.Property(s => s.Close).HasColumnType(PriceColumnType);
+
+            // Two trade dates can never claim one opening — that would be a calendar bug, and it must fail
+            // the write rather than become two sessions that overlap.
+            entity.HasIndex(s => new { s.Venue, s.Instrument, s.Session, s.OpenUtc }).IsUnique();
+
+            // The shape of every read: one instrument, one session, a window ending at the close.
+            entity.HasIndex(s => new { s.Instrument, s.Session, s.CloseUtc });
         });
 
         modelBuilder.Entity<TradeRecord>(entity =>

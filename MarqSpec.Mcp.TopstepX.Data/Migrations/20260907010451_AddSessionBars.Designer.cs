@@ -3,6 +3,7 @@ using System;
 using MarqSpec.Mcp.TopstepX.Data;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 using Pgvector;
@@ -12,9 +13,11 @@ using Pgvector;
 namespace MarqSpec.Mcp.TopstepX.Data.Migrations
 {
     [DbContext(typeof(TopstepXDbContext))]
-    partial class TopstepXDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260907010451_AddSessionBars")]
+    partial class AddSessionBars
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -37,10 +40,6 @@ namespace MarqSpec.Mcp.TopstepX.Data.Migrations
                     b.Property<int>("ResolutionMinutes")
                         .HasColumnType("integer");
 
-                    b.Property<string>("ContractId")
-                        .HasMaxLength(64)
-                        .HasColumnType("character varying(64)");
-
                     b.Property<DateTimeOffset>("RangeStart")
                         .HasColumnType("timestamp with time zone");
 
@@ -53,9 +52,9 @@ namespace MarqSpec.Mcp.TopstepX.Data.Migrations
                     b.Property<DateTimeOffset>("RecordedAt")
                         .HasColumnType("timestamp with time zone");
 
-                    b.HasKey("Venue", "Instrument", "ResolutionMinutes", "ContractId", "RangeStart", "RangeEnd");
+                    b.HasKey("Venue", "Instrument", "ResolutionMinutes", "RangeStart", "RangeEnd");
 
-                    b.HasIndex("Instrument", "ResolutionMinutes", "ContractId", "RangeStart", "RangeEnd");
+                    b.HasIndex("Instrument", "ResolutionMinutes", "RangeStart", "RangeEnd");
 
                     b.ToTable("BarCoverage", (string)null);
                 });

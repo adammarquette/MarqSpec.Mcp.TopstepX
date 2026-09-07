@@ -3,8 +3,10 @@ using MarqSpec.Mcp.TopstepX.Configuration;
 using MarqSpec.Mcp.TopstepX.Data;
 using MarqSpec.Mcp.TopstepX.Domain.MarketData;
 using MarqSpec.Mcp.TopstepX.MarketData;
+using MarqSpec.Mcp.TopstepX.Telemetry;
 using MarqSpec.Mcp.TopstepX.Tests.MarketData;
 using MarqSpec.Mcp.TopstepX.Tools;
+using MarqSpec.Mcp.TopstepX.Venue;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
@@ -71,6 +73,7 @@ public sealed class SessionBarToolBoundaryTests : IDisposable
     private readonly IndicatorCatalog _indicators;
     private readonly FakeTimeProvider _clock;
     private readonly SessionBarTools _sessions;
+    private readonly HostTelemetry _telemetry = new();
 
     public SessionBarToolBoundaryTests()
     {
@@ -107,7 +110,11 @@ public sealed class SessionBarToolBoundaryTests : IDisposable
         MondayStart.AddTicks(
             ((BarGapDetector.MaxBucketsPerPass + 1L) * Rth.BaseResolutionMinutes) * TimeSpan.TicksPerMinute);
 
-    public void Dispose() => _database.Dispose();
+    public void Dispose()
+    {
+        _database.Dispose();
+        _telemetry.Dispose();
+    }
 
     [Fact]
     public async Task AnUnknownSession_IsAnError_NamingTheConfiguredOnes()
@@ -258,9 +265,18 @@ public sealed class SessionBarToolBoundaryTests : IDisposable
             SessionCloseCentral = "16:00",
         });
 
-        IndicatorProjector projector = new(_database, _indicators, NullLogger<IndicatorProjector>.Instance);
+        IndicatorProjector projector =
+            new(_database, _indicators, NullLogger<IndicatorProjector>.Instance, _telemetry);
         BarCacheService cache = new(
-            _database, _gateway, calendar, projector, clock, NullLogger<BarCacheService>.Instance);
+            _database,
+            _gateway,
+            calendar,
+            projector,
+            new InstrumentRegistry(options),
+            new ContractDirectory(clock),
+            clock,
+            NullLogger<BarCacheService>.Instance,
+            _telemetry);
 
         SessionBarService service = new(
             _database, cache, _gateway, calendar, clock, NullLogger<SessionBarService>.Instance);

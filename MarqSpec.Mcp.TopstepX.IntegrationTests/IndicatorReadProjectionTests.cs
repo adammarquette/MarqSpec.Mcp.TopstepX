@@ -9,6 +9,7 @@ using MarqSpec.Mcp.TopstepX.MarketData;
 using MarqSpec.Mcp.TopstepX.Telemetry;
 using MarqSpec.Mcp.TopstepX.Tests.MarketData;
 using MarqSpec.Mcp.TopstepX.Tools;
+using MarqSpec.Mcp.TopstepX.Venue;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Storage;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -566,6 +567,8 @@ public sealed class IndicatorReadProjectionTests : IAsyncLifetime
             _gateway,
             Calendar(),
             new IndicatorProjector(_database, catalog, NullLogger<IndicatorProjector>.Instance, _telemetry),
+            new InstrumentRegistry(MarketData()),
+            new ContractDirectory(_clock),
             _clock,
             NullLogger<BarCacheService>.Instance,
             _telemetry);

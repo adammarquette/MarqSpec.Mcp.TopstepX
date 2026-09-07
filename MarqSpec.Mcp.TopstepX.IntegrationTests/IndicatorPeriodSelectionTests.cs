@@ -9,6 +9,7 @@ using MarqSpec.Mcp.TopstepX.MarketData;
 using MarqSpec.Mcp.TopstepX.Telemetry;
 using MarqSpec.Mcp.TopstepX.Tests.MarketData;
 using MarqSpec.Mcp.TopstepX.Tools;
+using MarqSpec.Mcp.TopstepX.Venue;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Storage;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -606,8 +607,15 @@ public sealed class IndicatorPeriodSelectionTests : IAsyncLifetime
             new BarTools(
                 resolver,
                 new BarCacheService(
-                    _database, gateway, calendar, projector, clock,
-                    NullLogger<BarCacheService>.Instance, _telemetry),
+                    _database,
+                    gateway,
+                    calendar,
+                    projector,
+                    new InstrumentRegistry(wrapped),
+                    new ContractDirectory(clock),
+                    clock,
+                    NullLogger<BarCacheService>.Instance,
+                    _telemetry),
                 guards,
                 clock),
             indicators,

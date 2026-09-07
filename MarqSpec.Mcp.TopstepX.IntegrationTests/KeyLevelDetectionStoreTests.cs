@@ -7,6 +7,7 @@ using MarqSpec.Mcp.TopstepX.MarketData;
 using MarqSpec.Mcp.TopstepX.Telemetry;
 using MarqSpec.Mcp.TopstepX.Tests.MarketData;
 using MarqSpec.Mcp.TopstepX.Tools;
+using MarqSpec.Mcp.TopstepX.Venue;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using Microsoft.Extensions.Time.Testing;
@@ -206,7 +207,15 @@ public sealed class KeyLevelDetectionStoreTests(SeriesStoreFixture fixture) : IA
             new(_database, indicators, NullLogger<IndicatorProjector>.Instance, _telemetry);
 
         BarCacheService cache = new(
-            _database, gateway, calendar, projector, clock, NullLogger<BarCacheService>.Instance, _telemetry);
+            _database,
+            gateway,
+            calendar,
+            projector,
+            new InstrumentRegistry(market),
+            new ContractDirectory(clock),
+            clock,
+            NullLogger<BarCacheService>.Instance,
+            _telemetry);
 
         InstrumentResolver resolver = new(new InstrumentRegistry(market), new StoreAvailabilityHolder());
         ToolGuards guards = new(market);

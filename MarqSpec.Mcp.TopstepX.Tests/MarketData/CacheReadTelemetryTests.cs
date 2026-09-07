@@ -7,6 +7,7 @@ using MarqSpec.Mcp.TopstepX.Domain;
 using MarqSpec.Mcp.TopstepX.Domain.MarketData;
 using MarqSpec.Mcp.TopstepX.MarketData;
 using MarqSpec.Mcp.TopstepX.Telemetry;
+using MarqSpec.Mcp.TopstepX.Venue;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Diagnostics.Metrics.Testing;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -190,6 +191,8 @@ public sealed class CacheReadTelemetryTests : IDisposable
             _gateway,
             _calendar,
             new IndicatorProjector(_database, _catalog, NullLogger<IndicatorProjector>.Instance, _telemetry),
+            new InstrumentRegistry(Options.Create(new MarketDataOptions())),
+            new ContractDirectory(_clock),
             _clock,
             NullLogger<BarCacheService>.Instance,
             _telemetry);

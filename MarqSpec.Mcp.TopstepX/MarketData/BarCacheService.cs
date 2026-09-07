@@ -43,15 +43,31 @@ public sealed record BarReadResult(
     int FetchedBuckets,
     int VenueRequests);
 
-/// <summary>One stored bucket, and whether the row standing in it says which contract produced it.</summary>
+/// <summary>One stored bucket, and which contract the row standing in it says produced it.</summary>
 /// <param name="BucketStart">When the bucket opens.</param>
-/// <param name="HasContract">Whether <c>ContractId</c> is recorded.</param>
+/// <param name="ContractId">The contract recorded against the bucket, or <see langword="null"/>.</param>
 /// <remarks>
+/// <para>
 /// A named type rather than an anonymous one so the projection is a documented shape rather than a shape the
 /// query happens to have: the read that produces it is the one deciding what gets re-asked for, and the two
 /// sets it splits into mean different things (gh#412).
+/// </para>
+/// <para>
+/// It carries the <b>id</b> rather than merely the fact of one (gh#505). Which contract answered for a trade
+/// date is what <c>HistoricalContractPolicy.Decide</c> takes as its tie-break against the store, so the read
+/// that already visits every row in the window is the read that should name it — a second query would be a
+/// second round trip for a column the first one was standing on.
+/// </para>
 /// </remarks>
-internal sealed record BucketProvenance(DateTimeOffset BucketStart, bool HasContract);
+internal sealed record BucketProvenance(DateTimeOffset BucketStart, string? ContractId)
+{
+    /// <summary>Whether a contract is recorded against the bucket at all.</summary>
+    /// <remarks>
+    /// Computed rather than stored, so the two sites that split the window on it (gh#402/gh#412) read exactly
+    /// as they did before the id was carried.
+    /// </remarks>
+    public bool HasContract => ContractId is not null;
+}
 
 /// <summary>
 /// Serves bars from the store, reaching the venue only for what is genuinely missing (ADR-0005).
@@ -98,10 +114,31 @@ public sealed class BarCacheService
     /// </remarks>
     public static readonly TimeSpan SettledHistoryAge = TimeSpan.FromDays(2);
 
+    /// <summary>
+    /// How far back the present band reaches when the store holds no run of the venue's active contract to
+    /// anchor it on (ADR-0020 §1).
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Seven days: long enough that a cold week of "latest bars" never touches the historical path, short
+    /// enough that a cold read of last week is one contract's fetch rather than the whole candidate set's.
+    /// A warm store never uses it — the band starts at the first bucket of the trailing run of the front,
+    /// <c>T(F)</c>, which is what keeps a warm present-band read byte-identical to what it costs today.
+    /// </para>
+    /// <para>
+    /// <b>A constant of the fetch flow, not configuration</b> (ADR-0020 §1). An operator who could shorten it
+    /// would silently hand recent bars to the historical policy, and one who could lengthen it would hide a
+    /// roll behind the venue's own pick — neither shows up as an error, only as a plausible series.
+    /// </para>
+    /// </remarks>
+    public static readonly TimeSpan PresentHorizon = TimeSpan.FromDays(7);
+
     private readonly TopstepXDbContext _database;
     private readonly IMarketDataGateway _gateway;
     private readonly BarSessionCalendar _calendar;
     private readonly IndicatorProjector _projector;
+    private readonly InstrumentRegistry _registry;
+    private readonly ContractDirectory _directory;
     private readonly TimeProvider _clock;
     private readonly ILogger<BarCacheService> _logger;
     private readonly HostTelemetry _telemetry;
@@ -117,6 +154,14 @@ public sealed class BarCacheService
     /// <param name="gateway">The venue.</param>
     /// <param name="calendar">The session calendar deciding which buckets are expected.</param>
     /// <param name="projector">The indicator projection, run in the same unit of work as a bar write.</param>
+    /// <param name="registry">
+    /// What this server knows about each instrument — here for the contract month cycle and the candidate
+    /// depth a historical range is planned against (ADR-0020 §2).
+    /// </param>
+    /// <param name="directory">
+    /// The by-id contract memo. A constructed historical expiry is a guess until the venue confirms it, and
+    /// this is what stops the confirmation costing a lookup per read.
+    /// </param>
     /// <param name="clock">The clock. Injected so a test can place "now" precisely against a session.</param>
     /// <param name="logger">The logger.</param>
     /// <param name="telemetry">The app-owned meter and activity source.</param>
@@ -125,6 +170,8 @@ public sealed class BarCacheService
         IMarketDataGateway gateway,
         BarSessionCalendar calendar,
         IndicatorProjector projector,
+        InstrumentRegistry registry,
+        ContractDirectory directory,
         TimeProvider clock,
         ILogger<BarCacheService> logger,
         HostTelemetry telemetry)
@@ -133,6 +180,8 @@ public sealed class BarCacheService
         _gateway = gateway;
         _calendar = calendar;
         _projector = projector;
+        _registry = registry;
+        _directory = directory;
         _clock = clock;
         _logger = logger;
         _telemetry = telemetry;
@@ -190,7 +239,7 @@ public sealed class BarCacheService
                 && b.ResolutionMinutes == resolutionMinutes
                 && b.BucketStart >= window.Start
                 && b.BucketStart < window.End)
-            .Select(b => new BucketProvenance(b.BucketStart, b.ContractId != null))
+            .Select(b => new BucketProvenance(b.BucketStart, b.ContractId))
             .ToListAsync(cancellationToken)
             .ConfigureAwait(false);
 
@@ -312,6 +361,85 @@ public sealed class BarCacheService
         _telemetry.CacheRead(CacheSeries.Bars, instrument.Symbol, resolutionMinutes, outcome);
 
         return new BarReadResult([.. rows.Select(IndicatorProjector.ToBar)], fetched, requests);
+    }
+
+    /// <summary>
+    /// Where the present band starts — the first bucket of the store's <b>trailing run</b> of the venue's
+    /// active contract, <c>T(F)</c> (ADR-0020 §1).
+    /// </summary>
+    /// <param name="venue">The venue the rows were written under.</param>
+    /// <param name="instrument">The instrument.</param>
+    /// <param name="frontContractId">The contract the venue marks active.</param>
+    /// <param name="now">The instant the read is happening at.</param>
+    /// <param name="cancellationToken">The caller's cancellation token.</param>
+    /// <returns>
+    /// The first bucket of the front's trailing run, or <c>now - <see cref="PresentHorizon"/></c> when the
+    /// store holds no such run.
+    /// </returns>
+    /// <remarks>
+    /// <para>
+    /// <b>Two queries, and every stored resolution is in scope.</b> The first asks for the latest bucket this
+    /// venue and instrument hold that is <i>not</i> the front's — a row with no contract id at all counts as
+    /// not the front's, because an unattributed bucket is precisely a bucket that cannot vouch for one. The
+    /// second asks for the earliest front bucket after it. Scoping either to the resolution being read would
+    /// answer with a run the fifteen-minute series knows was interrupted, and would hand buckets the previous
+    /// contract still holds provenance for to the venue's pick.
+    /// </para>
+    /// <para>
+    /// <b>The trailing run, not the front's earliest bucket.</b> A store that has lived through a roll holds
+    /// the front's id in older runs too, stamped there by a backfill before the previous contract's bars were
+    /// healed back in (ADR-0011's interleaving). Anchoring on the earliest one would give the whole
+    /// interleaved stretch to the venue's pick and never ask the volume winner about it.
+    /// </para>
+    /// <para>
+    /// <b>A cold store falls back to the horizon rather than to the beginning of time.</b> No run to anchor
+    /// on is not evidence that the front traded forever; it is an absence, and answering it with
+    /// <see cref="DateTimeOffset.MinValue"/> would make every cold read a historical one.
+    /// </para>
+    /// <para>
+    /// Public so the suite that pins it can call it directly. It is plumbing rather than surface — nothing
+    /// outside the fetch flow has a reason to ask — but this assembly declares no
+    /// <c>InternalsVisibleTo</c>, and adding one to make a single method testable buys less than it costs.
+    /// </para>
+    /// </remarks>
+    public async Task<DateTimeOffset> TenureStartAsync(
+        string venue,
+        InstrumentId instrument,
+        string frontContractId,
+        DateTimeOffset now,
+        CancellationToken cancellationToken)
+    {
+        // AsNoTracking on both: these are reads of a table written by raw SQL, so a tracked row here is a
+        // copy the identity map would hand back to the next read in this scope in preference to the row the
+        // statement wrote.
+        DateTimeOffset? latestOther = await _database.Bars
+            .AsNoTracking()
+            .Where(b => b.Venue == venue
+                && b.Instrument == instrument.Symbol
+                && (b.ContractId == null || b.ContractId != frontContractId))
+            .OrderByDescending(b => b.BucketStart)
+            .Select(b => (DateTimeOffset?)b.BucketStart)
+            .FirstOrDefaultAsync(cancellationToken)
+            .ConfigureAwait(false);
+
+        IQueryable<BarRecord> front = _database.Bars
+            .AsNoTracking()
+            .Where(b => b.Venue == venue
+                && b.Instrument == instrument.Symbol
+                && b.ContractId == frontContractId);
+
+        if (latestOther is { } boundary)
+        {
+            front = front.Where(b => b.BucketStart > boundary);
+        }
+
+        DateTimeOffset? tenureStart = await front
+            .OrderBy(b => b.BucketStart)
+            .Select(b => (DateTimeOffset?)b.BucketStart)
+            .FirstOrDefaultAsync(cancellationToken)
+            .ConfigureAwait(false);
+
+        return tenureStart ?? now - PresentHorizon;
     }
 
     private async Task<IReadOnlyList<BarRange>> ExcludeCoveredAsync(

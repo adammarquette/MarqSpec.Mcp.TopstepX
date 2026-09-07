@@ -8,6 +8,7 @@ using MarqSpec.Mcp.TopstepX.Domain.MarketData;
 using MarqSpec.Mcp.TopstepX.MarketData;
 using MarqSpec.Mcp.TopstepX.Telemetry;
 using MarqSpec.Mcp.TopstepX.Tools;
+using MarqSpec.Mcp.TopstepX.Venue;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -301,7 +302,15 @@ public sealed class SnapshotQueryCountTests(SchemaFixture fixture)
             new(database, catalog, NullLogger<IndicatorProjector>.Instance, telemetry);
 
         BarCacheService cache = new(
-            database, gateway, calendar, projector, clock, NullLogger<BarCacheService>.Instance, telemetry);
+            database,
+            gateway,
+            calendar,
+            projector,
+            new InstrumentRegistry(wrapped),
+            new ContractDirectory(clock),
+            clock,
+            NullLogger<BarCacheService>.Instance,
+            telemetry);
 
         InstrumentResolver resolver = new(new InstrumentRegistry(wrapped), new StoreAvailabilityHolder());
         ToolGuards guards = new(wrapped);

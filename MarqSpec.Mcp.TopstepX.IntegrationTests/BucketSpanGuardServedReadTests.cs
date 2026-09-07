@@ -7,6 +7,7 @@ using MarqSpec.Mcp.TopstepX.MarketData;
 using MarqSpec.Mcp.TopstepX.Telemetry;
 using MarqSpec.Mcp.TopstepX.Tests.MarketData;
 using MarqSpec.Mcp.TopstepX.Tools;
+using MarqSpec.Mcp.TopstepX.Venue;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using Microsoft.Extensions.Time.Testing;
@@ -66,7 +67,15 @@ public sealed class BucketSpanGuardServedReadTests : IAsyncLifetime
         IndicatorProjector projector =
             new(_database, catalog, NullLogger<IndicatorProjector>.Instance, _telemetry);
         _cache = new BarCacheService(
-            _database, gateway, calendar, projector, _clock, NullLogger<BarCacheService>.Instance, _telemetry);
+            _database,
+            gateway,
+            calendar,
+            projector,
+            new InstrumentRegistry(Options.Create(new MarketDataOptions())),
+            new ContractDirectory(_clock),
+            _clock,
+            NullLogger<BarCacheService>.Instance,
+            _telemetry);
     }
 
     private static DateTimeOffset SessionStart =>

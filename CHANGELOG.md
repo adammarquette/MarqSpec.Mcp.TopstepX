@@ -62,10 +62,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   contract held, and, counted apart, those carrying no contract at all — and every `BarCoverage` claim
   **overlapping** the window, for every contract, since a settled memo straddling it would suppress the next
   read of a window whose decision has just been overturned. Indicators are re-projected in the same unit of
-  work, unconditionally, so a delete-only run leaves no value standing over a bar that no longer exists. The
+  work, unconditionally, so a delete-only run leaves no value standing over a bar that no longer exists —
+  **for every `(Indicator, Period)` pair the catalogue computes**, which is the projection's own scope: a
+  value under a pair the catalogue was later reconfigured away from is not walked and survives the delete
+  (gh#571). The
   report is log lines: one per series — bars revised, removed, unattributed rows removed, trade dates
   changed, dates decided by a tie, coverage claims dropped, venue requests — and a closing summary naming the
-  window asked for beside the one re-decided, with the same counters plus the series and slices it skipped.
+  window asked for beside the one re-decided, with the same counters **except the coverage claims, which
+  appear per series only**, plus the series and slices it skipped.
   A resolution whose widened window is
   wider than one pass will enumerate is **skipped loudly** rather than trimmed, and a run that finds no
   stored series warns instead of reporting the zeros an already-correct window reports. **It migrates the

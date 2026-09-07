@@ -456,12 +456,17 @@ contract as having lost buckets it never held. And every `BarCoverage` claim **o
 for every contract: a settled "this range was empty" memo never expires and can reach into the window from
 outside it, and left standing it would suppress the next read of a window whose decision has just been
 overturned. Losing a claim outside the window costs one re-ask. The indicators are re-projected in the same
-transaction — including on a run that only deleted, or values would stand over bars that no longer exist.
+transaction — including on a run that only deleted, or values would stand over bars that no longer exist. That
+reach is **the pairs the catalogue currently computes**, which is the projection's own scope and not a
+narrowing added here: a value under an `(Indicator, Period)` pair the catalogue was later reconfigured away
+from is not walked, and survives the delete (gh#571).
 
 **What it logs.** One line per resolution series — bars revised, removed, unattributed rows removed, trade
 dates changed, dates decided by a tie, coverage claims dropped, venue requests — and a closing summary naming
-the window asked for beside the whole trade dates re-decided, carrying the same counters plus the series and
-slices it skipped. Two cases are `Warning` instead: a series whose widened
+the window asked for beside the whole trade dates re-decided, carrying the same counters **except the coverage
+claims, which appear per series only**, plus the series and slices it skipped — a *slice* being a stretch the
+cycle lists no candidate for, left alone rather than fetched from the venue's front. Two cases are `Warning`
+instead: a series whose widened
 window is wider than one pass will enumerate is **skipped rather than trimmed**, naming both windows and the
 cap; and a run that finds **no stored series** in the window says so loudly and prints no summary, because
 "0 revised, 0 removed" is what an already-correct window reports and also what a mistyped year reports.
@@ -473,7 +478,7 @@ reproduce.
 | Exit | Meaning |
 |---:|---|
 | `0` | The run finished. The log lines say by how much. |
-| `2` | The command line was refused **before anything touched the store** — a symbol this server does not serve, an instant that is not ISO-8601, an empty or inverted window, or one ending past the calendar's horizon. The message names the argument and the rule. Nothing was written. |
+| `2` | The command line was refused **before anything touched the store** — a missing or extra argument, a symbol this server does not serve, an instant that is not ISO-8601, an empty or inverted window, or one ending past the calendar's horizon. The message names the argument and the rule. Nothing was written. |
 | `3` | **The run stopped.** The store was unreachable or its migration dropped the connection, or the plan degraded for a whole window — the venue lists no contracts, the instrument is not served, its front does not read against the product's cycle. |
 
 **Exit 3 does not mean nothing was rewritten.** The run commits one unit of work per resolution series, so a

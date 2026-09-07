@@ -208,7 +208,9 @@ The server serves OHLCV bars for a futures instrument at a requested resolution 
   **overlapping** the window is dropped: a claim reaching in from outside would otherwise suppress the next
   read of a window whose decision has just been overturned, and losing a claim outside the window costs one
   re-ask. The indicators are then re-projected over what is left, in the same unit of work, so no value
-  outlives the bars it was computed from (`R-2.8`) — including on a run that only deleted. A window wider
+  **under a pair the catalogue computes** outlives the bars it was computed from (`R-2.8`) — including on a
+  run that only deleted. That scope is `R-2.8`'s own and is not widened here: a value under a pair the
+  catalogue was later reconfigured away from is not walked and survives the delete. A window wider
   than one pass can enumerate is **skipped for that resolution, loudly**, rather than trimmed to a smaller
   question than the one asked; a window the store holds nothing in **says so** rather than reporting the
   same zeros a window that was already correct reports. Nothing is written before the arguments are accepted

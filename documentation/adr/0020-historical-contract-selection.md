@@ -239,14 +239,16 @@ and still earns the empty-range memo (`R-1.14`); `history.selection` reports `As
 - **gh#353's trigger comment.** Once a store holds a cold year fetched under this record, post the segment
   count and the seam dates on gh#353 as one of the measurements that issue asked for before a re-key.
 - **gh#354** — the derived back-adjusted view, now the named remedy for the warm-up absences above.
-- **Indicator values under a retired `(Indicator, Period)` pair survive a bar delete.** `reselect-bars`
+- **gh#571 — indicator values under a retired `(Indicator, Period)` pair survive a bar delete.** `reselect-bars`
   deletes the buckets a new winner does not restate and re-projects, but the reconcile walks the **current**
   catalogue only ([ADR-0011](0011-contract-roll-boundary.md) §2, `R-2.8`, deliberately: ATR(14) and ATR(3)
   are different keys). There is no foreign key between `Bars` and `IndicatorValues`, so a value written under
   a period the catalogue has since been reconfigured away from is orphaned by the delete and nothing removes
   it. Pre-existing — a catalogue change already leaves such values behind — and this verb is the first thing
   that can create the orphan without a catalogue change. Not fixed here; a sweep would have to enumerate the
-  pairs the store holds rather than the ones the catalogue computes, which is a decision of its own.
+  pairs the store holds rather than the ones the catalogue computes, which is a decision of its own. The prose
+  that could have implied otherwise — `R-1.15`, the data dictionary §1, the README's operator section — is
+  scoped to "the pairs the catalogue computes" and points at gh#571.
 
 ## Decision log
 
@@ -275,7 +277,10 @@ store holds **only in the widened part** is re-decided too.
 **Eight counters, and two of them are separations rather than totals.** `BarsRevised` (rows the upsert
 actually changed, as the store reports them — a winner the store already agrees with costs nothing),
 `BarsRemoved`, `UnattributedRemoved`, `TradeDatesChanged`, `Ties`, `SeriesSkipped`, `SlicesSkipped`,
-`VenueRequests`, plus the effective window. `UnattributedRemoved` is counted apart from `BarsRemoved` because
+`VenueRequests`, plus the effective window. A **ninth**, `CoverageRemoved`, is per series only: it is on the
+internal `SeriesOutcome` and on that series' log line, and is deliberately **not** on `BarReselectResult` or
+on the summary — a claim dropped is a memo the next read will re-ask for, which is a fact about one series'
+ledger rather than about the window's provenance. `UnattributedRemoved` is counted apart from `BarsRemoved` because
 folding them together would tell an operator that a contract lost buckets it never held — the unattributed
 rows are pre-migration ones (gh#402) that nothing can attribute. `SeriesSkipped` and `SlicesSkipped` are two
 different refusals: a resolution whose widened window exceeds `BarGapDetector.MaxBucketsPerPass` is skipped

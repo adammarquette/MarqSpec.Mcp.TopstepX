@@ -694,9 +694,13 @@ on a bump, so a dashboard that must not break is built on these
 `get_positions`, `get_orders`, `get_trades` — named here rather than taken from the vendor's method names, so
 a vendor rename cannot silently retire a series. **That it stays closed is asserted against the gateway's
 compiled body**, not against a list beside the test: `VenueCallGuardTests` walks `ProjectXMarketDataGateway`'s
-IL — the state machines its `async` methods compile into included — and reads the operation at every
-`VenueCallGuard.RunAsync` call site, so an invented string fails and a vocabulary value no call site names
-fails too (gh#559).
+IL — the state machines its `async` methods compile into included — and reads the string literal **in the
+operation argument's own stack slot** at every `VenueCallGuard.RunAsync` call site, tracking depth from each
+instruction's stack behaviour rather than searching near the call. So the set it returns *is* the set of
+operation strings the gateway names, and comparing it to the vocabulary fails in both directions: an invented
+literal in that position, and a vocabulary value no call site names. An operation that is **not** a literal —
+forwarded through a parameter, as a private helper would do — is reported as unreadable rather than answered,
+because every call site behind such a helper would otherwise go unscanned (gh#559).
 
 Two spans sit under the SDK's `tools/call`: **`venue.<operation>`** per vendor request and
 **`cache.<series>`** per cache-aside read, which is what makes a slow tool call legible as *where* the time
@@ -706,7 +710,9 @@ went.
 instrument.** The gate discovers what is on the meter through a `MeterListener`, which is blind to measurement
 type, and drives it through `HostTelemetry`'s public methods reflectively, so a new instrument is inside it the
 day it is written and a `double` histogram is covered like a counter. Before gh#559 the gate listed its
-collectors and its drive calls, and `mcp.venue.call.duration` was in neither list. *Every tag value is a closed
+collectors and its drive calls, and `mcp.venue.call.duration` was in neither list. That an instrument exists is
+decided unconditionally; which tag keys and manufactured values it writes is decided **on the paths the drive's
+fixed inputs reach**. *Every tag value is a closed
 vocabulary, an instrument symbol or a bounded resolution* — never a timestamp, a venue contract id or vendor free
 text, because a counter keeps one accumulator per distinct tag set for the life of the process, so an
 unbounded tag is a memory leak here before it is a bill anywhere else. **`resolution` is the one that is

@@ -60,14 +60,16 @@ internal sealed record TelemetryDrive(
 /// an empty instrument set, an empty measurement set or an undriven instrument each fail an assertion there.
 /// </para>
 /// <para>
-/// <b>What this gate can and cannot decide.</b> It decides everything <see cref="HostTelemetry"/> itself
-/// controls: which instruments exist, which tag <i>keys</i> each one writes, and any tag value the class
-/// <i>manufactures</i> rather than forwards — a machine name, a formatted instant, a contract id built from a
-/// symbol. It cannot decide that a value the class merely forwards is drawn from a closed vocabulary, because
-/// that is a property of the <i>call sites</i> in the host and not of this class, which forwards whatever
-/// string it is handed. For the one tag where the call sites are decidable, they are decided:
-/// <c>VenueCallGuardTests</c> reads <c>ProjectXMarketDataGateway</c>'s compiled call sites for the
-/// <c>operation</c> tag.
+/// <b>What this gate can and cannot decide.</b> It decides which instruments exist — that one holds
+/// unconditionally, because an instrument is created in the constructor. It then decides which tag <i>keys</i>
+/// each one writes and any tag value the class <i>manufactures</i> rather than forwards — a machine name, a
+/// formatted instant, a contract id built from a symbol — but only <b>on the paths these fixed inputs
+/// reach</b>. A tag written behind <c>if (rows &gt; 1000)</c> is manufactured by the class and still outside
+/// the drive, and the qualifier is stated because it is a real limit and not a formality. It cannot decide at
+/// all that a value the class merely forwards is drawn from a closed vocabulary, because that is a property of
+/// the <i>call sites</i> in the host and not of this class, which forwards whatever string it is handed. For
+/// the one tag where the call sites are decidable, they are decided: <c>VenueCallGuardTests</c> reads
+/// <c>ProjectXMarketDataGateway</c>'s compiled call sites for the <c>operation</c> tag.
 /// </para>
 /// </remarks>
 internal static class HostTelemetryDriver

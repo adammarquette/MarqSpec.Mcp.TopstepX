@@ -226,7 +226,7 @@ public sealed class MarketDataOptions : IValidatableObject
     /// Refuses a configured session that does not describe a servable one, naming the key and the rule.
     /// </summary>
     /// <param name="validationContext">The validation context.</param>
-    /// <returns>One result per configured entry that breaks a rule, otherwise none.</returns>
+    /// <returns>One result per effective session that breaks a rule, otherwise none.</returns>
     /// <remarks>
     /// <para>
     /// <b>On the type rather than in a <c>.Validate(...)</c> lambda at the composition root</b>, for the
@@ -236,11 +236,20 @@ public sealed class MarketDataOptions : IValidatableObject
     /// the alternative is a server serving session bars cut on a window nobody chose (ADR-0022).
     /// </para>
     /// <para>
-    /// <b>Only CONFIGURED entries are checked, and only against a calendar that parses.</b> The shipped four
-    /// are not an operator's typo, and naming a key nobody set would send them looking for it. And a
-    /// malformed <see cref="SessionCloseCentral"/> is not a startup failure today — it faults when the
-    /// calendar singleton is first resolved — so when <see cref="BarSessionCalendar.Parse"/> throws, session
-    /// validation is skipped entirely rather than quietly moving that failure to boot under a different key.
+    /// <b>The EFFECTIVE set is checked, in two passes, because the two halves are fixed by different keys.</b>
+    /// A configured entry is refused under its own <c>__Window</c> or <c>__BaseResolutionMinutes</c>; a
+    /// shipped default nobody replaced is refused under <see cref="SessionCloseCentral"/>, because that is
+    /// the key the operator actually set and the one that made a session stated against the shipped 16:00
+    /// close stop describing a session at all. Checking only the configured half would pass a boot with an
+    /// unservable <c>full</c> in it and leave the refusal to <c>SessionCatalog</c>'s constructor, which
+    /// resolves lazily — a tool error at first request rather than a failure at start. Dropping the session
+    /// instead is the substitution this repository forbids.
+    /// </para>
+    /// <para>
+    /// <b>Only against a calendar that parses.</b> A malformed <see cref="SessionCloseCentral"/> is not a
+    /// startup failure today — it faults when the calendar singleton is first resolved — so when
+    /// <see cref="BarSessionCalendar.Parse"/> throws, session validation is skipped entirely rather than
+    /// quietly moving that failure to boot under a different key.
     /// </para>
     /// <para>
     /// The one thing decided here rather than in <c>Domain</c> is WHICH key to name. The base resolution is
@@ -282,6 +291,42 @@ public sealed class MarketDataOptions : IValidatableObject
             {
                 results.Add(new ValidationResult(
                     KeyFor(pair.Key, configured) + " is refused. " + exception.Message, [nameof(Sessions)]));
+            }
+        }
+
+        // Second pass: the shipped sessions NOBODY replaced, against the operator's own calendar. The four
+        // defaults are stated against the shipped 16:00 close, and a close the operator moved can leave one of
+        // them describing no session at all -- at 13:20 the open is 14:20, and `full` and `rth` then run
+        // backwards or past the session measured from there. Without this the boot passes (nothing configured
+        // is invalid) and the refusal lands in SessionCatalog's constructor instead, which resolves lazily and
+        // surfaces as a tool error on some later request. The alternative -- quietly dropping a session the
+        // calendar cannot state -- is the substitution this repository forbids: a served set missing `full` is
+        // indistinguishable from a market that produced nothing under it.
+        foreach (SessionDefinition shipped in SessionDefinition.Defaults)
+        {
+            bool replaced = Sessions.Keys.Any(
+                key => string.Equals(key, shipped.Name, StringComparison.OrdinalIgnoreCase));
+
+            if (replaced)
+            {
+                continue;
+            }
+
+            try
+            {
+                SessionWindows.Validate(shipped, calendar);
+            }
+            catch (ArgumentException exception)
+            {
+                results.Add(new ValidationResult(
+                    SectionName + "__SessionCloseCentral is '" + SessionCloseCentral + "'. The shipped session"
+                    + " '" + shipped.Name + "' ("
+                    + shipped.StartCentral.ToString("HH:mm", CultureInfo.InvariantCulture) + "-"
+                    + shipped.EndCentral.ToString("HH:mm", CultureInfo.InvariantCulture)
+                    + ") cannot be stated against it: " + exception.Message + " Set " + SectionName
+                    + "__Sessions__" + shipped.Name + "__" + nameof(SessionOptions.Window)
+                    + ", or restore the close.",
+                    [nameof(SessionCloseCentral), nameof(Sessions)]));
             }
         }
 

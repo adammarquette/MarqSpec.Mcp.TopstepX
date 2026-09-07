@@ -19,6 +19,7 @@ public sealed class StatefulResourceTests(EnvironmentTemplates templates) : ICla
         "AWS::Backup::BackupVault",
         "AWS::S3::Bucket",
         "AWS::Logs::LogGroup",
+        "AWS::Cognito::UserPool",
     ];
 
     [Theory]
@@ -40,13 +41,18 @@ public sealed class StatefulResourceTests(EnvironmentTemplates templates) : ICla
 
     [Theory]
     [MemberData(nameof(EnvironmentTemplates.Both), MemberType = typeof(EnvironmentTemplates))]
-    public void Three_secret_shells_exist_under_the_environment_prefix_and_carry_no_value(string env, string _)
+    public void Five_secret_shells_exist_under_the_environment_prefix_and_carry_no_value(string env, string _)
     {
         var t = templates.For(env);
         var secrets = t.Resources("AWS::SecretsManager::Secret").Values.Select(t.Properties).ToList();
 
+        // Three from gh#516 and the two Cognito client secrets from gh#517 (their key shape is CognitoTests').
         secrets.Select(s => s["Name"]!.GetValue<string>())
-            .Should().BeEquivalentTo([$"topstepx-mcp/{env}/postgres", $"topstepx-mcp/{env}/projectx", $"topstepx-mcp/{env}/cohere"]);
+            .Should().BeEquivalentTo(
+            [
+                $"topstepx-mcp/{env}/postgres", $"topstepx-mcp/{env}/projectx", $"topstepx-mcp/{env}/cohere",
+                $"topstepx-mcp/{env}/claude-connector", $"topstepx-mcp/{env}/deploy-check",
+            ]);
 
         foreach (var secret in secrets)
         {

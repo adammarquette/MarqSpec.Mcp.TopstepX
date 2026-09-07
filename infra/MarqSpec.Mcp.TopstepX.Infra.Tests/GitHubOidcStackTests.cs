@@ -13,7 +13,7 @@ public sealed class GitHubOidcStackTests
 {
     private const string Repository = "repo:adammarquette/MarqSpec.Mcp.TopstepX";
 
-    private static readonly Synthesised _stack = Synthesised.Of(new GitHubOidcStack(new App(), "topstepx-mcp-github-oidc", new StackProps { Env = Synthesised.TestEnv }));
+    private static readonly Synthesised _stack = Synthesised.GitHubOidc();
 
     private static (JsonObject Role, JsonObject Statement) DeployRole(string name)
     {

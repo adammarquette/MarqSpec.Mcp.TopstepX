@@ -49,6 +49,10 @@ public sealed record Synthesised(Template Template, JsonObject Json)
     public static Synthesised Staging(OutboundPath outboundPath) =>
         Environment("staging", "staging.marqspec.com", ZoneMode.CreateAndDelegate, outboundPath, recordTapeDefault: false, warmIndicatorsDefault: false);
 
+    /// <summary>The OIDC stack, for the assertions that read it beside an environment.</summary>
+    public static Synthesised GitHubOidc() =>
+        Of(new GitHubOidcStack(new App(), "topstepx-mcp-github-oidc", new StackProps { Env = TestEnv }));
+
     public static Synthesised Of(Stack stack)
     {
         var template = Template.FromStack(stack);

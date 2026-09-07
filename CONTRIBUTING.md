@@ -249,8 +249,11 @@ tracker and drifts from it.
 
   The reason may run over several lines and must not be empty. A blank line ends the block, and so does the
   previous operation, so **one marker acknowledges one operation** — a marker at the top of the file
-  acknowledges only what it is actually touching. The gate says no *unacknowledged* destructive operation is
-  in the diff; whether a marked one is right is the reviewer's call.
+  acknowledges only what it is actually touching. **Put one destructive operation on a line**: two sharing a
+  line are refused outright, because there is one sentence and two acts and nothing says which act it
+  describes. The gate reads the whole migration except its `Down()`, so a helper `Up()` calls is covered
+  too. It says no *unacknowledged* destructive operation is in the diff; whether a marked one is right is the
+  reviewer's call.
 - **Merge gate.** Rulesets protect `develop`, `staging` and `main`: each requires a pull request and green status
   checks before merge, and blocks force-push and deletion. `ladder` is additionally required on `staging` and
   `main`. Approvals are not required (single operator); the rulesets carry no bypass.

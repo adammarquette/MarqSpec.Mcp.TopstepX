@@ -748,14 +748,23 @@ rollback must be additive*. gh#529 turns it into
 `build & unit tests` — a required context on all three rungs, so this needs no ruleset write.
 
 **What the gate claims, and it is narrower than the rule.** A green run says no operation in its enumerated
-set appears **unacknowledged** in the `Up()` body of a migration the pull request adds or changes. It does
-not say a migration is safe, and it does not judge an acknowledged one. The enumeration is `DropTable`,
-`DropColumn`, `RenameColumn`, `RenameTable`, `AlterColumn`, `DropSchema`, `DropSequence`, `DropIndex` when a
-`DropColumn` sits in the same body, and a raw `Sql(…)` carrying `DROP `, `TRUNCATE` or `ALTER TABLE … TYPE`.
-`AlterColumn` is covered wholesale because a narrowing and a widening are the same call shape; constraint
-drops (`DropPrimaryKey`, `DropForeignKey`, `DropUniqueConstraint`, `DropCheckConstraint`) are **not** covered,
-because they destroy no rows and a restored old task still reads and writes the same data. `Down()` is not
-read at all — every additive migration's `Down()` drops what its `Up()` added.
+set appears **unacknowledged** anywhere in a migration the pull request adds or changes, except inside its
+`Down()`. It does not say a migration is safe, and it does not judge an acknowledged one. The enumeration is
+`DropTable`, `DropColumn`, `RenameColumn`, `RenameTable`, `AlterColumn`, `DropSchema`, `DropSequence`,
+`DropIndex` when a `DropColumn` sits in the same migration, and a raw `Sql(…)` carrying `DROP `, `TRUNCATE`
+or `ALTER TABLE … TYPE`. `AlterColumn` is covered wholesale because a narrowing and a widening are the same
+call shape; constraint drops (`DropPrimaryKey`, `DropForeignKey`, `DropUniqueConstraint`,
+`DropCheckConstraint`) are **not** covered, because they destroy no rows and a restored old task still reads
+and writes the same data — though *destroys no rows* is not quite *a rollback is unaffected*: a lone
+`DropPrimaryKey`, or a lone `DropIndex` on a unique index, lets the restored old task insert duplicates and
+can make re-adding the key fail later, which is a forward-fix hazard rather than one this decision covers.
+`Down()` is not read at all — six of the seven migrations in the tree have a destructive `Down()`.
+
+**The scan is the whole migration except `Down()`, and one operation per line.** Both are corrections a
+review made rather than the design as first written: an operation in a *sibling member* of the migration
+class was outside an `Up()`-body scan entirely, and two destructive calls sharing a line were matched
+against the one marker above them — so a reason naming one column acknowledged a `DropTable` beside it. A
+line carrying more than one destructive operation is now refused rather than acknowledged.
 
 **The escape hatch is in the file rather than in the pull request**, so it is reviewable, greppable and
 survives the merge:
@@ -770,11 +779,12 @@ does the previous operation, so one marker acknowledges one operation. **This is
 a reviewer to judge**, and the gate exists to make sure somebody typed it rather than letting a generated
 file carry the drop unread.
 
-**The five migrations already in the tree are not re-read, and that is the diff scoping rather than an
+**The seven migrations already in the tree are not re-read, and that is the diff scoping rather than an
 exclusion list.** One of them, `20260827071708_DropPriceLevels`, is genuinely destructive; a gate that
 reddened it would have been switched off the first day. That same file is what shows the detector is not
-inert — pointed at a base before it, the gate names `…DropPriceLevels.cs:14  DropTable` in real
-EF-generated code and passes the other four.
+inert — pointed at a base before it, the gate reads six files, names `…DropPriceLevels.cs:14  DropTable` in
+real EF-generated code, and passes the other five. (Counted rather than remembered: this entry said *five*
+and *the other four* until review ran `git ls-tree`, and two migrations landed while the branch was open.)
 
 **Still not decided here:** whether an acknowledged destructive migration is *correct*. The gate turns that
 into a review question with a written reason attached, which is all decision 4 ever needed from it.

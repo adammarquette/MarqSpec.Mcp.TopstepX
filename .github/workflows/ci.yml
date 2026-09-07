@@ -239,7 +239,7 @@ jobs:
 
       # THE GATE ABOVE HAS TO BE ABLE TO FAIL, and it is line matching in shell — one loosened needle or a
       # terminator regex that stops finding Down() turns it into a step that passes on anything while the
-      # run page stays green. This runs the real script against 27 fixtures whose faults are known and
+      # run page stays green. This runs the real script against 28 fixtures whose faults are known and
       # requires it to reject each BY FILE, LINE AND OPERATION — never on exit status, which is also what
       # "the Migrations directory is missing" and "that base ref names no commit" produce — and to accept
       # the additive shapes WITHOUT WRITING A BYTE TO STDERR (gh#239). Two of its cases invoke the gate

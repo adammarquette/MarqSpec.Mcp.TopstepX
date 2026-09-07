@@ -399,6 +399,18 @@ N="$(line_of "$F" 'DropColumn(name: "Legacy"')"
 expect_red "an unacknowledged DropColumn, on the argument-free invocation CI uses" "$D" \
   "$MIG_REL/20260201000000_DropLegacy.cs:$N  DropColumn"
 
+D="$FIXTURES/untracked"; init_repo "$D"
+F="$D/$MIG_REL/20260201000000_ScaffoldedNotAdded.cs"; emit_head "$F" ScaffoldedNotAdded
+emit_body "$F" <<'EOF'
+            migrationBuilder.DropColumn(name: "Legacy", table: "Bars");
+EOF
+emit_tail "$F"
+# DELIBERATELY NOT COMMITTED — `dotnet ef migrations add` leaves the file untracked, and `git diff` cannot
+# see it. A green run on the very file the author is about to commit is the confident wrong answer.
+N="$(line_of "$F" 'DropColumn(name: "Legacy"')"
+expect_red "a migration scaffolded and never added — invisible to git diff alone" "$D" \
+  "$MIG_REL/20260201000000_ScaffoldedNotAdded.cs:$N  DropColumn" basebranch
+
 D="$FIXTURES/bare-droptable"; init_repo "$D"
 F="$D/$MIG_REL/20260201000000_DropThing.cs"; emit_head "$F" DropThing
 emit_body "$F" <<'EOF'

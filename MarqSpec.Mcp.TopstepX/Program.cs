@@ -823,10 +823,17 @@ public static class Program
         //
         // `app.Lifetime.ApplicationStopping` rather than `CancellationToken.None`: this call runs before
         // `RunHostAsync`'s `app.RunAsync()`, so today nothing has started that could request a stop and the
-        // token cannot fire here regardless -- same reasoning `RunHostAsync` documents for its own read of
-        // `app.Lifetime`. Passing it anyway costs nothing and is correct if that ordering ever changes, which
-        // is cheaper than leaving a 600-second uncancellable wait pinned on an ordering no comment enforces
-        // (PR #548 review, gh#551).
+        // token cannot fire AT THIS CALL SITE -- same reasoning `RunHostAsync` documents for its own read of
+        // `app.Lifetime`. That is not the same as saying a changed ordering would be handled correctly: if
+        // `MigrateAsync` ever moved to run after `StartAsync`, the token WOULD fire on a stop, and the
+        // resulting `OperationCanceledException` would propagate out of `ReachAsync` -- which has no catch --
+        // through this method and out of `Main`'s `await MigrateAsync(app)`, which sits BEFORE
+        // `RunHostAsync` and therefore outside its `catch (OperationCanceledException) when (stopping...)`.
+        // That is gh#76's crash shape, not its clean stop. Moving the call site would also need that catch
+        // moved (or duplicated) to cover it. Passing the token now is still strictly better than
+        // `CancellationToken.None` -- it costs nothing today and stops a 600-second wait from being
+        // uncancellable by construction -- it just is not, on its own, a promise that a future ordering is
+        // safe (PR #548 review, gh#551, gh#555 review).
         StoreAvailability reached = await StoreStartup.ReachAsync(
             token => database.Database.CanConnectAsync(token),
             database.Database.GetConnectionString(),

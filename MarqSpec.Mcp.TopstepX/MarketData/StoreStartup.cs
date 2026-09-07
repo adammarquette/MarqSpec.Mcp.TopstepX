@@ -94,7 +94,12 @@ public static class StoreStartup
     /// <param name="wait">How long to keep retrying. <see cref="TimeSpan.Zero"/> probes exactly once.</param>
     /// <param name="clock">The clock the bound and the backoff are measured against.</param>
     /// <param name="logger">Where the attempts and the final warning go.</param>
-    /// <param name="cancellationToken">Cancels the wait.</param>
+    /// <param name="cancellationToken">
+    /// Cancels the wait. Cancelling raises <see cref="OperationCanceledException"/> from this method — there
+    /// is no catch here, so it propagates to the caller uncaught. A caller that passes a token capable of
+    /// firing is responsible for handling that exception; passing one that cannot fire yet, because nothing
+    /// has started that could request cancellation, is safe without one (gh#551).
+    /// </param>
     /// <returns>
     /// <see cref="StoreAvailability.Available"/> if the store answered — note this says nothing about the
     /// migration, which is the caller's next step — or an unavailable marker naming the target if it did not.
@@ -169,8 +174,11 @@ public static class StoreStartup
                 CultureInfo.InvariantCulture,
                 $"Nothing answered at {target} after {attempts} {attemptNoun} over {wait.TotalSeconds:0} s.");
 
-        StoreAvailability unavailable = StoreAvailability.Unavailable(
-            "The store did not answer within the configured wait.");
+        // Empty, not a restatement: `logDetail` above already says "nothing answered", and Unavailable's own
+        // fixed sentence already says "not reachable" -- a third clause saying the same fact a third way,
+        // "did not answer within the configured wait", also read oddly at the default Store__StartupWaitSeconds=0,
+        // where there is no wait to speak of, only the one probe (gh#551 review).
+        StoreAvailability unavailable = StoreAvailability.Unavailable(string.Empty);
 
         logger.LogWarning("{LogDetail} {Explanation}", logDetail, unavailable.Explanation);
 

@@ -122,16 +122,34 @@ public sealed class CountingGateway : IMarketDataGateway
     public bool ListsTheInstrument { get; set; } = true;
 
     /// <inheritdoc />
+    /// <remarks>
+    /// <b>It lists everything it holds, front first</b> — not the front alone. A double that lists one
+    /// contract however many it was built with cannot express a <i>roll window</i>, which is the only time
+    /// the venue lists two expiries of one product (<c>InFrontMonthOrder</c>), and a caller that mistakes
+    /// the whole listing for the set of contracts it may consult is invisible to it. The single-series
+    /// constructor holds exactly one contract, so it answers exactly as it always did.
+    /// </remarks>
     public Task<IReadOnlyList<VenueContract>> ResolveContractsAsync(
         InstrumentId instrument,
         CancellationToken cancellationToken)
     {
         ContractRequests++;
         IReadOnlyList<VenueContract> contracts = ListsTheInstrument
-            ? [new VenueContract(_frontContractId, instrument, true, 0.25m, 12.50m)]
+            ?
+            [
+                .. _byContract.Keys
+                    .OrderByDescending(id => IsFront(id))
+                    .Select(id => new VenueContract(id, instrument, IsFront(id), 0.25m, 12.50m)),
+            ]
             : [];
         return Task.FromResult(contracts);
     }
+
+    /// <summary>Whether an id is the one the venue marks active.</summary>
+    /// <param name="contractId">The contract id.</param>
+    /// <returns><see langword="true"/> when it is the front.</returns>
+    private bool IsFront(string contractId) =>
+        string.Equals(contractId, _frontContractId, StringComparison.Ordinal);
 
     /// <inheritdoc />
     public Task<VenueContract?> FindContractAsync(

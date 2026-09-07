@@ -163,18 +163,36 @@ public sealed class BarCacheServiceTests : IAsyncLifetime
         DateTimeOffset now)
     {
         CountingGateway gateway = new(venueBars);
-        BarSessionCalendar calendar = BarSessionCalendar.Parse("16:00", []);
         FakeTimeProvider clock = new(now);
+
+        return (BuildAround(gateway, clock), gateway, clock);
+    }
+
+    /// <summary>
+    /// Builds the cache around a gateway the test already holds.
+    /// </summary>
+    /// <param name="gateway">The venue double.</param>
+    /// <param name="now">The instant to read at.</param>
+    /// <returns>The service.</returns>
+    /// <remarks>
+    /// The bar-script overloads above build the double themselves, which fixes it at one contract. A venue
+    /// that lists <b>two expiries</b> — the roll window — cannot be expressed that way, and it is the shape
+    /// the candidate set has to be pinned against (gh#504).
+    /// </remarks>
+    private BarCacheService BuildAround(CountingGateway gateway, DateTimeOffset now) =>
+        BuildAround(gateway, new FakeTimeProvider(now));
+
+    private BarCacheService BuildAround(CountingGateway gateway, TimeProvider clock)
+    {
+        BarSessionCalendar calendar = BarSessionCalendar.Parse("16:00", []);
 
         IndicatorCatalog catalog = new(
             Options.Create(new IndicatorOptions { AtrPeriod = 3, RsiPeriod = 3 }), calendar);
 
         IndicatorProjector projector = new(_database, catalog, NullLogger<IndicatorProjector>.Instance);
 
-        BarCacheService cache = new(
+        return new BarCacheService(
             _database, gateway, calendar, projector, clock, NullLogger<BarCacheService>.Instance);
-
-        return (cache, gateway, clock);
     }
 
     [Fact]
@@ -545,6 +563,63 @@ public sealed class BarCacheServiceTests : IAsyncLifetime
         second.VenueRequests.Should().Be(0);
         gateway.BarRequests.Should().Be(
             0, "the front now has a memo of its own, so the range is answered for every candidate");
+    }
+
+    [Fact]
+    public async Task AVenueListingTwoExpiries_StillCoversFromTheFrontsMemo()
+    {
+        // gh#504 from the other side, and the guard on gh#408 staying closed. THE CANDIDATE SET IS THE FRONT
+        // CONTRACT ALONE in this slice -- #505 is what widens it to the policy's per-range candidates -- and
+        // the venue's whole resolved listing is NOT that set. The venue lists two expiries of one product
+        // during a roll window (InFrontMonthOrder), while FetchAsync asks contracts[0] and stamps
+        // contracts[0]: a second listed contract can therefore never acquire a memo of its own, `All` over
+        // the listing can never be satisfied, and every previously-empty settled range is re-fetched on EVERY
+        // read -- which is precisely the unbounded per-read cost gh#408 closed.
+        //
+        // RED against a candidate set taken from the whole listing: the H27 leg has no memo of its own, the
+        // range is left outstanding, and this read costs a paced page.
+        CountingGateway gateway = new(
+            new Dictionary<string, IEnumerable<Bar>>(StringComparer.Ordinal)
+            {
+                ["CON.F.US.TEST.Z26"] = [],
+                ["CON.F.US.TEST.H27"] = [],
+            },
+            frontContractId: "CON.F.US.TEST.Z26");
+        BarCacheService cache = BuildAround(gateway, SettledNow);
+        BarRange window = new(SessionStart, SessionStart.AddHours(1));
+
+        // Asserted rather than assumed: if the double ever goes back to listing the front alone, this fixture
+        // stops being about a roll window at all and would pass for the wrong reason.
+        (await gateway.ResolveContractsAsync(_es, CancellationToken.None)).Should().HaveCount(
+            2, "the roll window is the only shape in which this question has two answers");
+        gateway.ResetCounters();
+
+        // The front's own permanent memo over the whole window -- exactly what its first read would have
+        // written. Seeded through the tracker, so the tracker is cleared afterwards for the reason
+        // SeedRowsAsync gives.
+        _database.BarCoverage.Add(new BarCoverageRecord
+        {
+            Venue = "test",
+            Instrument = _es.Symbol,
+            ResolutionMinutes = 5,
+            ContractId = "CON.F.US.TEST.Z26",
+            RangeStart = window.Start,
+            RangeEnd = window.End,
+            RecordedAt = SessionStart,
+            ExpiresAt = null,
+        });
+        await _database.SaveChangesAsync();
+        _database.ChangeTracker.Clear();
+
+        BarReadResult result = await cache.GetBarsAsync(_es, 5, window, CancellationToken.None);
+
+        result.VenueRequests.Should().Be(0);
+        gateway.BarRequests.Should().Be(
+            0,
+            "the front answered this range empty and the front is the only contract this slice consults, so "
+            + "a second listed expiry does not put a settled range back on the venue");
+        (await _database.BarCoverage.AsNoTracking().ToListAsync()).Should().ContainSingle(
+            "nothing was asked, so nothing further was recorded");
     }
 
     [Fact]

@@ -353,9 +353,22 @@ public sealed class BarCacheService
         // UNFILTERED by contract and the filtering is done in memory -- it is the same statement
         // SerializationFailureTests reasons about, and the row count for one key is tiny. #505 can push the
         // filter into SQL when the candidate set stops being one.
+        //
+        // THE FRONT ALONE, NOT THE WHOLE LISTING -- and the `Take(1)` is the slice boundary, not a shortcut.
+        // FetchAsync asks `contracts[0]` and stamps `contracts[0]`, so no other listed contract can ever
+        // acquire a memo of its own; taking the whole listing as the candidate set would leave `All` below
+        // unsatisfiable the moment the venue lists a second expiry, which it does during a roll window
+        // (`InFrontMonthOrder`). Every previously-empty settled range would then be re-fetched on every read
+        // -- gh#408's unbounded per-read cost, re-opened. #505 is the slice that widens this to the policy's
+        // per-range candidates, and it widens the FETCH at the same time.
+        //
+        // A list rather than a single id because that is the shape #505 consumes, and because the empty case
+        // has to survive the narrowing: an empty universe still yields an empty candidate set, which the
+        // refusal below depends on.
         IReadOnlyList<string> candidates =
         [
             .. (await ResolveOnceAsync(instrument, cancellationToken).ConfigureAwait(false))
+                .Take(1)
                 .Select(c => c.ContractId),
         ];
 

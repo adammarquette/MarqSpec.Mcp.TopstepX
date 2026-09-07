@@ -487,11 +487,19 @@ public sealed class TradeTapeRecorderTests
         {
             TapeAvailabilityHolder tape = services.GetRequiredService<TapeAvailabilityHolder>();
 
+            // A different contract than CountingGateway.DefaultContractId — the one the recorder is
+            // about to subscribe — on purpose (gh#579). Seeded under the same key,
+            // PersistOpenRangeAsync's own same-(Venue, Instrument, ContractId) retirement would
+            // remove this row itself when it opens the fresh listen, satisfying both assertions
+            // below whether or not DiscardAbandonedOpenRangesAsync ever ran. A different contract —
+            // standing in for a leftover from before a roll — cannot be retired that way, so only
+            // the discard (which is deliberately not keyed on ContractId; see its remarks) can
+            // remove it, which is the behaviour this test exists to pin.
             database.TapeCoverage.Add(new TapeCoverageRecord
             {
                 Venue = "test",
                 Instrument = "ES",
-                ContractId = "CON.F.US.TEST.Z26",
+                ContractId = "CON.F.US.TEST.Z25",
                 RangeStart = leftoverStart,
                 RangeEnd = TapeCoverageRecord.StillListeningEnd,
                 RecordedAt = leftoverStart,

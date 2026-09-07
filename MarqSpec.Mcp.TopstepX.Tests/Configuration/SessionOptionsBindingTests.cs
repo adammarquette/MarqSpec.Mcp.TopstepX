@@ -1,6 +1,7 @@
 using FluentAssertions;
 using MarqSpec.Mcp.TopstepX.Configuration;
 using MarqSpec.Mcp.TopstepX.Domain.MarketData;
+using MarqSpec.Mcp.TopstepX.MarketData;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Configuration.EnvironmentVariables;
@@ -142,6 +143,69 @@ public sealed class SessionOptionsBindingTests
             new Dictionary<string, string?> { ["MarketData:SessionCloseCentral"] = "not-a-time" }));
 
         start.Should().NotThrow();
+    }
+
+    /// <summary>
+    /// A shipped session the operator's OWN calendar cannot state fails startup, and the refusal names the
+    /// key they actually set.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The four defaults are stated against the shipped 16:00 close, which puts the open at 17:00. Move the
+    /// close and some of them stop describing a session at all: at 13:20 the open is 14:20, and both
+    /// <c>full</c> (17:00-16:00) and <c>rth</c> (08:30-15:00) run backwards or past the session measured from
+    /// there.
+    /// </para>
+    /// <para>
+    /// <b>This is a boot failure, not a first-request one.</b> Validating only the CONFIGURED entries would
+    /// pass here — nothing is configured — and leave the <see cref="ArgumentException"/> to
+    /// <c>SessionCatalog</c>'s constructor, which resolves lazily and would surface it as a tool error on some
+    /// later request. Dropping the session instead is the substitution this repository forbids: a served set
+    /// silently missing <c>full</c> is indistinguishable from a market that produced nothing under it.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public void AShippedDefault_TheCalendarCannotState_FailsStartup_NamingTheClose()
+    {
+        Action start = () => BindWith(builder => builder.Configuration.AddInMemoryCollection(
+            new Dictionary<string, string?> { ["MarketData:SessionCloseCentral"] = "13:20" }));
+
+        start.Should().Throw<OptionsValidationException>()
+            .WithMessage("*MarketData__SessionCloseCentral*")
+            .WithMessage("*'13:20'*")
+            .WithMessage("*'full'*")
+            .WithMessage("*MarketData__Sessions__full__Window*");
+    }
+
+    /// <summary>
+    /// The refusal above is a repair instruction, not a wall: configuring the sessions the odd close CAN state
+    /// boots, and the catalogue builds on them.
+    /// </summary>
+    /// <remarks>
+    /// <b>Both</b> <c>full</c> and <c>rth</c> are replaced, because a 14:20 open refuses both — the coordinator's
+    /// sketch named only <c>full</c>, and leaving <c>rth</c> shipped would keep this red for the very reason the
+    /// test above exists. <c>asia</c> (17:00-02:00) and <c>europe</c> (02:00-08:30) still fit a 14:20 open, so
+    /// they stand untouched and the overlay is exercised beside the second pass rather than instead of it.
+    /// </remarks>
+    [Fact]
+    public void AConfiguredReplacement_SatisfiesTheOddClose()
+    {
+        MarketDataOptions options = BindWith(builder => builder.Configuration.AddInMemoryCollection(
+            new Dictionary<string, string?>
+            {
+                ["MarketData:SessionCloseCentral"] = "13:20",
+                ["MarketData:Sessions:full:Window"] = "15:00-13:00",
+                ["MarketData:Sessions:full:BaseResolutionMinutes"] = "60",
+                ["MarketData:Sessions:rth:Window"] = "08:30-13:00",
+                ["MarketData:Sessions:rth:BaseResolutionMinutes"] = "30",
+            }));
+
+        SessionCatalog catalog = new(
+            Options.Create(options), BarSessionCalendar.Parse(options.SessionCloseCentral, []));
+
+        catalog.KnownNames.Should().Equal("asia", "europe", "full", "rth");
+        catalog.Resolve("full").Should()
+            .Be(new SessionDefinition("full", new TimeOnly(15, 0), new TimeOnly(13, 0), 60));
     }
 
     /// <summary>

@@ -296,9 +296,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   them was the front contract's answer over exactly those ranges. The settled ones are **permanent**, so left
   in place they would hide real bars forever. Migration `BarCoverageIsPerContract` therefore deletes every row
   rather than backfilling a guess. **What an operator will see:** the first read of each previously-empty
-  settled range costs **one paced venue page** again, once, showing up in `venueRequests`. Nothing else
-  changes and **no stored bar moves** — the bars themselves are untouched, and the cost does not recur
-  (gh#504).
+  settled range costs **one paced venue page** again, once, showing up in `venueRequests`, and **no stored bar
+  moves** — the bars themselves are untouched, and that cost does not recur. One further cost is new and will
+  **not** show up in `venueRequests`: a read answered entirely from the memo now resolves the instrument's
+  contract universe to know who the candidates were, which is **one contract search per request** (memoised
+  for the rest of it) where such a read previously reached the venue not at all (gh#504).
 - **A venue that returns no contracts for an instrument now raises the existing `ProjectX__DataTier` refusal
   even for a range the ledger had covered.** That empty universe is what the wrong market-data tier looks like
   on this gateway — it answers with no contracts rather than with an error — and with nobody to have answered

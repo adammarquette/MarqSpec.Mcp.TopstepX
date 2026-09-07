@@ -89,12 +89,16 @@ a **session bar** rather than a resolution (`R-1.12`,
 3. **Diff.** Nothing missing ⇒ return. **Zero vendor calls** (R-1.3).
 4. **Consult the coverage ledger.** A range the vendor previously answered empty is treated as covered — but
    **only for the contract that gave that answer**, and a range is covered only when every candidate contract
-   has said so (gh#504). With one candidate, which is what this slice resolves, that is exactly the previous
-   behaviour, so a warm window still costs **zero vendor calls** (`R-1.3`); the candidates are resolved at
-   most once per instrument per request, and only once the ledger has produced rows worth attributing, so
-   consulting it stays free. What it buys is the roll: after one, the new front's ranges are unanswered and
-   get asked, instead of inheriting the retiring contract's permanent "empty" over a window the new front
-   does cover.
+   has said so (gh#504). With one candidate, which is what this slice resolves, *which* ranges are dropped is
+   exactly the previous behaviour. A window whose buckets are all present never reaches this step — it left
+   at step 3 — so the **zero vendor calls** that step promises (`R-1.3`) are untouched. **What did change is
+   the cost of a read served entirely from the memo.** Answering "who are the candidates?" needs the
+   instrument's contract universe, resolved at most once per instrument per request and only once the ledger
+   has produced rows worth attributing — so that read now pays **one contract search** where it previously
+   reached the venue not at all, and because step 5 is never entered that call is **not counted in
+   `venueRequests`**. What it buys is the roll: after one, the new front's ranges are unanswered and get
+   asked, instead of inheriting the retiring contract's permanent "empty" over a window the new front does
+   cover.
 5. **Fetch** each remaining range, paged at `1000 × barSize` — the gateway caps a history call at 1000 bars and
    silently truncates past it. The pages are **paced** to the vendor's 50-per-30-seconds allowance on the
    history endpoint, shared process-wide, because a cold year of five-minute bars is 106 requests back to back

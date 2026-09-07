@@ -511,7 +511,9 @@ undocumented one: the bar itself was gone, and the reading was a number nothing 
 newest bucket a bar still accounts for (`R-2.14`, gh#577). The third reason is **narrowed rather than
 eliminated**: the value and its contract are two statements, so a bar deleted between them still yields the
 number with a null contract — reachable now only by interleaving with a single read, where it used to be the
-standing answer for as long as the orphaned rows stood.
+standing answer for as long as the orphaned rows stood. **That residue is this tool's alone.**
+`get_market_snapshot` reads the value and its bar in **one** statement, so the reading it publishes has no
+such window and its `contractId` carries only the two meanings above.
 
 **`get_market_snapshot` returns this same reading**, as the value of each entry in its `indicators{}` map
 (gh#286) — with one difference the container forces: there, cannot-measure is the map's own `null` rather

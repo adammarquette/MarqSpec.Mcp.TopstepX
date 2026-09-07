@@ -281,6 +281,28 @@ public sealed class PayloadNullWireShapeTests
             12.5m, "the value is unaffected: an absent contract does not make a reading unmeasured");
     }
 
+    [Fact]
+    public void ASessionAbsence_WritesItsReasonAsAnEnumName()
+    {
+        // The third wire shape a caller has to know about, and the one ADR-0008 turns on: an absence reason
+        // is a NAME from a vocabulary this repository defines, not an integer. Serialised as `1` it would be
+        // a code with no legend on the wire, and a reader acting on "the session is incomplete" would be
+        // acting on a number that means nothing without this assembly beside it.
+        JsonElement absence = Wire(new ToolPayloads.SessionAbsence(
+            TradeDate: new DateOnly(2026, 8, 3),
+            Reason: SessionBarAbsence.Incomplete,
+            ExpectedBuckets: 13,
+            MissingBuckets: 2));
+
+        JsonElement reason = absence.GetProperty("reason");
+
+        reason.ValueKind.Should().Be(
+            JsonValueKind.String, "an enum on this surface is a name, never an ordinal");
+        reason.GetString().Should().Be("Incomplete");
+        absence.GetProperty("missingBuckets").GetInt32().Should().Be(
+            2, "and the counts beside it are always present -- an absence is an answer, not a null");
+    }
+
     private static ToolPayloads.ContractCoverage EmptyCoverage =>
         new(ToolPayloads.ContractSpan.Unknown, []);
 

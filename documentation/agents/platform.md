@@ -508,7 +508,7 @@ by mutation, not as a description of the workflow files.**
 
 | Context | develop | staging | main | Reported by |
 |---|---|---|---|---|
-| `build & unit tests` | required | required | required | `ci.yml` |
+| `build & unit tests` | required | required | required | `ci.yml` — also carries the infra template tests and, since gh#529, the additive-migration gate; [see below](#build--unit-tests-also-refuses-an-unacknowledged-destructive-migration) |
 | `integration tests` | required | required | required | `ci.yml` |
 | `docs` | required | required | required | `ci.yml` — seven steps since gh#438, see below |
 | `coverage` | required | required | required | `ci.yml` |
@@ -713,6 +713,50 @@ All of it rides in the one job **because `docs` is already required on all three
 needed a ruleset write and [the table above](#what-is-required-and-what-only-reports) does not change — the
 same argument as `commit-hygiene`'s merge-commit refusal below. Four new jobs would have meant four new
 required contexts added by hand, and a context nobody adds is a check that only ever reports (gh#26).
+
+### `build & unit tests` also refuses an unacknowledged destructive migration
+
+**[`check-migrations-additive.sh`](../../scripts/check-migrations-additive.sh) and its self-test ride in
+`build & unit tests`** (gh#529), on the same argument as everything in `docs`: that context is already
+required on all three rungs, so the gate enforces by wiring and
+[the table above](#the-required-context-table) does not change. They run **before `setup-dotnet`** — the gate
+needs no SDK, so a pull request whose only fault is a `DropColumn` fails in seconds rather than after a
+restore, a build and two test tiers.
+
+**What a green run licenses, exactly: that no operation in the gate's enumerated set appears *unacknowledged*
+in the `Up()` body of a migration the diff adds or changes.** Not that a migration is safe, and not that an
+acknowledged one is right — judging that is the reviewer's, and the marker is the sentence they judge. The
+enumeration, and what is deliberately left out of it, is in the script's header rather than restated here;
+`AlterColumn` is covered wholesale because **a narrowing is not distinguishable from a widening statically**,
+and `DropIndex` is covered only when a `DropColumn` sits in the same body, because an index is recreatable
+and a lone one would put a marker on every reindex.
+
+Three things about it generalise:
+
+- **The scoping is the diff, not an exclusion list.** `git merge-base origin/develop HEAD`, then
+  `git diff --diff-filter=ACMR` from there — so the five migrations already on `develop` are never read, and
+  that stays true without a list anyone has to maintain. It matters: one of them, `20260827071708_DropPriceLevels`,
+  is genuinely destructive, and a gate that reddened it would have been disabled on day one. **That same
+  migration is the measurement that the detector is not inert** — pointed at `f49dd5b~1` the gate finds it in
+  real EF-generated code at `…DropPriceLevels.cs:14  DropTable` and passes the other five, whose `Up()` bodies
+  are additive and whose `Down()` bodies drop everything they added. Prose saying "it only reads the diff"
+  would otherwise be indistinguishable from a detector that reads nothing.
+- **The escape hatch is in the file and its scope is adjacency.** `// destructive-migration: <why>` in the
+  unbroken comment block directly above the operation. A blank line ends the block, and so does the previous
+  operation, so two destructive calls always need two markers — a blanket marker at the top of a generated
+  file silencing everything below it is the exact failure the gate exists for. The reason must be non-empty:
+  a bare `// destructive-migration:` is a rubber stamp, not an acknowledgement.
+- **The first fixture written for it found a defect in the rule, not in the code.** The marker was specified
+  as *the line immediately above*; a two-line reason — which the gate's own `explain` text prints — then
+  fails, so the documented form would have been refused. Adjacency had to become the comment *block* rather
+  than the line. **A rule stated in prose and never fed to its own implementation is the shape gh#178 names**:
+  write the fixture for the documented form before believing the form.
+
+`check-migrations-additive-selftest.sh` carries a **decision ledger** — the fourth gate here to need one —
+and its rows are split into the ones measured by mutation and the ones honestly marked unmeasured, with the
+sweep's cost recorded beside them. **The suite takes about 6m30s on a Windows checkout** and seconds on the
+runner, which is what bounds how much of that table could be measured on one card; the harness is named in
+the file so the next reader repeats it rather than re-deriving it.
 
 ### Size-gate targeting and decision ledgers
 

@@ -87,8 +87,14 @@ a **session bar** rather than a resolution (`R-1.12`,
    the calendar does not expect them. Off the grid they would otherwise never be asked for, and the window
    would report its contract span as `Unknown` for good (gh#412).
 3. **Diff.** Nothing missing ⇒ return. **Zero vendor calls** (R-1.3).
-4. **Consult the coverage ledger.** A range the vendor previously answered empty is treated as covered, so a
-   genuine hole is not re-requested forever.
+4. **Consult the coverage ledger.** A range the vendor previously answered empty is treated as covered — but
+   **only for the contract that gave that answer**, and a range is covered only when every candidate contract
+   has said so (gh#504). With one candidate, which is what this slice resolves, that is exactly the previous
+   behaviour, so a warm window still costs **zero vendor calls** (`R-1.3`); the candidates are resolved at
+   most once per instrument per request, and only once the ledger has produced rows worth attributing, so
+   consulting it stays free. What it buys is the roll: after one, the new front's ranges are unanswered and
+   get asked, instead of inheriting the retiring contract's permanent "empty" over a window the new front
+   does cover.
 5. **Fetch** each remaining range, paged at `1000 × barSize` — the gateway caps a history call at 1000 bars and
    silently truncates past it. The pages are **paced** to the vendor's 50-per-30-seconds allowance on the
    history endpoint, shared process-wide, because a cold year of five-minute bars is 106 requests back to back
@@ -116,7 +122,10 @@ a **session bar** rather than a resolution (`R-1.12`,
    The removals still go through the change tracker, so this step needs a **transaction** around it rather than
    merely one snapshot, and refuses without one.
 9. **Record coverage** for ranges that came back empty — one `ON CONFLICT … DO UPDATE` on
-   `(Venue, Instrument, ResolutionMinutes, RangeStart, RangeEnd)`, for the same reason step 7 is (gh#122).
+   `(Venue, Instrument, ResolutionMinutes, ContractId, RangeStart, RangeEnd)`, for the same reason step 7 is
+   (gh#122). The memo records **which contract answered empty**, because that is what step 4 asks of it
+   (gh#504); the target grew with the key, and a list that had not would fail at runtime rather than at
+   compile time.
    There is **no pre-read here at all**: the ledger holds the latest answer for a range rather than a history
    of asking, so `RecordedAt` moves on every ask and there is no unchanged write to save. `ExpiresAt` is
    assigned unconditionally, `null` included — `null` means *never*, not *not recorded*, so preserving a

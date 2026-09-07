@@ -142,7 +142,7 @@
       A real Postgres for the integration tier. The bar store's hypertable and the HNSW vector index are
       Timescale/pgvector features; an in-memory provider would pass a suite that proves nothing about them.
     -->
-    <PackageVersion Include="Testcontainers.PostgreSql" Version="4.14.0" />
+    <PackageVersion Include="Testcontainers.PostgreSql" Version="4.15.0" />
     <!--
       For the unit tier only. The cache's central claim — that a repeated read costs ZERO vendor calls — is
       about logic, not SQL, so it is pinned by a fast in-memory test rather than only by a container the suite

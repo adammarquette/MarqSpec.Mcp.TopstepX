@@ -20,8 +20,9 @@ lockstep with them in the same PR.
   representation, and an indicator accumulating over thousands of bars drifts.
 - **`Instrument` is the normalised venue-neutral symbol** (`ES`), upper-cased at the boundary — not a contract
   id. `CON.F.US.EP.U26` is one contract that quotes `ES` this quarter. On `Bars` the contract is recorded
-  **beside** the key ([ADR-0011](adr/0011-contract-roll-boundary.md)). On `Trades` and `TapeCoverage` it is
-  **in** the key: a print that cannot be attributed has no meaning (gh#215).
+  **beside** the key ([ADR-0011](adr/0011-contract-roll-boundary.md)). On `Trades`, `TapeCoverage` and
+  `BarCoverage` it is **in** the key: a print that cannot be attributed has no meaning (gh#215), and neither
+  can an empty answer, which without a contract asserts "empty" on behalf of every contract (gh#504).
 - **`Venue` is part of every market-data key.** The same product on two venues is two series, and a future
   second venue must not silently overwrite the first.
 - **No tenancy.** `trading-copilot` scopes rows to an owner and exempts market data; here there is nothing but
@@ -139,6 +140,7 @@ refuses.
 | Column | Type | Note |
 |---|---|---|
 | `Venue` `Instrument` `ResolutionMinutes` | | PK |
+| `ContractId` | `varchar(64)` | PK · **required**. The contract that was asked, and answered empty |
 | `RangeStart` `RangeEnd` | `timestamptz` | PK · half-open `[Start, End)` |
 | `RecordedAt` | `timestamptz` | |
 | `ExpiresAt` | `timestamptz` | Null means never — settled history |
@@ -149,6 +151,25 @@ fixed watchlist on a timer, so it never faces "an agent asked for an arbitrary c
 Records that the venue was asked for a range and answered **empty**. Without it, a range the vendor genuinely
 has no data for — before the contract listed, a cancelled session — is expected by the calendar and absent from
 the store, which is indistinguishable from "not fetched yet", and is re-requested on every call.
+
+**The question the row answers changed with gh#504.** It is no longer "did the venue have bars for this
+range?" but "did **contract C** have bars for this range?" — the same question §7 and §8 already ask of a
+print and a subscription, arriving here because bars record the contract that produced them
+([ADR-0011](adr/0011-contract-roll-boundary.md)) and the history fetch is becoming roll-aware (gh#497). Those
+have different answers over one range: an expiring front holds nothing for a window the incoming front
+covers. So a range is answered only when **every** candidate contract has an unexpired empty row whose union
+covers it, and a candidate with no rows answers nothing rather than being vacuously covered. One contract's
+empty answer never speaks for another's.
+
+**Migration `BarCoverageIsPerContract` deleted every existing row rather than backfilling one**, on the rule
+that a missing fact is missing and never a default. Which contract answered is not recoverable from anything
+the row holds — venue, symbol, resolution and the two range ends are the same whichever contract was asked — and a
+guessed provenance is indistinguishable from a recorded one once written. Recent rows expire within fifteen
+minutes regardless; the permanent, settled ones were exactly the hazard, stamped by the venue-front contract
+over ranges the new policy must ask other contracts about, and left in place they would hide real bars
+forever. **The one-time cost is one paced page per previously-empty settled range**, spent the next time
+something reads that range and visible to an operator as a bump in `venueRequests`. It is paid once and does
+not recur.
 
 `ExpiresAt` is asymmetric: short near `now` (a bucket empty only because it has not printed yet will print), and
 null for settled history (a hole in 2024 will not fill in). **Null means *never*, not *not recorded*** — so the
@@ -161,15 +182,19 @@ written per page slice, so a three-page empty answer leaves three abutting rows 
 covers the range. A lookup that asks whether one row contains the range answers "no" forever and re-fetches
 every page on every read (gh#408); the containment test is made against the union of the unexpired rows, with
 touching rows merged — half-open slices abut exactly — and a genuine gap between two rows still covering
-nothing.
+nothing. **The union is taken per contract**, over that candidate's own rows only: merging across contracts
+would invent a claim nobody made, which is the per-contract question above restated where the merge happens.
 
-Index: `(Instrument, ResolutionMinutes, RangeStart, RangeEnd)` — the shape of every coverage lookup.
+Index: `(Instrument, ResolutionMinutes, ContractId, RangeStart, RangeEnd)` — the shape of every coverage
+lookup.
 
-**The write reaches the composite key with `ON CONFLICT … DO UPDATE`**, not by reading the row and deciding
-(gh#122) — so two callers recording the same empty range concurrently both land, instead of the loser faulting
-on the key. There is no pre-read and no skip-unchanged rule: the ledger holds the **latest answer** for a
-range rather than a history of asking, so `RecordedAt` moves on every ask and there is no unchanged write to
-skip.
+**The write reaches the composite key with `ON CONFLICT … DO UPDATE`** on
+`(Venue, Instrument, ResolutionMinutes, ContractId, RangeStart, RangeEnd)`, not by reading the row and
+deciding (gh#122) — so two callers recording the same empty range concurrently both land, instead of the loser
+faulting on the key. The target *is* the key, so growing one grows the other: a statement whose list no longer
+matches fails at runtime with a `42P10`, not at compile time. There is no pre-read and no skip-unchanged rule:
+the ledger holds the **latest answer** for a range rather than a history of asking, so `RecordedAt` moves on
+every ask and there is no unchanged write to skip.
 
 ## §4 `PriceLevels` — dropped 2026-08-27 (gh#276)
 

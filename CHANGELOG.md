@@ -286,6 +286,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   uncancellable wait resting on an ordering no comment enforced. Nit: the give-up warning no longer reads
   "after 1 attempts" (gh#551).
 
+### Changed
+
+- **The empty-answer ledger is keyed by contract, and the migration emptied it.** A `BarCoverage` memo now
+  records **which contract** answered a range empty, and a range counts as answered only when **every**
+  candidate contract has said so — "the venue has nothing here" was never a fact about a range alone, and the
+  roll-aware history fetch (gh#497) asks earlier contracts about ranges the front cannot speak for. The old
+  rows could not be kept: which contract wrote one is not recoverable from anything it holds, and every one of
+  them was the front contract's answer over exactly those ranges. The settled ones are **permanent**, so left
+  in place they would hide real bars forever. Migration `BarCoverageIsPerContract` therefore deletes every row
+  rather than backfilling a guess. **What an operator will see:** the first read of each previously-empty
+  settled range costs **one paced venue page** again, once, showing up in `venueRequests`. Nothing else
+  changes and **no stored bar moves** — the bars themselves are untouched, and the cost does not recur
+  (gh#504).
+- **A venue that returns no contracts for an instrument now raises the existing `ProjectX__DataTier` refusal
+  even for a range the ledger had covered.** That empty universe is what the wrong market-data tier looks like
+  on this gateway — it answers with no contracts rather than with an error — and with nobody to have answered
+  a range empty, nothing is treated as covered. Previously such a range was served quietly from the ledger: a
+  silent empty answer produced by a misconfiguration, which reads as an ordinary "the market had nothing" and
+  is acted on as one. The message is unchanged and still names the setting (gh#504).
+
 ## [0.3.1] - 2026-09-06
 
 Carries the `KeyLevels__Source` fail-closed fix and a set of documentation corrections to what an

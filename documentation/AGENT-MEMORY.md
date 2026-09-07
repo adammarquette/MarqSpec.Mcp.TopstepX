@@ -57,6 +57,26 @@ at one this rule's own pull request retires.
 
 ## Practices to follow
 
+- **[2026-09-07] The `dotnet ef migrations add` invocation that works in this repo, and the CRLF it leaves
+  behind (gh#504).** Two projects are involved — the entities and the `DbContext` live in
+  `MarqSpec.Mcp.TopstepX.Data`, the host that configures them in `MarqSpec.Mcp.TopstepX` — so the command
+  needs both named or the design-time build cannot find a context:
+  ```
+  dotnet ef migrations add <Name> --project MarqSpec.Mcp.TopstepX.Data \
+      --startup-project MarqSpec.Mcp.TopstepX --output-dir Migrations
+  ```
+  **No `dotnet tool restore`, no `.env`, and no Postgres.** `dotnet-ef` is already available; scaffolding
+  reads the model, never a database, so it does not want a connection string and there is nothing to start
+  first. The only step after it is `dotnet build`, and the migration is applied by the host at startup.
+  - **The trap: `dotnet ef` writes CRLF, and `dotnet format --verify-no-changes` fails on it.** Three files
+    are generated — `Migrations/<stamp>_<Name>.cs`, its `.Designer.cs`, and the rewritten
+    `Migrations/TopstepXDbContextModelSnapshot.cs` — and every one of them arrives with Windows line endings.
+    `.gitattributes` normalises on commit and `.editorconfig` relaxes the *style* rules for
+    `**/Migrations/*.cs` and accepts the BOM the generator writes, but neither touches the working-tree line
+    endings the formatter actually reads, so the failure surfaces at the gate rather than at generation.
+    Convert all three to LF before you build: `sed -i 's/\r$//' <file>` on each, or reach for whatever
+    LF-conversion the shell offers. The BOM stays — `.editorconfig` asks for `utf-8-bom` there deliberately,
+    so stripping it makes the *next* generated file the problem instead.
 - **[2026-09-03] A clean `git status` and the issue author field both look like evidence of "who did what,"
   and neither is — one lesson, not two (gh#438, PR #441).** This entry covers **neither** gh#88 (the recovery
   once two sessions land in one commit) **nor** gh#438 (how a pushed branch's tip age is read) — it covers the

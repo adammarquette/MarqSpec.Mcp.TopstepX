@@ -177,12 +177,19 @@ public sealed class BarReselector(
 
             if (buckets > BarGapDetector.MaxBucketsPerPass)
             {
+                // BOTH WINDOWS, because the number is measured over the second one. Naming only the
+                // effective range would quote a bucket count against a range the operator never typed --
+                // and someone who then narrows their window to just under the cap gets refused again, for
+                // a widening the line never showed them.
                 _logger.LogWarning(
-                    "Skipping {Instrument} {Resolution}m: {From}..{To} spans at most {Buckets} buckets at "
-                    + "this resolution, over the {Cap} a single pass will enumerate. Narrow the window or "
-                    + "reselect this resolution on its own.",
+                    "Skipping {Instrument} {Resolution}m: asked {AskedFrom}..{AskedTo}, whose whole trade "
+                    + "dates {From}..{To} span at most {Buckets} buckets at this resolution, over the "
+                    + "{Cap} a single pass will enumerate. Narrow the window or reselect this resolution "
+                    + "on its own.",
                     instrument.Symbol,
                     s.ResolutionMinutes,
+                    window.Start,
+                    window.End,
                     effective.Start,
                     effective.End,
                     buckets,

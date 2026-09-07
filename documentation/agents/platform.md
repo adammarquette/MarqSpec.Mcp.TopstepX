@@ -734,23 +734,45 @@ and a lone one would put a marker on every reindex.
 Three things about it generalise:
 
 - **The scoping is the diff, not an exclusion list.** `git merge-base origin/develop HEAD`, then
-  `git diff --diff-filter=ACMR` from there — so the five migrations already on `develop` are never read, and
-  that stays true without a list anyone has to maintain. It matters: one of them, `20260827071708_DropPriceLevels`,
-  is genuinely destructive, and a gate that reddened it would have been disabled on day one. **That same
-  migration is the measurement that the detector is not inert** — pointed at `f49dd5b~1` the gate finds it in
-  real EF-generated code at `…DropPriceLevels.cs:14  DropTable` and passes the other five, whose `Up()` bodies
-  are additive and whose `Down()` bodies drop everything they added. Prose saying "it only reads the diff"
-  would otherwise be indistinguishable from a detector that reads nothing.
+  `git diff --diff-filter=ACMR` from there — so the **seven** migrations already on `develop` are never read,
+  and that stays true without a list anyone has to maintain. It matters: one of them,
+  `20260827071708_DropPriceLevels`, is genuinely destructive, and a gate that reddened it would have been
+  disabled on day one. **That same migration is the measurement that the detector is not inert** — pointed at
+  `f49dd5b~1` the gate reads six files, finds it in real EF-generated code at
+  `…DropPriceLevels.cs:14  DropTable`, and passes the other five. Prose saying "it only reads the diff" would
+  otherwise be indistinguishable from a detector that reads nothing. **Six of the seven have a destructive
+  `Down()`** — `DropPriceLevels`' `Down()` re-creates its table — which is what makes the `Down()` exclusion
+  not a close call. Every one of those numbers said *five* until review counted them; two migrations landed
+  on `develop` while this branch was open, and a count in prose is exactly the claim that stops being true.
 - **The escape hatch is in the file and its scope is adjacency.** `// destructive-migration: <why>` in the
   unbroken comment block directly above the operation. A blank line ends the block, and so does the previous
-  operation, so two destructive calls always need two markers — a blanket marker at the top of a generated
-  file silencing everything below it is the exact failure the gate exists for. The reason must be non-empty:
-  a bare `// destructive-migration:` is a rubber stamp, not an acknowledgement.
+  operation, so two destructive calls on two lines always need two markers — a blanket marker at the top of a
+  generated file silencing everything below it is the exact failure the gate exists for. The reason must be
+  non-empty: a bare `// destructive-migration:` is a rubber stamp, not an acknowledgement.
+- **Adjacency did not deliver the rule it was supposed to, and that is the finding to carry.** *One marker
+  acknowledges one operation* was stated in five documents and was **false** for two calls sharing a line:
+  the upward walk starts at `line - 1` for both and lands on the same marker, so a reason naming only
+  `Legacy` acknowledged a `DropTable` written beside it. Worse, the match was a **boolean**, so two
+  *identical* calls on one line were reported as **one operation** — the green line, whose whole job is to
+  carry its own evidence, undercounting in the quiet direction. The gate now counts occurrences and
+  **refuses** a line carrying more than one, because there is one sentence and two acts and nothing says
+  which act it describes. **A property that follows from a mechanism is not tested by testing the
+  mechanism**: every fixture put one operation per line, so nothing here could see it.
 - **The first fixture written for it found a defect in the rule, not in the code.** The marker was specified
   as *the line immediately above*; a two-line reason — which the gate's own `explain` text prints — then
   fails, so the documented form would have been refused. Adjacency had to become the comment *block* rather
   than the line. **A rule stated in prose and never fed to its own implementation is the shape gh#178 names**:
   write the fixture for the documented form before believing the form.
+- **What a text gate is actually defeated by is FORMATTING, and `dotnet format` is not the backstop it
+  looks like.** Review got a green run out of four shapes that all compile *and* all pass
+  `dotnet format --verify-no-changes`: two operations on one line; a `.DropColumn` whose `(` sits on the
+  next line; an operation in a **sibling member** of the migration class, which the `Up()`-body scan never
+  reached; and an operation swallowed by a `Sql(` region whose terminating `;` sat on a line of its own. The
+  useful contrast is `migrationBuilder . DropColumn (`, which the gate also missed and `Format` catches with
+  three `error WHITESPACE` — **defence in depth that exists by luck, and only for the shape nobody writes.**
+  Ask which of a text gate's blind spots another required step happens to cover, and treat the answer as
+  luck rather than design. The gate now scans everything outside `Down()`, accepts the `(` on the following
+  line, runs the operation needles *inside* `Sql(` regions, and closes a region on a lone `;`.
 
 `check-migrations-additive-selftest.sh` carries a **decision ledger** — the fourth gate here to need one —
 and its rows are split into eight **measured by a nine-mutant sweep** and the rest listed as

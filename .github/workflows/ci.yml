@@ -212,6 +212,44 @@ jobs:
           # version is stamped into the assembly (ADR-0001).
           fetch-depth: 0
 
+      # gh#529, ADR-0023 §4 and §12. The deploy shape is desired 1, min 0%, max 100%: the new task runs
+      # MigrateAsync alone, and if it then fails the circuit breaker restores the PREVIOUS task definition
+      # OVER THE MIGRATED SCHEMA. So a migration that lands before a code rollback must be additive, and a
+      # dropped column is an old binary crashing against a store nothing can put back. That rule was prose
+      # in an ADR; nothing in CI read a migration — SchemaTests pins what the schema IS, not how it got
+      # there.
+      #
+      # NEEDS NO SDK, so it runs BEFORE setup-dotnet: a pull request whose only fault is an unacknowledged
+      # DropColumn fails in seconds instead of after a restore, a build and two test tiers.
+      #
+      # THE FETCH IS PART OF THE GATE. The gate diffs against origin/develop, and actions/checkout's
+      # refspec is not something to infer from `fetch-depth: 0` — this makes the ref present on every
+      # event shape. The default shell is `bash -e`, so a failed fetch fails the step rather than leaving
+      # the gate to resolve nothing; and the gate itself refuses an unresolvable base rather than reading
+      # it as an empty diff.
+      #
+      # It rides in this job because `build & unit tests` is already required on all three rungs — no
+      # ruleset write, and `image`'s and `coverage`'s `needs:` lists are untouched, so the skip argument
+      # in documentation/agents/platform.md is unchanged. Moving it to a job of its own would mean adding
+      # a required context by hand, and a context nobody adds only ever reports (gh#26).
+      - name: New migrations are additive, or acknowledged in the file
+        run: |
+          git fetch --no-tags --quiet origin +refs/heads/develop:refs/remotes/origin/develop
+          ./scripts/check-migrations-additive.sh
+
+      # THE GATE ABOVE HAS TO BE ABLE TO FAIL, and it is line matching in shell — one loosened needle or a
+      # terminator regex that stops finding Down() turns it into a step that passes on anything while the
+      # run page stays green. This runs the real script against 27 fixtures whose faults are known and
+      # requires it to reject each BY FILE, LINE AND OPERATION — never on exit status, which is also what
+      # "the Migrations directory is missing" and "that base ref names no commit" produce — and to accept
+      # the additive shapes WITHOUT WRITING A BYTE TO STDERR (gh#239). Two of its cases invoke the gate
+      # with no argument, which is the only invocation the step above makes.
+      #
+      # Ordered after it so a genuinely destructive migration is reported first. Hermetic: mktemp -d, no
+      # network, no token.
+      - name: Prove the additive-migration gate can still fail
+        run: ./scripts/check-migrations-additive-selftest.sh
+
       - uses: actions/setup-dotnet@v6
         with:
           # net10.0 ONLY. This is an application, not the multi-targeting library the template came from —

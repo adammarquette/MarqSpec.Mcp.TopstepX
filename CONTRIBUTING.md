@@ -235,6 +235,22 @@ tracker and drifts from it.
   merge commits are reserved for the `develop → staging → main` promotions, and the rulesets enforce that.
 - Before a PR: `dotnet format --verify-no-changes` and unit tests green. **Test-first is the Definition of Done**
   — no new public method without a failing test first.
+- **A new EF Core migration must be additive, or say why in the file.** The deploy runs the new task's
+  `MigrateAsync` alone, and a failed rollout restores the *previous* task definition over the migrated schema
+  ([ADR-0023](documentation/adr/0023-aws-deployment-topology.md) §4) — so a dropped column is an old binary
+  crashing against a store nothing puts back. `scripts/check-migrations-additive.sh` runs in
+  `build & unit tests` and refuses a `DropTable`, `DropColumn`, `Rename*`, `AlterColumn` or a raw
+  `Sql("DROP …")` in an `Up()` body unless the operation carries, in the unbroken comment block **directly
+  above it**:
+
+  ```csharp
+  // destructive-migration: <the release after which rollback is no longer possible, and why>
+  ```
+
+  The reason may run over several lines and must not be empty. A blank line ends the block, and so does the
+  previous operation, so **one marker acknowledges one operation** — a marker at the top of the file
+  acknowledges only what it is actually touching. The gate says no *unacknowledged* destructive operation is
+  in the diff; whether a marked one is right is the reviewer's call.
 - **Merge gate.** Rulesets protect `develop`, `staging` and `main`: each requires a pull request and green status
   checks before merge, and blocks force-push and deletion. `ladder` is additionally required on `staging` and
   `main`. Approvals are not required (single operator); the rulesets carry no bypass.

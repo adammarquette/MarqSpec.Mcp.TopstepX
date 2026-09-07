@@ -592,6 +592,45 @@ would be the console-only configuration the platform contract refuses. They are 
 deploy's to take, quoted on gh#517 and recorded here as a dated entry; until that entry exists, the pre-
 registered-client assumption ADR-0021 states is still an assumption, and this entry does not narrow it.
 
+## Update (2026-09-07) — decision 4's additive-migration rule is a gate, and this is what it reads
+
+Decision 4 states the rule the circuit breaker makes load-bearing: *a migration that lands before a code
+rollback must be additive*. gh#529 turns it into
+[`scripts/check-migrations-additive.sh`](../../scripts/check-migrations-additive.sh), running in
+`build & unit tests` — a required context on all three rungs, so this needs no ruleset write.
+
+**What the gate claims, and it is narrower than the rule.** A green run says no operation in its enumerated
+set appears **unacknowledged** in the `Up()` body of a migration the pull request adds or changes. It does
+not say a migration is safe, and it does not judge an acknowledged one. The enumeration is `DropTable`,
+`DropColumn`, `RenameColumn`, `RenameTable`, `AlterColumn`, `DropSchema`, `DropSequence`, `DropIndex` when a
+`DropColumn` sits in the same body, and a raw `Sql(…)` carrying `DROP `, `TRUNCATE` or `ALTER TABLE … TYPE`.
+`AlterColumn` is covered wholesale because a narrowing and a widening are the same call shape; constraint
+drops (`DropPrimaryKey`, `DropForeignKey`, `DropUniqueConstraint`, `DropCheckConstraint`) are **not** covered,
+because they destroy no rows and a restored old task still reads and writes the same data. `Down()` is not
+read at all — every additive migration's `Down()` drops what its `Up()` added.
+
+**The escape hatch is in the file rather than in the pull request**, so it is reviewable, greppable and
+survives the merge:
+
+```csharp
+// destructive-migration: <the release after which rollback is no longer possible, and why>
+migrationBuilder.DropColumn(name: "Legacy", table: "Bars");
+```
+
+It must sit in the unbroken comment block directly above the operation — a blank line ends the block, and so
+does the previous operation, so one marker acknowledges one operation. **This is the sentence decision 4 asks
+a reviewer to judge**, and the gate exists to make sure somebody typed it rather than letting a generated
+file carry the drop unread.
+
+**The five migrations already in the tree are not re-read, and that is the diff scoping rather than an
+exclusion list.** One of them, `20260827071708_DropPriceLevels`, is genuinely destructive; a gate that
+reddened it would have been switched off the first day. That same file is what shows the detector is not
+inert — pointed at a base before it, the gate names `…DropPriceLevels.cs:14  DropTable` in real
+EF-generated code and passes the other four.
+
+**Still not decided here:** whether an acknowledged destructive migration is *correct*. The gate turns that
+into a review question with a written reason attached, which is all decision 4 ever needed from it.
+
 ## Follow-ups
 
 - gh#516, gh#517, gh#518 build decisions 7, 9 and 8; gh#529 gates decision 4's rule. All four cite this

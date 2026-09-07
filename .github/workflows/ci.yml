@@ -239,11 +239,18 @@ jobs:
 
       # THE GATE ABOVE HAS TO BE ABLE TO FAIL, and it is line matching in shell — one loosened needle or a
       # terminator regex that stops finding Down() turns it into a step that passes on anything while the
-      # run page stays green. This runs the real script against 28 fixtures whose faults are known and
+      # run page stays green. This runs the real script against 35 fixtures whose faults are known and
       # requires it to reject each BY FILE, LINE AND OPERATION — never on exit status, which is also what
       # "the Migrations directory is missing" and "that base ref names no commit" produce — and to accept
       # the additive shapes WITHOUT WRITING A BYTE TO STDERR (gh#239). Two of its cases invoke the gate
       # with no argument, which is the only invocation the step above makes.
+      #
+      # SEVEN OF THOSE CASES ARE SHAPES REVIEW GOT A GREEN RUN OUT OF, and every one of them compiled and
+      # passed `dotnet format --verify-no-changes`: two operations on one line under one marker (and two
+      # IDENTICAL ones, which a boolean match counted as one), a `.DropColumn` whose `(` sat on the next
+      # line, an operation in a sibling member the Up()-body scan never reached, and one swallowed by a
+      # Sql( region whose `;` sat on its own line. A gate an ordinary formatting choice walks past is the
+      # failure this card exists to prevent, so each is a fixture rather than a fix and a note.
       #
       # Ordered after it so a genuinely destructive migration is reported first. Hermetic: mktemp -d, no
       # network, no token.

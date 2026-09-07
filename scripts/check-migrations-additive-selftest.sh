@@ -32,10 +32,12 @@
 #       DESTRUCTIVE  …/20260827071708_DropPriceLevels.cs:14  DropTable  -- no '// destructive-migration:' …
 #
 # The second is the measurement that matters and it is not a fixture: pointed at a base BEFORE the one
-# genuinely destructive migration this repository has ever merged, the gate finds it in real EF-generated
-# code, at the real line, and passes the other five files -- whose Up() bodies are additive and whose Down()
-# bodies drop everything they added. `develop` is green because of the DIFF SCOPING, not because the
-# detector is inert.
+# genuinely destructive migration this repository has ever merged, the gate reads SIX files, finds it in
+# real EF-generated code at the real line, and passes the other FIVE -- whose Up() bodies are additive and
+# whose Down() bodies drop everything they added. `develop` is green because of the DIFF SCOPING, not
+# because the detector is inert. (`develop` carries SEVEN migrations; six of them have a destructive
+# Down(), `DropPriceLevels` being the one whose Down() re-creates its table. Counted, not remembered --
+# every earlier draft of this paragraph said five, and two more landed while the branch was open.)
 #
 # AND THE STDERR CLAIM AGREES WITH THE CODE. `grep -n '>&2' scripts/check-migrations-additive.sh` finds the
 # writers on failing paths only (`die`, the `explain` heredoc, the blank separator); the green line goes to
@@ -555,6 +557,132 @@ N="$(line_of "$F" 'DropIndex(name: "IX_Bars_Legacy"')"
 expect_red "a DropIndex beside an acknowledged DropColumn — half an acknowledgement" "$D" \
   "$MIG_REL/20260201000000_Paired.cs:$N  DropIndex" basebranch
 
+# ---------------------------------------------------------------------------------------------------------
+# The four shapes review found, each of which COMPILED and passed `dotnet format --verify-no-changes` while
+# the gate said green. A gate an ordinary formatting choice walks past is the failure this card exists to
+# prevent, so each one is a case rather than a fix and a note.
+# ---------------------------------------------------------------------------------------------------------
+
+D="$FIXTURES/two-ops-one-line"; init_repo "$D"
+F="$D/$MIG_REL/20260201000000_TwoOnOneLine.cs"; emit_head "$F" TwoOnOneLine
+emit_body "$F" <<'EOF'
+            // destructive-migration: only Legacy is dual-written, v0.4.0.
+            migrationBuilder.DropColumn(name: "Legacy", table: "Bars"); migrationBuilder.DropTable(name: "Thing");
+EOF
+emit_tail "$F"; commit_case "$D"
+N="$(line_of "$F" 'DropColumn(name: "Legacy"')"
+# The marker's reason names Legacy and nothing else; it must not reach across to a DropTable nobody wrote a
+# sentence about. "One marker acknowledges one operation" is stated in five documents and was false here.
+expect_red "TWO operations on one line under one marker" "$D" \
+  "$MIG_REL/20260201000000_TwoOnOneLine.cs:$N  2 destructive operations on one line (DropTable, DropColumn)" \
+  basebranch
+
+D="$FIXTURES/twin-ops-one-line"; init_repo "$D"
+F="$D/$MIG_REL/20260201000000_Twins.cs"; emit_head "$F" Twins
+emit_body "$F" <<'EOF'
+            // destructive-migration: only Legacy is dual-written, v0.4.0.
+            migrationBuilder.DropColumn(name: "Legacy", table: "Bars"); migrationBuilder.DropColumn(name: "Scratch", table: "Bars");
+EOF
+emit_tail "$F"; commit_case "$D"
+N="$(line_of "$F" 'DropColumn(name: "Legacy"')"
+# The COUNT is the assertion here, not the refusal. A boolean `=~` reported these two as ONE, so the green
+# line's evidence undercounted in the quiet direction; `(DropColumn, DropColumn)` is what proves it counts
+# occurrences rather than distinct operation names.
+expect_red "two IDENTICAL operations on one line, which a boolean match counts once" "$D" \
+  "$MIG_REL/20260201000000_Twins.cs:$N  2 destructive operations on one line (DropColumn, DropColumn)" \
+  basebranch
+
+D="$FIXTURES/wrapped-paren"; init_repo "$D"
+F="$D/$MIG_REL/20260201000000_Wrapped.cs"; emit_head "$F" Wrapped
+emit_body "$F" <<'EOF'
+            migrationBuilder.DropColumn
+                (name: "Legacy", table: "Bars");
+EOF
+emit_tail "$F"; commit_case "$D"
+N="$(line_of "$F" 'migrationBuilder.DropColumn')"
+# Legal C#, and `dotnet format --verify-no-changes` reports NOTHING for it -- so unlike
+# `migrationBuilder . DropColumn (`, which Format catches with whitespace errors, this one had no backstop.
+expect_red "an operation whose ( sits on the NEXT line, which dotnet format does not object to" "$D" \
+  "$MIG_REL/20260201000000_Wrapped.cs:$N  DropColumn" basebranch
+
+D="$FIXTURES/sibling-member"; init_repo "$D"
+F="$D/$MIG_REL/20260201000000_Helper.cs"
+mkdir -p "$(dirname "$F")"
+cat > "$F" <<'EOF'
+using Microsoft.EntityFrameworkCore.Migrations;
+
+#nullable disable
+
+namespace MarqSpec.Mcp.TopstepX.Data.Migrations
+{
+    /// <inheritdoc />
+    public partial class Helper : Migration
+    {
+        /// <inheritdoc />
+        protected override void Up(MigrationBuilder migrationBuilder)
+        {
+            RetireLegacy(migrationBuilder);
+        }
+
+        /// <inheritdoc />
+        protected override void Down(MigrationBuilder migrationBuilder)
+        {
+            migrationBuilder.AddColumn<string>(name: "Legacy", table: "Bars", nullable: true);
+        }
+
+        private static void RetireLegacy(MigrationBuilder migrationBuilder)
+        {
+            migrationBuilder.DropTable(name: "PriceLevels");
+        }
+    }
+}
+EOF
+commit_case "$D"
+N="$(line_of "$F" 'DropTable(name: "PriceLevels")')"
+# The helper sits AFTER Down(), so this pins the END of the Down() body as well as the start: if the member
+# boundary stopped being found, Down() would run to EOF and swallow the helper again.
+expect_red "an operation in a SIBLING member, reached from Up() and written outside it" "$D" \
+  "$MIG_REL/20260201000000_Helper.cs:$N  DropTable" basebranch
+
+D="$FIXTURES/lone-semicolon"; init_repo "$D"
+F="$D/$MIG_REL/20260201000000_LoneSemi.cs"; emit_head "$F" LoneSemi
+emit_body "$F" <<'EOF'
+            migrationBuilder.Sql(@"
+                UPDATE ""Bars"" SET ""Legacy2"" = NULL
+            ")
+            ;
+            migrationBuilder.DropColumn(name: "Legacy2", table: "Bars");
+EOF
+emit_tail "$F"; commit_case "$D"
+N="$(line_of "$F" 'DropColumn(name: "Legacy2"')"
+# The Sql( region used to close on the FIRST `);` it saw. With the `;` on a line of its own that was the
+# DropColumn's own closer, so the region swallowed the call and pass 3 skipped it as region-interior.
+expect_red "an operation swallowed by a Sql( region whose ; sits on its own line" "$D" \
+  "$MIG_REL/20260201000000_LoneSemi.cs:$N  DropColumn" basebranch
+
+# gh#529 review N2. These two rode the same loop as the five operations above and appeared in this file only
+# as ledger PROSE, so removing them from OPS reddened nothing -- an unpinned entry in a list is how the next
+# edit quietly shortens the list.
+D="$FIXTURES/bare-dropschema"; init_repo "$D"
+F="$D/$MIG_REL/20260201000000_DropSch.cs"; emit_head "$F" DropSch
+emit_body "$F" <<'EOF'
+            migrationBuilder.DropSchema(name: "archive");
+EOF
+emit_tail "$F"; commit_case "$D"
+N="$(line_of "$F" 'DropSchema(name: "archive")')"
+expect_red "an unacknowledged DropSchema" "$D" \
+  "$MIG_REL/20260201000000_DropSch.cs:$N  DropSchema" basebranch
+
+D="$FIXTURES/bare-dropsequence"; init_repo "$D"
+F="$D/$MIG_REL/20260201000000_DropSeq.cs"; emit_head "$F" DropSeq
+emit_body "$F" <<'EOF'
+            migrationBuilder.DropSequence(name: "BarIds");
+EOF
+emit_tail "$F"; commit_case "$D"
+N="$(line_of "$F" 'DropSequence(name: "BarIds")')"
+expect_red "an unacknowledged DropSequence" "$D" \
+  "$MIG_REL/20260201000000_DropSeq.cs:$N  DropSequence" basebranch
+
 D="$FIXTURES/no-up"; init_repo "$D"
 F="$D/$MIG_REL/20260201000000_Handwritten.cs"
 mkdir -p "$(dirname "$F")"
@@ -644,13 +772,37 @@ ok "ok  $cases self-test cases — check-migrations-additive.sh rejects each des
 # |   |                                                     | because the DROP line inside the literal is then   |
 # |   |                                                     | reported separately and carries no marker of its   |
 # |   |                                                     | own. A false POSITIVE is what this decision stops. |
-# | 8 | `DropSchema` and `DropSequence` removed from `OPS`  | **0. SURVIVOR.** See below.                        |
+# | 8 | `DropSchema` and `DropSequence` removed from `OPS`  | **0 at the time. SURVIVOR, now CLOSED** -- see    |
+# |   |                                                     | "an unacknowledged DropSchema" and "... DropSequence" |
 #
-# **MUTANT 8 SURVIVED, and that is recorded rather than repaired.** No case pins those two list entries: they
-# ride the same loop, the same `$CALL` suffix and the same `report` as the five operations that five cases do
-# pin, so a case each would pin the LIST ENTRY and nothing else. That is a real, named gap in this table --
-# add a fixture if either ever stops being reachable by the same loop. **A surviving mutant is the honest
-# output of a sweep**; a sweep with no survivors usually means the sweep was too timid.
+# **MUTANT 8 SURVIVED THE FIRST SWEEP, and the gap it named is now closed.** Those two list entries were
+# pinned by nothing: they ride the same loop and the same `$CALL` suffix as the five operations that five
+# cases do pin, so the argument was that a case each would pin the LIST ENTRY and nothing else. Review's
+# answer is the right one — **a list entry is exactly the thing that needs pinning**, because an unpinned
+# entry in a list is how the next edit quietly shortens the list, and the two cases cost six lines each.
+# The row is kept rather than deleted: **a surviving mutant is the honest output of a sweep**, and the
+# record of one having survived is worth more than a table that looks as though none ever did.
+#
+# SECOND SWEEP (gh#529 review round two). Four fixes, each reverted on the SHIPPING blob and the suite
+# re-run, so these rows have none of the first sweep's provenance caveat. Every one of the four shapes
+# compiles and passes `dotnet format --verify-no-changes`, which is what makes them worth a fixture apiece:
+#
+# | Fix reverted                                          | Cases that went red                                |
+# |-------------------------------------------------------|----------------------------------------------------|
+# | `$CALL`'s end-of-line arm (B2)                        | "an operation whose ( sits on the NEXT line"       |
+# | the `Sql(` region pair (B4) -- lone-`;` close AND     | "an operation swallowed by a Sql( region whose ;   |
+# |   the operation needles running inside a region        |   sits on its own line"                            |
+# | `scanned()`'s after-`Down()` arm (B3)                 | "an operation in a SIBLING member"                 |
+# | `adjudicate`'s `count -gt 1` refusal (B1)             | "TWO operations on one line" AND "two IDENTICAL …" |
+# | `count_matches` made boolean again (B1's other half)  | "two IDENTICAL operations on one line"             |
+#
+# **The B4 row reverts TWO changes together and is labelled a conjunction deliberately.** Either one alone
+# catches that shape — the region now closes on a lone `;`, *and* the operation needles run inside a region
+# — so neither half is pinned by that case on its own. That is platform.md's "refused by the conjunction,
+# pinned by neither", named here rather than left for the next reader to discover. The last two rows are the
+# opposite and are worth the contrast: B1's refusal and B1's counting are separable, and the two cases
+# separate them — delete the refusal and both one-line cases go red, make the match boolean again and only
+# the identical-operations case does.
 #
 # NOT MUTATED -- claimed as exercised, never as pinned
 #
@@ -667,7 +819,9 @@ ok "ok  $cases self-test cases — check-migrations-additive.sh rejects each des
 #   - `$SQL_CALL_RE` / `$STATEMENT_END_RE` ........... "a multi-line Sql() whose DROP is three lines below"
 #   - the three SQL needles, individually ............ one case each, matching the printed label
 #   - `nocasematch` .................................. "a LOWERCASE truncate"
-#   - `OPS` DropTable/DropColumn/Rename*/AlterColumn .. one case each, matching the printed operation
+#   - `OPS`, every entry ........................... one case each, matching the printed operation --
+#                                                      `DropSchema` and `DropSequence` included since the
+#                                                      first sweep found them pinned by nothing
 #   - `$MARKER_RE`'s non-empty-reason requirement .... "a marker with NO reason"
 #   - the `files_read -eq 0` early green ............. "a branch that touches no migration at all"
 #   - the untracked read ............................. case 8, plus the real-tree pair quoted above

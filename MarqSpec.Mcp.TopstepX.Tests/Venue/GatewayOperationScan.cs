@@ -44,12 +44,25 @@ namespace MarqSpec.Mcp.TopstepX.Tests.Venue;
 /// what any other instruction <i>computes</i> — only how many slots it moves.
 /// </para>
 /// <para>
+/// <b>The walk is linear, so a slot that two paths can fill is treated as unknown.</b> This is the second
+/// correction the review forced and the second false green of the same family: <c>name ?? VenueOperation
+/// .GetAccounts</c> lowers to <c>dup; brtrue L; pop; ldstr "get_accounts"; L:</c> with <i>no</i>
+/// <c>br</c> in it, so nothing emptied the stack and the walk carried the fallback literal into the operation
+/// slot — answering <c>get_accounts</c> for a call site that names <c>"list_accounts"</c> on its other path.
+/// The rule now is that reaching any offset something can branch to (see <see cref="BranchTargets"/>) keeps
+/// the slot <i>count</i>, which the runtime guarantees, and forgets the slot <i>contents</i>, which only one
+/// followed path could have supplied. A ternary, an interpolated string and a <c>switch</c> expression in the
+/// operation position are the same mechanism and refuse for the same reason.
+/// </para>
+/// <para>
 /// <b>What it decides, exactly.</b> For every <see cref="VenueCallGuard.RunAsync{T}"/> call site in the type,
-/// it answers with the string literal in the operation position. So the set it returns <i>is</i> the set of
-/// operation strings the gateway names, and comparing that set to the vocabulary decides both directions —
-/// a name the vocabulary does not know, and a vocabulary value nothing names. It does <b>not</b> decide the
-/// case where the operation is not a literal at all: a call site that forwards a parameter or a field is
-/// reported as a failure rather than answered, because the scan cannot see through it.
+/// it either answers with the single string literal standing in the operation slot, or refuses. So the set it
+/// returns <i>is</i> the set of operation strings named by the call sites it could read, and — because a call
+/// site it could not read is a failure rather than an omission — comparing that set to the vocabulary decides
+/// both directions: a name the vocabulary does not know, and a vocabulary value nothing names. It decides
+/// <b>nothing</b> about an operation that is not one literal in the argument itself: a value forwarded from a
+/// parameter or a field, or one that can arrive from more than one path, is reported as unreadable rather
+/// than answered, because the scan cannot see through either.
 /// </para>
 /// <para>
 /// <b>It fails when it finds nothing, and when it loses its place.</b> An unreadable opcode, an unresolvable
@@ -147,9 +160,19 @@ internal static class GatewayOperationScan
         // and a catch or filter starts with the exception object on it.
         Dictionary<int, int> blockStarts = BlockStarts(body);
 
+        // Every offset some instruction can jump to. Reaching one means two paths meet here and this walk
+        // followed only one of them, so what the slots HOLD is no longer knowable -- see Blur.
+        HashSet<int> joins = BranchTargets(il);
+
         // One entry per stack slot: the literal that produced it, or null for everything else. Only the
         // COUNT has to be right for the arguments to line up; the values are what makes an answer possible.
         List<string?> stack = [];
+
+        // Whether control flow has met or left mid-expression -- with slots still on the stack -- since the
+        // stack was last empty. A ternary or an interpolated string in an ARGUMENT does that, and no linear
+        // walk can know the depth on the other side of it, so this is what tells a depth mismatch below
+        // whether the walk lost its place or the argument list contained a branch.
+        bool branchedMidExpression = false;
         int offset = 0;
 
         while (offset < il.Length)
@@ -161,6 +184,11 @@ internal static class GatewayOperationScan
                 {
                     stack.Add(null);
                 }
+            }
+            else if (joins.Contains(offset))
+            {
+                branchedMidExpression |= stack.Count > 0;
+                Blur(stack);
             }
 
             OpCode code = Read(il, ref offset);
@@ -184,7 +212,7 @@ internal static class GatewayOperationScan
 
                 if (!constructing && IsGuard(callee))
                 {
-                    named.Add(OperationAt(stack, type, method));
+                    named.Add(OperationAt(stack, type, method, branchedMidExpression));
                 }
 
                 Move(stack, pop, push, literal: null);
@@ -193,11 +221,19 @@ internal static class GatewayOperationScan
             {
                 // After a return, a throw, or an unconditional transfer, the next instruction linearly is the
                 // start of another block, and the stack this walk was carrying belongs to neither.
+                branchedMidExpression |= stack.Count > 0;
                 stack.Clear();
             }
             else
             {
                 Move(stack, PopCount(code, type, method), PushCount(code, type, method), literal: null);
+            }
+
+            // An empty stack is a statement boundary, and whatever the control flow did inside the last one
+            // cannot reach across it.
+            if (stack.Count == 0)
+            {
+                branchedMidExpression = false;
             }
 
             offset += OperandSize(code, il, offset);
@@ -208,11 +244,19 @@ internal static class GatewayOperationScan
     /// <param name="stack">The tracked stack, with the receiver and three arguments on top.</param>
     /// <param name="type">The type, for the message.</param>
     /// <param name="method">The method, for the message.</param>
+    /// <param name="branchedMidExpression">
+    /// Whether control flow met or left mid-expression since the stack was last empty — which is what a
+    /// ternary or an interpolated string inside the argument list looks like from here.
+    /// </param>
     /// <returns>The operation literal.</returns>
     /// <exception cref="InvalidOperationException">
     /// The operation is not a literal, or the tracked depth is not what a guard call must look like.
     /// </exception>
-    private static string OperationAt(List<string?> stack, Type type, MethodBase method)
+    private static string OperationAt(
+        List<string?> stack,
+        Type type,
+        MethodBase method,
+        bool branchedMidExpression)
     {
         string where = type.Name + "." + method.Name;
 
@@ -220,8 +264,15 @@ internal static class GatewayOperationScan
         {
             throw new InvalidOperationException(
                 $"{where} calls VenueCallGuard.RunAsync with {stack.Count} tracked stack slot(s) beneath it "
-                + $"where {GuardCallSlots} are required (the receiver and three arguments). The scan has lost "
-                + "its place in this body rather than found a defect in it.");
+                + $"where {GuardCallSlots} are required (the receiver and three arguments). "
+                + (branchedMidExpression
+                    ? "CONTROL FLOW BRANCHED INSIDE THIS ARGUMENT LIST -- a ternary or an interpolated "
+                    + "string in one of the arguments -- and no linear walk can know the depth on the other "
+                    + "side of it, so the scan refuses rather than reading whichever slot it happens to be "
+                    + "pointing at. THIS IS NOT ITSELF A DEFECT IN THE OPERATION NAME: name the operation as "
+                    + "one `VenueOperation` constant in the argument itself, computing anything else into a "
+                    + "local first."
+                    : "The scan has lost its place in this body rather than found a defect in it."));
         }
 
         // An integrity check on the depth tracking itself: the receiver is `ldfld _calls`, so its slot can
@@ -236,13 +287,17 @@ internal static class GatewayOperationScan
 
         return stack[^OperationFromTop]
             ?? throw new InvalidOperationException(
-                $"{where} calls VenueCallGuard.RunAsync with an operation that is NOT A STRING LITERAL -- it "
-                + "is forwarded from a parameter, a field or a computed value, so this scan cannot say which "
-                + "operation it is. THIS IS NOT ITSELF A DEFECT IN THE OPERATION NAME. It is most often a "
-                + "private forwarding helper, and the reason it fails is that every call site behind such a "
-                + "helper would otherwise go unscanned and unchecked: route the guard call through "
-                + "`_calls.RunAsync(VenueOperation.X, ...)` at each site, or teach this scan to follow the "
-                + "helper's own parameter.");
+                $"{where} calls VenueCallGuard.RunAsync with an operation this scan cannot read as a single "
+                + "string literal, so it cannot say which operation the call site names. THIS IS NOT ITSELF "
+                + "A DEFECT IN THE OPERATION NAME -- the two causes are: (a) the operation is FORWARDED from "
+                + "a parameter or a field, which is what a private guarding helper does; or (b) it ARRIVES "
+                + "FROM MORE THAN ONE PATH -- `a ?? VenueOperation.X`, a ternary, an interpolated string, a "
+                + "`switch` expression -- where the literal this walk happened to follow is only one of the "
+                + "values that can reach the call. Both have to fail: a helper hides every call site behind "
+                + "it, and a join hides every branch but one, and answering from either is how "
+                + "`name ?? VenueOperation.GetAccounts` reported `get_accounts` for a site that also names "
+                + "`\"list_accounts\"` (PR #575 review). Name the operation as one `VenueOperation` constant "
+                + "in the argument itself, or teach this scan to follow the shape you need.");
     }
 
     /// <summary>Applies one instruction's effect to the tracked stack.</summary>
@@ -261,6 +316,79 @@ internal static class GatewayOperationScan
         {
             stack.Add(literal);
         }
+    }
+
+    /// <summary>Forgets what the tracked slots hold, keeping how many there are.</summary>
+    /// <param name="stack">The tracked stack.</param>
+    /// <remarks>
+    /// <b>At a join, the depth is still knowable and the contents are not.</b> Both paths into a label leave
+    /// the same number of slots — the runtime requires it — but this walk followed one of them, so whatever
+    /// literal it is carrying is only one of the values that can arrive here. Blurring turns that into "not a
+    /// literal", which makes a guard call beneath a join <i>refuse</i> rather than answer.
+    /// <para>
+    /// <b>This is the fix for <c>name ?? VenueOperation.GetAccounts</c></b>, which C# lowers to
+    /// <c>dup; brtrue L; pop; ldstr "get_accounts"; L:</c> — with no <c>br</c> anywhere, so nothing emptied
+    /// the stack and a linear walk carried the <i>fallback</i> literal into the operation slot and answered
+    /// <c>get_accounts</c> for a call site that names <c>"list_accounts"</c> on its other path. Blurring at
+    /// <c>L</c> is what turns that back into a refusal (PR #575 review). The same rule covers a ternary, an
+    /// interpolated string and a <c>switch</c> expression in the operation position, which are joins by the
+    /// same mechanism.
+    /// </para>
+    /// </remarks>
+    private static void Blur(List<string?> stack)
+    {
+        for (int slot = 0; slot < stack.Count; slot++)
+        {
+            stack[slot] = null;
+        }
+    }
+
+    /// <summary>Every offset in a body that some instruction can branch to.</summary>
+    /// <param name="il">The method body.</param>
+    /// <returns>The join points.</returns>
+    /// <remarks>
+    /// A separate pass because a target may be behind the walk as well as ahead of it, and the second pass
+    /// has to know about both before it reaches either.
+    /// </remarks>
+    private static HashSet<int> BranchTargets(byte[] il)
+    {
+        HashSet<int> targets = [];
+        int offset = 0;
+
+        while (offset < il.Length)
+        {
+            OpCode code = Read(il, ref offset);
+            int operand = offset;
+            int size = OperandSize(code, il, operand);
+            int next = operand + size;
+
+            switch (code.OperandType)
+            {
+                case OperandType.ShortInlineBrTarget:
+                    targets.Add(next + (sbyte)il[operand]);
+                    break;
+
+                case OperandType.InlineBrTarget:
+                    targets.Add(next + BitConverter.ToInt32(il, operand));
+                    break;
+
+                case OperandType.InlineSwitch:
+                    int cases = BitConverter.ToInt32(il, operand);
+                    for (int index = 0; index < cases; index++)
+                    {
+                        targets.Add(next + BitConverter.ToInt32(il, operand + 4 + (index * 4)));
+                    }
+
+                    break;
+
+                default:
+                    break;
+            }
+
+            offset = next;
+        }
+
+        return targets;
     }
 
     /// <summary>Whether an instruction leaves the following one at the start of a new block.</summary>
@@ -288,8 +416,12 @@ internal static class GatewayOperationScan
         {
             starts[clause.TryOffset] = 0;
 
-            // A catch or a filter is entered with the exception object already on the stack.
-            starts[clause.HandlerOffset] = clause.Flags == ExceptionHandlingClauseOptions.Clause ? 1 : 0;
+            // A catch handler, a filter block AND a filter's handler are each entered with the exception
+            // object already on the stack; a finally or fault handler is entered with an empty one.
+            bool carriesTheException =
+                clause.Flags is ExceptionHandlingClauseOptions.Clause or ExceptionHandlingClauseOptions.Filter;
+
+            starts[clause.HandlerOffset] = carriesTheException ? 1 : 0;
 
             if (clause.Flags == ExceptionHandlingClauseOptions.Filter)
             {

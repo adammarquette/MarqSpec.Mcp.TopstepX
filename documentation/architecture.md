@@ -696,11 +696,13 @@ a vendor rename cannot silently retire a series. **That it stays closed is asser
 compiled body**, not against a list beside the test: `VenueCallGuardTests` walks `ProjectXMarketDataGateway`'s
 IL — the state machines its `async` methods compile into included — and reads the string literal **in the
 operation argument's own stack slot** at every `VenueCallGuard.RunAsync` call site, tracking depth from each
-instruction's stack behaviour rather than searching near the call. So the set it returns *is* the set of
-operation strings the gateway names, and comparing it to the vocabulary fails in both directions: an invented
-literal in that position, and a vocabulary value no call site names. An operation that is **not** a literal —
-forwarded through a parameter, as a private helper would do — is reported as unreadable rather than answered,
-because every call site behind such a helper would otherwise go unscanned (gh#559).
+instruction's stack behaviour rather than searching near the call. **Every call site is either answered or
+refused**, never skipped: a slot two paths can fill is treated as unknown, so an operation forwarded from a
+parameter (a private guarding helper) or arriving through `??`, a ternary, an interpolated string or a
+`switch` expression fails rather than being read from whichever branch the linear walk happened to follow. So
+the set it returns *is* the set of operation strings the gateway names, and comparing it to the vocabulary
+fails in both directions: an invented literal in that position, and a vocabulary value no call site names
+(gh#559).
 
 Two spans sit under the SDK's `tools/call`: **`venue.<operation>`** per vendor request and
 **`cache.<series>`** per cache-aside read, which is what makes a slow tool call legible as *where* the time

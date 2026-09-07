@@ -308,10 +308,11 @@ session still in progress: the trade dates are walked off the session calendar, 
 disowns never enters the read, and a window entirely in the past never carries one.
 
 **Only sessions lying WHOLLY inside the window are returned**, so read the edges as inclusive of whole
-sessions only — a session the window clips is left out, not reported short. Of the trade dates whose whole
-session lies inside the window, one in **neither** list is **not a trading day**. A Saturday or a holiday can
-never be asked for here at all, because the ask is a calendar walk over the dates that carry a session — so a
-calendar day in neither list is one the calendar says did not trade, never a gap this server dropped.
+sessions only — a session the window clips is left out, not reported short. **A trade date the window
+WHOLLY CONTAINS that appears in neither list did not trade**; a date whose session the window clips is in
+neither list because it was never asked for. Nothing else lands there: the ask is a calendar walk over the
+dates that carry a session, so a Saturday or a holiday is never asked for either, and neither list ever
+silently drops a date this server did ask about.
 
 `contracts` is built from the session bars' own contract ids, and **each session bar comes from exactly
 one** — a session whose base bars disagreed is `absent` with `SpansRoll` rather than spliced. So a roll falls
@@ -326,15 +327,26 @@ it says provenance was never recorded. A session with no provenance is a `Proven
 
 | Field | Answers | Zero means |
 |---|---|---|
-| `venueRequests` | did this call **fetch base bars**? | **no bar fetch** — the exact test for an answer served entirely from the store |
+| `venueRequests` | did this call **fetch base bars**? | **no bar fetch** — the exact test for that, and the one to use |
 | `fetchedBuckets` | how much did the answer change the store? | only that nothing was *written* |
+
+**`venueRequests == 0` is narrower than "the vendor went untouched", and a session read is the case where
+that matters most.** Since gh#504 a read whose gaps the empty-range memo covers still resolves the
+instrument's contract candidates first, and that `Contract/search` is unpaced and not counted in
+`venueRequests` — so a settled session read is **venue-dependent**: with the venue down it raises rather than
+answering from the store. The covering window spans the overnight, so a warm session read is exactly that
+read. The zero proves **no bars were fetched**, which is the test to use, and nothing more; the miscount runs
+the same way as `fetchedBuckets`' — it undercounts venue traffic and never overcounts it.
 
 The service opens no fetch of its own, but it makes **one covering base read** — the first session's open to
 the last one's close, the overnight between them included — and that path is cache-aside, so a cold window
-pays the base series' ordinary fetch. A repeat is not immediately free: the read **settles to a store-only
-answer once the base ledger has recorded the venue's empty ranges**, and the ranges the venue answers empty
-are only discovered on the read *after* the one that filled the bars
-([ADR-0022](adr/0022-session-bars-derived-complete-or-absent.md), the 2026-09-07 update).
+pays the base series' ordinary fetch. **A repeat is not immediately free, and it takes three reads rather
+than two.** The first fetches: the cold covering window is one contiguous missing range, the venue answers it
+*with bars*, and a non-empty answer memoises nothing. The second is what discovers the ranges the venue has
+no bars for — the overnight legs, and any bucket the venue simply does not have — asks for each, and records
+them as covered. The third is the one served from the store. So the read **settles to a store-only answer
+once the base ledger has recorded the venue's empty ranges**, which is one read later than a caller expects
+([ADR-0022](adr/0022-session-bars-derived-complete-or-absent.md), the 2026-09-07 updates).
 
 **Refused rather than truncated**, in this order, and every refusal is decided before the store or the venue
 is touched:
@@ -372,7 +384,8 @@ Refused, in this order, and again before any read:
 
 **The last of those is not the row cap restated.** A `count` well inside `MaxRows` can still span more base
 buckets than a single pass enumerates — around 3,720 `rth` sessions at a 30-minute base, well under the
-default 5,000 rows — and before gh#500 that faulted below the boundary after the store had been opened.
+default 5,000 rows — and without that last check it would fault inside `BarGapDetector.ExpectedBuckets`
+after the store had been opened.
 
 ### `get_indicators(symbol, resolutionMinutes, indicator, fromUtc, toUtc, period?)`
 A stored indicator series, **filled on demand from bars this server already holds**.

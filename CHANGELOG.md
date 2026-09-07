@@ -38,10 +38,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   against the calendar horizon, then against `BarGapDetector.MaxBucketsPerPass` counted in **base** buckets,
   then against the row cap on trade dates; a count is checked against `MaxRows`, then the horizon, then the
   bounded closed-session walk of four calendar days per session plus fifteen, then the same base-bucket cap
-  over the covering window it would read. `fetchedBuckets` and `venueRequests` are the base series' numbers
-  and `venueRequests == 0` is the exact test for an answer served entirely from the store; a repeat read
-  settles to a store-only answer once the base ledger has recorded the venue's empty ranges, which is the
-  read after the one that filled the bars. The
+  over the covering window it would read. `fetchedBuckets` and `venueRequests` are the base series' numbers,
+  and `venueRequests == 0` is the exact test that **no bars were fetched** rather than that the vendor went
+  untouched — a read whose gaps the coverage ledger covers still resolves the instrument's contract list, so
+  it is venue-dependent and raises with the venue down (gh#504), and a session read's covering window spans
+  the overnight so the warm path is always that case. **A repeat is not free until the third read**: the
+  first fetches the bars, the second discovers and memoises the ranges the venue has none for, and the third
+  is the one served from the store. The
   [tool catalogue](documentation/mcp-tool-catalog.md), the PRD (`R-1.13`, `R-5.11`), the
   [architecture doc](documentation/architecture.md)'s *session read* section and
   [ADR-0022](documentation/adr/0022-session-bars-derived-complete-or-absent.md) — which gains a dated update

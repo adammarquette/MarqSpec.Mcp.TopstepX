@@ -225,9 +225,15 @@ public static class ToolPayloads
     /// </param>
     /// <param name="FetchedBuckets">
     /// How many base buckets this call wrote or revised. Zero does not prove the read was free; the exact
-    /// test for "served entirely from the store" is <c>venueRequests == 0</c>.
+    /// test for <i>no bar fetch</i> is <c>venueRequests == 0</c>, on the same terms and with the same
+    /// narrowness as <see cref="BarSeries.FetchedBuckets"/>.
     /// </param>
-    /// <param name="VenueRequests">How many requests reached the venue.</param>
+    /// <param name="VenueRequests">
+    /// How many history requests — bar fetches — reached the venue. Zero is narrower than "the vendor went
+    /// untouched": since gh#504 a read the empty-range memo covers still resolves the instrument's contract
+    /// candidates, which this does not count, so a settled read is still venue-dependent. A session read is
+    /// always that case once warm, its covering window spanning the overnight.
+    /// </param>
     /// <param name="Contracts">
     /// Which contracts produced these sessions. Each session bar comes from exactly one — a session whose
     /// base bars disagreed is <c>absent</c> rather than spliced — so a roll here falls <i>between</i> two

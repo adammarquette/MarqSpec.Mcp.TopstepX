@@ -104,8 +104,9 @@ The server serves OHLCV bars for a futures instrument at a requested resolution 
   read returns one row per trade date whose **whole** session lies inside the window — a session the window
   clips is left out rather than reported short — and every trade date it names arrives in exactly one of two
   lists: the bar, or an absence carrying its reason and its expected and missing base-bucket counts
-  (`R-1.12`). Among the trade dates a window wholly contains, one in **neither** list is a day the calendar
-  carries no session on — a non-trading day, and never a silent gap. Two caps bound the read and each refuses
+  (`R-1.12`). A trade date the window **wholly contains** that appears in neither list **did not trade**; a
+  date whose session the window clips is in neither list because it was never asked for, and a date this
+  server did ask about is never silently dropped from both. Two caps bound the read and each refuses
   naming the real number rather than shortening the series: the row cap on trade dates, and the gap
   detector's buckets-per-pass cap counted in the session's **base** buckets, the ones a session bar is
   derived from rather than the sessions themselves. A read anchored on a count of the most recent sessions is
@@ -370,8 +371,10 @@ The server serves OHLCV bars for a futures instrument at a requested resolution 
   refuse rather than truncate (`R-1.13`), and `contracts` is built from each session bar's single contract
   id, so a roll falls **between** two trade dates and never inside one (`R-1.11`); `contracts.span` reads
   `Unknown` only when no session bar could be built at all. `fetchedBuckets` and `venueRequests` are the
-  **base** series' numbers, and `venueRequests == 0` is the exact test for an answer served entirely from the
-  store (`R-1.3`). See [ADR-0022](adr/0022-session-bars-derived-complete-or-absent.md) (gh#496, gh#500).
+  **base** series' numbers, and `venueRequests == 0` is the exact test that **no bars were fetched** (`R-1.3`)
+  — not that the vendor went untouched: a read whose gaps the coverage ledger covers still resolves the
+  instrument's contract list, so it is venue-dependent and raises with the venue down (gh#504). See
+  [ADR-0022](adr/0022-session-bars-derived-complete-or-absent.md) (gh#496, gh#500).
 
 ## R-6 — Observations
 

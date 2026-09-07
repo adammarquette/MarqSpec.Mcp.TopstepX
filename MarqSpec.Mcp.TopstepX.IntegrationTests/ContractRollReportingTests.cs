@@ -165,6 +165,14 @@ public sealed class ContractRollReportingTests(SeriesStoreFixture fixture) : IAs
 
         series.Bars.Should().HaveCount(8, "the bars themselves are observations and are still returned");
         series.Contracts.Span.Should().Be(ToolPayloads.ContractSpan.SpansRoll);
+
+        // TWO INDEPENDENT FIELDS ON ONE PAYLOAD (gh#592). `contracts.span` answers whether these bars cross
+        // a roll; `history.selection` answers whether the contracts they were CHOSEN FROM were the ones the
+        // cycle names. This window proves a roll and says nothing about the choice, which is exactly the
+        // combination a caller would be unable to express if the second had been folded into the first.
+        series.History.Selection.Should().Be(HistorySelection.NotDecidedHere);
+        series.History.Unresolved.Should().BeEmpty();
+
         series.Contracts.Segments.Should().HaveCount(2);
         series.Contracts.Segments[0].ContractId.Should().Be(Expiring);
         series.Contracts.Segments[0].FirstBucket.Should().Be(Bucket(0));

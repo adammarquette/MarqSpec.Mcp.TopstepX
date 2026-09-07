@@ -148,6 +148,13 @@ The server serves OHLCV bars for a futures instrument at a requested resolution 
   constructed candidate is listed for** is the narrower case, and only it withholds the memo: that slice alone
   is fetched from `F`, with a **warning naming the range**, and **nothing permanent is recorded** about it
   being empty, so the next read asks again rather than inheriting a claim nobody could properly make.
+  **A candidate set the venue narrows rather than empties is the third shape, and every shape is reported to
+  the caller as well as to the log** (gh#592): the response carries `history.selection` —
+  `AsTheCycleNames`, `NarrowedByTheVenue`, `FellBackToTheFront`, or `NotDecidedHere` for a read that fetched
+  no history — beside `history.unresolved`, the expiries the venue did not list. It is **its own field, never
+  a value of `contracts.span`**, which answers the unrelated question of whether the bars cross a roll; and
+  `NotDecidedHere` is a statement about *this read* rather than a claim that the stored history is whole,
+  because nothing recorded about a stored bucket says which candidate set chose it.
   A read **never rewrites a bucket that already carries a contract**; replacing a run the policy would decide
   differently is an operator's verb, not a read's (gh#506). See
   [ADR-0020](adr/0020-historical-contract-selection.md) (gh#505, gh#497).

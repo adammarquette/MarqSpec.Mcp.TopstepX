@@ -55,7 +55,21 @@ public sealed class BarTools(
         + "carries `contracts`: bars are keyed by the symbol, so a window spanning a quarterly roll "
         + "contains TWO contracts. `contracts.span` is SingleContract, SpansRoll, or Unknown — Unknown "
         + "means the provenance was never recorded, NOT that there was no roll. Adjacent quarters do "
-        + "not trade at the same price; do not read a series across a roll as one.")]
+        + "not trade at the same price; do not read a series across a roll as one. "
+        + "`history.selection` is a SEPARATE question from `contracts.span` and must not be read as one of "
+        + "its values: span asks whether these bars cross a roll, history asks whether the contracts they "
+        + "were CHOSEN FROM were the ones this product's contract-month cycle names. A window can be "
+        + "SingleContract and still have been decided among survivors. AsTheCycleNames means every expiry "
+        + "the cycle named was listed by the vendor and the volume decision ran over all of them. "
+        + "NarrowedByTheVenue means the vendor did not list some of them, so the decision ran over what was "
+        + "left — the bars are a real series from a real contract, and when the only survivor was the "
+        + "vendor's own active contract that stretch is the thin, complete-looking series this selection "
+        + "exists to prevent you acting on. FellBackToTheFront is worse still: NONE of the cycle's expiries "
+        + "was listed, so no volume decision ran for that stretch at all. `history.unresolved` names the "
+        + "expiries that fell away, e.g. M26. NotDecidedHere means THIS call fetched no history — every "
+        + "bucket was already stored, or the window sits in the present band — and is NOT a statement that "
+        + "the stored history is whole: bars fetched by an earlier degraded read read back exactly like any "
+        + "other, and nothing recorded about them says otherwise.")]
     public async Task<ToolPayloads.BarSeries> GetBars(
         [Description("The instrument symbol, e.g. ES.")] string symbol,
         [Description("The bar size in minutes, e.g. 1, 5, 15, 60.")] int resolutionMinutes,
@@ -93,7 +107,9 @@ public sealed class BarTools(
     [McpServerTool(ReadOnly = true, Idempotent = true, Title = "Get latest bars")]
     [Description(
         "Reads the most recent closed bars for an instrument. Anchored on the last CLOSED bucket, never a "
-        + "forming one. This is usually the tool to reach for over get_bars, which needs explicit dates.")]
+        + "forming one. This is usually the tool to reach for over get_bars, which needs explicit dates. "
+        + "The response shape is get_bars', `contracts` and `history` included, and those two mean exactly "
+        + "what they mean there — read `history.selection` before treating a deep lookback as ordinary.")]
     public async Task<ToolPayloads.BarSeries> GetLatestBars(
         [Description("The instrument symbol, e.g. ES.")] string symbol,
         [Description("The bar size in minutes.")] int resolutionMinutes,

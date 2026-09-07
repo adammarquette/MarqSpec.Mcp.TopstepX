@@ -239,7 +239,8 @@ the boundary (gh#110).
 The workhorse. Cache-aside: served from the store, with only genuinely missing buckets fetched.
 
 Returns `{ symbol, resolutionMinutes, bars: [{ t, o, h, l, c, v }], fetchedBuckets, venueRequests,
-contracts: { span, segments: [{ contractId, firstBucket, lastBucket, barCount }] } }`.
+contracts: { span, segments: [{ contractId, firstBucket, lastBucket, barCount }] },
+history: { selection, unresolved: [expiryCode] } }`.
 
 `fetchedBuckets` and `venueRequests` are both in the response, and **they answer different questions.** Only
 one of them is evidence of a round trip.
@@ -283,6 +284,35 @@ band starts where the store's own run of the venue-front contract starts (`R-1.1
 claim, and it is the check for `R-1.3`. **There is no `fromCache`** — see the retractions at the foot of this
 page.
 
+#### `history` — which contracts the history was *chosen from* (`R-1.14`, gh#592)
+
+**A different question from `contracts.span`, and deliberately not one of its values.** `span` is about the
+bars: do they cross a roll, and can the store tell? `history.selection` is about the *choice that produced
+them*: were the contracts the volume decision ran over the ones the product's contract-month cycle names, or
+only the ones the vendor happened to list that minute? A window can be `SingleContract` and still have been
+decided among survivors — the two fields are independent, and folding one into the other would make two
+different unknowns indistinguishable, which is the failure `span`'s own `Unknown` exists to prevent.
+
+| `selection` | Means | What to do |
+|---|---|---|
+| `NotDecidedHere` | **This call fetched no history.** Every bucket was already stored, or the window sits in the present band, or the instrument carries no cycle. | Nothing — but do **not** read it as "the history is whole". See below. |
+| `AsTheCycleNames` | Every expiry the cycle named was listed, and the volume decision ran over all of them ([ADR-0020](adr/0020-historical-contract-selection.md) §2). | Read the series as ordinary. |
+| `NarrowedByTheVenue` | The vendor did not list some of them, so the decision ran over the survivors. | Treat that stretch as provisional. When the sole survivor was the vendor's own active contract it *is* the pre-ADR-0020 answer: a real, thin, complete-looking series from a contract nobody was trading. |
+| `FellBackToTheFront` | The vendor listed **none** of them, so no volume decision ran for that stretch at all. | Worse than narrowed. Nothing permanent is recorded about such a range, so a later read re-asks. |
+
+`history.unresolved` names the expiries that fell away — `["M26"]` — nearest first, once each however many
+slices dropped it. They are codes **this server constructed** from the cycle, never vendor text, which is what
+keeps them inside [ADR-0008](adr/0008-numeric-only-tool-payloads.md)'s closed vocabulary.
+
+**`NotDecidedHere` is not a clean bill of health, and this is the field's one sharp edge.** The narrowing is
+knowable only at the moment the fetch is planned: nothing in `Bars` records that a bucket was written under a
+narrowed candidate set, and [ADR-0020](adr/0020-historical-contract-selection.md) §5 forbids a read from
+re-deciding attributed history to work it out afterwards. So the *second* read of a window a degraded read
+filled reports `NotDecidedHere` — truthfully, because that read decided nothing — while the bars it returns
+are the degraded ones. Only `AsTheCycleNames` is a positive statement that a decision ran and ran whole.
+Repairing a run laid down by a degraded read is an operator's verb, `reselect-bars` (gh#506); making the store
+able to answer the question later would be a stored fact, an ADR and a migration, and is not this.
+
 **A cold wide window is slow on purpose.** The venue's history allowance is **50 requests per 30 seconds and
 it belongs to the whole process**, not to one call. Once this server has issued 50 history requests inside the
 last 30 seconds, further pages wait for the window to roll — so a cold year of five-minute bars carries about a
@@ -307,7 +337,8 @@ description trying to describe both.
 
 Returns `{ symbol, session, baseResolutionMinutes, bars: [{ tradeDate, t, closeUtc, o, h, l, c, v }],
 absent: [{ tradeDate, reason, expectedBuckets, missingBuckets }], fetchedBuckets, venueRequests,
-contracts: { span, segments: [{ contractId, firstBucket, lastBucket, barCount }] } }`.
+contracts: { span, segments: [{ contractId, firstBucket, lastBucket, barCount }] },
+history: { selection, unresolved: [expiryCode] } }`.
 
 `tradeDate` is the CME trade date and the key to join the two lists on. `t` is when the session opened — the
 same thing `t` means on every other series here — and `closeUtc` when it closed, exclusive, carried beside it

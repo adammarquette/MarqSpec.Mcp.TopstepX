@@ -99,7 +99,10 @@ candidates' volume with nothing pinned, rewrites the winner's buckets through th
 contract must not be reported as losing a bucket it never held — those carrying no contract at all. That last
 case is a real loss of a row written before this column existed and which the venue no longer answers for;
 it is bounded by the operator's window and by the trade date having been decided at all. `IndicatorValues`
-is re-projected in the same transaction, so nothing is left standing over a deleted bar.
+is re-projected in the same transaction, so nothing the projection walks is left standing over a deleted bar
+— **and it walks only the `(Indicator, Period)` pairs the catalogue currently computes** (§2, `R-2.8`). There
+is no foreign key between the two tables, so a value under a pair the catalogue was later reconfigured away
+from is orphaned by the delete and nothing here removes it: **gh#571**.
 
 **Deliberately no retention policy.** This is a record, not a pipeline.
 

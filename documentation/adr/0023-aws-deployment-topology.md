@@ -855,6 +855,35 @@ not a guard; what it guards against is the entry nobody listed* (PR #597 review)
 template, and that a span arrives in Tempo, is gh#537's deploy and belongs to gh#519 and gh#520. The `documentation/deployment.md` "Observability" section gh#537 asks for waits on gh#523, which has
 not created that file yet.
 
+## Update (2026-09-07) — staging's certificate is ordered behind its delegation, and the ordering is a test
+
+Decisions 1 and 2 are unchanged. This records a constraint their shape implies and which neither section
+states, found by auditing the synthesised templates rather than the C#.
+
+Under `ZoneMode.CreateAndDelegate` the stack creates three things: the zone, the `NS` delegation at the apex,
+and the ACM wildcard certificate DNS-validated *in that new zone*. In the template the certificate and the
+delegation were **siblings** — each carried one dependency edge, to the zone, and neither referenced the
+other — so CloudFormation was free to create them concurrently. When it does, CloudFormation writes ACM's
+validation record into a zone the apex does not yet point at, and ACM polls **public** DNS for it. Nothing
+bounds the wait: `AWS::CertificateManager::Certificate` blocks until validation succeeds and ACM does not
+give up for 72 hours, so a lost race is a stack sitting in `CREATE_IN_PROGRESS` rather than an error. Route 53
+propagates fast enough that the race is usually won, which is exactly why 142 template tests and four green
+`cdk synth` shapes never saw it. **Ask what a template does not say, not only what it asserts** — every other
+ordering here is implied by a `Ref` or `Fn::GetAtt` inside a property, and this one had nothing to be implied
+by.
+
+`EnvironmentStack` now adds the edge explicitly — `certificate.Node.AddDependency(delegation)`, in the
+`CreateAndDelegate` branch alone — and gh#588 asserts it **in both directions**: staging's certificate names
+the delegation in `DependsOn`, and production's names nothing, because a looked-up zone is already delegated
+and an edge there would be this fix leaking into the environment that must not carry it. `EnvironmentReuseTests`
+admits the new difference on its own terms rather than by exception: its zone-mode explanation accepts a
+`DependsOn` **whose value names the created zone or its delegation**, and no other.
+
+What this does not decide: the delegation record's `TTL`, which is the CDK default of `172800` — the two days
+a later change to the hostname spelling would have to wait out on any resolver that cached the `NS` set. That
+is one more reason gh#519 confirms `staging.` **before** the first `cdk deploy` rather than after it, and it
+is that card's to settle, not this entry's.
+
 ## Follow-ups
 
 - gh#516, gh#517, gh#518 build decisions 7, 9 and 8; gh#529 gates decision 4's rule. All four cite this

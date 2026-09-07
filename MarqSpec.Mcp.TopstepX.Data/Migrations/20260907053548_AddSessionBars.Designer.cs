@@ -13,7 +13,7 @@ using Pgvector;
 namespace MarqSpec.Mcp.TopstepX.Data.Migrations
 {
     [DbContext(typeof(TopstepXDbContext))]
-    [Migration("20260907010451_AddSessionBars")]
+    [Migration("20260907053548_AddSessionBars")]
     partial class AddSessionBars
     {
         /// <inheritdoc />
@@ -40,6 +40,10 @@ namespace MarqSpec.Mcp.TopstepX.Data.Migrations
                     b.Property<int>("ResolutionMinutes")
                         .HasColumnType("integer");
 
+                    b.Property<string>("ContractId")
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
                     b.Property<DateTimeOffset>("RangeStart")
                         .HasColumnType("timestamp with time zone");
 
@@ -52,9 +56,9 @@ namespace MarqSpec.Mcp.TopstepX.Data.Migrations
                     b.Property<DateTimeOffset>("RecordedAt")
                         .HasColumnType("timestamp with time zone");
 
-                    b.HasKey("Venue", "Instrument", "ResolutionMinutes", "RangeStart", "RangeEnd");
+                    b.HasKey("Venue", "Instrument", "ResolutionMinutes", "ContractId", "RangeStart", "RangeEnd");
 
-                    b.HasIndex("Instrument", "ResolutionMinutes", "RangeStart", "RangeEnd");
+                    b.HasIndex("Instrument", "ResolutionMinutes", "ContractId", "RangeStart", "RangeEnd");
 
                     b.ToTable("BarCoverage", (string)null);
                 });

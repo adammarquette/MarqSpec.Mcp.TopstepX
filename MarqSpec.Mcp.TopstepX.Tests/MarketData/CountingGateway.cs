@@ -60,7 +60,18 @@ public sealed class CountingGateway : IMarketDataGateway
     /// and it is what makes a candidate that was never listed distinguishable from one that simply had no
     /// trades.
     /// </para>
+    /// <para>
+    /// <b>The front must be one of the keys.</b> <see cref="ResolveContractsAsync"/> lists what it holds
+    /// front first by ordering on <see cref="IsFront"/>, so a front the dictionary does not hold leaves
+    /// every key tied: the sort is stable, and <c>contracts[0]</c> becomes whichever contract went in
+    /// first — a contract the test never named as the front, chosen by insertion order. A test built to
+    /// pin "the venue front is the thin one" would then pin nothing and pass or fail for an unrelated
+    /// reason. Refused here, while the double is still cheap to change.
+    /// </para>
     /// </remarks>
+    /// <exception cref="ArgumentException">
+    /// When <paramref name="frontContractId"/> is blank, or is not a key of <paramref name="byContract"/>.
+    /// </exception>
     public CountingGateway(IReadOnlyDictionary<string, IEnumerable<Bar>> byContract, string frontContractId)
     {
         ArgumentNullException.ThrowIfNull(byContract);
@@ -75,6 +86,16 @@ public sealed class CountingGateway : IMarketDataGateway
             }
 
             _byContract[contractId] = series;
+        }
+
+        if (!_byContract.ContainsKey(frontContractId))
+        {
+            throw new ArgumentException(
+                "The front contract '" + frontContractId + "' is not one this gateway holds. It holds: "
+                + string.Join(", ", _byContract.Keys)
+                + ". A front that is not a key is never listed first, so contracts[0] would silently be "
+                + "another contract.",
+                nameof(frontContractId));
         }
 
         _frontContractId = frontContractId;

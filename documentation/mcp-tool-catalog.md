@@ -508,8 +508,10 @@ dropped when there is nothing to report, and a caller testing `reading.value ===
 recorded — so an absent one is never evidence that two readings share a contract. It used to have a **third**,
 undocumented one: the bar itself was gone, and the reading was a number nothing could reproduce (a measured
 `65.32947503` with `contract: null`). That case is now cannot-measure instead, and the read falls back to the
-newest bucket a bar still accounts for (`R-2.14`, gh#577), so an absent `contractId` again means only what
-this paragraph says it means.
+newest bucket a bar still accounts for (`R-2.14`, gh#577). The third reason is **narrowed rather than
+eliminated**: the value and its contract are two statements, so a bar deleted between them still yields the
+number with a null contract — reachable now only by interleaving with a single read, where it used to be the
+standing answer for as long as the orphaned rows stood.
 
 **`get_market_snapshot` returns this same reading**, as the value of each entry in its `indicators{}` map
 (gh#286) — with one difference the container forces: there, cannot-measure is the map's own `null` rather

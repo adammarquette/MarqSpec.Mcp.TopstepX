@@ -52,7 +52,12 @@ public sealed class StoreAvailability
     /// <summary>
     /// The store could not be reached.
     /// </summary>
-    /// <param name="detail">The underlying reason, already reduced to one line.</param>
+    /// <param name="detail">
+    /// The underlying reason, already reduced to one line. This becomes part of <see cref="Explanation"/>,
+    /// which <see cref="Require"/> turns into an <see cref="McpException"/> — so <b>never pass the connection
+    /// target here</b>. Host, port, database and user belong only in whatever the caller logs alongside the
+    /// returned marker; <see cref="StoreStartup.ReachAsync"/> is the reference for the split (gh#551).
+    /// </param>
     /// <returns>An unavailable marker carrying an actionable explanation.</returns>
     public static StoreAvailability Unavailable(string detail) =>
         new(

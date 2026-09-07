@@ -155,14 +155,24 @@ public static class StoreStartup
 
         // One line, not a stack trace. This is the first thing a new operator meets, and the stack trace it
         // used to print named a socket rather than the thing they need to do.
-        StoreAvailability unavailable = StoreAvailability.Unavailable(
-            wait <= TimeSpan.Zero
-                ? string.Create(CultureInfo.InvariantCulture, $"Nothing answered at {target}.")
-                : string.Create(
-                    CultureInfo.InvariantCulture,
-                    $"Nothing answered at {target} after {attempts} attempts over {wait.TotalSeconds:0} s."));
+        //
+        // The target reaches only THIS log line, never StoreAvailability.Explanation: Require() turns
+        // Explanation into an McpException, so anything folded into it reaches every bearer-token holder, not
+        // only whoever is reading the log. Under stdio that is the same person; under ADR-0021's non-loopback
+        // instance it is not, and a token holder learning the database's host, port, name and username was
+        // review-caught on PR #548 and tracked as gh#551.
+        string attemptNoun = attempts == 1 ? "attempt" : "attempts";
 
-        logger.LogWarning("{Explanation}", unavailable.Explanation);
+        string logDetail = wait <= TimeSpan.Zero
+            ? string.Create(CultureInfo.InvariantCulture, $"Nothing answered at {target}.")
+            : string.Create(
+                CultureInfo.InvariantCulture,
+                $"Nothing answered at {target} after {attempts} {attemptNoun} over {wait.TotalSeconds:0} s.");
+
+        StoreAvailability unavailable = StoreAvailability.Unavailable(
+            "The store did not answer within the configured wait.");
+
+        logger.LogWarning("{LogDetail} {Explanation}", logDetail, unavailable.Explanation);
 
         return unavailable;
 

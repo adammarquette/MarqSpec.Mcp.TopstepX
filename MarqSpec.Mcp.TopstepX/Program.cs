@@ -820,6 +820,13 @@ public static class Program
         // The probe, the warning that names what it tried, and the bounded retry all live in StoreStartup so
         // the credential-bearing connection string is handled somewhere a unit test can assert the password
         // never reaches a log line (gh#514).
+        //
+        // `app.Lifetime.ApplicationStopping` rather than `CancellationToken.None`: this call runs before
+        // `RunHostAsync`'s `app.RunAsync()`, so today nothing has started that could request a stop and the
+        // token cannot fire here regardless -- same reasoning `RunHostAsync` documents for its own read of
+        // `app.Lifetime`. Passing it anyway costs nothing and is correct if that ordering ever changes, which
+        // is cheaper than leaving a 600-second uncancellable wait pinned on an ordering no comment enforces
+        // (PR #548 review, gh#551).
         StoreAvailability reached = await StoreStartup.ReachAsync(
             token => database.Database.CanConnectAsync(token),
             database.Database.GetConnectionString(),
@@ -827,7 +834,7 @@ public static class Program
                 scope.ServiceProvider.GetRequiredService<IOptions<StoreOptions>>().Value.StartupWaitSeconds),
             scope.ServiceProvider.GetRequiredService<TimeProvider>(),
             logger,
-            CancellationToken.None).ConfigureAwait(false);
+            app.Lifetime.ApplicationStopping).ConfigureAwait(false);
 
         if (!reached.IsAvailable)
         {

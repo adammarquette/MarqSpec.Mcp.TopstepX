@@ -110,8 +110,17 @@ public sealed class StoreStartupWaitTests
             CancellationToken.None);
 
         reached.IsAvailable.Should().BeFalse();
-        reached.Explanation.Should().Contain("host=localhost").And.Contain($"port={port}");
+
+        // gh#551: the coordinates reach the log StoreStartup.ReachAsync writes, never Explanation --
+        // Require() turns Explanation into the McpException a bearer-token holder receives, and under
+        // ADR-0021's non-loopback instance that holder is not necessarily the operator who should learn the
+        // database's host, port, name and username. The unit tier (StoreStartupTests) pins the log side
+        // against a fake clock; this only needs to confirm neither the coordinates nor the password leak into
+        // the caller-facing text a real Npgsql connection string produces.
+        reached.Explanation.Should().NotContain("host=localhost").And.NotContain($"port={port}");
         reached.Explanation.Should().NotContain("test-only", "the password never reaches an operator-facing line");
+        reached.Explanation.Should().Contain(
+            "ConnectionStrings__Default", "the caller-facing text still carries the operator-facing fix");
     }
 
     /// <summary>Takes a free port from the ephemeral range and releases it.</summary>

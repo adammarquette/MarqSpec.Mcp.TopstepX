@@ -208,9 +208,22 @@ public sealed class IndicatorProjector(
                 byIndicator.Key, instrument.Symbol, resolutionMinutes, byIndicator.Count());
         }
 
-        int removed = await ReconcileAsync(
-            venue, instrument, resolutionMinutes, stored.Count, existing, produced, cancellationToken)
+        // THE BUCKETS THIS SERIES ACTUALLY HAS BARS AT. Built from the same list the projection computed
+        // over, so it is the same snapshot the whole-series guard below checks -- never a second read.
+        HashSet<DateTimeOffset> barBuckets = [.. stored.Select(b => b.BucketStart)];
+
+        ReconcileTally tally = await ReconcileAsync(
+            venue,
+            instrument,
+            resolutionMinutes,
+            stored.Count,
+            barBuckets,
+            existing,
+            produced,
+            cancellationToken)
             .ConfigureAwait(false);
+
+        int removed = tally.Total;
 
         if (written + removed > 0)
         {
@@ -225,16 +238,54 @@ public sealed class IndicatorProjector(
                 removed);
         }
 
+        // THE TWO ORPHAN KINDS ARE REPORTED AT INFORMATION, SEPARATELY, AND NEVER FOLDED INTO THE LINE ABOVE
+        // (gh#571). The Debug line is the ordinary bookkeeping of a pass; these two are the store admitting it
+        // held numbers nothing could reproduce, and they call for different follow-ups -- a period the
+        // operator retired is a configuration question, a bucket with no bar is a bars question. A single
+        // "removed 2" cannot tell an operator which of their own actions caused it, and a Debug-only line is
+        // close enough to silent that nobody would ever learn either.
+        if (tally.Retired > 0 || tally.Orphaned > 0)
+        {
+            _logger.LogInformation(
+                "Swept {Retired} stored indicator value(s) for {Instrument} {Resolution}m on '{Venue}' under "
+                + "an (indicator, period) pair the catalogue no longer computes, and {Orphaned} standing at a "
+                + "bucket with no bar. Neither could be reproduced from the stored bars (ADR-0006); both are "
+                + "recoverable by restoring the configuration or the bars and replaying.",
+                tally.Retired,
+                instrument.Symbol,
+                resolutionMinutes,
+                venue,
+                tally.Orphaned);
+        }
+
         return written + removed;
     }
 
+    /// <summary>What one reconcile pass removed, split by why it removed it.</summary>
+    /// <param name="Unjustified">
+    /// Values under a pair the catalogue computes, at a bucket that still has a bar, that this pass declined
+    /// to produce — the warm-up that restarts at a contract seam (ADR-0011).
+    /// </param>
+    /// <param name="Retired">
+    /// Values under an <c>(Indicator, Period)</c> pair the catalogue no longer computes.
+    /// </param>
+    /// <param name="Orphaned">Values standing at a bucket the series holds no bar at.</param>
+    private readonly record struct ReconcileTally(int Unjustified, int Retired, int Orphaned)
+    {
+        /// <summary>How many rows were removed in all.</summary>
+        public int Total => Unjustified + Retired + Orphaned;
+    }
+
     /// <summary>
-    /// Removes stored values this pass was configured to produce but did not.
+    /// Removes every stored value for this series that the current bars and catalogue cannot account for.
     /// </summary>
     /// <param name="venue">The venue.</param>
     /// <param name="instrument">The instrument.</param>
     /// <param name="resolutionMinutes">The bar size in minutes.</param>
     /// <param name="barsRead">How many bars this pass loaded — the claim the guard below checks.</param>
+    /// <param name="barBuckets">
+    /// The buckets this pass read a bar at, from the same list it projected over — never a second read.
+    /// </param>
     /// <param name="existing">
     /// Every stored value for the series. Untracked, which changes nothing here:
     /// <c>Remove</c> attaches an untracked row as <c>Deleted</c> and the statement it produces is the same
@@ -242,18 +293,41 @@ public sealed class IndicatorProjector(
     /// </param>
     /// <param name="produced">The keys this pass accounted for.</param>
     /// <param name="cancellationToken">The caller's cancellation token.</param>
-    /// <returns>How many rows were removed.</returns>
+    /// <returns>How many rows were removed, split by why.</returns>
     /// <exception cref="InvalidOperationException">
     /// This pass read a different number of bars from what the store holds for the series, so its unscoped
     /// removal would reach values it never read the bars for.
     /// </exception>
     /// <remarks>
     /// <para>
-    /// <b>Scoped to the <c>(Indicator, Period)</c> pairs this catalogue computes</b>, and that scope is half
-    /// the safety of it. Deleting everything a pass did not write would erase a series the operator merely
-    /// configured a period away from — ATR(14) and ATR(3) are different numbers under different keys, and a
-    /// projection configured for one has no standing over the other's rows. That would be data loss wearing a
-    /// cleanup's clothes.
+    /// <b>Three kinds of row are removed, counted apart because they mean different things</b> (gh#571):
+    /// </para>
+    /// <list type="number">
+    /// <item>
+    /// <b>Unjustified</b> — the pair is computed and the bucket has a bar, but this pass declined to produce
+    /// a value there. That is the warm-up restarting at a contract seam (ADR-0011), and it is the case this
+    /// method was written for.
+    /// </item>
+    /// <item>
+    /// <b>Retired</b> — the <c>(Indicator, Period)</c> pair is one the catalogue no longer computes.
+    /// </item>
+    /// <item>
+    /// <b>Orphaned</b> — the value stands at a bucket this series holds no bar at, because the bars under it
+    /// were deleted (a base revision, a session-bar discard, <c>reselect-bars</c>) and nothing links the two
+    /// tables (ADR-0011 §2 rejected the foreign key).
+    /// </item>
+    /// </list>
+    /// <para>
+    /// <b>The second kind used to be skipped, deliberately, and gh#571 reversed that.</b> The old argument was
+    /// that ATR(14) and ATR(3) are different numbers under different keys, so a projection configured for one
+    /// has no standing over the other's rows — sweeping them would be data loss wearing a cleanup's clothes.
+    /// The half that is right is kept and is enforced below: this reaches only the series it projected. The
+    /// half that is wrong is that a retired pair's rows are not *another series* — they are this one, under a
+    /// window nothing computes any more. No pass recomputes them, so no replay can confirm them and none can
+    /// correct them: <c>rebuild-indicators</c> reports an empty diff over exactly the rows that need it, and
+    /// they read back as ordinary numbers. ADR-0006 forbids the store to hold a value it cannot reproduce
+    /// from its bars, and that is what these are. They are also cheap to get back — one configuration line
+    /// and one replay — because reproducibility runs both ways.
     /// </para>
     /// <para>
     /// <b>It is NOT scoped by bucket range, and that is the other half.</b> A pass sweeps the whole series,
@@ -277,12 +351,18 @@ public sealed class IndicatorProjector(
     /// reaches is the row that <i>used</i> to be justified — the ATR smoothed across a splice that a later,
     /// better-informed pass correctly declines to compute.
     /// </para>
+    /// <para>
+    /// <b>The sweep is bounded by the series this pass already read</b>, and by nothing else. It walks
+    /// <paramref name="existing"/> and <paramref name="barBuckets"/>, both of which are in hand — no extra
+    /// query, no store-wide scan, and no reach outside <c>(venue, instrument, resolution)</c>.
+    /// </para>
     /// </remarks>
-    private async Task<int> ReconcileAsync(
+    private async Task<ReconcileTally> ReconcileAsync(
         string venue,
         InstrumentId instrument,
         int resolutionMinutes,
         int barsRead,
+        HashSet<DateTimeOffset> barBuckets,
         Dictionary<(string Indicator, int Period, DateTimeOffset Bucket), IndicatorValueRecord> existing,
         HashSet<(string Indicator, int Period, DateTimeOffset Bucket)> produced,
         CancellationToken cancellationToken)
@@ -290,21 +370,41 @@ public sealed class IndicatorProjector(
         HashSet<(string Indicator, int Period)> owned =
             [.. _catalog.All.Select(i => (i.Name, i.Period))];
 
-        List<IndicatorValueRecord> unjustified = [];
+        List<IndicatorValueRecord> doomed = [];
+        int unjustified = 0;
+        int retired = 0;
+        int orphaned = 0;
 
         foreach ((var key, IndicatorValueRecord row) in existing)
         {
-            if (!owned.Contains((key.Indicator, key.Period)) || produced.Contains(key))
+            // Produced implies both that the pair is computed and that the bucket has a bar, so this one
+            // check is the whole of "the current bars account for this row".
+            if (produced.Contains(key))
             {
                 continue;
             }
 
-            unjustified.Add(row);
+            // CLASSIFIED IN THIS ORDER SO THE THREE COUNTS CANNOT DOUBLE-COUNT. A row can be both retired and
+            // orphaned; the bar is the more basic fact, so it wins, and Total is always the row count.
+            if (!barBuckets.Contains(key.Bucket))
+            {
+                orphaned++;
+            }
+            else if (!owned.Contains((key.Indicator, key.Period)))
+            {
+                retired++;
+            }
+            else
+            {
+                unjustified++;
+            }
+
+            doomed.Add(row);
         }
 
-        if (unjustified.Count == 0)
+        if (doomed.Count == 0)
         {
-            return 0;
+            return default;
         }
 
         // Checked BEFORE anything is removed, so a refusal costs nothing and leaves nothing half-done.
@@ -329,12 +429,12 @@ public sealed class IndicatorProjector(
                 + "the bucket range that was actually read.");
         }
 
-        foreach (IndicatorValueRecord row in unjustified)
+        foreach (IndicatorValueRecord row in doomed)
         {
             _database.IndicatorValues.Remove(row);
         }
 
-        return unjustified.Count;
+        return new ReconcileTally(unjustified, retired, orphaned);
     }
 
     /// <summary>Projects every configured indicator over one single-contract run of bars.</summary>

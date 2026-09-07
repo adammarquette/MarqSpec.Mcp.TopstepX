@@ -376,6 +376,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **A projection now sweeps the two kinds of orphaned indicator value it used to leave standing, and
+  `rebuild-indicators` visits the series that hold them.** `IndicatorValues` has no foreign key to `Bars`
+  ([ADR-0011](documentation/adr/0011-contract-roll-boundary.md) §2), so a value can outlive both its
+  window and its bar. Neither survivor threw and neither read back empty — each was an ordinary number at
+  the right scale, in the right column, computed over bars that are gone or under a period the operator
+  reconfigured away from, and `rebuild-indicators` reported an **empty diff** over exactly those rows.
+  A pass now removes, from the series it projected and nothing else, values under an `(Indicator, Period)`
+  pair the catalogue **no longer computes** (previously skipped deliberately, to protect a period change from
+  its own cleanup — reversed, because such a row is not another series but this one under a window nothing
+  recomputes, so no replay can confirm or correct it) and values whose `BucketStart` has **no bar**. The
+  three removal kinds — unjustified at a contract seam, retired, orphaned — are **counted and logged
+  separately**, the two new ones at *Information*, since one total cannot say whether a configuration change
+  or a bar delete caused it. `rebuild-indicators` walks the **union** of the series in `Bars` and in
+  `IndicatorValues`: read off `Bars` alone, a series whose every bar had been deleted was in no worklist and
+  was never visited again. **Nothing about reproducibility moves** — a store with no orphans has nothing to
+  sweep, so a confirming rebuild is still `(0, 0)` — and a **read still does not sweep**, because its probe
+  only projects when a *configured* pair is missing
+  ([ADR-0014](documentation/adr/0014-indicators-are-projected-on-read-too.md)), so retired rows stand,
+  unreachable, until a fill or the verb visits the series. Existing stores can already hold both kinds; the
+  next pass over each series removes them, and no migration does (gh#571,
+  [ADR-0006](documentation/adr/0006-indicators-as-projections.md), `R-2.8`).
+
 - **`get_bars`, `get_latest_bars` and `get_market_snapshot` now refuse a `resolutionMinutes` of 1,380 or
   more** — as does every other tool that takes one, since the rule lives in `ToolGuards.ValidateResolution`
   rather than in a tool. `ToolGuards.MaxResolutionMinutes` was 10,080 and admitted the day and the week, neither of which

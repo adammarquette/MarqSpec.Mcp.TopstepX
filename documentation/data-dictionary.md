@@ -116,13 +116,33 @@ back to a row on the quarter *before* the seam.
 **There is no foreign key to §1 either**, and that is a consequence worth knowing: deleting bars does not
 delete the values derived from them, it orphans them. A projection is a rebuildable view over §1 rather than a
 child row of it, so the cascade would be wrong — but the absence means *the projection itself* has to remove
-what the bars no longer justify. It does: a pass deletes every value it is configured to produce that this
-pass did not, scoped to the `(Indicator, Period)` pairs the catalogue computes so that a series left behind by
-a period change is not swept up with it.
+what the bars no longer justify. It does. A pass removes **three** kinds of row from the series it projected,
+counted apart and logged apart because they call for different follow-ups (gh#571):
+
+| Kind | What it is | How it got there |
+|---|---|---|
+| Unjustified | The pair is computed and the bucket has a bar, but the pass produced no value | The warm-up restarting at a contract seam ([ADR-0011](adr/0011-contract-roll-boundary.md)) |
+| Retired | The `(Indicator, Period)` pair is one the catalogue no longer computes | `Indicators__*Period` or `Indicators__Additional*Periods` changed |
+| Orphaned | The `BucketStart` has no bar in §1 | Bars deleted — a base revision, a session-bar discard, `reselect-bars` |
+
+**A retired pair's rows used to be left alone, and that was wrong** — see ADR-0006's 2026-09-07 update. They
+are not another series: they are this one, under a window nothing computes any more, so no replay confirms or
+corrects them and `rebuild-indicators` reports an empty diff over them. A row §1 cannot reproduce is the one
+thing this table must not hold, and getting it back costs one configuration line and one replay.
+
+**`rebuild-indicators` walks the union of §1's series and this table's**, for the same reason: a series whose
+every bar is gone is in neither §1 nor the verb's old worklist, so nothing ever visited it again.
 
 That sweep is **not** scoped by bucket range, so a pass has to read the whole series and read it in **one
 snapshot** — otherwise it removes values a concurrent write justified between its two reads, and the loss
-arrives as an absence (`R-2.9`, gh#73). A pass that finds the two disagree refuses rather than deleting.
+arrives as an absence (`R-2.9`, gh#73). A pass that finds the two disagree refuses rather than deleting. It is
+otherwise **bounded by the series in hand**: the classification is over rows the pass already read, and costs
+no additional query.
+
+**A read does not sweep.** `get_indicators` projects only when its probe finds a *configured* pair missing
+([ADR-0014](adr/0014-indicators-are-projected-on-read-too.md)), so under a narrowed catalogue every configured
+pair is present, no pass runs, and the retired rows stand until a fill or `rebuild-indicators` visits the
+series. They are unreachable meanwhile — the read refuses a period the catalogue does not carry.
 
 **The write half reaches the composite key with `ON CONFLICT … DO UPDATE`**, not by reading the values into a
 dictionary and deciding (gh#133) — a pass recomputes the whole series *its own snapshot* can see, so two fills

@@ -375,11 +375,16 @@ public sealed class IndicatorReadProjectionTests : IAsyncLifetime
         // compared to each other, and come back in whatever order the database happened to hand them.
         //
         // A single-element fixture cannot observe that: with one row there is no tie for an incomplete sort
-        // to mis-order. This file's own dominant idiom manufactures one instead -- warm at rsiPeriod 3, then
-        // read at rsiPeriod 19. ReconcileAsync (IndicatorProjector.cs:278) deliberately leaves a stored row
-        // the new catalogue does not own standing rather than deleting it, so (rsi, 3) survives sitting
-        // beside the freshly projected (rsi, 19). Every other pair keeps the same period across both
-        // catalogues, so rsi is the only tie -- exactly the shape the helper cannot resolve today.
+        // to mis-order. So one is manufactured -- warm at rsiPeriod 3, then read under a catalogue whose
+        // PRIMARY rsi is 19 and which ALSO computes 3. Both rows are then pairs the catalogue owns, and both
+        // stand. Every other pair keeps the same period across both catalogues, so rsi is the only tie --
+        // exactly the shape the helper cannot resolve today.
+        //
+        // The tie used to be built the other way: warm at 3, read at 19 alone, and rely on the reconcile
+        // LEAVING a row the new catalogue does not own. gh#571 reversed that -- a pair nothing recomputes is
+        // an orphan and is swept -- so the second row now has to be one the catalogue really carries. That is
+        // a better fixture for this test in any case: it is about ordering, and it should not turn on which
+        // rows a destructive pass decides to keep.
         //
         // Period 19, not the file's usual 5: on the twelve rows this fixture seeds, Postgres's planner
         // prefers an index scan over the composite index on (Instrument, ResolutionMinutes, Indicator,
@@ -392,7 +397,7 @@ public sealed class IndicatorReadProjectionTests : IAsyncLifetime
         // that actually exercises the missing comparison instead of passing by looking like it does.
         await WarmAsync(Catalog(rsiPeriod: 3));
 
-        IndicatorCacheService indicators = Cache(Catalog(rsiPeriod: 19));
+        IndicatorCacheService indicators = Cache(Catalog(rsiPeriod: 19, alsoRsiPeriods: "3"));
         bool projected = await indicators.EnsureProjectedAsync("test", _es, Resolution, CancellationToken.None);
 
         projected.Should().BeTrue("rsi at period 19 has never been computed for this series");
@@ -545,9 +550,19 @@ public sealed class IndicatorReadProjectionTests : IAsyncLifetime
         return [.. held.Select(v => (v.Indicator, v.Period))];
     }
 
-    private static IndicatorCatalog Catalog(int rsiPeriod) =>
+    /// <param name="rsiPeriod">The PRIMARY RSI period this catalogue computes at.</param>
+    /// <param name="alsoRsiPeriods">
+    /// Further RSI periods, comma-separated, that this catalogue <b>also</b> computes — so a second
+    /// <c>(rsi, period)</c> row is one the catalogue owns rather than one it has left behind.
+    /// </param>
+    private static IndicatorCatalog Catalog(int rsiPeriod, string? alsoRsiPeriods = null) =>
         new(
-            Options.Create(new IndicatorOptions { AtrPeriod = 3, RsiPeriod = rsiPeriod }),
+            Options.Create(new IndicatorOptions
+            {
+                AtrPeriod = 3,
+                RsiPeriod = rsiPeriod,
+                AdditionalRsiPeriods = alsoRsiPeriods,
+            }),
             Calendar());
 
     private static IOptions<MarketDataOptions> MarketData() =>

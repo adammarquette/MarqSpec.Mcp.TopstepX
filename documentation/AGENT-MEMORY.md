@@ -65,9 +65,13 @@ at one this rule's own pull request retires.
   dotnet ef migrations add <Name> --project MarqSpec.Mcp.TopstepX.Data \
       --startup-project MarqSpec.Mcp.TopstepX --output-dir Migrations
   ```
-  **No `dotnet tool restore`, no `.env`, and no Postgres.** `dotnet-ef` is already available; scaffolding
-  reads the model, never a database, so it does not want a connection string and there is nothing to start
-  first. The only step after it is `dotnet build`, and the migration is applied by the host at startup.
+  **No `dotnet tool restore`, no `.env`, and no Postgres.** There is **no tool manifest in this repo**, so
+  `dotnet tool restore` has nothing to restore and `dotnet-ef` has to be a **global** tool —
+  `dotnet tool install -g dotnet-ef` if the recipe fails with "could not execute because the specified command
+  or file was not found". Its availability is a property of the machine, not of the checkout. The other two
+  are properties of the command: scaffolding reads the model, never a database, so it does not want a
+  connection string and there is nothing to start first. The only step after it is `dotnet build`, and the
+  migration is applied by the host at startup.
   - **The trap: `dotnet ef` writes CRLF, and `dotnet format --verify-no-changes` fails on it.** Three files
     are generated — `Migrations/<stamp>_<Name>.cs`, its `.Designer.cs`, and the rewritten
     `Migrations/TopstepXDbContextModelSnapshot.cs` — and every one of them arrives with Windows line endings.

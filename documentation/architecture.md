@@ -209,7 +209,7 @@ paced page-walk included; a retry belongs in `SeriesUnitOfWork`, bounded, where 
 So the caller is told that another writer committed the rows it collided on, that its own transaction kept
 nothing, and that a retry is served from what that writer committed. *What else* was in the aborted
 transaction — here, the bars and the coverage ledger over the same series — is a fact about
-`SeriesUnitOfWork`, and it is stated there rather than in a sentence handed to all fifteen tools.
+`SeriesUnitOfWork`, and it is stated there rather than in a sentence handed to every tool.
 
 **No write on this path reaches that boundary with a `23505` any more** (gh#103, gh#122, gh#133 — epic gh#80).
 The bar write, the coverage ledger and the indicator projection were the three instances of one shape: read the

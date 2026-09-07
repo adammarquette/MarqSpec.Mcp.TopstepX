@@ -217,6 +217,97 @@ public sealed class HistoricalRangePlannerTests
     }
 
     [Fact]
+    public void TwoCycleFrontSlices_AtDepthOne_MergeIntoOnePresentSlice()
+    {
+        // THE MERGE BRANCH, EXERCISED — and depth one is the only thing that reaches it (gh#570 review).
+        //
+        // A range cut at the tenure start pays a page boundary at the cut, and when both halves ask the
+        // venue's own pick the same question that boundary buys nothing: one extra paced history request per
+        // read, for ever. That guarantee had no test on either side of this issue, and after it the
+        // depth-two population can no longer reach the branch at all — a slice whose set comes down to the
+        // front by LOSING a candidate is now refused below. Left unpinned it would be a promise nothing
+        // checks, quietly green because the mechanism it watches stopped being exercised.
+        //
+        // Nothing this server serves has a depth of one (InstrumentRegistryCycleTests pins that), so this is
+        // insurance against the day a single-candidate product is added. It is written at the tier that can
+        // reach it rather than deleted for being unreachable from the other one.
+        DateTimeOffset tenureStart = Utc(2026, 8, 10);
+        BarRange range = new(Utc(2026, 8, 5), Utc(2026, 8, 15));
+
+        IReadOnlyList<RangeSlice> planned = HistoricalRangePlanner.PlanSlices(
+            [range], tenureStart, Front, _calendar, _quarterly, 1, Listed);
+
+        planned.Should().HaveCount(
+            2, "the cut at the tenure start happens first -- the merge undoes it, it does not prevent it");
+        planned.Should().OnlyContain(slice => slice.IsCycleFrontSlice(Front));
+
+        IReadOnlyList<RangeSlice> merged = HistoricalRangePlanner.Coalesce(planned, Front);
+
+        merged.Should().ContainSingle("both halves ask the front, and only the front, the same question");
+        merged[0].Range.Should().Be(range, "the merge covers the input exactly, as the cut did");
+        merged[0].Present.Should().BeTrue();
+        merged[0].Candidates.Should().Equal(Front);
+        merged[0].Unresolved.Should().BeEmpty(
+            "both halves resolved everything the cycle named, so the merged slice has nothing to report");
+    }
+
+    [Fact]
+    public void AHistoricalHalfNarrowedToTheFront_IsNotMergedIntoThePresentBand()
+    {
+        // gh#570 at the tier that can see the seam directly, rather than through a venue request count.
+        //
+        // Same range and same tenure start as the merging case above, at depth two, with the venue listing
+        // only U26. The two halves carry the SAME candidate list -- asserted below, because that identity is
+        // the entire defect -- and a rule reading the list alone therefore folded the historical half into
+        // the present band and stored the front's bars under it with nothing logged.
+        DateTimeOffset tenureStart = Utc(2026, 8, 10);
+        BarRange range = new(Utc(2026, 8, 5), Utc(2026, 8, 15));
+
+        IReadOnlyList<RangeSlice> planned = HistoricalRangePlanner.PlanSlices(
+            [range],
+            tenureStart,
+            Front,
+            _calendar,
+            _quarterly,
+            2,
+            expiry => string.Equals(expiry.Code, "U26", StringComparison.Ordinal) ? Front : null);
+
+        planned.Should().HaveCount(2);
+        planned[0].Candidates.Should().Equal(
+            planned[1].Candidates,
+            "the halves are indistinguishable by candidate list, which is why the list cannot be the test");
+
+        IReadOnlyList<RangeSlice> merged = HistoricalRangePlanner.Coalesce(planned, Front);
+
+        merged.Should().HaveCount(2, "history stays history however identical the contract id looks");
+        merged[0].Range.Should().Be(new BarRange(range.Start, tenureStart));
+        merged[0].Present.Should().BeFalse();
+        merged[0].Unresolved.Select(expiry => expiry.Code).Should().Equal(new[] { "Z26" });
+        merged[1].Range.Should().Be(new BarRange(tenureStart, range.End));
+        merged[1].Present.Should().BeTrue();
+    }
+
+    [Fact]
+    public void AHistoricalHalfThatFellBackToTheFront_IsNotMergedEither()
+    {
+        // The same refusal at full strength, and the older half of the rule. A fallen-back slice earns no
+        // permanent memo, and folding it into the present band would hand it one -- the degraded answer
+        // becoming a permanent claim that a range nobody could properly ask about holds nothing.
+        DateTimeOffset tenureStart = Utc(2026, 8, 10);
+        BarRange range = new(Utc(2026, 8, 5), Utc(2026, 8, 15));
+
+        IReadOnlyList<RangeSlice> merged = HistoricalRangePlanner.Coalesce(
+            HistoricalRangePlanner.PlanSlices(
+                [range], tenureStart, Front, _calendar, _quarterly, 2, static _ => null),
+            Front);
+
+        merged.Should().HaveCount(2);
+        merged[0].FellBackToFront.Should().BeTrue();
+        merged[0].Present.Should().BeFalse();
+        merged[1].Present.Should().BeTrue();
+    }
+
+    [Fact]
     public void TheSlicesCoverTheInputExactly_AndAreAscending()
     {
         // The planner sits between the gap detector and the fetch, so anything it loses is a bucket nobody

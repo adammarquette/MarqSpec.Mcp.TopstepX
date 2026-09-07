@@ -197,6 +197,85 @@ public static class HistoricalRangePlanner
     }
 
     /// <summary>
+    /// Merges adjacent slices the <b>cycle</b> brings down to the venue's own pick, and only it.
+    /// </summary>
+    /// <param name="slices">The slices for one range, ascending and contiguous.</param>
+    /// <param name="front">The contract the venue marks active.</param>
+    /// <returns>The slices, adjacent cycle-front pieces merged into one present slice.</returns>
+    /// <exception cref="ArgumentNullException">A required argument is null.</exception>
+    /// <remarks>
+    /// <para>
+    /// <b>A historical slice with exactly one candidate is decided before it is fetched.</b>
+    /// <c>HistoricalContractPolicy.Decide</c> over a single contract can only choose that contract, so such
+    /// a slice writes the same bars under the same id as the present treatment does, and an empty answer
+    /// from it earns the same memo. When that one candidate is the front itself, the historical and present
+    /// pieces of one range are the same question asked twice.
+    /// </para>
+    /// <para>
+    /// <b>Merging them is what keeps the paging identical.</b> A range cut at the tenure start pays a page
+    /// boundary at the cut, so a store holding one attributed bucket would silently cost one venue request
+    /// more per read than the same store did before ADR-0020 — a cost with no answer behind it, since both
+    /// halves ask the same contract. Adjacent slices asking the same contracts the same question are one
+    /// slice; <see cref="PlanSlices"/> already applies that rule to trade-date boundaries.
+    /// </para>
+    /// <para>
+    /// <b>The test is what the CYCLE named, never what happened to survive</b> (gh#570), and that distinction
+    /// is the whole of this issue. A cycle naming two expiries the venue lists only one of leaves a candidate
+    /// list of exactly the front — character for character the list a depth-one cycle produces — so a rule
+    /// reading the list alone folded a real historical stretch into the present band on the strength of one
+    /// <c>ContractDirectory</c> negative, stored the front's bars under it, and logged nothing.
+    /// <see cref="RangeSlice.IsCycleFrontSlice"/> refuses that slice, and refuses a slice that
+    /// <see cref="RangeSlice.FellBackToFront"/> for the same reason at full strength: a candidate list that
+    /// is the front by degradation rather than by the cycle. Merged, either would stop being history at all —
+    /// no candidate set for the ledger to test per candidate, no volume decision, and no warning — for a
+    /// stretch the front is not the answer for; and the fallen-back one would additionally be handed the
+    /// permanent memo it must not earn.
+    /// </para>
+    /// <para>
+    /// <b>What is left is a DEPTH-ONE product, and nothing this server serves is one.</b> The live venue
+    /// lists the active expiry alone and still answers by id for expired ones (ADR-0020, gh#494), so a real
+    /// historical slice normally resolves its full candidate depth and is never merged; and every instrument
+    /// in <c>InstrumentRegistry</c> carries a depth of at least two, pinned by
+    /// <c>InstrumentRegistryCycleTests.EveryServedInstrumentHasACycleAndADepth</c>. So this is
+    /// <b>insurance rather than a hot path</b>. It is kept because it fires the day a single-candidate
+    /// product is added, and without it every straddling read of that product would silently pay one extra
+    /// paced history request for ever — and because deleting it would leave <c>IsCycleFrontSlice</c> with no
+    /// caller and reduce gh#570's "not folded into the present band" to a statement about nothing. It is
+    /// <b>exercised at depth one</b> rather than left to go quietly green once the depth-two population
+    /// stopped reaching it (gh#570 review).
+    /// </para>
+    /// <para>
+    /// Here rather than in the caller so the merge sits beside the cutting it undoes, and so the depth-one
+    /// branch above is reachable from the cheap tier at all: it is pure, it reads no service state, and the
+    /// host assembly declares no <c>InternalsVisibleTo</c>.
+    /// </para>
+    /// </remarks>
+    public static IReadOnlyList<RangeSlice> Coalesce(IReadOnlyList<RangeSlice> slices, string front)
+    {
+        ArgumentNullException.ThrowIfNull(slices);
+        ArgumentException.ThrowIfNullOrWhiteSpace(front);
+
+        List<RangeSlice> merged = [];
+
+        foreach (RangeSlice slice in slices)
+        {
+            if (merged.Count > 0
+                && merged[^1].Range.End == slice.Range.Start
+                && merged[^1].IsCycleFrontSlice(front)
+                && slice.IsCycleFrontSlice(front))
+            {
+                merged[^1] = new RangeSlice(
+                    new BarRange(merged[^1].Range.Start, slice.Range.End), [front], Present: true);
+                continue;
+            }
+
+            merged.Add(slice);
+        }
+
+        return merged;
+    }
+
+    /// <summary>
     /// The trade date a bucket belongs to, falling back to its UTC date for a bucket the calendar places
     /// outside every session — exactly as <c>HistoricalContractPolicy</c> groups bars.
     /// </summary>

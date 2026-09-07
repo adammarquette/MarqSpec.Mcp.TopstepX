@@ -592,6 +592,142 @@ would be the console-only configuration the platform contract refuses. They are 
 deploy's to take, quoted on gh#517 and recorded here as a dated entry; until that entry exists, the pre-
 registered-client assumption ADR-0021 states is still an assumption, and this entry does not narrow it.
 
+## Update (2026-09-07) — the `aws-production` environment: a GitHub setting, created by `bootstrap.sh` and read back with `gh api`
+
+**What it is.** A GitHub environment named `aws-production` on `adammarquette/MarqSpec.Mcp.TopstepX`,
+carrying one `required_reviewers` rule that names the maintainer (`User:adammarquette`), with
+`prevent_self_review` left `false` for gh#108's reason — one person is the whole review pool, and `true`
+would make the gate a wall — and no `wait_timer` or branch policy, since neither puts a human in front of a
+deploy. It is distinct from `production` on purpose (decision 8): that one gates the GHCR publish; this one
+gates what runs. **It is also the precondition of the production credential**, not only an approval:
+`GitHubDeploy-production` trusts only a token whose `sub` is
+`repo:adammarquette/MarqSpec.Mcp.TopstepX:environment:aws-production`, and GitHub mints that claim only for
+a job that declared the environment and passed its protection rules. An `aws-production` with no reviewer
+would therefore let the deploy role be assumed by any job in this repository that names the environment,
+which is the inert-gate class the platform contract refuses, wearing a credential.
+
+**How it is reproduced.** `scripts/bootstrap.sh` step 4, whose one hardcoded name became the list
+`ENV_NAMES="production aws-production"` (gh#518): each name is read on its own and **created only when the
+read is a clean 404**, with the running account as the reviewer; an environment that exists is reported and
+never written, because an environment `PUT` with `reviewers` in it replaces the list (gh#108's
+measurement). The template test `The_environment_the_production_role_trusts_is_one_bootstrap_sh_creates`
+reads that line off the script itself, so the trust condition and the setting cannot drift apart on the one
+name a production deploy's token has to carry. The dry run of 2026-09-07 printed the pre-creation state this
+repository is in — `production exists and requires: User:adammarquette` / `left untouched`, then
+`creating aws-production, required reviewer: adammarquette` — and wrote nothing.
+
+**The read-back**, which is also what `check-release-gate.sh` runs on every pull request once gh#520's
+workflow names the environment:
+
+```console
+$ gh api repos/adammarquette/MarqSpec.Mcp.TopstepX/environments/aws-production \
+    --jq '[.protection_rules[]|select(.type=="required_reviewers")|.reviewers[]|"\(.type):\(.reviewer.login)"]'
+["User:adammarquette"]
+```
+
+**Status: not yet created.** The maintainer runs `bootstrap.sh` once and quotes that read-back on gh#518;
+until then the answer is `HTTP 404`, and `check-release-gate-selftest.sh`'s two-environment case is the
+exact shape a workflow naming both environments would produce against it — `production` reported
+`PROTECTED`, the second named as missing, `1 of 2`. That case is the pre-bootstrap state, held red on
+purpose so a red `release-gate` on gh#520's pull request sends the reader to this entry rather than to the
+environment that is fine.
+
+## Update (2026-09-07) — `GitHubDeploy-staging` trust: two subjects, a tag pattern and `main`, read back with `aws iam get-role`
+
+**The condition, exactly** — `aud` under `StringEquals`, `sub` under `StringLike` with two patterns and
+no third:
+
+```json
+{
+  "StringEquals": { "token.actions.githubusercontent.com:aud": "sts.amazonaws.com" },
+  "StringLike": {
+    "token.actions.githubusercontent.com:sub": [
+      "repo:adammarquette/MarqSpec.Mcp.TopstepX:ref:refs/tags/v*",
+      "repo:adammarquette/MarqSpec.Mcp.TopstepX:ref:refs/heads/main"
+    ]
+  }
+}
+```
+
+The tag pattern is the release path and `main` is the branch `deploy.yml` is dispatched on — decision 8's
+review correction, unchanged here. The principal is the provider the same stack creates
+(`Fn::GetAtt [GitHub, Arn]`), never a provider ARN literal, and the session is one hour. Two template
+tests hold it: the named one that pins those two values, and gh#518's `Every_role_is_assumable_only_…`,
+which walks every role in the stack and refuses a subject not pinned to this repository, a subject ending
+in a wildcard, and any bound claim other than `aud` and `sub` — proven by adding a third role trusting
+`repo:…:*`, which the named tests never see and the text search for `repo:*` does not match, and which
+that test alone reddened.
+
+**The read-back**, once gh#519 has deployed `topstepx-mcp-github-oidc`:
+
+```console
+$ aws iam get-role --role-name GitHubDeploy-staging --query Role.AssumeRolePolicyDocument
+$ aws iam get-open-id-connect-provider \
+    --open-id-connect-provider-arn arn:aws:iam::<account>:oidc-provider/token.actions.githubusercontent.com
+```
+
+The first answers the document above with `Principal.Federated` resolved to the provider's ARN; the second
+answers `ClientIDList: ["sts.amazonaws.com"]`, and whatever `ThumbprintList` IAM filled in for a provider
+created without one (the next entry). **Status: not deployed** — no account exists, and the values above
+are the synthesised template's, which CI proves on every pull request and which is the only artefact this
+entry can quote today. gh#519 replaces this paragraph's "would answer" with the answer.
+
+## Update (2026-09-07) — `GitHubDeploy-production` trust: the `environment:aws-production` claim, read back with `aws iam get-role`
+
+**The condition, exactly** — both claims under `StringEquals`, no `StringLike` at all:
+
+```json
+{
+  "StringEquals": {
+    "token.actions.githubusercontent.com:aud": "sts.amazonaws.com",
+    "token.actions.githubusercontent.com:sub": "repo:adammarquette/MarqSpec.Mcp.TopstepX:environment:aws-production"
+  }
+}
+```
+
+One subject and it is not a ref: GitHub replaces the `ref:` form with `environment:<name>` whenever the job
+declares an environment, so both of gh#520's production jobs — the release's and the dispatch's — present
+this claim and nothing else can. The environment name in it is the constant
+`GitHubOidcStack.ProductionEnvironment`, and the `aws-production` entry's lockstep test ties it to the name
+`bootstrap.sh` creates. Same principal, same session, same every-role test as the staging entry.
+
+**The read-back**, once deployed:
+
+```console
+$ aws iam get-role --role-name GitHubDeploy-production --query Role.AssumeRolePolicyDocument
+```
+
+**Status: not deployed**, on the same terms as the staging entry.
+
+## Update (2026-09-07) — three choices on the OIDC stack that are not trust conditions
+
+Each is a line in `GitHubOidcStack.cs` a reader would otherwise ask "why not the obvious thing" about, and
+each is held by a template test (gh#518).
+
+1. **No `job_workflow_ref` condition.** gh#518's addendum offered binding both roles to the two workflow
+   files as an option, to be recorded either way. **Declined.** The claim carries the workflow *file path*
+   and the ref it ran at — `adammarquette/MarqSpec.Mcp.TopstepX/.github/workflows/deploy.yml@refs/heads/main`
+   — so it changes on every rename of a workflow file and needs its own wildcard on the ref half for the
+   tag path, which is a second pattern to keep in step with the `sub` for a property the `sub` already
+   binds: a token from a tag, from `main`, or from a job behind the `aws-production` rule. What it would add
+   is refusing a *different workflow file* on the same ref, and on this repository every workflow on `main`
+   or a `v*` tag is one the maintainer merged through the ladder. The every-role test asserts the bound
+   claims are exactly `aud` and `sub`, so adding it later is a red test and a dated entry here.
+2. **No thumbprint list on the provider.** gh#516 listed GitHub's two published intermediate thumbprints
+   "because the property is still required in some regions". AWS has verified `token.actions.githubusercontent.com`
+   against its own trusted CA library since 2023 and ignores the property for it, and the template test
+   now refuses any 40-hex-character run in the template: a literal nobody re-verifies reads exactly like a
+   current one after the CA rotates, which is the same shape as a stale `~tok` row. If CloudFormation in
+   the region gh#519 chooses rejects the omission, that is a loud failure naming the property, and the list
+   comes back with a dated entry saying which region required it.
+3. **Every ARN from `AWS::AccountId`, `AWS::Region` and `AWS::Partition`, never from `Stack.Account`.**
+   Under a concrete environment the stack's `Account` and `Region` resolve to *literals* in the template,
+   so the synthesised OIDC stack carried whatever `cdk.json` named — the documentation placeholder today,
+   a real account id after gh#519, in a generated file. Built from the pseudo-parameters the same template
+   deploys into whichever account the credentials belong to, and the test refuses a twelve-digit run
+   anywhere in it. `EnvironmentStack` is not changed here; whether its ARNs move the same way is gh#519's
+   call when the first real account id would otherwise land in `cdk.out`.
+
 ## Follow-ups
 
 - gh#516, gh#517, gh#518 build decisions 7, 9 and 8; gh#529 gates decision 4's rule. All four cite this

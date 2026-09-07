@@ -1100,6 +1100,9 @@ found.
 | `required_status_checks` on `protect-develop` / `-staging` / `-main` | every merge gate in the table above; `no-order-path` carries ADR-0002 | `bootstrap.sh` step 3, which reads the contexts back per rung | gh#26, gh#72, gh#114; and gh#125, the one that went the other way — set correctly and recorded in `bootstrap.sh`, but not in the table above |
 | ruleset `enforcement: active` | all of the above | `bootstrap.sh` step 3 | `MarqSpec.Client.ProjectX`, disabled from creation |
 | the two Cognito client secrets' **values** in `topstepx-mcp/<env>/{claude-connector,deploy-check}` | the connector login (gh#524) and `check-deployment.sh`'s `client_credentials` token (gh#521); the stack creates the shells empty and no custom resource fills them ([ADR-0023](../adr/0023-aws-deployment-topology.md), 2026-09-07 Cognito entry) | gh#521's check, but read the shape carefully — an EMPTY shell fails it at `UNSET <the first empty value>` **before any request**, naming that value and saying nothing about the deployment. *Which* value depends on where the id is read from, and this repository has not settled that: `MCP_CHECK_CLIENT_ID` if both come out of the shell as ADR-0023 §"the `clientId` is duplicated into the shell" describes, `…_SECRET` if the id came from the stack output as gh#520 plans. A non-empty WRONG credential is the other path and is the one that comes back `NO TOKEN … answered 401`, after assertions 1 and 2 have passed. All measured 2026-09-07; this row said the opposite until then | never; not yet deployed (gh#519 writes them by hand) |
+| `aws-production` environment carries a `required_reviewers` rule | gh#520's two production deploy jobs — the approval on **what runs**, and the **precondition of the credential**: `GitHubDeploy-production` trusts only a token carrying `sub = …:environment:aws-production`, which GitHub mints only for a job that declared the environment and passed its rule ([ADR-0023](../adr/0023-aws-deployment-topology.md) §8 and its 2026-09-07 `aws-production` entry). Without the rule, any job in this repository naming the environment could assume the role | [`check-release-gate.sh`](../../scripts/check-release-gate.sh) on every pull request once a workflow names it — its self-test's two-environment case is the pre-creation shape; `bootstrap.sh` step 4 creates it and reports it, and a template test reads the script's `ENV_NAMES=` line against the trust condition | never; not yet created — the maintainer runs `bootstrap.sh` once (gh#518) |
+| `GitHubDeploy-staging` trust policy — `sub` StringLike `…:ref:refs/tags/v*` and `…:ref:refs/heads/main`, exactly two | `release.yml`'s staging deploy and `deploy.yml`'s dispatch on `main` (gh#520); a wider subject is a role any run of a public repository's fork could try, a narrower one refuses the rollback path | `GitHubOidcStackTests` on every pull request — the named test and the every-role test; on the account, `aws iam get-role --role-name GitHubDeploy-staging`, recorded on ADR-0023's 2026-09-07 staging entry | never; not yet deployed (gh#519) |
+| `GitHubDeploy-production` trust policy — `sub` StringEquals `…:environment:aws-production`, no `StringLike` | both production deploy jobs (gh#520) | the same tests; `aws iam get-role --role-name GitHubDeploy-production`, recorded on ADR-0023's 2026-09-07 production entry | never; not yet deployed (gh#519) |
 
 ### The release approval gate (gh#108)
 
@@ -1150,13 +1153,22 @@ output" reads a missing environment as a healthy one. The check keys on the exit
 
 **And it is made to fail on every run.**
 [`check-release-gate-selftest.sh`](../../scripts/check-release-gate-selftest.sh) runs in the same job,
-feeding the real script five fixtures with known faults and requiring it to reject each one — **matching on
+feeding the real script six fixtures with known faults and requiring it to reject each one — **matching on
 the words that name each fault, never on exit status**, since exit 1 is also what "gh is required" produces
-and a self-test satisfied by status alone goes green on a runner with no `gh` on it. **And a sixth fixture
-that is genuinely sound, which it must accept**: five rejections would all be satisfied by `exit 1`, and a
+and a self-test satisfied by status alone goes green on a runner with no `gh` on it. **And a seventh fixture
+that is genuinely sound, which it must accept**: six rejections would all be satisfied by `exit 1`, and a
 gate that says no to everything is exactly as useless as one that says yes to everything, and rather harder
 to notice. That case uses the mapping spelling of `environment:`, which no workflow here uses today, so
 nothing else would notice if it stopped being understood.
+
+The sixth rejection is gh#518's, and it asserts *which* environment a red run names rather than that it goes
+red: two environments in one workflow set — the real, protected `production` beside one that does not exist
+— and three needles on the same run, the missing one by its whole quoted name, `PROTECTED    production` for
+the sound one, and the tally `1 of 2`. That is the shape a workflow naming `aws-production` produces until
+the maintainer has run `bootstrap.sh`, and a gate that went red about the environment that is fine would
+send the reader to the wrong setting. Proven by making the gate's tally line lie (`$failed of $failed`):
+that case alone went red — *"never said: 1 of 2 environment(s) would not stop an unattended publish"* —
+while the five older rejections and the acceptance stayed green, since none of them asserts the count.
 
 One of the five earns its place from a defect gh#108 shipped and gh#140 fixed: an `environment:` mapping with
 no `name:` under it stayed pending into the *next* file and bound itself to that file's top-level `name:`,
@@ -1196,7 +1208,15 @@ A ruleset `PUT` **replaces**: a rule missing from the payload is deleted. An env
 the hazard at the environment endpoint is not omission but the payload — `bootstrap.sh`'s create payload
 names `reviewers` explicitly, and running it over a live environment would replace whatever list is there
 with one account. Step 4 therefore **creates only, and never writes over an environment that already
-exists**; it reports what an existing one requires and warns when that is nothing.
+exists**; it reports what an existing one requires and warns when that is nothing. Since gh#518 it walks a
+list — `ENV_NAMES="production aws-production"` — reading each name on its own, so an existing `production` is
+left exactly as it is while a missing `aws-production` is created beside it; a template test reads that line
+against the production deploy role's trust condition, so the environment the role trusts is always one the
+script creates. Step 5 is **read-only** and new on the same card: it reads the GHCR package's visibility
+back, because ECS pulls the image with no registry credential only while the package is public
+([ADR-0023](../adr/0023-aws-deployment-topology.md) §5), and it reports a 404 (nothing released yet), a 403
+for the missing `read:packages` scope — which the default `gh auth login` token lacks, measured on the
+maintainer's own token — and any other failure as three different states, none of them as "public".
 
 ## How the pipeline is shaped
 
@@ -1236,7 +1256,9 @@ the one that rewrites it. What exists today:
   parameter, `RETAIN` on everything stateful, every `.env.example` key outside the compose-only set present
   in the task, every credential a `valueFrom`, the two environments differing only where their props say;
   139 at gh#517, adding the Cognito pool, its two clients and the issuer and client ids reaching the task as
-  references) and then `cdk synth --no-lookups` **once per outbound shape** through the CLI pinned in
+  references; 142 at gh#518, adding the every-role trust shape on the OIDC stack, a template with no account
+  id and no thumbprint, and the `bootstrap.sh` lockstep on the `aws-production` name) and then
+  `cdk synth --no-lookups` **once per outbound shape** through the CLI pinned in
   `infra/package.json`. **No credential exists on the runner, by construction**: `--no-lookups` makes a
   context miss fail the synth rather than call AWS, and `infra/cdk.context.json` carries the hosted-zone
   and availability-zone answers under a placeholder account. A green run says the app runs, every stack

@@ -78,7 +78,9 @@ public sealed class GitHubOidcStackTests
         var policies = role["Policies"]!.AsArray().Select(p => Synthesised.Text(p!["PolicyDocument"])).ToList();
         var text = string.Join("\n", policies);
 
-        text.Should().Contain("ssm:PutParameter").And.Contain($"parameter/topstepx-mcp/{env}/");
+        // The stack owns the SSM history (ADR-0023, 2026-09-07 entry); the pipeline reads it and never writes it.
+        text.Should().Contain("ssm:GetParameter").And.Contain($"parameter/topstepx-mcp/{env}/");
+        text.Should().NotContain("ssm:PutParameter", "a put-parameter over a CloudFormation-managed resource is drift");
         text.Should().Contain("secretsmanager:GetSecretValue").And.Contain($"secret:topstepx-mcp/{env}/deploy-check");
         text.Should().Contain("sts:AssumeRole").And.Contain("cdk-hnb659fds-", "the CDK bootstrap roles do the deploying");
         text.Should().NotContain($"/{other}/");

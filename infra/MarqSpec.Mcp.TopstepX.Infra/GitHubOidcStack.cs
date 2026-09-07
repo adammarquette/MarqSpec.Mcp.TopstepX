@@ -69,12 +69,15 @@ public sealed class GitHubOidcStack : Stack
                 Actions = ["sts:AssumeRole"],
                 Resources = [$"arn:{Partition}:iam::{Account}:role/cdk-hnb659fds-*-role-{Account}-{Region}"],
             }),
-            // The deployed digest and version, as the written history (ADR-0023 §5), under this
-            // environment's prefix and no other.
+            // The deployed digest and version, as the written history (ADR-0023 §5 and its 2026-09-07
+            // entry): the EnvironmentStack OWNS the two SSM parameters and writes them from its own
+            // CloudFormation parameters on every deploy, so the pipeline only READS them -- a
+            // put-parameter over a CloudFormation-managed resource is drift the next stack update writes
+            // back. Under this environment's prefix and no other.
             new(new PolicyStatementProps
             {
-                Sid = "WriteDeploymentHistory",
-                Actions = ["ssm:PutParameter", "ssm:GetParameter"],
+                Sid = "ReadDeploymentHistory",
+                Actions = ["ssm:GetParameter"],
                 Resources = [$"arn:{Partition}:ssm:{Region}:{Account}:parameter/topstepx-mcp/{envName}/*"],
             }),
             // gh#521's deployment check reads the deploy-check client's secret at run time (gh#517 creates it).

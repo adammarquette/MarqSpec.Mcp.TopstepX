@@ -10,6 +10,7 @@ root [`AGENTS.md`](../../AGENTS.md) still applies. It owns the artifacts below *
 | The published image | [`Dockerfile`](../../Dockerfile) — built by `ci.yml`'s `image` job, pushed to GHCR only by `release.yml` |
 | Local stack | [`docker-compose.yml`](../../docker-compose.yml) (Postgres + server) and [`docker-compose.dev.yml`](../../docker-compose.dev.yml) (SDK overlay) |
 | Build and dependency properties | `Directory.Build.props`, `Directory.Packages.props` (Central Package Management — package *versions*, since nothing here is packaged), `global.json` |
+| Infrastructure as code | [`infra/`](../../infra/) — the CDK app, its template tests, `cdk.json`, the committed context and the pinned CLI; see [Infrastructure](#infrastructure) below |
 | Repo governance that lives in GitHub settings | [ADR-0001](../adr/0001-tag-driven-versioning.md), reproduced by `bootstrap.sh` |
 | Platform decisions | [ADR-0001](../adr/0001-tag-driven-versioning.md) |
 
@@ -1212,6 +1213,59 @@ the claims worth testing and an in-memory provider proves none of them ([ADR-000
 Branches map to intent rather than to environments — there is no deployment here, only a published image:
 `develop` integrates, `staging` holds what is promoted but unreleased, `main` is what has shipped, and a `v*`
 tag on `main` is what triggers a release.
+
+### Infrastructure
+
+**The AWS resources the deployment will run on are code under [`infra/`](../../infra/), and a pull request
+proves the template it proposes** ([ADR-0023](../adr/0023-aws-deployment-topology.md) §7, gh#516). The
+sentence above is still true — nothing deploys yet; the deploy jobs are gh#520's, and that pull request is
+the one that rewrites it. What exists today:
+
+- **Two projects in the solution.** `infra/MarqSpec.Mcp.TopstepX.Infra/` is the CDK app — one
+  `EnvironmentStack` instantiated for production (`marqspec.com`, zone looked up) and staging
+  (`staging.marqspec.com`, zone created and delegated), differing only in its props, plus the
+  `GitHubOidcStack`. `infra/MarqSpec.Mcp.TopstepX.Infra.Tests/` is xUnit over `Amazon.CDK.Assertions`.
+  Both ride `build & unit tests`' existing Restore, Format and Build steps, `NuGetAudit` and CodeQL, with
+  no ruleset write. **Neither references a product project or the venue package**, so ADR-0002's gate has
+  nothing to read there and `check-no-order-path.sh`'s list is unchanged on purpose; the `Dockerfile`
+  restores the host project alone, and the published `/app` was checked for an `Infra` assembly and holds
+  none.
+- **What CI checks, and what a green run licenses.** After the unit tests, `build & unit tests` runs the
+  template tests (107 at gh#516 — the security groups, the listeners, the health probe, the digest
+  parameter, `RETAIN` on everything stateful, every `.env.example` key outside the compose-only set present
+  in the task, every credential a `valueFrom`, the two environments differing only where their props say)
+  and then `cdk synth --no-lookups` **once per outbound shape** through the CLI pinned in
+  `infra/package.json`. **No credential exists on the runner, by construction**: `--no-lookups` makes a
+  context miss fail the synth rather than call AWS, and `infra/cdk.context.json` carries the hosted-zone
+  and availability-zone answers under a placeholder account. A green run says the app runs, every stack
+  synthesises and the template says what the tests assert — nothing about whether an account accepts it.
+  The tests need Node on `PATH` at run time and nowhere else: the constructs are jsii, and every call goes
+  through one Node process the runtime spawns. **The test project runs its classes serially** for the same
+  reason — parallel class fixtures raced on the runtime's first-use tarball extraction, measured as an
+  `IOException` in every test of the second class and one run hung four and a half minutes.
+- **Three things are placeholders until gh#519.** The account (`123456789012`, AWS's documentation
+  example) and the region (`us-east-1`, ADR-0023's cost basis, not a choice) sit in `cdk.json`'s context and
+  are overridden with `-c account=… -c region=…` at deploy; the CDK refuses to deploy into an account the
+  credentials do not match, so a forgotten override fails loudly. The hosted-zone entry in
+  `cdk.context.json` is keyed on those placeholders and is replaced by a real lookup on the first
+  credentialed synth. And **the tasks' outbound path is not chosen**: `OutboundPath` is a required enum with
+  no default, the app refuses to synthesise without `-c outbound=…`, CI passes every value, and the choice
+  is the maintainer's dated entry on ADR-0023 — when it lands, the loop in `ci.yml` collapses to one plain
+  synth and the value becomes a literal in `Program.cs`.
+- **Secrets are shells.** The three `topstepx-mcp/<env>/{postgres,projectx,cohere}` secrets are created
+  with every JSON key the task definitions read and every value empty; gh#519 writes the values by hand,
+  once. **Never edit a shell's literal afterwards**: CloudFormation creates a new secret version whenever
+  the `SecretString` property changes, and that version is the live one — an edit would put an empty
+  document over a real credential. A new key is a new secret.
+- **The image is a digest in a parameter.** `ImageDigest` and `Version` have no default and are passed on
+  `cdk deploy --parameters`; the stack writes the same two values to `/topstepx-mcp/<env>/image-digest`
+  and `/version` in SSM as the written history, so the history cannot say one thing while the task runs
+  another. The Timescale image is a literal digest in `EnvironmentStack.PostgresImage`, read off the `pg17`
+  tag on a stated date; bump it in a pull request that says why.
+- **Local loop.** `dotnet test infra/MarqSpec.Mcp.TopstepX.Infra.Tests` for the tests; in `infra/`,
+  `npm ci` once and then `npx cdk synth --no-lookups -c outbound=<shape>` for the templates under
+  `infra/cdk.out/`, which is ignored. Nothing here needs an AWS profile, and a command that asks for one is
+  a lookup the committed context does not cover — add the entry, do not add a credential.
 
 ## Definition of done
 

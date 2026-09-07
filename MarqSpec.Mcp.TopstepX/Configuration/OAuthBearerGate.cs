@@ -42,7 +42,15 @@ namespace MarqSpec.Mcp.TopstepX.Configuration;
 public static class OAuthBearerGate
 {
     /// <summary>The Cognito signing algorithm, and the only one accepted.</summary>
+    /// <remarks>
+    /// This one line is what refuses an RS512 or PS256 token signed with the <i>published</i> key — every
+    /// other check passes such a token — and the review of gh#512 found nothing pinned it. The
+    /// <c>AnotherAlgorithmUnderThePublishedKey_IsRefused</c> rows do now.
+    /// </remarks>
     private const string Algorithm = SecurityAlgorithms.RsaSha256;
+
+    /// <summary>The category the JWT bearer handler logs under, filtered to Warning in this mode.</summary>
+    private const string AuthenticationLogCategory = "Microsoft.AspNetCore.Authentication";
 
     /// <summary>Lifetime tolerance. The card bounds it at 60 s; the tests pin both sides.</summary>
     private static readonly TimeSpan _clockSkew = TimeSpan.FromSeconds(60);
@@ -57,6 +65,14 @@ public static class OAuthBearerGate
     {
         ArgumentNullException.ThrowIfNull(services);
         ArgumentNullException.ThrowIfNull(oauth);
+
+        // The handler logs a refused token's `iss` and `kid` VERBATIM at Information ("IDX10205: Issuer
+        // validation failed. Issuer: '…'", "IDX10503 … The token's kid is: '…'"). Both are attacker-chosen
+        // strings on a listener the internet can reach, and an unauthenticated request should not be able
+        // to write what it likes into the log at the product's default level. The category is filtered to
+        // Warning here, in the one mode that registers the handler; the gate's own refusal line above it
+        // names a claim and never a value, so nothing an operator needs is lost.
+        services.AddLogging(logging => logging.AddFilter(AuthenticationLogCategory, LogLevel.Warning));
 
         services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
             .AddJwtBearer(options =>
@@ -78,6 +94,16 @@ public static class OAuthBearerGate
                 {
                     ValidateIssuer = true,
                     ValidIssuer = oauth.Issuer,
+                    // The handler ALSO trusts the discovery document's own `issuer`: it concatenates it into
+                    // ValidIssuers beside the one above, so a document that named a second string would have
+                    // tokens under that string accepted (measured by the gh#512 review — 200). The delegate
+                    // replaces the list comparison entirely: the configured string, ordinally, and nothing
+                    // the document says about itself. The exception carries no claim value.
+                    IssuerValidator = (issuer, _, _) =>
+                        string.Equals(issuer, oauth.Issuer, StringComparison.Ordinal)
+                            ? issuer
+                            : throw new SecurityTokenInvalidIssuerException(
+                                "The iss claim is not the configured Mcp__OAuth__Issuer."),
                     // A Cognito access token carries no aud. The audience check is CognitoAccessTokenPolicy,
                     // below, and it is not optional.
                     ValidateAudience = false,

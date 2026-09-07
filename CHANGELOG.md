@@ -45,7 +45,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   ([ADR-0021](documentation/adr/0021-a-non-loopback-instance-is-supported.md)): every call to `/mcp` carries
   an access token Amazon Cognito issued (`Mcp__OAuth__Issuer`), verified against the keys discovered from the
   issuer's OpenID configuration — RS256 only, signed only, an `exp` required, 60 s skew, the issuer compared
-  byte for byte — and then checked for what a Cognito access token carries *instead of* an audience:
+  byte for byte by an explicit validator (the handler would otherwise also trust whatever `issuer` the
+  discovery document names, measured in review) — and then checked for what a Cognito access token carries
+  *instead of* an audience:
   `token_use == access`, one `client_id` in `Mcp__OAuth__ClientIds`, and `Mcp__OAuth__RequiredScope`
   (default `topstepx-mcp/read`) present as a whole entry of the `scope` claim. A refused call answers `401`
   with `WWW-Authenticate: Bearer resource_metadata="…", scope="…"`, and the RFC 9728 document that names —

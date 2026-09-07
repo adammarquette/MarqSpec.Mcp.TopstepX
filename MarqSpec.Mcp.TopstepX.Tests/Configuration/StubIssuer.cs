@@ -35,13 +35,15 @@ internal sealed class StubIssuer : IAsyncDisposable
 
     private readonly WebApplication _app;
     private readonly RSA _rsa;
+    private readonly string _advertisedSuffix;
     private int _discoveryRequests;
     private int _jwksRequests;
 
-    private StubIssuer(WebApplication app, RSA rsa, string issuer)
+    private StubIssuer(WebApplication app, RSA rsa, string issuer, string advertisedSuffix)
     {
         _app = app;
         _rsa = rsa;
+        _advertisedSuffix = advertisedSuffix;
         Issuer = issuer;
         Signing = new SigningCredentials(new RsaSecurityKey(rsa) { KeyId = Kid }, SecurityAlgorithms.RsaSha256);
     }
@@ -58,8 +60,19 @@ internal sealed class StubIssuer : IAsyncDisposable
     /// <summary>How many times the key set has been fetched.</summary>
     public int JwksRequests => Volatile.Read(ref _jwksRequests);
 
+    /// <summary>
+    /// What the discovery document says its own <c>issuer</c> is. Normally <see cref="Issuer"/>; a test can
+    /// make it lie, because the handler would otherwise believe it.
+    /// </summary>
+    public string AdvertisedIssuer => Issuer + _advertisedSuffix;
+
     /// <summary>Starts an issuer at <c>http://127.0.0.1:{ephemeral}{pool}</c>.</summary>
-    public static async Task<StubIssuer> StartAsync(string pool = "/stub-pool-1")
+    /// <param name="pool">The path segment, Cognito's pool id in shape.</param>
+    /// <param name="advertisedSuffix">
+    /// Appended to the issuer in the discovery document only, so the document names a string no configuration
+    /// does. The review of gh#512 measured that the handler adds that string to its trusted issuers.
+    /// </param>
+    public static async Task<StubIssuer> StartAsync(string pool = "/stub-pool-1", string advertisedSuffix = "")
     {
         RSA rsa = RSA.Create(2048);
         JsonWebKey published = JsonWebKeyConverter.ConvertFromRSASecurityKey(
@@ -79,7 +92,7 @@ internal sealed class StubIssuer : IAsyncDisposable
             string issuer = self.Issuer;
             return Results.Json(new
             {
-                issuer,
+                issuer = self.AdvertisedIssuer,
                 jwks_uri = issuer + "/.well-known/jwks.json",
                 authorization_endpoint = issuer + "/oauth2/authorize",
                 token_endpoint = issuer + "/oauth2/token",
@@ -103,9 +116,13 @@ internal sealed class StubIssuer : IAsyncDisposable
         });
 
         await app.StartAsync();
-        self = new StubIssuer(app, rsa, app.Urls.First() + pool);
+        self = new StubIssuer(app, rsa, app.Urls.First() + pool, advertisedSuffix);
         return self;
     }
+
+    /// <summary>The published key under another algorithm — the only thing wrong with such a token is its <c>alg</c>.</summary>
+    public SigningCredentials SignWith(string algorithm)
+        => new(new RsaSecurityKey(_rsa) { KeyId = Kid }, algorithm);
 
     /// <summary>A token shaped like a Cognito access token for this issuer, with every claim overridable.</summary>
     public TokenShape Valid() => new() { Issuer = Issuer };

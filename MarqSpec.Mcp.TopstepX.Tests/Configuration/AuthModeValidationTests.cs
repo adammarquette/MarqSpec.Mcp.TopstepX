@@ -204,13 +204,22 @@ public sealed class AuthModeValidationTests
     }
 
     [Theory]
-    [InlineData("")]
-    [InlineData("   ")]
     [InlineData("topstepx-mcp/read openid")]
+    [InlineData(" topstepx-mcp/read")]
     public void OAuth_RefusesToStart_WithAScopeThatIsNotOneScope(string scope)
     {
         Starting(CompleteOAuth(("Mcp:OAuth:RequiredScope", scope)))
             .Should().Throw<OptionsValidationException>().WithMessage("*Mcp__OAuth__RequiredScope*");
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData("   ")]
+    public void ABlankScope_IsTheSameAsAnUnsetOne(string scope)
+    {
+        // .env.example lists the key with no value, as it lists every key, and `Mcp__OAuth__RequiredScope=`
+        // exported from it used to refuse startup beside a comment saying it defaulted (gh#512 review).
+        Start(CompleteOAuth(("Mcp:OAuth:RequiredScope", scope))).OAuth.RequiredScope.Should().Be("topstepx-mcp/read");
     }
 
     [Fact]

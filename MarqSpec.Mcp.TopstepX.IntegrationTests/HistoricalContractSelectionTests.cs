@@ -1,3 +1,4 @@
+using System.Reflection;
 using FluentAssertions;
 using MarqSpec.Mcp.TopstepX.Configuration;
 using MarqSpec.Mcp.TopstepX.Data;
@@ -124,6 +125,45 @@ public sealed class HistoricalContractSelectionTests : IAsyncLifetime
 
         tenureStart.Should().Be(sevenDaysBack);
     }
+
+    [Fact]
+    public void EveryHandBuiltCache_CarriesARegistryServingItsOwnInstrument()
+    {
+        // A registry is only useful for the instruments it was configured with: CycleFor and
+        // CandidateDepthFor throw KeyNotFoundException for anything else. So a fixture that hands the cache a
+        // registry built from DIFFERENT options than the instrument it then reads is a KeyNotFoundException
+        // waiting for the first historical fetch -- and it would arrive as a thrown tool call, not as a red
+        // test, because nothing in the fetch flow consults the registry yet.
+        //
+        // ConcurrencyHarness is the one fixture where the two disagree. It serves TWO symbols: ES for
+        // everything, and MNQ for the rebuild test, which needs its own instrument because rebuild-indicators
+        // filters by instrument rather than by venue and would otherwise reconcile every other test's series.
+        // Registry() already names both; the cache has to be given THAT one, not a default.
+        BarCacheService cache = ConcurrencyHarness.Cache(
+            _database, "test", [], SessionStart.AddHours(2));
+
+        InstrumentRegistry registry = RegistryOf(cache);
+
+        registry.CycleFor(ConcurrencyHarness.RebuildInstrument).Code.Should().Be("HMUZ");
+        registry.CandidateDepthFor(ConcurrencyHarness.RebuildInstrument).Should().Be(2);
+
+        registry.CycleFor(ConcurrencyHarness.Instrument).Code.Should().Be("HMUZ");
+        registry.CandidateDepthFor(ConcurrencyHarness.Instrument).Should().Be(2);
+    }
+
+    /// <summary>The registry a service was constructed with.</summary>
+    /// <param name="cache">The service.</param>
+    /// <returns>The registry.</returns>
+    /// <remarks>
+    /// Read off the field because the service exposes no registry, and it should not: nothing outside the
+    /// fetch flow has a reason to ask it for one. The alternative — a behavioural assertion — cannot be
+    /// written until the fetch actually consults the registry, and the mistake this catches is one that would
+    /// then throw rather than answer wrongly. Reflection is the cheap proof available today.
+    /// </remarks>
+    private static InstrumentRegistry RegistryOf(BarCacheService cache) =>
+        (InstrumentRegistry)typeof(BarCacheService)
+            .GetField("_registry", BindingFlags.Instance | BindingFlags.NonPublic)!
+            .GetValue(cache)!;
 
     /// <summary>Seeds a run of buckets under one contract id.</summary>
     /// <param name="contractId">The contract the rows are attributed to.</param>

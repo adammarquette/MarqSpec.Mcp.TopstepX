@@ -204,7 +204,37 @@ public sealed class ToolGuards(IOptions<MarketDataOptions> options)
     /// (gh#110).
     /// </para>
     /// </remarks>
-    public static BarRange ValidateBucketSpan(BarRange window, int resolutionMinutes, string ask)
+    public static BarRange ValidateBucketSpan(BarRange window, int resolutionMinutes, string ask) =>
+        ValidateBucketSpan(
+            window,
+            resolutionMinutes,
+            ask,
+            "Narrow the window, ask for fewer bars, or use a coarser resolution.");
+
+    /// <summary>
+    /// Refuses a window that spans more buckets than one gap-detection pass will enumerate, with the remedy
+    /// the calling tool can actually offer.
+    /// </summary>
+    /// <param name="window">The window a read is about to be issued over.</param>
+    /// <param name="resolutionMinutes">The bar size in minutes.</param>
+    /// <param name="ask">How the caller expressed the request.</param>
+    /// <param name="remedy">
+    /// The action sentence, ending in a full stop — what THIS tool's caller can change. Named rather than
+    /// fixed because the three-way advice above is <c>get_bars</c>'s: a session-bar caller has no bar count
+    /// and no resolution argument, and advice pointing at parameters that do not exist reads as a dead end
+    /// (gh#500).
+    /// </param>
+    /// <returns>The window.</returns>
+    /// <exception cref="McpException">
+    /// The window spans more than <see cref="BarGapDetector.MaxBucketsPerPass"/> buckets, ends past
+    /// <see cref="LastServableEnd"/>, or the resolution is unservable.
+    /// </exception>
+    /// <remarks>
+    /// Only the <b>size</b> refusal takes the remedy. The representability one keeps its own advice, because
+    /// "move the end back" is the only thing that fixes an end past the calendar whichever tool asked.
+    /// </remarks>
+    public static BarRange ValidateBucketSpan(
+        BarRange window, int resolutionMinutes, string ask, string remedy)
     {
         ArgumentNullException.ThrowIfNull(window);
         ValidateResolution(resolutionMinutes);
@@ -237,8 +267,8 @@ public sealed class ToolGuards(IOptions<MarketDataOptions> options)
                 + " buckets at " + resolutionMinutes.ToString(System.Globalization.CultureInfo.InvariantCulture)
                 + "-minute resolution, over the "
                 + BarGapDetector.MaxBucketsPerPass.ToString(System.Globalization.CultureInfo.InvariantCulture)
-                + " a single gap-detection pass will enumerate. Narrow the window, ask for fewer bars, or use "
-                + "a coarser resolution. The read is refused rather than shortened to fit, because a series "
+                + " a single gap-detection pass will enumerate. " + remedy
+                + " The read is refused rather than shortened to fit, because a series "
                 + "cut at one end is indistinguishable from a complete one.")
             : window;
     }
@@ -352,7 +382,7 @@ public sealed class ToolGuards(IOptions<MarketDataOptions> options)
     /// comfortably inside the calendar and still be wider than one gap-detection pass will enumerate: 100,000
     /// one-minute bars are inside a <c>MaxRows</c> of 100,000 and reach 405,760 buckets, past the 250,000
     /// <see cref="BarGapDetector.MaxBucketsPerPass"/> allows. So the window this produces goes through
-    /// <see cref="ValidateBucketSpan"/> before it is returned (gh#96).
+    /// <see cref="ValidateBucketSpan(BarRange, int, string)"/> before it is returned (gh#96).
     /// </para>
     /// </remarks>
     public static BarRange LookbackWindow(DateTimeOffset end, int resolutionMinutes, int count)
@@ -534,7 +564,11 @@ public sealed class ToolGuards(IOptions<MarketDataOptions> options)
         // what stops a window of arbitrary width being enumerated a day at a time before anything refuses it.
         // The base resolution is the session's own -- the buckets a session bar is derived from are what a
         // read of it enumerates.
-        ValidateBucketSpan(window, definition.BaseResolutionMinutes, "That window");
+        ValidateBucketSpan(
+            window,
+            definition.BaseResolutionMinutes,
+            "That window",
+            "Narrow the window, or ask the operator for a coarser base resolution for this session.");
 
         IReadOnlyList<DateOnly> tradeDates = SessionWindows.TradeDatesIn(calendar, definition, window);
         if (tradeDates.Count > MaxRows)
@@ -562,8 +596,9 @@ public sealed class ToolGuards(IOptions<MarketDataOptions> options)
     /// <returns>The trade dates, ascending, oldest first.</returns>
     /// <exception cref="ArgumentNullException">An argument is <see langword="null"/>.</exception>
     /// <exception cref="McpException">
-    /// The count is not positive, exceeds <see cref="MaxRows"/>, or asks for more closed sessions than the
-    /// calendar carries inside the bounded walk.
+    /// The count is not positive, exceeds <see cref="MaxRows"/>, <paramref name="now"/> is past
+    /// <see cref="CalendarHorizon"/>, or the calendar carries fewer closed sessions than the count inside the
+    /// bounded walk.
     /// </exception>
     /// <remarks>
     /// <para>
@@ -576,7 +611,15 @@ public sealed class ToolGuards(IOptions<MarketDataOptions> options)
     /// </para>
     /// <para>
     /// The refusal states the span rather than quoting the Domain's message, because a caller's exception
-    /// text is free text and this surface carries none (ADR-0008).
+    /// text is free text and this surface carries none (ADR-0008). It blames the <b>calendar</b> rather than
+    /// the walk: every one of those days is walked, and what runs out is the sessions inside them.
+    /// </para>
+    /// <para>
+    /// <b>The catch is filtered on <c>ParamName</c>, and unfiltered it was wrong.</b> The same walk throws the
+    /// same exception type for an instant <see cref="DateOnly"/> cannot hold, and swallowing that one into a
+    /// count refusal tells a caller to ask for fewer sessions when the argument out of reach is
+    /// <paramref name="now"/>. <see cref="ValidateInstant"/> takes that case first; the filter is the second
+    /// line, for anything below that throws about something other than the count.
     /// </para>
     /// </remarks>
     public IReadOnlyList<DateOnly> ValidateSessionCount(
@@ -590,11 +633,17 @@ public sealed class ToolGuards(IOptions<MarketDataOptions> options)
 
         int wanted = ValidateCount(count);
 
+        // Representability before satisfiability, the same order and the same reason as
+        // ValidateSessionWindow: the walk starts one day AHEAD of `now`'s market date, so an instant at the
+        // top of the range faults inside the Domain -- and it faults with the same exception type the
+        // unsatisfiable-count path uses. Judged here, the two stay distinguishable.
+        ValidateInstant(now, "now");
+
         try
         {
             return SessionWindows.LastClosedTradeDates(calendar, definition, now, wanted);
         }
-        catch (ArgumentOutOfRangeException)
+        catch (ArgumentOutOfRangeException ex) when (ex.ParamName == "count")
         {
             // RESTATED CONSTANT, deliberately and with the drift in view: the walk span is computed as
             // `(count * 4) + 15` inside SessionWindows.LastClosedTradeDates, and it cannot be read back from
@@ -602,12 +651,20 @@ public sealed class ToolGuards(IOptions<MarketDataOptions> options)
             // together so the next reader of either sees the other.
             int span = (wanted * 4) + 15;
 
+            // The message names the CALENDAR as the cause, not the walk. The server does walk every one of
+            // those days; what runs out is the sessions inside them, and a refusal reading "this server only
+            // walks back N days" sends a reader to widen a bound that is not the one that bit. How many it
+            // did find is the other half of the story and is NOT stated: the Domain reports it only inside
+            // the exception message, which is free text this surface does not repeat (ADR-0008), and reading
+            // it back would take an accessor on SessionWindows -- deferred rather than smuggled in here.
+
+
             throw new McpException(
                 "count " + wanted.ToString(System.Globalization.CultureInfo.InvariantCulture)
                 + " asks for more closed " + definition.Name
-                + " sessions than this server walks back to ("
+                + " sessions than the calendar holds in the "
                 + span.ToString(System.Globalization.CultureInfo.InvariantCulture)
-                + " calendar days). Ask for fewer.");
+                + " calendar days this server walks back over. Ask for fewer.");
         }
     }
 }

@@ -1439,9 +1439,13 @@ public sealed class BarCacheService
     /// <para>
     /// So the settled part is claimed permanently and only the young remainder carries the TTL. <b>The two
     /// touch</b>, and touching rows are what <see cref="Union"/> merges — so the slice is still answered
-    /// whole while both stand, and when the young one lapses only its own stretch is re-asked. Cutting here
-    /// rather than recording per page keeps one row for the settled part however wide it is, which is the
-    /// row that has to survive for ever.
+    /// whole while both stand. When the young one lapses the <i>whole</i> slice is re-asked, not just its
+    /// young stretch: <c>ExcludeCoveredAsync</c> tests whole-slice containment and does not split a slice
+    /// around a covered sub-range. What the cut actually buys is the row that outlives the TTL — the settled
+    /// part is claimed once, permanently, and grows as <c>now</c> advances and later reads cut further
+    /// forward, so the stretch that has to be re-asked shrinks towards nothing instead of staying a whole
+    /// quarter for ever. Cutting here rather than recording per page keeps that permanent claim to one row
+    /// however wide it is.
     /// </para>
     /// </remarks>
     private static void MemoiseEmpty(

@@ -84,7 +84,10 @@ The server serves OHLCV bars for a futures instrument at a requested resolution 
   whose window spans a roll reports the boundary in its payload; the bars themselves are still returned,
   because each one is a real observation of a real contract
   ([ADR-0011](adr/0011-contract-roll-boundary.md)). Bars stored before this was recorded carry **no**
-  contract, and that absence is reported rather than guessed at.
+  contract, and that absence is reported rather than guessed at. **Which contract a range is fetched from is
+  `R-1.14`'s**: the present band comes from the venue's own pick and a historical range from whichever listed
+  contract carried the volume on each trade date, so a window spanning a roll holds one segment per contract
+  in expiry order rather than two runs interleaved by when each stretch happened to be fetched.
 - **R-1.12** A **session bar** is derived from stored base bars and **exists only when every expected base
   bucket is stored, from one contract**; otherwise it is **absent with a stated reason**, never a partial bar.
   A session is a named slice of the trade date `R-1.2`'s calendar already models, stated in Central
@@ -113,6 +116,32 @@ The server serves OHLCV bars for a futures instrument at a requested resolution 
   bounded the same way, and by the span of calendar days the closed-session walk covers. Every refusal is
   decided before the store or the venue is touched. See
   [ADR-0022](adr/0022-session-bars-derived-complete-or-absent.md) (gh#496, gh#500).
+- **R-1.14** **The present is fetched from the venue's pick; history is fetched from the contract that carried
+  the volume.** The two bands are separated by the store rather than by the clock: the present band begins at
+  the first bucket of the **trailing run** of the venue's active contract `F` — the newest contiguous run of
+  bars already attributed to `F`, taken across **every** stored resolution, a bucket carrying no contract
+  counting as *not* `F` — so a warm read asks nobody but `F` about a stretch `F` has already answered for, and
+  costs exactly what it cost before this requirement. A store holding no such run has an absence rather than a
+  reason to reach back for ever, so the band starts at `now` less a **seven-day horizon**, a constant of the
+  fetch flow and not configuration. Buckets at or after that point are the present; everything older is
+  history. A historical range is cut at every trade-date boundary where its candidates change, and a trade
+  date's candidates are the product's registry **contract month cycle** taken at its **candidate depth** —
+  `HMUZ` two deep on the equity indices, `GJMQVZ` and every-month three deep on the metals and energy, because
+  the market skips a listed gold month outright and a crude contract expires before the month it is named for.
+  Each constructed candidate is **existence-checked by id** before it is asked, since a constructed id is a
+  guess until the venue confirms it; each surviving one is fetched over the whole piece, and the contract with
+  the highest summed volume on a trade date keeps that date's bars. **A tie goes to the nearer expiry**, and a
+  trade date the store already holds an attributed bar for keeps the contract it is recorded under, so one day
+  is never half one contract and half another. A candidate that answered nothing records that emptiness
+  **under its own id** (`R-1.7`), cut at the settled age so the older part is claimed permanently while only
+  the young remainder carries the short TTL; a winner records none. **Degradation is loud and earns no
+  permanent claim**: an instrument the registry does not serve, a front whose expiry does not read against the
+  cycle, or a stretch no constructed candidate is listed for is fetched from `F` — exactly the behaviour that
+  preceded this requirement — with a **warning naming the range and the reason**, and with nothing recorded
+  about it being empty, so the next read asks again rather than inheriting a claim nobody could properly make.
+  A read **never rewrites a bucket that already carries a contract**; replacing a run the policy would decide
+  differently is an operator's verb, not a read's (gh#506). See
+  [ADR-0020](adr/0020-historical-contract-selection.md) (gh#505, gh#497).
 
 ## R-2 — Pre-computed indicators
 
@@ -148,7 +177,16 @@ The server serves OHLCV bars for a futures instrument at a requested resolution 
   same price, so a value smoothed across the seam reports a bookkeeping gap as market movement. The projection
   seeds each contract's run separately, which means the warm-up restarts at every roll and the values
   immediately after one are **absent** — an instance of `R-2.3`, not an exception to it
-  ([ADR-0011](adr/0011-contract-roll-boundary.md)).
+  ([ADR-0011](adr/0011-contract-roll-boundary.md)). **`R-1.14` makes that cost visible over the whole of
+  history rather than only at the live roll**, and how often it is paid is the product's listed cycle: the
+  candidate set turns **four** times a year on MES's `HMUZ`, **six** on MGC's `GJMQVZ` and **twelve** on
+  MCL's every-month cycle, and a seam lands wherever the volume winner actually changes — on gold that is
+  fewer than six, because the market has never given October the volume (gh#494). After each seam the first
+  `WarmupBars` buckets of that contract carry no value, so a series whose warm-up is longer than one
+  contract's tenure never produces a value at all: a 200-period daily needs two hundred daily bars from one
+  contract, where a tenure holds about twenty-one on MCL and about sixty-four on MES, and even a 50-period
+  daily only fills in the last stretch of an MES quarter and never on MCL. That is a real limit of a
+  per-contract series and not a defect; a continuous back-adjusted series is the remedy, and it is gh#354's.
 - **R-2.8** A projection **removes stored values the current bars no longer justify**, for the indicators
   and periods it is configured to produce. Until segmenting, a bucket could only move from *not computable* to
   *computable*, so an upsert-only projection was safe; a contract seam moves the boundary the other way, and a
@@ -215,7 +253,12 @@ The server serves OHLCV bars for a futures instrument at a requested resolution 
   price the contract in front has never traded, and it is indistinguishable from a level price is about to
   reach. When the requested lookback spans a roll, detection is confined to the contract in front and the
   result reports how many bars it actually used
-  ([ADR-0011](adr/0011-contract-roll-boundary.md)).
+  ([ADR-0011](adr/0011-contract-roll-boundary.md)). **`R-1.14` makes that confinement bite over stored
+  history too**: a long lookback over a range fetched by the policy holds one segment per contract in expiry
+  order, so `detectedOverBars` is bounded by **one contract's tenure** — roughly twenty-one sessions on MCL's
+  monthly cycle and sixty-four on MES's quarterly one — however many bars were asked for. The number is
+  reported rather than implied for exactly this reason; a level detected over sixty-four bars deserves less
+  weight than one detected over five hundred, and only `detectedOverBars` says which happened.
 - **R-3.6** Levels are detected by a **named method**, and the vocabulary is closed — an unknown name is an
   error listing the known ones, never an empty level set. `swing` finds pivots; `session` reports what a
   finished session left behind: prior-day and prior-week high, low and close, the overnight range and the

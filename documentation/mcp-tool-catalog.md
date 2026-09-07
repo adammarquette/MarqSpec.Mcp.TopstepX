@@ -163,6 +163,27 @@ page against either**, so check it against the code, never against another docum
   === null` is `false` for every one of them. Test `"contractId" in segment`, and read an absent one as
   *unknown*, never as "the same contract as the segment beside it".
 
+  **Since gh#505, history carries one segment per roll, in expiry order, and the segments do not
+  interleave.** Bars older than the present band are fetched from whichever listed contract carried the
+  volume on each trade date rather than from whatever the venue happens to mark active today (`R-1.14`,
+  [ADR-0020](adr/0020-historical-contract-selection.md)), so `contracts.segments` on `get_bars`,
+  `get_latest_bars`, `get_indicators` and `get_key_levels` reads as a clean succession — one contiguous run
+  per contract, each `firstBucket` at the volume-decided changeover — where a long window used to alternate
+  between two ids according to which stretch had been fetched when. A store filled before that change keeps
+  the interleaving it already has: a read never rewrites a bucket that already carries a contract, and
+  re-deciding a window is an operator's verb rather than a read's (gh#506).
+
+  **How often the seam arrives is the product's listed cycle, and it bounds what a long series can
+  measure.** The candidate set turns **four** times a year on MES's `HMUZ`, **six** on MGC's `GJMQVZ` and
+  **twelve** on MCL's every-month cycle — fewer on gold in practice, because the market has never given
+  October the volume. Nothing derived crosses a seam, so the first `WarmupBars` buckets of each contract
+  carry **no indicator value**, and an indicator whose warm-up outruns one contract's tenure **never
+  produces a value at all**: a 200-period daily needs two hundred daily bars from one contract, where a
+  tenure holds about twenty-one on MCL and about sixty-four on MES, and even a 50-period daily fills only in
+  the last stretch of an MES quarter and never on MCL. Ask for a long daily indicator on a monthly-cycle
+  product and the honest answer is an empty `values[]`, not a number. The remedy is a continuous
+  back-adjusted series, which this server does not build (gh#354).
+
 ## Reference and session
 
 ### `list_instruments`
@@ -238,10 +259,24 @@ budget than it believes.
 "no vendor traffic". Since gh#504 a read whose gaps the empty-range memo covers resolves the instrument's
 contract candidates first, and that `Contract/search` is unpaced and not counted in `venueRequests`: it is visible only on the platform meter, as
 `venue_calls_total{operation="resolve_contracts"}` — stated in
-[architecture, step 4](architecture.md#the-cache-aside-read--the-only-genuinely-interesting-path). So
+[architecture, step 4](architecture.md#the-cache-aside-read--the-only-genuinely-interesting-path). Since
+gh#505 a read with a **historical** gap also confirms each constructed candidate by id before asking it for
+bars, and those lookups sit in the same place: unpaced, on the vendor's general pool, and metered as
+`venue_calls_total{operation="find_contract"}` beside `resolve_contracts` — **never** added to
+`venueRequests`. So
 `venueRequests == 0` proves **no bars were fetched**, not that the vendor went untouched, and such a read is
 venue-dependent: with the venue down it raises rather than answering from the store. The error runs the same
 way as `fetchedBuckets`'s — it **undercounts** venue traffic and never overcounts it.
+
+**A cold *historical* window costs `venueRequests` several times over, and that is the price of the answer
+being right.** Every candidate of a historical stretch is paged through the same paced walk, so the count is
+about **K×** what a single-contract fetch of the same window would be — K is the product's candidate depth,
+**two** on the equity indices and **three** on the metals and energy, where a listed month is skipped
+outright or a contract expires before the month it is named for. Those pages are genuine history requests
+and are all counted, unlike the lookups above. The **present** band is untouched by this: a warm
+`get_latest_bars` issues exactly the `venueRequests` it always did, and zero contract lookups, because the
+band starts where the store's own run of the venue-front contract starts (`R-1.14`,
+[ADR-0020](adr/0020-historical-contract-selection.md)).
 
 `venueRequests == 0` is what makes "the second identical call fetches nothing" observable rather than a
 claim, and it is the check for `R-1.3`. **There is no `fromCache`** — see the retractions at the foot of this
@@ -1008,6 +1043,7 @@ not from whether its type is nullable, so `string? symbol` with no `= null` is n
 | `get_market_session` | a `sessionOpenUtc` field | never on `SessionState` | gh#48 |
 | `get_bars` | a `fromCache` field | never on `BarSeries` — and the one an agent would reach for, reading falsy `undefined` every call | gh#48 |
 | `get_bars` | `fetchedBuckets` ≡ `venueRequests` as evidence | only `venueRequests == 0` proves **no bars were fetched** — and since gh#504 not even that the vendor went untouched: a memo-covered read still makes one `Contract/search` that `venueRequests` does not count (`venue_calls_total{operation="resolve_contracts"}` does) | gh#73 · gh#504 |
+| `get_bars` | history comes from the contract the venue marks active | only the **present** band does. Since gh#505 a range older than the store's trailing run of that contract is fetched from every listed cycle candidate and kept per trade date by **volume** — so a window may be served from a contract the venue never marked active, and `contracts.segments` reads as one run per roll in expiry order instead of two interleaved ones (`R-1.14`) | gh#505 |
 | `get_indicators` | `period` is a parameter | never was; fixed per indicator, and returned | gh#48 |
 | `get_indicators` · `get_indicator_at` | `period` is not a parameter | since gh#495 it is an optional *selector* among the operator's configured periods — omitted means the primary, an unconfigured one is refused listing them, and nothing ad hoc is computed ([ADR-0018](adr/0018-period-selection-among-configured-periods.md)) | gh#495 |
 | `get_indicator_at` | cannot-measure is `{ value: null }` | it is `{}` | gh#85 |

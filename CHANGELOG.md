@@ -50,6 +50,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   [ADR-0022](documentation/adr/0022-session-bars-derived-complete-or-absent.md) — which gains a dated update
   for the tool surface — are updated in the same change, and the 1,380-and-above resolution refusal now names
   the two tools rather than promising them (gh#500, gh#496).
+- **History is fetched from the contract that carried the volume; the present still comes from the venue's
+  own pick.** A read now cuts what it owes the venue in two. The **present band** starts at the first bucket
+  of the store's trailing run of the venue-front contract — `BarCacheService.TenureStartAsync`, two
+  `AsNoTracking` queries unscoped by resolution, a bucket with no contract counting as *not* the front's —
+  and falls back to `now − PresentHorizon`, **seven days**, only on a store holding no such run. That band
+  is fetched exactly as it was before: the same pages, the same `requests++`, the same forming-bar drop, and
+  a warm `get_latest_bars` costs the `venueRequests` it always did with zero contract lookups. Everything
+  **older** is history: `HistoricalRangePlanner.PlanSlices` cuts it at each trade-date boundary where the
+  registry cycle's candidates change (a binary search on the same `BarSessionCalendar.TradeDateFor` the
+  fetch will ask, so the cut lands where the trade date actually turns), `ContractDirectory.FindAsync`
+  confirms each constructed id against the venue before it is asked, each surviving candidate is paged
+  through the same paced walk, and `HistoricalContractPolicy.Decide` keeps per trade date the bars of the
+  contract with the most volume — ties to the nearer expiry, and a trade date the store already holds an
+  attributed bar for keeping the contract it is recorded under, read by `StoredContractByTradeDateAsync`
+  from the trade dates rather than from the caller's window so half a day is never one contract and half
+  another. **The behaviour change is plain: a historical range may now be served from a contract the venue
+  did not mark active**, and `contracts.segments` therefore reads as one run per roll in expiry order rather
+  than two interleaved by when each stretch was fetched. **Existing attributed rows are not rewritten** — a
+  read fills what the store lacks and nothing more; re-deciding a window is `reselect-bars`' verb (gh#506).
+  Selection runs *outside* the transaction, before `ApplyAsync`, so a loser's bars are never written and
+  then deleted. The coverage ledger is consulted per slice against that slice's own candidate set — the
+  `.Take(1)` is gone — and a candidate that answered nothing records its emptiness under its own id, cut at
+  `SettledHistoryAge` so the settled part is permanent while only the young remainder carries the
+  fifteen-minute TTL. **Degradation is loud and earns nothing permanent:** an unserved instrument, a front
+  whose expiry does not read against the cycle, or a stretch no constructed candidate is listed for falls
+  back to the venue's pick with a `LogWarning` naming the range, and writes no memo, so the next read asks
+  again. Counters stay honest: `GapFilled` still counts ranges rather than slices, every candidate's history
+  pages count in `venueRequests` — a cold historical window costs about **K×** a single contract's, K being
+  the candidate depth, two on the indices and three on the metals and energy — and the `find_contract`
+  lookups are on the platform meter beside `resolve_contracts`, never in `venueRequests`. `Domain` is
+  untouched; the policy, the cycle and the expiry arithmetic are consumed as gh#502 and gh#503 left them.
+  [ADR-0020](documentation/adr/0020-historical-contract-selection.md) is the record, `R-1.14` the
+  requirement, and `R-2.7` and `R-3.5` gain what the seams cost a long series — four a year on MES, six on
+  MGC's listed cycle, twelve on MCL, and an indicator whose warm-up outruns one tenure never producing a
+  value (gh#354 is the remedy) (gh#505, gh#497).
 - **The host counts what it is for: cache hits and misses, venue calls, gap fills, tape ticks, hub
   reconnects and claim hand-offs.** One `Meter` and one `ActivitySource`, both named
   `MarqSpec.Mcp.TopstepX`, registered once and subscribed by `ConfigureTelemetry` beside the framework

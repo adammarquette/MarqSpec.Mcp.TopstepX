@@ -493,6 +493,36 @@ public sealed class CompositionRootTests
     }
 
     [Fact]
+    public void TheSessionBarServiceCanBeResolved()
+    {
+        // No tool reaches SessionBarService yet -- the session-bar tool surface is gh#500 -- so the theory
+        // that walks the tool types does not cover it and nothing else asks the container for it. A
+        // registration nobody resolves is a registration nobody has checked: the reader would die the first
+        // time gh#500 lands and asks for it, which is exactly the hole IndicatorRebuilder shipped through.
+        using ServiceProvider provider =
+            Build(new Dictionary<string, string?>(), new McpOptions { Transport = McpTransport.Stdio });
+        using IServiceScope scope = provider.CreateScope();
+
+        Func<object> resolve = () => scope.ServiceProvider.GetRequiredService<SessionBarService>();
+
+        resolve.Should().NotThrow();
+    }
+
+    [Fact]
+    public void TheSessionCatalogCanBeResolved()
+    {
+        // A singleton, so it resolves from the root rather than a scope -- and resolving it is the whole
+        // point: SessionCatalog validates the configured definitions in its CONSTRUCTOR, and a singleton
+        // resolves lazily, so a catalogue nothing ever asks for is a refusal that never happens.
+        using ServiceProvider provider =
+            Build(new Dictionary<string, string?>(), new McpOptions { Transport = McpTransport.Stdio });
+
+        Func<object> resolve = () => provider.GetRequiredService<SessionCatalog>();
+
+        resolve.Should().NotThrow();
+    }
+
+    [Fact]
     public void TheKeyLevelDetectionSection_Binds_IncludingItsSource()
     {
         // Bound from configuration rather than constructed, which is the whole of gh#244 on this side of the

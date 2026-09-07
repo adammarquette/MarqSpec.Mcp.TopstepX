@@ -151,9 +151,12 @@ public sealed class BarCacheService
 
     /// <summary>Where the present band starts, per instrument and front, for the life of this scope.</summary>
     /// <remarks>
-    /// Filled by <see cref="TenureOnceAsync"/>; see its remarks for why holding it is safe.
+    /// Filled by <see cref="TenureOnceAsync"/>; see its remarks for why holding it is safe. Keyed by a
+    /// <b>tuple</b> rather than by a joined string, so there is no separator that two different triples could
+    /// be made to collide on — and no separator character to choose in the first place.
     /// </remarks>
-    private readonly Dictionary<string, DateTimeOffset> _tenureStarts = new(StringComparer.Ordinal);
+    private readonly Dictionary<(string Venue, string Symbol, string Front), DateTimeOffset> _tenureStarts =
+        [];
 
     /// <summary>Creates the service.</summary>
     /// <param name="database">The store.</param>
@@ -254,26 +257,6 @@ public sealed class BarCacheService
         List<DateTimeOffset> unattributedBuckets =
             [.. storedRows.Where(static r => !r.HasContract).Select(static r => r.BucketStart)];
 
-        // WHICH CONTRACT EACH TRADE DATE IN THIS WINDOW IS ALREADY RECORDED UNDER (gh#505, ADR-0020 §5).
-        //
-        // The FIRST attributed bucket of each trade date, and "first" is chosen rather than "most common"
-        // because it is deterministic from the rows themselves: the ordering is by bucket start, so the same
-        // window over the same store names the same contract forever, however the day's runs are shaped.
-        // A vote could change its answer when one more bucket lands, and would make a read's decision depend
-        // on how far through the day it was made.
-        //
-        // This is what stops a read INTERLEAVING a day the store already holds: HistoricalContractPolicy
-        // keeps a trade date's stored contract when that contract answered bars for it, so filling the rest
-        // of the day cannot splice a second contract into the middle of one already recorded (ADR-0011). A
-        // read never rewrites an attributed bucket; the reselect verb does (gh#506).
-        Dictionary<DateOnly, string> storedContractByTradeDate = new();
-        foreach (BucketProvenance row in storedRows
-            .Where(static r => r.ContractId is not null)
-            .OrderBy(static r => r.BucketStart))
-        {
-            storedContractByTradeDate.TryAdd(TradeDateOf(row.BucketStart), row.ContractId!);
-        }
-
         // 2 & 3. Which buckets the venue owed us -- plus the ones it evidently published off the calendar's
         // grid and we cannot attribute -- minus what we have.
         IReadOnlyList<BarRange> missing = BarGapDetector.FindMissing(
@@ -341,10 +324,19 @@ public sealed class BarCacheService
             // The whole answer is held in memory before any of it is written. A cold year is on the order of
             // 70,000 small records per instrument, which is comfortable; if that ever stops being true the
             // answer is to fetch and apply in bounded chunks, not to put the network back inside the snapshot.
+            IReadOnlyList<RangeSlice> toFetch = [.. outstanding.SelectMany(range => range.Slices)];
+
+            // WHICH CONTRACT EACH TRADE DATE IS ALREADY RECORDED UNDER (gh#505, ADR-0020 §5). Asked of the
+            // store only when a historical slice survived, and asked about the TRADE DATES rather than about
+            // the caller's window -- see StoredContractByTradeDateAsync for why the difference matters.
+            IReadOnlyDictionary<DateOnly, string> storedContractByTradeDate =
+                await StoredContractByTradeDateAsync(venue, instrument, toFetch, cancellationToken)
+                    .ConfigureAwait(false);
+
             (IReadOnlyList<FetchedSlice> slices, requests) = await FetchAsync(
                 instrument,
                 barSize,
-                [.. outstanding.SelectMany(range => range.Slices)],
+                toFetch,
                 storedContractByTradeDate,
                 now,
                 cancellationToken).ConfigureAwait(false);
@@ -521,7 +513,7 @@ public sealed class BarCacheService
         DateTimeOffset now,
         CancellationToken cancellationToken)
     {
-        string key = venue + " " + instrument.Symbol + " " + frontContractId;
+        (string Venue, string Symbol, string Front) key = (venue, instrument.Symbol, frontContractId);
 
         if (_tenureStarts.TryGetValue(key, out DateTimeOffset memoised))
         {
@@ -533,6 +525,109 @@ public sealed class BarCacheService
 
         _tenureStarts[key] = resolved;
         return resolved;
+    }
+
+    /// <summary>
+    /// Which contract each trade date the historical slices touch is already recorded under.
+    /// </summary>
+    /// <param name="venue">The venue the rows were written under.</param>
+    /// <param name="instrument">The instrument.</param>
+    /// <param name="plan">The slices this read is about to fetch.</param>
+    /// <param name="cancellationToken">The caller's cancellation token.</param>
+    /// <returns>
+    /// The contract of the first attributed bucket of each trade date in reach. Empty when no slice has a
+    /// choice to make, which is every present-band read.
+    /// </returns>
+    /// <remarks>
+    /// <para>
+    /// <b>A query of its own, because the pin is a fact about the TRADE DATE and not about the window.</b>
+    /// Read off the step-1 rows this would only ever see the buckets the caller asked for, so a read of an
+    /// afternoon whose morning the store already holds would find nothing to keep and let the volume decide
+    /// — leaving one trade date half the venue's pick and half the volume winner. That is ADR-0011's
+    /// interleaving arriving inside a single day, produced by nothing but how wide the caller's window
+    /// happened to be. `get_latest_bars` and any scrolling chart ask exactly such windows.
+    /// </para>
+    /// <para>
+    /// <b>Unscoped by resolution, exactly as <see cref="TenureStartAsync"/> is.</b> Which contract a trade
+    /// date belongs to is one fact about the instrument; answering it from the five-minute series alone
+    /// would let the hourly series be filled from a different contract for the same day.
+    /// </para>
+    /// <para>
+    /// <b>The span is widened by a day at each end</b>, which is what "the trade dates these slices touch"
+    /// costs in UTC: a trade date opens at 17:00 Central on the previous calendar day, so the row that pins
+    /// the slice's first date can sit before the slice starts. Widening cannot pin the wrong day —
+    /// <c>Decide</c> looks up only the trade dates its own bars fall on — it can only fetch a few rows
+    /// nobody asks about.
+    /// </para>
+    /// <para>
+    /// <b>Asked only for a slice with a CHOICE to make — two or more candidates.</b> With one candidate the
+    /// pin cannot change the answer, and that is provable rather than likely: <c>Decide</c> keeps a stored
+    /// contract only when that contract is among the fetched candidates, so with a single candidate
+    /// <c>c</c> the pin either names <c>c</c> — which the volume rule returns anyway, being the only
+    /// contract with bars — or names something absent from the fetch and is ignored. Skipping the query
+    /// there keeps it off every read against a store whose venue resolves one candidate id, which is every
+    /// single-contract fixture and every present-band read.
+    /// </para>
+    /// <para>
+    /// So it is paid only by a read that is genuinely choosing between contracts, which is already paying
+    /// the candidate depth in paced venue pages.
+    /// </para>
+    /// <para>
+    /// <b>The FIRST attributed bucket, not the most common.</b> First is deterministic from the rows
+    /// themselves — the ordering is by bucket start, so the same store names the same contract forever,
+    /// however the day's runs are shaped. A vote could change its answer when one more bucket lands, making
+    /// a read's decision depend on how far through the day it was made.
+    /// </para>
+    /// </remarks>
+    private async Task<IReadOnlyDictionary<DateOnly, string>> StoredContractByTradeDateAsync(
+        string venue,
+        InstrumentId instrument,
+        IReadOnlyList<RangeSlice> plan,
+        CancellationToken cancellationToken)
+    {
+        Dictionary<DateOnly, string> pinned = [];
+
+        List<RangeSlice> deciding =
+            [.. plan.Where(static slice => !slice.Present && slice.Candidates.Count > 1)];
+
+        if (deciding.Count == 0)
+        {
+            return pinned;
+        }
+
+        // Widened by a day each way, and CLAMPED rather than added blindly -- a range that opens at the
+        // start of the representable calendar or ends at its end is not a reason to throw out of a read
+        // (the discipline gh#110 left on the page walk).
+        DateTimeOffset earliest = deciding.Min(static slice => slice.Range.Start);
+        DateTimeOffset latest = deciding.Max(static slice => slice.Range.End);
+
+        DateTimeOffset from = earliest.UtcTicks >= TimeSpan.TicksPerDay
+            ? earliest.AddDays(-1)
+            : DateTimeOffset.MinValue;
+        DateTimeOffset to = DateTimeOffset.MaxValue.UtcTicks - latest.UtcTicks >= TimeSpan.TicksPerDay
+            ? latest.AddDays(1)
+            : DateTimeOffset.MaxValue;
+
+        // AsNoTracking for the reason every read of Bars here is: the rows are written by SQL the change
+        // tracker never sees, so a tracked copy is what the identity map would hand the next read in scope.
+        List<BucketProvenance> rows = await _database.Bars
+            .AsNoTracking()
+            .Where(b => b.Venue == venue
+                && b.Instrument == instrument.Symbol
+                && b.ContractId != null
+                && b.BucketStart >= from
+                && b.BucketStart < to)
+            .OrderBy(b => b.BucketStart)
+            .Select(b => new BucketProvenance(b.BucketStart, b.ContractId))
+            .ToListAsync(cancellationToken)
+            .ConfigureAwait(false);
+
+        foreach (BucketProvenance row in rows)
+        {
+            pinned.TryAdd(TradeDateOf(row.BucketStart), row.ContractId!);
+        }
+
+        return pinned;
     }
 
     /// <summary>One outstanding range, and the slices it is to be fetched as.</summary>
@@ -775,8 +870,8 @@ public sealed class BarCacheService
     /// <c>HistoricalContractPolicy.Decide</c> over a single contract can only choose that contract, so such
     /// a slice writes the same bars under the same id as the present treatment does, and an empty answer
     /// from it earns the same memo. When that one candidate is the front itself — which is every range on a
-    /// venue listing one expiry, and the tail of every roll window — the historical and present pieces of
-    /// one range are the same question asked twice.
+    /// venue that <b>resolves</b> only one candidate id, and the tail of every roll window — the historical
+    /// and present pieces of one range are the same question asked twice.
     /// </para>
     /// <para>
     /// <b>Merging them is what keeps the paging identical.</b> A range cut at the tenure start pays a page
@@ -784,6 +879,12 @@ public sealed class BarCacheService
     /// more per read than the same store did before ADR-0020 — a cost with no answer behind it, since both
     /// halves ask the same contract. Adjacent slices asking the same contracts the same question are one
     /// slice; the planner already applies that rule to trade-date boundaries.
+    /// </para>
+    /// <para>
+    /// <b>"Only one candidate" is about what the venue RESOLVES, not about what it lists.</b> The live venue
+    /// lists the active expiry alone and still answers <c>GetContractByIdAsync</c> for expired ids (ADR-0020,
+    /// gh#494), so a real historical slice normally resolves the full candidate depth and is never merged.
+    /// This path is for the slice whose constructed candidates the venue genuinely does not carry.
     /// </para>
     /// <para>
     /// <b>A slice that FELL BACK is never merged.</b> Its candidate list is the front by degradation rather
@@ -933,6 +1034,17 @@ public sealed class BarCacheService
         // and re-asking for a slightly wider window is the cheaper error. The SLICES are a different matter:
         // they were cut by the plan rather than by the ledger, and dropping one the plan already separated
         // costs nothing extra to fetch.
+        // Unioned ONCE PER CANDIDATE, before the slices are walked. The union is a fact about the ledger
+        // rows of one contract and nothing about the slice being tested, so computing it inside the loop
+        // re-sorted and re-merged the same rows for every (slice, candidate) pair -- and a cold historical
+        // read is exactly where both counts are largest.
+        Dictionary<string, IReadOnlyList<BarRange>> answeredBy = new(StringComparer.Ordinal);
+        foreach (string id in candidates)
+        {
+            answeredBy[id] =
+                Union([.. covered.Where(c => string.Equals(c.ContractId, id, StringComparison.Ordinal))]);
+        }
+
         List<PlannedRange> outstanding = [];
         foreach (PlannedRange range in planned)
         {
@@ -947,11 +1059,12 @@ public sealed class BarCacheService
         return outstanding;
 
         // An EMPTY candidate set answers nothing, deliberately -- `All` over it is vacuously true, and a
-        // slice dropped on that basis is a hole reported as covered because nobody was asked.
+        // slice dropped on that basis is a hole reported as covered because nobody was asked. A candidate
+        // with no union of its own answers nothing either, for the same reason.
         bool StillOutstanding(RangeSlice slice) =>
             slice.Candidates.Count == 0 || !slice.Candidates.All(id =>
-                Union([.. covered.Where(c => string.Equals(c.ContractId, id, StringComparison.Ordinal))])
-                    .Any(a => a.Start <= slice.Range.Start && a.End >= slice.Range.End));
+                answeredBy.TryGetValue(id, out IReadOnlyList<BarRange>? answered)
+                && answered.Any(a => a.Start <= slice.Range.Start && a.End >= slice.Range.End));
     }
 
     /// <summary>
@@ -1300,11 +1413,54 @@ public sealed class BarCacheService
         {
             if (byContract[candidate].Count == 0)
             {
-                into.Add(new FetchedSlice(piece.Range, candidate, []));
+                MemoiseEmpty(piece.Range, candidate, now, into);
             }
         }
 
         return requests;
+    }
+
+    /// <summary>
+    /// Records a candidate's empty answer as up to two claims, cut at the settled age.
+    /// </summary>
+    /// <param name="range">The slice the candidate answered nothing for.</param>
+    /// <param name="contractId">The candidate.</param>
+    /// <param name="now">The instant the read is happening at.</param>
+    /// <param name="into">Where the claims are appended.</param>
+    /// <remarks>
+    /// <para>
+    /// <b>A historical slice is as wide as its candidate set holds — up to a whole quarter — and
+    /// <see cref="RecordEmptyAsync"/> judges permanence from the range's END alone.</b> A slice running up
+    /// to a tenure start younger than <see cref="SettledHistoryAge"/> would therefore take the fifteen-minute
+    /// TTL over the <i>whole</i> stretch, and every candidate's every page would be re-fetched four times an
+    /// hour until <c>T(F)</c> aged past two days. That is gh#408's unbounded per-read cost multiplied by the
+    /// candidate depth, arriving through a rule written for single-page slices.
+    /// </para>
+    /// <para>
+    /// So the settled part is claimed permanently and only the young remainder carries the TTL. <b>The two
+    /// touch</b>, and touching rows are what <see cref="Union"/> merges — so the slice is still answered
+    /// whole while both stand, and when the young one lapses only its own stretch is re-asked. Cutting here
+    /// rather than recording per page keeps one row for the settled part however wide it is, which is the
+    /// row that has to survive for ever.
+    /// </para>
+    /// </remarks>
+    private static void MemoiseEmpty(
+        BarRange range,
+        string contractId,
+        DateTimeOffset now,
+        List<FetchedSlice> into)
+    {
+        DateTimeOffset settledBefore = now - SettledHistoryAge;
+
+        if (range.Start >= settledBefore || range.End <= settledBefore)
+        {
+            // Wholly young or wholly settled: one claim, judged exactly as it was before.
+            into.Add(new FetchedSlice(range, contractId, []));
+            return;
+        }
+
+        into.Add(new FetchedSlice(new BarRange(range.Start, settledBefore), contractId, []));
+        into.Add(new FetchedSlice(new BarRange(settledBefore, range.End), contractId, []));
     }
 
     /// <summary>

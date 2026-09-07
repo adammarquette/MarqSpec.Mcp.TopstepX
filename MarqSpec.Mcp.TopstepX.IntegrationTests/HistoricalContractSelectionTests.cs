@@ -388,7 +388,9 @@ public sealed class HistoricalContractSelectionTests : IAsyncLifetime
         gateway.BarRequests.Should().Be(
             0, "every candidate of the slice has a memo covering it, so the range is answered");
         gateway.ContractLookups.Should().Be(
-            0, "the directory remembers a positive answer for the life of the process");
+            0,
+            "this cache holds one ContractDirectory, and a positive answer it has already given is not asked "
+            + "of the venue again");
     }
 
     [Fact]
@@ -464,6 +466,124 @@ public sealed class HistoricalContractSelectionTests : IAsyncLifetime
 
         (await StoredAsync(window.Start, window.End, 60))
             .Should().AllSatisfy(b => b.ContractId.Should().Be(Front));
+    }
+
+    [Fact]
+    public async Task ATradeDateAlreadyHeld_IsNotInterleaved_EvenWhenTheWindowCoversOnlyPartOfIt()
+    {
+        // THE PIN IS A FACT ABOUT THE TRADE DATE, NOT ABOUT THE WINDOW. The case above asks for the whole
+        // June session, so the morning that already carries a contract is inside the window either way. A
+        // caller asking only for the afternoon -- get_latest_bars, a chart scrolling forward, any narrower
+        // read -- would have found no attributed row inside its own window, kept nothing, and let the volume
+        // decide: the day would end up half the venue's pick and half the liquid contract, which is
+        // ADR-0011's interleaving arriving INSIDE one trade date rather than across a roll.
+        //
+        // RED against a pin built from the step-1 window read: the afternoon is stored under Liquid, the day
+        // reports two runs, and the morning the store already held is stranded on the other side of a seam
+        // no market event produced.
+        await SeedTenureAnchorAsync();
+
+        BarRange day = new(Market(2026, 6, 16, 9), Market(2026, 6, 16, 16));
+        DateTimeOffset held = Market(2026, 6, 16, 13);
+        IReadOnlyList<DateTimeOffset> grid =
+            BarGapDetector.ExpectedBuckets(day, TimeSpan.FromHours(1), Calendar);
+
+        foreach (DateTimeOffset bucket in grid.Where(b => b < held))
+        {
+            await SeedBucketAsync(Front, 60, bucket, 10);
+        }
+
+        CountingGateway gateway = Venue(new Dictionary<string, IEnumerable<Bar>>(StringComparer.Ordinal)
+        {
+            [Front] = grid.Where(b => b >= held).Select(b => Flat(b, 10)),
+            [Liquid] = grid.Where(b => b >= held).Select(b => Flat(b, 5_000)),
+        });
+
+        BarCacheService cache = BuildAround(gateway, Now);
+
+        // The afternoon alone. Nothing the store already holds is inside this window.
+        await cache.GetBarsAsync(_mes, 60, new BarRange(held, day.End), CancellationToken.None);
+
+        gateway.BarRequests.Should().Be(
+            2, "the range is historical, so every candidate the June trade date names is asked");
+
+        List<BarRecord> stored = await StoredAsync(day.Start, day.End, 60);
+
+        stored.Should().HaveCount(grid.Count);
+        stored.Should().AllSatisfy(b => b.ContractId.Should().Be(
+            Front, "the trade date was already recorded under the venue's pick, and a read does not rewrite "
+            + "history it was not even asked about"));
+
+        ContractRollDetector.Segment([.. stored.Select(IndicatorProjector.ToBar)]).Should().ContainSingle(
+            "one trade date, one contract -- a seam here would be a bookkeeping artefact of how wide the "
+            + "caller's window happened to be");
+    }
+
+    [Fact]
+    public async Task AnEmptyHistoricalSlice_ThatEndsInsideTheSettledAge_IsMemoisedPermanentlyUpToIt()
+    {
+        // A historical slice is as wide as its candidate set holds -- up to a whole quarter -- and it is
+        // memoised as ONE row, while RecordEmptyAsync decides permanence from the row's END alone. A slice
+        // that runs up to a tenure start younger than SettledHistoryAge therefore takes a fifteen-minute TTL
+        // over the WHOLE stretch: every candidate's every page is re-fetched, paced, four times an hour,
+        // until T(F) drifts past two days old. That is gh#408's unbounded per-read cost multiplied by the
+        // candidate depth.
+        //
+        // So the empty answer is cut at `now - SettledHistoryAge`: the settled part is believed for good,
+        // and only the young remainder is re-asked. The two rows TOUCH, so Union merges them and the slice
+        // is still answered whole while both stand.
+        //
+        // RED against one memo per slice: a single row spanning the window, carrying a TTL.
+        //
+        // Every instant below is a LITERAL. `now` is Thursday 20 August and the cut is Tuesday 18 August at
+        // 13:00 Central -- which is two days earlier, and is written out rather than computed for the reason
+        // BarCacheServiceTests.SettledNow gives: derived from SettledHistoryAge this expectation would move
+        // with the constant, and the case that exists to catch that change would follow it and stay green.
+        DateTimeOffset now = Market(2026, 8, 20, 13);
+        DateTimeOffset settledBefore = Market(2026, 8, 18, 13);
+        BarRange window = new(Market(2026, 8, 18, 9), Market(2026, 8, 18, 16));
+
+        // The tenure anchor, placed so the WHOLE window is history: a non-front bucket on the Monday, then
+        // the front's run opening on the Wednesday. T(F) is therefore Wednesday morning, past the window.
+        await SeedBucketAsync(Previous, 5, Market(2026, 8, 17, 9), 1_000);
+        await SeedAsync(Front, 5, Market(2026, 8, 19, 9), 4);
+
+        // The venue lists the front alone, so August's second candidate (Z26) is dropped and the slice has
+        // exactly one surviving candidate -- one contract's memo to count, rather than two identical pairs.
+        CountingGateway gateway = Venue(new Dictionary<string, IEnumerable<Bar>>(StringComparer.Ordinal)
+        {
+            [Front] = [],
+        });
+
+        BarCacheService cache = BuildAround(gateway, now);
+
+        await cache.GetBarsAsync(_mes, 5, window, CancellationToken.None);
+
+        List<BarCoverageRecord> memos =
+            [.. (await _database.BarCoverage.AsNoTracking().ToListAsync()).OrderBy(m => m.RangeStart)];
+
+        memos.Should().HaveCount(2, "the answer is one fact about two ages of history, not one fact");
+
+        memos[0].ContractId.Should().Be(Front);
+        memos[0].RangeStart.Should().Be(window.Start);
+        memos[0].RangeEnd.Should().Be(settledBefore);
+        memos[0].ExpiresAt.Should().BeNull(
+            "everything up to the settled age is history that is not going to fill in");
+
+        memos[1].ContractId.Should().Be(Front);
+        memos[1].RangeStart.Should().Be(settledBefore);
+        memos[1].RangeEnd.Should().Be(window.End);
+        memos[1].ExpiresAt.Should().NotBeNull(
+            "a bucket empty only for not having printed yet will print, and a permanent claim would blind "
+            + "the cache to it");
+
+        // The behaviour the split exists to keep, and it is the half a column assertion cannot see: two rows
+        // that touch are one answer, so nothing is re-asked while both stand.
+        gateway.ResetCounters();
+        BarReadResult second = await cache.GetBarsAsync(_mes, 5, window, CancellationToken.None);
+
+        second.VenueRequests.Should().Be(0);
+        gateway.BarRequests.Should().Be(0, "the union of the two touching memos answers the slice whole");
     }
 
     [Fact]

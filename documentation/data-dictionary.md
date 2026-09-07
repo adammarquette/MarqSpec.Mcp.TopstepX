@@ -406,7 +406,7 @@ The hypertable is **conditional**, following [ADR-0004](adr/0004-one-postgres-ti
 
 Index: `(Instrument, ContractId, TradeTimeUtc)` — the shape of every read.
 
-**Volume-front is a read over this table, not a filter and not an eleventh table** (gh#219). Per
+**Volume-front is a read over this table, not a filter and not a twelfth table** (gh#219). Per
 `(instrument, contract)` per session, total `Size`. The highest-volume contract is the tape's
 front; the session it overtook the previous one is the changeover. `Unknown` direction still
 counts as size — unlike §9, which refuses it so an unstated side cannot look like a buy. Both
@@ -494,7 +494,7 @@ tape yields empty cells, not a fabricated profile. **Two reads that need the con
 
 Not a hypertable. The tape is the high-volume series; this is its projection, rebuildable.
 
-**A volume profile is not an eleventh table.** Point of control and the 70% value area are an aggregate over
+**A volume profile is not a twelfth table.** Point of control and the 70% value area are an aggregate over
 these cells plus §8 (`R-9`, gh#221). The host reads the cells and the listening ledger and calls Domain;
 nothing here is written for that answer. A window that spans a roll or a listening hole is confined to
 the newest contiguous run of one contract, and the reported window is that run, not the ask.

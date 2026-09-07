@@ -408,7 +408,7 @@ public sealed class IndicatorTools(
     /// <c>Bars</c> — <see cref="MarqSpec.Mcp.TopstepX.Domain.MarketData.IIndicator">a projection is not a
     /// child row</see>, and ADR-0011 §2 rejected one deliberately — so deleting bars orphans the values over
     /// them. The projection's reconcile removes those, but <b>a read does not sweep</b> (ADR-0006,
-    /// 2026-09-07) and <see cref="IndicatorCacheService.EnsureProjectedAsync"/> returns before its probe
+    /// 2026-09-07) and <see cref="IndicatorCacheService.EnsureProjectedAsync(SeriesKey, CancellationToken)"/> returns before its probe
     /// when the series holds no bars at all, so for a bar-less series no read ever runs the pass. Until
     /// <c>rebuild-indicators</c> or a fill visits it, those rows stand — and before gh#577 they were
     /// <i>served</i>: 37 ATR points over zero bars, and a 65.32947503 with a null contract that a caller

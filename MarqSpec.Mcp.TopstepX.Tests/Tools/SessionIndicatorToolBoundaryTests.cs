@@ -3,6 +3,7 @@ using MarqSpec.Mcp.TopstepX.Configuration;
 using MarqSpec.Mcp.TopstepX.Data;
 using MarqSpec.Mcp.TopstepX.Domain.MarketData;
 using MarqSpec.Mcp.TopstepX.MarketData;
+using MarqSpec.Mcp.TopstepX.Telemetry;
 using MarqSpec.Mcp.TopstepX.Tests.MarketData;
 using MarqSpec.Mcp.TopstepX.Tools;
 using Microsoft.EntityFrameworkCore;
@@ -43,6 +44,7 @@ public sealed class SessionIndicatorToolBoundaryTests : IDisposable
     private readonly TopstepXDbContext _database;
     private readonly CountingGateway _gateway;
     private readonly SessionIndicatorTools _tools;
+    private readonly HostTelemetry _telemetry = new();
 
     public SessionIndicatorToolBoundaryTests()
     {
@@ -209,14 +211,14 @@ public sealed class SessionIndicatorToolBoundaryTests : IDisposable
         IndicatorCatalog catalog = new(
             Options.Create(new IndicatorOptions { AtrPeriod = 3, RsiPeriod = 3 }), calendar);
 
-        IndicatorProjector projector = new(_database, catalog, NullLogger<IndicatorProjector>.Instance);
+        IndicatorProjector projector = new(_database, catalog, NullLogger<IndicatorProjector>.Instance, _telemetry);
 
         return new SessionIndicatorTools(
             new InstrumentResolver(new InstrumentRegistry(options), new StoreAvailabilityHolder()),
             _database,
             catalog,
             new IndicatorCacheService(
-                _database, catalog, projector, clock, NullLogger<IndicatorCacheService>.Instance),
+                _database, catalog, projector, clock, NullLogger<IndicatorCacheService>.Instance, _telemetry),
             new SessionCatalog(options, calendar),
             calendar,
             _gateway,

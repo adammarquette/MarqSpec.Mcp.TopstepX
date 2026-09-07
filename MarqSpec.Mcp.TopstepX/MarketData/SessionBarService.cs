@@ -156,10 +156,13 @@ public sealed class SessionBarService
     /// know it.
     /// </para>
     /// <para>
-    /// <b>The indicator projection replays with the retry, and that is safe because it is idempotent.</b>
-    /// This body projects the session series it wrote (step 6(f2), gh#501), so a serialization failure
-    /// replays the projection as well as the upsert and the reconcile. Unlike the deletion above, that costs
-    /// nothing to get wrong: a projection derives entirely from the session bars visible on the attempt's own
+    /// <b>The indicator projection runs when the pass changed the series, and replays with the retry.</b>
+    /// This body projects the session series it wrote (step 6(f2), gh#501) whenever it upserted a bar,
+    /// reconciled a stale one away, or discarded one built under a definition that no longer holds — and not
+    /// otherwise, because every read with one closed date enters this unit of work and recomputing the whole
+    /// series on each of them is a cost paid per call for an empty diff. A serialization failure replays the
+    /// projection along with the upsert and the reconcile, and unlike the deletion above that costs nothing
+    /// to get wrong: a projection derives entirely from the session bars visible on the attempt's own
     /// snapshot and rounds to the stored column's scale, so running it twice over the same bars produces the
     /// same numbers and the second run is an empty diff (ADR-0006). It is the one step here whose replay
     /// needs no bound at all.
@@ -319,7 +322,11 @@ public sealed class SessionBarService
                 // UNSCOPED BY DATE on purpose. A changed definition invalidates the whole series, not the
                 // window this call happens to ask about -- leaving the rest would keep serving them from
                 // every other window forever.
-                await _database.SessionBars
+                // The count is kept because it is one of the three ways this pass can CHANGE the series, and
+                // the projection at (f2) turns on that. A discard leaves indicator values standing over bars
+                // that no longer exist, which is a change even when nothing was upserted and nothing was
+                // reconciled.
+                int discarded = await _database.SessionBars
                     .Where(s => s.Venue == venue
                         && s.Instrument == instrument.Symbol
                         && s.Session == definition.Name
@@ -389,25 +396,39 @@ public sealed class SessionBarService
                     await _database.SaveChangesAsync(token).ConfigureAwait(false);
                 }
 
-                // (f2) PROJECT THE SESSION SERIES THIS BODY JUST WROTE, in this transaction, and
-                // UNCONDITIONALLY (gh#501). A session bar is a bar like any other once it is stored, and the
+                // (f2) PROJECT THE SESSION SERIES THIS BODY WROTE, in this transaction, WHEN THIS PASS
+                // CHANGED IT (gh#501). A session bar is a bar like any other once it is stored, and the
                 // indicators over it are a projection of it (ADR-0006) -- so bars committed without the
                 // values they justify would be exactly the state a read then has to replay a whole series to
-                // repair. Here they commit together or not at all, the way a base fill has always projected
-                // in its own unit of work.
+                // repair. Inside this transaction they commit together or not at all, the way a base fill has
+                // always projected in its own unit of work.
                 //
-                // NOT GATED ON "SOMETHING CHANGED". `rows` counts the upsert alone, so a pass that only
-                // deleted stale rows changed the series with `rows == 0` -- and the reconcile inside the
-                // projection is what removes values those deleted bars no longer justify. An unconditional
-                // pass over an unchanged series is an empty diff, which is the property ADR-0006 exists to
-                // guarantee, so the honest cheap answer and the honest correct one are the same call.
-                await _projector.ProjectAsync(series, now, token).ConfigureAwait(false);
+                // GATED, ON ALL THREE WAYS THIS BODY CAN CHANGE THE SERIES, and BarCacheService's `written >
+                // 0` is the precedent. Unconditional was correct and too expensive: every get_session_bars
+                // with one closed date enters this unit of work, so a warm read for a single trade date
+                // recomputed the whole series -- an empty diff, but one paid per call over a series that
+                // grows with the store.
+                //
+                // ALL THREE, because `rows` alone is not "something changed". A pass that only reconciled
+                // stale dates away has rows == 0 and has left values standing over bars it just deleted; so
+                // has a pass that only DISCARDED rows built under a definition that no longer holds, and that
+                // one is unscoped by date, so it can fire on a call whose own dates were all unchanged.
+                // Removing those values is the projection's reconcile, and a gate missing either term leaves
+                // them behind until an operator runs rebuild-indicators.
+                if (discarded > 0 || rows > 0 || stale.Count > 0)
+                {
+                    await _projector.ProjectAsync(series, now, token).ConfigureAwait(false);
 
-                // (f3) AND SAVED AGAIN, because the projection is deliberately half-tracked: it writes its
-                // values with one statement the store runs as it is sent and removes what the bars no longer
-                // justify through the change tracker, which waits for this. The projector refuses outright
-                // outside a transaction for the same reason (AGENT-MEMORY.md, "Save before you project").
-                await _database.SaveChangesAsync(token).ConfigureAwait(false);
+                    // (f3) AND SAVED AGAIN, because the projection is deliberately half-tracked: it writes
+                    // its values with one statement the store runs as it is sent and removes what the bars no
+                    // longer justify through the change tracker, which waits for this. The projector refuses
+                    // outright outside a transaction for the same reason (AGENT-MEMORY.md, "Save before you
+                    // project").
+                    if (_database.ChangeTracker.HasChanges())
+                    {
+                        await _database.SaveChangesAsync(token).ConfigureAwait(false);
+                    }
+                }
 
                 // (g) READ BACK WHAT THIS TRANSACTION COMMITTED, rather than handing out what was
                 // derived. AsNoTracking for the reason the pre-read is: this table is written by SQL the

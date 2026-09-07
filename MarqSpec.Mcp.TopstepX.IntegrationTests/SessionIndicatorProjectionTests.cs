@@ -122,6 +122,86 @@ public sealed class SessionIndicatorProjectionTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task AWarmSessionRead_DoesNotReproject()
+    {
+        // THE COST OF THE FILL-TIME PROJECTION IS PAID ONLY WHEN THE PASS CHANGED THE SERIES. Every
+        // get_session_bars with one closed date enters the unit of work, so an unconditional projection made
+        // a warm read for a single trade date recompute the whole session series -- an empty diff, but one
+        // paid on every call, over a series that grows with the store. The resolution path has always gated
+        // its own projection on `written > 0`; this is the same rule with the two other ways a session pass
+        // can change the series added to it.
+        string venue = await FillAsync();
+
+        IReadOnlyList<DateTimeOffset> stamped = [.. (await StoredValuesAsync(venue)).Select(v => v.RecordedAt)];
+        stamped.Should().NotBeEmpty("the fill projected, which is what makes a SECOND read the warm one");
+
+        // A LATER CLOCK, so a pass that did rewrite these rows would stamp a different RecordedAt on them
+        // and be visible. Nothing else about the ask changes: the same six dates, the same definition.
+        SessionBarReadResult second =
+            await Sessions(venue, SettledNow.AddDays(1)).GetAsync(_es, _rth, _tradeDates, CancellationToken.None);
+
+        second.Bars.Should().HaveCount(_tradeDates.Length, "the second read is served from the store");
+        _database.ChangeTracker.Clear();
+
+        (await StoredValuesAsync(venue)).Select(v => v.RecordedAt).Should().BeEquivalentTo(
+            stamped, "no value was rewritten, so no RecordedAt moved");
+
+        // AND THE OBSERVATION THAT ACTUALLY DISCRIMINATES. RecordedAt not moving cannot tell "did not
+        // project" from "projected and agreed" -- a confirming pass writes nothing either way. Emptying the
+        // table first can: a third read over the same unchanged series must leave it empty, because it must
+        // not project at all.
+        await _database.SessionIndicatorValues.ExecuteDeleteAsync();
+        _database.ChangeTracker.Clear();
+
+        await Sessions(venue, SettledNow.AddDays(2)).GetAsync(_es, _rth, _tradeDates, CancellationToken.None);
+        _database.ChangeTracker.Clear();
+
+        (await StoredValuesAsync(venue)).Should().BeEmpty(
+            "a read that upserted no bar, reconciled none away and discarded none must not recompute the "
+            + "whole session series' indicators");
+    }
+
+    [Fact]
+    public async Task ADiscardOnlyPass_StillProjects()
+    {
+        // THE THIRD WAY A PASS CHANGES THE SERIES, and the one a `written > 0` gate copied straight from the
+        // resolution path would miss. Step (a) discards every stored row whose (WindowCentral,
+        // BaseResolutionMinutes) provenance disagrees with the definition standing today -- unscoped by date,
+        // because a changed definition invalidates the whole series -- and a pass that does only that has
+        // upserted nothing and reconciled nothing. Its values are now standing over bars that no longer
+        // exist, which is precisely what the projection's reconcile removes.
+        //
+        // ARRANGED BY SEEDING THE MISMATCHED ROW rather than by handing GetAsync a changed definition, and
+        // that is what ISOLATES the term: a changed definition also fails to re-derive the dates asked about,
+        // so `stale` fires too and the test would pass on either gate. Seeding one row under an old
+        // provenance, on a trade date OUTSIDE the ask, leaves the six asked-about bars unchanged (nothing to
+        // upsert) and derived (nothing stale) while step (a) still has something to discard.
+        string venue = await FillAsync();
+
+        DateOnly orphanDate = new(2026, 8, 17);
+        DateTimeOffset orphanOpen = RthBucket(orphanDate, 0);
+
+        await SeedAsync(venue, orphanDate, orphanOpen);
+
+        (await StoredValuesAsync(venue)).Should().Contain(
+            v => v.BucketStart == orphanOpen, "the orphan value is what the pass has to reconcile away");
+
+        SessionBarReadResult served =
+            await Sessions(venue, SettledNow.AddDays(1)).GetAsync(_es, _rth, _tradeDates, CancellationToken.None);
+
+        served.Bars.Should().HaveCount(_tradeDates.Length, "the six asked-about sessions are unchanged");
+        _database.ChangeTracker.Clear();
+
+        IReadOnlyList<SessionIndicatorValueRecord> after = await StoredValuesAsync(venue);
+
+        after.Should().NotContain(
+            v => v.BucketStart == orphanOpen,
+            "step (a) discarded the bar this value described, so the pass changed the series and had to "
+            + "project -- and the reconcile removes a value no bar justifies");
+        after.Should().NotBeEmpty("the six sessions the store still holds keep theirs");
+    }
+
+    [Fact]
     public async Task ASessionSeries_ProjectsTheCatalogueMinusVwap()
     {
         string venue = await FillAsync();
@@ -211,16 +291,25 @@ public sealed class SessionIndicatorProjectionTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task Rebuild_IsAnEmptyDiff_OverASeriesProjectedBeforeTheRefactor()
+    public async Task AConfirmingRebuild_OverAStoreTheFillProjected_IsAnEmptyDiff()
     {
-        // THE REFACTOR'S OWN REGRESSION. The bar fill writes IndicatorValues through the pre-refactor
-        // signature — the (venue, instrument, int, now, ct) overload the cache-aside path still calls — and
-        // the rebuild then confirms those rows through the key path. A key path that queried, rounded, keyed
-        // or ordered even slightly differently would rewrite them, and (0, 0) is the only answer that says
-        // it does not.
-        string venue = await FillAsync();
-
-        await ProjectOnePassAsync(new SeriesKey.Session(venue, _es.Symbol, _rth.Name), SettledNow);
+        // THE REBUILD VERB'S OWN EMPTY DIFF, over BOTH series at once and over rows nothing in this test
+        // wrote by hand. One fill leaves the store holding a 30-minute resolution series and an `rth` session
+        // series, each already projected by the unit of work that wrote its bars; `rebuild-indicators` then
+        // walks both and must change nothing. (0, 0) is the only answer that says so: the first number is
+        // values written plus removed across every series, the second is how many series were rewritten.
+        //
+        // NOT THE SAME CLAIM AS AConfirmingRebuild_ProducesAnEmptyDiff_OverSessionBars, which is one
+        // PROJECTOR pass repeated over the session series alone. This one is a level up and wider: it goes
+        // through the rebuilder's own enumeration, so it also covers the resolution half and the walk that
+        // finds the two series in the first place. A rebuilder that enumerated a session series twice, or
+        // normalised an instrument differently on the way in, is red here and green there.
+        //
+        // (Named for what it measures. It used to be called `…_OverASeriesProjectedBeforeTheRefactor`, from
+        // when the point was that rows written through the old (venue, instrument, int, now, ct) signature
+        // were confirmed through the key-taking one. That distinction is gone: the old signature forwards to
+        // the same body, so there is one path and nothing left to compare it against.)
+        await FillAsync();
 
         IndicatorRebuildResult result = await Rebuilder(NullLogger<IndicatorRebuilder>.Instance)
             .RebuildAsync(null, CancellationToken.None);
@@ -470,7 +559,88 @@ public sealed class SessionIndicatorProjectionTests : IAsyncLifetime
     private async Task<string> FillAsync()
     {
         string venue = ConcurrencyHarness.Venue();
-        FakeTimeProvider clock = new(SettledNow);
+
+        SessionBarReadResult result =
+            await Sessions(venue, SettledNow).GetAsync(_es, _rth, _tradeDates, CancellationToken.None);
+
+        result.Bars.Should().HaveCount(
+            _tradeDates.Length, "every trade date's whole session was served, so every one is stored");
+
+        _database.ChangeTracker.Clear();
+
+        return venue;
+    }
+
+    /// <summary>
+    /// Seeds one session bar built under an <b>older definition</b>, and one indicator value standing over it.
+    /// </summary>
+    /// <param name="venue">The venue the rows are keyed under.</param>
+    /// <param name="tradeDate">The trade date the seeded bar carries.</param>
+    /// <param name="openUtc">When that session opened — the key the value is written under.</param>
+    /// <returns>The running seed.</returns>
+    /// <remarks>
+    /// <para>
+    /// The provenance pair is deliberately wrong for the definition standing today — the same window off
+    /// <b>hourly</b> base bars rather than half-hourly ones — which is exactly the row step (a) exists to
+    /// discard. The trade date sits outside the ask, so discarding it is the <i>only</i> thing the pass under
+    /// test does.
+    /// </para>
+    /// <para>
+    /// <b>The tracker is cleared afterwards</b>, because the rows every other statement in this suite writes
+    /// are raw SQL the tracker never sees: a seeded instance left in the identity map is what a later read
+    /// would hand back in preference to the row the store actually holds (gh#387).
+    /// </para>
+    /// </remarks>
+    private async Task SeedAsync(string venue, DateOnly tradeDate, DateTimeOffset openUtc)
+    {
+        _database.SessionBars.Add(new SessionBarRecord
+        {
+            Venue = venue,
+            Instrument = _es.Symbol,
+            Session = _rth.Name,
+            TradeDate = tradeDate,
+            OpenUtc = openUtc,
+            CloseUtc = openUtc.AddHours(6.5),
+            Open = 5_000m,
+            High = 5_010m,
+            Low = 4_990m,
+            Close = 5_005m,
+            Volume = 130,
+            ContractId = ConcurrencyHarness.ContractId,
+            BaseResolutionMinutes = 60,
+            BaseBucketCount = 7,
+            WindowCentral = "08:30-15:00",
+            RecordedAt = SettledNow,
+        });
+
+        _database.SessionIndicatorValues.Add(new SessionIndicatorValueRecord
+        {
+            Venue = venue,
+            Instrument = _es.Symbol,
+            Session = _rth.Name,
+            Indicator = "atr",
+            Period = 3,
+            BucketStart = openUtc,
+            Value = 20m,
+            RecordedAt = SettledNow,
+        });
+
+        await _database.SaveChangesAsync();
+        _database.ChangeTracker.Clear();
+    }
+
+    /// <summary>The session-bar reader, over this suite's store and one venue.</summary>
+    /// <param name="venue">The venue the rows are keyed under.</param>
+    /// <param name="now">The instant the read runs at.</param>
+    /// <returns>The service.</returns>
+    /// <remarks>
+    /// Built per call rather than held: a second read of the same series is the thing several cases here
+    /// measure, and it has to go through a service whose per-scope state started empty, exactly as a second
+    /// MCP request would.
+    /// </remarks>
+    private SessionBarService Sessions(string venue, DateTimeOffset now)
+    {
+        FakeTimeProvider clock = new(now);
         SeriesGateway gateway = new(venue, RthBars());
 
         BarCacheService bars = new(
@@ -481,7 +651,7 @@ public sealed class SessionIndicatorProjectionTests : IAsyncLifetime
             clock,
             NullLogger<BarCacheService>.Instance);
 
-        SessionBarService sessions = new(
+        return new SessionBarService(
             _database,
             bars,
             gateway,
@@ -489,16 +659,6 @@ public sealed class SessionIndicatorProjectionTests : IAsyncLifetime
             ConcurrencyHarness.Projector(_database),
             clock,
             NullLogger<SessionBarService>.Instance);
-
-        SessionBarReadResult result =
-            await sessions.GetAsync(_es, _rth, _tradeDates, CancellationToken.None);
-
-        result.Bars.Should().HaveCount(
-            _tradeDates.Length, "every trade date's whole session was served, so every one is stored");
-
-        _database.ChangeTracker.Clear();
-
-        return venue;
     }
 
     /// <summary>Every trade date's thirteen 30-minute <c>rth</c> buckets, as a ramp the venue will serve.</summary>

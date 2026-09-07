@@ -372,7 +372,7 @@ public sealed class IndicatorCacheService(
     /// <para>
     /// <b>It is deliberately not exact, and errs towards replaying.</b> A run of absences longer than the
     /// warm-up is read as a gap even where several short contract runs make it honest; the pass then writes
-    /// nothing, which is the residue <see cref="EnsureProjectedAsync"/> states. Erring the other way — a
+    /// nothing, which is the residue <see cref="EnsureProjectedAsync(SeriesKey, CancellationToken)"/> states. Erring the other way — a
     /// threshold generous enough to never replay a fragmentary series — would put a truncated series back
     /// on the wire as an ordinary answer, and a wrong number costs more than a wasted pass.
     /// </para>

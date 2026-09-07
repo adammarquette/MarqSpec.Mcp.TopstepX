@@ -407,10 +407,11 @@ operator's own session close (`R-1.12`, gh#499).
    (f) **save before anything reads back** — normally a no-op, since nothing in this body tracks an entity,
    kept because both the projection and the read-back below are *queries* and a query does not see rows that
    are only tracked;
-   (f2) **project the session series this body just wrote**, unconditionally, through the same
-   `IndicatorProjector` and inside this transaction (gh#501, `R-2.14`) — see
-   [the projection](#the-indicator-projection) for why it is not gated on *something changed* and why its
-   replay under the retry is free;
+   (f2) **project the session series this body wrote, when the pass changed the series** — through the same
+   `IndicatorProjector` and inside this transaction (gh#501, `R-2.14`). Changed means any of the three: a bar
+   upserted at (d), a stale one reconciled away at (e), or a row discarded at (a) as built under a definition
+   that no longer holds. See [the projection](#the-indicator-projection) for why all three terms are needed
+   and why its replay under the retry is free;
    (f3) **save again**, because the projection is deliberately half-tracked: it writes values with a
    statement the store runs as it is sent and removes what the bars no longer justify through the change
    tracker, which waits for this;
@@ -628,14 +629,20 @@ volume distribution to weight — and the compute and the reconcile are handed t
 walking one list while the reconcile walked another would delete rows on every pass. `SeriesKey.Describe()`
 is also the label a series carries in an operator's log: `ES 5m`, `ES rth`.
 
-**A session read projects inside the unit of work that wrote its bars.** `SessionBarService` derives the
-sessions, upserts them, and then — unconditionally, between that write and the read-back of what it
-committed — projects the session series and saves a second time, all inside the one `SeriesUnitOfWork`
-transaction, so session bars never commit without the values they justify. It is not gated on *something
-changed*: the upsert's row count does not see a pass that only removed stale rows, and an unconditional pass
-over an unchanged series is an empty diff by ADR-0006, so the cheap answer and the correct one are the same
-call. It replays with the unit of work's serialisation retry for the same reason — a projection derives
-entirely from the bars on its own attempt's snapshot, so running it twice is free.
+**A session read projects inside the unit of work that wrote its bars, when it changed them.**
+`SessionBarService` derives the sessions, upserts them, and then — between that write and the read-back of
+what it committed — projects the session series and saves a second time, all inside the one `SeriesUnitOfWork`
+transaction, so session bars never commit without the values they justify. **It is gated, on all three ways
+that body can change the series**, which is `BarCacheService`'s `written > 0` widened rather than dropped: a
+bar upserted, a stale one reconciled away, or a row discarded as built under a definition that no longer
+holds. All three, because the upsert's row count alone is not *something changed* — a pass that only removed
+stale rows, and a pass that only discarded mismatched ones, have both left values standing over bars that no
+longer exist, and removing those is the projection's reconcile. **And gated at all, because the unit of work
+is entered on every read with one closed date**: an unconditional pass made a warm `get_session_bars` for a
+single trade date recompute the whole session series, which is an empty diff by ADR-0006 but one paid per
+call over a series that grows with the store. It replays with the unit of work's serialisation retry, and
+that is free for the ADR-0006 reason — a projection derives entirely from the bars on its own attempt's
+snapshot, so running it twice yields the same numbers.
 
 **A pass reconciles, it does not only upsert.** It removes every value it is configured to produce that the
 current bars no longer justify. Before segmenting that could not arise: the warm-up boundary was the start of

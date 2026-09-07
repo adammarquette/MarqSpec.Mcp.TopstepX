@@ -138,9 +138,11 @@ public sealed class VenueCallGuardTests
         // closedness a claim about this test's own list rather than about ProjectXMarketDataGateway --
         // a gateway that invented a string passed, because nothing here ever looked at it (gh#559).
         // GatewayOperationScan walks the compiled body, including the state machines an async method is
-        // compiled into, and reports the operation at every VenueCallGuard.RunAsync call site.
-        IReadOnlyList<string> named = GatewayOperationScan.OperationsNamedBy(
-            typeof(ProjectXMarketDataGateway), VenueOperation.All);
+        // compiled into, and reads the string in the OPERATION ARGUMENT'S OWN STACK SLOT at every
+        // VenueCallGuard.RunAsync call site -- not the literals near it. The first version of the scan did
+        // search near the call, and an ordinary logging line carrying a VenueOperation constant made it go
+        // green on an invented operation and red on a correct one (PR #575 review).
+        IReadOnlyList<string> named = GatewayOperationScan.OperationsNamedBy(typeof(ProjectXMarketDataGateway));
 
         named.Should().NotBeEmpty(
             "the scan must reach the gateway's call sites at all, or the comparison below is between two "
@@ -148,12 +150,19 @@ public sealed class VenueCallGuardTests
 
         VenueOperation.All.Should().OnlyHaveUniqueItems();
 
-        // Set equality, BOTH directions. Left to right: an operation the gateway names that the vocabulary
-        // does not know -- the failure this exists for. Right to left: a vocabulary value no call site names,
-        // which is a value a dashboard filters on and never sees, and the shape a deleted read leaves behind.
-        named.Distinct().Should().BeEquivalentTo(
+        // Set equality, BOTH directions, as two subset assertions rather than one equivalence -- a subset
+        // failure NAMES the offending value, and the value is the whole point of reading the gateway.
+        //
+        // Left to right: an operation the gateway names that the vocabulary does not know, which is the
+        // failure this exists for. Right to left: a vocabulary value no call site names, which is a value a
+        // dashboard filters on and never sees, and the shape a deleted read leaves behind.
+        named.Distinct().Should().BeSubsetOf(
             VenueOperation.All,
-            "the closed vocabulary is exactly what ProjectXMarketDataGateway asks VenueCallGuard for");
+            "every operation ProjectXMarketDataGateway names must be one the closed vocabulary knows");
+
+        VenueOperation.All.Should().BeSubsetOf(
+            named,
+            "every value in the closed vocabulary must be one ProjectXMarketDataGateway actually names");
     }
 
     /// <summary>Subscribes to one <see cref="ActivitySource"/> INSTANCE and records what it starts.</summary>

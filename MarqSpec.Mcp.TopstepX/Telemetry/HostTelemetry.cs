@@ -36,11 +36,13 @@ namespace MarqSpec.Mcp.TopstepX.Telemetry;
 /// <see cref="long"/> — drives them through the public methods below by reflection, and reads the allowed tag
 /// keys off the <c>…Tag</c> constants and the allowed values off the vocabularies themselves. Adding an
 /// instrument here therefore cannot skip the gate: either a public method records to it and its tags are
-/// checked, or nothing does and the gate fails naming it (gh#559). What the gate decides is everything this
-/// class controls — which instruments exist, which tag keys each writes, and any value this class
-/// <i>manufactures</i>. What it cannot decide is that a value merely <i>forwarded</i> through a parameter
-/// below comes from a closed vocabulary, because that is a property of the call sites: for the one tag where
-/// those are decidable, <c>VenueCallGuardTests</c> reads <c>ProjectXMarketDataGateway</c>'s compiled body.
+/// checked, or nothing does and the gate fails naming it (gh#559). What the gate decides is which instruments
+/// exist, and then — <b>on the paths its fixed inputs reach</b> — which tag keys each writes and any value
+/// this class <i>manufactures</i>. A tag written only behind a condition those inputs do not satisfy is
+/// outside it, so that qualifier is a limit rather than a formality. What it cannot decide at all is that a
+/// value merely <i>forwarded</i> through a parameter below comes from a closed vocabulary, because that is a
+/// property of the call sites: for the one tag where those are decidable, <c>VenueCallGuardTests</c> reads
+/// <c>ProjectXMarketDataGateway</c>'s compiled body.
 /// </para>
 /// <para>
 /// <b>With no <c>Otel__Endpoint</c> configured nothing subscribes, and these instruments cost nothing.</b>

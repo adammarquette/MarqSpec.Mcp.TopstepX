@@ -141,12 +141,20 @@ by reflection, and reads the allowed tag keys off the `…Tag` constants and the
 vocabularies themselves. A new instrument cannot slip past: either a public method records to it and its tags
 are checked, or nothing does and the gate fails naming it. Every way of driving nothing is a failure rather
 than a pass — an empty instrument set, an empty measurement set, an undriven instrument, or a parameter shape
-the driver cannot synthesise. What the gate decides is what `HostTelemetry` controls: which instruments exist,
-which tag keys each writes, and any value the class *manufactures*. That a value it merely *forwards* is drawn
-from a closed vocabulary is a property of the **call sites**, and for the one tag where those are decidable
-they are decided — `VenueCallGuardTests` reads `ProjectXMarketDataGateway`'s **compiled body**, so the closed
-`operation` vocabulary is asserted against the gateway's actual `VenueCallGuard.RunAsync` call sites rather
-than against a literal beside the test.
+the driver cannot synthesise.
+
+**What it decides, worded to what it checks.** That an instrument exists is decided unconditionally. Which tag
+keys it writes, and any value the class *manufactures*, are decided **on the paths the drive's fixed inputs
+reach** — a tag written only behind a condition those inputs do not satisfy is outside it. That a value the
+class merely *forwards* is drawn from a closed vocabulary is not decidable here at all: it is a property of the
+**call sites**, and for the one tag where those are decidable they are decided. `VenueCallGuardTests` reads
+`ProjectXMarketDataGateway`'s **compiled body** and takes the string literal in the operation argument's own
+stack slot at every `VenueCallGuard.RunAsync` call site, tracking depth from each instruction's stack
+behaviour. The first version searched the literals *near* the call instead, and an ordinary
+`_logger.LogDebug("Issuing {Operation}", VenueOperation.GetAccounts)` above the call made it green on an
+invented operation and red on a correct one — a heuristic worded as a proof, which is the same defect this
+section is about (PR #575 review). An operation that is not a literal is now reported as unreadable rather
+than answered, because a private forwarding helper would otherwise hide every call site behind it.
 
 **Registered unconditionally, subscribed conditionally.** `AddSingleton<HostTelemetry>()` runs whether or not
 `Otel__Endpoint` is set; only `AddSource`/`AddMeter` are inside the endpoint check. An unlistened counter is a

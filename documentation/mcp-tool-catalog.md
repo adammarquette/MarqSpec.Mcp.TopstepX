@@ -880,7 +880,7 @@ not from whether its type is nullable, so `string? symbol` with no `= null` is n
 | `list_instruments` | a `resolutionsAvailable` field | never on `InstrumentInfo` | gh#48 |
 | `get_market_session` | a `sessionOpenUtc` field | never on `SessionState` | gh#48 |
 | `get_bars` | a `fromCache` field | never on `BarSeries` — and the one an agent would reach for, reading falsy `undefined` every call | gh#48 |
-| `get_bars` | `fetchedBuckets` ≡ `venueRequests` as evidence | only `venueRequests == 0` proves **no bars were fetched** — and since gh#504 not even that the vendor went untouched: a memo-covered read still makes one uncounted `Contract/search` | gh#73 · gh#504 |
+| `get_bars` | `fetchedBuckets` ≡ `venueRequests` as evidence | only `venueRequests == 0` proves **no bars were fetched** — and since gh#504 not even that the vendor went untouched: a memo-covered read still makes one `Contract/search` that `venueRequests` does not count (`venue_calls_total{operation="resolve_contracts"}` does) | gh#73 · gh#504 |
 | `get_indicators` | `period` is a parameter | never was; fixed per indicator, and returned | gh#48 |
 | `get_indicators` · `get_indicator_at` | `period` is not a parameter | since gh#495 it is an optional *selector* among the operator's configured periods — omitted means the primary, an unconfigured one is refused listing them, and nothing ad hoc is computed ([ADR-0018](adr/0018-period-selection-among-configured-periods.md)) | gh#495 |
 | `get_indicator_at` | cannot-measure is `{ value: null }` | it is `{}` | gh#85 |

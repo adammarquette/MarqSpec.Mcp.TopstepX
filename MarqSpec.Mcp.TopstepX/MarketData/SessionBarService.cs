@@ -1,0 +1,519 @@
+using System.Globalization;
+using MarqSpec.Mcp.TopstepX.Data;
+using MarqSpec.Mcp.TopstepX.Data.Entities;
+using MarqSpec.Mcp.TopstepX.Domain;
+using MarqSpec.Mcp.TopstepX.Domain.MarketData;
+using MarqSpec.Mcp.TopstepX.Venue;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Logging;
+using Npgsql;
+using NpgsqlTypes;
+
+namespace MarqSpec.Mcp.TopstepX.MarketData;
+
+/// <summary>The outcome of a session-bar read.</summary>
+/// <param name="Bars">
+/// The session bars the store holds for the requested dates, ascending by trade date. Read back from the
+/// store rather than handed straight out of the aggregator, so what a caller receives is what was committed.
+/// </param>
+/// <param name="Absent">
+/// Why each of the other requested dates carries no bar, in the order the caller asked for them — the
+/// aggregator's reasons and the host's <see cref="SessionBarAbsence.NotClosed"/> in one list, because a
+/// caller sorting them into two would be reconstructing the distinction this type exists to erase.
+/// </param>
+/// <param name="FetchedBuckets">
+/// How many <b>base</b> buckets the one base read wrote or revised. It is the base series' number, not this
+/// one's: nothing here fetches, and a session bar is derived rather than fetched at all.
+/// </param>
+/// <param name="VenueRequests">
+/// How many requests that base read issued. Zero is the precise statement that this call reached no venue.
+/// </param>
+public sealed record SessionBarReadResult(
+    IReadOnlyList<SessionBar> Bars,
+    IReadOnlyList<SessionBarOutcome> Absent,
+    int FetchedBuckets,
+    int VenueRequests);
+
+/// <summary>
+/// Derives one session bar per closed trade date from the stored base series, and stores the complete ones
+/// (ADR-0022).
+/// </summary>
+/// <remarks>
+/// <para>
+/// <b>Complete or absent, never partial.</b> The aggregation itself is
+/// <see cref="SessionBarAggregator"/>'s, and it refuses a session whose base buckets are not all there, whose
+/// bars splice two contracts, or whose bars cannot say which contract they came from. This type adds the two
+/// judgements <c>Domain</c> may not make — <i>has the session closed</i>, which needs a clock, and <i>does
+/// the stored row still describe the definition standing today</i>, which needs the store — and then writes
+/// what is left.
+/// </para>
+/// <para>
+/// <b>An incomplete session is never recorded: no row, no ledger, no marker.</b> Re-derivation is a store
+/// read, the base coverage ledger already bounds what re-deriving can cost at the venue, and a session that
+/// heals simply appears on the next read. A per-session absence ledger would go stale the moment the missing
+/// base buckets arrived.
+/// </para>
+/// <para>
+/// <b>This service never calls the venue.</b> The one call that can is
+/// <see cref="BarCacheService.GetBarsAsync"/>, and it is made once, before and outside this service's
+/// transaction (ADR-0022 §7). <see cref="IMarketDataGateway"/> is taken here for
+/// <see cref="IMarketDataGateway.VenueId"/> alone — the first column of the storage key, read off the gateway
+/// exactly as <see cref="BarCacheService"/> reads it, because the same product on two venues is two series.
+/// </para>
+/// </remarks>
+public sealed class SessionBarService
+{
+    private readonly TopstepXDbContext _database;
+    private readonly BarCacheService _bars;
+    private readonly IMarketDataGateway _gateway;
+    private readonly BarSessionCalendar _calendar;
+    private readonly TimeProvider _clock;
+    private readonly ILogger<SessionBarService> _logger;
+
+    /// <summary>Creates the service.</summary>
+    /// <param name="database">The store.</param>
+    /// <param name="bars">The base series, cache-aside. The only thing here that can reach the venue.</param>
+    /// <param name="gateway">
+    /// The venue — for <see cref="IMarketDataGateway.VenueId"/> and nothing else. See the type's remarks.
+    /// </param>
+    /// <param name="calendar">The session calendar deciding which buckets a window expects.</param>
+    /// <param name="clock">The clock. Injected so a test can place "now" precisely against a session.</param>
+    /// <param name="logger">The logger. A serialization retry is announced through it.</param>
+    public SessionBarService(
+        TopstepXDbContext database,
+        BarCacheService bars,
+        IMarketDataGateway gateway,
+        BarSessionCalendar calendar,
+        TimeProvider clock,
+        ILogger<SessionBarService> logger)
+    {
+        _database = database;
+        _bars = bars;
+        _gateway = gateway;
+        _calendar = calendar;
+        _clock = clock;
+        _logger = logger;
+    }
+
+    /// <summary>
+    /// Derives and stores one session bar per closed trade date, and says why the others have none.
+    /// </summary>
+    /// <param name="instrument">The instrument.</param>
+    /// <param name="definition">The session being derived.</param>
+    /// <param name="tradeDates">The trade dates to answer for.</param>
+    /// <param name="cancellationToken">The caller's cancellation token.</param>
+    /// <returns>The bars, the absences, and what the base read cost.</returns>
+    /// <exception cref="ArgumentNullException">An argument is <see langword="null"/>.</exception>
+    /// <exception cref="VenueException">The base read could not resolve or reach the venue.</exception>
+    /// <exception cref="StoreContentionException">Every attempt at the write lost to a concurrent one.</exception>
+    public async Task<SessionBarReadResult> GetAsync(
+        InstrumentId instrument,
+        SessionDefinition definition,
+        IReadOnlyList<DateOnly> tradeDates,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(definition);
+        ArgumentNullException.ThrowIfNull(tradeDates);
+
+        DateTimeOffset now = _clock.GetUtcNow();
+        string venue = _gateway.VenueId;
+
+        // 1. WHICH SESSIONS HAVE CLOSED, WHICH IS THE ONE JUDGEMENT Domain CANNOT MAKE. A session bar for a
+        // window still running would be the partial the whole design refuses -- and it would be a partial
+        // that looks entirely ordinary, since every bucket printed so far is present and the count of them is
+        // simply lower than the calendar expects. So the clock decides here, in the host that owns one, and
+        // SessionBarAbsence.NotClosed is merely DECLARED in Domain (SessionBar.cs) so that both ends share one
+        // vocabulary.
+        //
+        // A window of null joins it: the calendar carries no such session on that date -- a Saturday, a
+        // holiday, a definition its close disowns -- and there is nothing to wait for and nothing to store.
+        // Reporting it as NotClosed rather than inventing a fifth reason keeps the vocabulary closed, and
+        // both mean the same thing to a caller: ask again later, there is no bar and nothing to fetch.
+        List<DateOnly> closed = [];
+        Dictionary<DateOnly, BarRange> windows = [];
+        Dictionary<DateOnly, SessionBarOutcome> absences = [];
+
+        foreach (DateOnly tradeDate in tradeDates)
+        {
+            if (SessionWindows.WindowFor(_calendar, definition, tradeDate) is { } window && window.End <= now)
+            {
+                windows[tradeDate] = window;
+                closed.Add(tradeDate);
+                continue;
+            }
+
+            absences[tradeDate] = SessionBarOutcome.Absent(tradeDate, SessionBarAbsence.NotClosed, 0, 0);
+        }
+
+        // 2. Nothing has closed, so there is nothing to derive from and nothing to reconcile against. The
+        // store is not opened and the venue is not reached: a read that can only answer "not yet" must not
+        // cost either of them.
+        if (closed.Count == 0)
+        {
+            return new SessionBarReadResult([], InAskedOrder(tradeDates, absences), 0, 0);
+        }
+
+        DateOnly firstClosed = closed.Min();
+        DateOnly lastClosed = closed.Max();
+
+        // 3. ONE BASE READ, AT definition.BaseResolutionMinutes, BEFORE AND OUTSIDE THE TRANSACTION.
+        //
+        // The resolution is the aggregator's contract and this is the only place it is kept: a Bar carries
+        // its open time and not its size, so a series read finer than the base passes the completeness check
+        // and yields a session bar that looks whole and is wrong -- its extremes are only the sub-buckets that
+        // happened to start on the boundary, and its volume is a fraction of the session's. Aggregate cannot
+        // check this and says so; the number lives on the definition, and it is read with it here.
+        //
+        // One call rather than one per date, because the covering window is contiguous and BarGapDetector
+        // already coalesces the holes in it -- the overnight between two sessions contains no expected bucket,
+        // so it costs nothing to span.
+        //
+        // OUTSIDE the transaction below, for the reason BarCacheService states at its own call site: the page
+        // walk is paced, and holding a RepeatableRead snapshot across a minute of deliberate sleeping pins
+        // xmin and widens every serialization window on this path. It also makes the retry free -- a second
+        // attempt re-derives from the store and re-fetches nothing.
+        //
+        // NORMALISED TO UTC, and that is not cosmetic. WindowFor hands back bounds carrying the MARKET's
+        // offset -- the same instants, written in the coordinate the session was stated in -- and Npgsql
+        // refuses to write a DateTimeOffset with a non-zero offset to a `timestamp with time zone`. The
+        // aggregator normalises for the same reason (SessionWindows.WindowFor's remark says so), and
+        // DateTimeOffset equality compares instants, so the difference is invisible to a test and fatal at
+        // the parameter.
+        BarReadResult read = await _bars.GetBarsAsync(
+            instrument,
+            definition.BaseResolutionMinutes,
+            new BarRange(
+                windows[firstClosed].Start.ToUniversalTime(), windows[lastClosed].End.ToUniversalTime()),
+            cancellationToken).ConfigureAwait(false);
+
+        // 4. Pure, and reproducible from the bars alone (ADR-0006).
+        IReadOnlyList<SessionBarOutcome> outcomes =
+            SessionBarAggregator.Aggregate(read.Bars, _calendar, definition, closed);
+
+        List<SessionBar> derived = [];
+        foreach (SessionBarOutcome outcome in outcomes)
+        {
+            if (outcome.Bar is { } bar)
+            {
+                derived.Add(bar);
+            }
+            else
+            {
+                absences[outcome.TradeDate] = outcome;
+            }
+        }
+
+        string windowCentral = WindowCentralFor(definition);
+        List<DateOnly> stale = [.. closed.Where(d => !derived.Exists(b => b.TradeDate == d))];
+
+        int written = await SeriesUnitOfWork.RunAsync(
+            _database,
+            instrument.Symbol + " " + definition.Name,
+            async token =>
+            {
+                // (a) DISCARD ROWS BUILT UNDER A DIFFERENT DEFINITION, and do it before reading anything.
+                //
+                // The pair (WindowCentral, BaseResolutionMinutes) is the row's provenance, and a row whose
+                // pair disagrees with the definition standing today describes a session nobody asked about:
+                // 08:30-15:00 off hourly bars is not 08:30-15:00 off half-hourly ones, and the key cannot
+                // tell them apart. Discarded rather than served (ADR-0022 §4).
+                //
+                // UNSCOPED BY DATE on purpose. A changed definition invalidates the whole series, not the
+                // window this call happens to ask about -- leaving the rest would keep serving them from
+                // every other window forever.
+                await _database.SessionBars
+                    .Where(s => s.Venue == venue
+                        && s.Instrument == instrument.Symbol
+                        && s.Session == definition.Name
+                        && (s.WindowCentral != windowCentral
+                            || s.BaseResolutionMinutes != definition.BaseResolutionMinutes))
+                    .ExecuteDeleteAsync(token)
+                    .ConfigureAwait(false);
+
+                // (b) THE PRE-READ. AsNoTracking, because the write below is raw SQL the change tracker never
+                // sees (gh#103): a tracked row here is a stale copy the identity map would hand back to the
+                // next query in this scope, and both the context and this service are scoped.
+                //
+                // The whole entity, and no ValueTuple anywhere near the Select (gh#282) -- a tuple there
+                // translates to a Postgres row constructor Npgsql refuses to materialise.
+                Dictionary<DateOnly, SessionBarRecord> existing = await _database.SessionBars
+                    .AsNoTracking()
+                    .Where(s => s.Venue == venue
+                        && s.Instrument == instrument.Symbol
+                        && s.Session == definition.Name
+                        && closed.Contains(s.TradeDate))
+                    .ToDictionaryAsync(s => s.TradeDate, token)
+                    .ConfigureAwait(false);
+
+                // (c) SKIP UNCHANGED, IN C#, AS A PRE-FILTER AND NOT AS A GUARD. It saves a write -- a row
+                // filtered out here is never sent, never index-probed and never row-locked -- and it decides
+                // nothing: insert-versus-update is a fact about the store, settled by the ON CONFLICT below
+                // against the row the store has actually committed.
+                List<SessionBar> pending =
+                [
+                    .. derived.Where(bar =>
+                        !existing.TryGetValue(bar.TradeDate, out SessionBarRecord? row) || !Unchanged(row, bar)),
+                ];
+
+                int rows = pending.Count == 0
+                    ? 0
+                    : await UpsertAsync(venue, instrument, definition, windowCentral, pending, now, token)
+                        .ConfigureAwait(false);
+
+                // (e) RECONCILE, SCOPED TO WHAT WAS ACTUALLY RE-DERIVED. A date this call asked about and the
+                // aggregator refused no longer has a session bar the store is entitled to serve -- a stored
+                // row for it was built from base bars that no longer support it, which is exactly what a roll
+                // landing on stored buckets does.
+                //
+                // Only those dates. A date OUTSIDE the ask was not re-derived, so deleting it would throw away
+                // a bar on the strength of not having looked -- which is why this deletes an explicit list
+                // rather than sweeping the window between the first and last date asked for.
+                if (stale.Count > 0)
+                {
+                    await _database.SessionBars
+                        .Where(s => s.Venue == venue
+                            && s.Instrument == instrument.Symbol
+                            && s.Session == definition.Name
+                            && stale.Contains(s.TradeDate))
+                        .ExecuteDeleteAsync(token)
+                        .ConfigureAwait(false);
+                }
+
+                // (f) SAVED BEFORE ANYTHING READS BACK. Nothing here tracks an entity today, so this is
+                // normally a no-op -- it stays because the read-back below is a QUERY, and a query does not
+                // see rows that are only tracked. The day something in this body starts going through the
+                // tracker, the failure without this is silent (AGENT-MEMORY.md).
+                if (_database.ChangeTracker.HasChanges())
+                {
+                    await _database.SaveChangesAsync(token).ConfigureAwait(false);
+                }
+
+                return rows;
+            },
+            _logger,
+            cancellationToken).ConfigureAwait(false);
+
+        _logger.LogDebug(
+            "Derived {Derived} '{Session}' bars for {Instrument} over {From} to {To}; the store wrote or "
+            + "revised {Written}.",
+            derived.Count,
+            definition.Name,
+            instrument.Symbol,
+            firstClosed,
+            lastClosed,
+            written);
+
+        // 6. READ BACK WHAT WAS COMMITTED, rather than handing out what was derived. AsNoTracking for the
+        // reason the pre-read is: this table is written by SQL the change tracker never sees.
+        //
+        // The provenance pair is repeated here rather than left to the discard at (a). This read runs AFTER
+        // the transaction committed, so it is the one statement in the method whose result the discard's
+        // ordering does not cover -- and what it returns is what a caller acts on. Stating the definition it
+        // will serve makes "a row built under a definition that no longer holds is never served" a property
+        // of the read itself rather than of the sequence that preceded it.
+        List<SessionBarRecord> committed = await _database.SessionBars
+            .AsNoTracking()
+            .Where(s => s.Venue == venue
+                && s.Instrument == instrument.Symbol
+                && s.Session == definition.Name
+                && s.WindowCentral == windowCentral
+                && s.BaseResolutionMinutes == definition.BaseResolutionMinutes
+                && closed.Contains(s.TradeDate))
+            .OrderBy(s => s.TradeDate)
+            .ToListAsync(cancellationToken)
+            .ConfigureAwait(false);
+
+        return new SessionBarReadResult(
+            [.. committed.Select(ToSessionBar)],
+            InAskedOrder(tradeDates, absences),
+            read.FetchedBuckets,
+            read.VenueRequests);
+    }
+
+    /// <summary>
+    /// The session write, as one statement the store resolves against the row it has committed.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>The conflict target is the composite primary key</b> — <c>(Venue, Instrument, Session, TradeDate)</c>,
+    /// the idempotence guard the data dictionary names, reached directly instead of inferred from a read of
+    /// it. It is deliberately <b>not</b> the unique <c>(Venue, Instrument, Session, OpenUtc)</c> index: that
+    /// one exists to make a calendar bug fail the write rather than become two overlapping sessions, and a
+    /// <c>DO UPDATE</c> aimed at it would turn the failure it is there to raise into a silent revision.
+    /// </para>
+    /// <para>
+    /// <b>The <c>WHERE</c> is the skip-unchanged rule</b>, and it is stated here rather than in C# because
+    /// this is the only place both sides are the column's own type: <c>excluded</c>'s prices have already been
+    /// coerced to <c>numeric(18,8)</c>, and a value at full <see cref="decimal"/> precision compared against a
+    /// stored one is the shape that made an identical guard dead code for a whole phase (gh#37).
+    /// </para>
+    /// <para>
+    /// <b>Arrays rather than a row per session</b>: a year of one session is 250-odd rows, and fifteen
+    /// parameters each would approach the protocol's parameter limit for no benefit. <c>WindowCentral</c> and
+    /// <c>BaseResolutionMinutes</c> are scalars because the definition is one per call, and they are not in
+    /// the <c>SET</c> or the comparison because the discard above has already removed every row that could
+    /// disagree about them.
+    /// </para>
+    /// </remarks>
+    private const string UpsertSessionBarsSql = """
+        INSERT INTO "SessionBars" (
+            "Venue", "Instrument", "Session", "TradeDate", "OpenUtc", "CloseUtc",
+            "Open", "High", "Low", "Close", "Volume", "ContractId",
+            "BaseResolutionMinutes", "BaseBucketCount", "WindowCentral", "RecordedAt")
+        SELECT @venue, @instrument, @session, a.trade_date, a.open_utc, a.close_utc,
+               a.open_price, a.high_price, a.low_price, a.close_price, a.volume, a.contract,
+               @resolution, a.bucket_count, @window, @recorded
+        FROM unnest(@tradeDates, @opensUtc, @closesUtc, @opens, @highs, @lows, @closes, @volumes,
+                    @contracts, @bucketCounts)
+             AS a(trade_date, open_utc, close_utc, open_price, high_price, low_price, close_price,
+                  volume, contract, bucket_count)
+        ON CONFLICT ("Venue", "Instrument", "Session", "TradeDate") DO UPDATE SET
+            "OpenUtc" = excluded."OpenUtc",
+            "CloseUtc" = excluded."CloseUtc",
+            "Open" = excluded."Open",
+            "High" = excluded."High",
+            "Low" = excluded."Low",
+            "Close" = excluded."Close",
+            "Volume" = excluded."Volume",
+            "ContractId" = excluded."ContractId",
+            "BaseBucketCount" = excluded."BaseBucketCount",
+            "RecordedAt" = excluded."RecordedAt"
+        WHERE ("SessionBars"."OpenUtc", "SessionBars"."CloseUtc", "SessionBars"."Open", "SessionBars"."High",
+               "SessionBars"."Low", "SessionBars"."Close", "SessionBars"."Volume",
+               "SessionBars"."ContractId", "SessionBars"."BaseBucketCount")
+              IS DISTINCT FROM
+              (excluded."OpenUtc", excluded."CloseUtc", excluded."Open", excluded."High", excluded."Low",
+               excluded."Close", excluded."Volume", excluded."ContractId", excluded."BaseBucketCount")
+        """;
+
+    /// <summary>Whether a stored row already holds exactly what has just been derived.</summary>
+    /// <param name="row">The stored row.</param>
+    /// <param name="bar">The session bar the aggregator produced.</param>
+    /// <returns><see langword="true"/> when writing it again would change nothing.</returns>
+    /// <remarks>
+    /// The bounds are compared as well as the numbers: the same trade date's session moves in UTC across a
+    /// daylight-saving change, and a row whose stored bounds no longer match the ones the calendar resolves
+    /// today is stale however identical its prices are.
+    /// </remarks>
+    private static bool Unchanged(SessionBarRecord row, SessionBar bar) =>
+        row.OpenUtc == bar.OpenUtc
+        && row.CloseUtc == bar.CloseUtc
+        && row.Open == bar.Open
+        && row.High == bar.High
+        && row.Low == bar.Low
+        && row.Close == bar.Close
+        && row.Volume == bar.Volume
+        && string.Equals(row.ContractId, bar.ContractId, StringComparison.Ordinal)
+        && row.BaseBucketCount == bar.BaseBucketCount;
+
+    /// <summary>The definition's window in Central time, as the provenance column records it.</summary>
+    /// <param name="definition">The definition.</param>
+    /// <returns>The window, e.g. <c>08:30-15:00</c>.</returns>
+    private static string WindowCentralFor(SessionDefinition definition) =>
+        definition.StartCentral.ToString("HH:mm", CultureInfo.InvariantCulture)
+        + "-"
+        + definition.EndCentral.ToString("HH:mm", CultureInfo.InvariantCulture);
+
+    /// <summary>Maps a stored row back to the domain shape.</summary>
+    /// <param name="row">The row.</param>
+    /// <returns>The session bar.</returns>
+    private static SessionBar ToSessionBar(SessionBarRecord row) =>
+        new(
+            row.TradeDate,
+            row.OpenUtc,
+            row.CloseUtc,
+            row.Open,
+            row.High,
+            row.Low,
+            row.Close,
+            row.Volume,
+            row.ContractId,
+            row.BaseBucketCount);
+
+    /// <summary>The absences, in the order the caller asked for their dates.</summary>
+    /// <param name="tradeDates">The dates as asked for.</param>
+    /// <param name="absences">The absence for each date that has one.</param>
+    /// <returns>The absences, in the caller's order.</returns>
+    private static IReadOnlyList<SessionBarOutcome> InAskedOrder(
+        IReadOnlyList<DateOnly> tradeDates,
+        Dictionary<DateOnly, SessionBarOutcome> absences) =>
+        [.. tradeDates.Where(absences.ContainsKey).Select(d => absences[d])];
+
+    /// <summary>
+    /// Writes the derived session bars, revising the rows already stored.
+    /// </summary>
+    /// <param name="venue">The venue.</param>
+    /// <param name="instrument">The instrument.</param>
+    /// <param name="definition">The definition that produced them.</param>
+    /// <param name="windowCentral">The definition's window, as the provenance column records it.</param>
+    /// <param name="bars">The bars to write. Never empty.</param>
+    /// <param name="now">The instant this write runs at.</param>
+    /// <param name="cancellationToken">The caller's cancellation token.</param>
+    /// <returns>
+    /// <b>How many rows the store reports it wrote or revised</b> — the statement's own row count, never this
+    /// process's prediction of it. The two differ exactly where the skip-unchanged <c>WHERE</c> bites.
+    /// </returns>
+    private async Task<int> UpsertAsync(
+        string venue,
+        InstrumentId instrument,
+        SessionDefinition definition,
+        string windowCentral,
+        IReadOnlyList<SessionBar> bars,
+        DateTimeOffset now,
+        CancellationToken cancellationToken)
+    {
+        NpgsqlParameter[] parameters =
+        [
+            new("venue", NpgsqlDbType.Varchar) { Value = venue },
+            new("instrument", NpgsqlDbType.Varchar) { Value = instrument.Symbol },
+            new("session", NpgsqlDbType.Varchar) { Value = definition.Name },
+            new("resolution", NpgsqlDbType.Integer) { Value = definition.BaseResolutionMinutes },
+            new("window", NpgsqlDbType.Varchar) { Value = windowCentral },
+            new("recorded", NpgsqlDbType.TimestampTz) { Value = now },
+            new("tradeDates", NpgsqlDbType.Array | NpgsqlDbType.Date)
+            {
+                Value = bars.Select(b => b.TradeDate).ToArray(),
+            },
+            new("opensUtc", NpgsqlDbType.Array | NpgsqlDbType.TimestampTz)
+            {
+                Value = bars.Select(b => b.OpenUtc).ToArray(),
+            },
+            new("closesUtc", NpgsqlDbType.Array | NpgsqlDbType.TimestampTz)
+            {
+                Value = bars.Select(b => b.CloseUtc).ToArray(),
+            },
+            new("opens", NpgsqlDbType.Array | NpgsqlDbType.Numeric)
+            {
+                Value = bars.Select(b => b.Open).ToArray(),
+            },
+            new("highs", NpgsqlDbType.Array | NpgsqlDbType.Numeric)
+            {
+                Value = bars.Select(b => b.High).ToArray(),
+            },
+            new("lows", NpgsqlDbType.Array | NpgsqlDbType.Numeric)
+            {
+                Value = bars.Select(b => b.Low).ToArray(),
+            },
+            new("closes", NpgsqlDbType.Array | NpgsqlDbType.Numeric)
+            {
+                Value = bars.Select(b => b.Close).ToArray(),
+            },
+            new("volumes", NpgsqlDbType.Array | NpgsqlDbType.Bigint)
+            {
+                Value = bars.Select(b => b.Volume).ToArray(),
+            },
+            new("contracts", NpgsqlDbType.Array | NpgsqlDbType.Varchar)
+            {
+                Value = bars.Select(b => b.ContractId).ToArray(),
+            },
+            new("bucketCounts", NpgsqlDbType.Array | NpgsqlDbType.Integer)
+            {
+                Value = bars.Select(b => b.BaseBucketCount).ToArray(),
+            },
+        ];
+
+        return await _database.Database
+            .ExecuteSqlRawAsync(UpsertSessionBarsSql, parameters, cancellationToken)
+            .ConfigureAwait(false);
+    }
+}

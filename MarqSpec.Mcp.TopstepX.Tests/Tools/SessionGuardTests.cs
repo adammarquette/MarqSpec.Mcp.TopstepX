@@ -29,24 +29,18 @@ public sealed class SessionGuardTests
     private const int UnsatisfiableCount = 5_000;
 
     /// <summary>
-    /// How many calendar days <c>SessionWindows.LastClosedTradeDates</c> walks back over for that count.
-    /// </summary>
-    /// <remarks>
-    /// RESTATED CONSTANT, carrying the same cross-reference the guard does: the span is computed as
-    /// <c>(count * 4) + 15</c> inside <c>SessionWindows.LastClosedTradeDates</c>, where it is a local nothing
-    /// can read back. Written as the expression rather than as 20,015 so that a reader who changes it there
-    /// finds the arithmetic here, not a number.
-    /// </remarks>
-    private const int WalkSpanDays = (UnsatisfiableCount * 4) + 15;
-
-    /// <summary>
     /// The span the sparse calendar declares holidays over — the walk's, plus a margin at both ends.
     /// </summary>
     /// <remarks>
-    /// The margin covers the cursor's own day (the walk starts one day <i>ahead</i> of <c>now</c>'s market
-    /// date) and leaves room for the span to grow a little before this fixture stops covering it.
+    /// <b>Read off <see cref="SessionWindows.LastClosedWalkSpanDays"/> rather than restated.</b> The span used
+    /// to be a local inside <c>LastClosedTradeDates</c>, so this fixture wrote <c>(count * 4) + 15</c> out
+    /// again with a comment admitting it was a copy; the accessor exists now, and one number in one place
+    /// cannot drift from itself. The 85 is margin: it covers the cursor's own day (the walk starts one day
+    /// <i>ahead</i> of <c>now</c>'s market date) and leaves room for the span to grow a little before this
+    /// fixture stops covering it.
     /// </remarks>
-    private const int SparseCalendarDays = WalkSpanDays + 85;
+    private static int SparseCalendarDays =>
+        SessionWindows.LastClosedWalkSpanDays(UnsatisfiableCount) + 85;
 
     /// <summary>The shipped `rth` session: 08:30–15:00 Central, derived from 30-minute base bars.</summary>
     private static SessionDefinition Rth =>
@@ -232,6 +226,31 @@ public sealed class SessionGuardTests
                 "Ask for fewer",
                 "an unrepresentable instant is not an unsatisfiable count, and a translation that cannot "
                 + "tell them apart misreports one of them every time");
+    }
+
+    [Fact]
+    public void ValidateSessionCount_RefusesACountWhoseBaseBucketsExceedThePass_BeforeAnyRead()
+    {
+        // THE CAP THE COUNT FORM WAS MISSING. MaxRows admits 5,000 sessions, and the service answers a count
+        // with ONE covering base read from the first session's open to the last one's close -- so a count the
+        // row cap allows can span more base buckets than a single gap-detection pass will enumerate, and
+        // BarGapDetector.ExpectedBuckets faults on it AFTER the store has already been opened. About 3,720
+        // `rth` sessions is where that starts at a 30-minute base; 4,000 is comfortably past it and still
+        // well inside MaxRows.
+        //
+        // Judged here rather than in the tool, so every refusal on this surface still fires before the read.
+        DateTimeOffset now = MarketClock.FromMarket(new DateOnly(2026, 8, 6), new TimeOnly(20, 0));
+
+        Action refuse = () => Guards().ValidateSessionCount(4_000, Rth, Calendar, now);
+
+        refuse.Should().Throw<McpException>().Which.Message
+            .Should().Contain("count 4000 rth sessions", "the refusal names the parameter and the value")
+            .And.Contain(
+                "gap-detection pass",
+                "and the bound it is over -- which is the base-bucket cap, not the row cap")
+            .And.Contain(
+                "Ask for fewer sessions.",
+                "and the one remedy this caller has: there is no window and no resolution to narrow");
     }
 
     [Fact]

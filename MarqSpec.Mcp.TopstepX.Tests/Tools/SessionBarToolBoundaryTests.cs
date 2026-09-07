@@ -39,15 +39,25 @@ public sealed class SessionBarToolBoundaryTests : IDisposable
     private const int SparseCount = 100;
 
     /// <summary>
-    /// How many calendar days <c>SessionWindows.LastClosedTradeDates</c> walks back over for that count.
+    /// A count inside the row cap whose covering base read is wider than one gap-detection pass.
     /// </summary>
     /// <remarks>
-    /// RESTATED CONSTANT, carrying the same cross-reference <c>ToolGuards.ValidateSessionCount</c> does: the
-    /// span is <c>(count * 4) + 15</c> inside <c>SessionWindows.LastClosedTradeDates</c>, where it is a local
-    /// nothing can read back. Written as the expression rather than as 415, so a reader who changes it there
-    /// finds the arithmetic here rather than a number.
+    /// About 3,720 <c>rth</c> sessions is where 30-minute base buckets first exceed the pass; 4,000 is past
+    /// it and still well inside the default <c>MaxRows</c> of 5,000, which is what makes the two caps
+    /// visibly different bounds rather than one implying the other.
     /// </remarks>
-    private const int WalkSpanDays = (SparseCount * 4) + 15;
+    private const int OverThePassCount = 4_000;
+
+    /// <summary>
+    /// The span the sparse calendar declares holidays over — the closed-session walk's, plus a margin.
+    /// </summary>
+    /// <remarks>
+    /// Read off <see cref="SessionWindows.LastClosedWalkSpanDays"/> rather than restated: the span used to be
+    /// a local inside <c>LastClosedTradeDates</c> and this fixture wrote the arithmetic out again. The margin
+    /// covers the cursor's own day, since the walk starts one day <i>ahead</i> of <c>now</c>'s market date.
+    /// </remarks>
+    private static int SparseCalendarDays =>
+        SessionWindows.LastClosedWalkSpanDays(SparseCount) + 85;
 
     private readonly TopstepXDbContext _database;
     private readonly CountingGateway _gateway;
@@ -178,6 +188,25 @@ public sealed class SessionBarToolBoundaryTests : IDisposable
     }
 
     [Fact]
+    public async Task ACountWhoseBaseBucketsExceedThePass_IsRefused_BeforeTheVenue()
+    {
+        // The row cap is not the only cap a count is under. One call answers a count with ONE covering base
+        // read -- the first session's open to the last one's close -- so a count MaxRows admits can still span
+        // more 30-minute buckets than a single gap-detection pass enumerates. Before this guard existed the
+        // fault landed inside BarGapDetector, after the store had been opened, and reached the caller as
+        // "An error occurred invoking get_latest_session_bars".
+        Func<Task> call = () =>
+            _sessions.GetLatestSessionBars("ES", "rth", OverThePassCount, CancellationToken.None);
+
+        (await call.Should().ThrowAsync<McpException>())
+            .WithMessage("*count 4000 rth sessions*", "the refusal names the parameter and the value")
+            .WithMessage("*gap-detection pass*", "and the bound it is over")
+            .WithMessage("*Ask for fewer sessions*", "and says what to do about it");
+
+        NothingWasSpent();
+    }
+
+    [Fact]
     public async Task AnUnsatisfiableCount_IsRefusedNamingCount_NotThrownRaw()
     {
         // MaxRows and the bounded calendar walk are two different bounds, and they disagree only when the
@@ -251,7 +280,7 @@ public sealed class SessionBarToolBoundaryTests : IDisposable
         DateOnly cursor = MarketClock.MarketDate(now).AddDays(1);
         List<DateOnly> holidays = [];
 
-        for (int i = 0; i < WalkSpanDays + 85; i++)
+        for (int i = 0; i < SparseCalendarDays; i++)
         {
             DateOnly day = cursor.AddDays(-i);
             if (day.DayOfWeek is not DayOfWeek.Friday)

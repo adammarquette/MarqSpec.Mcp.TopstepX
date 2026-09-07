@@ -170,6 +170,13 @@ public sealed class SessionBarToolServedReadTests : IAsyncLifetime
         first.Bars.Should().ContainSingle().Which.TradeDate.Should().Be(_tuesday);
         first.Absent.Should().ContainSingle().Which.Reason.Should().Be(SessionBarAbsence.Incomplete);
 
+        first.VenueRequests.Should().Be(
+            1,
+            "a cold store makes the covering window ONE contiguous missing range, so this read is a single "
+            + "request -- which is why it memoises nothing and the ledger is not settled after it");
+        first.FetchedBuckets.Should().BeGreaterThan(
+            0, "and that request came back with bars, which is what the store was written from");
+
         // The read that finds the two holes the first one left unmemoised, and records them.
         ToolPayloads.SessionBarSeries second =
             await tools.GetLatestSessionBars("ES", "rth", 2, CancellationToken.None);

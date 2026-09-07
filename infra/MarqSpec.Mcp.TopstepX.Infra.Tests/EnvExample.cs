@@ -12,14 +12,16 @@ public static class EnvExample
     /// with the two the file grew after it was filed): the Kestrel certificate keys — the container never
     /// holds a certificate (ADR-0021); the <c>POSTGRES_*</c> keys, which are the store container's, not
     /// the server's; the Kestrel port overrides, which a task definition must never copy (ADR-0021's rule in
-    /// two directions); the static bearer token — the deployed mode is OAuth; and the local Grafana
-    /// stack's own login, which this application never reads.
+    /// two directions); the static bearer token — the deployed mode is OAuth; and the <c>GF_*</c> keys,
+    /// which are the local Grafana stack's own (the <c>lgtm</c> compose service, gh#535) and are never read
+    /// by this application — a group rather than a name, because that file grew a second one
+    /// (<c>GF_AUTH_ANONYMOUS_ENABLED</c>) while this card was open and this test caught it on the rebase.
     /// </summary>
     public static bool IsComposeOnly(string key) =>
         key.StartsWith("Kestrel__", StringComparison.Ordinal)
         || key.StartsWith("POSTGRES_", StringComparison.Ordinal)
         || key is "ASPNETCORE_HTTP_PORTS" or "ASPNETCORE_HTTPS_PORTS" or "Mcp__HttpBearerToken"
-        || key == "GF_SECURITY_ADMIN_PASSWORD";
+        || key.StartsWith("GF_", StringComparison.Ordinal);
 
     /// <summary>
     /// Keys a later card of the same epic owns: the <c>Otel__*</c> keys are gh#537's, whose OTLP collector

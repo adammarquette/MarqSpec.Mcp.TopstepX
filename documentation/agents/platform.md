@@ -753,10 +753,22 @@ Three things about it generalise:
   write the fixture for the documented form before believing the form.
 
 `check-migrations-additive-selftest.sh` carries a **decision ledger** — the fourth gate here to need one —
-and its rows are split into the ones measured by mutation and the ones honestly marked unmeasured, with the
-sweep's cost recorded beside them. **The suite takes about 6m30s on a Windows checkout** and seconds on the
-runner, which is what bounds how much of that table could be measured on one card; the harness is named in
-the file so the next reader repeats it rather than re-deriving it.
+and its rows are split into eight **measured by a nine-mutant sweep** and the rest listed as
+exercised-but-not-mutated, which is not a claim of coverage. **The suite takes about 6m30s on a Windows
+checkout** and about two seconds on the runner, so the sweep is roughly an hour; that is what bounds how much
+of the table could be measured on one card, and it is written down so the next reader re-runs it rather than
+re-reading it. Two of its results are worth carrying:
+
+- **One mutant survived, and it is named rather than repaired.** Deleting `DropSchema` and `DropSequence`
+  from the operation list reddens **nothing** — they ride the same loop and the same call-suffix regex as the
+  five operations that five cases do pin, so a case each would pin the *list entry* and nothing else. **A
+  sweep with no survivors usually means the sweep was too timid**, and a survivor stated is worth more than a
+  fixture written to make the table look full.
+- **The mutant that matters most is the marker's comment-block boundary**, and it takes three cases with it —
+  including *two DropColumns, only the first acknowledged*. Without that boundary the upward walk runs to the
+  top of the file and **one marker acknowledges the whole migration**, which is the exact failure the escape
+  hatch exists to prevent. It is the difference between a marker and a rubber stamp, and nothing but that one
+  case measures it.
 
 ### Size-gate targeting and decision ledgers
 

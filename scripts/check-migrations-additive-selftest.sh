@@ -57,11 +57,11 @@
 # deployment actually gets wrong.
 #
 # DECISION LEDGER -- see the table at the bottom of this file (gh#178's remedy). Every decision the gate
-# makes is listed beside the case that kills it, and the table is SPLIT: rows written after running the
-# mutation, and rows honestly marked UNMEASURED. Adding a decision to the gate without adding a row is the
-# same visible omission the ledger exists to catch. Read the split before trusting a row -- "a ledger is a
-# claim too", and the two ways one lies are a grade promising more than its evidence and a decision pinned
-# by a fixture's incidental shape.
+# makes is listed beside the case that kills it, and the table is SPLIT: eight rows MEASURED by a mutation
+# sweep, and the rest listed as exercised-but-not-mutated. Adding a decision to the gate without adding a
+# row is the same visible omission the ledger exists to catch. Read the split before trusting a row -- "a
+# ledger is a claim too", and the two ways one lies are a grade promising more than its evidence and a
+# decision pinned by a fixture's incidental shape. ONE MUTANT SURVIVED and is named as such.
 #
 # LOCAL RUNTIME. Each case forks `git init`, a few commits and a shell. Seconds on the CI runner; roughly a
 # minute on a Windows checkout, where process spawning dominates.
@@ -598,3 +598,77 @@ if [ "$cases" -eq 0 ]; then
 fi
 
 ok "ok  $cases self-test cases — check-migrations-additive.sh rejects each destructive shape BY FILE, LINE AND OPERATION, honours a marker only in the unbroken comment block directly above the operation, and accepts the additive shapes WITHOUT WRITING A BYTE TO STDERR."
+
+# ---------------------------------------------------------------------------------------------------------
+# DECISION LEDGER (gh#178's remedy, and this is the fourth gate here to carry one).
+#
+# THE TABLE IS SPLIT, because "a ledger is a claim too, and it lies in two specific ways". The first part is
+# MEASURED: nine mutants, each deleting or inverting exactly one decision, each run against the whole suite,
+# and the row records WHICH CASES WENT RED rather than merely that the suite did (gh#178 -- "a mutation that
+# reddens for the WRONG reason reads as caught"). The second part is NOT MUTATED and says so; it is not a
+# claim of coverage.
+#
+# WHAT THE SWEEP RAN ON, stated because gh#184's rule is that a run is cited against the code it ran on. It
+# ran on this branch's gate BEFORE the untracked-file read was added -- that blob differs from the shipping
+# one only by the `git ls-files --others` block, two header paragraphs and one line of `explain` prose, and
+# EVERY decision in the measured table below is byte-identical across the two. The suite was 27 cases then;
+# case 8 (untracked) is the 28th and is the one thing the sweep could not see. That decision was measured
+# separately and on the REAL TREE rather than on a fixture, which is stronger: with the probe migration
+# written and never `git add`ed, the gate printed `ok  no migration added or changed against origin/develop`;
+# with the read added, it printed `DESTRUCTIVE  ...29990101000000_ProbeDropColumn.cs:13  DropColumn`. The
+# harness is nine `sed` edits driven by one script; each full run costs about 6m30s on a Windows checkout, so
+# the whole sweep is roughly an hour. Re-run it rather than re-reading this table -- that is where every row
+# below came from, and auditing a ledger by reading it is how the first one in this repository got two rows
+# wrong.
+#
+# MEASURED BY MUTATION (baseline: 27 of 27 green)
+#
+# | # | Decision deleted or inverted                        | Cases that went red                              |
+# |---|-----------------------------------------------------|--------------------------------------------------|
+# | 1 | `$MEMBER_RE` -- where the Up() body ENDS            | **7.** "a Down() that drops everything Up() added" |
+# |   | (made to never match, so Up() runs to EOF and       | plus every other green case, because every fixture |
+# |   | Down() is read)                                     | carries a destructive Down(). The Down() exclusion |
+# |   |                                                     | is what keeps this gate off ordinary migrations.   |
+# | 2 | `--diff-filter=ACMR` (D allowed back in)            | **1.** "a DELETED migration"                       |
+# | 3 | `has_drop_column` (forced to 1, always armed)       | **1.** "a DropIndex with no DropColumn beside it"  |
+# | 4 | the comment-block boundary in `report`'s upward      | **3.** "a BLANKET marker at the top of the body",  |
+# |   | walk (so the walk scans the whole file)             | "a marker separated ... by a blank line", and      |
+# |   |                                                     | "two DropColumns, only the first acknowledged" --  |
+# |   |                                                     | the third is the one that matters: without the     |
+# |   |                                                     | boundary, ONE marker acknowledges a whole file.    |
+# | 5 | the `[ ! -d "$MIG_DIR" ]` guard                     | **1.** "the Migrations directory gone"             |
+# | 6 | `BASE` default `origin/develop` (made `HEAD`)       | **2.** both argument-free cases, and only those --  |
+# |   |                                                     | which is why two cases pass no base at all.        |
+# | 7 | `in_region` suppression of pass 3                   | **1.** "a multi-line Sql() whose DROP is on a      |
+# |   |                                                     | later line, marked above the CALL" -- it goes RED, |
+# |   |                                                     | because the DROP line inside the literal is then   |
+# |   |                                                     | reported separately and carries no marker of its   |
+# |   |                                                     | own. A false POSITIVE is what this decision stops. |
+# | 8 | `DropSchema` and `DropSequence` removed from `OPS`  | **0. SURVIVOR.** See below.                        |
+#
+# **MUTANT 8 SURVIVED, and that is recorded rather than repaired.** No case pins those two list entries: they
+# ride the same loop, the same `$CALL` suffix and the same `report` as the five operations that five cases do
+# pin, so a case each would pin the LIST ENTRY and nothing else. That is a real, named gap in this table --
+# add a fixture if either ever stops being reachable by the same loop. **A surviving mutant is the honest
+# output of a sweep**; a sweep with no survivors usually means the sweep was too timid.
+#
+# NOT MUTATED -- claimed as exercised, never as pinned
+#
+#   Each of these has a case whose NEEDLE names it, so a silent regression would have to also keep the
+#   diagnostic byte-identical. That is weaker than a mutation and is listed separately for that reason.
+#
+#   - the base-ref read and its status check ......... "a base ref that names no commit" (needle: UNRESOLVABLE BASE)
+#   - `MIGRATION_GATE_BASE` fallback ................. "MIGRATION_GATE_BASE naming the base" (needle: against basebranch)
+#   - `git merge-base` and its status check .......... every case; UNREACHABLE as a failure from a fixture,
+#                                                      since every fixture history is related by construction
+#   - `*.Designer.cs` / `*ModelSnapshot.cs` skips .... "a Designer.cs and a model snapshot"
+#   - `$UP_RE` ....................................... "a migration whose Up(MigrationBuilder) cannot be located"
+#   - `$COMMENT_RE` skip ............................. "a commented-out DropColumn"
+#   - `$SQL_CALL_RE` / `$STATEMENT_END_RE` ........... "a multi-line Sql() whose DROP is three lines below"
+#   - the three SQL needles, individually ............ one case each, matching the printed label
+#   - `nocasematch` .................................. "a LOWERCASE truncate"
+#   - `OPS` DropTable/DropColumn/Rename*/AlterColumn .. one case each, matching the printed operation
+#   - `$MARKER_RE`'s non-empty-reason requirement .... "a marker with NO reason"
+#   - the `files_read -eq 0` early green ............. "a branch that touches no migration at all"
+#   - the untracked read ............................. case 8, plus the real-tree pair quoted above
+# ---------------------------------------------------------------------------------------------------------

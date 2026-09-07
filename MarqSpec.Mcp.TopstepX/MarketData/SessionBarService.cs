@@ -73,6 +73,7 @@ public sealed class SessionBarService
     private readonly BarCacheService _bars;
     private readonly IMarketDataGateway _gateway;
     private readonly BarSessionCalendar _calendar;
+    private readonly IndicatorProjector _projector;
     private readonly TimeProvider _clock;
     private readonly ILogger<SessionBarService> _logger;
 
@@ -83,6 +84,9 @@ public sealed class SessionBarService
     /// The venue — for <see cref="IMarketDataGateway.VenueId"/> and nothing else. See the type's remarks.
     /// </param>
     /// <param name="calendar">The session calendar deciding which buckets a window expects.</param>
+    /// <param name="projector">
+    /// The indicator projection over the session series this fill writes, run inside the same unit of work.
+    /// </param>
     /// <param name="clock">The clock. Injected so a test can place "now" precisely against a session.</param>
     /// <param name="logger">The logger. A serialization retry is announced through it.</param>
     public SessionBarService(
@@ -90,6 +94,7 @@ public sealed class SessionBarService
         BarCacheService bars,
         IMarketDataGateway gateway,
         BarSessionCalendar calendar,
+        IndicatorProjector projector,
         TimeProvider clock,
         ILogger<SessionBarService> logger)
     {
@@ -97,6 +102,7 @@ public sealed class SessionBarService
         _bars = bars;
         _gateway = gateway;
         _calendar = calendar;
+        _projector = projector;
         _clock = clock;
         _logger = logger;
     }
@@ -148,6 +154,15 @@ public sealed class SessionBarService
     /// strictly better-informed store; here the second attempt can undo work the winner committed. The bound
     /// above is what makes that acceptable, and it is stated here because the unit of work itself cannot
     /// know it.
+    /// </para>
+    /// <para>
+    /// <b>The indicator projection replays with the retry, and that is safe because it is idempotent.</b>
+    /// This body projects the session series it wrote (step 6(f2), gh#501), so a serialization failure
+    /// replays the projection as well as the upsert and the reconcile. Unlike the deletion above, that costs
+    /// nothing to get wrong: a projection derives entirely from the session bars visible on the attempt's own
+    /// snapshot and rounds to the stored column's scale, so running it twice over the same bars produces the
+    /// same numbers and the second run is an empty diff (ADR-0006). It is the one step here whose replay
+    /// needs no bound at all.
     /// </para>
     /// </remarks>
     public async Task<SessionBarReadResult> GetAsync(
@@ -287,9 +302,11 @@ public sealed class SessionBarService
         // the caller is answered with is decided in here, the read-back included: a statement run after the
         // commit is a fresh look at whatever the store holds by then, and a concurrent deletion landing in
         // that gap would leave a trade date in NEITHER list.
+        SeriesKey series = new SeriesKey.Session(venue, instrument.Symbol, definition.Name);
+
         (int Written, List<SessionBarRecord> Committed) stored = await SeriesUnitOfWork.RunAsync(
             _database,
-            new SeriesKey.Session(venue, instrument.Symbol, definition.Name).Describe(),
+            series.Describe(),
             async token =>
             {
                 // (a) DISCARD ROWS BUILT UNDER A DIFFERENT DEFINITION, and do it before reading anything.
@@ -371,6 +388,26 @@ public sealed class SessionBarService
                 {
                     await _database.SaveChangesAsync(token).ConfigureAwait(false);
                 }
+
+                // (f2) PROJECT THE SESSION SERIES THIS BODY JUST WROTE, in this transaction, and
+                // UNCONDITIONALLY (gh#501). A session bar is a bar like any other once it is stored, and the
+                // indicators over it are a projection of it (ADR-0006) -- so bars committed without the
+                // values they justify would be exactly the state a read then has to replay a whole series to
+                // repair. Here they commit together or not at all, the way a base fill has always projected
+                // in its own unit of work.
+                //
+                // NOT GATED ON "SOMETHING CHANGED". `rows` counts the upsert alone, so a pass that only
+                // deleted stale rows changed the series with `rows == 0` -- and the reconcile inside the
+                // projection is what removes values those deleted bars no longer justify. An unconditional
+                // pass over an unchanged series is an empty diff, which is the property ADR-0006 exists to
+                // guarantee, so the honest cheap answer and the honest correct one are the same call.
+                await _projector.ProjectAsync(series, now, token).ConfigureAwait(false);
+
+                // (f3) AND SAVED AGAIN, because the projection is deliberately half-tracked: it writes its
+                // values with one statement the store runs as it is sent and removes what the bars no longer
+                // justify through the change tracker, which waits for this. The projector refuses outright
+                // outside a transaction for the same reason (AGENT-MEMORY.md, "Save before you project").
+                await _database.SaveChangesAsync(token).ConfigureAwait(false);
 
                 // (g) READ BACK WHAT THIS TRANSACTION COMMITTED, rather than handing out what was
                 // derived. AsNoTracking for the reason the pre-read is: this table is written by SQL the

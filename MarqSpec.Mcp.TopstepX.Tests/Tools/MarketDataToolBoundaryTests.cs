@@ -125,6 +125,26 @@ public sealed class MarketDataToolBoundaryTests
                     typeof(TimeProvider),
                 ]
             },
+            {
+                // IndicatorTools' set plus the two a SESSION series needs -- the name vocabulary and the
+                // calendar its trade dates are walked off (gh#501). NOT SessionBarService, deliberately: that
+                // one holds a gateway, and holding it here would drag a live venue client into the field walk
+                // VenueFailureReportingTests performs and force a catch for a VenueException this route cannot
+                // raise. The gateway is read once for its venue id and not kept, exactly as IndicatorTools
+                // does. And no TimeProvider: both tools take the instant they answer about as an argument, so
+                // there is no "latest" member here to anchor on a clock.
+                typeof(SessionIndicatorTools),
+                [
+                    typeof(InstrumentResolver),
+                    typeof(TopstepXDbContext),
+                    typeof(IndicatorCatalog),
+                    typeof(IndicatorCacheService),
+                    typeof(SessionCatalog),
+                    typeof(BarSessionCalendar),
+                    typeof(IMarketDataGateway),
+                    typeof(ToolGuards),
+                ]
+            },
         };
 
     [Theory]

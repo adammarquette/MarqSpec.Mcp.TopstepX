@@ -379,7 +379,7 @@ public sealed class SessionBarToolBoundaryTests : IDisposable
             _telemetry);
 
         SessionBarService service = new(
-            _database, cache, _gateway, calendar, clock, NullLogger<SessionBarService>.Instance);
+            _database, cache, _gateway, calendar, projector, clock, NullLogger<SessionBarService>.Instance);
 
         return new SessionBarTools(
             new InstrumentResolver(new InstrumentRegistry(options), new StoreAvailabilityHolder()),

@@ -1,16 +1,19 @@
 using System.Data;
 using FluentAssertions;
+using MarqSpec.Mcp.TopstepX.Configuration;
 using MarqSpec.Mcp.TopstepX.Data;
 using MarqSpec.Mcp.TopstepX.Data.Entities;
 using MarqSpec.Mcp.TopstepX.Domain;
 using MarqSpec.Mcp.TopstepX.Domain.MarketData;
 using MarqSpec.Mcp.TopstepX.MarketData;
 using MarqSpec.Mcp.TopstepX.Telemetry;
+using MarqSpec.Mcp.TopstepX.Tools;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Storage;
 using Microsoft.Extensions.Diagnostics.Metrics.Testing;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Options;
 using Microsoft.Extensions.Time.Testing;
 
 namespace MarqSpec.Mcp.TopstepX.IntegrationTests;
@@ -91,10 +94,43 @@ public sealed class SessionIndicatorProjectionTests : IAsyncLifetime
     private static DateTimeOffset SettledNow => new(2026, 9, 1, 0, 0, 0, TimeSpan.Zero);
 
     [Fact]
+    public async Task ASessionFill_ProjectsIndicatorsInTheSameUnitOfWork()
+    {
+        // ONE CALL AND NOTHING ELSE. A session fill used to write SessionBars and leave
+        // SessionIndicatorValues empty until something else projected -- the first read, or an operator
+        // running `rebuild-indicators` -- so a freshly derived session answered its first indicator read by
+        // replaying the whole series. The projection now runs inside the fill's own unit of work, between the
+        // save and the read-back, which is what makes the bars and the values those bars justify commit
+        // together or not at all (gh#501).
+        string venue = await FillAsync();
+
+        IReadOnlyList<SessionIndicatorValueRecord> rows = await StoredValuesAsync(venue);
+
+        rows.Should().NotBeEmpty(
+            "the fill projected the session series it had just written, with nothing else asked to");
+
+        // The session vocabulary, from the fill rather than from a separate pass: the catalogue minus the
+        // session-anchored vwap a one-bar session has no distribution to weight (ADR-0022).
+        rows.Select(r => r.Indicator).Should().Contain("atr").And.Contain("rsi");
+        rows.Select(r => r.Indicator).Should().NotContain("vwap");
+
+        // Keyed on the session bar's own opening instant, so every value the fill wrote sits on a bar the
+        // same unit of work committed.
+        HashSet<DateTimeOffset> openings = [.. (await StoredBarsAsync(venue)).Select(b => b.OpenUtc)];
+        openings.Should().HaveCount(_tradeDates.Length);
+        rows.Select(r => r.BucketStart).Should().OnlyContain(bucket => openings.Contains(bucket));
+    }
+
+    [Fact]
     public async Task ASessionSeries_ProjectsTheCatalogueMinusVwap()
     {
         string venue = await FillAsync();
         SeriesKey key = new SeriesKey.Session(venue, _es.Symbol, _rth.Name);
+
+        // THE FILL ALREADY PROJECTED THIS SERIES (gh#501), so the pass below would confirm rather than write
+        // and this test would be measuring an empty diff instead of a projection. Emptied so the claim is
+        // about what one pass over these session bars produces.
+        await _database.SessionIndicatorValues.ExecuteDeleteAsync();
 
         int changed = await ProjectOnePassAsync(key, SettledNow);
         changed.Should().BePositive("six session bars satisfy the short warm-ups the catalogue is built with");
@@ -132,6 +168,11 @@ public sealed class SessionIndicatorProjectionTests : IAsyncLifetime
         string venue = await FillAsync();
         SeriesKey key = new SeriesKey.Session(venue, _es.Symbol, _rth.Name);
 
+        // Emptied for the reason ASessionSeries_ProjectsTheCatalogueMinusVwap states: the fill projects now,
+        // so without this the "first" pass below would already be the confirming one and the claim would be
+        // that two confirming passes agree -- which is a weaker thing to have proven.
+        await _database.SessionIndicatorValues.ExecuteDeleteAsync();
+
         int first = await ProjectOnePassAsync(key, SettledNow);
         int second = await ProjectOnePassAsync(key, SettledNow.AddHours(1));
 
@@ -148,9 +189,12 @@ public sealed class SessionIndicatorProjectionTests : IAsyncLifetime
         // got.
         string venue = await FillAsync();
 
-        // Both series unprojected, so both are rewritten. The fill projected the base 30-minute series in its
-        // own unit of work; emptying the table is what makes the walk's second series observable.
+        // Both series unprojected, so both are rewritten. The fill projects BOTH in its own unit of work --
+        // the base 30-minute series and, since gh#501's last slice, the session series too -- so both tables
+        // are emptied here. Clearing only one would leave that series confirming rather than rewritten, and
+        // the walk's second series would stop being observable.
         await _database.IndicatorValues.ExecuteDeleteAsync();
+        await _database.SessionIndicatorValues.ExecuteDeleteAsync();
 
         CapturingLogger<IndicatorRebuilder> logger = new();
 
@@ -216,6 +260,11 @@ public sealed class SessionIndicatorProjectionTests : IAsyncLifetime
     {
         string venue = await FillAsync();
 
+        // A CONFIRMING PASS RECORDS NOTHING, by design -- the meter counts what a pass decided to write. The
+        // fill already projected this series, so without emptying the table there would be no measurement to
+        // read the tags off at all.
+        await _database.SessionIndicatorValues.ExecuteDeleteAsync();
+
         using HostTelemetry telemetry = new();
         using MetricCollector<long> projections = new(
             telemetry, HostTelemetry.Name, HostTelemetry.IndicatorProjectionsInstrument);
@@ -231,6 +280,147 @@ public sealed class SessionIndicatorProjectionTests : IAsyncLifetime
             measurement.Tags[HostTelemetry.SessionTag].Should().Be("rth");
             measurement.Tags.Keys.Should().NotContain(HostTelemetry.ResolutionTag);
         }
+    }
+
+    // ── The two tools, served ────────────────────────────────────────────────────────────────────────
+
+    [Fact]
+    public async Task GetSessionIndicators_ReturnsOneValuePerTradeDate_AfterWarmup_WithContracts()
+    {
+        string venue = await FillAsync();
+
+        ToolPayloads.SessionIndicatorSeries series = await Tools(venue, ConcurrencyHarness.Catalog())
+            .GetSessionIndicators(
+                "ES", "rth", "atr", WindowStart, WindowEnd, cancellationToken: CancellationToken.None);
+
+        series.Symbol.Should().Be("ES");
+        series.Session.Should().Be("rth");
+        series.Indicator.Should().Be("atr");
+        series.Period.Should().Be(3, "the primary configured period answers when period is omitted");
+
+        // ONE VALUE PER TRADE DATE THAT HAS ONE, and the warm-up dates are ABSENT rather than zero. ATR(3)
+        // first measures on the fourth session bar, so of six stored sessions three carry a value -- and the
+        // first three carry none, which is a fact about the series' length and not about the market.
+        series.Values.Select(v => v.TradeDate).Should().Equal(
+            new DateOnly(2026, 8, 21), new DateOnly(2026, 8, 24), new DateOnly(2026, 8, 25));
+
+        // `t` is the session's own opening instant, carried beside the trade date because the two are not
+        // interchangeable: the UTC bounds of a session move with the offset.
+        series.Values.Select(v => v.T).Should().Equal(
+            RthBucket(new DateOnly(2026, 8, 21), 0),
+            RthBucket(new DateOnly(2026, 8, 24), 0),
+            RthBucket(new DateOnly(2026, 8, 25), 0));
+
+        series.Values.Should().OnlyContain(v => v.V > 0m, "an ATR over a moving ramp is a positive range");
+
+        series.Contracts.Span.Should().Be(
+            ToolPayloads.ContractSpan.SingleContract,
+            "all six sessions came from the one contract the fill listed");
+        series.Contracts.Segments.Should().ContainSingle()
+            .Which.ContractId.Should().Be(ConcurrencyHarness.ContractId);
+    }
+
+    [Fact]
+    public async Task GetSessionIndicatorAt_NeverReturnsASessionStillOpenAtTheMoment()
+    {
+        string venue = await FillAsync();
+
+        // Monday 24 August at 10:00 Central -- 15:00Z, inside that day's rth session, which runs 08:30 to
+        // 15:00 Central. Monday's session bar and its atr value are BOTH stored, because the fill covered
+        // every date in the list; the only thing that can keep Monday out of this answer is the comparison
+        // against the session's CLOSE.
+        DateTimeOffset mondayMidSession = new(2026, 8, 24, 15, 0, 0, TimeSpan.Zero);
+
+        (await StoredValuesAsync(venue)).Should().Contain(
+            v => v.Indicator == "atr" && v.BucketStart == RthBucket(new DateOnly(2026, 8, 24), 0),
+            "otherwise the as-of comparison below would have nothing to exclude and would prove nothing");
+
+        ToolPayloads.SessionIndicatorReading reading = await Tools(venue, ConcurrencyHarness.Catalog())
+            .GetSessionIndicatorAt(
+                "ES", "rth", "atr", mondayMidSession, cancellationToken: CancellationToken.None);
+
+        // FRIDAY'S, not Monday's. A session in progress has no final high, low or close, so its indicator
+        // value is a number the market has not finished producing -- reading it as of a moment inside it is
+        // the lookahead the whole as-of rule exists to refuse.
+        reading.TradeDate.Should().Be(new DateOnly(2026, 8, 21));
+        reading.BucketStart.Should().Be(RthBucket(new DateOnly(2026, 8, 21), 0));
+        reading.Value.Should().NotBeNull();
+        reading.ContractId.Should().Be(ConcurrencyHarness.ContractId);
+    }
+
+    [Fact]
+    public async Task GetSessionIndicators_ReplaysOnFirstRead_WhenTheCatalogueOutranTheStore()
+    {
+        // The session flavour of AnIndicatorTheStoreHasNoValuesFor_IsProjectedOnTheNextRead_WithNoVendorCall.
+        // The fill projected this series under the shipped test catalogue, so the store holds (rsi, 3); the
+        // read below arrives under a catalogue that computes (rsi, 5), which nothing has ever written. The
+        // membership of IndicatorCatalog is fixed at compile time and only the PERIODS are configurable, so
+        // moving one is exactly what "the catalogue outran the store" looks like from the store.
+        string venue = await FillAsync();
+
+        int barsBefore = await _database.Bars.CountAsync();
+
+        IndicatorCatalog wider = new(
+            Options.Create(new IndicatorOptions { AtrPeriod = 3, RsiPeriod = 5 }),
+            ConcurrencyHarness.Calendar());
+
+        ToolPayloads.SessionIndicatorSeries series = await Tools(venue, wider)
+            .GetSessionIndicators(
+                "ES", "rth", "rsi", WindowStart, WindowEnd, cancellationToken: CancellationToken.None);
+
+        series.Period.Should().Be(5, "the read answers under the period the catalogue is configured for");
+        series.Values.Should().NotBeEmpty(
+            "the session bars are already stored, so the value is computable without an operator running "
+            + "rebuild-indicators -- an absence here would be an artefact of when computation happened "
+            + "rather than a fact about the market");
+
+        // NO BAR WAS FETCHED, stated against the store rather than against a counter: a fetch writes bars,
+        // and this read left the base series exactly the size the fill left it. The stronger half of the
+        // claim is structural and is pinned elsewhere -- neither SessionIndicatorTools nor
+        // IndicatorCacheService holds a gateway at all (MarketDataToolBoundaryTests, VenueFailureReportingTests).
+        (await _database.Bars.CountAsync()).Should().Be(barsBefore);
+    }
+
+    /// <summary>The window every served read here asks over — the six trade dates, whole.</summary>
+    private static DateTimeOffset WindowStart => new(2026, 8, 18, 0, 0, 0, TimeSpan.Zero);
+
+    /// <summary>One day past the last session, so every one of the six lies wholly inside.</summary>
+    private static DateTimeOffset WindowEnd => new(2026, 8, 26, 0, 0, 0, TimeSpan.Zero);
+
+    /// <summary>The tool type under test, over this suite's store and one private venue.</summary>
+    /// <param name="venue">The venue the fill wrote under.</param>
+    /// <param name="catalog">The catalogue in force for this read.</param>
+    /// <returns>The tools.</returns>
+    /// <remarks>
+    /// The gateway is handed in holding <b>no bars at all</b>, and it is never called: this type reads it
+    /// once for its venue id in the constructor and keeps no client. A read that tried to fetch would
+    /// therefore have nothing to fetch, so every value these tests see came out of the store.
+    /// </remarks>
+    private SessionIndicatorTools Tools(string venue, IndicatorCatalog catalog)
+    {
+        IOptions<MarketDataOptions> options = Options.Create(new MarketDataOptions
+        {
+            Instruments = "ES,NQ",
+            MaxRows = 5_000,
+            SessionCloseCentral = "16:00",
+        });
+
+        IndicatorProjector projector = new(_database, catalog, NullLogger<IndicatorProjector>.Instance);
+
+        return new SessionIndicatorTools(
+            new InstrumentResolver(new InstrumentRegistry(options), new StoreAvailabilityHolder()),
+            _database,
+            catalog,
+            new IndicatorCacheService(
+                _database,
+                catalog,
+                projector,
+                new FakeTimeProvider(SettledNow),
+                NullLogger<IndicatorCacheService>.Instance),
+            new SessionCatalog(options, ConcurrencyHarness.Calendar()),
+            ConcurrencyHarness.Calendar(),
+            new SeriesGateway(venue, []),
+            new ToolGuards(options));
     }
 
     /// <summary>Runs one projection pass the way every call site in the product runs one.</summary>
@@ -296,6 +486,7 @@ public sealed class SessionIndicatorProjectionTests : IAsyncLifetime
             bars,
             gateway,
             ConcurrencyHarness.Calendar(),
+            ConcurrencyHarness.Projector(_database),
             clock,
             NullLogger<SessionBarService>.Instance);
 

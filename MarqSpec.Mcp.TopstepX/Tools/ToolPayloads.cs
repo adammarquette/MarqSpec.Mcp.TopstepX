@@ -323,6 +323,75 @@ public static class ToolPayloads
         DateTimeOffset? BucketStart,
         string? ContractId = null);
 
+    /// <summary>One indicator value over one whole session.</summary>
+    /// <param name="TradeDate">
+    /// The CME trade date the session belongs to — the key a caller joins a session series on, and the one
+    /// <c>get_session_bars</c> reports beside its own bars.
+    /// </param>
+    /// <param name="T">
+    /// When that session opened, UTC. Carried beside the trade date rather than instead of it because the
+    /// two are not interchangeable: a session's UTC bounds move with the offset, and the value is stored
+    /// keyed by the instant while a caller reasons in trade dates.
+    /// </param>
+    /// <param name="V">The value.</param>
+    public sealed record SessionIndicatorPoint(DateOnly TradeDate, DateTimeOffset T, decimal V);
+
+    /// <summary>An indicator series over a named session — one value per trade date.</summary>
+    /// <param name="Symbol">The normalised instrument.</param>
+    /// <param name="Session">The session name asked for — a storage key, lowercase and stable.</param>
+    /// <param name="Indicator">The indicator name.</param>
+    /// <param name="Period">
+    /// The period that RAN — the primary when <c>period</c> was omitted, and the selected one otherwise. It
+    /// counts SESSIONS here, not base bars: an <c>sma</c> at 20 over <c>rth</c> is twenty trading days.
+    /// </param>
+    /// <param name="Values">
+    /// The values, ascending by trade date. Trade dates where the indicator could not measure <b>have no
+    /// entry at all</b> — <see cref="SessionIndicatorPoint.V"/> is not nullable — and neither do trade dates
+    /// the store holds no session bar for, since a session that could not be built whole is never stored
+    /// (ADR-0022). So this is not one entry per trade date in the window, and a caller must pair each value
+    /// with its own <c>tradeDate</c> rather than with a bar at the same index.
+    /// </param>
+    /// <param name="Contracts">
+    /// Which contracts produced the session bars underneath the window. Each session bar comes from exactly
+    /// one, so a roll falls <i>between</i> two trade dates — and the values do not smooth across it: the new
+    /// contract's warm-up starts over, so expect a run of absent values just after a seam.
+    /// </param>
+    public sealed record SessionIndicatorSeries(
+        string Symbol,
+        string Session,
+        string Indicator,
+        int Period,
+        IReadOnlyList<SessionIndicatorPoint> Values,
+        ContractCoverage Contracts);
+
+    /// <summary>One session indicator value as of a moment.</summary>
+    /// <remarks>
+    /// <b>Four nullable fields rather than three, and the wire form is unchanged.</b> Cannot-measure is an
+    /// object with nothing in it at all — <c>{}</c> — exactly as on <see cref="IndicatorReading"/>, because
+    /// every property here is nullable and the serializer's ignore condition drops each of them. A caller
+    /// testing <c>reading.value === null</c> compares <c>undefined</c> to <c>null</c>, gets <c>false</c>, and
+    /// concludes it measured; the test is whether the key is THERE.
+    /// </remarks>
+    /// <param name="Value">
+    /// The value, or <see langword="null"/> meaning <b>cannot measure</b> — not zero, and not a neutral
+    /// reading. A caller receiving it should refuse to conclude rather than substitute.
+    /// </param>
+    /// <param name="TradeDate">The trade date of the session the value came from.</param>
+    /// <param name="BucketStart">
+    /// When that session opened, UTC. The session it belongs to had already CLOSED at the moment asked
+    /// about — a session still in progress is never answered from, because its numbers are not final.
+    /// </param>
+    /// <param name="ContractId">
+    /// The contract whose bars produced this value, or <see langword="null"/> when there is no value. Two
+    /// readings from different contracts are not comparable — the quarters do not trade at the same price —
+    /// and nothing in a bare number says so.
+    /// </param>
+    public sealed record SessionIndicatorReading(
+        decimal? Value,
+        DateOnly? TradeDate,
+        DateTimeOffset? BucketStart,
+        string? ContractId);
+
     /// <summary>What an instrument is, in contract terms.</summary>
     /// <param name="Symbol">The normalised symbol.</param>
     /// <param name="TickSize">The smallest price increment.</param>

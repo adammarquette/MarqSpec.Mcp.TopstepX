@@ -73,15 +73,20 @@ assert that the two synthesised stacks differ only where `RootDomain`, `EnvName`
 tape flags appear. A staging that is its own delegated root rather than a subdomain of production's zone is
 what makes the wildcard certificate, the Cognito domain and the host rule the same code in both.
 
-Per environment: a VPC with two public subnets across two availability zones and **no NAT gateway** — the
-tasks get public IPs for their outbound calls to the venue, GHCR and AWS APIs, and inbound is closed by the
-security groups in ADR-0021's loopback role (`alb` admits 443 and 80 from the internet; `server` admits
-8080 from `alb` only; `postgres` admits 5432 from `server` only; the EFS admits 2049 from `postgres` only).
+Per environment: a VPC with two public subnets across two availability zones and no NAT gateway — gh#516's
+words, *"VPC (2 AZs, public subnets, no NAT)"* — with inbound closed by the security groups in ADR-0021's
+loopback role (`alb` admits 443 and 80 from the internet; `server` admits 8080 from `alb` only; `postgres`
+admits 5432 from `server` only; the EFS admits 2049 from `postgres` only). **How the tasks reach the venue,
+GHCR and the AWS APIs outbound is not decided here.** ADR-0021 says there is no public IP on the task and
+gh#516 says public subnets with no NAT, and the two are only both true with something this record does not
+have the maintainer's word on; the fork is written out verbatim in the decision log below, and gh#516
+decides it with the maintainer and writes the answer back there.
 
 Hostnames: **`topstepx-mcp.marqspec.com`** and **`topstepx-mcp.staging.marqspec.com`**, one hostname per
 environment. The `staging.` spelling is gh#509's and this record's working spelling; `stage.` was written
-once on the epic, and ADR-0021 records that the choice is the maintainer's to confirm in gh#519 **before**
-the first `cdk deploy`, because a delegated zone renamed later is a re-delegation at the apex, not an edit.
+once on the epic, and ADR-0021 records that the choice is the maintainer's to confirm in gh#519; gh#519's
+step 2 is what says **before** the first `cdk deploy`, because a delegated zone renamed later is a
+re-delegation at the apex, not an edit.
 This record prefers `staging.` — it is the word every other document in the epic uses and the branch name
 of the promotion rung — but records it as the working spelling, not a settled fact, on the same terms
 ADR-0021 does. A document quoting a hostname cites this paragraph and its caveat.
@@ -425,9 +430,12 @@ its own reason, not a drift.
   and a hard task kill on staging, and writes the decision here. Until that entry exists, production on EFS
   is a decision the maintainer takes with the measurement pending, and gh#520's first `aws-production`
   approval either follows the entry or is recorded here, on a date, as having preceded it.
-- **Cost is an order of magnitude, checked by the bill.** Roughly 95 USD per environment per month on
-  `us-east-1` on-demand — two Fargate services, one ALB, two public IPv4 addresses, EFS Elastic throughput,
-  logs and secrets — before WAF (gh#528, about 5 USD per ACL plus per-rule and per-request charges) and
+- **Cost is an order of magnitude, checked by the bill.** gh#527's estimate basis is roughly 95 USD per
+  environment per month, priced on `us-east-1` on-demand as a basis and not as a chosen region — the region
+  is still gh#519's — for two Fargate services, one ALB with its two public IPv4 addresses, EFS Elastic
+  throughput, logs and secrets. Whether any task carries an address of its own is the outbound fork in the
+  decision log, and its cost lands in whichever entry closes it. That is before WAF (gh#528, about 5 USD
+  per ACL plus per-rule and per-request charges) and
   Cognito's separately metered machine-to-machine tokens (a few per release; a check loop would not be).
   gh#527 puts an AWS Budgets alarm on it and `Project` / `Environment` cost-allocation tags on every
   resource, and records the account-level tag activation here as the setting it is.
@@ -454,6 +462,8 @@ its own reason, not a drift.
 ## What this does not decide
 
 - **The region** — gh#519, as a dated entry here.
+- **The tasks' outbound path** — public IP per task, NAT gateway, or VPC endpoints plus one of those —
+  gh#516 with the maintainer, as a dated entry under the fork recorded in the decision log.
 - **The resource-server implementation** — claims, metadata document, the `401` header — gh#512, under
   ADR-0021.
 - **The Cognito discovery-document measurements** and whether the custom domain is taken — gh#517.
@@ -473,10 +483,35 @@ cost-allocation tag activation (gh#527); the WAF exclusions with their log lines
 additive-migration gate (gh#529); and, if it happens, the date production was approved ahead of gh#525 or
 gh#528. A choice made in a console and not written here does not exist.
 
+## Update (2026-09-06) — the tasks' outbound path is a fork, recorded for gh#516 and the maintainer
+
+Two Accepted sources disagree on what a task looks like from the internet, and the maintainer has decided
+neither: ADR-0021's *Bind* section says *"there is no public IP on the task"*; gh#516's scope says *"VPC
+(2 AZs, public subnets, no NAT)"*. Both are only true together if the tasks reach the venue, GHCR and the
+AWS APIs by a path neither sentence names. The first draft of this record resolved it by assertion — *"the
+tasks get public IPs for their outbound calls"* — and the review of PR #547 struck that, because it is a
+cost and exposure choice nothing on gh#509 or its review section decided. Three candidate shapes, none
+chosen here:
+
+1. **A public IP per task** (`AssignPublicIp=ENABLED`) — no NAT cost; the `server` task holding live
+   brokerage credentials and the `postgres` task holding the store each carry an internet-routable address
+   behind a security group, and ADR-0021's sentence is superseded by a dated update there.
+2. **A NAT gateway** — no address on any task, ADR-0021's sentence stays true as written; one more billed
+   resource per environment, per hour and per gigabyte, which gh#527's basis does not include.
+3. **VPC endpoints for the AWS APIs** (ECR, Secrets Manager, SSM, CloudWatch Logs, EFS) **plus one of the
+   two above** for the venue and GHCR, which have no endpoint — the endpoints are themselves billed per
+   hour per availability zone.
+
+gh#516 decides it with the maintainer, writes the choice back here as a dated entry with the cost it adds
+to gh#527's basis, and — if the choice is shape 1 — adds the dated update on ADR-0021 in the same pull
+request. Until that entry exists, the exposure statement about the two tasks is ADR-0021's, and this record
+does not contradict it.
+
 ## Follow-ups
 
 - gh#516, gh#517, gh#518 build decisions 7, 9 and 8; gh#529 gates decision 4's rule. All four cite this
-  record and may start once it merges.
+  record and may start once it merges. gh#516 also closes the outbound-path fork in the decision log, with
+  the maintainer, before any task definition names an address.
 - gh#519 stands staging up by hand once, confirms the hostname spelling and chooses the region — both as
   dated entries here.
 - gh#520 and gh#521 build decision 8's pipeline and its check; gh#520 also rewrites the platform contract's

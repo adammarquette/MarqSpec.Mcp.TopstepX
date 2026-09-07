@@ -139,6 +139,28 @@ public sealed class ReselectArgumentsTests
     }
 
     [Fact]
+    public void Parse_RefusesAnInstantBeforeTheCalendarCanReason()
+    {
+        // THE FLOOR UNDER THE HORIZON, and the fault it stops is the same shape one bound along. The
+        // reselector widens an asked window to whole trade dates, and a session opens on the CALENDAR DAY
+        // BEFORE its trade date -- so a window starting on 0001-01-01 asks DateOnly for a day before its own
+        // minimum and throws ArgumentOutOfRangeException from inside a verb that has already migrated the
+        // store. Refused here instead, before anything is touched.
+        string tooEarly =
+            ReselectArguments.CalendarFloor.AddTicks(-1).ToString("O", CultureInfo.InvariantCulture);
+
+        Action parse = () => ReselectArguments.Parse(
+            ["reselect-bars", "MES", tooEarly, "2026-06-16T10:00:00Z"], Registry);
+
+        string message = parse.Should().Throw<ArgumentException>().Which.Message;
+
+        message.Should().Contain("fromUtc", "the refusal names the argument the operator can change");
+        message.Should().Contain(
+            ReselectArguments.CalendarFloor.ToString("O", CultureInfo.InvariantCulture),
+            "and the bound, so they can move the window forward to it");
+    }
+
+    [Fact]
     public void Parse_RefusesAWindowPastTheCalendarHorizon()
     {
         // The same bound the tool surface refuses on, for the same reason: an evening instant belongs to the

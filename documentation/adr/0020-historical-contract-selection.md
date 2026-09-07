@@ -306,6 +306,9 @@ before it writes, where `rebuild-indicators` skips migration entirely — the re
 bars already stored, while this rewrites provenance, and doing that through an unapplied schema is a write
 nobody can reproduce. And it commits **one unit of work per resolution series**, as `IndicatorRebuilder`
 does, so its degraded exit (3) means *the run stopped*, never *nothing was written*: a degradation on the
-second series leaves the first committed, and the per-series log lines are what say how far it got.
+second series leaves the first committed, and the per-series log lines are what say how far it got. Of the
+three conditions that raise it, only two are reachable through the verb — an unserved instrument is refused
+by the argument parse before the store is touched, and its branch in the seam is defence in depth for a
+caller that does not come through that parse.
 
 *Assisted-by: Claude Fable 5.1 (Claude Code)*

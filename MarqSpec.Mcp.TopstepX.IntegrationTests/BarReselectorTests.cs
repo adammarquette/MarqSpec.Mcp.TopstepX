@@ -388,7 +388,10 @@ public sealed class BarReselectorTests : IAsyncLifetime
         result.BarsRemoved.Should().Be(0);
         gateway.BarRequests.Should().Be(0, "the refusal comes before the venue is asked anything");
 
-        logger.Messages.Should().Contain(
+        // ON Warnings, NOT Messages: the level is half the claim. A skip logged at Information sits among
+        // the ordinary run lines an operator scrolls past, and this is the line that says the window they
+        // asked about was NOT rewritten -- so a downgrade has to turn this red rather than stay green.
+        logger.Warnings.Should().Contain(
             message => message.Contains("250000", StringComparison.Ordinal)
                 && message.Contains("5m", StringComparison.Ordinal),
             "a series skipped in silence is a window the operator believes was rewritten");
@@ -406,7 +409,7 @@ public sealed class BarReselectorTests : IAsyncLifetime
         // ASSERTED ON THE SKIP LINE ITSELF, which is what "250000" pins it to. The run summary already names
         // both windows, so a predicate over every message would be green on that line while the refusal --
         // the one line an operator sees when nothing was rewritten -- still named only one of them.
-        logger.Messages.Should().Contain(
+        logger.Warnings.Should().Contain(
             message => message.Contains("250000", StringComparison.Ordinal)
                 && message.Contains(askedEnd, StringComparison.Ordinal)
                 && message.Contains(effectiveEnd, StringComparison.Ordinal),

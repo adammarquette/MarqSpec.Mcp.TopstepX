@@ -34,14 +34,23 @@ public static class ReselectExit
     /// <summary>
     /// <b>The run stopped.</b> The command line was right and the window still was not re-decided, so this
     /// is an environment to fix rather than a typo — the store was unreachable or the migration dropped its
-    /// connection, or a plan degraded for a whole window (the venue lists no contracts, the instrument is
-    /// not served, its front does not read against the product's cycle).
+    /// connection, or a plan degraded for a whole window (the venue lists no contracts, or its front does
+    /// not read against the product's cycle).
     /// </summary>
     /// <remarks>
+    /// <para>
     /// <b>It does not mean nothing was written.</b> The reselector commits one unit of work per resolution
     /// series, so a degradation on the second series exits 3 with the first already committed — and the
     /// migration itself can degrade partway through. <b>Read the per-series log lines</b> to see how far the
     /// run got; the summary line is not printed when a series throws.
+    /// </para>
+    /// <para>
+    /// <see cref="ReselectPlanException"/>'s third condition — the instrument is not served — is
+    /// <b>not reachable through the verb</b>: <see cref="ReselectArguments.Parse"/> resolves the symbol
+    /// against <see cref="InstrumentRegistry"/> before the store is touched and refuses it at
+    /// <see cref="RefusedArgument"/>. The branch stays in <c>BarCacheService</c> as defence in depth for a
+    /// future caller that does not come through this parse.
+    /// </para>
     /// </remarks>
     public const int Degraded = 3;
 

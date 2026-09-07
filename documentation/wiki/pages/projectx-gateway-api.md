@@ -262,6 +262,32 @@ before it is served — a guessed code resolves to a **real contract in the wron
 `tickSize` and `tickValue` come back on the contract. `tickValue` is money per **tick**; money per **point** is
 `tickValue / tickSize`. ES at \$12.50 a tick on a 0.25 tick size is \$50 a point.
 
+**The expiry is the last segment, `MYY`** — one exchange month letter from `FGHJKMNQUVXZ` (`I` and `L` are
+skipped, being confusable with digits) and two year digits. Read it year-first: sorting the id as text compares
+the month letter ahead of the year, which agrees with expiry order inside one calendar year and **reverses
+across one**, filing `Z25` behind `H26` every December — at the one moment `Z25` is the front month.
+
+**A historical contract id is *constructed*, never discovered.** Search and available-contracts return only the
+active expiry, so the contract that was front on a past date has to be built from the product code and the
+product's listing cycle, then confirmed with `GetContractByIdAsync` (`FindContractAsync` on this server's
+gateway). Which months a product lists, and how many of them are candidates for one trade date:
+
+| product | cycle | months | candidates | why that depth |
+|---|---|---|---|---|
+| `ES` `MES` `NQ` `MNQ` `YM` `MYM` | `HMUZ` | Mar Jun Sep Dec | **2** | the front and the next quarterly are every contract that can carry the volume on any day of a quarter |
+| `GC` `MGC` | `GJMQVZ` | Feb Apr Jun Aug Oct Dec | **3** | the market **skips October gold** — `MGC.V26` against `Z26` was 1 : 8 on every day measured — so two would stop at a contract nobody trades |
+| `SI` `SIL` | `HKNUZ` | Mar May Jul Sep Dec | **2** | no skipped month measured on silver |
+| `CL` `MCL` | `FGHJKMNQUVXZ` | every month | **3** | a crude contract expires **before** the month it is named for: on 2026-08-18 the front was `V26`, two listed months past the trade date's own |
+
+These are **listing facts, not configuration** — the exchange lists what it lists, and a knob would let an
+operator name a month the exchange does not, whose constructed ids the venue answers nothing for. They live in
+`InstrumentRegistry` (`CycleFor`, `CandidateDepthFor`); the depth is what a cold historical fetch is multiplied
+by, so it is the smallest number that reaches past every skip there is evidence for.
+
+The lookup itself draws on the **200 requests / 60 s** pool, not the 50 / 30 s history allowance, and
+`ContractDirectory` memoises it per id — a positive for the life of the process, a negative for an hour, since
+a far-out expiry lists eventually.
+
 ### Expired contracts and history depth — measured 2026-09-06 on the Simulated tier
 
 > Measured with a throwaway console project against the 3.0.0 client (gh#494, 162 paced history calls). The

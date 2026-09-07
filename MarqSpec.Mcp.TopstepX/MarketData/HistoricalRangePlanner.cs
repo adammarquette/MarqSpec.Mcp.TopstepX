@@ -14,7 +14,25 @@ namespace MarqSpec.Mcp.TopstepX.MarketData;
 /// Whether this piece sits in the present band — the stretch the venue's own active contract answers for
 /// (ADR-0020 §1). A present slice is fetched exactly as it is today; a historical one is not.
 /// </param>
-public sealed record RangeSlice(BarRange Range, IReadOnlyList<string> Candidates, bool Present);
+/// <param name="FellBackToFront">
+/// Whether the candidate set is the venue's own pick because <b>nothing survived the existence check</b>,
+/// rather than because the cycle named it.
+/// </param>
+/// <remarks>
+/// <para>
+/// <b><see cref="FellBackToFront"/> is not "the candidates happen to be the front".</b> A historical slice
+/// whose cycle names two expiries the venue lists only one of resolves, legitimately, to a set of one — and
+/// that one is often the front itself. That slice is an ordinary answer: a candidate did survive, its bars
+/// are the trade date's, and an empty answer from it is a fact worth memoising permanently. A slice that
+/// fell back has no surviving candidate at all, is a <i>degradation</i> logged by the caller, and must earn
+/// no permanent memo. Conflating the two would make every one-listed-candidate range re-fetched forever.
+/// </para>
+/// </remarks>
+public sealed record RangeSlice(
+    BarRange Range,
+    IReadOnlyList<string> Candidates,
+    bool Present,
+    bool FellBackToFront = false);
 
 /// <summary>
 /// Cuts the ranges a read still owes the venue into the present band and the historical bands, and names
@@ -102,7 +120,8 @@ public static class HistoricalRangePlanner
                     slices.Add(new RangeSlice(
                         new BarRange(from, next),
                         candidates.Count > 0 ? candidates : [frontContractId],
-                        Present: false));
+                        Present: false,
+                        FellBackToFront: candidates.Count == 0));
 
                     from = next;
                 }

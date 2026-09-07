@@ -19,6 +19,13 @@ page against either**, so check it against the code, never against another docum
 ## Rules that apply to every tool
 
 - **Read-only against the venue.** Nothing here transmits an order. Not behind a flag.
+- **Over HTTP, every call is authenticated, in one of two modes** — and the tool surface is identical under
+  both. `Mcp__Auth__Mode=StaticToken`, the compose stack and the plain `dotnet run` recipe, is one shared
+  secret in `Authorization: Bearer …`. `OAuth`, the deployed instance
+  ([ADR-0021](adr/0021-a-non-loopback-instance-is-supported.md)), is a Cognito-issued access token carrying
+  the `topstepx-mcp/read` scope, and a call without one gets a `401` naming the protected-resource metadata
+  the connector reads to find the issuer. Which mode a deployment runs is its environment's `Mcp__Auth__Mode`;
+  `/health` answers without a credential under both (ADR-0007, gh#512).
 - **Numeric-only payloads.** Every field is a number, a timestamp, a boolean, or an enum name from a closed set
   this repository defines. No vendor free text is echoed back.
 - **An unknown instrument is an error**, and it names what would have been valid. A wrong symbol and a quiet

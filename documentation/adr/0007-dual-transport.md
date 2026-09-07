@@ -1021,3 +1021,149 @@ would fail a healthy task for a cosmetic reason.
 **The static token is unchanged, and so is the composed stack.** ADR-0021 replaces that token with
 Cognito-issued OAuth for the non-loopback instance; `/health` stays unauthenticated in that mode too, for the
 same reason it is here — the load balancer probing it has no credential under either scheme.
+
+## Update (2026-09-06) — the gate learned a second mode, and stayed global
+
+[ADR-0021](0021-a-non-loopback-instance-is-supported.md) decided that the non-loopback instance replaces the
+static bearer token with OAuth 2.1 and Cognito-issued tokens, and named this card (gh#512) as the product
+side of it. This update records what that did to the gate on this page, and what it deliberately did not.
+
+**One knob: `Mcp__Auth__Mode`, `StaticToken` or `OAuth`, read only under the HTTP transport.** `StaticToken`
+is the default and is byte for byte the 2026-08-22 gate — `BearerTokenGate`, one shared secret in fixed
+time, a bare `WWW-Authenticate: Bearer` on refusal — and it remains the local and compose mode, for the
+reasons ADR-0021 gives. `OAuth` makes the server a resource server: `Microsoft.AspNetCore.Authentication.JwtBearer`
+(pinned at 10.0.11 beside the framework line) validates the token against the keys discovered from
+`{Mcp__OAuth__Issuer}/.well-known/openid-configuration` — RS256 only, signed only, an `exp` required,
+lifetime with a 60 s skew, and `ValidIssuer` set explicitly to the configured string so a discovery
+document's own `issuer` is never what the check trusts.
+
+### Why the Cognito claims are checked the way they are
+
+**A Cognito access token carries `client_id` and `scope` and no `aud`.** Standard audience validation
+therefore has nothing to compare and must be off — and `ValidateAudience = false` on its own means any token
+the pool ever signed, for any app client, with any scope, is accepted. The pool is shared with the
+deploy-check client by design ([ADR-0023 §9](0023-aws-deployment-topology.md)) and could be shared with
+anything else tomorrow, so that is not a theoretical gap. `CognitoAccessTokenPolicy` is what replaces the
+audience check, and it runs inside the handler's `OnTokenValidated` so that no principal is ever
+authenticated without it: `token_use` is exactly `access` — an ID token from the same pool is signed by the
+same key and is not a credential for a resource server; exactly one `client_id`, and in
+`Mcp__OAuth__ClientIds`; and `Mcp__OAuth__RequiredScope` present as a **whole entry** of the space-separated
+`scope`, ordinally — `topstepx-mcp/readwrite` and `TOPSTEPX-MCP/READ` are each a different scope. The pure
+check has its own tests, and the host tests pin every negative through the pipeline: absent, malformed,
+expired, no `exp`, not yet valid, wrong and missing issuer, unlisted and missing client,
+missing/wrong/prefix/case scope, `token_use=id`, `alg: none`, a key the issuer never published under the
+published `kid` and under an unknown one, and an issuer that has gone away. Each is its own test, so a
+later loosening fails one named test rather than a vague suite.
+
+### What a connector meets, in order
+
+A refused call answers `401` with
+`WWW-Authenticate: Bearer resource_metadata="<origin>/.well-known/oauth-protected-resource/mcp", scope="…"`.
+The RFC 9728 document that names — and the bare `/.well-known/oauth-protected-resource` — answers with no
+credential: `resource` is `Mcp__OAuth__ResourceUrl` **exactly as entered**, because the connector compares
+it with what the user typed and a `Uri` round trip lowercases the host or drops a port;
+`authorization_servers` is the issuer; `scopes_supported` the scope; `bearer_methods_supported` is
+`header`. It is the **second terminal branch** in front of the gate, beside `/health`, and for the same
+mechanism the 2026-09-06 update above measured: a `MapGet` here would be answered 401 by the gate
+registered after it. Exact paths, ordinal, `GET` only — a trailing slash, another casing, a neighbouring
+well-known path and any other method stay behind the gate, and `ProtectedResourceMetadataTests` says so.
+
+### Why it stayed global, and what `/health` does under OAuth
+
+The 2026-08-22 update installed the gate as global middleware because an endpoint carrying balances,
+positions and trade history is a data leak even though nothing here can trade, and the 2026-09-06 update
+above kept it global while carving out one path. The OAuth mode keeps that shape rather than becoming
+`UseAuthorization` with a policy on the MCP endpoints: **a policy protects what it is attached to**, and a
+path mapped tomorrow would be open until somebody remembered. The gate authenticates every request itself
+and refuses everything it does not positively authenticate; a valid token on a path nothing is mapped on
+gets a 404, never an answer. `/health` stays unauthenticated in this mode too, for the reason the update
+above gives — the load balancer probing it has no credential under either scheme — and it **never consults
+the issuer**: the handler fetches discovery only once it has a token to check, and `StubIssuer`'s request
+counters pin that a credential-less probe costs the issuer nothing.
+
+### Exactly one mode, and the coupling ADR-0021 stated is now a check
+
+`McpOptions.Validate` refuses, at startup and naming the key, an `OAuth` section without an issuer, client
+ids or resource URL; an `http` issuer off loopback (discovery and keys fetched in clear from across a
+network, with whoever answered choosing the keys this server trusts — loopback `http` is accepted for a stub
+on this machine only); an issuer with a trailing slash, query or fragment, because `iss` is compared byte
+for byte and a trailing slash would refuse every token with no hint why; and a resource URL whose path is
+not `/mcp`, the only path the endpoint is served on. And it refuses **both directions of two modes at
+once**: `Mcp__HttpBearerToken` beside `Mode=OAuth` is a variable left behind, and an `Mcp__OAuth__*` key
+beside `Mode=StaticToken` is the dangerous one — a public listener on the static gate with the OAuth keys
+silently ignored. Stdio reads none of it, as it never read the token.
+
+### Measured — against a stub issuer, and not yet against Cognito
+
+**gh#517's Cognito pool did not exist when this was written**, so nothing below was measured against a real
+issuer. The stub honours the same contract — a discovery document at `{issuer}/.well-known/openid-configuration`
+naming a `jwks_uri`, an RSA key generated for the run published there, tokens shaped like Cognito's
+`client_credentials` access token with an issuer that carries a path segment — and that is exactly the
+extent of the claim: the discovery, key-set and claims contract is exercised; Cognito's particular
+behaviour is not. The unit tier's `StubIssuer` is in-process and reaches no network; the console below is a
+throwaway copy of it on `127.0.0.1:5077`, the server on `127.0.0.1:5299`, plain `dotnet run`, no compose,
+no credentials:
+
+```console
+$ curl -i http://127.0.0.1:5299/mcp                                     # no Authorization header
+HTTP/1.1 401 Unauthorized
+Server: Kestrel
+WWW-Authenticate: Bearer resource_metadata="http://localhost:5299/.well-known/oauth-protected-resource/mcp", scope="topstepx-mcp/read"
+
+Unauthorized.
+
+$ curl http://127.0.0.1:5299/.well-known/oauth-protected-resource/mcp   # still none
+{"resource":"http://localhost:5299/mcp","authorization_servers":["http://127.0.0.1:5077/stub-pool"],"scopes_supported":["topstepx-mcp/read"],"bearer_methods_supported":["header"]}
+
+$ curl -i http://127.0.0.1:5299/health                                  # still none
+HTTP/1.1 200 OK
+
+$ curl -X POST http://127.0.0.1:5299/mcp -H "Authorization: Bearer $TOKEN" … initialize …
+HTTP/1.1 200 OK
+data: {"result":{"protocolVersion":"2024-11-05", … "serverInfo":{"name":"MarqSpec.Mcp.TopstepX", …
+```
+
+`list_instruments` answered in the same run with the same token. A token for `some-other-client`, one with
+`token_use=id`, one carrying only `openid`, and the compose stack's `changeme-local` each got the `401`
+above, and the log said why in the gate's own words — `the client_id claim is missing, duplicated, or not
+one of the configured client ids`, `the token_use claim is not 'access'` — with **zero** token fragments in
+the whole log, the JwtBearer handler's own lines included (`grep -c` on the token's first twelve characters).
+
+**The static mode, measured to be unchanged**, same day, same recipe on `127.0.0.1:5199`: `/health` 200
+with no header, `/mcp` 401 with a bare `WWW-Authenticate: Bearer`, the metadata path 401 (the static mode
+serves none), `initialize` and a `list_instruments` call answering with the token and 401 without it. And
+**on the composed stack** — an isolated project on `127.0.0.1:18443` because two other sessions held
+`:8443` and `:28443`, a throwaway `dotnet dev-certs` PFX because the measurement needs a listener and not a
+trust store, `curl -k`:
+
+```console
+$ curl -k -i https://127.0.0.1:18443/health          # no Authorization header at all
+HTTP/1.1 200 OK
+Content-Type: application/json; charset=utf-8
+Server: Kestrel
+
+{"status":"ok","store":"available","version":"0.4.0-gh512-probe","digest":"sha256:6d5ea7cc"}
+
+$ curl -k -i https://127.0.0.1:18443/mcp             # the same request, one path over
+HTTP/1.1 401 Unauthorized
+WWW-Authenticate: Bearer
+```
+
+`initialize` and `get_market_session ES` answered with the compose default token; the container's
+environment read `Mcp__Auth__Mode=StaticToken` with every `Mcp__OAuth__*` key forwarded and blank, and
+`Mcp__OAuth__RequiredScope=topstepx-mcp/read` — the app default mirrored, so that the one key with a default
+is not the one that signals a half-configured mode. Then the coupling, live: `docker compose run` of the same
+service with `Mcp__Auth__Mode=OAuth` and a complete OAuth section beside the stack's token default refused
+to start with `OptionsValidationException: … Mcp__HttpBearerToken is set while Mcp__Auth__Mode=OAuth …`.
+**Switching compose to OAuth is not a `.env` edit**, by design — the remote instance is a different artefact
+with all three replacements in it, never this stack with one line changed.
+
+### What this does not decide
+
+Where the tokens come from — the pool, its clients, the hosted domain — is gh#517's, and the two
+measurements ADR-0023 §9 names on the real discovery document (`S256` advertised, the RFC 8707 `resource`
+parameter tolerated) are its to record. Whether Claude's connector dialog accepts a pre-registered client
+without Dynamic Client Registration is gh#510's, and this update rests on ADR-0021's second assumption
+exactly as that record states it: if it is overturned, the issuer moves and the resource-server half here
+does not. Nothing here introspects an opaque token, and nothing here authorises per user beyond "an access
+token from a listed client carrying the scope".

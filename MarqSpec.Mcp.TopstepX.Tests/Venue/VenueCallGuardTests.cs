@@ -64,7 +64,7 @@ public sealed class VenueCallGuardTests
             telemetry, HostTelemetry.Name, HostTelemetry.VenueCallsInstrument);
 
         List<Activity> spans = [];
-        using ActivityListener listener = Listen(spans);
+        using ActivityListener listener = Listen(spans, telemetry.Activities);
 
         Func<Task> refused = () => guard.RunAsync<int>(
             VenueOperation.ResolveContracts,
@@ -138,11 +138,16 @@ public sealed class VenueCallGuardTests
             "one per read on IMarketDataGateway — a new read adds a value here in the same change");
     }
 
-    private static ActivityListener Listen(List<Activity> into)
+    /// <summary>Subscribes to one <see cref="ActivitySource"/> INSTANCE and records what it starts.</summary>
+    /// <remarks>
+    /// <b>Reference equality, not a name match</b> — a dozen suites that never mention telemetry emit spans
+    /// under this same name from their own fallback <c>HostTelemetry</c>, in parallel with this one (gh#536).
+    /// </remarks>
+    private static ActivityListener Listen(List<Activity> into, ActivitySource source)
     {
         ActivityListener listener = new()
         {
-            ShouldListenTo = candidate => candidate.Name == HostTelemetry.Name,
+            ShouldListenTo = candidate => ReferenceEquals(candidate, source),
             Sample = (ref ActivityCreationOptions<ActivityContext> options) =>
                 ActivitySamplingResult.AllDataAndRecorded,
             ActivityStopped = into.Add,

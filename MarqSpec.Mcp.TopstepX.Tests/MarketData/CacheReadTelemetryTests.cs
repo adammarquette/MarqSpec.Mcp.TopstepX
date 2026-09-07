@@ -102,10 +102,10 @@ public sealed class CacheReadTelemetryTests : IDisposable
         Seed(bars: 12);
 
         List<Activity> spans = [];
-        using ActivityListener listener = Listen(spans);
+        using ActivityListener listener = Listen(spans, _telemetry.Activities);
 
         using ActivitySource parentSource = new("test.parent");
-        using ActivityListener parentListener = Listen([], "test.parent");
+        using ActivityListener parentListener = Listen([], parentSource);
         using Activity? parent = parentSource.StartActivity("tools/call");
 
         parent.Should().NotBeNull("the stand-in parent has to be sampled, or this asserts nothing");
@@ -238,11 +238,18 @@ public sealed class CacheReadTelemetryTests : IDisposable
         _database.SaveChanges();
     }
 
-    private static ActivityListener Listen(List<Activity> into, string source = HostTelemetry.Name)
+    /// <summary>Subscribes to one <see cref="ActivitySource"/> INSTANCE and records what it starts.</summary>
+    /// <remarks>
+    /// <b>Reference equality, not a name match.</b> Every cache service falls back to its own
+    /// <c>new HostTelemetry()</c> when DI does not supply the singleton, so about a dozen suites that never
+    /// mention telemetry emit <c>cache.*</c> spans under the same name — and they run in PARALLEL with this
+    /// one. Matching by name let one of theirs land here and made <c>ContainSingle()</c> see two (gh#536).
+    /// </remarks>
+    private static ActivityListener Listen(List<Activity> into, ActivitySource source)
     {
         ActivityListener listener = new()
         {
-            ShouldListenTo = candidate => candidate.Name == source,
+            ShouldListenTo = candidate => ReferenceEquals(candidate, source),
             Sample = (ref ActivityCreationOptions<ActivityContext> options) =>
                 ActivitySamplingResult.AllDataAndRecorded,
             ActivityStopped = into.Add,

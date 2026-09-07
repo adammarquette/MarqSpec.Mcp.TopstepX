@@ -728,7 +728,7 @@ public sealed class BarCacheService
 
         foreach (BarRange range in missing)
         {
-            IReadOnlyList<RangeSlice> slices = Coalesce(
+            IReadOnlyList<RangeSlice> slices = HistoricalRangePlanner.Coalesce(
                 HistoricalRangePlanner.PlanSlices(
                     [range],
                     tenureStart,
@@ -884,70 +884,6 @@ public sealed class BarCacheService
                 wanted.Add(expiry);
             }
         }
-    }
-
-    /// <summary>
-    /// Merges adjacent slices that would ask the venue's own pick, and only it, the same question.
-    /// </summary>
-    /// <param name="slices">The planner's slices for one range, ascending and contiguous.</param>
-    /// <param name="front">The contract the venue marks active.</param>
-    /// <returns>The slices, adjacent front-only pieces merged into one present slice.</returns>
-    /// <remarks>
-    /// <para>
-    /// <b>A historical slice with exactly one candidate is decided before it is fetched.</b>
-    /// <c>HistoricalContractPolicy.Decide</c> over a single contract can only choose that contract, so such
-    /// a slice writes the same bars under the same id as the present treatment does, and an empty answer
-    /// from it earns the same memo. When that one candidate is the front itself — which is every range on a
-    /// venue that <b>resolves</b> only one candidate id, and the tail of every roll window — the historical
-    /// and present pieces of one range are the same question asked twice.
-    /// </para>
-    /// <para>
-    /// <b>Merging them is what keeps the paging identical.</b> A range cut at the tenure start pays a page
-    /// boundary at the cut, so a store holding one attributed bucket would silently cost one venue request
-    /// more per read than the same store did before ADR-0020 — a cost with no answer behind it, since both
-    /// halves ask the same contract. Adjacent slices asking the same contracts the same question are one
-    /// slice; the planner already applies that rule to trade-date boundaries.
-    /// </para>
-    /// <para>
-    /// <b>"Only one candidate" is about what the venue RESOLVES, not about what it lists.</b> The live venue
-    /// lists the active expiry alone and still answers <c>GetContractByIdAsync</c> for expired ids (ADR-0020,
-    /// gh#494), so a real historical slice normally resolves the full candidate depth and is never merged.
-    /// This path is for the slice whose constructed candidates the venue genuinely does not carry.
-    /// </para>
-    /// <para>
-    /// <b>A slice that FELL BACK is never merged.</b> Its candidate list is the front by degradation rather
-    /// than by the cycle, it earns no permanent memo, and folding it into the present band would hand it one.
-    /// </para>
-    /// <para>
-    /// <b>Neither is a slice the venue NARROWED to the front</b> (gh#570). "Comes down to the front alone" was
-    /// read off the candidate list, and a cycle naming two expiries the venue lists only one of produces
-    /// exactly that list — so an hour-long directory negative on the liquid contract folded a real historical
-    /// stretch into the present band, stored the front's bars under it, and logged nothing. Merged, the slice
-    /// stops being history at all: no candidate set for the ledger to test, no volume decision, and no
-    /// warning, for a stretch the front is not the answer for. <c>IsCycleFrontSlice</c> is the test, and it
-    /// asks what the <i>cycle</i> named rather than what happened to survive.
-    /// </para>
-    /// </remarks>
-    private static IReadOnlyList<RangeSlice> Coalesce(IReadOnlyList<RangeSlice> slices, string front)
-    {
-        List<RangeSlice> merged = [];
-
-        foreach (RangeSlice slice in slices)
-        {
-            if (merged.Count > 0
-                && merged[^1].Range.End == slice.Range.Start
-                && merged[^1].IsCycleFrontSlice(front)
-                && slice.IsCycleFrontSlice(front))
-            {
-                merged[^1] = new RangeSlice(
-                    new BarRange(merged[^1].Range.Start, slice.Range.End), [front], Present: true);
-                continue;
-            }
-
-            merged.Add(slice);
-        }
-
-        return merged;
     }
 
     /// <summary>

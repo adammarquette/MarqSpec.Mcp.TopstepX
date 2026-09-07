@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Reflection;
 using FluentAssertions;
 using MarqSpec.Mcp.TopstepX.Configuration;
@@ -981,16 +982,32 @@ public sealed class HistoricalContractSelectionTests : IAsyncLifetime
     /// <param name="logger">A logger, when the case needs to read what the fetch said it did.</param>
     /// <param name="clock">
     /// The clock, when the case needs to <b>move</b> it — a <c>ContractDirectory</c> negative lapses on
-    /// elapsed time, and a clock this method owns cannot be advanced from the test. Built from
-    /// <paramref name="now"/> when the case does not care.
+    /// elapsed time, and a clock this method owns cannot be advanced from the test. It must already read
+    /// <paramref name="now"/>; one is built from <paramref name="now"/> when the case does not care.
     /// </param>
     /// <returns>The service.</returns>
+    /// <exception cref="ArgumentException">
+    /// A supplied clock reads a different instant than <paramref name="now"/>.
+    /// </exception>
     private BarCacheService BuildAround(
         CountingGateway gateway,
         DateTimeOffset now,
         ILogger<BarCacheService>? logger = null,
         FakeTimeProvider? clock = null)
     {
+        // ONE INSTANT, NOT TWO. `now` exists only to build the clock, so a supplied clock reading something
+        // else wins silently and the case is then about a moment it does not name -- and every expectation
+        // here is a literal precisely so that the moment is written down. Refused while it is a typo rather
+        // than a green test measuring the wrong hour.
+        if (clock is not null && clock.GetUtcNow() != now)
+        {
+            throw new ArgumentException(
+                "The clock reads " + clock.GetUtcNow().ToString("O", CultureInfo.InvariantCulture)
+                + " but `now` is " + now.ToString("O", CultureInfo.InvariantCulture)
+                + ". The clock is what the read sees, so the two must agree.",
+                nameof(clock));
+        }
+
         clock ??= new FakeTimeProvider(now);
         BarSessionCalendar calendar = Calendar;
 

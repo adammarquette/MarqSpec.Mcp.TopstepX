@@ -118,7 +118,11 @@ a **session bar** rather than a resolution (`R-1.12`,
    named (gh#570). Adjacent slices the **cycle** brings down to the front alone are merged back into one, so
    a range cut at the tenure start does not silently buy a page boundary the old shape did not have; a slice
    the venue *narrowed* to the front is not one of those and is never merged — folded into the present band
-   it would stop being history at all, for a stretch the front is not the answer for. This step then asks the
+   it would stop being history at all, for a stretch the front is not the answer for. That merge is
+   **insurance rather than a hot path**: every served instrument has a candidate depth of at least two, so a
+   historical slice can only come down to the front alone by *losing* a candidate, which is the case now
+   refused. It fires the day a single-candidate product is added, and is exercised at depth one in the unit
+   tier rather than left to go quietly green (gh#570). This step then asks the
    ledger the same question per slice against that slice's own set — the `.Take(1)` is gone — and the two
    must not drift: a range answered here for a candidate the fetch would not have asked is a hole nothing
    ever fills again. A slice whose candidates **all** fell away is fetched from `contracts[0]` anyway, with a

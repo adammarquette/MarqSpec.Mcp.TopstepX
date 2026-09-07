@@ -452,10 +452,11 @@ public sealed class SessionBarServiceTests : IAsyncLifetime
     /// <returns>The running test.</returns>
     /// <remarks>
     /// <para>
-    /// <b>This is the contract gh#500 reads the result against.</b> A caller that finds a date in neither
-    /// list has no way to tell "no session bar, and here is why" from "not a trading day" — the two are the
-    /// same absence of evidence, and one of them is wrong. So the union of the two lists is exactly the dates
-    /// asked for, with nothing in both.
+    /// <b>This is the contract the session-bar tools read the result against</b> (gh#500, and
+    /// <see cref="SessionBarToolServedReadTests"/> asserts it on the wire). A caller that finds a date in
+    /// neither list has no way to tell "no session bar, and here is why" from "not a trading day" — the two
+    /// are the same absence of evidence, and one of them is wrong. So the union of the two lists is exactly
+    /// the dates asked for, with nothing in both.
     /// </para>
     /// <para>
     /// Stated as a property over the scenarios the fixtures already cover — a complete session beside an
@@ -495,9 +496,9 @@ public sealed class SessionBarServiceTests : IAsyncLifetime
     /// <b>The read-back has to be inside the unit of work</b>, and this is what says so. Run after the commit
     /// it reads back, it is a fresh statement against whatever the store holds <i>now</i> — so a concurrent
     /// deletion landing between the commit and the read leaves the trade date in neither list, which is the
-    /// absence gh#500 would read as "not a trading day". Inside the transaction the snapshot is this call's
-    /// own, taken before the other connection's delete, and the answer stays truthful to the base view this
-    /// call derived from.
+    /// absence <c>get_session_bars</c> reports as "not a trading day" (gh#500). Inside the transaction the
+    /// snapshot is this call's own, taken before the other connection's delete, and the answer stays truthful
+    /// to the base view this call derived from.
     /// </para>
     /// <para>
     /// <b>The row is warmed first so this read does not write it.</b> The skip-unchanged pre-filter drops the

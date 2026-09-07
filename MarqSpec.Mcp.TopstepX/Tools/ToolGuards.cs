@@ -47,7 +47,8 @@ public sealed class ToolGuards(IOptions<MarketDataOptions> options)
     /// <para>
     /// <b>The day and the week are session bars, not bar resolutions.</b> They are not unavailable and they
     /// are not out of range — they are a different thing, defined on the CME trade date rather than on the
-    /// bucket grid, and the session-bars epic gh#496 serves them. That is why the refusal in
+    /// bucket grid, and the session-bars epic gh#496 serves them: <c>get_session_bars</c> and
+    /// <c>get_latest_session_bars</c> on <see cref="SessionBarTools"/>. That is why the refusal in
     /// <see cref="ValidateResolution"/> names where the answer lives rather than only saying no.
     /// </para>
     /// <para>
@@ -329,8 +330,8 @@ public sealed class ToolGuards(IOptions<MarketDataOptions> options)
                 + " minutes, one minute short of a session (24 hours less the venue's one-hour maintenance "
                 + "window). A bucket that long or longer can never close inside a single session, "
                 + "so it is a session bar rather than a bar resolution. The day and the week are not "
-                + "unavailable and they are not out of range; ask the session-bar tools (gh#496, arriving in "
-                + "gh#500) for them.")
+                + "unavailable and they are not out of range; ask get_session_bars or "
+                + "get_latest_session_bars (gh#496) for them.")
             : resolutionMinutes;
     }
 

@@ -232,6 +232,7 @@ public sealed class CompositionRootTests
     [InlineData(typeof(AccountTools))]
     [InlineData(typeof(SnapshotTools))]
     [InlineData(typeof(ObservationTools))]
+    [InlineData(typeof(SessionBarTools))]
     public void EveryToolTypeCanBeResolvedFromARequestScope(Type toolType)
     {
         // The MCP SDK activates a tool type per call from the request scope, and it resolves constructor
@@ -356,6 +357,7 @@ public sealed class CompositionRootTests
     [InlineData(typeof(TapeTools), typeof(FootprintCacheService))]
     [InlineData(typeof(ContractRollTools), typeof(VolumeFrontReader))]
     [InlineData(typeof(SnapshotTools), typeof(IndicatorCatalogNames))]
+    [InlineData(typeof(SessionBarTools), typeof(SessionBarService))]
     public void AMarketDataToolTypeFailsTheContainerBuild_WhenOneOfItsOwnDependenciesIsUnregistered(
         Type toolType,
         Type dependency)
@@ -495,10 +497,12 @@ public sealed class CompositionRootTests
     [Fact]
     public void TheSessionBarServiceCanBeResolved()
     {
-        // No tool reaches SessionBarService yet -- the session-bar tool surface is gh#500 -- so the theory
-        // that walks the tool types does not cover it and nothing else asks the container for it. A
-        // registration nobody resolves is a registration nobody has checked: the reader would die the first
-        // time gh#500 lands and asks for it, which is exactly the hole IndicatorRebuilder shipped through.
+        // SessionBarTools reaches SessionBarService now (gh#500), so the theories above DO cover it: the
+        // request-scope walk activates the tool type, and the unregistered-dependency theory drops this very
+        // service and demands the container build fail. This stays as the DIRECT check. Both of those reach
+        // the reader through a tool constructor, so a slice that moved the service behind a different seam
+        // would take them with it and leave nothing asking the container for it at all -- which is exactly
+        // the hole IndicatorRebuilder shipped through, and it costs one Fact to keep shut.
         using ServiceProvider provider =
             Build(new Dictionary<string, string?>(), new McpOptions { Transport = McpTransport.Stdio });
         using IServiceScope scope = provider.CreateScope();

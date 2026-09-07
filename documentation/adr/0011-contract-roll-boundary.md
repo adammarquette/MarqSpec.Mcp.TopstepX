@@ -532,7 +532,11 @@ deleting the bars would orphan the values rather than remove them" is still this
 record still declines the foreign key. What gh#571 found is that the sweep it obliges was reachable for a
 *partial* bar delete and not for a total one: `rebuild-indicators` enumerated the series to replay from
 `Bars`, so a series whose every bar was deleted was in no worklist. The verb now walks the union of the two
-tables' series.
+tables' series. **And since gh#577 the absent foreign key no longer costs anything at read time either**: the
+reads join `Bars` themselves and serve a value only where the bar at its bucket is still stored, so an orphan
+waiting for the sweep is no longer served as an ordinary number ([ADR-0006](0006-indicators-as-projections.md),
+`R-2.14`). The declined foreign key still buys what this record says it buys; what it does *not* buy is now
+bought by the reads rather than left to the next pass.
 
 **Nothing about the seam, the segmenting or the empty diff moves.** A value recomputed to the same number
 still counts as produced, and a confirming rebuild still deletes nothing.

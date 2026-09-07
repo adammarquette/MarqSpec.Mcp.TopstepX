@@ -250,6 +250,20 @@ The server serves OHLCV bars for a futures instrument at a requested resolution 
   `(Indicator, Period)` instances the operator configures, since every additional period is one more series in
   the same replay (`R-2.12`). Every read after it pays only the probe. That cost is stated in the
   tool's own description rather than being a surprise.
+- **R-2.14** A read serves a stored value **only where the store still holds the bar at its bucket**. There is
+  no foreign key from the values to the bars ([ADR-0011](adr/0011-contract-roll-boundary.md)), so a bar delete
+  orphans the values over it; `R-2.8`'s sweep is what removes them, and **a read does not sweep** — for a
+  series whose bars are *all* gone, no read even runs a pass, so nothing removes them until
+  `rebuild-indicators` does (`R-2.5`). Until gh#577 those rows were **served**: 37 ATR points over zero bars,
+  and a reading of `65.32947503` carrying a null contract that a caller could not tell from a real one. That
+  is `R-2.2` failing in the only way it can be observed from outside — a number no recomputation can produce,
+  because the bars it came from are gone. What the read withholds is an **absence**, which `R-2.3` already
+  makes every caller read as *cannot measure*, rather than an error: the fault is the store's, not the
+  caller's, and refusing a whole window over one orphaned bucket answers larger than the fault. The rule is
+  per **value**, so a partial delete still serves everything the surviving bars justify and an as-of read
+  falls back to the newest bucket that has one — the same fallback `R-2.7`'s seam already produces. A bar
+  whose `ContractId` was never recorded is **not** this case: the bar is there, the number is reproducible,
+  and the unknown provenance is reported as it always was.
 
 ## R-3 — Key levels
 

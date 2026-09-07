@@ -591,10 +591,19 @@ it is over the bars and values the pass already read.
 when its probe finds a *configured* pair missing
 ([ADR-0014](adr/0014-indicators-are-projected-on-read-too.md)), and `EnsureProjectedAsync` returns before that
 probe when the series holds no bars at all. **Retired** rows are unreachable while they stand — the read
-refuses a period the catalogue does not carry, before the store is touched. **Orphaned** rows are still
-served: the pair is configured, the reads do not join `Bars` for the value, and for a series whose bars are
-all gone no read will ever run the pass that removes them. So an operator upgrading past gh#571 runs
-`rebuild-indicators` once.
+refuses a period the catalogue does not carry, before the store is touched. **Orphaned** rows stand too, and
+for a series whose bars are all gone no read will ever run the pass that removes them, so an operator
+upgrading past gh#571 runs `rebuild-indicators` once.
+
+**But an orphan is no longer *served*** (`R-2.14`, gh#577). All three read paths — `get_indicators`,
+`get_indicator_at` and the batched read behind `get_market_snapshot` — serve a stored value only where the
+store still holds the bar at its bucket, evaluated at read time rather than by a migration. Until then they
+did: 37 ATR points over zero bars, and a `65.32947503` carrying a null contract that no caller could tell from
+a real reading. The rule is per **value**, so a partial delete still serves what the surviving bars justify and
+an as-of read falls back to the newest bucket that has one — the same fallback the contract seam produces. The
+snapshot's bar join is an **inner** join for this reason and no longer a `LEFT` one; the case its comment
+defended, a bar present with no recorded `ContractId`, still matches on `BucketStart` and is still served with
+its unknown provenance ([ADR-0006](adr/0006-indicators-as-projections.md), 2026-09-07).
 
 It is **not** scoped by bucket range, and that is only sound because a pass reads the whole series — true at
 both call sites, and until gh#73 guaranteed by nothing. So the claim is checked rather than trusted: a pass

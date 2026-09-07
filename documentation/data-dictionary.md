@@ -146,14 +146,22 @@ probe entirely when the series holds **no bars**. So:
 
 - **Retired rows are unreachable** while they stand — the read refuses a period the catalogue does not carry,
   before the store is touched. They stand until a fill or `rebuild-indicators` visits the series.
-- **Orphaned rows are still served.** The pair *is* configured, so `get_indicators` returns them with no bar
-  join, `get_indicator_at` returns one with a null contract, and `get_market_snapshot` LEFT-joins §1 on
-  purpose — its comment says an inner join would turn a known number with unknown provenance into
-  *cannot-measure*, which is a different and worse answer. And for a series whose bars are **all** gone, no
-  read will ever run the pass that would remove them.
+- **Orphaned rows also stand**, and for a series whose bars are **all** gone no read will ever run the pass
+  that would remove them.
 
 **So an operator upgrading past gh#571 runs `rebuild-indicators` once.** That is the only thing that reaches
-a bar-less series, and until it runs, values over deleted bars keep answering as ordinary numbers.
+a bar-less series.
+
+**No read serves an orphan, though** (`R-2.14`, gh#577). All three read paths join §1: a stored value is
+served only where §1 still holds the bar at its `BucketStart`. Until then they did not — `get_indicators`
+returned 37 ATR points over zero bars, `get_indicator_at` returned `65.32947503` with a null contract, and
+`get_market_snapshot` LEFT-joined §1 on purpose, its comment arguing that an inner join would turn a known
+number with unknown provenance into *cannot-measure*. That argument is answered rather than overridden:
+**`ContractId` is nullable**, so a bar that exists with no recorded contract still matches the join and is
+still served with its unknown provenance; what the LEFT join actually decided was the case where the bar row
+is absent, and there nothing recomputes the number at all. The rule is per **value**, so a partial delete
+still serves what the surviving bars justify. Nothing is rewritten and no migration is implied — the join is
+evaluated at read time, and the rows stand until the sweep above reaches them.
 
 **The write half reaches the composite key with `ON CONFLICT … DO UPDATE`**, not by reading the values into a
 dictionary and deciding (gh#133) — a pass recomputes the whole series *its own snapshot* can see, so two fills

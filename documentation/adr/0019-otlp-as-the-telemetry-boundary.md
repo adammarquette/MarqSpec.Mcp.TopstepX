@@ -126,12 +126,27 @@ reads back as an absence rather than an error. So a rename is a deliberate chang
 promise, and that asymmetry is the whole point of decision 6.
 
 **The cardinality rule is now a gate, not a guideline.** Every tag value is drawn from one of those
-vocabularies, or is an instrument symbol or a resolution; `HostTelemetryTests` enumerates the allowed tag
-keys, drives every instrument, and fails on a value shaped like a timestamp, carrying `CON.F.US.`, or
-containing a space. The reason is smaller than a bill: a `Counter<T>` keeps one accumulator per distinct tag
-set **for the life of the process**, so an unbounded tag is a leak in this server before it is a cost in a
-backend. It is also the second half of invariant 4 — a vendor's free-text message is exactly the kind of
-string that carries an account number, and `VenueCallGuard` puts a status on the span and never the sentence.
+vocabularies, or is an instrument symbol or a resolution; `HostTelemetryTests` fails on a value shaped like a
+timestamp, carrying `CON.F.US.`, or containing a space. The reason is smaller than a bill: a `Counter<T>` keeps
+one accumulator per distinct tag set **for the life of the process**, so an unbounded tag is a leak in this
+server before it is a cost in a backend. It is also the second half of invariant 4 — a vendor's free-text
+message is exactly the kind of string that carries an account number, and `VenueCallGuard` puts a status on
+the span and never the sentence.
+
+**And the gate enumerates nothing, because a hand-maintained gate guards only what it was told about**
+(gh#559). It discovers the instruments off the meter through a `MeterListener`, which is blind to measurement
+type — so the `double` histogram `mcp.venue.call.duration`, which the `MetricCollector<long>` gate before it
+could not see at all, is covered like every counter — drives them through `HostTelemetry`'s own public methods
+by reflection, and reads the allowed tag keys off the `…Tag` constants and the allowed values off the
+vocabularies themselves. A new instrument cannot slip past: either a public method records to it and its tags
+are checked, or nothing does and the gate fails naming it. Every way of driving nothing is a failure rather
+than a pass — an empty instrument set, an empty measurement set, an undriven instrument, or a parameter shape
+the driver cannot synthesise. What the gate decides is what `HostTelemetry` controls: which instruments exist,
+which tag keys each writes, and any value the class *manufactures*. That a value it merely *forwards* is drawn
+from a closed vocabulary is a property of the **call sites**, and for the one tag where those are decidable
+they are decided — `VenueCallGuardTests` reads `ProjectXMarketDataGateway`'s **compiled body**, so the closed
+`operation` vocabulary is asserted against the gateway's actual `VenueCallGuard.RunAsync` call sites rather
+than against a literal beside the test.
 
 **Registered unconditionally, subscribed conditionally.** `AddSingleton<HostTelemetry>()` runs whether or not
 `Otel__Endpoint` is set; only `AddSource`/`AddMeter` are inside the endpoint check. An unlistened counter is a

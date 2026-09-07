@@ -21,6 +21,12 @@ namespace MarqSpec.Mcp.TopstepX.Tests;
 /// instance as its <c>Scope</c>, so nothing another test in this assembly emits can reach these collectors.
 /// </para>
 /// <para>
+/// <b>The cardinality gate at the foot of this file enumerates no instrument</b>, and its header says what it
+/// does rather than what it wishes it did. It reads one pass of <see cref="HostTelemetryDriver"/>, which
+/// discovers the instruments off the meter and drives them reflectively, so a <c>double</c> histogram and a
+/// ninth instrument are both inside it — neither was, before gh#559.
+/// </para>
+/// <para>
 /// <b>Nothing here reaches a network.</b> The unit tier needs no container and must stay that way; the
 /// compose-stack measurement is recorded on the pull request.
 /// </para>
@@ -298,56 +304,101 @@ public sealed class HostTelemetryTests
         projections.GetMeasurementSnapshot().Should().BeEmpty();
     }
 
-    // ── The vocabulary gate ──────────────────────────────────────────────────────────────────────────
+    // ── The cardinality gate ─────────────────────────────────────────────────────────────────────────
+    //
+    // What follows guards CARDINALITY, which is the failure mode that never announces itself: an unbounded
+    // tag breaks no build and fails no request, it multiplies time series until a backend bill or a query
+    // timeout is the first signal. A Counter<T> keeps one accumulator per distinct tag set FOR THE LIFE OF
+    // THE PROCESS, so it is a leak here before it is a cost anywhere else.
+    //
+    // All three read one pass of HostTelemetryDriver, which DISCOVERS the instruments off the meter through
+    // a MeterListener and drives them through HostTelemetry's own public methods by reflection. Nothing
+    // below enumerates an instrument, and that is the whole point: the gate this replaced listed its
+    // collectors, so mcp.venue.call.duration -- a double histogram a MetricCollector<long> cannot see --
+    // reached neither half of it, and a ninth instrument would have reached neither either, silently and
+    // greenly (gh#559). The driver's header states exactly what this can and cannot decide.
 
     [Fact]
-    public void EveryTagKeyEveryInstrumentEmitsIsOneThisRepositoryNames()
+    public void EveryInstrumentOnTheMeterIsDrivenByThisGate()
     {
-        // THE GATE, half one: the tag KEYS are enumerated here, so an instrument that quietly grows a tag has
-        // to come through this list. A key nobody enumerated is a dimension no dashboard knows about and no
-        // reviewer priced.
-        HashSet<string> allowed =
-        [
-            HostTelemetry.SeriesTag,
-            HostTelemetry.OutcomeTag,
-            HostTelemetry.SymbolTag,
-            HostTelemetry.ResolutionTag,
-            HostTelemetry.OperationTag,
-            HostTelemetry.ReasonTag,
-            HostTelemetry.TransitionTag,
-            HostTelemetry.ChangeTag,
-            HostTelemetry.IndicatorTag,
-        ];
+        // THE GATE'S OWN FOUNDATION, and it is asserted rather than assumed. Every way of driving nothing is
+        // a failure here: no instruments discovered, no measurements recorded, an instrument declared but
+        // never created, or -- the one that matters -- an instrument created on the meter that no public
+        // method records to, which is an instrument the two gates below would never see.
+        TelemetryDrive drive = HostTelemetryDriver.Run();
 
-        foreach (CollectedMeasurement<long> measurement in EveryLongMeasurement())
+        drive.Instruments.Should().NotBeEmpty(
+            "the listener must be subscribed at all, or every gate below asserts over an empty list and "
+            + "passes forever");
+        drive.Measurements.Should().NotBeEmpty(
+            "the drive must reach the instruments at all, or every gate below asserts over an empty list "
+            + "and passes forever");
+
+        drive.Instruments.Should().BeEquivalentTo(
+            HostTelemetryDriver.DeclaredInstrumentNames,
+            "every instrument created on the meter is named by a `…Instrument` constant and every constant "
+            + "names an instrument -- one without the other is a name a dashboard cannot find, or an "
+            + "instrument nothing declares");
+
+        drive.Measurements.Select(measurement => measurement.Instrument).Distinct()
+            .Should().BeEquivalentTo(
+                drive.Instruments,
+                "an instrument no public method on HostTelemetry records to is one the cardinality gates "
+                + "never see, whatever it is tagged with");
+    }
+
+    [Fact]
+    public void EveryTagKeyEveryInstrumentEmitsIsOneThisRepositoryDeclares()
+    {
+        // THE GATE, half one: the allowed tag KEYS are the `…Tag` constants on HostTelemetry, read off the
+        // declarations rather than copied beside them. So an instrument that quietly grows a tag fails here,
+        // and the only way to green is to DECLARE the tag -- a deliberate edit to the file whose header says
+        // every value comes from a closed vocabulary, which is the moment the cost gets priced.
+        //
+        // Both directions: an undeclared key is a dimension nobody wrote down, and a declared key nothing
+        // emits is a constant that has outlived its instrument and would launder the next one.
+        TelemetryDrive drive = HostTelemetryDriver.Run();
+
+        foreach (DrivenMeasurement measurement in drive.Measurements)
         {
-            measurement.Tags.Keys.Should().BeSubsetOf(allowed);
+            measurement.Tags.Select(tag => tag.Key).Should().BeSubsetOf(
+                HostTelemetryDriver.DeclaredTagKeys,
+                "instrument '{0}' emitted a tag key this repository never declared",
+                measurement.Instrument);
         }
+
+        drive.Measurements.SelectMany(measurement => measurement.Tags).Select(tag => tag.Key).Distinct()
+            .Should().BeEquivalentTo(
+                HostTelemetryDriver.DeclaredTagKeys,
+                "every declared tag key is emitted by something, or the declaration is a dead allowance");
     }
 
     [Fact]
     public void NoTagValueIsATimestampAContractIdOrVendorFreeText()
     {
-        // THE GATE, half two, and the one the issue asks for by name. Each of these turns ONE time series
-        // into an unbounded family: a timestamp is a new series per read, a contract id is a new one per
-        // quarter per instrument, and a vendor message is a new one per distinct sentence -- which is also
-        // how a credential or an account number reaches a backend an operator screenshots.
+        // THE GATE, half two. Each of these turns ONE time series into an unbounded family: a timestamp is a
+        // new series per read, a contract id is a new one per quarter per instrument, and a vendor message is
+        // a new one per distinct sentence -- which is also how a credential or an account number reaches a
+        // backend an operator screenshots.
         //
-        // A COUNTER KEEPS ONE ACCUMULATOR PER DISTINCT TAG SET FOR THE LIFE OF THE PROCESS, so this is a
-        // memory leak here before it is a bill anywhere else.
+        // The allowed set is the closed vocabularies THEMSELVES, discovered off the telemetry namespace, plus
+        // the symbol and the indicator name the drive passes. What this catches is any value HostTelemetry
+        // MANUFACTURES rather than forwards -- a formatted instant, a machine name, a contract id built from
+        // a symbol. What it cannot catch is a forwarded value whose closedness lives at the call site; for
+        // the one tag where the call sites are decidable, VenueCallGuardTests decides them against
+        // ProjectXMarketDataGateway's compiled body.
         HashSet<string> vocabulary =
         [
-            .. CacheSeries.All,
-            .. CacheOutcome.All,
-            .. VenueOperation.All,
-            .. GapReason.All,
-            .. TapeTransition.All,
-            .. TapeLeaseChange.All,
-            Symbol,
-            "atr",
+            .. HostTelemetryDriver.ClosedVocabularyValues,
+            HostTelemetryDriver.Symbol,
+            HostTelemetryDriver.Indicator,
         ];
 
-        foreach (CollectedMeasurement<long> measurement in EveryLongMeasurement())
+        vocabulary.Should().NotBeEmpty("the vocabularies must be discovered, or this admits everything");
+
+        TelemetryDrive drive = HostTelemetryDriver.Run();
+
+        foreach (DrivenMeasurement measurement in drive.Measurements)
         {
             foreach (KeyValuePair<string, object?> tag in measurement.Tags)
             {
@@ -378,13 +429,24 @@ public sealed class HostTelemetryTests
 
                 value.Should().NotMatchRegex(
                     _looksLikeATimestamp.ToString(),
-                    "tag '{0}' carried something shaped like an instant",
+                    "instrument '{0}' tagged '{1}' with something shaped like an instant",
+                    measurement.Instrument,
                     tag.Key);
                 value.Should().NotContain(
-                    "CON.F.US.", "tag '{0}' carried a venue contract id", tag.Key);
+                    "CON.F.US.",
+                    "instrument '{0}' tagged '{1}' with a venue contract id",
+                    measurement.Instrument,
+                    tag.Key);
                 value.Should().NotContain(
-                    " ", "tag '{0}' carried something shaped like a sentence", tag.Key);
-                value.Should().BeOneOf(vocabulary, "tag '{0}' left its closed vocabulary", tag.Key);
+                    " ",
+                    "instrument '{0}' tagged '{1}' with something shaped like a sentence",
+                    measurement.Instrument,
+                    tag.Key);
+                value.Should().BeOneOf(
+                    vocabulary,
+                    "instrument '{0}' tagged '{1}' with a value no closed vocabulary names",
+                    measurement.Instrument,
+                    tag.Key);
             }
         }
     }
@@ -394,16 +456,14 @@ public sealed class HostTelemetryTests
     {
         // These strings are storage keys in every backend already scraping them, exactly as an IIndicator's
         // Name is in the store. A rename orphans the panels built on the old one, where they read back as an
-        // absence rather than as an error -- so the shape is pinned rather than left to house style.
-        IEnumerable<string> all =
-        [
-            .. CacheSeries.All,
-            .. CacheOutcome.All,
-            .. VenueOperation.All,
-            .. GapReason.All,
-            .. TapeTransition.All,
-            .. TapeLeaseChange.All,
-        ];
+        // absence rather than an error -- so the shape is pinned rather than left to house style.
+        //
+        // The vocabularies are DISCOVERED, so a seventh one is held to this the day it is written.
+        IReadOnlyList<string> all = HostTelemetryDriver.ClosedVocabularyValues;
+
+        all.Should().NotBeEmpty("the vocabularies must be discovered, or this pins nothing");
+        all.Should().OnlyHaveUniqueItems(
+            "two vocabularies sharing a value would make one tag's series answer to the other's name");
 
         foreach (string value in all)
         {
@@ -411,72 +471,6 @@ public sealed class HostTelemetryTests
             value.Should().Be(value.ToLower(CultureInfo.InvariantCulture));
             value.Should().MatchRegex("^[a-z][a-z_]*$");
         }
-    }
-
-    /// <summary>Drives every counter once and returns every measurement they produced.</summary>
-    /// <remarks>
-    /// One <see cref="HostTelemetry"/> and one pass, so the two gates above read the same emissions. A gate
-    /// that enumerated the instruments by hand would go green the moment one was added.
-    /// </remarks>
-    private static List<CollectedMeasurement<long>> EveryLongMeasurement()
-    {
-        using HostTelemetry telemetry = new();
-
-        List<MetricCollector<long>> collectors =
-        [
-            Collect(telemetry, HostTelemetry.CacheReadsInstrument),
-            Collect(telemetry, HostTelemetry.VenueCallsInstrument),
-            Collect(telemetry, HostTelemetry.GapFillsInstrument),
-            Collect(telemetry, HostTelemetry.TapeTicksInstrument),
-            Collect(telemetry, HostTelemetry.TapeReconnectsInstrument),
-            Collect(telemetry, HostTelemetry.TapeLeaseChangesInstrument),
-            Collect(telemetry, HostTelemetry.IndicatorProjectionsInstrument),
-        ];
-
-        foreach (string series in CacheSeries.All)
-        {
-            foreach (string outcome in CacheOutcome.All)
-            {
-                telemetry.CacheRead(series, Symbol, 5, outcome);
-            }
-        }
-
-        foreach (string operation in VenueOperation.All)
-        {
-            telemetry.VenueCall(operation).Dispose();
-        }
-
-        foreach (string reason in GapReason.All)
-        {
-            telemetry.GapFilled(Symbol, 5, reason, ranges: 1);
-        }
-
-        telemetry.TapeTick(Symbol);
-
-        foreach (string transition in TapeTransition.All)
-        {
-            telemetry.TapeReconnect(transition);
-        }
-
-        foreach (string change in TapeLeaseChange.All)
-        {
-            telemetry.TapeLeaseChanged(Symbol, change);
-        }
-
-        telemetry.IndicatorProjected("atr", Symbol, 5, values: 1);
-
-        List<CollectedMeasurement<long>> measurements = [];
-        foreach (MetricCollector<long> collector in collectors)
-        {
-            measurements.AddRange(collector.GetMeasurementSnapshot());
-            collector.Dispose();
-        }
-
-        measurements.Should().NotBeEmpty(
-            "the collectors must be subscribed at all, or both gates assert over an empty list and pass "
-            + "forever");
-
-        return measurements;
     }
 
     private static MetricCollector<long> Collect(HostTelemetry telemetry, string instrument) =>

@@ -28,7 +28,19 @@ namespace MarqSpec.Mcp.TopstepX.Telemetry;
 /// A timestamp, a venue contract id or a vendor's free-text message would each turn one time series into an
 /// unbounded family of them — which is a cost problem in a backend, and a memory problem in this process,
 /// because a <see cref="Counter{T}"/> keeps one accumulator per distinct tag set forever.
-/// <c>HostTelemetryTests</c> enumerates the vocabulary and pins that.
+/// </para>
+/// <para>
+/// <b>The gate over that is <c>HostTelemetryTests</c>, and it enumerates nothing.</b> It discovers the
+/// instruments off this meter through a <see cref="MeterListener"/> — which is blind to measurement type, so
+/// a <see cref="Histogram{T}"/> of <see cref="double"/> is covered the same as a <see cref="Counter{T}"/> of
+/// <see cref="long"/> — drives them through the public methods below by reflection, and reads the allowed tag
+/// keys off the <c>…Tag</c> constants and the allowed values off the vocabularies themselves. Adding an
+/// instrument here therefore cannot skip the gate: either a public method records to it and its tags are
+/// checked, or nothing does and the gate fails naming it (gh#559). What the gate decides is everything this
+/// class controls — which instruments exist, which tag keys each writes, and any value this class
+/// <i>manufactures</i>. What it cannot decide is that a value merely <i>forwarded</i> through a parameter
+/// below comes from a closed vocabulary, because that is a property of the call sites: for the one tag where
+/// those are decidable, <c>VenueCallGuardTests</c> reads <c>ProjectXMarketDataGateway</c>'s compiled body.
 /// </para>
 /// <para>
 /// <b>With no <c>Otel__Endpoint</c> configured nothing subscribes, and these instruments cost nothing.</b>

@@ -238,8 +238,17 @@ public sealed class IndicatorOrphanReadTests : IAsyncLifetime
         ToolPayloads.IndicatorReading single = await indicators.GetIndicatorAt(
             "ES", Resolution, "atr", asOf, cancellationToken: CancellationToken.None);
 
+        // THE LITERAL BELOW IS LOAD-BEARING; DO NOT TIDY IT AWAY AS REDUNDANT. Anchoring the reference path
+        // to a literal FIRST is the whole of what makes the agreement assertions further down safe: an
+        // implementation that broke BOTH paths the same way -- the failure mode an agreement test invites --
+        // fails here, on the literal, before it ever reaches a clause comparing one path against the other.
+        // Without it the test degrades to the weak form, "these two agree", which a pair of equally wrong
+        // answers satisfies (PR #583 review).
         single.BucketStart.Should().Be(
             Bucket(Kept - 1), "the newest bucket at or before the moment that still has a bar");
+
+        single.Value.Should().NotBeNull("and it is a reading, not cannot-measure");
+        single.ContractId.Should().Be(Contract, "on the contract the surviving bars carry");
 
         ToolPayloads.IndicatorReading? composed = slice.Indicators["atr"];
 

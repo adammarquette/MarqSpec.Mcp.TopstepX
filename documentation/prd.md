@@ -538,7 +538,7 @@ The server serves OHLCV bars for a futures instrument at a requested resolution 
   instrument's contract list, so it is venue-dependent and raises with the venue down (gh#504). See
   [ADR-0022](adr/0022-session-bars-derived-complete-or-absent.md) (gh#496, gh#500).
 - **R-5.12** **`get_session_indicators`** and **`get_session_indicator_at`** read the indicator series over a
-  named session — one value per trade date, not per bar (`R-2.14`).
+  named session — one value per trade date, not per bar (`R-2.15`).
   `get_session_indicators(symbol, session, indicator, fromUtc, toUtc, period?)` answers
   `{ symbol, session, indicator, period, values, contracts }`, one `{ tradeDate, t, v }` per trade date that
   *has* a value, ascending; `get_session_indicator_at(symbol, session, indicator, asOfUtc, period?)` answers

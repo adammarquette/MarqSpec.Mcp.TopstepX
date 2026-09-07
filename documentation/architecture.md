@@ -474,8 +474,8 @@ outright, being anchored rather than windowed; a VWAP with a lookback is `vwap-r
 the vocabulary. **Resolving first is the point of the ordering**: a period this server does not compute is
 rejected without the read ever reaching `EnsureProjectedAsync`, so a rejected call cannot make a whole series
 replay. `IndicatorCatalog.ForSeries(key)` — every instance *that series* carries — is what the projection,
-the probe's diff and the reconcile all walk, and all three are handed the **same** list rather than reading
-it separately; for a resolution key it is `IndicatorCatalog.All` itself, the same instance, so nothing about
+the probe's diff and the reconcile all walk: the compute and the reconcile are handed one read of it, and the
+probe gets the **same** instance back from `ForSeries`; for a resolution key it is `IndicatorCatalog.All` itself, the same instance, so nothing about
 an existing series moved. `IndicatorCatalog.Primaries` — exactly one per name — is what keys
 `get_market_snapshot`'s `indicators{}` map.
 

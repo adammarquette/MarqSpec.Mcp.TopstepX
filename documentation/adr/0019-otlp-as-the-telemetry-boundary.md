@@ -126,7 +126,7 @@ reads back as an absence rather than an error. So a rename is a deliberate chang
 promise, and that asymmetry is the whole point of decision 6.
 
 **The cardinality rule is now a gate, not a guideline.** Every tag value is drawn from one of those
-vocabularies, or is an instrument symbol or a resolution; `HostTelemetryTests` fails on a value shaped like a
+vocabularies, or is an instrument symbol, a resolution, or a session name; `HostTelemetryTests` fails on a value shaped like a
 timestamp, carrying `CON.F.US.`, or containing a space. The reason is smaller than a bill: a `Counter<T>` keeps
 one accumulator per distinct tag set **for the life of the process**, so an unbounded tag is a leak in this
 server before it is a cost in a backend. It is also the second half of invariant 4 — a vendor's free-text

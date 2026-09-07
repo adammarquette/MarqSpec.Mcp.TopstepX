@@ -383,12 +383,19 @@ public sealed class CompositionRootTests
         // gh#347/gh#348 exist to count). Splitting one type into five multiplies the number of constructors
         // that hole could reopen in, so each of them is driven here.
         //
-        // Each pair is a dependency that type ALONE takes among the five, which is what makes the assertion
-        // discriminating: BarTools is the only one holding a BarCacheService, TapeTools the only one holding
-        // a FootprintCacheService, ContractRollTools' VolumeFrontReader reaches it through TapeTools too but
-        // the message names both. Assert on the message naming the SERVICE and the CONSUMING TYPE, because
-        // .NET validates every registered descriptor on build -- "something threw" would be satisfied by any
-        // other type in the container failing for its own reasons.
+        // WHAT EACH PAIR HAS TO BE is a dependency that type genuinely holds, whose absence fails the build
+        // naming BOTH it and the type -- which is what the two assertions below check, and it is why they
+        // assert on the message rather than on "something threw": .NET validates every registered descriptor
+        // on build, so a bare throw would be satisfied by any other type failing for its own reasons.
+        //
+        // MOST pairs are stronger than that: the dependency is one that type ALONE takes among the family --
+        // BarTools is the only one holding a BarCacheService, TapeTools the only one holding a
+        // FootprintCacheService, ContractRollTools' VolumeFrontReader reaches it through TapeTools too but the
+        // message names both. SessionIndicatorTools has no such dependency and cannot be given one honestly
+        // (gh#501): all eight of its collaborators are shared with IndicatorTools or SessionBarTools, so its
+        // row names SessionCatalog, which SessionBarTools takes as well. Dropping it fails the build naming
+        // both types, so the case still pins that this constructor is validated at build time and not at call
+        // time -- it just does not, on its own, distinguish which of the two consumers was hurt.
         WebApplicationBuilder builder = WebApplication.CreateBuilder();
         builder.Configuration.AddInMemoryCollection(_baseSettings);
 

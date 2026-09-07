@@ -139,7 +139,7 @@ public sealed class SessionIndicatorTools(
 
         DateOnly[] tradeDates = [.. plan.TradeDates];
 
-        List<ToolPayloads.SessionIndicatorPoint> values = await Values(resolved)
+        List<ToolPayloads.SessionIndicatorPoint> values = await Values(instrument, definition, resolved)
             .Join(
                 Bars(instrument, definition, tradeDates),
                 v => new { v.Venue, v.Instrument, v.Session, Opening = v.BucketStart },
@@ -217,7 +217,7 @@ public sealed class SessionIndicatorTools(
         // comparison is only reachable through the join: SessionIndicatorValues carries the opening instant
         // as its key and no close at all, because the close is the session bar's fact rather than the
         // value's.
-        ToolPayloads.SessionIndicatorReading? reading = await Values(resolved)
+        ToolPayloads.SessionIndicatorReading? reading = await Values(instrument, definition, resolved)
             .Join(
                 ClosedBy(instrument, definition, asOf),
                 v => new { v.Venue, v.Instrument, v.Session, Opening = v.BucketStart },
@@ -267,22 +267,40 @@ public sealed class SessionIndicatorTools(
             static ex => ex is KeyNotFoundException or ArgumentException);
 
     /// <summary>The stored values for one indicator over this instrument's session series.</summary>
+    /// <param name="instrument">The instrument.</param>
+    /// <param name="definition">The session.</param>
     /// <param name="resolved">The indicator and period the read answers under.</param>
     /// <returns>The query.</returns>
     /// <remarks>
+    /// <para>
+    /// <b>The whole storage key is named here, not only the half the join does not supply.</b> The instrument
+    /// and the session are redundant against today's four-column join and are written anyway: they are free —
+    /// the same index answers either way — and without them this query alone reads "every venue row for this
+    /// indicator", which is a correct series only for as long as the one call site keeps its join. A copy
+    /// made against a differently-keyed bar table, or a join narrowed later, would silently widen it.
+    /// </para>
+    /// <para>
     /// <b>AsNoTracking</b>, for the reason every read of a projected table here is: the rows are written by
     /// SQL the change tracker never sees, so a tracked copy is a stale entity the identity map hands back to
     /// the next read in the same scope (gh#103).
+    /// </para>
     /// </remarks>
-    private IQueryable<SessionIndicatorValueRecord> Values(IIndicator resolved)
+    private IQueryable<SessionIndicatorValueRecord> Values(
+        InstrumentId instrument, SessionDefinition definition, IIndicator resolved)
     {
         string venue = _venue;
+        string symbol = instrument.Symbol;
+        string session = definition.Name;
         string name = resolved.Name;
         int period = resolved.Period;
 
         return _database.SessionIndicatorValues
             .AsNoTracking()
-            .Where(v => v.Venue == venue && v.Indicator == name && v.Period == period);
+            .Where(v => v.Venue == venue
+                && v.Instrument == symbol
+                && v.Session == session
+                && v.Indicator == name
+                && v.Period == period);
     }
 
     /// <summary>The stored session bars for a set of trade dates.</summary>

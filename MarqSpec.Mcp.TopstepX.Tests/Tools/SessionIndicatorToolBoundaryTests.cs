@@ -68,13 +68,14 @@ public sealed class SessionIndicatorToolBoundaryTests : IDisposable
 
     public void Dispose() => _database.Dispose();
 
-    [Fact]
-    public async Task AnUnknownSession_IsAnError_NamingTheConfiguredOnes()
+    [Theory]
+    [InlineData(Route.Series)]
+    [InlineData(Route.AsOf)]
+    public async Task AnUnknownSession_IsAnError_NamingTheConfiguredOnes(Route route)
     {
         // The same closed vocabulary get_session_bars refuses on, refused in the same place: a typo answered
         // with an empty series reads as a session that produced no values.
-        Func<Task> call = () => _tools.GetSessionIndicators(
-            "ES", "rht", "atr", MondayStart, FortnightLater, cancellationToken: CancellationToken.None);
+        Func<Task> call = Read(route, "rht", "atr");
 
         (await call.Should().ThrowAsync<McpException>())
             .WithMessage("*rht*", "the refusal quotes what was asked for")
@@ -85,15 +86,16 @@ public sealed class SessionIndicatorToolBoundaryTests : IDisposable
         NothingWasSpent();
     }
 
-    [Fact]
-    public async Task VwapOnASession_IsRefused_NamingVwapRolling()
+    [Theory]
+    [InlineData(Route.Series)]
+    [InlineData(Route.AsOf)]
+    public async Task VwapOnASession_IsRefused_NamingVwapRolling(Route route)
     {
         // ADR-0022: "No 'vwap' on a session series, and the tool surface says so rather than omitting it
         // silently." Nothing ever writes a vwap row for a session series, so a read allowed through would
         // answer with no values at all -- the exact absence-that-looks-like-an-answer the closed vocabulary
         // exists to stop. The refusal names the alternative that IS computed here.
-        Func<Task> call = () => _tools.GetSessionIndicators(
-            "ES", "rth", "vwap", MondayStart, FortnightLater, cancellationToken: CancellationToken.None);
+        Func<Task> call = Read(route, "rth", "vwap");
 
         (await call.Should().ThrowAsync<McpException>())
             .WithMessage("*anchors on the session*", "the refusal says why this series cannot carry it")
@@ -102,15 +104,15 @@ public sealed class SessionIndicatorToolBoundaryTests : IDisposable
         NothingWasSpent();
     }
 
-    [Fact]
-    public async Task AnUnconfiguredPeriod_IsRefused_ListingTheConfiguredOnes()
+    [Theory]
+    [InlineData(Route.Series)]
+    [InlineData(Route.AsOf)]
+    public async Task AnUnconfiguredPeriod_IsRefused_ListingTheConfiguredOnes(Route route)
     {
         // gh#495's rule, unchanged on this surface: a period SELECTS among what the operator configured and
         // never asks for a new one. Refused before the store, because this read would otherwise answer an
         // unconfigured period with an honest-looking empty series.
-        Func<Task> call = () => _tools.GetSessionIndicators(
-            "ES", "rth", "rsi", MondayStart, FortnightLater, period: 99,
-            cancellationToken: CancellationToken.None);
+        Func<Task> call = Read(route, "rth", "rsi", period: 99);
 
         (await call.Should().ThrowAsync<McpException>())
             .WithMessage("*99*", "the refusal names the period that was asked for")
@@ -124,6 +126,11 @@ public sealed class SessionIndicatorToolBoundaryTests : IDisposable
     {
         // SessionWindows.TradeDatesIn answers an empty window with an empty list, which on this surface reads
         // as "no session traded then" rather than "you asked for nothing".
+        //
+        // NOT SWEPT OVER BOTH ROUTES, unlike the three vocabulary refusals above, and it is the one case
+        // where that is right: get_session_indicator_at takes a single moment and no window at all, so there
+        // is no empty window for it to refuse. A theory row driving it here would exercise a guard the route
+        // does not have and pass by asserting nothing.
         Func<Task> call = () => _tools.GetSessionIndicators(
             "ES", "rth", "atr", MondayStart, MondayStart, cancellationToken: CancellationToken.None);
 
@@ -133,6 +140,46 @@ public sealed class SessionIndicatorToolBoundaryTests : IDisposable
                 "the window is named as the fault, rather than answered with no rows");
 
         NothingWasSpent();
+    }
+
+    /// <summary>Which of the two reads a refusal case is being driven through.</summary>
+    /// <remarks>
+    /// <b>Both, for every refusal either of them can reach.</b> The two tools resolve the same session name,
+    /// the same indicator name and the same period, and each does it in its own method body — so a suite
+    /// that only ever drove the window read would let the as-of read stop refusing without going red. That
+    /// is the worse half to lose: <c>get_session_indicators</c> answering an unresolved name would at least
+    /// hand back an empty list, while <c>get_session_indicator_at</c> hands back <c>{}</c>, which a caller
+    /// is told to read as CANNOT MEASURE. A typo would arrive as a measurement that could not be taken.
+    /// </remarks>
+    public enum Route
+    {
+        /// <summary><c>get_session_indicators</c>, over a window.</summary>
+        Series,
+
+        /// <summary><c>get_session_indicator_at</c>, as of a moment.</summary>
+        AsOf,
+    }
+
+    /// <summary>Drives one refusal case through one of the two reads.</summary>
+    /// <param name="route">Which read.</param>
+    /// <param name="session">The session name to ask for.</param>
+    /// <param name="indicator">The indicator name to ask for.</param>
+    /// <param name="period">The period to ask for, or <see langword="null"/> for the primary.</param>
+    /// <returns>The call, unstarted.</returns>
+    /// <remarks>
+    /// The window and the moment are both well inside what the guards allow, so the only thing either call
+    /// can refuse is the vocabulary the case is about.
+    /// </remarks>
+    private Func<Task> Read(Route route, string session, string indicator, int? period = null)
+    {
+        if (route == Route.Series)
+        {
+            return () => _tools.GetSessionIndicators(
+                "ES", session, indicator, MondayStart, FortnightLater, period, CancellationToken.None);
+        }
+
+        return () => _tools.GetSessionIndicatorAt(
+            "ES", session, indicator, FortnightLater, period, CancellationToken.None);
     }
 
     /// <summary>Asserts the refusal landed before the venue was touched at all.</summary>

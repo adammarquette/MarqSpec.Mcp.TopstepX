@@ -83,6 +83,9 @@
 # added or changed, committed or not, and never a migration the base branch grew after the branch point.
 # Deletions are filtered out (a deleted migration is a history rewrite, not a schema change) and
 # `*.Designer.cs` and the model snapshot are excluded: they are generated mirrors carrying no operations.
+# `git ls-files --others` is read on top of it, because a migration `dotnet ef` has just scaffolded and
+# nobody has added yet is invisible to `git diff` -- and going green on the file the author is about to
+# commit is worse than saying nothing.
 #
 # IT CANNOT PASS VACUOUSLY. Every read that decides the verdict is assigned on its own line and its status
 # checked (gh#126): an unresolvable base ref, no merge base, a failed diff, a missing Migrations directory,
@@ -122,7 +125,7 @@ Two ways forward:
   1. MAKE IT ADDITIVE. Add the new column, write both, and drop the old one in a LATER migration, after the
      release you would roll back to is no longer a rollback target. This is almost always the answer.
 
-  2. ACKNOWLEDGE IT, on the line immediately above the operation:
+  2. ACKNOWLEDGE IT, in the comment block directly above the operation:
 
          // ${MARKER} not rollback-safe before v0.4.0 -- Bars.Legacy was dual-written
          // since v0.3.0 and nothing reads it.
@@ -173,6 +176,19 @@ git -c core.quotepath=false diff --name-only --diff-filter=ACMR "$MERGE_BASE" --
 if [ "$diff_status" -ne 0 ]; then
   die "  DIFF FAILED  git diff exited $diff_status against $MERGE_BASE."
   die "Nothing was read. A gate that cannot take its diff has checked nothing."
+  exit 1
+fi
+
+# AND THE UNTRACKED ONES. `git diff` cannot see a file that has never been added, so a migration `dotnet ef`
+# has just scaffolded is invisible to it -- and a green run on the very file the author is about to commit
+# is the confident wrong answer this gate exists to avoid. Irrelevant in CI, where actions/checkout produces
+# a clean tree, and it is the LOCAL run that decides whether anyone keeps running it before pushing.
+untracked_status=0
+git -c core.quotepath=false ls-files --others --exclude-standard -- "$MIG_DIR" \
+  >> "$DIFF_LIST" || untracked_status=$?
+if [ "$untracked_status" -ne 0 ]; then
+  die "  LIST FAILED  git ls-files --others exited $untracked_status under $MIG_DIR."
+  die "A migration scaffolded and not yet added would go unread. Nothing here is a pass."
   exit 1
 fi
 

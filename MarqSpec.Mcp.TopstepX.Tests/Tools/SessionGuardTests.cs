@@ -189,6 +189,67 @@ public sealed class SessionGuardTests
     }
 
     [Fact]
+    public void ValidateSessionWindow_RefusesAWindowThatClipsEverySession_NamingTheNearestWhole()
+    {
+        // The exact scenario from gh#568: nine hours of a Monday over an `rth` session that runs 13:30Z to
+        // 20:00Z (08:30-15:00 Central, CDT in August). The window overlaps the session heavily and still
+        // clips its last two hours, so TradeDatesIn admits nothing -- and left unrefused this answers exactly
+        // like the EMPTY window ValidateSessionWindow_RefusesAnEmptyWindow already refuses to avoid: bars: []
+        // and absent: [] both, reading as "ES did not trade" rather than "the window is narrower than any
+        // session".
+        DateTimeOffset from = new(2026, 8, 3, 9, 0, 0, TimeSpan.Zero);
+        DateTimeOffset to = new(2026, 8, 3, 18, 0, 0, TimeSpan.Zero);
+
+        Action refuse = () => Guards().ValidateSessionWindow(from, to, Rth, Calendar);
+
+        refuse.Should().Throw<McpException>().Which.Message
+            .Should().Contain(
+                "2026-08-03T09:00:00.0000000+00:00 .. 2026-08-03T18:00:00.0000000+00:00",
+                "the refusal names the window that was asked for")
+            .And.Contain("no whole rth session", "and the session it names none of")
+            .And.Contain(
+                "nearest whole rth session is 2026-08-03",
+                "and the trade date the nearest whole session sits on")
+            .And.Contain(
+                "2026-08-03T13:30:00.0000000+00:00 to 2026-08-03T20:00:00.0000000+00:00",
+                "with its bounds in UTC, so the caller can widen to it")
+            .And.Contain("Widen the window", "and says what to do about it");
+    }
+
+    [Fact]
+    public void ValidateSessionWindow_IncludesExactlyOneSession_WhenTheWindowExactlyContainsIt()
+    {
+        // The boundary the clipped-window refusal must not move: a window whose edges land EXACTLY on one
+        // session's open and close still names that one session, not zero. Off-by-one at a session edge is
+        // the classic defect a new zero-count guard could introduce.
+        DateTimeOffset from = new(2026, 8, 3, 13, 30, 0, TimeSpan.Zero);
+        DateTimeOffset to = new(2026, 8, 3, 20, 0, 0, TimeSpan.Zero);
+
+        SessionWindowPlan plan = Guards().ValidateSessionWindow(from, to, Rth, Calendar);
+
+        plan.TradeDates.Should().Equal([new DateOnly(2026, 8, 3)], "the window contains exactly one whole session");
+    }
+
+    [Fact]
+    public void ValidateSessionWindow_RefusesWhenTheWindowEndsOneTickBeforeTheSessionCloses()
+    {
+        // One tick short of ValidateSessionWindow_IncludesExactlyOneSession_WhenTheWindowExactlyContainsIt's
+        // window -- the session's own close is excluded by one tick, so the session is clipped and the count
+        // drops from one straight to zero rather than to some smaller whole number. Pins the boundary from
+        // the other side of the off-by-one this guard could get wrong.
+        DateTimeOffset from = new(2026, 8, 3, 13, 30, 0, TimeSpan.Zero);
+        DateTimeOffset to = new DateTimeOffset(2026, 8, 3, 20, 0, 0, TimeSpan.Zero).AddTicks(-1);
+
+        Action refuse = () => Guards().ValidateSessionWindow(from, to, Rth, Calendar);
+
+        refuse.Should().Throw<McpException>().Which.Message
+            .Should().Contain("no whole rth session", "one tick short of the close is still clipped")
+            .And.Contain(
+                "nearest whole rth session is 2026-08-03",
+                "and the nearest whole session is the very one the window just missed");
+    }
+
+    [Fact]
     public void ValidateSessionCount_TranslatesAnUnsatisfiableCount_IntoARefusalNamingCount()
     {
         // MaxRows admits 5,000 and the bounded walk covers (5,000 * 4) + 15 = 20,015 calendar days, so a

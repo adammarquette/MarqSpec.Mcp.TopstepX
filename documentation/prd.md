@@ -109,13 +109,16 @@ The server serves OHLCV bars for a futures instrument at a requested resolution 
   lists: the bar, or an absence carrying its reason and its expected and missing base-bucket counts
   (`R-1.12`). A trade date the window **wholly contains** that appears in neither list **did not trade**; a
   date whose session the window clips is in neither list because it was never asked for, and a date this
-  server did ask about is never silently dropped from both. Two caps bound the read and each refuses
-  naming the real number rather than shortening the series: the row cap on trade dates, and the gap
-  detector's buckets-per-pass cap counted in the session's **base** buckets, the ones a session bar is
+  server did ask about is never silently dropped from both. **A non-empty window that clips every session it
+  touches is refused, not answered with two empty lists** — that shape reads as "this instrument did not
+  trade", the very confusion an empty *window* is already refused to avoid, and the refusal names the window,
+  the session, and the nearest whole session's bounds so the caller can widen to it. Two caps bound the read
+  and each refuses naming the real number rather than shortening the series: the row cap on trade dates, and
+  the gap detector's buckets-per-pass cap counted in the session's **base** buckets, the ones a session bar is
   derived from rather than the sessions themselves. A read anchored on a count of the most recent sessions is
   bounded the same way, and by the span of calendar days the closed-session walk covers. Every refusal is
   decided before the store or the venue is touched. See
-  [ADR-0022](adr/0022-session-bars-derived-complete-or-absent.md) (gh#496, gh#500).
+  [ADR-0022](adr/0022-session-bars-derived-complete-or-absent.md) (gh#496, gh#500, gh#568).
 - **R-1.14** **The present is fetched from the venue's pick; history is fetched from the contract that carried
   the volume.** The two bands are separated by the store rather than by the clock: the present band begins at
   the first bucket of the **trailing run** of the venue's active contract `F` — the newest contiguous run of

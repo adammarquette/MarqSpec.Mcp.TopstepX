@@ -517,7 +517,8 @@ public sealed class ToolGuards(IOptions<MarketDataOptions> options)
     /// <exception cref="ArgumentNullException">An argument is <see langword="null"/>.</exception>
     /// <exception cref="McpException">
     /// The window is empty or inverted, ends past <see cref="CalendarHorizon"/>, spans more base buckets than
-    /// <see cref="BarGapDetector.MaxBucketsPerPass"/>, or names more trade dates than <see cref="MaxRows"/>.
+    /// <see cref="BarGapDetector.MaxBucketsPerPass"/>, names zero whole sessions, or names more trade dates
+    /// than <see cref="MaxRows"/>.
     /// </exception>
     /// <remarks>
     /// <para>
@@ -530,6 +531,13 @@ public sealed class ToolGuards(IOptions<MarketDataOptions> options)
     /// <para>
     /// <b>An over-cap window refuses and reports the real count</b>, on the same terms as every other read on
     /// this boundary: a series shortened to fit arrives looking exactly like a complete one.
+    /// </para>
+    /// <para>
+    /// <b>Zero trade dates refuses too, and for the same reason an empty window does.</b> A non-empty window
+    /// that clips every session it touches — nine hours of a Monday over an `rth` session that runs longer —
+    /// passes every check above and would otherwise answer <c>bars: []</c> and <c>absent: []</c>, which reads
+    /// as "this instrument did not trade" rather than "the window is narrower than any session". The refusal
+    /// names the nearest whole session so the caller can widen to it (gh#568).
     /// </para>
     /// </remarks>
     public SessionWindowPlan ValidateSessionWindow(
@@ -572,6 +580,18 @@ public sealed class ToolGuards(IOptions<MarketDataOptions> options)
             "Narrow the window, or ask the operator for a coarser base resolution for this session.");
 
         IReadOnlyList<DateOnly> tradeDates = SessionWindows.TradeDatesIn(calendar, definition, window);
+
+        // ZERO is not "nothing traded" -- it is every session the window touches being CLIPPED, since
+        // TradeDatesIn admits a trade date only when its WHOLE session sits inside the window. Left
+        // unrefused, a non-empty window that clips every session it touches answers exactly like the empty
+        // window ValidateWindow already refuses to avoid: bars: [] and absent: [] both, read cold as "this
+        // instrument did not trade" rather than "the window asked for something narrower than any session"
+        // (gh#568). Checked before the row cap, which a count of zero can never be over anyway.
+        if (tradeDates.Count == 0)
+        {
+            throw new McpException(NoWholeSessionMessage(window, definition, calendar));
+        }
+
         if (tradeDates.Count > MaxRows)
         {
             throw new McpException(
@@ -585,6 +605,55 @@ public sealed class ToolGuards(IOptions<MarketDataOptions> options)
         }
 
         return new SessionWindowPlan(window, tradeDates);
+    }
+
+    /// <summary>
+    /// The refusal for a window that names zero whole sessions — every session it touches is clipped.
+    /// </summary>
+    /// <param name="window">The validated window.</param>
+    /// <param name="definition">The session being asked for.</param>
+    /// <param name="calendar">The calendar the nearest whole session is looked up on.</param>
+    /// <returns>The message, naming the window, the session, and the nearest whole session's bounds.</returns>
+    /// <remarks>
+    /// <para>
+    /// <b>The enclosing trade date is the one <see cref="BarSessionCalendar.TradeDateFor"/> assigns the
+    /// window's own start</b> — the full 24-hour trade date, which correctly folds an evening leg into the
+    /// date it belongs to, not the plain calendar date. When the start sits inside the maintenance window
+    /// itself, the end is tried instead, and when neither instant carries a trade date at all — every
+    /// instant in the window falls in maintenance, on a weekend, or on a declared holiday — no specific
+    /// session can be named, and the message says only to widen the window.
+    /// </para>
+    /// <para>
+    /// <b>The nearest whole session's bounds are reported in UTC</b>, via <c>ToUniversalTime</c>, the same
+    /// normalisation <see cref="SessionWindowPlan"/> applies to the window itself:
+    /// <see cref="SessionWindows.WindowFor"/> hands back the market's own offset, and a message that quoted
+    /// the window in UTC beside a session in Central would read as two different clocks rather than one
+    /// instant seen twice.
+    /// </para>
+    /// </remarks>
+    private static string NoWholeSessionMessage(
+        BarRange window, SessionDefinition definition, BarSessionCalendar calendar)
+    {
+        string message =
+            "That window " + window.Start.ToString("O", System.Globalization.CultureInfo.InvariantCulture)
+            + " .. " + window.End.ToString("O", System.Globalization.CultureInfo.InvariantCulture)
+            + " names no whole " + definition.Name + " session: every session it touches is clipped at an "
+            + "edge, and a session bar built from part of one is a wrong number wearing an ordinary face.";
+
+        DateOnly? enclosing = calendar.TradeDateFor(window.Start) ?? calendar.TradeDateFor(window.End);
+        BarRange? nearestWhole = enclosing is { } tradeDate
+            ? SessionWindows.WindowFor(calendar, definition, tradeDate)
+            : null;
+
+        return nearestWhole is { } whole
+            ? message + " The nearest whole " + definition.Name + " session is "
+                + enclosing!.Value.ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture)
+                + "'s, " + whole.Start.ToUniversalTime()
+                    .ToString("O", System.Globalization.CultureInfo.InvariantCulture)
+                + " to " + whole.End.ToUniversalTime()
+                    .ToString("O", System.Globalization.CultureInfo.InvariantCulture)
+                + ". Widen the window to include it."
+            : message + " Widen the window to include a whole session.";
     }
 
     /// <summary>

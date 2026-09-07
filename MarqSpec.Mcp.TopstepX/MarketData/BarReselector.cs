@@ -521,6 +521,27 @@ public sealed class BarReselector(
                 .ConfigureAwait(false);
         }
 
+        // THE TWO NUMBERS HAVE TO AGREE, and subtracting without checking is how a negative count would be
+        // reported as a fact. `unattributed` is counted off the pre-read, `removed` is what the store says
+        // the statements deleted; inside one RepeatableRead unit of work with no other writer, the buckets
+        // named cannot have gone anywhere, so the only way these diverge is a defect in how `going` is
+        // built. Left unchecked, a divergence surfaces as "-3 bars removed" on a summary line an operator
+        // reads as evidence, which is precisely the plausible-number failure this server exists to refuse.
+        //
+        // A bare InvalidOperationException, deliberately NOT a ReselectPlanException: this is a bug in this
+        // repository, not a venue plan that degraded, and the verb's exit-code mapping must let it out as a
+        // fault with its stack rather than tidy it into a 3.
+        if (removed != going.Count)
+        {
+            throw new InvalidOperationException(
+                "The loser delete for " + instrument.Symbol + " "
+                + series.ResolutionMinutes.ToString(CultureInfo.InvariantCulture)
+                + "m named " + going.Count.ToString(CultureInfo.InvariantCulture)
+                + " buckets but the store reports " + removed.ToString(CultureInfo.InvariantCulture)
+                + " rows deleted. These are read from one snapshot inside one unit of work and cannot "
+                + "disagree; the counters this run would report are not trustworthy, so it stops.");
+        }
+
         return (removed - unattributed, unattributed);
     }
 

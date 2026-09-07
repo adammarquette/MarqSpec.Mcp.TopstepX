@@ -29,6 +29,34 @@ public sealed record ReselectArguments(InstrumentId Instrument, BarRange Window)
     public const string Usage = "reselect-bars <symbol> <fromUtc> <toUtc>";
 
     /// <summary>
+    /// How far <i>before</i> a window the session calendar has to be able to reach.
+    /// </summary>
+    /// <remarks>
+    /// A session opens on the calendar day <b>before</b> its trade date, and its open is a Central
+    /// wall-clock time converted back to UTC — so widening a window to whole trade dates asks the calendar
+    /// for an instant up to one day plus one offset earlier than the instant that was typed. Two days,
+    /// rounded up from that, for the same reason <c>ToolGuards.CalendarReachBeyondAWindow</c> is three at
+    /// the other end: a bound that is a little generous costs an operator nothing, and one that is a little
+    /// tight is the fault it exists to stop.
+    /// </remarks>
+    private static readonly TimeSpan _calendarReachBeforeAWindow = TimeSpan.FromDays(2);
+
+    /// <summary>
+    /// The earliest instant this verb accepts — the floor under <c>ToolGuards.CalendarHorizon</c>.
+    /// </summary>
+    /// <remarks>
+    /// <b>The same failure as the horizon, one bound along.</b> <c>BarReselector.EffectiveWindowFor</c>
+    /// widens the asked window to the whole trade dates it intersects, and a session opens on the previous
+    /// calendar day — so a window starting at <see cref="DateTimeOffset.MinValue"/> asks
+    /// <see cref="DateOnly"/> for a day before its own minimum and throws
+    /// <see cref="ArgumentOutOfRangeException"/> from inside a verb that has already migrated the store.
+    /// There is no data before this instant under any circumstances; the bound exists so the refusal is a
+    /// sentence rather than a stack trace.
+    /// </remarks>
+    public static readonly DateTimeOffset CalendarFloor =
+        new(DateTimeOffset.MinValue.UtcTicks + _calendarReachBeforeAWindow.Ticks, TimeSpan.Zero);
+
+    /// <summary>
     /// The instant forms accepted, in the order they are tried.
     /// </summary>
     /// <remarks>
@@ -47,7 +75,7 @@ public sealed record ReselectArguments(InstrumentId Instrument, BarRange Window)
     /// <returns>The parsed arguments.</returns>
     /// <exception cref="ArgumentException">
     /// The argument count is wrong, the symbol is not served, an instant is not ISO-8601, the window is
-    /// empty or inverted, or it ends past the session calendar's horizon.
+    /// empty or inverted, or it falls outside what the session calendar can reason about at either end.
     /// </exception>
     /// <remarks>
     /// <para>
@@ -96,9 +124,37 @@ public sealed record ReselectArguments(InstrumentId Instrument, BarRange Window)
                 nameof(args));
         }
 
+        // Both ends of the calendar's reach. Only the earlier instant can be under the floor and only the
+        // later one can be past the horizon, because the window is already known to run forwards.
+        Floor(from, "fromUtc");
         Horizon(to, "toUtc");
 
         return new ReselectArguments(instrument, new BarRange(from, to));
+    }
+
+    /// <summary>Refuses an instant earlier than the session calendar can reason about.</summary>
+    /// <param name="instant">The instant.</param>
+    /// <param name="ask">The argument name the operator can actually change.</param>
+    /// <exception cref="ArgumentException"><paramref name="instant"/> is before <see cref="CalendarFloor"/>.</exception>
+    /// <remarks>
+    /// Written here rather than delegated the way <see cref="Horizon"/> is, because the tool surface has no
+    /// lower bound to borrow: every windowed tool reaches this range only through a stored series, and there
+    /// are none. This verb is the one caller that hands the calendar an instant nothing has ever been
+    /// fetched for.
+    /// </remarks>
+    private static void Floor(DateTimeOffset instant, string ask)
+    {
+        if (instant < CalendarFloor)
+        {
+            throw new ArgumentException(
+                ask + " " + instant.ToString("O", CultureInfo.InvariantCulture)
+                + " is before the earliest instant this server's session calendar can reason about, "
+                + CalendarFloor.ToString("O", CultureInfo.InvariantCulture)
+                + ". A trade date's session opens on the previous calendar day, and below this bound that is "
+                + "a day no calendar can hold. There is no stored history down there in any case; move it "
+                + "forward.",
+                nameof(instant));
+        }
     }
 
     /// <summary>Refuses an instant the session calendar cannot reason about.</summary>

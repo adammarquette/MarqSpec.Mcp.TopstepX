@@ -479,7 +479,7 @@ reproduce.
 |---:|---|
 | `0` | The run finished. The log lines say by how much. |
 | `2` | The command line was refused **before anything touched the store** — a missing or extra argument, a symbol this server does not serve, an instant that is not ISO-8601, an empty or inverted window, or one ending past the calendar's horizon. The message names the argument and the rule. Nothing was written. |
-| `3` | **The run stopped.** The store was unreachable or its migration dropped the connection, or the plan degraded for a whole window — the venue lists no contracts, the instrument is not served, its front does not read against the product's cycle. |
+| `3` | **The run stopped.** The store was unreachable or its migration dropped the connection, or the plan degraded for a whole window — the venue lists no contracts, its front does not read against the product's cycle, or the instrument is not served (*not reachable through the verb — the parse refuses it first, at `2`*). |
 
 **Exit 3 does not mean nothing was rewritten.** The run commits one unit of work per resolution series, so a
 degradation on the second series exits 3 with the first already committed, and the migration itself can stop

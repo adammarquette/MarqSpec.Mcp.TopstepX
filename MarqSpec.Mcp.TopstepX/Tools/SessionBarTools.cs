@@ -64,9 +64,10 @@ public sealed class SessionBarTools(
         + "calendar expects inside the session is stored and all of them came from one contract. Otherwise "
         + "the trade date is listed under `absent` with a reason — Incomplete, SpansRoll, ProvenanceUnknown "
         + "or NotClosed — and never as a partial bar. NotClosed appears only for a session that has not "
-        + "finished yet, so a window entirely in the past never carries one. A trade date in NEITHER list is "
-        + "not a trading day at all, which is a different statement from an absence. Only sessions lying "
-        + "WHOLLY inside the window are returned: one the window clips is left out rather than served short. "
+        + "finished yet, so a window entirely in the past never carries one. Only sessions lying WHOLLY "
+        + "inside the window are returned. Of the trade dates whose WHOLE session lies inside the window, one "
+        + "in NEITHER list is not a trading day; a session the window clips is left out, not reported — so "
+        + "read the edges of a window as inclusive of whole sessions only. "
         + "The response reports `venueRequests` and `fetchedBuckets`, and only the first is evidence of a "
         + "vendor round trip: `venueRequests` of 0 is the exact test for an answer served entirely from the "
         + "store, while `fetchedBuckets` counts the BASE buckets this call wrote or revised and can read "
@@ -74,8 +75,10 @@ public sealed class SessionBarTools(
         + "row cap on trade dates, or the detection cap on the base buckets underneath them — is refused "
         + "with the real count. `contracts` says which contracts produced these sessions; each session bar "
         + "comes from exactly one, so a roll falls BETWEEN two trade dates and `contracts.span` is "
-        + "SingleContract, SpansRoll or Unknown. The session name is a closed vocabulary: an unknown one is "
-        + "an error listing the configured names, never an empty series.")]
+        + "SingleContract, SpansRoll or Unknown. Unknown here means NO session bar could be built at all, "
+        + "which is not what it means on get_contract_roll: a session whose provenance was never recorded is "
+        + "an `absent` entry reading ProvenanceUnknown, not an Unknown span. The session name is a closed "
+        + "vocabulary: an unknown one is an error listing the configured names, never an empty series.")]
     public async Task<ToolPayloads.SessionBarSeries> GetSessionBars(
         [Description("The instrument symbol, e.g. ES.")] string symbol,
         [Description(

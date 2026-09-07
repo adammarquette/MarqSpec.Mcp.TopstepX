@@ -217,6 +217,36 @@ public static partial class SessionWindows
     }
 
     /// <summary>
+    /// How many calendar days <see cref="LastClosedTradeDates"/> walks back over for a given count.
+    /// </summary>
+    /// <param name="count">How many closed sessions the walk is looking for.</param>
+    /// <returns>The number of calendar days the walk examines, inclusive of both ends.</returns>
+    /// <exception cref="ArgumentOutOfRangeException"><paramref name="count"/> is not positive.</exception>
+    /// <remarks>
+    /// <para>
+    /// <b>Public because the bound is part of the answer when the walk refuses.</b> It was a local, so every
+    /// caller that had to talk about it — the tool surface's refusal text and two test fixtures — wrote
+    /// <c>(count * 4) + 15</c> out again, each carrying a comment saying it was a restatement. Three copies
+    /// of one number are three places to go stale the day it changes (gh#500).
+    /// </para>
+    /// <para>
+    /// Four days per session plus fifteen: five trading days a week is 1.4 calendar days per session, so four
+    /// is generous room for a holiday-dense stretch, and the fifteen covers a long closure sitting right at
+    /// the anchor. It is a bound on the WALK, not a promise about the calendar — a venue closed for most of
+    /// the span still runs it out, which is what the refusal says.
+    /// </para>
+    /// <para>
+    /// Pure arithmetic: no clock, no store, no configuration, so <c>Domain</c> keeps referencing nothing.
+    /// </para>
+    /// </remarks>
+    public static int LastClosedWalkSpanDays(int count)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(count);
+
+        return (count * 4) + 15;
+    }
+
+    /// <summary>
     /// The most recent trade dates whose session had closed at or before <paramref name="now"/>.
     /// </summary>
     /// <param name="calendar">The calendar.</param>
@@ -245,10 +275,10 @@ public static partial class SessionWindows
         // when `now` sits in the evening leg that opened it.
         DateOnly cursor = MarketClock.MarketDate(now).AddDays(1);
 
-        // The floor is inclusive, so the walk examines `span` days, not `span - 1`. Stated once and used by
-        // both the bound and the refusal, because a message quoting a different number than the code walked
-        // is a message that sends the next reader looking for a bug that is not there.
-        int span = (count * 4) + 15;
+        // The floor is inclusive, so the walk examines `span` days, not `span - 1`. Read from
+        // LastClosedWalkSpanDays rather than written out, so the bound and every message that quotes it --
+        // here and on the tool surface -- cannot say different numbers.
+        int span = LastClosedWalkSpanDays(count);
         DateOnly floor = cursor.AddDays(-(span - 1));
 
         List<DateOnly> found = [];

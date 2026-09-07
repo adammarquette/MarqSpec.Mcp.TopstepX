@@ -598,8 +598,9 @@ public sealed class ToolGuards(IOptions<MarketDataOptions> options)
     /// <exception cref="ArgumentNullException">An argument is <see langword="null"/>.</exception>
     /// <exception cref="McpException">
     /// The count is not positive, exceeds <see cref="MaxRows"/>, <paramref name="now"/> is past
-    /// <see cref="CalendarHorizon"/>, or the calendar carries fewer closed sessions than the count inside the
-    /// bounded walk.
+    /// <see cref="CalendarHorizon"/>, the calendar carries fewer closed sessions than the count inside the
+    /// bounded walk, or the sessions it names span more base buckets than
+    /// <see cref="BarGapDetector.MaxBucketsPerPass"/>.
     /// </exception>
     /// <remarks>
     /// <para>
@@ -622,6 +623,15 @@ public sealed class ToolGuards(IOptions<MarketDataOptions> options)
     /// <paramref name="now"/>. <see cref="ValidateInstant"/> takes that case first; the filter is the second
     /// line, for anything below that throws about something other than the count.
     /// </para>
+    /// <para>
+    /// <b>The row cap is not the only cap a count is under, and reading it as though it were is the hole the
+    /// last step closes.</b> <c>SessionBarService</c> answers a count with ONE covering base read — the first
+    /// session's open to the last one's close — so a count <see cref="MaxRows"/> admits can still span more
+    /// base buckets than a single gap-detection pass enumerates. Around 3,720 <c>rth</c> sessions is where
+    /// that starts at a 30-minute base, well inside the default 5,000, and the fault landed inside
+    /// <see cref="BarGapDetector.ExpectedBuckets"/> <i>after</i> the store had been opened. Measured here so
+    /// every refusal on this surface still fires before the read.
+    /// </para>
     /// </remarks>
     public IReadOnlyList<DateOnly> ValidateSessionCount(
         int count,
@@ -640,34 +650,80 @@ public sealed class ToolGuards(IOptions<MarketDataOptions> options)
         // unsatisfiable-count path uses. Judged here, the two stay distinguishable.
         ValidateInstant(now, "now");
 
+        IReadOnlyList<DateOnly> tradeDates;
         try
         {
-            return SessionWindows.LastClosedTradeDates(calendar, definition, now, wanted);
+            tradeDates = SessionWindows.LastClosedTradeDates(calendar, definition, now, wanted);
         }
         catch (ArgumentOutOfRangeException ex) when (ex.ParamName == "count")
         {
-            // RESTATED CONSTANT, deliberately and with the drift in view: the walk span is computed as
-            // `(count * 4) + 15` inside SessionWindows.LastClosedTradeDates, and it cannot be read back from
-            // there -- it is a local. Change it there and this number is wrong here; the two are named
-            // together so the next reader of either sees the other.
-            int span = (wanted * 4) + 15;
-
             // The message names the CALENDAR as the cause, not the walk. The server does walk every one of
             // those days; what runs out is the sessions inside them, and a refusal reading "this server only
             // walks back N days" sends a reader to widen a bound that is not the one that bit. How many it
             // did find is the other half of the story and is NOT stated: the Domain reports it only inside
-            // the exception message, which is free text this surface does not repeat (ADR-0008), and reading
-            // it back would take an accessor on SessionWindows -- deferred rather than smuggled in here.
-
-
+            // the exception message, which is free text this surface does not repeat (ADR-0008).
+            //
+            // The span is READ BACK from the Domain rather than restated, so the number in this sentence is
+            // the number the walk actually used.
             throw new McpException(
                 "count " + wanted.ToString(System.Globalization.CultureInfo.InvariantCulture)
                 + " asks for more closed " + definition.Name
                 + " sessions than the calendar holds in the "
-                + span.ToString(System.Globalization.CultureInfo.InvariantCulture)
+                + SessionWindows.LastClosedWalkSpanDays(wanted)
+                    .ToString(System.Globalization.CultureInfo.InvariantCulture)
                 + " calendar days this server walks back over. Ask for fewer.");
         }
+
+        // THE BASE-BUCKET CAP, which the count form had no way of reaching before. It is measured over the
+        // window the service will actually read -- the first session's open to the last one's close, the
+        // overnight between them included -- because that is one covering read and one gap-detection pass.
+        // The remedy is the only lever this caller has: there is no window to narrow and no resolution
+        // argument, the base resolution belonging to the session definition.
+        ValidateBucketSpan(
+            CoveringWindow(calendar, definition, tradeDates),
+            definition.BaseResolutionMinutes,
+            "count " + wanted.ToString(System.Globalization.CultureInfo.InvariantCulture)
+                + " " + definition.Name + " sessions",
+            "Ask for fewer sessions.");
+
+        return tradeDates;
     }
+
+    /// <summary>The single window that covers a run of trade dates — first open to last close.</summary>
+    /// <param name="calendar">The calendar the sessions are stated against.</param>
+    /// <param name="definition">The session.</param>
+    /// <param name="tradeDates">The trade dates, ascending and non-empty.</param>
+    /// <returns>The covering window, in UTC.</returns>
+    /// <exception cref="InvalidOperationException">
+    /// The calendar carries no session on a date it has just handed back.
+    /// </exception>
+    private static BarRange CoveringWindow(
+        BarSessionCalendar calendar, SessionDefinition definition, IReadOnlyList<DateOnly> tradeDates)
+    {
+        BarRange first = WindowOrFault(calendar, definition, tradeDates[0]);
+        BarRange last = WindowOrFault(calendar, definition, tradeDates[^1]);
+
+        return new BarRange(first.Start.ToUniversalTime(), last.End.ToUniversalTime());
+    }
+
+    /// <summary>One trade date's session window, or a fault naming the date the calendar disowned.</summary>
+    /// <param name="calendar">The calendar.</param>
+    /// <param name="definition">The session.</param>
+    /// <param name="tradeDate">The trade date.</param>
+    /// <returns>The window.</returns>
+    /// <exception cref="InvalidOperationException">The calendar carries no such session.</exception>
+    /// <remarks>
+    /// Unreachable by construction — the dates come from a walk over this same calendar, which only yields a
+    /// date it found a window for. It FAULTS rather than refusing, because an inconsistency inside this
+    /// server is not a mistake a caller can act on, and an <see cref="McpException"/> would tell them it was.
+    /// </remarks>
+    private static BarRange WindowOrFault(
+        BarSessionCalendar calendar, SessionDefinition definition, DateOnly tradeDate) =>
+        SessionWindows.WindowFor(calendar, definition, tradeDate)
+        ?? throw new InvalidOperationException(
+            "The calendar carries no '" + definition.Name + "' session on "
+            + tradeDate.ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture)
+            + ", yet the closed-session walk over the same calendar has just named it.");
 }
 
 /// <summary>

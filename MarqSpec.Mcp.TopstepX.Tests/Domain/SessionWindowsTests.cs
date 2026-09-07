@@ -290,6 +290,21 @@ public sealed class SessionWindowsTests
     }
 
     [Fact]
+    public void LastClosedWalkSpanDays_IsFourPerSessionPlusFifteen()
+    {
+        // The bound the walk stops at, EXPOSED rather than restated. It used to be a local inside
+        // LastClosedTradeDates, so every caller that needed to talk about it -- the tool guard's refusal text
+        // and two test fixtures -- wrote the arithmetic out again, and three copies of a number is three
+        // places to go stale when one of them changes (gh#500).
+        //
+        // Four days per session plus fifteen: five trading days a week is 1.4 calendar days per session, so
+        // four is generous room for holidays, and the fifteen covers a long closure near the anchor.
+        SessionWindows.LastClosedWalkSpanDays(1).Should().Be(19);
+        SessionWindows.LastClosedWalkSpanDays(100).Should().Be(415);
+        SessionWindows.LastClosedWalkSpanDays(5_000).Should().Be(20_015);
+    }
+
+    [Fact]
     public void LastClosedTradeDates_RefusesANonPositiveCount()
     {
         Action act = () => SessionWindows.LastClosedTradeDates(

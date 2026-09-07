@@ -755,6 +755,10 @@ public static class Program
         services.AddScoped<FootprintCacheService>();
         services.AddScoped<VolumeProfileService>();
         services.AddScoped<TapeVolumeFrontService>();
+        // Scoped, and the lifetime is load-bearing rather than conventional: this service memoises the
+        // instrument's contract universe, and the scope is one request. A singleton would carry a pre-roll
+        // front across a quarterly roll and go on answering the ledger's per-contract question with a
+        // contract that has since retired (gh#504).
         services.AddScoped<BarCacheService>();
 
         // The tape recorder. Always registered so the container shape does not depend on the

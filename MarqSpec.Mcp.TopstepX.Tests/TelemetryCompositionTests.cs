@@ -4,6 +4,7 @@ using System.Net.Sockets;
 using System.Text;
 using FluentAssertions;
 using MarqSpec.Mcp.TopstepX.Configuration;
+using MarqSpec.Mcp.TopstepX.Telemetry;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Configuration;
@@ -133,6 +134,71 @@ public sealed class TelemetryCompositionTests
         // something on a deployed instance.
         attributes.Should().ContainKey("service.version");
         attributes["service.version"].As<string>().Should().NotBeNullOrWhiteSpace();
+    }
+
+    [Fact]
+    public void TheAppOwnedMeterAndActivitySourceAreBothSubscribed()
+    {
+        // THE SUBSCRIPTION END OF gh#536, AND IT IS THE HALF THAT WAS OPEN.
+        //
+        // HostTelemetryTests pins that each instrument records the right measurement with the right tags,
+        // against a collector the TEST attaches. Nothing pinned that the PIPELINE attaches one. Delete
+        // `.AddSource(HostTelemetry.Name)` or `.AddMeter(HostTelemetry.Name)` from ConfigureTelemetry and
+        // every instrument and both spans stop reaching the exporter -- no metric, no span, and no error
+        // anywhere, because an unlistened instrument is silent BY DESIGN. That is the exact failure
+        // HostTelemetryTests' own header warns about ("a meter the pipeline never subscribes to"), avoided
+        // at the instrument end and left open at this one. The compose-stack measurement on the pull request
+        // proved it worked that day; this is what makes it survive the next edit to that method.
+        //
+        // ONE TEST FOR BOTH SIGNALS, deliberately. They are two lines in one method and they are deleted or
+        // mistyped by the same edit; splitting them would double the fixture and pin nothing extra.
+        List<Activity> spans = [];
+        List<Metric> metrics = [];
+
+        using ServiceProvider provider = Build(
+            new Dictionary<string, string?> { ["Otel:Endpoint"] = Endpoint },
+            alsoRegister: services =>
+            {
+                services.ConfigureOpenTelemetryTracerProvider(
+                    tracing => tracing.AddInMemoryExporter(spans));
+                services.ConfigureOpenTelemetryMeterProvider(
+                    meterProvider => meterProvider.AddInMemoryExporter(metrics));
+            });
+
+        // Resolving them is what starts the listeners. The container owns both; disposing either here would
+        // shut the pipeline down before the measurement that is the point of the test.
+        _ = provider.GetRequiredService<TracerProvider>();
+        MeterProvider meters = provider.GetRequiredService<MeterProvider>();
+
+        // THE SINGLETON THE HOST REGISTERED, not one this test built. A fresh HostTelemetry would carry its
+        // own Meter, and AddMeter matches by NAME -- so the assertion would pass over a composition root
+        // that never registered the singleton at all.
+        HostTelemetry telemetry = provider.GetRequiredService<HostTelemetry>();
+
+        telemetry.CacheRead(CacheSeries.Bars, "ES", 5, CacheOutcome.Hit);
+
+        using (telemetry.VenueCall(VenueOperation.GetBars))
+        {
+        }
+
+        // Metrics are batched; nothing is exported until the provider is asked to flush.
+        //
+        // The RETURN VALUE IS DELIBERATELY IGNORED. This host registers the OTLP exporter too, pointed at an
+        // endpoint nothing is listening on, so the aggregate flush reports `false` for that reader while the
+        // in-memory one beside it has exported perfectly well. Asserting on it would pin "a collector is
+        // reachable", which is a compose-stack fact and not this test's claim.
+        meters.ForceFlush();
+
+        spans.Should().Contain(
+            span => span.Source.Name == HostTelemetry.Name,
+            "ConfigureTelemetry must AddSource(HostTelemetry.Name), or every venue and cache-aside span this "
+            + "repository owns is dropped silently");
+
+        metrics.Should().Contain(
+            metric => metric.MeterName == HostTelemetry.Name
+                && metric.Name == HostTelemetry.CacheReadsInstrument,
+            "ConfigureTelemetry must AddMeter(HostTelemetry.Name), or every instrument this repository owns "
+            + "is dropped silently");
     }
 
     [Fact]

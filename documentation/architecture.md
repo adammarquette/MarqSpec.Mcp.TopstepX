@@ -470,6 +470,7 @@ Two things about it are easy to undo by accident:
 when unset. Nothing here declares a version in a file — the tag is the version
 ([ADR-0001](adr/0001-tag-driven-versioning.md)) and the image build never sees `.git` — so the only honest
 source for "which release is this" is the deployment that started the task.
+
 ### What the host measures
 
 `ConfigureTelemetry` mostly *subscribes* — to the MCP SDK's `Experimental.ModelContextProtocol` source and
@@ -502,9 +503,16 @@ Two spans sit under the SDK's `tools/call`: **`venue.<operation>`** per vendor r
 went.
 
 **Three rules hold this together, and each is a test rather than a convention.** *Every tag value is a closed
-vocabulary, an instrument symbol or a resolution* — never a timestamp, a venue contract id or vendor free
+vocabulary, an instrument symbol or a bounded resolution* — never a timestamp, a venue contract id or vendor free
 text, because a counter keeps one accumulator per distinct tag set for the life of the process, so an
-unbounded tag is a memory leak here before it is a bill anywhere else. *The instrument names and the
+unbounded tag is a memory leak here before it is a bill anywhere else. **`resolution` is the one that is
+bounded rather than closed**, and the difference is worth stating: it is chosen by the caller, not written
+down here, and the only thing over it is `ToolGuards.ValidateResolution`, which admits any integer from 1 to
+`ToolGuards.MaxResolutionMinutes` (1,379). So a caller walking every one of them pins on the order of
+1,379 × symbols × 3 series × 3 outcomes accumulators for the life of the process. That is accepted rather
+than fixed — the ceiling is enforced *before* the tag is written so the set is finite by construction, no
+answer is wrong or missing, and the same caller can already create as many distinct stored series, which is a
+larger exposure this instrumentation neither creates nor worsens. *The instrument names and the
 vocabulary values are storage keys*, exactly as an `IIndicator`'s `Name` is in the store: renaming one
 orphans every panel built on it, where it reads back as an absence rather than an error. And *nothing moves
 below the host* — `Domain` reads no clock, store or config singleton

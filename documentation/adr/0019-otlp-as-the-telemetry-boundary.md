@@ -147,7 +147,6 @@ which needs an `IProjectXApiClient` — an interface carrying the venue's whole 
 would put `PlaceOrderAsync` into this repository to test a counter, which is the opposite of what
 [ADR-0002](0002-read-only-venue-boundary.md) asks for.
 
-
 ## Alternatives considered
 
 **Serilog (or NLog, or any structured logging library).** The tempting one, and the one gh#515 half-chose:

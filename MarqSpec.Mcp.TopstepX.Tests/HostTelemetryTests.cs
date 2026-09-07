@@ -3,6 +3,7 @@ using System.Globalization;
 using System.Text.RegularExpressions;
 using FluentAssertions;
 using MarqSpec.Mcp.TopstepX.Telemetry;
+using MarqSpec.Mcp.TopstepX.Tools;
 using Microsoft.Extensions.Diagnostics.Metrics.Testing;
 
 namespace MarqSpec.Mcp.TopstepX.Tests;
@@ -350,10 +351,24 @@ public sealed class HostTelemetryTests
             {
                 if (tag.Value is int resolution)
                 {
-                    // A resolution is a number, and the only non-vocabulary value any tag carries. It is
-                    // bounded by MarketData__Resolutions, which an operator configures and a guard refuses
-                    // outside.
+                    // A resolution is a number, and the only tag value that is BOUNDED rather than CLOSED.
+                    // Everything else here comes from a vocabulary this repository writes down; this one is
+                    // chosen by the CALLER, and the only thing standing over it is
+                    // ToolGuards.ValidateResolution, which admits any integer from 1 to
+                    // ToolGuards.MaxResolutionMinutes (1,379). There is no configured resolution set and no
+                    // MarketData__Resolutions key -- an earlier version of this comment named one, and the
+                    // sentence read as though `resolution` were closed the way `series` and `outcome` are.
+                    //
+                    // What that costs, stated rather than implied: a caller walking r = 1..1379 pins on the
+                    // order of 1,379 x symbols x 3 series x 3 outcomes accumulators on mcp.cache.reads for
+                    // the life of the process, and get_market_snapshot takes an uncapped int[] of
+                    // resolutions, so it is reachable in a handful of calls. It is ACCEPTED rather than
+                    // fixed: the ceiling is enforced BEFORE the tag is ever written, so the set is finite by
+                    // construction, no answer is wrong or missing, and the same caller can already create
+                    // the same number of distinct stored series -- a larger, pre-existing exposure this
+                    // instrumentation neither creates nor worsens (gh#536 review, finding 1).
                     resolution.Should().BePositive();
+                    resolution.Should().BeLessThanOrEqualTo(ToolGuards.MaxResolutionMinutes);
                     continue;
                 }
 

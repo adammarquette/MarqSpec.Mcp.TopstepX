@@ -52,7 +52,7 @@ public sealed class HostTelemetry : IDisposable
     /// <summary>How long a venue request took, in seconds.</summary>
     public const string VenueCallDurationInstrument = "mcp.venue.call.duration";
 
-    /// <summary>A range the gap detector found missing and this read fetched.</summary>
+    /// <summary>A range the gap detector found missing and this read asked the venue for.</summary>
     public const string GapFillsInstrument = "mcp.gap.fills";
 
     /// <summary>A print stored from the market hub.</summary>
@@ -134,7 +134,7 @@ public sealed class HostTelemetry : IDisposable
         _gapFills = _meter.CreateCounter<long>(
             GapFillsInstrument,
             unit: "{range}",
-            description: "Bar ranges the gap detector found outstanding and a read fetched, by reason.");
+            description: "Bar ranges the gap detector found outstanding and a read asked the venue for, by reason.");
 
         _tapeTicks = _meter.CreateCounter<long>(
             TapeTicksInstrument,
@@ -207,11 +207,20 @@ public sealed class HostTelemetry : IDisposable
         return span;
     }
 
-    /// <summary>Counts the ranges one read fetched to close a gap.</summary>
+    /// <summary>Counts the ranges one read asked the venue for to close a gap.</summary>
     /// <param name="symbol">The venue-neutral instrument symbol.</param>
     /// <param name="resolutionMinutes">The bar size in minutes.</param>
     /// <param name="reason">Why they were outstanding, from <see cref="GapReason"/>.</param>
     /// <param name="ranges">How many ranges. Zero is not recorded.</param>
+    /// <remarks>
+    /// <b>Asked for, not fetched, and the wording is the fix rather than a hedge.</b> The call site records
+    /// this <i>before</i> the venue is reached, so a venue that throws leaves gap fills counted for ranges
+    /// nothing came back for — and no <c>mcp.cache.reads</c> at all, because that one is recorded after. An
+    /// outage therefore shows gap fills with no matching reads, which is a legible shape rather than a
+    /// contradiction, and it is why this counts demand rather than delivery. Moving the record past the
+    /// fetch was the alternative and is worse: it would report zero demand during exactly the outage an
+    /// operator is trying to size (gh#536 review, finding 5).
+    /// </remarks>
     public void GapFilled(string symbol, int resolutionMinutes, string reason, int ranges)
     {
         if (ranges <= 0)

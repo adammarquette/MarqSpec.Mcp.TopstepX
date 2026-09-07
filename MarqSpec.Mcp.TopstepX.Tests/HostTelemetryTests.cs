@@ -155,6 +155,8 @@ public sealed class HostTelemetryTests
         using ActivityListener parentListener = Listen([], parentSource);
         using Activity? parent = parentSource.StartActivity("tools/call");
 
+        parent.Should().NotBeNull("the stand-in parent has to be sampled, or this asserts nothing");
+
         using (telemetry.StartCacheRead(CacheSeries.Bars, Symbol, 15))
         {
         }
@@ -489,12 +491,15 @@ public sealed class HostTelemetryTests
     /// <param name="source">The exact source to listen to.</param>
     /// <returns>The listener. The caller disposes it.</returns>
     /// <remarks>
-    /// <b>Reference equality, not <c>candidate.Name == HostTelemetry.Name</c>.</b> Every cache service falls
-    /// back to its own <c>new HostTelemetry()</c> when DI does not supply the singleton, so about a dozen
-    /// suites that never mention telemetry emit <c>cache.*</c> spans under that same name — and they run in
-    /// PARALLEL with this one, because <see cref="HostTelemetryCollection"/> only serialises the suites that
-    /// listen. Matching by name therefore let another suite's span land in this list, and a
-    /// <c>ContainSingle()</c> below saw two whenever the timing lined up (gh#536).
+    /// <b>Reference equality, not <c>candidate.Name == HostTelemetry.Name</c>.</b> Before gh#562, every cache
+    /// service fell back to its own <c>new HostTelemetry()</c> when DI did not supply the singleton, so about a
+    /// dozen suites that never mentioned telemetry emitted <c>cache.*</c> spans under that same name — and they
+    /// ran in PARALLEL with this one, because <see cref="HostTelemetryCollection"/> only serialises the suites
+    /// that listen. Matching by name therefore let another suite's span land in this list, and a
+    /// <c>ContainSingle()</c> below saw two whenever the timing lined up (gh#536). The fallback is gone now —
+    /// every construction site takes the instance explicitly — but the listener stays reference-equal rather
+    /// than reverting to a name match, because a name match is the wrong test on its own terms: two suites can
+    /// legitimately build two different <see cref="HostTelemetry"/> instances that happen to share the name.
     /// </remarks>
     private static ActivityListener Listen(List<Activity> into, ActivitySource source)
     {

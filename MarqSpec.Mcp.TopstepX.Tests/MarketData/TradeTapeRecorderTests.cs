@@ -2182,6 +2182,7 @@ public sealed class TradeTapeRecorderTests
         BarSessionCalendar calendar = BarSessionCalendar.Parse("16:00", []);
         FakeTimeProvider clock = new(new DateTimeOffset(2026, 8, 18, 16, 0, 0, TimeSpan.Zero));
         CountingGateway gateway = new([]);
+        HostTelemetry telemetry = new();
 
         return new TapeTools(
             new InstrumentResolver(new InstrumentRegistry(options), new StoreAvailabilityHolder()),
@@ -2195,7 +2196,8 @@ public sealed class TradeTapeRecorderTests
                 database,
                 new FootprintProjector(database, NullLogger<FootprintProjector>.Instance),
                 clock,
-                NullLogger<FootprintCacheService>.Instance));
+                NullLogger<FootprintCacheService>.Instance,
+                telemetry));
     }
 
     private static TradeUpdate Print(

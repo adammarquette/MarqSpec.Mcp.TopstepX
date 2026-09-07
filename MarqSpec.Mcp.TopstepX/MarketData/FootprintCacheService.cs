@@ -48,22 +48,19 @@ namespace MarqSpec.Mcp.TopstepX.MarketData;
 /// <param name="projector">The whole-tape replay.</param>
 /// <param name="clock">The clock, stamped on rows a projection actually changes.</param>
 /// <param name="logger">The logger. A read that silently replayed a year of prints would be invisible.</param>
-/// <param name="telemetry">
-/// The app-owned meter and activity source. Optional only so hand-built tests that do not care about it keep
-/// compiling; the composition root always supplies the singleton.
-/// </param>
+/// <param name="telemetry">The app-owned meter and activity source.</param>
 public sealed class FootprintCacheService(
     TopstepXDbContext database,
     FootprintProjector projector,
     TimeProvider clock,
     ILogger<FootprintCacheService> logger,
-    HostTelemetry? telemetry = null)
+    HostTelemetry telemetry)
 {
     private readonly TopstepXDbContext _database = database;
     private readonly FootprintProjector _projector = projector;
     private readonly TimeProvider _clock = clock;
     private readonly ILogger<FootprintCacheService> _logger = logger;
-    private readonly HostTelemetry _telemetry = telemetry ?? new HostTelemetry();
+    private readonly HostTelemetry _telemetry = telemetry;
 
     /// <summary>
     /// Series this scope has already found complete.

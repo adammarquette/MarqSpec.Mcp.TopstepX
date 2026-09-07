@@ -6,6 +6,7 @@ using MarqSpec.Mcp.TopstepX.Data;
 using MarqSpec.Mcp.TopstepX.Data.Entities;
 using MarqSpec.Mcp.TopstepX.Domain.MarketData;
 using MarqSpec.Mcp.TopstepX.MarketData;
+using MarqSpec.Mcp.TopstepX.Telemetry;
 using MarqSpec.Mcp.TopstepX.Tests.MarketData;
 using MarqSpec.Mcp.TopstepX.Tools;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -73,6 +74,7 @@ public sealed class CalendarEndGuardServedReadTests : IAsyncLifetime
     private readonly IndicatorCatalog _catalog;
     private readonly BarSessionCalendar _calendar;
     private readonly FakeTimeProvider _clock;
+    private readonly HostTelemetry _telemetry = new();
 
     /// <summary>Builds the store context and the pieces every tool here is composed from.</summary>
     /// <param name="fixture">The shared container.</param>
@@ -87,9 +89,10 @@ public sealed class CalendarEndGuardServedReadTests : IAsyncLifetime
         _clock = new FakeTimeProvider(Bucket(SeededBars).AddHours(2));
         _gateway = new CountingGateway([]);
 
-        IndicatorProjector projector = new(_database, _catalog, NullLogger<IndicatorProjector>.Instance);
+        IndicatorProjector projector =
+            new(_database, _catalog, NullLogger<IndicatorProjector>.Instance, _telemetry);
         _cache = new BarCacheService(
-            _database, _gateway, _calendar, projector, _clock, NullLogger<BarCacheService>.Instance);
+            _database, _gateway, _calendar, projector, _clock, NullLogger<BarCacheService>.Instance, _telemetry);
     }
 
     private static DateTimeOffset SessionStart =>
@@ -133,6 +136,7 @@ public sealed class CalendarEndGuardServedReadTests : IAsyncLifetime
     public Task DisposeAsync()
     {
         _database.Dispose();
+        _telemetry.Dispose();
         return Task.CompletedTask;
     }
 
@@ -305,9 +309,10 @@ public sealed class CalendarEndGuardServedReadTests : IAsyncLifetime
             new IndicatorCacheService(
                 _database,
                 _catalog,
-                new IndicatorProjector(_database, _catalog, NullLogger<IndicatorProjector>.Instance),
+                new IndicatorProjector(_database, _catalog, NullLogger<IndicatorProjector>.Instance, _telemetry),
                 _clock,
-                NullLogger<IndicatorCacheService>.Instance),
+                NullLogger<IndicatorCacheService>.Instance,
+                _telemetry),
             _gateway,
             guards);
 
@@ -333,7 +338,8 @@ public sealed class CalendarEndGuardServedReadTests : IAsyncLifetime
                 _database,
                 new FootprintProjector(_database, NullLogger<FootprintProjector>.Instance),
                 _clock,
-                NullLogger<FootprintCacheService>.Instance));
+                NullLogger<FootprintCacheService>.Instance,
+                _telemetry));
 
         ContractRollTools roll = new(
             resolver, _database, _gateway, new LevelMethodCatalog(_calendar), front, _clock);

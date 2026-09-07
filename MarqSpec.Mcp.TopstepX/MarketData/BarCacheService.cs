@@ -119,10 +119,7 @@ public sealed class BarCacheService
     /// <param name="projector">The indicator projection, run in the same unit of work as a bar write.</param>
     /// <param name="clock">The clock. Injected so a test can place "now" precisely against a session.</param>
     /// <param name="logger">The logger.</param>
-    /// <param name="telemetry">
-    /// The app-owned meter and activity source. Optional only so hand-built tests that do not care about it
-    /// keep compiling; the composition root always supplies the singleton.
-    /// </param>
+    /// <param name="telemetry">The app-owned meter and activity source.</param>
     public BarCacheService(
         TopstepXDbContext database,
         IMarketDataGateway gateway,
@@ -130,7 +127,7 @@ public sealed class BarCacheService
         IndicatorProjector projector,
         TimeProvider clock,
         ILogger<BarCacheService> logger,
-        HostTelemetry? telemetry = null)
+        HostTelemetry telemetry)
     {
         _database = database;
         _gateway = gateway;
@@ -138,7 +135,7 @@ public sealed class BarCacheService
         _projector = projector;
         _clock = clock;
         _logger = logger;
-        _telemetry = telemetry ?? new HostTelemetry();
+        _telemetry = telemetry;
     }
 
     /// <summary>

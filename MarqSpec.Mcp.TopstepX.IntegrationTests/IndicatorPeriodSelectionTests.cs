@@ -6,6 +6,7 @@ using MarqSpec.Mcp.TopstepX.Data.Entities;
 using MarqSpec.Mcp.TopstepX.Domain;
 using MarqSpec.Mcp.TopstepX.Domain.MarketData;
 using MarqSpec.Mcp.TopstepX.MarketData;
+using MarqSpec.Mcp.TopstepX.Telemetry;
 using MarqSpec.Mcp.TopstepX.Tests.MarketData;
 using MarqSpec.Mcp.TopstepX.Tools;
 using Microsoft.EntityFrameworkCore;
@@ -62,6 +63,7 @@ public sealed class IndicatorPeriodSelectionTests : IAsyncLifetime
 
     private readonly SeriesStoreFixture _fixture;
     private readonly TopstepXDbContext _database;
+    private readonly HostTelemetry _telemetry = new();
 
     /// <param name="fixture">The shared container.</param>
     public IndicatorPeriodSelectionTests(SeriesStoreFixture fixture)
@@ -77,6 +79,7 @@ public sealed class IndicatorPeriodSelectionTests : IAsyncLifetime
     public Task DisposeAsync()
     {
         _database.Dispose();
+        _telemetry.Dispose();
         return Task.CompletedTask;
     }
 
@@ -569,7 +572,8 @@ public sealed class IndicatorPeriodSelectionTests : IAsyncLifetime
         // Serves nothing: the window each case reads is filled from the store alone.
         CountingGateway gateway = new([]);
 
-        IndicatorProjector projector = new(_database, catalog, NullLogger<IndicatorProjector>.Instance);
+        IndicatorProjector projector =
+            new(_database, catalog, NullLogger<IndicatorProjector>.Instance, _telemetry);
 
         // WRAPPED IN THE TRANSACTION PRODUCTION USES (gh#387). The projector refuses to run outside one, and
         // RepeatableRead is restated by hand because SeriesUnitOfWork, which states it once for production,
@@ -578,7 +582,7 @@ public sealed class IndicatorPeriodSelectionTests : IAsyncLifetime
             .BeginTransactionAsync(IsolationLevel.RepeatableRead, CancellationToken.None))
         {
             await new IndicatorProjector(
-                _database, warmCatalog, NullLogger<IndicatorProjector>.Instance).ProjectAsync(
+                _database, warmCatalog, NullLogger<IndicatorProjector>.Instance, _telemetry).ProjectAsync(
                 "test", new InstrumentId("ES"), Resolution, SessionStart, CancellationToken.None);
             await _database.SaveChangesAsync();
             await seed.CommitAsync(CancellationToken.None);
@@ -588,7 +592,7 @@ public sealed class IndicatorPeriodSelectionTests : IAsyncLifetime
         ToolGuards guards = new(wrapped);
 
         IndicatorCacheService cache = new(
-            _database, catalog, projector, clock, NullLogger<IndicatorCacheService>.Instance);
+            _database, catalog, projector, clock, NullLogger<IndicatorCacheService>.Instance, _telemetry);
 
         IndicatorTools indicators = new(
             resolver,
@@ -602,7 +606,8 @@ public sealed class IndicatorPeriodSelectionTests : IAsyncLifetime
             new BarTools(
                 resolver,
                 new BarCacheService(
-                    _database, gateway, calendar, projector, clock, NullLogger<BarCacheService>.Instance),
+                    _database, gateway, calendar, projector, clock,
+                    NullLogger<BarCacheService>.Instance, _telemetry),
                 guards,
                 clock),
             indicators,

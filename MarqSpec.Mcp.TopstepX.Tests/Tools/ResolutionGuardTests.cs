@@ -8,6 +8,7 @@ using MarqSpec.Mcp.TopstepX.Data.Entities;
 using MarqSpec.Mcp.TopstepX.Domain;
 using MarqSpec.Mcp.TopstepX.Domain.MarketData;
 using MarqSpec.Mcp.TopstepX.MarketData;
+using MarqSpec.Mcp.TopstepX.Telemetry;
 using MarqSpec.Mcp.TopstepX.Tests.MarketData;
 using MarqSpec.Mcp.TopstepX.Tools;
 using Microsoft.EntityFrameworkCore;
@@ -69,6 +70,7 @@ public sealed class ResolutionGuardTests : IDisposable
     private readonly BarCacheService _cache;
     private readonly IndicatorCatalog _catalog;
     private readonly FakeTimeProvider _clock;
+    private readonly HostTelemetry _telemetry = new();
 
     public ResolutionGuardTests()
     {
@@ -113,9 +115,10 @@ public sealed class ResolutionGuardTests : IDisposable
 
         _gateway = new CountingGateway([]);
 
-        IndicatorProjector projector = new(_database, _catalog, NullLogger<IndicatorProjector>.Instance);
+        IndicatorProjector projector =
+            new(_database, _catalog, NullLogger<IndicatorProjector>.Instance, _telemetry);
         _cache = new BarCacheService(
-            _database, _gateway, calendar, projector, _clock, NullLogger<BarCacheService>.Instance);
+            _database, _gateway, calendar, projector, _clock, NullLogger<BarCacheService>.Instance, _telemetry);
 
         // Five market-data tool types now, not one (gh#414). The sweep below walks the surface by
         // reflection and maps a declaring type to an instance, so EVERY one of them has to be built here --
@@ -133,9 +136,10 @@ public sealed class ResolutionGuardTests : IDisposable
             new IndicatorCacheService(
                 _database,
                 _catalog,
-                new IndicatorProjector(_database, _catalog, NullLogger<IndicatorProjector>.Instance),
+                new IndicatorProjector(_database, _catalog, NullLogger<IndicatorProjector>.Instance, _telemetry),
                 _clock,
-                NullLogger<IndicatorCacheService>.Instance),
+                NullLogger<IndicatorCacheService>.Instance,
+                _telemetry),
             _gateway,
             guards);
 
@@ -161,7 +165,8 @@ public sealed class ResolutionGuardTests : IDisposable
                 _database,
                 new FootprintProjector(_database, NullLogger<FootprintProjector>.Instance),
                 _clock,
-                NullLogger<FootprintCacheService>.Instance));
+                NullLogger<FootprintCacheService>.Instance,
+                _telemetry));
 
         _roll = new ContractRollTools(
             resolver, _database, _gateway, new LevelMethodCatalog(calendar), front, _clock);
@@ -175,7 +180,11 @@ public sealed class ResolutionGuardTests : IDisposable
             _clock);
     }
 
-    public void Dispose() => _database.Dispose();
+    public void Dispose()
+    {
+        _database.Dispose();
+        _telemetry.Dispose();
+    }
 
     private static DateTimeOffset SessionStart =>
         MarketClock.FromMarket(new DateOnly(2026, 8, 18), new TimeOnly(9, 0)).ToUniversalTime();

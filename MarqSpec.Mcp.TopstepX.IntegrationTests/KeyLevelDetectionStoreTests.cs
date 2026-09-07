@@ -4,6 +4,7 @@ using MarqSpec.Mcp.TopstepX.Data;
 using MarqSpec.Mcp.TopstepX.Data.Entities;
 using MarqSpec.Mcp.TopstepX.Domain.MarketData;
 using MarqSpec.Mcp.TopstepX.MarketData;
+using MarqSpec.Mcp.TopstepX.Telemetry;
 using MarqSpec.Mcp.TopstepX.Tests.MarketData;
 using MarqSpec.Mcp.TopstepX.Tools;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -51,6 +52,7 @@ public sealed class KeyLevelDetectionStoreTests(SeriesStoreFixture fixture) : IA
 
     private readonly SeriesStoreFixture _fixture = fixture;
     private readonly TopstepXDbContext _database = fixture.CreateContext();
+    private readonly HostTelemetry _telemetry = new();
 
     /// <inheritdoc />
     public Task InitializeAsync() => _fixture.ResetAsync();
@@ -59,6 +61,7 @@ public sealed class KeyLevelDetectionStoreTests(SeriesStoreFixture fixture) : IA
     public Task DisposeAsync()
     {
         _database.Dispose();
+        _telemetry.Dispose();
         return Task.CompletedTask;
     }
 
@@ -199,10 +202,11 @@ public sealed class KeyLevelDetectionStoreTests(SeriesStoreFixture fixture) : IA
         CountingGateway gateway = new([]);
         FakeTimeProvider clock = new(Bucket(Bars).AddHours(2));
 
-        IndicatorProjector projector = new(_database, indicators, NullLogger<IndicatorProjector>.Instance);
+        IndicatorProjector projector =
+            new(_database, indicators, NullLogger<IndicatorProjector>.Instance, _telemetry);
 
         BarCacheService cache = new(
-            _database, gateway, calendar, projector, clock, NullLogger<BarCacheService>.Instance);
+            _database, gateway, calendar, projector, clock, NullLogger<BarCacheService>.Instance, _telemetry);
 
         InstrumentResolver resolver = new(new InstrumentRegistry(market), new StoreAvailabilityHolder());
         ToolGuards guards = new(market);
@@ -226,7 +230,7 @@ public sealed class KeyLevelDetectionStoreTests(SeriesStoreFixture fixture) : IA
             _database,
             indicators,
             new IndicatorCacheService(
-                _database, indicators, projector, clock, NullLogger<IndicatorCacheService>.Instance),
+                _database, indicators, projector, clock, NullLogger<IndicatorCacheService>.Instance, _telemetry),
             gateway,
             guards);
 

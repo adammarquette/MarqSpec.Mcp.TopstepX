@@ -240,10 +240,12 @@ public sealed class CacheReadTelemetryTests : IDisposable
 
     /// <summary>Subscribes to one <see cref="ActivitySource"/> INSTANCE and records what it starts.</summary>
     /// <remarks>
-    /// <b>Reference equality, not a name match.</b> Every cache service falls back to its own
-    /// <c>new HostTelemetry()</c> when DI does not supply the singleton, so about a dozen suites that never
-    /// mention telemetry emit <c>cache.*</c> spans under the same name — and they run in PARALLEL with this
-    /// one. Matching by name let one of theirs land here and made <c>ContainSingle()</c> see two (gh#536).
+    /// <b>Reference equality, not a name match.</b> Before gh#562, every cache service fell back to its own
+    /// <c>new HostTelemetry()</c> when DI did not supply the singleton, so about a dozen suites that never
+    /// mentioned telemetry emitted <c>cache.*</c> spans under the same name — and they ran in PARALLEL with
+    /// this one. Matching by name let one of theirs land here and made <c>ContainSingle()</c> see two (gh#536).
+    /// The fallback is gone now, but the listener stays reference-equal: two suites can still legitimately
+    /// build two different <see cref="HostTelemetry"/> instances that happen to share the name.
     /// </remarks>
     private static ActivityListener Listen(List<Activity> into, ActivitySource source)
     {

@@ -651,7 +651,8 @@ public sealed class SessionBarServiceTests : IAsyncLifetime
             ConcurrencyHarness.Calendar(),
             ConcurrencyHarness.Projector(database),
             clock,
-            NullLogger<BarCacheService>.Instance);
+            NullLogger<BarCacheService>.Instance,
+            ConcurrencyHarness.Telemetry);
 
         return new SessionBarService(
             database,

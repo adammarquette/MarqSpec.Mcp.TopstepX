@@ -6,6 +6,7 @@ using MarqSpec.Mcp.TopstepX.Data.Entities;
 using MarqSpec.Mcp.TopstepX.Domain;
 using MarqSpec.Mcp.TopstepX.Domain.MarketData;
 using MarqSpec.Mcp.TopstepX.MarketData;
+using MarqSpec.Mcp.TopstepX.Telemetry;
 using MarqSpec.Mcp.TopstepX.Tests.MarketData;
 using MarqSpec.Mcp.TopstepX.Tools;
 using Microsoft.EntityFrameworkCore;
@@ -72,6 +73,7 @@ public sealed class SnapshotClockTests : IAsyncLifetime
 
     private readonly SeriesStoreFixture _fixture;
     private readonly TopstepXDbContext _database;
+    private readonly HostTelemetry _telemetry = new();
 
     /// <param name="fixture">The shared container.</param>
     public SnapshotClockTests(SeriesStoreFixture fixture)
@@ -87,6 +89,7 @@ public sealed class SnapshotClockTests : IAsyncLifetime
     public Task DisposeAsync()
     {
         _database.Dispose();
+        _telemetry.Dispose();
         return Task.CompletedTask;
     }
 
@@ -208,7 +211,8 @@ public sealed class SnapshotClockTests : IAsyncLifetime
         // take both cases off the path under test.
         CountingGateway gateway = new([]);
 
-        IndicatorProjector projector = new(_database, catalog, NullLogger<IndicatorProjector>.Instance);
+        IndicatorProjector projector =
+            new(_database, catalog, NullLogger<IndicatorProjector>.Instance, _telemetry);
 
         // WRAPPED IN THE TRANSACTION PRODUCTION USES (gh#387). The projector refuses to run outside one --
         // it writes its values with a statement the store runs as it is sent, while its removals wait for
@@ -225,7 +229,7 @@ public sealed class SnapshotClockTests : IAsyncLifetime
         }
 
         BarCacheService cache = new(
-            _database, gateway, calendar, projector, clock, NullLogger<BarCacheService>.Instance);
+            _database, gateway, calendar, projector, clock, NullLogger<BarCacheService>.Instance, _telemetry);
 
         InstrumentResolver resolver = new(new InstrumentRegistry(wrapped), new StoreAvailabilityHolder());
         ToolGuards guards = new(wrapped);
@@ -240,7 +244,7 @@ public sealed class SnapshotClockTests : IAsyncLifetime
                 _database,
                 catalog,
                 new IndicatorCacheService(
-                    _database, catalog, projector, clock, NullLogger<IndicatorCacheService>.Instance),
+                    _database, catalog, projector, clock, NullLogger<IndicatorCacheService>.Instance, _telemetry),
                 gateway,
                 guards),
             new KeyLevelTools(

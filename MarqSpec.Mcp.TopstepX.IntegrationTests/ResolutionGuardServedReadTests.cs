@@ -4,6 +4,7 @@ using MarqSpec.Mcp.TopstepX.Data;
 using MarqSpec.Mcp.TopstepX.Data.Entities;
 using MarqSpec.Mcp.TopstepX.Domain.MarketData;
 using MarqSpec.Mcp.TopstepX.MarketData;
+using MarqSpec.Mcp.TopstepX.Telemetry;
 using MarqSpec.Mcp.TopstepX.Tests.MarketData;
 using MarqSpec.Mcp.TopstepX.Tools;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -47,6 +48,7 @@ public sealed class ResolutionGuardServedReadTests : IAsyncLifetime
     private readonly SeriesStoreFixture _fixture;
     private readonly TopstepXDbContext _database;
     private readonly BarTools _bars;
+    private readonly HostTelemetry _telemetry = new();
 
     /// <summary>Builds the store context and the bar tools the served read goes through.</summary>
     /// <param name="fixture">The shared container.</param>
@@ -68,9 +70,10 @@ public sealed class ResolutionGuardServedReadTests : IAsyncLifetime
         FakeTimeProvider clock = new(Bucket(SeededBars).AddHours(2));
         CountingGateway gateway = new([]);
 
-        IndicatorProjector projector = new(_database, catalog, NullLogger<IndicatorProjector>.Instance);
+        IndicatorProjector projector =
+            new(_database, catalog, NullLogger<IndicatorProjector>.Instance, _telemetry);
         BarCacheService cache = new(
-            _database, gateway, calendar, projector, clock, NullLogger<BarCacheService>.Instance);
+            _database, gateway, calendar, projector, clock, NullLogger<BarCacheService>.Instance, _telemetry);
 
         // Only the bar tools, unlike the unit-tier fixture. That one builds all six tool types because its
         // reflection sweep can land on any of them; the single test here drives get_latest_bars and nothing
@@ -121,6 +124,7 @@ public sealed class ResolutionGuardServedReadTests : IAsyncLifetime
     public Task DisposeAsync()
     {
         _database.Dispose();
+        _telemetry.Dispose();
         return Task.CompletedTask;
     }
 

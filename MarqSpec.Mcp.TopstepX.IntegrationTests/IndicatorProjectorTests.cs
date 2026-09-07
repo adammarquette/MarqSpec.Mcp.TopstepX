@@ -6,6 +6,7 @@ using MarqSpec.Mcp.TopstepX.Data.Entities;
 using MarqSpec.Mcp.TopstepX.Domain;
 using MarqSpec.Mcp.TopstepX.Domain.MarketData;
 using MarqSpec.Mcp.TopstepX.MarketData;
+using MarqSpec.Mcp.TopstepX.Telemetry;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Storage;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -48,6 +49,7 @@ public sealed class IndicatorProjectorTests : IAsyncLifetime
 
     private readonly SeriesStoreFixture _fixture;
     private readonly TopstepXDbContext _database;
+    private readonly HostTelemetry _telemetry = new();
 
     /// <param name="fixture">The shared container.</param>
     public IndicatorProjectorTests(SeriesStoreFixture fixture)
@@ -63,6 +65,7 @@ public sealed class IndicatorProjectorTests : IAsyncLifetime
     public Task DisposeAsync()
     {
         _database.Dispose();
+        _telemetry.Dispose();
         return Task.CompletedTask;
     }
 
@@ -75,7 +78,7 @@ public sealed class IndicatorProjectorTests : IAsyncLifetime
         IndicatorCatalog catalog = new(
             Options.Create(new IndicatorOptions { AtrPeriod = 3, RsiPeriod = 3 }), calendar);
 
-        return new IndicatorProjector(_database, catalog, NullLogger<IndicatorProjector>.Instance);
+        return new IndicatorProjector(_database, catalog, NullLogger<IndicatorProjector>.Instance, _telemetry);
     }
 
     /// <summary>Runs one projection pass the way every call site in the product runs one.</summary>

@@ -4,6 +4,7 @@ using MarqSpec.Mcp.TopstepX.Data;
 using MarqSpec.Mcp.TopstepX.Data.Entities;
 using MarqSpec.Mcp.TopstepX.Domain.MarketData;
 using MarqSpec.Mcp.TopstepX.MarketData;
+using MarqSpec.Mcp.TopstepX.Telemetry;
 using MarqSpec.Mcp.TopstepX.Tests.MarketData;
 using MarqSpec.Mcp.TopstepX.Tools;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -47,6 +48,7 @@ public sealed class BucketSpanGuardServedReadTests : IAsyncLifetime
     private readonly TopstepXDbContext _database;
     private readonly BarCacheService _cache;
     private readonly FakeTimeProvider _clock;
+    private readonly HostTelemetry _telemetry = new();
 
     /// <summary>Builds the store context and the cache the served read is answered from.</summary>
     /// <param name="fixture">The shared container.</param>
@@ -61,9 +63,10 @@ public sealed class BucketSpanGuardServedReadTests : IAsyncLifetime
         _clock = new FakeTimeProvider(Bucket(SeededBars).AddHours(2));
         CountingGateway gateway = new([]);
 
-        IndicatorProjector projector = new(_database, catalog, NullLogger<IndicatorProjector>.Instance);
+        IndicatorProjector projector =
+            new(_database, catalog, NullLogger<IndicatorProjector>.Instance, _telemetry);
         _cache = new BarCacheService(
-            _database, gateway, calendar, projector, _clock, NullLogger<BarCacheService>.Instance);
+            _database, gateway, calendar, projector, _clock, NullLogger<BarCacheService>.Instance, _telemetry);
     }
 
     private static DateTimeOffset SessionStart =>
@@ -107,6 +110,7 @@ public sealed class BucketSpanGuardServedReadTests : IAsyncLifetime
     public Task DisposeAsync()
     {
         _database.Dispose();
+        _telemetry.Dispose();
         return Task.CompletedTask;
     }
 

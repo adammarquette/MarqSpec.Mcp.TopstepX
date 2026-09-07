@@ -461,6 +461,124 @@ public sealed class SchemaTests(SchemaFixture fixture)
         stored.ContractId.Should().Be("CON.F.US.EP.U26");
     }
 
+    [Fact]
+    public async Task SessionBars_IsAPlainTable_WithNoRetentionPolicy()
+    {
+        // ADR-0022. A session bar is one row per session per day — a few hundred a year per series — so
+        // partitioning it would buy nothing, and the absence of a Timescale block in the migration IS the
+        // decision. It is also a record rather than a pipeline, on the same terms as Bars: a replay reaching
+        // for the session behind a past decision must find it, not a window that aged out.
+        long tables = await ScalarAsync(
+            "SELECT count(*) FROM information_schema.tables "
+            + "WHERE table_schema = 'public' AND table_name = 'SessionBars';");
+        tables.Should().Be(1);
+
+        long hypertables = await ScalarAsync(
+            "SELECT count(*) FROM timescaledb_information.hypertables "
+            + "WHERE hypertable_name = 'SessionBars';");
+        hypertables.Should().Be(0);
+
+        // Named rather than counting every retention job: BarsAndIndicatorValues_CarryNoRetentionPolicy
+        // already asserts there is none at all, and this one has to survive the day some other table
+        // legitimately gains one.
+        long retention = await ScalarAsync(
+            "SELECT count(*) FROM timescaledb_information.jobs "
+            + "WHERE proc_name = 'policy_retention' AND hypertable_name = 'SessionBars';");
+        retention.Should().Be(0);
+    }
+
+    [Fact]
+    public async Task SessionBars_KeysOnTheTradeDate_NotTheInstant()
+    {
+        // ADR-0005/ADR-0022. A session is identified by the CME trade date, not by the instant it opened:
+        // the UTC bounds move with daylight saving, so keying on OpenUtc would make one November session two
+        // rows. OpenUtc is recorded because the caller needs the instant — it is not part of the identity.
+        long dateTyped = await ScalarAsync(
+            "SELECT count(*) FROM information_schema.columns "
+            + "WHERE table_name = 'SessionBars' AND column_name = 'TradeDate' AND data_type = 'date';");
+        dateTyped.Should().Be(1);
+
+        long tradeDateInKey = await PrimaryKeyColumnsAsync("SessionBars", "TradeDate");
+        tradeDateInKey.Should().Be(1);
+
+        long openUtcInKey = await PrimaryKeyColumnsAsync("SessionBars", "OpenUtc");
+        openUtcInKey.Should().Be(0);
+    }
+
+    [Fact]
+    public async Task SessionBars_ContractId_IsNotNullBecauseAnUnattributableSessionIsNeverStored()
+    {
+        // The mirror of ABarsContractId_IsNullableSoUnknownProvenanceIsRepresentable, and the same
+        // asymmetry ATradesContractId_IsRequiredBecauseAPrintWithoutAContractHasNoMeaning pins. A session
+        // bar exists only when every base bucket came from one contract; a session whose contract cannot be
+        // named is ProvenanceUnknown and is never written, so there is no unknown state to represent here.
+        long notNullable = await ScalarAsync(
+            "SELECT count(*) FROM information_schema.columns "
+            + "WHERE table_name = 'SessionBars' AND column_name = 'ContractId' AND is_nullable = 'NO';");
+
+        notNullable.Should().Be(1);
+    }
+
+    [Fact]
+    public async Task SessionBars_CannotHoldTwoRowsForOneOpening()
+    {
+        // The unique index on (Venue, Instrument, Session, OpenUtc), and nothing else reaches it: the two
+        // rows differ in TradeDate, so the primary key admits both. Two trade dates claiming one opening is
+        // a calendar bug, and it must surface as a write failure rather than as two sessions that overlap.
+        await using TopstepXDbContext database = _fixture.CreateContext();
+        DateTimeOffset open = new(2026, 9, 3, 13, 30, 0, TimeSpan.Zero);
+
+        database.SessionBars.Add(NewSessionBar("ONEOPEN", new DateOnly(2026, 9, 3), open));
+        await database.SaveChangesAsync();
+
+        await using TopstepXDbContext second = _fixture.CreateContext();
+        second.SessionBars.Add(NewSessionBar("ONEOPEN", new DateOnly(2026, 9, 4), open));
+
+        Func<Task> save = () => second.SaveChangesAsync();
+        await save.Should().ThrowAsync<DbUpdateException>();
+    }
+
+    [Theory]
+    [InlineData("Open")]
+    [InlineData("High")]
+    [InlineData("Low")]
+    [InlineData("Close")]
+    public async Task SessionBarPrices_AreNumericEighteenEight(string column)
+    {
+        // A session bar's extremes are compared against tick-sized levels like any other price, so it uses
+        // the store's one price type rather than a narrower one chosen for a daily aggregate.
+        long count = await ScalarAsync(
+            "SELECT count(*) FROM information_schema.columns "
+            + "WHERE table_name = 'SessionBars' AND column_name = @c "
+            + "AND numeric_precision = 18 AND numeric_scale = 8;",
+            ("c", column));
+
+        count.Should().Be(1);
+    }
+
+    private static SessionBarRecord NewSessionBar(
+        string instrument,
+        DateOnly tradeDate,
+        DateTimeOffset openUtc) => new()
+        {
+            Venue = "test",
+            Instrument = instrument,
+            Session = "rth",
+            TradeDate = tradeDate,
+            OpenUtc = openUtc,
+            CloseUtc = openUtc.AddHours(6.5),
+            Open = 5000m,
+            High = 5010m,
+            Low = 4990m,
+            Close = 5005m,
+            Volume = 1_000,
+            ContractId = "CON.F.US.EP.U26",
+            BaseResolutionMinutes = 5,
+            BaseBucketCount = 78,
+            WindowCentral = "08:30-15:00",
+            RecordedAt = DateTimeOffset.UtcNow,
+        };
+
     private static BarRecord NewBar(string instrument, DateTimeOffset bucket, decimal close) => new()
     {
         Venue = "test",
@@ -515,6 +633,15 @@ public sealed class SchemaTests(SchemaFixture fixture)
             // No trailing semicolon: EF composes this into a subquery, and one there is a syntax error.
             .SqlQueryRaw<long>("SELECT count(*) AS \"Value\" FROM \"BarCoverage\"")
             .SingleAsync();
+
+    private Task<long> PrimaryKeyColumnsAsync(string table, string column) => ScalarAsync(
+        "SELECT count(*) FROM information_schema.table_constraints tc "
+        + "JOIN information_schema.key_column_usage kcu "
+        + "  ON tc.constraint_name = kcu.constraint_name AND tc.table_schema = kcu.table_schema "
+        + "WHERE tc.table_schema = 'public' AND tc.constraint_type = 'PRIMARY KEY' "
+        + "AND tc.table_name = @t AND kcu.column_name = @c;",
+        ("t", table),
+        ("c", column));
 
     private async Task<long> ScalarAsync(string sql, params (string Name, object Value)[] parameters)
     {

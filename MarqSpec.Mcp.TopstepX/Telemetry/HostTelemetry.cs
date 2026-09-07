@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Diagnostics.Metrics;
+using MarqSpec.Mcp.TopstepX.MarketData;
 
 namespace MarqSpec.Mcp.TopstepX.Telemetry;
 
@@ -92,6 +93,19 @@ public sealed class HostTelemetry : IDisposable
 
     /// <summary>The bar size in minutes, as an integer.</summary>
     public const string ResolutionTag = "resolution";
+
+    /// <summary>
+    /// The configured session name a series is over, e.g. <c>rth</c> — the session flavour's answer to
+    /// <see cref="ResolutionTag"/>, and never emitted beside it.
+    /// </summary>
+    /// <remarks>
+    /// <b>A session series has no resolution, and it is not given a sentinel one.</b> Its window is
+    /// wall-clock and its minutes move with daylight saving, so any integer put in <see cref="ResolutionTag"/>
+    /// would be a lie — and a sentinel that collided with a real resolution would silently merge two series
+    /// in the backend. So the two tags are alternatives: a measurement carries exactly one of them, and which
+    /// one it carries says which kind of series it was over.
+    /// </remarks>
+    public const string SessionTag = "session";
 
     /// <summary>Which venue read this was. Values: <see cref="VenueOperation"/>.</summary>
     public const string OperationTag = "operation";
@@ -192,6 +206,47 @@ public sealed class HostTelemetry : IDisposable
             new KeyValuePair<string, object?>(ResolutionTag, resolutionMinutes),
             new KeyValuePair<string, object?>(OutcomeTag, outcome));
 
+    /// <summary>Counts one cache-aside read of a series named by its key.</summary>
+    /// <param name="series">Which cache, from <see cref="CacheSeries"/>.</param>
+    /// <param name="symbol">The venue-neutral instrument symbol.</param>
+    /// <param name="key">Which series the read was of.</param>
+    /// <param name="outcome">What it cost, from <see cref="CacheOutcome"/>.</param>
+    /// <exception cref="ArgumentOutOfRangeException"><paramref name="key"/> is a kind nothing tags yet.</exception>
+    /// <remarks>
+    /// <b>A resolution key delegates to the integer overload, and that is the whole point of the shape.</b>
+    /// Every panel already built on <c>mcp.cache.reads</c> reads the tags that overload emits, so the
+    /// key-taking form must produce them byte for byte rather than merely equivalently — one added or renamed
+    /// tag retires every stored series in every backend scraping it. A session key emits
+    /// <see cref="SessionTag"/> in <see cref="ResolutionTag"/>'s place; see that field for why not both.
+    /// </remarks>
+    public void CacheRead(string series, string symbol, SeriesKey key, string outcome)
+    {
+        ArgumentNullException.ThrowIfNull(key);
+
+        switch (key)
+        {
+            case SeriesKey.Resolution resolution:
+                CacheRead(series, symbol, resolution.Minutes, outcome);
+                return;
+
+            case SeriesKey.Session session:
+                _cacheReads.Add(
+                    1,
+                    new KeyValuePair<string, object?>(SeriesTag, series),
+                    new KeyValuePair<string, object?>(SymbolTag, symbol),
+                    new KeyValuePair<string, object?>(SessionTag, session.Name),
+                    new KeyValuePair<string, object?>(OutcomeTag, outcome));
+                return;
+
+            default:
+                throw new ArgumentOutOfRangeException(
+                    nameof(key),
+                    key.GetType().Name,
+                    "A series kind this meter has no dimension for. Decide its tags deliberately: a kind "
+                    + "that fell through to another's tags would merge two series in every backend.");
+        }
+    }
+
     /// <summary>Opens a span for one venue request and counts it when the scope closes.</summary>
     /// <param name="operation">Which read, from <see cref="VenueOperation"/>.</param>
     /// <returns>A scope the caller disposes when the request has finished, however it finished.</returns>
@@ -219,6 +274,40 @@ public sealed class HostTelemetry : IDisposable
         span?.SetTag(ResolutionTag, resolutionMinutes);
 
         return span;
+    }
+
+    /// <summary>Opens a span for one cache-aside read of a series named by its key.</summary>
+    /// <param name="series">Which cache, from <see cref="CacheSeries"/>.</param>
+    /// <param name="symbol">The venue-neutral instrument symbol.</param>
+    /// <param name="key">Which series the read is of.</param>
+    /// <returns>The span, or <see langword="null"/> when nothing is listening.</returns>
+    /// <exception cref="ArgumentOutOfRangeException"><paramref name="key"/> is a kind nothing tags yet.</exception>
+    /// <remarks>A resolution key delegates, byte for byte; see <see cref="CacheRead(string, string, SeriesKey, string)"/>.</remarks>
+    public Activity? StartCacheRead(string series, string symbol, SeriesKey key)
+    {
+        ArgumentNullException.ThrowIfNull(key);
+
+        switch (key)
+        {
+            case SeriesKey.Resolution resolution:
+                return StartCacheRead(series, symbol, resolution.Minutes);
+
+            case SeriesKey.Session session:
+                Activity? span = Activities.StartActivity("cache." + series, ActivityKind.Internal);
+
+                span?.SetTag(SeriesTag, series);
+                span?.SetTag(SymbolTag, symbol);
+                span?.SetTag(SessionTag, session.Name);
+
+                return span;
+
+            default:
+                throw new ArgumentOutOfRangeException(
+                    nameof(key),
+                    key.GetType().Name,
+                    "A series kind this activity source has no dimension for. Decide its tags deliberately: "
+                    + "a kind that fell through to another's tags would merge two series in every backend.");
+        }
     }
 
     /// <summary>Counts the ranges one read asked the venue for to close a gap.</summary>
@@ -300,6 +389,45 @@ public sealed class HostTelemetry : IDisposable
             new KeyValuePair<string, object?>(IndicatorTag, indicator),
             new KeyValuePair<string, object?>(SymbolTag, symbol),
             new KeyValuePair<string, object?>(ResolutionTag, resolutionMinutes));
+    }
+
+    /// <summary>Counts the values a projection pass wrote for one indicator over a series named by its key.</summary>
+    /// <param name="indicator">The indicator's stable lowercase name.</param>
+    /// <param name="symbol">The venue-neutral instrument symbol.</param>
+    /// <param name="key">Which series the pass was over.</param>
+    /// <param name="values">How many values. Zero is not recorded.</param>
+    /// <exception cref="ArgumentOutOfRangeException"><paramref name="key"/> is a kind nothing tags yet.</exception>
+    /// <remarks>A resolution key delegates, byte for byte; see <see cref="CacheRead(string, string, SeriesKey, string)"/>.</remarks>
+    public void IndicatorProjected(string indicator, string symbol, SeriesKey key, int values)
+    {
+        ArgumentNullException.ThrowIfNull(key);
+
+        switch (key)
+        {
+            case SeriesKey.Resolution resolution:
+                IndicatorProjected(indicator, symbol, resolution.Minutes, values);
+                return;
+
+            case SeriesKey.Session session:
+                if (values <= 0)
+                {
+                    return;
+                }
+
+                _indicatorProjections.Add(
+                    values,
+                    new KeyValuePair<string, object?>(IndicatorTag, indicator),
+                    new KeyValuePair<string, object?>(SymbolTag, symbol),
+                    new KeyValuePair<string, object?>(SessionTag, session.Name));
+                return;
+
+            default:
+                throw new ArgumentOutOfRangeException(
+                    nameof(key),
+                    key.GetType().Name,
+                    "A series kind this meter has no dimension for. Decide its tags deliberately: a kind "
+                    + "that fell through to another's tags would merge two series in every backend.");
+        }
     }
 
     /// <inheritdoc />

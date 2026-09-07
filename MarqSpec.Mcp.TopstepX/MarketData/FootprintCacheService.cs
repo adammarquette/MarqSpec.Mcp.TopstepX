@@ -1,5 +1,4 @@
 using System.Diagnostics;
-using System.Globalization;
 using MarqSpec.Mcp.TopstepX.Data;
 using MarqSpec.Mcp.TopstepX.Data.Entities;
 using MarqSpec.Mcp.TopstepX.Domain;
@@ -148,7 +147,7 @@ public sealed class FootprintCacheService(
         // the ordinary state of a live instrument and must not read as a cache that is not working.
         string outcome = stored.Count == 0 ? CacheOutcome.Miss : CacheOutcome.Partial;
 
-        string what = instrument.Symbol + " " + resolutionMinutes.ToString(CultureInfo.InvariantCulture) + "m";
+        string what = new SeriesKey.Resolution(venue, instrument.Symbol, resolutionMinutes).Describe();
 
         _logger.LogInformation(
             "The stored tape has prints {Instrument} {Resolution}m cells do not yet reflect. "

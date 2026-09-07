@@ -85,9 +85,21 @@ payload** as `history.selection`
 ([tool catalogue — `history`](mcp-tool-catalog.md#history--which-contracts-the-history-was-chosen-from-r-114-gh592)).
 It is not stored, and a later read of the same window says `NotDecidedHere` rather than reconstructing it —
 [ADR-0020](adr/0020-historical-contract-selection.md) §5 forbids a read from re-deciding attributed history,
-which is the same rule that makes the fact unrecoverable in the first place. Replacing a run a degraded read
-laid down is an operator's verb, `reselect-bars` (gh#506); making this table able to answer the question
-later would be a new stored fact, its own ADR and a migration.
+which is the same rule that makes the fact unrecoverable in the first place.
+
+**A read heals a null; a read never rewrites a bucket that already carries one.** Those are two different
+rules and only the first fills this column. Keeping an attributed bucket is what makes a warm read
+byte-identical to the one before it and what stops one day being split between two contracts, so a window
+filled under a policy since corrected stays wrong until somebody decides otherwise
+([ADR-0020](adr/0020-historical-contract-selection.md) §5). **Revising provenance in bulk is an operator's
+verb** — `reselect-bars <symbol> <fromUtc> <toUtc>` (`R-1.15`, gh#506) — bounded to the window they name,
+widened to the whole trade dates it intersects, counted and logged. It re-decides each trade date from the
+candidates' volume with nothing pinned, rewrites the winner's buckets through the ordinary upsert, and
+**deletes the rows the winner does not restate**: those another contract held, and — counted apart, because a
+contract must not be reported as losing a bucket it never held — those carrying no contract at all. That last
+case is a real loss of a row written before this column existed and which the venue no longer answers for;
+it is bounded by the operator's window and by the trade date having been decided at all. `IndicatorValues`
+is re-projected in the same transaction, so nothing is left standing over a deleted bar.
 
 **Deliberately no retention policy.** This is a record, not a pipeline.
 
@@ -244,6 +256,16 @@ every page on every read (gh#408); the containment test is made against the unio
 touching rows merged — half-open slices abut exactly — and a genuine gap between two rows still covering
 nothing. **The union is taken per contract**, over that candidate's own rows only: merging across contracts
 would invent a claim nobody made, which is the per-contract question above restated where the merge happens.
+
+**`reselect-bars` deletes every row that *overlaps* its window, not every row contained in it** (`R-1.15`,
+gh#506). Overlap rather than containment because a straddling claim is the ordinary shape here, not an edge
+case: `MemoiseEmpty` cuts a claim at the settled age and the union above merges touching rows, so a permanent
+memo routinely reaches into a window from outside it. Left standing, that memo would answer "empty" for a
+range whose contract decision has just been overturned and suppress the very next read of it — a permanent
+hole, written by the policy the verb was run to undo. Deleting on overlap can drop a claim about time outside
+the operator's window; that costs **one re-ask**, which is the cheap direction. Every contract's rows go, for
+the venue, instrument and resolution being re-decided, since which contract will answer that range is exactly
+what the run has just changed.
 
 Index: `(Instrument, ResolutionMinutes, ContractId, RangeStart, RangeEnd)` — the shape of every coverage
 lookup.

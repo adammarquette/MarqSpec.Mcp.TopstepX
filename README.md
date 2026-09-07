@@ -404,6 +404,89 @@ volume, which the profile has nothing to do with.
 Full configuration catalogue: [`.env.example`](.env.example). Real secrets are never committed; this repository
 is public.
 
+## Operator verbs
+
+The same image is also a command line. Pass a verb as the first argument and the process does that one thing
+and exits instead of serving — no transport is started, no MCP client is involved:
+
+```bash
+docker compose run --rm server rebuild-indicators
+docker compose run --rm server reselect-bars MES 2026-06-01T00:00:00Z 2026-07-01T00:00:00Z
+```
+
+**Both report only through the log.** Under stdio, stdout carries the protocol, so neither verb prints to the
+console; the numbers arrive as log lines. Both dispose the host before returning, because the console logger
+writes from a queue and the OTLP exporter batches on a timer — without that the **last** lines, the summary
+among them, are exactly the ones a process exit drops.
+
+### `rebuild-indicators [symbol]`
+
+Replays the indicator projection over the bars already stored — every series, or only those of one symbol.
+**It reaches no venue at all**: every value is reproducible from the bars ([ADR-0006](documentation/adr/0006-indicators-as-projections.md)),
+so this is a recomputation, not a fetch. It is transactional per series, and it is the remedy for the things a
+read cannot heal on its own — a corrected arithmetic, whose `(Indicator, Period)` pairs are all still present
+so no read will recompute them, and the stale values a concurrent backfill can leave behind (`R-2.5`,
+`R-2.11`).
+
+It **does not migrate the store**, and it **always exits 0**: the counts are in the log and there is no
+failure code to read. It writes only `IndicatorValues`; no bar and no provenance is touched.
+
+### `reselect-bars <symbol> <fromUtc> <toUtc>`
+
+**The one thing in this server that rewrites an attributed bar.** A read never does — it fills what the store
+lacks and keeps the contract a bucket already carries, which is what makes a warm read cheap and stops a seam
+appearing inside a day ([ADR-0020](documentation/adr/0020-historical-contract-selection.md) §5). So a window
+filled before that policy — every bar stamped with the venue's own pick, however thin that contract's series
+was — stays wrong until an operator decides to fix it. This is that decision, bounded by a window they name
+(`R-1.15`).
+
+**What it re-decides.** Every resolution series the store holds for the instrument inside the window, each
+one on its own. The window is **widened to the whole trade dates it intersects, and never narrowed** — a day
+decided from part of its volume and rewritten in part would leave two contracts inside one day — so a series
+the store holds only in the widened part is re-decided too. Both windows are logged. Each of the cycle's
+listed candidates is then paged over the window and the contract with the most volume on a trade date keeps
+that date, ties going to the nearer expiry; **nothing is pinned**, which is the whole difference from a read.
+A cold window therefore costs about **K×** the venue requests one contract's would, K being the product's
+candidate depth.
+
+**What it deletes, and why.** Buckets inside the window that another contract held and the new winner does
+not restate — those rows are that contract losing a day it did not carry. Buckets carrying **no** contract
+at all are deleted on the same rule and counted **apart**, because folding the two together would report a
+contract as having lost buckets it never held. And every `BarCoverage` claim **overlapping** the window goes,
+for every contract: a settled "this range was empty" memo never expires and can reach into the window from
+outside it, and left standing it would suppress the next read of a window whose decision has just been
+overturned. Losing a claim outside the window costs one re-ask. The indicators are re-projected in the same
+transaction — including on a run that only deleted, or values would stand over bars that no longer exist.
+
+**What it logs.** One line per resolution series — bars revised, removed, unattributed rows removed, trade
+dates changed, dates decided by a tie, coverage claims dropped, venue requests — and a closing summary naming
+the window asked for beside the whole trade dates re-decided, carrying the same counters plus the series and
+slices it skipped. Two cases are `Warning` instead: a series whose widened
+window is wider than one pass will enumerate is **skipped rather than trimmed**, naming both windows and the
+cap; and a run that finds **no stored series** in the window says so loudly and prints no summary, because
+"0 revised, 0 removed" is what an already-correct window reports and also what a mistyped year reports.
+
+**It migrates the store first**, where `rebuild-indicators` skips migration entirely, and the difference is
+that this verb writes: rewriting provenance through a schema this build has not applied is a write nobody can
+reproduce.
+
+| Exit | Meaning |
+|---:|---|
+| `0` | The run finished. The log lines say by how much. |
+| `2` | The command line was refused **before anything touched the store** — a symbol this server does not serve, an instant that is not ISO-8601, an empty or inverted window, or one ending past the calendar's horizon. The message names the argument and the rule. Nothing was written. |
+| `3` | **The run stopped.** The store was unreachable or its migration dropped the connection, or the plan degraded for a whole window — the venue lists no contracts, the instrument is not served, its front does not read against the product's cycle. |
+
+**Exit 3 does not mean nothing was rewritten.** The run commits one unit of work per resolution series, so a
+degradation on the second series exits 3 with the first already committed, and the migration itself can stop
+partway. The per-series log lines are what say how far it got. Anything the verb has no story for — a
+contention, a cancellation, a bug — arrives as an unhandled fault with its stack rather than as a tidy code,
+on the same rule that makes a missing number missing here rather than a default.
+
+Two limits worth knowing before a long window: "too wide" is **not** refused before the store is touched, because
+the cap is per resolution and the verb takes none — the resolutions are whatever the store holds, so it is a
+`Warning` after the migration ran rather than a refusal before it. And a window entirely in the future is
+accepted; it finds no stored series and says so.
+
 ---
 
 ## For AI agents & new readers — start here
@@ -456,7 +539,9 @@ The interesting part, and the reason this is not just a thin proxy:
 3. Diff. **Nothing missing means zero API calls.**
 4. Fetch only the missing ranges, paged at the gateway's 1000-bar cap.
 5. Drop still-forming bars, upsert on the composite key, and project indicators for the affected buckets in the
-   same transaction.
+   same transaction. A bucket that already records the contract that produced it is **never rewritten** by a
+   read; re-deciding a stored window is [`reselect-bars`](#reselect-bars-symbol-fromutc-toutc)' job, and it is
+   the only thing here that does.
 6. Record ranges the venue answered *empty*, so a real data hole is not re-requested on every call.
 
 Step 2 is what makes it terminate. Without it, "no bar at 03:00 on Sunday" and "a bar we are missing" are the

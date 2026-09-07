@@ -50,6 +50,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   [ADR-0022](documentation/adr/0022-session-bars-derived-complete-or-absent.md) — which gains a dated update
   for the tool surface — are updated in the same change, and the 1,380-and-above resolution refusal now names
   the two tools rather than promising them (gh#500, gh#496).
+- **`reselect-bars <symbol> <fromUtc> <toUtc>` — the one verb that rewrites stored provenance, bounded and
+  counted.** A read fills what the store lacks and never rewrites a bucket that already carries a contract,
+  so a window filled before the volume policy keeps whatever contract it was filled under. This is the
+  operator's remedy. It re-decides **every resolution series the store holds** for the instrument inside the
+  window, each in its own transaction, with **nothing pinned** — each trade date goes to the candidate that
+  carried the volume, ties to the nearer expiry. **The window is widened to the whole trade dates it
+  intersects and never narrowed**, because deciding a day from part of its volume and rewriting only that
+  part would leave two contracts inside one day; both windows are logged, and a series held only in the
+  widened part is re-decided too. It **deletes** the buckets the new winner does not restate — those another
+  contract held, and, counted apart, those carrying no contract at all — and every `BarCoverage` claim
+  **overlapping** the window, for every contract, since a settled memo straddling it would suppress the next
+  read of a window whose decision has just been overturned. Indicators are re-projected in the same unit of
+  work, unconditionally, so a delete-only run leaves no value standing over a bar that no longer exists. The
+  report is log lines: one per series — bars revised, removed, unattributed rows removed, trade dates
+  changed, dates decided by a tie, coverage claims dropped, venue requests — and a closing summary naming the
+  window asked for beside the one re-decided, with the same counters plus the series and slices it skipped.
+  A resolution whose widened window is
+  wider than one pass will enumerate is **skipped loudly** rather than trimmed, and a run that finds no
+  stored series warns instead of reporting the zeros an already-correct window reports. **It migrates the
+  store first**, where `rebuild-indicators` skips migration entirely, because this one writes. Exit **0** on
+  a finished run, **2** on a refused command line — an unserved symbol, a non-ISO-8601 instant, an empty or
+  inverted window, one past the calendar's horizon — refused **before the store is touched**, and **3** when
+  the run *stopped*: an unreachable store, or a plan that degraded for the whole window. **Exit 3 does not
+  mean nothing was written** — one unit of work per series, so an earlier series may already be committed,
+  and the per-series lines say how far it got. Both verbs now dispose the host before returning, so the last
+  log lines are flushed rather than dropped at process exit.
+  [ADR-0020](documentation/adr/0020-historical-contract-selection.md) §5 is the record and `R-1.15` the
+  requirement (gh#506, gh#497).
 - **History is fetched from the contract that carried the volume; the present still comes from the venue's
   own pick.** A read now cuts what it owes the venue in two. The **present band** starts at the first bucket
   of the store's trailing run of the venue-front contract — `BarCacheService.TenureStartAsync`, two

@@ -83,6 +83,7 @@ and can be pinned by fixture tests shared with `trading-copilot` — which is wh
 | [2026-09-06](#update-2026-09-06--selection-among-configured-periods-is-allowed-ad-hoc-computation-is-not) | A call may **select** among the periods the catalogue is configured for ([ADR-0018](0018-period-selection-among-configured-periods.md)) |
 | [2026-09-07](#update-2026-09-07--a-row-nothing-recomputes-is-not-protected-data-it-is-an-orphan) | The reconcile sweeps retired `(Indicator, Period)` pairs and bucketless values, and the rebuild walks the values table too |
 | [2026-09-07](#update-2026-09-07--the-design-question-the-update-above-left-open-a-read-serves-only-what-the-bars-account-for) | A read serves a value only where the bar at its bucket is still stored — the question the row above left open, settled as *serve nothing* (`R-2.14`) |
+| [2026-09-07](#update-2026-09-07--the-key-gained-a-second-shape-the-rule-did-not-change) | A named session series is projected by the same code path, under a second key shape (`R-2.15`, [ADR-0022](0022-session-bars-derived-complete-or-absent.md)) |
 
 ## Update (2026-08-23) — the empty-diff claim was false in practice
 
@@ -291,9 +292,9 @@ past gh#571 must run `rebuild-indicators` once**, because for a bar-less series 
 itself. Whether the reads should instead join a bar, or the probe should treat *values held, zero bars* as a
 reason to project, is a design question raised separately rather than settled here.
 
-**`SessionIndicatorValues` is out of reach here.** gh#571's scope asks for the same rule over the session
-shape through `ISeriesTables`; neither exists yet — they arrive with gh#501, which is still open. That half
-lands with it.
+**`SessionIndicatorValues` arrives with the update below.** gh#571's scope asked for the same rule over the
+session shape through `ISeriesTables`; both arrived with gh#501, and the orphan/retired sweep runs over that
+pair of tables through the same `ReconcileAsync` body.
 
 ## Update (2026-09-07) — the design question the update above left open: a read serves only what the bars account for
 
@@ -366,3 +367,38 @@ is that waiting for it is now safe: the window between the bar delete and the sw
 nothing can reproduce.
 
 *Assisted-by: Claude Opus 5 (Claude Code)*
+
+## Update (2026-09-07) — the key gained a second shape; the rule did not change
+
+This record says `(Venue, Instrument, ResolutionMinutes, Indicator, Period, BucketStart)` is the key.
+**There are now two keys, and everything above holds over both** (gh#501, `R-2.15`). A named session series — the
+derived one-row-per-trade-date series of
+[ADR-0022](0022-session-bars-derived-complete-or-absent.md) — is projected into `SessionIndicatorValues`
+under `(Venue, Instrument, Session, Indicator, Period, BucketStart)`, with `BucketStart` the session bar's
+opening instant.
+
+**The reason to record this is that it is one projection and not two.** A `SeriesKey` — a resolution or a
+session — picks an `ISeriesTables`, which names the bars a pass reads and the values it writes and is the
+*only* thing that differs between the two kinds. The seeding from the start of each contract run, the
+rounding to the stored column's scale before comparing, the skip-unchanged rule, the unscoped reconcile and
+its whole-series guard, and the requirement that a pass hold a transaction are one body of code running over
+whichever pair the key chose. Two copies would be two projections free to disagree about a number nobody
+would question — and the disagreement would arrive as a value, not as an error.
+
+The **vocabulary** is the second and last difference. `IndicatorCatalog.ForSeries(key)` returns `All` itself
+for a resolution key — the same instance, so nothing about an existing series moved — and `All` minus
+session-anchored `vwap` for a session key. That exclusion is a fact about the calculation rather than about
+the store: `vwap` weights a session's own intra-session volume distribution, and a session that *is* one bar
+has none, so the number would be that bar's typical price wearing an average's name. `vwap-rolling` stays,
+because a window over N bars is a real number on any series. The list is the same one the compute walks and
+the reconcile is scoped to, handed to both from one read: a compute walking one list while the reconcile
+walked another would delete rows on every pass.
+
+**The purity claim is untouched and is what makes the sharing safe.** `Domain` did not change in this slice;
+it never learned what a session is. A session bar arrives as a `Bar` like any other, and `IIndicator.Compute`
+cannot tell which table it came from — which is precisely why one algorithm over two key shapes cannot drift.
+
+**General form.** When a second thing wants a projection this record governs, the question to ask is whether
+it differs in the *storage* or in the *arithmetic*. A difference in storage is a key shape and a pair of
+tables, and it is shared code. A difference in arithmetic is a different calculation, and by the
+parameterisation section above it is a different **name**.

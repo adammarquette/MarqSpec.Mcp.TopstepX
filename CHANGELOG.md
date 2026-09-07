@@ -34,8 +34,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   session's own volume distribution and a session that *is* one bar has none. It is one projection and not
   two — a `SeriesKey` picks which pair of tables a pass reads and writes, and the seeding, the contract
   segmenting, the rounding, the reconcile and the whole-series guard are the same code, so the two kinds
-  cannot drift apart on a number. A session read projects inside the unit of work that writes its bars, so
-  session bars never commit without the values they justify. **Three things change for operators.**
+  cannot drift apart on a number. A session read projects inside the unit of work that writes its bars —
+  **when that pass changed them**: a bar upserted, a stale one reconciled away, or a row discarded as built
+  under a definition that no longer holds. So session bars never commit without the values they justify, and
+  a **warm** session read pays no projection at all rather than recomputing the whole series for an empty
+  diff on every call. **Three things change for operators.**
   `rebuild-indicators` now walks the distinct session series `SessionBars` holds as well as the resolution
   series in `Bars`, and boot-time warm-up (`MarketData__WarmIndicators`, HTTP only) replays them too — both
   do more work than before, in proportion to the session history kept. **The projector's and rebuilder's

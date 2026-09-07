@@ -25,7 +25,7 @@ namespace MarqSpec.Mcp.TopstepX.IntegrationTests;
 /// <para>
 /// <b>This is the repository's central failure mode in its purest form.</b> gh#571 stopped an orphaned value
 /// <i>surviving</i> a bar delete; it did not stop one being <b>served</b> in the window before a pass runs,
-/// and no read runs that pass — <see cref="IndicatorCacheService.EnsureProjectedAsync"/> returns early at
+/// and no read runs that pass — <see cref="IndicatorCacheService.EnsureProjectedAsync(SeriesKey, CancellationToken)"/> returns early at
 /// zero bars, so a series whose bars are all gone is never reprojected on read. Measured on PR #574's head:
 /// <c>get_indicators</c> returned <b>37 ATR points over zero bars</b>, <c>get_indicator_at</c> returned
 /// <b>65.32947503</b> with <c>contract=null</c>, and <c>get_market_snapshot</c> published that same number

@@ -311,6 +311,54 @@ served from the store. So the read settles to a store-only answer once the base 
 venue's empty ranges, which is one read later than a caller expects
 (`SessionBarToolServedReadTests.GetLatestSessionBars_AnchorsOnTheLastClosedSession` drives all three).
 
+## Update (2026-09-07) — the session indicator tools, and the `vwap` refusal made real
+
+**§7's session-indicator read now exists, and the Consequences bullet that says the surface refuses `vwap`
+rather than omitting it silently is now a behaviour rather than an intention** (gh#501, `R-5.12`).
+`get_session_indicators(symbol, session, indicator, fromUtc, toUtc, period?)` and
+`get_session_indicator_at(symbol, session, indicator, asOfUtc, period?)` read a stored series over a named
+session — one value per trade date — and `IndicatorCatalog.ResolveFor(key, name, period)` is where the
+refusal lives: an `ArgumentException` naming why `vwap` cannot be a session series' indicator and listing
+what can. It is refused **before the store is read**, so a mistyped call cannot make a whole series replay to
+serve something that was always going to be rejected.
+
+**§7's claim is exact, and this update is what makes it checkable.** These tools reach no gateway at all:
+they copy `IndicatorTools`' constructor shape, reading the venue id off the gateway once and keeping no
+gateway — not `SessionBarTools`', which holds a `SessionBarService` and must therefore translate
+`VenueException`. Nothing on this route can raise one, and a catch nobody can test goes stale in silence.
+
+**The values are a projection, not a derivation on this route** ([ADR-0006](0006-indicators-as-projections.md)'s
+update of the same date). A session bar is written by `get_session_bars` or `get_latest_session_bars` and the
+indicators over it are projected inside that same unit of work, so bars never commit without the values they
+justify. These two tools build nothing: a window whose sessions nobody has read answers with no values, and
+that is a fact about what has been asked for rather than about the market. The tool descriptions say so.
+
+**That projection runs when the pass changed the series, and the gate is part of what a session read costs.**
+The unit of work is entered by every read with one closed date, so projecting unconditionally made a warm
+`get_session_bars` for a single trade date recompute the whole session series — an empty diff by ADR-0006,
+but one paid on every call over a series that grows with the store, which the cost update above did not
+price. It is now gated on all three ways step 6 can change the series: a bar upserted, a stale one reconciled
+away, or a row discarded as built under a definition that no longer holds (§4). All three, because the last
+two leave values standing over bars that no longer exist and removing them is the projection's own reconcile;
+a gate copied from `BarCacheService`'s `written > 0` alone would leave them until an operator ran
+`rebuild-indicators`. **A warm read therefore pays the derivation and the two aggregates it always paid, and
+no projection at all.**
+
+**Half of one follow-up is taken.** *`rebuild-indicators` should re-aggregate session bars* is really two
+things, and only the second is done: the verb now walks the distinct session series `SessionBars` holds and
+**re-projects the indicators over them**, so the correction pass reaches the thing projected from the base
+series. It still does not **re-aggregate the session bars themselves** from base bars — gh#501 put that out
+of scope — so a session bar built under an aggregation bug is still repaired only by the read that re-derives
+it. The follow-up stays open, narrowed.
+
+**Known limits, recorded rather than claimed away.** The in-unit-of-work projection's *commit together or not
+at all* rests on the projection sitting inside `SeriesUnitOfWork`'s transaction by inspection: no test fails a
+fill after the projection and asserts that neither the bars nor the values survive. There is no concurrency
+suite for the `SessionIndicatorValues` upsert and reconcile, where the resolution series has two. And a value
+stored under a period the catalogue was later reconfigured away from is not reconciled — the reconcile is
+scoped to the `(Indicator, Period)` pairs the catalogue currently computes — which is a pre-existing rule of
+this projection and is now true of session series too.
+
 ## Update (2026-09-08) — the served ceiling, the pigeonhole bound, and the residue closed
 
 **The refusal above moved from 1,380 down to 661, and the reason it stopped at 1,380 was the wrong reason to

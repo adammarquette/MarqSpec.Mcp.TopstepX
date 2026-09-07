@@ -346,10 +346,11 @@ The server serves OHLCV bars for a futures instrument at a requested resolution 
   **minus session-anchored VWAP**, which has no intra-session volume distribution to weight when the session
   *is* one bar; `vwap-rolling` stays and reads as an N-session rolling VWAP. That exclusion is **refused by
   name at the tool** rather than served as an empty series (`R-5.12`), because an empty series is
-  indistinguishable from a market that produced none (`R-5.3`). A session read projects inside the same unit
-  of work that wrote its bars, so bars never commit without the values they justify, and
-  `rebuild-indicators` walks session series beside resolution ones (`R-2.5`). See
-  [ADR-0006](adr/0006-indicators-as-projections.md) and
+  indistinguishable from a market that produced none (`R-5.3`). A session read that **changed** the stored
+  sessions — upserting one, reconciling one away, or discarding one built under a definition that no longer
+  holds — projects inside that same unit of work, so bars never commit without the values they justify; a
+  warm read changes nothing and projects nothing. `rebuild-indicators` walks session series beside resolution
+  ones (`R-2.5`). See [ADR-0006](adr/0006-indicators-as-projections.md) and
   [ADR-0022](adr/0022-session-bars-derived-complete-or-absent.md) (gh#501, gh#496).
 
 ## R-3 — Key levels

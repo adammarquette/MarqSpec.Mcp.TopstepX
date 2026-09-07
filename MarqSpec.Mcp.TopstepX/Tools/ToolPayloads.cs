@@ -128,8 +128,9 @@ public static class ToolPayloads
     /// <para>
     /// <b>Zero does not prove the read cost nothing.</b> A range the venue answers <i>empty</i> (<c>R-1.7</c>)
     /// costs a request and returns no buckets, so this reads zero after a genuine round trip. The exact test
-    /// for "served entirely from the store" is <c>VenueRequests == 0</c>, and this remark claimed otherwise
-    /// until gh#71.
+    /// for <i>no bar fetch</i> is <c>VenueRequests == 0</c>, and this remark claimed otherwise until gh#71.
+    /// That test is narrower than "served entirely from the store": since gh#504 a read the empty-range memo
+    /// covers still makes one contract search, which nothing counts.
     /// </para>
     /// <para>
     /// The error is in the direction that matters: reading this as "free" <b>undercounts</b> venue traffic,
@@ -137,7 +138,10 @@ public static class ToolPayloads
     /// caller pacing itself on this number spends more of a shared budget than it believes it is spending.
     /// </para>
     /// </param>
-    /// <param name="VenueRequests">How many requests reached the venue.</param>
+    /// <param name="VenueRequests">
+    /// How many <b>history</b> requests reached the venue. A contract search issued to resolve the coverage
+    /// ledger's candidates is not one of them and is counted nowhere (gh#504).
+    /// </param>
     /// <param name="Contracts">
     /// Which contracts produced these bars. The bars are returned either way — each one is a real observation
     /// of a real contract — but <c>span</c> says whether reading them as a single series is valid.

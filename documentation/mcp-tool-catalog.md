@@ -224,7 +224,7 @@ one of them is evidence of a round trip.
 
 | Field | Answers | Zero means |
 |---|---|---|
-| `venueRequests` | did this call reach the venue? | **nothing was fetched** — the exact test, and the one to use |
+| `venueRequests` | did this call **fetch bars**? | **no bar fetch** — the exact test for that, and the one to use |
 | `fetchedBuckets` | how much did the answer change the store? | only that nothing was *written* |
 
 `fetchedBuckets` reads zero after a real fetch in two ordinary cases: a range the venue answers **empty**
@@ -233,6 +233,14 @@ against the winner's committed state and finds its buckets already there (gh#73)
 therefore **undercounts** venue traffic and never overcounts it — and the gateway's history limit belongs to
 the whole process rather than to one call, so a caller pacing itself on this number spends more of a shared
 budget than it believes.
+
+**`venueRequests` counts history requests — bar fetches — and nothing else**, so its zero is narrower than
+"no vendor traffic". Since gh#504 a read whose gaps the empty-range memo covers resolves the instrument's
+contract candidates first, and that `Contract/search` is unpaced and counted nowhere — stated in
+[architecture, step 4](architecture.md#the-cache-aside-read--the-only-genuinely-interesting-path). So
+`venueRequests == 0` proves **no bars were fetched**, not that the vendor went untouched, and such a read is
+venue-dependent: with the venue down it raises rather than answering from the store. The error runs the same
+way as `fetchedBuckets`'s — it **undercounts** venue traffic and never overcounts it.
 
 `venueRequests == 0` is what makes "the second identical call fetches nothing" observable rather than a
 claim, and it is the check for `R-1.3`. **There is no `fromCache`** — see the retractions at the foot of this
@@ -871,7 +879,7 @@ not from whether its type is nullable, so `string? symbol` with no `= null` is n
 | `list_instruments` | a `resolutionsAvailable` field | never on `InstrumentInfo` | gh#48 |
 | `get_market_session` | a `sessionOpenUtc` field | never on `SessionState` | gh#48 |
 | `get_bars` | a `fromCache` field | never on `BarSeries` — and the one an agent would reach for, reading falsy `undefined` every call | gh#48 |
-| `get_bars` | `fetchedBuckets` ≡ `venueRequests` as evidence | only `venueRequests == 0` proves the store served it | gh#73 |
+| `get_bars` | `fetchedBuckets` ≡ `venueRequests` as evidence | only `venueRequests == 0` proves **no bars were fetched** — and since gh#504 not even that the vendor went untouched: a memo-covered read still makes one uncounted `Contract/search` | gh#73 · gh#504 |
 | `get_indicators` | `period` is a parameter | never was; fixed per indicator, and returned | gh#48 |
 | `get_indicators` · `get_indicator_at` | `period` is not a parameter | since gh#495 it is an optional *selector* among the operator's configured periods — omitted means the primary, an unconfigured one is refused listing them, and nothing ad hoc is computed ([ADR-0018](adr/0018-period-selection-among-configured-periods.md)) | gh#495 |
 | `get_indicator_at` | cannot-measure is `{ value: null }` | it is `{}` | gh#85 |

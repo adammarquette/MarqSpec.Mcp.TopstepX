@@ -29,12 +29,14 @@ namespace MarqSpec.Mcp.TopstepX.MarketData;
 /// <para>
 /// <b>Zero no longer proves the read touched no venue.</b> It did before the serialization retry: a second
 /// attempt re-derives against the winner's committed state, so the buckets it would have written are already
-/// there and it writes none — after a real fetch. <see cref="VenueRequests"/> is the exact test for "served
-/// entirely from the store", and it stays truthful on that path.
+/// there and it writes none — after a real fetch. <see cref="VenueRequests"/> is the exact test for <i>no
+/// bar fetch</i>, and it stays truthful on that path — but that is narrower than "served entirely from the
+/// store": since gh#504 a read the empty-range memo covers still makes one uncounted contract search.
 /// </para>
 /// </param>
 /// <param name="VenueRequests">
-/// How many requests were issued to the venue. Zero is the precise statement that nothing was fetched.
+/// How many <b>history</b> requests were issued to the venue. Zero is the precise statement that no bars
+/// were fetched — not that the venue went untouched (gh#504).
 /// </param>
 public sealed record BarReadResult(
     IReadOnlyList<Bar> Bars,

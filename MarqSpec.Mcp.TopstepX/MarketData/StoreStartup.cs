@@ -37,10 +37,10 @@ public static class StoreStartup
     /// Capped rather than unbounded because the bound is short: an exponential gap that reached a minute would
     /// spend most of a ninety-second wait asleep and miss a store that arrived at second thirty-five.
     /// </remarks>
-    private static readonly TimeSpan MaxBackoff = TimeSpan.FromSeconds(5);
+    private static readonly TimeSpan _maxBackoff = TimeSpan.FromSeconds(5);
 
     /// <summary>The first gap between probes.</summary>
-    private static readonly TimeSpan FirstBackoff = TimeSpan.FromSeconds(1);
+    private static readonly TimeSpan _firstBackoff = TimeSpan.FromSeconds(1);
 
     /// <summary>
     /// Reduces a connection string to the coordinates an operator needs, and to nothing else.
@@ -117,7 +117,7 @@ public static class StoreStartup
 
         string target = DescribeTarget(connectionString);
         long started = clock.GetTimestamp();
-        TimeSpan backoff = FirstBackoff;
+        TimeSpan backoff = _firstBackoff;
         int attempts = 0;
 
         while (true)
@@ -150,7 +150,7 @@ public static class StoreStartup
 
             await Task.Delay(delay, clock, cancellationToken).ConfigureAwait(false);
 
-            backoff = backoff < MaxBackoff ? Min(backoff + backoff, MaxBackoff) : MaxBackoff;
+            backoff = backoff < _maxBackoff ? Min(backoff + backoff, _maxBackoff) : _maxBackoff;
         }
 
         // One line, not a stack trace. This is the first thing a new operator meets, and the stack trace it

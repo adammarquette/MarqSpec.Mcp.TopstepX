@@ -58,6 +58,12 @@ services:
     environment:
       ConnectionStrings__Default: "${ConnectionStrings__Default:-Host=postgres;Port=5432;Database=topstepx_mcp;Username=topstepx;Password=changeme-local}"
 
+      # 0 here, deliberately, and not because 0 is a safe default -- because this stack does not need it.
+      # depends_on above is service_healthy against pg_isready, so Postgres is answering before this service
+      # starts. A deployment with no cross-service ordering is the case the key exists for (ECS sets 90), and
+      # setting it here would only mask a compose stack whose health gate had stopped working (gh#514).
+      Store__StartupWaitSeconds: "${Store__StartupWaitSeconds:-0}"
+
       ProjectX__ApiKey: "${ProjectX__ApiKey:-}"
       ProjectX__ApiSecret: "${ProjectX__ApiSecret:-}"
       # Defaulted so `docker compose up` with credentials and no tier does not fail startup. The

@@ -15,6 +15,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`Store__StartupWaitSeconds` — how long startup waits for a store that is not answering yet.** `0` by
+  default, which is one probe and no delay: byte for byte what every launch did before, and what compose
+  wants, since its `depends_on` is a `pg_isready` health gate. It exists for a deployment with **no
+  cross-service ordering**, where the server can reach the migration before Postgres answers and a single
+  probe leaves the task degraded for its whole life — healthy, and serving refusals — until someone restarts
+  it. A non-zero bound retries with backoff capped at five seconds, logging each attempt at Information
+  against the same named target. Range `0..600`, `ValidateOnStart`, and **refused rather than clamped**
+  outside it: reading `-1` as `0` would leave an operator believing a wait is configured. It does not make the
+  store required — an absent store still degrades to a refusal at the point of use
+  ([ADR-0007](documentation/adr/0007-dual-transport.md)), and a migration that fails against a database which
+  *did* answer still fails the process (gh#514, gh#509).
 - **[ADR-0023](documentation/adr/0023-aws-deployment-topology.md) — the AWS deployment topology.** A decision
   record only; **no code, no workflow, no AWS resource changes with it**. It carries the shape
   [ADR-0021](documentation/adr/0021-a-non-loopback-instance-is-supported.md) decided and records the
@@ -185,6 +196,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (gh#496, arriving in gh#500). **This is breaking for any caller passing 1,440 to 10,080** — it now gets a
   tool error where it used to get `[]` (gh#498,
   [ADR-0022](documentation/adr/0022-session-bars-derived-complete-or-absent.md), `R-1.9`).
+
+### Fixed
+
+- **The store-unreachable warning names what it tried** — `Nothing answered at host=… port=… database=…
+  user=…` — where it previously said only "nothing answered on the configured connection string". The
+  difference is not cosmetic in a container: an unset `ConnectionStrings__Default` substitutes a
+  `Host=localhost` fallback, so a task whose secret never landed and a database that is genuinely down used to
+  produce the same sentence, and the operator went and looked at the database. **The password is never in the
+  line, and neither is the connection string** — the target is rebuilt from `NpgsqlConnectionStringBuilder`,
+  including on the branch where the string does not parse, and the unit tier asserts the sentinel reaches no
+  log line at any level. Validation was rejected as the fix: the documented plain `dotnet run` HTTP recipe
+  starts with no database by design, so refusing an unset connection string would break a supported mode
+  (gh#514, gh#509).
 
 ## [0.3.1] - 2026-09-06
 

@@ -197,6 +197,21 @@ purpose. `curl` against `/mcp` with no `Authorization` header, or the wrong toke
 right one, `initialize`, a full `tools/list` and a `list_instruments` call all answer normally, with the
 absent-database warning firing exactly as it does under stdio.
 
+**That warning names what it tried.** It reads `Nothing answered at host=localhost port=5432
+database=topstepx_mcp user=topstepx` — the four coordinates, and never the password or the connection string
+itself. The point is a deployment rather than this recipe: `ConnectionStrings__Default` being unset
+substitutes exactly that `localhost` string, so a container whose secret failed to land says `host=localhost`
+in its log and points at the secret instead of at a database that is fine (gh#514). Here, where no database
+is the *supported* state, it is simply telling you which one it looked for.
+
+`Store__StartupWaitSeconds` sets how long startup keeps retrying before it gives up, in seconds, and is `0`
+— one probe, no delay — everywhere including this recipe. Leave it alone locally: waiting is for a
+deployment with no cross-service ordering, where the server can reach the migration before Postgres answers
+and a single probe would degrade it for the life of the task. Compose does not need it either, since its
+`depends_on` is a `pg_isready` health gate. Each retry logs at Information against the same target, the value
+is refused outside `0..600`, and none of it makes the store required — an absent one still degrades to a
+refusal at the point of use ([ADR-0007](documentation/adr/0007-dual-transport.md)).
+
 Two things this recipe deliberately does **not** carry over from `docker compose up`:
 
 - **No TLS.** The composed endpoint's HTTPS on `:8443` is gh#416's answer to one client's requirement, not

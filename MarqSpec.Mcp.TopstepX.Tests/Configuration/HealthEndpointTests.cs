@@ -104,7 +104,7 @@ public sealed class HealthEndpointTests
         app.Services.GetRequiredService<StoreAvailabilityHolder>()
             .Set(store ?? StoreAvailability.Available());
 
-        Program.MapHttpTransport(app, mcp.HttpBearerToken);
+        Program.MapHttpTransport(app, mcp);
 
         await app.StartAsync();
 

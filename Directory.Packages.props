@@ -30,6 +30,13 @@
     -->
     <PackageVersion Include="ModelContextProtocol" Version="2.2.0" />
     <PackageVersion Include="ModelContextProtocol.AspNetCore" Version="2.2.0" />
+    <!--
+      The OAuth 2.1 resource-server half of the HTTP transport (ADR-0007, ADR-0021, gh#512): validates a
+      Cognito-issued JWT against the issuer's published keys, discovered from its OpenID configuration. Host
+      only — it is a request-pipeline seam. 10.0.x to match the framework line the web host already pulls, for
+      the same transitive-pinning reason as the Microsoft.Extensions.* packages below.
+    -->
+    <PackageVersion Include="Microsoft.AspNetCore.Authentication.JwtBearer" Version="10.0.11" />
   </ItemGroup>
 
   <ItemGroup Label="Venue">

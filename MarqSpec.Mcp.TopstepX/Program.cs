@@ -98,7 +98,7 @@ public static class Program
 
         if (mcp.Transport == McpTransport.Http)
         {
-            MapHttpTransport(app, mcp.HttpBearerToken);
+            MapHttpTransport(app, mcp);
         }
 
         // Both transports run through the same call. The shutdown-during-startup race it absorbs is reachable
@@ -114,27 +114,40 @@ public static class Program
 
     /// <summary>Builds the HTTP transport's request pipeline, in the one order that is correct.</summary>
     /// <param name="app">The built host.</param>
-    /// <param name="bearerToken">The configured token.</param>
+    /// <param name="mcp">The transport options, carrying which authentication mode the gate runs in.</param>
     /// <remarks>
-    /// One method rather than three lines inline, so the ordering is a thing a test can call. It is the
-    /// ordering that carries the whole of the carve-out, and nothing about reading the three calls tells you
-    /// that.
+    /// One method rather than a few lines inline, so the ordering is a thing a test can call. It is the
+    /// ordering that carries the whole of the carve-out, and nothing about reading the calls tells you that.
     /// </remarks>
-    public static void MapHttpTransport(WebApplication app, string bearerToken)
+    public static void MapHttpTransport(WebApplication app, McpOptions mcp)
     {
         ArgumentNullException.ThrowIfNull(app);
+        ArgumentNullException.ThrowIfNull(mcp);
 
         // BEFORE the gate, and it works only because it is a terminal branch rather than a mapped endpoint:
         // `WebApplication` runs every endpoint after every middleware whatever order they were added in, so
         // a MapGet here would be answered 401 by the gate below and never reached. An ALB target-group probe
-        // carries no credential and is what this is for (gh#513, ADR-0021).
+        // carries no credential and is what this is for (gh#513, ADR-0021). Under EITHER mode: the load
+        // balancer has no credential under OAuth any more than it had a static token.
         app.UseHealthEndpoint();
 
-        // BEFORE MapMcp, so the gate sits in front of the endpoint rather than beside it. Options
-        // validation already refuses to start the HTTP transport without a token; this is what makes that
-        // requirement mean something at request time (ADR-0007).
-        app.UseBearerTokenGate(bearerToken);
-        app.MapMcp("/mcp");
+        // BEFORE MapMcp, so the gate sits in front of the endpoint rather than beside it. Options validation
+        // already refuses to start the HTTP transport with no mode configured, or with both; this is what
+        // makes that requirement mean something at request time (ADR-0007). The gate is global in both
+        // modes, and the only things past it are the terminal branches above it.
+        if (mcp.Auth.Mode == McpAuthMode.OAuth)
+        {
+            // The RFC 9728 document the 401 names; a connector reads it before it has a token, so it is the
+            // second terminal branch in front of the gate and the last one (gh#512).
+            app.UseProtectedResourceMetadata(mcp.OAuth);
+            app.UseOAuthBearerGate(mcp.OAuth);
+        }
+        else
+        {
+            app.UseBearerTokenGate(mcp.HttpBearerToken);
+        }
+
+        app.MapMcp(McpOptions.McpEndpointPath);
     }
 
     /// <summary>Runs the built host, treating a shutdown asked for during startup as a shutdown.</summary>
@@ -581,13 +594,22 @@ public static class Program
             .ValidateDataAnnotations()
             .ValidateOnStart();
 
+        // Under HTTP, exactly one authentication mode, complete — the token for StaticToken, the issuer,
+        // client ids and resource URL for OAuth — and both directions of "both" refused, each naming its
+        // key. The rules are McpOptions.Validate, an IValidatableObject like KeyLevelDetectionOptions, so
+        // the token rule that used to be a lambda here now lives beside the ones it is exclusive with
+        // (ADR-0021, gh#512). Nothing under Mcp:Auth or Mcp:OAuth is read under stdio.
         services.AddOptions<McpOptions>()
             .Bind(builder.Configuration.GetSection(McpOptions.SectionName))
-            .Validate(
-                o => o.Transport != McpTransport.Http || !string.IsNullOrWhiteSpace(o.HttpBearerToken),
-                "Mcp__HttpBearerToken is required when the HTTP transport is enabled. Nothing here can trade, "
-                + "but an open endpoint still exposes balances, positions and trade history.")
+            .ValidateDataAnnotations()
             .ValidateOnStart();
+
+        // The JWT bearer handler the OAuth gate authenticates with, registered only in the mode that uses
+        // it: the static mode's container is byte for byte what it was, and stdio's too.
+        if (mcp.Transport == McpTransport.Http && mcp.Auth.Mode == McpAuthMode.OAuth)
+        {
+            services.AddOAuthBearerAuthentication(mcp.OAuth);
+        }
 
         // What the liveness probe reports as `version` and `digest`. Optional, unvalidated, and defaulting to
         // "unknown": nothing here declares a version in a file (ADR-0001), so a running task can only be told

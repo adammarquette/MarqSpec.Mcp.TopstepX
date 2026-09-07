@@ -39,6 +39,12 @@
       (ADR-0023 §3).
     -->
     <None Include="..\..\.env.example" Link=".env.example" CopyToOutputDirectory="PreserveNewest" />
+    <!--
+      The repository-settings half of the OIDC trust (gh#518, ADR-0023 §8): the production role trusts one
+      GitHub environment by name, and bootstrap.sh is what creates that environment with its reviewer. The
+      test reads the script's own list so the two cannot drift on that name.
+    -->
+    <None Include="..\..\scripts\bootstrap.sh" Link="bootstrap.sh" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
 </Project>

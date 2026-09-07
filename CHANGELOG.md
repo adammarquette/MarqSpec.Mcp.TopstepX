@@ -15,6 +15,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Session bars are reachable from the MCP surface: `get_session_bars(symbol, session, fromUtc, toUtc)` and
+  `get_latest_session_bars(symbol, session, count)`.** One OHLCV bar per **whole** trading session — the day,
+  the overnight, or any named slice of it — derived from the cached base series rather than fetched as a bar
+  that size, over the four shipped sessions `full` (17:00→16:00 Central, 60-minute base), `rth`
+  (08:30→15:00, 30), `asia` (17:00→02:00, 30) and `europe` (02:00→08:30, 30). The windowed form returns one
+  row per trade date whose **whole** session lies inside the window; the count form anchors on the last
+  session whose close is at or before now and never the one in progress, so it answers with the sessions
+  before today's rather than with a partial one. Both answer `{ symbol, session, baseResolutionMinutes,
+  bars: [{ tradeDate, t, closeUtc, o, h, l, c, v }], absent: [{ tradeDate, reason, expectedBuckets,
+  missingBuckets }], fetchedBuckets, venueRequests, contracts }`: **a session this server could not build
+  whole is an `absent` entry with a reason — `Incomplete`, `SpansRoll`, `ProvenanceUnknown` or `NotClosed` —
+  and never a bar with holes in it**, and the two lists partition the trade dates asked for, so among the
+  sessions a window wholly contains a date in neither list is a day the calendar says did not trade. Their
+  own tool type rather than a `session` argument on `get_bars`
+  ([ADR-0017](documentation/adr/0017-one-tool-type-per-concern.md)), since a session bar is defined on the
+  CME trade date rather than on the bucket grid and carries a second list `get_bars` has no place for.
+  `contracts` is built from each session bar's single contract id — a session whose base bars disagreed is
+  `absent` rather than spliced — so a roll falls *between* two trade dates and `contracts.span` reads
+  `Unknown` only when no session bar could be built at all. **Refused rather than truncated on either cap,
+  and every refusal fires before the store or the venue is touched**: a window is checked for emptiness, then
+  against the calendar horizon, then against `BarGapDetector.MaxBucketsPerPass` counted in **base** buckets,
+  then against the row cap on trade dates; a count is checked against `MaxRows`, then the horizon, then the
+  bounded closed-session walk of four calendar days per session plus fifteen, then the same base-bucket cap
+  over the covering window it would read. `fetchedBuckets` and `venueRequests` are the base series' numbers
+  and `venueRequests == 0` is the exact test for an answer served entirely from the store; a repeat read
+  settles to a store-only answer once the base ledger has recorded the venue's empty ranges, which is the
+  read after the one that filled the bars. The
+  [tool catalogue](documentation/mcp-tool-catalog.md), the PRD (`R-1.13`, `R-5.11`), the
+  [architecture doc](documentation/architecture.md)'s *session read* section and
+  [ADR-0022](documentation/adr/0022-session-bars-derived-complete-or-absent.md) — which gains a dated update
+  for the tool surface — are updated in the same change, and the 1,380-and-above resolution refusal now names
+  the two tools rather than promising them (gh#500, gh#496).
 - **The host counts what it is for: cache hits and misses, venue calls, gap fills, tape ticks, hub
   reconnects and claim hand-offs.** One `Meter` and one `ActivitySource`, both named
   `MarqSpec.Mcp.TopstepX`, registered once and subscribed by `ConfigureTelemetry` beside the framework
@@ -135,8 +167,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the overnight included, and reports what that cost. A warm base series answers with zero venue requests.
   `R-1.12` and ADR-0022 §7 are scoped to match: *never reaches the vendor* is the session-**indicator** read's
   claim, and ADR-0022 gains a dated update saying what a session-**bar** read costs.
-  **No tool ships with this.** Session bars are not reachable from the MCP surface until gh#500; the data
-  dictionary (§11) and the architecture doc's *session read* section describe what is stored and how.
+  **No tool shipped with this slice.** Session bars reached the MCP surface one slice later, as
+  `get_session_bars` and `get_latest_session_bars` (gh#500, above); the data dictionary (§11) and the
+  architecture doc's *session read* section describe what is stored and how.
 - **[ADR-0021](documentation/adr/0021-a-non-loopback-instance-is-supported.md) — a non-loopback instance is
   supported, in one shape, and each of the three same-machine couplings has a named replacement.** ADR-0007's
   2026-09-01 TLS update scoped the composed endpoint to a client on the same machine and left a remote
@@ -288,7 +321,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   nothing. The ceiling is now **1,379**, one minute short of a session, and the refusal names where the
   answer lives rather than only saying no: a bar of a session's length or longer is a **session bar**,
   defined on the CME trade date rather than on the bucket grid, and the session-bars tools will serve it
-  (gh#496, arriving in gh#500). **This is breaking for any caller passing 1,440 to 10,080** — it now gets a
+  (gh#496): since gh#500 the refusal names `get_session_bars` and `get_latest_session_bars` outright.
+  **This is breaking for any caller passing 1,440 to 10,080** — it now gets a
   tool error where it used to get `[]` (gh#498,
   [ADR-0022](documentation/adr/0022-session-bars-derived-complete-or-absent.md), `R-1.9`).
 

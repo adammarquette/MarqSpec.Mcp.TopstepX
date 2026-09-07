@@ -360,7 +360,7 @@ operator's own session close (`R-1.12`, gh#499).
    the read itself rather than of the sequence that preceded it. **Inside the unit of work, not after it**:
    under `RepeatableRead` the statement sees this transaction's own writes against its own snapshot, so a
    concurrent deletion landing between the commit and a later read cannot leave a trade date in *neither*
-   list — the silent gap gh#500 would read as *not a trading day*.
+   list — the silent gap `get_session_bars` reads as *not a trading day*.
 
    **A retry replays this call's own reconcile decision, and that decision is a `DELETE`** — the only
    `SeriesUnitOfWork` body in the repository of which that is true. Which dates are stale is derived at step 5
@@ -380,8 +380,23 @@ operator's own session close (`R-1.12`, gh#499).
 re-derived on every read, so a session that heals simply appears on the next one
 ([ADR-0022](adr/0022-session-bars-derived-complete-or-absent.md)).
 
-**No tool reaches this yet.** The session-bar tool surface is gh#500; until it lands, `SessionBarService` is
-registered and reachable only from the composition root.
+**Two tools reach this: `get_session_bars(symbol, session, fromUtc, toUtc)` and
+`get_latest_session_bars(symbol, session, count)`** (gh#500, `R-5.11`). They are their own tool type
+([ADR-0017](adr/0017-one-tool-type-per-concern.md)), they hold no gateway — the venue is reached only through
+`SessionBarService` — and the trade-date list each hands the service is a walk over the session calendar, so
+it can never contain a duplicate and never a date the calendar disowns.
+
+**Every refusal is decided before the store or the venue is touched**, and the order differs between the two
+forms. `get_session_bars`: an empty or inverted window → a `toUtc` past the calendar horizon → the
+base-bucket cap (`BarGapDetector.MaxBucketsPerPass`, counted in the session's **base** buckets, since those
+are what the covering read enumerates) → the row cap on the trade dates the window wholly contains. The
+bucket cap comes **before** the row cap here, the opposite of `ToolGuards.ValidateWindow`'s order, because
+the row count is a calendar walk rather than arithmetic and the bucket span is what bounds the walk.
+`get_latest_session_bars`: `count` positive and within `MaxRows` → `now` past the horizon → the bounded
+closed-session walk (`SessionWindows.LastClosedWalkSpanDays` — four calendar days per session plus fifteen,
+refused naming the count and the span when a holiday-dense calendar holds fewer) → the same base-bucket cap,
+measured over the covering window the read will issue. That last one is not the row cap restated: a `count`
+well inside `MaxRows` can still span more base buckets than one pass enumerates.
 
 ## The indicator read — cache-aside on the same terms, and never against the vendor
 

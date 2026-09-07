@@ -163,6 +163,9 @@ public sealed class EnvironmentStack : Stack
 
         // ── DNS ─────────────────────────────────────────────────────────────────────────────────────────
         IHostedZone zone;
+        // Held only so the certificate far below can be ORDERED behind it (gh#588). Null under Lookup: that
+        // zone already exists and is already delegated, so there is nothing to wait for.
+        ZoneDelegationRecord? delegation = null;
         if (props.ZoneMode == ZoneMode.Lookup)
         {
             zone = HostedZone.FromLookup(this, "Zone", new HostedZoneProviderProps { DomainName = root });
@@ -175,7 +178,7 @@ public sealed class EnvironmentStack : Stack
                 ZoneName = root,
                 Comment = $"topstepx-mcp {env}: delegated from the apex so the environment is its own root (ADR-0023 §1).",
             });
-            _ = new ZoneDelegationRecord(this, "Delegation", new ZoneDelegationRecordProps
+            delegation = new ZoneDelegationRecord(this, "Delegation", new ZoneDelegationRecordProps
             {
                 Zone = parent,
                 RecordName = root,
@@ -691,6 +694,18 @@ public sealed class EnvironmentStack : Stack
             DomainName = $"*.{root}",
             Validation = CertificateValidation.FromDns(zone),
         });
+        // ORDERING, and it has to be said out loud (gh#588). Under CreateAndDelegate the certificate and the
+        // delegation are SIBLINGS: each references the created zone and neither references the other, so
+        // CloudFormation is free to build them at the same time. CloudFormation writes ACM's validation record
+        // into that new zone and ACM then polls PUBLIC DNS for it -- which resolves only once the apex
+        // delegates. Concurrently, that is a race: usually won, unbounded when lost, and lost as a stack
+        // sitting in CREATE_IN_PROGRESS rather than as an error, because ACM does not give up for 72 hours.
+        // AddDependency rather than a reference, since there is no value here to pass -- the certificate needs
+        // the delegation to have HAPPENED, not to say anything.
+        if (delegation is not null)
+        {
+            certificate.Node.AddDependency(delegation);
+        }
         var targetGroup = new ApplicationTargetGroup(this, "ServerTargetGroup", new ApplicationTargetGroupProps
         {
             Vpc = vpc,

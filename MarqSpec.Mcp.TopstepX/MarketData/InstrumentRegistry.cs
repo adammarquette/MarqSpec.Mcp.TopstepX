@@ -203,12 +203,15 @@ public sealed class InstrumentRegistry
     /// <exception cref="KeyNotFoundException">The instrument is not one this server serves.</exception>
     /// <remarks>
     /// <para>
-    /// <b>Two for the equity indices, three for the metals and energy</b>, and the difference is measured
-    /// rather than assumed (gh#494). A quarterly index trades its own quarter's contract until the roll, so
-    /// the front and the next quarterly are every contract that can carry the volume. Gold lists October and
-    /// the market skips it — `MGC.V26` against `Z26` was 1 : 8 on every day measured — so a depth of two
+    /// <b>Two for the equity indices and for silver, three for gold and the energy products</b>, and the
+    /// difference is measured rather than assumed (gh#494). A quarterly index trades its own quarter's
+    /// contract until the roll, so the front and the next quarterly are every contract that can carry the
+    /// volume; silver is on <c>HKNUZ</c> with no measured skip, so it takes the same two. Gold lists October
+    /// and the market skips it — `MGC.V26` against `Z26` was 1 : 8 on every day measured — so a depth of two
     /// would stop at a contract nobody trades. Crude expires before the month it is named for, so on
-    /// 2026-08-18 the front was `V26`, two listed months past the trade date's own.
+    /// 2026-08-18 the front was `V26`, two listed months past the trade date's own. <b>"The metals" is not
+    /// one answer</b>: gold and silver differ here, and a summary that lumps them overstates K, which is the
+    /// multiplier on a cold historical fetch.
     /// </para>
     /// <para>
     /// The depth is what a cold historical fetch is multiplied by, so it is the smallest number that reaches

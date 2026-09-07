@@ -126,19 +126,26 @@ The server serves OHLCV bars for a futures instrument at a requested resolution 
   fetch flow and not configuration. Buckets at or after that point are the present; everything older is
   history. A historical range is cut at every trade-date boundary where its candidates change, and a trade
   date's candidates are the product's registry **contract month cycle** taken at its **candidate depth** —
-  `HMUZ` two deep on the equity indices, `GJMQVZ` and every-month three deep on the metals and energy, because
-  the market skips a listed gold month outright and a crude contract expires before the month it is named for.
-  Each constructed candidate is **existence-checked by id** before it is asked, since a constructed id is a
+  **two deep on the equity indices and on silver, three deep on gold and the energy products**, because the
+  market skips a listed gold month outright and a crude contract expires before the month it is named for,
+  while a quarterly index and silver's own cycle need only the front and the next listed month. Each
+  constructed candidate is **existence-checked by id** before it is asked, since a constructed id is a
   guess until the venue confirms it; each surviving one is fetched over the whole piece, and the contract with
   the highest summed volume on a trade date keeps that date's bars. **A tie goes to the nearer expiry**, and a
-  trade date the store already holds an attributed bar for keeps the contract it is recorded under, so one day
-  is never half one contract and half another. A candidate that answered nothing records that emptiness
+  trade date the store already holds an attributed bar for keeps the contract it is recorded under **when that
+  contract is among the candidates that answered bars for the date** — otherwise the pin names nothing the
+  fetch can honour and volume decides — so one day is never half one contract and half another. A candidate
+  that answered nothing records that emptiness
   **under its own id** (`R-1.7`), cut at the settled age so the older part is claimed permanently while only
-  the young remainder carries the short TTL; a winner records none. **Degradation is loud and earns no
-  permanent claim**: an instrument the registry does not serve, a front whose expiry does not read against the
-  cycle, or a stretch no constructed candidate is listed for is fetched from `F` — exactly the behaviour that
-  preceded this requirement — with a **warning naming the range and the reason**, and with nothing recorded
-  about it being empty, so the next read asks again rather than inheriting a claim nobody could properly make.
+  the young remainder carries the short TTL; a winner records none. **Degradation is loud, and it takes two
+  shapes.** An instrument the registry does not serve, and a front whose expiry does not read against the
+  cycle, are conditions of the **whole read**: every range is fetched from `F` as one present slice — exactly
+  the behaviour that preceded this requirement, memoisation included, since an empty answer from `F` is a true
+  statement about `F` under the per-contract ledger (`R-1.7`) and a later read with a wider candidate set
+  still asks the others — with a **warning naming the instrument, the front and the cycle**. A **stretch no
+  constructed candidate is listed for** is the narrower case, and only it withholds the memo: that slice alone
+  is fetched from `F`, with a **warning naming the range**, and **nothing permanent is recorded** about it
+  being empty, so the next read asks again rather than inheriting a claim nobody could properly make.
   A read **never rewrites a bucket that already carries a contract**; replacing a run the policy would decide
   differently is an operator's verb, not a read's (gh#506). See
   [ADR-0020](adr/0020-historical-contract-selection.md) (gh#505, gh#497).
@@ -181,7 +188,8 @@ The server serves OHLCV bars for a futures instrument at a requested resolution 
   history rather than only at the live roll**, and how often it is paid is the product's listed cycle: the
   candidate set turns **four** times a year on MES's `HMUZ`, **six** on MGC's `GJMQVZ` and **twelve** on
   MCL's every-month cycle, and a seam lands wherever the volume winner actually changes — on gold that is
-  fewer than six, because the market has never given October the volume (gh#494). After each seam the first
+  fewer than six, because the market has not given October the volume in the contract-year measured
+  (gh#494). After each seam the first
   `WarmupBars` buckets of that contract carry no value, so a series whose warm-up is longer than one
   contract's tenure never produces a value at all: a 200-period daily needs two hundred daily bars from one
   contract, where a tenure holds about twenty-one on MCL and about sixty-four on MES, and even a 50-period

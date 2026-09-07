@@ -63,7 +63,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   confirms each constructed id against the venue before it is asked, each surviving candidate is paged
   through the same paced walk, and `HistoricalContractPolicy.Decide` keeps per trade date the bars of the
   contract with the most volume — ties to the nearer expiry, and a trade date the store already holds an
-  attributed bar for keeping the contract it is recorded under, read by `StoredContractByTradeDateAsync`
+  attributed bar for keeping the contract it is recorded under **when that contract is among the ones that
+  answered bars for the date**, volume deciding when it is not. That pin is read by
+  `StoredContractByTradeDateAsync`
   from the trade dates rather than from the caller's window so half a day is never one contract and half
   another. **The behaviour change is plain: a historical range may now be served from a contract the venue
   did not mark active**, and `contracts.segments` therefore reads as one run per roll in expiry order rather
@@ -73,12 +75,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   then deleted. The coverage ledger is consulted per slice against that slice's own candidate set — the
   `.Take(1)` is gone — and a candidate that answered nothing records its emptiness under its own id, cut at
   `SettledHistoryAge` so the settled part is permanent while only the young remainder carries the
-  fifteen-minute TTL. **Degradation is loud and earns nothing permanent:** an unserved instrument, a front
-  whose expiry does not read against the cycle, or a stretch no constructed candidate is listed for falls
-  back to the venue's pick with a `LogWarning` naming the range, and writes no memo, so the next read asks
+  fifteen-minute TTL. **Degradation is loud, and it takes two shapes.** An instrument the registry does not
+  serve, and a front whose expiry does not read against the cycle, end the plan for the **whole read**:
+  every range becomes one present slice on the venue's pick — today's behaviour exactly, memoisation
+  included, since an empty answer from that contract is a true statement about *it* under the per-contract
+  ledger, and a later read whose candidate set is wider still asks the others — with a `LogWarning` naming
+  the instrument, the front and the cycle. Only the narrower case, a **stretch no constructed candidate is
+  listed for**, withholds the claim: that slice alone falls back, with a `LogWarning` naming the range, and
+  writes **no** memo, so the next read asks
   again. Counters stay honest: `GapFilled` still counts ranges rather than slices, every candidate's history
   pages count in `venueRequests` — a cold historical window costs about **K×** a single contract's, K being
-  the candidate depth, two on the indices and three on the metals and energy — and the `find_contract`
+  the candidate depth, two on the equity indices and silver and three on gold and the energy products — and
+  the `find_contract`
   lookups are on the platform meter beside `resolve_contracts`, never in `venueRequests`. `Domain` is
   untouched; the policy, the cycle and the expiry arithmetic are consumed as gh#502 and gh#503 left them.
   [ADR-0020](documentation/adr/0020-historical-contract-selection.md) is the record, `R-1.14` the

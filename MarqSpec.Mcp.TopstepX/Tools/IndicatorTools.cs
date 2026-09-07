@@ -414,6 +414,26 @@ public sealed class IndicatorTools(
     /// <i>served</i>: 37 ATR points over zero bars, and a 65.32947503 with a null contract that a caller
     /// could not tell from a real reading.
     /// </para>
+    /// <para>
+    /// <b>The semi-join this produces is a MERGE join, and that is why the shape is safe rather than merely
+    /// correct.</b> Both sides arrive already ordered on <c>BucketStart</c> descending — from the indexes
+    /// these reads use anyway — so an <c>ORDER BY … LIMIT 1</c> stops the merge after one pair and every
+    /// chunk but the newest goes unexecuted. A hash semi-join would have to <i>give up</i> that ordering and
+    /// pay a sort to satisfy the same <c>LIMIT</c>, which is what makes the cheap plan and the ordered plan
+    /// the same plan here; it is a property of the two keys rather than of a fixture, since the bars' key
+    /// ends in the column this joins on.
+    /// </para>
+    /// <para>
+    /// <b>The cost is planning, not the join, and it is the number that grows.</b> Measured on gh#577 at
+    /// 250,000 bars and 250,000 values on <c>timescale/timescaledb-ha:pg17</c>: execution 1.515 ms without
+    /// this filter and 3.394 ms with it, six shared buffer hits against three — while <b>planning</b> went
+    /// 25.7 ms to 42.6 ms, because a second 125-chunk hypertable enters the plan. So the figure to watch as a
+    /// store grows is the planning one, and it scales with chunk count rather than with series length.
+    /// <b>Both numbers are a floor.</b> That fixture holds one instrument, one indicator and one period, so
+    /// the values side matched its five equality columns as a <c>Filter</c> rather than an
+    /// <c>Index Cond</c> and a crowded chunk would walk further before its first hit — true of the query
+    /// before this filter existed too, which is why it qualifies the measurement rather than this change.
+    /// </para>
     /// </remarks>
     private IQueryable<BarRecord> SeriesBars(InstrumentId instrument, int resolutionMinutes) =>
         _database.Bars

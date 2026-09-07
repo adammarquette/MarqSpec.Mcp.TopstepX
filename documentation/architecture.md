@@ -107,18 +107,41 @@ a **session bar** rather than a resolution (`R-1.12`,
    the new front's ranges are unanswered and get asked, instead of inheriting the retiring contract's
    permanent "empty" over a window the new front does cover.
 
-   **The candidate set is the venue-front contract alone in this slice** — `contracts[0]`, the same one step
-   5 asks and stamps. A contract this slice never fetches from can never hold a memo, so counting the
-   venue's whole listing as candidates would make "every candidate answered" unsatisfiable the moment a roll
-   window lists two expiries, and every settled empty range would be re-fetched on every read. The set is
-   carried as a *list* because gh#505 widens it — to the policy's per-range candidates, and to the fetch at
-   the same time.
+   **The candidate set now varies by slice, and it is decided before this step rather than inside it**
+   (gh#505, `R-1.14`). `PlanAsync` runs between step 3 and this one — only when something is actually
+   missing, so a warm read pays neither of its two store queries — and cuts each outstanding range into
+   `RangeSlice`es. A slice at or after the store's trailing run of the venue front is *present* and carries
+   `contracts[0]` alone, which is what keeps a warm read byte-identical; an older slice is *historical* and
+   carries the registry cycle's candidates for its trade dates, each **existence-checked by id** through
+   `ContractDirectory` first, unlisted ones dropped. Adjacent slices that both come down to the front alone
+   are merged back into one, so a range cut at the tenure start does not silently buy a page boundary the
+   old shape did not have. This step then asks the ledger the same question per slice against that slice's
+   own set — the `.Take(1)` is gone — and the two must not drift: a range answered here for a candidate the
+   fetch would not have asked is a hole nothing ever fills again. A slice whose candidates **all** fell away
+   is fetched from `contracts[0]` anyway, with a warning, and is deliberately excluded from earning a memo
+   at step 9. The existence checks are `FindContractAsync` calls: unpaced, on the vendor's general pool, and
+   counted on the platform meter as `venue_calls_total{operation="find_contract"}` beside
+   `resolve_contracts` — **never in `venueRequests`**, which is history pages and nothing else.
 5. **Fetch** each remaining range, paged at `1000 × barSize` — the gateway caps a history call at 1000 bars and
    silently truncates past it. The pages are **paced** to the vendor's 50-per-30-seconds allowance on the
    history endpoint, shared process-wide, because a cold year of five-minute bars is 106 requests back to back
    (`R-1.10`, [wiki — rate limits](wiki/pages/projectx-gateway-api.md#rate-limits)). Every bar is **stamped
    with the contract it was fetched from**, here and nowhere else: one layer up, the series is keyed by the
    symbol alone and the fact is gone ([ADR-0011](adr/0011-contract-roll-boundary.md)).
+
+   **A present slice is that loop unchanged; a historical slice runs it once per candidate** and then
+   chooses (gh#505). Every candidate's pages go through the same paced walk, so a cold historical stretch
+   costs **K×** the venue requests a single-contract fetch would — K being the product's candidate depth,
+   two on the equity indices and three on the metals and energy — and every one of those pages *is* counted
+   in `venueRequests`, because every one of them is a history request. `HistoricalContractPolicy.Decide`
+   then groups the answers by trade date and keeps, per date, the bars of the contract with the highest
+   summed volume, ties going to the nearer expiry, and a date the store already holds an attributed bar for
+   keeping the contract it is recorded under — that pin is a second `AsNoTracking` query over the trade
+   dates the slices touch, asked only for a slice with more than one candidate, because with one the pin
+   cannot change the answer. **Selection happens here, outside the transaction, and that ordering is
+   load-bearing**: a loser's bars upserted at step 7 would have to be deleted again, and a read that rewrote
+   attributed history is exactly what [ADR-0020](adr/0020-historical-contract-selection.md) §5 refuses.
+   Only winners' bars and per-candidate empty answers leave this step.
 6. **Drop still-forming bars** (`OpenTime + barSize <= now`) even though the request already sends
    `includePartialBar: false`. This does not depend on a venue behaving.
 7. **Upsert** on `(Venue, Instrument, ResolutionMinutes, BucketStart)` — one `ON CONFLICT … DO UPDATE`, so the
@@ -143,7 +166,10 @@ a **session bar** rather than a resolution (`R-1.12`,
    `(Venue, Instrument, ResolutionMinutes, ContractId, RangeStart, RangeEnd)`, for the same reason step 7 is
    (gh#122). The memo records **which contract answered empty**, because that is what step 4 asks of it
    (gh#504); the target grew with the key, and a list that had not would fail at runtime rather than at
-   compile time.
+   compile time. Each candidate of a historical slice that answered nothing writes its own row, cut at the
+   settled age so the older part is permanent and only the young remainder carries the TTL; a **winner**
+   writes none, and a slice that **fell back** to the venue's pick writes none either — a degraded answer
+   must not become a permanent claim (gh#505).
    There is **no pre-read here at all**: the ledger holds the latest answer for a range rather than a history
    of asking, so `RecordedAt` moves on every ask and there is no unchanged write to save. `ExpiresAt` is
    assigned unconditionally, `null` included — `null` means *never*, not *not recorded*, so preserving a
@@ -854,6 +880,17 @@ confirmed (ADR-0020, gh#494). The registry carries each product's listing cycle 
 depth for the construction; `ContractDirectory`, a singleton, memoises the answer per id — a
 positive for the process, a negative for an hour. The lookup draws on the venue's 200 / 60 s
 pool, not the 50 / 30 s history allowance, so it is not paced by `VenueRequestPacer`.
+
+**Which of the three answers the bar fetch is a question of *when*, since gh#505.** The venue's pick owns
+the **present band** — the stretch from the store's trailing run of that contract forward, or the last seven
+days on a store with no such run — and it owns it precisely because a warm read must not pay to re-litigate
+a stretch the store has already answered for. Everything older is decided by **volume**: the cycle's
+existence-checked candidates are each fetched over the piece and `HistoricalContractPolicy.Decide` keeps,
+per trade date, the contract with the most of it. The **tape** is neither of those; it stays the reported
+second opinion, computed from prints rather than from bars, and it is what `get_contract_roll` and the
+profile tools carry as `front`. So the three are a division of labour rather than a contest: the venue's
+pick for now, volume-over-bars for history, volume-over-prints as the observation reported beside both
+(`R-1.14`, [ADR-0020](adr/0020-historical-contract-selection.md)).
 
 **They disagree during a roll, by design, and neither is dropped.** A read that compares them
 names both, says the tape is the volume-front, and does not rewrite `Bars` or substitute the

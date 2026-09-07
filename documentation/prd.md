@@ -134,7 +134,9 @@ The server serves OHLCV bars for a futures instrument at a requested resolution 
   the highest summed volume on a trade date keeps that date's bars. **A tie goes to the nearer expiry**, and a
   trade date the store already holds an attributed bar for keeps the contract it is recorded under **when that
   contract is among the candidates that answered bars for the date** — otherwise the pin names nothing the
-  fetch can honour and volume decides — so one day is never half one contract and half another. A candidate
+  fetch can honour and volume decides — so a day the store can vouch for is never split. A day the pin cannot
+  name is decided by volume before the tenure start and by the venue's pick after it, and the tenure cut is the
+  one boundary that is not trade-date aligned; re-deciding such a day is gh#506's verb. A candidate
   that answered nothing records that emptiness
   **under its own id** (`R-1.7`), cut at the settled age so the older part is claimed permanently while only
   the young remainder carries the short TTL; a winner records none. **Degradation is loud, and it takes two

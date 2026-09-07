@@ -200,6 +200,63 @@ public sealed class IndicatorOrphanReadTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task APartialDelete_TheSnapshotLandsOnTheSameJustifiedBucketGetIndicatorAtDoes()
+    {
+        // WHERE THE SERVABILITY FILTER SITS IN THE BATCHED READ, pinned rather than argued. It is applied
+        // BEFORE the group-max, so the map falls back to the newest justified bucket; applied AFTER, the
+        // group-max lands on the orphaned bucket, the join finds no bar for it, and the whole reading is
+        // dropped — cannot-measure for a value the surviving bars justify, and a snapshot that disagrees with
+        // get_indicator_at on exactly the series both are wrong about. The reviewer of PR #583 made that move
+        // and the ENTIRE suite stayed green, this class included: the other partial-delete case never reaches
+        // the snapshot, so the decision was defended in three prose comments and pinned by nothing.
+        //
+        // THE ARRANGEMENT IS THE WHOLE DIFFICULTY, and it is why the case that was missing is not obvious. A
+        // slice anchors on its last bar, and a value at that bucket has a bar there by construction — so
+        // under a tail delete the orphans sit AFTER the anchor and the as-of filter removes them before the
+        // group-max ever sees one. The group-max can only land on an orphan when the anchor is the CLOCK,
+        // which is what a bar-less slice uses (gh#286). So: delete the tail, then move the look-back past the
+        // survivors. The stored rows are untouched by that move -- SeriesBars is deliberately not scoped by
+        // the read window -- so bucket 29 is still servable and bucket 39 is still stored and still orphaned.
+        DateTimeOffset asOf = Bucket(Bars).AddDays(30);
+
+        (IndicatorTools indicators, SnapshotTools snapshot) = await ComposeAsync(now: asOf);
+        await DeleteBarsAsync(from: Kept);
+
+        ToolPayloads.MarketSnapshot payload =
+            await snapshot.GetMarketSnapshot("ES", [Resolution], Bars, CancellationToken.None);
+
+        ToolPayloads.ResolutionSnapshot slice = payload.PerResolution.Should().ContainSingle().Subject;
+
+        slice.Bars.Should().BeEmpty(
+            "the look-back has moved past every surviving bar, so this slice anchors on the clock -- and "
+            + "without that the orphaned tail sits after the anchor and is never a candidate for the "
+            + "group-max at all");
+
+        // What the single-purpose read answers at the same moment. It is the reference rather than a literal,
+        // because the claim is that the two AGREE: a literal on both sides could be updated together and go
+        // on agreeing with nothing.
+        ToolPayloads.IndicatorReading single = await indicators.GetIndicatorAt(
+            "ES", Resolution, "atr", asOf, cancellationToken: CancellationToken.None);
+
+        single.BucketStart.Should().Be(
+            Bucket(Kept - 1), "the newest bucket at or before the moment that still has a bar");
+
+        ToolPayloads.IndicatorReading? composed = slice.Indicators["atr"];
+
+        composed.Should().NotBeNull(
+            "the surviving bars justify a value at bucket {0}, so refusing the whole reading would be an "
+            + "over-refusal -- honest about nothing and wrong about a number the store can still reproduce",
+            Kept - 1);
+
+        composed!.BucketStart.Should().Be(
+            single.BucketStart, "the two reads must land on the SAME bucket, which is the property the "
+            + "filter's placement decides");
+
+        composed.Value.Should().Be(single.Value);
+        composed.ContractId.Should().Be(Contract);
+    }
+
+    [Fact]
     public async Task AValueWhoseBarRecordedNoContract_IsStillServed()
     {
         // THE SNAPSHOT COMMENT'S OWN CASE, and it is untouched. "A known number with unknown provenance"
@@ -264,6 +321,12 @@ public sealed class IndicatorOrphanReadTests : IAsyncLifetime
     /// The contract every seeded bar carries, or <see langword="null"/> for bars whose provenance was never
     /// recorded.
     /// </param>
+    /// <param name="now">
+    /// The moment every part of the composition agrees is <i>now</i>. Defaults to two hours past the last
+    /// bucket, which puts a snapshot's look-back window over the whole fixture. Pushing it further makes the
+    /// slice bar-less, and a bar-less slice anchors on the clock rather than on its last bar — which is the
+    /// only arrangement that puts an orphaned bucket at or <i>before</i> the anchor.
+    /// </param>
     /// <returns>The single-purpose tool and the snapshot, out of ONE wiring.</returns>
     /// <remarks>
     /// One <see cref="IndicatorTools"/> instance serves both, exactly as the composition root wires it: two
@@ -271,7 +334,8 @@ public sealed class IndicatorOrphanReadTests : IAsyncLifetime
     /// about the same one.
     /// </remarks>
     private async Task<(IndicatorTools Indicators, SnapshotTools Snapshot)> ComposeAsync(
-        string? contractId = Contract)
+        string? contractId = Contract,
+        DateTimeOffset? now = null)
     {
         // Bars that drift irregularly, so ATR and RSI land on values with real precision rather than on
         // numbers a flat series would make indistinguishable from a default.
@@ -314,7 +378,7 @@ public sealed class IndicatorOrphanReadTests : IAsyncLifetime
         IndicatorCatalog catalog = new(
             Options.Create(new IndicatorOptions { AtrPeriod = 3, RsiPeriod = 3 }), calendar);
 
-        FakeTimeProvider clock = new(Bucket(Bars).AddHours(2));
+        FakeTimeProvider clock = new(now ?? Bucket(Bars).AddHours(2));
 
         // Serves nothing, so every read below is answered from the store alone. A gateway holding bars would
         // refill the window a case had just emptied -- and, worse, a fill projects, which would sweep the very

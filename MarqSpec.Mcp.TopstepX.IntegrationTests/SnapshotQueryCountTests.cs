@@ -297,7 +297,7 @@ public sealed class SnapshotQueryCountTests(SchemaFixture fixture)
 
         SeriesGateway gateway = new(Venue, [], Contract);
 
-        HostTelemetry telemetry = new();
+        using HostTelemetry telemetry = new();
         IndicatorProjector projector =
             new(database, catalog, NullLogger<IndicatorProjector>.Instance, telemetry);
 

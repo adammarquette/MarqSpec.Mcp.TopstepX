@@ -32,6 +32,17 @@ public sealed class TradeTapeRecorderTests
     private static readonly DateTimeOffset _receipt =
         new(2026, 8, 28, 14, 30, 0, TimeSpan.Zero);
 
+    /// <summary>
+    /// One meter for the whole suite, exactly as <c>ConcurrencyHarness.Telemetry</c> does it.
+    /// <see cref="Build"/> is called 57 times and <see cref="Tools"/> 11 more; a fresh
+    /// <see cref="HostTelemetry"/> at each site leaked up to 68 undisposed process-global
+    /// <see cref="System.Diagnostics.Metrics.Meter"/>s per run. Neither call site can wrap its
+    /// instance in a <c>using</c> — <see cref="Build"/>'s constructs the recorder under test and
+    /// <see cref="Tools"/>'s is captured by the returned <c>TapeTools</c>, so both must outlive the
+    /// helper that builds them (gh#563).
+    /// </summary>
+    private static readonly HostTelemetry _telemetry = new();
+
     [Theory]
     [InlineData(McpTransport.Stdio, true)]
     [InlineData(McpTransport.Http, false)]
@@ -473,6 +484,8 @@ public sealed class TradeTapeRecorderTests
         await using (services)
         await using (database)
         {
+            TapeAvailabilityHolder tape = services.GetRequiredService<TapeAvailabilityHolder>();
+
             database.TapeCoverage.Add(new TapeCoverageRecord
             {
                 Venue = "test",
@@ -485,7 +498,15 @@ public sealed class TradeTapeRecorderTests
             await database.SaveChangesAsync();
 
             await recorder.StartAsync(CancellationToken.None);
-            await WaitUntil(() => hub.TradeSubscriptions.Count > 0);
+
+            // IsListening is set only after PersistOpenRangeAsync's SaveChanges lands
+            // (TradeTapeRecorder.SubscribeOneAsync), strictly after TradeSubscriptions records the
+            // subscribe call. Waiting on TradeSubscriptions alone raced that write: a subscription
+            // confirmed by the fake before the coverage row is persisted could read the row set as
+            // still holding only the leftover, or as empty, depending on which finished first
+            // (gh#563). This is the same seam every other test past this one in the file already
+            // waits on for the identical reason.
+            await WaitUntil(() => hub.TradeSubscriptions.Count > 0 && tape.For("ES").IsListening);
 
             DateTimeOffset listenStart = clock.GetUtcNow();
             IReadOnlyList<TapeCoverageRecord> rows = CoverageRows(database);
@@ -2182,7 +2203,6 @@ public sealed class TradeTapeRecorderTests
         BarSessionCalendar calendar = BarSessionCalendar.Parse("16:00", []);
         FakeTimeProvider clock = new(new DateTimeOffset(2026, 8, 18, 16, 0, 0, TimeSpan.Zero));
         CountingGateway gateway = new([]);
-        HostTelemetry telemetry = new();
 
         return new TapeTools(
             new InstrumentResolver(new InstrumentRegistry(options), new StoreAvailabilityHolder()),
@@ -2197,7 +2217,7 @@ public sealed class TradeTapeRecorderTests
                 new FootprintProjector(database, NullLogger<FootprintProjector>.Instance),
                 clock,
                 NullLogger<FootprintCacheService>.Instance,
-                telemetry));
+                _telemetry));
     }
 
     private static TradeUpdate Print(
@@ -2475,7 +2495,7 @@ public sealed class TradeTapeRecorderTests
             clock,
             logger ?? NullLogger<TradeTapeRecorder>.Instance,
             tape,
-            telemetry ?? new HostTelemetry(),
+            telemetry ?? _telemetry,
             channelCapacity,
             leaseTimeToLive ?? TapeLease.DefaultTimeToLive);
 

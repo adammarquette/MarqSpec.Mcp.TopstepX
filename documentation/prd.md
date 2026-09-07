@@ -194,6 +194,27 @@ The server serves OHLCV bars for a futures instrument at a requested resolution 
   A read **never rewrites a bucket that already carries a contract**; replacing a run the policy would decide
   differently is an operator's verb, not a read's (gh#506). See
   [ADR-0020](adr/0020-historical-contract-selection.md) (gh#505, gh#497).
+- **R-1.15** **Stored provenance is revised in bulk only by an operator's verb — over whole trade dates,
+  counted and logged.** `R-1.14` makes a read fill what the store lacks and nothing more, so a window filled
+  before it keeps whatever contract it was filled under until someone decides otherwise. That decision is
+  `reselect-bars <symbol> <fromUtc> <toUtc>`: every resolution series the store holds for the instrument
+  inside the window is re-decided with **nothing pinned**, so each trade date goes to the contract that
+  carried the volume rather than to the one already recorded. **The window is widened to the whole trade
+  dates it intersects and never narrowed** — deciding a date from part of its volume and then rewriting only
+  that part would leave two contracts inside one day, which is the interleaving `R-1.11` exists to forbid —
+  and the run reports the window asked for beside the one re-decided. Buckets a winner does not restate are
+  **deleted**, those carrying no contract counted apart from those another contract held, because a
+  contract that never held a bucket must not be reported as having lost it. Every coverage claim (`R-1.7`)
+  **overlapping** the window is dropped: a claim reaching in from outside would otherwise suppress the next
+  read of a window whose decision has just been overturned, and losing a claim outside the window costs one
+  re-ask. The indicators are then re-projected over what is left, in the same unit of work, so no value
+  outlives the bars it was computed from (`R-2.8`) — including on a run that only deleted. A window wider
+  than one pass can enumerate is **skipped for that resolution, loudly**, rather than trimmed to a smaller
+  question than the one asked; a window the store holds nothing in **says so** rather than reporting the
+  same zeros a window that was already correct reports. Nothing is written before the arguments are accepted
+  and the schema is migrated, and the run commits **one series at a time**, so a failure partway names how
+  far it got rather than undoing what came before. See
+  [ADR-0020](adr/0020-historical-contract-selection.md) §5 (gh#506, gh#497).
 
 ## R-2 — Pre-computed indicators
 

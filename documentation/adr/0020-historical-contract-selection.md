@@ -239,5 +239,68 @@ and still earns the empty-range memo (`R-1.14`); `history.selection` reports `As
 - **gh#353's trigger comment.** Once a store holds a cold year fetched under this record, post the segment
   count and the seam dates on gh#353 as one of the measurements that issue asked for before a re-key.
 - **gh#354** — the derived back-adjusted view, now the named remedy for the warm-up absences above.
+- **Indicator values under a retired `(Indicator, Period)` pair survive a bar delete.** `reselect-bars`
+  deletes the buckets a new winner does not restate and re-projects, but the reconcile walks the **current**
+  catalogue only ([ADR-0011](0011-contract-roll-boundary.md) §2, `R-2.8`, deliberately: ATR(14) and ATR(3)
+  are different keys). There is no foreign key between `Bars` and `IndicatorValues`, so a value written under
+  a period the catalogue has since been reconfigured away from is orphaned by the delete and nothing removes
+  it. Pre-existing — a catalogue change already leaves such values behind — and this verb is the first thing
+  that can create the orphan without a catalogue change. Not fixed here; a sweep would have to enumerate the
+  pairs the store holds rather than the ones the catalogue computes, which is a decision of its own.
+
+## Decision log
+
+| Update | What changed |
+|---|---|
+| [2026-09-07](#update-2026-09-07--reselect-bars-shipped-whole-trade-dates-counted-and-logged) | Part 5's verb exists. `reselect-bars <symbol> <fromUtc> <toUtc>` re-decides an operator's window over **whole trade dates** with nothing pinned, deletes the losers and every overlapping coverage claim, re-projects, and reports eight counters. §5's decision is unchanged; this records what carrying it out turned out to require (gh#506) |
+
+## Update (2026-09-07) — `reselect-bars` shipped: whole trade dates, counted and logged
+
+**Nothing in the Decision changes.** The present band is still the venue's pick anchored on the store, history
+is still the volume winner among the cycle's listed candidates, the ledger is still per contract, and a read
+still never rewrites an attributed bucket. What follows is what §5's second sentence cost to build, recorded
+because three of the four points were not obvious from it (gh#506, `R-1.15`).
+
+**The window is widened to whole trade dates, and never narrowed.** §5 says "over the window"; an operator
+types instants and the policy decides a *date*. Taken literally, a window covering part of a day would decide
+that day from part of its volume and then rewrite only the part — leaving one contract, then another, then
+the first again **inside a single day**, which is the interleaving `HistoricalContractPolicy` exists to
+forbid, and which `ContractRollDetector` would cut into three segments with an indicator warm-up at each. So
+the bounds are grown to the sessions the asked window intersects and everything — the series enumeration, the
+per-series bucket cap, the deletes, the coverage sweep — happens over the wider one. It only ever widens: the
+session bounds are clamped against the asked window, because a window beginning inside a maintenance gap has
+no session bound of its own to grow to. Both windows are on every summary line, and a resolution series the
+store holds **only in the widened part** is re-decided too.
+
+**Eight counters, and two of them are separations rather than totals.** `BarsRevised` (rows the upsert
+actually changed, as the store reports them — a winner the store already agrees with costs nothing),
+`BarsRemoved`, `UnattributedRemoved`, `TradeDatesChanged`, `Ties`, `SeriesSkipped`, `SlicesSkipped`,
+`VenueRequests`, plus the effective window. `UnattributedRemoved` is counted apart from `BarsRemoved` because
+folding them together would tell an operator that a contract lost buckets it never held — the unattributed
+rows are pre-migration ones (gh#402) that nothing can attribute. `SeriesSkipped` and `SlicesSkipped` are two
+different refusals: a resolution whose widened window exceeds `BarGapDetector.MaxBucketsPerPass` is skipped
+**loudly rather than trimmed**, because reselecting the first part of an operator's window reports a number
+about a smaller question than the one asked; and a slice no constructed candidate is listed for is skipped
+rather than fetched from the front, because re-attributing a trade date to a contract chosen by *degradation*
+is worse than leaving the rows alone.
+
+**Ties are counted from `VolumeByContract`, not signalled by the policy.** `Decide` returns no tie flag —
+`TradeDateSelection.VolumeByContract` is the only evidence one happened, and the read path drops it. The
+break is unchanged and deterministic (the nearer expiry); what is new is that a rewritten window says which
+dates were decided that way rather than by the volume, which is the difference between a decision an operator
+can audit and one they have to take on trust.
+
+**Coverage claims are deleted on OVERLAP, not on containment.** A settled empty never expires, `MemoiseEmpty`
+cuts a claim at the settled age and `Union` merges touching rows, so a claim reaching into the window from
+outside it is the ordinary shape. Left standing it would answer "empty" for a range whose decision has just
+been overturned and suppress the next read of it — a permanent hole written by the very policy the run was
+undoing. Discarding a claim about time outside the window costs one re-ask, which is the cheap direction.
+
+**Two operational facts that are not in §5 and matter to whoever runs it.** The verb migrates the store
+before it writes, where `rebuild-indicators` skips migration entirely — the rebuild replays projections over
+bars already stored, while this rewrites provenance, and doing that through an unapplied schema is a write
+nobody can reproduce. And it commits **one unit of work per resolution series**, as `IndicatorRebuilder`
+does, so its degraded exit (3) means *the run stopped*, never *nothing was written*: a degradation on the
+second series leaves the first committed, and the per-series log lines are what say how far it got.
 
 *Assisted-by: Claude Fable 5.1 (Claude Code)*

@@ -14,7 +14,7 @@
 # WHAT IT DOES. Serves the gate a fixture that is a correct deployment in every respect but ONE, and requires
 # the gate to reject it BY NAME — never by exit status alone, because `check-deployment.sh` also exits 1 for
 # "curl is required", for an unset environment variable and for a malformed URL, so a self-test satisfied by
-# status would go green on a runner where nothing had been checked at all. Eight cases, one green:
+# status would go green on a runner where nothing had been checked at all. Nine cases, one green:
 #
 #   1  sound            accepted, exit 0, and WRITING NOTHING AT ALL TO STDERR (gh#239 / gh#271)
 #   2  wrong version    /health reports a release that is not the one asked for
@@ -24,10 +24,22 @@
 #   6  no access_token  the token endpoint answers a cheerful 200 with no token in it
 #   7  a self-signed certificate over https
 #   8  a plain-http token endpoint off loopback — the one case that needs no server at all
+#   9  case 7 again, with an `insecure` curlrc in scope — a DIFFERENT property, see below
 #
-# AND ON EVERY CASE, GREEN AND RED ALIKE: the client secret this hands the gate appears in NEITHER stream.
-# That is the contract's "no secrets in logs" turned into a run rather than a promise, and a failure path is
-# where such a thing actually leaks — six of the eight cases below ARE failure paths.
+# AND ON EVERY CASE, GREEN AND RED ALIKE: neither the client secret nor the bearer token this hands the gate
+# appears in either stream. That is the contract's "no secrets in logs" turned into a run rather than a
+# promise, and a failure path is where such a thing actually leaks — most of the cases below ARE failure
+# paths. The TOKEN half of that assertion was added by the gh#521 review, which found the gate putting the
+# bearer into a `bash -x` trace while this suite watched only the secret and stayed green.
+#
+# WHAT THIS SUITE DOES NOT COVER, said here so nobody reads nine cases as the assertion list. The gate names
+# roughly twenty distinct failures; nine are pinned. `NOT JSON`, `STORE`, `NO ISSUER`, `NO SERVERINFO`,
+# `NOTIFICATION REFUSED`, `INITIALIZE REFUSED`, every `UNREACHABLE` arm and each `CANNOT READ` guard have no
+# fixture, so a loosened match on any of them is invisible to CI. Assertion 4's non-zero branch is
+# unreachable from a fixture by construction and says so beside the code. The fixture also answers instantly
+# on loopback, so no timeout, DNS failure or load-balancer error page is exercised. Adding a case is cheap —
+# the fixture takes one more fault name — and the reason these are listed rather than written is that the
+# card asked for four and this stops at nine; the list is what the next author should shorten.
 #
 # WHY THE FIXTURE IS A FIXTURE AND NOT THE PRODUCT. The gate's subject is a HOSTNAME, and there is no
 # deployed one to point at (gh#519 has not run). Standing the real server up would also not help: it would
@@ -50,12 +62,19 @@
 # ONE under, deliberately, because a fixture that is wildly wrong is satisfied by a gate that is only
 # roughly right.
 #
-# THE THING CASE 7 ACTUALLY PROVES, and it is the only case here that can. Every other fault is content, and
-# a gate could be checked for those over plain http forever while quietly passing `-k`. A self-signed
-# certificate on an https loopback URL is refused by curl and accepted by `curl -k`, so this case is red if
-# and only if the gate is NOT bypassing verification. `check-deployment.sh`'s loopback exemption forgives
-# plain http and deliberately does not forgive an unverifiable certificate, which is what leaves this case
-# reachable at all.
+# THE THING CASES 7 AND 9 ACTUALLY PROVE, and they are the only cases here that can reach it. Every other
+# fault is content, and a gate could be checked for those over plain http forever while quietly bypassing
+# verification. A self-signed certificate on an https loopback URL is refused by curl and accepted by
+# `curl -k`, so these two are red if and only if the gate is not bypassing it. `check-deployment.sh`'s
+# loopback exemption forgives plain http and deliberately does not forgive an unverifiable certificate,
+# which is what leaves them reachable at all.
+#
+# THEY ARE TWO PROPERTIES, NOT ONE RUN TWICE. Case 7 says no `-k` is WRITTEN in the gate. Case 9 says none
+# can be SUPPLIED to it: curl reads `$CURL_HOME/.curlrc` before its arguments unless `-q` is the first
+# parameter, and the gate shipped without one — so a single line in an operator's home directory turned
+# verification off, with case 7 still green, the certificate still accepted, and the gate printing that it
+# had verified. Deleting either case leaves a hole the other cannot see, and case 9 carries a precondition
+# proving `CURL_HOME` is honoured at all before it leans on that.
 #
 # WHAT IT DOES NOT COVER, stated rather than papered over. The fixture answers instantly and locally, so
 # nothing here exercises a timeout, a DNS failure, a load balancer's own error page, or `%{ssl_verify_result}`
@@ -88,6 +107,11 @@ ok()  { printf '\033[32m%s\033[0m\n' "$*"; }
 FIXTURE_VERSION="9.9.9-fixture"
 FIXTURE_CLIENT_ID="deploy-check-fixture-client"
 FIXTURE_CLIENT_SECRET="fixture-secret-not-a-credential-4c1d9e"
+# The BEARER the fixture mints, and it is a leak needle in its own right. It was not one until the review of
+# gh#521: the leak assertion watched the client secret alone, so a gate printing the token it had just been
+# given passed every case — and that is exactly what the gate did into a `bash -x` trace. Two credentials
+# cross this boundary; both are searched for.
+FIXTURE_ACCESS_TOKEN="fixture-access-token-not-a-credential"
 WRONG_VERSION="1.0.0-not-the-expected-one"
 WRONG_RESOURCE="https://somebody-elses-host.example/mcp"
 SOUND_TOOLS=20
@@ -169,9 +193,10 @@ FEW_TOOLS = int(os.environ["MCP_FIXTURE_FEW_TOOLS"])
 CERT_FILE = sys.argv[1] if len(sys.argv) > 1 else ""
 KEY_FILE = sys.argv[2] if len(sys.argv) > 2 else ""
 
-# Not a credential: a literal this file mints and this file checks, so that the SOUND case only passes if
-# the gate really forwarded the token it was given rather than skipping the header.
-ACCESS_TOKEN = "fixture-access-token-not-a-credential"
+# Not a credential: a literal the harness mints and this file checks, so that the SOUND case only passes if
+# the gate really forwarded the token it was given rather than skipping the header. It comes from the
+# harness rather than being spelled twice, because it is also one of the two leak needles.
+ACCESS_TOKEN = os.environ["MCP_FIXTURE_ACCESS_TOKEN"]
 SCOPE = "topstepx-mcp/read"
 ISSUER = "https://cognito-idp.us-east-1.amazonaws.com/us-east-1_fixture"
 BASIC = "Basic " + base64.b64encode(f"{CLIENT_ID}:{CLIENT_SECRET}".encode()).decode()
@@ -327,6 +352,7 @@ start_fixture() {
   MCP_FIXTURE_WRONG_RESOURCE="$WRONG_RESOURCE" \
   MCP_FIXTURE_CLIENT_ID="$FIXTURE_CLIENT_ID" \
   MCP_FIXTURE_CLIENT_SECRET="$FIXTURE_CLIENT_SECRET" \
+  MCP_FIXTURE_ACCESS_TOKEN="$FIXTURE_ACCESS_TOKEN" \
   MCP_FIXTURE_SOUND_TOOLS="$SOUND_TOOLS" \
   MCP_FIXTURE_FEW_TOOLS="$FEW_TOOLS" \
     "$PYTHON" "$FIXTURE" "$cert" "$key" >"$log" 2>&1 &
@@ -368,31 +394,38 @@ stop_fixture() {
 
 GATE_STATUS=0
 run_gate() {
-  local base="$1" token_url="$2"
+  local base="$1" token_url="$2" curl_home="${3:-}"
   GATE_STATUS=0
   : >"$OUT"
   : >"$ERR"
+  # CURL_HOME is exported into the gate's environment for case 9 alone, and is empty everywhere else.
+  CURL_HOME="$curl_home" \
   MCP_CHECK_CLIENT_ID="$FIXTURE_CLIENT_ID" \
   MCP_CHECK_CLIENT_SECRET="$FIXTURE_CLIENT_SECRET" \
   MCP_CHECK_TOKEN_URL="$token_url" \
     bash "$GATE" "$base" "$FIXTURE_VERSION" >"$OUT" 2>"$ERR" || GATE_STATUS=$?
 
-  # ON EVERY CASE, and six of the eight are failure paths, which is where a credential actually leaks. The
-  # streams are searched separately so a leak cannot hide in whichever one the reader is not looking at.
-  local stream
+  # ON EVERY CASE, and most of them are failure paths, which is where a credential actually leaks. BOTH
+  # credentials that cross this boundary are searched for, in each stream separately so a leak cannot hide
+  # in whichever one the reader is not looking at. The token was added by the gh#521 review: the assertion
+  # watched the secret alone, and the gate was meanwhile putting the token into a `bash -x` trace.
+  local stream needle label
   for stream in "$OUT" "$ERR"; do
-    local found=0
-    grep -qF "$FIXTURE_CLIENT_SECRET" "$stream" || found=$?
-    if [ "$found" -eq 0 ]; then
-      die "  LEAK  the gate printed the client secret it was given, to $(basename "$stream")"
-      die "This repository is PUBLIC and this output goes into CI logs. Whatever prints it has to stop"
-      die "before anything else here matters — the fixture's secret is fake, and the next one will not be."
-      exit 1
-    fi
-    if [ "$found" -gt 1 ]; then
-      die "  CANNOT READ  grep exited $found searching $(basename "$stream") for the secret"
-      exit 1
-    fi
+    for needle in "$FIXTURE_CLIENT_SECRET" "$FIXTURE_ACCESS_TOKEN"; do
+      if [ "$needle" = "$FIXTURE_CLIENT_SECRET" ]; then label="client secret"; else label="access token"; fi
+      local found=0
+      grep -qF "$needle" "$stream" || found=$?
+      if [ "$found" -eq 0 ]; then
+        die "  LEAK  the gate printed the $label it handled, to $(basename "$stream")"
+        die "This repository is PUBLIC and this output goes into CI logs. Whatever prints it has to stop"
+        die "before anything else here matters — the fixture's credentials are fake, the next ones are not."
+        exit 1
+      fi
+      if [ "$found" -gt 1 ]; then
+        die "  CANNOT READ  grep exited $found searching $(basename "$stream") for the $label"
+        exit 1
+      fi
+    done
   done
 }
 
@@ -603,4 +636,46 @@ expect_rejected "a plain-http token endpoint" \
   "TOKEN URL" \
   "NOTHING HAS BEEN SENT"
 
-ok "check-deployment.sh accepts a sound deployment and rejects seven known faults by name."
+# ---------------------------------------------------------------------------
+# 9. The same self-signed certificate, with a `.curlrc` saying `insecure` in scope.
+# ---------------------------------------------------------------------------
+# CASE 7 AND CASE 9 ARE NOT THE SAME CASE, and the gh#521 review is why both exist. curl reads its config
+# file BEFORE its arguments unless `-q` is the first parameter, so a one-line `insecure` in an operator's
+# home directory silently turned verification off for the whole gate — case 7 green, the self-signed fixture
+# ACCEPTED, and a line printed saying the certificate had verified. Case 7 pins that no `-k` is written in
+# the script; this pins that none can be supplied to it. The gate's real subject is an operator's machine,
+# by hand, against staging, and that is exactly where a curlrc lives.
+CURLHOME="$WORK/curlhome"
+mkdir -p "$CURLHOME"
+
+# THE PRECONDITION IS THE HALF THAT MAKES THIS A MEASUREMENT. If curl ignored CURL_HOME on this platform,
+# the curlrc below would never be read, the gate would reject the certificate for the ordinary reason, and
+# case 9 would pass having tested NOTHING — coverage owed to a fixture's incidental shape, which is the
+# ledger hazard check-doc-sizes-selftest.sh's header names. So: a curlrc naming a dead proxy must make an
+# ORDINARY curl to the fixture fail. If it succeeds, the mechanism is absent and that is a hard failure
+# here, never a skip.
+start_fixture none
+printf 'proxy = "http://127.0.0.1:1"\n' >"$CURLHOME/.curlrc"
+PROBE_STATUS=0
+CURL_HOME="$CURLHOME" curl --silent --show-error --max-time 10 \
+  --output /dev/null "$FIXTURE_ORIGIN/health" >"$WORK/probe.log" 2>&1 || PROBE_STATUS=$?
+
+if [ "$PROBE_STATUS" -eq 0 ]; then
+  stop_fixture
+  die "  NO CURLRC  a curlrc under CURL_HOME naming a dead proxy did not stop an ordinary curl"
+  cat "$WORK/probe.log" >&2 || true
+  die "So this curl is not reading CURL_HOME, the case below would pass without exercising anything, and"
+  die "whether the gate resists an ambient curlrc is UNMEASURED on this platform. That is the finding, not"
+  die "a reason to skip: the property was worth a blocking review comment."
+  exit 1
+fi
+stop_fixture
+
+printf 'insecure\n' >"$CURLHOME/.curlrc"
+start_fixture none "$WORK/cert.pem" "$WORK/key.pem"
+run_gate "$FIXTURE_ORIGIN" "$(token_url_for "$FIXTURE_ORIGIN")" "$CURLHOME"
+stop_fixture
+expect_rejected "a self-signed certificate with an 'insecure' curlrc in scope" \
+  "THE CERTIFICATE did not validate"
+
+ok "check-deployment.sh accepts a sound deployment and rejects eight known faults by name."

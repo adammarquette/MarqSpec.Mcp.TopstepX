@@ -32,11 +32,14 @@
 #   4. the certificate      the chain validated and the name matched, with no `-k` anywhere on any path.
 #
 # WHY 4 IS LAST IN THE LIST AND FIRST ON THE WIRE. TLS is not a step that can be deferred: it decides the
-# first byte of assertion 1. So everything above runs over a connection that has ALREADY been verified, and
-# what assertion 4 adds at the end is the explicit READING — curl's own `%{ssl_verify_result}` off that same
-# connection, printed rather than inferred. A certificate fault therefore surfaces at assertion 1 with TLS
-# named as the cause, and assertion 4 is what stops "we never looked" from reading like "we looked and it was
-# fine". Both halves are exercised by the self-test.
+# first byte of assertion 1. So everything above runs over a connection that has already been verified, and a
+# certificate fault surfaces at assertion 1 with TLS named as the cause. What assertion 4 does at the end is
+# state the INFERENCE that leaves — verification was enforced, and the connection completed — which is a
+# claim about the option list rather than a reading off the wire. It deliberately no longer quotes
+# `%{ssl_verify_result}` as evidence: that number is 0 on every run that reaches assertion 4, including one
+# made with `-k`, so quoting it read as a measurement of exactly the thing it cannot see. What holds the
+# premises up is the self-test: case 7 rejects a self-signed certificate, and case 9 rejects it again with a
+# `.curlrc` saying `insecure` in scope.
 #
 # THE LOOPBACK EXEMPTION, and it is the reason a self-test is possible at all. An https base URL is required
 # — EXCEPT on loopback, where plain http is accepted and assertion 4 reports itself NOT MEASURED. That is
@@ -50,9 +53,18 @@
 #   * The client id and secret arrive in the ENVIRONMENT and never as arguments: an argument is in
 #     `/proc/<pid>/cmdline` and in every `ps` on the box. They are handed to curl the same way, through a
 #     `--config` file rather than `-u`, because curl's argv is exactly as public as this script's.
-#   * That config file is written by a HEREDOC, not by `printf … "$SECRET" >file`. Under `bash -x` — which
-#     an operator debugging a red run will reach for — an expanded argument is traced and a heredoc body is
-#     not. The difference is one line of shell and the whole of whether this is safe to debug.
+#   * NOTHING EXPANDS A CREDENTIAL INTO A WORD THE SHELL TRACES, and this is a repaired claim rather than an
+#     original one — worth stating as such, because the repair is the whole content. The first version said
+#     the config file is written by a heredoc *because* `bash -x` traces an expanded argument and not a
+#     heredoc body. Both halves were true and the conclusion was not: the review ran it, and the secret was
+#     at trace line 45 anyway, from the `[ -z "${!required-}" ]` loop three screens ABOVE the heredoc, on
+#     the sound path; the token was at 249 and 250, from its own assignment. An operator debugging gh#519's
+#     first red deploy — the case that paragraph was written for — would have pasted both into a public
+#     tracker. So the property is now built rather than asserted: the heredoc stays, the environment check
+#     is by LENGTH (`${#VAR}` traces a number), and the token goes from the response body into the config
+#     file THROUGH A FILE, never a variable. Each is commented where it sits. Re-measure after any edit
+#     here: `bash -x` with sentinel values, then grep the trace. It is one command and it has been wrong
+#     once.
 #   * The token endpoint's RESPONSE BODY is never printed, on any path. Its success body carries the token;
 #     its failure body is harmless, but "print it only when it failed" is one refactor away from printing it
 #     when it did not, and the status code is what names the fault anyway.
@@ -230,16 +242,36 @@ case "$URL_TRANSPORT" in
     ;;
 esac
 
-for required in MCP_CHECK_CLIENT_ID MCP_CHECK_CLIENT_SECRET MCP_CHECK_TOKEN_URL; do
-  # Indirect expansion rather than three copies of one block; `${!name-}` is unset-safe under `set -u`.
-  if [ -z "${!required-}" ]; then
-    die "  UNSET  $required is empty or unset"
-    die "The token step cannot run, so assertion 3 could only ever be skipped — and a skipped assertion in a"
-    die "gate that exits 0 is the whole failure mode this file exists to avoid. NOTHING HAS BEEN CHECKED."
-    usage
-    exit 1
-  fi
-done
+# CHECKED BY LENGTH, NOT BY VALUE, and the three are spelled out rather than looped. This was a `for` loop
+# over the names with `[ -z "${!required-}" ]`, which is tidier and puts the secret in a `bash -x` trace on
+# EVERY run — three screens above the heredoc that was protecting it, and on the sound path as much as on a
+# failing one. Measured on the shipped script, at line 45 of the trace:
+#
+#     + '[' -z SENTINEL-CLIENT-SECRET-zz93q ']'
+#
+# `${#VAR}` traces the NUMBER (`+ '[' 28 -eq 0 ']'`) and is exactly equivalent to `-z`, which is defined as
+# "the length is zero" — so nothing about the check changed, only what a trace can see. There is no
+# unset-safe spelling of `${#VAR}` and every alternative — `${!name-}`, `${VAR-}`, an assignment carrying a
+# default — expands the value, which is the thing being avoided. So `set -u` is off for exactly these lines,
+# and the three variables are known to be set afterwards.
+MISSING=""
+set +u
+if [ "${#MCP_CHECK_CLIENT_ID}" -eq 0 ]; then
+  MISSING="MCP_CHECK_CLIENT_ID"
+elif [ "${#MCP_CHECK_CLIENT_SECRET}" -eq 0 ]; then
+  MISSING="MCP_CHECK_CLIENT_SECRET"
+elif [ "${#MCP_CHECK_TOKEN_URL}" -eq 0 ]; then
+  MISSING="MCP_CHECK_TOKEN_URL"
+fi
+set -u
+
+if [ -n "$MISSING" ]; then
+  die "  UNSET  $MISSING is empty or unset"
+  die "The token step cannot run, so assertion 3 could only ever be skipped — and a skipped assertion in a"
+  die "gate that exits 0 is the whole failure mode this file exists to avoid. NOTHING HAS BEEN CHECKED."
+  usage
+  exit 1
+fi
 
 # THE SAME RULE, ON THE SHARPER URL. Assertion 1's traffic is public data; this request carries the CLIENT
 # SECRET. So a plain-http token endpoint off loopback is refused before the secret is ever assembled into a
@@ -278,13 +310,26 @@ HEADERS="$WORK/headers"
 CURL_ERR="$WORK/curl.err"
 MATCH="$WORK/match"
 CURL_CONFIG="$WORK/curl.conf"
+TOKEN_RAW="$WORK/token.raw"
+TOKEN_FILE="$WORK/token"
 
 # ---------------------------------------------------------------------------
 # One request shape, so no call site can quietly acquire an option the others lack.
 # ---------------------------------------------------------------------------
-# NO `-k`, NO `--insecure`, and no way to add one from a call site: every request in this file goes through
-# here and the option list lives here once. That is the mechanism behind assertion 4 — an `--insecure` added
-# "just to get past staging" would have to be added HERE, in the diff, under this comment.
+# NO `-k`, NO `--insecure`, and no call site can add one: every request goes through here and the option list
+# lives here once.
+#
+# `-q` IS FIRST, AND ITS POSITION IS THE POINT. curl reads `$CURL_HOME/.curlrc`, `$XDG_CONFIG_HOME/curlrc`
+# or `~/.curlrc` BEFORE its arguments unless `-q` is the first parameter — so without it, a one-line
+# `insecure` in an operator's home directory turns verification off for this whole script, silently, with no
+# diff to see and nothing on the run page. Measured on the shipped script before this line existed: the gate
+# ACCEPTED the self-signed fixture and printed a line saying the certificate had verified. CI could never
+# have caught it, because a runner has no curlrc and the property was decided by whichever `$HOME` the gate
+# happened to run under — and this gate's real subject is an operator's machine, by hand, against staging.
+#
+# So what this option list now excludes is the whole of curl's ambient configuration, not merely a flag
+# somebody might type here. Case 9 of the self-test pins it, and pins that `CURL_HOME` is honoured at all
+# before leaning on that.
 #
 # The status code and the TLS verification result come back on stdout through `-w`; the body and the response
 # headers go to files, and curl's own diagnostics to a third, so that a GREEN run of this script writes
@@ -301,6 +346,9 @@ request() {
   local config="$1"; shift
 
   local -a options=(
+    # FIRST, and it only works first. curl documents `-q` as ignored unless it is the initial parameter,
+    # and the array is expanded ahead of every caller's arguments so that stays true from every call site.
+    -q
     --silent --show-error
     --connect-timeout "$CONNECT_TIMEOUT_SECONDS"
     --max-time "$REQUEST_TIMEOUT_SECONDS"
@@ -571,8 +619,10 @@ ok "  OK  /mcp refuses an anonymous call with 401, and the document it names cla
 # ---------------------------------------------------------------------------
 # 3. A client_credentials token, then initialize and tools/list with it.
 # ---------------------------------------------------------------------------
-# THE HEREDOC IS THE POINT: `printf 'user = "%s:%s"' "$id" "$secret" >file` puts the secret on a line that
-# `bash -x` traces, and a heredoc's body is not traced. Mode 600 by the umask above; removed by the trap.
+# A HEREDOC, because `printf 'user = "%s:%s"' "$id" "$secret" >file` puts the secret on a line `bash -x`
+# traces and a heredoc's body is not traced — measured, and it is only ONE of the three things that make
+# that true of the whole script; the other two are the length check above and the token file below. Mode 600
+# by the umask; removed by the trap.
 cat >"$CURL_CONFIG" <<CONFIG
 user = "$MCP_CHECK_CLIENT_ID:$MCP_CHECK_CLIENT_SECRET"
 CONFIG
@@ -601,8 +651,20 @@ if [ "$HTTP_STATUS" != "200" ]; then
   exit 1
 fi
 
-ACCESS_TOKEN="$(value_of "$BODY" access_token)"
-if [ -z "$ACCESS_TOKEN" ]; then
+# THE TOKEN NEVER BECOMES A SHELL VARIABLE, and that is the whole shape of this block. `value_of` returns
+# it, so `ACCESS_TOKEN="$(value_of …)"` traced `+ ACCESS_TOKEN=<the token>` and the `[ -z … ]` after it
+# traced it again — lines 249 and 250 of a measured `bash -x` run, on the SOUND path. A file has none of
+# that: `sed` writes it, `-s` asks only whether there are bytes, and `cat` splices it into the config
+# between two `printf`s. Nothing in this block puts the value in a word the shell expands.
+#
+# `value_of`'s expression, not a second copy of it — but reaching a file rather than stdout, so the two are
+# written out here instead of shared. Keep them together if either changes.
+sed -n 's/.*"access_token"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$BODY" >"$TOKEN_RAW"
+# From a FILE rather than through a pipe from `sed`: `head` closing early would SIGPIPE a producer, and a
+# status that means "the reader had enough" is not one this script should have to tell from a failure.
+head -n 1 "$TOKEN_RAW" | tr -d '\r\n' >"$TOKEN_FILE"
+
+if [ ! -s "$TOKEN_FILE" ]; then
   die "  NO TOKEN  the token endpoint answered 200 with no access_token field"
   die "Something is answering where the token endpoint should be and it is not an OAuth token endpoint — a"
   die "login page, a redirect body or a proxy's error document all arrive as a cheerful 200."
@@ -611,10 +673,12 @@ fi
 
 # Overwritten rather than appended: this file has held the client secret and now holds a bearer token, and
 # neither has any business outliving the request it was written for.
-cat >"$CURL_CONFIG" <<CONFIG
-header = "Authorization: Bearer $ACCESS_TOKEN"
-CONFIG
-ACCESS_TOKEN=""
+{
+  printf 'header = "Authorization: Bearer '
+  cat "$TOKEN_FILE"
+  printf '"\n'
+} >"$CURL_CONFIG"
+rm -f "$TOKEN_RAW" "$TOKEN_FILE"
 
 ok "  OK  the token endpoint minted a client_credentials access token"
 
@@ -725,21 +789,33 @@ ok "  OK  tools/list returned $TOOL_COUNT tools (the floor is $MINIMUM_TOOLS)"
 # ---------------------------------------------------------------------------
 # 4. The certificate — read back rather than assumed.
 # ---------------------------------------------------------------------------
-# Everything above already ran over this connection, so a bad certificate has ALREADY failed the run at
-# assertion 1, with curl exit 60 and TLS named. What is left is to say so from the data instead of from the
-# absence of a failure: `%{ssl_verify_result}` is OpenSSL's own verification code — 0 for a chain AND a name
-# that verified — and reading it is what makes "we checked" a measurement rather than an inference.
+# THIS IS AN INFERENCE, AND IT SAYS SO. The first version printed `%{ssl_verify_result}` as though the
+# number were evidence. It is not: with verification ON a non-zero result is curl exit 60, which ended the
+# run back at assertion 1 and never reaches here; with verification OFF it is 0. So the number is 0 on every
+# run that gets this far — under `-k`, under a curlrc, and under a clean run alike — and a line quoting it
+# reads as an independent measurement of exactly the thing it cannot see. That is the reassuring-line-about-
+# a-check-not-performed shape this repository keeps finding, produced here by trying to avoid it.
+#
+# What IS true, and what this line now states: verification was enforced (nothing here passes `-k`, and `-q`
+# means no curlrc could have), and the TLS connection completed. The premises are properties of the option
+# list above, which case 7 and case 9 of the self-test pin; the connection is the observation.
 if [ "$TLS_MEASURED" -eq 0 ]; then
   note "  NOT MEASURED  $BASE_URL is plain http on loopback, so there is no certificate to verify."
   note "      This run says nothing about TLS. It is the fixture shape; a deployed hostname is https and"
   note "      this line does not appear."
 elif [ "$HEALTH_SSL_VERIFY" != "0" ]; then
-  die "  TLS  curl reports ssl_verify_result=$HEALTH_SSL_VERIFY for $HOST (0 is a verified chain and name)"
-  die "A connection was made and the peer's certificate did not verify. Nothing here passes -k, so this is"
-  die "the answer a real client gets."
+  # DEFENSIVE ONLY, AND UNREACHABLE as the paragraph above explains: a peer whose certificate did not verify
+  # fails the request outright, so assertion 1 has already exited 60. Kept rather than deleted because a
+  # future curl option — or a future curl — could make a completed request carry a non-zero result, and a
+  # branch that cannot fire costs nothing while a missing one is silent. It is not covered by any fixture.
+  die "  TLS  curl reports ssl_verify_result=$HEALTH_SSL_VERIFY for $HOST, on a request that completed"
+  die "That should not be reachable: with verification enforced, a certificate that did not verify ends the"
+  die "run at assertion 1. Treat this as a finding about the check rather than about the deployment."
   exit 1
 else
-  ok "  OK  the certificate chain and the host name verified for $HOST (ssl_verify_result 0)"
+  ok "  OK  TLS verification was enforced for $HOST, and the connection completed"
+  note "      Inferred, not measured: no -k is passed and -q disables any curlrc, so a certificate that did"
+  note "      not verify would have ended this run at assertion 1. ssl_verify_result reads 0 either way."
 fi
 
 ok "$BASE_URL is serving release $EXPECTED_VERSION: liveness, a refusal a connector can act on, a token, and $TOOL_COUNT tools."

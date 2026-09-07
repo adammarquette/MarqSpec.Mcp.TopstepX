@@ -199,6 +199,11 @@ public sealed class HistoricalContractSelectionTests : IAsyncLifetime
             "the second hour is one page on the venue's own pick -- the count this read cost before ADR-0020 "
             + "and the count it must still cost");
         result.VenueRequests.Should().Be(1);
+
+        // A PRESENT-BAND READ DECIDES NO HISTORY, AND MUST NOT CLAIM IT DID (gh#592). There is no candidate
+        // set here to have narrowed, so the honest answer is "not decided here" -- not "the cycle was whole",
+        // which would be a confident statement about a decision that never ran.
+        result.History.Selection.Should().Be(HistorySelection.NotDecidedHere);
         gateway.ContractLookups.Should().Be(
             0, "nothing in the present band is a constructed expiry, so nothing needs confirming by id");
 
@@ -230,8 +235,15 @@ public sealed class HistoricalContractSelectionTests : IAsyncLifetime
 
         BarCacheService cache = BuildAround(gateway, Now);
 
-        await cache.GetBarsAsync(
+        BarReadResult result = await cache.GetBarsAsync(
             _mes, 5, new BarRange(HistoryStart, HistoryStart.AddHours(1)), CancellationToken.None);
+
+        // THE UNDEGRADED DIRECTION (gh#592). Every expiry the cycle named for these trade dates resolved, so
+        // the volume decision ran over the cycle rather than over a survivor set -- and the payload says so
+        // in its own words rather than by staying silent. A flag that is always set is the same as no flag,
+        // which is why this assertion sits on the case where nothing went wrong.
+        result.History.Selection.Should().Be(HistorySelection.AsTheCycleNames);
+        result.History.Unresolved.Should().BeEmpty();
 
         gateway.BarRequests.Should().Be(
             2, "one page each for the two candidates a June trade date names on a quarterly cycle");
@@ -338,8 +350,15 @@ public sealed class HistoricalContractSelectionTests : IAsyncLifetime
         CapturingLogger<BarCacheService> log = new();
         BarCacheService cache = BuildAround(gateway, Now, log);
 
-        await cache.GetBarsAsync(
+        BarReadResult result = await cache.GetBarsAsync(
             _mes, 5, new BarRange(UnlistedStart, UnlistedStart.AddHours(1)), CancellationToken.None);
+
+        // A FOURTH STATE, BECAUSE THIS IS NOT THE NARROWED ONE (gh#592). A narrowed set had a survivor and
+        // the volume decision ran over it; here nothing the cycle named was listed, so ADR-0020's rule did
+        // not run at all and the whole stretch is the pre-ADR-0020 answer. Reporting both degradations under
+        // one value would make them indistinguishable on the wire -- the same defect one level down.
+        result.History.Selection.Should().Be(HistorySelection.FellBackToTheFront);
+        result.History.Unresolved.Should().Equal("H26", "M26");
 
         gateway.ContractLookups.Should().Be(
             2, "both constructed March expiries are existence-checked before either is fetched");
@@ -386,7 +405,15 @@ public sealed class HistoricalContractSelectionTests : IAsyncLifetime
 
         BarRange window = new(HistoryStart, HistoryStart.AddHours(1));
 
-        await cache.GetBarsAsync(_mes, 5, window, CancellationToken.None);
+        BarReadResult degraded = await cache.GetBarsAsync(_mes, 5, window, CancellationToken.None);
+
+        // THE CALLER-FACING HALF (gh#592). The operator's warning below is not on the caller's path -- an MCP
+        // client never sees a log line -- so until this state existed the payload of this read and the
+        // payload of the undegraded read further up were the same object.
+        degraded.History.Selection.Should().Be(HistorySelection.NarrowedByTheVenue);
+        degraded.History.Unresolved.Should().Equal(
+            new[] { "M26" },
+            "the caller is told WHICH expiry fell away, not merely that something did");
 
         gateway.ContractLookups.Should().Be(
             2, "both of June's constructed expiries are existence-checked before either is fetched");
@@ -425,6 +452,12 @@ public sealed class HistoricalContractSelectionTests : IAsyncLifetime
         second.Bars.Should().HaveCount(12);
         second.Bars.Should().AllSatisfy(bar => bar.ContractId.Should().Be(
             Liquid, "the volume decision ADR-0020 exists for finally ran, and the liquid contract won"));
+
+        // BOTH DIRECTIONS, ON THE SAME STORE AND THE SAME WINDOW. The only thing that changed between the two
+        // reads is whether the venue listed M26, and the payload changes with it -- which is what makes this
+        // a report of a fact rather than a flag that is always set.
+        second.History.Selection.Should().Be(HistorySelection.AsTheCycleNames);
+        second.History.Unresolved.Should().BeEmpty();
     }
 
     [Fact]
@@ -457,7 +490,10 @@ public sealed class HistoricalContractSelectionTests : IAsyncLifetime
 
         BarRange window = new(HistoryStart, HistoryStart.AddHours(1));
 
-        await cache.GetBarsAsync(_mes, 5, window, CancellationToken.None);
+        BarReadResult first = await cache.GetBarsAsync(_mes, 5, window, CancellationToken.None);
+
+        first.History.Selection.Should().Be(
+            HistorySelection.NarrowedByTheVenue, "the read that narrowed is the read that can say so");
 
         log.Messages.Should().ContainMatch(
             "*M26*", "the stretch was decided by default, and that is the only warning an operator will get");
@@ -469,13 +505,22 @@ public sealed class HistoricalContractSelectionTests : IAsyncLifetime
         clock.Advance(ContractDirectory.NegativeLifetime);
         gateway.ResetCounters();
 
-        await cache.GetBarsAsync(_mes, 5, window, CancellationToken.None);
+        BarReadResult later = await cache.GetBarsAsync(_mes, 5, window, CancellationToken.None);
 
         gateway.BarRequests.Should().Be(
             0, "every bucket is present, so the read is answered from the store and never re-asks");
 
         (await StoredAsync(window.Start, window.End)).Should().AllSatisfy(bar => bar.ContractId.Should().Be(
             Front, "a read does not rewrite attributed history -- reselect-bars (gh#506) is the remedy"));
+
+        // WHERE THE STATE STOPS, PINNED RATHER THAN LEFT TO BE DISCOVERED (gh#592). This read plans nothing,
+        // so it knows nothing: nothing in Bars records that a bucket was written under a narrowed set, and
+        // ADR-0020 §5 forbids re-deciding attributed history to find out. NotDecidedHere is the honest
+        // answer, and it is emphatically not AsTheCycleNames -- a caller must not read silence as a whole
+        // cycle. Making the store able to answer this is a persisted fact, an ADR and a migration; the verb
+        // that repairs the run underneath it is reselect-bars (gh#506).
+        later.History.Selection.Should().Be(HistorySelection.NotDecidedHere);
+        later.History.Unresolved.Should().BeEmpty();
     }
 
     [Fact]

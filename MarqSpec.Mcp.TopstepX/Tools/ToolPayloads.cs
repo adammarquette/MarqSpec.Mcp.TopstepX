@@ -1,4 +1,5 @@
 using MarqSpec.Mcp.TopstepX.Domain.MarketData;
+using MarqSpec.Mcp.TopstepX.MarketData;
 using MarqSpec.Mcp.TopstepX.Venue;
 
 namespace MarqSpec.Mcp.TopstepX.Tools;
@@ -148,13 +149,21 @@ public static class ToolPayloads
     /// Which contracts produced these bars. The bars are returned either way — each one is a real observation
     /// of a real contract — but <c>span</c> says whether reading them as a single series is valid.
     /// </param>
+    /// <param name="History">
+    /// How <b>this call's</b> historical half was decided (gh#592). A separate question from
+    /// <paramref name="Contracts"/>, and deliberately not a value of it: <c>contracts.span</c> is about
+    /// whether the bars cross a roll, while this is about whether the contracts they were chosen from were
+    /// the ones the product's cycle names. A window can be <c>SingleContract</c> and still have been decided
+    /// among survivors of a venue negative.
+    /// </param>
     public sealed record BarSeries(
         string Symbol,
         int ResolutionMinutes,
         IReadOnlyList<BarPoint> Bars,
         int FetchedBuckets,
         int VenueRequests,
-        ContractCoverage Contracts);
+        ContractCoverage Contracts,
+        HistoryCandidates History);
 
     /// <summary>One session's OHLCV, on the trade date it belongs to.</summary>
     /// <param name="TradeDate">The CME trade date, the key a caller joins these on.</param>
@@ -239,6 +248,11 @@ public static class ToolPayloads
     /// base bars disagreed is <c>absent</c> rather than spliced — so a roll here falls <i>between</i> two
     /// trade dates, and <c>span</c> says whether one does.
     /// </param>
+    /// <param name="History">
+    /// How <b>this call's</b> historical half was decided (gh#592), on exactly the terms
+    /// <see cref="BarSeries.History"/> describes — the base bars a session is derived from are read through
+    /// the same cache-aside path, so the same degradation reaches this answer.
+    /// </param>
     public sealed record SessionBarSeries(
         string Symbol,
         string Session,
@@ -247,7 +261,8 @@ public static class ToolPayloads
         IReadOnlyList<SessionAbsence> Absent,
         int FetchedBuckets,
         int VenueRequests,
-        ContractCoverage Contracts);
+        ContractCoverage Contracts,
+        HistoryCandidates History);
 
     /// <summary>An indicator series.</summary>
     /// <param name="Symbol">The normalised instrument.</param>

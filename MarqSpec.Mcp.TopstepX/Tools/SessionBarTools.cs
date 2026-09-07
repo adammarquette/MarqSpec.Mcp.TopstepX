@@ -193,7 +193,8 @@ public sealed class SessionBarTools(
             [.. result.Absent.Select(ToolPayloads.ToAbsence)],
             result.FetchedBuckets,
             result.VenueRequests,
-            ToolPayloads.ToSessionCoverage(result.Bars));
+            ToolPayloads.ToSessionCoverage(result.Bars),
+            result.History);
 
     private async Task<SessionBarReadResult> ReadAsync(
         InstrumentId instrument,

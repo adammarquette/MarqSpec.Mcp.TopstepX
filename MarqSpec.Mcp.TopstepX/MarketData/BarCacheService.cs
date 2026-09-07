@@ -38,10 +38,22 @@ namespace MarqSpec.Mcp.TopstepX.MarketData;
 /// How many <b>history</b> requests were issued to the venue. Zero is the precise statement that no bars
 /// were fetched — not that the venue went untouched (gh#504).
 /// </param>
+/// <param name="History">
+/// How <b>this read's</b> historical half was decided, and which of the cycle's expiries the venue did not
+/// list (gh#592).
+/// <para>
+/// <b>Carried beside the two counters rather than derived from the bars, because it is the same kind of fact
+/// as they are</b> — a property of what this call did at the venue, not of the rows it returns. The bars
+/// cannot answer it: nothing in <c>Bars</c> records that a bucket was written under a narrowed candidate set,
+/// and ADR-0020 §5 forbids a read from re-deciding attributed history to find out. So a warm read reports
+/// <see cref="HistorySelection.NotDecidedHere"/> — "this read decided none", never "the history is whole".
+/// </para>
+/// </param>
 public sealed record BarReadResult(
     IReadOnlyList<Bar> Bars,
     int FetchedBuckets,
-    int VenueRequests);
+    int VenueRequests,
+    HistoryCandidates History);
 
 /// <summary>One stored bucket, and which contract the row standing in it says produced it.</summary>
 /// <param name="BucketStart">When the bucket opens.</param>
@@ -282,6 +294,22 @@ public sealed class BarCacheService
         int fetched = 0;
         int requests = 0;
 
+        // WHAT THE CALLER IS TOLD ABOUT HOW ITS HISTORY WAS DECIDED (gh#592), read off the slices this read
+        // is about to ask the venue about rather than off the plan.
+        //
+        // `outstanding` and not `planned`, so that the state tracks the same boundary `venueRequests` does: a
+        // slice the empty-range ledger already answered is not fetched, and reporting a degradation for a
+        // stretch this read never asked about would attribute somebody else's decision to this payload.
+        //
+        // Captured HERE because here is the only place it exists. Once the bars are written, nothing in
+        // `Bars` says a bucket was chosen among survivors rather than among the cycle, and ADR-0020 §5
+        // forbids a later read from re-deciding to work it out -- so this is the moment, or never. The
+        // consequence is deliberate and pinned: a warm read of the same window reports NotDecidedHere, which
+        // is "this read decided none" and not "the stored history is whole". Repairing the run underneath is
+        // reselect-bars (gh#506).
+        HistoryCandidates history = HistoricalRangePlanner.SelectionOf(
+            [.. outstanding.SelectMany(range => range.Slices)]);
+
         // WHAT THIS READ COST, decided here and reported once at the end.
         //
         // `hit` is the exact statement "the venue was not reached": every bucket the calendar expected is
@@ -400,7 +428,7 @@ public sealed class BarCacheService
 
         _telemetry.CacheRead(CacheSeries.Bars, instrument.Symbol, resolutionMinutes, outcome);
 
-        return new BarReadResult([.. rows.Select(IndicatorProjector.ToBar)], fetched, requests);
+        return new BarReadResult([.. rows.Select(IndicatorProjector.ToBar)], fetched, requests, history);
     }
 
     /// <summary>

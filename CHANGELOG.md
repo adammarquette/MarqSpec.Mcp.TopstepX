@@ -80,7 +80,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   every range becomes one present slice on the venue's pick — today's behaviour exactly, memoisation
   included, since an empty answer from that contract is a true statement about *it* under the per-contract
   ledger, and a later read whose candidate set is wider still asks the others — with a `LogWarning` naming
-  the instrument, the front and the cycle. Only the narrower case, a **stretch no constructed candidate is
+  the instrument and the front, and the cycle where there is one. Only the narrower case, a **stretch no constructed candidate is
   listed for**, withholds the claim: that slice alone falls back, with a `LogWarning` naming the range, and
   writes **no** memo, so the next read asks
   again. Counters stay honest: `GapFilled` still counts ranges rather than slices, every candidate's history

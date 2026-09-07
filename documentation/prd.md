@@ -142,7 +142,7 @@ The server serves OHLCV bars for a futures instrument at a requested resolution 
   cycle, are conditions of the **whole read**: every range is fetched from `F` as one present slice — exactly
   the behaviour that preceded this requirement, memoisation included, since an empty answer from `F` is a true
   statement about `F` under the per-contract ledger (`R-1.7`) and a later read with a wider candidate set
-  still asks the others — with a **warning naming the instrument, the front and the cycle**. A **stretch no
+  still asks the others — with a **warning naming the instrument and the front, and the cycle where there is one**. A **stretch no
   constructed candidate is listed for** is the narrower case, and only it withholds the memo: that slice alone
   is fetched from `F`, with a **warning naming the range**, and **nothing permanent is recorded** about it
   being empty, so the next read asks again rather than inheriting a claim nobody could properly make.

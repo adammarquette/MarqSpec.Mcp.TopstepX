@@ -238,6 +238,52 @@ jobs:
           --collect:"XPlat Code Coverage"
           --results-directory ./TestResults
 
+      # gh#516. The infrastructure under infra/ is CDK in C#, in the solution, so the Restore, Format and
+      # Build steps above already cover it; these two steps are what make a pull request PROVE the template
+      # it proposes (ADR-0023 §7). They ride in this job because `build & unit tests` is already required
+      # on all three rungs -- no ruleset write, and nothing is added to `image`'s or `coverage`'s `needs`,
+      # so the skip argument in documentation/agents/platform.md is untouched.
+      #
+      # NO CREDENTIALS, by construction: the runner holds none, `--no-lookups` makes a context miss fail
+      # the synth rather than call AWS, and infra/cdk.context.json carries the hosted-zone and AZ lookups.
+      # A green run here therefore licenses exactly this: the app runs, every stack synthesises, and the
+      # template says what the tests assert. It says nothing about whether the account will accept it.
+      #
+      # The template tests are the cheaper, sharper half and run first. NO `--collect`: the coverage gate
+      # measures the PRODUCT (scripts/check-coverage-floor.py), and instrumenting the infra assembly would
+      # move that figure for a change in code no tool call ever executes.
+      #
+      # Both need Node on PATH at RUN time (the constructs are jsii; the tests spawn the same kernel);
+      # ubuntu-latest ships one, and setup-node pins the major and caches the CLI install.
+      - name: Infrastructure template tests
+        run: >-
+          dotnet test infra/MarqSpec.Mcp.TopstepX.Infra.Tests/MarqSpec.Mcp.TopstepX.Infra.Tests.csproj
+          --configuration Release --no-build
+          --logger "trx;LogFileName=infra-tests.trx"
+          --results-directory ./TestResults
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: infra/package-lock.json
+
+      # EVERY SHAPE, because the tasks' outbound path is a fork ADR-0023's decision log leaves to the
+      # maintainer: the app refuses to synthesise without `-c outbound=…`, and this step passes each value
+      # the property admits rather than picking one. When the maintainer decides, the loop collapses to one
+      # plain `npx cdk synth` and the choice becomes a literal in infra/…/Program.cs. Each iteration is a
+      # separate `dotnet run`; the loop aborts on the first failure under this shell's `-e`, and the listing
+      # afterwards is what shows three templates per shape actually landed.
+      - name: Synthesise every outbound shape, with no credentials
+        working-directory: infra
+        run: |
+          npm ci --no-audit --no-fund
+          for outbound in PublicIpPerTask NatGateway VpcEndpointsWithPublicIp VpcEndpointsWithNatGateway; do
+            echo "== outbound=$outbound"
+            npx cdk synth --quiet --no-lookups -c "outbound=$outbound"
+          done
+          ls -1 cdk.out/*.template.json
+
       - name: Upload unit test results
         if: always()
         uses: actions/upload-artifact@v7

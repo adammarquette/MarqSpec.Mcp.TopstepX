@@ -95,6 +95,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   reads none of it. Pinned by 122 unit tests against an in-process stub issuer with a key generated for the
   run — no test reaches the network — and **not yet measured against a real Cognito pool**, which gh#517
   builds ([ADR-0007](documentation/adr/0007-dual-transport.md) 2026-09-06 update, gh#512, gh#509).
+- **`infra/` — the AWS deployment as code, synthesised and asserted in CI with no credentials.** A CDK app
+  in C# joins the solution ([ADR-0023](documentation/adr/0023-aws-deployment-topology.md) §7): one
+  `EnvironmentStack` instantiated for production and staging from the same class, differing only in its
+  props — the root domain, the environment name, the zone mode (looked up, or created and delegated) and
+  the two tape flags — plus the `GitHubOidcStack` with the two deploy roles and their exact trust
+  conditions. Per environment: a VPC over two AZs; the four security groups in loopback's role; one ALB with
+  the `*.<root>` ACM wildcard, HTTPS 443 defaulting to 404 with one host rule, HTTP 80 answering 301, a
+  target group probing `/health` on 8080, idle timeout 600 s and access logs; the released image **by digest
+  from a CloudFormation parameter** with no default, and the Timescale image by digest on an EFS access point
+  as uid/gid 1000, one task each, old-stops-before-new with circuit breaker and rollback; three empty secret
+  shells for gh#519 to fill, the SSM deployment history, 30-day log groups, a daily 35-day AWS Backup plan,
+  and `RETAIN` on delete **and** on replace for everything stateful. 107 template tests pin all of it,
+  including that every `.env.example` key outside the compose-only set reaches the task and that no image
+  reference contains `:latest`; `build & unit tests` runs them and then `cdk synth --no-lookups` through a
+  pinned CLI. **The tasks' outbound path is deliberately undecided**: it is a required stack property with no
+  default, every shape it admits is asserted and synthesised, and the choice stays the maintainer's on
+  ADR-0023's decision log. No deployment exists yet — that is gh#520 (gh#516, gh#509).
+
 - **`Store__StartupWaitSeconds` — how long startup waits for a store that is not answering yet.** `0` by
   default, which is one probe and no delay: byte for byte what every launch did before, and what compose
   wants, since its `depends_on` is a `pg_isready` health gate. It exists for a deployment with **no

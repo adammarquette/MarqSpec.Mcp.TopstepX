@@ -100,6 +100,18 @@ The server serves OHLCV bars for a futures instrument at a requested resolution 
   reaches the vendor; a session-**bar** read reaches it only through the base series' cache-aside path, and
   opens no fetch of its own. See [ADR-0022](adr/0022-session-bars-derived-complete-or-absent.md) (gh#496,
   gh#498, gh#499).
+- **R-1.13** A **session read answers over whole sessions, and refuses rather than truncates.** A windowed
+  read returns one row per trade date whose **whole** session lies inside the window — a session the window
+  clips is left out rather than reported short — and every trade date it names arrives in exactly one of two
+  lists: the bar, or an absence carrying its reason and its expected and missing base-bucket counts
+  (`R-1.12`). Among the trade dates a window wholly contains, one in **neither** list is a day the calendar
+  carries no session on — a non-trading day, and never a silent gap. Two caps bound the read and each refuses
+  naming the real number rather than shortening the series: the row cap on trade dates, and the gap
+  detector's buckets-per-pass cap counted in the session's **base** buckets, the ones a session bar is
+  derived from rather than the sessions themselves. A read anchored on a count of the most recent sessions is
+  bounded the same way, and by the span of calendar days the closed-session walk covers. Every refusal is
+  decided before the store or the venue is touched. See
+  [ADR-0022](adr/0022-session-bars-derived-complete-or-absent.md) (gh#496, gh#500).
 
 ## R-2 — Pre-computed indicators
 
@@ -345,6 +357,21 @@ The server serves OHLCV bars for a futures instrument at a requested resolution 
   is a failure on a background thread that reads as an absence of telemetry — indistinguishable from the
   supported unconfigured state. **No header value reaches a span or a log attribute**, the exporter's own
   `Otel__Headers` included: it carries the backend's token, and this repository is public (R-7.1).
+- **R-5.11** **`get_session_bars`** and **`get_latest_session_bars`** return one OHLCV bar per whole trading
+  session: `get_session_bars(symbol, session, fromUtc, toUtc)` over the trade dates a window wholly contains,
+  and `get_latest_session_bars(symbol, session, count)` over the most recent **closed** sessions, never the
+  one in progress. Both answer `{ symbol, session, baseResolutionMinutes, bars, absent, fetchedBuckets,
+  venueRequests, contracts }`, with the bars and the absences partitioning the trade dates asked for
+  (`R-1.13`, `R-1.12`) and `baseResolutionMinutes` saying what "complete" was measured in. `session` is a
+  closed vocabulary — an unknown name is an error listing the configured ones, never an empty series, on the
+  same terms as an unknown instrument (R-5.3). They are their own tool type rather than a `session` argument
+  on `get_bars` ([ADR-0017](adr/0017-one-tool-type-per-concern.md)), because a session bar is defined on the
+  trade date rather than on the bucket grid and carries a second list `get_bars` has no place for. Both caps
+  refuse rather than truncate (`R-1.13`), and `contracts` is built from each session bar's single contract
+  id, so a roll falls **between** two trade dates and never inside one (`R-1.11`); `contracts.span` reads
+  `Unknown` only when no session bar could be built at all. `fetchedBuckets` and `venueRequests` are the
+  **base** series' numbers, and `venueRequests == 0` is the exact test for an answer served entirely from the
+  store (`R-1.3`). See [ADR-0022](adr/0022-session-bars-derived-complete-or-absent.md) (gh#496, gh#500).
 
 ## R-6 — Observations
 

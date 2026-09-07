@@ -105,13 +105,13 @@ page against either**, so check it against the code, never against another docum
   > resolutionMinutes 1440 is coarser than the largest bar this server serves, 1379 minutes, one minute short
   > of a session (24 hours less the venue's one-hour maintenance window). A bucket that long or longer can
   > never close inside a single session, so it is a session bar rather than a bar resolution. The day and the
-  > week are not unavailable and they are not out of range; ask the session-bar tools (gh#496,
-  > arriving in gh#500) for them.
+  > week are not unavailable and they are not out of range; ask get_session_bars or
+  > get_latest_session_bars (gh#496) for them.
 
   **A bar of a session's length or longer is a session bar, not a coarse resolution**: it is defined on the
-  CME trade date rather than on the bucket grid, and it is served by the session-bars tools of gh#496 —
-  arriving in gh#500 — over the four named sessions `full`, `rth`, `asia` and `europe`
-  ([ADR-0022](adr/0022-session-bars-derived-complete-or-absent.md), `R-1.12`). **Two cross-axis pairs are
+  CME trade date rather than on the bucket grid, and it is served by `get_session_bars` and
+  `get_latest_session_bars` (gh#496, gh#500) over the four named sessions `full`, `rth`, `asia` and `europe`
+  ([ADR-0022](adr/0022-session-bars-derived-complete-or-absent.md), `R-1.12`, `R-5.11`). **Two cross-axis pairs are
   refused alongside it.** `get_latest_bars` reaches back four bar
   spans per bar wanted **plus four days** (`ToolGuards.LookbackWindow`), so a coarse resolution and a big
   count — each inside its own bound — can name a window that **starts before the calendar does**, and that is
@@ -259,6 +259,120 @@ The recent window, which is what an agent actually asks for. Same shape as `get_
 **closed** bucket. `count` is bounded by `MaxRows`. The look-back is four bar spans per bar wanted **plus
 four days** (`ToolGuards.LookbackWindow`), and a coarse resolution with a large `count` is refused for
 reaching back past the start of the calendar — one of the cross-axis pairs above.
+
+### `get_session_bars(symbol, session, fromUtc, toUtc)`
+One OHLCV bar per **whole** trading session over a window — the day, the overnight, or any named slice of it.
+Not a coarse `get_bars`: a session bar is defined on the CME trade date rather than on the bucket grid, it is
+**derived** from cached base bars rather than fetched as a bar that size, and it is complete or it is *absent
+with a reason* ([ADR-0022](adr/0022-session-bars-derived-complete-or-absent.md), `R-1.13`, `R-5.11`). Its own
+tool type rather than a `session` argument on `get_bars`
+([ADR-0017](adr/0017-one-tool-type-per-concern.md)): one tool would have had two return shapes and one
+description trying to describe both.
+
+Returns `{ symbol, session, baseResolutionMinutes, bars: [{ tradeDate, t, closeUtc, o, h, l, c, v }],
+absent: [{ tradeDate, reason, expectedBuckets, missingBuckets }], fetchedBuckets, venueRequests,
+contracts: { span, segments: [{ contractId, firstBucket, lastBucket, barCount }] } }`.
+
+`tradeDate` is the CME trade date and the key to join the two lists on. `t` is when the session opened — the
+same thing `t` means on every other series here — and `closeUtc` when it closed, exclusive, carried beside it
+rather than derived, because the span between them is a wall-clock rule that moves with the offset.
+`baseResolutionMinutes` is what *complete* was measured in: the counts under `absent` are counts of base bars
+that size.
+
+**The session name is a closed vocabulary.** Four ship, stated in Central wall-clock time on the trade date:
+
+| `session` | Central window | Base resolution |
+|---|---|---:|
+| `full` | 17:00 → 16:00 | 60 |
+| `rth` | 08:30 → 15:00 | 30 |
+| `asia` | 17:00 → 02:00 | 30 |
+| `europe` | 02:00 → 08:30 | 30 |
+
+An unknown name is an **error listing the configured names**, never an empty series — `R-5.3`'s rule, one
+axis along. An operator may configure others; a base resolution has to divide 60 so the wall-clock boundaries
+land on the stored UTC bucket grid under both standard and daylight time.
+
+**Two lists, and they partition the trade dates asked for.** A session this server could not build whole is
+never a bar with holes in it; it is an `absent` entry carrying one of four reasons:
+
+| `reason` | Means |
+|---|---|
+| `Incomplete` | base buckets the calendar expected are not in the store — `expectedBuckets` and `missingBuckets` say how many |
+| `SpansRoll` | the session's base bars came from more than one contract, so nothing is spliced ([ADR-0011](adr/0011-contract-roll-boundary.md)) |
+| `ProvenanceUnknown` | the base bars carry no contract id, so a roll cannot be ruled out |
+| `NotClosed` | the session has not finished yet |
+
+`missingBuckets` is `0` for an absence that is not about completeness — a spliced or unattributed session is
+missing nothing — so a zero there does not mean *nearly whole*. `NotClosed` reaches a caller only for the
+session still in progress: the trade dates are walked off the session calendar, so a date the calendar
+disowns never enters the read, and a window entirely in the past never carries one.
+
+**Only sessions lying WHOLLY inside the window are returned**, so read the edges as inclusive of whole
+sessions only — a session the window clips is left out, not reported short. Of the trade dates whose whole
+session lies inside the window, one in **neither** list is **not a trading day**. A Saturday or a holiday can
+never be asked for here at all, because the ask is a calendar walk over the dates that carry a session — so a
+calendar day in neither list is one the calendar says did not trade, never a gap this server dropped.
+
+`contracts` is built from the session bars' own contract ids, and **each session bar comes from exactly
+one** — a session whose base bars disagreed is `absent` with `SpansRoll` rather than spliced. So a roll falls
+*between* two trade dates, `segments` are maximal runs of consecutive bars sharing an id, and `firstBucket` /
+`lastBucket` are session **opens** at both ends. `span` is `SingleContract`, `SpansRoll`, or `Unknown` **only
+when no session bar could be built at all** — which is not what `Unknown` means on `get_contract_roll`, where
+it says provenance was never recorded. A session with no provenance is a `ProvenanceUnknown` absence, not an
+`Unknown` span.
+
+`fetchedBuckets` and `venueRequests` answer different questions here for the same reason they do under
+`get_bars`, and they are the **base** series' numbers: nothing fetches a session bar.
+
+| Field | Answers | Zero means |
+|---|---|---|
+| `venueRequests` | did this call **fetch base bars**? | **no bar fetch** — the exact test for an answer served entirely from the store |
+| `fetchedBuckets` | how much did the answer change the store? | only that nothing was *written* |
+
+The service opens no fetch of its own, but it makes **one covering base read** — the first session's open to
+the last one's close, the overnight between them included — and that path is cache-aside, so a cold window
+pays the base series' ordinary fetch. A repeat is not immediately free: the read **settles to a store-only
+answer once the base ledger has recorded the venue's empty ranges**, and the ranges the venue answers empty
+are only discovered on the read *after* the one that filled the bars
+([ADR-0022](adr/0022-session-bars-derived-complete-or-absent.md), the 2026-09-07 update).
+
+**Refused rather than truncated**, in this order, and every refusal is decided before the store or the venue
+is touched:
+
+1. an empty or inverted window — `fromUtc` must be strictly before `toUtc`;
+2. a `toUtc` past the last instant this server's session calendar can reason about;
+3. more **base** buckets than one gap-detection pass will enumerate — `BarGapDetector.MaxBucketsPerPass`,
+   counted in bars of the session's own base resolution rather than in sessions. The remedy is *narrow the
+   window, or ask the operator for a coarser base resolution for this session*: there is no
+   `resolutionMinutes` here to coarsen;
+4. more trade dates than `MaxRows`, refused naming the real count.
+
+The bucket cap is measured **before** the row cap, the opposite of `get_bars`' order: the row count here is a
+calendar walk rather than arithmetic, and the bucket span is what bounds the walk.
+
+### `get_latest_session_bars(symbol, session, count)`
+The most recent **closed** session bars, oldest first — usually the one to reach for, since
+`get_session_bars` needs explicit dates. Same shape, same session vocabulary, same two lists, same cost
+fields.
+
+**Anchored on the last session whose close is at or before now, never the one in progress.** Asked during
+today's session it answers with the sessions before it rather than with a partial one, so `NotClosed` cannot
+appear here at all: only closed sessions are asked about.
+
+Refused, in this order, and again before any read:
+
+1. a `count` that is not positive, or over `MaxRows`;
+2. a `now` past the calendar horizon;
+3. a `count` the calendar cannot satisfy inside the bounded walk — `SessionWindows.LastClosedWalkSpanDays`,
+   **four calendar days per session asked for plus fifteen**. A holiday-dense stretch is enough to reach it;
+   the refusal names the count and the span, and blames the calendar rather than the walk, because every one
+   of those days *is* walked and what runs out is the sessions inside them;
+4. more base buckets than `MaxBucketsPerPass`, measured over the covering window the read will actually
+   issue — the first session's open to the last one's close — with the remedy *ask for fewer sessions*.
+
+**The last of those is not the row cap restated.** A `count` well inside `MaxRows` can still span more base
+buckets than a single pass enumerates — around 3,720 `rth` sessions at a 30-minute base, well under the
+default 5,000 rows — and before gh#500 that faulted below the boundary after the store had been opened.
 
 ### `get_indicators(symbol, resolutionMinutes, indicator, fromUtc, toUtc, period?)`
 A stored indicator series, **filled on demand from bars this server already holds**.

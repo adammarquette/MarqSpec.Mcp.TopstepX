@@ -6,10 +6,10 @@
 what a session *window* is · [ADR-0010](0010-per-call-resolutions-fetched-not-derived.md) — this is the first
 use of the "explicit completeness guard" its Decision names as the acceptable form of derivation ·
 [ADR-0011](0011-contract-roll-boundary.md) — nothing is derived across a roll, and a session bar is a derived
-thing · [ADR-0017](0017-one-tool-type-per-concern.md) — the two tool types this needs arrive under its rule in
+thing · [ADR-0017](0017-one-tool-type-per-concern.md) — the two tool types this needs arrived under its rule in
 gh#500 · gh#496 (epic) · gh#498 (this slice) · gh#499 · gh#500 · gh#501 · gh#494 (the vendor probe) ·
 `Domain/MarketData/SessionDefinition.cs`, `SessionWindows.cs`, `SessionBar.cs`, `SessionBarAggregator.cs`,
-`Tools/ToolGuards.cs`
+`Tools/ToolGuards.cs`, `Tools/SessionBarTools.cs`
 
 ## Context
 
@@ -60,7 +60,7 @@ that takes a resolution refuses 1,380 and above with the value named:
 > resolutionMinutes 1440 is coarser than the largest bar this server serves, 1379 minutes, one minute short of
 > a session (24 hours less the venue's one-hour maintenance window). A bucket that long or longer can never
 > close inside a single session, so it is a session bar rather than a bar resolution. The day and the week are
-> not unavailable and they are not out of range; ask the session-bar tools (gh#496, arriving in gh#500)
+> not unavailable and they are not out of range; ask get_session_bars or get_latest_session_bars (gh#496)
 > for them.
 
 **The refusal names where the answer lives**, because refusing silently would swap one wrong answer for a
@@ -198,8 +198,9 @@ invalidated by every base write, which is more machinery than recomputing the ab
 ## Consequences
 
 - **One refusal breaks callers.** Anything passing `resolutionMinutes` between 1,440 and 10,080 now gets an
-  error where it used to get an empty array. That is the point — the empty array was the defect — but it is a
-  behaviour change on a live tool surface, and it is in the changelog as one.
+  error where it used to get an empty array, and since gh#500 that error names `get_session_bars` and
+  `get_latest_session_bars` as where the answer lives. That is the point — the empty array was the defect —
+  but it is a behaviour change on a live tool surface, and it is in the changelog as one.
 - **Warm-up is measured in trade dates, not in bars.** Sixty trade dates of `rth` history need the 30-minute
   base bars for sixty trade dates before any of them can be answered, and one missing base bucket costs that
   whole day.
@@ -255,6 +256,40 @@ date, forever.
 model and §7's own claim about indicator reads all stand; what is corrected is a reading of §7 that the
 storage slice made easy to reach. `documentation/prd.md`'s `R-1.12` and `documentation/architecture.md`'s
 *session read* section are scoped to match (gh#499).
+
+## Update (2026-09-07) — the tool surface
+
+**The two tools this record needed exist: `get_session_bars(symbol, session, fromUtc, toUtc)` and
+`get_latest_session_bars(symbol, session, count)` (gh#500).** Everything in the Decision is unchanged; what
+changes is that its Consequences are now consequences *for callers* rather than for a service reachable only
+from the composition root.
+
+**They are their own `[McpServerToolType]`, not a `session` argument on `get_bars`**
+([ADR-0017](0017-one-tool-type-per-concern.md), the rule the header already named). A session bar is defined
+on the CME trade date rather than on the bucket grid, it is complete or absent with a reason, and it answers
+with a second list `get_bars` has no place for — folding the two together would have given one tool two
+return shapes and one description trying to describe both.
+
+**`contracts` is built from each session bar's own contract id, and there is exactly one per bar.** A session
+whose base bars disagreed is `absent` with `SpansRoll` rather than spliced, so `ContractRollDetector` is not
+reused: there is no unattributed run to weigh and the precedence question it answers does not arise. A roll
+therefore falls *between* two trade dates, `span` is `SingleContract` or `SpansRoll`, and `Unknown` means
+**no session bar could be built at all** — never "provenance was unrecorded", which is a `ProvenanceUnknown`
+entry under `absent`.
+
+**Every refusal is decided before the store or the venue is touched**, and the two forms refuse different
+things. The window form: empty or inverted window → `toUtc` past the calendar horizon → the base-bucket cap →
+the row cap on trade dates. The count form: `count` positive and within `MaxRows` → `now` past the horizon →
+the bounded closed-session walk (`SessionWindows.LastClosedWalkSpanDays` — four calendar days per session
+plus fifteen) → the same base-bucket cap over the covering window the read will issue. Both bucket checks
+count **base** buckets, because the base buckets are what a session read enumerates
+([ADR-0005](0005-session-aware-gap-detection.md)); `documentation/mcp-tool-catalog.md` carries the order and
+the remedies, and `documentation/prd.md` states them as `R-1.13` and `R-5.11`.
+
+**The cost story of the previous update is what a caller now sees.** `fetchedBuckets` and `venueRequests` on
+the wire are the *base* series' numbers, `venueRequests == 0` is the exact test for an answer served entirely
+from the store, and a repeat read is not immediately free: it settles to a store-only answer once the base
+ledger has recorded the venue's empty ranges, which is the read *after* the one that filled the bars.
 
 ## Follow-ups
 

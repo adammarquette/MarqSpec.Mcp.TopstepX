@@ -453,6 +453,12 @@ public sealed class HistoricalContractSelectionTests : IAsyncLifetime
 
         BarReadResult result = await cache.GetBarsAsync(_mes, 60, window, CancellationToken.None);
 
+        // Asserted, because without it this passes for the wrong reason: a read that never asked the fat
+        // candidate at all would also store the front's bars, and that is the pre-ADR-0020 behaviour rather
+        // than the pin. Both candidates are asked; the stored contract is what decides between them.
+        gateway.BarRequests.Should().Be(
+            2, "the range is historical, so every candidate the June trade date names is asked");
+
         ContractRollDetector.Segment(result.Bars).Should().ContainSingle(
             "the trade date keeps the contract the store already attributed it to, so the day is one run");
 

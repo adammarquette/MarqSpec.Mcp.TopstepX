@@ -86,6 +86,15 @@ public static class Program
             return await RebuildIndicatorsAsync(app, args).ConfigureAwait(false);
         }
 
+        // Beside rebuild-indicators and above StoreAvailabilityHolder.Set for the same reason the precedent
+        // is: the verb validates its symbol against InstrumentRegistry directly and exits the process, so
+        // the holder the MCP tool surface consults is never set on this path. It does NOT skip the
+        // migration the way the rebuild does -- see ReselectBarsAsync (gh#506).
+        if (args.Length > 0 && string.Equals(args[0], "reselect-bars", StringComparison.Ordinal))
+        {
+            return await ReselectBarsAsync(app, args).ConfigureAwait(false);
+        }
+
         // The result is published into DI rather than thrown: the tools that need a store ask it, and the
         // ones that do not are unaffected.
         StoreAvailability store = await MigrateAsync(app).ConfigureAwait(false);
@@ -954,5 +963,71 @@ public static class Program
             .ConfigureAwait(false);
 
         return 0;
+    }
+
+    private static async Task<int> ReselectBarsAsync(WebApplication app, string[] args)
+    {
+        // Both singletons, so they are taken from the root provider rather than from a scope: this runs
+        // before the migration, and a scoped DbContext resolved here would be one nothing has verified a
+        // schema for.
+        ILogger logger = app.Services.GetRequiredService<ILoggerFactory>().CreateLogger("reselect-bars");
+
+        ReselectArguments parsed;
+
+        try
+        {
+            // BEFORE THE MIGRATION AND BEFORE ANYTHING TOUCHES THE STORE. A mistyped symbol or an inverted
+            // window is the operator's to correct, and learning it after a schema has been applied and a
+            // window's worth of provenance is halfway rewritten is the expensive way to be told.
+            parsed = ReselectArguments.Parse(args, app.Services.GetRequiredService<InstrumentRegistry>());
+        }
+        catch (ArgumentException ex)
+        {
+            // Through the logger, not Console.Error: the stdio transport's logging is already configured
+            // (ConfigureLogging), and a bare Console write would be the only one in this codebase -- on the
+            // one transport where stdout is the protocol.
+            logger.LogError("reselect-bars refused the command line: {Reason}", ex.Message);
+            return ReselectExit.From(ex);
+        }
+
+        // THE MIGRATION RUNS FIRST HERE, WHERE rebuild-indicators SKIPS IT ENTIRELY, and the difference is
+        // that this verb WRITES. A rebuild replays projections over bars already stored; a reselect rewrites
+        // the bars' provenance, deletes the rows a new winner does not restate and drops coverage claims.
+        // Doing that through a schema this build has not applied is a write nobody can reproduce, or a
+        // failure halfway across a window.
+        StoreAvailability store = await MigrateAsync(app).ConfigureAwait(false);
+
+        if (!store.IsAvailable)
+        {
+            // The same class of fact as a degraded read, and reported as one: the command line was right and
+            // the window still was not re-decided. Serving the tool surface degraded is a decision about
+            // READS -- a verb whose only purpose is to write has nothing to offer past this point.
+            logger.LogError("reselect-bars cannot run: {Reason}", store.Explanation);
+            return ReselectExit.Degraded;
+        }
+
+        using IServiceScope scope = app.Services.CreateScope();
+
+        // Resolved OUTSIDE the try, deliberately: GetRequiredService throws InvalidOperationException for a
+        // missing registration, and catching that here would report a container defect as a degraded venue
+        // read. CompositionRootTests.TheReselectVerbCanBeResolved is what covers it instead.
+        BarReselector reselector = scope.ServiceProvider.GetRequiredService<BarReselector>();
+
+        try
+        {
+            // The report is the reselector's own log lines -- one per series and one summary naming both the
+            // asked window and the whole trade dates it was widened to. Same shape as IndicatorRebuilder,
+            // and for the same reason: under stdio, stdout carries the protocol.
+            await reselector
+                .ReselectAsync(parsed.Instrument, parsed.Window, CancellationToken.None)
+                .ConfigureAwait(false);
+        }
+        catch (InvalidOperationException ex)
+        {
+            logger.LogError("reselect-bars could not re-decide the window: {Reason}", ex.Message);
+            return ReselectExit.From(ex);
+        }
+
+        return ReselectExit.Ok;
     }
 }

@@ -444,6 +444,24 @@ public sealed class CompositionRootTests
     }
 
     [Fact]
+    public void TheReselectVerbCanBeResolved()
+    {
+        // BarReselector is reachable from NO tool, so the theory above -- which walks the tool types -- does
+        // not cover it, and `GetRequiredService<BarReselector>()` in the reselect-bars branch is verified by
+        // nothing else. That branch migrates the store and exits the process, so a missing registration
+        // surfaces as an operator running a repair command over months of history and getting a container
+        // exception instead. This repository has already shipped a verb that had never been executed
+        // anywhere (gh#37); leaving its one resolution unchecked would repeat exactly that.
+        using ServiceProvider provider =
+            Build(new Dictionary<string, string?>(), new McpOptions { Transport = McpTransport.Stdio });
+        using IServiceScope scope = provider.CreateScope();
+
+        Func<object> resolve = () => scope.ServiceProvider.GetRequiredService<BarReselector>();
+
+        resolve.Should().NotThrow();
+    }
+
+    [Fact]
     public void TheFootprintRebuildVerbCanBeResolved()
     {
         // FootprintProjector is reached from get_footprint / get_volume_profile via

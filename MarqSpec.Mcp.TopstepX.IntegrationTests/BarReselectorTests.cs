@@ -1,3 +1,4 @@
+using System.Globalization;
 using FluentAssertions;
 using MarqSpec.Mcp.TopstepX.Configuration;
 using MarqSpec.Mcp.TopstepX.Data;
@@ -378,8 +379,9 @@ public sealed class BarReselectorTests : IAsyncLifetime
         CapturingLogger<BarReselector> logger = new();
         CountingGateway gateway = Venue(FatLiquid(), ThinFront());
 
-        BarReselectResult result = await Reselector(gateway, logger)
-            .ReselectAsync(_mes, new BarRange(JuneStart, JuneStart.AddDays(1_000)), default);
+        BarRange asked = new(JuneStart, JuneStart.AddDays(1_000));
+
+        BarReselectResult result = await Reselector(gateway, logger).ReselectAsync(_mes, asked, default);
 
         result.SeriesSkipped.Should().Be(1);
         result.BarsRevised.Should().Be(0);
@@ -390,6 +392,25 @@ public sealed class BarReselectorTests : IAsyncLifetime
             message => message.Contains("250000", StringComparison.Ordinal)
                 && message.Contains("5m", StringComparison.Ordinal),
             "a series skipped in silence is a window the operator believes was rewritten");
+
+        // BOTH WINDOWS, and the pair is the whole message. The bucket count quoted here is measured over the
+        // EFFECTIVE range -- the whole trade dates the asked window was widened to -- so a warning naming
+        // only that range tells an operator their window spans a number of buckets it does not, and an
+        // operator who narrows to just under the cap gets refused again for reasons the line never showed
+        // them. The summary line already pairs the two; the refusal has to as well.
+        string askedEnd = asked.End.ToString(CultureInfo.InvariantCulture);
+        string effectiveEnd = result.EffectiveWindow.End.ToString(CultureInfo.InvariantCulture);
+
+        effectiveEnd.Should().NotBe(askedEnd, "the widening is what makes the pair worth printing");
+
+        // ASSERTED ON THE SKIP LINE ITSELF, which is what "250000" pins it to. The run summary already names
+        // both windows, so a predicate over every message would be green on that line while the refusal --
+        // the one line an operator sees when nothing was rewritten -- still named only one of them.
+        logger.Messages.Should().Contain(
+            message => message.Contains("250000", StringComparison.Ordinal)
+                && message.Contains(askedEnd, StringComparison.Ordinal)
+                && message.Contains(effectiveEnd, StringComparison.Ordinal),
+            "the skip has to name the range the operator asked for beside the one it was measured over");
     }
 
     [Fact]

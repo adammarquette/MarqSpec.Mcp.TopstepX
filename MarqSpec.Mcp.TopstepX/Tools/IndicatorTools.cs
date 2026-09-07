@@ -108,6 +108,8 @@ public sealed class IndicatorTools(
         // the bars are local (gh#246). A warm series pays two aggregates and nothing else.
         await EnsureProjectedAsync(instrument, resolutionMinutes, cancellationToken).ConfigureAwait(false);
 
+        IQueryable<BarRecord> bars = SeriesBars(instrument, resolutionMinutes);
+
         List<ToolPayloads.IndicatorPoint> values = await _database.IndicatorValues
             .Where(v => v.Venue == _venue
                 && v.Instrument == instrument.Symbol
@@ -116,6 +118,11 @@ public sealed class IndicatorTools(
                 && v.Period == resolved.Period
                 && v.BucketStart >= window.Start
                 && v.BucketStart < window.End)
+            // ONLY THE VALUES THE STORED BARS STILL ACCOUNT FOR (gh#577). Deleting bars orphans the values
+            // over them -- there is no foreign key (ADR-0011 §2) -- and a read never runs the pass that
+            // removes them, so without this a series whose bars were all deleted answered with a full window
+            // of ordinary-looking numbers over nothing. SeriesBars carries the rest of the reasoning.
+            .Where(v => bars.Any(b => b.BucketStart == v.BucketStart))
             .OrderBy(v => v.BucketStart)
             .Select(v => new ToolPayloads.IndicatorPoint(v.BucketStart, v.Value))
             .ToListAsync(cancellationToken)
@@ -180,6 +187,8 @@ public sealed class IndicatorTools(
         // cannot-measure over bars that measure perfectly well.
         await EnsureProjectedAsync(instrument, resolutionMinutes, cancellationToken).ConfigureAwait(false);
 
+        IQueryable<BarRecord> bars = SeriesBars(instrument, resolutionMinutes);
+
         var row = await _database.IndicatorValues
             .Where(v => v.Venue == _venue
                 && v.Instrument == instrument.Symbol
@@ -187,6 +196,11 @@ public sealed class IndicatorTools(
                 && v.Indicator == resolved.Name
                 && v.Period == resolved.Period
                 && v.BucketStart <= asOf)
+            // UNDER the as-of ordering, not over its answer (gh#577). Filtering the row this read landed on
+            // would turn an orphaned tail into cannot-measure for the whole series; filtering the candidates
+            // makes the read fall back to the newest bucket a bar still accounts for, which is the same
+            // fallback a contract seam already produces (`R-2.7`).
+            .Where(v => bars.Any(b => b.BucketStart == v.BucketStart))
             .OrderByDescending(v => v.BucketStart)
             .Select(v => new { v.Value, v.BucketStart })
             .FirstOrDefaultAsync(cancellationToken)
@@ -200,11 +214,13 @@ public sealed class IndicatorTools(
         // Which contract this reading belongs to. A value is only ever computed inside one contract, so the
         // bar at its bucket is the answer -- and without it, two readings either side of a roll are two
         // numbers with nothing saying they measure different instruments.
-        string? contractId = await _database.Bars
-            .Where(b => b.Venue == _venue
-                && b.Instrument == instrument.Symbol
-                && b.ResolutionMinutes == resolutionMinutes
-                && b.BucketStart == row.BucketStart)
+        //
+        // The bar is now GUARANTEED to be there, because the filter above only served a value that had one,
+        // so a null here means exactly what ToolPayloads says it means: the bar's provenance was never
+        // recorded. It used to be able to mean "there is no bar", which is a different fact wearing the same
+        // null (gh#577).
+        string? contractId = await bars
+            .Where(b => b.BucketStart == row.BucketStart)
             .Select(b => b.ContractId)
             .FirstOrDefaultAsync(cancellationToken)
             .ConfigureAwait(false);
@@ -302,34 +318,44 @@ public sealed class IndicatorTools(
                 && b.Instrument == instrumentSymbol
                 && b.ResolutionMinutes == resolutionMinutes);
 
+        // THE SAME SERVABILITY RULE THE OTHER TWO READS APPLY, and applied BEFORE the group-max so this read
+        // falls back to the newest justified bucket rather than dropping a name whose latest row happens to
+        // be orphaned. Filtering after the group-max would make the snapshot disagree with get_indicator_at
+        // on exactly the series both are wrong about (gh#577).
+        IQueryable<IndicatorValueRecord> servable =
+            series.Where(v => bars.Any(b => b.BucketStart == v.BucketStart));
+
         // ONE statement: the latest bucket PER (Indicator, Period), joined back for that row's value, with
-        // the contract taken from the bar at that same bucket. The bar side is a LEFT join, not an inner
-        // one -- a value whose bar the store no longer holds keeps its number and reports an unknown
-        // contract, exactly as GetIndicatorAt's FirstOrDefault did. An inner join would DROP that reading,
-        // turning a known number with unknown provenance into cannot-measure, which is a different and worse
-        // answer.
-        var rows = await series
+        // the contract taken from the bar at that same bucket.
+        //
+        // THE BAR SIDE IS NOW AN INNER JOIN, and the argument the LEFT join carried is answered rather than
+        // overridden. That comment said an inner join would turn "a known number with unknown provenance"
+        // into cannot-measure. Unknown provenance is BarRecord.ContractId being null on a bar that EXISTS,
+        // and this join is on BucketStart -- so that bar still matches, the number is still served, and the
+        // unknown contract is still reported (IndicatorOrphanReadTests.AValueWhoseBarRecordedNoContract_
+        // IsStillServed). What the LEFT join actually decided was the other case, where the bar row is
+        // absent altogether, and there the number is not known-with-unknown-provenance: nothing recomputes
+        // it, so no replay can confirm or correct it (ADR-0006 §3). Measured on a store with every bar
+        // deleted, it published atr = 65.32947503 beside `bars: []` in the same payload.
+        var rows = await servable
             .GroupBy(v => new { v.Indicator, v.Period })
             .Select(g => new { g.Key.Indicator, g.Key.Period, BucketStart = g.Max(v => v.BucketStart) })
             .Join(
-                series,
+                servable,
                 latest => new { latest.Indicator, latest.Period, latest.BucketStart },
                 value => new { value.Indicator, value.Period, value.BucketStart },
                 (latest, value) => value)
-            .GroupJoin(
+            .Join(
                 bars,
                 value => value.BucketStart,
                 bar => bar.BucketStart,
-                (value, matched) => new { Row = value, Bars = matched })
-            .SelectMany(
-                pair => pair.Bars.DefaultIfEmpty(),
-                (pair, bar) => new
+                (value, bar) => new
                 {
-                    pair.Row.Indicator,
-                    pair.Row.Period,
-                    pair.Row.BucketStart,
-                    pair.Row.Value,
-                    ContractId = bar == null ? null : bar.ContractId,
+                    value.Indicator,
+                    value.Period,
+                    value.BucketStart,
+                    value.Value,
+                    bar.ContractId,
                 })
             .ToListAsync(cancellationToken)
             .ConfigureAwait(false);
@@ -357,6 +383,37 @@ public sealed class IndicatorTools(
 
         return readings;
     }
+
+    /// <summary>The bars of one series, as the thing a stored value has to be accounted for by.</summary>
+    /// <param name="instrument">The instrument.</param>
+    /// <param name="resolutionMinutes">The bar size in minutes.</param>
+    /// <returns>The series' bars, unbounded by any read window.</returns>
+    /// <remarks>
+    /// <para>
+    /// <b>Not scoped by the caller's window, deliberately.</b> The question each read asks of this is
+    /// "does the store still hold the bar at <i>this value's</i> bucket", which is a fact about the series
+    /// rather than about the window. Scoping it to the window would make a slice whose look-back has moved
+    /// past its bars — an instrument that stopped updating — report cannot-measure for every indicator,
+    /// which is a real state the payload already describes honestly (gh#286).
+    /// </para>
+    /// <para>
+    /// <b>Why the reads need it at all.</b> There is no foreign key from <c>IndicatorValues</c> to
+    /// <c>Bars</c> — <see cref="MarqSpec.Mcp.TopstepX.Domain.MarketData.IIndicator">a projection is not a
+    /// child row</see>, and ADR-0011 §2 rejected one deliberately — so deleting bars orphans the values over
+    /// them. The projection's reconcile removes those, but <b>a read does not sweep</b> (ADR-0006,
+    /// 2026-09-07) and <see cref="IndicatorCacheService.EnsureProjectedAsync"/> returns before its probe
+    /// when the series holds no bars at all, so for a bar-less series no read ever runs the pass. Until
+    /// <c>rebuild-indicators</c> or a fill visits it, those rows stand — and before gh#577 they were
+    /// <i>served</i>: 37 ATR points over zero bars, and a 65.32947503 with a null contract that a caller
+    /// could not tell from a real reading.
+    /// </para>
+    /// </remarks>
+    private IQueryable<BarRecord> SeriesBars(InstrumentId instrument, int resolutionMinutes) =>
+        _database.Bars
+            .AsNoTracking()
+            .Where(b => b.Venue == _venue
+                && b.Instrument == instrument.Symbol
+                && b.ResolutionMinutes == resolutionMinutes);
 
     /// <summary>The catalogue's refusal, as this surface's refusal.</summary>
     /// <param name="name">The indicator name.</param>

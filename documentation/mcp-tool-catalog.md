@@ -452,6 +452,14 @@ Returns `{ symbol, resolutionMinutes, indicator, period, values: [{ t, v }], con
 `{ t, v: null }` point. So the series is not one point per bucket, and the gaps are the cannot-measure
 signal: pair each `v` with its own `t` rather than with a bar at the same index.
 
+**A bucket whose bar this server no longer holds is one of those gaps** (`R-2.14`, gh#577). Deleting bars does
+not delete the values computed from them — a projection is a rebuildable view, not a child row — and a read
+never runs the pass that sweeps them, so a series whose bars were all deleted used to answer with a full
+window of ordinary-looking numbers over nothing: **37 ATR points over zero bars**, measured. Every read now
+serves a value only where the bar at its bucket is still stored. The rule is per value, so a partial delete
+still returns everything the surviving bars justify, and the `contracts` block beside the values already says
+how much of the window has bars underneath it.
+
 `indicator` is a **closed vocabulary**, held in `IndicatorCatalog` and named in full by the tool's own
 description — `atr`, `rsi`, `sma`, `ema`, `macd`, `macd-signal`, `macd-histogram`, `vwap`, `vwap-rolling`,
 `bb-upper`, `bb-middle`, `bb-lower`. An unknown name **errors and lists the known ones** rather than returning
@@ -497,7 +505,11 @@ dropped when there is nothing to report, and a caller testing `reading.value ===
 `value` means cannot measure, and a caller receiving one should refuse rather than substitute.
 
 `contractId` is absent for **two** different reasons — there was no value, or the bar's provenance was never
-recorded — so an absent one is never evidence that two readings share a contract.
+recorded — so an absent one is never evidence that two readings share a contract. It used to have a **third**,
+undocumented one: the bar itself was gone, and the reading was a number nothing could reproduce (a measured
+`65.32947503` with `contract: null`). That case is now cannot-measure instead, and the read falls back to the
+newest bucket a bar still accounts for (`R-2.14`, gh#577), so an absent `contractId` again means only what
+this paragraph says it means.
 
 **`get_market_snapshot` returns this same reading**, as the value of each entry in its `indicators{}` map
 (gh#286) — with one difference the container forces: there, cannot-measure is the map's own `null` rather
@@ -876,6 +888,13 @@ is untouched, so a caller's `indicators.atr === null` still says *cannot measure
 value arithmetically has to reach one field deeper. Inside the reading the ordinary property rule applies
 again — `contractId` is **omitted** when the bar's provenance was never recorded — so this one object is the
 only place on the surface where both null shapes are in force at once.
+
+**A reading whose bar is gone is the map's `null`, not a number** (`R-2.14`, gh#577). This slice used to
+publish a value the store could no longer justify beside its own empty `bars[]`: over a series with every bar
+deleted, `atr = 65.32947503` and `rsi = 54.29857597`, both with `contract: null`, in a slice reporting zero
+bars — a payload contradicting itself with nothing saying which half to believe. The batched read now joins
+the bars, on the same terms `get_indicators` and `get_indicator_at` do, so all three agree. A bar that exists
+with no recorded contract is **not** this case and is still published, with its `contractId` omitted as above.
 
 **One slice has one anchor and many provenances, which is why the bucket is per indicator.** Every read in a
 slice is taken as of the same moment — the last bar's `t`, or *now* when there are no bars — but that anchor

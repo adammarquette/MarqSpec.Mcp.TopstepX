@@ -82,6 +82,7 @@ and can be pinned by fixture tests shared with `trading-copilot` — which is wh
 | [2026-08-26](#update-2026-08-26--a-read-is-a-trigger-too-and-the-key-is-untouched) | A read projects what the catalogue has outrun ([ADR-0014](0014-indicators-are-projected-on-read-too.md)) |
 | [2026-09-06](#update-2026-09-06--selection-among-configured-periods-is-allowed-ad-hoc-computation-is-not) | A call may **select** among the periods the catalogue is configured for ([ADR-0018](0018-period-selection-among-configured-periods.md)) |
 | [2026-09-07](#update-2026-09-07--a-row-nothing-recomputes-is-not-protected-data-it-is-an-orphan) | The reconcile sweeps retired `(Indicator, Period)` pairs and bucketless values, and the rebuild walks the values table too |
+| [2026-09-07](#update-2026-09-07--the-design-question-the-update-above-left-open-a-read-serves-only-what-the-bars-account-for) | A read serves a value only where the bar at its bucket is still stored — the question the row above left open, settled as *serve nothing* (`R-2.14`) |
 
 ## Update (2026-08-23) — the empty-diff claim was false in practice
 
@@ -262,6 +263,13 @@ catalogue every configured pair is present, so no pass runs, and `EnsureProjecte
 when the series holds no bars at all. Wiring the sweep into the probe would let a read delete on the strength
 of a catalogue it never projected with.
 
+> **The serving half below is superseded,
+> [2026-09-07](#update-2026-09-07--the-design-question-the-update-above-left-open-a-read-serves-only-what-the-bars-account-for).**
+> The design question this paragraph declines to settle is settled in the update after it (gh#577): the reads
+> join a bar, so an **orphaned** row is no longer served either. Read the paragraph for what the *sweep*
+> reaches and for the measurement; its "37 ATR points" is what a read returned before, not what one returns
+> now. The operator step it prescribes still stands — a read still does not sweep.
+
 **The two kinds are not equally harmless while they stand, and the difference is the operator-facing half of
 this record.** A **retired** row is unreachable: the read refuses a period the catalogue does not carry,
 before the store is touched. An **orphaned** row is not — its pair is configured, so `get_indicators` serves
@@ -276,3 +284,75 @@ reason to project, is a design question raised separately rather than settled he
 **`SessionIndicatorValues` is out of reach here.** gh#571's scope asks for the same rule over the session
 shape through `ISeriesTables`; neither exists yet — they arrive with gh#501, which is still open. That half
 lands with it.
+
+## Update (2026-09-07) — the design question the update above left open: a read serves only what the bars account for
+
+The update above ends by naming a question and declining to settle it — *"whether the reads should instead
+join a bar, or the probe should treat values held, zero bars as a reason to project"*. **It is settled here
+(gh#577): the reads join a bar, and the probe is untouched.** The same paragraph also recorded the state that
+made it urgent — 37 ATR points returned over zero bars — and a reviewer then measured the other two paths:
+`get_indicator_at` answering `65.32947503` with `contract=null`, and `get_market_snapshot` publishing that
+same number *and* `rsi = 54.29857597` in a slice whose own `bars` array was empty.
+
+**This record's own words had already decided it, and only the serving half was missing.** The paragraph above
+calls an orphan "the plausible number this repository exists to refuse", and the third property at the top
+says a stored value "is never authoritative — every row is reproducible from `Bars`". A row whose bars are
+gone is the row that is not, and the sweep it prescribes removes it *eventually*. Between the delete and the
+next pass, the read was handing it out.
+
+### The three candidates, and why serving nothing is the one
+
+**Refuse — raise an error.** Rejected. The condition belongs to the store, not to the call: a caller who asked
+correctly would get an error it cannot act on, and `get_indicators` would fail a whole window because one
+bucket in it lost its bar. This repository already has a channel for *the number is not there* — an absence,
+which `R-2.3` makes every caller read as cannot-measure and which the tool descriptions tell them to refuse to
+conclude from. Note that "refuse" in the paragraph above means **refusing to serve the number**, not raising;
+that is the reading this update fixes in the record, because a later agent could reasonably have taken it the
+other way.
+
+**Sweep on read.** Rejected, and the update above already rejected it: *"a read still does not sweep, and that
+is deliberate… wiring the sweep into the probe would let a read delete on the strength of a catalogue it never
+projected with."* [ADR-0014](0014-indicators-are-projected-on-read-too.md) makes a read a *projection* trigger
+and says nothing that would make it a *deletion* trigger, and the difference is the whole of ADR-0012's
+concurrency argument: a projection that lost its race recomputes to the same numbers and writes nothing, while
+a delete that lost one is not recoverable by repeating it. gh#571 also deliberately shipped **no migration**,
+on the argument that the rebuild pass is the remedy; a sweeping read would be that migration, arriving
+one tool call at a time.
+
+**Serve nothing — chosen.** A read serves a stored value only where the store still holds the bar at its
+bucket. `R-2.14` states it. The rule is per **value**, not per series: a partial delete still serves everything
+the surviving bars justify, and an as-of read falls back to the newest bucket that has a bar — the same
+fallback a contract seam already produces (`R-2.7`), which is why the filter sits under the as-of ordering
+rather than over its answer.
+
+### The snapshot's `LEFT` join argued against this, and the case it argued for is still served
+
+`get_market_snapshot`'s batched read carried a comment saying an inner join *"would turn a known number with
+unknown provenance into cannot-measure, which is a different and worse answer."* It is answered rather than
+overridden, on a fact about the schema: **`BarRecord.ContractId` is nullable**, and the join is on
+`BucketStart`. A bar that exists with no recorded contract therefore still matches, still yields its number,
+and still reports the unknown contract — that is the case the comment names, and it is pinned by
+`AValueWhoseBarRecordedNoContract_IsStillServed` rather than argued. What the `LEFT` join actually decided was
+the *other* case, where the bar row is absent altogether; and there the provenance is not the unknown thing.
+The number itself is: nothing recomputes it, so no replay can confirm or correct it, and the payload's own
+documentation compounded it by defining a null `contractId` as *the bar's provenance was never recorded* —
+which asserted a bar that was not there.
+
+The three reads now say the same thing, which is what the update above could not claim: `get_indicators`
+returns no point, `get_indicator_at` returns cannot-measure, and the snapshot publishes the map's own `null`,
+all from one servability rule applied in one place per read.
+
+**Nothing about the projection moves.** `IIndicator.Compute` is untouched, a pass still seeds from the start
+of each contract run, the reconcile and its three counts are unchanged, and a confirming rebuild is still an
+empty diff. This changes only what a read is willing to hand out, so `rebuild = replay` and `R-2.2` hold
+exactly as before.
+
+**Existing rows need no migration, and gh#571's decision not to ship one is not contradicted.** The rule is
+evaluated at read time against the bars actually present, so a store carrying orphans today is served
+correctly from the first call after the upgrade, with nothing rewritten. The rows still stand until
+`rebuild-indicators` or a fill visits the series — `TheOrphanedRowsAreStillInTheStore_TheReadJustDoesNotServeThem`
+says so — and the operator step the update above prescribes is still the thing that removes them. What changes
+is that waiting for it is now safe: the window between the bar delete and the sweep no longer serves numbers
+nothing can reproduce.
+
+*Assisted-by: Claude Opus 5 (Claude Code)*

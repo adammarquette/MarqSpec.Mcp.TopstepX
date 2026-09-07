@@ -113,6 +113,37 @@ public sealed class SessionBarService
     /// </exception>
     /// <exception cref="VenueException">The base read could not resolve or reach the venue.</exception>
     /// <exception cref="StoreContentionException">Every attempt at the write lost to a concurrent one.</exception>
+    /// <exception cref="InvalidOperationException">
+    /// A trade date the caller asked about ended up in neither list, or in both. It is thrown rather than
+    /// returned because the result type cannot express it: a caller reading a date that is in neither list
+    /// has no way to tell <i>no bar, and here is why</i> from <i>not a trading day</i>.
+    /// </exception>
+    /// <remarks>
+    /// <para>
+    /// <b>A retry replays this call's own reconcile decision, and that decision is a DELETE.</b> Which dates
+    /// are stale is derived at step 5, outside the transaction, from the base bars this call read — so the
+    /// second attempt re-runs the reconcile of step 6(e) against the <i>same</i> base view rather than
+    /// re-deriving from the store the winner has just committed. That is deliberate: re-deriving inside the
+    /// transaction would mean aggregating over bars read under the retry's snapshot, and the base read is
+    /// the one step that may not happen in there.
+    /// </para>
+    /// <para>
+    /// <b>The consequence is a lost update, and it is bounded.</b> If a concurrent call derived a complete
+    /// bar for a date this call found <see cref="SessionBarAbsence.Incomplete"/> — the missing base bucket
+    /// arrived between the two base reads — the replayed reconcile removes that row from the STORE. Nothing
+    /// served is wrong: each call's answer stays truthful to the base view it derived from, this one reports
+    /// the date absent because that is what its bars supported, and a session bar is re-derived on every
+    /// read, so the next read re-derives and re-upserts it. No row, no ledger and no marker records the
+    /// absence (ADR-0022), which is exactly why the store healing itself costs nothing.
+    /// </para>
+    /// <para>
+    /// <b>This is the first <see cref="SeriesUnitOfWork"/> body in this repository whose retry replays a
+    /// deletion.</b> Every other one replays a fill or a projection, where the second attempt runs over a
+    /// strictly better-informed store; here the second attempt can undo work the winner committed. The bound
+    /// above is what makes that acceptable, and it is stated here because the unit of work itself cannot
+    /// know it.
+    /// </para>
+    /// </remarks>
     public async Task<SessionBarReadResult> GetAsync(
         InstrumentId instrument,
         SessionDefinition definition,
@@ -122,7 +153,7 @@ public sealed class SessionBarService
         ArgumentNullException.ThrowIfNull(definition);
         ArgumentNullException.ThrowIfNull(tradeDates);
 
-        // ONE TRADE DATE IS ONE SESSION BAR, AND IT IS REFUSED HERE RATHER THAN IN THE STORE. A repeated date
+        // 1. ONE TRADE DATE IS ONE SESSION BAR, AND IT IS REFUSED HERE RATHER THAN IN THE STORE. A repeated date
         // produces a repeated array entry in the upsert, and Postgres rejects an ON CONFLICT DO UPDATE that
         // would touch one row twice with a 21000 -- a cardinality violation naming a constraint, from inside a
         // transaction, which says nothing about the caller that asked for the same day twice.
@@ -146,7 +177,7 @@ public sealed class SessionBarService
         DateTimeOffset now = _clock.GetUtcNow();
         string venue = _gateway.VenueId;
 
-        // 1. WHICH SESSIONS HAVE CLOSED, WHICH IS THE ONE JUDGEMENT Domain CANNOT MAKE. A session bar for a
+        // 2. WHICH SESSIONS HAVE CLOSED, WHICH IS THE ONE JUDGEMENT Domain CANNOT MAKE. A session bar for a
         // window still running would be the partial the whole design refuses -- and it would be a partial
         // that looks entirely ordinary, since every bucket printed so far is present and the count of them is
         // simply lower than the calendar expects. So the clock decides here, in the host that owns one, and
@@ -173,18 +204,18 @@ public sealed class SessionBarService
             absences[tradeDate] = SessionBarOutcome.Absent(tradeDate, SessionBarAbsence.NotClosed, 0, 0);
         }
 
-        // 2. Nothing has closed, so there is nothing to derive from and nothing to reconcile against. The
+        // 3. Nothing has closed, so there is nothing to derive from and nothing to reconcile against. The
         // store is not opened and the venue is not reached: a read that can only answer "not yet" must not
         // cost either of them.
         if (closed.Count == 0)
         {
-            return new SessionBarReadResult([], InAskedOrder(tradeDates, absences), 0, 0);
+            return Verified(tradeDates, [], InAskedOrder(tradeDates, absences), 0, 0);
         }
 
         DateOnly firstClosed = closed.Min();
         DateOnly lastClosed = closed.Max();
 
-        // 3. ONE BASE READ, AT definition.BaseResolutionMinutes, BEFORE AND OUTSIDE THE TRANSACTION.
+        // 4. ONE BASE READ, AT definition.BaseResolutionMinutes, BEFORE AND OUTSIDE THE TRANSACTION.
         //
         // The resolution is the aggregator's contract and this is the only place it is kept: a Bar carries
         // its open time and not its size, so a series read finer than the base passes the completeness check
@@ -220,7 +251,7 @@ public sealed class SessionBarService
                 windows[firstClosed].Start.ToUniversalTime(), windows[lastClosed].End.ToUniversalTime()),
             cancellationToken).ConfigureAwait(false);
 
-        // 4. Pure, and reproducible from the bars alone (ADR-0006).
+        // 5. Pure, and reproducible from the bars alone (ADR-0006).
         IReadOnlyList<SessionBarOutcome> outcomes =
             SessionBarAggregator.Aggregate(read.Bars, _calendar, definition, closed);
 
@@ -240,7 +271,11 @@ public sealed class SessionBarService
         string windowCentral = WindowCentralFor(definition);
         List<DateOnly> stale = [.. closed.Where(d => !derived.Exists(b => b.TradeDate == d))];
 
-        int written = await SeriesUnitOfWork.RunAsync(
+        // 6. ONE UNIT OF WORK, at RepeatableRead with the single retry every series write shares. Everything
+        // the caller is answered with is decided in here, the read-back included: a statement run after the
+        // commit is a fresh look at whatever the store holds by then, and a concurrent deletion landing in
+        // that gap would leave a trade date in NEITHER list.
+        (int Written, List<SessionBarRecord> Committed) stored = await SeriesUnitOfWork.RunAsync(
             _database,
             instrument.Symbol + " " + definition.Name,
             async token =>
@@ -289,6 +324,9 @@ public sealed class SessionBarService
                         !existing.TryGetValue(bar.TradeDate, out SessionBarRecord? row) || !Unchanged(row, bar)),
                 ];
 
+                // (d) ONE ON CONFLICT ... DO UPDATE, aimed at the primary key. The statement itself, and
+                // why it is not aimed at the unique (Venue, Instrument, Session, OpenUtc) index instead,
+                // are UpsertSessionBarsSql's.
                 int rows = pending.Count == 0
                     ? 0
                     : await UpsertAsync(venue, instrument, definition, windowCentral, pending, now, token)
@@ -322,7 +360,32 @@ public sealed class SessionBarService
                     await _database.SaveChangesAsync(token).ConfigureAwait(false);
                 }
 
-                return rows;
+                // (g) READ BACK WHAT THIS TRANSACTION COMMITTED, rather than handing out what was
+                // derived. AsNoTracking for the reason the pre-read is: this table is written by SQL the
+                // change tracker never sees.
+                //
+                // INSIDE the transaction, and that is the whole point. Under RepeatableRead this statement
+                // sees this transaction's own writes against this transaction's own snapshot, so what comes
+                // back is what THIS call committed -- a concurrent reader deleting the row a moment later
+                // cannot turn this answer into a trade date reported in neither list.
+                //
+                // The provenance pair is restated here rather than left to the discard at (a). This is the
+                // statement whose result a caller acts on, so naming the definition it will serve makes "a
+                // row built under a definition that no longer holds is never served" a property of the read
+                // itself rather than of the sequence that preceded it.
+                List<SessionBarRecord> committed = await _database.SessionBars
+                    .AsNoTracking()
+                    .Where(s => s.Venue == venue
+                        && s.Instrument == instrument.Symbol
+                        && s.Session == definition.Name
+                        && s.WindowCentral == windowCentral
+                        && s.BaseResolutionMinutes == definition.BaseResolutionMinutes
+                        && closed.Contains(s.TradeDate))
+                    .OrderBy(s => s.TradeDate)
+                    .ToListAsync(token)
+                    .ConfigureAwait(false);
+
+                return (rows, committed);
             },
             _logger,
             cancellationToken).ConfigureAwait(false);
@@ -335,33 +398,68 @@ public sealed class SessionBarService
             instrument.Symbol,
             firstClosed,
             lastClosed,
-            written);
+            stored.Written);
 
-        // 6. READ BACK WHAT WAS COMMITTED, rather than handing out what was derived. AsNoTracking for the
-        // reason the pre-read is: this table is written by SQL the change tracker never sees.
-        //
-        // The provenance pair is repeated here rather than left to the discard at (a). This read runs AFTER
-        // the transaction committed, so it is the one statement in the method whose result the discard's
-        // ordering does not cover -- and what it returns is what a caller acts on. Stating the definition it
-        // will serve makes "a row built under a definition that no longer holds is never served" a property
-        // of the read itself rather than of the sequence that preceded it.
-        List<SessionBarRecord> committed = await _database.SessionBars
-            .AsNoTracking()
-            .Where(s => s.Venue == venue
-                && s.Instrument == instrument.Symbol
-                && s.Session == definition.Name
-                && s.WindowCentral == windowCentral
-                && s.BaseResolutionMinutes == definition.BaseResolutionMinutes
-                && closed.Contains(s.TradeDate))
-            .OrderBy(s => s.TradeDate)
-            .ToListAsync(cancellationToken)
-            .ConfigureAwait(false);
-
-        return new SessionBarReadResult(
-            [.. committed.Select(ToSessionBar)],
+        // 7. EVERY TRADE DATE ASKED FOR IN EXACTLY ONE LIST, CHECKED RATHER THAN ASSUMED.
+        return Verified(
+            tradeDates,
+            [.. stored.Committed.Select(ToSessionBar)],
             InAskedOrder(tradeDates, absences),
             read.FetchedBuckets,
             read.VenueRequests);
+    }
+
+    /// <summary>
+    /// The result, once every trade date asked for has been accounted for exactly once.
+    /// </summary>
+    /// <param name="asked">The trade dates the caller asked about.</param>
+    /// <param name="bars">The session bars to serve.</param>
+    /// <param name="absent">The absences to serve.</param>
+    /// <param name="fetchedBuckets">What the base read wrote or revised.</param>
+    /// <param name="venueRequests">What the base read cost the venue.</param>
+    /// <returns>The result.</returns>
+    /// <exception cref="InvalidOperationException">A date is in neither list, or in both.</exception>
+    /// <remarks>
+    /// <b>Loud, never a silent gap.</b> The two lists partition the ask, and a caller has no way to see that
+    /// broken: a date missing from both looks exactly like a date nobody asked about, and reads as "not a
+    /// trading day". So the invariant is enforced at the boundary that states it, naming the date, rather
+    /// than left as a property of the sequence above happening to hold.
+    /// </remarks>
+    private static SessionBarReadResult Verified(
+        IReadOnlyList<DateOnly> asked,
+        IReadOnlyList<SessionBar> bars,
+        IReadOnlyList<SessionBarOutcome> absent,
+        int fetchedBuckets,
+        int venueRequests)
+    {
+        HashSet<DateOnly> reported = [.. bars.Select(b => b.TradeDate)];
+
+        foreach (SessionBarOutcome outcome in absent)
+        {
+            if (!reported.Add(outcome.TradeDate))
+            {
+                throw new InvalidOperationException(
+                    "The trade date "
+                    + outcome.TradeDate.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture)
+                    + " is reported both as a session bar and as an absence. A trade date has one answer, "
+                    + "and a caller reading both would have to choose between them.");
+            }
+        }
+
+        foreach (DateOnly tradeDate in asked)
+        {
+            if (!reported.Contains(tradeDate))
+            {
+                throw new InvalidOperationException(
+                    "The trade date "
+                    + tradeDate.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture)
+                    + " was asked about and is in neither the bars nor the absences. Every date this read "
+                    + "answers for is one or the other; a date in neither is indistinguishable from a date "
+                    + "nobody asked about, and reads as 'not a trading day'.");
+            }
+        }
+
+        return new SessionBarReadResult(bars, absent, fetchedBuckets, venueRequests);
     }
 
     /// <summary>

@@ -353,11 +353,28 @@ operator's own session close (`R-1.12`, gh#499).
    buckets does. An explicit list rather than a sweep of the span, because a date outside the ask was not
    re-derived and deleting it would throw away a bar on the strength of not having looked;
    (f) **save before anything reads back** — a no-op today, kept because the read-back is a *query* and a query
-   does not see rows that are only tracked.
-7. **Read back what was committed**, `AsNoTracking`, restating the provenance pair in the predicate. What a
-   caller receives is what the store holds, not what the aggregator produced — and because this read runs after
-   the transaction, stating the definition makes *a row built under a definition that no longer holds is never
-   served* a property of the read itself rather than of the sequence that preceded it.
+   does not see rows that are only tracked;
+   (g) **read back what this transaction committed**, `AsNoTracking`, restating the provenance pair in the
+   predicate. What a caller receives is what the store holds, not what the aggregator produced — and stating
+   the definition makes *a row built under a definition that no longer holds is never served* a property of
+   the read itself rather than of the sequence that preceded it. **Inside the unit of work, not after it**:
+   under `RepeatableRead` the statement sees this transaction's own writes against its own snapshot, so a
+   concurrent deletion landing between the commit and a later read cannot leave a trade date in *neither*
+   list — the silent gap gh#500 would read as *not a trading day*.
+
+   **A retry replays this call's own reconcile decision, and that decision is a `DELETE`** — the only
+   `SeriesUnitOfWork` body in the repository of which that is true. Which dates are stale is derived at step 5
+   from *this* call's base view, outside the transaction, so a second attempt re-runs (e) against the same
+   view rather than re-deriving from the store the winner just committed; re-deriving inside would mean
+   aggregating over bars read under the retry's snapshot, and the base read is the one step that may not
+   happen in there. The consequence is a bounded lost update: a bar a concurrent call derived for a date this
+   one found `Incomplete` can be removed from the **store**. Nothing served is wrong — each call's answer
+   stays truthful to the base view it derived from — and since nothing records an absence, the next read
+   re-derives and re-upserts the row.
+7. **Report every trade date asked for in exactly one list.** The bars and the absences partition the ask, and
+   the boundary checks it rather than assuming it: a date in neither, or in both, is an `InvalidOperationException`
+   naming the date. A caller cannot see the invariant break — a date missing from both looks exactly like a
+   date nobody asked about.
 
 **An incomplete session is absent with a reason, and is never recorded** — no row, no marker, no ledger. It is
 re-derived on every read, so a session that heals simply appears on the next one

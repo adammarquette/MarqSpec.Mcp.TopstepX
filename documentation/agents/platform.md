@@ -1161,6 +1161,15 @@ gate that says no to everything is exactly as useless as one that says yes to ev
 to notice. That case uses the mapping spelling of `environment:`, which no workflow here uses today, so
 nothing else would notice if it stopped being understood.
 
+**And "never on exit status" is now enforced on the harness, not only practised by its cases** (gh#586
+review). `expect_red` took its needles as trailing arguments, so a call with none ran its match loop zero
+times and fell straight through to `ok "rejected"` — satisfied by exit status alone, the one thing that
+file's header refuses. Measured rather than argued: a needle-less case added to the **shipped** code printed
+`rejected  PROBE: no needle at all` in green and the suite exited 0 still claiming six rejections; against
+the guard it dies naming the case, and the probe was removed. It fails the **suite** rather than counting a
+failure, because a self-test that cannot assert is not a result to tally. Six calls pass at least one needle
+today; nothing could have told you when one stopped.
+
 The sixth rejection is gh#518's, and it asserts *which* environment a red run names rather than that it goes
 red: two environments in one workflow set — the real, protected `production` beside one that does not exist
 — and three needles on the same run, the missing one by its whole quoted name, `PROTECTED    production` for
@@ -1170,7 +1179,7 @@ send the reader to the wrong setting. Proven by making the gate's tally line lie
 that case alone went red — *"never said: 1 of 2 environment(s) would not stop an unattended publish"* —
 while the five older rejections and the acceptance stayed green, since none of them asserts the count.
 
-One of the five earns its place from a defect gh#108 shipped and gh#140 fixed: an `environment:` mapping with
+One of the six earns its place from a defect gh#108 shipped and gh#140 fixed: an `environment:` mapping with
 no `name:` under it stayed pending into the *next* file and bound itself to that file's top-level `name:`,
 reporting a workflow's own name as an environment — red, but for the wrong reason, naming a setting nobody
 ever asked for, and sending the reader to look for it. On a gate whose whole job is to be believed about
@@ -1216,7 +1225,15 @@ script creates. Step 5 is **read-only** and new on the same card: it reads the G
 back, because ECS pulls the image with no registry credential only while the package is public
 ([ADR-0023](../adr/0023-aws-deployment-topology.md) §5), and it reports a 404 (nothing released yet), a 403
 for the missing `read:packages` scope — which the default `gh auth login` token lacks, measured on the
-maintainer's own token — and any other failure as three different states, none of them as "public".
+maintainer's own token — and any other failure as three different states, none of them as "public". **Every
+read in that step warns and skips rather than dying, and both of them do** — the owner-type read went through
+`gh_read`, which `die`s, so a secondary rate limit on a *public* endpoint killed the script between step 4's
+writes and step 6's labels, leaving a half-bootstrapped repository under a comment promising it could not
+(gh#586 review). The rule the rest of the script runs on is unchanged and is the reason this step is the
+exception: **a read that decides a write is fatal**, and this one decides nothing. What it will not do is
+guess `users/` versus `orgs/` — the wrong endpoint 404s, and this step reads a 404 as "nothing has been
+released". That reading now names its own assumption, since a private package a token cannot see answers 404
+too; the missing-scope case is a 403 and is reported separately.
 
 ## How the pipeline is shaped
 

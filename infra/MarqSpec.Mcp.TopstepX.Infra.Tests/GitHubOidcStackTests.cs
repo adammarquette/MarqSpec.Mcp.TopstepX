@@ -114,6 +114,15 @@ public sealed class GitHubOidcStackTests
     /// third role added later cannot arrive with a trust policy nobody asserted on. A trust policy that is too
     /// broad is the whole risk of this stack: the token any public fork's workflow can mint carries the same
     /// issuer and audience, and only the <c>sub</c> condition says whose run may assume the role.
+    /// <para>
+    /// WHICH ASSERTION HOLDS THE LINE, because it is not the one it looks like. The role-name equivalence
+    /// below refuses a third role <em>whatever its subject</em>, so while there are exactly two roles and
+    /// both are pinned by a named test above, this loop's per-subject rules are never the only thing reading
+    /// a subject. The moment that count is relaxed to admit a third role they become exactly that — which is
+    /// why the gh#586 review's finding, that the wildcard rule was suffix-only and missed
+    /// <c>…:environment:aws-*</c>, mattered even though nothing could reach it: it was the guard that would
+    /// have been alone. Relaxing the count is therefore a change to this whole method, not one line of it.
+    /// </para>
     /// </summary>
     [Fact]
     public void Every_role_is_assumable_only_through_this_stacks_provider_by_a_token_bound_to_aud_and_a_sub_of_this_repository()
@@ -152,8 +161,21 @@ public sealed class GitHubOidcStackTests
                 .ToList();
             subs.Should().NotBeEmpty(id);
             subs.Should().OnlyContain(s => s.StartsWith(Repository + ":", StringComparison.Ordinal), "{0}: every subject is pinned to this repository", id);
-            subs.Should().OnlyContain(s => !s.EndsWith(":*", StringComparison.Ordinal) && !s.EndsWith("/*", StringComparison.Ordinal),
-                "{0}: no subject trusts every ref, every branch or every environment", id);
+            // A WILDCARD MAY APPEAR ONLY AS THE LAST CHARACTER OF A TAG-REF SUBJECT. The release path needs
+            // one pattern -- `…:ref:refs/tags/v*` -- and nothing else here does; a subject with no `*` at all
+            // is the ordinary case and passes untouched.
+            //
+            // This was `!EndsWith(":*") && !EndsWith("/*")`, which is SUFFIX-ONLY and does not see a
+            // MID-STRING wildcard: the gh#586 review set the production subject to
+            // `repo:…:environment:aws-*` and this test stayed green, leaving the two named tests above and
+            // the exactly-two-roles assertion as the only things that caught it. Neither survives the case
+            // this loop exists for -- a THIRD role, added later, that no named test reads -- so the guard
+            // that is supposed to be the general one was the weakest. `IndexOf` rather than `LastIndexOf`,
+            // so the first `*` must also be the last: exactly one, at the end.
+            subs.Should().OnlyContain(
+                s => !s.Contains('*')
+                     || (s.StartsWith($"{Repository}:ref:refs/tags/", StringComparison.Ordinal) && s.IndexOf('*') == s.Length - 1),
+                "{0}: no subject trusts every ref, every branch or every environment, and the only wildcard any of them may carry is a trailing one on a tag ref", id);
             subs.Should().OnlyContain(s => s.Contains(":ref:refs/", StringComparison.Ordinal) || s.Contains(":environment:", StringComparison.Ordinal),
                 "{0}: a subject names a ref or an environment, the two claim shapes the pipeline runs under", id);
         }

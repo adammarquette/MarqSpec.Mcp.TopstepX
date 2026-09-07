@@ -158,9 +158,9 @@ public sealed class ServerTaskTests(EnvironmentTemplates templates) : IClassFixt
     public void The_task_runs_the_oauth_mode_against_its_own_resource_url(string env, string root)
     {
         // ADR-0021's coupling, template-tested: a target group in front of 8080 means the OAuth mode, never
-        // the static token. The three values the stack knows itself are set here; the issuer and the client
-        // ids are Cognito's outputs and gh#517 wires them from the pool constructs. Until then the task refuses
-        // to start (an incomplete OAuth section), which is the correct state for a skeleton nobody may deploy.
+        // the static token. The three values the stack knows itself are asserted here; the issuer and the
+        // client ids are references to the Cognito constructs and CognitoTests asserts those intrinsics
+        // (gh#517), so an incomplete OAuth section can no longer reach a task definition.
         var t = templates.For(env);
         var container = ServerContainer(t);
         var environment = Synthesised.EnvironmentOf(container).ToDictionary(e => e.Key, e => Synthesised.Text(e.Value));

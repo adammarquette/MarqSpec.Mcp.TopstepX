@@ -13,8 +13,10 @@ namespace MarqSpec.Mcp.TopstepX.Infra;
 /// (the image's inherited 8080 is the plaintext port behind the load balancer; clearing it binds
 /// <c>localhost:5000</c> and serves nothing), every <c>Kestrel__*</c> key (the container never holds a
 /// certificate), <c>Mcp__HttpBearerToken</c> (a target group in front of 8080 means the OAuth mode, never
-/// the static token — gh#512 and gh#517 add the OAuth keys), and the <c>Otel__*</c> keys (gh#537's
-/// collector sidecar decides the endpoint and holds the token; unset, the server registers no telemetry).
+/// the static token), and the <c>Otel__*</c> keys (gh#537's collector sidecar decides the endpoint and
+/// holds the token; unset, the server registers no telemetry). <c>Mcp__OAuth__Issuer</c> and
+/// <c>Mcp__OAuth__ClientIds</c> are absent from this class for a different reason: they are references to
+/// the Cognito constructs, not strings, and the stack sets them beside the resource URL (gh#517).
 /// </para>
 /// <para>
 /// Every credential — the ProjectX login, the connection string, the Cohere key — is a Secrets Manager
@@ -33,9 +35,8 @@ public static class ServerConfiguration
         // ADR-0007 / ADR-0021: the HTTP transport, plaintext on the image's own 8080, behind the ALB.
         ["Mcp__Transport"] = "Http",
         // ADR-0021's coupling: a target group in front of 8080 means the OAuth mode, never the static token
-        // (gh#512). The issuer and the client ids are Cognito's outputs and gh#517 sets them; until then the
-        // task refuses to start on an incomplete OAuth section, which is right for a skeleton nobody may
-        // deploy. The resource URL is the stack's own hostname and is set beside these by the stack.
+        // (gh#512). The issuer and the client ids are the pool's and its clients' own references (gh#517),
+        // and the resource URL is the stack's own hostname; all three are set beside these by the stack.
         ["Mcp__Auth__Mode"] = "OAuth",
         // ADR-0023 §9: the pool's resource server is `topstepx-mcp` and its one scope is `read`. Explicit
         // rather than left to the product's default of the same value, so the task definition says it.

@@ -155,6 +155,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   pinned CLI. **The tasks' outbound path is deliberately undecided**: it is a required stack property with no
   default, every shape it admits is asserted and synthesised, and the choice stays the maintainer's on
   ADR-0023's decision log. No deployment exists yet — that is gh#520 (gh#516, gh#509).
+- **Amazon Cognito as the authorization server, in the same stack.** Per environment: a user pool with
+  self-sign-up off, optional TOTP MFA and no SMS role, `RETAIN`; the `topstepx-mcp` resource server with
+  its one `read` scope; the confidential `claude-connector` client on the authorization-code grant alone,
+  scopes `openid topstepx-mcp/read`, callback `https://claude.ai/api/mcp/auth_callback` and no other,
+  one-hour access tokens and rotating refresh tokens; the `deploy-check` client on `client_credentials`
+  alone with no callback; the Cognito-provided prefix domain; two empty secret shells for the client
+  secrets; and four outputs that never name a secret. **`Mcp__OAuth__Issuer` and `Mcp__OAuth__ClientIds`
+  now reach the server task as `Fn::GetAtt` of the pool and `Ref`s of the two clients — never literals — and
+  the deferral gh#516 wrote for them is gone**, so the task no longer refuses to start on an incomplete OAuth
+  section and the catalogue-parity test demands both keys. 139 template tests, each new one proven red by
+  mutation. The discovery-document measurements wait for the first credentialed deploy
+  ([ADR-0023](documentation/adr/0023-aws-deployment-topology.md) 2026-09-07 Cognito entry, gh#517, gh#509).
 
 - **`Store__StartupWaitSeconds` — how long startup waits for a store that is not answering yet.** `0` by
   default, which is one probe and no delay: byte for byte what every launch did before, and what compose

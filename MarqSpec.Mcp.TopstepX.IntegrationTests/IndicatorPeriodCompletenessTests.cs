@@ -278,8 +278,10 @@ public sealed class IndicatorPeriodCompletenessTests : IAsyncLifetime
         // adjacent stored buckets either side of the break are 20 h 55 m apart, where the resolution says
         // five minutes. So `tail[0] - 2 * 5min`, the threshold the time form would use, lands 20 h 50 m
         // later than that value. Counted in bars this is a warm-up; counted in time it is a chasm.
-        // (Measured off the store, not computed on paper: the value sits at 2026-08-18T17:05:00Z and
-        // `tail[0]` at 2026-08-19T14:05:00Z, so the gap is 1,255 minutes and the shortfall 1,250.)
+        // (Measured off the store, not computed on paper: the adjacent buckets across the break sit at
+        // 2026-08-18T17:05:00Z and 2026-08-19T14:00:00Z, so that gap is 1,255 minutes; the value sits at
+        // the first and the time-form threshold at 2026-08-19T13:55:00Z, so the shortfall is 1,250. The
+        // newest bar at 2026-08-19T14:05:00Z is 1,260 minutes — 21 h — past the value.)
         await SeedDirectlyAsync(
             BarsAcrossARoll(0, Warmed, rollAt: Warmed - 2, sessionBreakAt: Warmed - 2));
         await ProjectAsync(Catalog(alsoEmaPeriods: "3"));
@@ -291,7 +293,7 @@ public sealed class IndicatorPeriodCompletenessTests : IAsyncLifetime
 
         (await NewestBarAsync()).Should().Be(
             Bucket(0).AddDays(1).AddMinutes(Resolution),
-            "and the newest bar really is the second bucket of the NEXT day's session — 20 h 55 m past the "
+            "and the newest bar really is the second bucket of the NEXT day's session — 21 h past the "
             + "last bucket before the break, where two five-minute steps would put it ten minutes past. "
             + "Without that gap the two forms of the boundary agree and this case tests nothing");
 

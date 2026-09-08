@@ -239,7 +239,7 @@ jobs:
 
       # THE GATE ABOVE HAS TO BE ABLE TO FAIL, and it is line matching in shell — one loosened needle or a
       # terminator regex that stops finding Down() turns it into a step that passes on anything while the
-      # run page stays green. This runs the real script against 54 fixtures whose faults are known and
+      # run page stays green. This runs the real script against 57 fixtures whose faults are known and
       # requires it to reject each BY FILE, LINE AND OPERATION — never on exit status, which is also what
       # "the Migrations directory is missing" and "that base ref names no commit" produce — and to accept
       # the additive shapes WITHOUT WRITING A BYTE TO STDERR (gh#239). Two of its cases invoke the gate
@@ -248,20 +248,26 @@ jobs:
       # re-measures is the drift the size gate exists to stop, one layer down — re-count it in the pull
       # request that adds a case, and the self-test prints the number to paste.
       #
-      # NINE OF THOSE CASES ARE SHAPES THAT GOT A GREEN RUN OUT OF THIS GATE, and every one of them compiled
-      # and passed `dotnet format --verify-no-changes`. Counted here rather than asserted, because the line
-      # above it said 35 for a suite of 49 and this one said SEVEN over a list of five, then NINE over a
-      # list of nine — a count in a comment drifts from the list beside it as readily as from the code:
+      # THIRTEEN OF THOSE CASES ARE SHAPES THAT GOT A GREEN RUN OUT OF THIS GATE, and every one of them
+      # compiled and passed `dotnet format --verify-no-changes`. Counted here rather than asserted, because
+      # the line above it said 35 for a suite of 49 and this one said SEVEN over a list of five, then NINE
+      # over a list of nine, then NINE over a list that had grown a tenth — a count in a comment drifts
+      # from the list beside it as readily as from the code:
       # two operations on one line under one marker; two IDENTICAL ones, which a boolean match counted as
       # one; a `.DropColumn` whose `(` sat on the next line; an operation in a sibling member the Up()-body
       # scan never reached; one swallowed by a Sql( region whose `;` sat on its own line — and, from gh#601,
       # a `Down` local function and a `Down` overload whose trailing COMMENT carried the word `override`,
       # a one-line GENUINE `override` of a NESTED type's `Down(` that is simply not the migration's, and an
-      # `Up()` whose trailing comment named the `Down(` signature. MOST CAME FROM REVIEW; the last is the
-      # exception and the attribution matters — it was found by auditing the fix for the other three, which
-      # is the same route as the no-modifier sibling above it, and a list that credits review with every
-      # find hides how many an audit is worth. A gate an ordinary formatting choice walks past is the
-      # failure this card exists to prevent, so each is a fixture rather than a fix and a note.
+      # `Up()` whose trailing comment named the `Down(` signature — and, from gh#612, a file-scoped
+      # namespace with a sibling `override` of `Down(` and a second partial holding a no-modifier helper,
+      # a one-line `Down() { }` as last member of that first partial with the helper in a later one,
+      # the same later-partial helper in this repository's block-namespace style with no sibling type,
+      # and an unmatched `{` in a `Sql(` string so the class span never closes. MOST CAME FROM REVIEW;
+      # the `Up()`-comment find is the exception and the attribution matters — it was found by auditing
+      # the fix for the other three, which is the same route as the no-modifier sibling above it, and a
+      # list that credits review with every find hides how many an audit is worth. A gate an ordinary
+      # formatting choice walks past is the failure this card exists to prevent, so each is a fixture
+      # rather than a fix and a note.
       #
       # Ordered after it so a genuinely destructive migration is reported first. Hermetic: mktemp -d, no
       # network, no token.

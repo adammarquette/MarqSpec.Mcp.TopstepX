@@ -61,14 +61,15 @@
 # deployment actually gets wrong.
 #
 # DECISION LEDGER -- see the table at the bottom of this file (gh#178's remedy). Every decision the gate
-# makes is listed beside the case that kills it, and the table is SPLIT: five MEASURED sweeps of mutants,
+# makes is listed beside the case that kills it, and the table is SPLIT: seven MEASURED sweeps of mutants,
 # and the rest listed as exercised-but-not-mutated. Adding a decision to the gate without adding a row is
 # the same visible omission the ledger exists to catch. Read the split before trusting a row -- "a ledger is
 # a claim too", and the ways one lies are a grade promising more than its evidence, a decision pinned by a
 # fixture's incidental shape, and -- found by review on this very file -- **a row whose mechanism has moved
-# underneath it, so the number is stale and the sentence describes code that is gone.** THREE MUTANTS have
-# survived a sweep and each is named as such; the first sweep's rows 1 and 7 have now been re-run FOUR
-# times, and row 1 has moved on every single one.
+# underneath it, so the number is stale and the sentence describes code that is gone.** ONE MUTANT still
+# survives a sweep (the `//` test, fifth sweep row 7); fifth-sweep row 8 stopped surviving the day the
+# unmatched-`{` fixture reached it. The first sweep's rows 1 and 7 have now been re-run FIVE times, and
+# row 1 has moved on every single one of the first four.
 #
 # RUNTIME, AND WHERE THE FIFTH SWEEP WAS RUN. Each case forks `git init`, a few commits and a shell, so what
 # it costs is process creation and nothing else. On a Windows checkout that is brutal: **16m15s at 54 cases**
@@ -1200,6 +1201,149 @@ N="$(line_of "$F" 'b.DropTable(name: "PriceLevels")')"
 expect_red "a file-scoped namespace with a sibling override of Down( and a second partial holding a no-modifier helper — only the class brace span ends the search" "$D" \
   "$MIG_REL/20260201000000_FileScopedSiblingDecoy.cs:$N  DropTable" basebranch
 
+# gh#612 kickback — the filed fixture omitted the migration's own Down(), which every EF migration
+# declares. A one-line Down() as last member of the : Migration partial has its closer on the
+# declaration line, so the down_end walk (from down_start+1, capped at that partial's close) never
+# sees it; MEMBER_RE cannot see the next partial's `public partial class` either; down_end stays
+# n+1 and the later-partial helper is unread. Green on blob 4dd38ed, red on parent fba4730.
+D="$FIXTURES/one-line-down-later-partial"; init_repo "$D"
+F="$D/$MIG_REL/20260201000000_OneLineDownLaterPartial.cs"
+mkdir -p "$(dirname "$F")"
+cat > "$F" <<'EOF'
+using Microsoft.EntityFrameworkCore.Migrations;
+
+#nullable disable
+
+namespace MarqSpec.Mcp.TopstepX.Data.Migrations;
+
+internal class ShimP612
+{
+    public virtual void Down(MigrationBuilder b) { }
+}
+
+/// <inheritdoc />
+public partial class OneLineDownLaterPartial : Migration
+{
+    /// <inheritdoc />
+    protected override void Up(MigrationBuilder migrationBuilder)
+    {
+        RetireLegacy(migrationBuilder);
+    }
+
+    /// <inheritdoc />
+    protected override void Down(MigrationBuilder migrationBuilder) { }
+}
+
+internal class OtherP612 : ShimP612
+{
+    public override void Down(MigrationBuilder b) { }
+}
+
+/// <inheritdoc />
+public partial class OneLineDownLaterPartial
+{
+    void RetireLegacy(MigrationBuilder b)
+    {
+        b.DropColumn(name: "Legacy", table: "Bars");
+        b.DropTable(name: "PriceLevels");
+    }
+}
+EOF
+commit_case "$D"
+N="$(line_of "$F" 'b.DropTable(name: "PriceLevels")')"
+expect_red "a one-line Down() as last member of the first partial, helper in a later partial — the class-close cap must not leave down_end at EOF" "$D" \
+  "$MIG_REL/20260201000000_OneLineDownLaterPartial.cs:$N  DropTable" basebranch
+
+# Same helper extraction in this repository's block-namespace style, no sibling type at all.
+D="$FIXTURES/block-ns-later-partial"; init_repo "$D"
+F="$D/$MIG_REL/20260201000000_BlockNsLaterPartial.cs"
+mkdir -p "$(dirname "$F")"
+cat > "$F" <<'EOF'
+using Microsoft.EntityFrameworkCore.Migrations;
+
+#nullable disable
+
+namespace MarqSpec.Mcp.TopstepX.Data.Migrations
+{
+    /// <inheritdoc />
+    public partial class BlockNsLaterPartial : Migration
+    {
+        /// <inheritdoc />
+        protected override void Up(MigrationBuilder migrationBuilder)
+        {
+            RetireLegacy(migrationBuilder);
+        }
+
+        /// <inheritdoc />
+        protected override void Down(MigrationBuilder migrationBuilder) { }
+    }
+
+    /// <inheritdoc />
+    public partial class BlockNsLaterPartial
+    {
+        void RetireLegacy(MigrationBuilder migrationBuilder)
+        {
+            migrationBuilder.DropColumn(name: "Legacy", table: "Bars");
+            migrationBuilder.DropTable(name: "PriceLevels");
+        }
+    }
+}
+EOF
+commit_case "$D"
+N="$(line_of "$F" 'DropTable(name: "PriceLevels")')"
+expect_red "the same later-partial helper in block-namespace style, no sibling type — a one-line Down() must not swallow the next partial" "$D" \
+  "$MIG_REL/20260201000000_BlockNsLaterPartial.cs:$N  DropTable" basebranch
+
+# Missing class close must not fall back to the old whole-file Down() search. The span walker
+# counts braces in strings; Sql("{") leaves migration_class_end = n+1, the search-bound if fails,
+# and the sibling's override Down takes down_start again. Fail-closed: no locatable span ⇒ no
+# Down() boundary ⇒ read the file.
+D="$FIXTURES/unclosed-class-span"; init_repo "$D"
+F="$D/$MIG_REL/20260201000000_UnclosedClassSpan.cs"
+mkdir -p "$(dirname "$F")"
+cat > "$F" <<'EOF'
+using Microsoft.EntityFrameworkCore.Migrations;
+
+#nullable disable
+
+namespace MarqSpec.Mcp.TopstepX.Data.Migrations;
+
+internal class ShimP612
+{
+    public virtual void Down(MigrationBuilder b) { }
+}
+
+/// <inheritdoc />
+public partial class UnclosedClassSpan : Migration
+{
+    /// <inheritdoc />
+    protected override void Up(MigrationBuilder migrationBuilder)
+    {
+        migrationBuilder.Sql("{");
+        RetireLegacy(migrationBuilder);
+    }
+}
+
+internal class OtherP612 : ShimP612
+{
+    public override void Down(MigrationBuilder b) { }
+}
+
+/// <inheritdoc />
+public partial class UnclosedClassSpan
+{
+    void RetireLegacy(MigrationBuilder b)
+    {
+        b.DropColumn(name: "Legacy", table: "Bars");
+        b.DropTable(name: "PriceLevels");
+    }
+}
+EOF
+commit_case "$D"
+N="$(line_of "$F" 'b.DropTable(name: "PriceLevels")')"
+expect_red "an unmatched { in a Sql( string so the class span never closes — no locatable span means no Down() boundary" "$D" \
+  "$MIG_REL/20260201000000_UnclosedClassSpan.cs:$N  DropTable" basebranch
+
 D="$FIXTURES/designer-partial"; init_repo "$D"
 F="$D/$MIG_REL/20260201000000_Hidden.cs"
 mkdir -p "$(dirname "$F")"
@@ -1356,7 +1500,7 @@ ok "ok  $cases self-test cases — check-migrations-additive.sh rejects each des
 # DECISION LEDGER (gh#178's remedy, and this is the fourth gate here to carry one).
 #
 # THE TABLE IS SPLIT, because "a ledger is a claim too, and it lies in two specific ways". The first part is
-# MEASURED: four sweeps of mutants, each deleting or inverting exactly one decision, each run against the
+# MEASURED: seven sweeps of mutants, each deleting or inverting exactly one decision, each run against the
 # whole suite, and the row records WHICH CASES WENT RED rather than merely that the suite did (gh#178 -- "a
 # mutation that reddens for the WRONG reason reads as caught"). The last part is NOT MUTATED and says so; it
 # is not a claim of coverage.
@@ -1614,12 +1758,11 @@ ok "ok  $cases self-test cases — check-migrations-additive.sh rejects each des
 #
 # **ROW 7 SURVIVES AND IS SUPPOSED TO** -- the `//` test's subsumption is discussed above the fourth sweep.
 #
-# **ROW 8 SURVIVES BECAUSE NO FIXTURE CAN REACH IT, and that was checked rather than asserted.** A file with
-# no locatable `Up()` is only ever a generated partial: a migration without one dies on `NO Up()` first.
-# Neither `*.Designer.cs` nor the model snapshot declares a `Down()`, and neither can -- the migration class
-# already declares it and a partial class cannot declare it twice. The fixture would have to be a file
-# nobody can write. Recorded as a measured 0 rather than as "unreachable, and here is why", which is this
-# ledger's own weakest row shape.
+# **ROW 8 WAS A SURVIVOR AND IS NOT ONE ANY MORE.** A file with no locatable `Up()` is still only ever a
+# generated partial, and that half remains unreachable. The kickback's unmatched-`{` fixture reaches the
+# other half of the same decision -- "no locatable *span* means no `Down()` boundary" -- by leaving
+# `migration_class_end` at `n+1`. Searching the file at any indent then lets the sibling take `down_start`
+# again. Measured **1 of 57** at blob `364cfb2`; see the seventh sweep.
 #
 # **AND THE TWO LOCAL-FUNCTION FIXTURES ARE NOW REFUSED TWICE OVER AND PINNED BY NEITHER HALF.** "a STATIC
 # LOCAL FUNCTION named Down inside Up()" and "a local function named Down whose trailing COMMENT carries the
@@ -1637,24 +1780,58 @@ ok "ok  $cases self-test cases — check-migrations-additive.sh rejects each des
 # WHAT gh#612 CLOSED. A sibling type beside the migration at the same member indent could take `down_start`;
 # file-scoped namespace put the class at column 0 where `MEMBER_RE` could not end the span. **Bounding the
 # `Down()` search to the migration class's own brace span uses machinery `down_end` already had** — the
-# closing brace in the declaration's column — not a parser. The fixture is "a file-scoped namespace with a
-# sibling override of Down( and a second partial holding a no-modifier helper"; see the sixth sweep below.
-# An author willing to construct a decoy can lie in a `// destructive-migration:` marker instead — which the
-# design accepts by construction and hands to the reviewer.
+# closing brace in the declaration's column — not a parser. The filed fixture omitted the migration's own
+# `Down()`, which every EF migration declares; the kickback added the one-line form as last member of the
+# first partial (and the same helper extraction in this repository's block-namespace style, no sibling)
+# plus an unmatched `{` in a `Sql(` string so the walker never closes. An author willing to construct a
+# decoy can lie in a `// destructive-migration:` marker instead — which the design accepts by construction
+# and hands to the reviewer.
 #
 # SIXTH SWEEP (gh#612). ONE revert on a COPY of the gate, refusing to start unless the copy's blob moved and
 # printing `APPLIED <before> -> <after>`, the whole suite re-run in the container named at the top of this
 # file. Baseline blob `4dd38ed`: **54 of 54 green.** Mutation `APPLIED 4dd38ed -> 3f31e0c` reddens only the
-# gh#612 fixture (`1 of 54` failed); restore returns **54 of 54 green.**
+# gh#612 fixture (`1 of 54` failed); restore returns **54 of 54 green.** That number is what that blob
+# measured; the unique case has since moved — see the seventh sweep's re-audit.
 #
 # | # | Decision deleted or inverted                          | Cases that went red                             |
 # |---|-------------------------------------------------------|-------------------------------------------------|
-# | 9 | the migration class brace span on the `Down()` search | **1.** "a file-scoped namespace with a sibling |
-# |   | (search the whole file again instead)                 |   override of Down( and a second partial …"     |
+# | 9 | the migration class brace span on the `Down()` search | **1 of 54 then**; see seventh-sweep re-audit.   |
+# |   | (search the whole file again instead)                 |   Unique case was the filed gh#612 fixture.     |
 #
-# **RE-AUDIT after the boundary change.** Every fifth-sweep separating fixture's own mutation was re-run; each
-# still reddened for its own reason. Row 9 is the only new pin; row 0 on a revert-to-shipping blob reddens
-# the gh#612 fixture among the gh#601 four.
+# SEVENTH SWEEP (gh#612 kickback). TWO reverts on a COPY of the gate, refusing to start unless the copy's
+# blob moved and printing `APPLIED <before> -> <after>`, the whole suite re-run in the container named at
+# the top of this file. Baseline blob `364cfb2`: **57 of 57 green.**
+#
+# | # | Decision deleted or inverted                          | Cases that went red                             |
+# |---|-------------------------------------------------------|-------------------------------------------------|
+# | 10| `down_end` fallback to the class close when the walk  | **2.** "a one-line Down() as last member of the |
+# |   | finds nothing (`APPLIED 364cfb2 -> f3dd589`)          |   first partial …" AND "the same later-partial  |
+# |   |                                                       |   helper in block-namespace style …"            |
+# | 11| no locatable span ⇒ no `Down()` boundary (restore    | **1.** "an unmatched { in a Sql( string so the  |
+# |   | whole-file search when the span is missing;           |   class span never closes"                      |
+# |   | `APPLIED 364cfb2 -> 060461a`)                         |                                                 |
+#
+# **RE-AUDIT after the kickback boundary change.** Every fifth-sweep separating fixture's own mutation was
+# re-run at blob `364cfb2`, 57 cases, same container. Rows 1–7 of the fifth sweep, the third-sweep
+# `down_end` pins, `$DOWN_RE`'s end-of-line arm, the generated-partials read, `$MEMBER_RE`'s non-access
+# modifiers, the closing-brace rule, `$DOT`, and first-sweep rows 1 and 7 each still reddened for their
+# own reason (denominators only). Two rows moved:
+#
+# | Earlier row re-run                                        | Then        | Now, of 57                                 |
+# |-----------------------------------------------------------|-------------|--------------------------------------------|
+# | fifth sweep row 8 — no locatable `Up()` means no `Down()` | 0 SURVIVOR  | **1.** the unmatched-`{` span fixture.     |
+# |   boundary (file searched at any indent instead)          |             |   No longer a survivor: the new fixture    |
+# |                                                           |             |   reaches it.                              |
+# | sixth sweep row 9 — search the whole file again           | 1 / 612 fix.| **1.** the unmatched-`{` span fixture.     |
+# |                                                           |             |   Unique case MOVED: the filed gh#612      |
+# |                                                           |             |   fixture stays red because the `down_end` |
+# |                                                           |             |   fallback now scans a later-partial       |
+# |                                                           |             |   helper even when a sibling took          |
+# |                                                           |             |   `down_start`.                            |
+#
+# Row 9 and row 11 now share the same set `{ unmatched-{ span }`. What separates them is no longer a
+# unique case — the same weaker claim the fifth sweep already named. Row 10 owns its two later-partial
+# fixtures outright. Fifth-sweep row 7 (`//` test) is still **0**, still the expected survivor.
 #
 # NOT MUTATED -- claimed as exercised, never as pinned
 #

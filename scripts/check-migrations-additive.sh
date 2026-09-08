@@ -91,6 +91,18 @@
 # migration at the same member indent, plus file-scoped namespace (class at column 0, where `MEMBER_RE` cannot
 # end the span), was the residue PR #609 recorded; bounding the search refuses it and every variant at once.
 #
+# TWO SILENT GREENS SAT IN THAT BOUND, and both are the quiet end again (gh#612 kickback). Capping
+# `down_end_hi` at the `: Migration` partial's close takes the MEMBER_RE half away from a helper that
+# lives in a LATER PARTIAL: a one-line `Down() { }` as last member has its closer on the declaration
+# line, so the walk from `down_start+1` never sees it, and `down_end` stayed `n+1` -- everything after
+# `Down()` unread. A walk that finds nothing therefore ends the body at the class close, not at EOF.
+# (Reading the declaration line itself would also see that closer -- and would un-pin the inline
+# `Down() { }` / `static` sibling fixture, whose DropTable is swallowed by the helper's own `}` at
+# the same indent the moment MEMBER_RE is not the thing that ends the body.) And a span the walker
+# cannot CLOSE (it counts braces in strings; `Sql("{")` is enough) must not fall back to the old
+# whole-file `Down()` search: no locatable span means no `Down()` boundary, and the file is read
+# whole -- the same fail-closed as a missing `Up()`.
+#
 # The one place the excluded span was removed outright is a file with NO locatable `Up()`: it gets no
 # `Down()` boundary at all and is read whole. That is only ever a generated partial (a migration without an
 # `Up()` fails `NO Up()` first), neither `*.Designer.cs` nor the model snapshot has ever declared a `Down()`,
@@ -637,15 +649,13 @@ scan_file() {  # $1 path  $2 1 if Up(MigrationBuilder) must be locatable
     fi
   fi
 
+  # NO LOCATABLE SPAN MEANS NO Down() BOUNDARY (gh#612 kickback). The walker counts `{`/`}` in
+  # strings and comments; an unmatched `{` leaves `migration_class_end = n+1`. Falling back to the
+  # whole-file search then lets a sibling `override void Down` take `down_start` again -- the silent
+  # direction. Fail-closed is the rule already written for a missing `Up()`: read the file.
   down_start=0
-  down_search_lo=1
-  down_search_hi=$n
   if [ -n "$member_indent" ] && [ "$migration_class_body_start" -ne 0 ] && [ "$migration_class_end" -le "$n" ]; then
-    down_search_lo=$migration_class_body_start
-    down_search_hi=$(( migration_class_end - 1 ))
-  fi
-  if [ -n "$member_indent" ]; then
-    for (( ln = down_search_lo; ln <= down_search_hi; ln++ )); do
+    for (( ln = migration_class_body_start; ln < migration_class_end; ln++ )); do
       if declares "$ln" "$member_indent" "$DOWN_RE"; then down_start=$ln; break; fi
     done
   fi
@@ -654,6 +664,14 @@ scan_file() {  # $1 path  $2 1 if Up(MigrationBuilder) must be locatable
   # brace, in the declaration's own column, and it ends at the next member declaration -- and each rule has
   # a blind spot the other covers. `MEMBER_RE` alone missed `static void Helper(...)`, and Down() then ran
   # to end of file and swallowed it. The brace rule alone would miss a `Down(...) { }` written on one line.
+  #
+  # CAPPING THE WALK AT THE CLASS CLOSE IS NOT THE LOUD DIRECTION if a miss then leaves `down_end` at
+  # `n+1`. A later-partial helper is past that cap, so MEMBER_RE cannot end the body there, and
+  # everything after `Down()` is unread -- the quiet end, on a widening that was supposed to be loud.
+  # A walk that finds nothing therefore ends the body at the class close, not at EOF. The declaration
+  # line is still not walked: reading it would see the one-line closer, and would un-pin the inline
+  # `Down() { }` / `static` sibling fixture (third sweep), whose DropTable is then swallowed by the
+  # helper's own `}` at the same indent the moment MEMBER_RE is deleted.
   #
   # Neither consults `in_region`, and that is deliberate rather than an oversight: a string literal that
   # falsely matches ends the body EARLY, so more is scanned -- the loud direction, and the one this gate
@@ -674,6 +692,11 @@ scan_file() {  # $1 path  $2 1 if Up(MigrationBuilder) must be locatable
         break
       fi
     done
+    # Walk found nothing inside the cap: the partial's close ends the body so a later-partial
+    # helper is not swallowed. Leaving `down_end` at `n+1` was the quiet hole the cap opened.
+    if [ "$down_end" -gt "$n" ] && [ "$migration_class_end" -le "$n" ]; then
+      down_end=$migration_class_end
+    fi
   fi
 
   declare -A found_count=()

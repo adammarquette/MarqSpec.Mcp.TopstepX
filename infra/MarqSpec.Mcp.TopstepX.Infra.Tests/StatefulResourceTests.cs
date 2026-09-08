@@ -41,17 +41,19 @@ public sealed class StatefulResourceTests(EnvironmentTemplates templates) : ICla
 
     [Theory]
     [MemberData(nameof(EnvironmentTemplates.Both), MemberType = typeof(EnvironmentTemplates))]
-    public void Five_secret_shells_exist_under_the_environment_prefix_and_carry_no_value(string env, string _)
+    public void Six_secret_shells_exist_under_the_environment_prefix_and_carry_no_value(string env, string _)
     {
         var t = templates.For(env);
         var secrets = t.Resources("AWS::SecretsManager::Secret").Values.Select(t.Properties).ToList();
 
-        // Three from gh#516 and the two Cognito client secrets from gh#517 (their key shape is CognitoTests').
+        // Three from gh#516, the two Cognito client secrets from gh#517 (their key shape is CognitoTests'),
+        // and the collector sidecar's backend from gh#537 — which exists only while telemetry props do, and
+        // TelemetrySidecarTests is what asserts its absence in the other shape.
         secrets.Select(s => s["Name"]!.GetValue<string>())
             .Should().BeEquivalentTo(
             [
                 $"topstepx-mcp/{env}/postgres", $"topstepx-mcp/{env}/projectx", $"topstepx-mcp/{env}/cohere",
-                $"topstepx-mcp/{env}/claude-connector", $"topstepx-mcp/{env}/deploy-check",
+                $"topstepx-mcp/{env}/claude-connector", $"topstepx-mcp/{env}/deploy-check", $"topstepx-mcp/{env}/otel",
             ]);
 
         foreach (var secret in secrets)
@@ -71,6 +73,8 @@ public sealed class StatefulResourceTests(EnvironmentTemplates templates) : ICla
             .RootElement.EnumerateObject().Select(p => p.Name).Should().BeEquivalentTo(["apiKey", "apiSecret"]);
         JsonDocument.Parse(secrets.Single(s => s["Name"]!.GetValue<string>().EndsWith("/cohere", StringComparison.Ordinal))["SecretString"]!.GetValue<string>())
             .RootElement.EnumerateObject().Select(p => p.Name).Should().BeEquivalentTo(["apiKey"]);
+        JsonDocument.Parse(secrets.Single(s => s["Name"]!.GetValue<string>().EndsWith("/otel", StringComparison.Ordinal))["SecretString"]!.GetValue<string>())
+            .RootElement.EnumerateObject().Select(p => p.Name).Should().BeEquivalentTo(["endpoint", "authorization"]);
     }
 
     [Theory]

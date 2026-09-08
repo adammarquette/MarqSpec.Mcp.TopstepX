@@ -60,6 +60,24 @@ public sealed class EnvironmentStack : Stack
     /// </summary>
     public const string PostgresImage = "timescale/timescaledb-ha@sha256:567690e00aa9a485b45e2feec09c0e46288ca817891342f5575ba14da6a8592e";
 
+    /// <summary>
+    /// <c>otel/opentelemetry-collector-contrib:0.160.0</c> by digest — the multi-arch index digest, read
+    /// from the Docker Hub registry API's <c>docker-content-digest</c> header on 2026-09-07 (the index
+    /// carries <c>linux/amd64</c>, which is this task's <see cref="CpuArchitecture.X86_64"/>). The
+    /// <i>contrib</i> distribution rather than the core one because the <c>resource</c> processor that
+    /// stamps <c>deployment.environment</c> and <c>service.version</c> ships only there. The tag moves; this
+    /// does not. Bump it deliberately, in a pull request that says why, never by re-reading the tag
+    /// (ADR-0023 §12: no task definition references a floating tag).
+    /// </summary>
+    public const string OtelCollectorImage = "otel/opentelemetry-collector-contrib@sha256:799dc6cf12c96192af37b5bdba804da8c10b3bc563b43cb90c3f3c58d9572ad6";
+
+    /// <summary>
+    /// Where the server exports OTLP: the task's own loopback, where the sidecar's receiver is bound. Every
+    /// container in an <c>awsvpc</c> task shares one network namespace, so this crosses no network and needs
+    /// no port mapping, no security-group rule and no credential.
+    /// </summary>
+    public const string OtelLoopbackEndpoint = "http://localhost:4317";
+
     private const string PostgresUser = "topstepx";
     private const string PostgresDatabase = "topstepx_mcp";
     private const string PostgresDataMount = "/home/postgres/pgdata";
@@ -250,6 +268,16 @@ public sealed class EnvironmentStack : Stack
             "The claude-connector app client's id and secret, pasted into the Cowork custom-connector dialog (gh#524); the secret is read once with describe-user-pool-client.");
         _ = Shell("DeployCheckSecret", env, "deploy-check", """{"clientId":"","clientSecret":""}""",
             "The deploy-check app client's id and secret, read at run time by the deployment check (gh#521) for a client_credentials token; never a GitHub secret.");
+        // The sixth shell exists only when the sidecar does (gh#537). It is the telemetry backend's whole
+        // identity: `endpoint` is the Grafana Cloud OTLP gateway -- which names the stack, and so the account
+        // -- and `authorization` is the header value that authenticates to it. gh#537's body asked for these
+        // as two ARNs on TelemetryProps; an ARN carries an account id, and a literal account id in a public
+        // repository is what the root contract's second non-negotiable refuses, so they are a shell like the
+        // other five and gh#519 fills them once the Grafana Cloud stack exists.
+        var otelSecret = props.Telemetry is null
+            ? null
+            : Shell("OtelSecret", env, "otel", """{"endpoint":"","authorization":""}""",
+                "The OTLP collector sidecar's Grafana Cloud endpoint and Authorization header value (gh#537, ADR-0019 decision 5). Read by the sidecar alone; the server never sees either.");
 
         // The written history the pipeline leaves on every deploy (ADR-0023 §5): the same two parameters
         // the task definition reads, so the history cannot say one thing while the task runs another.
@@ -555,6 +583,22 @@ public sealed class EnvironmentStack : Stack
             ["Deployment__Version"] = version.ValueAsString,
             ["Deployment__ImageDigest"] = imageDigest.ValueAsString,
         };
+
+        // The telemetry seam (gh#537, ADR-0019). WITH a sidecar the server is told one endpoint -- the
+        // container beside it, on the task's own loopback -- and nothing about the backend: decision 2, "one
+        // OTLP exporter, nothing vendor-specific in the host". `Otel__Headers` is deliberately NOT here: it
+        // is where a backend token would go, and the token is the sidecar's.
+        //
+        // WITHOUT one, not one Otel__ key is set, and that is not a degraded mode -- it is decision 3, absent
+        // configuration is today's behaviour exactly: no exporter registered, no background thread, no retry
+        // queue, no warning about a collector that is not there.
+        if (props.Telemetry is not null)
+        {
+            serverEnvironment["Otel__Endpoint"] = OtelLoopbackEndpoint;
+            serverEnvironment["Otel__Protocol"] = "grpc";
+            serverEnvironment["Otel__ServiceName"] = "marqspec-mcp-topstepx";
+        }
+
         serverTask.AddContainer("server", new ContainerDefinitionOptions
         {
             ContainerName = "server",
@@ -572,6 +616,46 @@ public sealed class EnvironmentStack : Stack
                 ["Embeddings__ApiKey"] = EcsSecret.FromSecretsManager(cohereSecret, "apiKey"),
             },
         });
+
+        // ── Server: the OTLP collector sidecar ──────────────────────────────────────────────────────────
+        // gh#537, ADR-0019 decision 5, ADR-0023 §11: the second container in this task receives what the
+        // server exports on the loopback and forwards it to Grafana Cloud. Self-hosting Loki, Tempo and
+        // Grafana as further Fargate services was rejected in ADR-0019, not re-argued here.
+        if (props.Telemetry is not null && otelSecret is not null)
+        {
+            serverTask.AddContainer("OtelCollector", new ContainerDefinitionOptions
+            {
+                ContainerName = "otel-collector",
+                Image = ContainerImage.FromRegistry(props.Telemetry.CollectorImage),
+                // NOT essential, and capped. Between them these are the whole answer to "what happens when
+                // the sidecar is unhealthy": the task keeps running, the server keeps answering, and the
+                // exporter drops on the floor (ADR-0019). An unfilled shell fails the collector's own config
+                // validation and lands in exactly that state, which is the state staging starts in.
+                Essential = false,
+                MemoryLimitMiB = props.Telemetry.MemoryLimitMiB,
+                // Same group as the server, different stream prefix -- one place to read an environment.
+                Logging = LogDrivers.AwsLogs(new AwsLogDriverProps { LogGroup = serverLogs, StreamPrefix = "otel-collector" }),
+                // No PortMappings, deliberately: containers of an awsvpc task share one network namespace, so
+                // the receiver bound to 127.0.0.1 is reachable from the server container and from nothing
+                // else. Publishing 4317 would put an unauthenticated OTLP receiver on the task's own address.
+                Environment = new Dictionary<string, string>(StringComparer.Ordinal)
+                {
+                    // The checked-in configuration, carried as a variable because a Fargate task has no disk
+                    // to mount a file from and baking it into an image would make a one-line edit a registry
+                    // push. The collector is started against the variable, below.
+                    ["OTEL_COLLECTOR_CONFIG"] = CollectorConfiguration.Yaml,
+                    // The two resource attributes that let one Grafana stack tell the environments apart.
+                    ["DEPLOYMENT_ENVIRONMENT"] = env,
+                    ["SERVICE_VERSION"] = version.ValueAsString,
+                },
+                Secrets = new Dictionary<string, EcsSecret>
+                {
+                    ["GRAFANA_OTLP_ENDPOINT"] = EcsSecret.FromSecretsManager(otelSecret, "endpoint"),
+                    ["GRAFANA_OTLP_AUTHORIZATION"] = EcsSecret.FromSecretsManager(otelSecret, "authorization"),
+                },
+                Command = ["--config=env:OTEL_COLLECTOR_CONFIG"],
+            });
+        }
 
         // ── Edge ────────────────────────────────────────────────────────────────────────────────────────
         var accessLogs = new Bucket(this, "AlbAccessLogs", new BucketProps

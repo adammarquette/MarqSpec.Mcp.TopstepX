@@ -1274,7 +1274,9 @@ the one that rewrites it. What exists today:
   in the task, every credential a `valueFrom`, the two environments differing only where their props say;
   139 at gh#517, adding the Cognito pool, its two clients and the issuer and client ids reaching the task as
   references; 142 at gh#518, adding the every-role trust shape on the OIDC stack, a template with no account
-  id and no thumbprint, and the `bootstrap.sh` lockstep on the `aws-production` name) and then
+  id and no thumbprint, and the `bootstrap.sh` lockstep on the `aws-production` name; 162 at gh#537, adding
+  the OTLP collector sidecar — two containers and the sixth shell with telemetry props, one container and no
+  `Otel__*` key without them, and no endpoint, token or account id anywhere in the template) and then
   `cdk synth --no-lookups` **once per outbound shape** through the CLI pinned in
   `infra/package.json`. **No credential exists on the runner, by construction**: `--no-lookups` makes a
   context miss fail the synth rather than call AWS, and `infra/cdk.context.json` carries the hosted-zone
@@ -1293,7 +1295,8 @@ the one that rewrites it. What exists today:
   no default, the app refuses to synthesise without `-c outbound=…`, CI passes every value, and the choice
   is the maintainer's dated entry on ADR-0023 — when it lands, the loop in `ci.yml` collapses to one plain
   synth and the value becomes a literal in `Program.cs`.
-- **Secrets are shells.** The five `topstepx-mcp/<env>/{postgres,projectx,cohere,claude-connector,deploy-check}`
+- **Secrets are shells.** The six
+  `topstepx-mcp/<env>/{postgres,projectx,cohere,claude-connector,deploy-check,otel}`
   secrets are created with every JSON key the task definitions and the deployment check read and every
   value empty; gh#519 writes the values by hand, once. **Never edit a shell's literal afterwards**:
   CloudFormation creates a new secret version whenever the `SecretString` property changes, and that
@@ -1310,6 +1313,17 @@ the one that rewrites it. What exists today:
   asserted to contain no Lambda. What is **not** measured yet — the discovery document's `S256`
   advertisement, its tolerance of the `resource` parameter, the token-endpoint auth methods — waits for
   gh#519's first credentialed deploy, because no pool exists to measure.
+- **The server task carries a second container** (gh#537, [ADR-0019](../adr/0019-otlp-as-the-telemetry-boundary.md)
+  §5, ADR-0023 §11): an OTLP collector that receives on the task's loopback and exports to Grafana Cloud.
+  `Essential=false` with a hard 128 MiB cap, no port mapping, and its Grafana endpoint and token as
+  `valueFrom`s on the sixth shell — so an unhealthy sidecar leaves the server answering, and a template
+  carries no backend hostname or credential. Its configuration is a **checked-in file**,
+  `infra/MarqSpec.Mcp.TopstepX.Infra/Collector/otel-collector-config.yaml`, embedded in the assembly, read at
+  synth time into `OTEL_COLLECTOR_CONFIG` and started with `--config=env:…` — a Fargate task has no disk to
+  mount one from, and a test compares the file, the embedded resource and the task's value so it cannot
+  become decorative. **The whole sidecar hangs off `EnvironmentStackProps.Telemetry` being non-null**, and
+  the absent case is the template this stack had before that card; both shapes are asserted. Edit that file
+  the way you bump an image digest: deliberately, and never with an endpoint or a token in it.
 - **The image is a digest in a parameter.** `ImageDigest` and `Version` have no default and are passed on
   `cdk deploy --parameters`; the stack writes the same two values to `/topstepx-mcp/<env>/image-digest`
   and `/version` in SSM as the written history, so the history cannot say one thing while the task runs

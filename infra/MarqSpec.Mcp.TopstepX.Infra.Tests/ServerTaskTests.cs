@@ -10,11 +10,9 @@ namespace MarqSpec.Mcp.TopstepX.Infra.Tests;
 /// </summary>
 public sealed class ServerTaskTests(EnvironmentTemplates templates) : IClassFixture<EnvironmentTemplates>
 {
-    private static JsonObject ServerContainer(Synthesised t)
-    {
-        var (_, _, containers) = t.TaskDefinition("-server");
-        return containers.Should().ContainSingle().Which!.AsObject();
-    }
+    // By name, not by "the only one": the task carries the OTLP collector beside the server once telemetry
+    // is on (gh#537), and every assertion below is about the server container specifically.
+    private static JsonObject ServerContainer(Synthesised t) => t.Container("-server", "server");
 
     [Theory]
     [MemberData(nameof(EnvironmentTemplates.Both), MemberType = typeof(EnvironmentTemplates))]
@@ -110,7 +108,7 @@ public sealed class ServerTaskTests(EnvironmentTemplates templates) : IClassFixt
 
     [Theory]
     [MemberData(nameof(EnvironmentTemplates.Both), MemberType = typeof(EnvironmentTemplates))]
-    public void Every_catalogue_key_outside_the_compose_only_and_deferred_sets_reaches_the_task(string env, string _)
+    public void Every_catalogue_key_outside_the_compose_only_and_excluded_sets_reaches_the_task(string env, string _)
     {
         var t = templates.For(env);
         var container = ServerContainer(t);
@@ -119,6 +117,15 @@ public sealed class ServerTaskTests(EnvironmentTemplates templates) : IClassFixt
         var expected = EnvExample.ServerKeys();
         expected.Should().NotBeEmpty("the catalogue was read from disk");
         expected.Should().BeSubsetOf(carried, "the third copy of the configuration is enforced rather than remembered");
+
+        // The deferred set is now EMPTY — gh#537 retired the last of it, the Otel__* keys, in the pull
+        // request that built the sidecar they were waiting for. What is left is one key excluded for a
+        // reason rather than for a date, and this test names it rather than letting EnvExample excuse it
+        // out of sight: the backend token is the SIDECAR's, and TelemetrySidecarTests asserts it reaches
+        // that container and not this one.
+        EnvExample.Keys().Where(EnvExample.IsDeferred).Should().BeEmpty("no card is still owed a key here");
+        expected.Should().Contain(["Otel__Endpoint", "Otel__Protocol", "Otel__ServiceName"], "the sidecar's card owns these now");
+        expected.Should().NotContain("Otel__Headers");
     }
 
     [Theory]

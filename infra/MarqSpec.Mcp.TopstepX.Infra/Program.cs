@@ -33,6 +33,12 @@ _ = new EnvironmentStack(app, "topstepx-mcp-production", new EnvironmentStackPro
     RootDomain = "marqspec.com",
     ZoneMode = ZoneMode.Lookup,
     OutboundPath = outbound,
+    // The OTLP collector sidecar (gh#537, ADR-0019 decision 5). BOTH environments get it, and staging is
+    // first only in the order gh#519 fills the two shells -- one stack class, two environments, and a
+    // template that is present in one and absent in the other would be a second stack class in disguise.
+    // Until a shell is filled the collector fails its own config validation and stops; it is not essential,
+    // so the server answers exactly as it does today.
+    Telemetry = new TelemetryProps(),
     RecordTapeDefault = true,
     WarmIndicatorsDefault = true,
     Env = env,
@@ -46,6 +52,12 @@ _ = new EnvironmentStack(app, "topstepx-mcp-staging", new EnvironmentStackProps
     RootDomain = "staging.marqspec.com",
     ZoneMode = ZoneMode.CreateAndDelegate,
     OutboundPath = outbound,
+    // The OTLP collector sidecar (gh#537, ADR-0019 decision 5). BOTH environments get it, and staging is
+    // first only in the order gh#519 fills the two shells -- one stack class, two environments, and a
+    // template that is present in one and absent in the other would be a second stack class in disguise.
+    // Until a shell is filled the collector fails its own config validation and stops; it is not essential,
+    // so the server answers exactly as it does today.
+    Telemetry = new TelemetryProps(),
     RecordTapeDefault = false,
     WarmIndicatorsDefault = false,
     Env = env,

@@ -28,4 +28,13 @@
     <PackageReference Include="Constructs" />
   </ItemGroup>
 
+  <ItemGroup>
+    <!--
+      The OTLP collector sidecar's configuration (gh#537), embedded so the synth reads it from the assembly
+      rather than from a path relative to wherever the CDK CLI was run. `LogicalName` fixes the resource name
+      against the default namespace-and-folder mangling, so moving the file cannot silently rename it.
+    -->
+    <EmbeddedResource Include="Collector\otel-collector-config.yaml" LogicalName="otel-collector-config.yaml" />
+  </ItemGroup>
+
 </Project>

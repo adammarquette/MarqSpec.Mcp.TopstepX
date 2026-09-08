@@ -20,6 +20,13 @@ public sealed record Synthesised(Template Template, JsonObject Json)
     /// </summary>
     public static readonly Amazon.CDK.Environment TestEnv = new() { Account = "123456789012", Region = "us-east-1" };
 
+    /// <summary>
+    /// The telemetry shape the app deploys (gh#537): the sidecar present, at its defaults. Passing
+    /// <c>null</c> instead is the absent case — the stack as it was before gh#537 — and
+    /// <see cref="TelemetrySidecarTests"/> is what pins that the two really are different templates.
+    /// </summary>
+    public static TelemetryProps DeployedTelemetry => new();
+
     public static Synthesised Environment(
         string envName,
         string rootDomain,
@@ -27,6 +34,7 @@ public sealed record Synthesised(Template Template, JsonObject Json)
         OutboundPath outboundPath,
         bool recordTapeDefault,
         bool warmIndicatorsDefault,
+        TelemetryProps? telemetry,
         string? stackId = null)
     {
         var app = new App();
@@ -38,16 +46,28 @@ public sealed record Synthesised(Template Template, JsonObject Json)
             OutboundPath = outboundPath,
             RecordTapeDefault = recordTapeDefault,
             WarmIndicatorsDefault = warmIndicatorsDefault,
+            Telemetry = telemetry,
             Env = TestEnv,
         });
         return Of(stack);
     }
 
-    public static Synthesised Production(OutboundPath outboundPath) =>
-        Environment("production", "marqspec.com", ZoneMode.Lookup, outboundPath, recordTapeDefault: true, warmIndicatorsDefault: true);
+    public static Synthesised Production(OutboundPath outboundPath, TelemetryProps? telemetry = null) =>
+        Environment("production", "marqspec.com", ZoneMode.Lookup, outboundPath, recordTapeDefault: true, warmIndicatorsDefault: true,
+            telemetry: telemetry ?? DeployedTelemetry);
 
-    public static Synthesised Staging(OutboundPath outboundPath) =>
-        Environment("staging", "staging.marqspec.com", ZoneMode.CreateAndDelegate, outboundPath, recordTapeDefault: false, warmIndicatorsDefault: false);
+    public static Synthesised Staging(OutboundPath outboundPath, TelemetryProps? telemetry = null) =>
+        Environment("staging", "staging.marqspec.com", ZoneMode.CreateAndDelegate, outboundPath, recordTapeDefault: false, warmIndicatorsDefault: false,
+            telemetry: telemetry ?? DeployedTelemetry);
+
+    /// <summary>
+    /// One environment with <b>no</b> telemetry props at all — the absent case. Separate from the optional
+    /// argument above on purpose: <c>Staging(shape, null)</c> would read as "no telemetry" and mean "the
+    /// default", and the absent case is the one whose whole point is that it is not the default.
+    /// </summary>
+    public static Synthesised WithoutTelemetry(string envName) => envName == "production"
+        ? Environment("production", "marqspec.com", ZoneMode.Lookup, EnvironmentTemplates.FixtureShape, true, true, telemetry: null)
+        : Environment("staging", "staging.marqspec.com", ZoneMode.CreateAndDelegate, EnvironmentTemplates.FixtureShape, false, false, telemetry: null);
 
     /// <summary>The OIDC stack, for the assertions that read it beside an environment.</summary>
     public static Synthesised GitHubOidc() =>
@@ -158,6 +178,26 @@ public sealed record Synthesised(Template Template, JsonObject Json)
         var (id, resource) = (matches[0].Key, matches[0].Value);
         return (id, resource, Properties(resource)["ContainerDefinitions"]!.AsArray());
     }
+
+    /// <summary>
+    /// One named container of one task definition. By name rather than by "the only one": the server task
+    /// carries a second container once telemetry is on (gh#537), and a test that means <i>the server</i> has
+    /// to say so rather than assert a count it does not care about.
+    /// </summary>
+    public JsonObject Container(string familySuffix, string containerName)
+    {
+        var (_, _, containers) = TaskDefinition(familySuffix);
+        var matches = containers.Where(c => c!["Name"]!.GetValue<string>() == containerName).ToList();
+        return matches.Count == 1
+            ? matches[0]!.AsObject()
+            : throw new InvalidOperationException(
+                $"Expected one container named '{containerName}' in the '{familySuffix}' task, found {matches.Count} of " +
+                $"[{string.Join(", ", containers.Select(c => c!["Name"]!.GetValue<string>()))}].");
+    }
+
+    /// <summary>Every container name of one task definition, in template order.</summary>
+    public IReadOnlyList<string> ContainerNames(string familySuffix) =>
+        TaskDefinition(familySuffix).Containers.Select(c => c!["Name"]!.GetValue<string>()).ToList();
 
     /// <summary>The environment of a container, name to value, where the value is the JSON text of the node.</summary>
     public static IReadOnlyDictionary<string, JsonNode?> EnvironmentOf(JsonObject container) =>

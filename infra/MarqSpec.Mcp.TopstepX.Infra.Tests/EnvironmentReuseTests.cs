@@ -17,10 +17,12 @@ public sealed partial class EnvironmentReuseTests(EnvironmentTemplates templates
     /// not a prop, so the comparison holds it constant and lets only the props vary.
     /// </summary>
     private static readonly Synthesised _productionShape =
-        Synthesised.Environment("production", "marqspec.com", ZoneMode.Lookup, EnvironmentTemplates.FixtureShape, true, true, "topstepx-mcp");
+        Synthesised.Environment("production", "marqspec.com", ZoneMode.Lookup, EnvironmentTemplates.FixtureShape, true, true,
+            Synthesised.DeployedTelemetry, "topstepx-mcp");
 
     private static readonly Synthesised _stagingShape =
-        Synthesised.Environment("staging", "staging.marqspec.com", ZoneMode.CreateAndDelegate, EnvironmentTemplates.FixtureShape, false, false, "topstepx-mcp");
+        Synthesised.Environment("staging", "staging.marqspec.com", ZoneMode.CreateAndDelegate, EnvironmentTemplates.FixtureShape, false, false,
+            Synthesised.DeployedTelemetry, "topstepx-mcp");
 
     [Fact]
     public void The_two_stacks_differ_only_where_the_props_say_they_may()

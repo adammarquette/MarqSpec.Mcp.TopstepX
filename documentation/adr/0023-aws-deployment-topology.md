@@ -760,11 +760,22 @@ and writes the same data — though *destroys no rows* is not quite *a rollback 
 can make re-adding the key fail later, which is a forward-fix hazard rather than one this decision covers.
 `Down()` is not read at all — six of the seven migrations in the tree have a destructive `Down()`.
 
-**The scan is the whole migration except `Down()`, and one operation per line.** Both are corrections a
-review made rather than the design as first written: an operation in a *sibling member* of the migration
-class was outside an `Up()`-body scan entirely, and two destructive calls sharing a line were matched
-against the one marker above them — so a reason naming one column acknowledged a `DropTable` beside it. A
-line carrying more than one destructive operation is now refused rather than acknowledged.
+**The scan is the whole migration except `Down()`, the generated files beside it included, and one operation
+per line.** All three are corrections reviews made rather than the design as first written: an operation in a
+*sibling member* of the migration class was outside an `Up()`-body scan entirely; `Foo.Designer.cs` declares
+`partial class Foo`, so a helper written there was still skipped by name once helpers began to be read; and
+two destructive calls sharing a line were matched against the one marker above them — so a reason naming one
+column acknowledged a `DropTable` beside it. A line carrying more than one destructive operation is now
+refused rather than acknowledged.
+
+**Where `Down()` starts and ends is decided only by a line that declares a member**, and that is the second
+review's finding rather than a detail. Matching the signature against raw text let a `//` comment inside
+`Up()` naming the method — *"there is no `void Down(MigrationBuilder …)` worth writing"*, the sentence the
+destructive migration is most likely to carry — set the excluded span from the comment to the real
+declaration, so the rest of `Up()` was read by nothing while the `Down()` body's own drop was reported at a
+line number a reader would act on. The generalisation is worth more than the fix: *a finding needle that is
+too loose costs a false positive; a boundary needle that is too loose excludes code, and nothing reports
+what was never read.*
 
 **The escape hatch is in the file rather than in the pull request**, so it is reviewable, greppable and
 survives the merge:
@@ -782,9 +793,12 @@ file carry the drop unread.
 **The seven migrations already in the tree are not re-read, and that is the diff scoping rather than an
 exclusion list.** One of them, `20260827071708_DropPriceLevels`, is genuinely destructive; a gate that
 reddened it would have been switched off the first day. That same file is what shows the detector is not
-inert — pointed at a base before it, the gate reads six files, names `…DropPriceLevels.cs:14  DropTable` in
-real EF-generated code, and passes the other five. (Counted rather than remembered: this entry said *five*
-and *the other four* until review ran `git ls-tree`, and two migrations landed while the branch was open.)
+inert — pointed at a base before it, the gate reads six migration files, names
+`…DropPriceLevels.cs:14  DropTable` in real EF-generated code, and passes the other five. It reads the six
+generated partials beside them on the same run and reports nothing from any of them, which is what shows the
+widening costs correct work nothing; they are counted separately, so `N migration file(s)` still counts
+migrations. (Counted rather than remembered: this entry said *five* and *the other four* until review ran
+`git ls-tree`, and two migrations landed while the branch was open.)
 
 **Still not decided here:** whether an acknowledged destructive migration is *correct*. The gate turns that
 into a review question with a written reason attached, which is all decision 4 ever needed from it.

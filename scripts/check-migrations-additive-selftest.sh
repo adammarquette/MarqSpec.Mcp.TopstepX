@@ -1518,8 +1518,7 @@ ok "ok  $cases self-test cases — check-migrations-additive.sh rejects each des
 # Rows 1 through 5 are five decisions inside ONE regex (row 6 is a separate condition), and they are listed
 # as five because that is what they are: each was mutated alone, and no two of the six redden the same set.
 # **WHAT SEPARATES THEM IS THE SET, NOT A UNIQUE CASE.** Here are the sets, so that the containment can be
-# READ rather than taken on trust -- a claim derivable from the table beside it should be derived from it,
-# and the summary sentence that used to stand here was wrong three drafts running:
+# READ rather than taken on trust -- a claim derivable from the table beside it should be derived from it:
 #
 #     row 1   indent equality ............  { nested }
 #     row 2   an override at all .........  { decoy overload, commented overload }
@@ -1534,12 +1533,7 @@ ok "ok  $cases self-test cases — check-migrations-additive.sh rejects each des
 # give is a unique case per row, and *pinned by a set difference* is a weaker claim than *pinned by a unique
 # case*.
 #
-# THREE DRAFTS OF THAT ONE SENTENCE WERE WRONG, WHICH IS WHY THE SETS ARE WRITTEN OUT ABOVE IT. The first
-# claimed a unique case for every row. The second named the two exceptions correctly as a pair and attached
-# them to the wrong side -- "only rows 4 and 6 own a case outright", when rows 2 and 5 own one too. Each was
-# a summary nobody could check without re-measuring, which is precisely the shape this ledger exists to warn
-# about, committed three times by the pull request that re-audits it and caught three times by a reviewer who
-# measured instead of reading. A compound pattern still does not get one row for being written on one line.
+# A compound pattern still does not get one row for being written on one line.
 #
 # FIFTH SWEEP, PART TWO -- THE RE-RUNS. `declares()` changed, so every earlier row whose separating fixture
 # that change could have un-pinned was RE-RUN rather than re-read. Same baseline blob, same container.

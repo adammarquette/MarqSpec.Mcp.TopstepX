@@ -804,13 +804,29 @@ Three things about it generalise:
   un-predicated patterns are left un-predicated for exactly that reason. **So the question to ask of any
   widening is not "is this looser" but "which END did I widen":** the two widenings that touched the
   beginning are the two that were then defeated, one apiece, by a `static` local function and by a decoy
-  overload. Both had been added to fix the round before.
-- **A condition on a boundary must test what the line DECLARES, not a property of the line.** A comment
-  test, a string-interior test and a modifier-keyword test are all properties of the line, and a `static`
-  local function passes all three. What closed it is that `Migration.Up`/`Down` are `protected virtual`, so
-  a real one is always an `override` — a fact about the thing being matched rather than about its text.
-  **When three conditions in a row keep being defeated, the next one probably belongs at a different level
-  of description.**
+  overload. Both had been added to fix the round before. **The rule then predicted the next round's two
+  shapes before anyone went looking** (gh#601): both are `down_start`, both were silent, and the fix
+  narrows that end on three counts and widens nothing — a narrowed `down_start` can only scan more. A rule
+  that names where to look is worth more than the bugs it has already explained.
+- **A condition on a boundary must test what the line DECLARES, not a property of the line — and requiring
+  the word `override` was still a property of the line.** A comment test, a string-interior test and a
+  modifier-keyword test are all properties of the line, and a `static` local function passes all three.
+  Requiring `override` read like a fact about the thing being matched, because `Migration.Up`/`Down` are
+  `protected virtual` and a real one always is one. **It was not, and this bullet said it was** (gh#601):
+  the needle was matched **unanchored against the whole line**, so the *word* `override` in a trailing
+  comment — `static void Down(MigrationBuilder b) { } // no override needed on a local shim` — satisfied it
+  and the local-function hole re-opened. A fifth *text* property, not a structural one. And even satisfied
+  honestly it says the wrong thing: a one-line `public override void Down(MigrationBuilder b) { }` inside a
+  nested `private sealed class Fake : Shim` **forges nothing** — it is a real override that is simply not
+  the migration's, and no reading of the text distinguishes them. What replaced both text tests is one
+  anchored pattern: at the class's own member indent, a modifier run carrying `override`, and the signature
+  immediately after it with nothing between. The indent is **where the declaration sits** and the contiguity
+  is **what it declares**, and no wording on the line can forge either; the third piece was needed because
+  anchoring the modifiers alone leaves the mirror shape, a genuine `override void Up(…)` whose trailing
+  comment names `void Down(MigrationBuilder)`. `declares()` went from five conditions to three, and the two
+  it lost were the two that admitted decoys. **Counting text conditions is the diagnostic: five that each
+  admit a decoy are weaker than one structural one, and each new one is evidence you are describing the
+  thing at the wrong level.**
 
 The gate's **decision ledger** lives in `check-migrations-additive-selftest.sh` — the fourth gate here to
 need one — split into four measured mutation sweeps and a tail listed as exercised-but-not-mutated, which is

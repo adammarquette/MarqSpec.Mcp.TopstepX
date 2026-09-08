@@ -141,7 +141,7 @@ at one this rule's own pull request retires.
 - **[2026-09-08] A `Total:` is discovery; a `Passed:` is execution — five ways a test run has lied about a
   mutation (gh#600).** Mutation testing is this repo's proof of coverage, so *"nothing reddened"* is the
   most load-bearing observation an agent makes, and the one a broken run counterfeits best. **Score the
-  run before you score the mutation**, on four things the summary line does not carry:
+  run before you score the mutation**, on four things a `Total:` does not carry:
   - **The split, never the total alone.** `Failed: N, Passed: 0` over a *full* total is a broken host, not
     N regressions.
   - **The duration.** A tier that normally takes 34 s finishing in 227 ms did not run.
@@ -167,9 +167,10 @@ at one this rule's own pull request retires.
      fixture cannot construct. **The `Total:` is correct here**, which is why the older rule *"know the
      expected suite size and treat disagreement as the run being wrong"* (the 2026-08-26 entry below)
      **agrees with this broken run**. Only the split and the 150x duration collapse give it away.
-  5. **Windows Application Control** (`0x800711C7`) — a whole tier failing in its fixture constructor under
-     an ordinary-looking `Total:`. **Persistent here** — the 2026-09-08 correction under the 2026-08-26
-     entry below.
+  5. **Windows Application Control** (`0x800711C7`) — a full `Total: 156` with every test red in its
+     fixture constructor. The 2026-08-26 entry's example of this block is a **short** total; this is the
+     same cause presenting as a **full** one, fully red. **Persistent here** — the 2026-09-08 correction
+     under that entry below.
 
 - **[2026-08-28] A restore can backdate a source file's mtime, MSBuild skips the compile, and `dotnet test`
   scores a stale binary with a plausible `Total:` (gh#302).** Found by PR #298's author (gh#286) with a

@@ -85,6 +85,12 @@
 #   - `override` must sit in the declaration's own modifier run, so a comment or a string cannot supply it;
 #   - the signature must follow that run immediately, so a comment cannot supply the signature either.
 #
+# gh#612 adds a fourth narrowing, still at `down_start`: the search runs only inside the migration class's
+# own brace span -- the partial block whose declaration carries `: Migration` and contains the located `Up()`.
+# Same closing-brace-in-column machinery `down_end` already uses; not a parser. A sibling type beside the
+# migration at the same member indent, plus file-scoped namespace (class at column 0, where `MEMBER_RE` cannot
+# end the span), was the residue PR #609 recorded; bounding the search refuses it and every variant at once.
+#
 # The one place the excluded span was removed outright is a file with NO locatable `Up()`: it gets no
 # `Down()` boundary at all and is read whole. That is only ever a generated partial (a migration without an
 # `Up()` fails `NO Up()` first), neither `*.Designer.cs` nor the model snapshot has ever declared a `Down()`,
@@ -587,9 +593,59 @@ scan_file() {  # $1 path  $2 1 if Up(MigrationBuilder) must be locatable
     member_indent="${BASH_REMATCH[1]}"
   fi
 
+  # THE MIGRATION CLASS'S BRACE SPAN (gh#612). Walk backward from the located `Up()` to the
+  # `partial class … : Migration` declaration, then forward to the closing `}` in that declaration's
+  # column -- the same rule `down_end` uses for a method body. The `Down()` search below runs only inside
+  # this span so a sibling type at the same member indent cannot take `down_start`.
+  migration_class_end=$(( n + 1 ))
+  migration_class_body_start=0
+  migration_class_decl=0
+  if [ "$up_start" -ne 0 ]; then
+    for (( ln = up_start; ln >= 1; ln-- )); do
+      line="${LINES[$(( ln - 1 ))]}"
+      if [[ "$line" =~ partial[[:space:]]+class[[:space:]]+[^:]+:[[:space:]]*Migration ]]; then
+        migration_class_decl=$ln
+        break
+      fi
+    done
+    if [ "$migration_class_decl" -ne 0 ]; then
+      class_indent=""
+      if [[ "${LINES[$(( migration_class_decl - 1 ))]}" =~ ^([[:space:]]*) ]]; then
+        class_indent="${BASH_REMATCH[1]}"
+      fi
+      class_close_re="^${class_indent}\\}[[:space:]]*$"
+      depth=0
+      opened=0
+      for (( ln = migration_class_decl; ln <= n; ln++ )); do
+        line="${LINES[$(( ln - 1 ))]}"
+        len=${#line}
+        for (( i = 0; i < len; i++ )); do
+          c="${line:$i:1}"
+          if [ "$c" = '{' ]; then
+            opened=1
+            depth=$(( depth + 1 ))
+            [ "$migration_class_body_start" -eq 0 ] && migration_class_body_start=$ln
+          elif [ "$c" = '}' ]; then
+            depth=$(( depth - 1 ))
+            if [ "$opened" -eq 1 ] && [ "$depth" -eq 0 ] && [[ "$line" =~ $class_close_re ]]; then
+              migration_class_end=$ln
+              break 2
+            fi
+          fi
+        done
+      done
+    fi
+  fi
+
   down_start=0
+  down_search_lo=1
+  down_search_hi=$n
+  if [ -n "$member_indent" ] && [ "$migration_class_body_start" -ne 0 ] && [ "$migration_class_end" -le "$n" ]; then
+    down_search_lo=$migration_class_body_start
+    down_search_hi=$(( migration_class_end - 1 ))
+  fi
   if [ -n "$member_indent" ]; then
-    for (( ln = 1; ln <= n; ln++ )); do
+    for (( ln = down_search_lo; ln <= down_search_hi; ln++ )); do
       if declares "$ln" "$member_indent" "$DOWN_RE"; then down_start=$ln; break; fi
     done
   fi
@@ -604,10 +660,14 @@ scan_file() {  # $1 path  $2 1 if Up(MigrationBuilder) must be locatable
   # argues for everywhere else. Skipping region interiors here would let an unterminated literal inside
   # Down() push `down_end` to end of file and hide a sibling helper below it, which is the quiet one.
   down_end=$(( n + 1 ))
+  down_end_hi=$n
+  if [ "$migration_class_end" -le "$n" ] && [ "$migration_class_body_start" -ne 0 ]; then
+    down_end_hi=$(( migration_class_end - 1 ))
+  fi
   if [ "$down_start" -ne 0 ]; then
     if [[ "${LINES[$(( down_start - 1 ))]}" =~ ^([[:space:]]*) ]]; then indent="${BASH_REMATCH[1]}"; fi
     brace_re="^${indent}\\}[[:space:]]*$"
-    for (( ln = down_start + 1; ln <= n; ln++ )); do
+    for (( ln = down_start + 1; ln <= down_end_hi; ln++ )); do
       line="${LINES[$(( ln - 1 ))]}"
       if [[ "$line" =~ $MEMBER_RE ]] || [[ "$line" =~ $brace_re ]]; then
         down_end=$ln

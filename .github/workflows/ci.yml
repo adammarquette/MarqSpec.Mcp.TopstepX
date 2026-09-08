@@ -239,7 +239,7 @@ jobs:
 
       # THE GATE ABOVE HAS TO BE ABLE TO FAIL, and it is line matching in shell — one loosened needle or a
       # terminator regex that stops finding Down() turns it into a step that passes on anything while the
-      # run page stays green. This runs the real script against 53 fixtures whose faults are known and
+      # run page stays green. This runs the real script against 54 fixtures whose faults are known and
       # requires it to reject each BY FILE, LINE AND OPERATION — never on exit status, which is also what
       # "the Migrations directory is missing" and "that base ref names no commit" produce — and to accept
       # the additive shapes WITHOUT WRITING A BYTE TO STDERR (gh#239). Two of its cases invoke the gate
@@ -250,7 +250,7 @@ jobs:
       #
       # NINE OF THOSE CASES ARE SHAPES THAT GOT A GREEN RUN OUT OF THIS GATE, and every one of them compiled
       # and passed `dotnet format --verify-no-changes`. Counted here rather than asserted, because the line
-      # above it said 35 for a suite of 49 and this one said SEVEN over a list of five, then ELEVEN over a
+      # above it said 35 for a suite of 49 and this one said SEVEN over a list of five, then NINE over a
       # list of nine — a count in a comment drifts from the list beside it as readily as from the code:
       # two operations on one line under one marker; two IDENTICAL ones, which a boolean match counted as
       # one; a `.DropColumn` whose `(` sat on the next line; an operation in a sibling member the Up()-body

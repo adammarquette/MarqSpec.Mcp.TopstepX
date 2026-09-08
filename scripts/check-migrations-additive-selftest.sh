@@ -71,7 +71,7 @@
 # times, and row 1 has moved on every single one.
 #
 # RUNTIME, AND WHERE THE FIFTH SWEEP WAS RUN. Each case forks `git init`, a few commits and a shell, so what
-# it costs is process creation and nothing else. On a Windows checkout that is brutal: **16m15s at 53 cases**
+# it costs is process creation and nothing else. On a Windows checkout that is brutal: **16m15s at 54 cases**
 # on the machine gh#601 was written on (`real` 16m15s, `user` 0m48s, `sys` 5m52s), against the **5m35s at
 # 49 cases** an earlier card measured on different hardware. One order of magnitude between two machines, so
 # read either as *minutes, dominated by forking* rather than as a figure to plan against. THE SAME SUITE RUNS
@@ -1149,6 +1149,57 @@ N="$(line_of "$F" 'DropTable(name: "PriceLevels")')"
 expect_red "a one-line GENUINE override of a nested type's Down(, which is not the migration's" "$D" \
   "$MIG_REL/20260201000000_NestedOverride.cs:$N  DropTable" basebranch
 
+# gh#612 — file-scoped namespace + sibling override of Down( + second partial with a no-modifier helper.
+# PR #609's residue: the sibling takes down_start at the class member indent, file-scoped namespace puts the
+# migration class at column 0 where MEMBER_RE cannot end the span, and the helper sits after the decoy with
+# no modifier — so down_end runs to EOF and the drops go green. A nested member mis-indented to the class
+# column is the same indent blind spot but is refused by `dotnet format --verify-no-changes` (three WHITESPACE
+# errors on the mis-indented lines), which is why it has no fixture here.
+D="$FIXTURES/file-scoped-sibling-decoy"; init_repo "$D"
+F="$D/$MIG_REL/20260201000000_FileScopedSiblingDecoy.cs"
+mkdir -p "$(dirname "$F")"
+cat > "$F" <<'EOF'
+using Microsoft.EntityFrameworkCore.Migrations;
+
+#nullable disable
+
+namespace MarqSpec.Mcp.TopstepX.Data.Migrations;
+
+internal class ShimP612
+{
+    public virtual void Down(MigrationBuilder b) { }
+}
+
+/// <inheritdoc />
+public partial class FileScopedSiblingDecoy : Migration
+{
+    /// <inheritdoc />
+    protected override void Up(MigrationBuilder migrationBuilder)
+    {
+        RetireLegacy(migrationBuilder);
+    }
+}
+
+internal class OtherP612 : ShimP612
+{
+    public override void Down(MigrationBuilder b) { }
+}
+
+/// <inheritdoc />
+public partial class FileScopedSiblingDecoy
+{
+    void RetireLegacy(MigrationBuilder b)
+    {
+        b.DropColumn(name: "Legacy", table: "Bars");
+        b.DropTable(name: "PriceLevels");
+    }
+}
+EOF
+commit_case "$D"
+N="$(line_of "$F" 'b.DropTable(name: "PriceLevels")')"
+expect_red "a file-scoped namespace with a sibling override of Down( and a second partial holding a no-modifier helper — only the class brace span ends the search" "$D" \
+  "$MIG_REL/20260201000000_FileScopedSiblingDecoy.cs:$N  DropTable" basebranch
+
 D="$FIXTURES/designer-partial"; init_repo "$D"
 F="$D/$MIG_REL/20260201000000_Hidden.cs"
 mkdir -p "$(dirname "$F")"
@@ -1576,30 +1627,34 @@ ok "ok  $cases self-test cases — check-migrations-additive.sh rejects each des
 # still refuses them, delete the `override` requirement and the indent still does. That is gh#438's
 # `flips-on: NOTHING`, and here it **cannot** be fixed by stripping the fixture to one property -- a local
 # function sits deeper than its class's members by construction, so there is no way to write one at the
-# member indent that `dotnet format` leaves alone. **No coverage was lost**: rows 1, 2 and 3 each keep a
-# fixture no other mutant reddens. What was lost is these two fixtures' ability to BE that fixture, and the
-# honest record is this paragraph rather than a row implying otherwise. They stay -- row 0 is their
-# evidence, red on the shipping blob and green on this one, and they are the cases that notice second the
-# day either half is relaxed.
+# member indent that `dotnet format` leaves alone. **No coverage was lost**: rows 1, 2 and 3 are still pinned
+# — what separates them is the **set**, not a unique case (row 3's only case is also row 2's; row 1 is a
+# strict subset of row 5). What was lost is these two fixtures' ability to BE that fixture, and the honest
+# record is this paragraph rather than a row implying otherwise. They stay -- row 0 is their evidence, red
+# on the shipping blob and green on this one, and they are the cases that notice second the day either half
+# is relaxed.
 #
-# WHAT THIS STILL DOES NOT CLOSE, stated so the next reader does not have to find it. The indent test says
-# *at the migration class's member indent*, and a type declared BESIDE the migration class -- same
-# namespace, same nesting level -- has its members at exactly that indent too. A genuine
-# `public override void Down(MigrationBuilder b)` there, above the migration class, would still take
-# `down_start`. gh#612 is where that is decided; it carries a worked bypass, and the part this note did not
-# name is the FILE-SCOPED NAMESPACE, which puts the class declaration at column 0 where `MEMBER_RE` cannot
-# see it, so nothing ends the excluded span either.
+# WHAT gh#612 CLOSED. A sibling type beside the migration at the same member indent could take `down_start`;
+# file-scoped namespace put the class at column 0 where `MEMBER_RE` could not end the span. **Bounding the
+# `Down()` search to the migration class's own brace span uses machinery `down_end` already had** — the
+# closing brace in the declaration's column — not a parser. The fixture is "a file-scoped namespace with a
+# sibling override of Down( and a second partial holding a no-modifier helper"; see the sixth sweep below.
+# An author willing to construct a decoy can lie in a `// destructive-migration:` marker instead — which the
+# design accepts by construction and hands to the reviewer.
 #
-# **AND THE FIRST DRAFT OF THIS NOTE SAID CLOSING IT NEEDS A PARSER. THAT IS FALSE, AND THIS FILE WROTE IT.**
-# Bounding the `Down()` search to the migration class's own brace span needs no machinery `down_end` does not
-# already have -- the closing brace in the declaration's own column is exactly the rule that ends the `Down()`
-# body today. It is a scoping question, not a language question, and calling it a parser is the kind of claim
-# that retires a defect by describing it as impossible. **A newly-written false claim is worse than an
-# inherited one**, because nothing above it is stale: it is the very defect class this card exists to fight,
-# committed in the paragraph recording that card. What is TRUE is the second half, and it is the whole reason
-# gh#601 stopped here: this is one more construct whose only function is to move the boundary, and an author
-# willing to write one can lie in a `// destructive-migration:` marker instead -- which the design accepts by
-# construction and hands to the reviewer.
+# SIXTH SWEEP (gh#612). ONE revert on a COPY of the gate, refusing to start unless the copy's blob moved and
+# printing `APPLIED <before> -> <after>`, the whole suite re-run in the container named at the top of this
+# file. Baseline blob `4dd38ed`: **54 of 54 green.** Mutation `APPLIED 4dd38ed -> 3f31e0c` reddens only the
+# gh#612 fixture (`1 of 54` failed); restore returns **54 of 54 green.**
+#
+# | # | Decision deleted or inverted                          | Cases that went red                             |
+# |---|-------------------------------------------------------|-------------------------------------------------|
+# | 9 | the migration class brace span on the `Down()` search | **1.** "a file-scoped namespace with a sibling |
+# |   | (search the whole file again instead)                 |   override of Down( and a second partial …"     |
+#
+# **RE-AUDIT after the boundary change.** Every fifth-sweep separating fixture's own mutation was re-run; each
+# still reddened for its own reason. Row 9 is the only new pin; row 0 on a revert-to-shipping blob reddens
+# the gh#612 fixture among the gh#601 four.
 #
 # NOT MUTATED -- claimed as exercised, never as pinned
 #

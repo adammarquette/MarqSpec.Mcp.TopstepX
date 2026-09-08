@@ -117,12 +117,31 @@ public sealed class IndicatorCacheService(
     /// <exception cref="StoreContentionException">Every attempt lost to a concurrent writer.</exception>
     /// <remarks>
     /// <para>
-    /// <b>The probe is two aggregates, and it decides the whole cost of a warm read.</b> A bar count capped
-    /// at the largest warm-up, and one <c>DISTINCT (Indicator, Period)</c> over the series' values — which
-    /// returns at most as many rows as the catalogue has members. A warm series pays exactly that and opens
-    /// no transaction. Measured on gh#246 at <b>4.1 ms</b> over 2,000 bars and <b>18 ms</b> over 70,000
-    /// before the cap; the cap makes the first half flat and the remaining growth is the <c>DISTINCT</c>,
-    /// which scans the whole key range because Postgres 17 has no index skip scan.
+    /// <b>The probe is two aggregates, and it decides the whole cost of a warm read.</b> The newest buckets
+    /// of the series, capped at the largest warm-up, and one <c>GROUP BY (Indicator, Period)</c> over the
+    /// series' values carrying <c>max(BucketStart)</c> — which returns at most as many rows as the catalogue
+    /// has members. A warm series pays exactly that and opens no transaction. Measured on gh#246 at
+    /// <b>4.1 ms</b> over 2,000 bars and <b>18 ms</b> over 70,000 before the cap; the cap makes the first
+    /// half flat and the remaining growth is the grouping, which scans the whole key range because Postgres
+    /// 17 has no index skip scan.
+    /// </para>
+    /// <para>
+    /// <b>It asks whether each pair is COMPLETE, not whether it exists</b> (gh#531). Existence was the
+    /// weaker question, and a pair whose rows stop halfway down the series answered it: the read then served
+    /// every value written up to wherever the last projection reached and nothing after, which is a series
+    /// that ends early wearing the clothes of a market that stopped moving. Both aggregates changed shape to
+    /// close that — the bar count became the newest buckets in descending order, and the <c>DISTINCT</c>
+    /// became a grouped <c>max</c> — and neither added a query.
+    /// </para>
+    /// <para>
+    /// <b>The completeness boundary is the indicator's own warm-up, counted in BARS rather than in time.</b>
+    /// A pair is short when its newest value sits further back than the bucket <see cref="IIndicator.WarmupBars"/>
+    /// bars behind the newest bar. Anything nearer than that is an absence a warm-up can account for, and
+    /// after a contract roll it routinely is (ADR-0011): the new run's first bars carry no value at all, and
+    /// a probe that read those as a gap would replay the series on every read and write nothing each time.
+    /// Counted in bars because a threshold in <i>time</i> — the newest bucket less
+    /// <c>warm-up × resolution</c> — is wrong across every weekend and session break, where the stored
+    /// buckets are not contiguous.
     /// </para>
     /// <para>
     /// <b>Eleven <c>EXISTS</c> seeks were the obvious alternative and are measurably worse</b> — 21.00,
@@ -151,6 +170,16 @@ public sealed class IndicatorCacheService(
     /// recorded rather than guarded — and pinned by
     /// <c>ASeriesWhoseEveryContractRunIsShorterThanTheWarmUp_ReplaysOnEveryRead</c> rather than asserted.
     /// </para>
+    /// <para>
+    /// <b>The completeness test widens that residue by exactly one shape, and no more</b> (gh#531). A pair's
+    /// legitimate trailing absence is bounded by its warm-up only while <i>one</i> contract run sits at the
+    /// tail. Where several consecutive runs are each shorter than the warm-up, the trailing absence is their
+    /// sum, the newest value falls behind the threshold, and the series is replayed on every read —
+    /// producing nothing, exactly as the residue above does. It is the same series in the same state: a
+    /// stored history so fragmentary that no run measures. Closing it exactly would mean reading the whole
+    /// series' contract ids in the probe, which is the read a replay already is, so there would be nothing
+    /// left to decide.
+    /// </para>
     /// </remarks>
     public async Task<bool> EnsureProjectedAsync(
         string venue,
@@ -175,8 +204,8 @@ public sealed class IndicatorCacheService(
 
         Probes++;
 
-        // CAPPED AT THE LARGEST WARM-UP, and the cap is what keeps this query flat. The only thing the count
-        // decides is `WarmupBars <= bars` for each catalogue member, so any number at or above the largest
+        // CAPPED AT THE LARGEST WARM-UP, and the cap is what keeps this query flat. The count this yields
+        // decides `WarmupBars <= bars` for each catalogue member, so any number at or above the largest
         // warm-up answers every one of those comparisons identically -- min(actual, cap) preserves each of
         // them exactly, because a warm-up that fails the comparison is below the cap by definition. Uncapped
         // it is a count of the whole series and grows with it: measured on gh#246 at 2.24 ms over 500 bars
@@ -184,13 +213,24 @@ public sealed class IndicatorCacheService(
         // same run.
         int cap = _catalog.All.Max(i => i.WarmupBars);
 
-        int bars = await _database.Bars
+        // THE BUCKETS THEMSELVES, NEWEST FIRST, RATHER THAN A COUNT OF THEM (gh#531). Still one query, still
+        // capped, and it answers a second question the count could not: `tail[w - 1]` is the bucket exactly
+        // `w` bars back from the newest, which is how far a warm-up of `w` can push a pair's newest value
+        // back before the pair is genuinely short. Counted in BARS, not in time -- `newest - w * resolution`
+        // would be wrong across every weekend and session break, where the stored buckets are not
+        // contiguous. The cap is safe for this second use too: no `WarmupBars` this loop reaches exceeds it,
+        // so no index it takes is past the end.
+        List<DateTimeOffset> tail = await _database.Bars
             .Where(b => b.Venue == venue
                 && b.Instrument == instrument.Symbol
                 && b.ResolutionMinutes == resolutionMinutes)
+            .OrderByDescending(b => b.BucketStart)
+            .Select(b => b.BucketStart)
             .Take(cap)
-            .CountAsync(cancellationToken)
+            .ToListAsync(cancellationToken)
             .ConfigureAwait(false);
+
+        int bars = tail.Count;
 
         // No bars, nothing to project from. Checked before the second query rather than after it: an unknown
         // instrument, or one nothing has ever fetched, is the commonest cold read there is and it must not
@@ -209,8 +249,11 @@ public sealed class IndicatorCacheService(
 
         // AsNoTracking for the reason every read of IndicatorValues here is: the rows are written by SQL the
         // change tracker never sees, so a tracked copy is a stale entity the identity map would hand back to
-        // the next read in the same scope (gh#103). Projected to two columns because that is the whole
-        // question -- WHICH pairs exist, never how many rows or what they hold.
+        // the next read in the same scope (gh#103). Grouped rather than DISTINCT because the question is not
+        // WHICH pairs exist but HOW FAR each one reaches (gh#531): existence is satisfied by a pair whose
+        // rows stopped halfway down the series, and a read of one of those served a window that ended early
+        // and looked ordinary. The grouping returns the same at-most-one-row-per-catalogue-member it always
+        // did, over the same scan, carrying one more column.
         // The tuple is BUILT AFTER MATERIALISATION, not projected into. Npgsql reads a ValueTuple as a
         // Postgres composite `record`, so `.Select(v => ValueTuple.Create(…))` translates and then throws on
         // the read -- and the in-memory provider the unit tier runs on materialises it happily, so the fault
@@ -220,15 +263,16 @@ public sealed class IndicatorCacheService(
             .Where(v => v.Venue == venue
                 && v.Instrument == instrument.Symbol
                 && v.ResolutionMinutes == resolutionMinutes)
-            .Select(v => new { v.Indicator, v.Period })
-            .Distinct()
+            .GroupBy(v => new { v.Indicator, v.Period })
+            .Select(g => new { g.Key.Indicator, g.Key.Period, Newest = g.Max(v => v.BucketStart) })
             .ToListAsync(cancellationToken)
             .ConfigureAwait(false);
 
-        HashSet<(string Indicator, int Period)> stored = [.. held.Select(v => (v.Indicator, v.Period))];
+        Dictionary<(string Indicator, int Period), DateTimeOffset> stored =
+            held.ToDictionary(v => (v.Indicator, v.Period), v => v.Newest);
 
         List<IIndicator> missing =
-            [.. _catalog.All.Where(i => i.WarmupBars <= bars && !stored.Contains((i.Name, i.Period)))];
+            [.. _catalog.All.Where(i => i.WarmupBars <= bars && !IsComplete(i, stored, tail))];
 
         if (missing.Count == 0)
         {
@@ -238,8 +282,8 @@ public sealed class IndicatorCacheService(
         }
 
         // A series the store holds NO values for is a miss; one it holds some of is a partial. The second is
-        // the ordinary shape after a catalogue addition or a period move, and reading it as a cold miss
-        // would say the cache had lost a series it still has.
+        // the ordinary shape after a catalogue addition, a period move, or a pair the bars have outrun, and
+        // reading it as a cold miss would say the cache had lost a series it still has.
         string outcome = stored.Count == 0 ? CacheOutcome.Miss : CacheOutcome.Partial;
 
         string what = instrument.Symbol + " " + resolutionMinutes.ToString(CultureInfo.InvariantCulture) + "m";
@@ -247,7 +291,8 @@ public sealed class IndicatorCacheService(
         _readTriggeredReplays.RecordReplay();
 
         _logger.LogInformation(
-            "The catalogue computes {Missing} the store holds no value for on {Series}: "
+            "The catalogue computes {Missing} the store holds no value for, or holds values that stop short "
+            + "of the bars, on {Series}: "
             + "{Names}. Replaying the whole series to serve this read. "
             + "Read-triggered replays this process: {Replays}.",
             missing.Count,
@@ -277,6 +322,46 @@ public sealed class IndicatorCacheService(
         _telemetry.CacheRead(CacheSeries.Indicators, instrument.Symbol, resolutionMinutes, outcome);
         return true;
     }
+
+    /// <summary>
+    /// Whether the store holds this indicator's values as far down the series as the bars justify.
+    /// </summary>
+    /// <param name="indicator">The catalogue member.</param>
+    /// <param name="stored">The newest bucket the store holds a value at, per <c>(Indicator, Period)</c>.</param>
+    /// <param name="tail">The series' newest buckets, newest first, capped at the largest warm-up.</param>
+    /// <returns><see langword="true"/> when nothing needs replaying for this pair.</returns>
+    /// <remarks>
+    /// <para>
+    /// <b>Two ways to be incomplete, and only one of them used to count</b> (gh#531). A pair with no rows at
+    /// all is the case gh#246 was written for — a catalogue addition, or a period the operator has just
+    /// configured. A pair whose rows stop short of the bars is the same absence arriving from the other end,
+    /// and the probe could not see it, because <c>DISTINCT (Indicator, Period)</c> answers "present" for
+    /// both a full series and a truncated one.
+    /// </para>
+    /// <para>
+    /// <b><c>tail[w - 1]</c> is the whole of the boundary.</b> It is the bucket exactly <c>w</c> bars back
+    /// from the newest, so a newest value at or after it is one a warm-up of <c>w</c> can account for. The
+    /// index cannot run past the end: this is only reached for an indicator whose <c>WarmupBars</c> is at
+    /// most <paramref name="tail"/>'s length, since the caller has already filtered on
+    /// <c>WarmupBars &lt;= bars</c> and <c>bars</c> IS that length. It cannot go below zero either, and the
+    /// floor is a statement rather than a guard: <c>w - 1</c> is how many trailing bars a warm-up may leave
+    /// without a value, so a warm-up of nought and a warm-up of one both mean <i>every bar has one</i> and
+    /// both put the boundary on the newest bar.
+    /// </para>
+    /// <para>
+    /// <b>It is deliberately not exact, and errs towards replaying.</b> A run of absences longer than the
+    /// warm-up is read as a gap even where several short contract runs make it honest; the pass then writes
+    /// nothing, which is the residue <see cref="EnsureProjectedAsync"/> states. Erring the other way — a
+    /// threshold generous enough to never replay a fragmentary series — would put a truncated series back
+    /// on the wire as an ordinary answer, and a wrong number costs more than a wasted pass.
+    /// </para>
+    /// </remarks>
+    private static bool IsComplete(
+        IIndicator indicator,
+        Dictionary<(string Indicator, int Period), DateTimeOffset> stored,
+        List<DateTimeOffset> tail) =>
+        stored.TryGetValue((indicator.Name, indicator.Period), out DateTimeOffset newest)
+            && newest >= tail[Math.Max(indicator.WarmupBars - 1, 0)];
 
     private void Hit(InstrumentId instrument, int resolutionMinutes) =>
         _telemetry.CacheRead(

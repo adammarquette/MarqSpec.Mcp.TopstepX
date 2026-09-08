@@ -248,15 +248,20 @@ jobs:
       # re-measures is the drift the size gate exists to stop, one layer down — re-count it in the pull
       # request that adds a case, and the self-test prints the number to paste.
       #
-      # ELEVEN OF THOSE CASES ARE SHAPES REVIEW GOT A GREEN RUN OUT OF, and every one of them compiled and
-      # passed `dotnet format --verify-no-changes`: two operations on one line under one marker (and two
-      # IDENTICAL ones, which a boolean match counted as one), a `.DropColumn` whose `(` sat on the next
-      # line, an operation in a sibling member the Up()-body scan never reached, and one swallowed by a
-      # Sql( region whose `;` sat on its own line — and, from gh#601, a `Down` local function and a `Down`
-      # overload whose trailing COMMENT carried the word `override`, an `Up()` whose trailing comment named
-      # the `Down(` signature, and a one-line GENUINE `override` of a NESTED type's `Down(` that is simply
-      # not the migration's. A gate an ordinary formatting choice walks past is the failure this card
-      # exists to prevent, so each is a fixture rather than a fix and a note.
+      # NINE OF THOSE CASES ARE SHAPES THAT GOT A GREEN RUN OUT OF THIS GATE, and every one of them compiled
+      # and passed `dotnet format --verify-no-changes`. Counted here rather than asserted, because the line
+      # above it said 35 for a suite of 49 and this one said SEVEN over a list of five, then ELEVEN over a
+      # list of nine — a count in a comment drifts from the list beside it as readily as from the code:
+      # two operations on one line under one marker; two IDENTICAL ones, which a boolean match counted as
+      # one; a `.DropColumn` whose `(` sat on the next line; an operation in a sibling member the Up()-body
+      # scan never reached; one swallowed by a Sql( region whose `;` sat on its own line — and, from gh#601,
+      # a `Down` local function and a `Down` overload whose trailing COMMENT carried the word `override`,
+      # a one-line GENUINE `override` of a NESTED type's `Down(` that is simply not the migration's, and an
+      # `Up()` whose trailing comment named the `Down(` signature. MOST CAME FROM REVIEW; the last is the
+      # exception and the attribution matters — it was found by auditing the fix for the other three, which
+      # is the same route as the no-modifier sibling above it, and a list that credits review with every
+      # find hides how many an audit is worth. A gate an ordinary formatting choice walks past is the
+      # failure this card exists to prevent, so each is a fixture rather than a fix and a note.
       #
       # Ordered after it so a genuinely destructive migration is reported first. Hermetic: mktemp -d, no
       # network, no token.

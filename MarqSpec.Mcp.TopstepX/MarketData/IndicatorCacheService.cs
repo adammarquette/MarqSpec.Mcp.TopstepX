@@ -55,11 +55,15 @@ namespace MarqSpec.Mcp.TopstepX.MarketData;
 /// <param name="projector">The whole-series replay.</param>
 /// <param name="clock">The clock, stamped on rows a projection actually changes.</param>
 /// <param name="logger">The logger. A read that silently replayed a year of bars would be invisible.</param>
+/// <param name="telemetry">The app-owned meter and activity source, always supplied by the composition root.</param>
 /// <param name="readTriggeredReplays">
 /// The process-lifetime count of read-opened replays. Optional only so hand-built tests that do not
 /// care about it keep compiling; the composition root always supplies the singleton.
 /// </param>
-/// <param name="telemetry">The app-owned meter and activity source, always supplied by the composition root.</param>
+/// <param name="sessions">
+/// The closed vocabulary of session names. Optional only so hand-built resolution-only tests keep compiling;
+/// the composition root always supplies the singleton, and a session series refuses to project without it.
+/// </param>
 public sealed class IndicatorCacheService(
     TopstepXDbContext database,
     IndicatorCatalog catalog,
@@ -67,7 +71,8 @@ public sealed class IndicatorCacheService(
     TimeProvider clock,
     ILogger<IndicatorCacheService> logger,
     HostTelemetry telemetry,
-    IndicatorReadProjectionCounter? readTriggeredReplays = null)
+    IndicatorReadProjectionCounter? readTriggeredReplays = null,
+    SessionCatalog? sessions = null)
 {
     private readonly TopstepXDbContext _database = database;
     private readonly IndicatorCatalog _catalog = catalog;
@@ -77,6 +82,7 @@ public sealed class IndicatorCacheService(
     private readonly IndicatorReadProjectionCounter _readTriggeredReplays =
         readTriggeredReplays ?? new IndicatorReadProjectionCounter();
     private readonly HostTelemetry _telemetry = telemetry;
+    private readonly SessionCatalog? _sessions = sessions;
 
     /// <summary>
     /// Series this scope has already found complete.
@@ -234,8 +240,9 @@ public sealed class IndicatorCacheService(
 
         // WHICH TABLES AND WHICH VOCABULARY, both decided from the key. The tables are built here rather than
         // injected: this constructor is hand-built at sixteen sites across the two test projects, and one
-        // more parameter would be an edit to every one of them (gh#501).
-        ISeriesTables tables = ISeriesTables.For(key, _database);
+        // more *required* parameter would be an edit to every one of them (gh#501). SessionCatalog is
+        // optional and trailing for that reason; a session series needs it for ADR-0022 §4 provenance.
+        ISeriesTables tables = ISeriesTables.For(key, _database, _sessions);
 
         // The SAME list the projection will walk and the reconcile will scope itself to. A probe that read a
         // wider vocabulary than the projection computes would replay this series on every read forever.

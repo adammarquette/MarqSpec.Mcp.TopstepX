@@ -308,18 +308,28 @@ public sealed class SessionIndicatorTools(
     /// <param name="definition">The session.</param>
     /// <param name="tradeDates">The trade dates the window names.</param>
     /// <returns>The query.</returns>
+    /// <remarks>
+    /// <b>The provenance pair is restated here</b>, matching <see cref="SessionBarService"/>'s read-back
+    /// (ADR-0022 §4). A row built under a window or base that no longer holds describes a session nobody
+    /// asked about; joining values to it would serve an ordinary-looking number today's definition cannot
+    /// reproduce.
+    /// </remarks>
     private IQueryable<SessionBarRecord> Bars(
         InstrumentId instrument, SessionDefinition definition, DateOnly[] tradeDates)
     {
         string venue = _venue;
         string symbol = instrument.Symbol;
         string session = definition.Name;
+        string windowCentral = definition.WindowCentral;
+        int baseResolution = definition.BaseResolutionMinutes;
 
         return _database.SessionBars
             .AsNoTracking()
             .Where(s => s.Venue == venue
                 && s.Instrument == symbol
                 && s.Session == session
+                && s.WindowCentral == windowCentral
+                && s.BaseResolutionMinutes == baseResolution
                 && tradeDates.Contains(s.TradeDate));
     }
 
@@ -328,18 +338,26 @@ public sealed class SessionIndicatorTools(
     /// <param name="definition">The session.</param>
     /// <param name="asOf">The moment, UTC.</param>
     /// <returns>The query.</returns>
+    /// <remarks>
+    /// Same provenance restatement as <see cref="Bars"/> — the as-of join is the same bar query under a
+    /// different time predicate.
+    /// </remarks>
     private IQueryable<SessionBarRecord> ClosedBy(
         InstrumentId instrument, SessionDefinition definition, DateTimeOffset asOf)
     {
         string venue = _venue;
         string symbol = instrument.Symbol;
         string session = definition.Name;
+        string windowCentral = definition.WindowCentral;
+        int baseResolution = definition.BaseResolutionMinutes;
 
         return _database.SessionBars
             .AsNoTracking()
             .Where(s => s.Venue == venue
                 && s.Instrument == symbol
                 && s.Session == session
+                && s.WindowCentral == windowCentral
+                && s.BaseResolutionMinutes == baseResolution
                 && s.CloseUtc <= asOf);
     }
 

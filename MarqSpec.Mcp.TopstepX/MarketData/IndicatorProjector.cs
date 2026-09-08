@@ -62,16 +62,22 @@ namespace MarqSpec.Mcp.TopstepX.MarketData;
 /// <param name="catalog">The indicators to project.</param>
 /// <param name="logger">The logger.</param>
 /// <param name="telemetry">The app-owned meter.</param>
+/// <param name="sessions">
+/// The closed vocabulary of session names. Optional only so hand-built resolution-only tests keep compiling;
+/// the composition root always supplies the singleton, and a session series refuses to project without it.
+/// </param>
 public sealed class IndicatorProjector(
     TopstepXDbContext database,
     IndicatorCatalog catalog,
     ILogger<IndicatorProjector> logger,
-    HostTelemetry telemetry)
+    HostTelemetry telemetry,
+    SessionCatalog? sessions = null)
 {
     private readonly TopstepXDbContext _database = database;
     private readonly IndicatorCatalog _catalog = catalog;
     private readonly ILogger<IndicatorProjector> _logger = logger;
     private readonly HostTelemetry _telemetry = telemetry;
+    private readonly SessionCatalog? _sessions = sessions;
 
     /// <summary>
     /// Recomputes every configured indicator for one series and writes the values that changed.
@@ -173,7 +179,7 @@ public sealed class IndicatorProjector(
         // WHICH TABLES, decided from the key and nowhere else. The pair is built here rather than injected:
         // these constructors are hand-built at fifty-odd sites across the two test projects, and one more
         // parameter would be an edit to every one of them (gh#501).
-        ISeriesTables tables = ISeriesTables.For(key, _database);
+        ISeriesTables tables = ISeriesTables.For(key, _database, _sessions);
 
         // WHAT THIS SERIES' VOCABULARY IS, and it has to be the same list for the compute below and the
         // reconcile at the end. Read once for exactly that reason: two calls could not disagree today, and a

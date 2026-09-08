@@ -438,6 +438,55 @@ public sealed class SessionIndicatorProjectionTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task ASessionIndicatorRead_DoesNotServeOrProjectOverMismatchedProvenance()
+    {
+        // ADR-0022 §4. SessionBarService discards rows whose (WindowCentral, BaseResolutionMinutes)
+        // disagree with the standing definition and restates that pair on read-back, so mismatched bars
+        // are never served. The indicator path used to key only on (Venue, Instrument, Session): store
+        // holds rth under an older provenance, the operator changes the definition and restarts, and a
+        // caller who never re-ran get_session_bars receives ordinary-looking atr/rsi labeled as today's
+        // rth — a number today's definition cannot reproduce.
+        //
+        // ARRANGED BY SEEDING ONLY THE MISMATCHED SERIES — no get_session_bars under the standing
+        // definition — which is exactly the call order the failure needs. SeedAsync already plants
+        // BaseResolutionMinutes = 60 against today's half-hourly rth.
+        string venue = ConcurrencyHarness.Venue();
+
+        foreach (DateOnly tradeDate in _tradeDates)
+        {
+            await SeedAsync(venue, tradeDate, RthBucket(tradeDate, 0));
+        }
+
+        int seeded = await _database.SessionIndicatorValues.CountAsync(v => v.Venue == venue);
+        seeded.Should().Be(
+            _tradeDates.Length, "one atr value per mismatched bar, and nothing else in this venue");
+
+        ToolPayloads.SessionIndicatorSeries series = await Tools(venue, ConcurrencyHarness.Catalog())
+            .GetSessionIndicators(
+                "ES", "rth", "atr", WindowStart, WindowEnd, cancellationToken: CancellationToken.None);
+
+        series.Values.Should().BeEmpty(
+            "mismatched provenance is not today's rth — those atr points must not arrive as ordinary "
+            + "current-session answers");
+
+        ToolPayloads.SessionIndicatorReading reading = await Tools(venue, ConcurrencyHarness.Catalog())
+            .GetSessionIndicatorAt(
+                "ES", "rth", "atr", WindowEnd, cancellationToken: CancellationToken.None);
+
+        reading.Value.Should().BeNull("the as-of join is the same bar query the windowed read uses");
+        reading.TradeDate.Should().BeNull();
+
+        IReadOnlyList<SessionIndicatorValueRecord> after = await StoredValuesAsync(venue);
+        after.Should().HaveCount(
+            seeded,
+            "EnsureProjectedAsync must not treat the retired OHLC as the standing series and project "
+            + "the catalogue over it");
+        after.Should().OnlyContain(
+            v => v.Indicator == "atr" && v.Period == 3,
+            "the only values left are the ones the seed planted — a projection would have written rsi too");
+    }
+
+    [Fact]
     public async Task GetSessionIndicators_ReplaysOnFirstRead_WhenTheCatalogueOutranTheStore()
     {
         // The session flavour of AnIndicatorTheStoreHasNoValuesFor_IsProjectedOnTheNextRead_WithNoVendorCall.
@@ -494,7 +543,9 @@ public sealed class SessionIndicatorProjectionTests : IAsyncLifetime
             SessionCloseCentral = "16:00",
         });
 
-        IndicatorProjector projector = new(_database, catalog, NullLogger<IndicatorProjector>.Instance, ConcurrencyHarness.Telemetry);
+        SessionCatalog sessions = new(options, ConcurrencyHarness.Calendar());
+        IndicatorProjector projector = new(
+            _database, catalog, NullLogger<IndicatorProjector>.Instance, ConcurrencyHarness.Telemetry, sessions);
 
         return new SessionIndicatorTools(
             new InstrumentResolver(new InstrumentRegistry(options), new StoreAvailabilityHolder()),
@@ -506,8 +557,9 @@ public sealed class SessionIndicatorProjectionTests : IAsyncLifetime
                 projector,
                 new FakeTimeProvider(SettledNow),
                 NullLogger<IndicatorCacheService>.Instance,
-                ConcurrencyHarness.Telemetry),
-            new SessionCatalog(options, ConcurrencyHarness.Calendar()),
+                ConcurrencyHarness.Telemetry,
+                sessions: sessions),
+            sessions,
             ConcurrencyHarness.Calendar(),
             new SeriesGateway(venue, []),
             new ToolGuards(options));
@@ -523,7 +575,7 @@ public sealed class SessionIndicatorProjectionTests : IAsyncLifetime
     {
         IndicatorProjector projector = new(
             _database, ConcurrencyHarness.Catalog(), NullLogger<IndicatorProjector>.Instance,
-            telemetry ?? ConcurrencyHarness.Telemetry);
+            telemetry ?? ConcurrencyHarness.Telemetry, ConcurrencyHarness.Sessions());
 
         await using IDbContextTransaction transaction = await _database.Database
             .BeginTransactionAsync(IsolationLevel.RepeatableRead, CancellationToken.None);

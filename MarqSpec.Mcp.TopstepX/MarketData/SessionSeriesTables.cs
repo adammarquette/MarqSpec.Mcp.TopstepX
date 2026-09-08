@@ -23,10 +23,20 @@ namespace MarqSpec.Mcp.TopstepX.MarketData;
 /// is thirty-four trading days here rather than a few hours, so the honest answer on a short series is that
 /// most members measure nothing — an absence the bars justify, and a fact rather than a gap (`R-2.3`).
 /// </para>
+/// <para>
+/// <b>Bar reads restate the standing definition's provenance</b> (ADR-0022 §4). A row whose
+/// <c>(WindowCentral, BaseResolutionMinutes)</c> disagrees with the catalogue today describes a session
+/// nobody asked about; projecting over it would write ordinary-looking values today's definition cannot
+/// reproduce. Discard stays <see cref="SessionBarService"/>'s job — this path filters rather than deletes.
+/// </para>
 /// </remarks>
 /// <param name="key">The series.</param>
 /// <param name="database">The store.</param>
-internal sealed class SessionSeriesTables(SeriesKey.Session key, TopstepXDbContext database) : ISeriesTables
+/// <param name="sessions">The closed vocabulary that names the standing definition for <paramref name="key"/>.</param>
+internal sealed class SessionSeriesTables(
+    SeriesKey.Session key,
+    TopstepXDbContext database,
+    SessionCatalog sessions) : ISeriesTables
 {
     /// <summary>
     /// The value write — <see cref="ResolutionSeriesTables"/>'s statement with the session name where the bar
@@ -47,6 +57,7 @@ internal sealed class SessionSeriesTables(SeriesKey.Session key, TopstepXDbConte
 
     private readonly SeriesKey.Session _key = key;
     private readonly TopstepXDbContext _database = database;
+    private readonly SessionDefinition _definition = sessions.Resolve(key.Name);
 
     /// <summary>The rows <see cref="LoadValuesAsync"/> read, so <see cref="Remove"/> can take one out.</summary>
     private readonly
@@ -62,11 +73,19 @@ internal sealed class SessionSeriesTables(SeriesKey.Session key, TopstepXDbConte
         // AsNoTracking for the reason every read of a raw-SQL-written table here is (gh#103), and ordered by
         // the OPENING rather than by the trade date: the two agree today, and the opening is what the values
         // are keyed by, so ordering by it is the claim the projection actually depends on.
+        //
+        // Provenance restated — see the type remarks. Without it, EnsureProjectedAsync would project over
+        // retired OHLC after a definition change and the values⋈bars join on the tool would still match.
+        string windowCentral = _definition.WindowCentral;
+        int baseResolution = _definition.BaseResolutionMinutes;
+
         List<SessionBarRecord> stored = await _database.SessionBars
             .AsNoTracking()
             .Where(s => s.Venue == _key.Venue
                 && s.Instrument == _key.Instrument
-                && s.Session == _key.Name)
+                && s.Session == _key.Name
+                && s.WindowCentral == windowCentral
+                && s.BaseResolutionMinutes == baseResolution)
             .OrderBy(s => s.OpenUtc)
             .ToListAsync(cancellationToken)
             .ConfigureAwait(false);
@@ -75,22 +94,36 @@ internal sealed class SessionSeriesTables(SeriesKey.Session key, TopstepXDbConte
     }
 
     /// <inheritdoc />
-    public Task<int> CountBarsAsync(CancellationToken cancellationToken) =>
-        _database.SessionBars
+    public Task<int> CountBarsAsync(CancellationToken cancellationToken)
+    {
+        string windowCentral = _definition.WindowCentral;
+        int baseResolution = _definition.BaseResolutionMinutes;
+
+        return _database.SessionBars
             .CountAsync(
                 s => s.Venue == _key.Venue
                     && s.Instrument == _key.Instrument
-                    && s.Session == _key.Name,
+                    && s.Session == _key.Name
+                    && s.WindowCentral == windowCentral
+                    && s.BaseResolutionMinutes == baseResolution,
                 cancellationToken);
+    }
 
     /// <inheritdoc />
-    public Task<int> CountBarsAsync(int cap, CancellationToken cancellationToken) =>
-        _database.SessionBars
+    public Task<int> CountBarsAsync(int cap, CancellationToken cancellationToken)
+    {
+        string windowCentral = _definition.WindowCentral;
+        int baseResolution = _definition.BaseResolutionMinutes;
+
+        return _database.SessionBars
             .Where(s => s.Venue == _key.Venue
                 && s.Instrument == _key.Instrument
-                && s.Session == _key.Name)
+                && s.Session == _key.Name
+                && s.WindowCentral == windowCentral
+                && s.BaseResolutionMinutes == baseResolution)
             .Take(cap)
             .CountAsync(cancellationToken);
+    }
 
     /// <inheritdoc />
     public async Task<Dictionary<(string Indicator, int Period, DateTimeOffset Bucket), decimal>>
@@ -117,15 +150,22 @@ internal sealed class SessionSeriesTables(SeriesKey.Session key, TopstepXDbConte
     }
 
     /// <inheritdoc />
-    public Task<List<DateTimeOffset>> LoadNewestBucketsAsync(int cap, CancellationToken cancellationToken) =>
-        _database.SessionBars
+    public Task<List<DateTimeOffset>> LoadNewestBucketsAsync(int cap, CancellationToken cancellationToken)
+    {
+        string windowCentral = _definition.WindowCentral;
+        int baseResolution = _definition.BaseResolutionMinutes;
+
+        return _database.SessionBars
             .Where(s => s.Venue == _key.Venue
                 && s.Instrument == _key.Instrument
-                && s.Session == _key.Name)
+                && s.Session == _key.Name
+                && s.WindowCentral == windowCentral
+                && s.BaseResolutionMinutes == baseResolution)
             .OrderByDescending(s => s.OpenUtc)
             .Select(s => s.OpenUtc)
             .Take(cap)
             .ToListAsync(cancellationToken);
+    }
 
     /// <inheritdoc />
     public async Task<Dictionary<(string Indicator, int Period), DateTimeOffset>> NewestHeldAsync(

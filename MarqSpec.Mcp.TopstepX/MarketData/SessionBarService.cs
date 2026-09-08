@@ -298,7 +298,7 @@ public sealed class SessionBarService
             }
         }
 
-        string windowCentral = WindowCentralFor(definition);
+        string windowCentral = definition.WindowCentral;
         List<DateOnly> stale = [.. closed.Where(d => !derived.Exists(b => b.TradeDate == d))];
 
         // 6. ONE UNIT OF WORK, at RepeatableRead with the single retry every series write shares. Everything
@@ -610,14 +610,6 @@ public sealed class SessionBarService
         && row.Volume == bar.Volume
         && string.Equals(row.ContractId, bar.ContractId, StringComparison.Ordinal)
         && row.BaseBucketCount == bar.BaseBucketCount;
-
-    /// <summary>The definition's window in Central time, as the provenance column records it.</summary>
-    /// <param name="definition">The definition.</param>
-    /// <returns>The window, e.g. <c>08:30-15:00</c>.</returns>
-    private static string WindowCentralFor(SessionDefinition definition) =>
-        definition.StartCentral.ToString("HH:mm", CultureInfo.InvariantCulture)
-        + "-"
-        + definition.EndCentral.ToString("HH:mm", CultureInfo.InvariantCulture);
 
     /// <summary>Maps a stored row back to the domain shape.</summary>
     /// <param name="row">The row.</param>

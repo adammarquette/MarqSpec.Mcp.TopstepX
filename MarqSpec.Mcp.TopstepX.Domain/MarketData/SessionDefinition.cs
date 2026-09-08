@@ -1,3 +1,5 @@
+using System.Globalization;
+
 namespace MarqSpec.Mcp.TopstepX.Domain.MarketData;
 
 /// <summary>
@@ -33,6 +35,19 @@ public sealed record SessionDefinition(
     TimeOnly EndCentral,
     int BaseResolutionMinutes)
 {
+    /// <summary>
+    /// The window as the provenance column records it, e.g. <c>08:30-15:00</c>.
+    /// </summary>
+    /// <remarks>
+    /// Paired with <see cref="BaseResolutionMinutes"/> on every stored session bar (ADR-0022 §4). A row whose
+    /// pair disagrees with the definition standing today describes a session nobody asked about and must not
+    /// be served or projected over.
+    /// </remarks>
+    public string WindowCentral =>
+        StartCentral.ToString("HH:mm", CultureInfo.InvariantCulture)
+        + "-"
+        + EndCentral.ToString("HH:mm", CultureInfo.InvariantCulture);
+
     /// <summary>
     /// The sessions this server ships with — operator-configurable later, and the same four everywhere until
     /// then.

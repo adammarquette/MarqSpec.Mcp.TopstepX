@@ -529,7 +529,11 @@ Returns `{ symbol, session, indicator, period, values: [{ tradeDate, t, v }], co
 called and nothing is derived here: a session bar exists only after `get_session_bars` or
 `get_latest_session_bars` covered that trade date, and this tool does not build one. So a window nobody has
 read sessions for answers with **no values at all** — a fact about what has been asked for rather than about
-the market. Read the sessions first, then read this. Where the sessions are stored and the values are not,
+the market. Read the sessions first, then read this. Rows whose `(WindowCentral, BaseResolutionMinutes)`
+provenance disagrees with the session definition standing today are not those sessions either
+([ADR-0022](adr/0022-session-bars-derived-complete-or-absent.md) §4): they are filtered on every serve and
+projection path the same way `get_session_bars` discards them, so a definition change never leaves ordinary-
+looking RSI/ATR labeled as the current `rth`. Where matching sessions are stored and the values are not,
 the first read that asks for them projects and stores them, on `get_indicators`' cache-aside terms — but that
 is now the uncommon path, because a session read projects in the same unit of work that writes its bars, so
 an ordinary read here is the probe. It is still reachable: a catalogue change, or a store filled before this

@@ -211,15 +211,18 @@ public sealed class SessionIndicatorToolBoundaryTests : IDisposable
         IndicatorCatalog catalog = new(
             Options.Create(new IndicatorOptions { AtrPeriod = 3, RsiPeriod = 3 }), calendar);
 
-        IndicatorProjector projector = new(_database, catalog, NullLogger<IndicatorProjector>.Instance, _telemetry);
+        SessionCatalog sessions = new(options, calendar);
+        IndicatorProjector projector = new(
+            _database, catalog, NullLogger<IndicatorProjector>.Instance, _telemetry, sessions);
 
         return new SessionIndicatorTools(
             new InstrumentResolver(new InstrumentRegistry(options), new StoreAvailabilityHolder()),
             _database,
             catalog,
             new IndicatorCacheService(
-                _database, catalog, projector, clock, NullLogger<IndicatorCacheService>.Instance, _telemetry),
-            new SessionCatalog(options, calendar),
+                _database, catalog, projector, clock, NullLogger<IndicatorCacheService>.Instance, _telemetry,
+                sessions: sessions),
+            sessions,
             calendar,
             _gateway,
             new ToolGuards(options));

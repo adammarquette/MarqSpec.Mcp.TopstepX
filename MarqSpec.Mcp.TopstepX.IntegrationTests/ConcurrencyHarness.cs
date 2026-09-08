@@ -402,6 +402,23 @@ public static class ConcurrencyHarness
     public static BarSessionCalendar Calendar() => BarSessionCalendar.Parse("16:00", []);
 
     /// <summary>
+    /// The closed vocabulary of session names, over the shipped defaults and this harness's calendar.
+    /// </summary>
+    /// <returns>The catalogue.</returns>
+    /// <remarks>
+    /// Handed to <see cref="Projector"/> and <see cref="Indicators"/> so a session series' bar reads can
+    /// restate ADR-0022 §4 provenance. Resolution-only callers ignore it.
+    /// </remarks>
+    public static SessionCatalog Sessions() =>
+        new(
+            Options.Create(new MarketDataOptions
+            {
+                Instruments = Symbol + "," + RebuildSymbol,
+                SessionCloseCentral = "16:00",
+            }),
+            Calendar());
+
+    /// <summary>
     /// The catalogue every test here shares.
     /// </summary>
     /// <returns>The catalogue.</returns>
@@ -430,7 +447,7 @@ public static class ConcurrencyHarness
     /// <param name="database">The store.</param>
     /// <returns>The projector.</returns>
     public static IndicatorProjector Projector(TopstepXDbContext database) =>
-        new(database, Catalog(), NullLogger<IndicatorProjector>.Instance, Telemetry);
+        new(database, Catalog(), NullLogger<IndicatorProjector>.Instance, Telemetry, Sessions());
 
     /// <summary>The read-time indicator projection over a context.</summary>
     /// <param name="database">The store.</param>
@@ -447,7 +464,8 @@ public static class ConcurrencyHarness
             Projector(database),
             new FakeTimeProvider(now ?? SessionStart),
             logger ?? NullLogger<IndicatorCacheService>.Instance,
-            Telemetry);
+            Telemetry,
+            sessions: Sessions());
 
     /// <summary>A cache-aside service over a context, serving one venue's bars.</summary>
     /// <param name="database">The store.</param>

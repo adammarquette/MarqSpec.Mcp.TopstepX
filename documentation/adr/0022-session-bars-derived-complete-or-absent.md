@@ -127,7 +127,10 @@ when the definition that produced them changes.**
 
 The row records which window and which base resolution produced it, so a stored bar can be checked against the
 definition standing today; when the two disagree the series is rebuilt rather than served. That is gh#499's
-storage slice.
+storage slice. The same pair is restated on every session-indicator serve and projection path
+(`get_session_indicators` / `get_session_indicator_at`, and the session half of `ISeriesTables`): a caller who
+never re-ran `get_session_bars` after a definition change must not receive ordinary-looking RSI/ATR over the
+retired OHLC (gh#501 review).
 
 **5. The base resolution is configuration, not an implementation detail, because that is what makes the stored
 series reproducible.**

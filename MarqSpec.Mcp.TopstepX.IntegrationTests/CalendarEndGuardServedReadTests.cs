@@ -373,7 +373,9 @@ public sealed class CalendarEndGuardServedReadTests : IAsyncLifetime
                 _cache,
                 _gateway,
                 _calendar,
-                new IndicatorProjector(_database, _catalog, NullLogger<IndicatorProjector>.Instance, _telemetry),
+                new IndicatorProjector(
+                    _database, _catalog, NullLogger<IndicatorProjector>.Instance, _telemetry,
+                    ConcurrencyHarness.Sessions()),
                 _clock,
                 NullLogger<SessionBarService>.Instance),
             new SessionCatalog(Defaults(), _calendar),

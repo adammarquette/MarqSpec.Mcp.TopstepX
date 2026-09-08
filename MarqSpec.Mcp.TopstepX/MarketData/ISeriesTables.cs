@@ -45,20 +45,34 @@ internal interface ISeriesTables
     /// <summary>Builds the tables for one series.</summary>
     /// <param name="key">The series.</param>
     /// <param name="database">The store.</param>
+    /// <param name="sessions">
+    /// The closed vocabulary of session names. Required when <paramref name="key"/> is a
+    /// <see cref="SeriesKey.Session"/> — bar reads restate that definition's provenance (ADR-0022 §4).
+    /// Ignored for a resolution series.
+    /// </param>
     /// <returns>The tables that series lives in.</returns>
     /// <exception cref="ArgumentNullException"><paramref name="key"/> is <see langword="null"/>.</exception>
+    /// <exception cref="ArgumentNullException">
+    /// <paramref name="sessions"/> is <see langword="null"/> and <paramref name="key"/> is a session series.
+    /// </exception>
     /// <exception cref="ArgumentOutOfRangeException">
     /// A series kind with no tables behind it. Enumerated rather than defaulted: a kind that fell through to
     /// another kind's tables would project one series' bars into the other's rows.
     /// </exception>
-    static ISeriesTables For(SeriesKey key, TopstepXDbContext database)
+    static ISeriesTables For(SeriesKey key, TopstepXDbContext database, SessionCatalog? sessions = null)
     {
         ArgumentNullException.ThrowIfNull(key);
 
         return key switch
         {
             SeriesKey.Resolution resolution => new ResolutionSeriesTables(resolution, database),
-            SeriesKey.Session session => new SessionSeriesTables(session, database),
+            SeriesKey.Session session => new SessionSeriesTables(
+                session,
+                database,
+                sessions ?? throw new ArgumentNullException(
+                    nameof(sessions),
+                    "A session series' bar reads restate the standing definition's provenance (ADR-0022 §4). "
+                    + "Pass the SessionCatalog rather than projecting over every row that shares the name.")),
             _ => throw new ArgumentOutOfRangeException(
                 nameof(key),
                 key.GetType().Name,

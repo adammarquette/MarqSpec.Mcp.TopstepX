@@ -1371,7 +1371,8 @@ public sealed class HistoricalContractSelectionTests : IAsyncLifetime
                 new IndicatorCatalog(
                     Options.Create(new IndicatorOptions { AtrPeriod = 3, RsiPeriod = 3 }), Calendar),
                 NullLogger<IndicatorProjector>.Instance,
-                _telemetry),
+                _telemetry,
+                new SessionCatalog(market, Calendar)),
             clock,
             NullLogger<SessionBarService>.Instance);
 

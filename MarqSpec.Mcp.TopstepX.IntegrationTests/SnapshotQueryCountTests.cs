@@ -157,10 +157,19 @@ public sealed class SnapshotQueryCountTests(SchemaFixture fixture)
                 + "map of nulls would meet every count below having read nothing");
         }
 
-        // The batched read, identified by the group-max the store actually ran. Its presence is the
-        // translation claim: EF would have thrown rather than sent this if Npgsql could not build it.
+        // The batched read, identified by the group-max the store actually ran AND by the contract it
+        // carries out of the join. Its presence is the translation claim: EF would have thrown rather than
+        // sent this if Npgsql could not build it.
+        //
+        // THE SECOND CLAUSE IS LOAD-BEARING (gh#531). The read-triggered projection's probe now runs a
+        // group-max over the same column of the same table to ask how far each (Indicator, Period) reaches,
+        // so the first clause alone counts four statements on a two-resolution call and cannot say which two
+        // are the read this test is about. What separates them is what the batched read exists to do: join
+        // the latest row back to its bar and carry that bar's contract, which is the whole of the N+1 it
+        // replaced. The probe selects three columns and joins nothing.
         int batched = counted.Commands.Count(c =>
-            c.Contains("max(i.\"BucketStart\")", StringComparison.Ordinal));
+            c.Contains("max(i.\"BucketStart\")", StringComparison.Ordinal)
+            && c.Contains("\"ContractId\"", StringComparison.Ordinal));
 
         batched.Should().Be(
             SnapshotTools.DefaultResolutionMinutes.Count,

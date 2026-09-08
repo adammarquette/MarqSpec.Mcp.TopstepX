@@ -24,64 +24,113 @@ public sealed class ToolGuards(IOptions<MarketDataOptions> options)
     private readonly MarketDataOptions _options = options.Value;
 
     /// <summary>
-    /// How long one session is, in minutes — 24 hours less the venue's maintenance window.
+    /// How long one session is in Central wall-clock time, in minutes — 24 hours less the venue's
+    /// maintenance window.
     /// </summary>
     /// <remarks>
+    /// <para>
     /// The one hour <see cref="BarSessionCalendar.DefaultMaintenanceWindow"/> holds, written out as
     /// <c>60</c> because a <c>const int</c> is a compile-time constant and cannot read a
-    /// <see cref="TimeSpan"/> field. Named here rather than spelled inline because two separate bounds are
-    /// derived from it: <see cref="MaxResolutionMinutes"/>, and the line above which a bucket stops being a
-    /// bar at all.
+    /// <see cref="TimeSpan"/> field. It is the line above which a bucket stops being a bar at all, and the
+    /// number <see cref="ShortestSessionMinutes"/> is taken from.
+    /// </para>
     /// <para>
-    /// It is a <b>duration</b>, not a position. Every session is exactly this long in UTC whatever the
-    /// season: a US daylight-saving transition falls on a Sunday at 02:00 Central, which is inside no
-    /// session, so the wall-clock span and the elapsed span never disagree. The derivation below depends on
-    /// that.
+    /// <b>It is a WALL-CLOCK span, and the elapsed span can be shorter — which is why the resolution
+    /// ceiling is not derived from it.</b> A session runs from the reopen on the previous market date to the
+    /// close on the trade date, and a US daylight-saving transition falls on a Sunday at 02:00 Central. At
+    /// the shipped 16:00 close the reopen is 17:00, so Monday's session starts after that instant and no
+    /// session ever contains a transition — every one is exactly 1,380 minutes. Spring-forward <i>deletes</i>
+    /// the wall-clock hour [02:00, 03:00), so at a close before 02:00 the reopen sits inside or before that
+    /// hour, Monday's session loses it, and that session is <b>1,320</b> minutes long once a year — measured
+    /// across every whole-minute close, the hundred and twenty from 00:00 to 01:59 are the ones that
+    /// shrink. <c>SessionCloseCentral</c> is operator configuration with no
+    /// range check, so a bound that assumed 1,380 would be true only for the default (gh#538, PR #607
+    /// review). Whether such a close should be refused outright is gh#613; this bound does not need it to
+    /// be, which is why the two are separate.
     /// </para>
     /// </remarks>
     public const int SessionMinutes = (24 * 60) - 60;
 
     /// <summary>
-    /// The coarsest bar this server serves, in minutes — half a session.
+    /// The shortest session this calendar can produce at any configured close, in minutes.
+    /// </summary>
+    /// <remarks>
+    /// <see cref="SessionMinutes"/> less the hour a spring-forward transition takes out of a session that
+    /// contains one, and the only length below the nominal one that occurs. The autumn transition does
+    /// <i>not</i> lengthen a session in return: the reopen then lands in the ambiguous hour, and
+    /// <see cref="MarketClock.FromMarket"/> resolves an ambiguous wall-clock time to <b>standard</b> time,
+    /// so the session stays 23 elapsed hours. Measured rather than reasoned —
+    /// <c>ResolutionGuardTests.TheSessionLengthCensus_ShowsAShortestSessionOf1320_AtEveryCloseBefore0100</c>
+    /// sweeps every whole-minute close and sees exactly 1,320 and 1,380. This is the number
+    /// <see cref="MaxResolutionMinutes"/> is derived from, so that the ceiling holds for a configured close
+    /// this server never reads.
+    /// </remarks>
+    public const int ShortestSessionMinutes = SessionMinutes - 60;
+
+    /// <summary>
+    /// The coarsest bar this server serves, in minutes — half the shortest session.
     /// </summary>
     /// <remarks>
     /// <para>
     /// <b>A product bound, not an arithmetic one</b>, and a <i>derived</i> one rather than a chosen number.
-    /// It is the widest bucket the UTC grid is guaranteed to fit inside <b>every</b> session.
+    /// It is the widest bucket the UTC grid is guaranteed to fit inside <b>every</b> session, at every
+    /// session close an operator can configure.
     /// </para>
     /// <para>
     /// <b>The derivation, so the next reader can re-run it.</b>
     /// <see cref="BarGapDetector.AlignUp"/> anchors buckets on a fixed grid struck from the .NET epoch — not
     /// on the session open — and <see cref="BarSessionCalendar.IsExpectedBucket"/> expects a bucket only when
-    /// it opens inside the session and closes at or before that session's close. So a session of
-    /// <see cref="SessionMinutes"/> admits an <c>r</c>-minute bucket exactly when some multiple of <c>r</c>
-    /// lands in <c>[open, close - r]</c> — a run of <c>S - r + 1</c> consecutive whole minutes. A run of
-    /// <c>n</c> consecutive integers is <i>certain</i> to contain a multiple of <c>r</c> only while
-    /// <c>n &gt;= r</c>, so the guarantee holds exactly while <c>S - r + 1 &gt;= r</c>, i.e.
-    /// <c>r &lt;= (S + 1) / 2</c>. At <c>S = 1,380</c> that is <b>690</b> — which is also 1,380's largest
-    /// proper divisor, so the pigeonhole bound and "the largest divisor of the session length" name the same
-    /// number.
+    /// it opens inside the session and closes at or before that session's close. So a session of <c>S</c>
+    /// minutes admits an <c>r</c>-minute bucket exactly when some multiple of <c>r</c> lands in
+    /// <c>[open, close - r]</c> — a run of <c>S - r + 1</c> consecutive whole minutes. A run of <c>n</c>
+    /// consecutive integers is <i>certain</i> to contain a multiple of <c>r</c> only while <c>n &gt;= r</c>,
+    /// so the guarantee holds exactly while <c>S - r + 1 &gt;= r</c>, i.e. <c>r &lt;= (S + 1) / 2</c>. C#'s
+    /// integer division truncates, which gives the largest admissible <i>integer</i> for an odd <c>S</c> and
+    /// for an even one alike.
     /// </para>
     /// <para>
-    /// <b>Above it the answer depends on the day, which is the failure this bound exists to remove (gh#538).</b>
-    /// A 1,379-minute bucket is expected only when the grid lands within a minute of the session open, so
-    /// <c>get_bars</c> at 1,379 answered an <b>empty series with <c>venueRequests: 0</c></b> on all but a
-    /// handful of scattered trade dates — the exact shape gh#498 abolished one minute higher, and an answer
-    /// indistinguishable from an instrument that produced no data.
+    /// <b><c>S</c> is <see cref="ShortestSessionMinutes"/> and not <see cref="SessionMinutes"/>, and that is
+    /// the whole of the PR #607 review's first finding.</b> Derived from 1,380 the ceiling is 690, and 690
+    /// is <i>wrong</i> at a close before 02:00, where the session is 1,320 minutes on a transition weekend:
+    /// at <c>SessionCloseCentral = "00:30"</c>, <c>get_bars</c> at 690 answers an empty series on trade date
+    /// 2030-03-11. That is this card's own defect, reintroduced at a width the card permitted. Derived from
+    /// 1,320 the ceiling is <b>660</b>, and 660 is measured to fit every trade date at every whole-minute
+    /// close. It is also <b>tight</b>: 661, the very next width, already misses.
     /// </para>
     /// <para>
-    /// <b>It over-rejects four widths, deliberately, and the refusal says so.</b> Measured over sixteen years
-    /// at a 16:00 Central close, 692, 696, 700 and 720 minutes do fit on every trade date — their phase
-    /// against the session never drifts far enough. They are refused with the rest because this is a
-    /// guarantee that survives a different <c>SessionCloseCentral</c>, and those four are an accident of this
-    /// one; <c>ResolutionGuardTests.AboveTheCeiling_TheGuaranteeFails_AndTheCoincidencesAreNamed</c> measures
-    /// both halves so the claim cannot rot into folklore.
+    /// <b>The two derivations gh#538 offered agree here by arithmetic accident, so only one is used.</b>
+    /// 660 is both the pigeonhole bound on 1,320 and 1,320's largest proper divisor — but that pairing holds
+    /// only because <c>S</c> is even. At <c>S = 1,379</c> the pigeonhole form gives 690 and the
+    /// largest-proper-divisor form gives 197. The general form is the one implemented.
+    /// </para>
+    /// <para>
+    /// <b>Above it the answer depends on the day and on the configured close, which is the failure this
+    /// bound exists to remove (gh#538).</b> A 1,379-minute bucket is expected only when the grid lands within
+    /// a minute of the session open, so <c>get_bars</c> at 1,379 answered an <b>empty series with
+    /// <c>venueRequests: 0</c></b> on all but a handful of scattered trade dates — the exact shape gh#498
+    /// abolished one minute higher, and an answer indistinguishable from an instrument that produced no data.
+    /// </para>
+    /// <para>
+    /// <b>It over-rejects, deliberately, and the refusal says so rather than claiming the band never
+    /// works.</b> Measured over sixteen years: at the shipped 16:00 close every width from 661 to 690 fits on
+    /// every trade date, and so do 692, 696, 700 and 720 — thirty-four in all. Widen the sweep to the closes
+    /// whose session can lose an hour and <b>two</b> survive; widen the window at one such close from one
+    /// year to sixteen and the count falls 31 → 28 → 19. A survivor list is what a sweep did not disprove,
+    /// which is not what a bound is. They are refused because <see cref="ValidateResolution"/> is
+    /// deliberately <c>static</c> and reads no configuration, so serving them would make the servable set
+    /// depend invisibly on <c>SessionCloseCentral</c>; a bound is a guarantee, and a list of widths that
+    /// happen to survive one sweep is a table of coincidences.
+    /// <c>ResolutionGuardTests.AboveTheCeiling_TheGuaranteeFails_AndTheCoincidencesAreNamed</c> measures both
+    /// halves, and <c>TheGridRefusal_ConcedesTheBandSometimesFits</c> pins the message against overclaiming
+    /// them away.
     /// </para>
     /// <para>
     /// <b>A bucket of a session's length or longer is a different thing again — not coarse, but a session
-    /// bar.</b> Nothing that wide can close inside a session at all, so the day and the week are neither
-    /// unavailable nor out of range: they are defined on the CME trade date rather than on the bucket grid,
-    /// and the session-bars epic gh#496 serves them through <c>get_session_bars</c> and
+    /// bar.</b> A bucket <i>longer</i> than a session can never close inside one; one <i>exactly</i> a
+    /// session's length can, but only when the grid lands exactly on the session open — 4.34% of trade dates
+    /// at the shipped close — so the claim that carries the refusal is the definitional one rather than the
+    /// arithmetic one: a bar covering a whole session is defined on the CME trade date rather than on the
+    /// bucket grid, and the session-bars epic gh#496 serves it through <c>get_session_bars</c> and
     /// <c>get_latest_session_bars</c> on <see cref="SessionBarTools"/>. <see cref="ValidateResolution"/>
     /// keeps that as a <i>separate</i> refusal with its own message, because "ask for a narrower bar" is the
     /// wrong advice for a caller who wanted a daily bar.
@@ -91,7 +140,7 @@ public sealed class ToolGuards(IOptions<MarketDataOptions> options)
     /// <see cref="LookbackWindow"/>: the ceiling on its own does not make that arithmetic safe.
     /// </para>
     /// </remarks>
-    public const int MaxResolutionMinutes = (SessionMinutes + 1) / 2;
+    public const int MaxResolutionMinutes = (ShortestSessionMinutes + 1) / 2;
 
     /// <summary>
     /// How far past a window's end the session calendar reasons, on top of the bucket grid's own reach.
@@ -177,8 +226,8 @@ public sealed class ToolGuards(IOptions<MarketDataOptions> options)
     /// <para>
     /// <b>It moves with the resolution, which is why it is a function and not a constant.</b> It is
     /// <see cref="CalendarHorizon"/> less those two spans: at one minute, two minutes plus three days before
-    /// the end of the calendar; at the 690-minute bar <see cref="MaxResolutionMinutes"/> allows, two spans
-    /// are 1,380 minutes, so nearly four days before the end of the calendar.
+    /// the end of the calendar; at the 660-minute bar <see cref="MaxResolutionMinutes"/> allows, two spans
+    /// are 1,320 minutes, so nearly four days before the end of the calendar.
     /// </para>
     /// </remarks>
     public static DateTimeOffset LastServableEnd(int resolutionMinutes)
@@ -343,7 +392,8 @@ public sealed class ToolGuards(IOptions<MarketDataOptions> options)
     /// <para>
     /// <b>There are two refusals above the ceiling, not one, because there are two different mistakes
     /// (gh#538).</b> At or above <see cref="SessionMinutes"/> the caller asked for something that is not a bar
-    /// resolution at all, and the remedy is another tool. Between <see cref="MaxResolutionMinutes"/> and that
+    /// resolution at all — a bucket covering a whole session is a session bar by definition, whether or not
+    /// the grid ever lets it close inside one — and the remedy is another tool. Between <see cref="MaxResolutionMinutes"/> and that
     /// line the caller asked for a real bar the grid cannot be relied on to fit inside a session, and the
     /// remedy is a narrower one — so that message states the rule, its arithmetic, and the fact that a few
     /// widths in the band do fit every day and are refused anyway. A refusal that claimed they never produce
@@ -371,13 +421,16 @@ public sealed class ToolGuards(IOptions<MarketDataOptions> options)
             throw new McpException(
                 "resolutionMinutes "
                 + resolutionMinutes.ToString(System.Globalization.CultureInfo.InvariantCulture)
-                + " is a whole session or longer — a session is "
+                + " covers a whole session or more — a session is "
                 + SessionMinutes.ToString(System.Globalization.CultureInfo.InvariantCulture)
-                + " minutes, 24 hours less the venue's one-hour maintenance window. A bucket that long or "
-                + "longer can never close inside a single session, so it is a session bar rather than a bar "
-                + "resolution. The day and the week are not unavailable and they are not out of range; ask "
-                + "get_session_bars or get_latest_session_bars (gh#496) for them. The largest bar resolution "
-                + "this server serves is "
+                + " minutes of Central wall clock, 24 hours less the venue's one-hour maintenance window. A "
+                + "bucket longer than that can never close inside a single session, and one exactly that "
+                + "long can only when the grid lands exactly on the session open — 4% of trade dates at the "
+                + "shipped close. Either way it is a session bar rather than a bar resolution: a bar "
+                + "covering a whole session is defined on the CME trade date, not on the bucket grid. The "
+                + "day and the week are not unavailable and they are not out of range; ask get_session_bars "
+                + "or get_latest_session_bars (gh#496) for them. The largest bar resolution this server "
+                + "serves is "
                 + MaxResolutionMinutes.ToString(System.Globalization.CultureInfo.InvariantCulture)
                 + " minutes.");
         }
@@ -389,18 +442,20 @@ public sealed class ToolGuards(IOptions<MarketDataOptions> options)
                 + " is coarser than the largest bar this server serves, "
                 + MaxResolutionMinutes.ToString(System.Globalization.CultureInfo.InvariantCulture)
                 + " minutes — half of the "
-                + SessionMinutes.ToString(System.Globalization.CultureInfo.InvariantCulture)
-                + "-minute session (24 hours less the venue's one-hour maintenance window). Buckets are "
-                + "anchored on a fixed UTC grid rather than on the session open, so a bucket wider than half "
-                + "a session is not guaranteed to open and close inside one: whether it fits depends on "
-                + "where that grid falls on the day, and on the trade dates where it does not fit the series "
-                + "comes back empty with nothing said. "
+                + ShortestSessionMinutes.ToString(System.Globalization.CultureInfo.InvariantCulture)
+                + "-minute shortest session. Buckets are anchored on a fixed UTC grid rather than on the "
+                + "session open, so a bucket wider than half a session is not guaranteed to open and close "
+                + "inside one: whether it fits depends on where that grid falls on the day, and on the trade "
+                + "dates where it does not fit the series comes back empty with nothing said. "
                 + MaxResolutionMinutes.ToString(System.Globalization.CultureInfo.InvariantCulture)
-                + " is the widest bucket that fits on every trade date whichever session close is "
-                + "configured, because a run of S - r + 1 consecutive minutes holds a multiple of r only "
-                + "while S - r + 1 >= r. A few widths just above it (692, 696, 700 and 720 at a 16:00 "
-                + "Central close) do happen to fit every day; they are refused with the rest because the "
-                + "bound is a guarantee and not a table of coincidences. Ask for "
+                + " is the widest bucket that fits on every trade date at every session close an operator "
+                + "can configure, because a run of S - r + 1 consecutive minutes holds a multiple of r only "
+                + "while S - r + 1 >= r, and S is 1320 rather than 1380 for a close before 02:00 Central, "
+                + "where a session contains the spring-forward transition and loses an hour. It is tight: "
+                + "661 already misses. Widths above it are not all useless — every one from 661 to 690 fits "
+                + "every trade date at the shipped 16:00 close, as do 692, 696, 700 and 720 — but which "
+                + "widths those are depends on the configured close, which this check deliberately does not "
+                + "read, so they are refused with the rest rather than served by coincidence. Ask for "
                 + MaxResolutionMinutes.ToString(System.Globalization.CultureInfo.InvariantCulture)
                 + " minutes or less; for the day and the week ask get_session_bars or "
                 + "get_latest_session_bars (gh#496).")
@@ -432,10 +487,10 @@ public sealed class ToolGuards(IOptions<MarketDataOptions> options)
     /// <para>
     /// <b><see cref="MaxResolutionMinutes"/> does not on its own make this safe, which is why the check is
     /// here as well as there.</b> <c>MaxRows</c> is operator configuration and ranges to 1,000,000. At a
-    /// 690-minute bar — exactly at the ceiling, nothing out of range about it — 500,000 bars <i>span</i>
-    /// about 656 years; the reach is <b>four bar spans per bar wanted</b>, so it is about <b>2,624</b> years
+    /// 660-minute bar — exactly at the ceiling, nothing out of range about it — 500,000 bars <i>span</i>
+    /// about 627 years; the reach is <b>four bar spans per bar wanted</b>, so it is about <b>2,510</b> years
     /// and the window starts before year one. <b>The 4× is the whole point</b>: it is what carries a pair that
-    /// is legal on both axes past a calendar neither axis knows about — refusal in fact begins around 386,000
+    /// is legal on both axes past a calendar neither axis knows about — refusal in fact begins around 403,000
     /// such bars, not 500,000. A bound on either axis alone is not the rule; the bound is on the product.
     /// </para>
     /// <para>

@@ -182,13 +182,13 @@ public sealed class CalendarEndGuardTests : IDisposable
     public void TheBoundMovesWithTheResolution()
     {
         // The headroom is two bar spans plus three days, so it is not a fixed instant: at the coarsest bar
-        // this server serves -- 690 minutes, half a session, the widest bucket the UTC grid fits inside one
-        // on every trade date (gh#538) -- two spans is 1,380 minutes, and the last servable end is nearly
-        // four days before the end of the calendar rather than three. Hand-computed:
-        // 9999-12-31T23:59:59.9999999Z less three days is 9999-12-28T23:59:59.9999999Z, less 1,380 minutes
-        // (23 h) is 9999-12-28T00:59:59.9999999Z.
+        // this server serves -- 660 minutes, half the SHORTEST session, the widest bucket the UTC grid fits
+        // inside one on every trade date at every configurable close (gh#538) -- two spans is 1,320 minutes,
+        // and the last servable end is nearly four days before the end of the calendar rather than three.
+        // Hand-computed: 9999-12-31T23:59:59.9999999Z less three days is 9999-12-28T23:59:59.9999999Z, less
+        // 1,320 minutes (22 h) is 9999-12-28T01:59:59.9999999Z.
         ToolGuards guards = Guards();
-        DateTimeOffset last = new DateTimeOffset(9999, 12, 28, 0, 59, 59, TimeSpan.Zero)
+        DateTimeOffset last = new DateTimeOffset(9999, 12, 28, 1, 59, 59, TimeSpan.Zero)
             .AddTicks(9_999_999);
 
         // Seven bars wide at the ceiling -- inside every size cap, so the END is the only thing on trial.
@@ -203,7 +203,7 @@ public sealed class CalendarEndGuardTests : IDisposable
             last - sevenBars, last.AddTicks(1), ToolGuards.MaxResolutionMinutes);
 
         past.Should().Throw<McpException>()
-            .WithMessage("*9999-12-28T00:59:59.9999999*", "the refusal names the bound it moved past");
+            .WithMessage("*9999-12-28T01:59:59.9999999*", "the refusal names the bound it moved past");
     }
 
     // ── The same axis on the instant-taking tool ─────────────────────────────────────────────────────

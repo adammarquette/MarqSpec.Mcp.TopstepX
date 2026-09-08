@@ -157,7 +157,7 @@ correct bar, and the guard's failure mode is silent.
 | [2026-08-23](#update-2026-08-23--maxbucketsperpass-is-a-second-cap-on-the-same-quantity-and-it-is-now-stated-at-the-boundary) | The cost bound named in *Alternatives* is now a **tool error**, not a fault one layer down |
 | [2026-08-28](#update-2026-08-28--gh49s-snapshot-default-shipped) | gh#49 closed: `get_market_snapshot` defaults `[5, 60]` |
 | [2026-09-06](#update-2026-09-06--the-ceiling-is-the-session-and-the-day-is-a-session-bar) | Read "1 to 10,080" as **1 to 1,379**; the day and the week are session bars, and the completeness-guard exception below is taken by [ADR-0022](0022-session-bars-derived-complete-or-absent.md) |
-| [2026-09-08](#update-2026-09-08--the-ceiling-is-half-a-session-because-the-grid-is-not-session-aligned) | Read "1 to 1,379" as **1 to 690**; the UTC bucket grid is not session-aligned, so a bucket wider than half a session is not guaranteed to fit inside one (gh#538) |
+| [2026-09-08](#update-2026-09-08--the-ceiling-is-half-the-shortest-session-because-the-grid-is-not-session-aligned) | Read "1 to 1,379" as **1 to 660**; the UTC bucket grid is not session-aligned, so a bucket wider than half a session is not guaranteed to fit inside one — and the session in that bound is the *shortest* one, 1,320 minutes, not the nominal 1,380 (gh#538, PR #607 review) |
 
 ## Update (2026-08-23) — any meant any positive, and four tools did not enforce it
 
@@ -377,10 +377,10 @@ per trade date stamped at the 17:00 Central open — the same trade date this re
 makes fetching `full` a real option rather than a dismissed one; ADR-0022 records why it was not taken for
 this slice, and carries the cross-check as a follow-up.
 
-## Update (2026-09-08) — the ceiling is half a session, because the grid is not session-aligned
+## Update (2026-09-08) — the ceiling is half the shortest session, because the grid is not session-aligned
 
 **Point 1 stands, point 2 is untouched, and the number in the update above moves once more: the servable range
-is 1 to 690 minutes.** Resolution is still a per-call parameter, there is still no allow-list, and the range
+is 1 to 660 minutes.** Resolution is still a per-call parameter, there is still no allow-list, and the range
 is still contiguous — this closes an end, it does not enumerate.
 
 **The 2026-09-06 ceiling was right about what a session bar *is* and wrong about where the line falls.** It
@@ -394,13 +394,21 @@ grid lands within a minute of the open, so `get_bars` at 1,379 answered an **emp
 **The bound is derived rather than chosen, which is what makes it re-checkable.** A session of `S` minutes
 admits an `r`-minute bucket exactly when a multiple of `r` lands in `[open, close - r]`, a run of `S - r + 1`
 consecutive whole minutes; a run of `n` consecutive integers is certain to hold a multiple of `r` only while
-`n >= r`; so the guarantee holds exactly while `r <= (S + 1) / 2`. At `S = 1380` that is **690**, which is
-also 1,380's largest proper divisor. `ToolGuards.MaxResolutionMinutes` is written as `(SessionMinutes + 1) / 2`
-for that reason — a literal 690 nobody can re-derive is worse than the formula.
+`n >= r`; so the guarantee holds exactly while `r <= (S + 1) / 2`.
+
+**`S` is the *shortest* session and not the nominal one, and the first version of this update got that
+wrong.** It read `S = 1380` and gave 690. `SessionCloseCentral` is operator configuration with no range
+validation, spring-forward deletes the wall-clock hour `[02:00, 03:00)`, and the reopen is one maintenance
+window after the close — so at any close before 02:00 Central the session is **1,320** minutes once a year,
+and 690 answers an empty series at `SessionCloseCentral = "00:30"` on trade date 2030-03-11. At `S = 1320`
+the bound is **660**, which is tight (661 already misses) and also 1,320's largest proper divisor — a
+coincidence of `S` being even rather than a second derivation, since at `S = 1379` the two forms give 690 and
+197. `ToolGuards.MaxResolutionMinutes` is written as `(ShortestSessionMinutes + 1) / 2` — a literal nobody can
+re-derive is worse than the formula.
 
 **The bound is on *meaning* a third time, and it is a third meaning.** 10,080 was about what a minute count
 can express. 1,380 was about what the session calendar can hold. This one is about where the **bucket grid**
-falls: 690 is legal and 691 is not, and the difference is neither arithmetic nor calendar but alignment.
+falls: 660 is legal and 661 is not, and the difference is neither arithmetic nor calendar but alignment.
 
 **It is a refusal and not a warning field**, for the reason `R-2.3` refuses a substituted number: an empty
 series carrying a flag is still an empty series, and a caller reads it as a market that printed nothing.

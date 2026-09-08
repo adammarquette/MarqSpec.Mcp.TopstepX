@@ -174,7 +174,7 @@ at one this rule's own pull request retires.
      **Persistent here** — the 2026-09-08 correction under that entry.
 
 - **[2026-09-08] A green check is evidence about a commit, not about a branch (gh#611).** Same shape as the
-  mutation-run entry above — mechanism 2 (*a re-run reporting the previous run's result*) — arriving in the
+  *`Total:` is discovery* entry dated 2026-09-08 — mechanism 2 (*a re-run reporting the previous run's result*) — arriving in the
   tooling agents use to verify their work. Verifying gh#600 / PR #603 (also gh#608 / PR #610),
   `gh pr checks --watch` printed **13 passing checks** for a head it was **not** describing: a commit had been
   pushed to the branch, GitHub had not yet associated it with the pull request, and `pulls/603` still reported

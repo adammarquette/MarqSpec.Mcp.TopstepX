@@ -71,8 +71,9 @@ This is the whole argument, and it is a property of the key rather than of the t
 
 **Every row a `period` can reach was written by the catalogue's own projection, under exactly
 `(Venue, Instrument, ResolutionMinutes, Indicator, Period, BucketStart)`.** The projection iterates `All`; the
-read-time probe diffs `All` against the stored `DISTINCT (Indicator, Period)`; the reconcile removes what
-`All` no longer justifies, scoped to those same pairs; `rebuild-indicators` replays `All`. **One set drives
+read-time probe diffs `All` against the stored pairs and how far each one reaches (`GROUP BY (Indicator,
+Period)` carrying `max(BucketStart)` — see the update below); the reconcile removes what
+`All` no longer justifies; `rebuild-indicators` replays `All`. **One set drives
 all four.**
 
 So a selectable period can never be one the store could hold values for that nobody computes, nor one computed
@@ -118,8 +119,9 @@ something nobody named, and the payload is the only trace. Refusing names the mi
 - **The probe's bar-count cap rises to the largest *configured* warm-up**, not the largest shipped one. It is
   still flat in the series length — the cap only decides `WarmupBars <= bars` per member — but an operator who
   configures an EMA at 500 moves the cap to 500.
-- **The probe's `DISTINCT (Indicator, Period)` returns up to N rows** where N is the number of configured
-  instances rather than the number of names. The scan is the same scan; the diff walks a longer list.
+- **The probe's grouped read returns up to N rows** where N is the number of configured
+  instances rather than the number of names. The scan is the same scan; the diff walks a longer list. (It was
+  a `DISTINCT (Indicator, Period)` when this was written; the update below says why it is a grouped `max`.)
 - **Cold replay grows with the instance count.** Every additional period is one more series inside the same
   whole-series replay. **The shipped default is unchanged** — no `Indicators__Additional*Periods` is set, so a
   default deployment computes exactly what it computed before, plus `vwap-rolling`. The 8.3 s figure is no
@@ -130,11 +132,12 @@ something nobody named, and the payload is the only trace. Refusing names the mi
   every read. A larger configured period raises the warm-up it is measured against, so a series that was past
   the bound can fall back under it. Nothing is wrong on such a series — the pass writes nothing and the
   absences are honest — and the cost is the same one that record already records.
-- **A period removed from an `Additional*Periods` list leaves its stored rows standing.** The reconcile is
-  scoped to the pairs the catalogue *currently* computes, deliberately, so a series left behind by a period
-  change is not swept up with an unrelated pass. Those rows become unreadable through the tools — the
-  selector refuses a period the catalogue no longer holds — and unreferenced. Removing them is
-  `rebuild-indicators`' business or the operator's, not a read's.
+- **A period removed from an `Additional*Periods` list leaves its stored rows standing** *until a projection
+  pass next visits the series.* The reconcile was scoped to the pairs the catalogue *currently* computes when
+  this was written, deliberately, so a series left behind by a period change was not swept up with an
+  unrelated pass; the rows became unreadable through the tools — the selector refuses a period the catalogue
+  no longer holds — and unreferenced. **gh#571 reversed that**: a pair nothing recomputes is a value ADR-0006
+  forbids the store to hold, so a pass now sweeps it. A read still runs no sweep of its own.
 - **A duplicate period is a boot failure rather than a runtime one**, because the projector writes a whole
   series in **one statement**: two instances sharing `(Indicator, Period)` would have the second overwrite the
   first on every bar, under a row naming neither window. `ValidateOnStart` is what makes that impossible to
@@ -155,3 +158,60 @@ something nobody named, and the payload is the only trace. Refusing names the mi
 - **Re-measure the cold replay with a larger catalogue.** Every number in ADR-0014's table was taken against
   eleven indicators at one period each. The per-instance growth is asserted above from the shape of the replay
   rather than measured, and a catalogue with additional periods configured is what would measure it.
+
+## Update — 2026-09-08: the probe asks whether a pair is complete, not whether it exists (gh#531)
+
+**The hole this record left.** The argument above rests on one set driving projection, probe, reconcile and
+rebuild — and it is sound about *which pairs* each walks. It said nothing about *how far down the series* the
+store's rows for a pair reach, because the probe's `DISTINCT (Indicator, Period)` cannot see that: a pair
+whose rows stop halfway is "present" by that test. So a series could be served truncated — every value up to
+wherever the last projection reached, and nothing after — and a truncated indicator series is exactly the
+shape this repository refuses, because it reads as a market that stopped moving rather than as a store that
+stopped writing.
+
+**What the probe does now.** Both of its two aggregates changed shape, and neither became a second query:
+
+- the bar count is now the series' **newest buckets in descending order**, still capped at the largest
+  configured warm-up. `tail[w - 1]` is then the bucket exactly `w` bars behind the newest;
+- the `DISTINCT` is now `GROUP BY (Indicator, Period)` carrying `max(BucketStart)` — the same scan over the
+  same key range, one column wider, still at most one row per configured instance.
+
+A pair is **missing** when the store holds no value for it *or* its newest value sits strictly before
+`tail[WarmupBars - 1]`. Either way the read replays the whole series, as it always did.
+
+**Why the boundary is the warm-up, counted in bars.** A run of absences at the end of a series is routinely
+honest: warm-up restarts at every contract seam (ADR-0011), so the bars just after a roll carry no value at
+all. `WarmupBars` is the domain's own statement of how long that run may be, so anything nearer than
+`tail[w - 1]` is an absence the bars justify (`R-2.3`) and is left alone. It is counted in **bars** rather
+than in time — never `newest − w × resolution` — because stored buckets are not contiguous across a weekend
+or a session break, and a time-shaped threshold would call every Monday a gap.
+
+**The alternative, and why it was rejected.** The other way to close this is to make the partial state
+**unservable**: have the read decline to serve a pair it cannot confirm is complete, or sweep its rows. Both
+were rejected. Declining turns a self-healing cache into a refusal over data the store can reproduce from
+bars it already holds, which is a larger answer than the fault and contradicts the whole premise of
+[ADR-0014](0014-indicators-are-projected-on-read-too.md); sweeping puts a delete on a read path, which
+[ADR-0006](0006-indicators-as-projections.md)'s 2026-09-07 update and gh#577 deliberately keep out of one —
+a read would be deleting on the strength of a catalogue it never projected with. Detecting and replaying
+needs neither: the replay is the same whole-series unit of work every other trigger runs, so the fix adds no
+new operation, no new concurrency shape and no new failure mode.
+
+**What it costs, stated exactly.** The residue [ADR-0014](0014-indicators-are-projected-on-read-too.md)
+records — a series whose every contract run is shorter than the warm-up replays on every read and writes
+nothing — widens by one shape and no more. Where **several consecutive** runs at the tail are each shorter
+than the warm-up, their absences sum past `tail[w - 1]` and the series is replayed on every read, producing
+nothing, exactly as that residue does. It is the same series in the same state: a stored history so
+fragmentary that no run measures. Closing it exactly would mean reading the whole series' contract ids in the
+probe, which is the read a replay already is — so there would be nothing left for the probe to decide. The
+error direction is deliberate: a wasted pass costs a transaction, a truncated series served as an ordinary
+answer costs a decision.
+
+**gh#571 had already closed the route this card was filed for.** The issue described an operator removing a
+period, bars arriving, and the re-added period being served short. Between the filing and the fix,
+[gh#571](https://github.com/adammarquette/MarqSpec.Mcp.TopstepX/issues/571) made the reconcile sweep pairs the
+catalogue no longer computes, so the fill that arrives during the removal now deletes that pair's rows
+outright and the re-add finds it genuinely absent — measured, and pinned by
+`APeriodRemovedAndReAdded_CoversTheBarsWrittenWhileItWasGone_WithNoVendorCall`, which passes on `develop`.
+That closed one *producer*. It left the probe asking the weaker question, which is what this update changes:
+`APairWhoseValuesStopShortOfTheBars_IsReplayedByTheNextRead` was red on `develop` and is what the completeness
+test is measured by.

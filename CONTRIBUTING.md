@@ -240,8 +240,8 @@ tracker and drifts from it.
   ([ADR-0023](documentation/adr/0023-aws-deployment-topology.md) §4) — so a dropped column is an old binary
   crashing against a store nothing puts back. `scripts/check-migrations-additive.sh` runs in
   `build & unit tests` and refuses a `DropTable`, `DropColumn`, `Rename*`, `AlterColumn` or a raw
-  `Sql("DROP …")` in an `Up()` body unless the operation carries, in the unbroken comment block **directly
-  above it**:
+  `Sql("DROP …")` anywhere in a migration except its `Down()` — its `*.Designer.cs` partial included —
+  unless the operation carries, in the unbroken comment block **directly above it**:
 
   ```csharp
   // destructive-migration: <the release after which rollback is no longer possible, and why>
@@ -251,9 +251,9 @@ tracker and drifts from it.
   previous operation, so **one marker acknowledges one operation** — a marker at the top of the file
   acknowledges only what it is actually touching. **Put one destructive operation on a line**: two sharing a
   line are refused outright, because there is one sentence and two acts and nothing says which act it
-  describes. The gate reads the whole migration except its `Down()`, so a helper `Up()` calls is covered
-  too. It says no *unacknowledged* destructive operation is in the diff; whether a marked one is right is the
-  reviewer's call.
+  describes. The gate reads the whole migration except its `Down()` — and the generated files beside it —
+  so a helper `Up()` calls is covered wherever the class puts it. It says no *unacknowledged* destructive
+  operation is in the diff; whether a marked one is right is the reviewer's call.
 - **Merge gate.** Rulesets protect `develop`, `staging` and `main`: each requires a pull request and green status
   checks before merge, and blocks force-push and deletion. `ladder` is additionally required on `staging` and
   `main`. Approvals are not required (single operator); the rulesets carry no bypass.

@@ -58,13 +58,13 @@ public sealed class ToolGuards(IOptions<MarketDataOptions> options)
     public const int ShortestSessionMinutes = SessionMinutes;
 
     /// <summary>
-    /// The coarsest bar this server serves, in minutes — below the pigeonhole bound on the shortest session.
+    /// The coarsest bar this server serves, in minutes — the served ceiling, below the pigeonhole bound.
     /// </summary>
     /// <remarks>
     /// <para>
     /// <b>A product bound, not an arithmetic one</b>, and a <i>derived</i> one rather than a chosen number.
-    /// It is the widest bucket the UTC grid is guaranteed to fit inside <b>every</b> session, at every
-    /// session close an operator can configure.
+    /// It is the widest bucket the UTC grid is guaranteed to fit inside <b>every</b> admissible session —
+    /// every close from 02:00 Central onward that calendar construction accepts (gh#613).
     /// </para>
     /// <para>
     /// <b>The derivation, so the next reader can re-run it.</b>
@@ -86,10 +86,12 @@ public sealed class ToolGuards(IOptions<MarketDataOptions> options)
     /// until the ceiling moves.
     /// </para>
     /// <para>
-    /// <b>The two derivations gh#538 offered agree here by arithmetic accident, so only one is used.</b>
-    /// 660 is both the pigeonhole bound on 1,320 and 1,320's largest proper divisor — but that pairing holds
-    /// only because <c>S</c> is even. At <c>S = 1,379</c> the pigeonhole form gives 690 and the
-    /// largest-proper-divisor form gives 197. The general form is the one implemented.
+    /// <b>660 is not half of 1,380 — the ceiling is a product bound, not the pigeonhole maximum.</b>
+    /// The pigeonhole form on every admissible session gives 690; this ceiling stays at 660 until a separate
+    /// card justifies raising it. The largest-proper-divisor coincidence gh#538 noted at <c>S = 1,320</c> no
+    /// longer applies: gh#613 refused the closes that produced 1,320-minute sessions. At <c>S = 1,379</c> the
+    /// pigeonhole form gives 690 and the largest-proper-divisor form gives 197; the general pigeonhole form is
+    /// the one implemented.
     /// </para>
     /// <para>
     /// <b>Above it the answer depends on the day and on the configured close, which is the failure this
@@ -100,14 +102,11 @@ public sealed class ToolGuards(IOptions<MarketDataOptions> options)
     /// </para>
     /// <para>
     /// <b>It over-rejects, deliberately, and the refusal says so rather than claiming the band never
-    /// works.</b> Measured over sixteen years: at the shipped 16:00 close every width from 661 to 690 fits on
-    /// every trade date, and so do 692, 696, 700 and 720 — thirty-four in all. Widen the sweep to the closes
-    /// whose session can lose an hour and <b>two</b> survive; widen the window at one such close from one
-    /// year to sixteen and the count falls 31 → 28 → 19. A survivor list is what a sweep did not disprove,
-    /// which is not what a bound is. They are refused because <see cref="ValidateResolution"/> is
-    /// deliberately <c>static</c> and reads no configuration, so serving them would make the servable set
-    /// depend invisibly on <c>SessionCloseCentral</c>; a bound is a guarantee, and a list of widths that
-    /// happen to survive one sweep is a table of coincidences.
+    /// works.</b> Measured over sixteen years at the shipped 16:00 close: every width from 661 to 690 fits on
+    /// every trade date, and so do 692, 696, 700 and 720 — thirty-four in all. They are refused because
+    /// <see cref="ValidateResolution"/> is deliberately <c>static</c> and reads no configuration, so serving
+    /// them would make the servable set depend invisibly on <c>SessionCloseCentral</c>; a bound is a guarantee,
+    /// and a list of widths that happen to survive one sweep is a table of coincidences.
     /// <c>ResolutionGuardTests.AboveTheCeiling_TheGuaranteeFails_AndTheCoincidencesAreNamed</c> measures both
     /// halves, and <c>TheGridRefusal_ConcedesTheBandSometimesFits</c> pins the message against overclaiming
     /// them away.

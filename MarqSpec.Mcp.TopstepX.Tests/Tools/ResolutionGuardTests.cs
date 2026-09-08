@@ -567,7 +567,7 @@ public sealed class ResolutionGuardTests : IDisposable
 
         misses.Should().BeEmpty(
             "every resolution at or below the ceiling must produce an expected bucket on every trade date, "
-            + "at every session close an operator can configure");
+            + "at every admissible session close");
     }
 
     [Fact]

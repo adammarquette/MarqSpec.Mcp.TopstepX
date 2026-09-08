@@ -29,8 +29,8 @@ What genuinely needs a real database:
 
 **The line: a test that reaches a store belongs here; one that refuses before reaching a store stays in
 `…​.Tests`.** That is why the guard suites are *split* rather than moved — `ResolutionGuardTests` keeps its
-eighteen rejections, and its one "a valid one still answers" case lives here as
-`ResolutionGuardServedReadTests`. Splitting is the price of keeping the cheap tier cheap, and the measurement
+rejections, and its "a valid one still answers" cases — an ordinary resolution, and the
+ceiling itself — live here as `ResolutionGuardServedReadTests`. Splitting is the price of keeping the cheap tier cheap, and the measurement
 says pay it: a container costs **~8 s to start and migrate** (image pulled) against a unit tier that runs
 1,071 tests in **~3 s**.
 

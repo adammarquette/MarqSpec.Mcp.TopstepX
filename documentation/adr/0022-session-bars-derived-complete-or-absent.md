@@ -54,14 +54,17 @@ than reversing it.
 **1. A resolution of a session's length or longer is refused. The day is not a coarse bar; it is a session
 bar.**
 
-`ToolGuards.MaxResolutionMinutes` is **1,379** — one minute short of the 1,380-minute session — and every tool
-that takes a resolution refuses 1,380 and above with the value named:
+`ToolGuards.SessionMinutes` is **1,380** and every tool that takes a resolution refuses that and above with
+the value named:
 
-> resolutionMinutes 1440 is coarser than the largest bar this server serves, 1379 minutes, one minute short of
-> a session (24 hours less the venue's one-hour maintenance window). A bucket that long or longer can never
-> close inside a single session, so it is a session bar rather than a bar resolution. The day and the week are
-> not unavailable and they are not out of range; ask get_session_bars or get_latest_session_bars (gh#496)
-> for them.
+> resolutionMinutes 1440 is a whole session or longer — a session is 1380 minutes, 24 hours less the venue's
+> one-hour maintenance window. A bucket that long or longer can never close inside a single session, so it is
+> a session bar rather than a bar resolution. The day and the week are not unavailable and they are not out
+> of range; ask get_session_bars or get_latest_session_bars (gh#496) for them. The largest bar resolution
+> this server serves is 690 minutes.
+
+`ToolGuards.MaxResolutionMinutes` was **1,379** when this was written — one minute short of the session — and
+is **690** since the update below closed the residue this record left at that boundary.
 
 **The refusal names where the answer lives**, because refusing silently would swap one wrong answer for a
 second: a caller reading "coarser than the largest bar" with nothing after it concludes the market has no
@@ -212,20 +215,20 @@ invalidated by every base write, which is more machinery than recomputing the ab
 - **`get_market_snapshot` and `get_key_levels` are unchanged.** Neither takes a session, and the level methods
   already do their own session reasoning over base bars
   ([ADR-0013](0013-levels-are-computed-on-read.md), `R-3.13`).
-- **A recorded residue: resolutions from 690 to 1,379 remain servable and only partially align with a
-  session.** A 690-minute bar is half a session by length and lands wherever the UTC grid puts it; the
-  calendar expects the buckets that close inside the session and not the ones that do not, so the series is
-  legal, complete by its own rule, and not a session. Nothing here refuses it, and this sentence exists so the
-  next reader knows that was a decision rather than an oversight.
-- **The ceiling itself has that residue — 1,379 is inside the range this record left servable.** A bucket of
+- **A recorded residue, now closed by the update below: resolutions from 691 to 1,379 remained servable and
+  only partially aligned with a session.** A 690-minute bar is half a session by length and lands wherever the
+  UTC grid puts it; the calendar expects the buckets that close inside the session and not the ones that do
+  not, so the series was legal, complete by its own rule, and not a session. Nothing *here* refused it, and
+  these sentences existed so the next reader knew that was a decision rather than an oversight. The rule that
+  separates "coarse but honest" from "coarse and misaligned" is **gh#538**, and the *Update (2026-09-08)*
+  below is it.
+- **The ceiling itself had that residue — 1,379 was inside the range this record left servable.** A bucket of
   nearly a session's length is expected only when the bucket grid — anchored at the .NET epoch, not at the
   session open — lands within a minute of 17:00 Central, which is a coincidence rather than a rule and
   happens on a handful of scattered trade dates a decade. On every other one, `get_bars` at 1,379 and through
-  its neighbourhood still answers an **empty series with `venueRequests: 0`** — the exact shape this record
-  abolished at 1,440, moved by one minute rather than removed. The refusal is drawn at the session's length
-  because that is the line the *definition* of a session bar supports, and nothing above it can ever be a bar;
-  refusing 1,379 as well needs a rule separating "coarse but honest" from "coarse and misaligned", and that
-  rule is **gh#538**, not this record.
+  its neighbourhood answered an **empty series with `venueRequests: 0`** — the exact shape this record
+  abolished at 1,440, moved by one minute rather than removed. The refusal was drawn at the session's length
+  because that is the line the *definition* of a session bar supports, and nothing above it can ever be a bar.
 
 ## Update (2026-09-07) — what a session-bar read costs
 
@@ -306,6 +309,63 @@ served from the store. So the read settles to a store-only answer once the base 
 venue's empty ranges, which is one read later than a caller expects
 (`SessionBarToolServedReadTests.GetLatestSessionBars_AnchorsOnTheLastClosedSession` drives all three).
 
+## Update (2026-09-08) — the ceiling is half a session, and the residue is closed
+
+**The refusal above moved from 1,380 down to 691, and the reason it stopped at 1,380 was the wrong reason to
+stop (gh#538).** *Consequences* recorded the residue honestly and left it: a bucket **narrower** than a
+session can still fail to fit inside one, because `BarGapDetector.AlignUp` anchors buckets on a grid struck
+from the .NET epoch rather than on the session open. `get_bars("MES", 1379, …)` answered `[]` with
+`venueRequests: 0` on all but a handful of scattered trade dates — the shape *Decision §1* abolished at 1,440,
+moved by one minute rather than removed.
+
+**The bound is derived, and the derivation is the whole point of recording it here.** A session of `S` minutes
+admits an `r`-minute bucket exactly when a multiple of `r` lands in `[open, close - r]` — a run of
+`S - r + 1` consecutive whole minutes. A run of `n` consecutive integers is *certain* to contain a multiple of
+`r` only while `n >= r`, so the guarantee holds exactly while `S - r + 1 >= r`, i.e. `r <= (S + 1) / 2`. At
+`S = 1380` that is **690**, which is also 1,380's largest proper divisor — the pigeonhole bound and "the
+largest divisor of the session length" gh#538 offered as alternatives name the same number, so neither is
+quoted alone. `ToolGuards.MaxResolutionMinutes` is now written as `(SessionMinutes + 1) / 2` rather than as a
+literal, because a hard-coded 690 nobody can re-derive is worse than a computed bound with its formula beside
+it.
+
+**It depends on every session being exactly `S` minutes in UTC, and that is a measured fact rather than an
+assumption.** A US daylight-saving transition falls on a Sunday at 02:00 Central, which is inside no session,
+so the wall-clock span and the elapsed span never disagree —
+`ResolutionGuardTests.Sessions` builds both bounds through `MarketClock` and the sweeps below would fail if
+they ever did.
+
+**Refusal, not a warning field, and the alternative was real.** gh#538's title offered both. A per-call
+`partialCoverage` flag would have kept 691–1,379 servable and told the caller the series may be short — but an
+empty `bars` array beside a warning is still an empty array, and a caller reads it as an instrument that
+printed nothing whatever sits next to it. That is this repository's third non-negotiable, and it is `R-2.3`
+one layer out: a missing number is missing, never a default. Two further reasons: *Decision §1* already chose
+refusal for the identical shape at 1,440, so flagging the band below it would have left that boundary
+arbitrary; and the flag is a new field on **every** bar-returning tool — `get_bars`, `get_latest_bars`, the
+indicator, footprint, volume-profile and snapshot surfaces — to serve widths nobody has asked for.
+
+**Two refusals now, not one, because there are two different mistakes.** At or above `SessionMinutes` the
+caller did not ask for a bar resolution at all and the remedy is another tool; between `MaxResolutionMinutes`
+and that line the caller asked for a real bar the grid cannot be relied on to fit, and the remedy is a
+narrower one. One message would have had to give both remedies, and "ask for a narrower bar" is wrong advice
+for somebody who wanted a daily bar.
+
+**The refusal over-rejects four widths, and says so rather than overstating what it measured.** Swept over
+sixteen years of trade dates at a 16:00 Central close, exactly four widths in 691–1,379 — **692, 696, 700 and
+720** — fit on *every* one; the rest fail on between 0.14% and 99.86% of them. Those four are refused with the
+rest, because the bound is a guarantee that survives a different `SessionCloseCentral` and they are an
+accident of this one. A message claiming the band never produces a bar would have been shorter and would not
+have been true. `ResolutionGuardTests.AboveTheCeiling_TheGuaranteeFails_AndTheCoincidencesAreNamed` pins that
+set exactly, and `EveryServableResolution_FitsInsideEverySession` sweeps every width at or below the ceiling
+against every trade date over three years — the claim is checked by sweep rather than by example, because a
+refusal that looks right on examples is how gh#568's first message got a 6.3% error rate past review.
+
+**What moved with it.** The last servable `toUtc` is `9999-12-28T00:59:59.9999999Z` at the ceiling rather than
+`9999-12-27T02:01:59.9999999Z`, since that bound is two bar spans plus three days. `get_market_snapshot` is
+untouched: its defaults are 5 and 60 and its 240-minute slice is far inside the new ceiling.
+`KeyLevelDetectionPlumbingTests` drove `SessionBucketGuard` through the tool at 720 minutes and now does so at
+240, which refuses by the same arm; the twelve-hour cases keep their coverage in `SessionBucketGuardTests`,
+below the tool boundary.
+
 ## Follow-ups
 
 - **Cross-check the derived `full` series against the vendor's `Day` unit.** gh#494's boundary measurement is
@@ -318,6 +378,6 @@ venue's empty ranges, which is one read later than a caller expects
   metals will need it before equity index does.
 - **A session slice on `get_market_snapshot`.** Deliberately out of gh#496; worth revisiting once the session
   tools have been used.
-- **A refusal for partial-coverage resolutions (gh#538)**, the residue named in *Consequences* — the
-  neighbourhood below the ceiling, 1,379 included, that still answers empty with `venueRequests: 0`. It needs
-  a rule that distinguishes "coarse but honest" from "coarse and misaligned", and nobody has written one.
+- ~~**A refusal for partial-coverage resolutions (gh#538)**~~ — **done**, in *Update (2026-09-08)* above.
+  The rule that separates "coarse but honest" from "coarse and misaligned" is the pigeonhole bound on the
+  session length, and the ceiling is now 690.

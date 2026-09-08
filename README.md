@@ -452,10 +452,12 @@ candidate depth.
 **What it deletes, and why.** Buckets inside the window that another contract held and the new winner does
 not restate — those rows are that contract losing a day it did not carry. Buckets carrying **no** contract
 at all are deleted on the same rule and counted **apart**, because folding the two together would report a
-contract as having lost buckets it never held. And every `BarCoverage` claim **overlapping** the window goes,
-for every contract: a settled "this range was empty" memo never expires and can reach into the window from
-outside it, and left standing it would suppress the next read of a window whose decision has just been
-overturned. Losing a claim outside the window costs one re-ask. The indicators are re-projected in the same
+contract as having lost buckets it never held. And every `BarCoverage` claim **overlapping a trade date that
+actually received a winner** goes, for every contract: a settled "this range was empty" memo never expires and
+can reach into a re-decided day from outside it, and left standing it would suppress the next read of a day
+whose decision has just been overturned. A slice nobody could decide leaves its claims standing — sweeping the
+whole effective window would open holes a later warm read refills under degradation. Losing a claim outside a
+winner's session costs one re-ask. The indicators are re-projected in the same
 transaction — including on a run that only deleted, or values would stand over bars that no longer exist. That
 reach is **the pairs the catalogue currently computes**, which is the projection's own scope and not a
 narrowing added here: a value under an `(Indicator, Period)` pair the catalogue was later reconfigured away

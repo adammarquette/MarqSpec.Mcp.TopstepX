@@ -352,6 +352,15 @@ public sealed class BarReselector(
         DateTimeOffset now,
         CancellationToken cancellationToken)
     {
+        // NOTHING DECIDED MEANS NOTHING TO WRITE. A window whose every slice was skipped leaves bars
+        // untouched; sweeping coverage (or opening a unit of work that only re-projects) would still
+        // erase memos for days nobody re-decided, and a later warm read would refill those holes under
+        // degradation and serve thin wrong-contract bars as ordinary history.
+        if (selections.Count == 0)
+        {
+            return new SeriesOutcome(0, 0, 0, 0, 0, 0);
+        }
+
         Dictionary<DateOnly, string> winners = selections.ToDictionary(
             static selection => selection.TradeDate,
             static selection => selection.ContractId);
@@ -404,20 +413,36 @@ public sealed class BarReselector(
                 (int removed, int unattributed) = await RemoveLosersAsync(
                     series, instrument, window, before, winners, winnerBars, token).ConfigureAwait(false);
 
-                // EVERY CLAIM THAT TOUCHES THE WINDOW GOES, for every contract -- on OVERLAP rather than on
-                // containment. A coverage row says a contract answered a range with nothing, and a settled
-                // one never expires; MemoiseEmpty cuts a claim at the settled age and Union merges touching
-                // rows, so a claim reaching into the window from outside it is the ordinary shape. Left
-                // standing, that straddling memo would suppress the next read of a window whose decision has
-                // just been overturned. Losing a claim outside the window costs one re-ask.
-                int coverage = await _database.BarCoverage
-                    .Where(c => c.Venue == series.Venue
-                        && c.Instrument == instrument.Symbol
-                        && c.ResolutionMinutes == series.ResolutionMinutes
-                        && c.RangeStart < window.End
-                        && c.RangeEnd > window.Start)
-                    .ExecuteDeleteAsync(token)
-                    .ConfigureAwait(false);
+                // ONLY THE TRADE DATES THAT GOT A WINNER LOSE THEIR CLAIMS, for every contract -- on OVERLAP
+                // rather than on containment, and scoped to each winner's session rather than to the whole
+                // effective window. A coverage row says a contract answered a range with nothing, and a
+                // settled one never expires; MemoiseEmpty cuts a claim at the settled age and Union merges
+                // touching rows, so a claim reaching into a re-decided day from outside it is the ordinary
+                // shape. Left standing, that straddling memo would suppress the next read of a day whose
+                // decision has just been overturned. A mixed window can skip one slice and decide another;
+                // sweeping the whole effective range would drop memos for the skipped day, and a later warm
+                // read would refill under degradation. Losing a claim outside a winner's session costs one
+                // re-ask.
+                int coverage = 0;
+
+                foreach (DateOnly tradeDate in winners.Keys.OrderBy(static date => date))
+                {
+                    DateTimeOffset open = MarketClock
+                        .FromMarket(tradeDate.AddDays(-1), _calendar.SessionOpen)
+                        .ToUniversalTime();
+                    DateTimeOffset close = MarketClock
+                        .FromMarket(tradeDate, _calendar.SessionClose)
+                        .ToUniversalTime();
+
+                    coverage += await _database.BarCoverage
+                        .Where(c => c.Venue == series.Venue
+                            && c.Instrument == instrument.Symbol
+                            && c.ResolutionMinutes == series.ResolutionMinutes
+                            && c.RangeStart < close
+                            && c.RangeEnd > open)
+                        .ExecuteDeleteAsync(token)
+                        .ConfigureAwait(false);
+                }
 
                 // NO SAVE IS NEEDED HERE, and saying so is the point of the comment. GetBarsAsync saves
                 // before projecting because ApplyAsync can leave tracked work, and the projector reads the
@@ -606,7 +631,9 @@ public sealed class BarReselector(
     /// <param name="UnattributedRemoved">Rows carrying no contract id that the winner does not restate.</param>
     /// <param name="TradeDatesChanged">Trade dates that changed hands.</param>
     /// <param name="Ties">Trade dates whose top volume was shared.</param>
-    /// <param name="CoverageRemoved">Coverage claims overlapping the window that were dropped.</param>
+    /// <param name="CoverageRemoved">
+    /// Coverage claims overlapping a trade date that actually received a winner and were therefore dropped.
+    /// </param>
     private sealed record SeriesOutcome(
         int BarsRevised,
         int BarsRemoved,

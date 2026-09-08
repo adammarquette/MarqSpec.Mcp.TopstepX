@@ -60,8 +60,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   part would leave two contracts inside one day; both windows are logged, and a series held only in the
   widened part is re-decided too. It **deletes** the buckets the new winner does not restate — those another
   contract held, and, counted apart, those carrying no contract at all — and every `BarCoverage` claim
-  **overlapping** the window, for every contract, since a settled memo straddling it would suppress the next
-  read of a window whose decision has just been overturned. Indicators are re-projected in the same unit of
+  **overlapping a trade date that actually received a winner**, for every contract, since a settled memo
+  straddling a re-decided day would suppress the next read of it; a slice nobody could decide leaves its
+  claims standing. Indicators are re-projected in the same unit of
   work, unconditionally, so a delete-only run leaves no value standing over a bar that no longer exists —
   **for every `(Indicator, Period)` pair the catalogue computes**, which is the projection's own scope: a
   value under a pair the catalogue was later reconfigured away from is not walked and survives the delete

@@ -205,8 +205,10 @@ The server serves OHLCV bars for a futures instrument at a requested resolution 
   and the run reports the window asked for beside the one re-decided. Buckets a winner does not restate are
   **deleted**, those carrying no contract counted apart from those another contract held, because a
   contract that never held a bucket must not be reported as having lost it. Every coverage claim (`R-1.7`)
-  **overlapping** the window is dropped: a claim reaching in from outside would otherwise suppress the next
-  read of a window whose decision has just been overturned, and losing a claim outside the window costs one
+  **overlapping a trade date that actually received a winner** is dropped: a claim reaching in from outside
+  would otherwise suppress the next read of a day whose decision has just been overturned, and a slice
+  nobody could decide leaves its claims standing — sweeping the whole effective window would open holes a
+  later warm read refills under degradation. Losing a claim outside a winner's session costs one
   re-ask. The indicators are then re-projected over what is left, in the same unit of work, so no value
   **under a pair the catalogue computes** outlives the bars it was computed from (`R-2.8`) — including on a
   run that only deleted. That scope is `R-2.8`'s own and is not widened here: a value under a pair the

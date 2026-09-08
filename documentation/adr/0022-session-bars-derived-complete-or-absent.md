@@ -404,11 +404,10 @@ untouched: its defaults are 5 and 60 and its 240-minute slice is far inside the 
 240, which refuses by the same arm; the twelve-hour cases keep their coverage in `SessionBucketGuardTests`,
 below the tool boundary.
 
-**What is deliberately *not* done here.** `SessionCloseCentral` still has no range validation, so an operator
-can still configure a close whose session loses an hour. That is now harmless to *this* bound — 660 holds at
-every close — but it is a real gap in the calendar's contract and it is filed as its own card rather than
-smuggled in here: validating it would let the ceiling go back to 690, and that is a trade to make on the
-evidence, not as a side effect of a resolution guard. It is **gh#613**.
+**What was deliberately deferred here and is now done elsewhere.** Refusing a `SessionCloseCentral` before
+02:00 Central was filed as **gh#613** rather than folded into this guard — it is now **done** in
+[ADR-0005](0005-session-aware-gap-detection.md) *Update (2026-09-08)*. The ceiling stays at 660 until a
+separate card justifies 690.
 
 ## Follow-ups
 
@@ -425,8 +424,6 @@ evidence, not as a side effect of a resolution guard. It is **gh#613**.
 - ~~**A refusal for partial-coverage resolutions (gh#538)**~~ — **done**, in *Update (2026-09-08)* above.
   The rule that separates "coarse but honest" from "coarse and misaligned" is the pigeonhole bound on the
   **shortest** session length, and the ceiling is now 660.
-- **Validate `SessionCloseCentral` so a session cannot silently lose an hour.** A close before 02:00 Central
-  puts the deleted spring-forward hour inside the session, making it 1,320 minutes once a year. The
-  resolution ceiling is derived from that shortest length and so is safe either way, but nothing else in the
-  calendar's contract says a session may be short, and refusing such a close would let the ceiling go back to
-  690. Deliberately not folded into gh#538 — it is **gh#613** (PR #607 review).
+- ~~**Validate `SessionCloseCentral` so a session cannot silently lose an hour.**~~ — **done**, in
+  [ADR-0005](0005-session-aware-gap-detection.md) *Update (2026-09-08)* (gh#613). Closes before 02:00
+  Central are refused at calendar construction; the ceiling stays at 660 until a separate card justifies 690.

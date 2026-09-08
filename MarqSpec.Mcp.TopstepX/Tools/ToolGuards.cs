@@ -35,18 +35,12 @@ public sealed class ToolGuards(IOptions<MarketDataOptions> options)
     /// number <see cref="ShortestSessionMinutes"/> is taken from.
     /// </para>
     /// <para>
-    /// <b>It is a WALL-CLOCK span, and the elapsed span can be shorter — which is why the resolution
-    /// ceiling is not derived from it.</b> A session runs from the reopen on the previous market date to the
-    /// close on the trade date, and a US daylight-saving transition falls on a Sunday at 02:00 Central. At
-    /// the shipped 16:00 close the reopen is 17:00, so Monday's session starts after that instant and no
-    /// session ever contains a transition — every one is exactly 1,380 minutes. Spring-forward <i>deletes</i>
-    /// the wall-clock hour [02:00, 03:00), so at a close before 02:00 the reopen sits inside or before that
-    /// hour, Monday's session loses it, and that session is <b>1,320</b> minutes long once a year — measured
-    /// across every whole-minute close, the hundred and twenty from 00:00 to 01:59 are the ones that
-    /// shrink. <c>SessionCloseCentral</c> is operator configuration with no
-    /// range check, so a bound that assumed 1,380 would be true only for the default (gh#538, PR #607
-    /// review). Whether such a close should be refused outright is gh#613; this bound does not need it to
-    /// be, which is why the two are separate.
+    /// <b>It is a WALL-CLOCK span.</b> A session runs from the reopen on the previous market date to the
+    /// close on the trade date. At the shipped 16:00 close the reopen is 17:00, so every session is exactly
+    /// 1,380 minutes. A close before 02:00 Central would put the spring-forward transition inside the
+    /// session and shorten it to 1,320 minutes once a year — that close is refused at calendar construction
+    /// (gh#613), so <see cref="ShortestSessionMinutes"/> equals this value for every configuration the server
+    /// accepts.
     /// </para>
     /// </remarks>
     public const int SessionMinutes = (24 * 60) - 60;
@@ -55,17 +49,13 @@ public sealed class ToolGuards(IOptions<MarketDataOptions> options)
     /// The shortest session this calendar can produce at any configured close, in minutes.
     /// </summary>
     /// <remarks>
-    /// <see cref="SessionMinutes"/> less the hour a spring-forward transition takes out of a session that
-    /// contains one, and the only length below the nominal one that occurs. The autumn transition does
-    /// <i>not</i> lengthen a session in return: the reopen then lands in the ambiguous hour, and
-    /// <see cref="MarketClock.FromMarket"/> resolves an ambiguous wall-clock time to <b>standard</b> time,
-    /// so the session stays 23 elapsed hours. Measured rather than reasoned —
-    /// <c>ResolutionGuardTests.TheSessionLengthCensus_ShowsAShortestSessionOf1320_AtEveryCloseBefore0100</c>
-    /// sweeps every whole-minute close and sees exactly 1,320 and 1,380. This is the number
-    /// <see cref="MaxResolutionMinutes"/> is derived from, so that the ceiling holds for a configured close
-    /// this server never reads.
+    /// Equal to <see cref="SessionMinutes"/> since gh#613: a close whose reopen lands before 03:00 Central
+    /// is refused at calendar construction, because spring-forward deletes the wall-clock hour [02:00, 03:00)
+    /// and nothing else in the calendar's contract says a session may be an hour shorter once a year.
+    /// <see cref="MaxResolutionMinutes"/> remains at 660 rather than the pigeonhole bound of 690 — raising
+    /// the ceiling is a separate trade on its own evidence, not a side effect of this refusal.
     /// </remarks>
-    public const int ShortestSessionMinutes = SessionMinutes - 60;
+    public const int ShortestSessionMinutes = SessionMinutes;
 
     /// <summary>
     /// The coarsest bar this server serves, in minutes — half the shortest session.
@@ -89,13 +79,10 @@ public sealed class ToolGuards(IOptions<MarketDataOptions> options)
     /// for an even one alike.
     /// </para>
     /// <para>
-    /// <b><c>S</c> is <see cref="ShortestSessionMinutes"/> and not <see cref="SessionMinutes"/>, and that is
-    /// the whole of the PR #607 review's first finding.</b> Derived from 1,380 the ceiling is 690, and 690
-    /// is <i>wrong</i> at a close before 02:00, where the session is 1,320 minutes on a transition weekend:
-    /// at <c>SessionCloseCentral = "00:30"</c>, <c>get_bars</c> at 690 answers an empty series on trade date
-    /// 2030-03-11. That is this card's own defect, reintroduced at a width the card permitted. Derived from
-    /// 1,320 the ceiling is <b>660</b>, and 660 is measured to fit every trade date at every whole-minute
-    /// close. It is also <b>tight</b>: 661, the very next width, already misses.
+    /// <b><c>S</c> is <see cref="ShortestSessionMinutes"/>, which equals <see cref="SessionMinutes"/> since
+    /// gh#613 refused the closes that would shorten a session.</b> The pigeonhole bound on 1,380 is 690; this
+    /// ceiling stays at <b>660</b> until a separate card justifies raising it — the conservative bound still
+    /// fits every admissible close, and 661 is measured to miss.
     /// </para>
     /// <para>
     /// <b>The two derivations gh#538 offered agree here by arithmetic accident, so only one is used.</b>
@@ -140,7 +127,7 @@ public sealed class ToolGuards(IOptions<MarketDataOptions> options)
     /// <see cref="LookbackWindow"/>: the ceiling on its own does not make that arithmetic safe.
     /// </para>
     /// </remarks>
-    public const int MaxResolutionMinutes = (ShortestSessionMinutes + 1) / 2;
+    public const int MaxResolutionMinutes = 660;
 
     /// <summary>
     /// How far past a window's end the session calendar reasons, on top of the bucket grid's own reach.
@@ -450,8 +437,9 @@ public sealed class ToolGuards(IOptions<MarketDataOptions> options)
                 + MaxResolutionMinutes.ToString(System.Globalization.CultureInfo.InvariantCulture)
                 + " is the widest bucket that fits on every trade date at every session close an operator "
                 + "can configure, because a run of S - r + 1 consecutive minutes holds a multiple of r only "
-                + "while S - r + 1 >= r, and S is 1320 rather than 1380 for a close before 02:00 Central, "
-                + "where a session contains the spring-forward transition and loses an hour. It is tight: "
+                + "while S - r + 1 >= r, and S is "
+                + ShortestSessionMinutes.ToString(System.Globalization.CultureInfo.InvariantCulture)
+                + " minutes for every session close this server accepts. It is tight: "
                 + "661 already misses. Widths above it are not all useless — every one from 661 to 690 fits "
                 + "every trade date at the shipped 16:00 close, as do 692, 696, 700 and 720 — but which "
                 + "widths those are depends on the configured close, which this check deliberately does not "

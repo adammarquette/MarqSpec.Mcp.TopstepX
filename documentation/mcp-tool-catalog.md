@@ -121,34 +121,30 @@ page against either**, so check it against the code, never against another docum
   bound is **derived, not chosen**: a session of `S` minutes admits an `r`-minute bucket only when a multiple
   of `r` lands in `[open, close - r]`, a run of `S - r + 1` consecutive minutes, and a run of `n` consecutive
   integers is certain to hold a multiple of `r` only while `n >= r` — so the guarantee holds exactly while
-  `r <= (S + 1) / 2`. **`S` is the *shortest* session, 1,320, and not the nominal 1,380**: `SessionCloseCentral`
-  has no range validation, and at a close before 02:00 Central the reopen falls inside the wall-clock hour
-  spring-forward deletes, so that session is an hour shorter once a year. Derived from 1,380 the ceiling would
-  be 690, and 690 answers an empty series at `SessionCloseCentral = "00:30"` on trade date 2030-03-11 — this
-  card's own defect at a width it permitted (PR #607 review). Derived from 1,320 it is **660**, and 660 is
-  **tight**: 661 already misses. It is a **refusal rather than a warning field**, because an empty series
-  beside a flag is still an empty series and reads as a market that printed nothing:
+  `r <= (S + 1) / 2`. **`S` is 1,380 for every admissible close** — closes before 02:00 Central are refused
+  at calendar construction (gh#613, [ADR-0005](adr/0005-session-aware-gap-detection.md) *Update (2026-09-08)*).
+  The served ceiling stays at **660**; the pigeonhole bound on 1,380 is 690, but raising it is a separate
+  trade. 660 is **tight**: 661 already misses. It is a **refusal rather than a warning field**, because an
+  empty series beside a flag is still an empty series and reads as a market that printed nothing:
 
   > resolutionMinutes 1379 is coarser than the largest bar this server serves, 660 minutes — half of the
-  > 1320-minute shortest session. Buckets are anchored on a fixed UTC grid rather than on the session open, so
+  > 1380-minute shortest session. Buckets are anchored on a fixed UTC grid rather than on the session open, so
   > a bucket wider than half a session is not guaranteed to open and close inside one: whether it fits depends
   > on where that grid falls on the day, and on the trade dates where it does not fit the series comes back
   > empty with nothing said. 660 is the widest bucket that fits on every trade date at every session close an
   > operator can configure, because a run of S - r + 1 consecutive minutes holds a multiple of r only while
-  > S - r + 1 >= r, and S is 1320 rather than 1380 for a close before 02:00 Central, where a session contains
-  > the spring-forward transition and loses an hour. It is tight: 661 already misses. Widths above it are not
-  > all useless — every one from 661 to 690 fits every trade date at the shipped 16:00 close, as do 692, 696,
-  > 700 and 720 — but which widths those are depends on the configured close, which this check deliberately
-  > does not read, so they are refused with the rest rather than served by coincidence. Ask for 660 minutes or
-  > less; for the day and the week ask get_session_bars or get_latest_session_bars (gh#496).
+  > S - r + 1 >= r, and S is 1380 minutes for every session close this server accepts. It is tight: 661 already
+  > misses. Widths above it are not all useless — every one from 661 to 690 fits every trade date at the shipped
+  > 16:00 close, as do 692, 696, 700 and 720 — but which widths those are depends on the configured close,
+  > which this check deliberately does not read, so they are refused with the rest rather than served by
+  > coincidence. Ask for 660 minutes or less; for the day and the week ask get_session_bars or
+  > get_latest_session_bars (gh#496).
 
   **It over-rejects, and the message concedes it rather than claiming the band never works.** At the shipped
   16:00 close thirty-four widths above the ceiling fit on every trade date over sixteen years — all of 661 to
-  690, plus 692, 696, 700 and 720. Widen the sweep to the closes whose session can lose an hour and **two**
-  survive; widen the window at one such close from one year to sixteen and the count falls 31 → 28 → 19. A
-  survivor list is what a sweep failed to disprove, which is not what a bound is, and `ValidateResolution` is
-  deliberately `static` and reads no configuration — so serving them would make the servable set depend
-  invisibly on `SessionCloseCentral`.
+  690, plus 692, 696, 700 and 720. A survivor list is what a sweep failed to disprove, which is not what a
+  bound is, and `ValidateResolution` is deliberately `static` and reads no configuration — so serving them
+  would make the servable set depend invisibly on `SessionCloseCentral`.
 
   **A bar of a session's length or longer is a session bar, not a coarse resolution**: it is defined on the
   CME trade date rather than on the bucket grid, and it is served by `get_session_bars` and

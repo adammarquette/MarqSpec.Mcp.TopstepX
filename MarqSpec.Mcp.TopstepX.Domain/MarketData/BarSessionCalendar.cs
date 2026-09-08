@@ -60,9 +60,55 @@ public sealed class BarSessionCalendar
                 "The maintenance window must be positive and shorter than a day.");
         }
 
+        RefuseIfSpringForwardWouldShortenSession(sessionClose, window);
+
         SessionClose = sessionClose;
         MaintenanceWindow = window;
         _holidays = [.. holidays];
+    }
+
+    /// <summary>
+    /// The trade date used to measure how long a session would be when spring-forward falls inside it.
+    /// </summary>
+    /// <remarks>
+    /// US spring-forward is 02:00 Central on a Sunday; Monday 2030-03-11 is the example named in gh#613.
+    /// </remarks>
+    private static readonly DateOnly SpringForwardExampleTradeDate = new(2030, 3, 11);
+
+    /// <summary>
+    /// When the session close is before 02:00 Central, the reopen lands before 03:00 and spring-forward can
+    /// fall inside the session once a year.
+    /// </summary>
+    private static void RefuseIfSpringForwardWouldShortenSession(TimeOnly sessionClose, TimeSpan maintenanceWindow)
+    {
+        if (sessionClose >= new TimeOnly(2, 0))
+        {
+            return;
+        }
+
+        int shortenedMinutes = SessionLengthMinutes(
+            SpringForwardExampleTradeDate,
+            sessionClose.Add(maintenanceWindow),
+            sessionClose);
+        int nominalMinutes = (int)(TimeSpan.FromDays(1) - maintenanceWindow).TotalMinutes;
+
+        throw new ArgumentOutOfRangeException(
+            nameof(sessionClose),
+            sessionClose,
+            "Session close '"
+            + sessionClose.ToString("HH:mm", CultureInfo.InvariantCulture)
+            + "' puts the spring-forward transition inside the session, which would be "
+            + shortenedMinutes.ToString(CultureInfo.InvariantCulture)
+            + " minutes long once a year rather than "
+            + nominalMinutes.ToString(CultureInfo.InvariantCulture)
+            + ".");
+    }
+
+    private static int SessionLengthMinutes(DateOnly tradeDate, TimeOnly sessionOpen, TimeOnly sessionClose)
+    {
+        DateTimeOffset open = MarketClock.FromMarket(tradeDate.AddDays(-1), sessionOpen).ToUniversalTime();
+        DateTimeOffset close = MarketClock.FromMarket(tradeDate, sessionClose).ToUniversalTime();
+        return (int)(close - open).TotalMinutes;
     }
 
     /// <summary>The daily session close, in Central wall-clock time.</summary>

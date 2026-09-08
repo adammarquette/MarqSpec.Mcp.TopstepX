@@ -137,6 +137,26 @@ public sealed class BarSessionCalendarTests
     }
 
     [Fact]
+    public void Parse_RefusesASessionCloseBeforeTwoAmCentral_NamingTheLengthItWouldProduce()
+    {
+        // gh#613: spring-forward deletes [02:00, 03:00) Central. At 00:30 the reopen is 01:30, so Monday's
+        // session on 2030-03-11 is 1,320 elapsed minutes rather than 1,380 — once a year, silently.
+        Action parse = () => BarSessionCalendar.Parse("00:30", []);
+        parse.Should().Throw<ArgumentOutOfRangeException>()
+            .WithMessage("*00:30*", "the refusal names the close the operator configured")
+            .WithMessage("*1320*", "and the session length it would produce on a spring-forward trade date");
+    }
+
+    [Fact]
+    public void Parse_AcceptsASessionCloseAtTwoAmCentral()
+    {
+        // 02:00 reopens at 03:00, after the deleted hour — the first whole-minute close that always keeps
+        // the transition outside the session.
+        Action parse = () => BarSessionCalendar.Parse("02:00", []);
+        parse.Should().NotThrow();
+    }
+
+    [Fact]
     public void Parse_RefusesAMalformedHoliday()
     {
         Action parse = () => BarSessionCalendar.Parse("16:00", ["19 August 2026"]);

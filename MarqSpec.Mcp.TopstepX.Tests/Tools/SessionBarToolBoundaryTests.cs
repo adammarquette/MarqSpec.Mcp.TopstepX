@@ -17,7 +17,8 @@ namespace MarqSpec.Mcp.TopstepX.Tests.Tools;
 
 /// <summary>
 /// What <c>get_session_bars</c> and <c>get_latest_session_bars</c> refuse, and that they refuse it before
-/// they spend anything (gh#500).
+/// they spend anything (gh#500) — plus the one read they <b>answer</b> without spending anything either
+/// (gh#599).
 /// </summary>
 /// <remarks>
 /// <para>
@@ -28,7 +29,8 @@ namespace MarqSpec.Mcp.TopstepX.Tests.Tools;
 /// forever.
 /// </para>
 /// <para>
-/// <b>No container, and none needed (gh#387).</b> Every case here refuses, and the two counter assertions on
+/// <b>No container, and none needed (gh#387).</b> <b>No case here reaches a store</b> — which is the line the
+/// QA contract actually draws, and every case but one gets there by refusing. The two counter assertions on
 /// every test say what they measure and no more: <b>the VENUE was not reached</b>. Neither is a statement
 /// about the store, and there is no cheap honest one to make here — the in-memory provider counts no reads,
 /// and "no session bar was written" would be green under a failure too, because the raw upsert cannot run
@@ -40,6 +42,12 @@ namespace MarqSpec.Mcp.TopstepX.Tests.Tools;
 /// a write are both observable — is
 /// <c>MarqSpec.Mcp.TopstepX.IntegrationTests.SessionBarToolServedReadTests</c>: a boundary proven only to
 /// refuse is a boundary nobody has checked for over-reach.
+/// </para>
+/// <para>
+/// <b>The exception, and why it is not a demotion.</b> <see cref="AReadThatClosedNoSession_DecidesNoHistory"/>
+/// is answered rather than refused and still belongs here, because the arm it exercises returns before it
+/// opens the store or reaches the venue — there is no read and no write for a container to make observable,
+/// so the reason the served half lives a tier up does not reach it (gh#599).
 /// </para>
 /// </remarks>
 public sealed class SessionBarToolBoundaryTests : IDisposable
@@ -264,6 +272,70 @@ public sealed class SessionBarToolBoundaryTests : IDisposable
         (await call.Should().ThrowAsync<McpException>())
             .WithMessage("*count 100*", "the refusal names the parameter and the value")
             .WithMessage("*Ask for fewer*", "and says what to do about it");
+
+        NothingWasSpent();
+    }
+
+    /// <summary>
+    /// Answers a window whose every session is still running with <c>NotDecidedHere</c> — nothing decided.
+    /// </summary>
+    /// <returns>The running test.</returns>
+    /// <remarks>
+    /// <para>
+    /// <b>The one case on this boundary that is answered rather than refused</b>, and it is here for the same
+    /// reason the refusals are: the arm returns before it opens the store or reaches the venue, so there is no
+    /// write for a container to make observable. A window naming only sessions that have not closed is not a
+    /// caller mistake — it is "ask again after the close", and it is answered as one.
+    /// </para>
+    /// <para>
+    /// <b>What is pinned is the history field, because nothing else on this payload can carry it.</b> The bars
+    /// and the absences describe the sessions; <c>history.selection</c> describes how the contracts behind them
+    /// were chosen, and a read that closed no session chose nothing. Any other value is a report on a decision
+    /// this call never made — and <see cref="HistorySelection.AsTheCycleNames"/> in particular is the clean
+    /// bill of health <see cref="HistorySelection.NotDecidedHere"/>'s own remarks exist to withhold.
+    /// </para>
+    /// <para>
+    /// <b>Unpinned until gh#599</b>: fabricating a value on that arm left both suites green, measured on
+    /// PR #595 at <c>e0dcefd</c>. It also props up
+    /// <c>IntegrationTests.HistoricalContractSelectionTests.GetSessionBarsPayload_CarriesTheNarrowingOfItsBaseRead</c>,
+    /// which proves a narrowed session read does <i>not</i> come through this arm only because the arm
+    /// hard-codes <c>NotDecidedHere</c> where that test asserts <c>NarrowedByTheVenue</c> — a proof that would
+    /// stop holding, quietly and with nothing red, the moment this value changed.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public async Task AReadThatClosedNoSession_DecidesNoHistory()
+    {
+        // Monday 12:00 Central -- 17:00Z in August -- over the Monday alone: `rth` opened at 13:30Z and does
+        // not close until 20:00Z, and Tuesday's opens after the window ends. So the window names exactly one
+        // trade date, and none of the dates it names has closed.
+        SessionBarTools running = Tools(
+            5_000,
+            BarSessionCalendar.Parse("16:00", []),
+            new FakeTimeProvider(MondayStart.AddHours(17)));
+
+        ToolPayloads.SessionBarSeries series = await running.GetSessionBars(
+            "ES", "rth", MondayStart, MondayStart.AddDays(1), CancellationToken.None);
+
+        // Stated first, because the history assertion below is green over a great many other windows too: a
+        // read that closed a session and merely fetched nothing arrives at NotDecidedHere by an entirely
+        // different route, and this case is the one where no session closed at all.
+        series.Bars.Should().BeEmpty("no session in the window has finished, so none can be derived");
+
+        ToolPayloads.SessionAbsence monday = series.Absent.Should().ContainSingle().Subject;
+        monday.TradeDate.Should().Be(new DateOnly(2026, 8, 3));
+        monday.Reason.Should().Be(
+            SessionBarAbsence.NotClosed, "which is what makes this the no-closed-dates arm and not another");
+
+        series.History.Selection.Should().Be(
+            HistorySelection.NotDecidedHere,
+            "a read that closed no session decided no history, and any other value reports a decision this "
+            + "call never made");
+        series.History.Unresolved.Should().BeEmpty(
+            "there was no candidate set to drop an expiry from");
+
+        series.VenueRequests.Should().Be(0, "a read that can only answer 'not yet' must not cost the venue");
+        series.FetchedBuckets.Should().Be(0, "nor the store a write");
 
         NothingWasSpent();
     }

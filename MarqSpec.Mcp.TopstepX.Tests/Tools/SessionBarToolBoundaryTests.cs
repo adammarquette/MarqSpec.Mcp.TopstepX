@@ -190,10 +190,17 @@ public sealed class SessionBarToolBoundaryTests : IDisposable
     [Fact]
     public async Task AWindowThatClipsEverySession_IsRefused_NamingTheNearestWhole()
     {
-        // gh#568: nine hours of Monday over an `rth` session that runs 13:30Z to 20:00Z clips the whole
-        // thing. Left unrefused this answers exactly like an empty window -- bars: [] and absent: [] both,
-        // reading as "ES did not trade" -- so it must be refused before the venue is touched, same as every
-        // other guard on this boundary.
+        // gh#568: nine hours of Monday over an `rth` session that runs 13:30Z to 20:00Z holds no session
+        // that both opens and closes inside it. Left unrefused this answers exactly like an empty window --
+        // bars: [] and absent: [] both, reading as "ES did not trade" -- so it must be refused before the
+        // venue is touched, same as every other guard on this boundary.
+        //
+        // What NothingWasSpent pins here, and what it cannot: it proves the venue was not reached, and it
+        // reds if the guard is deleted. It would NOT red if the guard were merely moved BEHIND the read,
+        // because SessionBarService.GetAsync short-circuits on an empty trade-date list before it reaches
+        // the gateway -- so the counters stay zero either way, and no assertion available in this tier can
+        // separate the two orderings. That is the same limit every sibling case here carries, and the class
+        // remark is honest about it; this is not an ordering proof.
         DateTimeOffset to = MondayStart.AddHours(18);
 
         Func<Task> call = () =>

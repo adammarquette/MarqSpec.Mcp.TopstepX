@@ -390,11 +390,21 @@ dates that carry a session, so a Saturday or a holiday is never asked for either
 silently drops a date this server did ask about.
 
 **A window that names ZERO whole sessions is refused, not answered with two empty lists.** Nine hours of a
-trading day over a session that runs longer clips every session it touches, and left unrefused this would
-pass every other check and answer `bars: []` and `absent: []` both — the shape `ValidateWindow`'s
-empty-window refusal already exists to avoid, since it reads as "this instrument did not trade" rather than
-"the window is narrower than any session". The refusal names the window, the session, and the nearest whole
-session's bounds so the caller can widen to it (gh#568).
+trading day over a session that runs longer holds no session that both opens and closes inside it, and left
+unrefused this would pass every other check and answer `bars: []` and `absent: []` both — the shape
+`ValidateWindow`'s empty-window refusal already exists to avoid, since it reads as "this instrument did not
+trade" rather than "the window is narrower than any session". The refusal names the window and the session
+always; it names **the nearest whole session's bounds** — genuinely the nearer of the two candidates, the
+whole session on the trade date the window's start falls on and the one on the trade date its end falls on,
+compared by how much widening each would need — only when there is one to name. **When the window falls
+entirely on non-trading time** — a weekend, a declared holiday, the maintenance break, the gap between two
+sessions with no session on either side's trade date — no session can be named, and the message carries no
+bounds and says only to widen the window (gh#568).
+
+That second arm **narrows the "wholly contains and in neither list ⇒ did not trade" signal above**: a window
+holding *only* non-trading days now refuses rather than reporting them. The signal survives wherever the
+window also holds one whole session — December 24, 25 and 26 together still report the 25th in neither
+list — which is the only shape it was legible in anyway.
 
 `contracts` is built from the session bars' own contract ids, and **each session bar comes from exactly
 one** — a session whose base bars disagreed is `absent` with `SpansRoll` rather than spliced. So a roll falls
@@ -439,9 +449,11 @@ is touched:
    counted in bars of the session's own base resolution rather than in sessions. The remedy is *narrow the
    window, or ask the operator for a coarser base resolution for this session*: there is no
    `resolutionMinutes` here to coarsen;
-4. **zero whole sessions named** — every session the window touches is clipped at an edge, refused naming
-   the window, the session, and the nearest whole session's bounds (`SessionWindows.WindowFor` on the trade
-   date the window's start falls on) so the caller can widen to it (gh#568);
+4. **zero whole sessions named** — no session both opens and closes inside the window, refused naming the
+   window and the session, plus the nearest whole session's bounds when one can be named at all
+   (`SessionWindows.WindowFor` on the trade dates the window's start and end fall on, whichever of the two
+   needs less widening) so the caller can widen to it; on a window entirely on non-trading time there is no
+   session to name and the refusal says only to widen (gh#568);
 5. more trade dates than `MaxRows`, refused naming the real count.
 
 The bucket cap is measured **before** the row cap, the opposite of `get_bars`' order: the row count here is a

@@ -109,10 +109,15 @@ The server serves OHLCV bars for a futures instrument at a requested resolution 
   lists: the bar, or an absence carrying its reason and its expected and missing base-bucket counts
   (`R-1.12`). A trade date the window **wholly contains** that appears in neither list **did not trade**; a
   date whose session the window clips is in neither list because it was never asked for, and a date this
-  server did ask about is never silently dropped from both. **A non-empty window that clips every session it
-  touches is refused, not answered with two empty lists** — that shape reads as "this instrument did not
-  trade", the very confusion an empty *window* is already refused to avoid, and the refusal names the window,
-  the session, and the nearest whole session's bounds so the caller can widen to it. Two caps bound the read
+  server did ask about is never silently dropped from both. **A non-empty window inside which no session both
+  opens and closes is refused, not answered with two empty lists** — that shape reads as "this instrument did
+  not trade", the very confusion an empty *window* is already refused to avoid. The refusal names the window
+  and the session always, plus the **nearest** whole session's bounds — the nearer of the sessions on the
+  trade dates the window's start and end fall on, by how much widening each needs — when there is one to
+  name; a window falling entirely on non-trading time has none, so that refusal carries no bounds and says
+  only to widen. **That arm narrows the "wholly contains ⇒ did not trade" signal**: a window holding only
+  non-trading days now refuses instead of reporting them, and the signal needs a window that also holds at
+  least one whole session. Two caps bound the read
   and each refuses naming the real number rather than shortening the series: the row cap on trade dates, and
   the gap detector's buckets-per-pass cap counted in the session's **base** buckets, the ones a session bar is
   derived from rather than the sessions themselves. A read anchored on a count of the most recent sessions is

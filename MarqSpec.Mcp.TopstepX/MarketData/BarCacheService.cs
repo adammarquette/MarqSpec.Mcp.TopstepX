@@ -819,15 +819,18 @@ public sealed class BarCacheService
         return planned;
     }
 
-    /// <summary>Every range as one present slice on the venue's own pick — today's behaviour, stated once.</summary>
+    /// <summary>
+    /// Every range as one whole-read fallback on the venue's own pick — today's fetch, honestly labelled
+    /// (gh#598).
+    /// </summary>
     /// <param name="missing">The ranges.</param>
     /// <param name="front">The contract the venue marks active.</param>
     /// <returns>The plan.</returns>
     private static IReadOnlyList<PlannedRange> FromTheFront(
         IReadOnlyList<BarRange> missing, string front) =>
         [
-            .. missing.Select(range =>
-                new PlannedRange(range, [new RangeSlice(range, [front], Present: true)])),
+            .. HistoricalRangePlanner.FromTheFront(missing, front)
+                .Select(static slice => new PlannedRange(slice.Range, [slice])),
         ];
 
     /// <summary>
@@ -1224,11 +1227,15 @@ public sealed class BarCacheService
 
         foreach (RangeSlice piece in plan)
         {
-            if (piece.Present)
+            if (piece.Present || piece.WholeReadFallback)
             {
-                // THE PRESENT BAND IS THE LOOP IT ALWAYS WAS. One candidate -- the venue's own pick -- one
-                // FetchedSlice per page, the same requests++, the same forming-bar drop. Every poll this
-                // server actually serves lands here, and it must cost exactly what it cost before ADR-0020.
+                // THE PRESENT BAND IS THE LOOP IT ALWAYS WAS -- and the whole-read fallback shares it
+                // (gh#598). One candidate -- the venue's own pick -- one FetchedSlice per page, the same
+                // requests++, the same forming-bar drop, the same empty-range memo. Present is no longer
+                // how the front is asked: a months-old fallback is not the present band, but an empty
+                // answer from F is still a true statement about F (R-1.14) and must not take the
+                // per-slice withhold. Every poll this server actually serves lands on Present, and it
+                // must cost exactly what it cost before ADR-0020.
                 requests += await PageAsync(
                     instrument, piece.Candidates[0], piece.Range, barSize, now, slices, cancellationToken)
                     .ConfigureAwait(false);

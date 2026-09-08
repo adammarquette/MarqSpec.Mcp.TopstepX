@@ -24,18 +24,15 @@ namespace MarqSpec.Mcp.TopstepX.MarketData;
 public enum HistorySelection
 {
     /// <summary>
-    /// <b>This read decided no history, so it has nothing to say about how any was decided.</b> Three
-    /// different situations arrive here: every bucket the window asked for was already stored; the window
-    /// sits entirely in the present band the venue's own pick answers for (ADR-0020 §1); or there was no
-    /// cycle to decide against at all — <c>R-1.14</c>'s two <b>whole-read</b> degradations, an instrument
-    /// the registry does not serve and a front whose expiry does not read against the cycle.
+    /// <b>This read decided no history, so it has nothing to say about how any was decided.</b> Two
+    /// situations arrive here: every bucket the window asked for was already stored, or the window sits
+    /// entirely in the present band the venue's own pick answers for (ADR-0020 §1).
     /// <para>
-    /// <b>That third arm is a degradation this value cannot name, and it is the field's known limit.</b>
-    /// <c>PlanAsync</c> answers both of those conditions with a plan of present slices, so no candidate set
-    /// exists for <see cref="HistoricalRangePlanner.SelectionOf"/> to describe — the whole window is fetched
-    /// from the venue's own pick with no volume decision anywhere, and only the Warning
-    /// <c>BarCacheService</c> logs says so. The two degradations this enum <i>does</i> name are the
-    /// per-slice ones. Giving the whole-read pair their own value is deliberately not done here (gh#592).
+    /// <b>Not the whole-read fallback.</b> An instrument the registry does not serve, and a front whose
+    /// expiry does not read against the cycle, are recorded on the plan as
+    /// <see cref="RangeSlice.WholeReadFallback"/> and reported as <see cref="AsTheFrontAlone"/> (gh#598).
+    /// They used to land here because <c>FromTheFront</c> labelled those ranges present, and this value
+    /// skipped them.
     /// </para>
     /// <para>
     /// <b>Not "the cycle was whole".</b> The bars in the answer may well have been fetched by an earlier,
@@ -77,6 +74,24 @@ public enum HistorySelection
     /// </para>
     /// </summary>
     FellBackToTheFront = 3,
+
+    /// <summary>
+    /// <b>The whole plan was fetched from the venue's own pick, because there was no cycle to decide
+    /// against.</b> Both of <c>R-1.14</c>'s whole-read conditions land here: an instrument the registry
+    /// does not serve, and a front whose expiry does not read against the product's cycle (gh#598).
+    /// <para>
+    /// A different degradation from <see cref="FellBackToTheFront"/> and deliberately not folded into it.
+    /// That value is per-slice: a candidate set was built and the venue listed none of it, and the empty
+    /// answer earns no permanent memo. Here no candidate set was built at all — the entire window is
+    /// today's behaviour — and an empty answer from the front <i>does</i> earn the memo, because it is a
+    /// true statement about <c>F</c> under the per-contract ledger.
+    /// </para>
+    /// <para>
+    /// Recorded where the plan is cut, as <see cref="RangeSlice.WholeReadFallback"/>, not inferred from
+    /// <c>venueRequests</c> or from a slice labelled present so it would route to the front.
+    /// </para>
+    /// </summary>
+    AsTheFrontAlone = 4,
 }
 
 /// <summary>
@@ -89,7 +104,9 @@ public enum HistorySelection
 /// </param>
 /// <param name="Unresolved">
 /// Every expiry the cycle named that the venue did not list, nearest first and named once however many slices
-/// dropped it — e.g. <c>M26</c>. Empty unless <see cref="Selection"/> is a degradation.
+/// dropped it — e.g. <c>M26</c>. Empty when no candidate set dropped an expiry: a whole-read fallback
+/// built none, and <see cref="HistorySelection.NotDecidedHere"/> / <see cref="HistorySelection.AsTheCycleNames"/>
+/// have nothing to name.
 /// <para>
 /// These are codes <b>this server constructed</b> from the product's <c>ContractMonthCycle</c>, never vendor
 /// text echoed back, which is what keeps them inside ADR-0008's closed vocabulary.

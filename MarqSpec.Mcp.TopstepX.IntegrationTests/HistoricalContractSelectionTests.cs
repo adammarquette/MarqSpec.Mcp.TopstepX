@@ -41,6 +41,14 @@ public sealed class HistoricalContractSelectionTests : IAsyncLifetime
     /// <summary>The contract the venue marks active.</summary>
     private const string Front = "CON.F.US.MES.U26";
 
+    /// <summary>
+    /// A January MES expiry — listed by no quarterly cycle, so PlanAsync cannot read it against HMUZ.
+    /// </summary>
+    private const string OffCycleFront = "CON.F.US.MES.F26";
+
+    /// <summary>The venue-active ES contract. Product code is EP, not ES.</summary>
+    private const string EsFront = "CON.F.US.EP.U26";
+
     /// <summary>The contract that was front a roll ago.</summary>
     private const string Previous = "CON.F.US.MES.H26";
 
@@ -662,6 +670,160 @@ public sealed class HistoricalContractSelectionTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task GetBarsPayload_ReportsAsTheFrontAlone_WhenTheRegistryDoesNotServeTheInstrument()
+    {
+        // ARM 1, get_bars (gh#598). The resolver serves ES so the tool accepts the call; the cache's
+        // registry does not, which is the whole-read condition PlanAsync records. Replacing
+        // AsTheFrontAlone with NotDecidedHere reddens this test.
+        CountingGateway gateway = Venue(
+            new Dictionary<string, IEnumerable<Bar>>(StringComparer.Ordinal)
+            {
+                [EsFront] = Series(HistoryStart, 12, 5, 10),
+            },
+            EsFront);
+
+        ToolPayloads.BarSeries series = await Tools(gateway, Now, resolverInstruments: "MES,ES")
+            .Bars.GetBars("ES", 5, HistoryStart, HistoryStart.AddHours(1), CancellationToken.None);
+
+        series.History.Selection.Should().Be(HistorySelection.AsTheFrontAlone);
+        series.History.Unresolved.Should().BeEmpty();
+        series.Bars.Should().HaveCount(12);
+    }
+
+    [Fact]
+    public async Task GetBarsPayload_ReportsAsTheFrontAlone_WhenTheFrontExpiryDoesNotReadAgainstTheCycle()
+    {
+        // ARM 2, get_bars (gh#598). HMUZ does not list January. Replacing AsTheFrontAlone with
+        // NotDecidedHere reddens this test.
+        CountingGateway gateway = Venue(
+            new Dictionary<string, IEnumerable<Bar>>(StringComparer.Ordinal)
+            {
+                [OffCycleFront] = Series(HistoryStart, 12, 5, 10),
+            },
+            OffCycleFront);
+
+        ToolPayloads.BarSeries series = await Tools(gateway, Now).Bars.GetBars(
+            "MES", 5, HistoryStart, HistoryStart.AddHours(1), CancellationToken.None);
+
+        series.History.Selection.Should().Be(HistorySelection.AsTheFrontAlone);
+        series.History.Unresolved.Should().BeEmpty();
+        series.Bars.Should().HaveCount(12);
+    }
+
+    [Fact]
+    public async Task GetLatestBarsPayload_ReportsAsTheFrontAlone_WhenTheRegistryDoesNotServeTheInstrument()
+    {
+        // ARM 1, get_latest_bars — its own payload site, not a copy of get_bars.
+        CountingGateway gateway = Venue(
+            new Dictionary<string, IEnumerable<Bar>>(StringComparer.Ordinal)
+            {
+                [EsFront] = Series(Market(2026, 8, 10, 9), 200, 60, 1_000),
+            },
+            EsFront);
+
+        ToolPayloads.BarSeries series = await Tools(gateway, Now, resolverInstruments: "MES,ES")
+            .Bars.GetLatestBars("ES", 60, 24, CancellationToken.None);
+
+        series.History.Selection.Should().Be(HistorySelection.AsTheFrontAlone);
+        series.History.Unresolved.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task GetLatestBarsPayload_ReportsAsTheFrontAlone_WhenTheFrontExpiryDoesNotReadAgainstTheCycle()
+    {
+        // ARM 2, get_latest_bars.
+        CountingGateway gateway = Venue(
+            new Dictionary<string, IEnumerable<Bar>>(StringComparer.Ordinal)
+            {
+                [OffCycleFront] = Series(Market(2026, 8, 10, 9), 200, 60, 1_000),
+            },
+            OffCycleFront);
+
+        ToolPayloads.BarSeries series = await Tools(gateway, Now).Bars.GetLatestBars(
+            "MES", 60, 24, CancellationToken.None);
+
+        series.History.Selection.Should().Be(HistorySelection.AsTheFrontAlone);
+        series.History.Unresolved.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task GetSessionBarsPayload_ReportsAsTheFrontAlone_WhenTheRegistryDoesNotServeTheInstrument()
+    {
+        // ARM 1, get_session_bars — the field arrives through SessionBarService, a third drop site.
+        CountingGateway gateway = Venue(
+            new Dictionary<string, IEnumerable<Bar>>(StringComparer.Ordinal)
+            {
+                [EsFront] = [],
+            },
+            EsFront);
+
+        ToolPayloads.SessionBarSeries series = await Tools(gateway, Now, resolverInstruments: "MES,ES")
+            .Sessions.GetSessionBars(
+                "ES",
+                "rth",
+                new DateTimeOffset(2026, 6, 16, 0, 0, 0, TimeSpan.Zero),
+                new DateTimeOffset(2026, 6, 17, 0, 0, 0, TimeSpan.Zero),
+                CancellationToken.None);
+
+        series.History.Selection.Should().Be(HistorySelection.AsTheFrontAlone);
+        series.History.Unresolved.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task GetSessionBarsPayload_ReportsAsTheFrontAlone_WhenTheFrontExpiryDoesNotReadAgainstTheCycle()
+    {
+        // ARM 2, get_session_bars.
+        CountingGateway gateway = Venue(
+            new Dictionary<string, IEnumerable<Bar>>(StringComparer.Ordinal)
+            {
+                [OffCycleFront] = [],
+            },
+            OffCycleFront);
+
+        ToolPayloads.SessionBarSeries series = await Tools(gateway, Now).Sessions.GetSessionBars(
+            "MES",
+            "rth",
+            new DateTimeOffset(2026, 6, 16, 0, 0, 0, TimeSpan.Zero),
+            new DateTimeOffset(2026, 6, 17, 0, 0, 0, TimeSpan.Zero),
+            CancellationToken.None);
+
+        series.History.Selection.Should().Be(HistorySelection.AsTheFrontAlone);
+        series.History.Unresolved.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task AWholeReadFallback_StillEarnsTheEmptyRangeMemo()
+    {
+        // R-1.14: an empty answer from F is a true statement about F, so the whole-read fallback earns
+        // the memo the per-slice fallback withholds. A card that reclassifies the range must not silently
+        // withdraw that. June is settled at the August clock, so the claim is permanent.
+        CountingGateway gateway = Venue(
+            new Dictionary<string, IEnumerable<Bar>>(StringComparer.Ordinal)
+            {
+                [OffCycleFront] = [],
+            },
+            OffCycleFront);
+
+        BarCacheService cache = BuildAround(gateway, Now);
+        BarRange window = new(HistoryStart, HistoryStart.AddHours(1));
+
+        BarReadResult first = await cache.GetBarsAsync(_mes, 5, window, CancellationToken.None);
+
+        first.History.Selection.Should().Be(HistorySelection.AsTheFrontAlone);
+        (await _database.BarCoverage.AsNoTracking().ToListAsync())
+            .Should().ContainSingle().Which.ContractId.Should().Be(OffCycleFront);
+
+        gateway.ResetCounters();
+        BarReadResult second = await cache.GetBarsAsync(_mes, 5, window, CancellationToken.None);
+
+        second.VenueRequests.Should().Be(0);
+        gateway.BarRequests.Should().Be(0, "the front's empty answer was memoised, as it was before this card");
+        second.History.Selection.Should().Be(
+            HistorySelection.NotDecidedHere,
+            "the second read fetched nothing, so it decided nothing -- the memo must not move the state");
+    }
+
+    [Fact]
     public async Task AStraddlingRange_WhoseHistoricalHalfNarrowedToTheFront_IsNotFoldedIntoThePresentBand()
     {
         // The fold is where the silence came from. Adjacent slices that both come down to the front alone are
@@ -1025,7 +1187,15 @@ public sealed class HistoricalContractSelectionTests : IAsyncLifetime
     /// <param name="byContract">The bars each listed contract holds.</param>
     /// <returns>The double.</returns>
     private static CountingGateway Venue(IReadOnlyDictionary<string, IEnumerable<Bar>> byContract) =>
-        new(byContract, Front);
+        Venue(byContract, Front);
+
+    /// <summary>A venue whose active contract the test names.</summary>
+    /// <param name="byContract">The bars each listed contract holds.</param>
+    /// <param name="front">The contract the venue marks active.</param>
+    /// <returns>The double.</returns>
+    private static CountingGateway Venue(
+        IReadOnlyDictionary<string, IEnumerable<Bar>> byContract, string front) =>
+        new(byContract, front);
 
     /// <summary>The stored rows of a window, read past the tracker.</summary>
     /// <param name="from">The window start.</param>
@@ -1167,14 +1337,23 @@ public sealed class HistoricalContractSelectionTests : IAsyncLifetime
     /// every other case here reasons about — a second composition would be a second fixture free to disagree
     /// about the tenure start, the cycle or the clock.
     /// </remarks>
-    private ToolFamily Tools(CountingGateway gateway, DateTimeOffset now)
+    /// <param name="resolverInstruments">
+    /// What the tool resolver serves. Wider than <paramref name="cacheInstruments"/> when the case is the
+    /// registry whole-read arm: the tool must accept the symbol, and the cache must not.
+    /// </param>
+    /// <param name="cacheInstruments">What the cache's registry serves. Defaults to MES like every other case.</param>
+    private ToolFamily Tools(
+        CountingGateway gateway,
+        DateTimeOffset now,
+        string resolverInstruments = "MES",
+        string cacheInstruments = "MES")
     {
         FakeTimeProvider clock = new(now);
-        BarCacheService cache = BuildAround(gateway, now, clock: clock);
+        BarCacheService cache = BuildAround(gateway, now, clock: clock, instruments: cacheInstruments);
 
         IOptions<MarketDataOptions> market = Options.Create(new MarketDataOptions
         {
-            Instruments = "MES",
+            Instruments = resolverInstruments,
             SessionCloseCentral = "16:00",
             MaxRows = 5_000,
         });
@@ -1216,11 +1395,13 @@ public sealed class HistoricalContractSelectionTests : IAsyncLifetime
     /// <exception cref="ArgumentException">
     /// A supplied clock reads a different instant than <paramref name="now"/>.
     /// </exception>
+    /// <param name="instruments">The symbols the cache's registry serves.</param>
     private BarCacheService BuildAround(
         CountingGateway gateway,
         DateTimeOffset now,
         ILogger<BarCacheService>? logger = null,
-        FakeTimeProvider? clock = null)
+        FakeTimeProvider? clock = null,
+        string instruments = "MES")
     {
         // ONE INSTANT, NOT TWO. `now` exists only to build the clock, so a supplied clock reading something
         // else wins silently and the case is then about a moment it does not name -- and every expectation
@@ -1246,7 +1427,7 @@ public sealed class HistoricalContractSelectionTests : IAsyncLifetime
 
         IOptions<MarketDataOptions> market = Options.Create(new MarketDataOptions
         {
-            Instruments = "MES",
+            Instruments = instruments,
             SessionCloseCentral = "16:00",
             MaxRows = 5_000,
         });

@@ -337,22 +337,16 @@ different unknowns indistinguishable, which is the failure `span`'s own `Unknown
 
 | `selection` | Means | What to do |
 |---|---|---|
-| `NotDecidedHere` | **This call decided no history**, for one of three reasons: every bucket was already stored, the window sits in the present band, or there was no cycle to decide against — the instrument is not one this server serves, or the vendor's active contract has an expiry that does not read against the cycle. | Do **not** read it as "the history is whole" (see below). And tell the third reason apart from the first two before treating a deep window as ordinary: it is the whole-read degradation of `R-1.14`, where the entire window is fetched from the vendor's active contract with no volume decision made anywhere. |
+| `NotDecidedHere` | **This call decided no history**: every bucket was already stored, or the window sits in the present band. | Do **not** read it as "the history is whole" (see below). |
 | `AsTheCycleNames` | Every expiry the cycle named was listed, and the volume decision ran over all of them ([ADR-0020](adr/0020-historical-contract-selection.md) §2). | Read the series as ordinary. |
 | `NarrowedByTheVenue` | The vendor did not list some of them, so the decision ran over the survivors. | Treat that stretch as provisional. When the sole survivor was the vendor's own active contract it *is* the pre-ADR-0020 answer: a real, thin, complete-looking series from a contract nobody was trading. |
 | `FellBackToTheFront` | The vendor listed **none** of them, so no volume decision ran for that stretch at all. | Worse than narrowed. Nothing permanent is recorded about such a range, so a later read re-asks. |
+| `AsTheFrontAlone` | The **whole plan** fell back because there was no cycle to decide against — this server does not serve the instrument, or the vendor's active contract has an expiry that does not read against the cycle (`R-1.14`, gh#598). Recorded where the plan is cut, not inferred from `venueRequests`. | The entire window was fetched from the vendor's active contract with no volume decision anywhere. Same thin-series risk as `FellBackToTheFront`, but the empty answer from that contract **is** memoised. |
 
 `history.unresolved` names the expiries that fell away — `["M26"]` — nearest first, once each however many
 slices dropped it. They are codes **this server constructed** from the cycle, never vendor text, which is what
-keeps them inside [ADR-0008](adr/0008-numeric-only-tool-payloads.md)'s closed vocabulary.
-
-**The third reason reaches the log alone, and that is a real limit of this field.** `R-1.14`'s two
-*whole-read* degradations — an instrument the registry does not serve, and a front whose expiry does not read
-against the cycle — produce no historical candidate set for `history` to describe, so they arrive here as
-`NotDecidedHere` rather than as a degradation of their own, with only a server-side Warning naming the
-instrument and the front. The two degradations `history` *does* name are the per-slice ones, where a candidate
-set was built and then narrowed or emptied. Giving the whole-read pair their own value is not done here
-(gh#592).
+keeps them inside [ADR-0008](adr/0008-numeric-only-tool-payloads.md)'s closed vocabulary. Empty on
+`AsTheFrontAlone`: no candidate set was built, so none fell away.
 
 **`NotDecidedHere` is not a clean bill of health, and this is the field's one sharp edge.** The narrowing is
 knowable only at the moment the fetch is planned: nothing in `Bars` records that a bucket was written under a

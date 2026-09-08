@@ -44,11 +44,12 @@
 # WHERE THE BOUNDARY COMES FROM, WHICH IS A DIFFERENT KIND OF PATTERN
 #
 # `Up()` and `Down()` are located through `declares()`, never by matching a raw line: the line must not be a
-# `//` comment, must not be the interior of a `Sql(` string literal, must carry a modifier keyword, and must
-# carry `override`. A comment inside `Up()` reading "there is no void Down(MigrationBuilder …) worth
-# writing" otherwise set the excluded span from that comment to the real declaration -- switching off the
-# rest of `Up()` while reporting the `Down()` body's own drop as if it were in `Up()`. A finding needle that
-# is too loose costs a false positive; a BOUNDARY needle that is too loose excludes code, and nothing
+# `//` comment, must not be the interior of a `Sql(` string literal, and must carry ONE UNINTERRUPTED
+# DECLARATION -- at the migration class's own member indent, a modifier run containing `override`, and the
+# signature immediately after it. A comment inside `Up()` reading "there is no void Down(MigrationBuilder …)
+# worth writing" otherwise set the excluded span from that comment to the real declaration -- switching off
+# the rest of `Up()` while reporting the `Down()` body's own drop as if it were in `Up()`. A finding needle
+# that is too loose costs a false positive; a BOUNDARY needle that is too loose excludes code, and nothing
 # reports what was never read.
 #
 # ONLY ONE BOUNDARY HERE FAILS SILENTLY, AND IT IS WHERE THE EXCLUDED SPAN BEGINS. That asymmetry is what
@@ -73,7 +74,21 @@
 # `in_region`, which can only make `declares()` refuse more -- loud. `MEMBER_RE`'s modifier list and the
 # brace rule widen `down_end`, which can only end the body earlier -- loud. The two that widened
 # `down_start` -- `MEMBER_RE`'s list, again, and `DOWN_RE`'s end-of-line arm -- are the two that were
-# defeated, and both are now behind `OVERRIDE_RE`. **Widen a boundary and say which end you widened.**
+# defeated, and both now sit behind the anchored declaration pattern below. **Widen a boundary and say which
+# end you widened.**
+#
+# AND THIS ROUND WIDENED NEITHER (gh#601). Both shapes it closes are `down_start` shapes, which is exactly
+# what the asymmetry above predicts -- three rounds running, every boundary bug has been at that one end. All
+# three changes NARROW `down_start`, and a narrowed `down_start` scans MORE:
+#
+#   - the declaration must sit at the class's member indent, so a nested type's member cannot take it;
+#   - `override` must sit in the declaration's own modifier run, so a comment or a string cannot supply it;
+#   - the signature must follow that run immediately, so a comment cannot supply the signature either.
+#
+# The one place the excluded span was removed outright is a file with NO locatable `Up()`: it gets no
+# `Down()` boundary at all and is read whole. That is only ever a generated partial (a migration without an
+# `Up()` fails `NO Up()` first), neither `*.Designer.cs` nor the model snapshot has ever declared a `Down()`,
+# and reading more is the loud direction if one ever does.
 #
 # NOT THE `Up()` BODY ALONE, and that is a correction rather than a design (gh#529 review). Scanning only
 # `Up()` meant an operation in a SIBLING MEMBER of the same class -- a private helper `Up()` calls -- was
@@ -317,11 +332,24 @@ DOWN_RE='void[[:space:]]+Down[[:space:]]*\([[:space:]]*(MigrationBuilder|$)'
 # is legal C#, defaults to private, and `dotnet format` will not add a modifier -- so a `MEMBER_RE` wanting
 # one never found the end of the `Down()` body, `down_end` ran to end of file, and a sibling helper written
 # that way was swallowed whole. Same shape as the decoy above, found by auditing rather than by review.
+#
+# MEMBER_RE ENDS THE `Down()` BODY AND DECIDES NOTHING ELSE (gh#601). It used to be one of `declares()`'s
+# conditions as well, and the two uses pull in OPPOSITE directions: widening it here ends the body earlier,
+# which scans more and is loud, while widening a condition on `down_start` excludes code and is silent. One
+# list serving both is a widening made for the loud use arriving in the quiet one -- which is precisely how
+# `static` reached `declares()` and let a local function set a boundary. The list below is the LOUD use;
+# `DECL_MODIFIER` is the quiet one, and they are separate on purpose. Do not merge them.
 MEMBER_RE='^[[:space:]]+(public|private|protected|internal|static|override|virtual|abstract|sealed|partial|async|extern|unsafe)[[:space:]]'
-# AND THE THING THAT DECIDES A BOUNDARY MUST BE AN OVERRIDE. Everything above tests a property of the LINE,
-# and the property that matters is WHAT THE LINE DECLARES: a modifier keyword is evidence of a declaration,
-# never of WHICH declaration, nor that it is a member rather than a local. Both of round three's defeats came
-# through that gap, and each arrived through a widening made for the round before it:
+# THE DECLARATION PATTERN, AND IT IS ONE PATTERN RATHER THAN A STACK OF TESTS ON THE LINE (gh#601).
+#
+# Round three's answer to the two defeats below was to require `override`, on the ground that
+# `Migration.Up`/`Down` are `protected virtual` so a real one always is one -- described at the time as a
+# fact about the thing being matched rather than about its text. IT WAS NOT. The needle was matched
+# UNANCHORED against the whole line, so the WORD `override` in a trailing comment
+# (`// no override needed on a local shim`) or in a string satisfied it, and the local function walked
+# straight back in. It was a FIFTH property of the text, and each of the five admitted a decoy.
+#
+# The two defeats it was written for, kept because each arrived through the fix for the round before it:
 #
 #   - `static` was added to MEMBER_RE for the sibling-helper find, and `static` is also the modifier a C#
 #     LOCAL FUNCTION may carry -- so `static void Down(MigrationBuilder b) { }` written inside `Up()` took
@@ -330,11 +358,37 @@ MEMBER_RE='^[[:space:]]+(public|private|protected|internal|static|override|virtu
 #     it also matches an ordinary OVERLOAD -- `private static void Down(\n int unused)` -- which wins the
 #     first-match race against the real one.
 #
-# `Migration.Up` and `Migration.Down` are `protected virtual`, so a migration's are ALWAYS overrides; EF can
-# scaffold nothing else, and all seven on `develop` are. A local function cannot be an override and neither
-# is `Down(int)`, so one condition refuses both without narrowing either widening back. The cost is named:
-# a hand-written migration declaring `Up` without `override` fails `NO Up()`, which is the loud direction.
-OVERRIDE_RE='(^|[^[:alnum:]_])override[[:space:]]'
+# What replaces the last two text tests is the conjunction of three things a line cannot claim by wording:
+#
+#   1. WHERE IT SITS. The migration's `Up`/`Down` are members of the migration class, so they carry the
+#      class's member indent. A local function is deeper by construction, and so is a nested type's member --
+#      which is the other shape that got through here, and it FORGES NOTHING: a one-line
+#      `public override void Down(MigrationBuilder b) { }` inside a nested `private sealed class Fake : Shim`
+#      is a real override of a real virtual method. It is simply not this class's, and no test of the text
+#      can tell the two apart. The indent tells them apart without reading anything, and it would also have
+#      refused the local function with no `override` requirement at all. (Its THREE-LINE form was already
+#      caught: `down_end`'s brace rule ends the body at the nested method's own closing brace.)
+#   2. THAT `override` IS IN THE DECLARATION'S OWN MODIFIER RUN, before the return type -- where C# requires
+#      a real one to be, and where no comment and no string literal can put one.
+#   3. THAT THE SIGNATURE FOLLOWS THAT RUN IMMEDIATELY, with nothing between. Anchoring the modifiers alone
+#      leaves the mirror shape open: a genuine `protected override void Up(...)` whose trailing comment names
+#      `void Down(MigrationBuilder)` satisfies a modifier test, an override test and a signature test as
+#      three independent questions about three different substrings -- and takes `down_start` at `Up()`'s own
+#      line, excluding the whole of `Up()`.
+#
+# THIS REPLACES `MEMBER_RE` AND `OVERRIDE_RE` INSIDE `declares()` RATHER THAN STACKING ON THEM. An anchored
+# modifier run IS the member test and a stricter one, because it also fixes where the run begins. Five text
+# conditions that each admit a decoy are worse than one structural one.
+#
+# The cost is unchanged and still named: a hand-written migration declaring `Up` without `override`, or
+# indented unlike its own class, fails `NO Up()` -- the loud direction.
+DECL_MODIFIER='(public|private|protected|internal|new|static|virtual|sealed|override|abstract|extern|unsafe|async|partial)'
+# The indent to use while the class's member indent is still unknown -- which is only ever while `Up()` is
+# being located, since `Up()` is what defines it.
+DECL_INDENT_ANY='[[:space:]]+'
+declaration_re() {  # $1 indent regex  $2 signature regex -> DECL_RE
+  DECL_RE="^$1(${DECL_MODIFIER}[[:space:]]+)*override[[:space:]]+(${DECL_MODIFIER}[[:space:]]+)*$2"
+}
 
 # Matched case-insensitively. The left boundary is what keeps `.DropColumn(` -- no space after Drop -- out
 # of the DROP arm, so the two families cannot be confused for one another in a diagnostic.
@@ -441,7 +495,7 @@ adjudicate() {  # $1 file  $2 line
 
 scan_file() {  # $1 path  $2 1 if Up(MigrationBuilder) must be locatable
   local file="$1" require_up="$2"
-  local sql_open=0 sql_text='' indent='' brace_re=''
+  local sql_open=0 sql_text='' indent='' brace_re='' member_indent=''
 
   mapfile -t LINES < "$file"
   n=${#LINES[@]}
@@ -479,27 +533,28 @@ scan_file() {  # $1 path  $2 1 if Up(MigrationBuilder) must be locatable
   if [ "$sql_open" -ne 0 ]; then region_text[$sql_open]="$sql_text"; fi
 
   # A LINE MAY ONLY DECIDE A BOUNDARY IF IT DECLARES AN OVERRIDE OF `Up`/`Down` ON THE MIGRATION CLASS. Not
-  # a `//` comment, not the interior of a string literal, carrying a modifier keyword, AND carrying
-  # `override`. The first three test properties of the LINE; the fourth is the only one that tests what the
-  # line DECLARES, and two rounds of boundary bugs are what it took to notice the difference.
+  # a `//` comment, not the interior of a string literal, and carrying -- as ONE uninterrupted declaration
+  # at the class's member indent -- a modifier run containing `override` followed by the signature.
   #
-  # Each condition has a fixture written to defeat EXACTLY it -- except the `//` test, which is SUBSUMED by
-  # MEMBER_RE (a `//` line can carry no leading modifier) and pinned by nothing. That is stated in the
-  # ledger rather than papered over: an unpinnable guard whose redundancy is written down cannot mislead
-  # anyone about what is proven, and an unlabelled one is indistinguishable from a guard that works.
-  declares() {  # $1 line number  $2 the signature regex
-    local ln="$1" re="$2" text="${LINES[$(( $1 - 1 ))]}"
+  # THREE CONDITIONS, DOWN FROM FIVE (gh#601). The first two test properties of the LINE; the third is the
+  # only one that tests what the line DECLARES, and it is the one three rounds of boundary bugs were spent
+  # arriving at. Each has a fixture written to defeat EXACTLY it, and so does each decision inside the third
+  # -- except the `//` test, which is SUBSUMED by the declaration pattern (a `//` line cannot open with a
+  # modifier keyword) and pinned by nothing. That is stated in the ledger rather than papered over: an
+  # unpinnable guard whose redundancy is written down cannot mislead anyone about what is proven, and an
+  # unlabelled one is indistinguishable from a guard that works.
+  declares() {  # $1 line number  $2 indent regex  $3 the signature regex
+    local ln="$1" text="${LINES[$(( $1 - 1 ))]}"
     if [ -n "${in_region[$ln]:-}" ]; then return 1; fi
     if [[ "$text" =~ $COMMENT_RE ]]; then return 1; fi
-    if [[ ! "$text" =~ $MEMBER_RE ]]; then return 1; fi
-    if [[ ! "$text" =~ $OVERRIDE_RE ]]; then return 1; fi
-    if [[ ! "$text" =~ $re ]]; then return 1; fi
+    declaration_re "$2" "$3"
+    if [[ ! "$text" =~ $DECL_RE ]]; then return 1; fi
     return 0
   }
 
   up_start=0
   for (( ln = 1; ln <= n; ln++ )); do
-    if declares "$ln" "$UP_RE"; then up_start=$ln; break; fi
+    if declares "$ln" "$DECL_INDENT_ANY" "$UP_RE"; then up_start=$ln; break; fi
   done
   if [ "$require_up" -eq 1 ] && [ "$up_start" -eq 0 ]; then
     die "  NO Up()  $file  -- the migration's Up(MigrationBuilder) could not be located."
@@ -517,10 +572,27 @@ scan_file() {  # $1 path  $2 1 if Up(MigrationBuilder) must be locatable
   #
   # THE COST IS NAMED RATHER THAN HIDDEN: a helper called only from Down() is read too, because nothing
   # here says which of the two calls it. That is the loud direction -- mark it, or inline it into Down().
+  #
+  # THE CLASS'S MEMBER INDENT IS TAKEN FROM `Up()`, which every migration must declare and which the check
+  # above has just found. A file where it could not be found gets NO `Down()` boundary at all and is read
+  # whole: that is only ever a generated partial, since a migration without an `Up()` has already failed
+  # above, and neither `*.Designer.cs` nor the model snapshot has ever declared a `Down()`. Reading more is
+  # the loud direction if one ever does.
+  #
+  # A decoy that wins the `Up()` race -- an `override void Up(MigrationBuilder)` in a NESTED type, above the
+  # real one -- sets the member indent to the nested type's, at which point the real `Down()` is not found at
+  # that indent, `down_start` falls to 0, and the whole file INCLUDING `Down()` is scanned. Loud, by
+  # construction: the only thing `up_start` decides besides this is whether the file is readable at all.
+  if [ "$up_start" -ne 0 ] && [[ "${LINES[$(( up_start - 1 ))]}" =~ ^([[:space:]]*) ]]; then
+    member_indent="${BASH_REMATCH[1]}"
+  fi
+
   down_start=0
-  for (( ln = 1; ln <= n; ln++ )); do
-    if declares "$ln" "$DOWN_RE"; then down_start=$ln; break; fi
-  done
+  if [ -n "$member_indent" ]; then
+    for (( ln = 1; ln <= n; ln++ )); do
+      if declares "$ln" "$member_indent" "$DOWN_RE"; then down_start=$ln; break; fi
+    done
+  fi
 
   # WHERE THE Down() BODY ENDS, by TWO rules, and the EARLIER of the two wins. A body ends at its closing
   # brace, in the declaration's own column, and it ends at the next member declaration -- and each rule has

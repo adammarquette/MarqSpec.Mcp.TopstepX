@@ -173,6 +173,23 @@ at one this rule's own pull request retires.
      so a denominator check passes it. The split and where the failures originate are the tell.
      **Persistent here** — the 2026-09-08 correction under that entry.
 
+- **[2026-09-08] A green check is evidence about a commit, not about a branch (gh#611).** Same shape as the
+  mutation-run entry above — mechanism 2 (*a re-run reporting the previous run's result*) — arriving in the
+  tooling agents use to verify their work. Verifying gh#600 / PR #603 (also gh#608 / PR #610),
+  `gh pr checks --watch` printed **13 passing checks** for a head it was **not** describing: a commit had been
+  pushed to the branch, GitHub had not yet associated it with the pull request, and `pulls/603` still reported
+  the *previous* `head.sha`. The watch reported that older commit's results as though they were current, with
+  no indication anything was stale. The same push left orphan `7c2dad2` on the branch ref that GitHub never
+  attached to the PR and for which **no CI ever fired** — branch tip and PR head disagreed, and only the PR
+  head was built. The checks named were real, they did pass, and they described a commit the author was no
+  longer working on.
+  - **After a push, confirm the PR head moved** — `gh pr view <n> --json headRefOid` — before waiting on
+    checks at all.
+  - **Never quote a CI result without checking the run describes the head you mean** — read the run's own
+    `headSha` via `gh run list --json headSha,conclusion,databaseId` (or
+    `gh api repos/:owner/:repo/actions/runs/<id>`) and compare it to the SHA you are reporting. `gh pr
+    checks`, with or without `--watch`, does not guarantee this.
+
 - **[2026-08-28] A restore can backdate a source file's mtime, MSBuild skips the compile, and `dotnet test`
   scores a stale binary with a plausible `Total:` (gh#302).** Found by PR #298's author (gh#286) with a
   `Copy-Item` restore: the timestamp went **backwards**, the compile was skipped, and the host ran the

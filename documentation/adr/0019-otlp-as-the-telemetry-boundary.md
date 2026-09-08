@@ -207,6 +207,19 @@ the one this repository had before gh#537 — one container in the server task, 
 `otel` shell — and `TelemetrySidecarTests` fails if any of the three appears. That is the same sentence as
 *absent configuration is today's behaviour, exactly*, said in CloudFormation.
 
+**Three of this card's first assertions proved a declaration where a wiring was the thing that mattered, and
+the shape is general enough to be worth recording** (PR #597 review). *Reading a name out of a file proves the
+name is in the file.* The processor that stamps `deployment.environment` and `service.version` was asserted by
+finding `key: deployment.environment` in the configuration text — so removing `resource` from all three
+pipelines, which is what makes the collector actually run it, left the collector starting clean and every test
+green while every record shipped unstamped. The no-credential guard was a list of five named needles, so an
+ARN-shaped property nobody had listed carried a real account id into both templates, green. And the receiver's
+bind was guarded by `NotContain("0.0.0.0")`, one spelling of the wildcard address out of at least three, so
+`[::]:4318` bound every interface, green. Each is now asserted over the **structure**: the pipelines' composed
+stages in order, no `arn:aws` plus no unrecognised twelve-digit run, and every literal `endpoint:` in the file
+enumerated and required to be a loopback bind. **The tell they share is that the assertion named a token and
+the claim named a property**, and the gap between them is where each survived.
+
 **The configuration travels as an environment variable, and that is a mechanism worth naming.** A Fargate task
 has no disk to mount a config file from, and baking one into an image would make a one-line edit a registry
 push — so `EnvironmentStack` reads the checked-in file at synth time into `OTEL_COLLECTOR_CONFIG` and starts

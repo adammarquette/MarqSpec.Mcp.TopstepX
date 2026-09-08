@@ -76,7 +76,13 @@ public sealed class EnvironmentStack : Stack
     /// container in an <c>awsvpc</c> task shares one network namespace, so this crosses no network and needs
     /// no port mapping, no security-group rule and no credential.
     /// </summary>
-    public const string OtelLoopbackEndpoint = "http://localhost:4317";
+    /// <remarks>
+    /// <c>127.0.0.1</c> rather than <c>localhost</c>, which is what this said first: the receiver binds the
+    /// IPv4 loopback alone, and <c>localhost</c> can resolve to <c>::1</c> ahead of it. .NET falls back, so
+    /// the difference is a connection attempt nobody sees rather than a failure — which is exactly why it is
+    /// worth removing while it costs nothing (PR #597 review).
+    /// </remarks>
+    public const string OtelLoopbackEndpoint = "http://127.0.0.1:4317";
 
     private const string PostgresUser = "topstepx";
     private const string PostgresDatabase = "topstepx_mcp";

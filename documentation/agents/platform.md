@@ -1274,9 +1274,10 @@ the one that rewrites it. What exists today:
   in the task, every credential a `valueFrom`, the two environments differing only where their props say;
   139 at gh#517, adding the Cognito pool, its two clients and the issuer and client ids reaching the task as
   references; 142 at gh#518, adding the every-role trust shape on the OIDC stack, a template with no account
-  id and no thumbprint, and the `bootstrap.sh` lockstep on the `aws-production` name; 162 at gh#537, adding
+  id and no thumbprint, and the `bootstrap.sh` lockstep on the `aws-production` name; 163 at gh#537, adding
   the OTLP collector sidecar — two containers and the sixth shell with telemetry props, one container and no
-  `Otel__*` key without them, and no endpoint, token or account id anywhere in the template) and then
+  `Otel__*` key without them, the three pipelines' composed stages, and no `arn:aws` or unrecognised
+  twelve-digit run anywhere in the template) and then
   `cdk synth --no-lookups` **once per outbound shape** through the CLI pinned in
   `infra/package.json`. **No credential exists on the runner, by construction**: `--no-lookups` makes a
   context miss fail the synth rather than call AWS, and `infra/cdk.context.json` carries the hosted-zone
@@ -1317,7 +1318,10 @@ the one that rewrites it. What exists today:
   §5, ADR-0023 §11): an OTLP collector that receives on the task's loopback and exports to Grafana Cloud.
   `Essential=false` with a hard 128 MiB cap, no port mapping, and its Grafana endpoint and token as
   `valueFrom`s on the sixth shell — so an unhealthy sidecar leaves the server answering, and a template
-  carries no backend hostname or credential. Its configuration is a **checked-in file**,
+  carries no backend hostname or credential. **Filling that shell takes an
+  `aws ecs update-service --force-new-deployment`**: a `valueFrom` is read once at container start, and ECS
+  does not restart a stopped non-essential container, which is exactly what an unfilled shell leaves behind —
+  so without the second command the secret is written, the service reads healthy, and nothing is exported. Its configuration is a **checked-in file**,
   `infra/MarqSpec.Mcp.TopstepX.Infra/Collector/otel-collector-config.yaml`, embedded in the assembly, read at
   synth time into `OTEL_COLLECTOR_CONFIG` and started with `--config=env:…` — a Fargate task has no disk to
   mount one from, and a test compares the file, the embedded resource and the task's value so it cannot

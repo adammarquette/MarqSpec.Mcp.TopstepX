@@ -1,4 +1,5 @@
 using System.Text.Json.Nodes;
+using System.Text.RegularExpressions;
 using FluentAssertions;
 using MarqSpec.Mcp.TopstepX.Infra;
 
@@ -14,9 +15,27 @@ namespace MarqSpec.Mcp.TopstepX.Infra.Tests;
 /// <see cref="TelemetryProps"/> the template is the one this stack had before this card — one container, no
 /// <c>Otel__*</c> key, no <c>otel</c> shell — which is ADR-0019 decision 3 reaching the deployment.
 /// </remarks>
-public sealed class TelemetrySidecarTests(EnvironmentTemplates templates) : IClassFixture<EnvironmentTemplates>
+public sealed partial class TelemetrySidecarTests(EnvironmentTemplates templates) : IClassFixture<EnvironmentTemplates>
 {
     private const string Collector = "otel-collector";
+
+    /// <summary>
+    /// The only twelve-digit runs a template synthesised from this repository may carry, and neither is this
+    /// project's AWS account: <c>123456789012</c> is AWS's own documentation-example account, which
+    /// <c>cdk.json</c> and <see cref="Synthesised.TestEnv"/> synthesise under until gh#519 overrides it, and
+    /// <c>127311923021</c> is AWS's published ELB log-delivery account, named by the access-log bucket
+    /// policy since gh#516. Anything else of that shape is an account id nobody meant to publish.
+    /// </summary>
+    private static readonly string[] _awsOwnedTwelveDigitConstants = ["123456789012", "127311923021"];
+
+    /// <summary>
+    /// A twelve-digit run bounded by non-hex on both sides. The bound is what keeps a <c>sha256</c> image
+    /// digest that happens to carry twelve consecutive digits from reading as an account id — an account id
+    /// in a template is always delimited by <c>:</c>, <c>"</c> or <c>/</c>, so the bound costs nothing here
+    /// and a digest bump cannot turn this red for a reason other than the one it watches for.
+    /// </summary>
+    [GeneratedRegex(@"(?<![0-9a-fA-F])\d{12}(?![0-9a-fA-F])", RegexOptions.CultureInvariant)]
+    private static partial Regex TwelveDigitRun();
 
     private JsonObject CollectorContainer(string env) => templates.For(env).Container("-server", Collector);
 
@@ -39,7 +58,7 @@ public sealed class TelemetrySidecarTests(EnvironmentTemplates templates) : ICla
         var container = ServerContainer(env);
         var environment = Synthesised.EnvironmentOf(container).ToDictionary(e => e.Key, e => Synthesised.Text(e.Value));
 
-        environment["Otel__Endpoint"].Should().Be("\"http://localhost:4317\"");
+        environment["Otel__Endpoint"].Should().Be("\"http://127.0.0.1:4317\"", "the receiver binds the IPv4 loopback alone, and `localhost` can resolve to ::1 first");
         environment["Otel__Protocol"].Should().Be("\"grpc\"", "4317 is the gRPC port and the two must agree (.env.example)");
         environment["Otel__ServiceName"].Should().Be("\"marqspec-mcp-topstepx\"");
         environment.Should().NotContainKey("Otel__Headers", "the sidecar holds the backend token, never the server");
@@ -82,6 +101,98 @@ public sealed class TelemetrySidecarTests(EnvironmentTemplates templates) : ICla
         text.Should().NotContain("Bearer ");
         CollectorConfiguration.Yaml.Should().NotContain("grafana.net");
         CollectorConfiguration.Yaml.Should().NotContain("glc_");
+
+        // AND THE TWO ASSERTIONS THAT MAKE THIS TEST SAY WHAT IT CLAIMS (PR #597 review). The five needles
+        // above are a list of things somebody thought of, and this test's name — and ADR-0023's entry citing
+        // it — claim something wider: that no endpoint, token, ARN or account id appears anywhere. Measured:
+        // a props shape carrying `arn:aws:secretsmanager:<region>:<account>:secret:…`, which is the shape
+        // gh#537's body originally asked for, put a real account id into BOTH templates with all 162 tests
+        // green. A NEEDLE LIST IS NOT A GUARD, because what it is guarding against is the entry nobody
+        // listed. These two are exhaustive over the shape instead.
+        text.Should().NotContain("arn:aws",
+            "an ARN carries an account id, and CDK writes every legitimate one as a Fn::Join over {\"Ref\":\"AWS::Partition\"} — a literal one is hand-written");
+        TwelveDigitRun().Matches(text).Select(m => m.Value).Distinct(StringComparer.Ordinal)
+            .Should().BeSubsetOf(_awsOwnedTwelveDigitConstants,
+                "a twelve-digit run in a template synthesised from a PUBLIC repository is an AWS account id until it is one of the two AWS itself owns");
+    }
+
+    [Fact]
+    public void Every_pipeline_runs_the_resource_processor_that_stamps_the_environment_and_the_release()
+    {
+        // THE CARD'S ONE GUARANTEE, PREVIOUSLY ASSERTED IN THE WRONG PLACE (PR #597 review). The test below
+        // reads `key: deployment.environment` out of the configuration text, which proves the processor is
+        // DECLARED. A collector runs a processor because a PIPELINE lists it — so deleting `resource` from
+        // all three pipelines left the collector starting clean, with no warning, shipping every span,
+        // metric and log with no `deployment.environment` and no `service.version` on it, and all 162 tests
+        // green. One Grafana stack that can no longer tell the two environments apart is the whole thing
+        // this sidecar exists to prevent. This assertion is about the wiring rather than the vocabulary.
+        var pipelines = Pipelines();
+
+        pipelines.Keys.Should().BeEquivalentTo(["traces", "metrics", "logs"], "all three signals leave by the same door");
+        foreach (var (name, stages) in pipelines)
+        {
+            stages.Receivers.Should().Equal(["otlp"], $"{name}: the server container beside it is the only source");
+            // Order, not merely membership: `memory_limiter` first is what makes it a limiter, and
+            // `resource` before `batch` is what stamps records rather than batches of them.
+            stages.Processors.Should().Equal(["memory_limiter", "resource", "batch"], $"{name}: the stamping processor has to be RUN, not merely declared");
+            stages.Exporters.Should().Equal(["otlp_http/grafana"], $"{name}: one exporter, and the host never learns its name");
+        }
+    }
+
+    /// <summary>One pipeline of the collector's <c>service.pipelines</c> block.</summary>
+    private sealed record PipelineStages(IReadOnlyList<string> Receivers, IReadOnlyList<string> Processors, IReadOnlyList<string> Exporters);
+
+    /// <summary>
+    /// The <c>service.pipelines</c> block of the checked-in configuration, parsed rather than string-matched.
+    /// The file uses one shape — a flow sequence at a known indent — so this stays a dozen lines and adds no
+    /// dependency; what it buys is the difference between <i>the word appears in the file</i> and <i>this
+    /// stage is wired into this pipeline</i>, which is what PR #597's review was about.
+    /// </summary>
+    private static IReadOnlyDictionary<string, PipelineStages> Pipelines()
+    {
+        var lines = CollectorConfiguration.Yaml.Split('\n').Select(l => l.TrimEnd('\r')).ToList();
+        var start = lines.FindIndex(l => l == "  pipelines:");
+        start.Should().BeGreaterThan(-1, "the configuration has a service.pipelines block to read");
+
+        var stages = new Dictionary<string, Dictionary<string, IReadOnlyList<string>>>(StringComparer.Ordinal);
+        string? current = null;
+        for (var i = start + 1; i < lines.Count; i++)
+        {
+            var line = lines[i];
+            if (line.Trim().Length == 0 || line.TrimStart().StartsWith('#'))
+            {
+                continue;
+            }
+
+            var indent = line.Length - line.TrimStart().Length;
+            if (indent < 4)
+            {
+                break;
+            }
+
+            var trimmed = line.Trim();
+            if (indent == 4 && trimmed.EndsWith(':'))
+            {
+                current = trimmed[..^1];
+                stages[current] = new Dictionary<string, IReadOnlyList<string>>(StringComparer.Ordinal);
+                continue;
+            }
+
+            if (indent == 6 && current is not null && trimmed.Contains(": [", StringComparison.Ordinal))
+            {
+                var key = trimmed[..trimmed.IndexOf(':', StringComparison.Ordinal)];
+                var values = trimmed[(trimmed.IndexOf('[', StringComparison.Ordinal) + 1)..trimmed.LastIndexOf(']')];
+                stages[current][key] = values.Split(',').Select(v => v.Trim()).Where(v => v.Length > 0).ToList();
+            }
+        }
+
+        return stages.ToDictionary(
+            p => p.Key,
+            p => new PipelineStages(
+                p.Value.GetValueOrDefault("receivers", []),
+                p.Value.GetValueOrDefault("processors", []),
+                p.Value.GetValueOrDefault("exporters", [])),
+            StringComparer.Ordinal);
     }
 
     [Theory]
@@ -137,10 +248,23 @@ public sealed class TelemetrySidecarTests(EnvironmentTemplates templates) : ICla
         // An OTLP receiver takes anything anyone sends it. Bound to 127.0.0.1 it is reachable from the
         // container beside it and from nowhere else -- including under the public-IP outbound shape, where
         // the task's own address is internet-routable.
+        //
+        // ENUMERATED, not needled (PR #597 review). This asserted `NotContain("0.0.0.0")`, which is one
+        // spelling of the wildcard address out of at least three: `[::]:4318` passed it, and the collector
+        // then really does bind every interface. Reading every literal `endpoint:` in the file and requiring
+        // each to be the loopback has no spelling left to miss. `${env:…}` values are the exporter's
+        // destination, resolved at run time from the secret shell, and are not binds.
         var container = CollectorContainer(env);
 
-        CollectorConfiguration.Yaml.Should().Contain("endpoint: 127.0.0.1:4317");
-        CollectorConfiguration.Yaml.Should().NotContain("0.0.0.0", "binding every interface publishes an unauthenticated receiver");
+        var binds = CollectorConfiguration.Yaml.Split('\n')
+            .Select(line => line.Trim())
+            .Where(line => line.StartsWith("endpoint:", StringComparison.Ordinal))
+            .Select(line => line["endpoint:".Length..].Trim())
+            .Where(value => !value.StartsWith("${env:", StringComparison.Ordinal))
+            .ToList();
+
+        binds.Should().BeEquivalentTo(["127.0.0.1:4317", "127.0.0.1:4318"],
+            "every literal bind in the configuration is the loopback, whatever the wildcard address is spelled like");
         container.ContainsKey("PortMappings").Should().BeFalse("containers of an awsvpc task share one namespace; loopback needs no mapping");
     }
 

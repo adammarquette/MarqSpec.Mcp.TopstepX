@@ -760,8 +760,16 @@ apply to it unchanged, the load-bearing one included: **never edit a shell's lit
 written**, and a new key is a new secret. gh#519's list grows by one — this is the sixth secret it fills by
 hand, and the two values come from the Grafana Cloud stack the maintainer creates.
 
+**Filling that shell is not enough on its own, and this is the step that gets missed.** A task reads a
+Secrets Manager `valueFrom` **once, at container start**, and ECS does **not** restart a container that has
+stopped and is not essential — which is precisely the state an unfilled shell leaves the sidecar in. So the
+sequence is: write the two values, then `aws ecs update-service --force-new-deployment` on that environment's
+server service. Without the second command the shell is full, the console shows a healthy service, and
+nothing is being exported. It belongs in gh#519's step list and in gh#523's runbook when that file exists.
+
 **`Otel__Endpoint`, `Otel__Protocol` and `Otel__ServiceName` on the server container**, pointing at the
-sidecar on `http://localhost:4317`. `Otel__Headers` stays absent and is now absent *by decision rather than by
+sidecar on `http://127.0.0.1:4317` — the literal address rather than `localhost`, because the receiver binds
+IPv4 alone and `localhost` can resolve to `::1` first. `Otel__Headers` stays absent and is now absent *by decision rather than by
 date*: the backend token is the sidecar's, and the server's export crosses no network. §3's configuration
 catalogue therefore has **no deferred set left** — the `.env.example` parity test's deferral list is empty,
 gh#517 having retired the Cognito half and this card the telemetry half, each in the pull request that built
@@ -775,9 +783,14 @@ exits on its own configuration validation (measured, quoted in ADR-0019's update
 takes nothing with it.
 
 **Not measured, and not measurable here.** No account, no Grafana Cloud stack, no gh#519. A template test says
-the task definition has the shape above and that no endpoint, token, ARN or account id appears anywhere in it;
-that a real ECS accepts it, and that a span arrives in Tempo, is gh#537's deploy and belongs to gh#519 and
-gh#520. The `documentation/deployment.md` "Observability" section gh#537 asks for waits on gh#523, which has
+the task definition has the shape above and that no endpoint, token, ARN or account id appears anywhere in it
+— **and that sentence had to be earned twice**: the first version of the test asserted five named needles,
+which let a props shape carrying `arn:aws:secretsmanager:<region>:<account>:secret:…` put a real account id
+into both templates with every test green. It now refuses `arn:aws` outright and refuses any twelve-digit run
+that is not one of the two constants AWS itself owns — the documentation-example account this synthesises
+under, and the ELB log-delivery account the access-log bucket policy has named since gh#516. *A needle list is
+not a guard; what it guards against is the entry nobody listed* (PR #597 review). That a real ECS accepts the
+template, and that a span arrives in Tempo, is gh#537's deploy and belongs to gh#519 and gh#520. The `documentation/deployment.md` "Observability" section gh#537 asks for waits on gh#523, which has
 not created that file yet.
 
 ## Follow-ups

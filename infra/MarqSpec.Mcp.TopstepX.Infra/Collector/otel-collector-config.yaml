@@ -23,13 +23,14 @@ receivers:
   otlp:
     protocols:
       grpc:
-        # The loopback, NOT every interface — and a template test refuses the wildcard address anywhere in
-        # this file, so the alternative cannot be written down here even in a comment. Every container in an
-        # awsvpc task shares one network namespace, so the server container reaches this on the loopback and
-        # nothing outside the task can reach it at all — which is why the sidecar also declares no port
-        # mapping. Binding every interface would put an unauthenticated OTLP receiver on the task's own
-        # address, and under the public-IP outbound shape (ADR-0023's undecided fork) that address is
-        # internet-routable.
+        # The loopback, NOT every interface. A template test reads EVERY literal `endpoint:` in this file and
+        # requires each one to be a loopback bind — enumerated rather than needled, because the wildcard
+        # address has at least three spellings and the test used to name one of them (PR #597 review). Every
+        # container in an awsvpc task shares one network namespace, so the server container reaches this on
+        # the loopback and nothing outside the task can reach it at all — which is why the sidecar also
+        # declares no port mapping. Binding every interface would put an unauthenticated OTLP receiver on the
+        # task's own address, and under the public-IP outbound shape (ADR-0023's undecided fork) that address
+        # is internet-routable.
         endpoint: 127.0.0.1:4317
       http:
         endpoint: 127.0.0.1:4318

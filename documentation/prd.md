@@ -112,10 +112,11 @@ The server serves OHLCV bars for a futures instrument at a requested resolution 
   server did ask about is never silently dropped from both. **A non-empty window inside which no session both
   opens and closes is refused, not answered with two empty lists** — that shape reads as "this instrument did
   not trade", the very confusion an empty *window* is already refused to avoid. The refusal names the window
-  and the session always, plus the **nearest** whole session's bounds — the nearer of the sessions on the
-  trade dates the window's start and end fall on, by how much widening each needs — when there is one to
-  name; a window falling entirely on non-trading time has none, so that refusal carries no bounds and says
-  only to widen. **That arm narrows the "wholly contains ⇒ did not trade" signal**: a window holding only
+  and the session always, plus the **nearest** whole session's bounds — nearest by how much widening it would
+  take to reach, over a scan that widens outward from the window until no further trade date could need less,
+  so a weekend, a holiday or the maintenance break is scanned across rather than stopped at. Only a closure
+  longer than that scan leaves no session to name, and that refusal carries no bounds and says only to widen.
+  **The refusal narrows the "wholly contains ⇒ did not trade" signal**: a window holding only
   non-trading days now refuses instead of reporting them, and the signal needs a window that also holds at
   least one whole session. Two caps bound the read
   and each refuses naming the real number rather than shortening the series: the row cap on trade dates, and

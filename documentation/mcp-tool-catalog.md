@@ -394,12 +394,13 @@ trading day over a session that runs longer holds no session that both opens and
 unrefused this would pass every other check and answer `bars: []` and `absent: []` both — the shape
 `ValidateWindow`'s empty-window refusal already exists to avoid, since it reads as "this instrument did not
 trade" rather than "the window is narrower than any session". The refusal names the window and the session
-always; it names **the nearest whole session's bounds** — genuinely the nearer of the two candidates, the
-whole session on the trade date the window's start falls on and the one on the trade date its end falls on,
-compared by how much widening each would need — only when there is one to name. **When the window falls
-entirely on non-trading time** — a weekend, a declared holiday, the maintenance break, the gap between two
-sessions with no session on either side's trade date — no session can be named, and the message carries no
-bounds and says only to widen the window (gh#568).
+always, and with them **the nearest whole session's bounds** — nearest by how much widening it would take to
+reach, the window's start moved back plus its end moved out, over a scan that starts on the window's own
+market dates and widens outward until nothing further out could win. A weekend, a holiday or the maintenance
+break is scanned *across*, not stopped at: the session on the far side of a gap is usually the nearest one
+there is. Only a closure longer than the scan's cap — `SessionWindows.LastClosedWalkSpanDays` of one, the
+span the closed-session walk gives itself to find a single closed session — leaves nothing to name, and
+**that** refusal carries no bounds and says only to widen the window (gh#568).
 
 That second arm **narrows the "wholly contains and in neither list ⇒ did not trade" signal above**: a window
 holding *only* non-trading days now refuses rather than reporting them. The signal survives wherever the
@@ -450,10 +451,10 @@ is touched:
    window, or ask the operator for a coarser base resolution for this session*: there is no
    `resolutionMinutes` here to coarsen;
 4. **zero whole sessions named** — no session both opens and closes inside the window, refused naming the
-   window and the session, plus the nearest whole session's bounds when one can be named at all
-   (`SessionWindows.WindowFor` on the trade dates the window's start and end fall on, whichever of the two
-   needs less widening) so the caller can widen to it; on a window entirely on non-trading time there is no
-   session to name and the refusal says only to widen (gh#568);
+   window, the session, and the nearest whole session's bounds (`SessionWindows.WindowFor` over a scan that
+   widens outward from the window's own market dates until no further date could need less widening) so the
+   caller can widen to it; only a closure outrunning that scan's cap leaves no session to name, and there
+   the refusal says only to widen (gh#568);
 5. more trade dates than `MaxRows`, refused naming the real count.
 
 The bucket cap is measured **before** the row cap, the opposite of `get_bars`' order: the row count here is a

@@ -1,3 +1,4 @@
+using System.Globalization;
 using FluentAssertions;
 using MarqSpec.Mcp.TopstepX.Configuration;
 using MarqSpec.Mcp.TopstepX.Domain.MarketData;
@@ -45,6 +46,10 @@ public sealed class SessionGuardTests
     /// <summary>The shipped `rth` session: 08:30–15:00 Central, derived from 30-minute base bars.</summary>
     private static SessionDefinition Rth =>
         SessionDefinition.Defaults.Single(static d => d.Name == "rth");
+
+    /// <summary>The shipped `asia` session: 17:00–02:00 Central, so it straddles the calendar date.</summary>
+    private static SessionDefinition Asia =>
+        SessionDefinition.Defaults.Single(static d => d.Name == "asia");
 
     /// <summary>A calendar with no declared holidays, so every weekday is a trade date.</summary>
     private static BarSessionCalendar Calendar => BarSessionCalendar.Parse("16:00", []);
@@ -271,6 +276,121 @@ public sealed class SessionGuardTests
                 "2026-08-04T13:30:00.0000000+00:00 to 2026-08-04T20:00:00.0000000+00:00",
                 "with Tuesday's bounds, not Monday's")
             .And.NotContain("2026-08-03's", "Monday is the further of the two candidates, not the nearer");
+    }
+
+    [Fact]
+    public void ValidateSessionWindow_ScansPastTheMaintenanceHour_ForTheSessionOnItsFarSide()
+    {
+        // `TradeDateFor` answers NULL inside the maintenance hour, so a candidate set built from the window's
+        // two endpoints alone loses whichever endpoint lands in a gap -- and the session on the far side of
+        // that gap is usually the nearest one. This window starts at 21:00Z, inside maintenance, and ends in
+        // Tuesday's evening leg: scoring by widening, Monday's `rth` needs 7h30m and Tuesday's needs 21h30m,
+        // yet only Tuesday was ever a candidate. The scan has to cover the trade dates the window touches,
+        // not only the two its endpoints happen to resolve to.
+        DateTimeOffset from = new(2026, 8, 3, 21, 0, 0, TimeSpan.Zero);
+        DateTimeOffset to = new(2026, 8, 3, 22, 30, 0, TimeSpan.Zero);
+
+        Action refuse = () => Guards().ValidateSessionWindow(from, to, Rth, Calendar);
+
+        refuse.Should().Throw<McpException>().Which.Message
+            .Should().Contain(
+                "nearest whole rth session is 2026-08-03",
+                "Monday's session is 7h30m of widening away where Tuesday's is 21h30m")
+            .And.Contain(
+                "2026-08-03T13:30:00.0000000+00:00 to 2026-08-03T20:00:00.0000000+00:00",
+                "with Monday's bounds, the ones a caller can actually reach from here");
+    }
+
+    [Fact]
+    public void ValidateSessionWindow_ScansBackPastTheWeekend_ForFridaysSession()
+    {
+        // The same hole, two days wide. A Saturday-through-Sunday window ends exactly at Sunday's reopen, so
+        // its END resolves to Monday 08-10 while its START, a Saturday, resolves to nothing at all. Monday is
+        // 22h of widening away; the Friday on the near side of the weekend is 10h30m, and was never
+        // considered. Weekends are the largest single share of the refusals that name the wrong session, and
+        // of those that name none at all.
+        DateTimeOffset from = new(2026, 8, 8, 0, 0, 0, TimeSpan.Zero);
+        DateTimeOffset to = new(2026, 8, 9, 22, 0, 0, TimeSpan.Zero);
+
+        Action refuse = () => Guards().ValidateSessionWindow(from, to, Rth, Calendar);
+
+        refuse.Should().Throw<McpException>().Which.Message
+            .Should().Contain(
+                "nearest whole rth session is 2026-08-07",
+                "Friday is 10h30m of widening back where Monday is 22h forward")
+            .And.Contain(
+                "2026-08-07T13:30:00.0000000+00:00 to 2026-08-07T20:00:00.0000000+00:00",
+                "with Friday's bounds");
+    }
+
+    [Fact]
+    public void ValidateSessionWindow_NamesBounds_ForAWindowWhollyInsideAWeekend()
+    {
+        // The bounds-LESS arm shrinks to what it should always have been: a window with no whole session
+        // anywhere near it. A Saturday is not that -- Friday's session sits one day back -- and reporting no
+        // bounds there told a caller "no session can be named" when what was true is only "no session sits on
+        // a trade date either of your endpoints resolves to". The arm survives; it just stops swallowing
+        // every weekend, holiday and maintenance hour.
+        DateTimeOffset from = new(2026, 8, 8, 6, 0, 0, TimeSpan.Zero);
+        DateTimeOffset to = new(2026, 8, 8, 18, 0, 0, TimeSpan.Zero);
+
+        Action refuse = () => Guards().ValidateSessionWindow(from, to, Rth, Calendar);
+
+        refuse.Should().Throw<McpException>().Which.Message
+            .Should().Contain(
+                "nearest whole rth session is 2026-08-07",
+                "Friday's session is one day back, not unnameable")
+            .And.NotContain(
+                "Widen the window to include a whole session.",
+                "the bounds-less arm is for a window with no session in reach, not for every weekend");
+    }
+
+    [Fact]
+    public void ValidateSessionWindow_ScansPastTwoMarketDates_WhenTheNEARERSessionIsFurtherOutInDates()
+    {
+        // Why the scan widens until nothing further can win, rather than by a fixed day at each end. This
+        // `asia` window sits deep inside a Saturday: BOTH its endpoints fall on market date 08-08, so a
+        // one-day margin reaches 08-07 and 08-09 and stops. Friday 08-07's session (08-06T22:00Z-08-07T07:00Z)
+        // is 46h of widening back; Monday 08-10's (08-09T22:00Z-08-10T07:00Z) is 27h forward, and lies TWO
+        // market dates out. Nearness is measured in time, not in dates, so the walk has to keep going while a
+        // further date could still hold a closer session.
+        DateTimeOffset from = new(2026, 8, 8, 20, 0, 0, TimeSpan.Zero);
+        DateTimeOffset to = new(2026, 8, 9, 4, 0, 0, TimeSpan.Zero);
+
+        Action refuse = () => Guards().ValidateSessionWindow(from, to, Asia, Calendar);
+
+        refuse.Should().Throw<McpException>().Which.Message
+            .Should().Contain(
+                "nearest whole asia session is 2026-08-10",
+                "Monday is 27h of widening where Friday is 46h")
+            .And.NotContain("2026-08-07's", "Friday is nearer in dates and further in time");
+    }
+
+    [Fact]
+    public void ValidateSessionWindow_NamesNoBounds_WhenTheClosureOutrunsTheScan()
+    {
+        // The bounds-less arm, and the cap that decides it: a closure longer than the span the closed-session
+        // walk gives itself to find ONE closed session leaves nothing worth calling nearest, and the refusal
+        // says only to widen. This is the awkward CORRECT input the widened scan must not swallow -- without
+        // a cap the walk would run to the end of the calendar looking for a session to name.
+        int cap = SessionWindows.LastClosedWalkSpanDays(1);
+        DateOnly shutdownStart = new(2026, 7, 1);
+        string[] closed = [.. Enumerable.Range(0, (2 * cap) + 10)
+            .Select(day => shutdownStart.AddDays(day).ToString("yyyy-MM-dd", CultureInfo.InvariantCulture))];
+        BarSessionCalendar shutdown = BarSessionCalendar.Parse("16:00", closed);
+        // Placed a clear cap's walk inside the closure at both ends: a midnight-UTC instant sits on the
+        // PREVIOUS market date, so the scan's first backward step is already two days ahead of the window's
+        // own calendar date.
+        DateTimeOffset from = new(
+            shutdownStart.AddDays(cap + 2).ToDateTime(TimeOnly.MinValue), TimeSpan.Zero);
+
+        Action refuse = () => Guards().ValidateSessionWindow(from, from.AddHours(9), Rth, shutdown);
+
+        refuse.Should().Throw<McpException>().Which.Message
+            .Should().Contain(
+                "Widen the window to include a whole session.",
+                "no session sits within the scan, so none can be named")
+            .And.NotContain("nearest whole", "and naming one would be inventing it");
     }
 
     [Fact]

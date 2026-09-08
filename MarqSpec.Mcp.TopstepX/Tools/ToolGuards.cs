@@ -650,11 +650,14 @@ public sealed class ToolGuards(IOptions<MarketDataOptions> options)
     /// <para>
     /// <b>Each direction closes as soon as its own lower bound catches the best held.</b> A session on a
     /// trade date before the window ends no later than that trade date's close, so it cannot need less than
-    /// <c>window.Start - close</c> of widening; one after starts no earlier than its own trade date's open,
-    /// so it cannot need less than <c>open - window.End</c>. Both grow with distance, so the first date that
-    /// fails ends the direction rather than being stepped over — the mistake the endpoint-only version made
-    /// in miniature. The hard cap is <see cref="SessionWindows.LastClosedWalkSpanDays"/> of one, the span
-    /// the closed-session walk gives itself to find a single closed session.
+    /// <c>window.Start - close</c> of widening; one after starts no earlier than the <i>preceding</i> trade
+    /// date's close, so it cannot need less than <c>previousClose - window.End</c>. The forward floor is
+    /// anchored on that close rather than on the trade date's own open, which sits one maintenance window
+    /// later — a weaker bound on purpose, since it can only make the walk stop late and never early. Both
+    /// grow with distance, so the first date that fails ends the direction rather than being stepped over —
+    /// the mistake the endpoint-only version made in miniature. The hard cap is
+    /// <see cref="SessionWindows.LastClosedWalkSpanDays"/> of one, the span the closed-session walk gives
+    /// itself to find a single closed session.
     /// </para>
     /// <para>
     /// <b>Ties keep the earlier date, stated rather than inherited.</b> The walk runs outward from the
@@ -690,9 +693,11 @@ public sealed class ToolGuards(IOptions<MarketDataOptions> options)
         // So the walk starts on the window's own market dates and widens a day at a time, and each direction
         // closes as soon as nothing further out could beat what is already held. A session on a trade date
         // BEFORE the window ends no later than that date's close, so it cannot need less than
-        // (window.Start - close) of widening; one AFTER starts no earlier than its own trade date's open, so
-        // it cannot need less than (open - window.End). Both bounds grow with distance, which is what makes
-        // the first failure final rather than a gap to step over. The cap is the span the closed-session
+        // (window.Start - close) of widening; one AFTER starts no earlier than the PRECEDING date's close --
+        // one maintenance window before its own open, so a weaker floor than the tightest available, which
+        // can only stop the walk late and never early -- so it cannot need less than
+        // (previousClose - window.End). Both bounds grow with distance, which is what makes the first
+        // failure final rather than a gap to step over. The cap is the span the closed-session
         // walk gives itself to find ONE closed session: a venue shut for longer than that has no session
         // worth calling nearest, and the bounds-less arm answers instead.
         DateOnly earliest = MarketClock.MarketDate(window.Start);

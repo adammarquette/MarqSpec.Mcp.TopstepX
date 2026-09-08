@@ -6,6 +6,7 @@ using MarqSpec.Mcp.TopstepX.Data.Entities;
 using MarqSpec.Mcp.TopstepX.Domain;
 using MarqSpec.Mcp.TopstepX.Domain.MarketData;
 using MarqSpec.Mcp.TopstepX.MarketData;
+using MarqSpec.Mcp.TopstepX.Telemetry;
 using MarqSpec.Mcp.TopstepX.Tests.MarketData;
 using MarqSpec.Mcp.TopstepX.Venue;
 using Microsoft.EntityFrameworkCore;
@@ -53,6 +54,8 @@ public sealed class BarReselectorTests : IAsyncLifetime
     private readonly SeriesStoreFixture _fixture;
 
     private readonly TopstepXDbContext _database;
+
+    private readonly HostTelemetry _telemetry = new();
 
     /// <param name="fixture">The shared container.</param>
     public BarReselectorTests(SeriesStoreFixture fixture)
@@ -729,7 +732,7 @@ public sealed class BarReselectorTests : IAsyncLifetime
     {
         IndicatorRebuilder rebuilder = new(
             _database,
-            new IndicatorProjector(_database, Catalog(), NullLogger<IndicatorProjector>.Instance),
+            new IndicatorProjector(_database, Catalog(), NullLogger<IndicatorProjector>.Instance, _telemetry),
             Registry(),
             new FakeTimeProvider(Now),
             NullLogger<IndicatorRebuilder>.Instance);
@@ -751,7 +754,7 @@ public sealed class BarReselectorTests : IAsyncLifetime
         FakeTimeProvider clock = new(Now);
         BarSessionCalendar sessions = calendar ?? Calendar;
         IndicatorProjector projector =
-            new(_database, Catalog(sessions), NullLogger<IndicatorProjector>.Instance);
+            new(_database, Catalog(sessions), NullLogger<IndicatorProjector>.Instance, _telemetry);
 
         BarCacheService cache = new(
             _database,
@@ -761,7 +764,8 @@ public sealed class BarReselectorTests : IAsyncLifetime
             Registry(),
             new ContractDirectory(clock),
             clock,
-            NullLogger<BarCacheService>.Instance);
+            NullLogger<BarCacheService>.Instance,
+            _telemetry);
 
         return new BarReselector(
             _database,

@@ -193,7 +193,7 @@ ADR-0013's answer, and wrong here by a factor of about **750**: 8.3 s of
 arithmetic per call against the 11 ms probe every warm read pays before its lookup. It would also delete
 ADR-0006's whole premise — the stored series is what makes a read a lookup.
 
-### Probe with eleven `EXISTS` seeks instead of one `DISTINCT`
+### Probe with eleven `EXISTS` seeks instead of one grouped scan
 
 The obvious way to avoid scanning a whole key range on Postgres 17, which has no index skip scan. **Measured
 and rejected: about 20–27 ms, and it does not fall with size** — 21.00, 19.72, 21.43, 26.04 and 26.99 ms
@@ -214,7 +214,9 @@ once per catalogue change. `rebuild-indicators` already does it on demand for an
 - **The first read of a cold series is slow in proportion to the history kept** — 8.3 s at a year of
   five-minute bars — and every read after it pays the probe, with the one exception two entries below.
 - **Every indicator read now pays a probe**: 4.3 ms p50 over 2,000 bars, 11.2 ms over 70,000. The residual
-  growth is the `DISTINCT`, and it would flatten for free on Postgres 18's index skip scan.
+  growth is the grouped scan over the value key range — a `DISTINCT` when this was measured, a
+  `GROUP BY (Indicator, Period)` carrying `max(BucketStart)` since gh#531 — and it would flatten for free on
+  Postgres 18's index skip scan.
 - **A `40001` is reachable from a read.** New in kind, not in shape — `R-5.7` and `StoreFaultGuard` already
   carry it.
 - **The probe is bounded by `IIndicator.WarmupBars`.** A pair the stored bars cannot satisfy is not *missing*,
@@ -232,6 +234,12 @@ once per catalogue change. `rebuild-indicators` already does it on demand for an
   watched behave as claimed is a guess. The first version of this paragraph said it needed more rolls than a
   quarterly contract can have, which is the causal-claim failure `AGENT-MEMORY.md` warns about; the review of
   this pull request caught it.
+  **[2026-09-08] gh#531 widens this residue by one shape and no more.** The probe now also asks how far each
+  stored pair reaches, so a pair whose newest value falls further back than its own warm-up allows is
+  replayed. Where **several consecutive** contract runs at the tail are each shorter than the warm-up their
+  absences sum past that boundary, and such a series re-replays on every read — the same cost, on the same
+  kind of series, for the same reason. [ADR-0018](0018-period-selection-among-configured-periods.md)'s
+  update carries the mechanism and why the boundary is counted in bars.
 - **`rebuild-indicators` keeps its registration and its test**, and its job is now correction rather than
   repair. Deleting it would remove the only forced replay, and a changed formula needs one.
 - **`IndicatorCacheService` is scoped, and the lifetime is load-bearing.** It memoises which series it found
@@ -288,9 +296,11 @@ So `get_indicators` and `get_indicator_at` now take an optional `period` that **
 error listing the configured periods with the primary labelled, never an empty series (`R-2.3`).
 
 **This record's own mechanism is what makes that safe, which is why it rests here.** The probe diffs the
-catalogue's instances against the stored `DISTINCT (Indicator, Period)`, the reconcile is scoped to those same
+catalogue's instances against the pairs the store holds, the reconcile is scoped to those same
 pairs, and the replay walks them — so a period a caller can select is, by construction, one the projection
-writes and one the reconcile maintains. The set widened; nothing about the trigger changed.
+writes and one the reconcile maintains. The set widened; nothing about the trigger changed. (gh#531 later
+changed what the probe asks *of* each pair — completeness rather than existence — without changing which
+pairs it asks about; [ADR-0018](0018-period-selection-among-configured-periods.md)'s update has it.)
 
 **Two numbers in this record are now conditional on the catalogue's size**, and neither is restated here —
 the measurements above stand as taken. They were taken against eleven indicators at one period each, before
@@ -310,7 +320,8 @@ for the same reason.
   (`IndicatorReadProjectionCounter.Replays`, incremented from
   `IndicatorCacheService.EnsureProjectedAsync`; the existing log line still names the series and the missing
   pairs, and now includes the process total). gh#347.
-- **The `DISTINCT` half of the probe scans the whole key range.** Worth re-measuring on Postgres 18, where an
-  index skip scan should make it flat without a code change.
+- **The grouped half of the probe scans the whole key range.** Worth re-measuring on Postgres 18, where an
+  index skip scan should make it flat without a code change. It is a `GROUP BY (Indicator, Period)` carrying
+  `max(BucketStart)` since gh#531 — the same scan, one column wider — so the measurement to take is of that.
 - **Warming on startup is taken** (gh#350): `IndicatorWarmup` runs `IndicatorRebuilder` when HTTP and
   `MarketData__WarmIndicators` are both on. Stdio never warms.

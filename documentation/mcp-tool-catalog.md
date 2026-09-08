@@ -1124,6 +1124,8 @@ is a lookup, not a narrative. Four `gh#48` rows are fields this page invented an
 `gh#70` rows share one cause: the SDK derives `required` from whether a C# parameter has a **default value**,
 not from whether its type is nullable, so `string? symbol` with no `= null` is nullable and required at once.
 
+**A row records what was true when it was written.** Where a later card reversed one, the row says so and names its successor — the `get_indicators` `period` pair below is the only such case, and the **lower** of the two is current.
+
 | Tool | Claimed | Actually | |
 |---|---|---|---|
 | `list_instruments` | a `resolutionsAvailable` field | never on `InstrumentInfo` | gh#48 |
@@ -1131,7 +1133,7 @@ not from whether its type is nullable, so `string? symbol` with no `= null` is n
 | `get_bars` | a `fromCache` field | never on `BarSeries` — and the one an agent would reach for, reading falsy `undefined` every call | gh#48 |
 | `get_bars` | `fetchedBuckets` ≡ `venueRequests` as evidence | only `venueRequests == 0` proves **no bars were fetched** — and since gh#504 not even that the vendor went untouched: a memo-covered read still makes one `Contract/search` that `venueRequests` does not count (`venue_calls_total{operation="resolve_contracts"}` does) | gh#73 · gh#504 |
 | `get_bars` | history comes from the contract the venue marks active | only the **present** band does. Since gh#505 a range older than the store's trailing run of that contract is fetched from every listed cycle candidate and kept per trade date by **volume** — so a window may be served from a contract the venue never marked active, and `contracts.segments` reads as one run per roll in expiry order instead of two interleaved ones (`R-1.14`) | gh#505 |
-| `get_indicators` | `period` is a parameter | never was; fixed per indicator, and returned | gh#48 |
+| `get_indicators` | `period` is an arbitrary window a caller passes | **history, and the row below supersedes it.** It was not a parameter at all when this was written — fixed per indicator, and returned. gh#495 later made it one; what stays retracted is the *ad-hoc* window this row claimed, which ADR-0006 still forbids | gh#48 |
 | `get_indicators` · `get_indicator_at` | `period` is not a parameter | since gh#495 it is an optional *selector* among the operator's configured periods — omitted means the primary, an unconfigured one is refused listing them, and nothing ad hoc is computed ([ADR-0018](adr/0018-period-selection-among-configured-periods.md)) | gh#495 |
 | `get_indicator_at` | cannot-measure is `{ value: null }` | it is `{}` | gh#85 |
 | `get_market_snapshot` | the run of absent values after a roll arrives as `null` in `indicators{}` | that map is one **as-of read** per indicator, not one entry per bucket, so it answers with the newest row at or before the anchor — on the **expiring** contract just after a seam. Measured: `atr` came back at the pre-seam `2` where the contract in front was ranging `4` | gh#286 |

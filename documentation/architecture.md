@@ -465,20 +465,24 @@ all walk; `IndicatorCatalog.Primaries` — exactly one per name — is what keys
 
 `IndicatorCacheService.EnsureProjectedAsync(venue, instrument, resolution)`:
 
-1. **Probe** — a bar count **capped at the largest warm-up in the catalogue**, which follows the largest
-   *configured* period rather than the shipped one, and one
-   `DISTINCT (Indicator, Period)` over the series' stored values, which returns one row per configured
-   instance rather than per name. Two aggregates, and they are the whole cost
+1. **Probe** — the series' **newest buckets, capped at the largest warm-up in the catalogue**, which follows
+   the largest *configured* period rather than the shipped one, and one
+   `GROUP BY (Indicator, Period)` carrying `max(BucketStart)` over the series' stored values, which returns
+   one row per configured instance rather than per name. Two aggregates, and they are the whole cost
    of a warm read: **4.3 ms** at 2,000 bars, **11.2 ms** at 70,000, **measured at the shipped catalogue** —
-   eleven indicators at one period each, before `vwap-rolling` and before additional periods were configurable.
-   Read them on the same terms as the 8.3 s below: the `DISTINCT` returns a row per configured instance, so
+   eleven indicators at one period each, before `vwap-rolling` and before additional periods were configurable,
+   and before gh#531 replaced a `DISTINCT` with the grouped `max` over the same scan. Read them on the same
+   terms as the 8.3 s below: the grouping returns a row per configured instance, so
    the second aggregate's result set grows with what an operator adds. The cap is why the first half does not
    grow with the series — the only thing that count decides is `WarmupBars <= bars` for each catalogue member,
    and any number at or above the largest warm-up answers every one of those identically.
-2. **Diff against the catalogue.** A pair is *missing* only when the stored bars reach its
-   `IIndicator.WarmupBars`. A pair the bars cannot yet satisfy is **not yet measurable**, which is a fact
-   (`R-2.3`) rather than a gap — and treating the two alike would replay a short series on every read forever
-   while never writing a value.
+2. **Diff against the catalogue, on completeness rather than existence** (gh#531). A pair is *missing* when
+   the store holds no value for it **or** its newest value sits further back than the bucket
+   `IIndicator.WarmupBars` bars behind the newest bar. A pair the bars cannot yet satisfy is **not yet
+   measurable**, which is a fact (`R-2.3`) rather than a gap — and treating the two alike would replay a
+   short series on every read forever while never writing a value. The warm-up offset is what keeps the run
+   of absences after a contract roll a fact too: counted in bars rather than in time, because stored buckets
+   are not contiguous across a weekend.
 3. **Nothing missing ⇒ return**, opening no transaction — on every series except the short-run one
    ADR-0014's consequences describe, where *nothing missing* is never reached. The answer is memoised for
    the life of the request scope, so a snapshot covering several resolutions pays **one** probe per

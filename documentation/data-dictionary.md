@@ -157,9 +157,11 @@ otherwise **bounded by the series in hand**: the classification is over rows the
 no additional query.
 
 **A read does not sweep, and the two orphan kinds differ sharply in what that costs.** `get_indicators`
-projects only when its probe finds a *configured* pair missing
-([ADR-0014](adr/0014-indicators-are-projected-on-read-too.md)), and `EnsureProjectedAsync` returns before that
-probe entirely when the series holds **no bars**. So:
+projects only when its probe finds a *configured* pair missing — meaning the store holds no value for it, or
+holds values that stop short of the bars by more than that indicator's warm-up
+([ADR-0014](adr/0014-indicators-are-projected-on-read-too.md),
+[ADR-0018](adr/0018-period-selection-among-configured-periods.md) *Update*, gh#531) — and
+`EnsureProjectedAsync` returns before that probe entirely when the series holds **no bars**. So:
 
 - **Retired rows are unreachable** while they stand — the read refuses a period the catalogue does not carry,
   before the store is touched. They stand until a fill or `rebuild-indicators` visits the series.

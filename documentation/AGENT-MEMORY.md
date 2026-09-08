@@ -138,6 +138,40 @@ at one this rule's own pull request retires.
       irony, is this signal's own subject. The detectable shape is cheap: `select(.body | startswith("@"))`
       over a PR's comments finds this exact broken-post case directly.
 
+- **[2026-09-08] A `Total:` is discovery; a `Passed:` is execution — five ways a test run has lied about a
+  mutation (gh#600).** Mutation testing is this repository's standard proof of coverage, so *"nothing
+  reddened"* is the most load-bearing observation an agent makes, and the one a broken run counterfeits
+  best. **Score the run before you score the mutation**, on four things the summary line alone does not
+  carry:
+  - **The split, never the total alone.** `Failed: N, Passed: 0` over a *full* total is a broken host, not
+    N regressions.
+  - **The duration.** A tier that normally takes 34 s finishing in 227 ms did not run.
+  - **Where the failures originate.** A fixture constructor or a runtime loader is the environment; only a
+    failure inside the code under test is the tree.
+  - **The harness's own `APPLIED <file> <what>` line — its absence is a failed run, never a green one.**
+    Before recording a survivor, confirm the source really differs (`git diff --stat` on the mutated file),
+    and carry a **positive control**, a deletion known to redden, so a green row means *no coverage* rather
+    than *no loop*.
+
+  Measured across gh#529 / PR #589, gh#537 / PR #597 and gh#588 / PR #590. Each mechanism below is a way
+  that check was violated:
+  1. **A stale binary** printed `Total: 71` where the suite has 162 — the 2026-08-28 entry below, same cause.
+  2. **`Test Run Aborted.`** printed no counts at all, and the re-run reported the *previous* count
+     unchanged, so an agent scrolling back for a `Passed:` line finds the earlier run's.
+  3. **The mutation never applied.** A `mkdir` failed earlier in an `&&` chain, the mutation script never
+     ran, and the suite honestly printed `Passed: 163` over unmutated source — indistinguishable from a
+     survivor. **Never chain a mutation behind `&&` after setup that can fail**; run the setup separately
+     and check it.
+  4. **The infra suite with no Node on `PATH`.** Same built output, two containers differing only in
+     `node`: `Passed: 165, Total: 165` in 34 s, against `Failed: 165, Passed: 0, Total: 165` in **227 ms**,
+     every failure from `Amazon.JSII.Runtime.NodeProcess..ctor` — CDK synthesis shells out to Node, so the
+     fixture cannot construct. **The `Total:` is correct here**, which is why the older rule *"know the
+     expected suite size and treat disagreement as the run being wrong"* (the 2026-08-26 entry below)
+     **agrees with this broken run**. Only the split and the 150x duration collapse give it away.
+  5. **Windows Application Control** (`0x800711C7`) blocked the freshly built test assemblies; the first
+     attempt printed `Total: 156` with every test failed in its fixture constructor. It is **persistent on
+     this host, not transient** — see the 2026-09-08 correction under the 2026-08-26 entry below.
+
 - **[2026-08-28] A restore can backdate a source file's mtime, MSBuild skips the compile, and `dotnet test`
   scores a stale binary with a plausible `Total:` (gh#302).** Found by PR #298's author (gh#286) with a
   `Copy-Item` restore: the timestamp went **backwards**, the compile was skipped, and the host ran the
@@ -232,6 +266,13 @@ at one this rule's own pull request retires.
       gate rewrite with no tier able to run at all. **Its limit:** it scores a rule *as reimplemented against
       the metadata reader*, not the shipped test executing — indirect evidence, never a substitute for a
       `Total:` line.
+    - **[2026-09-08] On this host the block is PERSISTENT, not intermittent, and a green `dotnet build` says
+      nothing about it (gh#600).** Reproduced during gh#588 / PR #590 across three paths, both
+      configurations, with the sandbox disabled and after full `bin`/`obj` wipes: every freshly built test
+      assembly fails to load. `dotnet build` and `dotnet run` are unaffected — **only the VSTest reflection
+      load fails** — so a successful build is not evidence that tests can run. This supersedes *"retrying
+      often clears it"* in the 2026-08-23 entry below. The container remains the working path; a docs-only
+      change can instead cite CI on the pushed head rather than claim a local count.
 
 - **[2026-08-25] A conflict resolver that never ran let `git rebase` commit conflict markers, silently
   (gh#187).** The script sat at `/tmp/fix.py`; **the `python` on PATH is Windows-native and cannot see MSYS's
@@ -435,8 +476,9 @@ at one this rule's own pull request retires.
     indistinguishable from a genuinely bad `--filter`, so the detection rule has to be *"`Total:` is absent
     or below what I expected"* and can never be *"look for an error"*.
   - **`C:/tmp` is a coin flip, not a fix.** The block tracks **freshly-produced binaries**, not the path: it
-    has been hit from `C:/tmp` as well, on a rebuild, minutes after the same directory worked. Retrying often
-    clears it. Moving is worth trying and is not a remedy to rely on.
+    has been hit from `C:/tmp` as well, on a rebuild, minutes after the same directory worked. Retrying
+    cleared it often in 2026-08; **[2026-09-08] on this host it no longer does** — see the 2026-09-08
+    correction under the 2026-08-26 entry above. Moving is worth trying and is not a remedy to rely on.
   - Found during the reviews of gh#73/PR #79 and gh#82/PR #83, both of which hit it from both locations.
 
 - **[2026-08-23] Docker IS up now, so the integration tier runs locally — and the Application Control block
@@ -452,7 +494,8 @@ at one this rule's own pull request retires.
     `MarqSpec.Mcp.TopstepX.dll`, with no code change between. **A host run succeeding once does not mean the
     block is gone**, and the failure arrives as an xUnit *"No test is available / Catastrophic failure"*,
     which reads like a broken test project rather than an OS policy. Look for the hex code before believing
-    the runner.
+    the runner. **[2026-09-08] "Unpredictably" no longer holds on this host** — see the 2026-09-08
+    correction under the 2026-08-26 entry above.
   - **The container fallback works and is the reliable path**, now that Docker is up:
     `docker compose -f docker-compose.yml -f docker-compose.dev.yml run --rm --no-deps sdk dotnet test
     MarqSpec.Mcp.TopstepX.Tests`. (Expect `MINVER1001` warnings — the container does not see the git

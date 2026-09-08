@@ -388,6 +388,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **The resolution ceiling is now 690 minutes — half a session — rather than 1,379, and a
+  `resolutionMinutes` between 691 and 1,379 is refused instead of served.** Those widths were legal and, on
+  most trade dates, unanswerable: buckets are anchored on a fixed UTC grid rather than on the session open, so
+  a bucket wider than half a session only *sometimes* opens and closes inside one, and which trade dates it
+  fits on depends on where the grid falls that day. `get_bars("MES", 1379, …)` answered `[]` with
+  `venueRequests: 0` on all but a handful of scattered dates — the exact shape the 1,440 refusal abolished,
+  one minute lower. The bound is derived: a session of `S` minutes admits an `r`-minute bucket only when a
+  multiple of `r` lands in a run of `S - r + 1` consecutive minutes, which is guaranteed only while
+  `S - r + 1 >= r`, so `r <= (S + 1) / 2` — **690** at `S = 1380`, and also 1,380's largest proper divisor.
+  Refused rather than flagged, because an empty series carrying a warning is still an empty series and reads
+  as a market that printed nothing. **It over-rejects four widths and says so**: 692, 696, 700 and 720 do fit
+  every trade date at a 16:00 Central close, and they are refused anyway because the bound is a guarantee that
+  survives a different session close rather than a table of coincidences. Two separate refusals now — 1,380
+  and above is still "that is a session bar, ask `get_session_bars`"; 691 to 1,379 is "ask for a narrower
+  bar", with the rule and its arithmetic in the message. `get_market_snapshot` is unaffected: its defaults are
+  5 and 60 and its 240-minute slice is far inside the ceiling. The last servable `toUtc` at the ceiling moves
+  to `9999-12-28T00:59:59.9999999Z` (gh#538,
+  [ADR-0022](documentation/adr/0022-session-bars-derived-complete-or-absent.md),
+  [ADR-0010](documentation/adr/0010-per-call-resolutions-fetched-not-derived.md), `R-1.9`).
 - **`get_session_bars` now refuses a window inside which no session both opens and closes, rather than
   answering with two empty lists.** A non-empty window naming zero whole trade dates — nine hours of a
   trading day over an `rth` session that runs longer, say — passed every existing guard and answered

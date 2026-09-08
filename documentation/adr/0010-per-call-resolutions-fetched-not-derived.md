@@ -157,6 +157,7 @@ correct bar, and the guard's failure mode is silent.
 | [2026-08-23](#update-2026-08-23--maxbucketsperpass-is-a-second-cap-on-the-same-quantity-and-it-is-now-stated-at-the-boundary) | The cost bound named in *Alternatives* is now a **tool error**, not a fault one layer down |
 | [2026-08-28](#update-2026-08-28--gh49s-snapshot-default-shipped) | gh#49 closed: `get_market_snapshot` defaults `[5, 60]` |
 | [2026-09-06](#update-2026-09-06--the-ceiling-is-the-session-and-the-day-is-a-session-bar) | Read "1 to 10,080" as **1 to 1,379**; the day and the week are session bars, and the completeness-guard exception below is taken by [ADR-0022](0022-session-bars-derived-complete-or-absent.md) |
+| [2026-09-08](#update-2026-09-08--the-ceiling-is-half-a-session-because-the-grid-is-not-session-aligned) | Read "1 to 1,379" as **1 to 690**; the UTC bucket grid is not session-aligned, so a bucket wider than half a session is not guaranteed to fit inside one (gh#538) |
 
 ## Update (2026-08-23) — any meant any positive, and four tools did not enforce it
 
@@ -375,6 +376,36 @@ vendor call volume — session reads make no vendor call at all.
 per trade date stamped at the 17:00 Central open — the same trade date this repository already models. That
 makes fetching `full` a real option rather than a dismissed one; ADR-0022 records why it was not taken for
 this slice, and carries the cross-check as a follow-up.
+
+## Update (2026-09-08) — the ceiling is half a session, because the grid is not session-aligned
+
+**Point 1 stands, point 2 is untouched, and the number in the update above moves once more: the servable range
+is 1 to 690 minutes.** Resolution is still a per-call parameter, there is still no allow-list, and the range
+is still contiguous — this closes an end, it does not enumerate.
+
+**The 2026-09-06 ceiling was right about what a session bar *is* and wrong about where the line falls.** It
+drew at 1,380 because nothing that wide can close inside a session. True — and it left a residue
+[ADR-0022](0022-session-bars-derived-complete-or-absent.md) recorded rather than fixed: a bucket **narrower**
+than a session can also fail to fit inside one, because `BarGapDetector.AlignUp` anchors buckets on a grid
+struck from the .NET epoch and not on the session open. At 1,379 minutes a bucket is expected only when that
+grid lands within a minute of the open, so `get_bars` at 1,379 answered an **empty series** with
+`venueRequests: 0` on all but a handful of scattered trade dates — the same fault, one minute lower (gh#538).
+
+**The bound is derived rather than chosen, which is what makes it re-checkable.** A session of `S` minutes
+admits an `r`-minute bucket exactly when a multiple of `r` lands in `[open, close - r]`, a run of `S - r + 1`
+consecutive whole minutes; a run of `n` consecutive integers is certain to hold a multiple of `r` only while
+`n >= r`; so the guarantee holds exactly while `r <= (S + 1) / 2`. At `S = 1380` that is **690**, which is
+also 1,380's largest proper divisor. `ToolGuards.MaxResolutionMinutes` is written as `(SessionMinutes + 1) / 2`
+for that reason — a literal 690 nobody can re-derive is worse than the formula.
+
+**The bound is on *meaning* a third time, and it is a third meaning.** 10,080 was about what a minute count
+can express. 1,380 was about what the session calendar can hold. This one is about where the **bucket grid**
+falls: 690 is legal and 691 is not, and the difference is neither arithmetic nor calendar but alignment.
+
+**It is a refusal and not a warning field**, for the reason `R-2.3` refuses a substituted number: an empty
+series carrying a flag is still an empty series, and a caller reads it as a market that printed nothing.
+ADR-0022's *Update (2026-09-08)* carries that argument, the four widths the bound over-rejects, and the sweeps
+that measure both.
 
 ## Follow-ups
 

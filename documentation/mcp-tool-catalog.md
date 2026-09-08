@@ -402,8 +402,9 @@ there is. Only a closure longer than the scan's cap — `SessionWindows.LastClos
 span the closed-session walk gives itself to find a single closed session — leaves nothing to name, and
 **that** refusal carries no bounds and says only to widen the window (gh#568).
 
-That second arm **narrows the "wholly contains and in neither list ⇒ did not trade" signal above**: a window
-holding *only* non-trading days now refuses rather than reporting them. The signal survives wherever the
+**The refusal narrows the "wholly contains and in neither list ⇒ did not trade" signal above**: a window
+holding *only* non-trading days now refuses rather than reporting them, whether it is named a nearest session
+or not — a Saturday is refused *with* bounds and still reports nothing. The signal survives wherever the
 window also holds one whole session — December 24, 25 and 26 together still report the 25th in neither
 list — which is the only shape it was legible in anyway.
 

@@ -44,17 +44,36 @@
 # WHERE THE BOUNDARY COMES FROM, WHICH IS A DIFFERENT KIND OF PATTERN
 #
 # `Up()` and `Down()` are located through `declares()`, never by matching a raw line: the line must not be a
-# `//` comment, must not be the interior of a `Sql(` string literal, and must carry a modifier keyword. A
-# comment inside `Up()` reading "there is no void Down(MigrationBuilder …) worth writing" otherwise set the
-# excluded span from that comment to the real declaration -- switching off the rest of `Up()` while
-# reporting the `Down()` body's own drop as if it were in `Up()`. A finding needle that is too loose costs a
-# false positive; a BOUNDARY needle that is too loose excludes code.
+# `//` comment, must not be the interior of a `Sql(` string literal, must carry a modifier keyword, and must
+# carry `override`. A comment inside `Up()` reading "there is no void Down(MigrationBuilder …) worth
+# writing" otherwise set the excluded span from that comment to the real declaration -- switching off the
+# rest of `Up()` while reporting the `Down()` body's own drop as if it were in `Up()`. A finding needle that
+# is too loose costs a false positive; a BOUNDARY needle that is too loose excludes code, and nothing
+# reports what was never read.
 #
-# The two boundaries that are still decided from raw text -- `MEMBER_RE`/the brace rule for where `Down()`
-# ENDS, and `STATEMENT_END_RE` for where a `Sql(` region ends -- are left that way on purpose, and the reason
-# is the DIRECTION each fails in: a string literal that falsely matches either one ends a region EARLY, so
-# more is scanned. Making them string-aware would let an unterminated literal run a region to end of file and
-# take a sibling helper with it, which is the quiet direction.
+# ONLY ONE BOUNDARY HERE FAILS SILENTLY, AND IT IS WHERE THE EXCLUDED SPAN BEGINS. That asymmetry is what
+# says where to look, and three rounds of review have found bugs at exactly one end:
+#
+#   - `down_start` too EARLY excludes real code and reports nothing about it. SILENT. Every boundary bug
+#     this gate has had lives here, and each arrived through the previous round's fix -- which is why the
+#     condition added for it tests what the line DECLARES rather than another property of the line.
+#   - `down_end` (`MEMBER_RE`, the brace rule) matching falsely ends the body EARLY, so MORE is scanned. LOUD.
+#   - `SQL_CALL_RE` opening a bogus region in pass 0 puts lines in `in_region`, which makes `declares()`
+#     REFUSE the declarations inside it -- so the run dies on `NO Up()`, or `down_start` falls to 0 and the
+#     whole file including `Down()` is read. LOUD, by construction rather than by luck.
+#   - `STATEMENT_END_RE` closing a region early takes lines OUT of `in_region`, where pass 3's line-level
+#     SQL needle picks them up. LOUD.
+#
+# So those three stay un-predicated on purpose. Making them string-aware would let an unterminated literal
+# run a region to end of file and take a sibling member with it, which is the quiet direction.
+#
+# AND EVERY WIDENING IN THIS FILE IS AUDITED AGAINST THAT ASYMMETRY, because a widening is how each of the
+# last two rounds' bugs arrived. `$DOT`, the `$CALL` end-of-line arm and reading the generated partials
+# widen what is FOUND, so they can only add findings -- loud. Pass 0's whole-file region map widens
+# `in_region`, which can only make `declares()` refuse more -- loud. `MEMBER_RE`'s modifier list and the
+# brace rule widen `down_end`, which can only end the body earlier -- loud. The two that widened
+# `down_start` -- `MEMBER_RE`'s list, again, and `DOWN_RE`'s end-of-line arm -- are the two that were
+# defeated, and both are now behind `OVERRIDE_RE`. **Widen a boundary and say which end you widened.**
 #
 # NOT THE `Up()` BODY ALONE, and that is a correction rather than a design (gh#529 review). Scanning only
 # `Up()` meant an operation in a SIBLING MEMBER of the same class -- a private helper `Up()` calls -- was
@@ -299,6 +318,23 @@ DOWN_RE='void[[:space:]]+Down[[:space:]]*\([[:space:]]*(MigrationBuilder|$)'
 # one never found the end of the `Down()` body, `down_end` ran to end of file, and a sibling helper written
 # that way was swallowed whole. Same shape as the decoy above, found by auditing rather than by review.
 MEMBER_RE='^[[:space:]]+(public|private|protected|internal|static|override|virtual|abstract|sealed|partial|async|extern|unsafe)[[:space:]]'
+# AND THE THING THAT DECIDES A BOUNDARY MUST BE AN OVERRIDE. Everything above tests a property of the LINE,
+# and the property that matters is WHAT THE LINE DECLARES: a modifier keyword is evidence of a declaration,
+# never of WHICH declaration, nor that it is a member rather than a local. Both of round three's defeats came
+# through that gap, and each arrived through a widening made for the round before it:
+#
+#   - `static` was added to MEMBER_RE for the sibling-helper find, and `static` is also the modifier a C#
+#     LOCAL FUNCTION may carry -- so `static void Down(MigrationBuilder b) { }` written inside `Up()` took
+#     `down_start`, and the rest of `Up()` fell between it and the real declaration.
+#   - the END-OF-LINE arm was added to DOWN_RE so a wrapped signature would stop reddening correct work, and
+#     it also matches an ordinary OVERLOAD -- `private static void Down(\n int unused)` -- which wins the
+#     first-match race against the real one.
+#
+# `Migration.Up` and `Migration.Down` are `protected virtual`, so a migration's are ALWAYS overrides; EF can
+# scaffold nothing else, and all seven on `develop` are. A local function cannot be an override and neither
+# is `Down(int)`, so one condition refuses both without narrowing either widening back. The cost is named:
+# a hand-written migration declaring `Up` without `override` fails `NO Up()`, which is the loud direction.
+OVERRIDE_RE='(^|[^[:alnum:]_])override[[:space:]]'
 
 # Matched case-insensitively. The left boundary is what keeps `.DropColumn(` -- no space after Drop -- out
 # of the DROP arm, so the two families cannot be confused for one another in a diagnostic.
@@ -442,14 +478,21 @@ scan_file() {  # $1 path  $2 1 if Up(MigrationBuilder) must be locatable
   # A region left open at the end of the file is closed there and still scanned: unread is not a pass.
   if [ "$sql_open" -ne 0 ]; then region_text[$sql_open]="$sql_text"; fi
 
-  # A LINE MAY ONLY DECIDE A BOUNDARY IF IT DECLARES A MEMBER. Not a `//` comment, not the interior of a
-  # string literal, and carrying a modifier keyword. Both decoys review built fail two of the three, and
-  # that redundancy is deliberate -- a boundary is the one thing here worth guarding twice.
+  # A LINE MAY ONLY DECIDE A BOUNDARY IF IT DECLARES AN OVERRIDE OF `Up`/`Down` ON THE MIGRATION CLASS. Not
+  # a `//` comment, not the interior of a string literal, carrying a modifier keyword, AND carrying
+  # `override`. The first three test properties of the LINE; the fourth is the only one that tests what the
+  # line DECLARES, and two rounds of boundary bugs are what it took to notice the difference.
+  #
+  # Each condition has a fixture written to defeat EXACTLY it -- except the `//` test, which is SUBSUMED by
+  # MEMBER_RE (a `//` line can carry no leading modifier) and pinned by nothing. That is stated in the
+  # ledger rather than papered over: an unpinnable guard whose redundancy is written down cannot mislead
+  # anyone about what is proven, and an unlabelled one is indistinguishable from a guard that works.
   declares() {  # $1 line number  $2 the signature regex
     local ln="$1" re="$2" text="${LINES[$(( $1 - 1 ))]}"
     if [ -n "${in_region[$ln]:-}" ]; then return 1; fi
     if [[ "$text" =~ $COMMENT_RE ]]; then return 1; fi
     if [[ ! "$text" =~ $MEMBER_RE ]]; then return 1; fi
+    if [[ ! "$text" =~ $OVERRIDE_RE ]]; then return 1; fi
     if [[ ! "$text" =~ $re ]]; then return 1; fi
     return 0
   }

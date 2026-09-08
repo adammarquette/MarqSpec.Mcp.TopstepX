@@ -24,9 +24,19 @@ namespace MarqSpec.Mcp.TopstepX.MarketData;
 public enum HistorySelection
 {
     /// <summary>
-    /// <b>This read decided no history, so it has nothing to say about how any was decided.</b> Every bucket
-    /// the window asked for was already stored, or the window sits entirely in the present band the venue's
-    /// own pick answers for (ADR-0020 §1), or the instrument carries no cycle to plan against.
+    /// <b>This read decided no history, so it has nothing to say about how any was decided.</b> Three
+    /// different situations arrive here: every bucket the window asked for was already stored; the window
+    /// sits entirely in the present band the venue's own pick answers for (ADR-0020 §1); or there was no
+    /// cycle to decide against at all — <c>R-1.14</c>'s two <b>whole-read</b> degradations, an instrument
+    /// the registry does not serve and a front whose expiry does not read against the cycle.
+    /// <para>
+    /// <b>That third arm is a degradation this value cannot name, and it is the field's known limit.</b>
+    /// <c>PlanAsync</c> answers both of those conditions with a plan of present slices, so no candidate set
+    /// exists for <see cref="HistoricalRangePlanner.SelectionOf"/> to describe — the whole window is fetched
+    /// from the venue's own pick with no volume decision anywhere, and only the Warning
+    /// <c>BarCacheService</c> logs says so. The two degradations this enum <i>does</i> name are the
+    /// per-slice ones. Giving the whole-read pair their own value is deliberately not done here (gh#592).
+    /// </para>
     /// <para>
     /// <b>Not "the cycle was whole".</b> The bars in the answer may well have been fetched by an earlier,
     /// degraded read, and nothing in the store records that. Reading this as a clean bill of health is the

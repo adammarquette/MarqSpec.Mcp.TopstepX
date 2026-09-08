@@ -886,6 +886,36 @@ a later change to the hostname spelling would have to wait out on any resolver t
 is one more reason gh#519 confirms `staging.` **before** the first `cdk deploy` rather than after it, and it
 is that card's to settle, not this entry's.
 
+
+## Update (2026-09-08) — account budget on the OIDC stack; Project / Environment cost tags
+
+gh#527. Decisions above are unchanged; this records where the budget lives, the default amount, the
+notification thresholds, the two tag keys, and the account setting that activates them for Cost Explorer.
+
+- **Budget home:** `GitHubOidcStack` (`topstepx-mcp-github-oidc`), not `EnvironmentStack`. One monthly
+  `AWS::Budgets::Budget` for the account; two environment stacks would have synthesised two budgets.
+- **Amount:** CloudFormation parameter `BudgetAmount`, type `Number`, default **300** USD. Notifications at
+  **50 / 80 / 100 % of ACTUAL** and **100 % of FORECASTED**, all to parameter `AlertsEmail` (no default —
+  a default would be an email literal in the template). Shared later with gh#526's SNS topic, or its own
+  until that card lands.
+- **Tags:** `Project=topstepx-mcp` via `Tags.Of(app)` in `Program.cs` and on each stack that template tests
+  synthesise alone; `Environment=<env>` on each `EnvironmentStack` only. The OIDC stack carries `Project`
+  and must not carry `Environment`.
+- **Cost-allocation activation** is an account setting outside any template. After the first deploy
+  (gh#519), activate and read back:
+
+  ```bash
+  aws ce update-cost-allocation-tags-status --status Active --tag-keys Project Environment
+  aws ce list-cost-allocation-tags --status Active
+  ```
+
+  Quote both on #519. Live `aws budgets describe-budgets` and the first Cost Explorer `Environment=staging`
+  row are also #519's (AC split 2026-09-08), not this card's ship gate.
+
+Template tests: `CostAllocationTests` — every taggable environment resource carries both keys; the OIDC
+stack has exactly one monthly COST budget whose amount and subscriber Ref parameters; a missing
+`Environment` key yields null under the same helper the green assertions use. Suite **170** at this entry.
+
 ## Follow-ups
 
 - gh#516, gh#517, gh#518 build decisions 7, 9 and 8; gh#529 gates decision 4's rule. All four cite this

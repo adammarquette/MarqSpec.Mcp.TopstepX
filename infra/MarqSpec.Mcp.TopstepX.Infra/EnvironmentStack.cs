@@ -33,9 +33,9 @@ namespace MarqSpec.Mcp.TopstepX.Infra;
 /// staging — from the same class; what differs is in <see cref="EnvironmentStackProps"/> and nowhere else.
 /// </summary>
 /// <remarks>
-/// What is <b>not</b> here, by card: the alarms (gh#526), the budget and cost tags (gh#527), the WAF
-/// (gh#528), the <c>pg_dump</c> task (gh#522), the OTLP sidecar (gh#537). Each is a further construct in
-/// this same stack, filed separately so this one stays the skeleton. Cognito (gh#517) is here.
+/// What is <b>not</b> here, by card: the alarms (gh#526), the account budget (gh#527 — on
+/// <see cref="GitHubOidcStack"/>), the WAF (gh#528), the <c>pg_dump</c> task (gh#522). Cost-allocation
+/// tags (gh#527) and the OTLP sidecar (gh#537) are here. Cognito (gh#517) is here.
 /// <para>
 /// <b>Operational defaults this card took</b>, traced to neither ADR-0023 nor gh#516 and none a cost or
 /// exposure choice — named here so nobody hunts for where they were decided: the AWS Backup rule runs at
@@ -119,6 +119,12 @@ public sealed class EnvironmentStack : Stack
         var env = props.EnvName;
         var root = props.RootDomain;
         Hostname = $"topstepx-mcp.{root}";
+
+        // Cost-allocation tags (gh#527). Project is also applied at the app in Program.cs; Environment is
+        // per-stack so the two environments never share a value. Applied here so template tests that
+        // synthesise a single EnvironmentStack still see both keys.
+        Amazon.CDK.Tags.Of(this).Add("Project", "topstepx-mcp");
+        Amazon.CDK.Tags.Of(this).Add("Environment", env);
 
         var natShape = props.OutboundPath is OutboundPath.NatGateway or OutboundPath.VpcEndpointsWithNatGateway;
         var endpointShape = props.OutboundPath is OutboundPath.VpcEndpointsWithPublicIp or OutboundPath.VpcEndpointsWithNatGateway;

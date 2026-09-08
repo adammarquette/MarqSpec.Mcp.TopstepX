@@ -5,6 +5,11 @@ using MarqSpec.Mcp.TopstepX.Infra;
 // and the OIDC stack that lets GitHub Actions deploy them. Run through `infra/cdk.json`; never by hand.
 var app = new App();
 
+// Cost-allocation tag shared by every stack (gh#527, ADR-0023). Environment= is applied per EnvironmentStack;
+// the account-scoped OIDC stack carries Project alone. Activation as CE cost-allocation tags is an account
+// setting outside the template — recorded on ADR-0023 with the read-back call.
+Amazon.CDK.Tags.Of(app).Add("Project", "topstepx-mcp");
+
 // The account and region come from `cdk.json`'s context, or from `-c account=… -c region=…` on the command
 // line, which is how gh#519 overrides the placeholders there. The placeholder account is AWS's own
 // documentation example and the region is only the cost basis ADR-0023 priced on, not a chosen one -- the

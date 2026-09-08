@@ -61,16 +61,17 @@
 # deployment actually gets wrong.
 #
 # DECISION LEDGER -- see the table at the bottom of this file (gh#178's remedy). Every decision the gate
-# makes is listed beside the case that kills it, and the table is SPLIT: three MEASURED sweeps of mutants,
+# makes is listed beside the case that kills it, and the table is SPLIT: four MEASURED sweeps of mutants,
 # and the rest listed as exercised-but-not-mutated. Adding a decision to the gate without adding a row is
 # the same visible omission the ledger exists to catch. Read the split before trusting a row -- "a ledger is
 # a claim too", and the ways one lies are a grade promising more than its evidence, a decision pinned by a
 # fixture's incidental shape, and -- found by review on this very file -- **a row whose mechanism has moved
 # underneath it, so the number is stale and the sentence describes code that is gone.** ONE MUTANT SURVIVED
-# the first sweep and is named as such; TWO of that sweep's rows have since been re-run and both moved.
+# the first sweep and is named as such; TWO of that sweep's rows have been re-run three times and moved
+# every time, and the ledger now names WHICH rows have been re-run and against which blob.
 #
 # LOCAL RUNTIME. Each case forks `git init`, a few commits and a shell. Seconds on the CI runner; **about
-# 7m20s on a Windows checkout** at 47 cases, where process spawning dominates -- `sys` is five times `user`.
+# 5m35s on a Windows checkout** at 49 cases, where process spawning dominates -- `sys` is seven times `user`.
 # That is what bounds how much of the ledger below can be measured on one card, so it is written down rather
 # than left for the next reader to discover mid-sweep.
 
@@ -730,12 +731,13 @@ expect_red "the same decoy inside a Sql( string literal" "$D" \
 D="$FIXTURES/down-decoy-plain-string"; init_repo "$D"
 F="$D/$MIG_REL/20260201000000_DecoyStr.cs"; emit_head "$F" DecoyStr
 emit_body "$F" <<'EOF'
-            System.Console.WriteLine("void Down(MigrationBuilder migrationBuilder)");
+            System.Console.WriteLine("protected override void Down(MigrationBuilder migrationBuilder)");
             migrationBuilder.DropColumn(name: "Legacy", table: "Bars");
 EOF
 emit_tail "$F"; commit_case "$D"
 N="$(line_of "$F" 'DropColumn(name: "Legacy"')"
-# A decoy in a string that is NOT a Sql( region, so the region guard cannot see it. Only the requirement
+# A decoy in a string that is NOT a Sql( region, so the region guard cannot see it -- and it quotes the
+# WHOLE signature, `override` included, so the override test cannot see it either. Only the requirement
 # that a boundary line DECLARE A MEMBER refuses this one, which is what pins that requirement alone.
 expect_red "the decoy in a plain string literal, outside any Sql( region" "$D" \
   "$MIG_REL/20260201000000_DecoyStr.cs:$N  DropColumn" basebranch
@@ -874,6 +876,98 @@ N="$(line_of "$F" 'DropTable(name: "PriceLevels")')"
 # pins the widening alone.
 expect_red "an inline Down() { } above a static sibling — only the member rule ends Down() there" "$D" \
   "$MIG_REL/20260201000000_InlineDown.cs:$N  DropTable" basebranch
+
+# ROUND THREE's two shapes, and they are the SAME finding as round two arriving through the fixes for it:
+# each of round two's boundary widenings opened a defeat of its own. `declares()` asked whether a line is a
+# comment, whether it is inside a Sql( region, and whether it carries a modifier -- and NONE of those asks
+# what the line DECLARES. A modifier keyword is evidence of a declaration; it is not evidence of WHICH
+# declaration, nor that the declaration is a member rather than a local. Both compile and both pass
+# `dotnet format --verify-no-changes`, measured in the real Migrations/ directory rather than in a fixture.
+
+D="$FIXTURES/local-function-down"; init_repo "$D"
+F="$D/$MIG_REL/20260201000000_LocalFn.cs"
+mkdir -p "$(dirname "$F")"
+cat > "$F" <<'EOF'
+using Microsoft.EntityFrameworkCore.Migrations;
+
+#nullable disable
+
+namespace MarqSpec.Mcp.TopstepX.Data.Migrations
+{
+    /// <inheritdoc />
+    public partial class LocalFn : Migration
+    {
+        /// <inheritdoc />
+        protected override void Up(MigrationBuilder migrationBuilder)
+        {
+            static void Down(MigrationBuilder b) { }
+            Down(migrationBuilder);
+            migrationBuilder.DropColumn(name: "Legacy", table: "Bars");
+            migrationBuilder.DropTable(name: "PriceLevels");
+        }
+
+        /// <inheritdoc />
+        protected override void Down(MigrationBuilder migrationBuilder)
+        {
+        }
+    }
+}
+EOF
+commit_case "$D"
+N="$(line_of "$F" 'DropTable(name: "PriceLevels")')"
+# `static` was added to MEMBER_RE to close the audit find, and `static` is also the modifier a C# LOCAL
+# FUNCTION may carry -- so a local function named Down inside Up() satisfied all three conditions, took
+# `down_start`, and the real declaration below took `down_end`. Everything between was excluded. (An
+# EXPRESSION-bodied one is caught, because `=> b.Sql(…)` puts the line in a region; it is the block-bodied
+# form that got through, which is the region guard doing real work rather than the shape being exotic.)
+expect_red "a STATIC LOCAL FUNCTION named Down inside Up(), which a modifier test cannot tell from a member" \
+  "$D" "$MIG_REL/20260201000000_LocalFn.cs:$N  DropTable" basebranch
+
+D="$FIXTURES/decoy-overload-down"; init_repo "$D"
+F="$D/$MIG_REL/20260201000000_Overload.cs"
+mkdir -p "$(dirname "$F")"
+cat > "$F" <<'EOF'
+using Microsoft.EntityFrameworkCore.Migrations;
+
+#nullable disable
+
+namespace MarqSpec.Mcp.TopstepX.Data.Migrations
+{
+    /// <inheritdoc />
+    public partial class Overload : Migration
+    {
+        private static void Down(
+            int unused)
+        { }
+
+        void RetireLegacy(MigrationBuilder b)
+        {
+            b.DropColumn(name: "Legacy", table: "Bars");
+            b.DropTable(name: "PriceLevels");
+        }
+
+        /// <inheritdoc />
+        protected override void Up(MigrationBuilder migrationBuilder)
+        {
+            RetireLegacy(migrationBuilder);
+        }
+
+        /// <inheritdoc />
+        protected override void Down(MigrationBuilder migrationBuilder)
+        {
+        }
+    }
+}
+EOF
+commit_case "$D"
+N="$(line_of "$F" 'b.DropTable(name: "PriceLevels")')"
+# And the mirror, through the OTHER widening: the end-of-line arm added so a WRAPPED `Down(` signature would
+# stop reddening correct work also matches an ordinary OVERLOAD whose parameter is not a MigrationBuilder at
+# all, and an overload wins the first-match race against the real declaration. `down_end` then lands on the
+# closing brace of a helper written with NO modifier at all -- which the widened MEMBER_RE still misses,
+# because there is no list entry for *nothing* -- so the helper's body falls inside the excluded span.
+expect_red "a decoy Down( OVERLOAD above a no-modifier sibling, which wins the first-match race" \
+  "$D" "$MIG_REL/20260201000000_Overload.cs:$N  DropTable" basebranch
 
 D="$FIXTURES/designer-partial"; init_repo "$D"
 F="$D/$MIG_REL/20260201000000_Hidden.cs"
@@ -1031,7 +1125,7 @@ ok "ok  $cases self-test cases — check-migrations-additive.sh rejects each des
 # DECISION LEDGER (gh#178's remedy, and this is the fourth gate here to carry one).
 #
 # THE TABLE IS SPLIT, because "a ledger is a claim too, and it lies in two specific ways". The first part is
-# MEASURED: three sweeps of mutants, each deleting or inverting exactly one decision, each run against the
+# MEASURED: four sweeps of mutants, each deleting or inverting exactly one decision, each run against the
 # whole suite, and the row records WHICH CASES WENT RED rather than merely that the suite did (gh#178 -- "a
 # mutation that reddens for the WRONG reason reads as caught"). The last part is NOT MUTATED and says so; it
 # is not a claim of coverage.
@@ -1046,10 +1140,10 @@ ok "ok  $cases self-test cases — check-migrations-additive.sh rejects each des
 # `DESTRUCTIVE  ...29990101000000_ProbeDropColumn.cs:13  DropColumn`.
 #
 # **TWO OF ITS ROWS HAVE SINCE BEEN RE-RUN AND BOTH MOVED** -- rows 1 and 7, whose numbers below are from the
-# SHIPPING blob at 47 cases and whose history is in the third sweep's note. The rest of the first table is
+# SHIPPING blob `1bf26eb` at 49 cases and whose history is in the fourth sweep's note. The rest of the first table is
 # where the provenance caveat still lives, and the caveat is now the smaller half of the point: **a ledger
 # row names a mechanism, and a mechanism that moves takes the row's meaning with it, silently.** Each full
-# run costs about 7m20s on a Windows checkout, so a sweep is an hour or more. Re-run it rather than
+# run costs about 5m35s on a Windows checkout, so a sweep is the better part of an hour. Re-run it rather than
 # re-reading this table -- that is where every row below came from, and auditing a ledger by reading it is
 # how the first one in this repository got two rows wrong.
 #
@@ -1057,10 +1151,10 @@ ok "ok  $cases self-test cases — check-migrations-additive.sh rejects each des
 #
 # | # | Decision deleted or inverted                        | Cases that went red                              |
 # |---|-----------------------------------------------------|--------------------------------------------------|
-# | 1 | `$MEMBER_RE` (made to never match)                  | **39 of 47** on the code that ships. RE-MEASURED   |
-# |   |                                                     | TWICE -- see the note below the third sweep; the   |
-# |   |                                                     | row said "7" and described a mechanism two rounds  |
-# |   |                                                     | of review have since moved out from under it.      |
+# | 1 | `$MEMBER_RE` (made to never match)                  | **41 of 49** at gate blob `1bf26eb`. RE-MEASURED   |
+# |   |                                                     | THREE TIMES -- see the note below the third sweep; |
+# |   |                                                     | the row said "7" and described a mechanism three   |
+# |   |                                                     | rounds of review have since moved out from under.  |
 # | 2 | `--diff-filter=ACMR` (D allowed back in)            | **1.** "a DELETED migration"                       |
 # | 3 | `has_drop_column` (forced to 1, always armed)       | **1.** "a DropIndex with no DropColumn beside it"  |
 # | 4 | the comment-block boundary in `report`'s upward      | **3.** "a BLANKET marker at the top of the body",  |
@@ -1071,12 +1165,24 @@ ok "ok  $cases self-test cases — check-migrations-additive.sh rejects each des
 # | 5 | the `[ ! -d "$MIG_DIR" ]` guard                     | **1.** "the Migrations directory gone"             |
 # | 6 | `BASE` default `origin/develop` (made `HEAD`)       | **2.** both argument-free cases, and only those --  |
 # |   |                                                     | which is why two cases pass no base at all.        |
-# | 7 | `in_region` suppression of pass 3's SQL-NEEDLE arm  | **4 of 47** on the code that ships. RE-MEASURED,   |
+# | 7 | `in_region` suppression of pass 3's SQL-NEEDLE arm  | **4 of 49** at gate blob `1bf26eb`. RE-MEASURED,   |
 # |   | (pass 3's operation needles are no longer           | and the row also said the wrong thing: pass 3 is   |
 # |   | suppressed by it at all -- see the second sweep)    | not suppressed by `in_region`, only its SQL arm    |
 # |   |                                                     | is. See the note below the third sweep.            |
 # | 8 | `DropSchema` and `DropSequence` removed from `OPS`  | **0 at the time. SURVIVOR, now CLOSED** -- see    |
 # |   |                                                     | "an unacknowledged DropSchema" and "... DropSequence" |
+#
+# **WHICH ROWS HAVE BEEN RE-RUN, because inferring it from the two that mention a blob is exactly the reading
+# the third-way rule refuses.** Rows **1 and 7** were re-run against the shipping gate blob `1bf26eb` at 49
+# cases; row 4 was re-run by review at round two and measured 3, as stated. Rows **2, 3, 5, 6 and 8 have NOT
+# been re-run since the first sweep**, and their mechanisms -- `--diff-filter`, `has_drop_column`, the
+# directory guard, the `BASE` default and the `OPS` list -- are the ones no round has touched. That is a
+# reason to expect them to hold, not evidence that they do. **A row nobody has re-run is a row whose number
+# is as old as its mechanism's last edit, and only the row can say which.**
+#
+# `1bf26eb` is a BLOB hash (`git hash-object scripts/check-migrations-additive.sh`), not a commit. Deliberate:
+# a run is cited against the code it ran on (gh#184), and this branch is rebased -- a commit SHA naming these
+# numbers would be stale before they were read, while the blob is the thing that was actually executed.
 #
 # **MUTANT 8 SURVIVED THE FIRST SWEEP, and the gap it named is now closed.** Those two list entries were
 # pinned by nothing: they ride the same loop and the same `$CALL` suffix as the five operations that five
@@ -1132,28 +1238,62 @@ ok "ok  $cases self-test cases — check-migrations-additive.sh rejects each des
 # | the ambiguous-line refusal's wording                  | **1.** "the ambiguous-line refusal leads with the  |
 # |                                                       |   act"                                             |
 #
+# FOURTH SWEEP (gh#529 review round three, A1 and A2). ONE revert, and one condition closes both shapes:
+#
+# | Fix reverted                                          | Cases that went red                                |
+# |-------------------------------------------------------|----------------------------------------------------|
+# | `declares()`'s `$OVERRIDE_RE` requirement             | **2.** "a STATIC LOCAL FUNCTION named Down inside  |
+# |                                                       |   Up()" AND "a decoy Down( OVERLOAD above a        |
+# |                                                       |   no-modifier sibling"                             |
+#
+# **BOTH SHAPES ARRIVED THROUGH THE PREVIOUS ROUND'S FIXES, and that is the finding rather than the bug.**
+# `static` went into `MEMBER_RE` to close the sibling-helper find, and `static` is what a C# local function
+# may carry. `DOWN_RE`'s end-of-line arm went in so a wrapped signature would stop reddening correct work,
+# and it also matches an ordinary `Down(int)` overload. Three rounds, three boundary bugs, each one living
+# in the fix for the last: **a widening is where the next defeat lives, so say which END of a boundary you
+# widened.** `declares()`'s first three conditions test properties of the LINE; `OVERRIDE_RE` is the only one
+# that tests what the line DECLARES, which is the property that was always the point.
+#
+# The member test is still separately pinned after that addition, and only because its fixture was
+# strengthened in the same change: the plain-string decoy now quotes the WHOLE signature, `override`
+# included, so `OVERRIDE_RE` cannot refuse it and `MEMBER_RE` is the only condition left. **Adding a
+# condition can silently un-pin an existing one, and the way to find out is to re-run its mutant** -- which
+# is this file's own instruction, applied to a fixture rather than to a row.
+#
 # **`declares()`'s `//` test is pinned by NOTHING and is subsumed today.** A `//` line can never carry a
 # leading modifier keyword, so the MEMBER_RE requirement already refuses every comment; deleting the comment
-# test reddens nothing. It is kept anyway, and stated here rather than left to be discovered: the two would
-# have to be wrong together, and the day MEMBER_RE is widened is the day it starts carrying weight.
+# test reddens nothing. It is kept anyway, and stated here rather than left to be discovered -- the two would
+# have to be wrong together, and the subsumption is structural (`^[[:space:]]*//` and
+# `^[[:space:]]+<modifier>` cannot both match a line) rather than incidental, so it will not rot quietly.
 #
-# **AND THE FIRST SWEEP'S ROWS 1 AND 7 WERE RE-RUN, because two rounds of review moved the code under them**
+# **THAT ROW CARRIED A PREDICTION, THE PREDICTION WAS TESTED, AND IT FAILED.** It said *the day MEMBER_RE is
+# widened is the day the `//` test starts carrying weight*. `MEMBER_RE` WAS widened, in the very next round,
+# and that is not what happened: the widening did not give the `//` test weight, it took weight away from
+# the MEMBER test -- `static` made a local function eligible to set a boundary, and what was needed was a
+# FOURTH condition rather than one of the three already there. **A prediction about which guard will matter
+# next is a guess about where the next bug is, and this one pointed at the wrong guard.** Kept and marked
+# rather than quietly rewritten, because a wrong prediction with its outcome recorded is worth more than a
+# tidy row that never risked anything.
+#
+# **AND THE FIRST SWEEP'S ROWS 1 AND 7 WERE RE-RUN, because every round of review moved the code under them**
 # (review's F1, which measured row 1 itself rather than reading it). This is the ledger's own instruction
 # turned on the ledger:
 #
-#   - **Row 1 said 7 and now measures 39 of 47.** It was a claim about `$MEMBER_RE` bounding the END of the
-#     `Up()` body. Round two made it bound the end of `Down()`, at which point review measured **1** — the
-#     row overstated its own evidence, and the case it NAMED stayed green. Round three then made MEMBER_RE
-#     the requirement for locating `Down()` at all, so a MEMBER_RE that never matches leaves `down_start` at
-#     0, the whole file is read including a destructive `Down()`, and almost the whole suite moves. Same
-#     mutant, three different numbers, three different mechanisms. **A row that names a mechanism has to be
-#     re-run when the mechanism moves, and nothing but re-running it says so.**
-#   - **Row 7 said 1 and now measures 4 of 47**, and it also named the wrong thing: pass 3 is not suppressed
-#     by `in_region` at all any more, only its SQL-needle arm is. The three single-line `Sql()` cases join it
-#     because the region finding and the outside-a-region finding then land on the SAME line, which the
-#     ambiguity rule refuses — so they fail on a diagnostic that is right about the code and wrong about
-#     them. **A mutation that reddens for the wrong reason reads as caught**, which is why the row records
-#     which cases moved rather than that the suite did.
+#   - **Row 1 said 7, then 1, then 39 of 47, and now measures 41 of 49 at gate blob `1bf26eb`.** It was a
+#     claim about `$MEMBER_RE` bounding the END of the `Up()` body. Round two made it bound the end of
+#     `Down()`, at which point review measured **1** -- the row overstated its own evidence, and the case it
+#     NAMED stayed green. Round three made MEMBER_RE part of locating `Down()` at all. **And the mechanism
+#     moved AGAIN on the next round, which is the row's point rather than a footnote to it:** `declares()`
+#     now gates `up_start` as well, so a MEMBER_RE that never matches means no migration's `Up()` can be
+#     located and every operation case dies on `NO Up()` -- they redden for a reason this row's own sentence
+#     does not give. **A mutation that reddens for the wrong reason reads as caught**, and this row is now
+#     its own example. Four numbers, four mechanisms, one mutant.
+#   - **Row 7 said 1 and measures 4 of 49 at the same blob**, and it also named the wrong thing: pass 3 is
+#     not suppressed by `in_region` at all any more, only its SQL-needle arm is. The three single-line
+#     `Sql()` cases join the multi-line one because the region finding and the outside-a-region finding then
+#     land on the SAME line, which the ambiguity rule refuses -- so they fail on a diagnostic that is right
+#     about the code and wrong about them. That is why a row records which cases moved rather than that the
+#     suite did.
 #
 # NOT MUTATED -- claimed as exercised, never as pinned
 #

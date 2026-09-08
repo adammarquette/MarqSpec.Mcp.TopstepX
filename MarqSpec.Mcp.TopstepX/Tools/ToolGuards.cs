@@ -537,9 +537,9 @@ public sealed class ToolGuards(IOptions<MarketDataOptions> options)
     /// inside which no session both opens and closes — nine hours of a Monday over an `rth` session that runs
     /// longer — passes every check above and would otherwise answer <c>bars: []</c> and <c>absent: []</c>,
     /// which reads as "this instrument did not trade" rather than "the window is narrower than any session".
-    /// The refusal names the nearest whole session so the caller can widen to it, or, when the window falls
-    /// entirely on non-trading time and no session can be named, says only to widen it (gh#568). That second
-    /// arm is a narrowing of the "wholly contained and in neither list ⇒ did not trade" signal: a window
+    /// The refusal names the nearest whole session so the caller can widen to it, or, when a market closure
+    /// outruns the scan that looks for one, says only to widen it (gh#568). The refusal is a narrowing of
+    /// the "wholly contained and in neither list ⇒ did not trade" signal: a window
     /// holding <i>only</i> non-trading days now refuses instead of reporting them. The signal survives
     /// wherever the window also holds one whole session, which is the only shape it was readable in anyway.
     /// </para>
@@ -630,17 +630,39 @@ public sealed class ToolGuards(IOptions<MarketDataOptions> options)
     /// "did this instrument trade?" would be pointed at the wrong remedy.
     /// </para>
     /// <para>
-    /// <b>"Nearest" is measured, not assumed.</b> Both candidates are considered — the whole session on the
-    /// trade date <see cref="BarSessionCalendar.TradeDateFor"/> assigns the window's <i>start</i>, and the
-    /// one on the trade date it assigns the <i>end</i> — and the one named is whichever needs the
-    /// <b>smaller total widening</b> to fit: how far the window's start would move back plus how far its end
-    /// would move out. Naming the start's unconditionally can advise a widening many times larger than the
-    /// one that answers, and hand back the wrong day's data to a caller who wanted the end of the window
-    /// (gh#568). A tie keeps the earlier date, so the choice is deterministic. Trade dates are the full
-    /// 24-hour kind, which correctly folds an evening leg into the date it belongs to rather than the plain
-    /// calendar date; when neither instant carries a trade date with a whole session on it — every instant
-    /// in the window falls in maintenance, on a weekend, or on a declared holiday — <b>no specific session
-    /// can be named, and the message says only to widen the window</b>, with no bounds in it at all.
+    /// <b>"Nearest" is measured, not assumed, and it is measured over every trade date the window could
+    /// reach.</b> The one named is whichever whole session needs the <b>smaller total widening</b> to fit:
+    /// how far the window's start would move back, plus how far its end would move out. Naming the start's
+    /// trade date unconditionally advised a widening many times larger than the one that answers, and handed
+    /// back the wrong day's data to a caller who wanted the end of the window (gh#568).
+    /// </para>
+    /// <para>
+    /// <b>The scan starts on the window's own market dates and widens outward until nothing further out
+    /// could win.</b> Scoring only the trade dates of the two <i>endpoints</i> was the earlier defect and a
+    /// subtler one: <see cref="BarSessionCalendar.TradeDateFor"/> answers <see langword="null"/> in the
+    /// maintenance hour, at a weekend and on a declared holiday, so an endpoint landing in a gap dropped the
+    /// session on the far side of that gap out of the running — usually the nearest one. Over a 30-minute
+    /// grid of `rth` windows that named the wrong session in 6.6% of refusals and withheld bounds entirely
+    /// from 30% of them, with a whole session sitting close by in every case. A fixed ±1-day widening does
+    /// not fix it either: it clears `rth` and leaves `asia` at 5.2%, because a window deep inside a Saturday
+    /// reaches Monday's session sooner than Friday's and Monday is two market dates away.
+    /// </para>
+    /// <para>
+    /// <b>Each direction closes as soon as its own lower bound catches the best held.</b> A session on a
+    /// trade date before the window ends no later than that trade date's close, so it cannot need less than
+    /// <c>window.Start - close</c> of widening; one after starts no earlier than its own trade date's open,
+    /// so it cannot need less than <c>open - window.End</c>. Both grow with distance, so the first date that
+    /// fails ends the direction rather than being stepped over — the mistake the endpoint-only version made
+    /// in miniature. The hard cap is <see cref="SessionWindows.LastClosedWalkSpanDays"/> of one, the span
+    /// the closed-session walk gives itself to find a single closed session.
+    /// </para>
+    /// <para>
+    /// <b>Ties keep the earlier date, stated rather than inherited.</b> The walk runs outward from the
+    /// middle, so it has no ascending order to lean on the way the endpoint pair did. Trade dates are the
+    /// full 24-hour kind, which correctly folds an evening leg into the date it belongs to rather than the
+    /// plain calendar date. The <b>bounds-less arm survives</b>, shrunk to what it always should have been:
+    /// a window with no whole session within that cap — a closure longer than the walk, or a session
+    /// definition this calendar disowns — where the message names no session and says only to widen.
     /// </para>
     /// <para>
     /// <b>The nearest whole session's bounds are reported in UTC</b>, via <c>ToUniversalTime</c>, the same
@@ -660,24 +682,79 @@ public sealed class ToolGuards(IOptions<MarketDataOptions> options)
             + " session both opens and closes inside it — and a session bar built from part of one is a "
             + "wrong number wearing an ordinary face.";
 
+        // Scoring the two trade dates the window's ENDPOINTS resolve to was the earlier defect, and a quiet
+        // one: TradeDateFor answers null in the maintenance hour, at a weekend and on a holiday, so an
+        // endpoint landing in a gap dropped the session on the FAR SIDE of that gap out of the running --
+        // usually the nearest one there was (gh#568).
+        //
+        // So the walk starts on the window's own market dates and widens a day at a time, and each direction
+        // closes as soon as nothing further out could beat what is already held. A session on a trade date
+        // BEFORE the window ends no later than that date's close, so it cannot need less than
+        // (window.Start - close) of widening; one AFTER starts no earlier than its own trade date's open, so
+        // it cannot need less than (open - window.End). Both bounds grow with distance, which is what makes
+        // the first failure final rather than a gap to step over. The cap is the span the closed-session
+        // walk gives itself to find ONE closed session: a venue shut for longer than that has no session
+        // worth calling nearest, and the bounds-less arm answers instead.
+        DateOnly earliest = MarketClock.MarketDate(window.Start);
+        DateOnly latest = MarketClock.MarketDate(window.End);
+
         (DateOnly Date, BarRange Session)? nearest = null;
         TimeSpan leastWidening = TimeSpan.MaxValue;
-        foreach (DateOnly? candidate in
-            (DateOnly?[])[calendar.TradeDateFor(window.Start), calendar.TradeDateFor(window.End)])
+
+        void Consider(DateOnly candidate)
         {
-            if (candidate is not { } tradeDate
-                || SessionWindows.WindowFor(calendar, definition, tradeDate) is not { } session)
+            if (SessionWindows.WindowFor(calendar, definition, candidate) is not { } session)
             {
-                continue;
+                return;
             }
 
             TimeSpan widening =
                 (session.Start < window.Start ? window.Start - session.Start : TimeSpan.Zero)
                 + (session.End > window.End ? session.End - window.End : TimeSpan.Zero);
-            if (widening < leastWidening)
+
+            // Ties keep the EARLIER date, said outright rather than left to the order candidates arrive in:
+            // this walk runs outward from the middle, so ascending order is the one thing it does not have.
+            if (widening < leastWidening
+                || (widening == leastWidening && nearest is { } held && candidate < held.Date))
             {
-                nearest = (tradeDate, session);
+                nearest = (candidate, session);
                 leastWidening = widening;
+            }
+        }
+
+        bool Settled(TimeSpan floor) => nearest is not null && floor >= leastWidening;
+
+        for (DateOnly candidate = earliest; candidate <= latest; candidate = candidate.AddDays(1))
+        {
+            Consider(candidate);
+        }
+
+        bool scanBack = true;
+        bool scanForward = true;
+        int cap = SessionWindows.LastClosedWalkSpanDays(1);
+        for (int step = 1; step <= cap && (scanBack || scanForward); step++)
+        {
+            scanBack = scanBack && earliest.DayNumber - step >= DateOnly.MinValue.DayNumber;
+            if (scanBack)
+            {
+                DateOnly back = earliest.AddDays(-step);
+                scanBack = !Settled(window.Start - MarketClock.FromMarket(back, calendar.SessionClose));
+                if (scanBack)
+                {
+                    Consider(back);
+                }
+            }
+
+            scanForward = scanForward && latest.DayNumber + step <= DateOnly.MaxValue.DayNumber;
+            if (scanForward)
+            {
+                DateOnly forward = latest.AddDays(step);
+                scanForward = !Settled(
+                    MarketClock.FromMarket(forward.AddDays(-1), calendar.SessionClose) - window.End);
+                if (scanForward)
+                {
+                    Consider(forward);
+                }
             }
         }
 

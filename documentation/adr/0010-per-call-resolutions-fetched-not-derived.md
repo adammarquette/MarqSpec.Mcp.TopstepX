@@ -377,7 +377,7 @@ per trade date stamped at the 17:00 Central open — the same trade date this re
 makes fetching `full` a real option rather than a dismissed one; ADR-0022 records why it was not taken for
 this slice, and carries the cross-check as a follow-up.
 
-## Update (2026-09-08) — the ceiling is half the shortest session, because the grid is not session-aligned
+## Update (2026-09-08) — the ceiling stays below the pigeonhole bound, because the grid is not session-aligned
 
 **Point 1 stands, point 2 is untouched, and the number in the update above moves once more: the servable range
 is 1 to 660 minutes.** Resolution is still a per-call parameter, there is still no allow-list, and the range
@@ -396,23 +396,21 @@ admits an `r`-minute bucket exactly when a multiple of `r` lands in `[open, clos
 consecutive whole minutes; a run of `n` consecutive integers is certain to hold a multiple of `r` only while
 `n >= r`; so the guarantee holds exactly while `r <= (S + 1) / 2`.
 
-**`S` is the *shortest* session and not the nominal one, and the first version of this update got that
-wrong.** It read `S = 1380` and gave 690. `SessionCloseCentral` is operator configuration with no range
-validation, spring-forward deletes the wall-clock hour `[02:00, 03:00)`, and the reopen is one maintenance
-window after the close — so at any close before 02:00 Central the session is **1,320** minutes once a year,
-and 690 answers an empty series at `SessionCloseCentral = "00:30"` on trade date 2030-03-11. At `S = 1320`
-the bound is **660**, which is tight (661 already misses) and also 1,320's largest proper divisor — a
-coincidence of `S` being even rather than a second derivation, since at `S = 1379` the two forms give 690 and
-197. `ToolGuards.MaxResolutionMinutes` is written as `(ShortestSessionMinutes + 1) / 2` — a literal nobody can
-re-derive is worse than the formula.
+**`S` is 1,380 for every admissible close since gh#613.** Closes before 02:00 Central — whose reopen would
+fall inside the wall-clock hour spring-forward deletes — are refused at calendar construction, naming the
+close and the shortened length. The pigeonhole bound on 1,380 is **690**; `ToolGuards.MaxResolutionMinutes`
+stays at **660** until a separate card justifies raising it. Widths from 661 to 690 fit every admitted session
+but are refused with the band above the ceiling because `ValidateResolution` is deliberately `static` and reads
+no configuration.
 
 **The bound is on *meaning* a third time, and it is a third meaning.** 10,080 was about what a minute count
 can express. 1,380 was about what the session calendar can hold. This one is about where the **bucket grid**
-falls: 660 is legal and 661 is not, and the difference is neither arithmetic nor calendar but alignment.
+falls: 660 is legal and 661 is not, and the difference is neither arithmetic nor calendar but alignment —
+plus the conservative ceiling below the pigeonhole bound until a separate trade raises it.
 
 **It is a refusal and not a warning field**, for the reason `R-2.3` refuses a substituted number: an empty
 series carrying a flag is still an empty series, and a caller reads it as a market that printed nothing.
-ADR-0022's *Update (2026-09-08)* carries that argument, the four widths the bound over-rejects, and the sweeps
+ADR-0022's *Update (2026-09-08)* carries that argument, the widths the bound over-rejects, and the sweeps
 that measure both.
 
 ## Follow-ups

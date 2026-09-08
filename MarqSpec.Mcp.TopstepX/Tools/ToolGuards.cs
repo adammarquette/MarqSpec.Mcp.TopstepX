@@ -58,7 +58,7 @@ public sealed class ToolGuards(IOptions<MarketDataOptions> options)
     public const int ShortestSessionMinutes = SessionMinutes;
 
     /// <summary>
-    /// The coarsest bar this server serves, in minutes — half the shortest session.
+    /// The coarsest bar this server serves, in minutes — below the pigeonhole bound on the shortest session.
     /// </summary>
     /// <remarks>
     /// <para>
@@ -82,7 +82,8 @@ public sealed class ToolGuards(IOptions<MarketDataOptions> options)
     /// <b><c>S</c> is <see cref="ShortestSessionMinutes"/>, which equals <see cref="SessionMinutes"/> since
     /// gh#613 refused the closes that would shorten a session.</b> The pigeonhole bound on 1,380 is 690; this
     /// ceiling stays at <b>660</b> until a separate card justifies raising it — the conservative bound still
-    /// fits every admissible close, and 661 is measured to miss.
+    /// fits every admissible close, and widths from 661 up to that pigeonhole bound fit too but are refused
+    /// until the ceiling moves.
     /// </para>
     /// <para>
     /// <b>The two derivations gh#538 offered agree here by arithmetic accident, so only one is used.</b>
@@ -428,22 +429,24 @@ public sealed class ToolGuards(IOptions<MarketDataOptions> options)
                 + resolutionMinutes.ToString(System.Globalization.CultureInfo.InvariantCulture)
                 + " is coarser than the largest bar this server serves, "
                 + MaxResolutionMinutes.ToString(System.Globalization.CultureInfo.InvariantCulture)
-                + " minutes — half of the "
-                + ShortestSessionMinutes.ToString(System.Globalization.CultureInfo.InvariantCulture)
-                + "-minute shortest session. Buckets are anchored on a fixed UTC grid rather than on the "
-                + "session open, so a bucket wider than half a session is not guaranteed to open and close "
-                + "inside one: whether it fits depends on where that grid falls on the day, and on the trade "
-                + "dates where it does not fit the series comes back empty with nothing said. "
+                + " minutes. Buckets are anchored on a fixed UTC grid rather than on the session open, so a "
+                + "bucket wider than half a session is not guaranteed to open and close inside one: whether "
+                + "it fits depends on where that grid falls on the day, and on the trade dates where it does "
+                + "not fit the series comes back empty with nothing said. "
                 + MaxResolutionMinutes.ToString(System.Globalization.CultureInfo.InvariantCulture)
-                + " is the widest bucket that fits on every trade date at every session close an operator "
-                + "can configure, because a run of S - r + 1 consecutive minutes holds a multiple of r only "
-                + "while S - r + 1 >= r, and S is "
+                + " is the served ceiling: every admissible session is "
                 + ShortestSessionMinutes.ToString(System.Globalization.CultureInfo.InvariantCulture)
-                + " minutes for every session close this server accepts. It is tight: "
-                + "661 already misses. Widths above it are not all useless — every one from 661 to 690 fits "
-                + "every trade date at the shipped 16:00 close, as do 692, 696, 700 and 720 — but which "
-                + "widths those are depends on the configured close, which this check deliberately does not "
-                + "read, so they are refused with the rest rather than served by coincidence. Ask for "
+                + " minutes, so the pigeonhole bound is "
+                + ((ShortestSessionMinutes + 1) / 2).ToString(System.Globalization.CultureInfo.InvariantCulture)
+                + ", but the ceiling stays at "
+                + MaxResolutionMinutes.ToString(System.Globalization.CultureInfo.InvariantCulture)
+                + " until a separate change justifies raising it. Widths above it are not all useless — every "
+                + "one from 661 to "
+                + ((ShortestSessionMinutes + 1) / 2).ToString(System.Globalization.CultureInfo.InvariantCulture)
+                + " fits every trade date at every session close this server accepts, and more fit at the "
+                + "shipped 16:00 close, as do 692, 696, 700 and 720 — but which widths those are depends on "
+                + "the configured close, which this check deliberately does not read, so they are refused "
+                + "with the rest rather than served by coincidence. Ask for "
                 + MaxResolutionMinutes.ToString(System.Globalization.CultureInfo.InvariantCulture)
                 + " minutes or less; for the day and the week ask get_session_bars or "
                 + "get_latest_session_bars (gh#496).")

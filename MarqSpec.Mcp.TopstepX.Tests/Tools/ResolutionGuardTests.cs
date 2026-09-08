@@ -523,10 +523,8 @@ public sealed class ResolutionGuardTests : IDisposable
         //
         // WHAT MAKES THIS COMPLETE RATHER THAN A SAMPLE. The pigeonhole argument is offset-independent: for
         // a session of a given LENGTH it holds whatever the phase, so the only thing that varies between
-        // one close and another is the length. TheSessionLengthCensus enumerates every length that occurs
-        // (1,320 and 1,380) and the closes that produce them, so sweeping every width against the
-        // shipped close AND against every session that is not 1,380 minutes long covers the space --
-        // 1,380-minute sessions at other closes differ only in phase, which the guarantee does not use.
+        // one close and another was the length — before gh#613 refused the closes that shortened a session.
+        // TheSessionLengthCensus enumerates every admissible close and shows only 1,380 minutes remain.
         List<string> misses = [];
 
         void Sweep(IReadOnlyList<(DateOnly Date, DateTimeOffset Open, DateTimeOffset Close)> sessions,
@@ -573,33 +571,36 @@ public sealed class ResolutionGuardTests : IDisposable
     }
 
     [Fact]
-    public void TheCeilingIsTight_AndTheOldOneWasWrongOnTheReviewersOwnExample()
+    public void TheCeilingStaysBelowThePigeonholeBound_Though661FitsEveryAdmittedSession()
     {
-        // Both halves of "660, not 690", driven rather than argued.
-        //
-        // The upper half is the defect PR #607's review found: 690 was this card's own ceiling and it
-        // answers an EMPTY SERIES on the reviewer's example — `SessionCloseCentral = "00:30"`, trade date
-        // 2030-03-11. That close is now refused at parse (gh#613); measure the session directly to pin why
-        // 690 was wrong.
-        DateOnly tradeDate = new(2030, 3, 11);
-        DateTimeOffset open = MarketClock.FromMarket(tradeDate.AddDays(-1), new TimeOnly(1, 30)).ToUniversalTime();
-        DateTimeOffset close = MarketClock.FromMarket(tradeDate, new TimeOnly(0, 30)).ToUniversalTime();
+        // gh#613 refused closes before 02:00 Central, so every admissible session is 1,380 minutes and the
+        // pigeonhole bound is 690. The served ceiling stays at 660 — raising it is a separate trade — and 661
+        // fits every admitted session even though ValidateResolution refuses it.
+        ToolGuards.MaxResolutionMinutes.Should().Be(660);
+        ((ToolGuards.ShortestSessionMinutes + 1) / 2).Should().Be(
+            690, "the pigeonhole bound on the nominal session — deliberately not the ceiling yet");
 
-        (close - open).Should().Be(
-            TimeSpan.FromMinutes(1_320),
-            "the spring-forward transition falls inside this session");
-        BucketFitsOpenClose(open, close, 690).Should().BeFalse(
-            "690 — the ceiling before this review — produces no expected bucket here at all");
-        BucketFitsOpenClose(open, close, ToolGuards.MaxResolutionMinutes)
-            .Should().BeTrue("and 660 does");
+        BarSessionCalendar shipped = BarSessionCalendar.Parse("16:00", []);
+        IReadOnlyList<(DateOnly Date, DateTimeOffset Open, DateTimeOffset Close)> sessions =
+            Sessions(shipped, new DateOnly(2020, 1, 1), new DateOnly(2036, 1, 1));
 
-        // The lower half: on a 1,320-minute session the pigeonhole bound is 660, not 661 — arithmetic,
-        // because that is the session shape the refusal prevents rather than one the server still serves.
-        int shortenedSessionMinutes = (int)(close - open).TotalMinutes;
         int oneWider = ToolGuards.MaxResolutionMinutes + 1;
-        (shortenedSessionMinutes - oneWider + 1).Should().BeLessThan(
-            oneWider,
-            "661 is above the pigeonhole bound on a shortened session, so 660 is the largest guaranteed width");
+        sessions.Should().OnlyContain(
+            s => FitsTheSession(shipped, s.Open, s.Close, oneWider),
+            "661 fits every trade date at the shipped close — refusal is policy, not misfit");
+
+        Action validate = () => ToolGuards.ValidateResolution(oneWider);
+        string message = validate.Should().Throw<McpException>().Which.Message;
+
+        message.Should().Contain(
+            "690",
+            "the refusal names the pigeonhole bound the ceiling stays below rather than calling 660 half of 1,380");
+        message.Should().Contain(
+            "not all useless",
+            "and concedes the band sometimes fits");
+        message.Should().NotContain("661 already misses", "661 fits every admitted session");
+        message.Should().NotContain(
+            "half of the 1380", "660 is not half of 1,380 — the ceiling is a separate product bound");
     }
 
     [Theory]

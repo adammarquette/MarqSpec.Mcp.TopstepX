@@ -325,22 +325,21 @@ admits an `r`-minute bucket exactly when a multiple of `r` lands in `[open, clos
 `S - r + 1` consecutive whole minutes. A run of `n` consecutive integers is *certain* to contain a multiple of
 `r` only while `n >= r`, so the guarantee holds exactly while `S - r + 1 >= r`, i.e. `r <= (S + 1) / 2`. C#'s
 integer division truncates, which yields the largest admissible *integer* for an odd `S` and an even one
-alike. `ToolGuards.MaxResolutionMinutes` is written as `(ShortestSessionMinutes + 1) / 2` rather than as a
-literal, because a hard-coded number nobody can re-derive is worse than a computed bound with its formula
-beside it.
+alike. `ToolGuards.MaxResolutionMinutes` is a literal **660** — below the pigeonhole bound on 1,380 — until a
+separate card justifies raising it; a hard-coded number nobody can re-derive is worse than a formula with no
+formula beside it.
 
-**`S` is the shortest session, 1,320 — not the nominal 1,380 — and getting that wrong was this record's own
-first defect.** PR #607 shipped `(SessionMinutes + 1) / 2 = 690` on the premise that every session is exactly
-1,380 minutes because a daylight-saving transition never falls inside one. That premise holds at the shipped
-16:00 close and **not** in general: `SessionCloseCentral` is operator configuration with no range validation,
-spring-forward *deletes* the wall-clock hour `[02:00, 03:00)`, and the reopen is one maintenance window after
-the close — so at any close before 02:00 Central the session loses that hour and is **1,320** minutes long
-once a year. Concretely, at `SessionCloseCentral = "00:30"` and trade date **2030-03-11**, a 690-minute
-request answers an empty series with `venueRequests: 0`: this record's own defect, reintroduced at a width
-this record permitted. Swept against the real converter over every whole-minute close, exactly two session
-lengths occur — **1,320 and 1,380** — and the hundred and twenty closes from 00:00 to 01:59 are the ones that
-shrink. Derived from 1,320 the ceiling is **660**, and 660 is **tight**: 661 already misses, at close 00:20
-on trade date 2027-03-15.
+**`S` looked like the shortest session, 1,320 — not the nominal 1,380 — and getting that wrong was this
+record's own first defect (pre-gh#613).** PR #607 shipped `(SessionMinutes + 1) / 2 = 690` on the premise
+that every session is exactly 1,380 minutes because a daylight-saving transition never falls inside one.
+That premise held at the shipped 16:00 close and **not** in general: before gh#613, `SessionCloseCentral`
+had no range validation, spring-forward *deleted* the wall-clock hour `[02:00, 03:00)`, and the reopen was one
+maintenance window after the close — so at any close before 02:00 Central the session lost that hour and was
+**1,320** minutes long once a year. Concretely, at `SessionCloseCentral = "00:30"` and trade date
+**2030-03-11**, a 690-minute request answered an empty series with `venueRequests: 0`. **gh#613 now refuses
+those closes at parse**, so every admissible session is 1,380 minutes, the pigeonhole bound is 690, and the
+served ceiling stays at 660 until a separate card raises it — 661 fits every admitted session but is refused
+with the band above the ceiling.
 
 **The autumn transition does not lengthen a session in return, and that is measured rather than assumed.** A
 hand-written model of the calendar says it should — 1,440 minutes — and the real one never produces it,
@@ -378,10 +377,10 @@ trade date rather than on the bucket grid, and that is as true on those 4.3% as 
 
 **The refusal over-rejects, and says so rather than overstating what it measured.** At the shipped 16:00
 close, **thirty-four** widths above the ceiling fit on *every* trade date over sixteen years: all of 661–690,
-plus 692, 696, 700 and 720. Widen the sweep to the hundred and twenty closes whose session can lose an hour
-and **two** survive. Widen the *window* instead, at one such close, and the count falls **31 → 28 → 19** over
-one, four and sixteen years. A survivor list is what a sweep failed to disprove, which is not what a bound is
-— and `ValidateResolution` is deliberately `static` and reads no configuration, so serving those widths would
+plus 692, 696, 700 and 720. Before gh#613, widening the sweep to closes whose session could lose an hour
+left only two survivors; those closes are refused at parse now, so every admissible session is 1,380 minutes.
+A survivor list is what a sweep failed to disprove, which is not what a bound is — and `ValidateResolution`
+is deliberately `static` and reads no configuration, so serving those widths would
 make the servable set depend invisibly on `SessionCloseCentral`. The widths that *do* fit at the shipped close
 are named in the message anyway, because a refusal claiming the band never produces a bar would be shorter and
 would not be true; `ResolutionGuardTests.TheGridRefusal_ConcedesTheBandSometimesFits_RatherThanClaimingItNeverDoes`
@@ -391,11 +390,9 @@ stayed green.
 **Everything above is swept rather than sampled**, because a refusal that looks right on examples is how
 gh#568's message got a 6.3% error rate past review and how this record's own 690 got past a first one.
 `EveryServableResolution_FitsInsideEverySession_AtEveryConfigurableClose` sweeps every width at or below the
-ceiling against the shipped close over three years *and* against every session that is not 1,380 minutes long
-at every close that produces one, over sixteen — complete rather than partial, because the pigeonhole
-argument is offset-independent, so the only thing that varies between one close and another is the session's
-length, and `TheSessionLengthCensus_ShowsAShortestSessionOf1320_AtEveryCloseBefore0200` enumerates every
-length that occurs.
+ceiling against the shipped close over three years and against every admissible whole-minute close from 02:00
+to 22:59 over the same span — complete rather than partial, because the pigeonhole argument is
+offset-independent and gh#613 left only the nominal session length.
 
 **What moved with it.** The last servable `toUtc` is `9999-12-28T01:59:59.9999999Z` at the ceiling rather than
 `9999-12-27T02:01:59.9999999Z`, since that bound is two bar spans plus three days. `get_market_snapshot` is

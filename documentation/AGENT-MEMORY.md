@@ -199,6 +199,29 @@ at one this rule's own pull request retires.
     did. Same family as `--no-build` in the 2026-08-26 entry (a well-formed total about bytes you did not
     just produce), different cause.
 
+- **[2026-09-08] When the defect you are mutating is a RACE, inject the racing condition — do not sample for
+  it (gh#596).** The complement of the *`Total:` is discovery* entry dated 2026-09-08 above: that one is
+  about a run that did not measure what it claims, this one about a run that measures **honestly** and still
+  carries no signal, because the code under test is nondeterministic. Score the run by that one, then ask
+  this one whether the answer would survive a different machine.
+  gh#596 was `TelemetryCompositionTests`' HttpClient assertion passing on *other* collections'
+  spans: the exporter is fed by a process-global `ActivityListener`, so whether deleting
+  `AddHttpClientInstrumentation` is caught turns on whether a sibling collection emits inside the test's
+  few-millisecond window. The issue measured **111** and **103** spans there where the test makes one
+  request. In the pinned SDK container at `764e666` a probe printed **`count=1`** — no foreign span at all —
+  and the mutation therefore **reddened 17 of 17** full-suite Release runs: 16 on the branch, at 1, 2, 4, 8
+  and all 20 CPUs, and a 17th run independently by the reviewer. Both measurements are real; the container
+  simply finishes the tier in 12–20 s and the window never overlaps anything.
+  - **What it costs:** "the mutation reddens under the full suite" is then not evidence the assertion
+    measures what it claims, and re-running to catch the other outcome does not converge — 17 found none.
+    **The issue's own "would leave this assertion green" was written in the conditional off an UNMUTATED
+    probe**, and reached the branch restated in the past tense; a derived outcome carries the derivation
+    with it or it is read later as a measurement nobody can reproduce.
+  - **Remedy:** raise the interfering signal yourself, once, deterministically, from a background thread
+    inside the window — for gh#596, one span on the app-owned source the pipeline subscribes to, which is
+    exactly what a sibling suite contributes. That turned a 17-run coin-flip into a five-run matrix: green
+    before, red after, and green again on the same input with the registration restored.
+
 - **[2026-08-26] `dotnet test` on this Windows box can score a run it never fully executed — Smart App
   Control blocks freshly built assemblies (gh#242, corrected under gh#281).** It comes back either as no
   failures having run no tests, or as a well-formed summary over a fraction of the tier. The block lands on

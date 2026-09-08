@@ -1,17 +1,22 @@
 using Amazon.CDK;
+using Amazon.CDK.AWS.Budgets;
 using Amazon.CDK.AWS.IAM;
 using Constructs;
 
 namespace MarqSpec.Mcp.TopstepX.Infra;
 
 /// <summary>
-/// The GitHub OIDC provider and the two deploy roles (ADR-0023 §8). No long-lived AWS key exists in GitHub,
-/// in a workflow, or anywhere else: each run presents a token bound to a ref or an environment, and each
-/// role trusts exactly the claims the pipeline runs under.
+/// The GitHub OIDC provider and the two deploy roles (ADR-0023 §8), plus the account-level monthly cost
+/// budget (gh#527). No long-lived AWS key exists in GitHub, in a workflow, or anywhere else: each run
+/// presents a token bound to a ref or an environment, and each role trusts exactly the claims the pipeline
+/// runs under. The budget is here rather than on <see cref="EnvironmentStack"/> so the account carries one
+/// monthly limit, not one per environment.
 /// </summary>
 /// <remarks>
 /// Authored here; the GitHub-side settings it pairs with — the <c>aws-production</c> environment and its
-/// reviewer rule — are gh#518's, recorded on ADR-0023 with their read-back calls.
+/// reviewer rule — are gh#518's, recorded on ADR-0023 with their read-back calls. Cost-allocation tag
+/// activation (<c>aws ce update-cost-allocation-tags-status</c>) is an account setting outside this template;
+/// ADR-0023's decision log records the read-back call.
 /// </remarks>
 public sealed class GitHubOidcStack : Stack
 {
@@ -23,6 +28,9 @@ public sealed class GitHubOidcStack : Stack
     public GitHubOidcStack(Construct scope, string id, StackProps? props = null)
         : base(scope, id, props)
     {
+        // Project alone — this stack is account-scoped (gh#527). Environment would invent a third env.
+        Amazon.CDK.Tags.Of(this).Add("Project", "topstepx-mcp");
+
         // The L1 rather than the L2 `OpenIdConnectProvider`: the L2 is a custom resource — a Lambda and a
         // role with wildcard permissions — from before CloudFormation supported the type natively.
         //
@@ -67,6 +75,74 @@ public sealed class GitHubOidcStack : Stack
             {
                 [$"{Issuer}:aud"] = "sts.amazonaws.com",
                 [$"{Issuer}:sub"] = $"repo:{Repository}:environment:{ProductionEnvironment}",
+            },
+        });
+
+        MonthlyCostBudget();
+    }
+
+    /// <summary>
+    /// One account monthly COST budget (gh#527). Amount defaults to 300 USD; notifications at 50 / 80 /
+    /// 100 % of actual and 100 % of forecast, all to the <c>AlertsEmail</c> parameter (shared later with
+    /// gh#526's SNS topic, or its own until that card lands). No email literal in the template.
+    /// </summary>
+    private void MonthlyCostBudget()
+    {
+        var amount = new CfnParameter(this, "BudgetAmount", new CfnParameterProps
+        {
+            Type = "Number",
+            Default = 300,
+            Description = "Monthly AWS Budgets COST limit in USD for the whole account (gh#527). Default 300.",
+            MinValue = 1,
+        });
+        var alertsEmail = new CfnParameter(this, "AlertsEmail", new CfnParameterProps
+        {
+            Type = "String",
+            Description = "Email that receives budget threshold notifications (gh#527). No default — a default would be a literal in the template.",
+            AllowedPattern = @".+@.+\..+",
+            ConstraintDescription = "Must be an email address.",
+        });
+
+        CfnBudget.NotificationWithSubscribersProperty Note(
+            string notificationType, double threshold) =>
+            new()
+            {
+                Notification = new CfnBudget.NotificationProperty
+                {
+                    ComparisonOperator = "GREATER_THAN",
+                    NotificationType = notificationType,
+                    Threshold = threshold,
+                    ThresholdType = "PERCENTAGE",
+                },
+                Subscribers = new object[]
+                {
+                    new CfnBudget.SubscriberProperty
+                    {
+                        Address = alertsEmail.ValueAsString,
+                        SubscriptionType = "EMAIL",
+                    },
+                },
+            };
+
+        _ = new CfnBudget(this, "MonthlyCostBudget", new CfnBudgetProps
+        {
+            Budget = new CfnBudget.BudgetDataProperty
+            {
+                BudgetName = "topstepx-mcp",
+                BudgetType = "COST",
+                TimeUnit = "MONTHLY",
+                BudgetLimit = new CfnBudget.SpendProperty
+                {
+                    Amount = amount.ValueAsNumber,
+                    Unit = "USD",
+                },
+            },
+            NotificationsWithSubscribers = new object[]
+            {
+                Note("ACTUAL", 50),
+                Note("ACTUAL", 80),
+                Note("ACTUAL", 100),
+                Note("FORECASTED", 100),
             },
         });
     }

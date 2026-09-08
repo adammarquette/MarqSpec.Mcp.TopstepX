@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# check-migrations-additive-selftest.sh — require that check-migrations-additive.sh can still go red, and
+# check-migrations-additive-selftest.sh â€” require that check-migrations-additive.sh can still go red, and
 # that it goes red for the RIGHT reason, at the right file and line.
 #
 #   scripts/check-migrations-additive-selftest.sh
@@ -27,9 +27,9 @@
 # split and the exit status captured directly:
 #
 #     the real repository, no argument      1 line stdout   0 B stderr   exit 0
-#       ok  no migration added or changed against origin/develop (0 path(s) under …/Migrations in the diff).
+#       ok  no migration added or changed against origin/develop (0 path(s) under â€¦/Migrations in the diff).
 #     the real repository, base f49dd5b~1   0 B stdout      red + explain on stderr   exit 1
-#       DESTRUCTIVE  …/20260827071708_DropPriceLevels.cs:14  DropTable  -- no '// destructive-migration:' …
+#       DESTRUCTIVE  â€¦/20260827071708_DropPriceLevels.cs:14  DropTable  -- no '// destructive-migration:' â€¦
 #
 # The second is the measurement that matters and it is not a fixture: pointed at a base BEFORE the one
 # genuinely destructive migration this repository has ever merged, the gate reads SIX migration files, finds
@@ -147,7 +147,7 @@ line_of() {  # $1 file  $2 fixed string
   local n
   n="$(grep -n -F -- "$2" "$1" | head -n1 | cut -d: -f1)"
   if [ -z "$n" ]; then
-    red "  FIXTURE BROKEN  '$2' is not in $1 — its case would assert a line nothing is on."
+    red "  FIXTURE BROKEN  '$2' is not in $1 â€” its case would assert a line nothing is on."
     exit 1
   fi
   printf '%s' "$n"
@@ -182,7 +182,7 @@ commit_case() {  # $1 dir
   git -C "$1" "${git_ident[@]}" commit -q -m 'fixture case'
 }
 
-run_gate() {  # $1 dir  [base ref…]
+run_gate() {  # $1 dir  [base refâ€¦]
   local dir="$1"; shift
   : > "$GATE_STDERR"
   bash "$dir/scripts/check-migrations-additive.sh" "$@" 2>"$GATE_STDERR"
@@ -190,7 +190,7 @@ run_gate() {  # $1 dir  [base ref…]
 
 gate_output() { printf '%s\n%s' "$1" "$(cat "$GATE_STDERR")"; }
 
-expect_red() {  # $1 label  $2 dir  $3 needle  [base…]
+expect_red() {  # $1 label  $2 dir  $3 needle  [baseâ€¦]
   local label="$1" dir="$2" needle="$3" out status=0
   shift 3
   cases=$(( cases + 1 ))
@@ -216,9 +216,9 @@ expect_red() {  # $1 label  $2 dir  $3 needle  [base…]
   ok "  red as required  $label  ($needle)"
 }
 
-# $4, when given, is a string the output must NOT contain — that is how "the FIRST DropColumn was marked,
+# $4, when given, is a string the output must NOT contain â€” that is how "the FIRST DropColumn was marked,
 # only the second is reported" is pinned as a fact about which line, rather than as a fact about failing.
-expect_red_without() {  # $1 label  $2 dir  $3 needle  $4 forbidden  [base…]
+expect_red_without() {  # $1 label  $2 dir  $3 needle  $4 forbidden  [baseâ€¦]
   local label="$1" dir="$2" needle="$3" forbidden="$4" out status=0
   shift 4
   cases=$(( cases + 1 ))
@@ -251,7 +251,7 @@ expect_red_without() {  # $1 label  $2 dir  $3 needle  $4 forbidden  [base…]
   ok "  red as required  $label  ($needle, and not $forbidden)"
 }
 
-expect_green() {  # $1 label  $2 dir  $3 needle  [base…]
+expect_green() {  # $1 label  $2 dir  $3 needle  [baseâ€¦]
   local label="$1" dir="$2" needle="$3" out err status=0 stray
   shift 3
   cases=$(( cases + 1 ))
@@ -270,7 +270,7 @@ expect_green() {  # $1 label  $2 dir  $3 needle  [base…]
   if [[ "$out" != *"$needle"* ]]; then
     red "SELF-TEST FAILED  $label"
     red "  The gate passed without saying '$needle'. Exit 0 having read NOTHING is the shape this suite"
-    red "  exists to refuse — the green line carries the file count for exactly that reason."
+    red "  exists to refuse â€” the green line carries the file count for exactly that reason."
     info "$(gate_output "$out")"
     failures=$(( failures + 1 ))
     return 0
@@ -287,7 +287,7 @@ expect_green() {  # $1 label  $2 dir  $3 needle  [base…]
   ok "  green as required  $label  ($needle; stderr empty)"
 }
 
-info "check-migrations-additive.sh self-test — the real gate, run against fixtures with known faults."
+info "check-migrations-additive.sh self-test â€” the real gate, run against fixtures with known faults."
 info ""
 
 # ---------------------------------------------------------------------------------------------------------
@@ -305,14 +305,14 @@ emit_body "$F" <<'EOF'
             migrationBuilder.CreateIndex(name: "IX_Thing_Id", table: "Thing", column: "Id");
 EOF
 emit_tail "$F"; commit_case "$D"
-# NO BASE ARGUMENT — the invocation ci.yml makes, resolving refs/remotes/origin/develop.
+# NO BASE ARGUMENT â€” the invocation ci.yml makes, resolving refs/remotes/origin/develop.
 expect_green "an additive migration, on the argument-free invocation CI uses" "$D" \
   "1 migration file(s) added or changed against origin/develop; 0 destructive operation(s)"
 
 D="$FIXTURES/marked"; init_repo "$D"
 F="$D/$MIG_REL/20260201000000_DropLegacy.cs"; emit_head "$F" DropLegacy
 emit_body "$F" <<'EOF'
-            // destructive-migration: not rollback-safe before v0.4.0 — Bars.Legacy has been dual-written
+            // destructive-migration: not rollback-safe before v0.4.0 â€” Bars.Legacy has been dual-written
             // since v0.3.0 and no code path reads it.
             migrationBuilder.DropColumn(name: "Legacy", table: "Bars");
 EOF
@@ -326,7 +326,7 @@ emit_body "$F" <<'EOF'
             migrationBuilder.AddColumn<int>(name: "Rank", table: "Bars", nullable: true);
 EOF
 emit_tail "$F"; commit_case "$D"
-expect_green "a Down() that drops everything Up() added — every real migration's shape" "$D" \
+expect_green "a Down() that drops everything Up() added â€” every real migration's shape" "$D" \
   "0 destructive operation(s)" basebranch
 
 D="$FIXTURES/generated-only"; init_repo "$D"
@@ -362,19 +362,19 @@ emit_body "$F" <<'EOF'
             migrationBuilder.CreateIndex(name: "IX_Bars_New", table: "Bars", column: "Bucket");
 EOF
 emit_tail "$F"; commit_case "$D"
-expect_green "a DropIndex with no DropColumn beside it — recreatable, so not flagged" "$D" \
+expect_green "a DropIndex with no DropColumn beside it â€” recreatable, so not flagged" "$D" \
   "0 destructive operation(s)" basebranch
 
 D="$FIXTURES/deleted"; init_repo "$D"
 git -C "$D" "${git_ident[@]}" rm -q "$MIG_REL/20260101000000_Baseline.cs"
 commit_case "$D"
-expect_green "a DELETED migration — filtered out, and not read as a file that vanished" "$D" \
+expect_green "a DELETED migration â€” filtered out, and not read as a file that vanished" "$D" \
   "no migration added or changed" basebranch
 
 D="$FIXTURES/marked-sql"; init_repo "$D"
 F="$D/$MIG_REL/20260201000000_SqlMarked.cs"; emit_head "$F" SqlMarked
 emit_body "$F" <<'EOF'
-            // destructive-migration: not rollback-safe before v0.5.0 — the index is rebuilt by the same
+            // destructive-migration: not rollback-safe before v0.5.0 â€” the index is rebuilt by the same
             // release and nothing plans against it.
             migrationBuilder.Sql(@"
                 DROP INDEX IF EXISTS ""IX_Bars_Legacy"";
@@ -391,7 +391,7 @@ emit_body "$F" <<'EOF'
 EOF
 emit_tail "$F"; commit_case "$D"
 # Exported rather than run in a subshell: expect_green counts into `cases` and `failures`, and a subshell
-# would drop both — a case that cannot report its own failure is the shape this whole file refuses.
+# would drop both â€” a case that cannot report its own failure is the shape this whole file refuses.
 export MIGRATION_GATE_BASE=basebranch
 expect_green "MIGRATION_GATE_BASE naming the base, with no argument" "$D" "against basebranch"
 unset MIGRATION_GATE_BASE
@@ -407,7 +407,7 @@ emit_body "$F" <<'EOF'
 EOF
 emit_tail "$F"; commit_case "$D"
 N="$(line_of "$F" 'DropColumn(name: "Legacy"')"
-# NO BASE ARGUMENT — the red half of the pair that pins the default-base resolution.
+# NO BASE ARGUMENT â€” the red half of the pair that pins the default-base resolution.
 expect_red "an unacknowledged DropColumn, on the argument-free invocation CI uses" "$D" \
   "$MIG_REL/20260201000000_DropLegacy.cs:$N  DropColumn"
 
@@ -417,10 +417,10 @@ emit_body "$F" <<'EOF'
             migrationBuilder.DropColumn(name: "Legacy", table: "Bars");
 EOF
 emit_tail "$F"
-# DELIBERATELY NOT COMMITTED — `dotnet ef migrations add` leaves the file untracked, and `git diff` cannot
+# DELIBERATELY NOT COMMITTED â€” `dotnet ef migrations add` leaves the file untracked, and `git diff` cannot
 # see it. A green run on the very file the author is about to commit is the confident wrong answer.
 N="$(line_of "$F" 'DropColumn(name: "Legacy"')"
-expect_red "a migration scaffolded and never added — invisible to git diff alone" "$D" \
+expect_red "a migration scaffolded and never added â€” invisible to git diff alone" "$D" \
   "$MIG_REL/20260201000000_ScaffoldedNotAdded.cs:$N  DropColumn" basebranch
 
 D="$FIXTURES/bare-droptable"; init_repo "$D"
@@ -460,7 +460,7 @@ emit_body "$F" <<'EOF'
 EOF
 emit_tail "$F"; commit_case "$D"
 N="$(line_of "$F" 'AlterColumn<string>(name: "Instrument"')"
-expect_red "an unacknowledged AlterColumn — a narrowing is not distinguishable statically" "$D" \
+expect_red "an unacknowledged AlterColumn â€” a narrowing is not distinguishable statically" "$D" \
   "$MIG_REL/20260201000000_Narrow.cs:$N  AlterColumn" basebranch
 
 D="$FIXTURES/sql-drop"; init_repo "$D"
@@ -493,7 +493,7 @@ emit_body "$F" <<'EOF'
 EOF
 emit_tail "$F"; commit_case "$D"
 N="$(line_of "$F" 'Sql("truncate table')"
-expect_red "a LOWERCASE truncate — SQL keywords are matched case-insensitively" "$D" \
+expect_red "a LOWERCASE truncate â€” SQL keywords are matched case-insensitively" "$D" \
   "$MIG_REL/20260201000000_SqlTrunc.cs:$N  raw SQL: TRUNCATE" basebranch
 
 D="$FIXTURES/sql-alter-type"; init_repo "$D"
@@ -503,8 +503,8 @@ emit_body "$F" <<'EOF'
 EOF
 emit_tail "$F"; commit_case "$D"
 N="$(line_of "$F" 'Sql("ALTER TABLE')"
-expect_red "a raw ALTER TABLE … TYPE, which narrows without naming a Drop" "$D" \
-  "$MIG_REL/20260201000000_SqlAlter.cs:$N  raw SQL: ALTER TABLE … TYPE" basebranch
+expect_red "a raw ALTER TABLE â€¦ TYPE, which narrows without naming a Drop" "$D" \
+  "$MIG_REL/20260201000000_SqlAlter.cs:$N  raw SQL: ALTER TABLE â€¦ TYPE" basebranch
 
 D="$FIXTURES/blanket-marker"; init_repo "$D"
 F="$D/$MIG_REL/20260201000000_Blanket.cs"; emit_head "$F" Blanket
@@ -526,13 +526,13 @@ emit_body "$F" <<'EOF'
 EOF
 emit_tail "$F"; commit_case "$D"
 N="$(line_of "$F" 'DropColumn(name: "Legacy"')"
-expect_red "a marker with NO reason — a rubber stamp is not an acknowledgement" "$D" \
+expect_red "a marker with NO reason â€” a rubber stamp is not an acknowledgement" "$D" \
   "$MIG_REL/20260201000000_NoReason.cs:$N  DropColumn" basebranch
 
 D="$FIXTURES/marker-gap"; init_repo "$D"
 F="$D/$MIG_REL/20260201000000_Gap.cs"; emit_head "$F" Gap
 emit_body "$F" <<'EOF'
-            // destructive-migration: not rollback-safe before v0.4.0 — nothing reads it.
+            // destructive-migration: not rollback-safe before v0.4.0 â€” nothing reads it.
 
             migrationBuilder.DropColumn(name: "Legacy", table: "Bars");
 EOF
@@ -544,7 +544,7 @@ expect_red "a marker separated from the operation by a blank line" "$D" \
 D="$FIXTURES/second-unmarked"; init_repo "$D"
 F="$D/$MIG_REL/20260201000000_Two.cs"; emit_head "$F" Two
 emit_body "$F" <<'EOF'
-            // destructive-migration: not rollback-safe before v0.4.0 — Legacy was dual-written.
+            // destructive-migration: not rollback-safe before v0.4.0 â€” Legacy was dual-written.
             migrationBuilder.DropColumn(name: "Legacy", table: "Bars");
             migrationBuilder.DropColumn(name: "Scratch", table: "Bars");
 EOF
@@ -559,12 +559,12 @@ D="$FIXTURES/paired-drop-index"; init_repo "$D"
 F="$D/$MIG_REL/20260201000000_Paired.cs"; emit_head "$F" Paired
 emit_body "$F" <<'EOF'
             migrationBuilder.DropIndex(name: "IX_Bars_Legacy", table: "Bars");
-            // destructive-migration: not rollback-safe before v0.4.0 — Legacy was dual-written.
+            // destructive-migration: not rollback-safe before v0.4.0 â€” Legacy was dual-written.
             migrationBuilder.DropColumn(name: "Legacy", table: "Bars");
 EOF
 emit_tail "$F"; commit_case "$D"
 N="$(line_of "$F" 'DropIndex(name: "IX_Bars_Legacy"')"
-expect_red "a DropIndex beside an acknowledged DropColumn — half an acknowledgement" "$D" \
+expect_red "a DropIndex beside an acknowledged DropColumn â€” half an acknowledgement" "$D" \
   "$MIG_REL/20260201000000_Paired.cs:$N  DropIndex" basebranch
 
 # ---------------------------------------------------------------------------------------------------------
@@ -711,7 +711,7 @@ N="$(line_of "$F" 'DropColumn(name: "Legacy"')"
 # The decoy sets down_start at the COMMENT and down_end at the real declaration, so the whole rest of Up()
 # falls out of every pass -- and, because the fixture's Down() is EF's ordinary destructive one, the gate
 # then reports the Down() body's drop instead. It fails in both directions from one root.
-expect_red "a COMMENT inside Up() naming void Down(MigrationBuilder — the boundary decoy" "$D" \
+expect_red "a COMMENT inside Up() naming void Down(MigrationBuilder â€” the boundary decoy" "$D" \
   "$MIG_REL/20260201000000_Decoy.cs:$N  DropColumn" basebranch
 
 D="$FIXTURES/down-decoy-literal"; init_repo "$D"
@@ -791,12 +791,12 @@ commit_case "$D"
 # A GREEN case, and the only one here that pins a FALSE POSITIVE. A wrapped signature left `down_start` at 0,
 # so the whole file was scanned and an ordinary additive migration was reddened by its own Down(). A gate that
 # reddens correct work is deleted by the first person it wrongly stops.
-expect_green "a WRAPPED Down( signature — correct additive work must not be reddened by its own Down()" "$D" \
+expect_green "a WRAPPED Down( signature â€” correct additive work must not be reddened by its own Down()" "$D" \
   "0 destructive operation(s)" basebranch
 
 # THE THIRD BOUNDARY-BLIND PATTERN, found by auditing rather than by review. `MEMBER_RE` also decides where
-# the Down() body ENDS, and it wanted an ACCESS MODIFIER -- so a sibling helper written `void Helper(…)` or
-# `static void Helper(…)`, both legal C# that `dotnet format` will not touch, was never reached: Down() ran
+# the Down() body ENDS, and it wanted an ACCESS MODIFIER -- so a sibling helper written `void Helper(â€¦)` or
+# `static void Helper(â€¦)`, both legal C# that `dotnet format` will not touch, was never reached: Down() ran
 # to end of file and swallowed it. Quiet, and one keyword away from the shape review already found. Two
 # rules close it, a closing brace in the declaration's own column and the next member declaration, and there
 # is a fixture for EACH because either alone catches the obvious shape.
@@ -837,7 +837,7 @@ commit_case "$D"
 N="$(line_of "$F" 'DropTable(name: "PriceLevels")')"
 # NO modifier keyword at all, so no widening of MEMBER_RE can reach it. Only the CLOSING BRACE rule ends
 # Down() here, which is what pins that rule alone.
-expect_red "a sibling helper with no modifier at all — only the closing-brace rule ends Down() there" "$D" \
+expect_red "a sibling helper with no modifier at all â€” only the closing-brace rule ends Down() there" "$D" \
   "$MIG_REL/20260201000000_NoModifier.cs:$N  DropTable" basebranch
 
 D="$FIXTURES/inline-down-sibling"; init_repo "$D"
@@ -874,7 +874,7 @@ N="$(line_of "$F" 'DropTable(name: "PriceLevels")')"
 # And the mirror: a Down() whose body is `{ }` on the declaration line, so the closing brace in that column
 # is the HELPER's, below the drop. Only `MEMBER_RE` knowing `static` is a modifier ends Down() here, which
 # pins the widening alone.
-expect_red "an inline Down() { } above a static sibling — only the member rule ends Down() there" "$D" \
+expect_red "an inline Down() { } above a static sibling â€” only the member rule ends Down() there" "$D" \
   "$MIG_REL/20260201000000_InlineDown.cs:$N  DropTable" basebranch
 
 # ROUND THREE's two shapes, and they are the SAME finding as round two arriving through the fixes for it:
@@ -918,7 +918,7 @@ N="$(line_of "$F" 'DropTable(name: "PriceLevels")')"
 # `static` was added to MEMBER_RE to close the audit find, and `static` is also the modifier a C# LOCAL
 # FUNCTION may carry -- so a local function named Down inside Up() satisfied all three conditions, took
 # `down_start`, and the real declaration below took `down_end`. Everything between was excluded. (An
-# EXPRESSION-bodied one is caught, because `=> b.Sql(…)` puts the line in a region; it is the block-bodied
+# EXPRESSION-bodied one is caught, because `=> b.Sql(â€¦)` puts the line in a region; it is the block-bodied
 # form that got through, which is the region guard doing real work rather than the shape being exotic.)
 expect_red "a STATIC LOCAL FUNCTION named Down inside Up(), which a modifier test cannot tell from a member" \
   "$D" "$MIG_REL/20260201000000_LocalFn.cs:$N  DropTable" basebranch
@@ -968,6 +968,180 @@ N="$(line_of "$F" 'b.DropTable(name: "PriceLevels")')"
 # because there is no list entry for *nothing* -- so the helper's body falls inside the excluded span.
 expect_red "a decoy Down( OVERLOAD above a no-modifier sibling, which wins the first-match race" \
   "$D" "$MIG_REL/20260201000000_Overload.cs:$N  DropTable" basebranch
+
+# ROUND FOUR's two shapes (gh#601), and they are round three's finding once more: the condition added for it
+# was itself a TEXT property. `OVERRIDE_RE` was matched UNANCHORED against the whole line, so the WORD
+# `override` anywhere on it -- a trailing comment, a string -- satisfied the one condition that was supposed
+# to test what the line DECLARES. And a genuine override is not necessarily the MIGRATION's: a nested type
+# has members of its own. Both are `down_start` shapes, which is what the header's asymmetry predicts. All
+# four fixtures below compile and pass `dotnet format --verify-no-changes`.
+
+D="$FIXTURES/commented-local-fn"; init_repo "$D"
+F="$D/$MIG_REL/20260201000000_CommentedLocalFn.cs"
+mkdir -p "$(dirname "$F")"
+cat > "$F" <<'EOF'
+using Microsoft.EntityFrameworkCore.Migrations;
+
+#nullable disable
+
+namespace MarqSpec.Mcp.TopstepX.Data.Migrations
+{
+    /// <inheritdoc />
+    public partial class CommentedLocalFn : Migration
+    {
+        /// <inheritdoc />
+        protected override void Up(MigrationBuilder migrationBuilder)
+        {
+            static void Down(MigrationBuilder b) { } // no override needed on a local shim
+            Down(migrationBuilder);
+            migrationBuilder.DropColumn(name: "Legacy", table: "Bars");
+            migrationBuilder.DropTable(name: "PriceLevels");
+        }
+
+        /// <inheritdoc />
+        protected override void Down(MigrationBuilder migrationBuilder)
+        {
+        }
+    }
+}
+EOF
+commit_case "$D"
+N="$(line_of "$F" 'DropTable(name: "PriceLevels")')"
+# THE SHAPE gh#601 IS NAMED FOR: round three's local function, with five words of ordinary comment on it. An
+# unanchored `override` needle reads the comment, so the condition that closed A1 was satisfied by prose.
+# TWO conditions refuse it now -- the indent it sits at is not the class's, and its `override` is not in the
+# declaration's own modifier run -- so it PINS THE PAIR AND NEITHER HALF, exactly like the Sql( decoy above.
+# The two cases below separate them, which is what a conjunction owes its ledger row.
+expect_red "a local function named Down whose trailing COMMENT carries the word override" "$D" \
+  "$MIG_REL/20260201000000_CommentedLocalFn.cs:$N  DropTable" basebranch
+
+D="$FIXTURES/commented-sibling"; init_repo "$D"
+F="$D/$MIG_REL/20260201000000_CommentedSibling.cs"
+mkdir -p "$(dirname "$F")"
+cat > "$F" <<'EOF'
+using Microsoft.EntityFrameworkCore.Migrations;
+
+#nullable disable
+
+namespace MarqSpec.Mcp.TopstepX.Data.Migrations
+{
+    /// <inheritdoc />
+    public partial class CommentedSibling : Migration
+    {
+        /// <inheritdoc />
+        protected override void Up(MigrationBuilder migrationBuilder)
+        {
+            RetireLegacy(migrationBuilder);
+        }
+
+        static void Down(MigrationBuilder b, bool force) { } // no override needed on this shim
+
+        void RetireLegacy(MigrationBuilder migrationBuilder)
+        {
+            migrationBuilder.DropTable(name: "PriceLevels");
+        }
+
+        /// <inheritdoc />
+        protected override void Down(MigrationBuilder migrationBuilder)
+        {
+        }
+    }
+}
+EOF
+commit_case "$D"
+N="$(line_of "$F" 'DropTable(name: "PriceLevels")')"
+# The same forgery at the CLASS'S OWN MEMBER INDENT, on an ordinary overload. The indent test cannot see it
+# and there is no `override` in the modifier run, so ONLY the requirement that the override sit in the
+# declaration itself refuses it -- which is what pins the anchoring alone.
+expect_red "a sibling Down( overload whose trailing COMMENT carries the word override" "$D" \
+  "$MIG_REL/20260201000000_CommentedSibling.cs:$N  DropTable" basebranch
+
+D="$FIXTURES/commented-up"; init_repo "$D"
+F="$D/$MIG_REL/20260201000000_CommentedUp.cs"
+mkdir -p "$(dirname "$F")"
+cat > "$F" <<'EOF'
+using Microsoft.EntityFrameworkCore.Migrations;
+
+#nullable disable
+
+namespace MarqSpec.Mcp.TopstepX.Data.Migrations
+{
+    /// <inheritdoc />
+    public partial class CommentedUp : Migration
+    {
+        /// <inheritdoc />
+        protected override void Up(MigrationBuilder migrationBuilder) // no void Down(MigrationBuilder) here
+        {
+            migrationBuilder.DropTable(name: "PriceLevels");
+        }
+
+        /// <inheritdoc />
+        protected override void Down(MigrationBuilder migrationBuilder)
+        {
+        }
+    }
+}
+EOF
+commit_case "$D"
+N="$(line_of "$F" 'DropTable(name: "PriceLevels")')"
+# THE MIRROR OF IT, and the reason the fix is one CONTIGUOUS pattern rather than a stricter `override` needle
+# beside a signature needle: here the `override` is real, the indent is the class's, and the SIGNATURE is the
+# part written in the comment. `Up()`'s own declaration then takes `down_start`, and Up()'s whole body is the
+# excluded span. Only the requirement that the modifier run and the signature be one uninterrupted
+# declaration refuses this, so it pins that alone.
+expect_red "a real Up() declaration whose trailing COMMENT names the Down( signature" "$D" \
+  "$MIG_REL/20260201000000_CommentedUp.cs:$N  DropTable" basebranch
+
+D="$FIXTURES/nested-override"; init_repo "$D"
+F="$D/$MIG_REL/20260201000000_NestedOverride.cs"
+mkdir -p "$(dirname "$F")"
+cat > "$F" <<'EOF'
+using Microsoft.EntityFrameworkCore.Migrations;
+
+#nullable disable
+
+namespace MarqSpec.Mcp.TopstepX.Data.Migrations
+{
+    /// <inheritdoc />
+    public partial class NestedOverride : Migration
+    {
+        /// <inheritdoc />
+        protected override void Up(MigrationBuilder migrationBuilder)
+        {
+            RetireLegacy(migrationBuilder);
+        }
+
+        private class Shim
+        {
+            public virtual void Down(MigrationBuilder b) { }
+        }
+
+        private sealed class Fake : Shim
+        {
+            public override void Down(MigrationBuilder b) { }
+        }
+
+        void RetireLegacy(MigrationBuilder migrationBuilder)
+        {
+            migrationBuilder.DropTable(name: "PriceLevels");
+        }
+
+        /// <inheritdoc />
+        protected override void Down(MigrationBuilder migrationBuilder)
+        {
+        }
+    }
+}
+EOF
+commit_case "$D"
+N="$(line_of "$F" 'DropTable(name: "PriceLevels")')"
+# NOTHING IS FORGED HERE. `Fake.Down` is a real override of a real virtual method -- it is simply not the
+# MIGRATION's, and no test of the line's TEXT can tell the two apart. Written as a ONE-LINER on purpose: the
+# three-line form is already caught, because `down_end`'s brace rule ends the body at the nested method's own
+# closing brace. Its indent is the nested type's, so only the indent-equality test refuses it, and that is
+# what pins the indent test alone.
+expect_red "a one-line GENUINE override of a nested type's Down(, which is not the migration's" "$D" \
+  "$MIG_REL/20260201000000_NestedOverride.cs:$N  DropTable" basebranch
 
 D="$FIXTURES/designer-partial"; init_repo "$D"
 F="$D/$MIG_REL/20260201000000_Hidden.cs"
@@ -1055,13 +1229,13 @@ N="$(line_of "$F" 'DropColumn (name: "Legacy"')"
 # it. It is a LATER STEP IN THE SAME JOB, and this gate's whole placement argument is that it runs BEFORE
 # `setup-dotnet`; splitting it into a job of its own would take the backstop away silently. One character
 # class costs less than the paragraph defending its absence.
-expect_red "a receiver, dot and name separated by spaces — a backstop in a later step is not this gate's" "$D" \
+expect_red "a receiver, dot and name separated by spaces â€” a backstop in a later step is not this gate's" "$D" \
   "$MIG_REL/20260201000000_Spaced.cs:$N  DropColumn" basebranch
 
 D="$FIXTURES/marked-and-unmarked"; init_repo "$D"
 F="$D/$MIG_REL/20260201000000_Mixed.cs"; emit_head "$F" Mixed
 emit_body "$F" <<'EOF'
-            // destructive-migration: not rollback-safe before v0.4.0 — Legacy was dual-written.
+            // destructive-migration: not rollback-safe before v0.4.0 â€” Legacy was dual-written.
             migrationBuilder.DropColumn(name: "Legacy", table: "Bars");
             migrationBuilder.DropTable(name: "Thing");
 EOF
@@ -1092,17 +1266,17 @@ public partial class Handwritten : Migration
 }
 EOF
 commit_case "$D"
-expect_red "a migration whose Up(MigrationBuilder) cannot be located — unread is not a pass" "$D" \
+expect_red "a migration whose Up(MigrationBuilder) cannot be located â€” unread is not a pass" "$D" \
   "NO Up()  $MIG_REL/20260201000000_Handwritten.cs" basebranch
 
 D="$FIXTURES/bad-base"; init_repo "$D"
-expect_red "a base ref that names no commit — it must not read that as an empty diff" "$D" \
+expect_red "a base ref that names no commit â€” it must not read that as an empty diff" "$D" \
   "UNRESOLVABLE BASE" origin/does-not-exist
 
 D="$FIXTURES/no-migrations-dir"; init_repo "$D"
 git -C "$D" "${git_ident[@]}" rm -q -r "$MIG_REL"
 commit_case "$D"
-expect_red "the Migrations directory gone — the gate would otherwise pass forever having read nothing" "$D" \
+expect_red "the Migrations directory gone â€” the gate would otherwise pass forever having read nothing" "$D" \
   "MISSING  $MIG_REL" basebranch
 
 info ""
@@ -1119,7 +1293,7 @@ if [ "$cases" -eq 0 ]; then
   exit 1
 fi
 
-ok "ok  $cases self-test cases — check-migrations-additive.sh rejects each destructive shape BY FILE, LINE AND OPERATION, honours a marker only in the unbroken comment block directly above the operation, and accepts the additive shapes WITHOUT WRITING A BYTE TO STDERR."
+ok "ok  $cases self-test cases â€” check-migrations-additive.sh rejects each destructive shape BY FILE, LINE AND OPERATION, honours a marker only in the unbroken comment block directly above the operation, and accepts the additive shapes WITHOUT WRITING A BYTE TO STDERR."
 
 # ---------------------------------------------------------------------------------------------------------
 # DECISION LEDGER (gh#178's remedy, and this is the fourth gate here to carry one).
@@ -1187,7 +1361,7 @@ ok "ok  $cases self-test cases — check-migrations-additive.sh rejects each des
 # **MUTANT 8 SURVIVED THE FIRST SWEEP, and the gap it named is now closed.** Those two list entries were
 # pinned by nothing: they ride the same loop and the same `$CALL` suffix as the five operations that five
 # cases do pin, so the argument was that a case each would pin the LIST ENTRY and nothing else. Review's
-# answer is the right one — **a list entry is exactly the thing that needs pinning**, because an unpinned
+# answer is the right one â€” **a list entry is exactly the thing that needs pinning**, because an unpinned
 # entry in a list is how the next edit quietly shortens the list, and the two cases cost six lines each.
 # The row is kept rather than deleted: **a surviving mutant is the honest output of a sweep**, and the
 # record of one having survived is worth more than a table that looks as though none ever did.
@@ -1202,30 +1376,30 @@ ok "ok  $cases self-test cases — check-migrations-additive.sh rejects each des
 # | the `Sql(` region pair (B4) -- lone-`;` close AND     | "an operation swallowed by a Sql( region whose ;   |
 # |   the operation needles running inside a region        |   sits on its own line"                            |
 # | `scanned()`'s after-`Down()` arm (B3)                 | "an operation in a SIBLING member"                 |
-# | `adjudicate`'s `count -gt 1` refusal (B1)             | "TWO operations on one line" AND "two IDENTICAL …" |
+# | `adjudicate`'s `count -gt 1` refusal (B1)             | "TWO operations on one line" AND "two IDENTICAL â€¦" |
 # | `count_matches` made boolean again (B1's other half)  | "two IDENTICAL operations on one line"             |
 #
 # **The B4 row reverts TWO changes together and is labelled a conjunction deliberately.** Either one alone
-# catches that shape — the region now closes on a lone `;`, *and* the operation needles run inside a region
-# — so neither half is pinned by that case on its own. That is platform.md's "refused by the conjunction,
+# catches that shape â€” the region now closes on a lone `;`, *and* the operation needles run inside a region
+# â€” so neither half is pinned by that case on its own. That is platform.md's "refused by the conjunction,
 # pinned by neither", named here rather than left for the next reader to discover. The last two rows are the
 # opposite and are worth the contrast: B1's refusal and B1's counting are separable, and the two cases
-# separate them — delete the refusal and both one-line cases go red, make the match boolean again and only
+# separate them â€” delete the refusal and both one-line cases go red, make the match boolean again and only
 # the identical-operations case does.
 #
 # THIRD SWEEP (gh#529 review round two's verdict, N8 and F1-F7). Nine reverts, each on the SHIPPING blob,
 # each the whole suite re-run. The pattern review named is what shapes it: **round one widened WHAT IS
 # SCANNED; the hole that opened was in WHAT DECIDES THE BOUNDARY of that scan.** Every guard below that
-# could be pinned alone HAS a fixture written to defeat exactly it — a decoy in a plain string, a decoy
+# could be pinned alone HAS a fixture written to defeat exactly it â€” a decoy in a plain string, a decoy
 # written to look like a declaration inside a verbatim literal, a helper with no modifier, a helper under an
-# inline `Down() { }` — because the pair-of-guards shape is precisely how a conjunction hides a dead half.
+# inline `Down() { }` â€” because the pair-of-guards shape is precisely how a conjunction hides a dead half.
 #
 # | Fix reverted                                          | Cases that went red                                |
 # |-------------------------------------------------------|----------------------------------------------------|
 # | `declares()`'s MEMBER_RE requirement (N8)             | **1.** "the decoy in a plain string literal"       |
 # | `declares()`'s `in_region` requirement (N8)           | **1.** "the decoy written to LOOK like a           |
 # |                                                       |   declaration, inside a verbatim Sql( literal"     |
-# | `$DOWN_RE`'s end-of-line arm (F4)                     | **1.** "a WRAPPED Down( signature" — the only      |
+# | `$DOWN_RE`'s end-of-line arm (F4)                     | **1.** "a WRAPPED Down( signature" â€” the only      |
 # |                                                       |   FALSE-POSITIVE case in the suite                 |
 # | the generated partials read rather than skipped (F3)  | **2.** "a helper hidden in the *.Designer.cs       |
 # |                                                       |   partial" and "... in the model snapshot"         |

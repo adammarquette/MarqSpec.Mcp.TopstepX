@@ -172,7 +172,9 @@ stopped writing.
 **What the probe does now.** Both of its two aggregates changed shape, and neither became a second query:
 
 - the bar count is now the series' **newest buckets in descending order**, still capped at the largest
-  configured warm-up. `tail[w - 1]` is then the bucket exactly `w` bars behind the newest;
+  configured warm-up. `tail[w - 1]` is then the **`w`-th newest bucket** — `w - 1` bars behind the newest,
+  because a warm-up of `w` may leave exactly `w - 1` trailing bars without a value and no more. Stated as
+  *`w` bars behind the newest* it is one bar looser, and one bar looser serves the very series this closes;
 - the `DISTINCT` is now `GROUP BY (Indicator, Period)` carrying `max(BucketStart)` — the same scan over the
   same key range, one column wider, still at most one row per configured instance.
 
@@ -183,8 +185,13 @@ A pair is **missing** when the store holds no value for it *or* its newest value
 honest: warm-up restarts at every contract seam (ADR-0011), so the bars just after a roll carry no value at
 all. `WarmupBars` is the domain's own statement of how long that run may be, so anything nearer than
 `tail[w - 1]` is an absence the bars justify (`R-2.3`) and is left alone. It is counted in **bars** rather
-than in time — never `newest − w × resolution` — because stored buckets are not contiguous across a weekend
-or a session break, and a time-shaped threshold would call every Monday a gap.
+than in time — never `tail[0] − (w − 1) × resolution` — because stored buckets are not contiguous across a
+weekend or a session break. Buckets are never *closer* than the resolution, so the time form's threshold is
+never older than `tail[w - 1]`: it can only over-replay, never serve a wrong number. That is a cost rather
+than a fault, which is why it ranks below the boundary itself — but the cost is a series that rolls over a
+weekend replaying on every read forever, so it is pinned by
+`AWarmUpRunSpanningASessionBreak_IsNotReadAsAGap` rather than argued. The boundary's own off-by-one is
+pinned by `APairShortByExactlyItsWarmUp_IsReplayed`, which is red under the one-bar-looser reading.
 
 **The alternative, and why it was rejected.** The other way to close this is to make the partial state
 **unservable**: have the read decline to serve a pair it cannot confirm is complete, or sweep its rows. Both
@@ -193,8 +200,23 @@ bars it already holds, which is a larger answer than the fault and contradicts t
 [ADR-0014](0014-indicators-are-projected-on-read-too.md); sweeping puts a delete on a read path, which
 [ADR-0006](0006-indicators-as-projections.md)'s 2026-09-07 update and gh#577 deliberately keep out of one —
 a read would be deleting on the strength of a catalogue it never projected with. Detecting and replaying
-needs neither: the replay is the same whole-series unit of work every other trigger runs, so the fix adds no
-new operation, no new concurrency shape and no new failure mode.
+needs neither *of those*: the replay is the same whole-series unit of work every other trigger runs, so the
+fix adds no new operation, no new concurrency shape and no new failure mode.
+
+**It does not mean the replay deletes nothing, and that is worth stating rather than leaving to be
+discovered.** `EnsureProjectedAsync`'s replay is `IndicatorProjector.ProjectAsync`, which ends in
+`ReconcileAsync` and removes the `unjustified`, `retired` and `orphaned` rows the series cannot account for.
+What survives the rejection above is the *qualifier*, not a claim that nothing is deleted: the replay has
+just recomputed the whole series in the same transaction, so it deletes on a catalogue it **did** project
+with, which sweep-on-read by definition does not.
+
+**So this change widens the delete surface as well as the replay residue, and both are consequences of the
+accepted design.** Before, only a configured pair with *no* rows opened the pass; now a short one does too,
+and every such read reconciles. gh#571 already decided those deletes are correct — a row no pass can
+reproduce is one ADR-0006 forbids the store to hold — so the widening is the fix reaching rows that were
+always due for it, sooner. It is recorded here because
+[ADR-0006](0006-indicators-as-projections.md)'s *"a read still does not sweep"* is read against it, and that
+sentence now carries the same precision.
 
 **What it costs, stated exactly.** The residue [ADR-0014](0014-indicators-are-projected-on-read-too.md)
 records — a series whose every contract run is shorter than the warm-up replays on every read and writes

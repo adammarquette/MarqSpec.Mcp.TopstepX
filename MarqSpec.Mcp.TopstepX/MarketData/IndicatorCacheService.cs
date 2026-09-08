@@ -135,8 +135,10 @@ public sealed class IndicatorCacheService(
     /// </para>
     /// <para>
     /// <b>The completeness boundary is the indicator's own warm-up, counted in BARS rather than in time.</b>
-    /// A pair is short when its newest value sits further back than the bucket <see cref="IIndicator.WarmupBars"/>
-    /// bars behind the newest bar. Anything nearer than that is an absence a warm-up can account for, and
+    /// A pair is short when its newest value sits further back than the
+    /// <see cref="IIndicator.WarmupBars"/>-th newest bucket — which is <i>one fewer</i> bars behind the
+    /// newest than the warm-up itself, because a warm-up of <c>w</c> may leave exactly <c>w - 1</c> trailing
+    /// bars without a value and no more. Anything nearer than that is an absence a warm-up can account for, and
     /// after a contract roll it routinely is (ADR-0011): the new run's first bars carry no value at all, and
     /// a probe that read those as a gap would replay the series on every read and write nothing each time.
     /// Counted in bars because a threshold in <i>time</i> — the newest bucket less
@@ -214,9 +216,10 @@ public sealed class IndicatorCacheService(
         int cap = _catalog.All.Max(i => i.WarmupBars);
 
         // THE BUCKETS THEMSELVES, NEWEST FIRST, RATHER THAN A COUNT OF THEM (gh#531). Still one query, still
-        // capped, and it answers a second question the count could not: `tail[w - 1]` is the bucket exactly
-        // `w` bars back from the newest, which is how far a warm-up of `w` can push a pair's newest value
-        // back before the pair is genuinely short. Counted in BARS, not in time -- `newest - w * resolution`
+        // capped, and it answers a second question the count could not: `tail[w - 1]` is the `w`-th NEWEST
+        // bucket -- `w - 1` bars back from the newest, not `w` -- which is how far a warm-up of `w` can push
+        // a pair's newest value back before the pair is genuinely short. Counted in BARS, not in time -- a
+        // threshold of `newest - (w - 1) * resolution`
         // would be wrong across every weekend and session break, where the stored buckets are not
         // contiguous. The cap is safe for this second use too: no `WarmupBars` this loop reaches exceeds it,
         // so no index it takes is past the end.
@@ -339,8 +342,10 @@ public sealed class IndicatorCacheService(
     /// both a full series and a truncated one.
     /// </para>
     /// <para>
-    /// <b><c>tail[w - 1]</c> is the whole of the boundary.</b> It is the bucket exactly <c>w</c> bars back
-    /// from the newest, so a newest value at or after it is one a warm-up of <c>w</c> can account for. The
+    /// <b><c>tail[w - 1]</c> is the whole of the boundary.</b> It is the <c>w</c>-th newest bucket, so it
+    /// sits <c>w - 1</c> bars back from the newest and a newest value at or after it is one a warm-up of
+    /// <c>w</c> can account for — <c>w</c> bars back would be <c>tail[w]</c>, one bar looser, and one bar
+    /// looser serves a series that should be replayed. The
     /// index cannot run past the end: this is only reached for an indicator whose <c>WarmupBars</c> is at
     /// most <paramref name="tail"/>'s length, since the caller has already filtered on
     /// <c>WarmupBars &lt;= bars</c> and <c>bars</c> IS that length. It cannot go below zero either, and the

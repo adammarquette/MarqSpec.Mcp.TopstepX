@@ -474,11 +474,14 @@ all walk; `IndicatorCatalog.Primaries` — exactly one per name — is what keys
    and before gh#531 replaced a `DISTINCT` with the grouped `max` over the same scan. Read them on the same
    terms as the 8.3 s below: the grouping returns a row per configured instance, so
    the second aggregate's result set grows with what an operator adds. The cap is why the first half does not
-   grow with the series — the only thing that count decides is `WarmupBars <= bars` for each catalogue member,
-   and any number at or above the largest warm-up answers every one of those identically.
+   grow with the series — what that count decides is `WarmupBars <= bars` for each catalogue member,
+   and any number at or above the largest warm-up answers every one of those identically. It is no longer the
+   *only* thing the query decides: the buckets it returns also carry the completeness boundary in step 2.
 2. **Diff against the catalogue, on completeness rather than existence** (gh#531). A pair is *missing* when
-   the store holds no value for it **or** its newest value sits further back than the bucket
-   `IIndicator.WarmupBars` bars behind the newest bar. A pair the bars cannot yet satisfy is **not yet
+   the store holds no value for it **or** its newest value sits further back than `tail[WarmupBars - 1]` —
+   the **`WarmupBars`-th newest bucket**, which is `WarmupBars - 1` bars behind the newest, because a warm-up
+   of `w` may leave exactly `w - 1` trailing bars without a value and no more. Read as *`w` bars behind the
+   newest* this is one bar looser, and one bar looser serves the very series the card exists to replay. A pair the bars cannot yet satisfy is **not yet
    measurable**, which is a fact (`R-2.3`) rather than a gap — and treating the two alike would replay a
    short series on every read forever while never writing a value. The warm-up offset is what keeps the run
    of absences after a contract roll a fact too: counted in bars rather than in time, because stored buckets
@@ -591,10 +594,12 @@ replay can confirm or correct it, and it reads back as an ordinary number
 cannot say whether a configuration change or a bar delete caused it. The classification costs no extra query —
 it is over the bars and values the pass already read.
 
-**A read does not sweep**, and the two orphan kinds differ in what that costs. `get_indicators` projects only
-when its probe finds a *configured* pair missing
+**A read runs no sweep of its own**, and the two orphan kinds differ in what that costs. `get_indicators`
+projects only when its probe finds a *configured* pair missing — no rows, or rows that stop short of the bars
+by more than that indicator's warm-up (gh#531) —
 ([ADR-0014](adr/0014-indicators-are-projected-on-read-too.md)), and `EnsureProjectedAsync` returns before that
-probe when the series holds no bars at all. **Retired** rows are unreachable while they stand — the read
+probe when the series holds no bars at all. The replay it opens *does* reconcile, over the series it has just
+projected; what a read never does is delete without projecting. **Retired** rows are unreachable while they stand — the read
 refuses a period the catalogue does not carry, before the store is touched. **Orphaned** rows stand too, and
 for a series whose bars are all gone no read will ever run the pass that removes them, so an operator
 upgrading past gh#571 runs `rebuild-indicators` once.
@@ -630,7 +635,8 @@ empty diff over the rows that most needed it (gh#571). On a store with no orphan
 of the first, so the union is the first and a confirming rebuild is still `(0, 0)`.
 
 Its job is now **correction rather than repair** (`R-2.5`). A read self-heals only what the probe can see — a
-`(Indicator, Period)` pair with no rows — so **correcting an indicator's arithmetic leaves every pair present
+`(Indicator, Period)` pair with no rows, or one whose newest value falls further back than its warm-up allows
+(gh#531) — so **correcting an indicator's arithmetic leaves every pair present, and reaching the newest bar,
 and no read will ever recompute it.** That forced replay, the accepted write skew of `R-2.11`, and warming a
 series ahead of its first caller are what the verb is for. It reports how many series it rewrote — values that
 actually changed, not confirming rebuilds — so the heal of `R-2.11` is visible without measuring it from

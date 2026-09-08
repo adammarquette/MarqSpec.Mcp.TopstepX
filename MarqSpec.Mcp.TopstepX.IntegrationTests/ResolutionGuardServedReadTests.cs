@@ -45,6 +45,7 @@ public sealed class ResolutionGuardServedReadTests : IAsyncLifetime
 {
     private const string Contract = "CON.F.US.EP.Z26";
     private const int SeededBars = 40;
+    private const int SeededCeilingBars = 12;
 
     private readonly SeriesStoreFixture _fixture;
     private readonly TopstepXDbContext _database;
@@ -97,6 +98,20 @@ public sealed class ResolutionGuardServedReadTests : IAsyncLifetime
 
     private static DateTimeOffset Bucket(int index) => SessionStart.AddMinutes(5 * index);
 
+    /// <summary>The bucket grid at the ceiling resolution, walked backwards from the fixture's clock.</summary>
+    /// <param name="index">Which bucket, <c>0</c> being the oldest seeded.</param>
+    /// <returns>The bucket start, on the real UTC grid.</returns>
+    /// <remarks>
+    /// Anchored with <see cref="BarGapDetector.AlignDown"/> rather than by adding minutes to
+    /// <see cref="SessionStart"/>, because the ceiling series has to sit on the <i>same</i> grid the read
+    /// aligns to — the whole subject of gh#538 is where that grid falls. Every bucket is strictly before the
+    /// clock, so all of them are closed.
+    /// </remarks>
+    private static DateTimeOffset CeilingBucket(int index) =>
+        BarGapDetector
+            .AlignDown(Bucket(SeededBars), TimeSpan.FromMinutes(ToolGuards.MaxResolutionMinutes))
+            .AddMinutes(ToolGuards.MaxResolutionMinutes * (index - SeededCeilingBars));
+
     /// <inheritdoc />
     /// <remarks>
     /// <b>Empty the store first, then seed it.</b> The unit-tier fixture seeded in its constructor because
@@ -116,6 +131,24 @@ public sealed class ResolutionGuardServedReadTests : IAsyncLifetime
                 Instrument = "ES",
                 ResolutionMinutes = 5,
                 BucketStart = Bucket(i),
+                Open = 100m,
+                High = 101m,
+                Low = 99m,
+                Close = 100m,
+                Volume = 1_000,
+                ContractId = Contract,
+                RecordedAt = SessionStart,
+            });
+        }
+
+        for (int i = 0; i < SeededCeilingBars; i++)
+        {
+            _database.Bars.Add(new BarRecord
+            {
+                Venue = "test",
+                Instrument = "ES",
+                ResolutionMinutes = ToolGuards.MaxResolutionMinutes,
+                BucketStart = CeilingBucket(i),
                 Open = 100m,
                 High = 101m,
                 Low = 99m,
@@ -146,5 +179,25 @@ public sealed class ResolutionGuardServedReadTests : IAsyncLifetime
 
         series.ResolutionMinutes.Should().Be(5);
         series.Bars.Should().HaveCount(10, "forty five-minute bars were seeded and ten were asked for");
+    }
+
+    [Fact]
+    public async Task AResolutionAtTheCeiling_StillAnswers()
+    {
+        // The boundary from the servable side, and the assertion is BARS (gh#538). This case lived upstairs
+        // in ResolutionGuardTests as `await call.Should().NotThrowAsync()`, which is a weaker claim than it
+        // reads as: the failure this whole boundary exists to abolish is a tool that answers an EMPTY series
+        // where the question was unanswerable, and an empty series does not throw either. "Did not throw" was
+        // green against exactly the defect being fixed.
+        //
+        // THE CEILING by the constant, so the case cannot drift off the boundary when the constant moves.
+        ToolPayloads.BarSeries series = await _bars.GetLatestBars(
+            "ES", ToolGuards.MaxResolutionMinutes, 3, CancellationToken.None);
+
+        series.ResolutionMinutes.Should().Be(ToolGuards.MaxResolutionMinutes);
+        series.Bars.Should().HaveCount(
+            3,
+            "twelve buckets were seeded on the ceiling's own grid and three were asked for — the ceiling is "
+            + "servable, not merely un-refused");
     }
 }

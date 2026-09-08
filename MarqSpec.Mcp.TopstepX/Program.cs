@@ -318,10 +318,13 @@ public static class Program
             .ValidateDataAnnotations()
             .ValidateOnStart();
 
-        // The detection defaults get_key_levels falls back to. Validated on start, and the Unknown check is
-        // an IValidatableObject on the type rather than a lambda here -- Unknown = 0 is what a mistyped or
-        // absent value binds to, and a server that boots on one answers every level call from a source
-        // nobody chose.
+        // The detection defaults get_key_levels falls back to. Validated on start, and the source check is
+        // an IValidatableObject on the type rather than a lambda here. Source binds as a STRING, not the
+        // PivotSource enum (gh#468 closed the comma-separated-list hole Enum.Parse opened: HeikinAshiBody,Body
+        // used to OR onto HighLow and boot on it). An absent key leaves the HeikinAshiBody initializer
+        // standing; every other value reaches Validate exactly as typed, and the server boots only if
+        // PivotSources.Resolve reads it, trimmed and case-insensitive, as one of the three names. A server
+        // that booted on an unresolved source would answer every level call from a source nobody chose.
         services.AddOptions<KeyLevelDetectionOptions>()
             .Bind(builder.Configuration.GetSection(KeyLevelDetectionOptions.SectionName))
             .ValidateDataAnnotations()

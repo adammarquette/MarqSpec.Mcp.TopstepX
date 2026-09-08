@@ -128,11 +128,15 @@ register it first and configure it after.
 
 The image's own entrypoint speaks **stdio**. [`Dockerfile`](Dockerfile) pins no transport, and it is
 `docker-compose.yml` setting `Mcp__Transport: "Http"` that makes the composed stack the exception — so the
-published image is already the thing an MCP client launches, and it needs neither compose nor the SDK:
+published image is already the thing an MCP client launches, and it needs neither compose nor the SDK — the
+`docker pull` below is there on purpose, front-loading the ~362 MB fetch so an MCP client's first launch does
+not stall waiting on it. The recipe tracks `latest` rather than pinning a release: an unread literal here
+would go stale the moment the next tag is cut, silently, and nothing in this repository re-reads a version
+written into prose (gh#471):
 
 ```bash
-docker pull ghcr.io/adammarquette/marqspec.mcp.topstepx:0.2.0
-claude mcp add topstepx -- docker run --rm -i ghcr.io/adammarquette/marqspec.mcp.topstepx:0.2.0
+docker pull ghcr.io/adammarquette/marqspec.mcp.topstepx:latest
+claude mcp add topstepx -- docker run --rm -i ghcr.io/adammarquette/marqspec.mcp.topstepx:latest
 ```
 
 Or build the image instead of pulling it — `docker build -t marqspec-mcp-topstepx:local .` — and register
@@ -144,11 +148,12 @@ serves. Since gh#76 that is a clean **exit 0** with an empty stdout — no crash
 for — and the explanation is the container's *last* log line, printed underneath a Kestrel
 `TaskCanceledException` that is expected on this path and is not the fault:
 
+The line is 412 characters and is quoted whole below rather than wrapped, so a phrase copied from either
+side still finds the other:
+
 ```
 info: startup[0]
-      Shutdown was requested before the server finished starting, so it stopped without listening. On stdio
-      this is what `docker run` WITHOUT `-i` looks like: stdin is closed before the handshake, so there is
-      no client to serve. Pass `-i` (or start the server from an MCP client, which holds stdin open) ...
+      Shutdown was requested before the server finished starting, so it stopped without listening. On stdio this is what `docker run` WITHOUT `-i` looks like: stdin is closed before the handshake, so there is no client to serve. Pass `-i` (or start the server from an MCP client, which holds stdin open) to keep a session. No background service faulted on the way here, so this exit code is not covering for one.
 ```
 
 **`Now listening on: http://[::]:8080` is expected here, and it is not the HTTP transport.**
@@ -166,8 +171,9 @@ that ships.
 This is the shape CI runs on every pull request —
 [`scripts/check-image-entrypoint.sh`](scripts/check-image-entrypoint.sh) drives `docker run --rm -i`,
 publishes no port, and asserts the `tools/list` reply *before* it reads the exit code. And as with the local
-process above, the container carries no database and no credentials until you give it some, and starts
-anyway.
+process above, the container carries no database and no credentials until you give it some — from inside the
+container that means an address reachable in **its own** network namespace, never the host's `localhost` —
+and starts anyway.
 
 ### The HTTP transport without compose
 
@@ -199,9 +205,13 @@ Two things this recipe deliberately does **not** carry over from `docker compose
 - **No override for `KeyLevels__Source`.** It is not needed: the option's C# default is already
   `HeikinAshiBody`, and .NET's configuration binder leaves it alone when the key is absent rather than
   resetting it — measured above, starting cleanly with nothing set for it. Setting the variable to something
-  real is fine; setting it to a typo is the one way to fail here, and the failure is an unhandled
-  `System.FormatException` naming the bad value, not a friendly sentence — see
-  [ADR-0007](documentation/adr/0007-dual-transport.md)'s 2026-09-03 update for the measurement.
+  real is fine. `Source` binds as a **string**, not the `PivotSource` enum (gh#468): every other value — a
+  typo, an empty string, `Unknown`, a bare number, a comma-separated list — reaches the same friendly startup
+  refusal, because whether the server boots turns on one question only, whether `PivotSources.Resolve` reads
+  it, trimmed and case-insensitive, as one of the three names. String binding is what closed the comma case:
+  `Enum.Parse` used to OR `HeikinAshiBody,Body` onto `HighLow`, a real source, and boot on it. See
+  [ADR-0007](documentation/adr/0007-dual-transport.md)'s 2026-09-03 update for the measurement that first
+  found the gap this closed.
 
 What this mode is **not**: it is not TLS, it is not reachable by Claude Cowork (which refuses a non-TLS
 endpoint), and it carries no real venue credential or database by default. It exists for testing and

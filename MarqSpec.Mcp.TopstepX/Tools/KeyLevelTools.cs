@@ -443,11 +443,16 @@ public sealed class KeyLevelTools(
         PivotSource source;
         if (pivotSource is null)
         {
+            // defaults.Source collapses every unresolved configuration value to Unknown (see
+            // KeyLevelDetectionOptions.Defaults), so the offending value quoted here is read back from the
+            // configuration options directly rather than from the collapsed result -- otherwise a comma
+            // list or a typo would all be echoed back as the single word "Unknown".
+            string configured = _detection.Source is null ? "null" : "'" + _detection.Source + "'";
             source = PivotSources.IsServable(defaults.Source)
                 ? defaults.Source
                 : throw new McpException(
-                    "This server's configured pivot source, '" + defaults.Source
-                    + "', is not one it can detect through. Known sources: " + PivotSources.KnownNames
+                    "This server's configured pivot source, " + configured
+                    + ", is not one it can detect through. Known sources: " + PivotSources.KnownNames
                     + ". Set " + KeyLevelDetectionOptions.SectionName + "__Source to one of them, or name a "
                     + "source on the call.");
         }

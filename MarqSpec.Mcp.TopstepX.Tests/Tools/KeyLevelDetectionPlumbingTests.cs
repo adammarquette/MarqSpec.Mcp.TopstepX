@@ -134,7 +134,7 @@ public sealed class KeyLevelDetectionPlumbingTests : IDisposable
         int maxLevels = 1_000) =>
         new()
         {
-            Source = source,
+            Source = source.ToString(),
             PivotLookback = pivotLookback,
             ZoneAtrMultiple = zoneAtrMultiple,
             MinSignificance = minSignificance,

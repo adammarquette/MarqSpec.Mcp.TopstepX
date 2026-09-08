@@ -780,73 +780,67 @@ Three things about it generalise:
   than the line. **A rule stated in prose and never fed to its own implementation is the shape gh#178 names**:
   write the fixture for the documented form before believing the form.
 - **What a text gate is actually defeated by is FORMATTING, and `dotnet format` is not the backstop it
-  looks like.** Review got a green run out of four shapes that all compile *and* all pass
-  `dotnet format --verify-no-changes`: two operations on one line; a `.DropColumn` whose `(` sits on the
-  next line; an operation in a **sibling member** of the migration class, which the `Up()`-body scan never
-  reached; and an operation swallowed by a `Sql(` region whose terminating `;` sat on a line of its own. The
-  useful contrast is `migrationBuilder . DropColumn (`, which the gate also missed and `Format` catches with
-  three `error WHITESPACE`. That was recorded as **defence in depth that exists by luck, and only for the
-  shape nobody writes** — and the generalisation survives, while the live dependency did not: **`Format` is a
-  later step in the SAME JOB**, and this gate's whole placement argument is that it runs *before*
-  `setup-dotnet`. A future split of the gate into a job of its own — which this section contemplates — takes
-  the backstop away with nothing going red. `\.[[:space:]]*DropColumn` is one character class and costs less
-  than the paragraph defending its absence, so the gate owns it now. **Ask which of a text gate's blind spots
-  another required step happens to cover, treat the answer as luck rather than design — and then check
-  whether the lucky step could be moved by a change nobody would think to connect to this one.** The gate
-  now scans everything outside `Down()`, accepts the `(` on the following line, tolerates whitespace around
-  the receiver's dot, runs the operation needles *inside* `Sql(` regions, and closes a region on a lone `;`.
-- **Round one widened WHAT IS SCANNED; round two's hole was in WHAT DECIDES THE BOUNDARY of that scan.**
-  `Down()` was located by matching a raw line, so a `//` comment inside `Up()` reading *"there is no
-  `void Down(MigrationBuilder …)` worth writing"* set the excluded span from that comment to the real
-  declaration — switching off the rest of `Up()` while reporting the `Down()` body's own drop at a line
-  number a reader would act on. It fails in both directions from one root, and **the accidental path and the
-  deliberate one are the same line**: the migration most likely to carry that sentence is the destructive
-  one. Boundaries are now decided only by a line that *declares a member* — not a comment, not a string
-  literal's interior, and carrying a modifier keyword. **Generalise it: a finding needle that is too loose
-  costs a false positive; a boundary needle that is too loose excludes code, and nothing reports what was
-  not read.** Two of that gate's boundaries are still decided from raw text on purpose — where `Down()` ends,
-  and where a `Sql(` region ends — because a false match there ends a region *early*, which is the loud
-  direction; making them string-aware would let an unterminated literal run to end of file and take a
-  sibling member with it.
-- **Auditing the rest of the class found a third one review had not, and it was a keyword.** `MEMBER_RE`
-  also decides where the `Down()` body *ends*, and it required an access modifier — so a sibling helper
-  written `static void RetireLegacy(MigrationBuilder)`, legal C# that `dotnet format` will not touch, was
-  never reached at all. **When a review names a pattern, run it over every instance of the pattern rather
-  than over the instances the review listed.**
+  looks like.** Every shape three review rounds got a green run out of both compiles *and* passes
+  `dotnet format --verify-no-changes` — they are enumerated in the self-test's cases and in the gate's own
+  header, which is where they belong. The useful contrast is `migrationBuilder . DropColumn (`, which the
+  gate also missed and `Format` *does* catch, with three `error WHITESPACE`. That was recorded as **defence
+  in depth that exists by luck, and only for the shape nobody writes** — and the generalisation survives
+  while the live dependency did not: **`Format` is a later step in the SAME JOB**, and this gate's whole
+  placement argument is that it runs *before* `setup-dotnet`. A future split of the gate into a job of its
+  own — which this section contemplates — takes the backstop away with nothing going red. **Ask which of a
+  text gate's blind spots another required step happens to cover, treat the answer as luck rather than
+  design — and then check whether the lucky step could be moved by a change nobody would think to connect to
+  this one.**
+- **Round one widened WHAT IS SCANNED; every round since has had its hole in WHAT DECIDES THE BOUNDARY of
+  that scan.** `Down()` was located by matching a raw line, so a `//` comment inside `Up()` naming the method
+  set the excluded span from that comment to the real declaration — switching off the rest of `Up()` while
+  reporting the `Down()` body's own drop at a line number a reader would act on. **The accidental path and
+  the deliberate one are the same line**: the migration most likely to say "there is no `Down()` worth
+  writing" is the destructive one. **Generalise it: a finding needle that is too loose costs a false
+  positive; a boundary needle that is too loose excludes code, and nothing reports what was never read.**
+- **Only one end of a boundary fails silently, and that is where every one of these bugs has been.** Where
+  the excluded span *begins* is the quiet direction; where it *ends*, and both ends of a `Sql(` region, fail
+  loud — a false match there scans **more**, or refuses a declaration and reddens the whole file. Three
+  un-predicated patterns are left un-predicated for exactly that reason. **So the question to ask of any
+  widening is not "is this looser" but "which END did I widen":** the two widenings that touched the
+  beginning are the two that were then defeated, one apiece, by a `static` local function and by a decoy
+  overload. Both had been added to fix the round before.
+- **A condition on a boundary must test what the line DECLARES, not a property of the line.** A comment
+  test, a string-interior test and a modifier-keyword test are all properties of the line, and a `static`
+  local function passes all three. What closed it is that `Migration.Up`/`Down` are `protected virtual`, so
+  a real one is always an `override` — a fact about the thing being matched rather than about its text.
+  **When three conditions in a row keep being defeated, the next one probably belongs at a different level
+  of description.**
 
-`check-migrations-additive-selftest.sh` carries a **decision ledger** — the fourth gate here to need one —
-split into **three measured mutation sweeps** and a tail listed as exercised-but-not-mutated, which is not a
-claim of coverage. **The suite takes about 7m20s on a Windows checkout** at 47 cases and about two seconds on
-the runner, so one sweep is an hour or more; that is what bounds how much of the table can be measured on one
-card, and it is written down so the next reader re-runs it rather than re-reading it. Four of its results are
-worth carrying:
+The gate's **decision ledger** lives in `check-migrations-additive-selftest.sh` — the fourth gate here to
+need one — split into four measured mutation sweeps and a tail listed as exercised-but-not-mutated, which is
+not a claim of coverage. **The per-row narrations belong there and not here**: this file carried a copy of
+the mutant-8 row that still said "survived" after the ledger said "closed", which is exactly the drift the
+same-PR rule exists to stop and is cheaper to obey when a measured number has one home. Read the rows there;
+what generalises past this gate is:
 
-- **One mutant survived the first sweep, was named rather than repaired, and is now closed.** Deleting
-  `DropSchema` and `DropSequence` from the operation list reddened **nothing** — they ride the same loop and
-  the same call-suffix regex as the five operations that five cases do pin, so the argument was that a case
-  each would pin the *list entry* and nothing else. Review's answer is the right one: **a list entry is
-  exactly the thing that needs pinning**, because an unpinned entry is how the next edit quietly shortens the
-  list. Two cases close it, and **the row is kept rather than deleted** — a surviving mutant is the honest
-  output of a sweep, and the record that one survived is worth more than a table that looks as though none
-  ever did. **A sweep with no survivors usually means the sweep was too timid.**
-- **The mutant that matters most is the marker's comment-block boundary**, and it takes three cases with it —
-  including *two DropColumns, only the first acknowledged*. Without that boundary the upward walk runs to the
-  top of the file and **one marker acknowledges the whole migration**, which is the exact failure the escape
-  hatch exists to prevent. It is the difference between a marker and a rubber stamp, and nothing but that one
-  case measures it.
 - **A ledger row lies in a third way nobody had named: its mechanism moves underneath it.** Review re-ran the
-  first sweep's row 1 rather than reading it and got **1** case where the row claimed **7** — and not the case
-  the row named, which stayed green. Re-run again on the round-three code it measures **39 of 47**, because
-  the same regex now decides whether `Down()` is located at all. One mutant, three numbers, three mechanisms.
-  Row 7 moved the same way, from 1 to 4, and was also *describing the wrong thing*. **When a fix moves code a
-  ledger row names, that row is part of the diff** — and the only way to know is to re-run it, which is the
-  instruction the ledger already carried and nobody had followed.
-- **Guards come in pairs, and a pair hides a dead half.** Three conditions now decide whether a line may set
-  a boundary, and the obvious decoys fail two of the three — so a fixture apiece was written to defeat
-  *exactly one*: a decoy in a plain string, and a decoy typed to look like a real declaration inside a
-  verbatim SQL literal. One condition is pinned by nothing and is **subsumed** by another today; that is
-  recorded in the ledger rather than papered over, because an unpinnable guard that nobody has labelled is
-  indistinguishable from a guard that works.
+  first sweep's row 1 rather than reading it and got **1** case where the row claimed **7** — and not the
+  case the row named, which stayed green. It has since measured 39 and then 41, because the same regex came
+  to decide first where `Down()` ends, then whether `Down()` is found at all, then whether `Up()` is. One
+  mutant, four numbers, four mechanisms — and by the last of them the cases redden for a reason the row's own
+  sentence does not give, so the row is now its own example of *a mutation that reddens for the wrong reason
+  reads as caught*. **When a fix moves code a ledger row names, that row is part of the diff.** A row also
+  has to name the **blob** it was measured against, and the ledger has to say which rows have been re-run and
+  which have not — otherwise the reader infers it from the two that happen to mention it.
+- **A survivor is the honest output of a sweep, and the row stays after it is closed.** A sweep with no
+  survivors usually means the sweep was too timid.
+- **Guards come in pairs, and a pair hides a dead half.** Four conditions now decide whether a line may set
+  a boundary, and the obvious decoys fail more than one — so a fixture apiece is written to defeat *exactly
+  one*. **Adding a condition can silently un-pin an existing one**: the fourth would have made the third
+  unfailable, and the fixture had to be strengthened in the same change to keep it separable. One condition
+  is pinned by nothing and is **subsumed** by another; that is recorded in the ledger rather than papered
+  over, because an unpinnable guard nobody has labelled is indistinguishable from a guard that works.
+- **A prediction in a ledger row can be tested, and this one failed.** That subsumed row said the day
+  `MEMBER_RE` was widened would be the day the comment test started carrying weight. It was widened the very
+  next round, and the widening instead took weight *away* from the member test. It is kept and marked rather
+  than rewritten — a wrong prediction with its outcome recorded is worth more than a tidy row that never
+  risked anything.
 
 ### Size-gate targeting and decision ledgers
 

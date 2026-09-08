@@ -73,7 +73,7 @@ public sealed class BarSessionCalendar
     /// <remarks>
     /// US spring-forward is 02:00 Central on a Sunday; Monday 2030-03-11 is the example named in gh#613.
     /// </remarks>
-    private static readonly DateOnly SpringForwardExampleTradeDate = new(2030, 3, 11);
+    private static readonly DateOnly _springForwardExampleTradeDate = new(2030, 3, 11);
 
     /// <summary>
     /// When the session close is before 02:00 Central, the reopen lands before 03:00 and spring-forward can
@@ -87,7 +87,7 @@ public sealed class BarSessionCalendar
         }
 
         int shortenedMinutes = SessionLengthMinutes(
-            SpringForwardExampleTradeDate,
+            _springForwardExampleTradeDate,
             sessionClose.Add(maintenanceWindow),
             sessionClose);
         int nominalMinutes = (int)(TimeSpan.FromDays(1) - maintenanceWindow).TotalMinutes;

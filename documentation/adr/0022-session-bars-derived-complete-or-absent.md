@@ -311,7 +311,7 @@ served from the store. So the read settles to a store-only answer once the base 
 venue's empty ranges, which is one read later than a caller expects
 (`SessionBarToolServedReadTests.GetLatestSessionBars_AnchorsOnTheLastClosedSession` drives all three).
 
-## Update (2026-09-08) — the ceiling is half the shortest session, and the residue is closed
+## Update (2026-09-08) — the served ceiling, the pigeonhole bound, and the residue closed
 
 **The refusal above moved from 1,380 down to 661, and the reason it stopped at 1,380 was the wrong reason to
 stop (gh#538).** *Consequences* recorded the residue honestly and left it: a bucket **narrower** than a
@@ -347,10 +347,11 @@ because the reopen then lands in the *ambiguous* hour and `MarketClock.FromMarke
 wall-clock time to **standard** time, which is its own documented behaviour. That is why the census runs
 through the real converter: two of the three lengths a model predicts do not exist.
 
-**The two derivations gh#538 offered agree here by arithmetic accident, so only one is implemented.** 660 is
-both the pigeonhole bound on 1,320 and 1,320's largest proper divisor, but that pairing holds only because
-`S` is even: at `S = 1,379` the pigeonhole form gives 690 and the largest-proper-divisor form gives 197. The
-general form is the one in the code.
+**660 is not half of 1,380 — the ceiling is a product bound, not the pigeonhole maximum.** The pigeonhole
+form on every admissible session gives 690; the served ceiling stays at 660 until a separate card raises it.
+The largest-proper-divisor coincidence gh#538 noted at `S = 1,320` no longer applies: gh#613 refused the
+closes that produced 1,320-minute sessions. At `S = 1,379` the pigeonhole form gives 690 and the
+largest-proper-divisor form gives 197; the general pigeonhole form is the one in the code.
 
 **Refusal, not a warning field, and the alternative was real.** gh#538's title offered both. A per-call
 `partialCoverage` flag would have kept the band servable and told the caller the series may be short — but an

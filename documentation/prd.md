@@ -44,8 +44,9 @@ The server serves OHLCV bars for a futures instrument at a requested resolution 
   a history of asking, so a second recording is an update by design and not a way to dodge the error.
 - **R-1.8** Bar timestamps are stored in UTC. The gateway returns timestamps with no kind; they are UTC, and
   inferring local shifts every bar by the operator's offset.
-- **R-1.9** The supported resolutions are **every whole number of minutes from 1 to 660 — one minute up to
-  half the shortest session** — deliberately. Resolution is a per-call parameter rather than configuration,
+- **R-1.9** The supported resolutions are **every whole number of minutes from 1 to 660 — the served
+  ceiling, deliberately below the 690 pigeonhole bound on every admissible 1,380-minute session** —
+  deliberately. Resolution is a per-call parameter rather than configuration,
   so an agent is never
   blocked on a config change to look at a timeframe nobody anticipated, and no tool advertises a resolution list
   because the range is contiguous. **Both ends are refused at the boundary**, as a *caller error the server

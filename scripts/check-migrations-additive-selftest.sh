@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# check-migrations-additive-selftest.sh â€” require that check-migrations-additive.sh can still go red, and
+# check-migrations-additive-selftest.sh — require that check-migrations-additive.sh can still go red, and
 # that it goes red for the RIGHT reason, at the right file and line.
 #
 #   scripts/check-migrations-additive-selftest.sh
@@ -27,9 +27,9 @@
 # split and the exit status captured directly:
 #
 #     the real repository, no argument      1 line stdout   0 B stderr   exit 0
-#       ok  no migration added or changed against origin/develop (0 path(s) under â€¦/Migrations in the diff).
+#       ok  no migration added or changed against origin/develop (0 path(s) under …/Migrations in the diff).
 #     the real repository, base f49dd5b~1   0 B stdout      red + explain on stderr   exit 1
-#       DESTRUCTIVE  â€¦/20260827071708_DropPriceLevels.cs:14  DropTable  -- no '// destructive-migration:' â€¦
+#       DESTRUCTIVE  …/20260827071708_DropPriceLevels.cs:14  DropTable  -- no '// destructive-migration:' …
 #
 # The second is the measurement that matters and it is not a fixture: pointed at a base BEFORE the one
 # genuinely destructive migration this repository has ever merged, the gate reads SIX migration files, finds
@@ -61,19 +61,25 @@
 # deployment actually gets wrong.
 #
 # DECISION LEDGER -- see the table at the bottom of this file (gh#178's remedy). Every decision the gate
-# makes is listed beside the case that kills it, and the table is SPLIT: four MEASURED sweeps of mutants,
+# makes is listed beside the case that kills it, and the table is SPLIT: five MEASURED sweeps of mutants,
 # and the rest listed as exercised-but-not-mutated. Adding a decision to the gate without adding a row is
 # the same visible omission the ledger exists to catch. Read the split before trusting a row -- "a ledger is
 # a claim too", and the ways one lies are a grade promising more than its evidence, a decision pinned by a
 # fixture's incidental shape, and -- found by review on this very file -- **a row whose mechanism has moved
-# underneath it, so the number is stale and the sentence describes code that is gone.** ONE MUTANT SURVIVED
-# the first sweep and is named as such; TWO of that sweep's rows have been re-run three times and moved
-# every time, and the ledger now names WHICH rows have been re-run and against which blob.
+# underneath it, so the number is stale and the sentence describes code that is gone.** THREE MUTANTS have
+# survived a sweep and each is named as such; the first sweep's rows 1 and 7 have now been re-run FOUR
+# times, and row 1 has moved on every single one.
 #
-# LOCAL RUNTIME. Each case forks `git init`, a few commits and a shell. Seconds on the CI runner; **about
-# 5m35s on a Windows checkout** at 49 cases, where process spawning dominates -- `sys` is seven times `user`.
-# That is what bounds how much of the ledger below can be measured on one card, so it is written down rather
-# than left for the next reader to discover mid-sweep.
+# RUNTIME, AND WHERE THE FIFTH SWEEP WAS RUN. Each case forks `git init`, a few commits and a shell, so what
+# it costs is process creation and nothing else. On a Windows checkout that is brutal: **16m15s at 53 cases**
+# on the machine gh#601 was written on (`real` 16m15s, `user` 0m48s, `sys` 5m52s), against the **5m35s at
+# 49 cases** an earlier card measured on different hardware. One order of magnitude between two machines, so
+# read either as *minutes, dominated by forking* rather than as a figure to plan against. THE SAME SUITE RUNS
+# IN **11.8s** inside `mcr.microsoft.com/dotnet/sdk:10.0` -- bash 5.2.21 and git 2.43, which is the
+# `ubuntu-24.04` runner's own family -- and that is where gh#601's seventeen sweep runs were taken. Not a
+# shortcut around the Windows number: it is the CLOSER environment to the one CI uses, and it is what makes
+# a full per-decision sweep affordable on a single card at all. **Sweep in the container; run the gate
+# wherever you are.**
 
 set -euo pipefail
 
@@ -147,7 +153,7 @@ line_of() {  # $1 file  $2 fixed string
   local n
   n="$(grep -n -F -- "$2" "$1" | head -n1 | cut -d: -f1)"
   if [ -z "$n" ]; then
-    red "  FIXTURE BROKEN  '$2' is not in $1 â€” its case would assert a line nothing is on."
+    red "  FIXTURE BROKEN  '$2' is not in $1 — its case would assert a line nothing is on."
     exit 1
   fi
   printf '%s' "$n"
@@ -182,7 +188,7 @@ commit_case() {  # $1 dir
   git -C "$1" "${git_ident[@]}" commit -q -m 'fixture case'
 }
 
-run_gate() {  # $1 dir  [base refâ€¦]
+run_gate() {  # $1 dir  [base ref…]
   local dir="$1"; shift
   : > "$GATE_STDERR"
   bash "$dir/scripts/check-migrations-additive.sh" "$@" 2>"$GATE_STDERR"
@@ -190,7 +196,7 @@ run_gate() {  # $1 dir  [base refâ€¦]
 
 gate_output() { printf '%s\n%s' "$1" "$(cat "$GATE_STDERR")"; }
 
-expect_red() {  # $1 label  $2 dir  $3 needle  [baseâ€¦]
+expect_red() {  # $1 label  $2 dir  $3 needle  [base…]
   local label="$1" dir="$2" needle="$3" out status=0
   shift 3
   cases=$(( cases + 1 ))
@@ -216,9 +222,9 @@ expect_red() {  # $1 label  $2 dir  $3 needle  [baseâ€¦]
   ok "  red as required  $label  ($needle)"
 }
 
-# $4, when given, is a string the output must NOT contain â€” that is how "the FIRST DropColumn was marked,
+# $4, when given, is a string the output must NOT contain — that is how "the FIRST DropColumn was marked,
 # only the second is reported" is pinned as a fact about which line, rather than as a fact about failing.
-expect_red_without() {  # $1 label  $2 dir  $3 needle  $4 forbidden  [baseâ€¦]
+expect_red_without() {  # $1 label  $2 dir  $3 needle  $4 forbidden  [base…]
   local label="$1" dir="$2" needle="$3" forbidden="$4" out status=0
   shift 4
   cases=$(( cases + 1 ))
@@ -251,7 +257,7 @@ expect_red_without() {  # $1 label  $2 dir  $3 needle  $4 forbidden  [baseâ€�
   ok "  red as required  $label  ($needle, and not $forbidden)"
 }
 
-expect_green() {  # $1 label  $2 dir  $3 needle  [baseâ€¦]
+expect_green() {  # $1 label  $2 dir  $3 needle  [base…]
   local label="$1" dir="$2" needle="$3" out err status=0 stray
   shift 3
   cases=$(( cases + 1 ))
@@ -270,7 +276,7 @@ expect_green() {  # $1 label  $2 dir  $3 needle  [baseâ€¦]
   if [[ "$out" != *"$needle"* ]]; then
     red "SELF-TEST FAILED  $label"
     red "  The gate passed without saying '$needle'. Exit 0 having read NOTHING is the shape this suite"
-    red "  exists to refuse â€” the green line carries the file count for exactly that reason."
+    red "  exists to refuse — the green line carries the file count for exactly that reason."
     info "$(gate_output "$out")"
     failures=$(( failures + 1 ))
     return 0
@@ -287,7 +293,7 @@ expect_green() {  # $1 label  $2 dir  $3 needle  [baseâ€¦]
   ok "  green as required  $label  ($needle; stderr empty)"
 }
 
-info "check-migrations-additive.sh self-test â€” the real gate, run against fixtures with known faults."
+info "check-migrations-additive.sh self-test — the real gate, run against fixtures with known faults."
 info ""
 
 # ---------------------------------------------------------------------------------------------------------
@@ -305,14 +311,14 @@ emit_body "$F" <<'EOF'
             migrationBuilder.CreateIndex(name: "IX_Thing_Id", table: "Thing", column: "Id");
 EOF
 emit_tail "$F"; commit_case "$D"
-# NO BASE ARGUMENT â€” the invocation ci.yml makes, resolving refs/remotes/origin/develop.
+# NO BASE ARGUMENT — the invocation ci.yml makes, resolving refs/remotes/origin/develop.
 expect_green "an additive migration, on the argument-free invocation CI uses" "$D" \
   "1 migration file(s) added or changed against origin/develop; 0 destructive operation(s)"
 
 D="$FIXTURES/marked"; init_repo "$D"
 F="$D/$MIG_REL/20260201000000_DropLegacy.cs"; emit_head "$F" DropLegacy
 emit_body "$F" <<'EOF'
-            // destructive-migration: not rollback-safe before v0.4.0 â€” Bars.Legacy has been dual-written
+            // destructive-migration: not rollback-safe before v0.4.0 — Bars.Legacy has been dual-written
             // since v0.3.0 and no code path reads it.
             migrationBuilder.DropColumn(name: "Legacy", table: "Bars");
 EOF
@@ -326,7 +332,7 @@ emit_body "$F" <<'EOF'
             migrationBuilder.AddColumn<int>(name: "Rank", table: "Bars", nullable: true);
 EOF
 emit_tail "$F"; commit_case "$D"
-expect_green "a Down() that drops everything Up() added â€” every real migration's shape" "$D" \
+expect_green "a Down() that drops everything Up() added — every real migration's shape" "$D" \
   "0 destructive operation(s)" basebranch
 
 D="$FIXTURES/generated-only"; init_repo "$D"
@@ -362,19 +368,19 @@ emit_body "$F" <<'EOF'
             migrationBuilder.CreateIndex(name: "IX_Bars_New", table: "Bars", column: "Bucket");
 EOF
 emit_tail "$F"; commit_case "$D"
-expect_green "a DropIndex with no DropColumn beside it â€” recreatable, so not flagged" "$D" \
+expect_green "a DropIndex with no DropColumn beside it — recreatable, so not flagged" "$D" \
   "0 destructive operation(s)" basebranch
 
 D="$FIXTURES/deleted"; init_repo "$D"
 git -C "$D" "${git_ident[@]}" rm -q "$MIG_REL/20260101000000_Baseline.cs"
 commit_case "$D"
-expect_green "a DELETED migration â€” filtered out, and not read as a file that vanished" "$D" \
+expect_green "a DELETED migration — filtered out, and not read as a file that vanished" "$D" \
   "no migration added or changed" basebranch
 
 D="$FIXTURES/marked-sql"; init_repo "$D"
 F="$D/$MIG_REL/20260201000000_SqlMarked.cs"; emit_head "$F" SqlMarked
 emit_body "$F" <<'EOF'
-            // destructive-migration: not rollback-safe before v0.5.0 â€” the index is rebuilt by the same
+            // destructive-migration: not rollback-safe before v0.5.0 — the index is rebuilt by the same
             // release and nothing plans against it.
             migrationBuilder.Sql(@"
                 DROP INDEX IF EXISTS ""IX_Bars_Legacy"";
@@ -391,7 +397,7 @@ emit_body "$F" <<'EOF'
 EOF
 emit_tail "$F"; commit_case "$D"
 # Exported rather than run in a subshell: expect_green counts into `cases` and `failures`, and a subshell
-# would drop both â€” a case that cannot report its own failure is the shape this whole file refuses.
+# would drop both — a case that cannot report its own failure is the shape this whole file refuses.
 export MIGRATION_GATE_BASE=basebranch
 expect_green "MIGRATION_GATE_BASE naming the base, with no argument" "$D" "against basebranch"
 unset MIGRATION_GATE_BASE
@@ -407,7 +413,7 @@ emit_body "$F" <<'EOF'
 EOF
 emit_tail "$F"; commit_case "$D"
 N="$(line_of "$F" 'DropColumn(name: "Legacy"')"
-# NO BASE ARGUMENT â€” the red half of the pair that pins the default-base resolution.
+# NO BASE ARGUMENT — the red half of the pair that pins the default-base resolution.
 expect_red "an unacknowledged DropColumn, on the argument-free invocation CI uses" "$D" \
   "$MIG_REL/20260201000000_DropLegacy.cs:$N  DropColumn"
 
@@ -417,10 +423,10 @@ emit_body "$F" <<'EOF'
             migrationBuilder.DropColumn(name: "Legacy", table: "Bars");
 EOF
 emit_tail "$F"
-# DELIBERATELY NOT COMMITTED â€” `dotnet ef migrations add` leaves the file untracked, and `git diff` cannot
+# DELIBERATELY NOT COMMITTED — `dotnet ef migrations add` leaves the file untracked, and `git diff` cannot
 # see it. A green run on the very file the author is about to commit is the confident wrong answer.
 N="$(line_of "$F" 'DropColumn(name: "Legacy"')"
-expect_red "a migration scaffolded and never added â€” invisible to git diff alone" "$D" \
+expect_red "a migration scaffolded and never added — invisible to git diff alone" "$D" \
   "$MIG_REL/20260201000000_ScaffoldedNotAdded.cs:$N  DropColumn" basebranch
 
 D="$FIXTURES/bare-droptable"; init_repo "$D"
@@ -460,7 +466,7 @@ emit_body "$F" <<'EOF'
 EOF
 emit_tail "$F"; commit_case "$D"
 N="$(line_of "$F" 'AlterColumn<string>(name: "Instrument"')"
-expect_red "an unacknowledged AlterColumn â€” a narrowing is not distinguishable statically" "$D" \
+expect_red "an unacknowledged AlterColumn — a narrowing is not distinguishable statically" "$D" \
   "$MIG_REL/20260201000000_Narrow.cs:$N  AlterColumn" basebranch
 
 D="$FIXTURES/sql-drop"; init_repo "$D"
@@ -493,7 +499,7 @@ emit_body "$F" <<'EOF'
 EOF
 emit_tail "$F"; commit_case "$D"
 N="$(line_of "$F" 'Sql("truncate table')"
-expect_red "a LOWERCASE truncate â€” SQL keywords are matched case-insensitively" "$D" \
+expect_red "a LOWERCASE truncate — SQL keywords are matched case-insensitively" "$D" \
   "$MIG_REL/20260201000000_SqlTrunc.cs:$N  raw SQL: TRUNCATE" basebranch
 
 D="$FIXTURES/sql-alter-type"; init_repo "$D"
@@ -503,8 +509,8 @@ emit_body "$F" <<'EOF'
 EOF
 emit_tail "$F"; commit_case "$D"
 N="$(line_of "$F" 'Sql("ALTER TABLE')"
-expect_red "a raw ALTER TABLE â€¦ TYPE, which narrows without naming a Drop" "$D" \
-  "$MIG_REL/20260201000000_SqlAlter.cs:$N  raw SQL: ALTER TABLE â€¦ TYPE" basebranch
+expect_red "a raw ALTER TABLE … TYPE, which narrows without naming a Drop" "$D" \
+  "$MIG_REL/20260201000000_SqlAlter.cs:$N  raw SQL: ALTER TABLE … TYPE" basebranch
 
 D="$FIXTURES/blanket-marker"; init_repo "$D"
 F="$D/$MIG_REL/20260201000000_Blanket.cs"; emit_head "$F" Blanket
@@ -526,13 +532,13 @@ emit_body "$F" <<'EOF'
 EOF
 emit_tail "$F"; commit_case "$D"
 N="$(line_of "$F" 'DropColumn(name: "Legacy"')"
-expect_red "a marker with NO reason â€” a rubber stamp is not an acknowledgement" "$D" \
+expect_red "a marker with NO reason — a rubber stamp is not an acknowledgement" "$D" \
   "$MIG_REL/20260201000000_NoReason.cs:$N  DropColumn" basebranch
 
 D="$FIXTURES/marker-gap"; init_repo "$D"
 F="$D/$MIG_REL/20260201000000_Gap.cs"; emit_head "$F" Gap
 emit_body "$F" <<'EOF'
-            // destructive-migration: not rollback-safe before v0.4.0 â€” nothing reads it.
+            // destructive-migration: not rollback-safe before v0.4.0 — nothing reads it.
 
             migrationBuilder.DropColumn(name: "Legacy", table: "Bars");
 EOF
@@ -544,7 +550,7 @@ expect_red "a marker separated from the operation by a blank line" "$D" \
 D="$FIXTURES/second-unmarked"; init_repo "$D"
 F="$D/$MIG_REL/20260201000000_Two.cs"; emit_head "$F" Two
 emit_body "$F" <<'EOF'
-            // destructive-migration: not rollback-safe before v0.4.0 â€” Legacy was dual-written.
+            // destructive-migration: not rollback-safe before v0.4.0 — Legacy was dual-written.
             migrationBuilder.DropColumn(name: "Legacy", table: "Bars");
             migrationBuilder.DropColumn(name: "Scratch", table: "Bars");
 EOF
@@ -559,12 +565,12 @@ D="$FIXTURES/paired-drop-index"; init_repo "$D"
 F="$D/$MIG_REL/20260201000000_Paired.cs"; emit_head "$F" Paired
 emit_body "$F" <<'EOF'
             migrationBuilder.DropIndex(name: "IX_Bars_Legacy", table: "Bars");
-            // destructive-migration: not rollback-safe before v0.4.0 â€” Legacy was dual-written.
+            // destructive-migration: not rollback-safe before v0.4.0 — Legacy was dual-written.
             migrationBuilder.DropColumn(name: "Legacy", table: "Bars");
 EOF
 emit_tail "$F"; commit_case "$D"
 N="$(line_of "$F" 'DropIndex(name: "IX_Bars_Legacy"')"
-expect_red "a DropIndex beside an acknowledged DropColumn â€” half an acknowledgement" "$D" \
+expect_red "a DropIndex beside an acknowledged DropColumn — half an acknowledgement" "$D" \
   "$MIG_REL/20260201000000_Paired.cs:$N  DropIndex" basebranch
 
 # ---------------------------------------------------------------------------------------------------------
@@ -711,7 +717,7 @@ N="$(line_of "$F" 'DropColumn(name: "Legacy"')"
 # The decoy sets down_start at the COMMENT and down_end at the real declaration, so the whole rest of Up()
 # falls out of every pass -- and, because the fixture's Down() is EF's ordinary destructive one, the gate
 # then reports the Down() body's drop instead. It fails in both directions from one root.
-expect_red "a COMMENT inside Up() naming void Down(MigrationBuilder â€” the boundary decoy" "$D" \
+expect_red "a COMMENT inside Up() naming void Down(MigrationBuilder — the boundary decoy" "$D" \
   "$MIG_REL/20260201000000_Decoy.cs:$N  DropColumn" basebranch
 
 D="$FIXTURES/down-decoy-literal"; init_repo "$D"
@@ -791,12 +797,12 @@ commit_case "$D"
 # A GREEN case, and the only one here that pins a FALSE POSITIVE. A wrapped signature left `down_start` at 0,
 # so the whole file was scanned and an ordinary additive migration was reddened by its own Down(). A gate that
 # reddens correct work is deleted by the first person it wrongly stops.
-expect_green "a WRAPPED Down( signature â€” correct additive work must not be reddened by its own Down()" "$D" \
+expect_green "a WRAPPED Down( signature — correct additive work must not be reddened by its own Down()" "$D" \
   "0 destructive operation(s)" basebranch
 
 # THE THIRD BOUNDARY-BLIND PATTERN, found by auditing rather than by review. `MEMBER_RE` also decides where
-# the Down() body ENDS, and it wanted an ACCESS MODIFIER -- so a sibling helper written `void Helper(â€¦)` or
-# `static void Helper(â€¦)`, both legal C# that `dotnet format` will not touch, was never reached: Down() ran
+# the Down() body ENDS, and it wanted an ACCESS MODIFIER -- so a sibling helper written `void Helper(…)` or
+# `static void Helper(…)`, both legal C# that `dotnet format` will not touch, was never reached: Down() ran
 # to end of file and swallowed it. Quiet, and one keyword away from the shape review already found. Two
 # rules close it, a closing brace in the declaration's own column and the next member declaration, and there
 # is a fixture for EACH because either alone catches the obvious shape.
@@ -837,7 +843,7 @@ commit_case "$D"
 N="$(line_of "$F" 'DropTable(name: "PriceLevels")')"
 # NO modifier keyword at all, so no widening of MEMBER_RE can reach it. Only the CLOSING BRACE rule ends
 # Down() here, which is what pins that rule alone.
-expect_red "a sibling helper with no modifier at all â€” only the closing-brace rule ends Down() there" "$D" \
+expect_red "a sibling helper with no modifier at all — only the closing-brace rule ends Down() there" "$D" \
   "$MIG_REL/20260201000000_NoModifier.cs:$N  DropTable" basebranch
 
 D="$FIXTURES/inline-down-sibling"; init_repo "$D"
@@ -874,7 +880,7 @@ N="$(line_of "$F" 'DropTable(name: "PriceLevels")')"
 # And the mirror: a Down() whose body is `{ }` on the declaration line, so the closing brace in that column
 # is the HELPER's, below the drop. Only `MEMBER_RE` knowing `static` is a modifier ends Down() here, which
 # pins the widening alone.
-expect_red "an inline Down() { } above a static sibling â€” only the member rule ends Down() there" "$D" \
+expect_red "an inline Down() { } above a static sibling — only the member rule ends Down() there" "$D" \
   "$MIG_REL/20260201000000_InlineDown.cs:$N  DropTable" basebranch
 
 # ROUND THREE's two shapes, and they are the SAME finding as round two arriving through the fixes for it:
@@ -918,7 +924,7 @@ N="$(line_of "$F" 'DropTable(name: "PriceLevels")')"
 # `static` was added to MEMBER_RE to close the audit find, and `static` is also the modifier a C# LOCAL
 # FUNCTION may carry -- so a local function named Down inside Up() satisfied all three conditions, took
 # `down_start`, and the real declaration below took `down_end`. Everything between was excluded. (An
-# EXPRESSION-bodied one is caught, because `=> b.Sql(â€¦)` puts the line in a region; it is the block-bodied
+# EXPRESSION-bodied one is caught, because `=> b.Sql(…)` puts the line in a region; it is the block-bodied
 # form that got through, which is the region guard doing real work rather than the shape being exotic.)
 expect_red "a STATIC LOCAL FUNCTION named Down inside Up(), which a modifier test cannot tell from a member" \
   "$D" "$MIG_REL/20260201000000_LocalFn.cs:$N  DropTable" basebranch
@@ -1229,13 +1235,13 @@ N="$(line_of "$F" 'DropColumn (name: "Legacy"')"
 # it. It is a LATER STEP IN THE SAME JOB, and this gate's whole placement argument is that it runs BEFORE
 # `setup-dotnet`; splitting it into a job of its own would take the backstop away silently. One character
 # class costs less than the paragraph defending its absence.
-expect_red "a receiver, dot and name separated by spaces â€” a backstop in a later step is not this gate's" "$D" \
+expect_red "a receiver, dot and name separated by spaces — a backstop in a later step is not this gate's" "$D" \
   "$MIG_REL/20260201000000_Spaced.cs:$N  DropColumn" basebranch
 
 D="$FIXTURES/marked-and-unmarked"; init_repo "$D"
 F="$D/$MIG_REL/20260201000000_Mixed.cs"; emit_head "$F" Mixed
 emit_body "$F" <<'EOF'
-            // destructive-migration: not rollback-safe before v0.4.0 â€” Legacy was dual-written.
+            // destructive-migration: not rollback-safe before v0.4.0 — Legacy was dual-written.
             migrationBuilder.DropColumn(name: "Legacy", table: "Bars");
             migrationBuilder.DropTable(name: "Thing");
 EOF
@@ -1266,17 +1272,17 @@ public partial class Handwritten : Migration
 }
 EOF
 commit_case "$D"
-expect_red "a migration whose Up(MigrationBuilder) cannot be located â€” unread is not a pass" "$D" \
+expect_red "a migration whose Up(MigrationBuilder) cannot be located — unread is not a pass" "$D" \
   "NO Up()  $MIG_REL/20260201000000_Handwritten.cs" basebranch
 
 D="$FIXTURES/bad-base"; init_repo "$D"
-expect_red "a base ref that names no commit â€” it must not read that as an empty diff" "$D" \
+expect_red "a base ref that names no commit — it must not read that as an empty diff" "$D" \
   "UNRESOLVABLE BASE" origin/does-not-exist
 
 D="$FIXTURES/no-migrations-dir"; init_repo "$D"
 git -C "$D" "${git_ident[@]}" rm -q -r "$MIG_REL"
 commit_case "$D"
-expect_red "the Migrations directory gone â€” the gate would otherwise pass forever having read nothing" "$D" \
+expect_red "the Migrations directory gone — the gate would otherwise pass forever having read nothing" "$D" \
   "MISSING  $MIG_REL" basebranch
 
 info ""
@@ -1293,7 +1299,7 @@ if [ "$cases" -eq 0 ]; then
   exit 1
 fi
 
-ok "ok  $cases self-test cases â€” check-migrations-additive.sh rejects each destructive shape BY FILE, LINE AND OPERATION, honours a marker only in the unbroken comment block directly above the operation, and accepts the additive shapes WITHOUT WRITING A BYTE TO STDERR."
+ok "ok  $cases self-test cases — check-migrations-additive.sh rejects each destructive shape BY FILE, LINE AND OPERATION, honours a marker only in the unbroken comment block directly above the operation, and accepts the additive shapes WITHOUT WRITING A BYTE TO STDERR."
 
 # ---------------------------------------------------------------------------------------------------------
 # DECISION LEDGER (gh#178's remedy, and this is the fourth gate here to carry one).
@@ -1325,10 +1331,11 @@ ok "ok  $cases self-test cases â€” check-migrations-additive.sh rejects eac
 #
 # | # | Decision deleted or inverted                        | Cases that went red                              |
 # |---|-----------------------------------------------------|--------------------------------------------------|
-# | 1 | `$MEMBER_RE` (made to never match)                  | **41 of 49** at gate blob `1bf26eb`. RE-MEASURED   |
-# |   |                                                     | THREE TIMES -- see the note below the third sweep; |
-# |   |                                                     | the row said "7" and described a mechanism three   |
-# |   |                                                     | rounds of review have since moved out from under.  |
+# | 1 | `$MEMBER_RE` (made to never match)                  | **1 of 53** at gate blob `fba4730`. RE-MEASURED    |
+# |   |                                                     | FOUR TIMES, and it has moved on every one -- see   |
+# |   |                                                     | the fifth sweep's re-run table; the row said "7"   |
+# |   |                                                     | and described a mechanism four rounds of review    |
+# |   |                                                     | have since moved out from under.                   |
 # | 2 | `--diff-filter=ACMR` (D allowed back in)            | **1.** "a DELETED migration"                       |
 # | 3 | `has_drop_column` (forced to 1, always armed)       | **1.** "a DropIndex with no DropColumn beside it"  |
 # | 4 | the comment-block boundary in `report`'s upward      | **3.** "a BLANKET marker at the top of the body",  |
@@ -1339,7 +1346,7 @@ ok "ok  $cases self-test cases â€” check-migrations-additive.sh rejects eac
 # | 5 | the `[ ! -d "$MIG_DIR" ]` guard                     | **1.** "the Migrations directory gone"             |
 # | 6 | `BASE` default `origin/develop` (made `HEAD`)       | **2.** both argument-free cases, and only those --  |
 # |   |                                                     | which is why two cases pass no base at all.        |
-# | 7 | `in_region` suppression of pass 3's SQL-NEEDLE arm  | **4 of 49** at gate blob `1bf26eb`. RE-MEASURED,   |
+# | 7 | `in_region` suppression of pass 3's SQL-NEEDLE arm  | **4 of 53** at gate blob `fba4730`. RE-MEASURED,   |
 # |   | (pass 3's operation needles are no longer           | and the row also said the wrong thing: pass 3 is   |
 # |   | suppressed by it at all -- see the second sweep)    | not suppressed by `in_region`, only its SQL arm    |
 # |   |                                                     | is. See the note below the third sweep.            |
@@ -1347,21 +1354,22 @@ ok "ok  $cases self-test cases â€” check-migrations-additive.sh rejects eac
 # |   |                                                     | "an unacknowledged DropSchema" and "... DropSequence" |
 #
 # **WHICH ROWS HAVE BEEN RE-RUN, because inferring it from the two that mention a blob is exactly the reading
-# the third-way rule refuses.** Rows **1 and 7** were re-run against the shipping gate blob `1bf26eb` at 49
+# the third-way rule refuses.** Rows **1 and 7** were re-run again at gh#601 against blob `fba4730` at 53
 # cases; row 4 was re-run by review at round two and measured 3, as stated. Rows **2, 3, 5, 6 and 8 have NOT
 # been re-run since the first sweep**, and their mechanisms -- `--diff-filter`, `has_drop_column`, the
 # directory guard, the `BASE` default and the `OPS` list -- are the ones no round has touched. That is a
 # reason to expect them to hold, not evidence that they do. **A row nobody has re-run is a row whose number
 # is as old as its mechanism's last edit, and only the row can say which.**
 #
-# `1bf26eb` is a BLOB hash (`git hash-object scripts/check-migrations-additive.sh`), not a commit. Deliberate:
+# `1bf26eb` and `fba4730` are BLOB hashes (`git hash-object scripts/check-migrations-additive.sh`), not
+# commits. Deliberate:
 # a run is cited against the code it ran on (gh#184), and this branch is rebased -- a commit SHA naming these
 # numbers would be stale before they were read, while the blob is the thing that was actually executed.
 #
 # **MUTANT 8 SURVIVED THE FIRST SWEEP, and the gap it named is now closed.** Those two list entries were
 # pinned by nothing: they ride the same loop and the same `$CALL` suffix as the five operations that five
 # cases do pin, so the argument was that a case each would pin the LIST ENTRY and nothing else. Review's
-# answer is the right one â€” **a list entry is exactly the thing that needs pinning**, because an unpinned
+# answer is the right one — **a list entry is exactly the thing that needs pinning**, because an unpinned
 # entry in a list is how the next edit quietly shortens the list, and the two cases cost six lines each.
 # The row is kept rather than deleted: **a surviving mutant is the honest output of a sweep**, and the
 # record of one having survived is worth more than a table that looks as though none ever did.
@@ -1376,30 +1384,32 @@ ok "ok  $cases self-test cases â€” check-migrations-additive.sh rejects eac
 # | the `Sql(` region pair (B4) -- lone-`;` close AND     | "an operation swallowed by a Sql( region whose ;   |
 # |   the operation needles running inside a region        |   sits on its own line"                            |
 # | `scanned()`'s after-`Down()` arm (B3)                 | "an operation in a SIBLING member"                 |
-# | `adjudicate`'s `count -gt 1` refusal (B1)             | "TWO operations on one line" AND "two IDENTICAL â€¦" |
+# | `adjudicate`'s `count -gt 1` refusal (B1)             | "TWO operations on one line" AND "two IDENTICAL …" |
 # | `count_matches` made boolean again (B1's other half)  | "two IDENTICAL operations on one line"             |
 #
 # **The B4 row reverts TWO changes together and is labelled a conjunction deliberately.** Either one alone
-# catches that shape â€” the region now closes on a lone `;`, *and* the operation needles run inside a region
-# â€” so neither half is pinned by that case on its own. That is platform.md's "refused by the conjunction,
+# catches that shape — the region now closes on a lone `;`, *and* the operation needles run inside a region
+# — so neither half is pinned by that case on its own. That is platform.md's "refused by the conjunction,
 # pinned by neither", named here rather than left for the next reader to discover. The last two rows are the
 # opposite and are worth the contrast: B1's refusal and B1's counting are separable, and the two cases
-# separate them â€” delete the refusal and both one-line cases go red, make the match boolean again and only
+# separate them — delete the refusal and both one-line cases go red, make the match boolean again and only
 # the identical-operations case does.
 #
 # THIRD SWEEP (gh#529 review round two's verdict, N8 and F1-F7). Nine reverts, each on the SHIPPING blob,
 # each the whole suite re-run. The pattern review named is what shapes it: **round one widened WHAT IS
 # SCANNED; the hole that opened was in WHAT DECIDES THE BOUNDARY of that scan.** Every guard below that
-# could be pinned alone HAS a fixture written to defeat exactly it â€” a decoy in a plain string, a decoy
+# could be pinned alone HAS a fixture written to defeat exactly it — a decoy in a plain string, a decoy
 # written to look like a declaration inside a verbatim literal, a helper with no modifier, a helper under an
-# inline `Down() { }` â€” because the pair-of-guards shape is precisely how a conjunction hides a dead half.
+# inline `Down() { }` — because the pair-of-guards shape is precisely how a conjunction hides a dead half.
 #
 # | Fix reverted                                          | Cases that went red                                |
 # |-------------------------------------------------------|----------------------------------------------------|
-# | `declares()`'s MEMBER_RE requirement (N8)             | **1.** "the decoy in a plain string literal"       |
+# | `declares()`'s MEMBER_RE requirement (N8) -- the     | **1.** "the decoy in a plain string literal"       |
+# |   condition is GONE as of gh#601; see the fifth       |   (the same case is now pinned by the fifth        |
+# |   sweep's row 5                                       |   sweep's ANCHOR row)                              |
 # | `declares()`'s `in_region` requirement (N8)           | **1.** "the decoy written to LOOK like a           |
 # |                                                       |   declaration, inside a verbatim Sql( literal"     |
-# | `$DOWN_RE`'s end-of-line arm (F4)                     | **1.** "a WRAPPED Down( signature" â€” the only      |
+# | `$DOWN_RE`'s end-of-line arm (F4)                     | **1.** "a WRAPPED Down( signature" — the only      |
 # |                                                       |   FALSE-POSITIVE case in the suite                 |
 # | the generated partials read rather than skipped (F3)  | **2.** "a helper hidden in the *.Designer.cs       |
 # |                                                       |   partial" and "... in the model snapshot"         |
@@ -1416,36 +1426,45 @@ ok "ok  $cases self-test cases â€” check-migrations-additive.sh rejects eac
 #
 # | Fix reverted                                          | Cases that went red                                |
 # |-------------------------------------------------------|----------------------------------------------------|
-# | `declares()`'s `$OVERRIDE_RE` requirement             | **2.** "a STATIC LOCAL FUNCTION named Down inside  |
-# |                                                       |   Up()" AND "a decoy Down( OVERLOAD above a        |
-# |                                                       |   no-modifier sibling"                             |
+# | `declares()`'s `$OVERRIDE_RE` requirement -- GONE as  | **2.** "a STATIC LOCAL FUNCTION named Down inside  |
+# |   of gh#601, which split it into the fifth sweep's     |   Up()" AND "a decoy Down( OVERLOAD above a        |
+# |   rows 2 and 3 because it was answering two questions  |   no-modifier sibling"                             |
 #
 # **BOTH SHAPES ARRIVED THROUGH THE PREVIOUS ROUND'S FIXES, and that is the finding rather than the bug.**
 # `static` went into `MEMBER_RE` to close the sibling-helper find, and `static` is what a C# local function
 # may carry. `DOWN_RE`'s end-of-line arm went in so a wrapped signature would stop reddening correct work,
 # and it also matches an ordinary `Down(int)` overload. Three rounds, three boundary bugs, each one living
 # in the fix for the last: **a widening is where the next defeat lives, so say which END of a boundary you
-# widened.** `declares()`'s first three conditions test properties of the LINE; `OVERRIDE_RE` is the only one
-# that tests what the line DECLARES, which is the property that was always the point.
+# widened.** This row then said `OVERRIDE_RE` was the one condition testing what the line DECLARES, which is
+# the property that was always the point. **IT WAS NOT, and gh#601 is that correction**: the needle was
+# matched UNANCHORED against the whole line, so the word `override` in a trailing comment satisfied it -- a
+# fifth property of the TEXT, and a fourth round with its bug living in the third round's fix. What tests
+# what the line declares is where the declaration SITS and what it is CONTIGUOUS with, and both are in the
+# fifth sweep's rows.
 #
 # The member test is still separately pinned after that addition, and only because its fixture was
 # strengthened in the same change: the plain-string decoy now quotes the WHOLE signature, `override`
 # included, so `OVERRIDE_RE` cannot refuse it and `MEMBER_RE` is the only condition left. **Adding a
 # condition can silently un-pin an existing one, and the way to find out is to re-run its mutant** -- which
-# is this file's own instruction, applied to a fixture rather than to a row.
+# is this file's own instruction, applied to a fixture rather than to a row. (gh#601 removed `MEMBER_RE`
+# from `declares()` entirely; that fixture is now pinned by the ANCHOR instead -- fifth sweep, row 5 -- and
+# the strengthening is what still makes it a single-property fixture there.)
 #
-# **`declares()`'s `//` test is pinned by NOTHING and is subsumed today.** A `//` line can never carry a
-# leading modifier keyword, so the MEMBER_RE requirement already refuses every comment; deleting the comment
-# test reddens nothing. It is kept anyway, and stated here rather than left to be discovered -- the two would
-# have to be wrong together, and the subsumption is structural (`^[[:space:]]*//` and
-# `^[[:space:]]+<modifier>` cannot both match a line) rather than incidental, so it will not rot quietly.
+# **`declares()`'s `//` test is pinned by NOTHING and is subsumed today.** A `//` line can never open with a
+# modifier keyword, so the declaration pattern already refuses every comment; deleting the comment test
+# reddens nothing, measured twice now (fourth sweep, and fifth sweep row 7). It is kept anyway, and stated
+# here rather than left to be discovered -- the two would have to be wrong together, and the subsumption is
+# structural (`^[[:space:]]*//` and `^<indent>(modifier )` cannot both match a line) rather than incidental,
+# so it will not rot quietly.
 #
-# **THAT ROW CARRIED A PREDICTION, THE PREDICTION WAS TESTED, AND IT FAILED.** It said *the day MEMBER_RE is
-# widened is the day the `//` test starts carrying weight*. `MEMBER_RE` WAS widened, in the very next round,
-# and that is not what happened: the widening did not give the `//` test weight, it took weight away from
-# the MEMBER test -- `static` made a local function eligible to set a boundary, and what was needed was a
-# FOURTH condition rather than one of the three already there. **A prediction about which guard will matter
-# next is a guess about where the next bug is, and this one pointed at the wrong guard.** Kept and marked
+# **THAT ROW CARRIED A PREDICTION, THE PREDICTION WAS TESTED, AND IT FAILED -- TWICE.** It said *the day
+# MEMBER_RE is widened is the day the `//` test starts carrying weight*. `MEMBER_RE` WAS widened, in the very
+# next round, and that is not what happened: the widening did not give the `//` test weight, it took weight
+# away from the MEMBER test -- `static` made a local function eligible to set a boundary, and what was needed
+# was a FOURTH condition rather than one of the three already there. Then gh#601 removed `MEMBER_RE` from
+# `declares()` altogether, which is the strongest form of the event the prediction described, and the `//`
+# test picked up no weight from that either. **A prediction about which guard will matter next is a guess
+# about where the next bug is, and this one has now pointed at the wrong guard twice.** Kept and marked
 # rather than quietly rewritten, because a wrong prediction with its outcome recorded is worth more than a
 # tidy row that never risked anything.
 #
@@ -1469,6 +1488,93 @@ ok "ok  $cases self-test cases â€” check-migrations-additive.sh rejects eac
 #     about the code and wrong about them. That is why a row records which cases moved rather than that the
 #     suite did.
 #
+# FIFTH SWEEP (gh#601). SEVENTEEN runs, each deleting or inverting exactly ONE decision on a COPY of the
+# gate, each refusing to start unless the copy's blob moved and printing its own
+# `APPLIED <before> -> <after>` line, each the whole suite re-run. Baseline blob `fba4730`: **53 of 53
+# green.** Taken in the container named at the top of this file, not on the Windows checkout.
+#
+# | # | Decision deleted or inverted                          | Cases that went red                             |
+# |---|-------------------------------------------------------|-------------------------------------------------|
+# | 0 | THE WHOLE CHANGE, reverted to the shipping gate blob  | **4.** the four gh#601 fixtures and only those. |
+# |   | `1bf26eb`. Not a decision -- the before/after pair    |   Every other case green on BOTH blobs.         |
+# | 1 | the INDENT EQUALITY (the `Down()` search handed       | **1.** "a one-line GENUINE override of a nested |
+# |   | `[[:space:]]+` instead of the class's member indent)  |   type's Down("                                 |
+# | 2 | the requirement that an `override` be present AT ALL  | **2.** "a decoy Down( OVERLOAD above a          |
+# |   | (a modifier run required, none of it `override`)      |   no-modifier sibling" and "a sibling Down(     |
+# |   |                                                       |   overload whose trailing COMMENT carries …"    |
+# | 3 | the requirement that the `override` sit in the        | **1.** "a sibling Down( overload whose trailing |
+# |   | declaration's OWN run (round four's unanchored needle |   COMMENT carries the word override"            |
+# |   | restored beside a modifier run)                       |                                                 |
+# | 4 | the requirement that the SIGNATURE follow that run    | **1.** "a real Up() declaration whose trailing  |
+# |   | IMMEDIATELY (matched as its own question again)       |   COMMENT names the Down( signature"            |
+# | 5 | the `^<indent>` ANCHOR (the declaration allowed to    | **2.** "the decoy in a plain string literal"    |
+# |   | match anywhere on the line)                           |   and the nested-type one                       |
+# | 6 | `declares()`'s `in_region` requirement                | **1.** "the decoy written to LOOK like a        |
+# |   |                                                       |   declaration, inside a verbatim Sql( literal"  |
+# | 7 | `declares()`'s `//` test                              | **0. SURVIVOR, and expected** -- see below      |
+# | 8 | "no locatable `Up()` means no `Down()` boundary" (the | **0. SURVIVOR** -- unreachable from a fixture,  |
+# |   | file searched at any indent instead)                  |   and that was checked, not argued. See below.  |
+#
+# Rows 2 through 5 are four decisions inside ONE regex, and they are listed as four because that is what
+# they are: each was mutated alone and each has a case that no other mutant reddens. A compound pattern
+# does not get one ledger row for being written on one line.
+#
+# FIFTH SWEEP, PART TWO -- THE RE-RUNS. `declares()` changed, so every earlier row whose separating fixture
+# that change could have un-pinned was RE-RUN rather than re-read. Same baseline blob, same container.
+#
+# | Earlier row re-run                                     | Then  | Now, of 53                                 |
+# |--------------------------------------------------------|-------|--------------------------------------------|
+# | first sweep row 1 -- `$MEMBER_RE` made never to match  | 41/49 | **1.** "an inline Down() { } above a static |
+# |                                                        |       |   sibling". FOURTH mechanism, fifth number. |
+# | first sweep row 7 -- `in_region` suppressing pass 3's  | 4/49  | **4.** the same four; denominator only.     |
+# |   SQL-needle arm                                       |       |                                             |
+# | third sweep -- `$DOWN_RE`'s end-of-line arm            | 1     | **1.** "a WRAPPED Down( signature"          |
+# | third sweep -- the generated partials read             | 2     | **2.** unchanged, both mirrors              |
+# | third sweep -- `$MEMBER_RE`'s non-access modifiers     | 1     | **1.** "an inline Down() { } above a static |
+# |   (`down_end`)                                         |       |   sibling"                                  |
+# | third sweep -- `down_end`'s closing-brace rule         | 1     | **1.** "a sibling helper with no modifier"  |
+# | third sweep -- `$DOT`'s whitespace class               | 1     | **1.** "a receiver, dot and name separated" |
+# | third sweep -- `declares()`'s MEMBER_RE requirement    | 1     | **GONE.** The condition no longer exists;   |
+# |                                                        |       |   its fixture is pinned by row 5 above.     |
+# | fourth sweep -- `declares()`'s `$OVERRIDE_RE`          | 2     | **GONE.** Replaced by rows 2 and 3, which   |
+# |                                                        |       |   is gh#601's whole point: ONE condition    |
+# |                                                        |       |   was answering TWO questions.              |
+#
+# **ROW 1 MOVED AGAIN, AND THAT IS FIVE NUMBERS FOR ONE MUTANT.** 7, then 1, then 39 of 47, then 41 of 49,
+# now **1 of 53** -- because `MEMBER_RE` has stopped gating `up_start`, so killing it no longer kills every
+# migration's `NO Up()` check. Each number was true of a different mechanism. **A ledger row names a
+# mechanism, and a mechanism that moves takes the row's meaning with it, silently.**
+#
+# **ROW 7 SURVIVES AND IS SUPPOSED TO** -- the `//` test's subsumption is discussed above the fourth sweep.
+#
+# **ROW 8 SURVIVES BECAUSE NO FIXTURE CAN REACH IT, and that was checked rather than asserted.** A file with
+# no locatable `Up()` is only ever a generated partial: a migration without one dies on `NO Up()` first.
+# Neither `*.Designer.cs` nor the model snapshot declares a `Down()`, and neither can -- the migration class
+# already declares it and a partial class cannot declare it twice. The fixture would have to be a file
+# nobody can write. Recorded as a measured 0 rather than as "unreachable, and here is why", which is this
+# ledger's own weakest row shape.
+#
+# **AND THE TWO LOCAL-FUNCTION FIXTURES ARE NOW REFUSED TWICE OVER AND PINNED BY NEITHER HALF.** "a STATIC
+# LOCAL FUNCTION named Down inside Up()" and "a local function named Down whose trailing COMMENT carries the
+# word override" went red under **NOTHING** in this sweep: delete the indent test and the absent `override`
+# still refuses them, delete the `override` requirement and the indent still does. That is gh#438's
+# `flips-on: NOTHING`, and here it **cannot** be fixed by stripping the fixture to one property -- a local
+# function sits deeper than its class's members by construction, so there is no way to write one at the
+# member indent that `dotnet format` leaves alone. **No coverage was lost**: rows 1, 2 and 3 each keep a
+# fixture no other mutant reddens. What was lost is these two fixtures' ability to BE that fixture, and the
+# honest record is this paragraph rather than a row implying otherwise. They stay -- row 0 is their
+# evidence, red on the shipping blob and green on this one, and they are the cases that notice second the
+# day either half is relaxed.
+#
+# WHAT THIS STILL DOES NOT CLOSE, stated so the next reader does not have to find it. The indent test says
+# *at the migration class's member indent*, and a type declared BESIDE the migration class -- same
+# namespace, same nesting level -- has its members at exactly that indent too. A genuine
+# `public override void Down(MigrationBuilder b)` there, above the migration class, would still take
+# `down_start`. Telling it apart needs class IDENTITY rather than nesting depth, which is a parser, and
+# gh#601 puts that out of scope explicitly. It is also one more construct whose only function is to move the
+# boundary, and an author willing to write one can lie in a `// destructive-migration:` marker instead --
+# which the design accepts and hands to the reviewer.
+#
 # NOT MUTATED -- claimed as exercised, never as pinned
 #
 #   Each of these has a case whose NEEDLE names it, so a silent regression would have to also keep the
@@ -1480,10 +1586,11 @@ ok "ok  $cases self-test cases â€” check-migrations-additive.sh rejects eac
 #                                                      since every fixture history is related by construction
 #   - the generated mirrors needing no `Up()` ........ "a Designer.cs and a model snapshot are read"
 #   - `$UP_RE` ....................................... "a migration whose Up(MigrationBuilder) cannot be located"
-#   - `declares()`'s `//` test ....................... NOTHING. Subsumed by its MEMBER_RE test today, since a
-#                                                      `//` line carries no leading modifier -- kept because
-#                                                      the two would have to be wrong together, and named
-#                                                      here rather than left to be found
+#   - `declares()`'s `//` test ....................... MOVED. It is MUTATED now (fifth sweep, row 7) and
+#                                                      survives: subsumed by the anchored declaration
+#                                                      pattern, since a `//` line cannot open with a
+#                                                      modifier. A measured survivor is a stronger record
+#                                                      than a line in this list, which claims nothing
 #   - the `partials_read` clause in the summaries .... NOTHING asserts its TEXT. Three cases execute it (the
 #                                                      two generated-mirror reds and the green pair), so a
 #                                                      broken expansion would be caught by `set -u`; the

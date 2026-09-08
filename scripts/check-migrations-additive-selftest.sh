@@ -1515,16 +1515,31 @@ ok "ok  $cases self-test cases — check-migrations-additive.sh rejects each des
 # | 8 | "no locatable `Up()` means no `Down()` boundary" (the | **0. SURVIVOR** -- unreachable from a fixture,  |
 # |   | file searched at any indent instead)                  |   and that was checked, not argued. See below.  |
 #
-# Rows 1 through 5 are five decisions inside ONE regex, and they are listed as five because that is what
-# they are: each was mutated alone and the five SETS of red cases are all distinct. **WHAT SEPARATES THEM IS
-# THE SET, NOT A UNIQUE CASE, and the first draft of this sentence claimed the stronger thing** -- that each
-# row had a case no other mutant reddens. That is false twice over: row 3's single case is also one of row
-# 2's, and row 1's single case is also one of row 5's. Both are strict SUBSETS, and only rows 4 and 6 own a
-# case outright. Every row is still pinned -- deleting its decision reddens a case, and no two rows redden
-# the same set, so the table can tell them apart. But *pinned by a set difference* and *pinned by a unique
-# case* are different claims, and stating the stronger one is exactly the "a grade can promise more than its
-# evidence" failure this ledger already names, committed here by the pull request that re-audits it. A
-# compound pattern still does not get one row for being written on one line.
+# Rows 1 through 5 are five decisions inside ONE regex (row 6 is a separate condition), and they are listed
+# as five because that is what they are: each was mutated alone, and no two of the six redden the same set.
+# **WHAT SEPARATES THEM IS THE SET, NOT A UNIQUE CASE.** Here are the sets, so that the containment can be
+# READ rather than taken on trust -- a claim derivable from the table beside it should be derived from it,
+# and the summary sentence that used to stand here was wrong three drafts running:
+#
+#     row 1   indent equality ............  { nested }
+#     row 2   an override at all .........  { decoy overload, commented overload }
+#     row 3   override in its own run ....  { commented overload }
+#     row 4   signature contiguous .......  { mirror Up() }
+#     row 5   the `^<indent>` anchor .....  { plain-string, nested }
+#     row 6   `in_region` ................  { verbatim literal }
+#
+# Exactly two are strict SUBSETS of another -- row 1 of row 5, and row 3 of row 2 -- so **only rows 1 and 3
+# fail to own a case outright**, and rows 2, 4, 5 and 6 each do. Every row is still pinned: deleting its
+# decision reddens a case, and the six sets are distinct, so the table tells them apart. What it does not
+# give is a unique case per row, and *pinned by a set difference* is a weaker claim than *pinned by a unique
+# case*.
+#
+# THREE DRAFTS OF THAT ONE SENTENCE WERE WRONG, WHICH IS WHY THE SETS ARE WRITTEN OUT ABOVE IT. The first
+# claimed a unique case for every row. The second named the two exceptions correctly as a pair and attached
+# them to the wrong side -- "only rows 4 and 6 own a case outright", when rows 2 and 5 own one too. Each was
+# a summary nobody could check without re-measuring, which is precisely the shape this ledger exists to warn
+# about, committed three times by the pull request that re-audits it and caught three times by a reviewer who
+# measured instead of reading. A compound pattern still does not get one row for being written on one line.
 #
 # FIFTH SWEEP, PART TWO -- THE RE-RUNS. `declares()` changed, so every earlier row whose separating fixture
 # that change could have un-pinned was RE-RUN rather than re-read. Same baseline blob, same container.

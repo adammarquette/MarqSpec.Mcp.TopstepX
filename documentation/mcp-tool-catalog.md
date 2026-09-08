@@ -85,8 +85,8 @@ page against either**, so check it against the code, never against another docum
   caller must write. **Every entry below names its own form** — this page is read by lookup, and a reader who
   lands on one entry should not have to have read this bullet. `PayloadNullWireShapeTests` pins both forms
   against the real serializer options, so the statements here fail a build rather than drift (gh#85).
-- **`resolutionMinutes` is caller-chosen, and every resolution from `1` to `690` — one minute up to half a
-  session — is servable.** No tool enumerates supported timeframes, because the range is
+- **`resolutionMinutes` is caller-chosen, and every resolution from `1` to `660` — one minute up to half the
+  shortest session — is servable.** No tool enumerates supported timeframes, because the range is
   contiguous rather than a list —
   each resolution is an independent cached series fetched from the venue, never derived from a finer one
   ([ADR-0010](adr/0010-per-call-resolutions-fetched-not-derived.md)). **Both ends are refused**, by every tool
@@ -96,19 +96,24 @@ page against either**, so check it against the code, never against another docum
   arrived later, for the same fault at the other end: `2147483647` overflowed the look-back arithmetic and
   faulted, while sailing past that guard because it is positive (gh#81). **The ceiling was 10,080 until
   gh#498 and it admitted two values that were never servable** — the day at `1440` and the week at `10080`.
-  A session is 24 hours less the venue's one-hour maintenance window, so a bucket 1,380 minutes wide or wider
-  can never *close inside* one, is therefore never an expected bucket, and `get_bars` at `1440` answered with
-  an **empty series** and `venueRequests: 0` — a question of the wrong shape wearing the face of a market that
-  printed nothing. Both are refused now, and the refusal says where the answer lives rather than only saying
+  A session is 24 hours less the venue's one-hour maintenance window, so a bucket *wider* than 1,380 minutes
+  can never *close inside* one and is never an expected bucket; one *exactly* 1,380 minutes wide can be
+  expected, but only on the 4% of trade dates where the grid happens to land on the session open, which is
+  the same coincidence in a different disguise. `get_bars` at `1440` answered with an **empty series** and
+  `venueRequests: 0` — a question of the wrong shape wearing the face of a market that printed nothing. The
+  refusal does not rest on the arithmetic claim, which was overstated until PR #607's review: it rests on the
+  definitional one, that a bar covering a whole session is a session bar. Both are refused now, and the refusal says where the answer lives rather than only saying
   no:
 
-  > resolutionMinutes 1440 is a whole session or longer — a session is 1380 minutes, 24 hours less the
-  > venue's one-hour maintenance window. A bucket that long or longer can never close inside a single
-  > session, so it is a session bar rather than a bar resolution. The day and the week are not unavailable
-  > and they are not out of range; ask get_session_bars or get_latest_session_bars (gh#496) for them. The
-  > largest bar resolution this server serves is 690 minutes.
+  > resolutionMinutes 1440 covers a whole session or more — a session is 1380 minutes of Central wall clock,
+  > 24 hours less the venue's one-hour maintenance window. A bucket longer than that can never close inside a
+  > single session, and one exactly that long can only when the grid lands exactly on the session open — 4%
+  > of trade dates at the shipped close. Either way it is a session bar rather than a bar resolution: a bar
+  > covering a whole session is defined on the CME trade date, not on the bucket grid. The day and the week
+  > are not unavailable and they are not out of range; ask get_session_bars or get_latest_session_bars
+  > (gh#496) for them. The largest bar resolution this server serves is 660 minutes.
 
-  **The ceiling then moved from 1,379 to 690 (gh#538), because 1,379 had the same defect one minute lower.**
+  **The ceiling then moved from 1,379 to 660 (gh#538), because 1,379 had the same defect one minute lower.**
   Buckets are anchored on a fixed UTC grid rather than on the session open, so a bucket *narrower* than a
   session can still fail to fit inside one: a 1,379-minute bucket is expected only when the grid lands within
   a minute of the session open, so `get_bars` at `1379` answered `[]` with `venueRequests: 0` on all but a
@@ -116,25 +121,34 @@ page against either**, so check it against the code, never against another docum
   bound is **derived, not chosen**: a session of `S` minutes admits an `r`-minute bucket only when a multiple
   of `r` lands in `[open, close - r]`, a run of `S - r + 1` consecutive minutes, and a run of `n` consecutive
   integers is certain to hold a multiple of `r` only while `n >= r` — so the guarantee holds exactly while
-  `r <= (S + 1) / 2`, which at `S = 1380` is **690**, also 1,380's largest proper divisor. It is a **refusal
-  rather than a warning field**, because an empty series beside a flag is still an empty series and reads as
-  a market that printed nothing:
+  `r <= (S + 1) / 2`. **`S` is the *shortest* session, 1,320, and not the nominal 1,380**: `SessionCloseCentral`
+  has no range validation, and at a close before 02:00 Central the reopen falls inside the wall-clock hour
+  spring-forward deletes, so that session is an hour shorter once a year. Derived from 1,380 the ceiling would
+  be 690, and 690 answers an empty series at `SessionCloseCentral = "00:30"` on trade date 2030-03-11 — this
+  card's own defect at a width it permitted (PR #607 review). Derived from 1,320 it is **660**, and 660 is
+  **tight**: 661 already misses. It is a **refusal rather than a warning field**, because an empty series
+  beside a flag is still an empty series and reads as a market that printed nothing:
 
-  > resolutionMinutes 1379 is coarser than the largest bar this server serves, 690 minutes — half of the
-  > 1380-minute session (24 hours less the venue's one-hour maintenance window). Buckets are anchored on a
-  > fixed UTC grid rather than on the session open, so a bucket wider than half a session is not guaranteed
-  > to open and close inside one: whether it fits depends on where that grid falls on the day, and on the
-  > trade dates where it does not fit the series comes back empty with nothing said. 690 is the widest bucket
-  > that fits on every trade date whichever session close is configured, because a run of S - r + 1
-  > consecutive minutes holds a multiple of r only while S - r + 1 >= r. A few widths just above it (692,
-  > 696, 700 and 720 at a 16:00 Central close) do happen to fit every day; they are refused with the rest
-  > because the bound is a guarantee and not a table of coincidences. Ask for 690 minutes or less; for the
-  > day and the week ask get_session_bars or get_latest_session_bars (gh#496).
+  > resolutionMinutes 1379 is coarser than the largest bar this server serves, 660 minutes — half of the
+  > 1320-minute shortest session. Buckets are anchored on a fixed UTC grid rather than on the session open, so
+  > a bucket wider than half a session is not guaranteed to open and close inside one: whether it fits depends
+  > on where that grid falls on the day, and on the trade dates where it does not fit the series comes back
+  > empty with nothing said. 660 is the widest bucket that fits on every trade date at every session close an
+  > operator can configure, because a run of S - r + 1 consecutive minutes holds a multiple of r only while
+  > S - r + 1 >= r, and S is 1320 rather than 1380 for a close before 02:00 Central, where a session contains
+  > the spring-forward transition and loses an hour. It is tight: 661 already misses. Widths above it are not
+  > all useless — every one from 661 to 690 fits every trade date at the shipped 16:00 close, as do 692, 696,
+  > 700 and 720 — but which widths those are depends on the configured close, which this check deliberately
+  > does not read, so they are refused with the rest rather than served by coincidence. Ask for 660 minutes or
+  > less; for the day and the week ask get_session_bars or get_latest_session_bars (gh#496).
 
-  **It over-rejects four widths and says so.** Measured over sixteen years at a 16:00 Central close, 692,
-  696, 700 and 720 minutes do fit on every trade date. They are refused because the bound is a guarantee that
-  survives a different `SessionCloseCentral`, and those four are an accident of this one — a refusal claiming
-  they never produce a bar would be easier to write and would not be true.
+  **It over-rejects, and the message concedes it rather than claiming the band never works.** At the shipped
+  16:00 close thirty-four widths above the ceiling fit on every trade date over sixteen years — all of 661 to
+  690, plus 692, 696, 700 and 720. Widen the sweep to the closes whose session can lose an hour and **two**
+  survive; widen the window at one such close from one year to sixteen and the count falls 31 → 28 → 19. A
+  survivor list is what a sweep failed to disprove, which is not what a bound is, and `ValidateResolution` is
+  deliberately `static` and reads no configuration — so serving them would make the servable set depend
+  invisibly on `SessionCloseCentral`.
 
   **A bar of a session's length or longer is a session bar, not a coarse resolution**: it is defined on the
   CME trade date rather than on the bucket grid, and it is served by `get_session_bars` and
@@ -157,7 +171,7 @@ page against either**, so check it against the code, never against another docum
   **two bar spans plus three days**, because the grid is aligned *up* from the window's start, the gap
   detector tests one bucket beyond the last it yields, and the session calendar maps an evening bucket onto
   the *next* trade date. So the last servable `toUtc` is `9999-12-28T23:57:59.9999999Z` at one-minute bars and
-  `9999-12-28T00:59:59.9999999Z` at the 690-minute ceiling. The refusal names **both** the `toUtc` passed and the
+  `9999-12-28T01:59:59.9999999Z` at the 660-minute ceiling. The refusal names **both** the `toUtc` passed and the
   last one that would have been accepted, and — like every other bound here — it **refuses rather than moving
   the end back for you**, because a series short at one end is indistinguishable from a complete one.
 - **Nothing is derived across a contract roll.** A series is keyed by the venue-neutral symbol and the front

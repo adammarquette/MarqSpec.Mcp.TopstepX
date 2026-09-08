@@ -408,12 +408,12 @@ public sealed class HostTelemetryTests
                     // Everything else here comes from a vocabulary this repository writes down; this one is
                     // chosen by the CALLER, and the only thing standing over it is
                     // ToolGuards.ValidateResolution, which admits any integer from 1 to
-                    // ToolGuards.MaxResolutionMinutes (690). There is no configured resolution set and no
+                    // ToolGuards.MaxResolutionMinutes (660). There is no configured resolution set and no
                     // MarketData__Resolutions key -- an earlier version of this comment named one, and the
                     // sentence read as though `resolution` were closed the way `series` and `outcome` are.
                     //
-                    // What that costs, stated rather than implied: a caller walking r = 1..690 pins on the
-                    // order of 690 x symbols x 3 series x 3 outcomes accumulators on mcp.cache.reads for
+                    // What that costs, stated rather than implied: a caller walking r = 1..660 pins on the
+                    // order of 660 x symbols x 3 series x 3 outcomes accumulators on mcp.cache.reads for
                     // the life of the process, and get_market_snapshot takes an uncapped int[] of
                     // resolutions, so it is reachable in a handful of calls. It is ACCEPTED rather than
                     // fixed: the ceiling is enforced BEFORE the tag is ever written, so the set is finite by

@@ -44,35 +44,43 @@ The server serves OHLCV bars for a futures instrument at a requested resolution 
   a history of asking, so a second recording is an update by design and not a way to dodge the error.
 - **R-1.8** Bar timestamps are stored in UTC. The gateway returns timestamps with no kind; they are UTC, and
   inferring local shifts every bar by the operator's offset.
-- **R-1.9** The supported resolutions are **every whole number of minutes from 1 to 690 — one minute up to
-  half a session** — deliberately. Resolution is a per-call parameter rather than configuration,
+- **R-1.9** The supported resolutions are **every whole number of minutes from 1 to 660 — one minute up to
+  half the shortest session** — deliberately. Resolution is a per-call parameter rather than configuration,
   so an agent is never
   blocked on a config change to look at a timeframe nobody anticipated, and no tool advertises a resolution list
   because the range is contiguous. **Both ends are refused at the boundary**, as a *caller error the server
   names* rather than as a timeframe the server lacks, and on every tool that takes a resolution rather than only
   the ones that also validate a window (gh#69, gh#81). The ceiling is a bound on *meaning*, not on arithmetic:
-  a session is 24 hours less the venue's one-hour maintenance window, so a bucket 1,380 minutes wide or wider
-  can never **close inside** one and is therefore never an expected bucket (`R-1.2`). A bar of a session's
-  length or longer is not a coarse resolution at all — it is a **session bar**, defined on the trade date
-  rather than on the bucket grid, and the day and the week are the two that used to sit inside the old 10,080
+  a session is 24 hours less the venue's one-hour maintenance window, so a bucket *wider* than 1,380 minutes
+  can never **close inside** one and is never an expected bucket (`R-1.2`); one *exactly* 1,380 minutes wide
+  can be, but only on the 4% of trade dates where the grid lands on the session open. A bar covering a whole
+  session is not a coarse resolution at all — it is a **session bar**, defined on the trade date
+  rather than on the bucket grid, and that is definitional rather than arithmetic. The day and the week used
+  to sit inside the old 10,080
   ceiling and answer with an *empty series* rather than an error. They are refused now, and the refusal names
   the session-bar tools (`R-1.12`, gh#496) rather than leaving a caller to read "coarser than the largest bar"
-  as "this market has no daily data" (gh#498). **The ceiling is 690 rather than 1,379 because a bucket
+  as "this market has no daily data" (gh#498). **The ceiling is 660 rather than 1,379 because a bucket
   narrower than a session can still fail to fit inside one (gh#538).** Buckets are anchored on a fixed UTC
-  grid rather than on the session open, so between 691 and 1,379 minutes whether a bucket is expected depends
+  grid rather than on the session open, so above the ceiling whether a bucket is expected depends
   on where that grid falls on the day: at 1,379 it fits on a handful of scattered trade dates and `get_bars`
   answered an empty series with `venueRequests: 0` on the rest — the shape gh#498 abolished, one minute
   lower. The bound is **derived**: a session of `S` minutes admits an `r`-minute bucket only when a multiple
   of `r` lands in a run of `S - r + 1` consecutive minutes, which is certain only while `S - r + 1 >= r`, so
-  `r <= (S + 1) / 2` — **690** at `S = 1380`, and also 1,380's largest proper divisor. It **refuses rather
+  `r <= (S + 1) / 2`. **`S` is the *shortest* session and not the nominal one**: `SessionCloseCentral` is
+  operator configuration with no range validation, and at a close before 02:00 Central the reopen falls inside
+  the wall-clock hour spring-forward deletes, making that session 1,320 minutes once a year — so a ceiling
+  derived from 1,380 is 690, and 690 answers an empty series at `SessionCloseCentral = "00:30"` on trade date
+  2030-03-11. Derived from 1,320 it is **660**, and 660 is **tight**: 661 already misses. It **refuses rather
   than flags**, for the reason `R-2.3` refuses a substituted number: an empty series carrying a warning
-  field is still an empty series, and it reads as a market that printed nothing. It over-rejects four widths — 692, 696, 700 and 720 fit every trade
-  date at a 16:00 Central close — and the refusal says so rather than claiming the band never produces a bar,
-  because the bound is a guarantee that survives a different session close and those four are an accident of
-  this one. It is also not by itself sufficient — the look-back reach is
+  field is still an empty series, and it reads as a market that printed nothing. It **over-rejects, and says
+  so**: thirty-four widths above the ceiling fit every trade date at the shipped 16:00 close, two of those
+  also survive every close that can shorten a session, and the count keeps falling as the sweep widens — a
+  survivor list is what a sweep failed to disprove rather than a bound, and the check reads no configuration.
+  It is also not by itself sufficient — the look-back reach is
   four bar spans per bar
   asked for, so a resolution and a count each inside its own bound can still name a window that starts before
-  the calendar does, and that pair is refused too (gh#81). **Neither is the row cap sufficient**: `MaxRows` and
+  the calendar does, and that pair is refused too (gh#81).
+  **Neither is the row cap sufficient**: `MaxRows` and
   `BarGapDetector.MaxBucketsPerPass` bound the same quantity from two sides — the first operator-configurable
   to 1,000,000, the second fixed at 250,000 — so the ceiling on a windowed read is **the lesser of the two**,
   and a request past it is refused naming the buckets asked for and the cap they are over rather than faulting

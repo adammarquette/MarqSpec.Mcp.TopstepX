@@ -381,10 +381,10 @@ public sealed class ResolutionGuardTests : IDisposable
     {
         // The ceiling alone does NOT close this bug, and this is the proof. MaxRows is operator
         // configuration -- [Range(1, 1_000_000)] on MarketDataOptions -- and the reach is FOUR bar spans per
-        // bar asked for. THE CEILING here, by the constant: at 690 minutes, 500,000 bars SPAN about 656
-        // years, so they REACH about 2,624 -- past year one, and `end - reach` throws exactly the way
+        // bar asked for. THE CEILING here, by the constant: at 660 minutes, 500,000 bars SPAN about 627
+        // years, so they REACH about 2,510 -- past year one, and `end - reach` throws exactly the way
         // int.MaxValue did. The 4x is the whole finding: it is what carries a pair that is legal on both axes
-        // past a calendar neither axis knows about, and it puts the real boundary near 386,000 bars rather
+        // past a calendar neither axis knows about, and it puts the real boundary near 403,000 bars rather
         // than 500,000. Nothing about this request is out of range on either axis taken alone.
         BarTools capped = WithRowCap(1_000_000);
 
@@ -452,12 +452,12 @@ public sealed class ResolutionGuardTests : IDisposable
         _gateway.ContractRequests.Should().Be(0, "and before the contract behind it is resolved");
     }
 
-    // ── A bucket wider than half a session cannot be guaranteed to fit one (gh#538) ──────────────────
+    // ── A bucket wider than half the SHORTEST session cannot be guaranteed to fit one (gh#538) ───────
 
     [Fact]
-    public void TheCeiling_IsHalfASession_AndItIsDerivedRatherThanChosen()
+    public void TheCeiling_IsHalfTheShortestSession_AndItIsDerivedRatherThanChosen()
     {
-        // 690, and the number is a consequence of two facts already in the code rather than a preference.
+        // 660, and the number is a consequence of two facts already in the code rather than a preference.
         //
         // Buckets are anchored on a fixed UTC grid (BarGapDetector.AlignUp), NOT on the session open, and
         // BarSessionCalendar.IsExpectedBucket expects a bucket only when it both opens inside the session
@@ -466,23 +466,180 @@ public sealed class ResolutionGuardTests : IDisposable
         // consecutive whole minutes. A run of n consecutive integers is CERTAIN to contain a multiple of r
         // only while n >= r, so the guarantee holds exactly while S - r + 1 >= r, i.e. r <= (S + 1) / 2.
         //
-        // At S = 1,380 that is 690. It is also 1,380's largest proper divisor, so the two derivations the
-        // card offered -- the pigeonhole bound and "the largest divisor of the session length" -- agree on
-        // the same number, which is why neither is quoted alone.
-        const int session = (24 * 60) - 60;
-
-        session.Should().Be(1_380, "a session is 24 hours less the venue's one-hour maintenance window");
+        // S IS THE SHORTEST SESSION AND NOT THE NOMINAL ONE, which is the whole of the PR #607 review's
+        // first finding. A session is 1,380 minutes of Central WALL CLOCK, and at a close before 01:00 the
+        // reopen is at or before 02:00, so the spring-forward transition falls INSIDE Monday's session and
+        // it is 1,320 minutes of elapsed time. TheSessionLengthCensus below measures that; this only
+        // depends on it.
+        //
+        // The two derivations gh#538 offered -- the pigeonhole bound, and "the largest divisor of the
+        // session length" -- agree at 1,320 because it is even. They do NOT agree in general: at S = 1,379
+        // the pigeonhole form gives 690 and the largest-proper-divisor form gives 197. The general form is
+        // the one implemented, so the agreement is a note rather than a second derivation.
+        ToolGuards.SessionMinutes.Should().Be(
+            1_380, "a session is 24 hours of wall clock less the venue's one-hour maintenance window");
+        ToolGuards.ShortestSessionMinutes.Should().Be(
+            1_320, "and it loses an hour when it contains the spring-forward transition");
 
         ToolGuards.MaxResolutionMinutes.Should().Be(
-            (session + 1) / 2, "the ceiling is the pigeonhole bound on the session length");
-        ToolGuards.MaxResolutionMinutes.Should().Be(
-            session / 2, "which at 1,380 is also the session's largest proper divisor");
-        ToolGuards.MaxResolutionMinutes.Should().Be(690, "and both of those are 690");
+            (ToolGuards.ShortestSessionMinutes + 1) / 2,
+            "the ceiling is the pigeonhole bound on the SHORTEST session");
+        ToolGuards.MaxResolutionMinutes.Should().Be(660, "which is 660");
+
+        // C#'s integer division truncates, and that is what makes (S + 1) / 2 the largest admissible
+        // INTEGER rather than merely a rounding of the real bound -- for an odd S as well as an even one.
+        foreach (int session in new[] { 1_319, 1_320, 1_321, 1_379, 1_380 })
+        {
+            int bound = (session + 1) / 2;
+
+            (session - bound + 1).Should().BeGreaterThanOrEqualTo(
+                bound, "the bound itself must satisfy S - r + 1 >= r, at S = " + session);
+            (session - (bound + 1) + 1).Should().BeLessThan(
+                bound + 1, "and one wider must not, at S = " + session);
+        }
+    }
+
+    [Fact]
+    public void TheSessionLengthCensus_ShowsAShortestSessionOf1320_AtEveryCloseBefore0200()
+    {
+        // The fact the ceiling rests on, measured across the whole configuration surface rather than at the
+        // shipped close. `SessionCloseCentral` is operator configuration with NO range validation, so
+        // "1,380 minutes" is a claim about every value it can hold, and PR #607's first review found it
+        // false: the reviewer's example is `SessionCloseCentral = "00:30"`, trade date 2030-03-11.
+        //
+        // ONE YEAR is enough and the reason is not "it seemed like plenty": whether a session contains a
+        // daylight-saving transition is a WALL-CLOCK property of the close -- the transition is 02:00
+        // Central on a Sunday every year -- so a year containing both transitions settles it for every
+        // year. What a longer window buys is more chances for a GRID PHASE to fail, which is a different
+        // question, asked by the sweeps below.
+        //
+        // ONLY 1,320 AND 1,380 OCCUR, and the missing 1,440 is worth stating because a model of this
+        // written by hand gets it wrong. The autumn transition would lengthen a session that contained it,
+        // but at these closes the reopen lands in the AMBIGUOUS hour, and MarketClock.FromMarket resolves
+        // an ambiguous wall-clock time to STANDARD time -- its own documented behaviour -- so the reopen
+        // takes the later of the two instants and the session stays 23 elapsed hours. This is measured
+        // against the real converter for exactly that reason.
+        (int Min, HashSet<int> Lengths, List<int> Shortening) census = LengthCensus(2025);
+
+        census.Lengths.Should().BeEquivalentTo(
+            new[] { 1_320, 1_380 },
+            "a session is 23 wall-clock hours, and the only thing that moves it is a spring-forward "
+            + "transition inside it — the autumn one does NOT lengthen it, because the reopen then lands in "
+            + "the ambiguous hour and MarketClock.FromMarket resolves that to standard time, which is its "
+            + "documented behaviour and is what keeps the session 23 elapsed hours");
+        census.Min.Should().Be(
+            ToolGuards.ShortestSessionMinutes, "which is the number the ceiling is derived from");
+
+        List<int> everyCloseBeforeTwo = [.. Enumerable.Range(0, 120)];
+
+        census.Shortening.Should().Equal(
+            everyCloseBeforeTwo,
+            "exactly the closes from 00:00 to 01:59 put the skipped hour inside a session: the reopen is "
+            + "one maintenance window after the close, and spring-forward removes the wall-clock hour "
+            + "[02:00, 03:00), so any reopen before 03:00 loses time");
+    }
+
+    [Fact]
+    public void EveryServableResolution_FitsInsideEverySession_AtEveryConfigurableClose()
+    {
+        // The over-reach half, swept rather than sampled. #593's reviewer built an exhaustive sweep over a
+        // refusal that looked right on examples and found it wrong on 6.3% of them; examples are not
+        // evidence about a boundary. PR #607's reviewer then did the same to THIS card and found the claim
+        // "fits on every trade date whichever session close is configured" false at 690.
+        //
+        // WHAT MAKES THIS COMPLETE RATHER THAN A SAMPLE. The pigeonhole argument is offset-independent: for
+        // a session of a given LENGTH it holds whatever the phase, so the only thing that varies between
+        // one close and another is the length. TheSessionLengthCensus enumerates every length that occurs
+        // (1,320 and 1,380) and the closes that produce them, so sweeping every width against the
+        // shipped close AND against every session that is not 1,380 minutes long covers the space --
+        // 1,380-minute sessions at other closes differ only in phase, which the guarantee does not use.
+        List<string> misses = [];
+
+        void Sweep(IReadOnlyList<(DateOnly Date, DateTimeOffset Open, DateTimeOffset Close)> sessions,
+                   BarSessionCalendar calendar,
+                   string where)
+        {
+            for (int resolution = 1; resolution <= ToolGuards.MaxResolutionMinutes; resolution++)
+            {
+                foreach ((DateOnly date, DateTimeOffset open, DateTimeOffset close) in sessions)
+                {
+                    if (!FitsTheSession(calendar, open, close, resolution))
+                    {
+                        misses.Add(
+                            resolution.ToString(CultureInfo.InvariantCulture) + " min on "
+                            + date.ToString("O") + " at " + where);
+                    }
+                }
+            }
+        }
+
+        BarSessionCalendar shipped = BarSessionCalendar.Parse("16:00", []);
+        IReadOnlyList<(DateOnly Date, DateTimeOffset Open, DateTimeOffset Close)> atShipped =
+            Sessions(shipped, new DateOnly(2024, 1, 1), new DateOnly(2027, 1, 1));
+
+        atShipped.Should().HaveCountGreaterThan(700, "three years of weekdays, or this measures nothing");
+        Sweep(atShipped, shipped, "16:00");
+
+        int oddLengths = 0;
+        for (int minute = 0; minute < 120; minute++)
+        {
+            string close = ShorteningClose(minute);
+            BarSessionCalendar calendar = BarSessionCalendar.Parse(close, []);
+            List<(DateOnly, DateTimeOffset, DateTimeOffset)> odd =
+            [
+                .. Sessions(calendar, new DateOnly(2020, 1, 1), new DateOnly(2036, 1, 1))
+                    .Where(s => (s.Close - s.Open) != TimeSpan.FromMinutes(ToolGuards.SessionMinutes)),
+            ];
+
+            oddLengths += odd.Count;
+            Sweep(odd, calendar, close);
+        }
+
+        oddLengths.Should().Be(
+            120 * 16,
+            "one shortened session a year for sixteen years, at each of the hundred and twenty closes that "
+            + "admit the spring-forward transition — the autumn one is absorbed by the ambiguous-hour "
+            + "resolution");
+
+        misses.Should().BeEmpty(
+            "every resolution at or below the ceiling must produce an expected bucket on every trade date, "
+            + "at every session close an operator can configure");
+    }
+
+    [Fact]
+    public void TheCeilingIsTight_AndTheOldOneWasWrongOnTheReviewersOwnExample()
+    {
+        // Both halves of "660, not 690", driven rather than argued.
+        //
+        // The upper half is the defect PR #607's review found: 690 was this card's own ceiling and it
+        // answers an EMPTY SERIES on the reviewer's example -- the exact silent shape gh#538 exists to
+        // abolish, reintroduced by the fix at a width the fix permitted.
+        BarSessionCalendar halfPast = BarSessionCalendar.Parse("00:30", []);
+        (DateOnly Date, DateTimeOffset Open, DateTimeOffset Close) shrunk =
+            Sessions(halfPast, new DateOnly(2030, 3, 11), new DateOnly(2030, 3, 12)).Single();
+
+        (shrunk.Close - shrunk.Open).Should().Be(
+            TimeSpan.FromMinutes(ToolGuards.ShortestSessionMinutes),
+            "the spring-forward transition falls inside this session");
+        FitsTheSession(halfPast, shrunk.Open, shrunk.Close, 690).Should().BeFalse(
+            "690 -- the ceiling before this review -- produces no expected bucket here at all");
+        FitsTheSession(halfPast, shrunk.Open, shrunk.Close, ToolGuards.MaxResolutionMinutes)
+            .Should().BeTrue("and 660 does");
+
+        // The lower half: the bound is TIGHT, so it is not merely safe. 661 is the first width the
+        // guarantee stops covering, and it misses in fact and not only in theory.
+        BarSessionCalendar twenty = BarSessionCalendar.Parse("00:20", []);
+        (DateOnly Date, DateTimeOffset Open, DateTimeOffset Close) firstMiss =
+            Sessions(twenty, new DateOnly(2027, 3, 15), new DateOnly(2027, 3, 16)).Single();
+
+        FitsTheSession(twenty, firstMiss.Open, firstMiss.Close, ToolGuards.MaxResolutionMinutes + 1)
+            .Should().BeFalse("661 already misses, so 660 is the largest the guarantee reaches");
     }
 
     [Theory]
-    [InlineData(691)]
-    [InlineData(692)]
+    [InlineData(661)]
+    [InlineData(664)]
+    [InlineData(690)]
     [InlineData(720)]
     [InlineData(1_000)]
     [InlineData(1_379)]
@@ -491,10 +648,11 @@ public sealed class ResolutionGuardTests : IDisposable
         // The residue gh#498 recorded and did not close. 1,379 sits INSIDE the old ceiling and is expected
         // only when the UTC grid happens to land within a minute of the session open -- so get_bars at 1,379
         // answered [] with venueRequests: 0 on 99.86% of trade dates, which is the very shape gh#498
-        // abolished one minute higher. 691 is the first value the guarantee does not cover; 692 is one of the
-        // four in this band that DO fit every day at a 16:00 Central close, and it is refused with the rest
-        // because the bound is a guarantee and not a table of coincidences (see
-        // AboveTheCeiling_TheGuaranteeFails_AndTheCoincidencesAreNamed, which measures both claims).
+        // abolished one minute higher. 661 is the first value the guarantee does not cover; 664 and 690 are
+        // in the band that PR #607's first ceiling served, and 720 is one that fits every day at the shipped
+        // close. All of them are refused, because the bound is a guarantee rather than a table of
+        // coincidences -- see AboveTheCeiling_TheGuaranteeFails_AndTheCoincidencesAreNamed, which measures
+        // exactly how far that table shifts when the sweep behind it widens.
         Func<Task> call = () =>
             _bars.GetLatestBars("ES", resolutionMinutes, 10, CancellationToken.None);
 
@@ -513,83 +671,183 @@ public sealed class ResolutionGuardTests : IDisposable
     }
 
     [Fact]
-    public void EveryServableResolution_FitsInsideEverySession()
+    public async Task TheGridRefusal_ConcedesTheBandSometimesFits_RatherThanClaimingItNeverDoes()
     {
-        // The over-reach half, swept rather than sampled. #593's reviewer built an exhaustive sweep over a
-        // refusal that looked right on examples and found it wrong on 6.3% of them; examples are not
-        // evidence about a boundary.
+        // BLOCKING FINDING 2 of PR #607's review, and the reason it was found: the reviewer mutated the
+        // concession to "never produce a bar at all" -- the exact overclaim PR #593 spent four rounds
+        // removing -- and the whole suite stayed green. The one sentence the argument rests on was pinned
+        // by nothing.
         //
-        // Every r from 1 to the ceiling, against every trade date over three years -- both DST directions,
-        // several times each. The claim is that the guarantee is real: a servable resolution is one the
-        // calendar expects a bucket at on EVERY session, so a caller who is inside the ceiling never gets
-        // the silent empty series. Three years rather than one because the grid's phase against the session
-        // repeats on a period that grows with r, and at 690 minutes that period is 23 days.
-        BarSessionCalendar calendar = BarSessionCalendar.Parse("16:00", []);
+        // It is pinned two ways, because either alone is weak. The POSITIVE half requires the concession to
+        // be present AND TRUE: the widths it names are re-measured here against the real calendar, so a
+        // message that concedes a falsehood is as red as one that concedes nothing. The NEGATIVE half is a
+        // blocklist, and its limit is stated rather than glossed -- it catches the FAMILY of overclaim that
+        // has actually been written twice now, not every possible one. A blocklist cannot be exhaustive;
+        // what makes this test hard to fool is that the positive half forces the sentence to exist at all.
+        string message =
+            (await ((Func<Task>)(() => _bars.GetLatestBars("ES", 1_379, 10, CancellationToken.None)))
+                .Should().ThrowAsync<McpException>()).Which.Message;
+
+        BarSessionCalendar shipped = BarSessionCalendar.Parse("16:00", []);
         IReadOnlyList<(DateOnly Date, DateTimeOffset Open, DateTimeOffset Close)> sessions =
-            Sessions(calendar, new DateOnly(2024, 1, 1), new DateOnly(2027, 1, 1));
+            Sessions(shipped, new DateOnly(2020, 1, 1), new DateOnly(2036, 1, 1));
 
-        sessions.Should().HaveCountGreaterThan(
-            700, "three years of weekdays, or the sweep is measuring nothing");
-
-        List<string> misses = [];
-        for (int resolution = 1; resolution <= ToolGuards.MaxResolutionMinutes; resolution++)
+        foreach (int conceded in new[] { 661, 690, 692, 696, 700, 720 })
         {
-            foreach ((DateOnly date, DateTimeOffset open, DateTimeOffset close) in sessions)
-            {
-                if (!FitsTheSession(calendar, open, close, resolution))
-                {
-                    misses.Add(
-                        resolution.ToString(CultureInfo.InvariantCulture) + " min on " + date.ToString("O"));
-                }
-            }
+            sessions.Should().OnlyContain(
+                s => FitsTheSession(shipped, s.Open, s.Close, conceded),
+                "the refusal names " + conceded.ToString(CultureInfo.InvariantCulture)
+                + " as a width that fits every trade date at the shipped close, so it had better");
+
+            message.Should().Contain(
+                conceded.ToString(CultureInfo.InvariantCulture),
+                "and the message must actually name it rather than round the concession away");
         }
 
-        misses.Should().BeEmpty(
-            "every resolution at or below the ceiling must produce an expected bucket on every trade date");
+        message.Should().Contain(
+            "not all useless",
+            "the concession is the load-bearing sentence: the band DOES produce bars at some widths, and "
+            + "the reason they are refused is that WHICH ones depends on configuration this check never "
+            + "reads -- not that they never work");
+
+        foreach (string overclaim in new[]
+                 {
+                     "never produce", "never produces", "never fit", "never fits", "never a bar",
+                     "cannot produce a bar", "no bucket is ever", "produces no bar",
+                 })
+        {
+            message.Should().NotContain(
+                overclaim,
+                "a refusal that overstates what it measured is how #593's message needed four review "
+                + "rounds; this blocklist catches that family and is not claimed to catch every phrasing");
+        }
     }
 
     [Fact]
     public void AboveTheCeiling_TheGuaranteeFails_AndTheCoincidencesAreNamed()
     {
-        // The other half, and the one that keeps the refusal honest. Above 690 the guarantee is gone, but
-        // "gone" is not "never fits": four widths in the band -- 692, 696, 700 and 720 -- happen to fit on
-        // every trade date over sixteen years at a 16:00 Central close, because their phase against the
-        // session never drifts far enough. They are refused anyway, and the refusal must not claim they
-        // never work. What it claims is that the bound is a guarantee that holds for ANY session close,
-        // whereas those four are an accident of this one.
+        // The other half, and the one that keeps the refusal honest. Above the ceiling the guarantee is
+        // gone, but "gone" is not "never fits": at the shipped 16:00 close a whole run of widths above it
+        // fits on every trade date over sixteen years.
         //
-        // Sixteen years, because the phase of an r-minute grid against the UTC day repeats every
-        // lcm(r, 1440) / 1440 days -- up to 1,379 days near the top of the band -- and the two DST offsets
-        // double that again.
-        BarSessionCalendar calendar = BarSessionCalendar.Parse("16:00", []);
-        IReadOnlyList<(DateOnly Date, DateTimeOffset Open, DateTimeOffset Close)> sessions =
-            Sessions(calendar, new DateOnly(2020, 1, 1), new DateOnly(2036, 1, 1));
+        // AND THE SET SHRINKS AS THE SWEEP WIDENS, which is the real argument for refusing all of them. A
+        // sweep can only ever report that it found no failure. Widen it -- more trade dates, or more of the
+        // session closes an operator may configure -- and widths drop out. That is why the bound is derived
+        // from the shortest session rather than read off a table: ValidateResolution is deliberately static
+        // and reads no configuration, so serving these would make the servable set depend invisibly on
+        // SessionCloseCentral (PR #607 review).
+        BarSessionCalendar shipped = BarSessionCalendar.Parse("16:00", []);
+        IReadOnlyList<(DateOnly Date, DateTimeOffset Open, DateTimeOffset Close)> atShipped =
+            Sessions(shipped, new DateOnly(2020, 1, 1), new DateOnly(2036, 1, 1));
 
-        List<int> alwaysFit = [];
-        for (int resolution = ToolGuards.MaxResolutionMinutes + 1; resolution < 1_380; resolution++)
+        List<int> alwaysFitAtTheShippedClose =
+        [
+            .. Enumerable.Range(ToolGuards.MaxResolutionMinutes + 1, 1_379 - ToolGuards.MaxResolutionMinutes)
+                .Where(r => atShipped.All(s => FitsTheSession(shipped, s.Open, s.Close, r))),
+        ];
+
+        List<int> thirtyFour = [.. Enumerable.Range(661, 30), 692, 696, 700, 720];
+
+        alwaysFitAtTheShippedClose.Should().Equal(
+            thirtyFour,
+            "every width from 661 to 690 fits at 16:00, and so do four more — thirty-four in all");
+
+        // Widen to the closes whose session can be an hour shorter, and two survive. Only the
+        // sessions that are NOT the nominal length need sweeping for the widths at or below 690: the
+        // pigeonhole bound already covers a 1,380-minute session for any of those, whatever its phase.
+        List<(DateOnly Date, DateTimeOffset Open, DateTimeOffset Close)> odd = [];
+        List<BarSessionCalendar> calendars = [];
+        for (int minute = 0; minute < 120; minute++)
         {
-            if (sessions.All(s => FitsTheSession(calendar, s.Open, s.Close, resolution)))
-            {
-                alwaysFit.Add(resolution);
-            }
+            BarSessionCalendar calendar = BarSessionCalendar.Parse(ShorteningClose(minute), []);
+            calendars.Add(calendar);
+            odd.AddRange(
+                Sessions(calendar, new DateOnly(2020, 1, 1), new DateOnly(2036, 1, 1))
+                    .Where(s => (s.Close - s.Open) != TimeSpan.FromMinutes(ToolGuards.SessionMinutes)));
         }
 
-        alwaysFit.Should().Equal(
-            [692, 696, 700, 720],
-            "these four are refused despite always fitting at a 16:00 Central close, and the refusal says so "
-            + "rather than claiming nothing in this band ever produces a bar");
+        // The calendar only enters FitsTheSession through IsExpectedBucket, and every calendar here agrees
+        // about the bucket that matters because the bounds are passed in; the first is used for all of them.
+        List<int> alsoAtTheShorteningCloses =
+        [
+            .. alwaysFitAtTheShippedClose
+                .Where(r => odd.All(s => FitsTheSession(calendars[0], s.Open, s.Close, r))),
+        ];
+
+        alsoAtTheShorteningCloses.Should().Equal(
+            [672, 720],
+            "thirty-four falls to two once the sweep includes the sessions that are 1,320 minutes long — "
+            + "and two is not a licence, it is what this sweep happened to leave");
+
+        // And the shrinking does not stop there. At ONE of those closes, holding the sweep's shape fixed
+        // and only lengthening the window, the survivor count keeps falling — so the set is an artefact of
+        // how far the sweep looked, not a property of the widths.
+        BarSessionCalendar halfPast = BarSessionCalendar.Parse("00:30", []);
+        int SurvivorsOver(int years)
+        {
+            IReadOnlyList<(DateOnly Date, DateTimeOffset Open, DateTimeOffset Close)> window =
+                Sessions(halfPast, new DateOnly(2020, 1, 1), new DateOnly(2020 + years, 1, 1));
+
+            return alwaysFitAtTheShippedClose
+                .Count(r => window.All(s => FitsTheSession(halfPast, s.Open, s.Close, r)));
+        }
+
+        SurvivorsOver(16).Should().BeLessThan(
+            SurvivorsOver(4),
+            "a longer sweep at the same close leaves fewer survivors, which is what makes a table of them "
+            + "worthless as a bound");
+        SurvivorsOver(4).Should().BeLessThan(
+            SurvivorsOver(1), "and it is not a one-off step");
 
         // And the value the card names, measured rather than asserted. A 1,379-minute bucket needs the grid
         // to land within one minute of the session open, so it fits on a handful of scattered trade dates
         // and answers [] on the rest -- which is what makes it indistinguishable from an instrument with no
         // data, and what puts it on the wrong side of this repository's third non-negotiable.
-        int fitting = sessions.Count(s => FitsTheSession(calendar, s.Open, s.Close, 1_379));
+        int fitting = atShipped.Count(s => FitsTheSession(shipped, s.Open, s.Close, 1_379));
 
         fitting.Should().BeLessThan(
-            sessions.Count / 100,
+            atShipped.Count / 100,
             "a 1,379-minute bar fits on well under one trade date in a hundred");
         fitting.Should().BeGreaterThan(
             0, "and 'almost never' is the honest word for it — not 'never', which the refusal must not say");
+
+        // The worst of the band fits on NOTHING, which is the other end the ADR quotes.
+        foreach (int never in new[] { 1_360, 1_368, 1_376 })
+        {
+            atShipped.Should().NotContain(
+                s => FitsTheSession(shipped, s.Open, s.Close, never),
+                never.ToString(CultureInfo.InvariantCulture) + " fits on no trade date at all");
+        }
+    }
+
+    [Fact]
+    public void ABucketExactlyASessionLong_IsSometimesExpected_SoTheSessionBarRefusalIsDefinitional()
+    {
+        // The first non-blocking finding of PR #607's review, and it had been re-asserted in four places:
+        // "a bucket that long or longer can never close inside a single session" is FALSE at exactly the
+        // session's length. IsExpectedBucket admits a bucket that closes AT the close, so a 1,380-minute
+        // bucket is expected whenever the grid lands exactly on the session open.
+        //
+        // The refusal stands, on the claim that actually carries it: a bar covering a whole session is a
+        // SESSION BAR by definition -- defined on the CME trade date rather than on the bucket grid -- and
+        // that is true on the 4% of trade dates where the grid does line up as much as on the 96% where it
+        // does not.
+        BarSessionCalendar shipped = BarSessionCalendar.Parse("16:00", []);
+        IReadOnlyList<(DateOnly Date, DateTimeOffset Open, DateTimeOffset Close)> sessions =
+            Sessions(shipped, new DateOnly(2020, 1, 1), new DateOnly(2036, 1, 1));
+
+        int expected = sessions.Count(
+            s => FitsTheSession(shipped, s.Open, s.Close, ToolGuards.SessionMinutes));
+
+        expected.Should().BeGreaterThan(
+            0, "a session-length bucket IS expected when the grid lands on the session open");
+        expected.Should().BeLessThan(
+            sessions.Count / 10, "on a small minority of trade dates — about one in twenty-three");
+
+        // Longer than a session, though, really never fits: there is no run of minutes to land in.
+        sessions.Should().NotContain(
+            s => FitsTheSession(shipped, s.Open, s.Close, ToolGuards.SessionMinutes + 1),
+            "a bucket LONGER than a session can never close inside one, and that half of the claim holds");
     }
 
     /// <summary>Every session in a date range, as the UTC instants the bucket grid is compared against.</summary>
@@ -601,9 +859,11 @@ public sealed class ResolutionGuardTests : IDisposable
     /// A session for trade date D opens at <c>SessionOpen</c> on D-1 and closes at <c>SessionClose</c> on D,
     /// which is <see cref="BarSessionCalendar.TradeDateFor"/> read forwards. Both bounds are converted with
     /// <see cref="MarketClock"/> rather than by adding a fixed offset, so the DST transitions are the real
-    /// ones — and it is worth noting what that measurement shows: a transition always falls on a Sunday at
-    /// 02:00 Central, which is inside no session, so every session is exactly 1,380 minutes long. The
-    /// pigeonhole derivation depends on that.
+    /// ones — and the elapsed length is <b>not</b> always 1,380 minutes. At the shipped 16:00 close it is,
+    /// because the reopen is 17:00 and the 02:00 Central transition sits before every session's start; at a
+    /// close before 01:00 the reopen is at or before 02:00 and the transition falls inside, making that
+    /// session 1,320 minutes. An earlier version of this remark asserted the first case as though it were
+    /// general, and the resolution ceiling was derived from it (PR #607 review, finding 1).
     /// </remarks>
     private static IReadOnlyList<(DateOnly Date, DateTimeOffset Open, DateTimeOffset Close)> Sessions(
         BarSessionCalendar calendar, DateOnly from, DateOnly to)
@@ -626,6 +886,61 @@ public sealed class ResolutionGuardTests : IDisposable
         return sessions;
     }
 
+    /// <summary>One of the hundred and twenty closes whose session can lose an hour.</summary>
+    /// <param name="minute">Minutes past midnight, 0 to 119.</param>
+    /// <returns>The close in <c>HH:mm</c> form.</returns>
+    /// <remarks>
+    /// 00:00 to 01:59, because spring-forward deletes the wall-clock hour [02:00, 03:00) and the reopen is
+    /// one maintenance window after the close — so any close before 02:00 has its session start inside or
+    /// before that hour and loses time to it. It was 00:00 to 00:59 in the first draft of this sweep, which
+    /// is what a hand-written model of the transition gives; the census is what corrected it.
+    /// </remarks>
+    private static string ShorteningClose(int minute) =>
+        (minute / 60).ToString("D2", CultureInfo.InvariantCulture) + ":"
+        + (minute % 60).ToString("D2", CultureInfo.InvariantCulture);
+
+    /// <summary>The session lengths every whole-minute close produces over one year.</summary>
+    /// <param name="year">The year to walk.</param>
+    /// <returns>
+    /// The shortest length seen anywhere, the set of lengths seen, and the close-minutes that ever produce
+    /// a session shorter than <see cref="ToolGuards.SessionMinutes"/>.
+    /// </returns>
+    /// <remarks>
+    /// Closes from 00:00 to 22:59 only. Past that the reopen wraps past midnight and
+    /// <see cref="BarSessionCalendar.TradeDateFor"/>'s two branches overlap, so the calendar has no
+    /// maintenance window at all — a degenerate configuration this sweep does not claim to describe, and one
+    /// whose sessions are <i>longer</i> rather than shorter, which cannot lower the bound.
+    /// </remarks>
+    private static (int Min, HashSet<int> Lengths, List<int> Shortening) LengthCensus(int year)
+    {
+        HashSet<int> lengths = [];
+        List<int> shortening = [];
+
+        for (int close = 0; close < (23 * 60); close++)
+        {
+            BarSessionCalendar calendar = BarSessionCalendar.Parse(
+                (close / 60).ToString("D2", CultureInfo.InvariantCulture) + ":"
+                + (close % 60).ToString("D2", CultureInfo.InvariantCulture),
+                []);
+
+            bool shrinks = false;
+            foreach ((DateOnly _, DateTimeOffset open, DateTimeOffset closeAt) in
+                     Sessions(calendar, new DateOnly(year, 1, 1), new DateOnly(year + 1, 1, 1)))
+            {
+                int minutes = (int)(closeAt - open).TotalMinutes;
+                lengths.Add(minutes);
+                shrinks |= minutes < ToolGuards.SessionMinutes;
+            }
+
+            if (shrinks)
+            {
+                shortening.Add(close);
+            }
+        }
+
+        return (lengths.Min(), lengths, shortening);
+    }
+
     /// <summary>Whether one session admits a bucket of a given width on the UTC grid.</summary>
     /// <param name="calendar">The session calendar.</param>
     /// <param name="open">When the session opens.</param>
@@ -638,7 +953,7 @@ public sealed class ResolutionGuardTests : IDisposable
     /// <see cref="BarSessionCalendar.IsExpectedBucket"/>. Only the first candidate needs testing — every
     /// later one closes later, so if the earliest does not fit, none does. The <c>bucket &lt; close</c> guard
     /// keeps the question about <i>this</i> session: a bucket at or past the close belongs to the next trade
-    /// date, which this sweep asks about on its own turn.
+    /// date, which these sweeps ask about on its own turn.
     /// </remarks>
     private static bool FitsTheSession(
         BarSessionCalendar calendar, DateTimeOffset open, DateTimeOffset close, int resolutionMinutes)

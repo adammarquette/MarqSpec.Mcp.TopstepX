@@ -69,16 +69,18 @@ joins the discounted budget by being written rather than by somebody remembering
 ## The cache-aside read — the only genuinely interesting path
 
 **`resolution` is chosen by the caller, not by configuration.** There is no supported-resolution list: every
-whole number of minutes from **1 to 690** is servable (`R-1.9`), each becomes an independent cached series,
+whole number of minutes from **1 to 660** is servable (`R-1.9`), each becomes an independent cached series,
 and a timeframe is fetched from the venue rather than derived from a finer one —
 [ADR-0010](adr/0010-per-call-resolutions-fetched-not-derived.md).
 Zero and negative are refused at the tool boundary by `ToolGuards.ValidateResolution` and never reach this
 path (gh#69); so is a bucket of a session's length or longer, which can never close inside one session and is
 a **session bar** rather than a resolution (`R-1.12`,
-[ADR-0022](adr/0022-session-bars-derived-complete-or-absent.md), gh#498). **The ceiling is half a session
-rather than one minute short of it** because the bucket grid is anchored on UTC and not on the session open,
-so a bucket wider than half a session is not guaranteed to open *and* close inside one — 690 is the widest
-that fits on every trade date, and the derivation is in ADR-0022's *Update (2026-09-08)* (gh#538).
+[ADR-0022](adr/0022-session-bars-derived-complete-or-absent.md), gh#498). **The ceiling is half the
+*shortest* session rather than one minute short of a session** because the bucket grid is anchored on UTC and
+not on the session open, so a bucket wider than half a session is not guaranteed to open *and* close inside
+one — and because a session at a close before 02:00 Central loses an hour to the spring-forward transition,
+so the shortest one is 1,320 minutes rather than 1,380. 660 is the widest bucket that fits on every trade
+date at every configurable close, and the derivation is in ADR-0022's *Update (2026-09-08)* (gh#538).
 
 `BarCacheService.GetBarsAsync(instrument, resolution, window)`:
 
@@ -756,8 +758,8 @@ text, because a counter keeps one accumulator per distinct tag set for the life 
 unbounded tag is a memory leak here before it is a bill anywhere else. **`resolution` is the one that is
 bounded rather than closed**, and the difference is worth stating: it is chosen by the caller, not written
 down here, and the only thing over it is `ToolGuards.ValidateResolution`, which admits any integer from 1 to
-`ToolGuards.MaxResolutionMinutes` (690). So a caller walking every one of them pins on the order of
-690 × symbols × 3 series × 3 outcomes accumulators for the life of the process. That is accepted rather
+`ToolGuards.MaxResolutionMinutes` (660). So a caller walking every one of them pins on the order of
+660 × symbols × 3 series × 3 outcomes accumulators for the life of the process. That is accepted rather
 than fixed — the ceiling is enforced *before* the tag is written so the set is finite by construction, no
 answer is wrong or missing, and the same caller can already create as many distinct stored series, which is a
 larger exposure this instrumentation neither creates nor worsens. *The instrument names and the

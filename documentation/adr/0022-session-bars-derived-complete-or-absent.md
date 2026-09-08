@@ -57,14 +57,16 @@ bar.**
 `ToolGuards.SessionMinutes` is **1,380** and every tool that takes a resolution refuses that and above with
 the value named:
 
-> resolutionMinutes 1440 is a whole session or longer — a session is 1380 minutes, 24 hours less the venue's
-> one-hour maintenance window. A bucket that long or longer can never close inside a single session, so it is
-> a session bar rather than a bar resolution. The day and the week are not unavailable and they are not out
-> of range; ask get_session_bars or get_latest_session_bars (gh#496) for them. The largest bar resolution
-> this server serves is 690 minutes.
+> resolutionMinutes 1440 covers a whole session or more — a session is 1380 minutes of Central wall clock, 24
+> hours less the venue's one-hour maintenance window. A bucket longer than that can never close inside a
+> single session, and one exactly that long can only when the grid lands exactly on the session open — 4% of
+> trade dates at the shipped close. Either way it is a session bar rather than a bar resolution: a bar
+> covering a whole session is defined on the CME trade date, not on the bucket grid. The day and the week are
+> not unavailable and they are not out of range; ask get_session_bars or get_latest_session_bars (gh#496) for
+> them. The largest bar resolution this server serves is 660 minutes.
 
 `ToolGuards.MaxResolutionMinutes` was **1,379** when this was written — one minute short of the session — and
-is **690** since the update below closed the residue this record left at that boundary.
+is **660** since the update below closed the residue this record left at that boundary.
 
 **The refusal names where the answer lives**, because refusing silently would swap one wrong answer for a
 second: a caller reading "coarser than the largest bar" with nothing after it concludes the market has no
@@ -216,7 +218,7 @@ invalidated by every base write, which is more machinery than recomputing the ab
   already do their own session reasoning over base bars
   ([ADR-0013](0013-levels-are-computed-on-read.md), `R-3.13`).
 - **A recorded residue, now closed by the update below: resolutions from 691 to 1,379 remained servable and
-  only partially aligned with a session.** A 690-minute bar is half a session by length and lands wherever the
+  only partially aligned with a session.** A 690-minute bar is half a nominal session by length and lands wherever the
   UTC grid puts it; the calendar expects the buckets that close inside the session and not the ones that do
   not, so the series was legal, complete by its own rule, and not a session. Nothing *here* refused it, and
   these sentences existed so the next reader knew that was a decision rather than an oversight. The rule that
@@ -309,9 +311,9 @@ served from the store. So the read settles to a store-only answer once the base 
 venue's empty ranges, which is one read later than a caller expects
 (`SessionBarToolServedReadTests.GetLatestSessionBars_AnchorsOnTheLastClosedSession` drives all three).
 
-## Update (2026-09-08) — the ceiling is half a session, and the residue is closed
+## Update (2026-09-08) — the ceiling is half the shortest session, and the residue is closed
 
-**The refusal above moved from 1,380 down to 691, and the reason it stopped at 1,380 was the wrong reason to
+**The refusal above moved from 1,380 down to 661, and the reason it stopped at 1,380 was the wrong reason to
 stop (gh#538).** *Consequences* recorded the residue honestly and left it: a bucket **narrower** than a
 session can still fail to fit inside one, because `BarGapDetector.AlignUp` anchors buckets on a grid struck
 from the .NET epoch rather than on the session open. `get_bars("MES", 1379, …)` answered `[]` with
@@ -321,21 +323,38 @@ moved by one minute rather than removed.
 **The bound is derived, and the derivation is the whole point of recording it here.** A session of `S` minutes
 admits an `r`-minute bucket exactly when a multiple of `r` lands in `[open, close - r]` — a run of
 `S - r + 1` consecutive whole minutes. A run of `n` consecutive integers is *certain* to contain a multiple of
-`r` only while `n >= r`, so the guarantee holds exactly while `S - r + 1 >= r`, i.e. `r <= (S + 1) / 2`. At
-`S = 1380` that is **690**, which is also 1,380's largest proper divisor — the pigeonhole bound and "the
-largest divisor of the session length" gh#538 offered as alternatives name the same number, so neither is
-quoted alone. `ToolGuards.MaxResolutionMinutes` is now written as `(SessionMinutes + 1) / 2` rather than as a
-literal, because a hard-coded 690 nobody can re-derive is worse than a computed bound with its formula beside
-it.
+`r` only while `n >= r`, so the guarantee holds exactly while `S - r + 1 >= r`, i.e. `r <= (S + 1) / 2`. C#'s
+integer division truncates, which yields the largest admissible *integer* for an odd `S` and an even one
+alike. `ToolGuards.MaxResolutionMinutes` is written as `(ShortestSessionMinutes + 1) / 2` rather than as a
+literal, because a hard-coded number nobody can re-derive is worse than a computed bound with its formula
+beside it.
 
-**It depends on every session being exactly `S` minutes in UTC, and that is a measured fact rather than an
-assumption.** A US daylight-saving transition falls on a Sunday at 02:00 Central, which is inside no session,
-so the wall-clock span and the elapsed span never disagree —
-`ResolutionGuardTests.Sessions` builds both bounds through `MarketClock` and the sweeps below would fail if
-they ever did.
+**`S` is the shortest session, 1,320 — not the nominal 1,380 — and getting that wrong was this record's own
+first defect.** PR #607 shipped `(SessionMinutes + 1) / 2 = 690` on the premise that every session is exactly
+1,380 minutes because a daylight-saving transition never falls inside one. That premise holds at the shipped
+16:00 close and **not** in general: `SessionCloseCentral` is operator configuration with no range validation,
+spring-forward *deletes* the wall-clock hour `[02:00, 03:00)`, and the reopen is one maintenance window after
+the close — so at any close before 02:00 Central the session loses that hour and is **1,320** minutes long
+once a year. Concretely, at `SessionCloseCentral = "00:30"` and trade date **2030-03-11**, a 690-minute
+request answers an empty series with `venueRequests: 0`: this record's own defect, reintroduced at a width
+this record permitted. Swept against the real converter over every whole-minute close, exactly two session
+lengths occur — **1,320 and 1,380** — and the hundred and twenty closes from 00:00 to 01:59 are the ones that
+shrink. Derived from 1,320 the ceiling is **660**, and 660 is **tight**: 661 already misses, at close 00:20
+on trade date 2027-03-15.
+
+**The autumn transition does not lengthen a session in return, and that is measured rather than assumed.** A
+hand-written model of the calendar says it should — 1,440 minutes — and the real one never produces it,
+because the reopen then lands in the *ambiguous* hour and `MarketClock.FromMarket` resolves an ambiguous
+wall-clock time to **standard** time, which is its own documented behaviour. That is why the census runs
+through the real converter: two of the three lengths a model predicts do not exist.
+
+**The two derivations gh#538 offered agree here by arithmetic accident, so only one is implemented.** 660 is
+both the pigeonhole bound on 1,320 and 1,320's largest proper divisor, but that pairing holds only because
+`S` is even: at `S = 1,379` the pigeonhole form gives 690 and the largest-proper-divisor form gives 197. The
+general form is the one in the code.
 
 **Refusal, not a warning field, and the alternative was real.** gh#538's title offered both. A per-call
-`partialCoverage` flag would have kept 691–1,379 servable and told the caller the series may be short — but an
+`partialCoverage` flag would have kept the band servable and told the caller the series may be short — but an
 empty `bars` array beside a warning is still an empty array, and a caller reads it as an instrument that
 printed nothing whatever sits next to it. That is this repository's third non-negotiable, and it is `R-2.3`
 one layer out: a missing number is missing, never a default. Two further reasons: *Decision §1* already chose
@@ -349,22 +368,47 @@ and that line the caller asked for a real bar the grid cannot be relied on to fi
 narrower one. One message would have had to give both remedies, and "ask for a narrower bar" is wrong advice
 for somebody who wanted a daily bar.
 
-**The refusal over-rejects four widths, and says so rather than overstating what it measured.** Swept over
-sixteen years of trade dates at a 16:00 Central close, exactly four widths in 691–1,379 — **692, 696, 700 and
-720** — fit on *every* one; the rest fail on between 0.14% and 99.86% of them. Those four are refused with the
-rest, because the bound is a guarantee that survives a different `SessionCloseCentral` and they are an
-accident of this one. A message claiming the band never produces a bar would have been shorter and would not
-have been true. `ResolutionGuardTests.AboveTheCeiling_TheGuaranteeFails_AndTheCoincidencesAreNamed` pins that
-set exactly, and `EveryServableResolution_FitsInsideEverySession` sweeps every width at or below the ceiling
-against every trade date over three years — the claim is checked by sweep rather than by example, because a
-refusal that looks right on examples is how gh#568's first message got a 6.3% error rate past review.
+**The session-bar refusal rests on the definition, not on the arithmetic, because the arithmetic claim was
+overstated.** "A bucket that long or longer can never close inside a single session" is false at *exactly*
+1,380: `IsExpectedBucket` admits a bucket that closes **at** the close, so a session-length bucket is expected
+whenever the grid lands exactly on the session open — 4.3% of trade dates at the shipped close. What carries
+the refusal is that a bar covering a whole session is a **session bar** by definition, defined on the CME
+trade date rather than on the bucket grid, and that is as true on those 4.3% as on the rest. Only a bucket
+*longer* than a session never fits, and the message now says which is which.
 
-**What moved with it.** The last servable `toUtc` is `9999-12-28T00:59:59.9999999Z` at the ceiling rather than
+**The refusal over-rejects, and says so rather than overstating what it measured.** At the shipped 16:00
+close, **thirty-four** widths above the ceiling fit on *every* trade date over sixteen years: all of 661–690,
+plus 692, 696, 700 and 720. Widen the sweep to the hundred and twenty closes whose session can lose an hour
+and **two** survive. Widen the *window* instead, at one such close, and the count falls **31 → 28 → 19** over
+one, four and sixteen years. A survivor list is what a sweep failed to disprove, which is not what a bound is
+— and `ValidateResolution` is deliberately `static` and reads no configuration, so serving those widths would
+make the servable set depend invisibly on `SessionCloseCentral`. The widths that *do* fit at the shipped close
+are named in the message anyway, because a refusal claiming the band never produces a bar would be shorter and
+would not be true; `ResolutionGuardTests.TheGridRefusal_ConcedesTheBandSometimesFits_RatherThanClaimingItNeverDoes`
+pins that sentence, after PR #607's reviewer mutated it to "never produce a bar at all" and the whole suite
+stayed green.
+
+**Everything above is swept rather than sampled**, because a refusal that looks right on examples is how
+gh#568's message got a 6.3% error rate past review and how this record's own 690 got past a first one.
+`EveryServableResolution_FitsInsideEverySession_AtEveryConfigurableClose` sweeps every width at or below the
+ceiling against the shipped close over three years *and* against every session that is not 1,380 minutes long
+at every close that produces one, over sixteen — complete rather than partial, because the pigeonhole
+argument is offset-independent, so the only thing that varies between one close and another is the session's
+length, and `TheSessionLengthCensus_ShowsAShortestSessionOf1320_AtEveryCloseBefore0200` enumerates every
+length that occurs.
+
+**What moved with it.** The last servable `toUtc` is `9999-12-28T01:59:59.9999999Z` at the ceiling rather than
 `9999-12-27T02:01:59.9999999Z`, since that bound is two bar spans plus three days. `get_market_snapshot` is
 untouched: its defaults are 5 and 60 and its 240-minute slice is far inside the new ceiling.
 `KeyLevelDetectionPlumbingTests` drove `SessionBucketGuard` through the tool at 720 minutes and now does so at
 240, which refuses by the same arm; the twelve-hour cases keep their coverage in `SessionBucketGuardTests`,
 below the tool boundary.
+
+**What is deliberately *not* done here.** `SessionCloseCentral` still has no range validation, so an operator
+can still configure a close whose session loses an hour. That is now harmless to *this* bound — 660 holds at
+every close — but it is a real gap in the calendar's contract and it is filed as its own card rather than
+smuggled in here: validating it would let the ceiling go back to 690, and that is a trade to make on the
+evidence, not as a side effect of a resolution guard. It is **gh#613**.
 
 ## Follow-ups
 
@@ -380,4 +424,9 @@ below the tool boundary.
   tools have been used.
 - ~~**A refusal for partial-coverage resolutions (gh#538)**~~ — **done**, in *Update (2026-09-08)* above.
   The rule that separates "coarse but honest" from "coarse and misaligned" is the pigeonhole bound on the
-  session length, and the ceiling is now 690.
+  **shortest** session length, and the ceiling is now 660.
+- **Validate `SessionCloseCentral` so a session cannot silently lose an hour.** A close before 02:00 Central
+  puts the deleted spring-forward hour inside the session, making it 1,320 minutes once a year. The
+  resolution ceiling is derived from that shortest length and so is safe either way, but nothing else in the
+  calendar's contract says a session may be short, and refusing such a close would let the ceiling go back to
+  690. Deliberately not folded into gh#538 — it is **gh#613** (PR #607 review).

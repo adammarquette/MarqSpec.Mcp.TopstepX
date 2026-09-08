@@ -139,40 +139,37 @@ at one this rule's own pull request retires.
       over a PR's comments finds this exact broken-post case directly.
 
 - **[2026-09-08] A `Total:` is discovery; a `Passed:` is execution — five ways a test run has lied about a
-  mutation (gh#600).** Mutation testing is this repository's standard proof of coverage, so *"nothing
-  reddened"* is the most load-bearing observation an agent makes, and the one a broken run counterfeits
-  best. **Score the run before you score the mutation**, on four things the summary line alone does not
-  carry:
+  mutation (gh#600).** Mutation testing is this repo's proof of coverage, so *"nothing reddened"* is the
+  most load-bearing observation an agent makes, and the one a broken run counterfeits best. **Score the
+  run before you score the mutation**, on four things the summary line does not carry:
   - **The split, never the total alone.** `Failed: N, Passed: 0` over a *full* total is a broken host, not
     N regressions.
   - **The duration.** A tier that normally takes 34 s finishing in 227 ms did not run.
   - **Where the failures originate.** A fixture constructor or a runtime loader is the environment; only a
     failure inside the code under test is the tree.
-  - **The harness's `APPLIED <before-blob> -> <after-blob>` line — its absence is a failed run, never a
-    green one.** Before recording a survivor confirm the source really differs (`git diff --stat` on the
-    mutated file), and carry a **positive control**, a deletion known to redden, so a green row means *no
-    coverage* rather than *no loop*.
+  - **The harness's `APPLIED <before-blob> -> <after-blob>` line — its absence is a failed run, never a green
+    one.** Confirm the source really differs (`git diff --stat`) before recording a survivor, and carry a
+    **positive control**, a deletion known to redden, so green means *no coverage* rather than *no loop*.
 
-  Measured across gh#529 / PR #589, gh#537 / PR #597 and gh#588 / PR #590. Each mechanism below is a way
-  that check was violated:
+  Measured across gh#529 / PR #589, gh#537 / PR #597 and gh#588 / PR #590 — each a violation of that check:
   1. **`Total: 71` where the suite has 162** — short by 91, so by the 2026-08-26 entry's own discriminator
      (*short is Application Control; plausible-after-a-restore is the 2026-08-28 entry*) it is **not** a
      stale binary: that branch measured 142, 162 and 163, never 71. **Neither source establishes a cause**
      — record that rather than infer one, which is this entry's own thesis.
   2. **`Test Run Aborted.`** printed no counts at all, and the re-run reported the *previous* count
      unchanged, so an agent scrolling back for a `Passed:` line finds the earlier run's.
-  3. **The mutation never applied.** A `mkdir` failed earlier in an `&&` chain, the mutation script never
-     ran, and the suite honestly printed `Passed: 163` over unmutated source — indistinguishable from a
-     survivor. **Never chain a mutation behind `&&` after setup that can fail**; run the setup separately
-     and check it.
+  3. **The mutation never applied.** A `mkdir` failed earlier in an `&&` chain, so the script never ran and
+     the suite honestly printed `Passed: 163` over unmutated source — indistinguishable from a survivor.
+     **Never chain a mutation behind `&&` after setup that can fail**; run the setup separately and check it.
   4. **The infra suite with no Node on `PATH`.** Same built output, two containers differing only in
      `node`: `Passed: 165, Total: 165` in 34 s, against `Failed: 165, Passed: 0, Total: 165` in **227 ms**,
      every failure from `Amazon.JSII.Runtime.NodeProcess..ctor` — CDK synthesis shells out to Node, so the
      fixture cannot construct. **The `Total:` is correct here**, which is why the older rule *"know the
      expected suite size and treat disagreement as the run being wrong"* (the 2026-08-26 entry below)
      **agrees with this broken run**. Only the split and the 150x duration collapse give it away.
-  5. **Windows Application Control** (`0x800711C7`): `Total: 156`, every test failed in its fixture
-     constructor. **Persistent on this host** — the 2026-09-08 correction under the 2026-08-26 entry below.
+  5. **Windows Application Control** (`0x800711C7`) — a whole tier failing in its fixture constructor under
+     an ordinary-looking `Total:`. **Persistent here** — the 2026-09-08 correction under the 2026-08-26
+     entry below.
 
 - **[2026-08-28] A restore can backdate a source file's mtime, MSBuild skips the compile, and `dotnet test`
   scores a stale binary with a plausible `Total:` (gh#302).** Found by PR #298's author (gh#286) with a

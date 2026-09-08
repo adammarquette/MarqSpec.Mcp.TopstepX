@@ -261,6 +261,60 @@ public sealed class IndicatorPeriodCompletenessTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task ASeriesExactlyAsLongAsWarmUp_ProjectsTheOneValueItCanMeasure_Vwap()
+    {
+        // THE TIGHTEST SHIPPED WARM-UP (gh#614). `nonNull = N - WarmupBars + 1` gives 1 when N = w = 1.
+        // With one bar and no rows, `WarmupBars <= bars` includes vwap; `<` excludes it (`1 < 1`), so the
+        // probe finds nothing to replay and the series stays empty.
+        const int bars = 1;
+        await SeedDirectlyAsync(Bars(0, bars));
+
+        (await NewestValueAsync("vwap", 0)).Should().BeNull();
+
+        IndicatorCacheService cache = Cache(ShippedCatalog());
+
+        bool projected = await cache.EnsureProjectedAsync(
+            Venue, _es, Resolution, CancellationToken.None);
+
+        projected.Should().BeTrue(
+            "when bars equals the warm-up the pair can measure one value, and `WarmupBars <= bars` is the "
+            + "membership test that includes that case — `<` would skip it and leave the series empty");
+
+        (await NewestValueAsync("vwap", 0)).Should().Be(
+            Bucket(bars - 1),
+            "the replay is the whole stored series, so the one value lands on the newest bar");
+    }
+
+    [Fact]
+    public async Task ASeriesExactlyAsLongAsWarmUp_ProjectsTheOneValueItCanMeasure_Atr()
+    {
+        // A MID-RANGE SHIPPED PAIR (gh#614). ATR(14) declares `WarmupBars = Period + 1 = 15`; over 15 bars
+        // `Compute` yields exactly one non-null (`15 - 15 + 1`), on bucket index 14. VWAP (warm-up 1) is
+        // already complete at the newest bar so it cannot mask a broken filter: with `<`, atr(14) is excluded
+        // (`15 < 15`) while vwap is not missing, so the probe finds nothing to replay and atr stays absent.
+        const int bars = 15;
+        await SeedDirectlyAsync(Bars(0, bars));
+        await ProjectAsync(ShippedCatalog());
+        await DeleteIndicatorValuesAsync("atr", 14);
+
+        (await NewestValueAsync("vwap", 0)).Should().Be(Bucket(bars - 1));
+        (await NewestValueAsync("atr", 14)).Should().BeNull();
+
+        IndicatorCacheService cache = Cache(ShippedCatalog());
+
+        bool projected = await cache.EnsureProjectedAsync(
+            Venue, _es, Resolution, CancellationToken.None);
+
+        projected.Should().BeTrue(
+            "atr(14) can measure one value over fifteen bars, and only `WarmupBars <= bars` includes that "
+            + "equality case once shorter warm-ups are already complete");
+
+        (await NewestValueAsync("atr", 14)).Should().Be(
+            Bucket(bars - 1),
+            "the one value sits on the newest bar — WarmupBars - 1 — as `AssertFirstValueArrivesAtExactlyWarmupBars` pins");
+    }
+
+    [Fact]
     public async Task AWarmUpRunSpanningASessionBreak_IsNotReadAsAGap()
     {
         // THE "IN BARS, NEVER IN TIME" CLAIM, PINNED RATHER THAN ARGUED — the review of PR #606 found it
@@ -372,6 +426,10 @@ public sealed class IndicatorPeriodCompletenessTests : IAsyncLifetime
             }),
             Calendar());
 
+    /// <summary>The shipped defaults — the periods an operator actually runs.</summary>
+    private static IndicatorCatalog ShippedCatalog() =>
+        new(Options.Create(new IndicatorOptions()), Calendar());
+
     private static IOptions<MarketDataOptions> MarketData() =>
         Options.Create(new MarketDataOptions
         {
@@ -402,6 +460,22 @@ public sealed class IndicatorPeriodCompletenessTests : IAsyncLifetime
                 && v.Indicator == indicator
                 && v.Period == period)
             .MaxAsync(v => (DateTimeOffset?)v.BucketStart);
+
+    /// <summary>Removes every stored value for one pair so a later read must replay it.</summary>
+    /// <param name="indicator">The indicator name.</param>
+    /// <param name="period">The period.</param>
+    private async Task DeleteIndicatorValuesAsync(string indicator, int period)
+    {
+        await _database.IndicatorValues
+            .Where(v => v.Venue == Venue
+                && v.Instrument == _es.Symbol
+                && v.ResolutionMinutes == Resolution
+                && v.Indicator == indicator
+                && v.Period == period)
+            .ExecuteDeleteAsync();
+
+        _database.ChangeTracker.Clear();
+    }
 
     /// <summary>Fills the store the way the world fills it — through the cache-aside bar read.</summary>
     /// <param name="catalog">The catalogue in force while the bars were written.</param>

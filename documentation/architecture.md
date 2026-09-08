@@ -75,12 +75,12 @@ and a timeframe is fetched from the venue rather than derived from a finer one �
 Zero and negative are refused at the tool boundary by `ToolGuards.ValidateResolution` and never reach this
 path (gh#69); so is a bucket of a session's length or longer, which can never close inside one session and is
 a **session bar** rather than a resolution (`R-1.12`,
-[ADR-0022](adr/0022-session-bars-derived-complete-or-absent.md), gh#498). **The ceiling is half the
-*shortest* session rather than one minute short of a session** because the bucket grid is anchored on UTC and
-not on the session open, so a bucket wider than half a session is not guaranteed to open *and* close inside
-one — and because a session at a close before 02:00 Central loses an hour to the spring-forward transition,
-so the shortest one is 1,320 minutes rather than 1,380. 660 is the widest bucket that fits on every trade
-date at every configurable close, and the derivation is in ADR-0022's *Update (2026-09-08)* (gh#538).
+[ADR-0022](adr/0022-session-bars-derived-complete-or-absent.md), gh#498). **The ceiling is below the
+pigeonhole bound on the nominal session** because the bucket grid is anchored on UTC and not on the session
+open, so a bucket wider than half a session is not guaranteed to open *and* close inside one — and because
+closes before 02:00 Central are refused at calendar construction (gh#613), every admissible session is 1,380
+minutes and the pigeonhole bound is 690 while the served ceiling stays at 660. The derivation is in
+ADR-0022's *Update (2026-09-08)* (gh#538).
 
 `BarCacheService.GetBarsAsync(instrument, resolution, window)`:
 

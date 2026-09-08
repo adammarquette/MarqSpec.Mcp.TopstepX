@@ -66,16 +66,14 @@ The server serves OHLCV bars for a futures instrument at a requested resolution 
   answered an empty series with `venueRequests: 0` on the rest — the shape gh#498 abolished, one minute
   lower. The bound is **derived**: a session of `S` minutes admits an `r`-minute bucket only when a multiple
   of `r` lands in a run of `S - r + 1` consecutive minutes, which is certain only while `S - r + 1 >= r`, so
-  `r <= (S + 1) / 2`. **`S` is the *shortest* session and not the nominal one**: `SessionCloseCentral` is
-  operator configuration with no range validation, and at a close before 02:00 Central the reopen falls inside
-  the wall-clock hour spring-forward deletes, making that session 1,320 minutes once a year — so a ceiling
-  derived from 1,380 is 690, and 690 answers an empty series at `SessionCloseCentral = "00:30"` on trade date
-  2030-03-11. Derived from 1,320 it is **660**, and 660 is **tight**: 661 already misses. It **refuses rather
-  than flags**, for the reason `R-2.3` refuses a substituted number: an empty series carrying a warning
-  field is still an empty series, and it reads as a market that printed nothing. It **over-rejects, and says
-  so**: thirty-four widths above the ceiling fit every trade date at the shipped 16:00 close, two of those
-  also survive every close that can shorten a session, and the count keeps falling as the sweep widens — a
-  survivor list is what a sweep failed to disprove rather than a bound, and the check reads no configuration.
+  `r <= (S + 1) / 2`. **`S` is 1,380 for every admissible close** — closes before 02:00 Central are refused
+  at calendar construction (gh#613), so the pigeonhole bound is 690. The served ceiling stays at **660** until
+  a separate card justifies raising it; 661 fits every admitted session but is refused with the band above the
+  ceiling. It **refuses rather than flags**, for the reason `R-2.3` refuses a substituted number: an empty
+  series carrying a warning field is still an empty series, and it reads as a market that printed nothing. It
+  **over-rejects, and says so**: thirty-four widths above the ceiling fit every trade date at the shipped
+  16:00 close, and the count keeps falling as the sweep widens — a survivor list is what a sweep failed to
+  disprove rather than a bound, and the check reads no configuration.
   It is also not by itself sufficient — the look-back reach is
   four bar spans per bar
   asked for, so a resolution and a count each inside its own bound can still name a window that starts before

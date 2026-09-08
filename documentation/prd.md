@@ -170,8 +170,8 @@ The server serves OHLCV bars for a futures instrument at a requested resolution 
   **under its own id** (`R-1.7`), cut at the settled age so the older part is claimed permanently while only
   the young remainder carries the short TTL; a winner records none. **Degradation is loud, and it takes two
   shapes.** An instrument the registry does not serve, and a front whose expiry does not read against the
-  cycle, are conditions of the **whole read**: every range is fetched from `F` as one present slice — exactly
-  the behaviour that preceded this requirement, memoisation included, since an empty answer from `F` is a true
+  cycle, are conditions of the **whole read**: every range is fetched from `F` as one slice — exactly
+  the fetch that preceded this requirement, memoisation included, since an empty answer from `F` is a true
   statement about `F` under the per-contract ledger (`R-1.7`) and a later read with a wider candidate set
   still asks the others — with a **warning naming the instrument and the front, and the cycle where there is one**. A **stretch no
   constructed candidate is listed for** is the narrower case, and only it withholds the memo: that slice alone
@@ -180,12 +180,15 @@ The server serves OHLCV bars for a futures instrument at a requested resolution 
   **A candidate set the venue narrows rather than empties is the third shape, and the two shapes that are
   decided PER SLICE — this one and the fallback above it — are reported to the caller as well as to the log**
   (gh#592). The response carries `history.selection` — `NarrowedByTheVenue`, `FellBackToTheFront`,
-  `AsTheCycleNames` when every expiry the cycle named resolved, and `NotDecidedHere` when this read decided no
+  `AsTheCycleNames` when every expiry the cycle named resolved, `AsTheFrontAlone` when the **whole plan**
+  fell back because there was no cycle to decide against, and `NotDecidedHere` when this read decided no
   history at all — beside `history.unresolved`, the expiries the venue did not list. It is **its own field,
   never a value of `contracts.span`**, which answers the unrelated question of whether the bars cross a roll.
   The two **whole-read** conditions above — an instrument the registry does not serve, and a front whose
-  expiry does not read against the cycle — reach the **log alone**: they produce no historical candidate set
-  to report on, so such a read reports `NotDecidedHere` like any other read that decided none.
+  expiry does not read against the cycle — are recorded **where the plan is cut**, not inferred at the
+  payload (gh#598): a fallback range is not labelled as the present band purely to route it to `F`, and
+  the read reports `AsTheFrontAlone` rather than `NotDecidedHere`. Memoisation does not move — an empty
+  answer from `F` is still a true statement about `F` and still earns the empty-range memo.
   `NotDecidedHere` is therefore a statement about *this read* and never a claim that the stored history is
   whole — the same read repeated once the buckets are stored reports it too, because nothing recorded about a
   stored bucket says which candidate set chose it.

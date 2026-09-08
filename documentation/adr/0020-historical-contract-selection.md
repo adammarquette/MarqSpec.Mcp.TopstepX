@@ -191,6 +191,14 @@ the key, not the lifetime.
   of the same window reports `NotDecidedHere` — "this read decided none", never "the history is whole".
   Recovering it afterwards would need a stored fact this record does not introduce; repairing the run is
   `reselect-bars` (gh#506).
+- **A whole-read fallback is not the present band** (gh#598). §1 still defines the present band as the
+  trailing run of `F` (or `now − PresentHorizon` on a cold store). The two whole-read conditions — an
+  instrument the registry does not serve, and a front whose expiry does not read against the cycle — used
+  to label every outstanding range `Present: true` so the fetch would ask `F`. That made a months-old
+  fallback indistinguishable from a warm present-band read on the payload (`NotDecidedHere`).
+  `RangeSlice.Present` stays a bool answering §1; it gained a **sibling**, `WholeReadFallback`, rather than
+  a third state. The fetch still asks `F` and still earns the empty-range memo; `history.selection`
+  reports `AsTheFrontAlone`.
 - **No new configuration.** `PresentHorizon` and each product's cycle and candidate depth are constants of the
   fetch flow and the registry. A knob for the horizon would make "what is history" depend on a deployment
   setting, and a knob for the cycle would let an operator list a month the exchange does not.
@@ -200,6 +208,27 @@ the key, not the lifetime.
   pretends to.
 - **The Domain grows three pure types** — `ContractExpiry`, `ContractMonthCycle`, `HistoricalContractPolicy`
   — and the gateway's `ExpiryRank` becomes a delegation to the first. Its pinned values are unchanged.
+
+## Decision log
+
+Dated `## Update` entries land below this heading, oldest first. The Decision above is not rewritten.
+
+## Update (2026-09-08) — a whole-read fallback is not the present band (gh#598)
+
+§1 still defines the present band: it starts at `T(F)`, or at `now − PresentHorizon` on a cold store, and
+buckets at or after that point are fetched from the venue's pick. What this card withdraws is the lie that
+routed a whole-read fallback through that band.
+
+`PlanAsync` answers both whole-read conditions — the registry does not serve the instrument, or the venue
+front's expiry does not read against the cycle — through `FromTheFront`. That method used to return
+`new RangeSlice(range, [front], Present: true)`, so a stretch months old was labelled as the present band
+purely so the fetch would ask `F`. `SelectionOf` skips present slices, and the payload said
+`NotDecidedHere` — the same value a warm read reports.
+
+`RangeSlice.Present` stays a bool answering §1. It gained a **sibling**, `WholeReadFallback`, rather than a
+third state: mixing "is this the present band?" with "why are we asking the front?" would collapse two
+questions the way folding `FellBackToTheFront` into `NarrowedByTheVenue` would. The fetch still asks `F`
+and still earns the empty-range memo (`R-1.14`); `history.selection` reports `AsTheFrontAlone`.
 
 ## Follow-ups
 

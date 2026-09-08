@@ -288,6 +288,53 @@ public sealed class HistoricalRangePlannerTests
     }
 
     [Fact]
+    public void FromTheFront_MarksAMonthsOldRangeAsWholeReadFallback_NotPresent()
+    {
+        // WHERE THE PLAN IS CUT (gh#598). Both whole-read arms answer through this method, and until this
+        // card it labelled every range Present: true purely to route it to the venue's pick -- a stretch
+        // from January sitting in the present band by construction. SelectionOf can only describe what the
+        // plan records, so the fifth HistorySelection value is a fact about this slice, not a mapping
+        // invented at the payload.
+        BarRange monthsOld = new(Utc(2026, 1, 5), Utc(2026, 3, 20));
+
+        IReadOnlyList<RangeSlice> slices = HistoricalRangePlanner.FromTheFront([monthsOld], Front);
+
+        RangeSlice slice = slices.Should().ContainSingle().Subject;
+        slice.Range.Should().Be(monthsOld);
+        slice.Candidates.Should().Equal(Front);
+        slice.Present.Should().BeFalse(
+            "a fallback range is not in the present band (ADR-0020 §1); Present is not how the front is asked");
+        slice.WholeReadFallback.Should().BeTrue();
+        slice.FellBackToFront.Should().BeFalse(
+            "that flag is the per-slice empty-candidate degradation, which withholds the memo this path earns");
+
+        HistoricalRangePlanner.SelectionOf(slices).Selection
+            .Should().Be(HistorySelection.AsTheFrontAlone);
+    }
+
+    [Fact]
+    public void AWholeReadFallbackSlice_IsNotMergedIntoThePresentBand()
+    {
+        // Same refusal as a fallen-back or narrowed historical half. IsCycleFrontSlice would otherwise
+        // return true -- one candidate, the front, nothing unresolved -- and Coalesce would fold the
+        // fallback into a Present: true slice, wiping the fact the fifth value is derived from.
+        DateTimeOffset tenureStart = Utc(2026, 8, 10);
+        RangeSlice fallback = new(
+            new BarRange(Utc(2026, 1, 5), tenureStart), [Front], Present: false, WholeReadFallback: true);
+        RangeSlice present = new(new BarRange(tenureStart, Utc(2026, 8, 15)), [Front], Present: true);
+
+        fallback.IsCycleFrontSlice(Front).Should().BeFalse(
+            "the front is the whole candidate set because there was no cycle, not because the cycle named it");
+
+        IReadOnlyList<RangeSlice> merged = HistoricalRangePlanner.Coalesce([fallback, present], Front);
+
+        merged.Should().HaveCount(2, "a whole-read fallback stays a fallback however identical the id looks");
+        merged[0].WholeReadFallback.Should().BeTrue();
+        merged[0].Present.Should().BeFalse();
+        merged[1].Present.Should().BeTrue();
+    }
+
+    [Fact]
     public void AHistoricalHalfThatFellBackToTheFront_IsNotMergedEither()
     {
         // The same refusal at full strength, and the older half of the rule. A fallen-back slice earns no

@@ -91,7 +91,8 @@ public sealed class SessionBarTools(
         + "different question again — not whether these sessions cross a roll, but whether the base bars "
         + "underneath them were chosen from the contracts this product's cycle names: AsTheCycleNames, "
         + "NarrowedByTheVenue (the vendor did not list some of them, so the choice ran over the survivors), "
-        + "FellBackToTheFront (it listed none, so no volume decision ran for that stretch) or NotDecidedHere "
+        + "FellBackToTheFront (it listed none, so no volume decision ran for that stretch), AsTheFrontAlone "
+        + "(the whole plan fell back: no cycle to decide against) or NotDecidedHere "
         + "(THIS call fetched no history — never a statement that the stored history is whole). It is "
         + "described in full on get_bars. The session name is a closed "
         + "vocabulary: an unknown one is an error listing the configured names, never an empty series.")]

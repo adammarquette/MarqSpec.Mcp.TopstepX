@@ -13,10 +13,18 @@ namespace MarqSpec.Mcp.TopstepX.MarketData;
 /// <param name="Present">
 /// Whether this piece sits in the present band — the stretch the venue's own active contract answers for
 /// (ADR-0020 §1). A present slice is fetched exactly as it is today; a historical one is not.
+/// <b>It is not a routing flag.</b> A whole-read fallback also asks the front, and must not be labelled
+/// present just to send it down that path (gh#598).
 /// </param>
 /// <param name="FellBackToFront">
 /// Whether the candidate set is the venue's own pick because <b>nothing survived the existence check</b>,
 /// rather than because the cycle named it.
+/// </param>
+/// <param name="WholeReadFallback">
+/// Whether this piece exists because the <b>whole plan</b> could not be cut against a cycle — the registry
+/// does not serve the instrument, or the venue front's expiry does not read against the product's cycle
+/// (gh#598). Sibling of <paramref name="Present"/>, not a third state of it: the range is still not in the
+/// present band, even when it is months old and still fetched from the front.
 /// </param>
 /// <remarks>
 /// <para>
@@ -38,7 +46,8 @@ public sealed record RangeSlice(
     BarRange Range,
     IReadOnlyList<string> Candidates,
     bool Present,
-    bool FellBackToFront = false)
+    bool FellBackToFront = false,
+    bool WholeReadFallback = false)
 {
     /// <summary>
     /// The expiries the cycle named for this slice's trade dates that the venue does not list, nearest first.
@@ -71,13 +80,15 @@ public sealed record RangeSlice(
     /// </returns>
     /// <remarks>
     /// Two such slices side by side ask the same contract the same question, so the caller merges them and a
-    /// range cut at the tenure start buys no page boundary the old shape did not have. A slice that fell back
-    /// or whose set was <i>narrowed</i> by a venue negative is not one of these, however identical its
-    /// candidate list looks: merged into the present band it would stop being history at all — no candidate
-    /// set, no volume decision, and no warning — for a stretch the front is not the answer for.
+    /// range cut at the tenure start buys no page boundary the old shape did not have. A slice that fell back,
+    /// whose set was <i>narrowed</i> by a venue negative, or whose whole plan fell back (gh#598) is not one
+    /// of these, however identical its candidate list looks: merged into the present band it would stop being
+    /// history at all — no candidate set, no volume decision, and no warning — for a stretch the front is
+    /// not the answer for.
     /// </remarks>
     public bool IsCycleFrontSlice(string frontContractId) =>
         !FellBackToFront
+        && !WholeReadFallback
         && Unresolved.Count == 0
         && Candidates.Count == 1
         && string.Equals(Candidates[0], frontContractId, StringComparison.Ordinal);
@@ -101,6 +112,53 @@ public sealed record RangeSlice(
 /// </remarks>
 public static class HistoricalRangePlanner
 {
+    /// <summary>
+    /// Every outstanding range as one slice on the venue's own pick, because there is <b>no cycle to cut
+    /// against</b> (gh#598).
+    /// </summary>
+    /// <param name="outstanding">The ranges the read still owes, ascending and non-overlapping.</param>
+    /// <param name="frontContractId">The contract the venue marks active.</param>
+    /// <returns>
+    /// One slice per non-empty range, <see cref="RangeSlice.WholeReadFallback"/> set and
+    /// <see cref="RangeSlice.Present"/> false — a months-old fallback is not the present band.
+    /// </returns>
+    /// <exception cref="ArgumentNullException">A required argument is null.</exception>
+    /// <remarks>
+    /// <para>
+    /// <b>This is the other cut, and it used to lie about the band.</b> Both of <c>R-1.14</c>'s whole-read
+    /// conditions — an instrument the registry does not serve, and a front whose expiry does not read
+    /// against the cycle — answer through this method. Labelling those ranges <c>Present: true</c> routed
+    /// them to the front and made <see cref="SelectionOf"/> skip them, so a months-old fallback reported
+    /// <see cref="HistorySelection.NotDecidedHere"/> like a warm read. The sibling records the degradation
+    /// where the plan is cut; the fetch still asks the front and still earns the empty-range memo, because
+    /// an empty answer from <c>F</c> is a true statement about <c>F</c>.
+    /// </para>
+    /// <para>
+    /// Pure for the same reason <see cref="PlanSlices"/> is: no store, no venue, no clock.
+    /// </para>
+    /// </remarks>
+    public static IReadOnlyList<RangeSlice> FromTheFront(
+        IReadOnlyList<BarRange> outstanding,
+        string frontContractId)
+    {
+        ArgumentNullException.ThrowIfNull(outstanding);
+        ArgumentException.ThrowIfNullOrWhiteSpace(frontContractId);
+
+        List<RangeSlice> slices = [];
+
+        foreach (BarRange range in outstanding)
+        {
+            if (range is null || range.IsEmpty)
+            {
+                continue;
+            }
+
+            slices.Add(new RangeSlice(range, [frontContractId], Present: false, WholeReadFallback: true));
+        }
+
+        return slices;
+    }
+
     /// <summary>
     /// Cuts each outstanding range at the tenure start, and each historical piece wherever the trade date's
     /// candidate set changes.
@@ -298,13 +356,15 @@ public static class HistoricalRangePlanner
     /// </para>
     /// <para>
     /// <b>Pure, and public for the reason <see cref="Coalesce"/> is</b>: it reads no store, no clock and no
-    /// venue, so the cheap tier can pin all four states directly, and this assembly declares no
+    /// venue, so the cheap tier can pin all five states directly, and this assembly declares no
     /// <c>InternalsVisibleTo</c>.
     /// </para>
     /// <para>
     /// A <b>present</b> slice constructs no candidate and can therefore drop none, so it neither degrades the
     /// answer nor promotes it past <see cref="HistorySelection.NotDecidedHere"/> — a present-only read
-    /// decided no history at all.
+    /// decided no history at all. A <see cref="RangeSlice.WholeReadFallback"/> slice is the other cut: it
+    /// also asks the front alone, and it <i>is</i> a degradation, reported as
+    /// <see cref="HistorySelection.AsTheFrontAlone"/>.
     /// </para>
     /// </remarks>
     public static HistoryCandidates SelectionOf(IReadOnlyList<RangeSlice> slices)
@@ -316,6 +376,16 @@ public static class HistoricalRangePlanner
 
         foreach (RangeSlice slice in slices)
         {
+            if (slice.WholeReadFallback)
+            {
+                if (HistorySelection.AsTheFrontAlone > selection)
+                {
+                    selection = HistorySelection.AsTheFrontAlone;
+                }
+
+                continue;
+            }
+
             if (slice.Present)
             {
                 continue;

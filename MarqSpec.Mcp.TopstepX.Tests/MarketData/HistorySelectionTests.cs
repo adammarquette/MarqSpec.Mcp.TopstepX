@@ -59,10 +59,39 @@ public sealed class HistorySelectionTests
     {
         // The present band is the venue's own pick by definition (ADR-0020 §1) -- there is no candidate set
         // and therefore nothing to have narrowed. It is not "the cycle was whole" either: no cycle ran.
+        //
+        // PINNED AGAINST THE NEW VALUE LEAKING HERE (gh#598). A genuinely present-band read and a
+        // whole-read fallback both ask the front alone; folding the fallback's value into this arm would
+        // make a warm poll look like a degradation, and the other way around would hide the degradation
+        // again. Replacing NotDecidedHere with AsTheFrontAlone reddens this test.
         RangeSlice present = new(Range(10, 12), [Front], Present: true);
 
         HistoricalRangePlanner.SelectionOf([present]).Selection
             .Should().Be(HistorySelection.NotDecidedHere);
+    }
+
+    [Fact]
+    public void AWholeReadFallback_IsAsTheFrontAlone_NotNotDecidedHere()
+    {
+        // THE CARD (gh#598). PlanAsync answers both whole-read conditions -- the registry does not serve
+        // the instrument, or the venue front's expiry does not read against the cycle -- through
+        // FromTheFront. Until this state existed that method labelled the whole range Present: true, so
+        // SelectionOf skipped it and the payload said NotDecidedHere, the same value a warm read reports.
+        //
+        // The distinction is recorded on the slice, not inferred at the payload: a stretch months old is
+        // not the present band just because it is routed to the front. Present stays a bool; it gains a
+        // sibling. Replacing AsTheFrontAlone with NotDecidedHere reddens this test.
+        RangeSlice fallback = new(Range(1, 8), [Front], Present: false, WholeReadFallback: true);
+
+        fallback.Present.Should().BeFalse(
+            "a months-old fallback is not the present band; Present is not a routing flag");
+        fallback.WholeReadFallback.Should().BeTrue();
+
+        HistoryCandidates history = HistoricalRangePlanner.SelectionOf([fallback]);
+
+        history.Selection.Should().Be(HistorySelection.AsTheFrontAlone);
+        history.Unresolved.Should().BeEmpty(
+            "there was no candidate set to drop an expiry from -- the cycle never ran");
     }
 
     [Fact]

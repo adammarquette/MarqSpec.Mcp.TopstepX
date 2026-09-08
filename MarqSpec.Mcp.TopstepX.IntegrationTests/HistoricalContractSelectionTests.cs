@@ -1362,7 +1362,18 @@ public sealed class HistoricalContractSelectionTests : IAsyncLifetime
         ToolGuards guards = new(market);
 
         SessionBarService sessions = new(
-            _database, cache, gateway, Calendar, clock, NullLogger<SessionBarService>.Instance);
+            _database,
+            cache,
+            gateway,
+            Calendar,
+            new IndicatorProjector(
+                _database,
+                new IndicatorCatalog(
+                    Options.Create(new IndicatorOptions { AtrPeriod = 3, RsiPeriod = 3 }), Calendar),
+                NullLogger<IndicatorProjector>.Instance,
+                _telemetry),
+            clock,
+            NullLogger<SessionBarService>.Instance);
 
         return new ToolFamily(
             new BarTools(resolver, cache, guards, clock),

@@ -494,7 +494,7 @@ public sealed class SessionIndicatorProjectionTests : IAsyncLifetime
             SessionCloseCentral = "16:00",
         });
 
-        IndicatorProjector projector = new(_database, catalog, NullLogger<IndicatorProjector>.Instance);
+        IndicatorProjector projector = new(_database, catalog, NullLogger<IndicatorProjector>.Instance, ConcurrencyHarness.Telemetry);
 
         return new SessionIndicatorTools(
             new InstrumentResolver(new InstrumentRegistry(options), new StoreAvailabilityHolder()),
@@ -505,7 +505,8 @@ public sealed class SessionIndicatorProjectionTests : IAsyncLifetime
                 catalog,
                 projector,
                 new FakeTimeProvider(SettledNow),
-                NullLogger<IndicatorCacheService>.Instance),
+                NullLogger<IndicatorCacheService>.Instance,
+                ConcurrencyHarness.Telemetry),
             new SessionCatalog(options, ConcurrencyHarness.Calendar()),
             ConcurrencyHarness.Calendar(),
             new SeriesGateway(venue, []),
@@ -521,7 +522,8 @@ public sealed class SessionIndicatorProjectionTests : IAsyncLifetime
         SeriesKey key, DateTimeOffset now, HostTelemetry? telemetry = null)
     {
         IndicatorProjector projector = new(
-            _database, ConcurrencyHarness.Catalog(), NullLogger<IndicatorProjector>.Instance, telemetry);
+            _database, ConcurrencyHarness.Catalog(), NullLogger<IndicatorProjector>.Instance,
+            telemetry ?? ConcurrencyHarness.Telemetry);
 
         await using IDbContextTransaction transaction = await _database.Database
             .BeginTransactionAsync(IsolationLevel.RepeatableRead, CancellationToken.None);
@@ -643,13 +645,7 @@ public sealed class SessionIndicatorProjectionTests : IAsyncLifetime
         FakeTimeProvider clock = new(now);
         SeriesGateway gateway = new(venue, RthBars());
 
-        BarCacheService bars = new(
-            _database,
-            gateway,
-            ConcurrencyHarness.Calendar(),
-            ConcurrencyHarness.Projector(_database),
-            clock,
-            NullLogger<BarCacheService>.Instance);
+        BarCacheService bars = ConcurrencyHarness.Cache(_database, venue, RthBars(), now);
 
         return new SessionBarService(
             _database,

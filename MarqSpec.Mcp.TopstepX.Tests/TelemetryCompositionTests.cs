@@ -50,6 +50,18 @@ public sealed class TelemetryCompositionTests
     /// <summary>An endpoint that parses and is never dialled — no test here exports anything real.</summary>
     private const string Endpoint = "http://127.0.0.1:4317";
 
+    /// <summary>
+    /// The <see cref="ActivitySource"/> an outbound request raises, and what
+    /// <c>AddHttpClientInstrumentation</c> subscribes to.
+    /// </summary>
+    /// <remarks>
+    /// The runtime's own source, not the OpenTelemetry package's — the instrumentation is a subscription to
+    /// <c>System.Net.Http</c>, so this is the name to match and there is no constant to borrow for it. The
+    /// <b>display name is not</b>: it is the HTTP method (<c>GET</c>), which is neither stable across semantic
+    /// convention versions nor unique to this test. The URL below is what identifies the span.
+    /// </remarks>
+    private const string HttpClientSourceName = "System.Net.Http";
+
     private static readonly Dictionary<string, string?> _baseSettings = new()
     {
         ["ConnectionStrings:Default"] = "Host=localhost;Database=x;Username=u;Password=p",
@@ -243,10 +255,16 @@ public sealed class TelemetryCompositionTests
         listener.Start();
         int port = ((IPEndPoint)listener.LocalEndpoint).Port;
 
+        // ONE VARIABLE, USED TWICE ON PURPOSE (gh#596). The OS hands this port to this listener and to nothing
+        // else while it is open, so this URL names THIS request out of every span in the process. The
+        // assertion below finds the test's own span by it, and interpolating the URL a second time down there
+        // instead would let the two drift into a filter that quietly matches nothing.
+        string requestUrl = $"http://127.0.0.1:{port}/v2/embed";
+
         Task served = RespondOnceAsync(listener);
 
         using (HttpClient client = new())
-        using (HttpRequestMessage request = new(HttpMethod.Get, $"http://127.0.0.1:{port}/v2/embed"))
+        using (HttpRequestMessage request = new(HttpMethod.Get, requestUrl))
         {
             request.Headers.TryAddWithoutValidation("Authorization", $"Bearer {EmbeddingKey}");
             request.Headers.TryAddWithoutValidation("X-Api-Key", VenueKey);
@@ -272,9 +290,37 @@ public sealed class TelemetryCompositionTests
 
         IReadOnlyList<Activity> spans = exported.Snapshot();
 
-        spans.Should().NotBeEmpty(
-            "the HttpClient instrumentation must be subscribed at all, or this test asserts over an empty list "
-            + "and passes forever");
+        // THE SPAN THIS TEST CAUSED, FOUND BY ITS URL — not "the snapshot is non-empty" (gh#596).
+        //
+        // `NotBeEmpty` over the whole snapshot was measuring the suite, not the registration. The listener is
+        // process-global, so on a machine where the sibling collections happen to emit inside this test's
+        // window the snapshot also holds THEIR spans: 111 and 103 of them on two full-suite Release runs
+        // measured for gh#596, where this test makes exactly ONE request — 102 foreign, 1 own. Delete
+        // `.AddHttpClientInstrumentation()` from ConfigureTelemetry and 58 of those 103 survive it BY
+        // ARITHMETIC — the 45 that are HttpClient's own are all the deletion takes — which is enough to
+        // satisfy `NotBeEmpty` without a single span this test caused.
+        //
+        // THAT GREEN HAS NEVER BEEN OBSERVED, and saying so is the point: gh#596 wrote it in the CONDITIONAL,
+        // off an UNMUTATED probe, and every mutation run since has reddened — 17 full-suite Release runs in
+        // the pinned SDK container, at 1, 2, 4, 8 and all 20 CPUs, because no foreign span reaches this test
+        // there at all (the same probe, unmutated, prints `count=1`). Both halves are real, and together they
+        // are the defect at its sharpest: whether the deletion is caught came down to the machine.
+        //
+        // The URL is what makes it independent of that. `port` is this listener's alone for as long as it is
+        // open, so `url.full` names this request and no other — and it keeps naming it however loud or quiet
+        // the rest of the suite becomes later. The two alternatives weighed in gh#596 both pin the suite of
+        // the day rather than the registration: matching the SOURCE cannot work, because `System.Net.Http` is
+        // exactly what the neighbouring suites' own clients raise, and serialising this class against them
+        // holds only until the next suite that speaks HTTP is written.
+        IReadOnlyList<Activity> own = [.. spans.Where(span =>
+            span.Source.Name == HttpClientSourceName
+            && span.TagObjects.Any(tag => tag.Key == "url.full"
+                && string.Equals(tag.Value as string, requestUrl, StringComparison.Ordinal)))];
+
+        own.Should().ContainSingle(
+            "ConfigureTelemetry must AddHttpClientInstrumentation(), or the one request this test makes reaches "
+            + $"no span at all -- the {spans.Count} span(s) exported here are whatever the rest of the suite "
+            + "happened to raise beside it, and they say nothing about this registration");
 
         foreach (Activity activity in spans)
         {

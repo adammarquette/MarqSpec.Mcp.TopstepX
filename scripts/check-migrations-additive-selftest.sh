@@ -1515,9 +1515,16 @@ ok "ok  $cases self-test cases — check-migrations-additive.sh rejects each des
 # | 8 | "no locatable `Up()` means no `Down()` boundary" (the | **0. SURVIVOR** -- unreachable from a fixture,  |
 # |   | file searched at any indent instead)                  |   and that was checked, not argued. See below.  |
 #
-# Rows 2 through 5 are four decisions inside ONE regex, and they are listed as four because that is what
-# they are: each was mutated alone and each has a case that no other mutant reddens. A compound pattern
-# does not get one ledger row for being written on one line.
+# Rows 1 through 5 are five decisions inside ONE regex, and they are listed as five because that is what
+# they are: each was mutated alone and the five SETS of red cases are all distinct. **WHAT SEPARATES THEM IS
+# THE SET, NOT A UNIQUE CASE, and the first draft of this sentence claimed the stronger thing** -- that each
+# row had a case no other mutant reddens. That is false twice over: row 3's single case is also one of row
+# 2's, and row 1's single case is also one of row 5's. Both are strict SUBSETS, and only rows 4 and 6 own a
+# case outright. Every row is still pinned -- deleting its decision reddens a case, and no two rows redden
+# the same set, so the table can tell them apart. But *pinned by a set difference* and *pinned by a unique
+# case* are different claims, and stating the stronger one is exactly the "a grade can promise more than its
+# evidence" failure this ledger already names, committed here by the pull request that re-audits it. A
+# compound pattern still does not get one row for being written on one line.
 #
 # FIFTH SWEEP, PART TWO -- THE RE-RUNS. `declares()` changed, so every earlier row whose separating fixture
 # that change could have un-pinned was RE-RUN rather than re-read. Same baseline blob, same container.
@@ -1570,10 +1577,20 @@ ok "ok  $cases self-test cases — check-migrations-additive.sh rejects each des
 # *at the migration class's member indent*, and a type declared BESIDE the migration class -- same
 # namespace, same nesting level -- has its members at exactly that indent too. A genuine
 # `public override void Down(MigrationBuilder b)` there, above the migration class, would still take
-# `down_start`. Telling it apart needs class IDENTITY rather than nesting depth, which is a parser, and
-# gh#601 puts that out of scope explicitly. It is also one more construct whose only function is to move the
-# boundary, and an author willing to write one can lie in a `// destructive-migration:` marker instead --
-# which the design accepts and hands to the reviewer.
+# `down_start`. gh#612 is where that is decided; it carries a worked bypass, and the part this note did not
+# name is the FILE-SCOPED NAMESPACE, which puts the class declaration at column 0 where `MEMBER_RE` cannot
+# see it, so nothing ends the excluded span either.
+#
+# **AND THE FIRST DRAFT OF THIS NOTE SAID CLOSING IT NEEDS A PARSER. THAT IS FALSE, AND THIS FILE WROTE IT.**
+# Bounding the `Down()` search to the migration class's own brace span needs no machinery `down_end` does not
+# already have -- the closing brace in the declaration's own column is exactly the rule that ends the `Down()`
+# body today. It is a scoping question, not a language question, and calling it a parser is the kind of claim
+# that retires a defect by describing it as impossible. **A newly-written false claim is worse than an
+# inherited one**, because nothing above it is stale: it is the very defect class this card exists to fight,
+# committed in the paragraph recording that card. What is TRUE is the second half, and it is the whole reason
+# gh#601 stopped here: this is one more construct whose only function is to move the boundary, and an author
+# willing to write one can lie in a `// destructive-migration:` marker instead -- which the design accepts by
+# construction and hands to the reviewer.
 #
 # NOT MUTATED -- claimed as exercised, never as pinned
 #

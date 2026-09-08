@@ -388,6 +388,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **`SessionCloseCentral` before 02:00 Central is refused at startup rather than admitted silently.** At
+  `00:30` the reopen is `01:30`, so the spring-forward transition falls inside Monday's session on trade date
+  2030-03-11 and that session is 1,320 elapsed minutes rather than 1,380 — once a year, with nothing in the
+  calendar's contract saying a session may be short. `BarSessionCalendar.Parse` now refuses the hundred and
+  twenty whole-minute closes from `00:00` to `01:59`, naming the close and the shortened length. Every
+  admissible close produces the nominal session, so `ToolGuards.ShortestSessionMinutes` equals
+  `SessionMinutes`; the resolution ceiling stays at 660 until a separate card justifies 690 (gh#613,
+  [ADR-0005](documentation/adr/0005-session-aware-gap-detection.md) *Update (2026-09-08)*, `R-1.9`).
+
 - **The resolution ceiling is now 660 minutes — half the *shortest* session — rather than 1,379, and a
   `resolutionMinutes` between 661 and 1,379 is refused instead of served.** Those widths were legal and, on
   most trade dates, unanswerable: buckets are anchored on a fixed UTC grid rather than on the session open, so

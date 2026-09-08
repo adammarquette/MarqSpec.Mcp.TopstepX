@@ -97,6 +97,31 @@ sync problem for a handful of dates a year.
 | Update | What changed |
 |---|---|
 | [2026-09-06](#update-2026-09-06--the-calendar-also-defines-session-windows) | The same trade-date model now also defines **session windows**: `SessionWindows` (gh#498) reads this calendar to place a `SessionDefinition` in UTC, and adds the base-resolution and boundary rules that keep those windows on the stored bucket grid. What is derived from them is [ADR-0022](0022-session-bars-derived-complete-or-absent.md) |
+| [2026-09-08](#update-2026-09-08--refuse-a-close-that-puts-spring-forward-inside-a-session) | **Refuse** a session close whose reopen lands before 03:00 Central — the hundred and twenty whole-minute closes from `00:00` to `01:59` — at calendar construction, naming the close and the shortened session length it would produce (gh#613) |
+
+## Update (2026-09-08) — refuse a close that puts spring-forward inside a session
+
+**Decision:** refuse, at calendar construction, rather than admit a session that is an hour shorter once a
+year.
+
+Spring-forward deletes the wall-clock hour `[02:00, 03:00)` Central. The session for trade date D opens at
+close + maintenance on D−1 and closes at the close on D. When the reopen lands before 03:00, that deleted
+hour can fall inside the session — concretely, at `SessionCloseCentral = "00:30"`, trade date **2030-03-11**
+is **1,320** elapsed minutes rather than **1,380**. Nothing else in this calendar's contract says a session
+may be short, and `SessionBucketGuard`, `SessionWindows`, and session-bar aggregation all reason as though
+every session is the nominal length.
+
+`BarSessionCalendar.Parse` and the constructor therefore refuse any close before **02:00** Central, naming
+the close and the length the spring-forward example trade date would produce. The first admissible
+whole-minute close is **02:00** (reopen **03:00**, after the deleted hour).
+
+**What moved with it.** `ToolGuards.ShortestSessionMinutes` now equals `SessionMinutes` — every configuration
+the server accepts produces the nominal 1,380-minute session. `ToolGuards.MaxResolutionMinutes` stays at
+**660**; the pigeonhole bound on 1,380 is 690, but raising the ceiling is a separate trade on its own
+evidence, not a side effect of this refusal (gh#613 scope).
+
+**What did not change.** Gap detection, the coverage ledger, and session-window derivation are untouched —
+only which session closes exist to configure.
 
 ## Update (2026-09-06) — the calendar also defines session windows
 

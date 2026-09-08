@@ -85,8 +85,9 @@ page against either**, so check it against the code, never against another docum
   caller must write. **Every entry below names its own form** — this page is read by lookup, and a reader who
   lands on one entry should not have to have read this bullet. `PayloadNullWireShapeTests` pins both forms
   against the real serializer options, so the statements here fail a build rather than drift (gh#85).
-- **`resolutionMinutes` is caller-chosen, and every resolution from `1` to `660` — one minute up to half the
-  shortest session — is servable.** No tool enumerates supported timeframes, because the range is
+- **`resolutionMinutes` is caller-chosen, and every resolution from `1` to `660` — the served ceiling,
+  deliberately below the 690 pigeonhole bound on every admissible 1,380-minute session — is servable.** No
+  tool enumerates supported timeframes, because the range is
   contiguous rather than a list —
   each resolution is an independent cached series fetched from the venue, never derived from a finer one
   ([ADR-0010](adr/0010-per-call-resolutions-fetched-not-derived.md)). **Both ends are refused**, by every tool

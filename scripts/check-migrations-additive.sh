@@ -30,10 +30,31 @@
 #     .DropTable(         .DropColumn(        .RenameColumn(      .RenameTable(
 #     .AlterColumn<T>( or .AlterColumn(       .DropSchema(        .DropSequence(
 #     .DropIndex(         -- ONLY when the same migration also calls .DropColumn(; see below
-#   with the `(` allowed to sit on the FOLLOWING line, which is legal C# that `dotnet format` accepts.
+#   with the `(` allowed to sit on the FOLLOWING line and whitespace allowed after the `.`, both of which are
+#   legal C# that `dotnet format` accepts or repairs in a LATER step of the same job.
 #   And, over the whole text of a `migrationBuilder.Sql(...)` call (multi-line literals included), or on any
 #   other non-comment line outside a region, case-insensitively:
 #     DROP <space>        TRUNCATE            ALTER TABLE … <space>TYPE<space>
+#
+#   IN THE MIGRATION AND IN THE GENERATED PARTIALS BESIDE IT. `Foo.Designer.cs` declares `partial class Foo`,
+#   so a helper written there is a member of the migration class; skipping it by name was the one place a
+#   helper stayed invisible once the scan widened past `Up()`. The model snapshot is read on the same terms.
+#   They are reported separately from the migration count, because they are not migrations.
+#
+# WHERE THE BOUNDARY COMES FROM, WHICH IS A DIFFERENT KIND OF PATTERN
+#
+# `Up()` and `Down()` are located through `declares()`, never by matching a raw line: the line must not be a
+# `//` comment, must not be the interior of a `Sql(` string literal, and must carry a modifier keyword. A
+# comment inside `Up()` reading "there is no void Down(MigrationBuilder …) worth writing" otherwise set the
+# excluded span from that comment to the real declaration -- switching off the rest of `Up()` while
+# reporting the `Down()` body's own drop as if it were in `Up()`. A finding needle that is too loose costs a
+# false positive; a BOUNDARY needle that is too loose excludes code.
+#
+# The two boundaries that are still decided from raw text -- `MEMBER_RE`/the brace rule for where `Down()`
+# ENDS, and `STATEMENT_END_RE` for where a `Sql(` region ends -- are left that way on purpose, and the reason
+# is the DIRECTION each fails in: a string literal that falsely matches either one ends a region EARLY, so
+# more is scanned. Making them string-aware would let an unterminated literal run a region to end of file and
+# take a sibling helper with it, which is the quiet direction.
 #
 # NOT THE `Up()` BODY ALONE, and that is a correction rather than a design (gh#529 review). Scanning only
 # `Up()` meant an operation in a SIBLING MEMBER of the same class -- a private helper `Up()` calls -- was
@@ -101,8 +122,10 @@
 #
 # `git merge-base BASE HEAD`, then `git diff --diff-filter=ACMR <merge-base>` -- so it reads what THIS branch
 # added or changed, committed or not, and never a migration the base branch grew after the branch point.
-# Deletions are filtered out (a deleted migration is a history rewrite, not a schema change) and
-# `*.Designer.cs` and the model snapshot are excluded: they are generated mirrors carrying no operations.
+# Deletions are filtered out (a deleted migration is a history rewrite, not a schema change). Nothing under
+# the migrations directory is excluded by NAME any more: `*.Designer.cs` and the model snapshot are read on
+# the same passes, and only their COUNT is kept separate, because the green line's `N migration file(s)` is
+# an evidence number about migrations.
 # `git ls-files --others` is read on top of it, because a migration `dotnet ef` has just scaffolded and
 # nobody has added yet is invisible to `git diff` -- and going green on the file the author is about to
 # commit is worse than saying nothing.
@@ -215,14 +238,21 @@ fi
 # A capture strips trailing newlines and this list is read back as lines (gh#164), so it goes through a file.
 mapfile -t DIFFED < "$DIFF_LIST"
 
+# THE GENERATED MIRRORS ARE READ, and they used to be skipped by name. `Foo.Designer.cs` declares
+# `partial class Foo`, so a helper written there is a member of the migration class -- which was harmless
+# while no helper was read anywhere, and became the one place a helper was invisible the moment the scan
+# widened past `Up()`. They go in their own list because they are NOT migrations: `files_read` is the count
+# the green line offers as evidence, and inflating it by two generated files per migration would make that
+# number describe something else. Neither is required to declare an `Up()` -- they legitimately have none.
 MIGRATIONS=()
+PARTIALS=()
 for path in ${DIFFED[@]+"${DIFFED[@]}"}; do
   [ -n "$path" ] || continue
   case "$path" in
-    *.Designer.cs)     continue ;;   # generated mirror of the model; carries no operations
-    *ModelSnapshot.cs) continue ;;   # ditto
-    "$MIG_DIR"/*.cs)   MIGRATIONS+=("$path") ;;
-    *)                 continue ;;
+    "$MIG_DIR"/*.Designer.cs)     PARTIALS+=("$path") ;;
+    "$MIG_DIR"/*ModelSnapshot.cs) PARTIALS+=("$path") ;;
+    "$MIG_DIR"/*.cs)              MIGRATIONS+=("$path") ;;
+    *)                            continue ;;
   esac
 done
 
@@ -233,22 +263,42 @@ done
 # ---------------------------------------------------------------------------------------------------------
 
 OPS=(DropTable DropColumn RenameColumn RenameTable AlterColumn DropSchema DropSequence)
+# THE DOT MAY CARRY WHITESPACE. `migrationBuilder . DropColumn (` was left to `dotnet format`, which does
+# catch it with three `error WHITESPACE` -- recorded once as "defence in depth that exists by luck". Review
+# is right that the luck is thinner than it reads: `Format` is a LATER STEP IN THE SAME JOB, and this gate's
+# whole placement argument is that it runs BEFORE `setup-dotnet`. A future job split would take that backstop
+# away silently, with nothing going red. One character class costs less than the paragraph defending it.
+DOT='\.[[:space:]]*'
 # `.AlterColumn<string>(`, `.DropColumn(` -- and `.DropColumn` at END OF LINE with the `(` on the next one,
 # which is legal C#, survives `dotnet format --verify-no-changes` untouched, and defeated every needle here
 # until review found it. The mirror shape (`migrationBuilder` alone, `.DropColumn(` below) was already
 # caught, so this closes the one-sided half.
 CALL='([[:space:]]*[<(]|[[:space:]]*$)'
-DROP_COLUMN_RE="\\.DropColumn${CALL}"
-DROP_INDEX_RE="\\.DropIndex${CALL}"
-SQL_CALL_RE='\.Sql[[:space:]]*\('
+DROP_COLUMN_RE="${DOT}DropColumn${CALL}"
+DROP_INDEX_RE="${DOT}DropIndex${CALL}"
+SQL_CALL_RE="${DOT}Sql[[:space:]]*\\("
 # A statement can also end on a line carrying nothing but its `;`, which is how an unterminated region used
 # to run on and swallow the next call whole.
 STATEMENT_END_RE='(\)[[:space:]]*;|^[[:space:]]*\)?[[:space:]]*;[[:space:]]*$)'
 COMMENT_RE='^[[:space:]]*//'
 MARKER_RE='^[[:space:]]*//[[:space:]]*destructive-migration:[[:space:]]*[^[:space:]]'
-UP_RE='void[[:space:]]+Up[[:space:]]*\(MigrationBuilder'
-DOWN_RE='void[[:space:]]+Down[[:space:]]*\(MigrationBuilder'
-MEMBER_RE='^[[:space:]]+(public|private|protected|internal)[[:space:]]'
+# THE BOUNDARY NEEDLES. These decide which REGION of a file is read rather than reporting a finding, and
+# that makes them a different kind of pattern: a finding needle that is too loose costs a false positive,
+# while a boundary needle that is too loose EXCLUDES CODE. Round two's hole was exactly here -- `DOWN_RE`
+# was matched against raw text, so a `//` comment inside `Up()` naming the method it was talking about
+# ("there is no void Down(MigrationBuilder …) worth writing") set `down_start` at the comment and `down_end`
+# at the real declaration, and the whole rest of `Up()` fell out of every pass. A string literal did the
+# same. They are therefore matched through `declares()` below, never against a line directly.
+#
+# The `(` may sit at END OF LINE, because a wrapped signature is legal C#: without that, `down_start` stayed
+# 0, the whole file was scanned, and an ordinary additive migration was reddened by its own `Down()`.
+UP_RE='void[[:space:]]+Up[[:space:]]*\([[:space:]]*(MigrationBuilder|$)'
+DOWN_RE='void[[:space:]]+Down[[:space:]]*\([[:space:]]*(MigrationBuilder|$)'
+# AND AN ACCESS MODIFIER IS NOT REQUIRED TO DECLARE A MEMBER. `static void RetireLegacy(MigrationBuilder)`
+# is legal C#, defaults to private, and `dotnet format` will not add a modifier -- so a `MEMBER_RE` wanting
+# one never found the end of the `Down()` body, `down_end` ran to end of file, and a sibling helper written
+# that way was swallowed whole. Same shape as the decoy above, found by auditing rather than by review.
+MEMBER_RE='^[[:space:]]+(public|private|protected|internal|static|override|virtual|abstract|sealed|partial|async|extern|unsafe)[[:space:]]'
 
 # Matched case-insensitively. The left boundary is what keeps `.DropColumn(` -- no space after Drop -- out
 # of the DROP arm, so the two families cannot be confused for one another in a diagnostic.
@@ -261,6 +311,7 @@ SQL_LABELS=('raw SQL: DROP' 'raw SQL: TRUNCATE' 'raw SQL: ALTER TABLE … TYPE')
 
 failures=0
 files_read=0
+partials_read=0
 ops_found=0
 acknowledged=0
 SQL_LABEL=''
@@ -325,8 +376,12 @@ adjudicate() {  # $1 file  $2 line
   ops_found=$(( ops_found + count ))
 
   if [ "$count" -gt 1 ]; then
+    # THE ACTIONABLE HALF LEADS, and the sentence has to fit the case where there is NO marker at all --
+    # which is most of them. "One marker acknowledges ONE operation" as an opener describes a marker the
+    # author may never have written.
     die "  AMBIGUOUS LINE  $file:$line  $count destructive operations on one line ($labels)"
-    die "                  One marker acknowledges ONE operation. Put them on separate lines."
+    die "                  Put them on separate lines. A marker acknowledges ONE operation, and one"
+    die "                  sentence cannot say which of two acts it describes."
     failures=$(( failures + 1 ))
     return 0
   fi
@@ -343,31 +398,72 @@ adjudicate() {  # $1 file  $2 line
   failures=$(( failures + 1 ))
 }
 
-for file in ${MIGRATIONS[@]+"${MIGRATIONS[@]}"}; do
-  if [ ! -f "$file" ]; then
-    die "  UNREADABLE  $file is in the diff and not on disk. This gate did not read it."
-    failures=$(( failures + 1 ))
-    continue
-  fi
-  files_read=$(( files_read + 1 ))
+# ---------------------------------------------------------------------------------------------------------
+# READING ONE FILE. Called for a migration, where `Up(MigrationBuilder)` must be locatable, and for the
+# generated partials beside it, where it must not be.
+# ---------------------------------------------------------------------------------------------------------
+
+scan_file() {  # $1 path  $2 1 if Up(MigrationBuilder) must be locatable
+  local file="$1" require_up="$2"
+  local sql_open=0 sql_text='' indent='' brace_re=''
 
   mapfile -t LINES < "$file"
   n=${#LINES[@]}
   # .gitattributes pins LF, but a stray CR would defeat every `$`-anchored match below in silence.
   for (( i = 0; i < n; i++ )); do LINES[$i]="${LINES[$i]%$'\r'}"; done
 
-  up_start=0
-  for (( i = 0; i < n; i++ )); do
-    if [[ "${LINES[$i]}" =~ $UP_RE ]]; then
-      up_start=$(( i + 1 ))
-      break
+  # PASS 0 -- the migrationBuilder.Sql( regions, over the WHOLE file and BEFORE any boundary is decided.
+  # THE ORDER IS THE POINT. The boundaries below are read off raw text, and a boundary a string literal can
+  # pick is a boundary an attacker or an unlucky comment picks -- so they consult this map, which means the
+  # map cannot in turn depend on them. A region opened inside `Down()` is tracked here for that reason
+  # alone; nothing is REPORTED from one until `scanned()` has had its say, below.
+  declare -A in_region=()
+  declare -A region_text=()
+  local -a region_opens=()
+  for (( ln = 1; ln <= n; ln++ )); do
+    line="${LINES[$(( ln - 1 ))]}"
+    if [ "$sql_open" -eq 0 ]; then
+      if [[ "$line" =~ $COMMENT_RE ]]; then continue; fi
+      if [[ ! "$line" =~ $SQL_CALL_RE ]]; then continue; fi
+      sql_open=$ln
+      sql_text="$line"
+      in_region[$ln]=1
+      region_opens+=("$ln")
+    else
+      in_region[$ln]=1
+      sql_text+=$'\n'"$line"
+    fi
+    if [[ "$line" =~ $STATEMENT_END_RE ]]; then
+      region_text[$sql_open]="$sql_text"
+      sql_open=0
+      sql_text=''
     fi
   done
-  if [ "$up_start" -eq 0 ]; then
+  # A region left open at the end of the file is closed there and still scanned: unread is not a pass.
+  if [ "$sql_open" -ne 0 ]; then region_text[$sql_open]="$sql_text"; fi
+
+  # A LINE MAY ONLY DECIDE A BOUNDARY IF IT DECLARES A MEMBER. Not a `//` comment, not the interior of a
+  # string literal, and carrying a modifier keyword. Both decoys review built fail two of the three, and
+  # that redundancy is deliberate -- a boundary is the one thing here worth guarding twice.
+  declares() {  # $1 line number  $2 the signature regex
+    local ln="$1" re="$2" text="${LINES[$(( $1 - 1 ))]}"
+    if [ -n "${in_region[$ln]:-}" ]; then return 1; fi
+    if [[ "$text" =~ $COMMENT_RE ]]; then return 1; fi
+    if [[ ! "$text" =~ $MEMBER_RE ]]; then return 1; fi
+    if [[ ! "$text" =~ $re ]]; then return 1; fi
+    return 0
+  }
+
+  up_start=0
+  for (( ln = 1; ln <= n; ln++ )); do
+    if declares "$ln" "$UP_RE"; then up_start=$ln; break; fi
+  done
+  if [ "$require_up" -eq 1 ] && [ "$up_start" -eq 0 ]; then
     die "  NO Up()  $file  -- the migration's Up(MigrationBuilder) could not be located."
     die "This gate read nothing in that file. It is not a pass."
     failures=$(( failures + 1 ))
-    continue
+    unset -f declares
+    return 0
   fi
 
   # WHAT IS SCANNED IS THE WHOLE FILE EXCEPT THE Down() BODY -- not the Up() body alone. Reading only Up()
@@ -379,17 +475,27 @@ for file in ${MIGRATIONS[@]+"${MIGRATIONS[@]}"}; do
   # THE COST IS NAMED RATHER THAN HIDDEN: a helper called only from Down() is read too, because nothing
   # here says which of the two calls it. That is the loud direction -- mark it, or inline it into Down().
   down_start=0
-  for (( i = 0; i < n; i++ )); do
-    if [[ "${LINES[$i]}" =~ $DOWN_RE ]]; then
-      down_start=$(( i + 1 ))
-      break
-    fi
+  for (( ln = 1; ln <= n; ln++ )); do
+    if declares "$ln" "$DOWN_RE"; then down_start=$ln; break; fi
   done
+
+  # WHERE THE Down() BODY ENDS, by TWO rules, and the EARLIER of the two wins. A body ends at its closing
+  # brace, in the declaration's own column, and it ends at the next member declaration -- and each rule has
+  # a blind spot the other covers. `MEMBER_RE` alone missed `static void Helper(...)`, and Down() then ran
+  # to end of file and swallowed it. The brace rule alone would miss a `Down(...) { }` written on one line.
+  #
+  # Neither consults `in_region`, and that is deliberate rather than an oversight: a string literal that
+  # falsely matches ends the body EARLY, so more is scanned -- the loud direction, and the one this gate
+  # argues for everywhere else. Skipping region interiors here would let an unterminated literal inside
+  # Down() push `down_end` to end of file and hide a sibling helper below it, which is the quiet one.
   down_end=$(( n + 1 ))
   if [ "$down_start" -ne 0 ]; then
-    for (( i = down_start; i < n; i++ )); do
-      if [[ "${LINES[$i]}" =~ $MEMBER_RE ]]; then
-        down_end=$(( i + 1 ))
+    if [[ "${LINES[$(( down_start - 1 ))]}" =~ ^([[:space:]]*) ]]; then indent="${BASH_REMATCH[1]}"; fi
+    brace_re="^${indent}\\}[[:space:]]*$"
+    for (( ln = down_start + 1; ln <= n; ln++ )); do
+      line="${LINES[$(( ln - 1 ))]}"
+      if [[ "$line" =~ $MEMBER_RE ]] || [[ "$line" =~ $brace_re ]]; then
+        down_end=$ln
         break
       fi
     done
@@ -397,7 +503,6 @@ for file in ${MIGRATIONS[@]+"${MIGRATIONS[@]}"}; do
 
   declare -A found_count=()
   declare -A found_labels=()
-  declare -A in_region=()
 
   scanned() {  # $1 line number -- 0 if it belongs to Down()
     [ "$down_start" -eq 0 ] && return 0
@@ -415,33 +520,13 @@ for file in ${MIGRATIONS[@]+"${MIGRATIONS[@]}"}; do
     if [[ "$line" =~ $DROP_COLUMN_RE ]]; then has_drop_column=1; fi
   done
 
-  # Pass 2 -- the migrationBuilder.Sql(...) regions. A literal may span many lines, so the SQL needles run
-  # over the WHOLE region and the finding is anchored at the line that OPENS it, which is where the marker
-  # goes. A region left open at the end of the file is closed there and still scanned: unread is not a pass.
-  sql_open=0
-  sql_text=''
-  for (( ln = 1; ln <= n; ln++ )); do
+  # Pass 2 -- the findings from the regions pass 0 mapped. A literal may span many lines, so the SQL needles
+  # run over the WHOLE region and the finding is anchored at the line that OPENS it, which is where the
+  # marker goes -- and a region whose opener sits inside Down() reports nothing, like any other line there.
+  for ln in ${region_opens[@]+"${region_opens[@]}"}; do
     if ! scanned "$ln"; then continue; fi
-    line="${LINES[$(( ln - 1 ))]}"
-    if [ "$sql_open" -eq 0 ]; then
-      if [[ "$line" =~ $COMMENT_RE ]]; then continue; fi
-      if [[ ! "$line" =~ $SQL_CALL_RE ]]; then continue; fi
-      sql_open=$ln
-      sql_text="$line"
-      in_region[$ln]=1
-    else
-      in_region[$ln]=1
-      sql_text+=$'\n'"$line"
-    fi
-    if [[ "$line" =~ $STATEMENT_END_RE ]]; then
-      if sql_label_for "$sql_text"; then record "$sql_open" "$SQL_LABEL"; fi
-      sql_open=0
-      sql_text=''
-    fi
+    if sql_label_for "${region_text[$ln]}"; then record "$ln" "$SQL_LABEL"; fi
   done
-  if [ "$sql_open" -ne 0 ]; then
-    if sql_label_for "$sql_text"; then record "$sql_open" "$SQL_LABEL"; fi
-  fi
 
   # Pass 3 -- the operation calls on EVERY scanned line, region or not, and a SQL needle on any line outside
   # a region. The operation needles deliberately run INSIDE a Sql( region as well: a region whose statement
@@ -454,7 +539,7 @@ for file in ${MIGRATIONS[@]+"${MIGRATIONS[@]}"}; do
     if [[ "$line" =~ $COMMENT_RE ]]; then continue; fi
 
     for op in "${OPS[@]}"; do
-      op_re="\\.${op}${CALL}"
+      op_re="${DOT}${op}${CALL}"
       count_matches "$line" "$op_re"
       for (( k = 0; k < COUNT; k++ )); do record "$ln" "$op"; done
     done
@@ -473,24 +558,51 @@ for file in ${MIGRATIONS[@]+"${MIGRATIONS[@]}"}; do
   for (( ln = 1; ln <= n; ln++ )); do
     if [ -n "${found_count[$ln]:-}" ]; then adjudicate "$file" "$ln"; fi
   done
-  unset in_region found_count found_labels
-  unset -f scanned
+  unset -f scanned declares
+}
+
+for file in ${MIGRATIONS[@]+"${MIGRATIONS[@]}"}; do
+  if [ ! -f "$file" ]; then
+    die "  UNREADABLE  $file is in the diff and not on disk. This gate did not read it."
+    failures=$(( failures + 1 ))
+    continue
+  fi
+  files_read=$(( files_read + 1 ))
+  scan_file "$file" 1
 done
+
+# The generated partials, read on the same passes and counted separately -- see the PARTIALS list above.
+for file in ${PARTIALS[@]+"${PARTIALS[@]}"}; do
+  if [ ! -f "$file" ]; then
+    die "  UNREADABLE  $file is in the diff and not on disk. This gate did not read it."
+    failures=$(( failures + 1 ))
+    continue
+  fi
+  partials_read=$(( partials_read + 1 ))
+  scan_file "$file" 0
+done
+
+PARTIAL_NOTE=''
+if [ "$partials_read" -ne 0 ]; then
+  PARTIAL_NOTE="; $partials_read generated partial(s) also read"
+fi
 
 if [ "$failures" -ne 0 ]; then
   echo >&2
   # TWO numbers, because one refusal can cover two operations: an ambiguous line is a single site and more
   # than one act. Reporting only the refusals would undercount exactly what the ambiguity rule exists to
-  # stop being undercounted.
-  die "$failures refusal(s) over $ops_found destructive operation(s), in $files_read migration file(s)"
-  die "added or changed against $BASE."
+  # stop being undercounted. AND BOTH ARE LABELLED, because the second counts the ACKNOWLEDGED ones too:
+  # `1 refusal(s) over 2 destructive operation(s)` for one marked drop beside one unmarked read as two
+  # problems where there is one, and this is the one number the gate asks a reader to act on.
+  die "$failures refusal(s), $ops_found destructive operation(s) read, in $files_read migration file(s)"
+  die "added or changed against $BASE$PARTIAL_NOTE."
   explain
   exit 1
 fi
 
 if [ "$files_read" -eq 0 ]; then
-  ok "ok  no migration added or changed against $BASE (${#DIFFED[@]} path(s) under $MIG_DIR in the diff)."
+  ok "ok  no migration added or changed against $BASE (${#DIFFED[@]} path(s) under $MIG_DIR in the diff)$PARTIAL_NOTE."
   exit 0
 fi
 
-ok "ok  $files_read migration file(s) added or changed against $BASE; $ops_found destructive operation(s), $acknowledged acknowledged, 0 unacknowledged."
+ok "ok  $files_read migration file(s) added or changed against $BASE; $ops_found destructive operation(s), $acknowledged acknowledged, 0 unacknowledged$PARTIAL_NOTE."

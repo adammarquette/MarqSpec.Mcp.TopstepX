@@ -27,11 +27,9 @@ public sealed class CognitoTests(EnvironmentTemplates templates) : IClassFixture
         return (matches[0].Key, t.Properties(matches[0].Value));
     }
 
-    private static JsonObject ServerContainer(Synthesised t)
-    {
-        var (_, _, containers) = t.TaskDefinition("-server");
-        return containers.Should().ContainSingle().Which!.AsObject();
-    }
+    // By name, not by "the only one": the OTLP collector sits beside the server in this task (gh#537), and
+    // what these assertions are about is the server's own OAuth configuration.
+    private static JsonObject ServerContainer(Synthesised t) => t.Container("-server", "server");
 
     private static List<string> Strings(JsonNode? array) =>
         (array?.AsArray() ?? []).Select(v => v!.GetValue<string>()).ToList();

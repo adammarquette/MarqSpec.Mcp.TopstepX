@@ -45,6 +45,13 @@
       test reads the script's own list so the two cannot drift on that name.
     -->
     <None Include="..\..\scripts\bootstrap.sh" Link="bootstrap.sh" CopyToOutputDirectory="PreserveNewest" />
+    <!--
+      The collector sidecar's configuration (gh#537), read from the FILE here and compared against both the
+      resource embedded in the Infra assembly and the value the task definition carries. Three copies that
+      must agree, so an edit to the file that never reaches a template — or a template built from something
+      other than the file — fails a pull request.
+    -->
+    <None Include="..\MarqSpec.Mcp.TopstepX.Infra\Collector\otel-collector-config.yaml" Link="otel-collector-config.yaml" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
 </Project>

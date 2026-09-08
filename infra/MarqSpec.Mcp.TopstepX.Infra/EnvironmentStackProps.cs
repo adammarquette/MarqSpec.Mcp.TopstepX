@@ -42,6 +42,14 @@ public sealed record EnvironmentStackProps
     public required bool WarmIndicatorsDefault { get; init; }
 
     /// <summary>
+    /// The OTLP collector sidecar, or <c>null</c> for no telemetry at all (gh#537). <b>Null is not a
+    /// degraded mode</b>: it is the shape this stack had before gh#537 — one container in the server task,
+    /// no <c>Otel__*</c> key on it and no <c>otel</c> secret shell — which is ADR-0019 decision 3 reaching
+    /// the deployment. See <see cref="Infra.TelemetryProps"/> for why the endpoint and token are not on it.
+    /// </summary>
+    public TelemetryProps? Telemetry { get; init; }
+
+    /// <summary>
     /// The AWS account and region. Concrete values are what let the hosted-zone lookup resolve from the
     /// committed context; the region itself is gh#519's decision and reaches here from <c>cdk.json</c>.
     /// </summary>

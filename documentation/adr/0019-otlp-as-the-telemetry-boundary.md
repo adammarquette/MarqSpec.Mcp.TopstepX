@@ -178,6 +178,72 @@ which needs an `IProjectXApiClient` — an interface carrying the venue's whole 
 would put `PlaceOrderAsync` into this repository to test a counter, which is the opposite of what
 [ADR-0002](0002-read-only-venue-boundary.md) asks for.
 
+## Update — 2026-09-07: the sidecar's image, limits and secret wiring, and what has not met a collector
+
+*What this does not decide* left gh#537 "the collector sidecar's image, resource limits and secret wiring".
+They exist now, in `infra/MarqSpec.Mcp.TopstepX.Infra/` and its checked-in
+`Collector/otel-collector-config.yaml`, and this records them so they can be cited rather than rediscovered.
+
+**The image** is `otel/opentelemetry-collector-contrib` by digest, pinned in `EnvironmentStack`. The
+*contrib* distribution and not the core one, for one reason: the `resource` processor that stamps
+`deployment.environment` and `service.version` ships only there, and those two attributes are the whole point
+of running the sidecar per environment against one Grafana stack. **The limits**: `Essential=false` and a hard
+128 MiB ceiling inside the task's 1024, which together are the answer to *what happens when the sidecar is
+unhealthy* — the task keeps running, the server keeps answering, the exporter drops on the floor. **The
+receiver** binds the loopback and the container declares no port mapping: containers of an `awsvpc` task share
+one network namespace, so the server reaches it and nothing outside the task can, which matters under the
+public-IP outbound shape ADR-0023's fork still leaves open.
+
+**The secrets are a shell, not two ARNs.** gh#537's body asked for the endpoint and token as secret ARNs on a
+`TelemetryProps`. An ARN carries an account id, and a literal account id under `infra/` is what the root
+contract's second non-negotiable refuses — so the stack creates the sixth shell of ADR-0023 §6,
+`topstepx-mcp/<env>/otel` with `endpoint` and `authorization` empty, and the sidecar reads it by reference.
+gh#519 fills the two values by hand, once, exactly as it does for the other five. **Presence of the props is
+the switch**, and there is deliberately no `bool Enabled` beside them: a props object that is present and
+switched off is two ways to say the same thing, and the one nobody tests is the one that ships.
+
+**Decision 3 reaches the deployment, and is pinned there.** A stack synthesised with no telemetry props is
+the one this repository had before gh#537 — one container in the server task, not one `Otel__*` key on it, no
+`otel` shell — and `TelemetrySidecarTests` fails if any of the three appears. That is the same sentence as
+*absent configuration is today's behaviour, exactly*, said in CloudFormation.
+
+**The configuration travels as an environment variable, and that is a mechanism worth naming.** A Fargate task
+has no disk to mount a config file from, and baking one into an image would make a one-line edit a registry
+push — so `EnvironmentStack` reads the checked-in file at synth time into `OTEL_COLLECTOR_CONFIG` and starts
+the collector with `--config=env:OTEL_COLLECTOR_CONFIG`. A template test compares the file, the resource
+embedded in the assembly and the value the task carries, so the checked-in file cannot become decorative.
+
+**Measured, against the pinned image, locally, 2026-09-07** — `docker run` with the checked-in configuration
+and sentinel values, which is as close as anything here has come to a real collector:
+
+```console
+$ # the shell FILLED with a sentinel endpoint and token
+  "msg":"Starting GRPC server", … "endpoint":"127.0.0.1:4317"
+  "msg":"Everything is ready. Begin running and processing data."
+  # deprecation warnings: 0 · sentinel token in the log stream: 0 occurrences
+
+$ # the shell AS gh#516 CREATED IT — endpoint empty
+  Error: invalid configuration: exporters::otlp_http/grafana: at least one endpoint must be specified
+  # container exits 1; Essential=false, so the task and the server are unaffected
+```
+
+Three things that measurement settled and one it caused. `--config=env:` really does accept the file and
+`${env:…}` really is expanded from it, so the mechanism above is not an assumption. The unfilled shell is a
+**collector that exits**, not a collector that runs and silently discards — which is the state staging starts
+in, and is worth knowing before someone reads an empty Tempo and hunts the server. The token was never
+printed. And the first spelling of the exporter, `otlphttp/grafana`, started fine while logging *"otlphttp"
+alias is deprecated; use "otlp_http" instead* once per signal; the checked-in file uses `otlp_http`, because a
+deprecation warning in a log group nobody reads is how a collector stops starting on a bump nobody connected
+to it.
+
+**What has NOT been measured, and cannot be yet.** No AWS account exists, no Grafana Cloud stack exists, and
+gh#519 has not run — so nothing here has met a real collector endpoint, a real token, or a task definition
+that ECS accepted. gh#537's own acceptance criteria are explicit that its deploy is the measurement: a
+`tools/call` span in Tempo, its log lines in Loki under the same trace id, `deployment.environment=staging` on
+both, and `/health` still answering with the sidecar killed. **None of those four is claimed here.** What is
+claimed is what a template test and a local container can decide: the shape of the task definition, the
+absence of every literal, and that this collector starts on this configuration.
+
 ## Alternatives considered
 
 **Serilog (or NLog, or any structured logging library).** The tempting one, and the one gh#515 half-chose:
@@ -232,8 +298,8 @@ of.
 
 Package versions and the shape of the `Otel*` options object (gh#534), the app-owned instrument names and
 their units (gh#536), the compose profile's service layout and dashboard content (gh#535), and the collector
-sidecar's image, resource limits and secret wiring (gh#537). Each of those cards may cite this record; none of
-them reopens it. gh#515's JSON console formatter for CloudWatch is untouched and remains the log path when no
+sidecar's image, resource limits and secret wiring (gh#537 — **decided, in the 2026-09-07 update above**).
+Each of those cards may cite this record; none of them reopens it. gh#515's JSON console formatter for CloudWatch is untouched and remains the log path when no
 OTLP endpoint is set.
 
 ## Follow-ups

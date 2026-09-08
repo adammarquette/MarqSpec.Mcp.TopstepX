@@ -13,10 +13,14 @@ namespace MarqSpec.Mcp.TopstepX.Infra;
 /// (the image's inherited 8080 is the plaintext port behind the load balancer; clearing it binds
 /// <c>localhost:5000</c> and serves nothing), every <c>Kestrel__*</c> key (the container never holds a
 /// certificate), <c>Mcp__HttpBearerToken</c> (a target group in front of 8080 means the OAuth mode, never
-/// the static token), and the <c>Otel__*</c> keys (gh#537's collector sidecar decides the endpoint and
-/// holds the token; unset, the server registers no telemetry). <c>Mcp__OAuth__Issuer</c> and
+/// the static token), and <c>Otel__Headers</c> — the one <c>Otel__*</c> key that is absent outright, because
+/// it is where a backend token would go and the token is the collector sidecar's, never the server's
+/// (gh#537, ADR-0019 invariant 4). <c>Mcp__OAuth__Issuer</c> and
 /// <c>Mcp__OAuth__ClientIds</c> are absent from this class for a different reason: they are references to
-/// the Cognito constructs, not strings, and the stack sets them beside the resource URL (gh#517).
+/// the Cognito constructs, not strings, and the stack sets them beside the resource URL (gh#517). The other
+/// three <c>Otel__*</c> keys are absent here for a third reason again: they exist only while
+/// <see cref="EnvironmentStackProps.Telemetry"/> does, so the stack sets them beside the sidecar they point
+/// at, and a stack synthesised without telemetry carries none of them (ADR-0019 decision 3).
 /// </para>
 /// <para>
 /// Every credential — the ProjectX login, the connection string, the Cohere key — is a Secrets Manager

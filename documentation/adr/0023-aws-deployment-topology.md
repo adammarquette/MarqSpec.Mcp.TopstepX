@@ -318,7 +318,8 @@ it is ever preferred it is its own dated entry here, not a quiet substitution.
 
 **Where the stack runs on AWS was decided in [ADR-0019](0019-otlp-as-the-telemetry-boundary.md) §5, not
 here:** Grafana Cloud, reached from an **OTLP collector sidecar in the server task definition**, with the
-endpoint and token as secrets (gh#537). ADR-0019 rejected self-hosting Loki, Tempo and Grafana as further
+endpoint and token as secrets (gh#537 — **built; see the 2026-09-07 entry below** for what it added to this
+topology, including the sixth secret shell). ADR-0019 rejected self-hosting Loki, Tempo and Grafana as further
 Fargate services on EFS — three more stateful services on a stream already nervous about one — and this
 record inherits that rejection rather than re-arguing it. Two consequences of it land on this topology:
 **CloudWatch alarms remain the paging path** (gh#526 — task count, unhealthy target, 5xx, deployment
@@ -739,6 +740,45 @@ each is held by a template test (gh#518).
    **CDK's own**, written by the grant helpers rather than by this repository. Moving them means overriding
    generated policy documents or declining the helpers, not editing two properties, which is why it is a
    card of its own rather than a rider on this one.
+
+## Update (2026-09-07) — the OTLP collector sidecar is in the server task, and the sixth shell is its backend
+
+§11 above referenced ADR-0019's decision and named gh#537 as the card that would build it. It is built.
+[ADR-0019's 2026-09-07 update](0019-otlp-as-the-telemetry-boundary.md) is where the image, the limits and the
+secret wiring are reasoned; what lands on **this** topology is four things.
+
+**A second container in the server task**, `otel-collector`, `Essential=false` with a hard 128 MiB ceiling
+inside the task's existing 512/1024 — the task was not resized, so gh#527's cost basis is unchanged. It logs
+to the environment's existing `/topstepx-mcp/<env>/server` group under its own `otel-collector` stream prefix,
+so there is still one log group per container role and not one per container. It declares **no port mapping**:
+the receiver binds the loopback and containers of an `awsvpc` task share one namespace, which is what keeps an
+unauthenticated OTLP receiver off the task's own address — including under the public-IP outbound shape the
+decision log's fork still leaves open.
+
+**A sixth secret shell**, `topstepx-mcp/<env>/otel`, with `endpoint` and `authorization` empty. §6's rules
+apply to it unchanged, the load-bearing one included: **never edit a shell's literal after the values are
+written**, and a new key is a new secret. gh#519's list grows by one — this is the sixth secret it fills by
+hand, and the two values come from the Grafana Cloud stack the maintainer creates.
+
+**`Otel__Endpoint`, `Otel__Protocol` and `Otel__ServiceName` on the server container**, pointing at the
+sidecar on `http://localhost:4317`. `Otel__Headers` stays absent and is now absent *by decision rather than by
+date*: the backend token is the sidecar's, and the server's export crosses no network. §3's configuration
+catalogue therefore has **no deferred set left** — the `.env.example` parity test's deferral list is empty,
+gh#517 having retired the Cognito half and this card the telemetry half, each in the pull request that built
+what the deferral was waiting for.
+
+**And both environments get the sidecar.** Staging is first only in the order gh#519 fills the two shells, not
+in what the template says: §1's rule is one stack class differing only in its props, and a container present in
+one environment's template and absent from the other is a second stack class in disguise — which
+`EnvironmentReuseTests` would fail, and did while this was being written. Until a shell is filled the collector
+exits on its own configuration validation (measured, quoted in ADR-0019's update) and, not being essential,
+takes nothing with it.
+
+**Not measured, and not measurable here.** No account, no Grafana Cloud stack, no gh#519. A template test says
+the task definition has the shape above and that no endpoint, token, ARN or account id appears anywhere in it;
+that a real ECS accepts it, and that a span arrives in Tempo, is gh#537's deploy and belongs to gh#519 and
+gh#520. The `documentation/deployment.md` "Observability" section gh#537 asks for waits on gh#523, which has
+not created that file yet.
 
 ## Follow-ups
 

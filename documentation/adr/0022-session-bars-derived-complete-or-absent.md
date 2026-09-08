@@ -279,8 +279,10 @@ entry under `absent`.
 
 **Every refusal is decided before the store or the venue is touched**, and the two forms refuse different
 things. The window form: empty or inverted window → `toUtc` past the calendar horizon → the base-bucket cap →
-zero whole sessions named (every session the window touches is clipped, refused naming the nearest whole
-session so the caller can widen to it, gh#568) → the row cap on trade dates. The count form: `count` positive
+zero whole sessions named (no session both opens and closes inside the window; refused naming the nearest
+whole session — the nearer of the two the window's start and end trade dates carry, by how much widening
+each needs — so the caller can widen to it, or, on a window entirely on non-trading time where no session
+can be named, saying only to widen, gh#568) → the row cap on trade dates. The count form: `count` positive
 and within `MaxRows` → `now` past the horizon →
 the bounded closed-session walk (`SessionWindows.LastClosedWalkSpanDays` — four calendar days per session
 plus fifteen) → the same base-bucket cap over the covering window the read will issue. Both bucket checks

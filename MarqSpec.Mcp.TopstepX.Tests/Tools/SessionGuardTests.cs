@@ -250,6 +250,49 @@ public sealed class SessionGuardTests
     }
 
     [Fact]
+    public void ValidateSessionWindow_NamesTheSessionNeedingTheLeastWidening_WhenTheWindowStraddlesTwoTradeDates()
+    {
+        // "Nearest" is a claim the message makes, so it has to be measured rather than assumed. This window
+        // opens one minute before Monday's `rth` close and ends an hour before Tuesday's: Monday's session
+        // needs the START pulled back 6h29m to fit, Tuesday's needs only the END pushed out by 1h. Naming
+        // Monday -- the trade date the window's start happens to fall on -- would advise a widening more than
+        // six times larger than the one that answers, and would hand back the wrong day's data to a caller
+        // who wanted the end of their window.
+        DateTimeOffset from = new(2026, 8, 3, 19, 59, 0, TimeSpan.Zero);
+        DateTimeOffset to = new(2026, 8, 4, 19, 0, 0, TimeSpan.Zero);
+
+        Action refuse = () => Guards().ValidateSessionWindow(from, to, Rth, Calendar);
+
+        refuse.Should().Throw<McpException>().Which.Message
+            .Should().Contain(
+                "nearest whole rth session is 2026-08-04",
+                "Tuesday's session is the one a smaller widening reaches")
+            .And.Contain(
+                "2026-08-04T13:30:00.0000000+00:00 to 2026-08-04T20:00:00.0000000+00:00",
+                "with Tuesday's bounds, not Monday's")
+            .And.NotContain("2026-08-03's", "Monday is the further of the two candidates, not the nearer");
+    }
+
+    [Fact]
+    public void ValidateSessionWindow_DoesNotBlameClipping_WhenTheWindowTouchesNoSessionAtAll()
+    {
+        // Monday's `rth` closes at 20:00Z and Tuesday's opens at 13:30Z; a window between the two touches no
+        // `rth` session, so there is nothing for it to have clipped. The refusal still stands -- zero whole
+        // sessions is zero whole sessions -- but a fixed "every session it touches is clipped at an edge"
+        // is vacuous here rather than true, and points a caller asking "did ES trade?" at the wrong remedy.
+        DateTimeOffset from = new(2026, 8, 3, 20, 30, 0, TimeSpan.Zero);
+        DateTimeOffset to = new(2026, 8, 4, 12, 0, 0, TimeSpan.Zero);
+
+        Action refuse = () => Guards().ValidateSessionWindow(from, to, Rth, Calendar);
+
+        refuse.Should().Throw<McpException>().Which.Message
+            .Should().Contain(
+                "no rth session both opens and closes inside it",
+                "which is true of a window that touches no session as much as of one that clips every session")
+            .And.NotContain("clipped", "a window between two sessions clipped neither");
+    }
+
+    [Fact]
     public void ValidateSessionCount_TranslatesAnUnsatisfiableCount_IntoARefusalNamingCount()
     {
         // MaxRows admits 5,000 and the bounded walk covers (5,000 * 4) + 15 = 20,015 calendar days, so a

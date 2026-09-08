@@ -519,15 +519,20 @@ public sealed class KeyLevelDetectionPlumbingTests : IDisposable
     [Fact]
     public async Task SessionAndPivotMethods_RefuseWhenBucketsOverhangAClose()
     {
-        // The contaminating 07:00/19:00 twelve-hour alignment (gh#259 finding 4). Detect must not infer
-        // the width; the tool is the place that knows resolutionMinutes. Swing is not session-anchored
-        // and is not refused.
-        SeedTwelveHourContaminating();
+        // The contaminating alignment of gh#259 finding 4. Detect must not infer the width; the tool is
+        // the place that knows resolutionMinutes. Swing is not session-anchored and is not refused.
+        //
+        // FOUR-hour, where this drove twelve-hour until gh#538: 720 minutes is no longer servable through
+        // a tool, so a plumbing test cannot reach the guard with it. It is the same claim about the same
+        // guard -- the walk from the session open reaches a bucket that would close past the close, at
+        // 240 minutes the 13:00 one -- and the twelve-hour cases keep their own coverage a layer down, in
+        // SessionBucketGuardTests, where the guard is called directly and no tool boundary is in the way.
+        SeedFourHourContaminating();
 
         ToolPayloads.LevelSet levels = await Tools(Detection(pivotLookback: 1))
             .GetKeyLevels(
                 "ES",
-                720,
+                240,
                 10,
                 methods: "swing,session,pivot-classic",
                 cancellationToken: CancellationToken.None);
@@ -705,9 +710,16 @@ public sealed class KeyLevelDetectionPlumbingTests : IDisposable
     }
 
     /// <summary>
-    /// The 07:00/19:00 twelve-hour series whose Monday 07:00 bucket runs into Tuesday's session.
+    /// A four-hour series on the 07:00/11:00/… alignment, whose 13:00 bucket runs past the 16:00 close.
     /// </summary>
-    private void SeedTwelveHourContaminating()
+    /// <remarks>
+    /// Four-hour rather than the twelve-hour series this drove until gh#538: 720 minutes is past the
+    /// resolution ceiling now, so no tool will accept it and a plumbing test cannot reach the guard with
+    /// it. 240 refuses for the same reason and by the same arm — the walk from the session open reaches a
+    /// bucket that would close after the close — and 240 is what
+    /// <c>SessionBucketGuard</c>'s own remarks use as the worked example.
+    /// </remarks>
+    private void SeedFourHourContaminating()
     {
         DateOnly sunday = new(2026, 8, 16);
         DateOnly monday = new(2026, 8, 17);
@@ -720,7 +732,7 @@ public sealed class KeyLevelDetectionPlumbingTests : IDisposable
             {
                 Venue = "test",
                 Instrument = "ES",
-                ResolutionMinutes = 720,
+                ResolutionMinutes = 240,
                 BucketStart = start,
                 Open = 100m,
                 High = high,
@@ -732,9 +744,10 @@ public sealed class KeyLevelDetectionPlumbingTests : IDisposable
             });
         }
 
-        Add(sunday, 7, 100m);
         Add(sunday, 19, 120m);
+        Add(sunday, 23, 110m);
         Add(monday, 7, 300m);
+        Add(monday, 11, 200m);
         Add(monday, 19, 100m);
         Add(tuesday, 7, 100m);
         _database.SaveChanges();

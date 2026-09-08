@@ -148,14 +148,17 @@ at one this rule's own pull request retires.
   - **The duration.** A tier that normally takes 34 s finishing in 227 ms did not run.
   - **Where the failures originate.** A fixture constructor or a runtime loader is the environment; only a
     failure inside the code under test is the tree.
-  - **The harness's own `APPLIED <file> <what>` line — its absence is a failed run, never a green one.**
-    Before recording a survivor, confirm the source really differs (`git diff --stat` on the mutated file),
-    and carry a **positive control**, a deletion known to redden, so a green row means *no coverage* rather
-    than *no loop*.
+  - **The harness's `APPLIED <before-blob> -> <after-blob>` line — its absence is a failed run, never a
+    green one.** Before recording a survivor confirm the source really differs (`git diff --stat` on the
+    mutated file), and carry a **positive control**, a deletion known to redden, so a green row means *no
+    coverage* rather than *no loop*.
 
   Measured across gh#529 / PR #589, gh#537 / PR #597 and gh#588 / PR #590. Each mechanism below is a way
   that check was violated:
-  1. **A stale binary** printed `Total: 71` where the suite has 162 — the 2026-08-28 entry below, same cause.
+  1. **`Total: 71` where the suite has 162** — short by 91, so by the 2026-08-26 entry's own discriminator
+     (*short is Application Control; plausible-after-a-restore is the 2026-08-28 entry*) it is **not** a
+     stale binary: that branch measured 142, 162 and 163, never 71. **Neither source establishes a cause**
+     — record that rather than infer one, which is this entry's own thesis.
   2. **`Test Run Aborted.`** printed no counts at all, and the re-run reported the *previous* count
      unchanged, so an agent scrolling back for a `Passed:` line finds the earlier run's.
   3. **The mutation never applied.** A `mkdir` failed earlier in an `&&` chain, the mutation script never
@@ -168,9 +171,8 @@ at one this rule's own pull request retires.
      fixture cannot construct. **The `Total:` is correct here**, which is why the older rule *"know the
      expected suite size and treat disagreement as the run being wrong"* (the 2026-08-26 entry below)
      **agrees with this broken run**. Only the split and the 150x duration collapse give it away.
-  5. **Windows Application Control** (`0x800711C7`) blocked the freshly built test assemblies; the first
-     attempt printed `Total: 156` with every test failed in its fixture constructor. It is **persistent on
-     this host, not transient** — see the 2026-09-08 correction under the 2026-08-26 entry below.
+  5. **Windows Application Control** (`0x800711C7`): `Total: 156`, every test failed in its fixture
+     constructor. **Persistent on this host** — the 2026-09-08 correction under the 2026-08-26 entry below.
 
 - **[2026-08-28] A restore can backdate a source file's mtime, MSBuild skips the compile, and `dotnet test`
   scores a stale binary with a plausible `Total:` (gh#302).** Found by PR #298's author (gh#286) with a
@@ -268,11 +270,11 @@ at one this rule's own pull request retires.
       `Total:` line.
     - **[2026-09-08] On this host the block is PERSISTENT, not intermittent, and a green `dotnet build` says
       nothing about it (gh#600).** Reproduced during gh#588 / PR #590 across three paths, both
-      configurations, with the sandbox disabled and after full `bin`/`obj` wipes: every freshly built test
-      assembly fails to load. `dotnet build` and `dotnet run` are unaffected — **only the VSTest reflection
-      load fails** — so a successful build is not evidence that tests can run. This supersedes *"retrying
-      often clears it"* in the 2026-08-23 entry below. The container remains the working path; a docs-only
-      change can instead cite CI on the pushed head rather than claim a local count.
+      configurations, sandbox disabled, after full `bin`/`obj` wipes: every freshly built test assembly
+      fails to load, while `dotnet build` and `dotnet run` are unaffected — **only the VSTest reflection
+      load fails**. Cite CI on the pushed head rather than a local count. **Supersedes every "intermittent"
+      statement about the block** — this file's 2026-08-23 heading and bullets below, and
+      `docker-compose.dev.yml`'s header.
 
 - **[2026-08-25] A conflict resolver that never ran let `git rebase` commit conflict markers, silently
   (gh#187).** The script sat at `/tmp/fix.py`; **the `python` on PATH is Windows-native and cannot see MSYS's
@@ -482,7 +484,8 @@ at one this rule's own pull request retires.
   - Found during the reviews of gh#73/PR #79 and gh#82/PR #83, both of which hit it from both locations.
 
 - **[2026-08-23] Docker IS up now, so the integration tier runs locally — and the Application Control block
-  is INTERMITTENT, not gone.** Two corrections from gh#42 to what this file said on 2026-08-22, pointing in
+  is INTERMITTENT, not gone — [2026-09-08] and now PERSISTENT, not intermittent (the correction under the
+  2026-08-26 entry above).** Two corrections from gh#42 to what this file said on 2026-08-22, pointing in
   opposite directions. Both corrected entries were retired under gh#254; the compose command and the Smart
   App Control rationale they carried are in `docker-compose.dev.yml`'s header.
   - **The tier runs.** Docker Engine 29.6.2 is up on Adam's machine; `dotnet test

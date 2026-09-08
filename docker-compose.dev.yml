@@ -18,8 +18,10 @@
 # A local check that disagrees with CI is worse than no local check. CI runs on ubuntu-latest with LF line
 # endings and a pinned SDK; this reproduces that exactly, so `dotnet format` cannot pass here and fail there.
 #
-# And on Windows, Smart App Control intermittently blocks freshly built unsigned assemblies (0x800711C7),
-# which fails a local build for reasons that have nothing to do with the code. Building in the container
+# And on Windows, Smart App Control blocks freshly built unsigned assemblies (0x800711C7), which fails a
+# local run for reasons that have nothing to do with the code. It was INTERMITTENT when this was written;
+# as of 2026-09-08 it is PERSISTENT on the maintainer's host, where `dotnet build` still works and only
+# the test-assembly load fails (documentation/AGENT-MEMORY.md, gh#600). Building in the container
 # sidesteps it entirely.
 
 services:

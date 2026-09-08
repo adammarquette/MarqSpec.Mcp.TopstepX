@@ -865,9 +865,11 @@ and the ACM wildcard certificate DNS-validated *in that new zone*. In the templa
 delegation were **siblings** — each carried one dependency edge, to the zone, and neither referenced the
 other — so CloudFormation was free to create them concurrently. When it does, CloudFormation writes ACM's
 validation record into a zone the apex does not yet point at, and ACM polls **public** DNS for it. Nothing
-bounds the wait: `AWS::CertificateManager::Certificate` blocks until validation succeeds and ACM does not
-give up for 72 hours, so a lost race is a stack sitting in `CREATE_IN_PROGRESS` rather than an error. Route 53
-propagates fast enough that the race is usually won, which is exactly why 142 template tests and four green
+bounds the wait: `AWS::CertificateManager::Certificate` blocks until validation succeeds, **ACM caches the
+negative answers** it gets in the meantime — so the wait does not end the moment the delegation lands, which
+is what makes a lost race expensive rather than merely slow — and ACM itself does not give up for 72 hours.
+A lost race is therefore a stack sitting in `CREATE_IN_PROGRESS` rather than an error. Route 53
+propagates fast enough that the race is usually won, which is exactly why 163 template tests and four green
 `cdk synth` shapes never saw it. **Ask what a template does not say, not only what it asserts** — every other
 ordering here is implied by a `Ref` or `Fn::GetAtt` inside a property, and this one had nothing to be implied
 by.

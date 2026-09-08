@@ -9,6 +9,7 @@ using MarqSpec.Mcp.TopstepX.Domain.MarketData;
 using MarqSpec.Mcp.TopstepX.MarketData;
 using MarqSpec.Mcp.TopstepX.Telemetry;
 using MarqSpec.Mcp.TopstepX.Tests.MarketData;
+using MarqSpec.Mcp.TopstepX.Tools;
 using MarqSpec.Mcp.TopstepX.Venue;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
@@ -524,6 +525,143 @@ public sealed class HistoricalContractSelectionTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task ASliceTheLedgerAlreadyAnswered_ReportsNothing_BecauseThisReadDecidedNothing()
+    {
+        // THE `outstanding` BOUNDARY, WHICH IS THE ONE `venueRequests` USES (gh#592). The state is derived
+        // from the slices this read actually asks the venue about, not from the slices it planned, and the
+        // difference is a whole read.
+        //
+        // Here the front is silent over a settled June range, so the first read memoises it permanently under
+        // the front -- the only candidate the narrowed set left. The SECOND read still finds every bucket
+        // missing and still plans the same narrowed slice, but the ledger answers it, so nothing is fetched.
+        // Derived from the plan, that read would report `venueRequests: 0` beside a populated
+        // NarrowedByTheVenue: a payload saying in one field that it reached no venue and in another that a
+        // decision it never made went badly. Derived from `outstanding`, it says NotDecidedHere, which is
+        // what actually happened.
+        await SeedTenureAnchorAsync();
+
+        CountingGateway gateway = Venue(new Dictionary<string, IEnumerable<Bar>>(StringComparer.Ordinal)
+        {
+            [Front] = [],
+        });
+
+        gateway.Unlisted.Add("M26");
+
+        FakeTimeProvider clock = new(Now);
+        BarCacheService cache = BuildAround(gateway, Now, clock: clock);
+
+        BarRange window = new(HistoryStart, HistoryStart.AddHours(1));
+
+        BarReadResult first = await cache.GetBarsAsync(_mes, 5, window, CancellationToken.None);
+
+        first.History.Selection.Should().Be(
+            HistorySelection.NarrowedByTheVenue, "the read that asked is the read that decided");
+
+        (await _database.BarCoverage.AsNoTracking().ToListAsync())
+            .Should().NotBeEmpty("the front answered this settled range empty, so it is memoised permanently");
+
+        gateway.ResetCounters();
+
+        // The clock does not move and M26 stays unlisted, so the plan is identical -- same narrowed slice,
+        // same dropped expiry. Only the ledger is different.
+        BarReadResult second = await cache.GetBarsAsync(_mes, 5, window, CancellationToken.None);
+
+        second.VenueRequests.Should().Be(
+            0, "every slice the plan named is answered by the ledger, so no history request is issued");
+        second.History.Selection.Should().Be(
+            HistorySelection.NotDecidedHere,
+            "a read that fetched nothing decided nothing, and a degradation reported beside venueRequests "
+            + "of zero would be two halves of one payload contradicting each other");
+        second.History.Unresolved.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task GetBarsPayload_CarriesTheNarrowing_NotOnlyTheServiceResult()
+    {
+        // ON THE PAYLOAD, WHICH IS WHERE gh#592'S ACCEPTANCE PUTS IT. BarReadResult is one layer below the
+        // wire: a tool that dropped the field on the floor, or hard-wired it to NotDecidedHere, would leave
+        // every assertion on the service green and every MCP client exactly as blind as before this card.
+        await SeedTenureAnchorAsync();
+
+        CountingGateway gateway = Venue(new Dictionary<string, IEnumerable<Bar>>(StringComparer.Ordinal)
+        {
+            [Front] = Series(HistoryStart, 12, 5, 10),
+            [Liquid] = Series(HistoryStart, 12, 5, 5_000),
+        });
+
+        gateway.Unlisted.Add("M26");
+
+        ToolPayloads.BarSeries series = await Tools(gateway, Now).Bars.GetBars(
+            "MES", 5, HistoryStart, HistoryStart.AddHours(1), CancellationToken.None);
+
+        series.Bars.Should().HaveCount(12, "the bars are returned either way -- that is the whole trap");
+        series.Contracts.Span.Should().Be(
+            ToolPayloads.ContractSpan.SingleContract,
+            "one contract answered this window, which says nothing at all about which contracts it was "
+            + "chosen from -- the two fields are independent");
+
+        series.History.Selection.Should().Be(HistorySelection.NarrowedByTheVenue);
+        series.History.Unresolved.Should().Equal(new[] { "M26" });
+    }
+
+    [Fact]
+    public async Task GetLatestBarsPayload_CarriesTheNarrowingOfItsHistoricalHalf()
+    {
+        // The same claim for the other bar tool, and it is not a copy: get_latest_bars builds its own window
+        // from the clock and hands ToCoverage a TAIL of the series rather than all of it, so the two payload
+        // sites are two places the field can be dropped. This look-back reaches back past the front's tenure
+        // into August trade dates, whose second candidate Z26 the venue does not list.
+        await SeedTenureAnchorAsync();
+
+        CountingGateway gateway = Venue(new Dictionary<string, IEnumerable<Bar>>(StringComparer.Ordinal)
+        {
+            [Front] = Series(Market(2026, 8, 10, 9), 200, 60, 1_000),
+        });
+
+        ToolPayloads.BarSeries series = await Tools(gateway, Now).Bars.GetLatestBars(
+            "MES", 60, 24, CancellationToken.None);
+
+        series.History.Selection.Should().Be(
+            HistorySelection.NarrowedByTheVenue,
+            "the look-back crosses the tenure start, so its older half is history the venue narrowed");
+        series.History.Unresolved.Should().Equal(
+            new[] { "Z26" }, "the August candidate the venue does not list is what narrowed the set");
+    }
+
+    [Fact]
+    public async Task GetSessionBarsPayload_CarriesTheNarrowingOfItsBaseRead()
+    {
+        // A session bar is DERIVED from base bars read through the same cache-aside call, so a narrowed base
+        // read produces sessions aggregated over exactly that stretch -- and nothing else on the session
+        // payload says so. `contracts.span` cannot: a session whose base bars disagreed is absent rather than
+        // spliced, so span describes the sessions that survived, not how their bars were chosen.
+        //
+        // The venue is silent over this June session, so the trade date is an absence. That is deliberate:
+        // the degradation is a fact about the READ, and it must survive an answer with no bars in it.
+        await SeedTenureAnchorAsync();
+
+        CountingGateway gateway = Venue(new Dictionary<string, IEnumerable<Bar>>(StringComparer.Ordinal)
+        {
+            [Front] = [],
+        });
+
+        gateway.Unlisted.Add("M26");
+
+        ToolPayloads.SessionBarSeries series = await Tools(gateway, Now).Sessions.GetSessionBars(
+            "MES",
+            "rth",
+            new DateTimeOffset(2026, 6, 16, 0, 0, 0, TimeSpan.Zero),
+            new DateTimeOffset(2026, 6, 17, 0, 0, 0, TimeSpan.Zero),
+            CancellationToken.None);
+
+        series.Absent.Should().ContainSingle().Which.Reason.Should().Be(
+            SessionBarAbsence.Incomplete, "the venue held nothing for this session");
+
+        series.History.Selection.Should().Be(HistorySelection.NarrowedByTheVenue);
+        series.History.Unresolved.Should().Equal(new[] { "M26" });
+    }
+
+    [Fact]
     public async Task AStraddlingRange_WhoseHistoricalHalfNarrowedToTheFront_IsNotFoldedIntoThePresentBand()
     {
         // The fold is where the silence came from. Adjacent slices that both come down to the front alone are
@@ -1007,6 +1145,50 @@ public sealed class HistoricalContractSelectionTests : IAsyncLifetime
 
         await _database.SaveChangesAsync();
         _database.ChangeTracker.Clear();
+    }
+
+    /// <summary>The two tool types whose payloads carry the historical selection.</summary>
+    /// <param name="Bars">The bar tools.</param>
+    /// <param name="Sessions">The session-bar tools.</param>
+    /// <remarks>
+    /// Named rather than returned loose so a case says at its call site which surface it is pinning:
+    /// <c>get_bars</c> and <c>get_latest_bars</c> build the payload themselves, while
+    /// <c>get_session_bars</c> receives the fact through <c>SessionBarService</c> — three separate places
+    /// the field can be dropped between the cache and the wire (gh#592).
+    /// </remarks>
+    private sealed record ToolFamily(BarTools Bars, SessionBarTools Sessions);
+
+    /// <summary>Composes the tool surface over the same MES fixture the service cases use.</summary>
+    /// <param name="gateway">The venue double.</param>
+    /// <param name="now">The instant to read at.</param>
+    /// <returns>The tools.</returns>
+    /// <remarks>
+    /// Around <see cref="BuildAround"/> rather than beside it, so the cache under the tools is the cache
+    /// every other case here reasons about — a second composition would be a second fixture free to disagree
+    /// about the tenure start, the cycle or the clock.
+    /// </remarks>
+    private ToolFamily Tools(CountingGateway gateway, DateTimeOffset now)
+    {
+        FakeTimeProvider clock = new(now);
+        BarCacheService cache = BuildAround(gateway, now, clock: clock);
+
+        IOptions<MarketDataOptions> market = Options.Create(new MarketDataOptions
+        {
+            Instruments = "MES",
+            SessionCloseCentral = "16:00",
+            MaxRows = 5_000,
+        });
+
+        InstrumentResolver resolver = new(new InstrumentRegistry(market), new StoreAvailabilityHolder());
+        ToolGuards guards = new(market);
+
+        SessionBarService sessions = new(
+            _database, cache, gateway, Calendar, clock, NullLogger<SessionBarService>.Instance);
+
+        return new ToolFamily(
+            new BarTools(resolver, cache, guards, clock),
+            new SessionBarTools(
+                resolver, sessions, new SessionCatalog(market, Calendar), Calendar, guards, clock));
     }
 
     /// <summary>Builds the cache over a venue listing both the front and the contract behind it.</summary>

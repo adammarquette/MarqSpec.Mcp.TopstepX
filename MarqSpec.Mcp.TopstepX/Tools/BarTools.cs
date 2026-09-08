@@ -66,10 +66,16 @@ public sealed class BarTools(
         + "vendor's own active contract that stretch is the thin, complete-looking series this selection "
         + "exists to prevent you acting on. FellBackToTheFront is worse still: NONE of the cycle's expiries "
         + "was listed, so no volume decision ran for that stretch at all. `history.unresolved` names the "
-        + "expiries that fell away, e.g. M26. NotDecidedHere means THIS call fetched no history — every "
-        + "bucket was already stored, or the window sits in the present band — and is NOT a statement that "
-        + "the stored history is whole: bars fetched by an earlier degraded read read back exactly like any "
-        + "other, and nothing recorded about them says otherwise.")]
+        + "expiries that fell away, e.g. M26. NotDecidedHere means THIS call decided no history, and it "
+        + "covers three different situations: every bucket was already stored, or the window sits in the "
+        + "present band, or there was no contract-month cycle to decide against at all — this server does "
+        + "not serve that instrument, or the vendor's active contract has an expiry that does not read "
+        + "against the cycle. In that third case a deep window is fetched entirely from the vendor's active "
+        + "contract with no volume decision made, which is the same thin-series risk as FellBackToTheFront "
+        + "and is reported only in this server's log; `venueRequests` above zero on a window reaching well "
+        + "before the last few days is what distinguishes it from the first two. NotDecidedHere is in no "
+        + "case a statement that the stored history is whole: bars fetched by an earlier degraded read read "
+        + "back exactly like any other, and nothing recorded about them says otherwise.")]
     public async Task<ToolPayloads.BarSeries> GetBars(
         [Description("The instrument symbol, e.g. ES.")] string symbol,
         [Description("The bar size in minutes, e.g. 1, 5, 15, 60.")] int resolutionMinutes,

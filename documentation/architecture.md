@@ -975,8 +975,8 @@ pick for now, volume-over-bars for history, volume-over-prints as the observatio
 (`R-1.14`, [ADR-0020](adr/0020-historical-contract-selection.md)). **And a fourth act re-decides a stored
 window: `reselect-bars`** (`R-1.15`, gh#506) runs the historical answer again over whole trade dates an
 operator names, with nothing pinned, deletes the buckets the new winner does not restate along with every
-coverage claim overlapping the window, and re-projects. It is not a fourth *answer* — it is the second one
-applied to rows already written, which a read is forbidden to do.
+coverage claim overlapping a trade date that received a winner, and re-projects. It is not a fourth *answer*
+— it is the second one applied to rows already written, which a read is forbidden to do.
 
 **They disagree during a roll, by design, and neither is dropped.** A read that compares them
 names both, says the tape is the volume-front, and does not rewrite `Bars` or substitute the

@@ -254,7 +254,7 @@ and still earns the empty-range memo (`R-1.14`); `history.selection` reports `As
 
 | Update | What changed |
 |---|---|
-| [2026-09-07](#update-2026-09-07--reselect-bars-shipped-whole-trade-dates-counted-and-logged) | Part 5's verb exists. `reselect-bars <symbol> <fromUtc> <toUtc>` re-decides an operator's window over **whole trade dates** with nothing pinned, deletes the losers and every overlapping coverage claim, re-projects, and reports eight counters. §5's decision is unchanged; this records what carrying it out turned out to require (gh#506) |
+| [2026-09-07](#update-2026-09-07--reselect-bars-shipped-whole-trade-dates-counted-and-logged) | Part 5's verb exists. `reselect-bars <symbol> <fromUtc> <toUtc>` re-decides an operator's window over **whole trade dates** with nothing pinned, deletes the losers and coverage claims overlapping trade dates that received a winner, re-projects, and reports eight counters. §5's decision is unchanged; this records what carrying it out turned out to require (gh#506) |
 
 ## Update (2026-09-07) — `reselect-bars` shipped: whole trade dates, counted and logged
 
@@ -295,11 +295,14 @@ break is unchanged and deterministic (the nearer expiry); what is new is that a 
 dates were decided that way rather than by the volume, which is the difference between a decision an operator
 can audit and one they have to take on trust.
 
-**Coverage claims are deleted on OVERLAP, not on containment.** A settled empty never expires, `MemoiseEmpty`
-cuts a claim at the settled age and `Union` merges touching rows, so a claim reaching into the window from
-outside it is the ordinary shape. Left standing it would answer "empty" for a range whose decision has just
-been overturned and suppress the next read of it — a permanent hole written by the very policy the run was
-undoing. Discarding a claim about time outside the window costs one re-ask, which is the cheap direction.
+**Coverage claims are deleted on OVERLAP, not on containment — and only for trade dates that actually
+received a winner.** A settled empty never expires, `MemoiseEmpty` cuts a claim at the settled age and
+`Union` merges touching rows, so a claim reaching into a re-decided day from outside it is the ordinary
+shape. Left standing it would answer "empty" for a range whose decision has just been overturned and suppress
+the next read of it — a permanent hole written by the very policy the run was undoing. A window whose every
+slice was skipped opens no unit of work and drops no claims; a mixed window drops claims only for the days
+that got a winner. Discarding a claim about time outside a winner's session costs one re-ask, which is the
+cheap direction.
 
 **Two operational facts that are not in §5 and matter to whoever runs it.** The verb migrates the store
 before it writes, where `rebuild-indicators` skips migration entirely — the rebuild replays projections over

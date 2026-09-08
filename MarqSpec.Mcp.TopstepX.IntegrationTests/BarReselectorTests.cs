@@ -280,6 +280,30 @@ public sealed class BarReselectorTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task CoverageUnderASkippedSlice_Survives()
+    {
+        // THE DEFECT: ReselectSeriesAsync used to drop every BarCoverage row overlapping the effective
+        // window even when every slice was skipped and selections was empty — bars correctly untouched,
+        // coverage wrongly gone. A later warm read then refills the hole under degradation and serves
+        // thin wrong-contract bars as ordinary history. A claim recorded under a day nobody re-decided
+        // must stand; only a day that actually got a winner may lose its memos.
+        BarRange march = new(Market(2026, 3, 17, 9), Market(2026, 3, 17, 10));
+        await SeedBarAsync(Front, Thin(march.Start));
+        await SeedCoverageAsync(Front, Market(2026, 3, 16, 17), Market(2026, 3, 17, 16));
+
+        CountingGateway gateway = new(
+            new Dictionary<string, IEnumerable<Bar>>(StringComparer.Ordinal) { [Front] = [] }, Front);
+
+        await Reselector(gateway).ReselectAsync(_mes, march, default);
+
+        List<BarCoverageRecord> claims = await _database.BarCoverage.AsNoTracking().ToListAsync();
+        claims.Should().ContainSingle(
+            "a skipped slice re-decided nothing, so its coverage claim is not the run's to drop");
+        claims[0].RangeStart.Should().Be(Market(2026, 3, 16, 17));
+        claims[0].RangeEnd.Should().Be(Market(2026, 3, 17, 16));
+    }
+
+    [Fact]
     public async Task ACandidateChangeOnAHolidayEve_StillDecidesEachTradeDateOnce()
     {
         // The planner cuts a window where the cycle's nearest candidate moves, and on a holiday eve that cut

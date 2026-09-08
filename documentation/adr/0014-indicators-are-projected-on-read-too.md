@@ -296,11 +296,13 @@ So `get_indicators` and `get_indicator_at` now take an optional `period` that **
 error listing the configured periods with the primary labelled, never an empty series (`R-2.3`).
 
 **This record's own mechanism is what makes that safe, which is why it rests here.** The probe diffs the
-catalogue's instances against the pairs the store holds, the reconcile is scoped to those same
-pairs, and the replay walks them — so a period a caller can select is, by construction, one the projection
-writes and one the reconcile maintains. The set widened; nothing about the trigger changed. (gh#531 later
-changed what the probe asks *of* each pair — completeness rather than existence — without changing which
-pairs it asks about; [ADR-0018](0018-period-selection-among-configured-periods.md)'s update has it.)
+catalogue's instances against the pairs the store holds, the reconcile **maintains** those pairs — and, since
+gh#571, removes rows under pairs the catalogue no longer computes, which is the half this sentence used to
+deny by calling the reconcile "scoped to those same pairs" — and the replay walks them, so a period a caller
+can select is, by construction, one the projection writes and one the reconcile maintains. The set widened;
+nothing about the trigger changed. (gh#531 later changed what the probe asks *of* each pair — completeness
+rather than existence — without changing which pairs it asks about;
+[ADR-0018](0018-period-selection-among-configured-periods.md)'s update has it.)
 
 **Two numbers in this record are now conditional on the catalogue's size**, and neither is restated here —
 the measurements above stand as taken. They were taken against eleven indicators at one period each, before

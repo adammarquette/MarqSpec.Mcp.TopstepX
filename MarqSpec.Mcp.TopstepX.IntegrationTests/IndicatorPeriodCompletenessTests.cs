@@ -221,6 +221,89 @@ public sealed class IndicatorPeriodCompletenessTests : IAsyncLifetime
             + "than what the store lost -- and replaying would write nothing, forever, on every read");
     }
 
+    [Fact]
+    public async Task APairShortByExactlyItsWarmUp_IsReplayed()
+    {
+        // THE BOUNDARY FROM THE OTHER SIDE, AT ITS MINIMUM — one bar, and the review of PR #606 is why it is
+        // here. `architecture.md` described the boundary as the bucket `WarmupBars` bars behind the newest;
+        // the code uses the `WarmupBars`-th newest, which is one bar nearer. Those differ by exactly one
+        // bucket, the difference decides a verdict, and until this case nothing in either tier could tell
+        // them apart: the looser reading was applied to the probe and the whole suite stayed green.
+        //
+        // ONE unprojected bar is the sharpest fixture there is for it. It puts EVERY pair's newest value at
+        // `tail[1]`, and the tightest boundary in the shipped catalogue is VWAP's — warm-up 1, so `tail[0]`,
+        // the newest bar itself, because a warm-up of one may leave no trailing bar without a value at all.
+        // VWAP is therefore short by exactly its own warm-up, and every other pair is honestly complete: at
+        // `w >= 2` a newest value at `tail[1]` is inside what a warm-up accounts for. So this asserts the
+        // boundary rather than the mechanism, and it fails the moment the boundary moves a single bucket.
+        await FillAsync(Catalog(alsoEmaPeriods: "3"), Warmed);
+        await SeedDirectlyAsync(Bars(Warmed, Warmed + 1));
+
+        (await NewestValueAsync("vwap", 0)).Should().Be(
+            Bucket(Warmed - 1),
+            "the fixture only pins the boundary if VWAP really is one bucket behind the newest bar — a "
+            + "fixture that had already reached bucket {0} would pass while testing nothing",
+            Warmed);
+
+        IndicatorCacheService indicators = Cache(Catalog(alsoEmaPeriods: "3"));
+
+        bool projected = await indicators.EnsureProjectedAsync(
+            Venue, _es, Resolution, CancellationToken.None);
+
+        projected.Should().BeTrue(
+            "VWAP has a value from its session's first bar, so a stored bar carrying none is a gap and not a "
+            + "warm-up. One bar is the whole of the difference between the boundary the code uses and the "
+            + "one bar looser it is easy to write, and the looser one serves that bar as though the series "
+            + "ended before it");
+
+        (await NewestValueAsync("vwap", 0)).Should().Be(
+            Bucket(Warmed), "and the replay carries the pair to the newest stored bar");
+    }
+
+    [Fact]
+    public async Task AWarmUpRunSpanningASessionBreak_IsNotReadAsAGap()
+    {
+        // THE "IN BARS, NEVER IN TIME" CLAIM, PINNED RATHER THAN ARGUED — the review of PR #606 found it
+        // stated in four places and defended by no test, because every other fixture in this file lays its
+        // buckets five minutes apart with no break, and on a contiguous series the two forms agree exactly.
+        //
+        // The threshold the documents name as WRONG is `tail[0] - (w - 1) * resolution`. Buckets are never
+        // closer together than the resolution, so that instant is never older than `tail[w - 1]` and the
+        // time form can only ever over-replay — it cannot serve a wrong number, which is why this ranks
+        // below the boundary case above. What it costs is a series that rolls over a weekend replaying on
+        // every read, forever, writing nothing each time, with nothing anywhere reporting it.
+        //
+        // The arrangement is the roll fixture with one thing added: the last two buckets sit on the NEXT
+        // TRADING DAY. `ema(3)`'s newest value is then at `tail[2]`, exactly the boundary — but `tail[2]` is
+        // most of a day behind `tail[0]`, while `tail[0] - 2 * 5min` is nine hours later than that. Counted
+        // in bars this is a warm-up; counted in time it is a chasm.
+        await SeedDirectlyAsync(
+            BarsAcrossARoll(0, Warmed, rollAt: Warmed - 2, sessionBreakAt: Warmed - 2));
+        await ProjectAsync(Catalog(alsoEmaPeriods: "3"));
+
+        (await NewestValueAsync("ema", 3)).Should().Be(
+            Bucket(Warmed - 3),
+            "the fixture only pins anything if the pair really does stop at the last bucket of the earlier "
+            + "session");
+
+        (await NewestBarAsync()).Should().Be(
+            Bucket(0).AddDays(1).AddMinutes(Resolution),
+            "and the newest bar really is the second bucket of the NEXT day's session — nine hours past the "
+            + "value above, where two five-minute steps would put it a few minutes past. Without that gap "
+            + "the two forms of the boundary agree and this case tests nothing");
+
+        IndicatorCacheService indicators = Cache(Catalog(alsoEmaPeriods: "3"));
+
+        bool projected = await indicators.EnsureProjectedAsync(
+            Venue, _es, Resolution, CancellationToken.None);
+
+        projected.Should().BeFalse(
+            "two bars cannot satisfy a three-bar warm-up whichever day they fall on. A threshold measured in "
+            + "TIME puts the boundary two five-minute steps behind the newest bar — inside the new session — "
+            + "so every value from the previous session reads as a gap, and this series replays on every "
+            + "read and writes nothing");
+    }
+
     // ── Scaffolding ──────────────────────────────────────────────────────────────────────────────────
 
     /// <summary>
@@ -229,12 +312,34 @@ public sealed class IndicatorPeriodCompletenessTests : IAsyncLifetime
     /// <param name="fromIndex">The first bucket index.</param>
     /// <param name="toIndexExclusive">One past the last bucket index.</param>
     /// <param name="rollAt">The bucket index the second contract starts at.</param>
+    /// <param name="sessionBreakAt">
+    /// The bucket index that opens the <b>next trading day</b>, or <see langword="null"/> for a contiguous
+    /// series. A stored series is not contiguous in time — an overnight or a weekend puts hours between two
+    /// adjacent buckets — and that difference is the whole of what separates a boundary counted in bars from
+    /// one counted in time.
+    /// </param>
     /// <returns>The bars.</returns>
-    private static IReadOnlyList<Bar> BarsAcrossARoll(int fromIndex, int toIndexExclusive, int rollAt) =>
+    private static IReadOnlyList<Bar> BarsAcrossARoll(
+        int fromIndex,
+        int toIndexExclusive,
+        int rollAt,
+        int? sessionBreakAt = null) =>
     [
-        .. Bars(fromIndex, toIndexExclusive).Select(bar => bar.OpenTime < Bucket(rollAt)
-            ? bar
-            : bar with { ContractId = "CON.F.US.TEST.H27" }),
+        .. Bars(fromIndex, toIndexExclusive).Select(bar =>
+        {
+            Bar rolled = bar.OpenTime < Bucket(rollAt)
+                ? bar
+                : bar with { ContractId = "CON.F.US.TEST.H27" };
+
+            if (sessionBreakAt is not { } breakAt || rolled.OpenTime < Bucket(breakAt))
+            {
+                return rolled;
+            }
+
+            // Re-laid from the next day's session open, so the buckets after the break are five minutes
+            // apart from each other and a day apart from the ones before it.
+            return rolled with { OpenTime = rolled.OpenTime.AddDays(1).AddMinutes(-Resolution * breakAt) };
+        }),
     ];
 
     private static BarSessionCalendar Calendar() => BarSessionCalendar.Parse("16:00", []);
@@ -268,6 +373,16 @@ public sealed class IndicatorPeriodCompletenessTests : IAsyncLifetime
             Instruments = "ES,NQ",
             SessionCloseCentral = "16:00",
         });
+
+    /// <summary>The newest bucket the series holds a bar at.</summary>
+    /// <returns>The bucket.</returns>
+    private async Task<DateTimeOffset?> NewestBarAsync() =>
+        await _database.Bars
+            .AsNoTracking()
+            .Where(b => b.Venue == Venue
+                && b.Instrument == _es.Symbol
+                && b.ResolutionMinutes == Resolution)
+            .MaxAsync(b => (DateTimeOffset?)b.BucketStart);
 
     /// <summary>The newest bucket the store holds a value at for one pair, or null if it holds none.</summary>
     /// <param name="indicator">The indicator name.</param>

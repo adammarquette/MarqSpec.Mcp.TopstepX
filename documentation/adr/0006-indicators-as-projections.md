@@ -184,8 +184,10 @@ length is ever wanted, the answer is still that it goes in the **name** and this
 than reinterpreted.
 
 **`rebuild-indicators` keeps its place, with a narrower job.** A read self-heals only what the probe can see —
-a `(Indicator, Period)` pair with no rows. **Correcting an indicator's arithmetic leaves every pair present**,
-so no read will ever recompute it, and the verb is now how a *forced* replay happens. That, ADR-0012's
+a `(Indicator, Period)` pair with no rows, or, since gh#531, one whose newest value falls further back than
+that indicator's warm-up allows. **Correcting an indicator's arithmetic leaves every pair present and every
+pair reaching the newest bar**, so no read will ever recompute it, and the verb is now how a *forced* replay
+happens. That, ADR-0012's
 accepted write skew, and warming ahead of the first caller are what it is for.
 
 ## Update (2026-09-06) — selection among configured periods is allowed; ad-hoc computation is not
@@ -262,6 +264,14 @@ list is a subset of the bars' list.
 catalogue every configured pair is present, so no pass runs, and `EnsureProjectedAsync` returns earlier still
 when the series holds no bars at all. Wiring the sweep into the probe would let a read delete on the strength
 of a catalogue it never projected with.
+
+> **Read "does not sweep" precisely, because the replay reconciles.** What a read never does is delete
+> *without projecting*: the pass a read opens is `IndicatorProjector.ProjectAsync`, which ends in
+> `ReconcileAsync` and removes the `unjustified`, `retired` and `orphaned` rows the series it has just
+> recomputed cannot account for. That is the distinction the paragraph above turns on, not an exception to
+> it. **gh#531 widened how often that happens** — a *configured* pair now counts as missing when its rows
+> stop short of the bars, not only when it has none — so a read deletes on more occasions than before, each
+> of them still on a catalogue it has just projected the whole series with.
 
 > **The serving half below is superseded,
 > [2026-09-07](#update-2026-09-07--the-design-question-the-update-above-left-open-a-read-serves-only-what-the-bars-account-for).**

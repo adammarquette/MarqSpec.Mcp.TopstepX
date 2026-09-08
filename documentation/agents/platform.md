@@ -829,7 +829,7 @@ Three things about it generalise:
   thing at the wrong level.**
 
 The gate's **decision ledger** lives in `check-migrations-additive-selftest.sh` — the fourth gate here to
-need one — split into four measured mutation sweeps and a tail listed as exercised-but-not-mutated, which is
+need one — split into seven measured mutation sweeps and a tail listed as exercised-but-not-mutated, which is
 not a claim of coverage. **The per-row narrations belong there and not here**: this file carried a copy of
 the mutant-8 row that still said "survived" after the ledger said "closed", which is exactly the drift the
 same-PR rule exists to stop and is cheaper to obey when a measured number has one home. Read the rows there;

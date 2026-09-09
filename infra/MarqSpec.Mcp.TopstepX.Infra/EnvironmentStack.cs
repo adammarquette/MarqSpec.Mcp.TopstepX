@@ -570,7 +570,7 @@ public sealed class EnvironmentStack : Stack
         });
         postgres.AddMountPoints(new MountPoint { ContainerPath = PostgresDataMount, SourceVolume = "pgdata", ReadOnly = false });
 
-        _ = new FargateService(this, "PostgresService", new FargateServiceProps
+        var postgresService = new FargateService(this, "PostgresService", new FargateServiceProps
         {
             ServiceName = $"topstepx-mcp-{env}-postgres",
             Cluster = cluster,
@@ -836,8 +836,12 @@ public sealed class EnvironmentStack : Stack
             http5xxThreshold.ValueAsNumber, ComparisonOperator.GREATER_THAN_THRESHOLD, TreatMissingData.NOT_BREACHING,
             "ALB HTTPCode_Target_5XX_Count above Http5xxAlarmThreshold per 5 min. The server is answering 5xx.");
 
-        // Circuit-breaker rollback is an EventBridge event, not a metric. Filter on this cluster so the
-        // sibling environment in the same account does not page this topic.
+        // Circuit-breaker rollback is an EventBridge event, not a metric. Official ECS Deployment
+        // State Change / SERVICE_DEPLOYMENT_FAILED examples carry resources as the service ARN
+        // (arn:aws:ecs:…:service/<cluster>/<service>) and no detail.clusterArn — that field is on
+        // Service Action events. EventBridge requires every listed detail key, so a clusterArn
+        // clause would drop every rollback. Filter on this environment's service ARNs so the
+        // sibling in the same account does not page this topic.
         var deploymentFailed = new Rule(this, "DeploymentFailed", new RuleProps
         {
             RuleName = $"topstepx-mcp-{env}-deployment-failed",
@@ -846,10 +850,10 @@ public sealed class EnvironmentStack : Stack
             {
                 Source = ["aws.ecs"],
                 DetailType = ["ECS Deployment State Change"],
+                Resources = [server.ServiceArn, postgresService.ServiceArn],
                 Detail = new Dictionary<string, object>
                 {
                     ["eventName"] = new[] { "SERVICE_DEPLOYMENT_FAILED" },
-                    ["clusterArn"] = new[] { cluster.ClusterArn },
                 },
             },
         });
@@ -882,7 +886,7 @@ public sealed class EnvironmentStack : Stack
                 Statistic = Stats.AVERAGE,
             }),
             threshold: 80, ComparisonOperator.GREATER_THAN_THRESHOLD, TreatMissingData.NOT_BREACHING,
-            "EFS PercentIOLimit > 80 % for 15 min. The store's disk is at its I/O ceiling; burst credits or a throughput change.");
+            "EFS PercentIOLimit > 80 % for 15 min. The store is on Elastic throughput, so this is the file system's I/O ceiling. Find what is writing the volume; a quota increase or a mode change needs a dated ADR entry.");
     }
 
     /// <summary>

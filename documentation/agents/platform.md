@@ -1426,7 +1426,8 @@ the one that rewrites it. What exists today:
   `Environment` cost-allocation tags on every taggable environment resource, `Project` alone on the OIDC
   stack, and one account monthly `AWS::Budgets::Budget` whose amount and subscriber Ref parameters; 190 at
   gh#526, adding one SNS email topic per environment, seven CloudWatch alarms, the EventBridge rollback
-  rule and the migration metric filter whose pattern is the host log lines) and then
+  rule — `resources` service ARNs, not `detail.clusterArn` — and the migration metric filter whose
+  pattern is the host log lines; 192 after the filter-shape pin) and then
   `cdk synth --no-lookups` **once per outbound shape** through the CLI pinned in
   `infra/package.json`. **No credential exists on the runner, by construction**: `--no-lookups` makes a
   context miss fail the synth rather than call AWS, and `infra/cdk.context.json` carries the hosted-zone

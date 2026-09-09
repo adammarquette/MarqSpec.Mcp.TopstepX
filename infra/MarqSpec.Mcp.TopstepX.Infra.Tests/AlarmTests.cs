@@ -171,6 +171,36 @@ public sealed class AlarmTests(EnvironmentTemplates templates) : IClassFixture<E
         targets.Should().Contain(target => Synthesised.LogicalIdOf(target!["Arn"]) == topicId);
     }
 
+    /// <summary>
+    /// Official <c>ECS Deployment State Change</c> / <c>SERVICE_DEPLOYMENT_FAILED</c> events carry a
+    /// <c>resources</c> service ARN (<c>arn:aws:ecs:…:service/&lt;cluster&gt;/&lt;service&gt;</c>) and no
+    /// <c>detail.clusterArn</c> — that field is on Service Action events. EventBridge requires every
+    /// listed <c>detail</c> key, so a clusterArn clause would silently drop every rollback.
+    /// </summary>
+    [Theory]
+    [MemberData(nameof(EnvironmentTemplates.Both), MemberType = typeof(EnvironmentTemplates))]
+    public void Deployment_failure_rule_matches_service_resources_and_not_clusterArn(string env, string _)
+    {
+        var t = templates.For(env);
+        var rule = t.Resources("AWS::Events::Rule").Values.Select(t.Properties)
+            .Single(p => Synthesised.Text(p["EventPattern"]).Contains("SERVICE_DEPLOYMENT_FAILED", StringComparison.Ordinal));
+
+        var pattern = EventPatternObject(rule["EventPattern"]);
+        Synthesised.Text(pattern).Should().NotContain("clusterArn",
+            "clusterArn is not on ECS Deployment State Change; requiring it would drop every rollback");
+
+        var resourceIds = (pattern["resources"] ?? pattern["Resources"])!.AsArray()
+            .Select(Synthesised.LogicalIdOf)
+            .ToList();
+        var services = t.Resources("AWS::ECS::Service")
+            .ToDictionary(kv => t.Properties(kv.Value)["ServiceName"]!.GetValue<string>(), kv => kv.Key);
+        resourceIds.Should().BeEquivalentTo(
+        [
+            services[$"topstepx-mcp-{env}-server"],
+            services[$"topstepx-mcp-{env}-postgres"],
+        ], "resources is the service ARN EventBridge actually emits");
+    }
+
     [Theory]
     [MemberData(nameof(EnvironmentTemplates.Both), MemberType = typeof(EnvironmentTemplates))]
     public void Migration_filter_matches_the_host_log_lines_and_alarms_on_one_in_five_minutes(string env, string _)
@@ -215,6 +245,8 @@ public sealed class AlarmTests(EnvironmentTemplates templates) : IClassFixture<E
         props["Threshold"]!.GetValue<double>().Should().Be(80);
         props["Period"]!.GetValue<int>().Should().Be(900);
         AlarmSetsTreatMissingData(props).Should().BeTrue();
+        props["AlarmDescription"]!.GetValue<string>().Should().NotContain("burst",
+            "the file system is Elastic; BurstCreditBalance is Bursting-only");
     }
 
     [Theory]
@@ -247,6 +279,21 @@ public sealed class AlarmTests(EnvironmentTemplates templates) : IClassFixture<E
             "the startup Unavailable warning is the other line the filter must match");
 
         return [dropped.Groups[1].Value, unreachable.Groups[1].Value];
+    }
+
+    private static JsonObject EventPatternObject(JsonNode? eventPattern)
+    {
+        if (eventPattern is JsonObject obj)
+        {
+            return obj;
+        }
+
+        if (eventPattern is JsonValue value && value.TryGetValue<string>(out var json))
+        {
+            return JsonNode.Parse(json)!.AsObject();
+        }
+
+        throw new InvalidOperationException($"EventPattern was {eventPattern?.GetType().Name ?? "null"}, not an object or a JSON string.");
     }
 
     private static (string LogicalId, JsonObject Resource) Topic(Synthesised t, string env)

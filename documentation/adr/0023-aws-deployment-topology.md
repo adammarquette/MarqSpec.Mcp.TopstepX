@@ -471,8 +471,8 @@ its own reason, not a drift.
 - **The Cognito discovery-document measurements** and whether the custom domain is taken — gh#517.
 - **Whether production goes first**, ahead of the EFS measurement or the WAF — gh#520, gh#525, gh#528, each
   recorded here on a date if it does.
-- **The alarms' thresholds, the WAF's rate limit and exclusions, the budget's amount** — gh#526, gh#528,
-  gh#527, each a stack parameter with a default and a dated entry here.
+- **The WAF's rate limit and exclusions** — gh#528, a stack parameter with a default and a dated entry
+  here. The alarms' thresholds and the budget's amount are decided in the 2026-09-08 entries below.
 - **The runbook** — `documentation/deployment.md`, started by gh#519 and routed with its own `~tok` row.
 
 ## Decision log
@@ -916,6 +916,36 @@ Template tests: `CostAllocationTests` — every taggable environment resource ca
 stack has exactly one monthly COST budget whose amount and subscriber Ref parameters; a missing
 `Environment` key yields null under the same helper the green assertions use. Suite **170** at this entry.
 
+## Update (2026-09-08) — CloudWatch alarms and one SNS email topic per environment
+
+gh#526. Decisions above are unchanged; this records what pages, what does not, and the thresholds.
+
+- **Topic:** `topstepx-mcp-<env>-alerts` on each `EnvironmentStack`, email subscription whose endpoint
+  is parameter `AlertsEmail` (no default — a default would be a literal in a public repository). The
+  OIDC stack's budget `AlertsEmail` is a different parameter on a different stack; pass the same
+  address on each deploy. #522's "no dump in 26 h" alarm is still open and will publish here.
+- **Alarmed:** `server` and `postgres` `RunningTaskCount` < 1 for 5 min (Container Insights; missing
+  data **breaching**); ALB `UnHealthyHostCount` ≥ 1 for 5 min on the server target group (missing
+  not breaching); ALB `HTTPCode_ELB_5XX_Count` and `HTTPCode_Target_5XX_Count` above parameter
+  `Http5xxAlarmThreshold` (default **10**) per 5 min (missing not breaching); EventBridge on
+  `ECS Deployment State Change` / `SERVICE_DEPLOYMENT_FAILED`, filtered to this cluster so the
+  sibling environment in the same account does not cross-page; CloudWatch Logs metric filter on
+  `/topstepx-mcp/<env>/server` matching the `MigrateAsync` connection-dropped line and the startup
+  `StoreAvailability` Unavailable sentence, alarm on ≥ 1 in 5 min (missing not breaching); EFS
+  `PercentIOLimit` > 80 % for 15 min (missing not breaching).
+- **Not alarmed, by decision:** a server that is up, healthy and recording nothing because the
+  recorder lost the hub (ADR-0016). That is an app-emitted metric no card yet owns; `/health` stays
+  liveness-only (gh#513). A schema-defect crash that never writes those log lines pages as the
+  task-count and rollback alarms instead. Grafana alerting stays additive until a dated update to
+  ADR-0019 says otherwise.
+- **Live staging emails** (desired-count 0 / restore timestamps, forced rollback quoted) moved to
+  #519 (AC split 2026-09-08). This card's ship gate is template tests and this entry.
+
+Template tests: `AlarmTests` — a fixture with a literal `ops@example.com` and an alarm without an
+action fail the same helpers the green assertions use; every synthesised alarm publishes to the
+topic and sets `TreatMissingData`; the metric filter's pattern is read from the host sources, not
+retyped. Suite **190** at this entry.
+
 ## Follow-ups
 
 - gh#516, gh#517, gh#518 build decisions 7, 9 and 8; gh#529 gates decision 4's rule. All four cite this
@@ -927,6 +957,6 @@ stack has exactly one monthly COST budget whose amount and subscriber Ref parame
   "How the pipeline is shaped".
 - gh#522 builds decision 10 and records the restore drill; ADR-0004 gains the dated update saying the store
   has a backup story and what it is not.
-- gh#525, gh#526, gh#527, gh#528 each land their dated entry in the decision log above.
+- gh#525, gh#528 each land their dated entry in the decision log above. gh#526 and gh#527 have.
 - gh#510's connector measurement lands on ADR-0007 and ADR-0021; if it overturns the pre-registered-client
   assumption, decision 9's issuer reopens here as a dated entry and gh#517 is the card that changes.

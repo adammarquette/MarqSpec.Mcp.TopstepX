@@ -1,6 +1,8 @@
 using Amazon.CDK;
 using Amazon.CDK.AWS.Backup;
 using Amazon.CDK.AWS.CertificateManager;
+using Amazon.CDK.AWS.CloudWatch;
+using Amazon.CDK.AWS.CloudWatch.Actions;
 using Amazon.CDK.AWS.Cognito;
 using Amazon.CDK.AWS.EC2;
 using Amazon.CDK.AWS.ECS;
@@ -13,11 +15,14 @@ using Amazon.CDK.AWS.Route53;
 using Amazon.CDK.AWS.Route53.Targets;
 using Amazon.CDK.AWS.S3;
 using Amazon.CDK.AWS.ServiceDiscovery;
+using Amazon.CDK.AWS.SNS;
+using Amazon.CDK.AWS.SNS.Subscriptions;
 using Amazon.CDK.AWS.SSM;
 using Constructs;
 using CfnParameter = Amazon.CDK.CfnParameter;
 using CfnParameterProps = Amazon.CDK.CfnParameterProps;
 using EcsSecret = Amazon.CDK.AWS.ECS.Secret;
+using EventTargets = Amazon.CDK.AWS.Events.Targets;
 using FileSystem = Amazon.CDK.AWS.EFS.FileSystem;
 using FileSystemProps = Amazon.CDK.AWS.EFS.FileSystemProps;
 using SmSecret = Amazon.CDK.AWS.SecretsManager.Secret;
@@ -29,13 +34,15 @@ namespace MarqSpec.Mcp.TopstepX.Infra;
 /// One deployed environment (ADR-0023): a VPC and its four security groups in loopback's role, one
 /// Application Load Balancer as the whole edge, an ECS cluster running the released server image by digest
 /// and the Timescale store on EFS, the Cognito user pool that issues the tokens the server checks, the
-/// secret shells, the deployment history, the logs and the backup plan. Instantiated twice — production and
-/// staging — from the same class; what differs is in <see cref="EnvironmentStackProps"/> and nowhere else.
+/// secret shells, the deployment history, the logs, the backup plan and the CloudWatch / EventBridge
+/// paging path (gh#526). Instantiated twice — production and staging — from the same class; what differs
+/// is in <see cref="EnvironmentStackProps"/> and nowhere else.
 /// </summary>
 /// <remarks>
-/// What is <b>not</b> here, by card: the alarms (gh#526), the account budget (gh#527 — on
-/// <see cref="GitHubOidcStack"/>), the WAF (gh#528), the <c>pg_dump</c> task (gh#522). Cost-allocation
-/// tags (gh#527) and the OTLP sidecar (gh#537) are here. Cognito (gh#517) is here.
+/// What is <b>not</b> here, by card: the account budget (gh#527 — on <see cref="GitHubOidcStack"/>),
+/// the WAF (gh#528), the <c>pg_dump</c> task and its "no dump in 26 h" alarm (gh#522 — still open;
+/// the alerts topic is here for that card to attach to). Cost-allocation tags (gh#527) and the OTLP
+/// sidecar (gh#537) are here. Cognito (gh#517) is here. The alarms (gh#526) are here.
 /// <para>
 /// <b>Operational defaults this card took</b>, traced to neither ADR-0023 nor gh#516 and none a cost or
 /// exposure choice — named here so nobody hunts for where they were decided: the AWS Backup rule runs at
@@ -165,6 +172,21 @@ public sealed class EnvironmentStack : Stack
             Type = "String",
             Description = "ProjectX__DataTier: the market-data universe the credentials are entitled to. Simulated or Live, named on every deploy; the wrong tier answers empty, never an error (R-7.2).",
             AllowedValues = ["Simulated", "Live"],
+        });
+        // No default: a default would be the maintainer's address as a literal in a public repository.
+        var alertsEmail = new CfnParameter(this, "AlertsEmail", new CfnParameterProps
+        {
+            Type = "String",
+            Description = "Email that receives this environment's CloudWatch / EventBridge pages (gh#526). No default — a default would be a literal in the template.",
+            AllowedPattern = @".+@.+\..+",
+            ConstraintDescription = "Must be an email address.",
+        });
+        var http5xxThreshold = new CfnParameter(this, "Http5xxAlarmThreshold", new CfnParameterProps
+        {
+            Type = "Number",
+            Default = 10,
+            MinValue = 1,
+            Description = "ALB 5xx count in a 5-minute period that pages (gh#526). Same threshold for ELB-generated and target 5xx.",
         });
 
         // ── DNS ─────────────────────────────────────────────────────────────────────────────────────────
@@ -457,7 +479,7 @@ public sealed class EnvironmentStack : Stack
         plan.AddRule(new BackupPlanRule(new BackupPlanRuleProps
         {
             RuleName = "daily-35-days",
-            ScheduleExpression = Schedule.Cron(new CronOptions { Minute = "0", Hour = "22" }),
+            ScheduleExpression = Schedule.Cron(new Amazon.CDK.AWS.Events.CronOptions { Minute = "0", Hour = "22" }),
             StartWindow = Duration.Hours(1),
             CompletionWindow = Duration.Hours(4),
             DeleteAfter = Duration.Days(35),
@@ -782,6 +804,128 @@ public sealed class EnvironmentStack : Stack
             EnableExecuteCommand = false,
         });
         targetGroup.AddTarget(server);
+
+        // ── Paging: one SNS email topic and the alarms that publish to it (gh#526) ───────────────────────
+        // The address is a parameter, never a literal. #522's "no dump in 26 h" alarm is still open; the
+        // topic exists so that card attaches rather than creating a second one.
+        var alerts = new Topic(this, "Alerts", new TopicProps
+        {
+            TopicName = $"topstepx-mcp-{env}-alerts",
+            DisplayName = $"topstepx-mcp {env} alerts",
+        });
+        alerts.AddSubscription(new EmailSubscription(alertsEmail.ValueAsString));
+
+        Page(this, alerts, "ServerRunningTasks", $"topstepx-mcp-{env}-server-running-tasks",
+            ContainerInsightsRunningTasks(env, "server"),
+            threshold: 1, ComparisonOperator.LESS_THAN_THRESHOLD, TreatMissingData.BREACHING,
+            "server RunningTaskCount < 1 for 5 min. Missing data is breaching: Insights is off or the cluster is gone.");
+        Page(this, alerts, "PostgresRunningTasks", $"topstepx-mcp-{env}-postgres-running-tasks",
+            ContainerInsightsRunningTasks(env, "postgres"),
+            threshold: 1, ComparisonOperator.LESS_THAN_THRESHOLD, TreatMissingData.BREACHING,
+            "postgres RunningTaskCount < 1 for 5 min. Missing data is breaching: Insights is off or the cluster is gone.");
+        Page(this, alerts, "UnhealthyHosts", $"topstepx-mcp-{env}-unhealthy-hosts",
+            targetGroup.Metrics.UnhealthyHostCount(new MetricOptions { Period = Duration.Minutes(5), Statistic = Stats.MAXIMUM }),
+            threshold: 1, ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD, TreatMissingData.NOT_BREACHING,
+            "ALB UnHealthyHostCount ≥ 1 for 5 min on the server target group. Restore the task or the /health probe.");
+        Page(this, alerts, "Elb5xx", $"topstepx-mcp-{env}-elb-5xx",
+            alb.Metrics.HttpCodeElb(HttpCodeElb.ELB_5XX_COUNT, new MetricOptions { Period = Duration.Minutes(5), Statistic = Stats.SUM }),
+            http5xxThreshold.ValueAsNumber, ComparisonOperator.GREATER_THAN_THRESHOLD, TreatMissingData.NOT_BREACHING,
+            "ALB HTTPCode_ELB_5XX_Count above Http5xxAlarmThreshold per 5 min. The balancer itself is failing requests.");
+        Page(this, alerts, "Target5xx", $"topstepx-mcp-{env}-target-5xx",
+            targetGroup.Metrics.HttpCodeTarget(HttpCodeTarget.TARGET_5XX_COUNT, new MetricOptions { Period = Duration.Minutes(5), Statistic = Stats.SUM }),
+            http5xxThreshold.ValueAsNumber, ComparisonOperator.GREATER_THAN_THRESHOLD, TreatMissingData.NOT_BREACHING,
+            "ALB HTTPCode_Target_5XX_Count above Http5xxAlarmThreshold per 5 min. The server is answering 5xx.");
+
+        // Circuit-breaker rollback is an EventBridge event, not a metric. Filter on this cluster so the
+        // sibling environment in the same account does not page this topic.
+        var deploymentFailed = new Rule(this, "DeploymentFailed", new RuleProps
+        {
+            RuleName = $"topstepx-mcp-{env}-deployment-failed",
+            Description = "Pages when the ECS circuit breaker rolls a deployment back (gh#526).",
+            EventPattern = new EventPattern
+            {
+                Source = ["aws.ecs"],
+                DetailType = ["ECS Deployment State Change"],
+                Detail = new Dictionary<string, object>
+                {
+                    ["eventName"] = new[] { "SERVICE_DEPLOYMENT_FAILED" },
+                    ["clusterArn"] = new[] { cluster.ClusterArn },
+                },
+            },
+        });
+        deploymentFailed.AddTarget(new EventTargets.SnsTopic(alerts));
+
+        // The two phrases Program.MigrateAsync and StoreAvailability.Unavailable write. AlarmTests reads
+        // those host files and refuses a filter that does not contain them.
+        var migrationFilter = new MetricFilter(this, "MigrationFailureFilter", new MetricFilterProps
+        {
+            LogGroup = serverLogs,
+            FilterPattern = FilterPattern.AnyTerm(
+                "The connection dropped while applying migrations.",
+                "The database is not reachable, so cached market data and observations are unavailable."),
+            MetricNamespace = $"TopstepX/{env}",
+            MetricName = "MigrationFailure",
+            MetricValue = "1",
+        });
+        Page(this, alerts, "MigrationFailure", $"topstepx-mcp-{env}-migration-failure",
+            migrationFilter.Metric(new MetricOptions { Period = Duration.Minutes(5), Statistic = Stats.SUM }),
+            threshold: 1, ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD, TreatMissingData.NOT_BREACHING,
+            "A MigrateAsync / StoreAvailability Unavailable line landed in the server log. The store is down or a migration dropped the connection.");
+
+        Page(this, alerts, "EfsIo", $"topstepx-mcp-{env}-efs-io",
+            new Metric(new MetricProps
+            {
+                Namespace = "AWS/EFS",
+                MetricName = "PercentIOLimit",
+                DimensionsMap = new Dictionary<string, string> { ["FileSystemId"] = fileSystem.FileSystemId },
+                Period = Duration.Minutes(15),
+                Statistic = Stats.AVERAGE,
+            }),
+            threshold: 80, ComparisonOperator.GREATER_THAN_THRESHOLD, TreatMissingData.NOT_BREACHING,
+            "EFS PercentIOLimit > 80 % for 15 min. The store's disk is at its I/O ceiling; burst credits or a throughput change.");
+    }
+
+    /// <summary>
+    /// Container Insights publishes <c>ClusterName</c> / <c>ServiceName</c> as the names we set, not as
+    /// CloudFormation refs. The literals have to match <c>ClusterName</c> and each service's
+    /// <c>ServiceName</c> above.
+    /// </summary>
+    private static Metric ContainerInsightsRunningTasks(string env, string service) =>
+        new(new MetricProps
+        {
+            Namespace = "ECS/ContainerInsights",
+            MetricName = "RunningTaskCount",
+            DimensionsMap = new Dictionary<string, string>
+            {
+                ["ClusterName"] = $"topstepx-mcp-{env}",
+                ["ServiceName"] = $"topstepx-mcp-{env}-{service}",
+            },
+            Period = Duration.Minutes(5),
+            Statistic = Stats.AVERAGE,
+        });
+
+    private static void Page(
+        Stack stack,
+        ITopic topic,
+        string id,
+        string alarmName,
+        IMetric metric,
+        double threshold,
+        ComparisonOperator comparison,
+        TreatMissingData missing,
+        string description)
+    {
+        var alarm = new Alarm(stack, id, new AlarmProps
+        {
+            AlarmName = alarmName,
+            Metric = metric,
+            Threshold = threshold,
+            ComparisonOperator = comparison,
+            EvaluationPeriods = 1,
+            TreatMissingData = missing,
+            AlarmDescription = description,
+        });
+        alarm.AddAlarmAction(new SnsAction(topic));
     }
 
     /// <summary>

@@ -83,8 +83,9 @@ public sealed class GitHubOidcStack : Stack
 
     /// <summary>
     /// One account monthly COST budget (gh#527). Amount defaults to 300 USD; notifications at 50 / 80 /
-    /// 100 % of actual and 100 % of forecast, all to the <c>AlertsEmail</c> parameter (shared later with
-    /// gh#526's SNS topic, or its own until that card lands). No email literal in the template.
+    /// 100 % of actual and 100 % of forecast, all to this stack's <c>AlertsEmail</c> parameter. Each
+    /// environment stack carries its own <c>AlertsEmail</c> for gh#526's SNS topic — same name, different
+    /// stack, passed on that deploy. No email literal in the template.
     /// </summary>
     private void MonthlyCostBudget()
     {

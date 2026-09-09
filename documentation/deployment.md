@@ -56,7 +56,7 @@ Apex is still Cloudflare (unchanged):
 | Route 53 zone `Z063685735CT6R1B1I8YZ` | `ns-1890.awsdns-44.co.uk`, `ns-638.awsdns-15.net`, `ns-1360.awsdns-42.org`, `ns-445.awsdns-55.com` |
 | Public DNS | `peyton.ns.cloudflare.com`, `meadow.ns.cloudflare.com` |
 
-When that is done, the live checks (quote on #519, tokens redacted) are:
+Live checks (quote on #519, tokens redacted):
 
 ```bash
 # public NS of the delegated root must be zone Z00545362JA49XMTT3U7Q
@@ -252,8 +252,9 @@ Assisted-by: Cursor Grok 4.6 (Cursor)
 Each environment has one SNS topic `topstepx-mcp-<env>-alerts`. The subscription address is stack
 parameter `AlertsEmail` — confirm the email once after the first deploy (SNS sends a confirmation).
 gh#522's "no dump object in 26 h" alarm is still open and will publish here when it lands. Live
-task-count and rollback emails on staging are still outstanding: no EnvironmentStack, so no services
-to scale to zero.
+task-count and rollback emails on staging are still outstanding (gh#526): `topstepx-mcp-staging` deployed
+2026-09-09 with ALB and SNS up, but Fargate quota 0 leaves no running tasks — verify the alarms after
+quota is raised, not "no EnvironmentStack".
 
 What is **not** alarmed, by decision (ADR-0023, gh#526): a server that is up, healthy and recording
 nothing because the tape recorder lost the hub (ADR-0016). That needs an app-emitted metric no card
@@ -277,7 +278,8 @@ Assisted-by: Cursor Grok 4.6 (Cursor)
 The WAF rate-based rule (gh#528, ADR-0023 2026-09-08 entry) blocks the operator's own address the same as
 anyone else's. A load generator, a `check-deployment.sh` loop, or a browser refresh storm from one IP at
 more than **300 requests / 5 minutes** (stack parameter `WafRateLimit`) starts receiving **403** from the
-ALB, not from the server. The 2026-09-09 card could not fire this: no ALB.
+ALB, not from the server. Live WAF lockout on staging is still outstanding (gh#528) — the ALB exists;
+measure after tasks place.
 
 **Unblock.** Wait out the 5-minute evaluation window after the flood stops, or raise the parameter for
 the window and put it back:

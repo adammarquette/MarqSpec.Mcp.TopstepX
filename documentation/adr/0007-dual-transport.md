@@ -74,6 +74,7 @@ difference between the two entry points is a handful of lines.
 | [2026-09-05](#update-2026-09-05--the-16-tools-both-times-sentence-has-a-real-tree-behind-it-and-it-held-15-not-18) | Closes gh#460: the tree behind the "16 tools both times" sentence is real, on `origin/main`, and held 15 tools that day — a one-tool gap, not the three a first reading of `develop` alone implied |
 | [2026-09-06](#update-2026-09-06--the-remote-instance-is-decided-in-adr-0021) | The remote instance the 2026-09-01 TLS update left undecided is decided in ADR-0021 — the "same machine" scoping is superseded, the TLS decision and the composed shape are not |
 | [2026-09-06](#update-2026-09-06--the-route-table-gained-a-path-that-answers-without-a-credential) | `GET /health` answers unauthenticated in front of the gate, which stays global — and ordering alone would not have carved it out |
+| [2026-09-08](#update-2026-09-08--the-cowork-custom-connector-dialog-was-measured-on-this-plan) | The maintainer measured Cowork's custom-connector dialog on this plan — two screens, what each offered, and what was not shown (gh#510) |
 
 ## Update (2026-08-22) — starting is not the same as being ready
 
@@ -1210,3 +1211,31 @@ without Dynamic Client Registration is gh#510's, and this update rests on ADR-00
 exactly as that record states it: if it is overturned, the issuer moves and the resource-server half here
 does not. Nothing here introspects an opaque token, and nothing here authorises per user beyond "an access
 token from a listed client carrying the scope".
+
+## Update (2026-09-08) — the Cowork custom-connector dialog was measured on this plan
+
+gh#510 records what the maintainer saw in Claude Cowork's **custom connector** registration dialog on
+2026-09-08/09. This is a **client UI measurement**, not a registration of this server and not a check that
+Cowork reaches a public HTTPS endpoint — that remains *reported, not verified* until gh#524 registers the
+staging endpoint. What it means for the three connector assumptions [ADR-0021](0021-a-non-loopback-instance-is-supported.md)
+named is recorded there; this update carries the screen-by-screen observation only.
+
+### First screen (before Continue)
+
+- **Name** — a text field.
+- **URL** — a text field.
+- **Continue** is gated on a valid URL; a fake URL was enough to enable Continue.
+
+### Second screen (after Continue)
+
+- **Authentication:** `Always Required` | `Required when the server asks` | `None`.
+- **OAuth client:** `Use Anthropic's hosted client metadata (Recommended)` | `No client ID - register one automatically` | `Use your own OAuth client`.
+- **Additional request headers:** a list; **Header name** from a dropdown of standard HTTP headers; **value**; whether **required**.
+- **Advanced** (open button): **Transport** — `Streamable HTTP` | `SSE (legacy)`.
+
+### Not observed — stated rather than guessed
+
+- Plan tier.
+- Callback / redirect URL.
+- Whether choosing `Use your own OAuth client` expands to client id + secret fields.
+- Any stated HTTPS or path requirement on the URL field.

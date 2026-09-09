@@ -463,6 +463,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Cowork's custom-connector dialog was measured on the maintainer's plan (gh#510).** Two screens: name and
+  URL with Continue gated on a syntactically valid URL; then authentication mode, OAuth client choice
+  (Anthropic hosted metadata, DCR, or use your own client), additional request headers, and Advanced transport
+  (`Streamable HTTP` or `SSE (legacy)`). Plan tier, callback URL, own-client field labels and any HTTPS/path
+  rule on the URL were not shown. [ADR-0007](documentation/adr/0007-dual-transport.md) and
+  [ADR-0021](documentation/adr/0021-a-non-loopback-instance-is-supported.md) each gain a dated update;
+  assumption 2 is partially confirmed — DCR is offered but not exclusively, so Cognito and ADR-0023 §9 stand;
+  assumptions 1 and 3 remain for gh#524 and a separate stdio question.
 - **`SessionCloseCentral` before 02:00 Central is refused at startup rather than admitted silently.** At
   `00:30` the reopen is `01:30`, so the spring-forward transition falls inside Monday's session on trade date
   2030-03-11 and that session is 1,320 elapsed minutes rather than 1,380 — once a year, with nothing in the

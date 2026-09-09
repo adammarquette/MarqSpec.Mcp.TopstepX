@@ -230,6 +230,27 @@ and Terraform among them. Nothing here changes: the bind, token and certificate 
 written, and ADR-0023 carries them rather than restating them. The hostname spelling stays a caveat on both
 records until gh#519 confirms it, exactly as the *Bind* section says.
 
+## Update (2026-09-08) — which connector assumptions gh#510 confirmed or overturned
+
+gh#510 measured Cowork's custom-connector dialog on the maintainer's plan on 2026-09-08/09. The screen-by-screen
+observation is on [ADR-0007](0007-dual-transport.md)'s dated update the same day; this update says what that
+measurement did to the three assumptions in *What this assumes about the connector* above.
+
+1. **Cowork reaches the endpoint from Anthropic's infrastructure over the public internet, and requires a
+   publicly trusted HTTPS endpoint.** **Not measured** by this dialog. It shows fields for a URL and transport
+   choice; it does not register an endpoint or prove Anthropic's cloud can reach one. Still *reported, not
+   verified* — gh#524.
+2. **The dialog accepts a pre-registered OAuth client id and secret, with callback
+   `https://claude.ai/api/mcp/auth_callback`, and does not require Dynamic Client Registration.** **Partially
+   measured.** The second screen offers Dynamic Client Registration (`No client ID - register one
+   automatically`) and Anthropic's hosted client metadata (Recommended), **and** `Use your own OAuth client`.
+   It does **not** offer *only* DCR, so **the issuer does not reopen** — Cognito remains a possible issuer,
+   and [ADR-0023](0023-aws-deployment-topology.md) decision 9 stands; no dated entry was added there. The
+   callback URL was **not shown** on the screens reached. Whether `Use your own OAuth client` expands to
+   client-id and secret field labels was **not observed**.
+3. **Whether Cowork can register a local stdio server instead is not assumed either way.** **Not measured** by
+   this dialog, which is the remote custom-connector path only.
+
 ## Follow-ups
 
 - gh#510 lands as a dated update on ADR-0007; when it does, a dated update here says which of the three

@@ -3,7 +3,8 @@
 Operational steps for the AWS environments (ADR-0023, gh#509). Started by gh#527's cost section; the
 alarm table is gh#526; WAF lockout is gh#528. Rotation, restore and "which release is running" still
 land with gh#523. **gh#519 stood the account up once** (2026-09-09): region, OIDC stack, GitHub
-`aws-production` environment, and the DNS fail-closed that stopped the staging EnvironmentStack.
+`aws-production` environment, the DNS fail-closed, and the hand-created staging zone waiting on a
+Cloudflare NS swap.
 
 ## Account
 
@@ -14,7 +15,7 @@ land with gh#523. **gh#519 stood the account up once** (2026-09-09): region, OID
 | Operator principal on the first deploy | `arn:aws:iam::045296582762:root` |
 | CDK bootstrap | `aws://045296582762/us-east-1` (`CDKToolkit` `CREATE_COMPLETE`) |
 | OIDC stack | `topstepx-mcp-github-oidc` |
-| Staging stack | **not deployed** — public NS for `marqspec.com` is Cloudflare, not the Route 53 zone |
+| Staging stack | **not deployed** — waiting on Cloudflare NS swap to zone `Z00545362JA49XMTT3U7Q` |
 | Production stack | not deployed (out of scope for gh#519) |
 
 `infra/cdk.json` still carries AWS's documentation-example account and `us-east-1` as context placeholders.
@@ -32,26 +33,33 @@ Assisted-by: Cursor Grok 4.6 (Cursor)
 ## Hostnames and DNS
 
 Confirmed spelling: **`staging.marqspec.com`**, hostname **`topstepx-mcp.staging.marqspec.com`**.
-`stage.` was a one-time epic typo. Evidence on #519 (2026-09-09): epic #509's decided target, the CDK
-app's `RootDomain`, and no `stage.` / `staging.` record in Route 53 or public DNS.
+`stage.` was a one-time epic typo. Evidence on #519 (2026-09-09): epic #509's decided target and the CDK
+app's `RootDomain`.
 
-**Do not `cdk deploy topstepx-mcp-staging` until public NS matches a plan the maintainer has written.**
-Measured 2026-09-09:
+**Staging zone created 2026-09-09; waiting on Cloudflare NS swap.** Public hosted zone
+`Z00545362JA49XMTT3U7Q` (`staging.marqspec.com.`, account `045296582762`). Four NS, quoted on #519:
+
+- `ns-833.awsdns-40.net`
+- `ns-1770.awsdns-29.co.uk`
+- `ns-193.awsdns-24.com`
+- `ns-1299.awsdns-34.org`
+
+Cloudflare already has Type NS / Name `staging` pointed at the **apex** zone's four
+(`ns-445.awsdns-55.com` and siblings on `Z063685735CT6R1B1I8YZ`). Those names do not serve
+staging. **Replace the current four with the four above.** Do not `cdk deploy topstepx-mcp-staging`
+until public `NS staging.marqspec.com` matches this zone — ACM would hang (ADR-0023).
+
+Apex is still Cloudflare (unchanged):
 
 | Who answers `NS marqspec.com` | Values |
 |---|---|
 | Route 53 zone `Z063685735CT6R1B1I8YZ` | `ns-1890.awsdns-44.co.uk`, `ns-638.awsdns-15.net`, `ns-1360.awsdns-42.org`, `ns-445.awsdns-55.com` |
 | Public DNS | `peyton.ns.cloudflare.com`, `meadow.ns.cloudflare.com` |
 
-`CreateAndDelegate` writes the `staging.` NS set into that Route 53 apex. ACM validates in **public**
-DNS. Deploying today would sit in `CREATE_IN_PROGRESS` while ACM caches Cloudflare NXDOMAIN (ADR-0023
-2026-09-07 certificate-ordering entry). Maintainer chooses: point the apex at the Route 53 set, or
-add a Cloudflare NS record for `staging.marqspec.com` after a sequenced zone create.
-
 When that is done, the live checks (quote on #519, tokens redacted) are:
 
 ```bash
-# public NS of the delegated root must be the stack-created zone
+# public NS of the delegated root must be zone Z00545362JA49XMTT3U7Q
 dig +short NS staging.marqspec.com
 
 # ACM wildcard ISSUED

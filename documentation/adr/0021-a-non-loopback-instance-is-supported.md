@@ -60,8 +60,9 @@ compose file's comments.
 Hostnames: **`topstepx-mcp.marqspec.com`** for production and **`topstepx-mcp.staging.marqspec.com`** for
 staging, one load balancer per environment (gh#511). The `staging.` spelling is **confirmed** (gh#519,
 2026-09-09): epic #509's decided target, the CDK `RootDomain`, and no `stage.` record in Route 53 or
-public DNS. Public NS for the apex is still Cloudflare, so the first staging deploy is waiting on a
-DNS cutover ([ADR-0023](0023-aws-deployment-topology.md) 2026-09-09 entry).
+public DNS. Public NS for the apex is still Cloudflare. Staging's zone `Z00545362JA49XMTT3U7Q` exists;
+the first staging deploy is waiting on the Cloudflare NS swap
+([ADR-0023](0023-aws-deployment-topology.md) 2026-09-09 staging-zone entry).
 
 ### Token — OAuth 2.1, Cognito-issued; the static token stays local
 

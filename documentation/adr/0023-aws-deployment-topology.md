@@ -85,9 +85,10 @@ decides it with the maintainer and writes the answer back there.
 Hostnames: **`topstepx-mcp.marqspec.com`** and **`topstepx-mcp.staging.marqspec.com`**, one hostname per
 environment. The `staging.` spelling is **confirmed** (gh#519, 2026-09-09 entry): epic #509's decided
 target, this app's `RootDomain`, and no `stage.` record in Route 53 or public DNS. `stage.` was a
-one-time epic typo. **Public NS for `marqspec.com` is Cloudflare, not the Route 53 zone** — so the
-first EnvironmentStack deploy is stopped until the maintainer cuts DNS over (same entry). A document
-quoting a hostname cites this paragraph.
+one-time epic typo. **Public NS for `marqspec.com` is Cloudflare, not the Route 53 zone.** Staging's
+own public zone `Z00545362JA49XMTT3U7Q` exists; the first EnvironmentStack deploy is stopped until
+Cloudflare's `staging` NS set is swapped to that zone's four nameservers (2026-09-09 staging-zone
+entry). A document quoting a hostname cites this paragraph.
 
 ### 2. One Application Load Balancer per environment is the reverse proxy — there is no sidecar
 
@@ -1039,13 +1040,26 @@ the 2026-09-06 fork.
 secret-write shape. No credential-shaped value. Secret shells do not exist until EnvironmentStack does;
 do not mint them out of band.
 
+## Update (2026-09-09) — staging hosted zone created; waiting on Cloudflare NS swap
+
+gh#519. Decisions above are unchanged.
+
+**Public hosted zone `Z00545362JA49XMTT3U7Q`** for `staging.marqspec.com.` in account `045296582762`
+(us-east-1). Not private. Four NS: `ns-833.awsdns-40.net`, `ns-1770.awsdns-29.co.uk`,
+`ns-193.awsdns-24.com`, `ns-1299.awsdns-34.org`. Quoted on #519 for the Cloudflare paste (Type NS,
+Name `staging`). Replace the current four (apex NS on `Z063685735CT6R1B1I8YZ`) with these.
+
+**EnvironmentStack still not deployed.** ACM would hang until Cloudflare answers those four for
+`staging.marqspec.com`. Do not `cdk deploy` `topstepx-mcp-staging`. Production stays undeployed.
+
 ## Follow-ups
 
 - gh#516, gh#517, gh#518 built decisions 7, 9 and 8; gh#529 gates decision 4's rule. gh#516 also
   still owns the outbound-path fork with the maintainer.
-- gh#519 stood the account up, confirmed `staging.`, chose `us-east-1`, and stopped EnvironmentStack
-  on the Cloudflare/Route 53 NS mismatch. Remaining on that card: DNS cutover, the staging deploy,
-  secret fills, discovery measurements, live alarm/WAF/CE quotes.
+- gh#519 stood the account up, confirmed `staging.`, chose `us-east-1`, created public zone
+  `Z00545362JA49XMTT3U7Q`, and stopped EnvironmentStack pending the Cloudflare NS swap. Remaining
+  on that card: the swap, the staging deploy, secret fills, discovery measurements, live
+  alarm/WAF/CE quotes.
 - gh#520 and gh#521 build decision 8's pipeline and its check; gh#520 also rewrites the platform contract's
   "How the pipeline is shaped".
 - gh#522 builds decision 10 and records the restore drill; ADR-0004 gains the dated update saying the store

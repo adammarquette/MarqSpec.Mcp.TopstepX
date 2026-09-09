@@ -1405,7 +1405,7 @@ the one that rewrites it. What exists today:
 
 - **Two projects in the solution.** `infra/MarqSpec.Mcp.TopstepX.Infra/` is the CDK app — one
   `EnvironmentStack` instantiated for production (`marqspec.com`, zone looked up) and staging
-  (`staging.marqspec.com`, zone created and delegated), differing only in its props, plus the
+  (`staging.marqspec.com`, zone looked up — `Z00545362JA49XMTT3U7Q`; never CreateAndDelegate), differing only in its props, plus the
   `GitHubOidcStack`. `infra/MarqSpec.Mcp.TopstepX.Infra.Tests/` is xUnit over `Amazon.CDK.Assertions`.
   Both ride `build & unit tests`' existing Restore, Format and Build steps, `NuGetAudit` and CodeQL, with
   no ruleset write. **Neither references a product project or the venue package**, so ADR-0002's gate has

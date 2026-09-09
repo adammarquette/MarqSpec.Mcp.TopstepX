@@ -471,8 +471,8 @@ its own reason, not a drift.
 - **The Cognito discovery-document measurements** and whether the custom domain is taken — gh#517.
 - **Whether production goes first**, ahead of the EFS measurement or the WAF — gh#520, gh#525, gh#528, each
   recorded here on a date if it does.
-- **The WAF's rate limit and exclusions** — gh#528, a stack parameter with a default and a dated entry
-  here. The alarms' thresholds and the budget's amount are decided in the 2026-09-08 entries below.
+- **The WAF's exclusions after a week of staging logs** — gh#519 (live WAF verify). The WAF rate-limit
+  default, the alarms' thresholds and the budget's amount are decided in the 2026-09-08 entries below.
 - **The runbook** — `documentation/deployment.md`, started by gh#519 and routed with its own `~tok` row.
 
 ## Decision log
@@ -481,7 +481,8 @@ Dated `## Update` entries land below this heading, oldest first, one per setting
 decision the cards above own: the region (gh#519); each GitHub environment and IAM trust condition, with its
 read-back call (gh#518); the Cognito client ids and secret ARNs, and the discovery measurements (gh#517);
 the EFS threshold, measurement and verdict (gh#525); what is alarmed and what is not (gh#526); the
-cost-allocation tag activation (gh#527); the WAF exclusions with their log lines (gh#528); the
+cost-allocation tag activation (gh#527); the WAF rate limit and managed-group mode (gh#528; exclusions
+with their log lines wait on #519); the
 additive-migration gate (gh#529); and, if it happens, the date production was approved ahead of gh#525 or
 gh#528. A choice made in a console and not written here does not exist.
 
@@ -949,6 +950,41 @@ topic and sets `TreatMissingData`; the metric filter's pattern is read from the 
 retyped; the rollback rule matches `resources` service ARNs and refuses `detail.clusterArn`.
 Suite **192** at this entry.
 
+## Update (2026-09-08) — WAF on each ALB: rate-based block, managed groups count then block
+
+gh#528. Decisions above are unchanged; this records what the web ACL blocks, what it costs, and why the
+edge is not an allow-list to Anthropic's published outbound range. Live staging measurements (a load
+generator at twice the limit receiving 403; a week of count-mode logs and any exclusion list) are #519's
+ship gate, not this card's (AC split 2026-09-08).
+
+- **Association:** one `AWS::WAFv2::WebACL` (`REGIONAL`) per environment, associated with that
+  environment's ALB. Default action **allow**.
+- **Rate-based rule:** per source IP, CloudFormation parameter `WafRateLimit`, type `Number`, default
+  **300** requests per 5-minute window, action **block**. A Cowork session with paced `get_bars` paging
+  stays under it; the busiest-minute measurement from ALB access logs is #519's. The rule blocks the
+  operator's own load test too — see `documentation/deployment.md`.
+- **Managed groups:** `AWSManagedRulesCommonRuleSet` and `AWSManagedRulesKnownBadInputsRuleSet`. Staging
+  override action **count**; production override action **none** (the group's default **block**). No
+  exclusions yet — JSON-RPC bodies can trip SQLi/XSS and body-size rules of the common set, and inventing
+  an exclusion without a week of staging logs would be a hole dressed as hygiene. The exclusion list
+  (possibly empty) and the log line that justified each land here when #519 quotes them.
+- **Logging:** CloudWatch log group `aws-waf-logs-topstepx-mcp-<env>`, 30 days, `RETAIN`. The ALB
+  access-log bucket cannot be the destination: WAF requires the name prefix `aws-waf-logs-`.
+- **Cost, per environment, us-east-1 list as a basis not a choice:** about **5 USD per ACL** + **1 USD
+  per rule** + **0.60 USD per million requests**. Three rules (one rate-based, two managed groups) so
+  roughly 8 USD / month / environment before request charges. gh#527's 95 USD basis did not include this;
+  the budget default of 300 USD still covers both environments with room.
+- **Why not an allow-list to Anthropic's range (`160.79.104.0/21`).** Tempting because it would close 443
+  to everyone but the connector. Lost because `scripts/check-deployment.sh` (#521) runs from a GitHub
+  runner, whose egress is not in that range, and the published range is a document Anthropic can change
+  without notice — a security-group that trusts it would fail closed on a runner and fail open on a
+  rotation. A WAF rate rule has neither cost.
+
+Template tests: `WafTests` — a fixture with an ALB and a web ACL but no association has zero associations
+under the same helper the green tests use; each ALB has exactly one associated web ACL; the rate rule
+blocks at `WafRateLimit`; default allow; managed groups override count on staging and none (block) on
+production; logs go to a 30-day `aws-waf-logs-*` group. Suite **203** at this entry.
+
 ## Follow-ups
 
 - gh#516, gh#517, gh#518 build decisions 7, 9 and 8; gh#529 gates decision 4's rule. All four cite this
@@ -960,6 +996,6 @@ Suite **192** at this entry.
   "How the pipeline is shaped".
 - gh#522 builds decision 10 and records the restore drill; ADR-0004 gains the dated update saying the store
   has a backup story and what it is not.
-- gh#525, gh#528 each land their dated entry in the decision log above. gh#526 and gh#527 have.
+- gh#525 lands its dated entry in the decision log above. gh#526, gh#527 and gh#528 have.
 - gh#510's connector measurement lands on ADR-0007 and ADR-0021; if it overturns the pre-registered-client
   assumption, decision 9's issuer reopens here as a dated entry and gh#517 is the card that changes.

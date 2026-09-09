@@ -18,6 +18,7 @@ using Amazon.CDK.AWS.ServiceDiscovery;
 using Amazon.CDK.AWS.SNS;
 using Amazon.CDK.AWS.SNS.Subscriptions;
 using Amazon.CDK.AWS.SSM;
+using Amazon.CDK.AWS.WAFv2;
 using Constructs;
 using CfnParameter = Amazon.CDK.CfnParameter;
 using CfnParameterProps = Amazon.CDK.CfnParameterProps;
@@ -34,15 +35,16 @@ namespace MarqSpec.Mcp.TopstepX.Infra;
 /// One deployed environment (ADR-0023): a VPC and its four security groups in loopback's role, one
 /// Application Load Balancer as the whole edge, an ECS cluster running the released server image by digest
 /// and the Timescale store on EFS, the Cognito user pool that issues the tokens the server checks, the
-/// secret shells, the deployment history, the logs, the backup plan and the CloudWatch / EventBridge
-/// paging path (gh#526). Instantiated twice — production and staging — from the same class; what differs
-/// is in <see cref="EnvironmentStackProps"/> and nowhere else.
+/// secret shells, the deployment history, the logs, the backup plan, the CloudWatch / EventBridge
+/// paging path (gh#526) and the WAF on each ALB (gh#528). Instantiated twice — production and staging —
+/// from the same class; what differs is in <see cref="EnvironmentStackProps"/> and nowhere else.
 /// </summary>
 /// <remarks>
 /// What is <b>not</b> here, by card: the account budget (gh#527 — on <see cref="GitHubOidcStack"/>),
-/// the WAF (gh#528), the <c>pg_dump</c> task and its "no dump in 26 h" alarm (gh#522 — still open;
-/// the alerts topic is here for that card to attach to). Cost-allocation tags (gh#527) and the OTLP
-/// sidecar (gh#537) are here. Cognito (gh#517) is here. The alarms (gh#526) are here.
+/// the <c>pg_dump</c> task and its "no dump in 26 h" alarm (gh#522 — still open;
+/// the alerts topic is here for that card to attach to). The WAF (gh#528) is here —
+/// one REGIONAL web ACL per ALB. Cost-allocation tags (gh#527) and the OTLP sidecar (gh#537) are here.
+/// Cognito (gh#517) is here. The alarms (gh#526) are here.
 /// <para>
 /// <b>Operational defaults this card took</b>, traced to neither ADR-0023 nor gh#516 and none a cost or
 /// exposure choice — named here so nobody hunts for where they were decided: the AWS Backup rule runs at
@@ -187,6 +189,15 @@ public sealed class EnvironmentStack : Stack
             Default = 10,
             MinValue = 1,
             Description = "ALB 5xx count in a 5-minute period that pages (gh#526). Same threshold for ELB-generated and target 5xx.",
+        });
+        // Default 300 / 5 min: a Cowork session with paced get_bars stays under it. Live measurement of
+        // the busiest minute is #519's, not this card's ship gate (2026-09-08 AC split).
+        var wafRateLimit = new CfnParameter(this, "WafRateLimit", new CfnParameterProps
+        {
+            Type = "Number",
+            Default = 300,
+            MinValue = 10,
+            Description = "WAF rate-based rule: max requests per source IP per 5-minute window (gh#528). Default 300. The rule blocks the operator's own load test too.",
         });
 
         // ── DNS ─────────────────────────────────────────────────────────────────────────────────────────
@@ -781,6 +792,7 @@ public sealed class EnvironmentStack : Stack
             RecordName = "topstepx-mcp",
             Target = RecordTarget.FromAlias(new LoadBalancerTarget(alb)),
         });
+        AttachAlbWaf(env, alb, wafRateLimit);
 
         // ── Server: the service ─────────────────────────────────────────────────────────────────────────
         // ONE TASK, and the deploy shape it forces (ADR-0023 §4): MCP sessions are in memory, the tape
@@ -930,6 +942,93 @@ public sealed class EnvironmentStack : Stack
             AlarmDescription = description,
         });
         alarm.AddAlarmAction(new SnsAction(topic));
+    }
+
+    /// <summary>
+    /// <summary>
+    /// One REGIONAL web ACL on this environment's ALB (gh#528). Rate-based rule blocks per source IP;
+    /// managed groups count on staging and take the group's default block on production (<c>None</c>)
+    /// until an ADR-0023 entry lists exclusions. No Anthropic IP allow-list — the deployment check
+    /// runs from a GitHub runner, and the published range is a document, not a contract.
+    /// </summary>
+    private void AttachAlbWaf(string env, ApplicationLoadBalancer alb, CfnParameter rateLimit)
+    {
+        var blockManaged = string.Equals(env, "production", StringComparison.Ordinal);
+        var managedOverride = blockManaged
+            ? new CfnWebACL.OverrideActionProperty { None = new Dictionary<string, object>() }
+            : new CfnWebACL.OverrideActionProperty { Count = new Dictionary<string, object>() };
+
+        CfnWebACL.VisibilityConfigProperty Visible(string metric) => new()
+        {
+            CloudWatchMetricsEnabled = true,
+            MetricName = metric,
+            SampledRequestsEnabled = true,
+        };
+
+        CfnWebACL.RuleProperty Managed(string name, double priority) => new()
+        {
+            Name = name,
+            Priority = priority,
+            OverrideAction = managedOverride,
+            Statement = new CfnWebACL.StatementProperty
+            {
+                ManagedRuleGroupStatement = new CfnWebACL.ManagedRuleGroupStatementProperty
+                {
+                    VendorName = "AWS",
+                    Name = name,
+                },
+            },
+            VisibilityConfig = Visible(name),
+        };
+
+        var webAcl = new CfnWebACL(this, "WebAcl", new CfnWebACLProps
+        {
+            Name = $"topstepx-mcp-{env}",
+            Scope = "REGIONAL",
+            Description = $"topstepx-mcp {env}: rate limit and managed groups on the ALB, gh#528.",
+            DefaultAction = new CfnWebACL.DefaultActionProperty { Allow = new CfnWebACL.AllowActionProperty() },
+            VisibilityConfig = Visible($"topstepx-mcp-{env}"),
+            Rules = new object[]
+            {
+                new CfnWebACL.RuleProperty
+                {
+                    Name = "RateLimitPerIp",
+                    Priority = 0,
+                    Action = new CfnWebACL.RuleActionProperty { Block = new CfnWebACL.BlockActionProperty() },
+                    Statement = new CfnWebACL.StatementProperty
+                    {
+                        RateBasedStatement = new CfnWebACL.RateBasedStatementProperty
+                        {
+                            AggregateKeyType = "IP",
+                            Limit = rateLimit.ValueAsNumber,
+                            EvaluationWindowSec = 300,
+                        },
+                    },
+                    VisibilityConfig = Visible("RateLimitPerIp"),
+                },
+                Managed("AWSManagedRulesCommonRuleSet", 1),
+                Managed("AWSManagedRulesKnownBadInputsRuleSet", 2),
+            },
+        });
+
+        _ = new CfnWebACLAssociation(this, "WebAclAssociation", new CfnWebACLAssociationProps
+        {
+            ResourceArn = alb.LoadBalancerArn,
+            WebAclArn = webAcl.AttrArn,
+        });
+
+        // WAF CloudWatch destinations must be named aws-waf-logs-*; the ALB access-log bucket is not.
+        var wafLogs = new LogGroup(this, "WafLogs", new LogGroupProps
+        {
+            LogGroupName = $"aws-waf-logs-topstepx-mcp-{env}",
+            Retention = RetentionDays.ONE_MONTH,
+            RemovalPolicy = RemovalPolicy.RETAIN,
+        });
+        _ = new CfnLoggingConfiguration(this, "WafLogging", new CfnLoggingConfigurationProps
+        {
+            ResourceArn = webAcl.AttrArn,
+            LogDestinationConfigs = [wafLogs.LogGroupArn],
+        });
     }
 
     /// <summary>

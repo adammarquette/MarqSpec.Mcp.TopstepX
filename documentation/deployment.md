@@ -1,8 +1,8 @@
 # Deployment runbook
 
 Operational steps for the AWS environments (ADR-0023, gh#509). Started by gh#527's cost section; the
-alarm table is gh#526. Rotation, scale-to-zero, restore and "which release is running" land with
-gh#519 / gh#523.
+alarm table is gh#526; WAF lockout is gh#528. Rotation, scale-to-zero, restore and "which release is
+running" land with gh#519 / gh#523.
 
 ## Cost
 
@@ -50,3 +50,26 @@ yet owns. `/health` stays liveness-only (gh#513).
 | EFS `PercentIOLimit` > 80 % for 15 min | not breaching | The store's file system is at its Elastic I/O ceiling. Find what is driving I/O on the postgres volume; a quota increase or a throughput-mode change needs a dated ADR entry. |
 
 Assisted-by: Cursor Grok 4.6 (Cursor)
+
+## I locked myself out
+
+The WAF rate-based rule (gh#528, ADR-0023 2026-09-08 entry) blocks the operator's own address the same as
+anyone else's. A load generator, a `check-deployment.sh` loop, or a browser refresh storm from one IP at
+more than **300 requests / 5 minutes** (stack parameter `WafRateLimit`) starts receiving **403** from the
+ALB, not from the server.
+
+**Unblock.** Wait out the 5-minute evaluation window after the flood stops, or raise the parameter for
+the window and put it back:
+
+```bash
+npx cdk deploy topstepx-mcp-staging --parameters WafRateLimit=2000
+# …run the test…
+npx cdk deploy topstepx-mcp-staging --parameters WafRateLimit=300
+```
+
+Do not add your IP to an allow-list in the template. The rate rule is the lock; an operator exception
+would be a hole the next session inherits. Staging's managed groups are count-mode and will not lock you
+out. Production's groups block; a false positive there is a dated ADR-0023 entry plus a rule exclusion
+(after #519 quotes the log line), not a console click.
+
+Assisted-by: Composer (Cursor)

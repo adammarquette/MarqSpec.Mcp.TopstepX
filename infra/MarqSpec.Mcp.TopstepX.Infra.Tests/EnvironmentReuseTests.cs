@@ -6,7 +6,8 @@ namespace MarqSpec.Mcp.TopstepX.Infra.Tests;
 
 /// <summary>
 /// Staging and production are the same template with a different root (ADR-0023 §1): the two synthesised
-/// stacks differ only where <c>RootDomain</c>, <c>EnvName</c>, the tape flags and the zone mode appear.
+/// stacks differ only where <c>RootDomain</c>, <c>EnvName</c>, the tape flags, the zone mode and the WAF
+/// managed-group override (count vs block) appear.
 /// </summary>
 public sealed partial class EnvironmentReuseTests(EnvironmentTemplates templates) : IClassFixture<EnvironmentTemplates>
 {
@@ -35,7 +36,9 @@ public sealed partial class EnvironmentReuseTests(EnvironmentTemplates templates
             .ToList();
 
         differing.Should().NotBeEmpty("the zone mode does change the template");
-        var unexplained = differing.Where(path => !IsExplainedByTheZoneMode(path, production, staging)).ToList();
+        var unexplained = differing
+            .Where(path => !IsExplainedByTheZoneMode(path, production, staging) && !IsExplainedByTheWafOverride(path))
+            .ToList();
         unexplained.Should().BeEmpty("every remaining difference is a second stack class in disguise:\n" + string.Join('\n', unexplained));
     }
 
@@ -146,4 +149,12 @@ public sealed partial class EnvironmentReuseTests(EnvironmentTemplates templates
             || path.EndsWith("/HostedZoneId", StringComparison.Ordinal)
             || path.Contains("/HostedZoneId/", StringComparison.Ordinal);
     }
+
+    /// <summary>
+    /// Production's managed groups take the group's default block (<c>None</c>); staging counts.
+    /// That is <c>EnvName</c>, not a second stack class (gh#528).
+    /// </summary>
+    private static bool IsExplainedByTheWafOverride(string path) =>
+        path.Contains("/OverrideAction/", StringComparison.Ordinal)
+        || path.EndsWith("/OverrideAction", StringComparison.Ordinal);
 }

@@ -13,6 +13,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-09-09
+
+A **minor** bump: session-bar and session-indicator MCP tools, OAuth 2.1 on the HTTP
+transport, volume-based historical contract selection, OpenTelemetry, and the AWS
+deployment as code — merged onto `develop` since `[0.3.1]` without a release of their
+own.
+
+
 ### Added
 
 - **Indicators are projected over session series too, and two tools read them:
@@ -635,6 +643,71 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   silent empty answer produced by a misconfiguration, which reads as an ordinary "the market had nothing" and
   is acted on as one. The message is unchanged and still names the setting (gh#504).
 
+- **A Live canary proves an expired contract still answers hourly bars** — opt-in under
+  `Category=Live`, excluded from the default tier, so the integration suite keeps running
+  without credentials while a maintainer can still verify the venue serves history the
+  registry names (gh#507).
+- **GitHub OIDC deploy roles and the `aws-production` environment** — two roles in the
+  `GitHubOidcStack` with exact trust conditions, a production approval gate, and
+  `bootstrap.sh` / ADR-0023 records that name what was synthesised (gh#518).
+- **`scripts/check-deployment.sh` — HTTPS smoke against a running instance** — `/health`
+  without a credential, `401` on `/mcp`, Cognito token acquisition, `initialize`, and
+  `tools/list` over TLS, with a self-test that reddens when the script itself breaks
+  (gh#521).
+- **AWS Budgets and cost-allocation tags on every stack** — a monthly alarm on the
+  estimate ADR-0023 carries, tags on every resource the CDK creates, so the bill is
+  checked against the plan rather than discovered after the fact (gh#527).
+- **OTLP export from Fargate through a collector sidecar** — the task definition gains a
+  second container; `Otel__Endpoint` and `Otel__Headers` reach the server from secrets,
+  forwarding to Grafana Cloud rather than self-hosting Loki/Tempo on EFS (gh#537).
+- **The indicator reference wiki — canonical definitions and the LuxAlgo library** —
+  operator-facing definitions aligned with what the catalogue computes, linked from the
+  README rather than duplicated in product code (gh#492).
+- **A caller can see when history was narrowed to the front contract** — degraded slices
+  that fell back because no constructed candidate listed now surface in the read payload,
+  not only in operator logs (gh#592).
+- **Whole-read fallback is recorded where the plan is cut** — a range answered from the
+  venue's pick after a cycle or registry failure carries that fact on the response, so a
+  warm read is distinguishable from a degraded historical one (gh#598).
+
+### Fixed
+
+- **A re-added indicator period is projected on the next bar fetch, not left partial until
+  someone notices** — restoring a period the catalogue once dropped replays the series on
+  the fill that follows, rather than serving a truncated window forever (gh#531).
+- **A series whose bars are all deleted no longer serves indicator values over zero
+  bars** — orphaned `IndicatorValues` rows after a delete-only pass are removed when the
+  verb visits the series; a read alone still does not sweep (gh#577).
+- **`check-deployment.sh`'s unfilled-shell guard** — the paragraph that warns when a
+  placeholder shell variable is still literal now fires only when the shell is actually
+  unfilled, not on every run (gh#582).
+- **Staging ACM validation no longer races zone delegation** — the CDK orders certificate
+  validation after the delegated zone exists, so a first deploy does not stall with a cert
+  that cannot validate (gh#588).
+- **Exactly warm-up bars may still yield the one value the indicator can measure** — the
+  off-by-one at the series boundary that withheld a reading when the store held precisely
+  enough history is corrected (gh#614).
+- **Session suites compile against required telemetry again** — parallel construction sites
+  on `develop` pick up the `telemetry` parameter gh#562 made mandatory (gh#572).
+- **The session-break fixture comment matches the measured gap** — nine hours in prose
+  where the calendar gap is twenty hours fifty-five minutes, corrected so mutation tests
+  cite the right window (gh#615).
+
+### Changed
+
+- **Test and CI gates tightened across telemetry, deployment, migration and Live tiers**
+  — hand-enumerated tag cardinality on `mcp.*` instruments (gh#559); removal of the
+  `HostTelemetry` fallback that let suites emit into a name-matched listener (gh#562);
+  `NoRequestHeaderReachesASpanAttribute` pinned while the exporter list is still being
+  written (gh#591); a deterministic race injected for the HttpClient-instrumentation
+  assertion (gh#596); history-selection arms on the no-closed-dates session path pinned
+  (gh#599); the migration gate's boundary test anchored to the declaration, not a line's
+  text (gh#601).
+- **Agent-facing documentation records how to score a mutation run and the Application
+  Control block's two presentations** — `Total:` is discovery, `Passed:` is execution;
+  the full-total failure mode is restored beside the short-total one (gh#600, gh#608).
+
+
 ## [0.3.1] - 2026-09-06
 
 Carries the `KeyLevels__Source` fail-closed fix and a set of documentation corrections to what an
@@ -863,7 +936,8 @@ First tagged release. Read-only MCP server over the ProjectX/TopstepX gateway: c
 projections, contract-aware series, observations with semantic search, fifteen tools on stdio and streamable
 HTTP. The tag was re-cut after the first publish failed on an uppercase image reference (gh#115).
 
-[Unreleased]: https://github.com/adammarquette/MarqSpec.Mcp.TopstepX/compare/v0.3.1...HEAD
+[Unreleased]: https://github.com/adammarquette/MarqSpec.Mcp.TopstepX/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/adammarquette/MarqSpec.Mcp.TopstepX/compare/v0.3.1...v0.4.0
 [0.3.1]: https://github.com/adammarquette/MarqSpec.Mcp.TopstepX/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/adammarquette/MarqSpec.Mcp.TopstepX/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/adammarquette/MarqSpec.Mcp.TopstepX/compare/v0.1.0...v0.2.0

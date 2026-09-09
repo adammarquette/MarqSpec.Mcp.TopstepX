@@ -55,6 +55,16 @@ tracked file.
 **A test's skip condition must be able to become false.** A test skipped because a variable is never set in
 any environment is not a test, it is a comment that costs a CI minute.
 
+## Live
+
+The first standing check is [`ExpiredContractLiveTests.AnExpiredContract_StillAnswersOneDayOfHourlyBars`](ExpiredContractLiveTests.cs).
+It confirms the vendor fact the roll policy rests on (ADR-0020, gh#494): `FindContractAsync(MES, M26)` still
+returns a contract, and one day of hourly bars on 2026-05-04 — inside that contract's liquid window when the
+probe ran — is non-empty. The gateway is wired through `Program.ConfigureServices` and `AddProjectXApiClient`,
+same as the host; credentials from `ProjectX__ApiKey`, `ProjectX__ApiSecret` and `ProjectX__DataTier` via the
+environment or the integration project's user secrets (`marqspec.mcp.topstepx-integrationtests`). When
+`ProjectX__ApiKey` is unset the test returns immediately; CI never runs it (`Category!=Live`).
+
 ## Testcontainers
 
 - `timescale/timescaledb-ha:pg17` — the same image compose runs. Testing against a different Postgres than

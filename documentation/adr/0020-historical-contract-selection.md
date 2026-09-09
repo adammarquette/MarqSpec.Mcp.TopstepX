@@ -234,8 +234,10 @@ and still earns the empty-range memo (`R-1.14`); `history.selection` reports `As
 
 - **Tape cross-check.** Where the tape is recorded, compare the volume-decided changeover with
   `TapeVolumeFront`'s flip for the same roll and report the disagreement, if any, on `get_contract_roll`.
-- **A `Category=Live` canary** (gh#507, optional) that fetches one known roll week from both contracts and
-  asserts the changeover date the probe measured.
+- **A `Category=Live` canary** (gh#507) — `AnExpiredContract_StillAnswersOneDayOfHourlyBars` in
+  `ExpiredContractLiveTests` — re-checks the vendor fact this record rests on: an expired contract still
+  resolves by id (`MES.M26`) and serves non-empty hourly history for one day in its liquid window
+  (2026-05-04, measured gh#494).
 - **gh#353's trigger comment.** Once a store holds a cold year fetched under this record, post the segment
   count and the seam dates on gh#353 as one of the measurements that issue asked for before a re-key.
 - **gh#354** — the derived back-adjusted view, now the named remedy for the warm-up absences above.

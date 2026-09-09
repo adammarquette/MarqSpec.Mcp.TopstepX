@@ -52,6 +52,14 @@
       other than the file — fails a pull request.
     -->
     <None Include="..\MarqSpec.Mcp.TopstepX.Infra\Collector\otel-collector-config.yaml" Link="otel-collector-config.yaml" CopyToOutputDirectory="PreserveNewest" />
+    <!--
+      The host log lines the migration-failure metric filter must match (gh#526). Read from the source at
+      test time, never retyped here, so a wording change in MigrateAsync or StoreAvailability fails the
+      filter assertion rather than leaving a paraphrase in the template.
+    -->
+    <None Include="..\..\MarqSpec.Mcp.TopstepX\Program.cs" Link="HostProgram.cs" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="..\..\MarqSpec.Mcp.TopstepX\MarketData\StoreAvailability.cs" Link="StoreAvailability.cs" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="..\..\MarqSpec.Mcp.TopstepX\MarketData\StoreStartup.cs" Link="StoreStartup.cs" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
 </Project>

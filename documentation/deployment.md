@@ -15,7 +15,8 @@ land with gh#523. **gh#519 stood the account up once** (2026-09-09): region, OID
 | Operator principal on the first deploy | `arn:aws:iam::045296582762:root` |
 | CDK bootstrap | `aws://045296582762/us-east-1` (`CDKToolkit` `CREATE_COMPLETE`) |
 | OIDC stack | `topstepx-mcp-github-oidc` |
-| Staging stack | `topstepx-mcp-staging` — looks up zone `Z00545362JA49XMTT3U7Q`; ACM `*.staging.marqspec.com` **ISSUED**; stack left `CREATE_IN_PROGRESS` because Fargate On-Demand vCPU quota is **0** |
+| Staging stack | `topstepx-mcp-staging` — looks up zone `Z00545362JA49XMTT3U7Q`; ACM `*.staging.marqspec.com` **ISSUED**; Route 53 alias to ALB; stack **`CREATE_FAILED`** (2026-09-09 redeploy) — postgres **1/1**, server **0/1** |
+| Fargate On-Demand vCPU (`L-3032A538`) | **64** (raised 2026-09-09; was 0 on the first deploy) |
 | Production stack | not deployed (out of scope for gh#519) |
 
 `infra/cdk.json` still carries AWS's documentation-example account and `us-east-1` as context placeholders.
@@ -108,13 +109,27 @@ npx cdk deploy topstepx-mcp-staging \
   --parameters AlertsEmail="$ALERTS_EMAIL"
 ```
 
-The 2026-09-09 staging deploy created the ALB, issued `*.staging.marqspec.com`, and left the
-stack `CREATE_IN_PROGRESS`. `https://topstepx-mcp.staging.marqspec.com/health` answers **503**
-(TLS works; no healthy target). ECS: *unable to place a task because your account is currently
-blocked* — Service Quotas `Fargate On-Demand vCPU resource count` (`L-3032A538`) is **0**.
-Raise that quota, then the in-flight services can place. Do not `cdk deploy` production.
+The first 2026-09-09 staging deploy created the ALB and issued `*.staging.marqspec.com`, then
+stalled on Fargate quota **0** (`CREATE_IN_PROGRESS`). After quota rose to **64**, the stack
+landed in **`ROLLBACK_COMPLETE`** — it cannot be updated; **delete, then deploy again**. Do not
+`cdk deploy` production.
 
-Assisted-by: Cursor Grok 4.6 (Cursor)
+### Delete and redeploy (`ROLLBACK_COMPLETE` or failed create)
+
+1. `aws cloudformation delete-stack --stack-name topstepx-mcp-staging`
+2. **Delete RETAIN orphans** before the next deploy — fixed-name secrets, log groups, EFS (+ access
+   point), ALB access-log bucket, backup vault, Cognito pool — or CloudFormation will fail on
+   name conflicts. Quote what remains on #519.
+3. Fill **`topstepx-mcp/staging/postgres`** as soon as the secret exists during
+   `CREATE_IN_PROGRESS` (password + connection string; host `postgres.staging.topstepx.internal`).
+   An empty shell makes the postgres task exit and triggers the ECS circuit breaker.
+4. Prefer `cdk deploy --no-rollback` on a failed create so partial resources (issued cert, ALB)
+   survive for inspection; the stack stays `CREATE_FAILED` until the failing resource is fixed.
+5. Use a **release image that ships gh#512 OAuth** — tags `v0.3.0` and `v0.3.1` still call
+   `UseBearerTokenGate` only, while `EnvironmentStack` sets `Mcp__Auth__Mode=OAuth`. The server
+   refuses to start until a release contains the OAuth transport.
+
+Assisted-by: Composer (Cursor)
 
 ## OIDC and the GitHub environment
 
@@ -175,30 +190,29 @@ environment's server service so the task re-reads every `valueFrom` (the OTEL si
 **Never call `secretsmanager get-secret-value`.** The runbook records ARNs and client ids, never
 values.
 
-Staging shells (2026-09-09, still empty — CloudFormation `SecretString` must stay the empty
-document). ARNs:
+Staging shells after the 2026-09-09 redeploy (CloudFormation `SecretString` stays the empty
+document; ARNs rotate when RETAIN secrets are deleted and recreated). ARNs:
 
 | Secret id | ARN |
 |---|---|
-| `topstepx-mcp/staging/postgres` | `arn:aws:secretsmanager:us-east-1:045296582762:secret:topstepx-mcp/staging/postgres-KsnnKl` |
-| `topstepx-mcp/staging/projectx` | `arn:aws:secretsmanager:us-east-1:045296582762:secret:topstepx-mcp/staging/projectx-d7tjje` |
-| `topstepx-mcp/staging/cohere` | `arn:aws:secretsmanager:us-east-1:045296582762:secret:topstepx-mcp/staging/cohere-H308Gb` |
-| `topstepx-mcp/staging/claude-connector` | `arn:aws:secretsmanager:us-east-1:045296582762:secret:topstepx-mcp/staging/claude-connector-vA5Eap` |
-| `topstepx-mcp/staging/deploy-check` | `arn:aws:secretsmanager:us-east-1:045296582762:secret:topstepx-mcp/staging/deploy-check-PdXtvJ` |
-| `topstepx-mcp/staging/otel` | `arn:aws:secretsmanager:us-east-1:045296582762:secret:topstepx-mcp/staging/otel-ZUtNcC` |
+| `topstepx-mcp/staging/postgres` | `arn:aws:secretsmanager:us-east-1:045296582762:secret:topstepx-mcp/staging/postgres-kwZEj1` |
+| `topstepx-mcp/staging/projectx` | `arn:aws:secretsmanager:us-east-1:045296582762:secret:topstepx-mcp/staging/projectx-7KFfX9` |
+| `topstepx-mcp/staging/cohere` | `arn:aws:secretsmanager:us-east-1:045296582762:secret:topstepx-mcp/staging/cohere-NdFNzm` |
+| `topstepx-mcp/staging/claude-connector` | `arn:aws:secretsmanager:us-east-1:045296582762:secret:topstepx-mcp/staging/claude-connector-YE4yt6` |
+| `topstepx-mcp/staging/deploy-check` | `arn:aws:secretsmanager:us-east-1:045296582762:secret:topstepx-mcp/staging/deploy-check-HuS8p0` |
+| `topstepx-mcp/staging/otel` | `arn:aws:secretsmanager:us-east-1:045296582762:secret:topstepx-mcp/staging/otel-YAd9yz` |
 
-Client ids (not secrets): `claude-connector` `5n6l3vjohgai9uj4jmcfd55lr8`; `deploy-check`
-`dlgj9ubhbstgm9oqqovl2kjl2`. Pool `us-east-1_9OM1VPCKu`. Issuer
-`https://cognito-idp.us-east-1.amazonaws.com/us-east-1_9OM1VPCKu`.
+Client ids (not secrets): `claude-connector` `336o017ejvc91sl63ictlk7vrp`; `deploy-check`
+`10khmvfs1sb5b2hn3kk34bqbc`. Pool `us-east-1_PCefbBDnZ`. Issuer
+`https://cognito-idp.us-east-1.amazonaws.com/us-east-1_PCefbBDnZ`.
 
-Maintainer still owes: a Fargate On-Demand vCPU quota above 0 (`L-3032A538` is **0**; ECS events
-say the account is blocked and no task places); then generate the postgres password and
-connection string into that shell (never on the command line); practice ProjectX credentials;
-optional Cohere key; Grafana OTLP pair; copy both Cognito client secrets into their shells;
-one Cognito user (self-sign-up is off). Do not mint fake brokerage credentials. MFA stays
-`OPTIONAL` (TOTP only) as gh#517 shipped it unless the maintainer says otherwise.
+Maintainer still owes: practice ProjectX credentials; optional Cohere key; Grafana OTLP pair;
+copy both Cognito client secrets into their shells; one Cognito user (self-sign-up is off). Do not
+mint fake brokerage credentials. MFA stays `OPTIONAL` (TOTP only) as gh#517 shipped it unless the
+maintainer says otherwise. **Release image:** cut a tag after gh#512 OAuth is on `main` — `v0.3.1`
+still lacks it.
 
-Assisted-by: Cursor Grok 4.6 (Cursor)
+Assisted-by: Composer (Cursor)
 
 ## Deployment check
 
@@ -252,9 +266,8 @@ Assisted-by: Cursor Grok 4.6 (Cursor)
 Each environment has one SNS topic `topstepx-mcp-<env>-alerts`. The subscription address is stack
 parameter `AlertsEmail` — confirm the email once after the first deploy (SNS sends a confirmation).
 gh#522's "no dump object in 26 h" alarm is still open and will publish here when it lands. Live
-task-count and rollback emails on staging are still outstanding (gh#526): `topstepx-mcp-staging` deployed
-2026-09-09 with ALB and SNS up, but Fargate quota 0 leaves no running tasks — verify the alarms after
-quota is raised, not "no EnvironmentStack".
+task-count and rollback emails on staging are still outstanding (gh#526): `topstepx-mcp-staging` has ALB
+and SNS up; verify alarms after the server task places, not "no EnvironmentStack".
 
 What is **not** alarmed, by decision (ADR-0023, gh#526): a server that is up, healthy and recording
 nothing because the tape recorder lost the hub (ADR-0016). That needs an app-emitted metric no card

@@ -928,8 +928,10 @@ gh#526. Decisions above are unchanged; this records what pages, what does not, a
   data **breaching**); ALB `UnHealthyHostCount` ≥ 1 for 5 min on the server target group (missing
   not breaching); ALB `HTTPCode_ELB_5XX_Count` and `HTTPCode_Target_5XX_Count` above parameter
   `Http5xxAlarmThreshold` (default **10**) per 5 min (missing not breaching); EventBridge on
-  `ECS Deployment State Change` / `SERVICE_DEPLOYMENT_FAILED`, filtered to this cluster so the
-  sibling environment in the same account does not cross-page; CloudWatch Logs metric filter on
+  `ECS Deployment State Change` / `SERVICE_DEPLOYMENT_FAILED`, filtered to this environment's
+  service ARNs (`resources`: `arn:aws:ecs:…:service/<cluster>/<service>`) so the
+  sibling environment in the same account does not cross-page — not `detail.clusterArn`, which
+  official rollback examples do not carry; CloudWatch Logs metric filter on
   `/topstepx-mcp/<env>/server` matching the `MigrateAsync` connection-dropped line and the startup
   `StoreAvailability` Unavailable sentence, alarm on ≥ 1 in 5 min (missing not breaching); EFS
   `PercentIOLimit` > 80 % for 15 min (missing not breaching).
@@ -944,7 +946,8 @@ gh#526. Decisions above are unchanged; this records what pages, what does not, a
 Template tests: `AlarmTests` — a fixture with a literal `ops@example.com` and an alarm without an
 action fail the same helpers the green assertions use; every synthesised alarm publishes to the
 topic and sets `TreatMissingData`; the metric filter's pattern is read from the host sources, not
-retyped. Suite **190** at this entry.
+retyped; the rollback rule matches `resources` service ARNs and refuses `detail.clusterArn`.
+Suite **192** at this entry.
 
 ## Follow-ups
 

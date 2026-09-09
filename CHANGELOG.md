@@ -463,8 +463,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- **Cowork's custom-connector dialog was measured on the maintainer's plan (gh#510).** Two screens: name and
-  URL with Continue gated on a syntactically valid URL; then authentication mode, OAuth client choice
+- **Cowork's custom-connector dialog was measured on the maintainer's plan (gh#510).** The maintainer cancelled
+  without submitting — no Authentication or OAuth-client choice, no request headers, a fake URL only to read
+  the second screen (including Advanced → Transport), then cancel. Two screens: name and URL with Continue
+  gated on a syntactically valid URL; then authentication mode, OAuth client choice
   (Anthropic hosted metadata, DCR, or use your own client), additional request headers, and Advanced transport
   (`Streamable HTTP` or `SSE (legacy)`). Plan tier, callback URL, own-client field labels and any HTTPS/path
   rule on the URL were not shown. [ADR-0007](documentation/adr/0007-dual-transport.md) and

@@ -232,9 +232,12 @@ records until gh#519 confirms it, exactly as the *Bind* section says.
 
 ## Update (2026-09-08) — which connector assumptions gh#510 confirmed or overturned
 
-gh#510 measured Cowork's custom-connector dialog on the maintainer's plan on 2026-09-08/09. The screen-by-screen
-observation is on [ADR-0007](0007-dual-transport.md)'s dated update the same day; this update says what that
-measurement did to the three assumptions in *What this assumes about the connector* above.
+gh#510 measured Cowork's custom-connector dialog on the maintainer's plan on 2026-09-08/09. The maintainer
+**cancelled without submitting** — no Authentication or OAuth-client choice, no request headers added, a fake
+URL only to reach the second screen and read its labels (including Advanced → Transport), then cancel — so
+this is not a completed registration. The screen-by-screen observation is on
+[ADR-0007](0007-dual-transport.md)'s dated update the same day; this update says what that measurement did to
+the three assumptions in *What this assumes about the connector* above.
 
 1. **Cowork reaches the endpoint from Anthropic's infrastructure over the public internet, and requires a
    publicly trusted HTTPS endpoint.** **Not measured** by this dialog. It shows fields for a URL and transport

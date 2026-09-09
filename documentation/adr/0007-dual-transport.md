@@ -1217,8 +1217,11 @@ token from a listed client carrying the scope".
 gh#510 records what the maintainer saw in Claude Cowork's **custom connector** registration dialog on
 2026-09-08/09. This is a **client UI measurement**, not a registration of this server and not a check that
 Cowork reaches a public HTTPS endpoint — that remains *reported, not verified* until gh#524 registers the
-staging endpoint. What it means for the three connector assumptions [ADR-0021](0021-a-non-loopback-instance-is-supported.md)
-named is recorded there; this update carries the screen-by-screen observation only.
+staging endpoint. The maintainer **cancelled without submitting**: they did not choose an Authentication or
+OAuth-client option, did not add any request headers, opened Continue with a fake URL only to read the
+second-screen labels (including Advanced → Transport), and then cancelled. What it means for the three
+connector assumptions [ADR-0021](0021-a-non-loopback-instance-is-supported.md) named is recorded there; this
+update carries the screen-by-screen observation only.
 
 ### First screen (before Continue)
 

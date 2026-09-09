@@ -657,6 +657,13 @@ own.
 - **AWS Budgets and cost-allocation tags on every stack** — a monthly alarm on the
   estimate ADR-0023 carries, tags on every resource the CDK creates, so the bill is
   checked against the plan rather than discovered after the fact (gh#527).
+- **AWS WAF on each ALB** — a REGIONAL web ACL per environment load balancer: a
+  rate-based **block** on source IP (`WafRateLimit`, default 300 requests per
+  five-minute window), plus `AWSManagedRulesCommonRuleSet` and
+  `AWSManagedRulesKnownBadInputsRuleSet` in count mode on staging and block on
+  production, default action allow, and WAF logs to a 30-day CloudWatch log group.
+  Sequenced before the first `aws-production` approval; live load-generator and
+  count-mode log measurements remain on gh#519 (gh#528).
 - **OTLP export from Fargate through a collector sidecar** — the task definition gains a
   second container; `Otel__Endpoint` and `Otel__Headers` reach the server from secrets,
   forwarding to Grafana Cloud rather than self-hosting Loki/Tempo on EFS (gh#537).
@@ -692,6 +699,14 @@ own.
 - **The session-break fixture comment matches the measured gap** — nine hours in prose
   where the calendar gap is twenty hours fifty-five minutes, corrected so mutation tests
   cite the right window (gh#615).
+- **`ALeftoverStillListeningRow_IsDiscarded_WhenTheRecorderStarts` no longer races its
+  subscription wait** — the test waited on hub subscription readiness then read rows
+  the recorder writes after subscribing, so an intermittently empty collection redded
+  unrelated CI; it now waits on the asserted state instead (gh#563).
+- **The leftover-discard test now fails when `DiscardAbandonedOpenRangesAsync` is
+  deleted** — the seeded leftover shared the contract the recorder subscribed, so
+  same-key retirement satisfied both assertions without the discard ever running; the
+  fixture now seeds a different contract id (gh#579).
 
 ### Changed
 
@@ -702,10 +717,20 @@ own.
   written (gh#591); a deterministic race injected for the HttpClient-instrumentation
   assertion (gh#596); history-selection arms on the no-closed-dates session path pinned
   (gh#599); the migration gate's boundary test anchored to the declaration, not a line's
-  text (gh#601).
+  text (gh#601); the gate's `Down()` search bounded to the migration class's own brace
+  span, closing the file-scoped-namespace sibling-decoy bypass (gh#612);
+  `Synthesised.DependenciesOf` no longer handles a bare-string `DependsOn` — every
+  synthesised stack emits arrays and the unreachable scalar arm was removed rather than
+  pinned with a synthetic fixture (gh#602).
 - **Agent-facing documentation records how to score a mutation run and the Application
   Control block's two presentations** — `Total:` is discovery, `Passed:` is execution;
-  the full-total failure mode is restored beside the short-total one (gh#600, gh#608).
+  the full-total failure mode is restored beside the short-total one (gh#600, gh#608);
+  a green CI check is evidence about a commit, not about a branch — compare the run's
+  `headSha` to the head you mean and confirm the PR head moved after a push (gh#611).
+- **ADR-0019's Context no longer says gh#515 made compose emit JSON** — gh#515 documents
+  and forwards `Logging__Console__FormatterName` with the default unchanged (`simple`);
+  the AWS task definition flips to `json`. Only that Context sentence was loose
+  (gh#544).
 
 
 ## [0.3.1] - 2026-09-06

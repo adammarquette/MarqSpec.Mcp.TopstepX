@@ -6,6 +6,7 @@ using MarqSpec.Mcp.TopstepX.Data.Entities;
 using MarqSpec.Mcp.TopstepX.Domain;
 using MarqSpec.Mcp.TopstepX.Domain.MarketData;
 using MarqSpec.Mcp.TopstepX.MarketData;
+using MarqSpec.Mcp.TopstepX.Telemetry;
 using MarqSpec.Mcp.TopstepX.Tests.MarketData;
 using MarqSpec.Mcp.TopstepX.Tools;
 using Microsoft.EntityFrameworkCore;
@@ -57,6 +58,7 @@ public sealed class FootprintReadProjectionTests : IAsyncLifetime
     private readonly FakeTimeProvider _clock = new(_sixteen);
     private readonly TapeAvailabilityHolder _tape = new();
     private readonly CountingGateway _gateway = new([]);
+    private readonly HostTelemetry _telemetry = new();
 
     /// <param name="fixture">The shared container.</param>
     public FootprintReadProjectionTests(SeriesStoreFixture fixture)
@@ -73,6 +75,7 @@ public sealed class FootprintReadProjectionTests : IAsyncLifetime
     public Task DisposeAsync()
     {
         _database.Dispose();
+        _telemetry.Dispose();
         return Task.CompletedTask;
     }
 
@@ -283,7 +286,8 @@ public sealed class FootprintReadProjectionTests : IAsyncLifetime
                 _database,
                 new FootprintProjector(_database, NullLogger<FootprintProjector>.Instance),
                 _clock,
-                NullLogger<FootprintCacheService>.Instance));
+                NullLogger<FootprintCacheService>.Instance,
+                _telemetry));
     }
 
     private async Task SeedTapeAsync(params TradeRecord[] trades)

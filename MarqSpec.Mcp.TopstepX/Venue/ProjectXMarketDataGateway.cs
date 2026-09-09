@@ -4,6 +4,7 @@ using MarqSpec.Mcp.TopstepX.Configuration;
 using MarqSpec.Mcp.TopstepX.Domain;
 using MarqSpec.Mcp.TopstepX.Domain.MarketData;
 using MarqSpec.Mcp.TopstepX.MarketData;
+using MarqSpec.Mcp.TopstepX.Telemetry;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
@@ -32,6 +33,7 @@ public sealed class ProjectXMarketDataGateway : IMarketDataGateway
     private readonly IProjectXApiClient _client;
     private readonly InstrumentRegistry _registry;
     private readonly VenueRequestPacer _historyPacer;
+    private readonly VenueCallGuard _calls;
     private readonly bool _live;
     private readonly ILogger<ProjectXMarketDataGateway> _logger;
 
@@ -44,18 +46,25 @@ public sealed class ProjectXMarketDataGateway : IMarketDataGateway
     /// </param>
     /// <param name="options">The venue options, carrying the required data tier.</param>
     /// <param name="logger">The logger.</param>
+    /// <param name="telemetry">
+    /// The app-owned meter and activity source. <b>Every vendor call below is counted, timed and traced</b>,
+    /// and this is the only place in the process that can do it: <c>MarqSpec.Client.ProjectX</c> 3.0.0 has no
+    /// activity source of its own (ADR-0019, gh#536).
+    /// </param>
     public ProjectXMarketDataGateway(
         IProjectXApiClient client,
         InstrumentRegistry registry,
         VenueRequestPacer historyPacer,
         IOptions<VenueOptions> options,
-        ILogger<ProjectXMarketDataGateway> logger)
+        ILogger<ProjectXMarketDataGateway> logger,
+        HostTelemetry telemetry)
     {
         ArgumentNullException.ThrowIfNull(options);
 
         _client = client;
         _registry = registry;
         _historyPacer = historyPacer;
+        _calls = new VenueCallGuard(telemetry);
         _live = options.Value.DataTier == ProjectXDataTier.Live;
         _logger = logger;
     }
@@ -68,7 +77,8 @@ public sealed class ProjectXMarketDataGateway : IMarketDataGateway
         InstrumentId instrument,
         CancellationToken cancellationToken)
     {
-        IEnumerable<Contract> matches = await Guarded(
+        IEnumerable<Contract> matches = await _calls.RunAsync(
+            VenueOperation.ResolveContracts,
             () => _client.SearchContractsAsync(instrument.Symbol, _live, cancellationToken),
             "searching contracts for " + instrument.Symbol).ConfigureAwait(false);
 
@@ -176,6 +186,73 @@ public sealed class ProjectXMarketDataGateway : IMarketDataGateway
             .ThenBy(c => c.Id, StringComparer.Ordinal);
 
     /// <inheritdoc />
+    /// <remarks>
+    /// <para>
+    /// <b>Not paced by the history pacer, and deliberately so.</b> The vendor counts
+    /// <c>History/retrieveBars</c> against its own tight allowance — 50 requests / 30 seconds — while every
+    /// other endpoint, this lookup included, draws on a separate pool of <b>200 requests / 60 seconds</b>
+    /// (see <see cref="VenueRequestPacer"/>). Putting the lookup through the history pacer would spend the
+    /// scarce allowance on the abundant call and slow the paging it exists to protect. What keeps the lookup
+    /// count small is <c>ContractDirectory</c>, which memoises the answer per id.
+    /// </para>
+    /// <para>
+    /// <b>The id is constructed, so the answer is checked twice over.</b> The product segment must be the one
+    /// asked for, and the tick size must match this server's table — the same match-or-refuse pair
+    /// <see cref="ResolveContractsAsync"/> applies to a search result, for the same reason: a wrong tick
+    /// silently rescales every money figure, and a contract in the wrong instrument looks entirely ordinary
+    /// on a chart.
+    /// </para>
+    /// </remarks>
+    public async Task<VenueContract?> FindContractAsync(
+        InstrumentId instrument,
+        ContractExpiry expiry,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(expiry);
+
+        string productCode = _registry.ProductCodeFor(instrument);
+        string contractId = ContractIdFor(productCode, expiry);
+
+        Contract? found = await _calls.RunAsync(
+            VenueOperation.FindContract,
+            () => _client.GetContractByIdAsync(contractId, cancellationToken),
+            "looking up contract " + contractId).ConfigureAwait(false);
+
+        if (found is null)
+        {
+            // NOT an error. An expiry the exchange has not listed yet answers exactly like this, and so does
+            // one long enough expired that the venue has dropped it. The caller decides what an absent
+            // candidate means; inventing a contract here would decide it for them, wrongly.
+            return null;
+        }
+
+        // The id was built rather than returned by the venue, so confirm the venue answered about the
+        // product that was asked for. A lengthened prefix or a redirected id would otherwise arrive as an
+        // ordinary contract in a different instrument.
+        if (!HasProductCode(found.Id, productCode))
+        {
+            throw new VenueException(
+                "Asked the venue for contract '" + contractId + "' and it answered with '" + found.Id
+                + "', which does not carry the product code '" + productCode + "' expected for '"
+                + instrument.Symbol + "'. Refusing rather than reading bars from a different instrument.");
+        }
+
+        decimal expectedTick = _registry.SpecFor(instrument).TickSize;
+        if (found.TickSize != expectedTick)
+        {
+            throw new VenueException(
+                "Contract '" + found.Id + "' matches the product code for '" + instrument.Symbol
+                + "' but reports a tick size of "
+                + found.TickSize.ToString(System.Globalization.CultureInfo.InvariantCulture)
+                + " where this server expects "
+                + expectedTick.ToString(System.Globalization.CultureInfo.InvariantCulture)
+                + ". Refusing rather than pricing this instrument on the wrong scale.");
+        }
+
+        return ProjectXMapping.ToContract(found, instrument);
+    }
+
+    /// <inheritdoc />
     public async Task<IReadOnlyList<Bar>> GetBarsAsync(
         string contractId,
         BarRange window,
@@ -246,7 +323,8 @@ public sealed class ProjectXMarketDataGateway : IMarketDataGateway
                 pacedPages++;
             }
 
-            IEnumerable<AggregateBar> bars = await Guarded(
+            IEnumerable<AggregateBar> bars = await _calls.RunAsync(
+                VenueOperation.GetBars,
                 () => _client.GetHistoricalBarsAsync(
                     contractId,
                     from.UtcDateTime,
@@ -283,7 +361,8 @@ public sealed class ProjectXMarketDataGateway : IMarketDataGateway
         bool onlyActive,
         CancellationToken cancellationToken)
     {
-        IEnumerable<TradingAccount> accounts = await Guarded(
+        IEnumerable<TradingAccount> accounts = await _calls.RunAsync(
+            VenueOperation.GetAccounts,
             () => _client.GetAccountsAsync(onlyActive, cancellationToken),
             "listing accounts").ConfigureAwait(false);
 
@@ -295,7 +374,8 @@ public sealed class ProjectXMarketDataGateway : IMarketDataGateway
         int accountId,
         CancellationToken cancellationToken)
     {
-        IEnumerable<Position> positions = await Guarded(
+        IEnumerable<Position> positions = await _calls.RunAsync(
+            VenueOperation.GetPositions,
             () => _client.GetOpenPositionsAsync(accountId, cancellationToken),
             "reading open positions").ConfigureAwait(false);
 
@@ -309,10 +389,12 @@ public sealed class ProjectXMarketDataGateway : IMarketDataGateway
         CancellationToken cancellationToken)
     {
         IEnumerable<Order> orders = window is null
-            ? await Guarded(
+            ? await _calls.RunAsync(
+                VenueOperation.GetOrders,
                 () => _client.GetOpenOrdersAsync(accountId, cancellationToken),
                 "reading open orders").ConfigureAwait(false)
-            : await Guarded(
+            : await _calls.RunAsync(
+                VenueOperation.GetOrders,
                 () => _client.GetOrdersAsync(
                     accountId, window.Start.UtcDateTime, window.End.UtcDateTime, cancellationToken),
                 "searching orders").ConfigureAwait(false);
@@ -328,7 +410,8 @@ public sealed class ProjectXMarketDataGateway : IMarketDataGateway
     {
         ArgumentNullException.ThrowIfNull(window);
 
-        IEnumerable<HalfTrade> trades = await Guarded(
+        IEnumerable<HalfTrade> trades = await _calls.RunAsync(
+            VenueOperation.GetTrades,
             () => _client.GetTradesAsync(
                 accountId, window.Start.UtcDateTime, window.End.UtcDateTime, cancellationToken),
             "searching trades").ConfigureAwait(false);
@@ -361,10 +444,39 @@ public sealed class ProjectXMarketDataGateway : IMarketDataGateway
     }
 
     /// <summary>
-    /// The exchange's futures month codes in calendar order, so the index is the month less one.
+    /// Builds a venue contract id from a product code and an expiry, as <c>CON.F.US.{code}.{MYY}</c>.
     /// </summary>
-    /// <remarks><c>I</c> and <c>L</c> are absent by convention, being confusable with digits.</remarks>
-    private const string MonthCodes = "FGHJKMNQUVXZ";
+    /// <param name="productCode">
+    /// The venue's product segment, from <c>InstrumentRegistry.ProductCodeFor</c>. ES is <c>EP</c>, NQ is
+    /// <c>ENQ</c> — the code is not derivable from the symbol, which is why this takes it rather than an
+    /// <see cref="InstrumentId"/>: the registry is an instance dependency and this is the exact inverse of
+    /// <see cref="HasProductCode"/>.
+    /// </param>
+    /// <param name="expiry">The expiry the contract is named for.</param>
+    /// <returns>The id the venue would use for that contract.</returns>
+    /// <exception cref="ArgumentException"><paramref name="productCode"/> is blank.</exception>
+    /// <exception cref="ArgumentNullException"><paramref name="expiry"/> is null.</exception>
+    /// <remarks>
+    /// <para>
+    /// <b>Construction is the only route to a historical contract.</b> Search and available-contracts return
+    /// only the active expiry (gh#494), so an expired candidate cannot be discovered — it is built here and
+    /// confirmed by <see cref="FindContractAsync"/>. The pair must agree exactly: an id this builds and
+    /// <see cref="HasProductCode"/> then rejects would be a candidate the gateway refuses to believe its own
+    /// answer about, and <c>ContractResolutionTests</c> pins the round trip.
+    /// </para>
+    /// <para>
+    /// <b>A blank product code is refused rather than concatenated.</b> It would build <c>CON.F.US..U26</c>,
+    /// an id the venue answers nothing for — and an absent answer here means <i>not listed</i>, so the
+    /// caller's mistake would read back as an ordinary market fact.
+    /// </para>
+    /// </remarks>
+    public static string ContractIdFor(string productCode, ContractExpiry expiry)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(productCode);
+        ArgumentNullException.ThrowIfNull(expiry);
+
+        return "CON.F.US." + productCode + "." + expiry.Code;
+    }
 
     /// <summary>
     /// The sort rank of a contract id's expiry, as <c>CON.F.US.{code}.{MYY}</c>.
@@ -375,82 +487,21 @@ public sealed class ProjectXMarketDataGateway : IMarketDataGateway
     /// </returns>
     /// <remarks>
     /// <para>
-    /// <b>Year first, then month.</b> The id's own string order compares the month letter before the year,
-    /// and the month letters happen to ascend alphabetically in calendar order — so a string sort agrees
-    /// with expiry order inside one calendar year and <b>inverts across one</b>. Every December,
-    /// <c>Z25</c> sorts after <c>H26</c>, <c>M26</c> and <c>U26</c>: last, exactly when it is the front month.
+    /// The reading is <see cref="ContractExpiry"/>'s, in <c>Domain</c>, since gh#502: the month table and
+    /// the year-first order live there, where the contract month cycle and the historical contract policy
+    /// need them too (ADR-0020). What this keeps is the rank's <i>value</i> — the two-digit year the id
+    /// carries, times twelve, plus the month — so the order is <see cref="ContractExpiry.Rank"/>'s exactly
+    /// and the number is the one this method has always answered. The rank is ordinal within a century,
+    /// which is all a two-digit year can support.
     /// </para>
     /// <para>
     /// <b>Null is "cannot order", never a rank.</b> An invented rank would be indistinguishable from one that
     /// was read, and it would decide which contract every bar is fetched for. The caller places unknown
     /// deliberately; see <see cref="InFrontMonthOrder"/>.
     /// </para>
-    /// <para>
-    /// The rank is ordinal within a century, which is all a two-digit year can support. A four-digit year is
-    /// a change of id shape and returns null rather than a guess — the strictness is the point, because a
-    /// shape change should degrade to "cannot read" rather than to a wrong order nothing would notice.
-    /// </para>
     /// </remarks>
-    public static int? ExpiryRank(string contractId)
-    {
-        if (string.IsNullOrWhiteSpace(contractId))
-        {
-            return null;
-        }
-
-        string expiry = contractId.Split('.')[^1];
-        if (expiry.Length != 3)
-        {
-            return null;
-        }
-
-        int month = MonthCodes.IndexOf(expiry[0], StringComparison.Ordinal) + 1;
-        if (month == 0)
-        {
-            return null;
-        }
-
-        return int.TryParse(
-            expiry[1..],
-            System.Globalization.NumberStyles.None,
-            System.Globalization.CultureInfo.InvariantCulture,
-            out int year)
-            ? (year * 12) + month
+    public static int? ExpiryRank(string contractId) =>
+        ContractExpiry.TryParseContractId(contractId, out ContractExpiry expiry)
+            ? expiry.Rank - (ContractExpiry.Century * 12)
             : null;
-    }
-
-    /// <summary>
-    /// Runs a vendor call, translating its failures into one exception type with the vendor's numeric code.
-    /// </summary>
-    /// <remarks>
-    /// The vendor's own message string is deliberately not carried through: it is free text on a channel a
-    /// language model reads (ADR-0008), and the code carries the diagnostic value without the surface. What
-    /// the caller gets instead is <i>what this server was doing</i>, which is more useful anyway.
-    /// </remarks>
-    private static async Task<T> Guarded<T>(Func<Task<T>> call, string what)
-    {
-        try
-        {
-            return await call().ConfigureAwait(false);
-        }
-        catch (MarqSpec.Client.ProjectX.Exceptions.ProjectXApiException ex)
-        {
-            // The vendor's STATUS CODE, never its message string -- the code carries the
-            // diagnostic value without putting vendor free text on a channel a model reads.
-            throw ex.StatusCode is { } code
-                ? new VenueException("The gateway refused while " + what + ".", code)
-                : new VenueException("The gateway refused while " + what + ".");
-        }
-        catch (MarqSpec.Client.ProjectX.Exceptions.AuthenticationException)
-        {
-            throw new VenueException(
-                "The gateway rejected the credentials. Note that ProjectX__ApiKey is the USERNAME and "
-                + "ProjectX__ApiSecret is the API key -- putting the key in both authenticates as a user who "
-                + "does not exist, and the gateway reports that as a bare unknown error.");
-        }
-        catch (HttpRequestException ex)
-        {
-            throw new VenueException("The gateway could not be reached while " + what + ".", ex);
-        }
-    }
 }

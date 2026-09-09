@@ -43,6 +43,12 @@ public sealed class UnconfiguredMarketDataGateway : IMarketDataGateway
         CancellationToken cancellationToken) => throw new VenueException(Explanation);
 
     /// <inheritdoc />
+    public Task<VenueContract?> FindContractAsync(
+        InstrumentId instrument,
+        ContractExpiry expiry,
+        CancellationToken cancellationToken) => throw new VenueException(Explanation);
+
+    /// <inheritdoc />
     public Task<IReadOnlyList<Bar>> GetBarsAsync(
         string contractId,
         BarRange window,

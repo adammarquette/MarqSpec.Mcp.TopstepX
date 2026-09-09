@@ -33,6 +33,26 @@ updates:
       - dependency-name: "FluentAssertions"
         versions: [">=8.0.0"]
 
+  # The CDK CLI that `cdk synth` runs through in CI, pinned in infra/package.json (gh#516). The constructs
+  # are the Amazon.CDK.Lib NuGet package above, and the two move on separate trains: a CLI older than the
+  # library's cloud-assembly schema refuses to synthesise, so a bump here that lands before the NuGet one is
+  # harmless and the reverse is a red `build & unit tests` naming the schema version -- which is the right
+  # place to find out.
+  - package-ecosystem: npm
+    directory: "/infra"
+    schedule:
+      interval: weekly
+      day: monday
+      time: "07:00"
+    open-pull-requests-limit: 2
+    target-branch: develop
+    labels:
+      - work:platform
+      - "Work Estimate: 1"
+    commit-message:
+      prefix: build
+      include: scope
+
   - package-ecosystem: github-actions
     directory: "/"
     schedule:

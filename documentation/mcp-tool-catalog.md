@@ -19,6 +19,13 @@ page against either**, so check it against the code, never against another docum
 ## Rules that apply to every tool
 
 - **Read-only against the venue.** Nothing here transmits an order. Not behind a flag.
+- **Over HTTP, every call is authenticated, in one of two modes** — and the tool surface is identical under
+  both. `Mcp__Auth__Mode=StaticToken`, the compose stack and the plain `dotnet run` recipe, is one shared
+  secret in `Authorization: Bearer …`. `OAuth`, the deployed instance
+  ([ADR-0021](adr/0021-a-non-loopback-instance-is-supported.md)), is a Cognito-issued access token carrying
+  the `topstepx-mcp/read` scope, and a call without one gets a `401` naming the protected-resource metadata
+  the connector reads to find the issuer. Which mode a deployment runs is its environment's `Mcp__Auth__Mode`;
+  `/health` answers without a credential under both (ADR-0007, gh#512).
 - **Numeric-only payloads.** Every field is a number, a timestamp, a boolean, or an enum name from a closed set
   this repository defines. No vendor free text is echoed back.
 - **An unknown instrument is an error**, and it names what would have been valid. A wrong symbol and a quiet
@@ -78,17 +85,73 @@ page against either**, so check it against the code, never against another docum
   caller must write. **Every entry below names its own form** — this page is read by lookup, and a reader who
   lands on one entry should not have to have read this bullet. `PayloadNullWireShapeTests` pins both forms
   against the real serializer options, so the statements here fail a build rather than drift (gh#85).
-- **`resolutionMinutes` is caller-chosen, and every resolution from `1` to `10080` — one minute to one week —
-  is servable.** No tool enumerates supported timeframes, because the range is contiguous rather than a list —
+- **`resolutionMinutes` is caller-chosen, and every resolution from `1` to `660` — the served ceiling,
+  deliberately below the 690 pigeonhole bound on every admissible 1,380-minute session — is servable.** No
+  tool enumerates supported timeframes, because the range is
+  contiguous rather than a list —
   each resolution is an independent cached series fetched from the venue, never derived from a finer one
   ([ADR-0010](adr/0010-per-call-resolutions-fetched-not-derived.md)). **Both ends are refused**, by every tool
   that takes a resolution and with the offending value named. Zero and negative used to be refused only by the
   tools that also validate a window; on the other four a `0` arrived as a raw `ArgumentOutOfRangeException` or,
   worse, as an empty series — a caller's mistake wearing the shape of a quiet market (gh#69). The ceiling
   arrived later, for the same fault at the other end: `2147483647` overflowed the look-back arithmetic and
-  faulted, while sailing past that guard because it is positive (gh#81). Above a week a timeframe is a calendar
-  month or a quarter, whose length in minutes is not fixed, so nothing above the ceiling is a bar anyone could
-  be asking for. **Two cross-axis pairs are refused alongside it.** `get_latest_bars` reaches back four bar
+  faulted, while sailing past that guard because it is positive (gh#81). **The ceiling was 10,080 until
+  gh#498 and it admitted two values that were never servable** — the day at `1440` and the week at `10080`.
+  A session is 24 hours less the venue's one-hour maintenance window, so a bucket *wider* than 1,380 minutes
+  can never *close inside* one and is never an expected bucket; one *exactly* 1,380 minutes wide can be
+  expected, but only on the 4% of trade dates where the grid happens to land on the session open, which is
+  the same coincidence in a different disguise. `get_bars` at `1440` answered with an **empty series** and
+  `venueRequests: 0` — a question of the wrong shape wearing the face of a market that printed nothing. The
+  refusal does not rest on the arithmetic claim, which was overstated until PR #607's review: it rests on the
+  definitional one, that a bar covering a whole session is a session bar. Both are refused now, and the refusal says where the answer lives rather than only saying
+  no:
+
+  > resolutionMinutes 1440 covers a whole session or more — a session is 1380 minutes of Central wall clock,
+  > 24 hours less the venue's one-hour maintenance window. A bucket longer than that can never close inside a
+  > single session, and one exactly that long can only when the grid lands exactly on the session open — 4%
+  > of trade dates at the shipped close. Either way it is a session bar rather than a bar resolution: a bar
+  > covering a whole session is defined on the CME trade date, not on the bucket grid. The day and the week
+  > are not unavailable and they are not out of range; ask get_session_bars or get_latest_session_bars
+  > (gh#496) for them. The largest bar resolution this server serves is 660 minutes.
+
+  **The ceiling then moved from 1,379 to 660 (gh#538), because 1,379 had the same defect one minute lower.**
+  Buckets are anchored on a fixed UTC grid rather than on the session open, so a bucket *narrower* than a
+  session can still fail to fit inside one: a 1,379-minute bucket is expected only when the grid lands within
+  a minute of the session open, so `get_bars` at `1379` answered `[]` with `venueRequests: 0` on all but a
+  handful of scattered trade dates — the shape gh#498 abolished, moved by one minute rather than removed. The
+  bound is **derived, not chosen**: a session of `S` minutes admits an `r`-minute bucket only when a multiple
+  of `r` lands in `[open, close - r]`, a run of `S - r + 1` consecutive minutes, and a run of `n` consecutive
+  integers is certain to hold a multiple of `r` only while `n >= r` — so the guarantee holds exactly while
+  `r <= (S + 1) / 2`. **`S` is 1,380 for every admissible close** — closes before 02:00 Central are refused
+  at calendar construction (gh#613, [ADR-0005](adr/0005-session-aware-gap-detection.md) *Update (2026-09-08)*),
+  so the pigeonhole bound is 690. The served ceiling stays at **660** until a separate card justifies raising
+  it; 661 fits every admitted session but is refused with the band above the ceiling. It is a **refusal rather
+  than a warning field**, because an empty series beside a flag is still an empty series and reads as a market
+  that printed nothing:
+
+  > resolutionMinutes 1379 is coarser than the largest bar this server serves, 660 minutes. Buckets are
+  > anchored on a fixed UTC grid rather than on the session open, so a bucket wider than half a session is not
+  > guaranteed to open and close inside one: whether it fits depends on where that grid falls on the day, and on
+  > the trade dates where it does not fit the series comes back empty with nothing said. 660 is the served
+  > ceiling: every admissible session is 1380 minutes, so the pigeonhole bound is 690, but the ceiling stays at
+  > 660 until a separate change justifies raising it. Widths above it are not all useless — every one from 661
+  > to 690 fits every trade date at every session close this server accepts, and more fit at the shipped 16:00
+  > close, as do 692, 696, 700 and 720 — but which widths those are depends on the configured close, which
+  > this check deliberately does not read, so they are refused with the rest rather than served by coincidence.
+  > Ask for 660 minutes or less; for the day and the week ask get_session_bars or get_latest_session_bars
+  > (gh#496).
+
+  **It over-rejects, and the message concedes it rather than claiming the band never works.** At the shipped
+  16:00 close thirty-four widths above the ceiling fit on every trade date over sixteen years — all of 661 to
+  690, plus 692, 696, 700 and 720. A survivor list is what a sweep failed to disprove, which is not what a
+  bound is, and `ValidateResolution` is deliberately `static` and reads no configuration — so serving them
+  would make the servable set depend invisibly on `SessionCloseCentral`.
+
+  **A bar of a session's length or longer is a session bar, not a coarse resolution**: it is defined on the
+  CME trade date rather than on the bucket grid, and it is served by `get_session_bars` and
+  `get_latest_session_bars` (gh#496, gh#500) over the four named sessions `full`, `rth`, `asia` and `europe`
+  ([ADR-0022](adr/0022-session-bars-derived-complete-or-absent.md), `R-1.12`, `R-5.11`). **Two cross-axis pairs are
+  refused alongside it.** `get_latest_bars` reaches back four bar
   spans per bar wanted **plus four days** (`ToolGuards.LookbackWindow`), so a coarse resolution and a big
   count — each inside its own bound — can name a window that **starts before the calendar does**, and that is
   an error naming both rather than a fault (gh#81). The
@@ -105,7 +168,7 @@ page against either**, so check it against the code, never against another docum
   **two bar spans plus three days**, because the grid is aligned *up* from the window's start, the gap
   detector tests one bucket beyond the last it yields, and the session calendar maps an evening bucket onto
   the *next* trade date. So the last servable `toUtc` is `9999-12-28T23:57:59.9999999Z` at one-minute bars and
-  `9999-12-14T23:59:59.9999999Z` at the weekly ceiling. The refusal names **both** the `toUtc` passed and the
+  `9999-12-28T01:59:59.9999999Z` at the 660-minute ceiling. The refusal names **both** the `toUtc` passed and the
   last one that would have been accepted, and — like every other bound here — it **refuses rather than moving
   the end back for you**, because a series short at one end is indistinguishable from a complete one.
 - **Nothing is derived across a contract roll.** A series is keyed by the venue-neutral symbol and the front
@@ -138,6 +201,28 @@ page against either**, so check it against the code, never against another docum
   A segment with no recorded contract **omits `contractId` entirely** — it is a field, so `segment.contractId
   === null` is `false` for every one of them. Test `"contractId" in segment`, and read an absent one as
   *unknown*, never as "the same contract as the segment beside it".
+
+  **Since gh#505, history carries one segment per roll, in expiry order, and the segments do not
+  interleave.** Bars older than the present band are fetched from whichever listed contract carried the
+  volume on each trade date rather than from whatever the venue happens to mark active today (`R-1.14`,
+  [ADR-0020](adr/0020-historical-contract-selection.md)), so `contracts.segments` on `get_bars`,
+  `get_latest_bars`, `get_indicators` and `get_key_levels` reads as a clean succession — one contiguous run
+  per contract, each `firstBucket` at the volume-decided changeover — where a long window used to alternate
+  between two ids according to which stretch had been fetched when. A store filled before that change keeps
+  the interleaving it already has: a read never rewrites a bucket that already carries a contract, and
+  re-deciding a window is an operator's verb rather than a read's (gh#506).
+
+  **How often the seam arrives is the product's listed cycle, and it bounds what a long series can
+  measure.** The candidate set turns **four** times a year on MES's `HMUZ`, **six** on MGC's `GJMQVZ` and
+  **twelve** on MCL's every-month cycle — fewer on gold in practice, because the market has not given
+  October the volume in the contract-year measured (gh#494). Nothing derived crosses a seam, so the first
+  `WarmupBars` buckets of each contract
+  carry **no indicator value**, and an indicator whose warm-up outruns one contract's tenure **never
+  produces a value at all**: a 200-period daily needs two hundred daily bars from one contract, where a
+  tenure holds about twenty-one on MCL and about sixty-four on MES, and even a 50-period daily fills only in
+  the last stretch of an MES quarter and never on MCL. Ask for a long daily indicator on a monthly-cycle
+  product and the honest answer is an empty `values[]`, not a number. The remedy is a continuous
+  back-adjusted series, which this server does not build (gh#354).
 
 ## Reference and session
 
@@ -193,14 +278,15 @@ the boundary (gh#110).
 The workhorse. Cache-aside: served from the store, with only genuinely missing buckets fetched.
 
 Returns `{ symbol, resolutionMinutes, bars: [{ t, o, h, l, c, v }], fetchedBuckets, venueRequests,
-contracts: { span, segments: [{ contractId, firstBucket, lastBucket, barCount }] } }`.
+contracts: { span, segments: [{ contractId, firstBucket, lastBucket, barCount }] },
+history: { selection, unresolved: [expiryCode] } }`.
 
 `fetchedBuckets` and `venueRequests` are both in the response, and **they answer different questions.** Only
 one of them is evidence of a round trip.
 
 | Field | Answers | Zero means |
 |---|---|---|
-| `venueRequests` | did this call reach the venue? | **nothing was fetched** — the exact test, and the one to use |
+| `venueRequests` | did this call **fetch bars**? | **no bar fetch** — the exact test for that, and the one to use |
 | `fetchedBuckets` | how much did the answer change the store? | only that nothing was *written* |
 
 `fetchedBuckets` reads zero after a real fetch in two ordinary cases: a range the venue answers **empty**
@@ -210,9 +296,63 @@ therefore **undercounts** venue traffic and never overcounts it — and the gate
 the whole process rather than to one call, so a caller pacing itself on this number spends more of a shared
 budget than it believes.
 
+**`venueRequests` counts history requests — bar fetches — and nothing else**, so its zero is narrower than
+"no vendor traffic". Since gh#504 a read whose gaps the empty-range memo covers resolves the instrument's
+contract candidates first, and that `Contract/search` is unpaced and not counted in `venueRequests`: it is visible only on the platform meter, as
+`venue_calls_total{operation="resolve_contracts"}` — stated in
+[architecture, step 4](architecture.md#the-cache-aside-read--the-only-genuinely-interesting-path). Since
+gh#505 a read with a **historical** gap also confirms each constructed candidate by id before asking it for
+bars, and those lookups sit in the same place: unpaced, on the vendor's general pool, and metered as
+`venue_calls_total{operation="find_contract"}` beside `resolve_contracts` — **never** added to
+`venueRequests`. So
+`venueRequests == 0` proves **no bars were fetched**, not that the vendor went untouched, and such a read is
+venue-dependent: with the venue down it raises rather than answering from the store. The error runs the same
+way as `fetchedBuckets`'s — it **undercounts** venue traffic and never overcounts it.
+
+**A cold *historical* window costs `venueRequests` several times over, and that is the price of the answer
+being right.** Every candidate of a historical stretch is paged through the same paced walk, so the count is
+about **K×** what a single-contract fetch of the same window would be — K is the product's candidate depth,
+**two** on the equity indices and on silver, **three** on gold and the energy products, where a listed month
+is skipped outright or a contract expires before the month it is named for. Those pages are genuine history requests
+and are all counted, unlike the lookups above. The **present** band is untouched by this: a warm
+`get_latest_bars` issues exactly the `venueRequests` it always did, and zero contract lookups, because the
+band starts where the store's own run of the venue-front contract starts (`R-1.14`,
+[ADR-0020](adr/0020-historical-contract-selection.md)).
+
 `venueRequests == 0` is what makes "the second identical call fetches nothing" observable rather than a
 claim, and it is the check for `R-1.3`. **There is no `fromCache`** — see the retractions at the foot of this
 page.
+
+#### `history` — which contracts the history was *chosen from* (`R-1.14`, gh#592)
+
+**A different question from `contracts.span`, and deliberately not one of its values.** `span` is about the
+bars: do they cross a roll, and can the store tell? `history.selection` is about the *choice that produced
+them*: were the contracts the volume decision ran over the ones the product's contract-month cycle names, or
+only the ones the vendor happened to list that minute? A window can be `SingleContract` and still have been
+decided among survivors — the two fields are independent, and folding one into the other would make two
+different unknowns indistinguishable, which is the failure `span`'s own `Unknown` exists to prevent.
+
+| `selection` | Means | What to do |
+|---|---|---|
+| `NotDecidedHere` | **This call decided no history**: every bucket was already stored, or the window sits in the present band. | Do **not** read it as "the history is whole" (see below). |
+| `AsTheCycleNames` | Every expiry the cycle named was listed, and the volume decision ran over all of them ([ADR-0020](adr/0020-historical-contract-selection.md) §2). | Read the series as ordinary. |
+| `NarrowedByTheVenue` | The vendor did not list some of them, so the decision ran over the survivors. | Treat that stretch as provisional. When the sole survivor was the vendor's own active contract it *is* the pre-ADR-0020 answer: a real, thin, complete-looking series from a contract nobody was trading. |
+| `FellBackToTheFront` | The vendor listed **none** of them, so no volume decision ran for that stretch at all. | Worse than narrowed. Nothing permanent is recorded about such a range, so a later read re-asks. |
+| `AsTheFrontAlone` | The **whole plan** fell back because there was no cycle to decide against — this server does not serve the instrument, or the vendor's active contract has an expiry that does not read against the cycle (`R-1.14`, gh#598). Recorded where the plan is cut, not inferred from `venueRequests`. | The entire window was fetched from the vendor's active contract with no volume decision anywhere. Same thin-series risk as `FellBackToTheFront`, but the empty answer from that contract **is** memoised. |
+
+`history.unresolved` names the expiries that fell away — `["M26"]` — nearest first, once each however many
+slices dropped it. They are codes **this server constructed** from the cycle, never vendor text, which is what
+keeps them inside [ADR-0008](adr/0008-numeric-only-tool-payloads.md)'s closed vocabulary. Empty on
+`AsTheFrontAlone`: no candidate set was built, so none fell away.
+
+**`NotDecidedHere` is not a clean bill of health, and this is the field's one sharp edge.** The narrowing is
+knowable only at the moment the fetch is planned: nothing in `Bars` records that a bucket was written under a
+narrowed candidate set, and [ADR-0020](adr/0020-historical-contract-selection.md) §5 forbids a read from
+re-deciding attributed history to work it out afterwards. So the *second* read of a window a degraded read
+filled reports `NotDecidedHere` — truthfully, because that read decided nothing — while the bars it returns
+are the degraded ones. Only `AsTheCycleNames` is a positive statement that a decision ran and ran whole.
+Repairing a run laid down by a degraded read is an operator's verb, `reselect-bars` (gh#506); making the store
+able to answer the question later would be a stored fact, an ADR and a migration, and is not this.
 
 **A cold wide window is slow on purpose.** The venue's history allowance is **50 requests per 30 seconds and
 it belongs to the whole process**, not to one call. Once this server has issued 50 history requests inside the
@@ -227,7 +367,225 @@ The recent window, which is what an agent actually asks for. Same shape as `get_
 four days** (`ToolGuards.LookbackWindow`), and a coarse resolution with a large `count` is refused for
 reaching back past the start of the calendar — one of the cross-axis pairs above.
 
-### `get_indicators(symbol, resolutionMinutes, indicator, fromUtc, toUtc)`
+### `get_session_bars(symbol, session, fromUtc, toUtc)`
+One OHLCV bar per **whole** trading session over a window — the day, the overnight, or any named slice of it.
+Not a coarse `get_bars`: a session bar is defined on the CME trade date rather than on the bucket grid, it is
+**derived** from cached base bars rather than fetched as a bar that size, and it is complete or it is *absent
+with a reason* ([ADR-0022](adr/0022-session-bars-derived-complete-or-absent.md), `R-1.13`, `R-5.11`). Its own
+tool type rather than a `session` argument on `get_bars`
+([ADR-0017](adr/0017-one-tool-type-per-concern.md)): one tool would have had two return shapes and one
+description trying to describe both.
+
+Returns `{ symbol, session, baseResolutionMinutes, bars: [{ tradeDate, t, closeUtc, o, h, l, c, v }],
+absent: [{ tradeDate, reason, expectedBuckets, missingBuckets }], fetchedBuckets, venueRequests,
+contracts: { span, segments: [{ contractId, firstBucket, lastBucket, barCount }] },
+history: { selection, unresolved: [expiryCode] } }`.
+
+`tradeDate` is the CME trade date and the key to join the two lists on. `t` is when the session opened — the
+same thing `t` means on every other series here — and `closeUtc` when it closed, exclusive, carried beside it
+rather than derived, because the span between them is a wall-clock rule that moves with the offset.
+`baseResolutionMinutes` is what *complete* was measured in: the counts under `absent` are counts of base bars
+that size.
+
+**The session name is a closed vocabulary.** Four ship, stated in Central wall-clock time on the trade date:
+
+| `session` | Central window | Base resolution |
+|---|---|---:|
+| `full` | 17:00 → 16:00 | 60 |
+| `rth` | 08:30 → 15:00 | 30 |
+| `asia` | 17:00 → 02:00 | 30 |
+| `europe` | 02:00 → 08:30 | 30 |
+
+An unknown name is an **error listing the configured names**, never an empty series — `R-5.3`'s rule, one
+axis along. An operator may configure others; a base resolution has to divide 60 so the wall-clock boundaries
+land on the stored UTC bucket grid under both standard and daylight time.
+
+**Two lists, and they partition the trade dates asked for.** A session this server could not build whole is
+never a bar with holes in it; it is an `absent` entry carrying one of four reasons:
+
+| `reason` | Means |
+|---|---|
+| `Incomplete` | base buckets the calendar expected are not in the store — `expectedBuckets` and `missingBuckets` say how many |
+| `SpansRoll` | the session's base bars came from more than one contract, so nothing is spliced ([ADR-0011](adr/0011-contract-roll-boundary.md)) |
+| `ProvenanceUnknown` | the base bars carry no contract id, so a roll cannot be ruled out |
+| `NotClosed` | the session has not finished yet |
+
+`missingBuckets` is `0` for an absence that is not about completeness — a spliced or unattributed session is
+missing nothing — so a zero there does not mean *nearly whole*. `NotClosed` reaches a caller only for the
+session still in progress: the trade dates are walked off the session calendar, so a date the calendar
+disowns never enters the read, and a window entirely in the past never carries one.
+
+**Only sessions lying WHOLLY inside the window are returned**, so read the edges as inclusive of whole
+sessions only — a session the window clips is left out, not reported short. **A trade date the window
+WHOLLY CONTAINS that appears in neither list did not trade**; a date whose session the window clips is in
+neither list because it was never asked for. Nothing else lands there: the ask is a calendar walk over the
+dates that carry a session, so a Saturday or a holiday is never asked for either, and neither list ever
+silently drops a date this server did ask about.
+
+**A window that names ZERO whole sessions is refused, not answered with two empty lists.** Nine hours of a
+trading day over a session that runs longer holds no session that both opens and closes inside it, and left
+unrefused this would pass every other check and answer `bars: []` and `absent: []` both — the shape
+`ValidateWindow`'s empty-window refusal already exists to avoid, since it reads as "this instrument did not
+trade" rather than "the window is narrower than any session". The refusal names the window and the session
+always, and with them **the nearest whole session's bounds** — nearest by how much widening it would take to
+reach, the window's start moved back plus its end moved out, over a scan that starts on the window's own
+market dates and widens outward until nothing further out could win. A weekend, a holiday or the maintenance
+break is scanned *across*, not stopped at: the session on the far side of a gap is usually the nearest one
+there is. Only a closure longer than the scan's cap — `SessionWindows.LastClosedWalkSpanDays` of one, the
+span the closed-session walk gives itself to find a single closed session — leaves nothing to name, and
+**that** refusal carries no bounds and says only to widen the window (gh#568).
+
+**The refusal narrows the "wholly contains and in neither list ⇒ did not trade" signal above**: a window
+holding *only* non-trading days now refuses rather than reporting them, whether it is named a nearest session
+or not — a Saturday is refused *with* bounds and still reports nothing. The signal survives wherever the
+window also holds one whole session — December 24, 25 and 26 together still report the 25th in neither
+list — which is the only shape it was legible in anyway.
+
+`contracts` is built from the session bars' own contract ids, and **each session bar comes from exactly
+one** — a session whose base bars disagreed is `absent` with `SpansRoll` rather than spliced. So a roll falls
+*between* two trade dates, `segments` are maximal runs of consecutive bars sharing an id, and `firstBucket` /
+`lastBucket` are session **opens** at both ends. `span` is `SingleContract`, `SpansRoll`, or `Unknown` **only
+when no session bar could be built at all** — which is not what `Unknown` means on `get_contract_roll`, where
+it says provenance was never recorded. A session with no provenance is a `ProvenanceUnknown` absence, not an
+`Unknown` span.
+
+`fetchedBuckets` and `venueRequests` answer different questions here for the same reason they do under
+`get_bars`, and they are the **base** series' numbers: nothing fetches a session bar.
+
+| Field | Answers | Zero means |
+|---|---|---|
+| `venueRequests` | did this call **fetch base bars**? | **no bar fetch** — the exact test for that, and the one to use |
+| `fetchedBuckets` | how much did the answer change the store? | only that nothing was *written* |
+
+**`venueRequests == 0` is narrower than "the vendor went untouched", and a session read is the case where
+that matters most.** Since gh#504 a read whose gaps the empty-range memo covers still resolves the
+instrument's contract candidates first, and that `Contract/search` is unpaced and not counted in
+`venueRequests` — so a settled session read is **venue-dependent**: with the venue down it raises rather than
+answering from the store. The covering window spans the overnight, so a warm session read is exactly that
+read. The zero proves **no bars were fetched**, which is the test to use, and nothing more; the miscount runs
+the same way as `fetchedBuckets`' — it undercounts venue traffic and never overcounts it.
+
+The service opens no fetch of its own, but it makes **one covering base read** — the first session's open to
+the last one's close, the overnight between them included — and that path is cache-aside, so a cold window
+pays the base series' ordinary fetch. **A repeat is not immediately free, and it takes three reads rather
+than two.** The first fetches: the cold covering window is one contiguous missing range, the venue answers it
+*with bars*, and a non-empty answer memoises nothing. The second is what discovers the ranges the venue has
+no bars for — the overnight legs, and any bucket the venue simply does not have — asks for each, and records
+them as covered. The third is the one served from the store. So the read **settles to a store-only answer
+once the base ledger has recorded the venue's empty ranges**, which is one read later than a caller expects
+([ADR-0022](adr/0022-session-bars-derived-complete-or-absent.md), the 2026-09-07 updates).
+
+**Refused rather than truncated**, in this order, and every refusal is decided before the store or the venue
+is touched:
+
+1. an empty or inverted window — `fromUtc` must be strictly before `toUtc`;
+2. a `toUtc` past the last instant this server's session calendar can reason about;
+3. more **base** buckets than one gap-detection pass will enumerate — `BarGapDetector.MaxBucketsPerPass`,
+   counted in bars of the session's own base resolution rather than in sessions. The remedy is *narrow the
+   window, or ask the operator for a coarser base resolution for this session*: there is no
+   `resolutionMinutes` here to coarsen;
+4. **zero whole sessions named** — no session both opens and closes inside the window, refused naming the
+   window, the session, and the nearest whole session's bounds (`SessionWindows.WindowFor` over a scan that
+   widens outward from the window's own market dates until no further date could need less widening) so the
+   caller can widen to it; only a closure outrunning that scan's cap leaves no session to name, and there
+   the refusal says only to widen (gh#568);
+5. more trade dates than `MaxRows`, refused naming the real count.
+
+The bucket cap is measured **before** the row cap, the opposite of `get_bars`' order: the row count here is a
+calendar walk rather than arithmetic, and the bucket span is what bounds the walk.
+
+### `get_latest_session_bars(symbol, session, count)`
+The most recent **closed** session bars, oldest first — usually the one to reach for, since
+`get_session_bars` needs explicit dates. Same shape, same session vocabulary, same two lists, same cost
+fields.
+
+**Anchored on the last session whose close is at or before now, never the one in progress.** Asked during
+today's session it answers with the sessions before it rather than with a partial one, so `NotClosed` cannot
+appear here at all: only closed sessions are asked about.
+
+Refused, in this order, and again before any read:
+
+1. a `count` that is not positive, or over `MaxRows`;
+2. a `now` past the calendar horizon;
+3. a `count` the calendar cannot satisfy inside the bounded walk — `SessionWindows.LastClosedWalkSpanDays`,
+   **four calendar days per session asked for plus fifteen**. A holiday-dense stretch is enough to reach it;
+   the refusal names the count and the span, and blames the calendar rather than the walk, because every one
+   of those days *is* walked and what runs out is the sessions inside them;
+4. more base buckets than `MaxBucketsPerPass`, measured over the covering window the read will actually
+   issue — the first session's open to the last one's close — with the remedy *ask for fewer sessions*.
+
+**The last of those is not the row cap restated.** A `count` well inside `MaxRows` can still span more base
+buckets than a single pass enumerates — around 3,720 `rth` sessions at a 30-minute base, well under the
+default 5,000 rows — and without that last check it would fault inside `BarGapDetector.ExpectedBuckets`
+after the store had been opened.
+
+### `get_session_indicators(symbol, session, indicator, fromUtc, toUtc, period?)`
+An indicator series computed over **whole sessions** — one value per trade date, not per bar (`R-5.12`,
+`R-2.15`).
+
+Returns `{ symbol, session, indicator, period, values: [{ tradeDate, t, v }], contracts }`.
+
+**Stored series only, and the values exist because a session read put them there.** The vendor is never
+called and nothing is derived here: a session bar exists only after `get_session_bars` or
+`get_latest_session_bars` covered that trade date, and this tool does not build one. So a window nobody has
+read sessions for answers with **no values at all** — a fact about what has been asked for rather than about
+the market. Read the sessions first, then read this. Rows whose `(WindowCentral, BaseResolutionMinutes)`
+provenance disagrees with the session definition standing today are not those sessions either
+([ADR-0022](adr/0022-session-bars-derived-complete-or-absent.md) §4): they are filtered on every serve and
+projection path the same way `get_session_bars` discards them, so a definition change never leaves ordinary-
+looking RSI/ATR labeled as the current `rth`. Where matching sessions are stored and the values are not,
+the first read that asks for them projects and stores them, on `get_indicators`' cache-aside terms — but that
+is now the uncommon path, because a session read projects in the same unit of work that writes its bars, so
+an ordinary read here is the probe. It is still reachable: a catalogue change, or a store filled before this
+existed, both land on it.
+
+**`period` counts SESSIONS, not bars.** An `sma` at 20 over `rth` is twenty trading days, so a series needs
+that many stored sessions **inside one contract run** before it measures anything. It selects among the
+operator's configured periods on exactly the terms `get_indicators` states, refusal message included; for
+`macd`, `macd-signal` and `macd-histogram` it is the **SLOW** length.
+
+**The session vocabulary is `get_indicators`' minus `vwap`** — `atr`, `rsi`, `sma`, `ema`, `macd`,
+`macd-signal`, `macd-histogram`, `bb-upper`, `bb-middle`, `bb-lower`, `vwap-rolling`. **Asking for `vwap` is
+an error naming `vwap-rolling`**, not an empty series: session-anchored VWAP weights a session's own volume
+distribution and a session that *is* one bar has none, and
+[ADR-0022](adr/0022-session-bars-derived-complete-or-absent.md) requires the surface say so rather than omit
+it silently. Any other unknown name errors listing the vocabulary, because a typo returning no data would
+read as *no signal*.
+
+**`values[]` is not one entry per trade date in the window.** A trade date the warm-up cannot yet measure has
+no entry, and neither does one the store holds no session bar for — an incomplete session is never stored
+(`R-1.13`). Pair each `v` with its own `tradeDate` rather than with a bar at the same index. `t` is that
+session's opening instant, carried beside the trade date because the two are not interchangeable: a session's
+UTC bounds move with the offset.
+
+**Values are never smoothed across a contract roll**, so expect a run of absent trade dates just after one:
+the new contract's warm-up starts over (`R-2.7`). `contracts` reports which contracts produced the sessions
+under the window — every session in it, not only the ones carrying a value, since a warm-up date produced the
+values after it — and `contracts.span` reads `Unknown` only when the store holds no session bar for the window at all.
+
+`session` is the same **closed vocabulary** `get_session_bars` takes; an unknown name errors listing the
+configured ones. The window is refused on the session-bar tools' caps and in their order, before any read.
+
+### `get_session_indicator_at(symbol, session, indicator, asOfUtc, period?)`
+One whole-session value as of a moment, from the series `get_session_indicators` reads and on the same
+terms — no vendor call, nothing derived here, and values that exist only after a session read covered the
+trade date.
+
+Returns `{ value, tradeDate, bucketStart, contractId }`.
+
+**Answered from the last session that had CLOSED at or before that moment**, which is the one line where this
+differs from `get_indicator_at`. A session opens hours before it closes, so comparing the opening would answer
+a question asked *during* today's session with today's own still-forming number. A session in progress is
+never answered from.
+
+**Cannot-measure is the empty object `{}`, not `{ "value": null }`**, on exactly `get_indicator_at`'s terms:
+all four are fields and all four are dropped, so test `"value" in reading`. An absent value means the sessions
+were never read, or the series is shorter than the period needs — never zero and never neutral.
+
+`tradeDate` names the session the value belongs to and `contractId` the contract behind it; two readings from
+different contracts are not comparable. `period` and the `vwap` refusal are `get_session_indicators`'.
+
+### `get_indicators(symbol, resolutionMinutes, indicator, fromUtc, toUtc, period?)`
 A stored indicator series, **filled on demand from bars this server already holds**.
 
 **Cache-aside, and the vendor is never called.** A value is computed when its bar is written *and* on the
@@ -237,9 +595,11 @@ next read, with no operator running anything (gh#246,
 [ADR-0014](adr/0014-indicators-are-projected-on-read-too.md), `R-2.1`).
 
 **That first read replays the whole stored series and is slow in proportion to the history kept** — about
-**8.3 seconds** for a year of five-minute bars, measured; every read after it pays a probe of a few
-milliseconds. It is **not** capped, because capping it would return the operator step this removes. For scale:
-the `get_bars` call that fetched that year spent about a *minute* on paced vendor pages. An HTTP process with
+**8.3 seconds** for a year of five-minute bars **at the shipped catalogue**, measured; it grows with the
+number of `(indicator, period)` instances the operator configures, because every additional period is one
+more series in the same replay. Every read after it pays a probe of a few milliseconds. It is **not** capped,
+because capping it would return the operator step this removes. For scale: the `get_bars` call that fetched
+that year spent about a *minute* on paced vendor pages. An HTTP process with
 `MarketData__WarmIndicators` on starts that replay at boot (stdio never does — a Cowork child would stall the
 handshake). A read that arrives before warmup finishes that series still pays the 8.3 s, or can contend with
 the warmup pass. Once that series is written, the first read is a probe. `rebuild-indicators` remains the
@@ -254,21 +614,50 @@ Returns `{ symbol, resolutionMinutes, indicator, period, values: [{ t, v }], con
 `{ t, v: null }` point. So the series is not one point per bucket, and the gaps are the cannot-measure
 signal: pair each `v` with its own `t` rather than with a bar at the same index.
 
+**A bucket whose bar this server no longer holds is one of those gaps** (`R-2.14`, gh#577). Deleting bars does
+not delete the values computed from them — a projection is a rebuildable view, not a child row — and a read
+never runs the pass that sweeps them, so a series whose bars were all deleted used to answer with a full
+window of ordinary-looking numbers over nothing: **37 ATR points over zero bars**, measured. Every read now
+serves a value only where the bar at its bucket is still stored. The rule is per value, so a partial delete
+still returns everything the surviving bars justify, and the `contracts` block beside the values already says
+how much of the window has bars underneath it.
+
 `indicator` is a **closed vocabulary**, held in `IndicatorCatalog` and named in full by the tool's own
-description. An unknown name **errors and lists the known ones** rather than returning an empty series — a
-typo must not read as "no data".
+description — `atr`, `rsi`, `sma`, `ema`, `macd`, `macd-signal`, `macd-histogram`, `vwap`, `vwap-rolling`,
+`bb-upper`, `bb-middle`, `bb-lower`. An unknown name **errors and lists the known ones** rather than returning
+an empty series — a typo must not read as "no data".
+
+**`vwap-rolling` is the volume-weighted average price over the trailing `period` bars**, and it is a separate
+member rather than `vwap` at a period because it is a different calculation: `vwap` is anchored to the
+session, and a lookback window is not a parameterisation of an anchor. Different calculation, different name,
+different storage key (`R-2.6`, [ADR-0018](adr/0018-period-selection-among-configured-periods.md)).
 
 MACD's fast and signal lengths (12, 9) and Bollinger's width (2σ) are **fixed**, not configurable. The storage
 key carries one period, and a parameter it cannot see would make two parameterisations indistinguishable once
-stored.
+stored. **The period is not such a parameter** — the key names it in a column
+([ADR-0018](adr/0018-period-selection-among-configured-periods.md)).
 
-**`period` is not an argument.** It is fixed per indicator by the catalogue and *returned* in the payload so
-the caller knows what it got.
+**`period` SELECTS among the periods this server is configured to compute; it never asks for a new one.**
+Omit it for the indicator's **primary** period — the singular `Indicators__*Period`, and the one
+`get_market_snapshot` reports. Pass one of the operator's `Indicators__Additional*Periods` to read that
+series instead. It is still *returned* in the payload, so a caller that omitted it knows what it got.
 
-### `get_indicator_at(symbol, resolutionMinutes, indicator, asOfUtc)`
+**Any other period is an error, never an empty series**, and the message names what is configured:
+
+> Indicator 'ema' is not computed at period 200. Configured periods for ema: 20 (primary), 50. A period this
+> server does not compute would read back as an empty series, which is indistinguishable from a market that
+> produced none.
+
+The **name** is checked first, so a caller who typed `stochastic` is told the name is unknown rather than sent
+looking for a period key that does not exist. `vwap` **refuses a period at all** — it is anchored to the
+session, not to a window — rather than accepting and ignoring one. For `macd`, `macd-signal` and
+`macd-histogram` the period is the **SLOW** length.
+
+### `get_indicator_at(symbol, resolutionMinutes, indicator, asOfUtc, period?)`
 One value, as of a moment — at or **before** it, never after. **Cache-aside on exactly the terms
 `get_indicators` states above**, including the first-read cost (or the probe, once HTTP warmup has finished that series);
-the probe behind it is memoised per request, so several reads over one series cost one.
+the probe behind it is memoised per request, so several reads over one series cost one. `period` selects among
+the configured periods on exactly the terms `get_indicators` states, refusal message included.
 
 Returns `{ value, bucketStart, contractId }`.
 
@@ -278,7 +667,15 @@ dropped when there is nothing to report, and a caller testing `reading.value ===
 `value` means cannot measure, and a caller receiving one should refuse rather than substitute.
 
 `contractId` is absent for **two** different reasons — there was no value, or the bar's provenance was never
-recorded — so an absent one is never evidence that two readings share a contract.
+recorded — so an absent one is never evidence that two readings share a contract. It used to have a **third**,
+undocumented one: the bar itself was gone, and the reading was a number nothing could reproduce (a measured
+`65.32947503` with `contract: null`). That case is now cannot-measure instead, and the read falls back to the
+newest bucket a bar still accounts for (`R-2.14`, gh#577). The third reason is **narrowed rather than
+eliminated**: the value and its contract are two statements, so a bar deleted between them still yields the
+number with a null contract — reachable now only by interleaving with a single read, where it used to be the
+standing answer for as long as the orphaned rows stood. **That residue is this tool's alone.**
+`get_market_snapshot` reads the value and its bar in **one** statement, so the reading it publishes has no
+such window and its `contractId` carries only the two meanings above.
 
 **`get_market_snapshot` returns this same reading**, as the value of each entry in its `indicators{}` map
 (gh#286) — with one difference the container forces: there, cannot-measure is the map's own `null` rather
@@ -436,11 +833,14 @@ whichever real source the bits happened to name — `HeikinAshiBody,Body` bound 
 with `detection` reporting the source that ran as the only trace. String binding is what closed it.
 
 **Per-call detection parameters are sound here only because nothing stores a level** — [ADR-0013](adr/0013-levels-are-computed-on-read.md). ADR-0006
-forbids the same freedom for indicators, whose storage key is `(Indicator, Period)`: a parameter the key
+forbids **ad-hoc** parameters for indicators, whose storage key is `(Indicator, Period)`: a parameter the key
 cannot see leaves two parameterisations indistinguishable once written, spliced into one series with no seam
-visible anywhere. There is no level store to key at all — the table that never held a row was dropped under
-gh#276 — and [ADR-0013](adr/0013-levels-are-computed-on-read.md) names the one condition that reverses this, which is the moment anything stores a
-level.
+visible anywhere. The one indicator parameter the key *does* see — the period — is selectable among the
+configured ones, which is [ADR-0018](adr/0018-period-selection-among-configured-periods.md) and not a
+weakening of this: a selection names an existing family or is refused. There is no level store to key at all —
+the table that never held a row was dropped under gh#276 — and
+[ADR-0013](adr/0013-levels-are-computed-on-read.md) names the one condition that reverses this, which is the
+moment anything stores a level.
 
 **An empty `levels` is answered, never refused, and `detection` is what makes it readable.** It reports all
 seven parameters that produced the answer, for the same reason `get_indicators` reports the `period` it
@@ -640,6 +1040,13 @@ it where a `null` reaches the wire spelled `null`. Every indicator this server c
 is the test, and it means *cannot measure*. An **absent** key would mean this server does not compute that
 indicator at all — a different statement, and not one you should expect to see.
 
+**The map is keyed by NAME, and each entry is that name's PRIMARY period** — the singular
+`Indicators__*Period`, the same one `get_indicators` answers with when `period` is omitted. Additional
+configured periods are **not** here, and this payload is unchanged by them
+([ADR-0018](adr/0018-period-selection-among-configured-periods.md)): one key cannot carry two windows without
+saying which, so a second window is `get_indicators` or `get_indicator_at` with `period`. Nothing in this map
+states a period — read it from the tool that names it rather than inferring one.
+
 **A non-null entry is a reading, not a number** — `{ value, bucketStart, contractId }`, the same shape
 `get_indicator_at` returns, and **that is a breaking change to this tool's payload** (gh#286).
 `indicators.atr` was `2`; it is now `{ "value": 2, "bucketStart": "…", "contractId": "…" }`. The `null` half
@@ -647,6 +1054,13 @@ is untouched, so a caller's `indicators.atr === null` still says *cannot measure
 value arithmetically has to reach one field deeper. Inside the reading the ordinary property rule applies
 again — `contractId` is **omitted** when the bar's provenance was never recorded — so this one object is the
 only place on the surface where both null shapes are in force at once.
+
+**A reading whose bar is gone is the map's `null`, not a number** (`R-2.14`, gh#577). This slice used to
+publish a value the store could no longer justify beside its own empty `bars[]`: over a series with every bar
+deleted, `atr = 65.32947503` and `rsi = 54.29857597`, both with `contract: null`, in a slice reporting zero
+bars — a payload contradicting itself with nothing saying which half to believe. The batched read now joins
+the bars, on the same terms `get_indicators` and `get_indicator_at` do, so all three agree. A bar that exists
+with no recorded contract is **not** this case and is still published, with its `contractId` omitted as above.
 
 **One slice has one anchor and many provenances, which is why the bucket is per indicator.** Every read in a
 slice is taken as of the same moment — the last bar's `t`, or *now* when there are no bars — but that anchor
@@ -809,13 +1223,17 @@ is a lookup, not a narrative. Four `gh#48` rows are fields this page invented an
 `gh#70` rows share one cause: the SDK derives `required` from whether a C# parameter has a **default value**,
 not from whether its type is nullable, so `string? symbol` with no `= null` is nullable and required at once.
 
+**A row records what was true when it was written.** Where a later card reversed one, the row says so and names its successor — the `get_indicators` `period` pair below is the only such case, and the **lower** of the two is current.
+
 | Tool | Claimed | Actually | |
 |---|---|---|---|
 | `list_instruments` | a `resolutionsAvailable` field | never on `InstrumentInfo` | gh#48 |
 | `get_market_session` | a `sessionOpenUtc` field | never on `SessionState` | gh#48 |
 | `get_bars` | a `fromCache` field | never on `BarSeries` — and the one an agent would reach for, reading falsy `undefined` every call | gh#48 |
-| `get_bars` | `fetchedBuckets` ≡ `venueRequests` as evidence | only `venueRequests == 0` proves the store served it | gh#73 |
-| `get_indicators` | `period` is a parameter | never was; fixed per indicator, and returned | gh#48 |
+| `get_bars` | `fetchedBuckets` ≡ `venueRequests` as evidence | only `venueRequests == 0` proves **no bars were fetched** — and since gh#504 not even that the vendor went untouched: a memo-covered read still makes one `Contract/search` that `venueRequests` does not count (`venue_calls_total{operation="resolve_contracts"}` does) | gh#73 · gh#504 |
+| `get_bars` | history comes from the contract the venue marks active | only the **present** band does. Since gh#505 a range older than the store's trailing run of that contract is fetched from every listed cycle candidate and kept per trade date by **volume** — so a window may be served from a contract the venue never marked active, and `contracts.segments` reads as one run per roll in expiry order instead of two interleaved ones (`R-1.14`) | gh#505 |
+| `get_indicators` | `period` is an arbitrary window a caller passes | **history, and the row below supersedes it.** It was not a parameter at all when this was written — fixed per indicator, and returned. gh#495 later made it one; what stays retracted is the *ad-hoc* window this row claimed, which ADR-0006 still forbids | gh#48 |
+| `get_indicators` · `get_indicator_at` | `period` is not a parameter | since gh#495 it is an optional *selector* among the operator's configured periods — omitted means the primary, an unconfigured one is refused listing them, and nothing ad hoc is computed ([ADR-0018](adr/0018-period-selection-among-configured-periods.md)) | gh#495 |
 | `get_indicator_at` | cannot-measure is `{ value: null }` | it is `{}` | gh#85 |
 | `get_market_snapshot` | the run of absent values after a roll arrives as `null` in `indicators{}` | that map is one **as-of read** per indicator, not one entry per bucket, so it answers with the newest row at or before the anchor — on the **expiring** contract just after a seam. Measured: `atr` came back at the pre-seam `2` where the contract in front was ranging `4` | gh#286 |
 | `get_orders` | `fromUtc`/`toUtc` optional, as described | required on the wire — the documented way to read the working book was refused before reaching any code | gh#70 |

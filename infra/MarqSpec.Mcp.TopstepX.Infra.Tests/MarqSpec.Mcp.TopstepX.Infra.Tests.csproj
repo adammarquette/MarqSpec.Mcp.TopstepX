@@ -1,0 +1,65 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Template tests for the CDK app (ADR-0023 §7). Each test synthesises a stack in-process through
+    `Amazon.CDK.Assertions.Template.FromStack` and asserts the CloudFormation it produced — no AWS call, no
+    credential, no CLI. Context lookups (the hosted zone, the availability zones) resolve to the CDK's own
+    dummy values when no `cdk.context.json` is in play, which is exactly what a template test wants.
+
+    Needs Node on PATH at TEST time (jsii), not at build time.
+  -->
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <IsPackable>false</IsPackable>
+    <IsTestProject>true</IsTestProject>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="coverlet.collector" />
+    <PackageReference Include="FluentAssertions" />
+    <PackageReference Include="Microsoft.NET.Test.Sdk" />
+    <PackageReference Include="xunit" />
+    <PackageReference Include="xunit.runner.visualstudio" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Using Include="Xunit" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\MarqSpec.Mcp.TopstepX.Infra\MarqSpec.Mcp.TopstepX.Infra.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!--
+      The configuration catalogue, so the coverage test reads the real file rather than a copy of it: every
+      key `.env.example` documents, outside the compose-only and deferred sets, must reach the server task.
+      Linked rather than copied, so the third copy of the configuration is enforced rather than remembered
+      (ADR-0023 §3).
+    -->
+    <None Include="..\..\.env.example" Link=".env.example" CopyToOutputDirectory="PreserveNewest" />
+    <!--
+      The repository-settings half of the OIDC trust (gh#518, ADR-0023 §8): the production role trusts one
+      GitHub environment by name, and bootstrap.sh is what creates that environment with its reviewer. The
+      test reads the script's own list so the two cannot drift on that name.
+    -->
+    <None Include="..\..\scripts\bootstrap.sh" Link="bootstrap.sh" CopyToOutputDirectory="PreserveNewest" />
+    <!--
+      The collector sidecar's configuration (gh#537), read from the FILE here and compared against both the
+      resource embedded in the Infra assembly and the value the task definition carries. Three copies that
+      must agree, so an edit to the file that never reaches a template — or a template built from something
+      other than the file — fails a pull request.
+    -->
+    <None Include="..\MarqSpec.Mcp.TopstepX.Infra\Collector\otel-collector-config.yaml" Link="otel-collector-config.yaml" CopyToOutputDirectory="PreserveNewest" />
+    <!--
+      The host log lines the migration-failure metric filter must match (gh#526). Read from the source at
+      test time, never retyped here, so a wording change in MigrateAsync or StoreAvailability fails the
+      filter assertion rather than leaving a paraphrase in the template.
+    -->
+    <None Include="..\..\MarqSpec.Mcp.TopstepX\Program.cs" Link="HostProgram.cs" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="..\..\MarqSpec.Mcp.TopstepX\MarketData\StoreAvailability.cs" Link="StoreAvailability.cs" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="..\..\MarqSpec.Mcp.TopstepX\MarketData\StoreStartup.cs" Link="StoreStartup.cs" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+</Project>

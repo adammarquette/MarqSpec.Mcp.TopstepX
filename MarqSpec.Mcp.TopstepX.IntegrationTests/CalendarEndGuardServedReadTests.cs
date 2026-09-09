@@ -6,8 +6,10 @@ using MarqSpec.Mcp.TopstepX.Data;
 using MarqSpec.Mcp.TopstepX.Data.Entities;
 using MarqSpec.Mcp.TopstepX.Domain.MarketData;
 using MarqSpec.Mcp.TopstepX.MarketData;
+using MarqSpec.Mcp.TopstepX.Telemetry;
 using MarqSpec.Mcp.TopstepX.Tests.MarketData;
 using MarqSpec.Mcp.TopstepX.Tools;
+using MarqSpec.Mcp.TopstepX.Venue;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using Microsoft.Extensions.Time.Testing;
@@ -73,6 +75,7 @@ public sealed class CalendarEndGuardServedReadTests : IAsyncLifetime
     private readonly IndicatorCatalog _catalog;
     private readonly BarSessionCalendar _calendar;
     private readonly FakeTimeProvider _clock;
+    private readonly HostTelemetry _telemetry = new();
 
     /// <summary>Builds the store context and the pieces every tool here is composed from.</summary>
     /// <param name="fixture">The shared container.</param>
@@ -87,9 +90,18 @@ public sealed class CalendarEndGuardServedReadTests : IAsyncLifetime
         _clock = new FakeTimeProvider(Bucket(SeededBars).AddHours(2));
         _gateway = new CountingGateway([]);
 
-        IndicatorProjector projector = new(_database, _catalog, NullLogger<IndicatorProjector>.Instance);
+        IndicatorProjector projector =
+            new(_database, _catalog, NullLogger<IndicatorProjector>.Instance, _telemetry);
         _cache = new BarCacheService(
-            _database, _gateway, _calendar, projector, _clock, NullLogger<BarCacheService>.Instance);
+            _database,
+            _gateway,
+            _calendar,
+            projector,
+            new InstrumentRegistry(Defaults()),
+            new ContractDirectory(_clock),
+            _clock,
+            NullLogger<BarCacheService>.Instance,
+            _telemetry);
     }
 
     private static DateTimeOffset SessionStart =>
@@ -133,6 +145,7 @@ public sealed class CalendarEndGuardServedReadTests : IAsyncLifetime
     public Task DisposeAsync()
     {
         _database.Dispose();
+        _telemetry.Dispose();
         return Task.CompletedTask;
     }
 
@@ -229,8 +242,14 @@ public sealed class CalendarEndGuardServedReadTests : IAsyncLifetime
                     || p.Name == "resolutionMinutes")),
         ];
 
+        // FIFTEEN, measured off the filter rather than guessed, and raised whenever the surface grows
+        // (gh#500 took it from 9 to 13 -- 9 had been stale for three tools before get_session_bars arrived --
+        // and gh#501's two session-indicator reads take it to 15). A floor left behind the surface still
+        // passes while covering less and less of it, which is the one way this sweep can rot quietly:
+        // get_latest_session_bars is deliberately NOT among them, because it takes neither an instant nor a
+        // resolution and anchors on the clock instead.
         takingAnInstant.Should().HaveCountGreaterThanOrEqualTo(
-            9, "the reflection filter must actually match the surface it is guarding");
+            15, "the reflection filter must actually match the surface it is guarding");
 
         foreach (MethodInfo tool in takingAnInstant)
         {
@@ -305,9 +324,10 @@ public sealed class CalendarEndGuardServedReadTests : IAsyncLifetime
             new IndicatorCacheService(
                 _database,
                 _catalog,
-                new IndicatorProjector(_database, _catalog, NullLogger<IndicatorProjector>.Instance),
+                new IndicatorProjector(_database, _catalog, NullLogger<IndicatorProjector>.Instance, _telemetry),
                 _clock,
-                NullLogger<IndicatorCacheService>.Instance),
+                NullLogger<IndicatorCacheService>.Instance,
+                _telemetry),
             _gateway,
             guards);
 
@@ -333,7 +353,8 @@ public sealed class CalendarEndGuardServedReadTests : IAsyncLifetime
                 _database,
                 new FootprintProjector(_database, NullLogger<FootprintProjector>.Instance),
                 _clock,
-                NullLogger<FootprintCacheService>.Instance));
+                NullLogger<FootprintCacheService>.Instance,
+                _telemetry));
 
         ContractRollTools roll = new(
             resolver, _database, _gateway, new LevelMethodCatalog(_calendar), front, _clock);
@@ -341,7 +362,43 @@ public sealed class CalendarEndGuardServedReadTests : IAsyncLifetime
         SnapshotTools snapshot = new(
             bars, indicators, keyLevels, Reference(), new IndicatorCatalogNames(_catalog), _clock);
 
-        return new Family(bars, indicators, keyLevels, tape, roll, snapshot);
+        // get_session_bars takes fromUtc and toUtc, so the sweep's filter lands on it and the map has to be
+        // able to build it (gh#500). ADDED HERE RATHER THAN EXCLUDED FROM THE FILTER: a session window is
+        // arithmetic over the calendar too, and the whole point of the sweep is that a tool arriving later
+        // is covered without anyone remembering this file.
+        SessionBarTools sessionBars = new(
+            resolver,
+            new SessionBarService(
+                _database,
+                _cache,
+                _gateway,
+                _calendar,
+                new IndicatorProjector(
+                    _database, _catalog, NullLogger<IndicatorProjector>.Instance, _telemetry,
+                    ConcurrencyHarness.Sessions()),
+                _clock,
+                NullLogger<SessionBarService>.Instance),
+            new SessionCatalog(Defaults(), _calendar),
+            _calendar,
+            guards,
+            _clock);
+
+        // get_session_indicators takes fromUtc and toUtc and get_session_indicator_at takes an asOfUtc, so
+        // both land in the sweep's filter (gh#501). Session-window arithmetic and an as-of comparison against
+        // a session CLOSE are two more places the end of the calendar can overflow, which is exactly what the
+        // sweep is for.
+        SessionIndicatorTools sessionIndicators = new(
+            resolver,
+            _database,
+            _catalog,
+            ConcurrencyHarness.Indicators(_database),
+            new SessionCatalog(Defaults(), _calendar),
+            _calendar,
+            _gateway,
+            guards);
+
+        return new Family(
+            bars, indicators, keyLevels, tape, roll, snapshot, sessionBars, sessionIndicators);
     }
 
     /// <summary>Every market-data tool type this fixture can hand the sweep.</summary>
@@ -351,13 +408,17 @@ public sealed class CalendarEndGuardServedReadTests : IAsyncLifetime
     /// <param name="Tape">The tape tools.</param>
     /// <param name="Roll">The contract-roll tools.</param>
     /// <param name="Snapshot">The composed snapshot tool.</param>
+    /// <param name="SessionBars">The session-bar tools.</param>
+    /// <param name="SessionIndicators">The session-indicator tools.</param>
     private sealed record Family(
         BarTools Bars,
         IndicatorTools Indicators,
         KeyLevelTools KeyLevels,
         TapeTools Tape,
         ContractRollTools Roll,
-        SnapshotTools Snapshot)
+        SnapshotTools Snapshot,
+        SessionBarTools SessionBars,
+        SessionIndicatorTools SessionIndicators)
     {
         /// <summary>Hands back the instance for a declaring type, or says what has to be added here.</summary>
         /// <param name="type">The tool type the sweep found.</param>
@@ -369,6 +430,8 @@ public sealed class CalendarEndGuardServedReadTests : IAsyncLifetime
             : type == typeof(TapeTools) ? Tape
             : type == typeof(ContractRollTools) ? Roll
             : type == typeof(SnapshotTools) ? Snapshot
+            : type == typeof(SessionBarTools) ? SessionBars
+            : type == typeof(SessionIndicatorTools) ? SessionIndicators
             : throw new InvalidOperationException(
                 type.Name + " takes an instant and this fixture cannot build it. "
                 + "Add it here rather than narrowing the sweep -- the sweep is the point.");
@@ -424,6 +487,11 @@ public sealed class CalendarEndGuardServedReadTests : IAsyncLifetime
         "resolutionMinutes" => resolutionMinutes,
         "indicator" => "atr",
         "symbol" => "ES",
+
+        // A REAL session name, not the string filler. Left to Blank it would be "ES", which get_session_bars
+        // refuses on the vocabulary before it ever reaches the window arithmetic this sweep is about -- the
+        // tool would be covered by not being exercised, exactly the hole `openOnly` below closes.
+        "session" => "rth",
 
         // One tick wide, at the very end. That is the window that spans ZERO buckets and so clears every cap
         // this boundary had before this card -- the whole point of the sweep.

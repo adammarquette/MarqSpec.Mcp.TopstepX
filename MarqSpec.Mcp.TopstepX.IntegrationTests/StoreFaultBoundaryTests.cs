@@ -267,7 +267,7 @@ public sealed class StoreFaultBoundaryTests(SchemaFixture fixture)
             "atr",
             ConcurrencyHarness.Bucket(0),
             ConcurrencyHarness.Bucket(20),
-            token));
+            cancellationToken: token));
 
         string reported = (await call.Should().ThrowAsync<McpException>(
             "every tool that touches the store is behind this boundary, not only the two that fill bars"))

@@ -11,8 +11,8 @@ namespace MarqSpec.Mcp.TopstepX.MarketData;
 /// scope.
 /// </para>
 /// <para>
-/// A warm read — the probe finds nothing missing — does not increment. A request that asks eleven times
-/// for one series increments once: the scope memo still collapses those calls to one replay.
+/// A warm read — the probe finds nothing missing — does not increment. A request that asks once per
+/// catalogue name for one series increments once: the scope memo still collapses those calls to one replay.
 /// </para>
 /// <para>
 /// Readable as <see cref="Replays"/>. The existing information line on a replay also prints the process

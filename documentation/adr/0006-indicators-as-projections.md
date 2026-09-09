@@ -2,6 +2,9 @@
 
 **Status:** Accepted · **Date:** 2026-08-21 · **Deciders:** Adam (operator)
 **Relates to:** PRD `R-2` · [architecture](../architecture.md) *The indicator projection* ·
+the parameterisation rule below is narrowed by
+[ADR-0018](0018-period-selection-among-configured-periods.md) — selection among configured periods is
+allowed, ad-hoc computation is not ·
 `Domain/MarketData/IIndicator.cs`
 
 ## Context
@@ -77,6 +80,10 @@ and can be pinned by fixture tests shared with `trading-copilot` — which is wh
 | [2026-08-23](#update-2026-08-23--seeding-is-per-contract-not-per-series) | Seeding is per contract segment rather than per stored series ([ADR-0011](0011-contract-roll-boundary.md)) |
 | [2026-08-23](#update-2026-08-23--a-rebuild-is-a-unit-of-work-not-a-loop-of-statements) | The rebuild verb is transactional per series, and it is a class a test can run |
 | [2026-08-26](#update-2026-08-26--a-read-is-a-trigger-too-and-the-key-is-untouched) | A read projects what the catalogue has outrun ([ADR-0014](0014-indicators-are-projected-on-read-too.md)) |
+| [2026-09-06](#update-2026-09-06--selection-among-configured-periods-is-allowed-ad-hoc-computation-is-not) | A call may **select** among the periods the catalogue is configured for ([ADR-0018](0018-period-selection-among-configured-periods.md)) |
+| [2026-09-07](#update-2026-09-07--a-row-nothing-recomputes-is-not-protected-data-it-is-an-orphan) | The reconcile sweeps retired `(Indicator, Period)` pairs and bucketless values, and the rebuild walks the values table too |
+| [2026-09-07](#update-2026-09-07--the-design-question-the-update-above-left-open-a-read-serves-only-what-the-bars-account-for) | A read serves a value only where the bar at its bucket is still stored — the question the row above left open, settled as *serve nothing* (`R-2.14`) |
+| [2026-09-07](#update-2026-09-07--the-key-gained-a-second-shape-the-rule-did-not-change) | A named session series is projected by the same code path, under a second key shape (`R-2.15`, [ADR-0022](0022-session-bars-derived-complete-or-absent.md)) |
 
 ## Update (2026-08-23) — the empty-diff claim was false in practice
 
@@ -178,6 +185,220 @@ length is ever wanted, the answer is still that it goes in the **name** and this
 than reinterpreted.
 
 **`rebuild-indicators` keeps its place, with a narrower job.** A read self-heals only what the probe can see —
-a `(Indicator, Period)` pair with no rows. **Correcting an indicator's arithmetic leaves every pair present**,
-so no read will ever recompute it, and the verb is now how a *forced* replay happens. That, ADR-0012's
+a `(Indicator, Period)` pair with no rows, or, since gh#531, one whose newest value falls further back than
+that indicator's warm-up allows. **Correcting an indicator's arithmetic leaves every pair present and every
+pair reaching the newest bar**, so no read will ever recompute it, and the verb is now how a *forced* replay
+happens. That, ADR-0012's
 accepted write skew, and warming ahead of the first caller are what it is for.
+
+## Update (2026-09-06) — selection among configured periods is allowed; ad-hoc computation is not
+
+The parameterisation section above, and the 2026-08-26 update that repeats it, both say a per-call period is
+forbidden. **[ADR-0018](0018-period-selection-among-configured-periods.md) narrows that to the half this
+record was actually arguing, and the other half is now allowed** (gh#495).
+
+The section's subject is *a parameter the storage key cannot see*: MACD's fast length, Bollinger's width. Two
+parameterisations under one key are indistinguishable once written, and that is untouched — a configurable
+fast length still goes in the **name**. **But the key carries the period.** `(Venue, Instrument,
+ResolutionMinutes, Indicator, Period, BucketStart)` names it in a column, so the period is precisely the
+parameter this hazard does not reach.
+
+The second worry those sentences carry is different and is about the **closed vocabulary**, not the key: a
+caller naming a number nobody computed reads back an empty series, and an empty series is indistinguishable
+from a market that produced none. A vocabulary is closed by **refusing**, which is what the catalogue now
+does — a period it is not configured for is an error listing the configured ones, with the primary labelled.
+
+So `get_indicators` and `get_indicator_at` take an optional `period` that **selects** among the periods an
+operator configured (`Indicators__*Period` plus `Indicators__Additional*Periods`); omitted means the primary.
+**Ad-hoc per-call computation stays forbidden** for exactly the reasons this record gives — seeding from a
+requested window is refused by the second property above, and computing one honestly is the whole-series
+replay per call. Selection is a lookup along a column the key already carries; nothing new is computed to
+serve it.
+
+**Everything else here holds unchanged.** `IIndicator.Compute` is still pure, a pass still seeds from the
+start of each contract run, a rebuild is still a replay, and the empty-diff property is untouched — the
+projection walks a longer list of `(name, period)` instances, not a different algorithm.
+
+## Update (2026-09-07) — a row nothing recomputes is not protected data, it is an orphan
+
+The 2026-08-23 update above says the reconcile is "scoped to the `(Indicator, Period)` pairs the catalogue
+computes so a series left behind by a period change is not swept up with it". **That scope was protecting the
+wrong thing, and gh#571 reverses it.**
+
+The argument for it was real: ATR(14) and ATR(3) are different numbers under different keys, so a projection
+configured for one has no standing to delete the other's rows, and sweeping them would be data loss wearing a
+cleanup's clothes. The half that is right is kept — a pass still reaches **only the series it projected**, on
+venue, instrument, resolution and bucket alike, and `Reconciling_ReachesOnlyTheSeriesItProjected` still pins
+all four.
+
+The half that is wrong is that a retired pair's rows are not *another series*. They are **this** series, under
+a window nothing computes any more. This record's third property says a stored value "is never authoritative
+— every row is reproducible from `Bars`". A row under a pair the catalogue has dropped is the one row that is
+not: no pass recomputes it, so no replay can confirm it and none can correct it, and `rebuild-indicators`
+reports an **empty diff** over exactly the rows that need one. It reads back as an ordinary number, at the
+right scale, in the right column, computed under a window the operator stopped maintaining — the plausible
+number this repository exists to refuse.
+
+Deleting it is also cheap to undo, because reproducibility runs both ways: restore the configuration line,
+replay, and the numbers come back identical. Keeping it is not undoable at all — nothing can ever tell whether
+it is still right.
+
+**A second orphan had no path to a sweep at all.** There is no foreign key from `IndicatorValues` to `Bars`
+([ADR-0011](0011-contract-roll-boundary.md) §2 rejected one deliberately), so deleting bars orphans the values
+over them. A *partial* delete was already handled — the pass produces nothing at those buckets and the
+reconcile removes them. Deleting a series' **last** bar was not: `rebuild-indicators` enumerated the series to
+replay from `Bars`, and a series with no bars is not in that list, so nothing visited it again. The verb now
+walks the **union** of the two tables' series.
+
+The pass therefore removes three kinds of row and **counts and logs them apart** — unjustified (the warm-up at
+a contract seam), retired (a pair the catalogue dropped), orphaned (a bucket with no bar). One number cannot
+tell an operator whether their configuration change or their bar delete caused it, and those have different
+follow-ups. The two new kinds are reported at **Information**, not Debug: a store admitting it held numbers
+nothing could reproduce is not routine bookkeeping.
+
+**The empty-diff property is untouched.** A store with no orphans has nothing to sweep, so a confirming
+rebuild is still `(0, 0)` — including now that the rebuild walks the values table, since on such a store that
+list is a subset of the bars' list.
+
+**A read still does not sweep**, and that is deliberate. `get_indicators` projects only when its probe finds a
+*configured* pair missing ([ADR-0014](0014-indicators-are-projected-on-read-too.md)); under a narrowed
+catalogue every configured pair is present, so no pass runs, and `EnsureProjectedAsync` returns earlier still
+when the series holds no bars at all. Wiring the sweep into the probe would let a read delete on the strength
+of a catalogue it never projected with.
+
+> **Read "does not sweep" precisely, because the replay reconciles.** What a read never does is delete
+> *without projecting*: the pass a read opens is `IndicatorProjector.ProjectAsync`, which ends in
+> `ReconcileAsync` and removes the `unjustified`, `retired` and `orphaned` rows the series it has just
+> recomputed cannot account for. That is the distinction the paragraph above turns on, not an exception to
+> it. **gh#531 widened how often that happens** — a *configured* pair now counts as missing when its rows
+> stop short of the bars, not only when it has none — so a read deletes on more occasions than before, each
+> of them still on a catalogue it has just projected the whole series with.
+
+> **The serving half below is superseded,
+> [2026-09-07](#update-2026-09-07--the-design-question-the-update-above-left-open-a-read-serves-only-what-the-bars-account-for).**
+> The design question this paragraph declines to settle is settled in the update after it (gh#577): the reads
+> join a bar, so an **orphaned** row is no longer served either. Read the paragraph for what the *sweep*
+> reaches and for the measurement; its "37 ATR points" is what a read returned before, not what one returns
+> now. The operator step it prescribes still stands — a read still does not sweep.
+
+**The two kinds are not equally harmless while they stand, and the difference is the operator-facing half of
+this record.** A **retired** row is unreachable: the read refuses a period the catalogue does not carry,
+before the store is touched. An **orphaned** row is not — its pair is configured, so `get_indicators` serves
+it with no bar join, `get_indicator_at` serves it with a null contract, and `get_market_snapshot` LEFT-joins
+the bars deliberately, on the argument that an inner join would turn a known number with unknown provenance
+into *cannot-measure*. Measured on a store with every bar deleted: 37 ATR points returned over zero bars. That
+is pre-existing and this record's sweep narrows rather than opens it — but it means **an operator upgrading
+past gh#571 must run `rebuild-indicators` once**, because for a bar-less series no read will ever run the pass
+itself. Whether the reads should instead join a bar, or the probe should treat *values held, zero bars* as a
+reason to project, is a design question raised separately rather than settled here.
+
+**`SessionIndicatorValues` arrives with the update below.** gh#571's scope asked for the same rule over the
+session shape through `ISeriesTables`; both arrived with gh#501, and the orphan/retired sweep runs over that
+pair of tables through the same `ReconcileAsync` body.
+
+## Update (2026-09-07) — the design question the update above left open: a read serves only what the bars account for
+
+The update above ends by naming a question and declining to settle it — *"whether the reads should instead
+join a bar, or the probe should treat values held, zero bars as a reason to project"*. **It is settled here
+(gh#577): the reads join a bar, and the probe is untouched.** The same paragraph also recorded the state that
+made it urgent — 37 ATR points returned over zero bars — and a reviewer then measured the other two paths:
+`get_indicator_at` answering `65.32947503` with `contract=null`, and `get_market_snapshot` publishing that
+same number *and* `rsi = 54.29857597` in a slice whose own `bars` array was empty.
+
+**This record's own words had already decided it, and only the serving half was missing.** The paragraph above
+calls an orphan "the plausible number this repository exists to refuse", and the third property at the top
+says a stored value "is never authoritative — every row is reproducible from `Bars`". A row whose bars are
+gone is the row that is not, and the sweep it prescribes removes it *eventually*. Between the delete and the
+next pass, the read was handing it out.
+
+### The three candidates, and why serving nothing is the one
+
+**Refuse — raise an error.** Rejected. The condition belongs to the store, not to the call: a caller who asked
+correctly would get an error it cannot act on, and `get_indicators` would fail a whole window because one
+bucket in it lost its bar. This repository already has a channel for *the number is not there* — an absence,
+which `R-2.3` makes every caller read as cannot-measure and which the tool descriptions tell them to refuse to
+conclude from. Note that "refuse" in the paragraph above means **refusing to serve the number**, not raising;
+that is the reading this update fixes in the record, because a later agent could reasonably have taken it the
+other way.
+
+**Sweep on read.** Rejected, and the update above already rejected it: *"a read still does not sweep, and that
+is deliberate… wiring the sweep into the probe would let a read delete on the strength of a catalogue it never
+projected with."* [ADR-0014](0014-indicators-are-projected-on-read-too.md) makes a read a *projection* trigger
+and says nothing that would make it a *deletion* trigger, and the difference is the whole of ADR-0012's
+concurrency argument: a projection that lost its race recomputes to the same numbers and writes nothing, while
+a delete that lost one is not recoverable by repeating it. gh#571 also deliberately shipped **no migration**,
+on the argument that the rebuild pass is the remedy; a sweeping read would be that migration, arriving
+one tool call at a time.
+
+**Serve nothing — chosen.** A read serves a stored value only where the store still holds the bar at its
+bucket. `R-2.14` states it. The rule is per **value**, not per series: a partial delete still serves everything
+the surviving bars justify, and an as-of read falls back to the newest bucket that has a bar — the same
+fallback a contract seam already produces (`R-2.7`), which is why the filter sits under the as-of ordering
+rather than over its answer.
+
+### The snapshot's `LEFT` join argued against this, and the case it argued for is still served
+
+`get_market_snapshot`'s batched read carried a comment saying an inner join *"would turn a known number with
+unknown provenance into cannot-measure, which is a different and worse answer."* It is answered rather than
+overridden, on a fact about the schema: **`BarRecord.ContractId` is nullable**, and the join is on
+`BucketStart`. A bar that exists with no recorded contract therefore still matches, still yields its number,
+and still reports the unknown contract — that is the case the comment names, and it is pinned by
+`AValueWhoseBarRecordedNoContract_IsStillServed` rather than argued. What the `LEFT` join actually decided was
+the *other* case, where the bar row is absent altogether; and there the provenance is not the unknown thing.
+The number itself is: nothing recomputes it, so no replay can confirm or correct it, and the payload's own
+documentation compounded it by defining a null `contractId` as *the bar's provenance was never recorded* —
+which asserted a bar that was not there.
+
+The three reads now say the same thing, which is what the update above could not claim: `get_indicators`
+returns no point, `get_indicator_at` returns cannot-measure, and the snapshot publishes the map's own `null`,
+all from one servability rule applied in one place per read.
+
+**Nothing about the projection moves.** `IIndicator.Compute` is untouched, a pass still seeds from the start
+of each contract run, the reconcile and its three counts are unchanged, and a confirming rebuild is still an
+empty diff. This changes only what a read is willing to hand out, so `rebuild = replay` and `R-2.2` hold
+exactly as before.
+
+**Existing rows need no migration, and gh#571's decision not to ship one is not contradicted.** The rule is
+evaluated at read time against the bars actually present, so a store carrying orphans today is served
+correctly from the first call after the upgrade, with nothing rewritten. The rows still stand until
+`rebuild-indicators` or a fill visits the series — `TheOrphanedRowsAreStillInTheStore_TheReadJustDoesNotServeThem`
+says so — and the operator step the update above prescribes is still the thing that removes them. What changes
+is that waiting for it is now safe: the window between the bar delete and the sweep no longer serves numbers
+nothing can reproduce.
+
+*Assisted-by: Claude Opus 5 (Claude Code)*
+
+## Update (2026-09-07) — the key gained a second shape; the rule did not change
+
+This record says `(Venue, Instrument, ResolutionMinutes, Indicator, Period, BucketStart)` is the key.
+**There are now two keys, and everything above holds over both** (gh#501, `R-2.15`). A named session series — the
+derived one-row-per-trade-date series of
+[ADR-0022](0022-session-bars-derived-complete-or-absent.md) — is projected into `SessionIndicatorValues`
+under `(Venue, Instrument, Session, Indicator, Period, BucketStart)`, with `BucketStart` the session bar's
+opening instant.
+
+**The reason to record this is that it is one projection and not two.** A `SeriesKey` — a resolution or a
+session — picks an `ISeriesTables`, which names the bars a pass reads and the values it writes and is the
+*only* thing that differs between the two kinds. The seeding from the start of each contract run, the
+rounding to the stored column's scale before comparing, the skip-unchanged rule, the unscoped reconcile and
+its whole-series guard, and the requirement that a pass hold a transaction are one body of code running over
+whichever pair the key chose. Two copies would be two projections free to disagree about a number nobody
+would question — and the disagreement would arrive as a value, not as an error.
+
+The **vocabulary** is the second and last difference. `IndicatorCatalog.ForSeries(key)` returns `All` itself
+for a resolution key — the same instance, so nothing about an existing series moved — and `All` minus
+session-anchored `vwap` for a session key. That exclusion is a fact about the calculation rather than about
+the store: `vwap` weights a session's own intra-session volume distribution, and a session that *is* one bar
+has none, so the number would be that bar's typical price wearing an average's name. `vwap-rolling` stays,
+because a window over N bars is a real number on any series. The list is the same one the compute walks and
+the reconcile is scoped to, handed to both from one read: a compute walking one list while the reconcile
+walked another would delete rows on every pass.
+
+**The purity claim is untouched and is what makes the sharing safe.** `Domain` did not change in this slice;
+it never learned what a session is. A session bar arrives as a `Bar` like any other, and `IIndicator.Compute`
+cannot tell which table it came from — which is precisely why one algorithm over two key shapes cannot drift.
+
+**General form.** When a second thing wants a projection this record governs, the question to ask is whether
+it differs in the *storage* or in the *arithmetic*. A difference in storage is a key shape and a pair of
+tables, and it is shared code. A difference in arithmetic is a different calculation, and by the
+parameterisation section above it is a different **name**.

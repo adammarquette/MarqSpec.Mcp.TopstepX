@@ -52,16 +52,33 @@ public sealed class StoreAvailability
     /// <summary>
     /// The store could not be reached.
     /// </summary>
-    /// <param name="detail">The underlying reason, already reduced to one line.</param>
+    /// <param name="detail">
+    /// The underlying reason, already reduced to one line, or <see cref="string.Empty"/> when the fixed
+    /// sentence either side of it already says everything worth saying. This becomes part of
+    /// <see cref="Explanation"/>, which <see cref="Require"/> turns into an <see cref="McpException"/> — so
+    /// <b>never pass the connection target here</b>. Host, port, database and user belong only in whatever the
+    /// caller logs alongside the returned marker; <see cref="StoreStartup.ReachAsync"/> is the reference for
+    /// the split (gh#551).
+    /// </param>
     /// <returns>An unavailable marker carrying an actionable explanation.</returns>
-    public static StoreAvailability Unavailable(string detail) =>
-        new(
+    public static StoreAvailability Unavailable(string detail)
+    {
+        ArgumentNullException.ThrowIfNull(detail);
+
+        // A blank detail drops its own sentence rather than leaving a double space and an orphan period: a
+        // caller with nothing coordinate-free left to add (StoreStartup.ReachAsync, once the target moved to
+        // the log-only line) should not be forced to invent a restatement of the fixed sentence around it
+        // (gh#551).
+        string detailClause = string.IsNullOrWhiteSpace(detail) ? string.Empty : detail.Trim() + " ";
+
+        return new(
             false,
             "The database is not reachable, so cached market data and observations are unavailable. "
-            + detail
-            + " Start it with `docker compose up -d postgres`, or point ConnectionStrings__Default at a "
+            + detailClause
+            + "Start it with `docker compose up -d postgres`, or point ConnectionStrings__Default at a "
             + "running Postgres, then restart this server. Tools that need no database — list_instruments, "
             + "get_market_session, search_contracts — work regardless.");
+    }
 
     /// <summary>
     /// Throws unless the store is available.

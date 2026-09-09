@@ -21,6 +21,16 @@ namespace MarqSpec.Mcp.TopstepX.Data.Entities;
 /// overlap by one bucket or leave a one-bucket hole, and both errors are invisible until something derived
 /// from the wrong bar produces a number nobody can reproduce.
 /// </para>
+/// <para>
+/// <b>Rows written before <c>BarCoverageIsPerContract</c> were deleted, not backfilled</b> (gh#504). Which
+/// contract answered is not recoverable from anything the row holds — the venue, the symbol, the resolution
+/// and the two range ends are the same whichever contract was asked — and a guessed one is indistinguishable
+/// from a recorded one once written. That is the argument <c>AddBarContractId</c> makes for leaving
+/// <c>Bars.ContractId</c> null, reaching the opposite conclusion here because a bar is a <i>measurement</i>
+/// whose provenance can honestly be unknown, while this row is a <i>claim</i>: an unattributed one asserts
+/// "empty" on behalf of every contract, which is precisely what it must stop doing. Deleting costs one paced
+/// page per previously-empty settled range, once; keeping would hide real data forever.
+/// </para>
 /// </remarks>
 public sealed class BarCoverageRecord
 {
@@ -32,6 +42,15 @@ public sealed class BarCoverageRecord
 
     /// <summary>The bar size in minutes.</summary>
     public required int ResolutionMinutes { get; set; }
+
+    /// <summary>The contract that was asked, and answered empty.</summary>
+    /// <remarks>
+    /// The question this ledger answers is not "did the venue have bars for this range?" but "<b>did contract
+    /// C</b> have bars for this range?". Under a per-contract fetch policy those have different answers for
+    /// the same range — the expiring front has nothing for a window the new front covers — and one row per
+    /// range cannot hold two contracts' answers. So this is part of the key rather than a note beside it.
+    /// </remarks>
+    public required string ContractId { get; set; }
 
     /// <summary>The start of the empty range, inclusive. Always UTC.</summary>
     public required DateTimeOffset RangeStart { get; set; }

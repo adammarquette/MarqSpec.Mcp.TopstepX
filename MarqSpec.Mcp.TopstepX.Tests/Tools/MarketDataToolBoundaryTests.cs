@@ -2,6 +2,7 @@ using System.Reflection;
 using FluentAssertions;
 using MarqSpec.Mcp.TopstepX.Configuration;
 using MarqSpec.Mcp.TopstepX.Data;
+using MarqSpec.Mcp.TopstepX.Domain.MarketData;
 using MarqSpec.Mcp.TopstepX.MarketData;
 using MarqSpec.Mcp.TopstepX.Tools;
 using MarqSpec.Mcp.TopstepX.Venue;
@@ -37,10 +38,21 @@ namespace MarqSpec.Mcp.TopstepX.Tests.Tools;
 /// </remarks>
 public sealed class MarketDataToolBoundaryTests
 {
-    /// <summary>The five types <c>MarketDataTools</c> became, and what each one is allowed to hold.</summary>
+    /// <summary>
+    /// The five types <c>MarketDataTools</c> became — plus every market-data tool type added since — and what
+    /// each one is allowed to hold.
+    /// </summary>
     /// <remarks>
+    /// <para>
     /// Read this table as the card's deliverable. Fifteen dependencies on one type became 4, 6, 8, 8 and 6 —
     /// and, more than the arithmetic, none of the five can now name what another one holds.
+    /// </para>
+    /// <para>
+    /// <b>A market-data tool type added later joins the table rather than sitting outside it.</b>
+    /// <see cref="SessionBarTools"/> (gh#500) is the first: it is not one of the five, and the boundary this
+    /// card drew is worth exactly as much on the sixth type as on the first — a row here is what stops it
+    /// taking a footprint cache or a gateway it never reads.
+    /// </para>
     /// </remarks>
     public static TheoryData<Type, Type[]> Expected =>
         new()
@@ -100,6 +112,37 @@ public sealed class MarketDataToolBoundaryTests
                     typeof(LevelMethodCatalog),
                     typeof(VolumeFrontReader),
                     typeof(TimeProvider),
+                ]
+            },
+            {
+                typeof(SessionBarTools),
+                [
+                    typeof(InstrumentResolver),
+                    typeof(SessionBarService),
+                    typeof(SessionCatalog),
+                    typeof(BarSessionCalendar),
+                    typeof(ToolGuards),
+                    typeof(TimeProvider),
+                ]
+            },
+            {
+                // IndicatorTools' set plus the two a SESSION series needs -- the name vocabulary and the
+                // calendar its trade dates are walked off (gh#501). NOT SessionBarService, deliberately: that
+                // one holds a gateway, and holding it here would drag a live venue client into the field walk
+                // VenueFailureReportingTests performs and force a catch for a VenueException this route cannot
+                // raise. The gateway is read once for its venue id and not kept, exactly as IndicatorTools
+                // does. And no TimeProvider: both tools take the instant they answer about as an argument, so
+                // there is no "latest" member here to anchor on a clock.
+                typeof(SessionIndicatorTools),
+                [
+                    typeof(InstrumentResolver),
+                    typeof(TopstepXDbContext),
+                    typeof(IndicatorCatalog),
+                    typeof(IndicatorCacheService),
+                    typeof(SessionCatalog),
+                    typeof(BarSessionCalendar),
+                    typeof(IMarketDataGateway),
+                    typeof(ToolGuards),
                 ]
             },
         };

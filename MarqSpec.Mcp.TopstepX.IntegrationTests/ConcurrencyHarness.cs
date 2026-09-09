@@ -4,6 +4,7 @@ using MarqSpec.Mcp.TopstepX.Data;
 using MarqSpec.Mcp.TopstepX.Domain;
 using MarqSpec.Mcp.TopstepX.Domain.MarketData;
 using MarqSpec.Mcp.TopstepX.MarketData;
+using MarqSpec.Mcp.TopstepX.Telemetry;
 using MarqSpec.Mcp.TopstepX.Venue;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Diagnostics;
@@ -173,6 +174,16 @@ public sealed class CapturingLogger<T> : ILogger<T>
     /// <summary>Every message logged, formatted, in order.</summary>
     public List<string> Messages { get; } = [];
 
+    /// <summary>
+    /// The subset of <see cref="Messages"/> logged at <see cref="LogLevel.Warning"/> or above, in order.
+    /// </summary>
+    /// <remarks>
+    /// Kept apart because the level is part of the claim for some cases: a run that found nothing has to say
+    /// so <b>louder</b> than its ordinary counters, or it reads like a run that found nothing wrong. A
+    /// predicate over <see cref="Messages"/> alone would be green on a line logged at Information.
+    /// </remarks>
+    public List<string> Warnings { get; } = [];
+
     /// <inheritdoc />
     public IDisposable? BeginScope<TState>(TState state)
         where TState : notnull => null;
@@ -189,7 +200,14 @@ public sealed class CapturingLogger<T> : ILogger<T>
         Func<TState, Exception?, string> formatter)
     {
         ArgumentNullException.ThrowIfNull(formatter);
-        Messages.Add(formatter(state, exception));
+
+        string message = formatter(state, exception);
+        Messages.Add(message);
+
+        if (logLevel >= LogLevel.Warning)
+        {
+            Warnings.Add(message);
+        }
     }
 }
 
@@ -234,6 +252,26 @@ public sealed class SeriesGateway(
         IReadOnlyList<VenueContract> contracts =
             [new VenueContract(contractId, instrument, true, 0.25m, 12.50m)];
         return Task.FromResult(contracts);
+    }
+
+    /// <inheritdoc />
+    /// <remarks>
+    /// This fill lists exactly one contract, so the only id it knows is <paramref name="contractId"/> — any
+    /// other expiry answers null, which is what "the venue does not list this" looks like. A fill that needs
+    /// several listed expiries wants <c>CountingGateway</c>'s per-contract constructor instead.
+    /// </remarks>
+    public Task<VenueContract?> FindContractAsync(
+        InstrumentId instrument,
+        ContractExpiry expiry,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(expiry);
+
+        bool listed = ContractExpiry.TryParseContractId(contractId, out ContractExpiry mine)
+            && mine == expiry;
+
+        return Task.FromResult<VenueContract?>(
+            listed ? new VenueContract(contractId, instrument, true, 0.25m, 12.50m) : null);
     }
 
     /// <inheritdoc />
@@ -364,6 +402,23 @@ public static class ConcurrencyHarness
     public static BarSessionCalendar Calendar() => BarSessionCalendar.Parse("16:00", []);
 
     /// <summary>
+    /// The closed vocabulary of session names, over the shipped defaults and this harness's calendar.
+    /// </summary>
+    /// <returns>The catalogue.</returns>
+    /// <remarks>
+    /// Handed to <see cref="Projector"/> and <see cref="Indicators"/> so a session series' bar reads can
+    /// restate ADR-0022 §4 provenance. Resolution-only callers ignore it.
+    /// </remarks>
+    public static SessionCatalog Sessions() =>
+        new(
+            Options.Create(new MarketDataOptions
+            {
+                Instruments = Symbol + "," + RebuildSymbol,
+                SessionCloseCentral = "16:00",
+            }),
+            Calendar());
+
+    /// <summary>
     /// The catalogue every test here shares.
     /// </summary>
     /// <returns>The catalogue.</returns>
@@ -380,11 +435,19 @@ public static class ConcurrencyHarness
     public static InstrumentRegistry Registry() =>
         new(Options.Create(new MarketDataOptions { Instruments = Symbol + "," + RebuildSymbol }));
 
+    /// <summary>
+    /// The app-owned telemetry this harness's services are built with. One instance for the whole process,
+    /// since nothing here collects from it — the harness is about interleaving, not about telemetry. Internal
+    /// rather than private so other fixtures in this project that compose a service directly (rather than
+    /// through <see cref="Projector"/> or <see cref="Cache"/>) can build it with the same instance.
+    /// </summary>
+    internal static readonly HostTelemetry Telemetry = new();
+
     /// <summary>A projector over a context.</summary>
     /// <param name="database">The store.</param>
     /// <returns>The projector.</returns>
     public static IndicatorProjector Projector(TopstepXDbContext database) =>
-        new(database, Catalog(), NullLogger<IndicatorProjector>.Instance);
+        new(database, Catalog(), NullLogger<IndicatorProjector>.Instance, Telemetry, Sessions());
 
     /// <summary>The read-time indicator projection over a context.</summary>
     /// <param name="database">The store.</param>
@@ -400,7 +463,9 @@ public static class ConcurrencyHarness
             Catalog(),
             Projector(database),
             new FakeTimeProvider(now ?? SessionStart),
-            logger ?? NullLogger<IndicatorCacheService>.Instance);
+            logger ?? NullLogger<IndicatorCacheService>.Instance,
+            Telemetry,
+            sessions: Sessions());
 
     /// <summary>A cache-aside service over a context, serving one venue's bars.</summary>
     /// <param name="database">The store.</param>
@@ -418,14 +483,25 @@ public static class ConcurrencyHarness
         DateTimeOffset now,
         ILogger<BarCacheService>? logger = null,
         string contractId = ContractId,
-        bool answersBeyondTheSlice = false) =>
-        new(
+        bool answersBeyondTheSlice = false)
+    {
+        FakeTimeProvider clock = new(now);
+
+        return new BarCacheService(
             database,
             new SeriesGateway(venue, available, contractId, answersBeyondTheSlice),
             Calendar(),
             Projector(database),
-            new FakeTimeProvider(now),
-            logger ?? NullLogger<BarCacheService>.Instance);
+
+            // Registry(), NOT a default one. These tests serve two symbols -- Symbol for everything and
+            // RebuildSymbol for the rebuild test -- and a registry that has never heard of the second throws
+            // KeyNotFoundException from CycleFor the moment the fetch flow asks it anything (gh#505).
+            Registry(),
+            new ContractDirectory(clock),
+            clock,
+            logger ?? NullLogger<BarCacheService>.Instance,
+            Telemetry);
+    }
 
     /// <summary>The window covering a half-open bucket index range.</summary>
     /// <param name="fromIndex">The first bucket index.</param>

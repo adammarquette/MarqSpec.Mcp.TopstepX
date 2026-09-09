@@ -1,3 +1,4 @@
+using System.Globalization;
 using MarqSpec.Mcp.TopstepX.Configuration;
 using MarqSpec.Mcp.TopstepX.Domain.MarketData;
 using Microsoft.Extensions.Options;
@@ -5,7 +6,8 @@ using Microsoft.Extensions.Options;
 namespace MarqSpec.Mcp.TopstepX.MarketData;
 
 /// <summary>
-/// The closed vocabulary of indicators this server computes and serves.
+/// The closed vocabulary of indicators this server computes and serves, and every period it computes each of
+/// them at.
 /// </summary>
 /// <remarks>
 /// <para>
@@ -17,14 +19,47 @@ namespace MarqSpec.Mcp.TopstepX.MarketData;
 /// The vocabulary is <b>closed</b> deliberately. An unknown name is an error listing the known ones, because a
 /// typo that returns no data is indistinguishable from a market that produced none.
 /// </para>
+/// <para>
+/// <b>Names and instances are different sets, and every caller wants one or the other.</b> A name has one
+/// PRIMARY period — the singular <c>Indicators__*Period</c> key — and may have additional ones beside it.
+/// So <see cref="All"/> is every configured <c>(name, period)</c> instance, because the projection has to
+/// write all of them; <see cref="Primaries"/> is exactly one per name, because
+/// <c>get_market_snapshot</c>'s indicator map is keyed by name and a map built by walking <see cref="All"/>
+/// would let whichever instance came last win. That is not a smaller answer, it is a wrong one: the same
+/// name over a different window, with nothing in the payload saying so. <see cref="KnownNames"/> is the
+/// vocabulary and is unchanged by any amount of widening.
+/// </para>
+/// <para>
+/// <b>Why selecting a period is safe at all is ADR-0018.</b> Every row a caller's <c>period</c> can reach was
+/// written by the projection walking <see cref="ForSeries"/> for that series' key — <see cref="All"/> on a
+/// resolution series, under exactly
+/// <c>(Venue, Instrument, ResolutionMinutes, Indicator, Period, BucketStart)</c>, and the same list minus
+/// session-anchored VWAP on a session series, under
+/// <c>(Venue, Instrument, Session, Indicator, Period, BucketStart)</c> — and the read-time probe, the
+/// reconcile's scope and <c>rebuild-indicators</c> iterate that same set, per key shape. So a selectable
+/// period can never be one the store could hold values for that nothing computes, nor one computed that
+/// nothing can read. Selection is a lookup along a column the key already carries; ad-hoc per-call
+/// computation stays forbidden by ADR-0006.
+/// </para>
 /// </remarks>
 public sealed class IndicatorCatalog
 {
+    /// <summary>The one name a session series has no meaning for.</summary>
+    private const string SessionAnchoredVwap = "vwap";
+
     private readonly Dictionary<string, IIndicator> _byName;
+    private readonly Dictionary<(string Name, int Period), IIndicator> _byKey;
+    private readonly Dictionary<string, IReadOnlyList<int>> _periodsByName;
+    private readonly IReadOnlyList<IIndicator> _forSession;
 
     /// <summary>Builds the catalogue from the configured periods.</summary>
     /// <param name="options">The indicator options.</param>
     /// <param name="calendar">The session calendar — VWAP is anchored to a session, so it needs one.</param>
+    /// <exception cref="ArgumentException">
+    /// Two instances would share a <c>(name, period)</c>. Options bound at startup cannot produce that —
+    /// <see cref="IndicatorOptions.Validate"/> refuses a repeated period and <c>ValidateOnStart</c> makes it
+    /// a boot failure — but options built by hand can, and that pair is a storage key.
+    /// </exception>
     public IndicatorCatalog(IOptions<IndicatorOptions> options, BarSessionCalendar calendar)
     {
         ArgumentNullException.ThrowIfNull(options);
@@ -32,37 +67,117 @@ public sealed class IndicatorCatalog
 
         IndicatorOptions o = options.Value;
 
-        IIndicator[] indicators =
+        // Built once and listed by its own period rather than by a literal 0: VWAP is anchored, so there is
+        // one instance of it however many periods anything else is configured at.
+        VwapIndicator vwap = new(calendar);
+
+        // One entry per FAMILY: the configured periods, primary first, and what one period builds. MACD and
+        // Bollinger build three instances from one period each, because a slow length that produced a line
+        // but no signal, or an upper band with no middle, would answer the other reads with an empty series.
+        // The order is the projection order this catalogue has always had, and the primaries come out of it
+        // in that same order.
+        (IReadOnlyList<int> Periods, Func<int, IIndicator[]> Build)[] families =
         [
-            new AtrIndicator(o.AtrPeriod),
-            new RsiIndicator(o.RsiPeriod),
-            new SmaIndicator(o.SmaPeriod),
-            new EmaIndicator(o.EmaPeriod),
-            new MacdLineIndicator(o.MacdSlowPeriod),
-            new MacdSignalIndicator(o.MacdSlowPeriod),
-            new MacdHistogramIndicator(o.MacdSlowPeriod),
-            new VwapIndicator(calendar),
-            new BollingerUpperIndicator(o.BollingerPeriod),
-            new BollingerMiddleIndicator(o.BollingerPeriod),
-            new BollingerLowerIndicator(o.BollingerPeriod),
+            (o.AtrPeriods(), period => [new AtrIndicator(period)]),
+            (o.RsiPeriods(), period => [new RsiIndicator(period)]),
+            (o.SmaPeriods(), period => [new SmaIndicator(period)]),
+            (o.EmaPeriods(), period => [new EmaIndicator(period)]),
+            (o.MacdSlowPeriods(), period =>
+            [
+                new MacdLineIndicator(period),
+                new MacdSignalIndicator(period),
+                new MacdHistogramIndicator(period),
+            ]),
+            // VWAP is anchored, not windowed: one instance, and it takes no period from a caller either.
+            ([vwap.Period], _ => [vwap]),
+            (o.BollingerPeriods(), period =>
+            [
+                new BollingerUpperIndicator(period),
+                new BollingerMiddleIndicator(period),
+                new BollingerLowerIndicator(period),
+            ]),
+            (o.RollingVwapPeriods(), period => [new RollingVwapIndicator(period)]),
         ];
 
-        _byName = indicators.ToDictionary(i => i.Name, StringComparer.Ordinal);
-        All = indicators;
+        List<IIndicator> primaries = [];
+        List<IIndicator> additional = [];
+
+        foreach ((IReadOnlyList<int> periods, Func<int, IIndicator[]> build) in families)
+        {
+            for (int i = 0; i < periods.Count; i++)
+            {
+                (i == 0 ? primaries : additional).AddRange(build(periods[i]));
+            }
+        }
+
+        IIndicator[] all = [.. primaries, .. additional];
+
+        _byName = primaries.ToDictionary(i => i.Name, StringComparer.Ordinal);
+        _byKey = new Dictionary<(string, int), IIndicator>(all.Length);
+
+        foreach (IIndicator indicator in all)
+        {
+            if (!_byKey.TryAdd((indicator.Name, indicator.Period), indicator))
+            {
+                throw new ArgumentException(
+                    "The catalogue would hold two instances of '" + indicator.Name + "' at period "
+                    + indicator.Period.ToString(CultureInfo.InvariantCulture)
+                    + ". (Indicator, Period) is the storage key, so the second would overwrite the first on "
+                    + "every bar, under a row that names neither window.",
+                    nameof(options));
+            }
+        }
+
+        // Primary first, then the additional ones in configured order — because All is built that way and
+        // GroupBy preserves both the first-seen order of the groups and the order within each of them.
+        _periodsByName = all
+            .GroupBy(i => i.Name, StringComparer.Ordinal)
+            .ToDictionary(
+                g => g.Key,
+                IReadOnlyList<int> (g) => [.. g.Select(i => i.Period)],
+                StringComparer.Ordinal);
+
+        Primaries = primaries;
+        All = all;
+
+        // Built once, in All's order, because it does not depend on WHICH session was asked about: a
+        // session series has one bar a day, and session-anchored VWAP has nothing to weight inside one.
+        // Excluded by NAME rather than by type — the name is the storage key, and it is the name a caller
+        // asks with.
+        _forSession = [.. all.Where(i => !string.Equals(i.Name, SessionAnchoredVwap, StringComparison.Ordinal))];
     }
 
-    /// <summary>Every indicator, in projection order.</summary>
+    /// <summary>
+    /// Every configured instance: the primaries in projection order, then every additional period.
+    /// </summary>
+    /// <remarks>
+    /// What the projection walks, so it carries every <c>(name, period)</c> an operator configured. A caller
+    /// that wants one reading per NAME wants <see cref="Primaries"/> instead.
+    /// </remarks>
     public IReadOnlyList<IIndicator> All { get; }
 
+    /// <summary>Exactly one instance per name — the primary period each name is served at.</summary>
+    /// <remarks>
+    /// The snapshot's indicator map is keyed by name, and this is the list that keys it. Walking
+    /// <see cref="All"/> there would let a later instance of a name overwrite an earlier one, so a server
+    /// with an additional EMA configured would publish EMA at the wrong window with nothing saying so.
+    /// </remarks>
+    public IReadOnlyList<IIndicator> Primaries { get; }
+
     /// <summary>The known indicator names, for an error message that is actually useful.</summary>
+    /// <remarks>Names, not instances: additional periods never widen this.</remarks>
     public IEnumerable<string> KnownNames => _byName.Keys.Order(StringComparer.Ordinal);
 
     /// <summary>
-    /// Resolves an indicator name, or throws naming the valid ones.
+    /// Resolves an indicator name to the primary instance, or throws naming the valid ones.
     /// </summary>
     /// <param name="name">The indicator name, case-insensitive on input and lowercase in storage.</param>
-    /// <returns>The indicator.</returns>
+    /// <returns>The indicator at its primary period.</returns>
     /// <exception cref="KeyNotFoundException">The name is not in the vocabulary.</exception>
+    /// <remarks>
+    /// Unchanged: this has always meant "the configured one", and every existing call site means that.
+    /// Selecting among the configured periods is <see cref="Resolve(string, int?)"/>.
+    /// </remarks>
     public IIndicator Resolve(string name)
     {
         string normalised = (name ?? string.Empty).Trim().ToLowerInvariant();
@@ -74,14 +189,175 @@ public sealed class IndicatorCatalog
     }
 
     /// <summary>
-    /// The period this catalogue is configured to compute an indicator at.
+    /// Resolves an indicator name and a chosen period to the instance this server computes.
+    /// </summary>
+    /// <param name="name">The indicator name, case-insensitive on input and lowercase in storage.</param>
+    /// <param name="period">The chosen period, or <see langword="null"/> for the primary.</param>
+    /// <returns>The indicator.</returns>
+    /// <exception cref="KeyNotFoundException">
+    /// The name is not in the vocabulary, the name is <c>vwap</c> and a period was given at all, or the
+    /// period is not one this server computes that indicator at.
+    /// </exception>
+    /// <remarks>
+    /// <para>
+    /// A period SELECTS among what is configured; it never asks for a new one. A period this server does not
+    /// compute would read back as an empty series, and an empty series is indistinguishable from a market
+    /// that produced none — so the refusal lists what IS configured and says which of those is the primary.
+    /// </para>
+    /// <para>
+    /// The NAME is checked first. Telling a caller who typed <c>stochastic</c> that it "is not computed at
+    /// period 14" would send them looking for a configuration key that does not exist.
+    /// </para>
+    /// </remarks>
+    public IIndicator Resolve(string name, int? period)
+    {
+        IIndicator primary = Resolve(name);
+
+        if (period is null)
+        {
+            return primary;
+        }
+
+        if (primary is VwapIndicator)
+        {
+            throw new KeyNotFoundException(
+                "'" + primary.Name + "' takes no period: it is anchored to the session, not to a window. "
+                + "Omit period.");
+        }
+
+        return _byKey.TryGetValue((primary.Name, period.Value), out IIndicator? indicator)
+            ? indicator
+            : throw new KeyNotFoundException(
+                "Indicator '" + primary.Name + "' is not computed at period "
+                + period.Value.ToString(CultureInfo.InvariantCulture) + ". Configured periods for "
+                + primary.Name + ": " + DescribePeriods(_periodsByName[primary.Name])
+                + ". A period this server does not compute would read back as an empty series, which is "
+                + "indistinguishable from a market that produced none.");
+    }
+
+    /// <summary>
+    /// Every instance the projection walks for one series — <see cref="All"/> on a resolution series, and
+    /// <see cref="All"/> minus session-anchored VWAP on a session series.
+    /// </summary>
+    /// <param name="key">Which series is being projected or read.</param>
+    /// <returns>The instances, in <see cref="All"/>'s order.</returns>
+    /// <exception cref="ArgumentNullException"><paramref name="key"/> is <see langword="null"/>.</exception>
+    /// <remarks>
+    /// <para>
+    /// <b>For a resolution key this is <see cref="All"/> itself, the same instance.</b> Three consumers walk
+    /// it and have to agree by construction — what the projection computes, what the reconcile is allowed to
+    /// delete, and the read-time probe's missing set — so a list that was merely equal, re-derived per call,
+    /// would let a future reordering change a stored series that already exists.
+    /// </para>
+    /// <para>
+    /// <b>A session series has one bar a day, so <c>vwap</c> is dropped.</b> It anchors on the session, and a
+    /// session that IS one bar has no intra-session volume distribution to weight — the value would be that
+    /// bar's own typical price, dressed as an average (ADR-0022). <c>vwap-rolling</c> stays: a window over N
+    /// bars is a real number on any series, and on a session series it is an N-day rolling VWAP.
+    /// </para>
+    /// </remarks>
+    public IReadOnlyList<IIndicator> ForSeries(SeriesKey key)
+    {
+        ArgumentNullException.ThrowIfNull(key);
+
+        // ENUMERATED, NEVER DEFAULTED. The reconcile deletes every stored value in this list that a pass did
+        // not produce, so a key shape that inherited a vocabulary by falling through the switch would let a
+        // projection over it delete rows it has no standing over — data loss wearing a cleanup's clothes,
+        // and green. A third kind decides its own vocabulary here, deliberately.
+        return key switch
+        {
+            SeriesKey.Session => _forSession,
+            SeriesKey.Resolution => All,
+            _ => throw new ArgumentOutOfRangeException(
+                nameof(key),
+                key.GetType().Name,
+                "This catalogue has no vocabulary for that series kind. Add its arm above rather than "
+                + "letting it inherit another kind's: the list decides what a projection computes AND what "
+                + "the reconcile may delete."),
+        };
+    }
+
+    /// <summary>
+    /// Resolves a name and a chosen period for one series, refusing a name that series has no meaning for.
+    /// </summary>
+    /// <param name="key">Which series is being read.</param>
+    /// <param name="name">The indicator name, case-insensitive on input and lowercase in storage.</param>
+    /// <param name="period">The chosen period, or <see langword="null"/> for the primary.</param>
+    /// <returns>The indicator.</returns>
+    /// <exception cref="ArgumentNullException"><paramref name="key"/> is <see langword="null"/>.</exception>
+    /// <exception cref="KeyNotFoundException">
+    /// Everything <see cref="Resolve(string, int?)"/> refuses: an unknown name, a period on <c>vwap</c>, or a
+    /// period this server does not compute.
+    /// </exception>
+    /// <exception cref="ArgumentException">
+    /// The name resolves to an indicator this series does not carry — <c>vwap</c> on a session series.
+    /// </exception>
+    /// <remarks>
+    /// <b>Refused by name rather than served as an empty series</b> (ADR-0022: the tool surface says so
+    /// rather than omitting it silently). Nothing ever writes a <c>vwap</c> row for a session series, so a
+    /// read that was allowed through would answer with no values at all — indistinguishable from a market
+    /// that produced none, which is the exact failure the closed vocabulary exists to prevent.
+    /// </remarks>
+    public IIndicator ResolveFor(SeriesKey key, string name, int? period)
+    {
+        ArgumentNullException.ThrowIfNull(key);
+
+        IIndicator resolved = Resolve(name, period);
+        IReadOnlyList<IIndicator> available = ForSeries(key);
+
+        if (key is SeriesKey.Session && !available.Contains(resolved))
+        {
+            // THE EXPLANATION IS GATED ON THE NAME, and the general arm is written even though only `vwap`
+            // can reach it today. The VWAP sentence is a fact about one name; carried over to whatever the
+            // next exclusion turns out to be, it would explain the wrong thing with complete confidence.
+            //
+            // The list is not pre-announced either: naming 'vwap-rolling' in the prose ahead of a list that
+            // already contains it reads as though it were somehow outside the vocabulary that follows.
+            string why = string.Equals(resolved.Name, SessionAnchoredVwap, StringComparison.Ordinal)
+                ? "'" + resolved.Name + "' anchors on the session and a one-bar session has no VWAP"
+                : "'" + resolved.Name + "' is not computed on a session series";
+
+            throw new ArgumentException(
+                why + "; ask for one of: "
+                + string.Join(", ", available.Select(i => i.Name).Distinct(StringComparer.Ordinal)) + ".",
+                nameof(name));
+        }
+
+        return resolved;
+    }
+
+    /// <summary>
+    /// The periods this catalogue computes an indicator at — the primary first, then the additional ones in
+    /// configured order.
     /// </summary>
     /// <param name="name">The indicator name.</param>
-    /// <returns>The configured period.</returns>
+    /// <returns>The configured periods, primary first.</returns>
+    /// <exception cref="KeyNotFoundException">The name is not in the vocabulary.</exception>
+    /// <remarks>
+    /// Configured order, never sorted: the primary is the one a caller gets by omitting the period, and a
+    /// sorted list would bury it wherever its value happened to fall.
+    /// </remarks>
+    public IReadOnlyList<int> PeriodsFor(string name) => _periodsByName[Resolve(name).Name];
+
+    /// <summary>
+    /// The PRIMARY period this catalogue is configured to compute an indicator at.
+    /// </summary>
+    /// <param name="name">The indicator name.</param>
+    /// <returns>The primary period.</returns>
     /// <exception cref="KeyNotFoundException">The name is not in the vocabulary.</exception>
     /// <remarks>
     /// Exposed so a caller can ask for "the RSI" without knowing which period was configured. Asking for a
     /// period this server never computed would return an empty series that looks like missing market data.
+    /// The additional periods, if any, are <see cref="PeriodsFor"/>.
     /// </remarks>
     public int ConfiguredPeriodFor(string name) => Resolve(name).Period;
+
+    /// <summary>The configured periods as an operator reads them, with the primary labelled.</summary>
+    /// <param name="periods">The periods, primary first.</param>
+    /// <returns>e.g. <c>20 (primary), 10, 13</c>.</returns>
+    private static string DescribePeriods(IReadOnlyList<int> periods) =>
+        string.Join(
+            ", ",
+            periods.Select((p, i) =>
+                p.ToString(CultureInfo.InvariantCulture) + (i == 0 ? " (primary)" : string.Empty)));
 }

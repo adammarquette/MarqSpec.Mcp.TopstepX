@@ -222,6 +222,15 @@ public sealed class TapeVolumeFrontServiceTests : IDisposable
             CancellationToken cancellationToken) =>
             Task.FromResult(contracts);
 
+        /// <summary>Answers from the same fixed list, matched on the expiry the id carries.</summary>
+        public Task<VenueContract?> FindContractAsync(
+            InstrumentId instrument,
+            ContractExpiry expiry,
+            CancellationToken cancellationToken) =>
+            Task.FromResult(contracts.FirstOrDefault(c =>
+                ContractExpiry.TryParseContractId(c.ContractId, out ContractExpiry listed)
+                && listed == expiry));
+
         public Task<IReadOnlyList<Bar>> GetBarsAsync(
             string contractId,
             BarRange window,

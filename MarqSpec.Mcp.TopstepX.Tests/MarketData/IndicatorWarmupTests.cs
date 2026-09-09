@@ -4,6 +4,7 @@ using MarqSpec.Mcp.TopstepX.Data;
 using MarqSpec.Mcp.TopstepX.Data.Entities;
 using MarqSpec.Mcp.TopstepX.Domain.MarketData;
 using MarqSpec.Mcp.TopstepX.MarketData;
+using MarqSpec.Mcp.TopstepX.Telemetry;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.Extensions.DependencyInjection;
@@ -181,6 +182,7 @@ public sealed class IndicatorWarmupTests
         services.AddSingleton<IndicatorCatalog>();
         services.AddSingleton<TimeProvider>(clock);
         services.AddSingleton(holder);
+        services.AddSingleton<HostTelemetry>();
         services.AddScoped(_ => new TopstepXDbContext(options));
         services.AddScoped<IndicatorProjector>();
         if (rebuilderFactory is null)

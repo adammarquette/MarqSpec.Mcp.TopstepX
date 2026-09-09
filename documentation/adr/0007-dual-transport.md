@@ -72,6 +72,9 @@ difference between the two entry points is a handful of lines.
 | [2026-09-03](#update-2026-09-03--the-ephemeral-loopback-sentence-is-false-inside-the-image) | The stdio ephemeral-loopback claim is wired to the container behaviour that contradicts it, and the inherited variable is kept on measurement |
 | [2026-09-03](#update-2026-09-03--the-http-transport-is-supported-outside-compose-too) | The HTTP transport is a supported way to run this outside compose too, on its own narrower recipe — and one of the two traps a reader was warned about is not what the code does |
 | [2026-09-05](#update-2026-09-05--the-16-tools-both-times-sentence-has-a-real-tree-behind-it-and-it-held-15-not-18) | Closes gh#460: the tree behind the "16 tools both times" sentence is real, on `origin/main`, and held 15 tools that day — a one-tool gap, not the three a first reading of `develop` alone implied |
+| [2026-09-06](#update-2026-09-06--the-remote-instance-is-decided-in-adr-0021) | The remote instance the 2026-09-01 TLS update left undecided is decided in ADR-0021 — the "same machine" scoping is superseded, the TLS decision and the composed shape are not |
+| [2026-09-06](#update-2026-09-06--the-route-table-gained-a-path-that-answers-without-a-credential) | `GET /health` answers unauthenticated in front of the gate, which stays global — and ordering alone would not have carved it out |
+| [2026-09-08](#update-2026-09-08--the-cowork-custom-connector-dialog-was-measured-on-this-plan) | The maintainer measured Cowork's custom-connector dialog on this plan — two screens, what each offered, and what was not shown (gh#510) |
 
 ## Update (2026-08-22) — starting is not the same as being ready
 
@@ -289,6 +292,10 @@ decision: the client reaches the endpoint **from the same machine** — not Anth
 is no public hostname to certify and no ACME challenge to answer; and **gh#415's loopback bind stays**, so TLS
 is added beside it rather than instead of it. A genuinely remote instance is a different operational story and
 is not decided here.
+(Superseded as a scoping 2026-09-06: the remote instance is decided in
+[ADR-0021](0021-a-non-loopback-instance-is-supported.md) — a VPC behind a load balancer, OAuth 2.1 in place of
+the static token, ACM in place of the local CA. The "same machine" clause describes the composed shape only;
+the loopback bind and the TLS decision above are unchanged — see the 2026-09-06 update below.)
 
 **There was nothing to build on.** gh#416 swept `docker-compose.yml`, `docker-compose.dev.yml`, `Dockerfile`
 and `.env.example` for `https|tls|ssl|certificate|Kestrel__Certificates|ASPNETCORE_URLS|HTTPS_PORTS` and found
@@ -586,6 +593,33 @@ info: Microsoft.Hosting.Lifetime[0]
       Application started. Press Ctrl+C to shut down.
 ```
 
+(Superseded 2026-09-06: the warn line above no longer reproduces — gh#551 moved the target's host, port, database
+and user out of `StoreAvailability.Explanation` (what a caller receives) and into the log line alone, so the
+warning now *leads* with the coordinates rather than burying them behind `...`, and the sentence quoted above
+is now the *second* clause on that line rather than the first. Re-measured on this branch with the same
+transport and token, `ConnectionStrings__Default` set to a host with nothing listening — this working copy now
+has a real Postgres container bound to the default `localhost:5432` fallback the original run relied on being
+absent, so the target had to be named explicitly to keep the claim "the store does not answer" true:
+
+```console
+$ ConnectionStrings__Default="Host=127.0.0.1;Port=59991;Database=topstepx_mcp;Username=topstepx;Password=changeme-local" \
+  Mcp__Transport=Http Mcp__HttpBearerToken=local-test-token dotnet run --project MarqSpec.Mcp.TopstepX
+...
+warn: startup[0]
+      Nothing answered at host=127.0.0.1 port=59991 database=topstepx_mcp user=topstepx. The database is not
+      reachable, so cached market data and observations are unavailable. Start it with `docker compose up -d
+      postgres`, or point ConnectionStrings__Default at a running Postgres, then restart this server. Tools
+      that need no database — list_instruments, get_market_session, search_contracts — work regardless.
+info: Microsoft.Hosting.Lifetime[14]
+      Now listening on: http://localhost:5000
+info: Microsoft.Hosting.Lifetime[0]
+      Application started. Press Ctrl+C to shut down.
+```
+
+The rest of this update's claims are unaffected: `netstat`, the `401`/`200` sequence and the eighteen-tool
+count below all measured the transport and the auth gate, neither of which this PR touches. Left standing
+rather than rewritten, per this page's own convention — gh#551.)
+
 `netstat` during that run showed `TCP 127.0.0.1:5000 ... LISTENING` and `TCP [::1]:5000 ... LISTENING`, and
 nothing on `0.0.0.0` or `[::]` — Kestrel's own `localhost` default is already loopback-only, so nothing here
 had to bind it there deliberately. `curl` against `/mcp` with no `Authorization` header, and again with the
@@ -840,3 +874,371 @@ Both halves are wrong. `08c96da` did not write that sentence; `eac06a9`, on `ori
 earlier. And the discrepancy **is** tool growth since — the tree at `eac06a9` held fifteen, not eighteen. Left
 standing rather than rewritten, per this page's own convention; the paragraph above corrects it, and the
 paragraph itself now carries a pointer to here.
+
+## Update (2026-09-06) — the remote instance is decided, in ADR-0021
+
+The 2026-09-01 update titled *"the composed endpoint is TLS-only, behind a local CA"* settled the composed
+endpoint on a premise it named, and then named what it did not settle:
+
+> the client reaches the endpoint **from the same machine** — not Anthropic's cloud, not a LAN — so there is
+> no public hostname to certify and no ACME challenge to answer; and **gh#415's loopback bind stays**, so TLS
+> is added beside it rather than instead of it. A genuinely remote instance is a different operational story
+> and is not decided here.
+
+**The last sentence is now answered, and the "same machine" clause is superseded as a scoping — the
+loopback-bind clause beside it is not; compose still binds `127.0.0.1`.** gh#445's trigger fired on
+2026-09-03 when Anthropic's connector documentation was read: a remote MCP connector is reached from
+Anthropic's infrastructure for every Claude client, Cowork included, so a client "on the same machine" is not
+a shape a Cowork connector can be registered against at all — loopback is unroutable from there, and a mkcert
+leaf is trusted by nobody but the host that minted its CA. gh#509 then made a remote instance a requirement
+rather than a hypothesis, and [ADR-0021](0021-a-non-loopback-instance-is-supported.md) records the decision:
+**a non-loopback instance is supported, in one shape** — bind `[::]:8080` inside a VPC with the security group
+in loopback's role, reached only through an Application Load Balancer; **OAuth 2.1 with Cognito-issued tokens**
+in place of the static bearer token, which stays the local and compose mode only; **an ACM certificate at the
+load balancer** in place of the mkcert leaf, plaintext inside the VPC. gh#415's coupling survives there in the
+form a deployment can check: *a target group in front of 8080 ⇒ the OAuth mode must be configured, never the
+static token.*
+
+**What is unchanged on this page.** The TLS decision stands on its own terms — brokerage reads have no
+business crossing a network in plaintext whatever any client wants, and that reasoning never depended on
+Cowork. The composed stack is untouched: `127.0.0.1:8443`, the default token, the local CA, and every sentence
+above coupling the three are still the correct description of the same-machine shape, which is still the only
+shape `docker compose up` produces. "Reported, not verified" stays on the Cowork requirement until gh#524
+registers the staging endpoint and measures it. The quoted sentences are not edited in place; a bracketed
+pointer now sits directly under them, in the shape the 2026-08-23 and 2026-09-05 updates already carry, for
+the reason this page gives about itself: a reader who lands on them first is better served by a scoping that
+is visibly superseded and points at the record that superseded it than by a silent rewrite — and the
+2026-09-03 update exists because this page once left such a sentence standing with no pointer at all.
+
+## Update (2026-09-06) — the route table gained a path that answers without a credential
+
+The 2026-08-22 update above installed the bearer gate as **global** `app.Use` middleware, and said why: an
+endpoint carrying balances, positions and trade history is a data leak even though nothing here can trade.
+Global was the right shape and it stays. What it also meant, unstated because nothing needed it yet, is that
+**every path answered 401 without the token — including one nobody can send a token from.**
+
+**An Application Load Balancer cannot present a credential.** A target-group probe is a bare `GET` from the
+load balancer itself, and [ADR-0021](0021-a-non-loopback-instance-is-supported.md) puts exactly that in front
+of this server. A task whose every path answers 401 is a task the ALB marks unhealthy and replaces, forever,
+having never served a request — the deployment that record describes could not have started at all. The same
+gap made *which release is running* unanswerable in-band: the shipped assembly is stamped `0.0.0-alpha.0` by
+decision (ADR-0001) and `serverInfo.version` goes out as `0.0.0.0`, and reading either would answer
+confidently and wrongly.
+
+**So one path is allowed past the gate, and the gate is otherwise untouched.** `GET /health` answers
+`200 application/json`:
+
+```console
+$ curl -i http://127.0.0.1:5099/health          # no Authorization header at all
+HTTP/1.1 200 OK
+Content-Type: application/json; charset=utf-8
+Server: Kestrel
+
+{"status":"ok","store":"unavailable","version":"unknown","digest":"unknown"}
+
+$ curl -i http://127.0.0.1:5099/mcp             # the same request, one path over
+HTTP/1.1 401 Unauthorized
+Server: Kestrel
+WWW-Authenticate: Bearer
+
+Unauthorized.
+```
+
+Measured on this branch, Windows 11, under the 2026-09-03 update's own recipe —
+`Mcp__Transport=Http Mcp__HttpBearerToken=… dotnet run` with no compose, no Postgres and no credentials,
+on `127.0.0.1:5099` rather than the framework default because a second session held `:5000`. `/healthz`,
+`/health/anything` and `/Health` each answered `401` in the same run: **one exact path, matched ordinally,
+`GET` only.** A prefix match would hand `/health/anything` out unauthenticated and a case-insensitive one
+would turn a path into a family; both read as tidying in a diff, so both are pinned by tests rather than by
+care.
+
+**Measured again on the composed stack**, which is the shape that exercises TLS, a real migrated Postgres and
+the two new compose variables at once — same day, an isolated project on `127.0.0.1:8543` because another
+session held `:8443`:
+
+```console
+$ curl -k -i https://127.0.0.1:8543/health          # no Authorization header at all
+HTTP/1.1 200 OK
+Content-Type: application/json; charset=utf-8
+Server: Kestrel
+
+{"status":"ok","store":"available","version":"0.4.0-probe","digest":"sha256:cafebabe"}
+```
+
+`store` reads `available` there against the plain-run `unavailable` above — the same field, two environments,
+no code between them — and `version`/`digest` are the values `.env` handed `docker-compose.yml`, which is
+what says the forwarding is real rather than documented. `/mcp` on that endpoint answered `401` with
+`WWW-Authenticate: Bearer` in the same run: **TLS is not the thing letting `/health` through, and the gate is
+untouched.**
+
+### Registering it earlier is not what carves it out, and the code reads as though it were
+
+This is the trap on this page worth the most, because the wrong version is *one word shorter* and looks
+correct:
+
+> **`WebApplication` runs every endpoint after every middleware, whatever order they were added in.** It
+> inserts `UseRouting` ahead of everything the composition root adds and `UseEndpoints` after all of it, so a
+> `MapGet("/health", …)` written *before* `UseBearerTokenGate` still executes *after* it.
+
+Measured rather than reasoned about, because reasoning is exactly what produces the broken version. With the
+terminal branch replaced by `app.MapGet("/health", () => Results.Json(new { status = "ok" }))` in the same
+position — the line above the gate, in the same method, everything else identical:
+
+```console
+$ curl -i http://127.0.0.1:5099/health
+HTTP/1.1 401 Unauthorized
+Server: Kestrel
+WWW-Authenticate: Bearer
+
+Unauthorized.
+```
+
+What works is a **terminal branch**: `MapWhen` short-circuits the pipeline for the one path it claims, so
+nothing registered after it is reached and the gate never runs for that request. The three calls in
+`Program.MapHttpTransport` read the same either way — probe, gate, `MapMcp` — and only one of the two
+orderings is real. `HealthEndpointTests` is what tells them apart, and it is also **the gate's first test of
+its own**: `BearerTokenGate` had none until this card, which is precisely the condition the 2026-08-22 update
+records the cost of.
+
+### What it deliberately does not do
+
+**It is liveness, not readiness, and `store: unavailable` is still `200`.** The 2026-08-22 update settled that
+a missing database degrades to a refusal at the point of use rather than a dead process; killing the task for
+it would contradict that decision from the outside — the tool list is real and `list_instruments`,
+`get_market_session` and `search_contracts` answer normally. The measurement above is that case: nothing was
+listening on the configured connection string.
+
+**It is not `MapHealthChecks` and it reaches nothing.** `store` is the startup probe's answer, already held in
+`StoreAvailabilityHolder`; the ALB probes every 30 s per task, and a health check that opened a database
+connection would be load rather than a measurement of it.
+
+**Nothing about the venue, the token or the connection string appears in the body.** This is the only thing on
+the server reachable with no credential and THIS REPOSITORY IS PUBLIC — the store's own unavailable
+explanation, which names the connection string and the fix, is deliberately not written there. `version` and
+`digest` come from an optional `Deployment` section (`Deployment__Version`, `Deployment__ImageDigest`),
+reported as `unknown` when unset and never validated: a probe that refused to answer over a missing stamp
+would fail a healthy task for a cosmetic reason.
+
+**The static token is unchanged, and so is the composed stack.** ADR-0021 replaces that token with
+Cognito-issued OAuth for the non-loopback instance; `/health` stays unauthenticated in that mode too, for the
+same reason it is here — the load balancer probing it has no credential under either scheme.
+
+## Update (2026-09-06) — the gate learned a second mode, and stayed global
+
+[ADR-0021](0021-a-non-loopback-instance-is-supported.md) decided that the non-loopback instance replaces the
+static bearer token with OAuth 2.1 and Cognito-issued tokens, and named this card (gh#512) as the product
+side of it. This update records what that did to the gate on this page, and what it deliberately did not.
+
+**One knob: `Mcp__Auth__Mode`, `StaticToken` or `OAuth`, read only under the HTTP transport.** `StaticToken`
+is the default and is byte for byte the 2026-08-22 gate — `BearerTokenGate`, one shared secret in fixed
+time, a bare `WWW-Authenticate: Bearer` on refusal — and it remains the local and compose mode, for the
+reasons ADR-0021 gives. `OAuth` makes the server a resource server: `Microsoft.AspNetCore.Authentication.JwtBearer`
+(pinned at 10.0.11 beside the framework line) validates the token against the keys discovered from
+`{Mcp__OAuth__Issuer}/.well-known/openid-configuration` — RS256 only, signed only, an `exp` required,
+lifetime with a 60 s skew, and the issuer compared by an explicit `IssuerValidator` against the configured
+string, ordinally, and nothing else. **That last clause was false as first written and is true now.** The
+first draft of this update set `ValidIssuer` and said the discovery document's own `issuer` was "never what
+the check trusts"; the review measured otherwise — `JwtBearerHandler` concatenates the document's `issuer`
+into `ValidIssuers` beside the configured one, and a token whose `iss` matched the document but not the
+configuration was accepted, `200`. The trust boundary was the same in practice, since the document is
+fetched from the configured issuer and whoever controls it controls the key set too; but on a security path
+a false sentence is worse than none, and the stronger fix was one delegate rather than a corrected
+sentence. `ATokenUnderTheIssuerTheDiscoveryDocumentClaims_IsRefused_WhenItIsNotTheConfiguredOne` is the
+review's probe as a test — a stub whose document advertises a second string, a token under it — and it is
+`401` now.
+
+### Why the Cognito claims are checked the way they are
+
+**A Cognito access token carries `client_id` and `scope` and no `aud`.** Standard audience validation
+therefore has nothing to compare and must be off — and `ValidateAudience = false` on its own means any token
+the pool ever signed, for any app client, with any scope, is accepted. The pool is shared with the
+deploy-check client by design ([ADR-0023 §9](0023-aws-deployment-topology.md)) and could be shared with
+anything else tomorrow, so that is not a theoretical gap. `CognitoAccessTokenPolicy` is what replaces the
+audience check, and it runs inside the handler's `OnTokenValidated` so that no principal is ever
+authenticated without it: `token_use` is exactly `access` — an ID token from the same pool is signed by the
+same key and is not a credential for a resource server; exactly one `client_id`, and in
+`Mcp__OAuth__ClientIds`; and `Mcp__OAuth__RequiredScope` present as a **whole entry** of the space-separated
+`scope`, ordinally — `topstepx-mcp/readwrite` and `TOPSTEPX-MCP/READ` are each a different scope. **`aud`
+is never consulted, present or absent**: a Cognito access token never carries one, so its presence is not
+evidence of anything, and a token carrying `aud` naming some other resource beside a listed `client_id` and
+the scope is accepted on those two claims (the review measured `200`, and that is the intended answer).
+Refusing any token that carries an `aud` at all would be a stricter reading of "not a Cognito access
+token"; it is not taken here because it would pin a Cognito property this update has not measured. The
+pure check has its own tests, and the host tests pin every negative through the pipeline: absent,
+malformed, expired, no `exp`, not yet valid, wrong and missing issuer, the issuer the discovery document
+claims, unlisted and missing client, missing/wrong/prefix/case scope, `token_use=id`, `alg: none`, **RS512,
+RS384, PS256 and PS512 under the published key** — `ValidAlgorithms` is the one line refusing those, and the
+review found deleting it turned no test red until these rows existed — a key the issuer never published
+under the published `kid` and under an unknown one, and an issuer that has gone away. Each is its own test,
+so a later loosening fails one named test rather than a vague suite.
+
+### What a connector meets, in order
+
+A refused call answers `401` with
+`WWW-Authenticate: Bearer resource_metadata="<origin>/.well-known/oauth-protected-resource/mcp", scope="…"`.
+The RFC 9728 document that names — and the bare `/.well-known/oauth-protected-resource` — answers with no
+credential: `resource` is `Mcp__OAuth__ResourceUrl` **exactly as entered**, because the connector compares
+it with what the user typed and a `Uri` round trip lowercases the host or drops a port;
+`authorization_servers` is the issuer; `scopes_supported` the scope; `bearer_methods_supported` is
+`header`. It is the **second terminal branch** in front of the gate, beside `/health`, and for the same
+mechanism the 2026-09-06 update above measured: a `MapGet` here would be answered 401 by the gate
+registered after it. Exact paths, ordinal, `GET` only — a trailing slash, another casing, a neighbouring
+well-known path and any other method stay behind the gate, and `ProtectedResourceMetadataTests` says so.
+
+### Why it stayed global, and what `/health` does under OAuth
+
+The 2026-08-22 update installed the gate as global middleware because an endpoint carrying balances,
+positions and trade history is a data leak even though nothing here can trade, and the 2026-09-06 update
+above kept it global while carving out one path. The OAuth mode keeps that shape rather than becoming
+`UseAuthorization` with a policy on the MCP endpoints: **a policy protects what it is attached to**, and a
+path mapped tomorrow would be open until somebody remembered. The gate authenticates every request itself
+and refuses everything it does not positively authenticate; a valid token on a path nothing is mapped on
+gets a 404, never an answer. `/health` stays unauthenticated in this mode too, for the reason the update
+above gives — the load balancer probing it has no credential under either scheme — and it **never consults
+the issuer**: the handler fetches discovery only once it has a token to check, and `StubIssuer`'s request
+counters pin that a credential-less probe costs the issuer nothing.
+
+### Exactly one mode, and the coupling ADR-0021 stated is now a check
+
+`McpOptions.Validate` refuses, at startup and naming the key, an `OAuth` section without an issuer, client
+ids or resource URL; an `http` issuer off loopback (discovery and keys fetched in clear from across a
+network, with whoever answered choosing the keys this server trusts — loopback `http` is accepted for a stub
+on this machine only); an issuer with a trailing slash, query or fragment, because `iss` is compared byte
+for byte and a trailing slash would refuse every token with no hint why; and a resource URL whose path is
+not `/mcp`, the only path the endpoint is served on. And it refuses **both directions of two modes at
+once**: `Mcp__HttpBearerToken` beside `Mode=OAuth` is a variable left behind, and an `Mcp__OAuth__*` key
+beside `Mode=StaticToken` is the dangerous one — a public listener on the static gate with the OAuth keys
+silently ignored. Stdio reads none of it, as it never read the token.
+
+### Measured — against a stub issuer, and not yet against Cognito
+
+**gh#517's Cognito pool did not exist when this was written**, so nothing below was measured against a real
+issuer. The stub honours the same contract — a discovery document at `{issuer}/.well-known/openid-configuration`
+naming a `jwks_uri`, an RSA key generated for the run published there, tokens shaped like Cognito's
+`client_credentials` access token with an issuer that carries a path segment — and that is exactly the
+extent of the claim: the discovery, key-set and claims contract is exercised; Cognito's particular
+behaviour is not. The unit tier's `StubIssuer` is in-process and reaches no network; the console below is a
+throwaway copy of it on `127.0.0.1:5077`, the server on `127.0.0.1:5299`, plain `dotnet run`, no compose,
+no credentials:
+
+```console
+$ curl -i http://127.0.0.1:5299/mcp                                     # no Authorization header
+HTTP/1.1 401 Unauthorized
+Server: Kestrel
+WWW-Authenticate: Bearer resource_metadata="http://localhost:5299/.well-known/oauth-protected-resource/mcp", scope="topstepx-mcp/read"
+
+Unauthorized.
+
+$ curl http://127.0.0.1:5299/.well-known/oauth-protected-resource/mcp   # still none
+{"resource":"http://localhost:5299/mcp","authorization_servers":["http://127.0.0.1:5077/stub-pool"],"scopes_supported":["topstepx-mcp/read"],"bearer_methods_supported":["header"]}
+
+$ curl -i http://127.0.0.1:5299/health                                  # still none
+HTTP/1.1 200 OK
+
+$ curl -X POST http://127.0.0.1:5299/mcp -H "Authorization: Bearer $TOKEN" … initialize …
+HTTP/1.1 200 OK
+data: {"result":{"protocolVersion":"2024-11-05", … "serverInfo":{"name":"MarqSpec.Mcp.TopstepX", …
+```
+
+`list_instruments` answered in the same run with the same token. A token for `some-other-client`, one with
+`token_use=id`, one carrying only `openid`, and the compose stack's `changeme-local` each got the `401`
+above, and the log said why in the gate's own words — `the client_id claim is missing, duplicated, or not
+one of the configured client ids`, `the token_use claim is not 'access'` — with **zero** token fragments in
+the whole log, the JwtBearer handler's own lines included (`grep -c` on the token's first twelve characters).
+
+**The static mode, measured to be unchanged**, same day, same recipe on `127.0.0.1:5199`: `/health` 200
+with no header, `/mcp` 401 with a bare `WWW-Authenticate: Bearer`, the metadata path 401 (the static mode
+serves none), `initialize` and a `list_instruments` call answering with the token and 401 without it. And
+**on the composed stack** — an isolated project on `127.0.0.1:18443` because two other sessions held
+`:8443` and `:28443`, a throwaway `dotnet dev-certs` PFX because the measurement needs a listener and not a
+trust store, `curl -k`:
+
+```console
+$ curl -k -i https://127.0.0.1:18443/health          # no Authorization header at all
+HTTP/1.1 200 OK
+Content-Type: application/json; charset=utf-8
+Server: Kestrel
+
+{"status":"ok","store":"available","version":"0.4.0-gh512-probe","digest":"sha256:6d5ea7cc"}
+
+$ curl -k -i https://127.0.0.1:18443/mcp             # the same request, one path over
+HTTP/1.1 401 Unauthorized
+WWW-Authenticate: Bearer
+```
+
+`initialize` and `get_market_session ES` answered with the compose default token; the container's
+environment read `Mcp__Auth__Mode=StaticToken` with every `Mcp__OAuth__*` key forwarded and blank, and
+`Mcp__OAuth__RequiredScope=topstepx-mcp/read` — the app default mirrored, so that the one key with a default
+is not the one that signals a half-configured mode. Then the coupling, live: `docker compose run` of the same
+service with `Mcp__Auth__Mode=OAuth` and a complete OAuth section beside the stack's token default refused
+to start with `OptionsValidationException: … Mcp__HttpBearerToken is set while Mcp__Auth__Mode=OAuth …`.
+**Switching compose to OAuth is not a `.env` edit**, by design — the remote instance is a different artefact
+with all three replacements in it, never this stack with one line changed.
+
+### What an unauthenticated request can write into the log, and what it cannot
+
+**The JWT bearer handler's category is filtered to `Warning` under the OAuth mode**, in the same registration
+that adds the handler. Left at the product default it logs a refused token's `iss` and `kid` **verbatim** at
+Information — `IDX10205: Issuer validation failed. Issuer: '<the token's iss>'`, `IDX10503 … The token's
+kid is: '<the token's kid>'` — and under this mode the listener is reachable from the internet, so those
+two strings are chosen by whoever sends the request. Neither is a secret; what an attacker would control is
+**the content of a log line at the default level on every unauthenticated request** — a log-injection and
+noise vector, and one an alert built on that category would fire on. The gate's own refusal line stays,
+names a claim and never quotes a value, so nothing an operator needs is lost;
+`AttackerChosenClaimValues_NeverReachALogLine` pins both strings out of every line every logger produced,
+at Trace. The static mode registers no handler and is unaffected.
+
+Two things the review measured that this update does **not** change, recorded so they are not rediscovered:
+a token sent in the **query string** (`?access_token=…`) is refused under both modes — the handler and the
+static gate read the header only, and `bearer_methods_supported: ["header"]` is accurate — but
+`Microsoft.AspNetCore.Hosting.Diagnostics` writes the full request URL at Information, token included, and
+did so before this card under the static token too; a misbehaving client is the likeliest source of an
+IdP-issued bearer in a URL, and the fix is a request-logging decision that belongs to gh#515's hosting
+work, not here. And two shapes of the belt-and-braces: an incomplete OAuth section surfaces as
+`ArgumentException: The OAuth mode cannot be installed on an incomplete section … Mcp__OAuth__Issuer is
+required …` from `UseOAuthBearerGate`, which runs before `ValidateOnStart` would have thrown
+`OptionsValidationException` — the key is named either way, and it is the same shape the static gate has
+had since 2026-08-22; and a lowercase `bearer` scheme is accepted under OAuth (RFC 6750, the handler's
+behaviour) where the static gate's ordinal `Bearer ` refuses it — not a loosening of consequence, and not
+worth a second comparison to close.
+
+### What this does not decide
+
+Where the tokens come from — the pool, its clients, the hosted domain — is gh#517's, and the two
+measurements ADR-0023 §9 names on the real discovery document (`S256` advertised, the RFC 8707 `resource`
+parameter tolerated) are its to record. Whether Claude's connector dialog accepts a pre-registered client
+without Dynamic Client Registration is gh#510's, and this update rests on ADR-0021's second assumption
+exactly as that record states it: if it is overturned, the issuer moves and the resource-server half here
+does not. Nothing here introspects an opaque token, and nothing here authorises per user beyond "an access
+token from a listed client carrying the scope".
+
+## Update (2026-09-08) — the Cowork custom-connector dialog was measured on this plan
+
+gh#510 records what the maintainer saw in Claude Cowork's **custom connector** registration dialog on
+2026-09-08/09. This is a **client UI measurement**, not a registration of this server and not a check that
+Cowork reaches a public HTTPS endpoint — that remains *reported, not verified* until gh#524 registers the
+staging endpoint. The maintainer **cancelled without submitting**: they did not choose an Authentication or
+OAuth-client option, did not add any request headers, opened Continue with a fake URL only to read the
+second-screen labels (including Advanced → Transport), and then cancelled. What it means for the three
+connector assumptions [ADR-0021](0021-a-non-loopback-instance-is-supported.md) named is recorded there; this
+update carries the screen-by-screen observation only.
+
+### First screen (before Continue)
+
+- **Name** — a text field.
+- **URL** — a text field.
+- **Continue** is gated on a valid URL; a fake URL was enough to enable Continue.
+
+### Second screen (after Continue)
+
+- **Authentication:** `Always Required` | `Required when the server asks` | `None`.
+- **OAuth client:** `Use Anthropic's hosted client metadata (Recommended)` | `No client ID - register one automatically` | `Use your own OAuth client`.
+- **Additional request headers:** a list; **Header name** from a dropdown of standard HTTP headers; **value**; whether **required**.
+- **Advanced** (open button): **Transport** — `Streamable HTTP` | `SSE (legacy)`.
+
+### Not observed — stated rather than guessed
+
+- Plan tier.
+- Callback / redirect URL.
+- Whether choosing `Use your own OAuth client` expands to client id + secret fields.
+- Any stated HTTPS or path requirement on the URL field.

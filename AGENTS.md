@@ -28,14 +28,15 @@ measured `~tok` in [`agents/README.md`](documentation/agents/README.md). Check i
 An **application**, not a package: an MCP server that answers questions about futures markets from a local
 cache, reaching the vendor only for data it does not already hold.
 
-Solution `MarqSpec.Mcp.TopstepX.slnx`, five projects on `net10.0`:
+Solution `MarqSpec.Mcp.TopstepX.slnx`, seven projects on `net10.0`:
 
 | Project | What it is |
 |---|---|
 | `MarqSpec.Mcp.TopstepX` | The host — tool registration, stdio + HTTP transports, composition root, cache-aside services |
-| `…​.Domain` | Pure: `Bar`, `InstrumentId`, `InstrumentSpec`, `IIndicator` and `ILevelMethod` + implementations, `BarSessionCalendar`, `BarGapDetector`, `KeyLevels`, `SessionLevels`, `VolumeLevels`, `FootprintAggregator`, `VolumeProfileAggregator`, `TapeVolumeFront`. **References nothing** |
+| `…​.Domain` | Pure: `Bar`, `InstrumentId`, `InstrumentSpec`, `IIndicator` and `ILevelMethod` + implementations, `BarSessionCalendar`, `BarGapDetector`, `KeyLevels`, `SessionLevels`, `VolumeLevels`, `FootprintAggregator`, `VolumeProfileAggregator`, `TapeVolumeFront`, `ContractExpiry`, `ContractMonthCycle`, `HistoricalContractPolicy`. **References nothing** |
 | `…​.Data` | EF Core entities, `DbContext`, migrations |
 | `…​.Tests` / `…​.IntegrationTests` | Unit; and Testcontainers-backed integration |
+| `infra/…​.Infra` / `infra/…​.Infra.Tests` | The AWS deployment as CDK in C#, and its template tests — synthesised in CI with no credentials ([ADR-0023](documentation/adr/0023-aws-deployment-topology.md)). **References no product project and no venue package** |
 
 The venue is reached through the **[`MarqSpec.Client.ProjectX`](https://github.com/adammarquette/MarqSpec.Client.ProjectX)
 NuGet package** — not a submodule ([ADR-0003](documentation/adr/0003-client-as-package.md)).

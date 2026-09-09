@@ -3,6 +3,7 @@ using MarqSpec.Mcp.TopstepX.Data;
 using MarqSpec.Mcp.TopstepX.Data.Entities;
 using MarqSpec.Mcp.TopstepX.Domain;
 using MarqSpec.Mcp.TopstepX.Domain.MarketData;
+using MarqSpec.Mcp.TopstepX.Telemetry;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using Npgsql;
@@ -48,7 +49,7 @@ namespace MarqSpec.Mcp.TopstepX.MarketData;
 /// is what this did until gh#133 — decides it against <i>this</i> transaction's snapshot, and the loser took
 /// a <c>23505</c> out of <c>get_bars</c> for an ordinary question. The removal half stays with the change
 /// tracker, so the two halves need a transaction around them rather than merely one snapshot; see
-/// <see cref="ProjectAsync"/>.
+/// <see cref="ProjectAsync(SeriesKey, DateTimeOffset, CancellationToken)"/>.
 /// </para>
 /// <para>
 /// <b>The cost, stated honestly.</b> That makes a projection O(series), not O(changed). A year of 5-minute
@@ -60,14 +61,23 @@ namespace MarqSpec.Mcp.TopstepX.MarketData;
 /// <param name="database">The store.</param>
 /// <param name="catalog">The indicators to project.</param>
 /// <param name="logger">The logger.</param>
+/// <param name="telemetry">The app-owned meter.</param>
+/// <param name="sessions">
+/// The closed vocabulary of session names. Optional only so hand-built resolution-only tests keep compiling;
+/// the composition root always supplies the singleton, and a session series refuses to project without it.
+/// </param>
 public sealed class IndicatorProjector(
     TopstepXDbContext database,
     IndicatorCatalog catalog,
-    ILogger<IndicatorProjector> logger)
+    ILogger<IndicatorProjector> logger,
+    HostTelemetry telemetry,
+    SessionCatalog? sessions = null)
 {
     private readonly TopstepXDbContext _database = database;
     private readonly IndicatorCatalog _catalog = catalog;
     private readonly ILogger<IndicatorProjector> _logger = logger;
+    private readonly HostTelemetry _telemetry = telemetry;
+    private readonly SessionCatalog? _sessions = sessions;
 
     /// <summary>
     /// Recomputes every configured indicator for one series and writes the values that changed.
@@ -104,7 +114,7 @@ public sealed class IndicatorProjector(
     /// one the write autocommits and the removals do not, so this refuses rather than half-committing.
     /// </para>
     /// </remarks>
-    public async Task<int> ProjectAsync(
+    public Task<int> ProjectAsync(
         string venue,
         InstrumentId instrument,
         int resolutionMinutes,
@@ -112,6 +122,44 @@ public sealed class IndicatorProjector(
         CancellationToken cancellationToken)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(venue);
+
+        return ProjectAsync(
+            new SeriesKey.Resolution(venue, instrument.Symbol, resolutionMinutes), now, cancellationToken);
+    }
+
+    /// <summary>
+    /// Recomputes every configured indicator for one series — resolution or session — and writes what changed.
+    /// </summary>
+    /// <param name="key">Which series.</param>
+    /// <param name="now">The instant this pass runs at, stamped on changed rows.</param>
+    /// <param name="cancellationToken">The caller's cancellation token.</param>
+    /// <returns>How many rows this pass changed — written, updated, or <b>removed</b>.</returns>
+    /// <exception cref="ArgumentNullException"><paramref name="key"/> is <see langword="null"/>.</exception>
+    /// <exception cref="InvalidOperationException">
+    /// The caller opened no transaction, so the two halves of this pass could not commit together.
+    /// </exception>
+    /// <remarks>
+    /// <para>
+    /// <b>This is the body; the overload above forwards to it.</b> A session series and a resolution series
+    /// differ in exactly two places — which tables they live in (<see cref="ISeriesTables"/>) and which
+    /// indicators the catalogue computes over them (<see cref="IndicatorCatalog.ForSeries"/>) — and in
+    /// nothing else. Everything the resolution series relies on, from the contract segmenting to the rounding
+    /// to the reconcile's whole-series guard, is the same code running over the other pair of tables, so the
+    /// two kinds cannot drift apart on a number.
+    /// </para>
+    /// <para>
+    /// Every rule the overload's remarks state applies here unchanged: no <c>SaveChanges</c>, one
+    /// <see cref="System.Data.IsolationLevel.RepeatableRead"/> snapshot, and a transaction rather than merely
+    /// a snapshot.
+    /// </para>
+    /// </remarks>
+    public async Task<int> ProjectAsync(
+        SeriesKey key,
+        DateTimeOffset now,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(key);
+        ArgumentException.ThrowIfNullOrWhiteSpace(key.Venue);
 
         // CHECKED FIRST, so a refusal costs nothing and leaves nothing half-done -- the same shape as the
         // whole-series guard below, and it cannot fire as shipped for the same reason: both call sites go
@@ -128,41 +176,23 @@ public sealed class IndicatorProjector(
                 + "SeriesUnitOfWork is the one shape every series write uses.");
         }
 
-        // AsNoTracking because NOTHING HERE MUTATES A BAR -- the projection reads them and writes
-        // IndicatorValues. Tracked, a whole series' history sits in the change tracker being re-examined by
-        // every subsequent SaveChanges, and EF's change detection is superlinear in the tracked count. That
-        // is invisible on one series and is the whole cost on a store-wide rebuild (gh#73 review).
-        //
-        // Safe against the cache-aside path too: BarCacheService saves its bars BEFORE projecting -- a query
-        // cannot see tracked-only rows (gh#31) -- so this reads exactly what tracking would have returned.
-        List<BarRecord> stored = await _database.Bars
-            .AsNoTracking()
-            .Where(b => b.Venue == venue
-                && b.Instrument == instrument.Symbol
-                && b.ResolutionMinutes == resolutionMinutes)
-            .OrderBy(b => b.BucketStart)
-            .ToListAsync(cancellationToken)
-            .ConfigureAwait(false);
+        // WHICH TABLES, decided from the key and nowhere else. The pair is built here rather than injected:
+        // these constructors are hand-built at fifty-odd sites across the two test projects, and one more
+        // parameter would be an edit to every one of them (gh#501).
+        ISeriesTables tables = ISeriesTables.For(key, _database, _sessions);
+
+        // WHAT THIS SERIES' VOCABULARY IS, and it has to be the same list for the compute below and the
+        // reconcile at the end. Read once for exactly that reason: two calls could not disagree today, and a
+        // compute walking one list while the reconcile walked another would delete rows on every pass.
+        IReadOnlyList<IIndicator> catalogue = _catalog.ForSeries(key);
+
+        List<Bar> bars = await tables.LoadBarsAsync(cancellationToken).ConfigureAwait(false);
 
         // Loaded unconditionally, and the early return for an empty series is gone with it: reconciliation
         // has to run even when no bars remain, because values standing over a series whose bars have all been
         // deleted are exactly values nothing can justify.
-        IQueryable<IndicatorValueRecord> values = _database.IndicatorValues
-            .Where(v => v.Venue == venue
-                && v.Instrument == instrument.Symbol
-                && v.ResolutionMinutes == resolutionMinutes);
-
-        // AsNoTracking, and it is not tidiness (gh#103's identity-map finding). These rows are written by SQL
-        // the change tracker never sees, so a tracked copy is a stale entity the identity map would hand back
-        // to the next read of IndicatorValues in the same scope in preference to the row it just read. It is
-        // also what the perf note on the bar read above says: a whole series in the tracker is re-examined by
-        // every subsequent SaveChanges.
-        Dictionary<(string Indicator, int Period, DateTimeOffset Bucket), IndicatorValueRecord> existing =
-            await values.AsNoTracking()
-                .ToDictionaryAsync(v => (v.Indicator, v.Period, v.BucketStart), cancellationToken)
-                .ConfigureAwait(false);
-
-        List<Bar> bars = [.. stored.Select(ToBar)];
+        Dictionary<(string Indicator, int Period, DateTimeOffset Bucket), decimal> existing =
+            await tables.LoadValuesAsync(cancellationToken).ConfigureAwait(false);
 
         // Every key this pass accounted for -- written, updated, OR recomputed to the same number. The last
         // case is why a confirming rebuild still reconciles to an empty diff.
@@ -181,41 +211,100 @@ public sealed class IndicatorProjector(
         foreach (ContractSegment segment in segments)
         {
             List<Bar> run = bars.GetRange(segment.StartIndex, segment.BarCount);
-            ProjectSegment(run, existing, produced, pending);
+            ProjectSegment(catalogue, run, existing, produced, pending);
         }
 
         int written = pending.Count == 0
             ? 0
-            : await WriteAsync(venue, instrument, resolutionMinutes, pending, now, cancellationToken)
-                .ConfigureAwait(false);
+            : await WriteAsync(tables, pending, now, cancellationToken).ConfigureAwait(false);
 
-        int removed = await ReconcileAsync(
-            venue, instrument, resolutionMinutes, stored.Count, existing, produced, cancellationToken)
+        // COUNTED PER INDICATOR, from what this pass decided to write rather than from the statement's row
+        // count. The two differ only where the store resolved a conflict against a value a concurrent pass
+        // had already committed, and `pending` is the honest answer to "what did this projection produce" --
+        // which is the question an operator watching a catalogue addition roll through is asking.
+        //
+        // A CONFIRMING PASS RECORDS NOTHING, because `pending` is empty for it. That is the point: an empty
+        // diff is what proves indicators are reproducible projections (ADR-0006), and a rebuild that showed
+        // up here as a spike would say the opposite.
+        foreach (IGrouping<string, PendingValue> byIndicator in pending.GroupBy(
+            value => value.Indicator, StringComparer.Ordinal))
+        {
+            _telemetry.IndicatorProjected(
+                byIndicator.Key, key.Instrument, key, byIndicator.Count());
+        }
+
+        // THE BUCKETS THIS SERIES ACTUALLY HAS BARS AT. Built from the same list the projection computed
+        // over, so it is the same snapshot the whole-series guard below checks -- never a second read.
+        HashSet<DateTimeOffset> barBuckets = [.. bars.Select(b => b.OpenTime)];
+
+        ReconcileTally tally = await ReconcileAsync(
+            key, tables, catalogue, bars.Count, barBuckets, existing, produced, cancellationToken)
             .ConfigureAwait(false);
+
+        int removed = tally.Total;
 
         if (written + removed > 0)
         {
             _logger.LogDebug(
-                "Projected {Count} indicator values for {Instrument} {Resolution}m over {Bars} bars in "
+                "Projected {Count} indicator values for {Series} over {Bars} bars in "
                 + "{Segments} contract segment(s); removed {Removed} the bars no longer justify.",
                 written,
-                instrument.Symbol,
-                resolutionMinutes,
+                key.Describe(),
                 bars.Count,
                 segments.Count,
                 removed);
         }
 
+        // THE TWO ORPHAN KINDS ARE REPORTED AT INFORMATION, SEPARATELY, AND NEVER FOLDED INTO THE LINE ABOVE
+        // (gh#571). The Debug line is the ordinary bookkeeping of a pass; these two are the store admitting it
+        // held numbers nothing could reproduce, and they call for different follow-ups -- a period the
+        // operator retired is a configuration question, a bucket with no bar is a bars question. A single
+        // "removed 2" cannot tell an operator which of their own actions caused it, and a Debug-only line is
+        // close enough to silent that nobody would ever learn either.
+        if (tally.Retired > 0 || tally.Orphaned > 0)
+        {
+            _logger.LogInformation(
+                "Swept {Retired} stored indicator value(s) for {Series} under "
+                + "an (indicator, period) pair the catalogue no longer computes, and {Orphaned} standing at a "
+                + "bucket with no bar. Neither could be reproduced from the stored bars (ADR-0006); both are "
+                + "recoverable by restoring the configuration or the bars and replaying.",
+                tally.Retired,
+                key.Describe(),
+                tally.Orphaned);
+        }
+
         return written + removed;
     }
 
+    /// <summary>What one reconcile pass removed, split by why it removed it.</summary>
+    /// <param name="Unjustified">
+    /// Values under a pair the catalogue computes, at a bucket that still has a bar, that this pass declined
+    /// to produce — the warm-up that restarts at a contract seam (ADR-0011).
+    /// </param>
+    /// <param name="Retired">
+    /// Values under an <c>(Indicator, Period)</c> pair the catalogue no longer computes.
+    /// </param>
+    /// <param name="Orphaned">Values standing at a bucket the series holds no bar at.</param>
+    private readonly record struct ReconcileTally(int Unjustified, int Retired, int Orphaned)
+    {
+        /// <summary>How many rows were removed in all.</summary>
+        public int Total => Unjustified + Retired + Orphaned;
+    }
+
     /// <summary>
-    /// Removes stored values this pass was configured to produce but did not.
+    /// Removes every stored value for this series that the current bars and catalogue cannot account for.
     /// </summary>
-    /// <param name="venue">The venue.</param>
-    /// <param name="instrument">The instrument.</param>
-    /// <param name="resolutionMinutes">The bar size in minutes.</param>
+    /// <param name="key">The series.</param>
+    /// <param name="tables">The series' tables — where the count is read and the removal is made.</param>
+    /// <param name="catalogue">
+    /// What this series' projection is configured to produce, and therefore the only thing it may delete.
+    /// The <b>same list</b> the compute walked: two reads of it could not disagree today, and a compute and a
+    /// reconcile over different lists would delete rows on every pass.
+    /// </param>
     /// <param name="barsRead">How many bars this pass loaded — the claim the guard below checks.</param>
+    /// <param name="barBuckets">
+    /// The buckets this pass read a bar at, from the same list it projected over — never a second read.
+    /// </param>
     /// <param name="existing">
     /// Every stored value for the series. Untracked, which changes nothing here:
     /// <c>Remove</c> attaches an untracked row as <c>Deleted</c> and the statement it produces is the same
@@ -223,18 +312,41 @@ public sealed class IndicatorProjector(
     /// </param>
     /// <param name="produced">The keys this pass accounted for.</param>
     /// <param name="cancellationToken">The caller's cancellation token.</param>
-    /// <returns>How many rows were removed.</returns>
+    /// <returns>How many rows were removed, split by why.</returns>
     /// <exception cref="InvalidOperationException">
     /// This pass read a different number of bars from what the store holds for the series, so its unscoped
     /// removal would reach values it never read the bars for.
     /// </exception>
     /// <remarks>
     /// <para>
-    /// <b>Scoped to the <c>(Indicator, Period)</c> pairs this catalogue computes</b>, and that scope is half
-    /// the safety of it. Deleting everything a pass did not write would erase a series the operator merely
-    /// configured a period away from — ATR(14) and ATR(3) are different numbers under different keys, and a
-    /// projection configured for one has no standing over the other's rows. That would be data loss wearing a
-    /// cleanup's clothes.
+    /// <b>Three kinds of row are removed, counted apart because they mean different things</b> (gh#571):
+    /// </para>
+    /// <list type="number">
+    /// <item>
+    /// <b>Unjustified</b> — the pair is computed and the bucket has a bar, but this pass declined to produce
+    /// a value there. That is the warm-up restarting at a contract seam (ADR-0011), and it is the case this
+    /// method was written for.
+    /// </item>
+    /// <item>
+    /// <b>Retired</b> — the <c>(Indicator, Period)</c> pair is one the catalogue no longer computes.
+    /// </item>
+    /// <item>
+    /// <b>Orphaned</b> — the value stands at a bucket this series holds no bar at, because the bars under it
+    /// were deleted (a base revision, a session-bar discard, <c>reselect-bars</c>) and nothing links the two
+    /// tables (ADR-0011 §2 rejected the foreign key).
+    /// </item>
+    /// </list>
+    /// <para>
+    /// <b>The second kind used to be skipped, deliberately, and gh#571 reversed that.</b> The old argument was
+    /// that ATR(14) and ATR(3) are different numbers under different keys, so a projection configured for one
+    /// has no standing over the other's rows — sweeping them would be data loss wearing a cleanup's clothes.
+    /// The half that is right is kept and is enforced below: this reaches only the series it projected. The
+    /// half that is wrong is that a retired pair's rows are not *another series* — they are this one, under a
+    /// window nothing computes any more. No pass recomputes them, so no replay can confirm them and none can
+    /// correct them: <c>rebuild-indicators</c> reports an empty diff over exactly the rows that need it, and
+    /// they read back as ordinary numbers. ADR-0006 forbids the store to hold a value it cannot reproduce
+    /// from its bars, and that is what these are. They are also cheap to get back — one configuration line
+    /// and one replay — because reproducibility runs both ways.
     /// </para>
     /// <para>
     /// <b>It is NOT scoped by bucket range, and that is the other half.</b> A pass sweeps the whole series,
@@ -258,51 +370,70 @@ public sealed class IndicatorProjector(
     /// reaches is the row that <i>used</i> to be justified — the ATR smoothed across a splice that a later,
     /// better-informed pass correctly declines to compute.
     /// </para>
+    /// <para>
+    /// <b>The sweep is bounded by the series this pass already read</b>, and by nothing else. It walks
+    /// <paramref name="existing"/> and <paramref name="barBuckets"/>, both of which are in hand — no extra
+    /// query, no store-wide scan, and no reach outside <c>(venue, instrument, resolution)</c>.
+    /// </para>
     /// </remarks>
-    private async Task<int> ReconcileAsync(
-        string venue,
-        InstrumentId instrument,
-        int resolutionMinutes,
+    private async Task<ReconcileTally> ReconcileAsync(
+        SeriesKey key,
+        ISeriesTables tables,
+        IReadOnlyList<IIndicator> catalogue,
         int barsRead,
-        Dictionary<(string Indicator, int Period, DateTimeOffset Bucket), IndicatorValueRecord> existing,
+        HashSet<DateTimeOffset> barBuckets,
+        Dictionary<(string Indicator, int Period, DateTimeOffset Bucket), decimal> existing,
         HashSet<(string Indicator, int Period, DateTimeOffset Bucket)> produced,
         CancellationToken cancellationToken)
     {
         HashSet<(string Indicator, int Period)> owned =
-            [.. _catalog.All.Select(i => (i.Name, i.Period))];
+            [.. catalogue.Select(i => (i.Name, i.Period))];
 
-        List<IndicatorValueRecord> unjustified = [];
+        List<(string Indicator, int Period, DateTimeOffset Bucket)> doomed = [];
+        int unjustified = 0;
+        int retired = 0;
+        int orphaned = 0;
 
-        foreach ((var key, IndicatorValueRecord row) in existing)
+        foreach ((var stored, _) in existing)
         {
-            if (!owned.Contains((key.Indicator, key.Period)) || produced.Contains(key))
+            // Produced implies both that the pair is computed and that the bucket has a bar, so this one
+            // check is the whole of "the current bars account for this row".
+            if (produced.Contains(stored))
             {
                 continue;
             }
 
-            unjustified.Add(row);
+            // CLASSIFIED IN THIS ORDER SO THE THREE COUNTS CANNOT DOUBLE-COUNT. A row can be both retired and
+            // orphaned; the bar is the more basic fact, so it wins, and Total is always the row count.
+            if (!barBuckets.Contains(stored.Bucket))
+            {
+                orphaned++;
+            }
+            else if (!owned.Contains((stored.Indicator, stored.Period)))
+            {
+                retired++;
+            }
+            else
+            {
+                unjustified++;
+            }
+
+            doomed.Add(stored);
         }
 
-        if (unjustified.Count == 0)
+        if (doomed.Count == 0)
         {
-            return 0;
+            return default;
         }
 
         // Checked BEFORE anything is removed, so a refusal costs nothing and leaves nothing half-done.
-        int storedBars = await _database.Bars
-            .CountAsync(
-                b => b.Venue == venue
-                    && b.Instrument == instrument.Symbol
-                    && b.ResolutionMinutes == resolutionMinutes,
-                cancellationToken)
-            .ConfigureAwait(false);
+        int storedBars = await tables.CountBarsAsync(cancellationToken).ConfigureAwait(false);
 
         if (storedBars != barsRead)
         {
             throw new InvalidOperationException(
                 "This projection pass read " + barsRead.ToString(CultureInfo.InvariantCulture) + " bars for "
-                + instrument.Symbol + " " + resolutionMinutes.ToString(CultureInfo.InvariantCulture)
-                + "m on '" + venue + "', but the store holds "
+                + key.Describe() + " on '" + key.Venue + "', but the store holds "
                 + storedBars.ToString(CultureInfo.InvariantCulture)
                 + " — so it did not read the whole series. Reconciliation removes every value the pass did not "
                 + "produce and is not scoped by bucket range, so completing it would delete values whose bars "
@@ -310,15 +441,16 @@ public sealed class IndicatorProjector(
                 + "the bucket range that was actually read.");
         }
 
-        foreach (IndicatorValueRecord row in unjustified)
+        foreach ((string Indicator, int Period, DateTimeOffset Bucket) row in doomed)
         {
-            _database.IndicatorValues.Remove(row);
+            tables.Remove(row);
         }
 
-        return unjustified.Count;
+        return new ReconcileTally(unjustified, retired, orphaned);
     }
 
     /// <summary>Projects every configured indicator over one single-contract run of bars.</summary>
+    /// <param name="catalogue">What this series' projection computes.</param>
     /// <param name="bars">The run.</param>
     /// <param name="existing">Every stored value for the series — the pre-filter, not the decision.</param>
     /// <param name="produced">The keys this pass accounted for. Appended to.</param>
@@ -328,13 +460,14 @@ public sealed class IndicatorProjector(
     /// whole series in would let a roll gap -- routinely tens of points between adjacent quarters -- be
     /// smoothed forward as though it were price action, which is exactly the number nobody would question.
     /// </remarks>
-    private void ProjectSegment(
+    private static void ProjectSegment(
+        IReadOnlyList<IIndicator> catalogue,
         IReadOnlyList<Bar> bars,
-        Dictionary<(string Indicator, int Period, DateTimeOffset Bucket), IndicatorValueRecord> existing,
+        Dictionary<(string Indicator, int Period, DateTimeOffset Bucket), decimal> existing,
         HashSet<(string Indicator, int Period, DateTimeOffset Bucket)> produced,
         List<PendingValue> pending)
     {
-        foreach (IIndicator indicator in _catalog.All)
+        foreach (IIndicator indicator in catalogue)
         {
             IReadOnlyList<decimal?> values = indicator.Compute(bars);
 
@@ -379,7 +512,7 @@ public sealed class IndicatorProjector(
                 //
                 // A second copy in SQL would therefore be a clause nothing could ever make fail: unreachable
                 // by any input, and so unverifiable by any test.
-                if (existing.TryGetValue(key, out IndicatorValueRecord? row) && row.Value == value)
+                if (existing.TryGetValue(key, out decimal stored) && stored == value)
                 {
                     // Unchanged. Leaving RecordedAt alone is what makes a confirming rebuild produce an
                     // empty diff rather than rewriting every timestamp in the series.
@@ -395,100 +528,25 @@ public sealed class IndicatorProjector(
         }
     }
 
-    /// <summary>
-    /// The value write, as one statement the store resolves against the rows it has committed.
-    /// </summary>
-    /// <remarks>
-    /// <para>
-    /// <b>The conflict target is the composite primary key</b> — the same key the pre-read looked the values
-    /// up by, reached directly instead of being inferred from a read of it. Under
-    /// <see cref="SeriesUnitOfWork.Isolation"/> a conflict against a row committed <i>after</i> this
-    /// transaction's snapshot is refused with <c>40001</c> rather than <c>23505</c>, which is what
-    /// <c>R-2.10</c> already retries once — and the retry runs over the store the winner committed, where the
-    /// pre-filter above simply recognises those values as already produced.
-    /// </para>
-    /// <para>
-    /// <b>There is no skip-unchanged <c>WHERE</c>, and its absence is deliberate</b> — see the comment at the
-    /// pre-filter. Nothing reaches this statement that the C# comparison did not already find different, and
-    /// that comparison is made at the column's own scale.
-    /// </para>
-    /// <para>
-    /// <b>Arrays rather than a row per value</b>: a whole series times eleven indicators is tens of thousands
-    /// of rows, and four parameters each would exceed the protocol's parameter limit many times over.
-    /// </para>
-    /// </remarks>
-    private const string UpsertValuesSql = """
-        INSERT INTO "IndicatorValues" (
-            "Venue", "Instrument", "ResolutionMinutes", "Indicator", "Period", "BucketStart",
-            "Value", "RecordedAt")
-        SELECT @venue, @instrument, @resolution, a.indicator, a.period, a.bucket, a.value, @recorded
-        FROM unnest(@indicators, @periods, @buckets, @values)
-             AS a(indicator, period, bucket, value)
-        ON CONFLICT ("Venue", "Instrument", "ResolutionMinutes", "Indicator", "Period", "BucketStart")
-        DO UPDATE SET
-            "Value" = excluded."Value",
-            "RecordedAt" = excluded."RecordedAt"
-        """;
-
-    /// <summary>One value this pass found the store does not already hold.</summary>
-    /// <param name="Indicator">The indicator's stable name.</param>
-    /// <param name="Period">The period, part of the storage key.</param>
-    /// <param name="BucketStart">The bucket.</param>
-    /// <param name="Value">The value, already rounded to the stored scale.</param>
-    private readonly record struct PendingValue(
-        string Indicator,
-        int Period,
-        DateTimeOffset BucketStart,
-        decimal Value);
-
     /// <summary>Writes the values this pass found the store does not already hold.</summary>
-    /// <param name="venue">The venue.</param>
-    /// <param name="instrument">The instrument.</param>
-    /// <param name="resolutionMinutes">The bar size in minutes.</param>
+    /// <param name="tables">The series' tables — whose statement and parameter binding this runs.</param>
     /// <param name="pending">The values to write.</param>
     /// <param name="now">The instant this pass runs at.</param>
     /// <param name="cancellationToken">The caller's cancellation token.</param>
     /// <returns>
     /// <b>How many rows the store reports it wrote or revised</b> — the statement's own row count, never
-    /// <c>pending.Count</c>. There is no skip-unchanged <c>WHERE</c> on this statement, so the two agree
+    /// <c>pending.Count</c>. There is no skip-unchanged <c>WHERE</c> on either statement, so the two agree
     /// today; the contract is the store's number, so they still agree if one is ever added (gh#387).
     /// </returns>
     private async Task<int> WriteAsync(
-        string venue,
-        InstrumentId instrument,
-        int resolutionMinutes,
+        ISeriesTables tables,
         List<PendingValue> pending,
         DateTimeOffset now,
-        CancellationToken cancellationToken)
-    {
-        NpgsqlParameter[] parameters =
-        [
-            new("venue", NpgsqlDbType.Varchar) { Value = venue },
-            new("instrument", NpgsqlDbType.Varchar) { Value = instrument.Symbol },
-            new("resolution", NpgsqlDbType.Integer) { Value = resolutionMinutes },
-            new("recorded", NpgsqlDbType.TimestampTz) { Value = now },
-            new("indicators", NpgsqlDbType.Array | NpgsqlDbType.Varchar)
-            {
-                Value = pending.Select(v => v.Indicator).ToArray(),
-            },
-            new("periods", NpgsqlDbType.Array | NpgsqlDbType.Integer)
-            {
-                Value = pending.Select(v => v.Period).ToArray(),
-            },
-            new("buckets", NpgsqlDbType.Array | NpgsqlDbType.TimestampTz)
-            {
-                Value = pending.Select(v => v.BucketStart).ToArray(),
-            },
-            new("values", NpgsqlDbType.Array | NpgsqlDbType.Numeric)
-            {
-                Value = pending.Select(v => v.Value).ToArray(),
-            },
-        ];
-
-        return await _database.Database
-            .ExecuteSqlRawAsync(UpsertValuesSql, parameters, cancellationToken)
+        CancellationToken cancellationToken) =>
+        await _database.Database
+            .ExecuteSqlRawAsync(
+                tables.UpsertSql, tables.UpsertParameters(pending, now), cancellationToken)
             .ConfigureAwait(false);
-    }
 
     /// <summary>Maps a stored row to the domain bar the indicators compute over.</summary>
     /// <param name="record">The stored row.</param>

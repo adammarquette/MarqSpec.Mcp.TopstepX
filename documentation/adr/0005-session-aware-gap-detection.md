@@ -92,6 +92,76 @@ sync problem for a handful of dates a year.
 - The ledger can be wrong in the safe direction (a range marked covered that later gains data) and its TTL is
   the recovery path. A forced re-fetch verb is worth adding when that first bites.
 
+## Decision log
+
+| Update | What changed |
+|---|---|
+| [2026-09-06](#update-2026-09-06--the-calendar-also-defines-session-windows) | The same trade-date model now also defines **session windows**: `SessionWindows` (gh#498) reads this calendar to place a `SessionDefinition` in UTC, and adds the base-resolution and boundary rules that keep those windows on the stored bucket grid. What is derived from them is [ADR-0022](0022-session-bars-derived-complete-or-absent.md) |
+| [2026-09-08](#update-2026-09-08--refuse-a-close-that-puts-spring-forward-inside-a-session) | **Refuse** a session close whose reopen lands before 03:00 Central — the hundred and twenty whole-minute closes from `00:00` to `01:59` — at calendar construction, naming the close and the shortened session length it would produce (gh#613) |
+
+## Update (2026-09-08) — refuse a close that puts spring-forward inside a session
+
+**Decision:** refuse, at calendar construction, rather than admit a session that is an hour shorter once a
+year.
+
+Spring-forward deletes the wall-clock hour `[02:00, 03:00)` Central. The session for trade date D opens at
+close + maintenance on D−1 and closes at the close on D. When the reopen lands before 03:00, that deleted
+hour can fall inside the session — concretely, at `SessionCloseCentral = "00:30"`, trade date **2030-03-11**
+is **1,320** elapsed minutes rather than **1,380**. Nothing else in this calendar's contract says a session
+may be short, and `SessionBucketGuard`, `SessionWindows`, and session-bar aggregation all reason as though
+every session is the nominal length.
+
+`BarSessionCalendar.Parse` and the constructor therefore refuse any close before **02:00** Central, naming
+the close and the length the spring-forward example trade date would produce. The first admissible
+whole-minute close is **02:00** (reopen **03:00**, after the deleted hour).
+
+**What moved with it.** `ToolGuards.ShortestSessionMinutes` now equals `SessionMinutes` — every configuration
+the server accepts produces the nominal 1,380-minute session. `ToolGuards.MaxResolutionMinutes` stays at
+**660**; the pigeonhole bound on 1,380 is 690, but raising the ceiling is a separate trade on its own
+evidence, not a side effect of this refusal (gh#613 scope).
+
+**What did not change.** Gap detection, the coverage ledger, and session-window derivation are untouched —
+only which session closes exist to configure.
+
+## Update (2026-09-06) — the calendar also defines session windows
+
+**Nothing about gap detection changes.** `BarSessionCalendar` still decides whether a bucket was expected,
+`BarGapDetector` still diffs only expected buckets against the store, the `BarCoverage` ledger is untouched,
+and the zero-vendor-request test still passes for the same reason it always did.
+
+What is added is a **second reader** of the same trade-date model. `SessionWindows` (gh#498) turns a
+`SessionDefinition` — a name, a Central wall-clock start and end, and a base resolution — into the absolute
+UTC bounds of one trade date's session, using this calendar's `TradeDateFor`, its session close and its
+maintenance window. The four shipped sessions are `full` 17:00→16:00, `rth` 08:30→15:00, `asia` 17:00→02:00
+and `europe` 02:00→08:30.
+
+**It is the same model read at a finer grain, which is why it belongs here rather than in a calendar of its
+own.** Every rule in the Decision above already applies to a session window and is not restated by it:
+Sunday evening belongs to Monday, a declared holiday closes its own session *and* the evening before it, and
+the boundaries are Central wall-clock rather than a fixed UTC offset. `SessionWindows` expresses each
+definition as an **offset from the trade date's open** for that last reason — in that coordinate `asia`
+(17:00→02:00) is simply 0h→9h and needs no "spans midnight" case, while a definition that would straddle the
+maintenance window runs backwards and is refused by the same comparison.
+
+**Two new rules, and both are about the stored grid rather than about sessions.** A session's base resolution
+must divide 60, and **each boundary's minutes past the hour is a multiple of the base, which divides 60, so the
+boundary lands on the UTC bucket grid under both offsets**. Central is a whole-hour UTC offset, so a wall-clock
+boundary on an hour-dividing grid lands on the stored UTC bucket grid under **both** CST and CDT; a 120-minute
+base would not, since 17:00 Central is 22:00Z in summer and 23:00Z in winter.
+
+The boundary rule is stated in **wall-clock** rather than in the offset coordinate the rest of `SessionWindows`
+uses, because `BarGapDetector.AlignUp` anchors buckets on a fixed UTC-midnight grid rather than on the session
+open. The two coordinates agree only when the open is itself on the grid — true of the 16:00 close shipped
+here, false of an operator's 13:20 one, where `14:20 → 13:20` at a 60-minute base reads as a clean 0h → 23h
+from the open and resolves to a window whose first forty minutes no bucket covers.
+
+`SessionWindows.Validate` refuses a definition that breaks either — the same fail-at-startup posture the
+*Consequences* above take for a malformed session close, and for the same reason: a session definition decides
+what counts as a complete bar.
+
+What is *derived* from those windows — and the completeness guard that decides whether a session bar exists at
+all — is [ADR-0022](0022-session-bars-derived-complete-or-absent.md), not this record.
+
 ## Follow-ups
 
 - gh#7 — the read path, the ledger, and the zero-call test.

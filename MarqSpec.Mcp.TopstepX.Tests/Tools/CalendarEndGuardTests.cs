@@ -4,8 +4,10 @@ using MarqSpec.Mcp.TopstepX.Data;
 using MarqSpec.Mcp.TopstepX.Data.Entities;
 using MarqSpec.Mcp.TopstepX.Domain.MarketData;
 using MarqSpec.Mcp.TopstepX.MarketData;
+using MarqSpec.Mcp.TopstepX.Telemetry;
 using MarqSpec.Mcp.TopstepX.Tests.MarketData;
 using MarqSpec.Mcp.TopstepX.Tools;
+using MarqSpec.Mcp.TopstepX.Venue;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
@@ -68,6 +70,7 @@ public sealed class CalendarEndGuardTests : IDisposable
     private readonly IndicatorCatalog _catalog;
     private readonly BarSessionCalendar _calendar;
     private readonly FakeTimeProvider _clock;
+    private readonly HostTelemetry _telemetry = new();
 
     public CalendarEndGuardTests()
     {
@@ -104,12 +107,25 @@ public sealed class CalendarEndGuardTests : IDisposable
         _clock = new FakeTimeProvider(Bucket(SeededBars).AddHours(2));
         _gateway = new CountingGateway([]);
 
-        IndicatorProjector projector = new(_database, _catalog, NullLogger<IndicatorProjector>.Instance);
+        IndicatorProjector projector =
+            new(_database, _catalog, NullLogger<IndicatorProjector>.Instance, _telemetry);
         _cache = new BarCacheService(
-            _database, _gateway, _calendar, projector, _clock, NullLogger<BarCacheService>.Instance);
+            _database,
+            _gateway,
+            _calendar,
+            projector,
+            new InstrumentRegistry(Defaults()),
+            new ContractDirectory(_clock),
+            _clock,
+            NullLogger<BarCacheService>.Instance,
+            _telemetry);
     }
 
-    public void Dispose() => _database.Dispose();
+    public void Dispose()
+    {
+        _database.Dispose();
+        _telemetry.Dispose();
+    }
 
     private static DateTimeOffset SessionStart =>
         MarketClock.FromMarket(new DateOnly(2026, 8, 18), new TimeOnly(9, 0)).ToUniversalTime();
@@ -166,23 +182,28 @@ public sealed class CalendarEndGuardTests : IDisposable
     public void TheBoundMovesWithTheResolution()
     {
         // The headroom is two bar spans plus three days, so it is not a fixed instant: at the coarsest bar
-        // this server serves -- one week -- two spans is a fortnight, and the last servable end is seventeen
-        // days before the end of the calendar rather than three. Hand-computed: 9999-12-31T23:59:59.9999999Z
-        // less 17 days is 9999-12-14T23:59:59.9999999Z.
+        // this server serves -- 660 minutes, half the SHORTEST session, the widest bucket the UTC grid fits
+        // inside one on every trade date at every configurable close (gh#538) -- two spans is 1,320 minutes,
+        // and the last servable end is nearly four days before the end of the calendar rather than three.
+        // Hand-computed: 9999-12-31T23:59:59.9999999Z less three days is 9999-12-28T23:59:59.9999999Z, less
+        // 1,320 minutes (22 h) is 9999-12-28T01:59:59.9999999Z.
         ToolGuards guards = Guards();
-        DateTimeOffset last = new DateTimeOffset(9999, 12, 14, 23, 59, 59, TimeSpan.Zero)
+        DateTimeOffset last = new DateTimeOffset(9999, 12, 28, 1, 59, 59, TimeSpan.Zero)
             .AddTicks(9_999_999);
 
+        // Seven bars wide at the ceiling -- inside every size cap, so the END is the only thing on trial.
+        TimeSpan sevenBars = TimeSpan.FromMinutes(7 * ToolGuards.MaxResolutionMinutes);
+
         BarRange window = guards.ValidateWindow(
-            last - TimeSpan.FromDays(7), last, ToolGuards.MaxResolutionMinutes);
+            last - sevenBars, last, ToolGuards.MaxResolutionMinutes);
 
         window.End.Should().Be(last, "exactly at the bound is servable, as it is at every other cap here");
 
         Action past = () => guards.ValidateWindow(
-            last - TimeSpan.FromDays(7), last.AddTicks(1), ToolGuards.MaxResolutionMinutes);
+            last - sevenBars, last.AddTicks(1), ToolGuards.MaxResolutionMinutes);
 
         past.Should().Throw<McpException>()
-            .WithMessage("*9999-12-14T23:59:59.9999999*", "the refusal names the bound it moved past");
+            .WithMessage("*9999-12-28T01:59:59.9999999*", "the refusal names the bound it moved past");
     }
 
     // ── The same axis on the instant-taking tool ─────────────────────────────────────────────────────
@@ -268,9 +289,10 @@ public sealed class CalendarEndGuardTests : IDisposable
             new IndicatorCacheService(
                 _database,
                 _catalog,
-                new IndicatorProjector(_database, _catalog, NullLogger<IndicatorProjector>.Instance),
+                new IndicatorProjector(_database, _catalog, NullLogger<IndicatorProjector>.Instance, _telemetry),
                 _clock,
-                NullLogger<IndicatorCacheService>.Instance),
+                NullLogger<IndicatorCacheService>.Instance,
+                _telemetry),
             _gateway,
             guards);
 
@@ -296,7 +318,8 @@ public sealed class CalendarEndGuardTests : IDisposable
                 _database,
                 new FootprintProjector(_database, NullLogger<FootprintProjector>.Instance),
                 _clock,
-                NullLogger<FootprintCacheService>.Instance));
+                NullLogger<FootprintCacheService>.Instance,
+                _telemetry));
 
         ContractRollTools roll = new(
             resolver, _database, _gateway, new LevelMethodCatalog(_calendar), front, _clock);

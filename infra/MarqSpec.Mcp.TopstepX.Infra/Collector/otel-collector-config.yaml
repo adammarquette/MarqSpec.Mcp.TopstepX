@@ -1,0 +1,96 @@
+# The OTLP collector sidecar's configuration (gh#537, ADR-0019 decision 5, ADR-0023 §11).
+#
+# THERE IS NO ENDPOINT AND NO TOKEN IN THIS FILE, and there never may be. Both arrive as container secrets
+# from `topstepx-mcp/<env>/otel` and are read here as `${env:...}` — this repository is public, and the
+# sibling ProjectX client has already leaked and rotated a real credential once.
+#
+# HOW IT REACHES THE COLLECTOR. There is no file to mount: a Fargate task has no local disk to put one on
+# and building a config into an image would make a one-line change a registry push. So EnvironmentStack
+# reads this file at synth time, puts its text in the sidecar's OTEL_COLLECTOR_CONFIG environment variable,
+# and starts the collector with `--config=env:OTEL_COLLECTOR_CONFIG`. `${env:NAME}` inside is expanded by the
+# collector after it resolves the config, whichever provider the config came from, so the two secrets stay
+# secrets. A template test asserts the task carries THIS file byte for byte, so it cannot become decorative.
+#
+# WHAT IT DOES. Receives OTLP on the task's loopback from the server container beside it, stamps the
+# environment and the release on every record so one Grafana stack tells the two environments apart,
+# batches, and exports to Grafana Cloud over OTLP/HTTP.
+#
+# IT NAMES NEITHER ENVIRONMENT, and cannot: this file is byte-identical in both task definitions, and
+# EnvironmentReuseTests compares the two synthesised stacks after replacing each one's own name with a
+# placeholder — so the word alone, in a comment, would read there as a second stack class in disguise.
+
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        # The loopback, NOT every interface. A template test reads EVERY literal `endpoint:` in this file and
+        # requires each one to be a loopback bind — enumerated rather than needled, because the wildcard
+        # address has at least three spellings and the test used to name one of them (PR #597 review). Every
+        # container in an awsvpc task shares one network namespace, so the server container reaches this on
+        # the loopback and nothing outside the task can reach it at all — which is why the sidecar also
+        # declares no port mapping. Binding every interface would put an unauthenticated OTLP receiver on the
+        # task's own address, and under the public-IP outbound shape (ADR-0023's undecided fork) that address
+        # is internet-routable.
+        endpoint: 127.0.0.1:4317
+      http:
+        endpoint: 127.0.0.1:4318
+
+processors:
+  # The sidecar's queue must not be able to take the server down with it. This is the second half of the
+  # container's hard memory ceiling; `Essential=false` on the container is the third.
+  memory_limiter:
+    check_interval: 1s
+    limit_percentage: 75
+    spike_limit_percentage: 15
+
+  # The two attributes that make one Grafana stack able to tell the environments apart. Both values are
+  # plain environment variables the task definition sets — the environment name is a literal, the version is
+  # the `Version` CloudFormation parameter, the same one the deployment stamp and the SSM history read
+  # (ADR-0023 §5), so a span cannot claim a release the task is not running.
+  resource:
+    attributes:
+      - key: deployment.environment
+        value: ${env:DEPLOYMENT_ENVIRONMENT}
+        action: upsert
+      - key: service.version
+        value: ${env:SERVICE_VERSION}
+        action: upsert
+
+  batch:
+    timeout: 5s
+    send_batch_size: 512
+
+exporters:
+  # `otlp_http`, not the `otlphttp` alias: measured against the pinned image on 2026-09-07, the alias starts
+  # and logs `"otlphttp" alias is deprecated; use "otlp_http" instead` once per signal. A deprecation warning
+  # in a log group nobody reads is how a collector stops starting on a bump nobody connected to it.
+  otlp_http/grafana:
+    endpoint: ${env:GRAFANA_OTLP_ENDPOINT}
+    headers:
+      authorization: ${env:GRAFANA_OTLP_AUTHORIZATION}
+    retry_on_failure:
+      enabled: true
+    sending_queue:
+      enabled: true
+
+service:
+  telemetry:
+    logs:
+      # One JSON object per line, for the same reason the server's console formatter is json (gh#515):
+      # CloudWatch Logs ingests one event per record. These lines go to the server's log group under the
+      # `otel-collector` stream prefix.
+      level: info
+      encoding: json
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [memory_limiter, resource, batch]
+      exporters: [otlp_http/grafana]
+    metrics:
+      receivers: [otlp]
+      processors: [memory_limiter, resource, batch]
+      exporters: [otlp_http/grafana]
+    logs:
+      receivers: [otlp]
+      processors: [memory_limiter, resource, batch]
+      exporters: [otlp_http/grafana]

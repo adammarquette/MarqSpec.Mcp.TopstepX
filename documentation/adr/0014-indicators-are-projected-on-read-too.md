@@ -4,7 +4,9 @@
 **Relates to:** PRD `R-2.1`, `R-2.5`, `R-2.12`, `R-2.13` ·
 [architecture](../architecture.md) *The indicator read* ·
 refines [ADR-0006](0006-indicators-as-projections.md), whose parameterisation rule it explicitly does
-**not** reopen · rests on [ADR-0012](0012-fills-are-not-serialised.md)'s measurements · gh#246 ·
+**not** reopen — the per-call-period sentence below is narrowed by
+[ADR-0018](0018-period-selection-among-configured-periods.md) ·
+rests on [ADR-0012](0012-fills-are-not-serialised.md)'s measurements · gh#246 ·
 `MarketData/IndicatorCacheService.cs`
 
 ## Context
@@ -191,7 +193,7 @@ ADR-0013's answer, and wrong here by a factor of about **750**: 8.3 s of
 arithmetic per call against the 11 ms probe every warm read pays before its lookup. It would also delete
 ADR-0006's whole premise — the stored series is what makes a read a lookup.
 
-### Probe with eleven `EXISTS` seeks instead of one `DISTINCT`
+### Probe with eleven `EXISTS` seeks instead of one grouped scan
 
 The obvious way to avoid scanning a whole key range on Postgres 17, which has no index skip scan. **Measured
 and rejected: about 20–27 ms, and it does not fall with size** — 21.00, 19.72, 21.43, 26.04 and 26.99 ms
@@ -212,7 +214,9 @@ once per catalogue change. `rebuild-indicators` already does it on demand for an
 - **The first read of a cold series is slow in proportion to the history kept** — 8.3 s at a year of
   five-minute bars — and every read after it pays the probe, with the one exception two entries below.
 - **Every indicator read now pays a probe**: 4.3 ms p50 over 2,000 bars, 11.2 ms over 70,000. The residual
-  growth is the `DISTINCT`, and it would flatten for free on Postgres 18's index skip scan.
+  growth is the grouped scan over the value key range — a `DISTINCT` when this was measured, a
+  `GROUP BY (Indicator, Period)` carrying `max(BucketStart)` since gh#531 — and it would flatten for free on
+  Postgres 18's index skip scan.
 - **A `40001` is reachable from a read.** New in kind, not in shape — `R-5.7` and `StoreFaultGuard` already
   carry it.
 - **The probe is bounded by `IIndicator.WarmupBars`.** A pair the stored bars cannot satisfy is not *missing*,
@@ -230,6 +234,12 @@ once per catalogue change. `rebuild-indicators` already does it on demand for an
   watched behave as claimed is a guess. The first version of this paragraph said it needed more rolls than a
   quarterly contract can have, which is the causal-claim failure `AGENT-MEMORY.md` warns about; the review of
   this pull request caught it.
+  **[2026-09-08] gh#531 widens this residue by one shape and no more.** The probe now also asks how far each
+  stored pair reaches, so a pair whose newest value falls further back than its own warm-up allows is
+  replayed. Where **several consecutive** contract runs at the tail are each shorter than the warm-up their
+  absences sum past that boundary, and such a series re-replays on every read — the same cost, on the same
+  kind of series, for the same reason. [ADR-0018](0018-period-selection-among-configured-periods.md)'s
+  update carries the mechanism and why the boundary is counted in bars.
 - **`rebuild-indicators` keeps its registration and its test**, and its job is now correction rather than
   repair. Deleting it would remove the only forced replay, and a changed formula needs one.
 - **`IndicatorCacheService` is scoped, and the lifetime is load-bearing.** It memoises which series it found
@@ -241,6 +251,13 @@ once per catalogue change. `rebuild-indicators` already does it on demand for an
   and its levels through the same scope. The **argument** above is what changed, not the decision.
 
 ## Decision log
+
+| Update | What changed |
+|---|---|
+| [2026-08-29](#update-2026-08-29--warming-on-startup-is-taken-behind-http-and-a-switch) | A hosted service replays every stored series at start, when the transport is HTTP and `MarketData__WarmIndicators` is on (gh#350) |
+| [2026-08-29](#update-2026-08-29--the-tool-surface-names-the-window-before-warmup-finishes) | A read arriving before warm-up reaches its series still pays the first-read cost, and the descriptions say so |
+| [2026-09-06](#update-2026-09-06--selection-among-configured-periods-is-allowed-ad-hoc-computation-is-not) | A call may **select** among the periods the catalogue is configured for ([ADR-0018](0018-period-selection-among-configured-periods.md)) |
+| [2026-09-07](#update-2026-09-07--the-key-gained-a-second-shape-the-rule-did-not-change) | The read-through serves a second key shape — a named session series ([ADR-0022](0022-session-bars-derived-complete-or-absent.md)) |
 
 ## Update (2026-08-29) — warming on startup is taken, behind HTTP and a switch
 
@@ -269,13 +286,76 @@ still walking. A read in that window is still today's first-read path — the 8.
 replay, or `StoreContentionException` after two `40001`s. The tool descriptions and
 the catalogue now say so, the way the update above already did.
 
+## Update (2026-09-06) — selection among configured periods is allowed; ad-hoc computation is not
+
+*"The sentence to read twice"* above says a per-call period remains forbidden.
+**[ADR-0018](0018-period-selection-among-configured-periods.md) narrows that sentence, and only that
+sentence** (gh#495).
+
+The reasoning it gives — *"a value computed under a period the key cannot see would be served for another"* —
+is sound and is about a period **the key cannot see**. The key sees this one: `Period` is a column of
+`(Venue, Instrument, ResolutionMinutes, Indicator, Period, BucketStart)`. What the sentence was protecting
+against, once separated, is a caller naming a number nobody computed — and that is the closed vocabulary's
+problem, answered by **refusing** rather than by forbidding the argument.
+
+So `get_indicators` and `get_indicator_at` now take an optional `period` that **selects** among the
+`(name, period)` instances the catalogue is configured for; omitted means the primary; anything else is an
+error listing the configured periods with the primary labelled, never an empty series (`R-2.3`).
+
+**This record's own mechanism is what makes that safe, which is why it rests here.** The probe diffs the
+catalogue's instances against the pairs the store holds, the reconcile **maintains** those pairs — and, since
+gh#571, removes rows under pairs the catalogue no longer computes, which is the half this sentence used to
+deny by calling the reconcile "scoped to those same pairs" — and the replay walks them, so a period a caller
+can select is, by construction, one the projection writes and one the reconcile maintains. The set widened;
+nothing about the trigger changed. (gh#531 later changed what the probe asks *of* each pair — completeness
+rather than existence — without changing which pairs it asks about;
+[ADR-0018](0018-period-selection-among-configured-periods.md)'s update has it.)
+
+**Two numbers in this record are now conditional on the catalogue's size**, and neither is restated here —
+the measurements above stand as taken. They were taken against eleven indicators at one period each, before
+`vwap-rolling` and before additional periods were configurable. The **8.3 s cold replay** is quoted elsewhere
+as *"at the shipped catalogue"* ([architecture](../architecture.md) *The indicator read*,
+[tool catalogue](../mcp-tool-catalog.md) *`get_indicators`*, `R-2.13`), because every additional configured
+period is one more series inside the same replay. The **probe timings** — 4.3 ms and 11.2 ms in the
+consequences above — carry the same qualification, and the architecture document states it beside them: the
+probe's `DISTINCT` returns one row per configured instance rather than one per name, so its result set grows
+with what an operator adds. The probe's bar-count cap likewise follows the largest **configured** warm-up, so
+it is still flat in the series length and no longer fixed by the shipped periods. The short-run residue in the consequences above is reachable at a lower bar count
+for the same reason.
+
+## Update (2026-09-07) — the key gained a second shape; the rule did not change
+
+This record describes the read-through over one kind of series, named
+`(venue, instrument, resolutionMinutes)` throughout. **A second kind now goes through it, and nothing
+here needed re-deciding** (gh#501). `EnsureProjectedAsync` takes a `SeriesKey` — a resolution series over
+`Bars`, or a named session series over `SessionBars`
+([ADR-0022](0022-session-bars-derived-complete-or-absent.md)) — and the probe, the diff against the
+catalogue, the not-yet-measurable rule, the whole-series replay and the per-scope memo are the same code
+either way. What the key decides is which pair of tables the two aggregates run against and which vocabulary
+the diff is taken over (`IndicatorCatalog.ForSeries`); see
+[ADR-0006](0006-indicators-as-projections.md)'s update of the same date for why that is one projection and
+not two.
+
+**The memo is now keyed by the key itself**, which is a record comparing by value *and* by runtime type. The
+type matters: without it a session named `5` and the five-minute series would be one entry, and a read of one
+would answer *complete* for the other.
+
+**Two costs stated here move, and neither is a new rule.** Startup warming now walks session series too, so
+an HTTP process with `MarketData__WarmIndicators` on pays for them at boot as well — and the window the
+2026-08-29 update names, where a read arriving before warm-up reaches its series still pays the first-read
+cost, is that much wider. And a session read is normally *not* the trigger any more: a session fill projects
+inside the unit of work that writes its bars, so the ordinary path here is the probe. The read-triggered
+replay stays reachable, and is what an added indicator or a store filled before this existed lands on —
+which is the whole argument of this record, unchanged.
+
 ## Follow-ups
 
 - **A process-lifetime counter now records how often a read opens a replay**
   (`IndicatorReadProjectionCounter.Replays`, incremented from
   `IndicatorCacheService.EnsureProjectedAsync`; the existing log line still names the series and the missing
   pairs, and now includes the process total). gh#347.
-- **The `DISTINCT` half of the probe scans the whole key range.** Worth re-measuring on Postgres 18, where an
-  index skip scan should make it flat without a code change.
+- **The grouped half of the probe scans the whole key range.** Worth re-measuring on Postgres 18, where an
+  index skip scan should make it flat without a code change. It is a `GROUP BY (Indicator, Period)` carrying
+  `max(BucketStart)` since gh#531 — the same scan, one column wider — so the measurement to take is of that.
 - **Warming on startup is taken** (gh#350): `IndicatorWarmup` runs `IndicatorRebuilder` when HTTP and
   `MarketData__WarmIndicators` are both on. Stdio never warms.

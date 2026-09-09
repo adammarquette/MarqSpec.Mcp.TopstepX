@@ -262,6 +262,78 @@ before it is served — a guessed code resolves to a **real contract in the wron
 `tickSize` and `tickValue` come back on the contract. `tickValue` is money per **tick**; money per **point** is
 `tickValue / tickSize`. ES at \$12.50 a tick on a 0.25 tick size is \$50 a point.
 
+**The expiry is the last segment, `MYY`** — one exchange month letter from `FGHJKMNQUVXZ` (`I` and `L` are
+skipped, being confusable with digits) and two year digits. Read it year-first: sorting the id as text compares
+the month letter ahead of the year, which agrees with expiry order inside one calendar year and **reverses
+across one**, filing `Z25` behind `H26` every December — at the one moment `Z25` is the front month.
+
+**A historical contract id is *constructed*, never discovered.** Search and available-contracts return only the
+active expiry, so the contract that was front on a past date has to be built from the product code and the
+product's listing cycle, then confirmed with `GetContractByIdAsync` (`FindContractAsync` on this server's
+gateway). Which months a product lists, and how many of them are candidates for one trade date:
+
+| product | cycle | months | candidates | why that depth |
+|---|---|---|---|---|
+| `ES` `MES` `NQ` `MNQ` `YM` `MYM` | `HMUZ` | Mar Jun Sep Dec | **2** | the front and the next quarterly are every contract that can carry the volume on any day of a quarter |
+| `GC` `MGC` | `GJMQVZ` | Feb Apr Jun Aug Oct Dec | **3** | the market **skips October gold** — `MGC.V26` against `Z26` was 1 : 8 on every day measured — so two would stop at a contract nobody trades |
+| `SI` `SIL` | `HKNUZ` | Mar May Jul Sep Dec | **2** | no skipped month measured on silver |
+| `CL` `MCL` | `FGHJKMNQUVXZ` | every month | **3** | a crude contract expires **before** the month it is named for: on 2026-08-18 the front was `V26`, two listed months past the trade date's own |
+
+These are **listing facts, not configuration** — the exchange lists what it lists, and a knob would let an
+operator name a month the exchange does not, whose constructed ids the venue answers nothing for. They live in
+`InstrumentRegistry` (`CycleFor`, `CandidateDepthFor`); the depth is what a cold historical fetch is multiplied
+by, so it is the smallest number that reaches past every skip there is evidence for.
+
+The lookup itself draws on the **200 requests / 60 s** pool, not the 50 / 30 s history allowance, and
+`ContractDirectory` memoises it per id — a positive for the life of the process, a negative for an hour, since
+a far-out expiry lists eventually.
+
+### Expired contracts and history depth — measured 2026-09-06 on the Simulated tier
+
+> Measured with a throwaway console project against the 3.0.0 client (gh#494, 162 paced history calls). The
+> raw tables are on that issue. Nothing here is documented by the vendor; re-measure before relying on a
+> number that has aged.
+
+**An expired contract is still a contract, by id.** `GetContractByIdAsync` and `GetContractAsync` both return
+`CON.F.US.MES.Z25`, `H26` and `M26`, `CON.F.US.MGC.M26`, `Q26` and `V26`, and `CON.F.US.MCLE.Q26`, `U26` and `X26`,
+each with `ActiveContract = false` and the right tick size. **Search and available-contracts return only the
+active expiry** — one per product (`MES.U26`, `MGC.Z26`, `MCLE.V26` on the day) — so a historical candidate has
+to be *constructed* from the product code and month code and *confirmed* by id; it cannot be discovered.
+
+**An expired contract serves its full hourly history, and it is the liquid one.** On 2026-05-04, `MES.M26`
+answered 23 hourly bars carrying **1 380 105** contracts; the venue-front `MES.U26` answered the same day with
+**2 854**. `MES.H26` on 2026-02-02: 1 079 343. `MES.Z25` on 2025-11-03: 932 247. Fetching a historical range from
+whichever contract is active *today* — which is what `BarCacheService` did until the roll policy landed —
+stores the thin series and nothing errors.
+
+**Depth is a property of the bar unit, not of the contract.**
+
+| unit | reaches back | evidence |
+|---|---|---|
+| `Hour` | **about one year**, or the contract's own listing if later | edge 2025-09-05 on both `MGC.Z26` and `MGC.Q26`, 2025-09-10 on `MCLE.Q26`; `MES.M26` from 2025-09-20 and `MES.U26` from 2025-12-17 (their first trades); `MCLE.V26` from 2026-01-19 |
+| `Minute` (5 and 15) | **63 days, rolling**, for every contract alike | edge 2026-07-06 (first bar 2026-07-08) on `MES.U26`, `MGC.Z26`, `MGC.Q26`, `MCLE.V26` and `MCLE.Q26`; `MES.M26`, expired longer ago than that, has **no** minute bars at all |
+| `Day` | exists; one bar per **trade date, stamped at the session open** (17:00 Central of the prior calendar day) | `MES.U26`, window 2026-08-03..04 → one bar at the 2026-08-02 open, volume 900 159 |
+
+So a year of history is an **hourly** (and derived-daily) question. Minute bars are a rolling nine weeks, and
+asking for them on a contract that expired earlier than that returns an empty answer that is *correct*.
+
+**Bar volume names the changeover cleanly**, which is what makes "the front is the contract with the most
+volume" (gh#219) usable for history as well as for the tape:
+
+| product | changeover | the day before | the day after |
+|---|---|---|---|
+| `MES` H26 → M26 | **2026-03-16** (Monday of expiry week) | H26 2 169 836 / M26 86 569 (Fri 03-13) | H26 0 / M26 1 122 168 |
+| `MCLE` U26 → V26 | **2026-08-18** | U26 89 257 / V26 53 177 | U26 24 077 / V26 99 571 |
+| `MGC` V26 vs Z26 | **no changeover** — October gold is never front | V26 54 015 / Z26 403 599 (09-01) | same shape every day measured |
+
+The last row is why metals need three candidates rather than two: the nearest listed expiry (`V26`) is skipped
+by the market, and only volume says so.
+
+**Timestamps, once more.** The probe printed raw `AggregateBar.Timestamp` values and they arrived three hours
+behind UTC on that machine — the 22:00Z session open printed as `19:00`. That is the "no kind" trap in
+[Retrieve bars](#retrieve-bars) seen from the other side; `ProjectXMapping.ToUtc` handles it in the server, and
+the tables on gh#494 must not be read as UTC.
+
 ### Realtime
 The market hub carries quotes, trades and depth over SignalR. **This repository has decided to subscribe and
 record the trade tape** — see [ADR-0016](../../adr/0016-subscribe-to-the-market-hub.md) and the architecture
@@ -312,8 +384,11 @@ The order endpoints — place, modify, cancel, close — exist and work. **This 
   closed, gh#43), but they have never been *measured* — the scope of the counter and the shape of the window
   are assumptions. Anyone who does provoke a 429 should record what came back here, and say whether a
   `Retry-After` was on it.
-- **Contract roll.** Resolution picks the front month with no explicit roll logic, and this server keys bars by
-  the venue-neutral symbol — so a roll splices two contracts into one series (`Q-1`).
+- **Contract roll.** `Q-1` was resolved by ADR-0011 (every bar records its contract; nothing derived crosses a
+  seam), which deferred *which contract to fetch a historical range from*. The measurement above (gh#494)
+  settles that the vendor can answer for an expired contract; the policy is
+  [ADR-0020](../../adr/0020-historical-contract-selection.md) (gh#497): history from the volume-decided front
+  contract per trade date, the present from the venue's pick.
 
 ## Links
 

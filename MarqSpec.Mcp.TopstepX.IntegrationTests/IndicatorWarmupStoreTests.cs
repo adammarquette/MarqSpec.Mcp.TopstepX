@@ -4,6 +4,7 @@ using MarqSpec.Mcp.TopstepX.Data;
 using MarqSpec.Mcp.TopstepX.Data.Entities;
 using MarqSpec.Mcp.TopstepX.Domain.MarketData;
 using MarqSpec.Mcp.TopstepX.MarketData;
+using MarqSpec.Mcp.TopstepX.Telemetry;
 
 // TODO(gh#387): `BackgroundServiceTestSupport` is `internal` to MarqSpec.Mcp.TopstepX.Tests and is NOT
 // compiled into this assembly yet, so this file does not build until it is. It is needed in BOTH tiers now
@@ -176,6 +177,7 @@ public sealed class IndicatorWarmupStoreTests(SeriesStoreFixture fixture) : IAsy
         services.AddSingleton<IndicatorCatalog>();
         services.AddSingleton<TimeProvider>(clock);
         services.AddSingleton(holder);
+        services.AddSingleton<HostTelemetry>();
         services.AddScoped(_ => _fixture.CreateContext());
         services.AddScoped<IndicatorProjector>();
         services.AddScoped<IndicatorRebuilder>();

@@ -44,26 +44,55 @@ The server serves OHLCV bars for a futures instrument at a requested resolution 
   a history of asking, so a second recording is an update by design and not a way to dodge the error.
 - **R-1.8** Bar timestamps are stored in UTC. The gateway returns timestamps with no kind; they are UTC, and
   inferring local shifts every bar by the operator's offset.
-- **R-1.9** The supported resolutions are **every whole number of minutes from 1 to 10,080 — one minute to one
-  week** — deliberately. Resolution is a per-call parameter rather than configuration, so an agent is never
+- **R-1.9** The supported resolutions are **every whole number of minutes from 1 to 660 — the served
+  ceiling, deliberately below the 690 pigeonhole bound on every admissible 1,380-minute session** —
+  deliberately. Resolution is a per-call parameter rather than configuration,
+  so an agent is never
   blocked on a config change to look at a timeframe nobody anticipated, and no tool advertises a resolution list
   because the range is contiguous. **Both ends are refused at the boundary**, as a *caller error the server
   names* rather than as a timeframe the server lacks, and on every tool that takes a resolution rather than only
   the ones that also validate a window (gh#69, gh#81). The ceiling is a bound on *meaning*, not on arithmetic:
-  above a week a timeframe is a calendar month or a quarter, whose length in minutes is not fixed, so no minute
-  count expresses one. It is also not by itself sufficient — the look-back reach is four bar spans per bar
+  a session is 24 hours less the venue's one-hour maintenance window, so a bucket *wider* than 1,380 minutes
+  can never **close inside** one and is never an expected bucket (`R-1.2`); one *exactly* 1,380 minutes wide
+  can be, but only on the 4% of trade dates where the grid lands on the session open. A bar covering a whole
+  session is not a coarse resolution at all — it is a **session bar**, defined on the trade date
+  rather than on the bucket grid, and that is definitional rather than arithmetic. The day and the week used
+  to sit inside the old 10,080
+  ceiling and answer with an *empty series* rather than an error. They are refused now, and the refusal names
+  the session-bar tools (`R-1.12`, gh#496) rather than leaving a caller to read "coarser than the largest bar"
+  as "this market has no daily data" (gh#498). **The ceiling is 660 rather than 1,379 because a bucket
+  narrower than a session can still fail to fit inside one (gh#538).** Buckets are anchored on a fixed UTC
+  grid rather than on the session open, so above the ceiling whether a bucket is expected depends
+  on where that grid falls on the day: at 1,379 it fits on a handful of scattered trade dates and `get_bars`
+  answered an empty series with `venueRequests: 0` on the rest — the shape gh#498 abolished, one minute
+  lower. The bound is **derived**: a session of `S` minutes admits an `r`-minute bucket only when a multiple
+  of `r` lands in a run of `S - r + 1` consecutive minutes, which is certain only while `S - r + 1 >= r`, so
+  `r <= (S + 1) / 2`. **`S` is 1,380 for every admissible close** — closes before 02:00 Central are refused
+  at calendar construction (gh#613), so the pigeonhole bound is 690. The served ceiling stays at **660** until
+  a separate card justifies raising it; 661 fits every admitted session but is refused with the band above the
+  ceiling. It **refuses rather than flags**, for the reason `R-2.3` refuses a substituted number: an empty
+  series carrying a warning field is still an empty series, and it reads as a market that printed nothing. It
+  **over-rejects, and says so**: thirty-four widths above the ceiling fit every trade date at the shipped
+  16:00 close, and the count keeps falling as the sweep widens — a survivor list is what a sweep failed to
+  disprove rather than a bound, and the check reads no configuration.
+  It is also not by itself sufficient — the look-back reach is
+  four bar spans per bar
   asked for, so a resolution and a count each inside its own bound can still name a window that starts before
-  the calendar does, and that pair is refused too (gh#81). **Neither is the row cap sufficient**: `MaxRows` and
+  the calendar does, and that pair is refused too (gh#81).
+  **Neither is the row cap sufficient**: `MaxRows` and
   `BarGapDetector.MaxBucketsPerPass` bound the same quantity from two sides — the first operator-configurable
   to 1,000,000, the second fixed at 250,000 — so the ceiling on a windowed read is **the lesser of the two**,
   and a request past it is refused naming the buckets asked for and the cap they are over rather than faulting
   below the boundary or being shortened to fit (gh#96). **Nor is any bound on *size* sufficient**, which is
   the same lesson a third time: a window at the far end of the calendar spans *zero* buckets, clears every cap
   above at the default configuration, and still overflowed the bucket-grid arithmetic below the boundary — so
-  the window's **end** is bounded too, by R-5.4 (gh#110). A timeframe is fetched from the venue independently,
-  never derived from a finer one: a bar derived from an incomplete set of constituents is indistinguishable
-  from a real one, which R-2.3's rule forbids in the indicator path and which is no more acceptable here.
-  See [ADR-0010](adr/0010-per-call-resolutions-fetched-not-derived.md).
+  the window's **end** is bounded too, by R-5.4 (gh#110). A **bar** timeframe is fetched from the venue
+  independently, never derived from a finer one: a bar derived from an incomplete set of constituents is
+  indistinguishable from a real one, which R-2.3's rule forbids in the indicator path and which is no more
+  acceptable here. `R-1.12` is the one exception and it is granted on exactly those terms — a session bar has
+  no vendor unit to fetch, so it is derived behind a completeness guard that emits **no** bar rather than a
+  partial one. See [ADR-0010](adr/0010-per-call-resolutions-fetched-not-derived.md) and
+  [ADR-0022](adr/0022-session-bars-derived-complete-or-absent.md).
 - **R-1.10** Those pages are **paced** to the vendor's documented allowance for the history endpoint —
   **50 requests / 30 seconds**, one allowance shared by the whole process. A cold year of five-minute bars is
   106 pages back to back, which breaches inside the first window; the client's 429 retry recovers from a
@@ -74,7 +103,122 @@ The server serves OHLCV bars for a futures instrument at a requested resolution 
   whose window spans a roll reports the boundary in its payload; the bars themselves are still returned,
   because each one is a real observation of a real contract
   ([ADR-0011](adr/0011-contract-roll-boundary.md)). Bars stored before this was recorded carry **no**
-  contract, and that absence is reported rather than guessed at.
+  contract, and that absence is reported rather than guessed at. **Which contract a range is fetched from is
+  `R-1.14`'s**: the present band comes from the venue's own pick and a historical range from whichever listed
+  contract carried the volume on each trade date, so a window spanning a roll holds one segment per contract
+  in expiry order rather than two runs interleaved by when each stretch happened to be fetched.
+- **R-1.12** A **session bar** is derived from stored base bars and **exists only when every expected base
+  bucket is stored, from one contract**; otherwise it is **absent with a stated reason**, never a partial bar.
+  A session is a named slice of the trade date `R-1.2`'s calendar already models, stated in Central
+  wall-clock time — shipped as `full` 17:00→16:00, `rth` 08:30→15:00, `asia` 17:00→02:00 and `europe`
+  02:00→08:30, each with its own base resolution, which must divide 60 so the wall-clock boundaries land on
+  the stored UTC bucket grid under both standard and daylight time. Expected is decided by the same session
+  calendar `R-1.2` uses, so a holiday and the maintenance window cost nothing. The reasons are a closed
+  vocabulary a caller can act on — incomplete, with the expected and missing counts; the window spans a
+  contract roll (`R-1.11`); the base bars carry no contract; the session has not closed — and the base
+  resolution is recorded on the stored bar so the series is reproducible (`R-2.2`). This is the one exception
+  to `R-1.9`'s never-derive rule, and it is granted only because it carries the completeness guard that rule
+  demands: the vendor has no `rth`, `asia` or `europe` bar unit to fetch. A session-**indicator** read never
+  reaches the vendor; a session-**bar** read reaches it only through the base series' cache-aside path, and
+  opens no fetch of its own. See [ADR-0022](adr/0022-session-bars-derived-complete-or-absent.md) (gh#496,
+  gh#498, gh#499).
+- **R-1.13** A **session read answers over whole sessions, and refuses rather than truncates.** A windowed
+  read returns one row per trade date whose **whole** session lies inside the window — a session the window
+  clips is left out rather than reported short — and every trade date it names arrives in exactly one of two
+  lists: the bar, or an absence carrying its reason and its expected and missing base-bucket counts
+  (`R-1.12`). A trade date the window **wholly contains** that appears in neither list **did not trade**; a
+  date whose session the window clips is in neither list because it was never asked for, and a date this
+  server did ask about is never silently dropped from both. **A non-empty window inside which no session both
+  opens and closes is refused, not answered with two empty lists** — that shape reads as "this instrument did
+  not trade", the very confusion an empty *window* is already refused to avoid. The refusal names the window
+  and the session always, plus the **nearest** whole session's bounds — nearest by how much widening it would
+  take to reach, over a scan that widens outward from the window until no further trade date could need less,
+  so a weekend, a holiday or the maintenance break is scanned across rather than stopped at. Only a closure
+  longer than that scan leaves no session to name, and that refusal carries no bounds and says only to widen.
+  **The refusal narrows the "wholly contains ⇒ did not trade" signal**: a window holding only
+  non-trading days now refuses instead of reporting them, and the signal needs a window that also holds at
+  least one whole session. Two caps bound the read
+  and each refuses naming the real number rather than shortening the series: the row cap on trade dates, and
+  the gap detector's buckets-per-pass cap counted in the session's **base** buckets, the ones a session bar is
+  derived from rather than the sessions themselves. A read anchored on a count of the most recent sessions is
+  bounded the same way, and by the span of calendar days the closed-session walk covers. Every refusal is
+  decided before the store or the venue is touched. See
+  [ADR-0022](adr/0022-session-bars-derived-complete-or-absent.md) (gh#496, gh#500, gh#568).
+- **R-1.14** **The present is fetched from the venue's pick; history is fetched from the contract that carried
+  the volume.** The two bands are separated by the store rather than by the clock: the present band begins at
+  the first bucket of the **trailing run** of the venue's active contract `F` — the newest contiguous run of
+  bars already attributed to `F`, taken across **every** stored resolution, a bucket carrying no contract
+  counting as *not* `F` — so a warm read asks nobody but `F` about a stretch `F` has already answered for, and
+  costs exactly what it cost before this requirement. A store holding no such run has an absence rather than a
+  reason to reach back for ever, so the band starts at `now` less a **seven-day horizon**, a constant of the
+  fetch flow and not configuration. Buckets at or after that point are the present; everything older is
+  history. A historical range is cut at every trade-date boundary where its candidates change, and a trade
+  date's candidates are the product's registry **contract month cycle** taken at its **candidate depth** —
+  **two deep on the equity indices and on silver, three deep on gold and the energy products**, because the
+  market skips a listed gold month outright and a crude contract expires before the month it is named for,
+  while a quarterly index and silver's own cycle need only the front and the next listed month. Each
+  constructed candidate is **existence-checked by id** before it is asked, since a constructed id is a
+  guess until the venue confirms it; each surviving one is fetched over the whole piece, and the contract with
+  the highest summed volume on a trade date keeps that date's bars. **A tie goes to the nearer expiry**, and a
+  trade date the store already holds an attributed bar for keeps the contract it is recorded under **when that
+  contract is among the candidates that answered bars for the date** — otherwise the pin names nothing the
+  fetch can honour and volume decides — so a day the store can vouch for is never split. A day the pin cannot
+  name is decided by volume before the tenure start and by the venue's pick after it, and the tenure cut is the
+  one boundary that is not trade-date aligned; re-deciding such a day is gh#506's verb. A candidate
+  that answered nothing records that emptiness
+  **under its own id** (`R-1.7`), cut at the settled age so the older part is claimed permanently while only
+  the young remainder carries the short TTL; a winner records none. **Degradation is loud, and it takes two
+  shapes.** An instrument the registry does not serve, and a front whose expiry does not read against the
+  cycle, are conditions of the **whole read**: every range is fetched from `F` as one slice — exactly
+  the fetch that preceded this requirement, memoisation included, since an empty answer from `F` is a true
+  statement about `F` under the per-contract ledger (`R-1.7`) and a later read with a wider candidate set
+  still asks the others — with a **warning naming the instrument and the front, and the cycle where there is one**. A **stretch no
+  constructed candidate is listed for** is the narrower case, and only it withholds the memo: that slice alone
+  is fetched from `F`, with a **warning naming the range**, and **nothing permanent is recorded** about it
+  being empty, so the next read asks again rather than inheriting a claim nobody could properly make.
+  **A candidate set the venue narrows rather than empties is the third shape, and the two shapes that are
+  decided PER SLICE — this one and the fallback above it — are reported to the caller as well as to the log**
+  (gh#592). The response carries `history.selection` — `NarrowedByTheVenue`, `FellBackToTheFront`,
+  `AsTheCycleNames` when every expiry the cycle named resolved, `AsTheFrontAlone` when the **whole plan**
+  fell back because there was no cycle to decide against, and `NotDecidedHere` when this read decided no
+  history at all — beside `history.unresolved`, the expiries the venue did not list. It is **its own field,
+  never a value of `contracts.span`**, which answers the unrelated question of whether the bars cross a roll.
+  The two **whole-read** conditions above — an instrument the registry does not serve, and a front whose
+  expiry does not read against the cycle — are recorded **where the plan is cut**, not inferred at the
+  payload (gh#598): a fallback range is not labelled as the present band purely to route it to `F`, and
+  the read reports `AsTheFrontAlone` rather than `NotDecidedHere`. Memoisation does not move — an empty
+  answer from `F` is still a true statement about `F` and still earns the empty-range memo.
+  `NotDecidedHere` is therefore a statement about *this read* and never a claim that the stored history is
+  whole — the same read repeated once the buckets are stored reports it too, because nothing recorded about a
+  stored bucket says which candidate set chose it.
+  A read **never rewrites a bucket that already carries a contract**; replacing a run the policy would decide
+  differently is an operator's verb, not a read's (gh#506). See
+  [ADR-0020](adr/0020-historical-contract-selection.md) (gh#505, gh#497).
+- **R-1.15** **Stored provenance is revised in bulk only by an operator's verb — over whole trade dates,
+  counted and logged.** `R-1.14` makes a read fill what the store lacks and nothing more, so a window filled
+  before it keeps whatever contract it was filled under until someone decides otherwise. That decision is
+  `reselect-bars <symbol> <fromUtc> <toUtc>`: every resolution series the store holds for the instrument
+  inside the window is re-decided with **nothing pinned**, so each trade date goes to the contract that
+  carried the volume rather than to the one already recorded. **The window is widened to the whole trade
+  dates it intersects and never narrowed** — deciding a date from part of its volume and then rewriting only
+  that part would leave two contracts inside one day, which is the interleaving `R-1.11` exists to forbid —
+  and the run reports the window asked for beside the one re-decided. Buckets a winner does not restate are
+  **deleted**, those carrying no contract counted apart from those another contract held, because a
+  contract that never held a bucket must not be reported as having lost it. Every coverage claim (`R-1.7`)
+  **overlapping a trade date that actually received a winner** is dropped: a claim reaching in from outside
+  would otherwise suppress the next read of a day whose decision has just been overturned, and a slice
+  nobody could decide leaves its claims standing — sweeping the whole effective window would open holes a
+  later warm read refills under degradation. Losing a claim outside a winner's session costs one
+  re-ask. The indicators are then re-projected over what is left, in the same unit of work, so no value
+  **under a pair the catalogue computes** outlives the bars it was computed from (`R-2.8`) — including on a
+  run that only deleted. That scope is `R-2.8`'s own and is not widened here: a value under a pair the
+  catalogue was later reconfigured away from is not walked and survives the delete. A window wider
+  than one pass can enumerate is **skipped for that resolution, loudly**, rather than trimmed to a smaller
+  question than the one asked; a window the store holds nothing in **says so** rather than reporting the
+  same zeros a window that was already correct reports. Nothing is written before the arguments are accepted
+  and the schema is migrated, and the run commits **one series at a time**, so a failure partway names how
+  far it got rather than undoing what came before. See
+  [ADR-0020](adr/0020-historical-contract-selection.md) §5 (gh#506, gh#497).
 
 ## R-2 — Pre-computed indicators
 
@@ -83,7 +227,8 @@ The server serves OHLCV bars for a futures instrument at a requested resolution 
   justify, and `IndicatorValues` holds no row for. A read never reaches the vendor: every bar a projection
   needs is already local, so adding an indicator or moving a period is live on the next read with no operator
   action ([ADR-0014](adr/0014-indicators-are-projected-on-read-too.md), gh#246). **The trigger is what
-  changed; the key is not** — a period is still never a per-call argument (`R-2.12`). **The store performs
+  changed; the key is not** — a period is still never an ad-hoc per-call *computation*, though a call may
+  select among the periods the catalogue is configured for (`R-2.12`). **The store performs
   the write** — an `ON CONFLICT … DO UPDATE` on `(Venue, Instrument, ResolutionMinutes, Indicator, Period,
   BucketStart)` — so two passes over one series whose snapshots each miss the other's rows both land instead of
   the loser faulting on a duplicate key (gh#133). A pass recomputes the whole series *its own snapshot* can
@@ -99,18 +244,39 @@ The server serves OHLCV bars for a futures instrument at a requested resolution 
   the only one: correcting an indicator's arithmetic leaves every `(Indicator, Period)` pair present, so no
   read will recompute it. It also repairs `R-2.11`'s accepted skew, and warms a series ahead of its first
   caller.
-- **R-2.6** Supported at v1: ATR, RSI, SMA, EMA, MACD (line, signal, histogram), session-anchored VWAP, and
+- **R-2.6** Supported at v1: ATR, RSI, SMA, EMA, MACD (line, signal, histogram), session-anchored VWAP,
+  rolling VWAP (`vwap-rolling`, the volume-weighted average price over the trailing `period` bars) and
   Bollinger bands. The set is a **closed vocabulary** at the tool boundary — an unknown name is an error that
-  names the known ones.
+  names the known ones. **A different calculation is a different name**: a VWAP with a lookback is not a
+  parameterised session VWAP, so it is its own member rather than `vwap` at a period
+  ([ADR-0018](adr/0018-period-selection-among-configured-periods.md)).
 - **R-2.7** **No indicator value is computed across a contract roll.** Adjacent quarters do not trade at the
   same price, so a value smoothed across the seam reports a bookkeeping gap as market movement. The projection
   seeds each contract's run separately, which means the warm-up restarts at every roll and the values
   immediately after one are **absent** — an instance of `R-2.3`, not an exception to it
-  ([ADR-0011](adr/0011-contract-roll-boundary.md)).
-- **R-2.8** A projection **removes stored values the current bars no longer justify**, for the indicators
-  and periods it is configured to produce. Until segmenting, a bucket could only move from *not computable* to
-  *computable*, so an upsert-only projection was safe; a contract seam moves the boundary the other way, and a
-  value left standing is a number the bars cannot account for. A confirming rebuild still removes nothing.
+  ([ADR-0011](adr/0011-contract-roll-boundary.md)). **`R-1.14` makes that cost visible over the whole of
+  history rather than only at the live roll**, and how often it is paid is the product's listed cycle: the
+  candidate set turns **four** times a year on MES's `HMUZ`, **six** on MGC's `GJMQVZ` and **twelve** on
+  MCL's every-month cycle, and a seam lands wherever the volume winner actually changes — on gold that is
+  fewer than six, because the market has not given October the volume in the contract-year measured
+  (gh#494). After each seam the first
+  `WarmupBars` buckets of that contract carry no value, so a series whose warm-up is longer than one
+  contract's tenure never produces a value at all: a 200-period daily needs two hundred daily bars from one
+  contract, where a tenure holds about twenty-one on MCL and about sixty-four on MES, and even a 50-period
+  daily only fills in the last stretch of an MES quarter and never on MCL. That is a real limit of a
+  per-contract series and not a defect; a continuous back-adjusted series is the remedy, and it is gh#354's.
+- **R-2.8** A projection **removes every stored value for the series it projected that the current bars and
+  catalogue cannot account for**, and reports the kinds apart. Until segmenting, a bucket could only move from
+  *not computable* to *computable*, so an upsert-only projection was safe; a contract seam moves the boundary
+  the other way, and a value left standing is a number the bars cannot account for. Two further kinds are
+  swept for the same reason (gh#571): a value under an `(Indicator, Period)` pair the catalogue **no longer
+  computes**, and a value whose `BucketStart` has **no bar**. Neither is reproducible from `Bars`, so no
+  replay can confirm or correct it and `rebuild-indicators` reports an empty diff over it — while it reads
+  back as an ordinary number. The three counts are logged separately, and the two orphan kinds at
+  *Information*: one total cannot tell an operator whether a configuration change or a bar delete caused it.
+  **`rebuild-indicators` walks the union of the series in `Bars` and in `IndicatorValues`**, or a series whose
+  last bar was deleted is never visited again — and since no *read* ever runs a pass over a bar-less series,
+  that verb is the only thing that reaches one. A confirming rebuild still removes nothing.
 - **R-2.9** A projection removes **only** values it read the bars for. Its two reads — the bars, then the
   values standing over them — are **one snapshot of the store**, so a pass cannot delete what a concurrent
   write justified between them; and a pass that finds it read less than the whole series **refuses** rather
@@ -136,17 +302,56 @@ The server serves OHLCV bars for a futures instrument at a requested resolution 
   fills share no bar, no coverage row and no indicator key, so this is write skew rather than contention and
   `R-2.10` cannot reach it. Closing it would need a lock rather than an isolation level, and the measurements
   behind not taking one are [ADR-0012](adr/0012-fills-are-not-serialised.md).
-- **R-2.12** A period is **never a per-call argument**. It is part of a value's identity and the storage key
-  carries one, so a value computed under a period the key cannot see would be served for another. `R-2.1`'s
-  read trigger does not reopen this: a read asks for exactly the period the catalogue is configured for and
-  gets that or an honest absence (`R-2.3`). A configurable non-period parameter goes in the indicator's
-  **name**, and [ADR-0006](adr/0006-indicators-as-projections.md) is superseded rather than reinterpreted.
+- **R-2.12** A period is **never an ad-hoc per-call *computation* input**. A call may **select** a period
+  among those the catalogue is configured to compute; any other is refused, naming the configured ones
+  ([ADR-0018](adr/0018-period-selection-among-configured-periods.md)). The storage key carries the period, so
+  selection names an existing `(Indicator, Period)` family or nothing — never an empty series a caller would
+  read as *cannot measure* (`R-2.3`). What stays forbidden is computing a period nobody configured: seeding
+  from the requested window is refused by `R-2.2`, and computing it honestly is `R-2.13`'s whole-series replay
+  per call. A configurable **non-period** parameter still goes in the indicator's **name**, and
+  [ADR-0006](adr/0006-indicators-as-projections.md) is superseded rather than reinterpreted.
 - **R-2.13** A read that finds a series cold **replays the whole stored series**, never a window around what
   was asked for. A moving seed window makes a value depend on how much history happened to be loaded, which
   `R-2.2` forbids, and a narrowed read under `R-2.8`'s unscoped removal would delete every value outside the
   range. The first such read is therefore slow in proportion to the history kept — about **8.3 seconds** for a
-  year of five-minute bars, measured — and every read after it pays only the probe. That cost is stated in the
+  year of five-minute bars at the shipped catalogue, measured — and it grows with the number of
+  `(Indicator, Period)` instances the operator configures, since every additional period is one more series in
+  the same replay (`R-2.12`). Every read after it pays only the probe. That cost is stated in the
   tool's own description rather than being a surprise.
+- **R-2.14** A read serves a stored value **only where the store still holds the bar at its bucket**. There is
+  no foreign key from the values to the bars ([ADR-0011](adr/0011-contract-roll-boundary.md)), so a bar delete
+  orphans the values over it; `R-2.8`'s sweep is what removes them, and **a read does not sweep** — for a
+  series whose bars are *all* gone, no read even runs a pass, so nothing removes them until
+  `rebuild-indicators` does (`R-2.5`). Until gh#577 those rows were **served**: 37 ATR points over zero bars,
+  and a reading of `65.32947503` carrying a null contract that a caller could not tell from a real one. That
+  is `R-2.2` failing in the only way it can be observed from outside — a number no recomputation can produce,
+  because the bars it came from are gone. What the read withholds is an **absence**, which `R-2.3` already
+  makes every caller read as *cannot measure*, rather than an error: the fault is the store's, not the
+  caller's, and refusing a whole window over one orphaned bucket answers larger than the fault. The rule is
+  per **value**, so a partial delete still serves everything the surviving bars justify and an as-of read
+  falls back to the newest bucket that has one — the same fallback `R-2.7`'s seam already produces. A bar
+  whose `ContractId` was never recorded is **not** this case: the bar is there, the number is reproducible,
+  and the unknown provenance is reported as it always was.
+- **R-2.15** **A named session series is projected on exactly the terms above, by the same code path.** One
+  value per whole session, keyed `(Venue, Instrument, Session, Indicator, Period, BucketStart)` over the
+  stored session bars (`R-1.13`) where a resolution series is keyed by the bar size over the bucket grid —
+  and produced by the *same* projection, so the contract segmenting (`R-2.7`), the removal of what the bars
+  no longer justify (`R-2.8`, `R-2.9`), the serialisation retry (`R-2.10`), the snapshot rule (`R-2.11`),
+  the cold-read whole-series replay (`R-2.13`), the orphan-servability rule (`R-2.14`) and the empty diff of a
+  confirming rebuild (`R-2.2`) hold unchanged. Two code paths would be two projections free to disagree about
+  a number nobody would question, so there is one, and the only thing a series' key decides is which pair of
+  tables it reads and writes and which indicators the catalogue computes over it. **The period counts
+  sessions**, not base bars: an SMA at 20 over `rth` is twenty trading days inside one contract run, and a
+  trade date the warm-up does not reach is absent (`R-2.3`). The vocabulary is the configured catalogue
+  **minus session-anchored VWAP**, which has no intra-session volume distribution to weight when the session
+  *is* one bar; `vwap-rolling` stays and reads as an N-session rolling VWAP. That exclusion is **refused by
+  name at the tool** rather than served as an empty series (`R-5.12`), because an empty series is
+  indistinguishable from a market that produced none (`R-5.3`). A session read that **changed** the stored
+  sessions — upserting one, reconciling one away, or discarding one built under a definition that no longer
+  holds — projects inside that same unit of work, so bars never commit without the values they justify; a
+  warm read changes nothing and projects nothing. `rebuild-indicators` walks session series beside resolution
+  ones (`R-2.5`). See [ADR-0006](adr/0006-indicators-as-projections.md) and
+  [ADR-0022](adr/0022-session-bars-derived-complete-or-absent.md) (gh#501, gh#496).
 
 ## R-3 — Key levels
 
@@ -168,7 +373,12 @@ The server serves OHLCV bars for a futures instrument at a requested resolution 
   price the contract in front has never traded, and it is indistinguishable from a level price is about to
   reach. When the requested lookback spans a roll, detection is confined to the contract in front and the
   result reports how many bars it actually used
-  ([ADR-0011](adr/0011-contract-roll-boundary.md)).
+  ([ADR-0011](adr/0011-contract-roll-boundary.md)). **`R-1.14` makes that confinement bite over stored
+  history too**: a long lookback over a range fetched by the policy holds one segment per contract in expiry
+  order, so `detectedOverBars` is bounded by **one contract's tenure** — roughly twenty-one sessions on MCL's
+  monthly cycle and sixty-four on MES's quarterly one — however many bars were asked for. The number is
+  reported rather than implied for exactly this reason; a level detected over sixty-four bars deserves less
+  weight than one detected over five hundred, and only `detectedOverBars` says which happened.
 - **R-3.6** Levels are detected by a **named method**, and the vocabulary is closed — an unknown name is an
   error listing the known ones, never an empty level set. `swing` finds pivots; `session` reports what a
   finished session left behind: prior-day and prior-week high, low and close, the overnight range and the
@@ -295,6 +505,57 @@ The server serves OHLCV bars for a futures instrument at a requested resolution 
   ([ADR-0011](adr/0011-contract-roll-boundary.md)). There is no historical tape before
   recording began. An unknown instrument is an error (R-5.3). A symbol with no changeover
   omits it rather than guessing a date. No `why` on the wire (ADR-0008).
+- **R-5.10** **Traces, metrics and logs are exported over OTLP when a collector is configured, and the host
+  emits none when one is not.** Configured means `Otel__Endpoint`; that one key is the whole switch. With it
+  set, the sources already emitting are subscribed and exported — per-request MCP spans, the store's, the
+  venue's HTTP calls', ASP.NET Core's and the runtime's — behind **one exporter and one trace id**, so a slow
+  call leads to its own log lines and back. The host names an endpoint, optional headers, a protocol and a
+  service name, and **never a backend**: a backend swap is a deployment edit, not a code change
+  ([ADR-0019](adr/0019-otlp-as-the-telemetry-boundary.md)). With it unset **nothing is registered** — no
+  provider, no background exporter thread, no retry queue and no warning about a collector that is not there.
+  That is the default and it is a supported state, not a degraded one, on the same terms as an absent
+  embedding key (R-6.3): every tool answers exactly as it does today. **R-5.5 is unaffected and untouchable
+  by this**: no console exporter is registered under either transport, behind no flag and in no environment,
+  because telemetry written to stdout under stdio does not degrade a trace, it corrupts the protocol frame.
+  A malformed endpoint, protocol or header list **refuses at startup naming the key**, since the alternative
+  is a failure on a background thread that reads as an absence of telemetry — indistinguishable from the
+  supported unconfigured state. **No header value reaches a span or a log attribute**, the exporter's own
+  `Otel__Headers` included: it carries the backend's token, and this repository is public (R-7.1).
+- **R-5.11** **`get_session_bars`** and **`get_latest_session_bars`** return one OHLCV bar per whole trading
+  session: `get_session_bars(symbol, session, fromUtc, toUtc)` over the trade dates a window wholly contains,
+  and `get_latest_session_bars(symbol, session, count)` over the most recent **closed** sessions, never the
+  one in progress. Both answer `{ symbol, session, baseResolutionMinutes, bars, absent, fetchedBuckets,
+  venueRequests, contracts }`, with the bars and the absences partitioning the trade dates asked for
+  (`R-1.13`, `R-1.12`) and `baseResolutionMinutes` saying what "complete" was measured in. `session` is a
+  closed vocabulary — an unknown name is an error listing the configured ones, never an empty series, on the
+  same terms as an unknown instrument (R-5.3). They are their own tool type rather than a `session` argument
+  on `get_bars` ([ADR-0017](adr/0017-one-tool-type-per-concern.md)), because a session bar is defined on the
+  trade date rather than on the bucket grid and carries a second list `get_bars` has no place for. Both caps
+  refuse rather than truncate (`R-1.13`), and `contracts` is built from each session bar's single contract
+  id, so a roll falls **between** two trade dates and never inside one (`R-1.11`); `contracts.span` reads
+  `Unknown` only when no session bar could be built at all. `fetchedBuckets` and `venueRequests` are the
+  **base** series' numbers, and `venueRequests == 0` is the exact test that **no bars were fetched** (`R-1.3`)
+  — not that the vendor went untouched: a read whose gaps the coverage ledger covers still resolves the
+  instrument's contract list, so it is venue-dependent and raises with the venue down (gh#504). See
+  [ADR-0022](adr/0022-session-bars-derived-complete-or-absent.md) (gh#496, gh#500).
+- **R-5.12** **`get_session_indicators`** and **`get_session_indicator_at`** read the indicator series over a
+  named session — one value per trade date, not per bar (`R-2.15`).
+  `get_session_indicators(symbol, session, indicator, fromUtc, toUtc, period?)` answers
+  `{ symbol, session, indicator, period, values, contracts }`, one `{ tradeDate, t, v }` per trade date that
+  *has* a value, ascending; `get_session_indicator_at(symbol, session, indicator, asOfUtc, period?)` answers
+  one `{ value, tradeDate, bucketStart, contractId }` from the last session that had **closed** at or before
+  that moment, so a session still in progress is never answered from and no number arrives before the market
+  had it (`R-2.4`). **Both read stored series only.** The vendor is never called and no session bar is built
+  here, so a window whose sessions `get_session_bars` or `get_latest_session_bars` never covered answers with
+  no values — a fact about what has been asked for rather than about the market — and where the sessions are
+  stored and the values are not, the read projects them first (`R-2.1`, `R-2.13`). Cannot-measure **drops the
+  `value` key** rather than sending null, so the whole reading arrives as `{}` and a caller tests key
+  presence, never `=== null` (`R-2.3`). `session` is the closed vocabulary the session-bar tools
+  take (`R-5.11`), `period` selects among the configured periods on `get_indicators`' terms and refuses any
+  other by listing them (`R-2.12`), and **`vwap` is refused by name**, naming `vwap-rolling`, where any other
+  unknown name is refused by listing the session vocabulary (`R-5.3`). They are their own tool type
+  ([ADR-0017](adr/0017-one-tool-type-per-concern.md)) and the window caps refuse rather than truncate
+  (`R-5.4`, `R-1.13`). See [ADR-0022](adr/0022-session-bars-derived-complete-or-absent.md) (gh#501, gh#496).
 
 ## R-6 — Observations
 

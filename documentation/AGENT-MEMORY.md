@@ -57,6 +57,30 @@ at one this rule's own pull request retires.
 
 ## Practices to follow
 
+- **[2026-09-07] The `dotnet ef migrations add` invocation that works in this repo, and the CRLF it leaves
+  behind (gh#504).** Two projects are involved — the entities and the `DbContext` live in
+  `MarqSpec.Mcp.TopstepX.Data`, the host that configures them in `MarqSpec.Mcp.TopstepX` — so the command
+  needs both named or the design-time build cannot find a context:
+  ```
+  dotnet ef migrations add <Name> --project MarqSpec.Mcp.TopstepX.Data \
+      --startup-project MarqSpec.Mcp.TopstepX --output-dir Migrations
+  ```
+  **No `dotnet tool restore`, no `.env`, and no Postgres.** There is **no tool manifest in this repo**, so
+  `dotnet tool restore` has nothing to restore and `dotnet-ef` has to be a **global** tool —
+  `dotnet tool install -g dotnet-ef` if the recipe fails with "could not execute because the specified command
+  or file was not found". Its availability is a property of the machine, not of the checkout. The other two
+  are properties of the command: scaffolding reads the model, never a database, so it does not want a
+  connection string and there is nothing to start first. The only step after it is `dotnet build`, and the
+  migration is applied by the host at startup.
+  - **The trap: `dotnet ef` writes CRLF, and `dotnet format --verify-no-changes` fails on it.** Three files
+    are generated — `Migrations/<stamp>_<Name>.cs`, its `.Designer.cs`, and the rewritten
+    `Migrations/TopstepXDbContextModelSnapshot.cs` — and every one of them arrives with Windows line endings.
+    `.gitattributes` normalises on commit and `.editorconfig` relaxes the *style* rules for
+    `**/Migrations/*.cs` and accepts the BOM the generator writes, but neither touches the working-tree line
+    endings the formatter actually reads, so the failure surfaces at the gate rather than at generation.
+    Convert all three to LF before you build: `sed -i 's/\r$//' <file>` on each, or reach for whatever
+    LF-conversion the shell offers. The BOM stays — `.editorconfig` asks for `utf-8-bom` there deliberately,
+    so stripping it makes the *next* generated file the problem instead.
 - **[2026-09-03] A clean `git status` and the issue author field both look like evidence of "who did what,"
   and neither is — one lesson, not two (gh#438, PR #441).** This entry covers **neither** gh#88 (the recovery
   once two sessions land in one commit) **nor** gh#438 (how a pushed branch's tip age is read) — it covers the
@@ -114,6 +138,58 @@ at one this rule's own pull request retires.
       irony, is this signal's own subject. The detectable shape is cheap: `select(.body | startswith("@"))`
       over a PR's comments finds this exact broken-post case directly.
 
+- **[2026-09-08] A `Total:` is discovery; a `Passed:` is execution — five ways a test run has lied about a
+  mutation (gh#600).** Mutation testing is this repo's proof of coverage, so *"nothing reddened"* is the
+  most load-bearing observation an agent makes, and the one a broken run counterfeits best. **Score the
+  run before you score the mutation**, on four things a `Total:` does not carry:
+  - **The split, never the total alone.** `Failed: N, Passed: 0` over a *full* total is a broken host, not
+    N regressions.
+  - **The duration.** A tier that normally takes 34 s finishing in 227 ms did not run.
+  - **Where the failures originate.** A fixture constructor or a runtime loader is the environment; only a
+    failure inside the code under test is the tree.
+  - **The harness's `APPLIED <before-blob> -> <after-blob>` line — its absence is a failed run, never a green
+    one.** Confirm the source really differs (`git diff --stat`) before recording a survivor, and carry a
+    **positive control**, a deletion known to redden, so green means *no coverage* rather than *no loop*.
+
+  Measured across gh#529 / PR #589, gh#537 / PR #597 and gh#588 / PR #590 — each a violation of that check:
+  1. **`Total: 71` where the suite has 162** — short by 91, so by the 2026-08-26 entry's own discriminator
+     (*short is Application Control; plausible-after-a-restore is the 2026-08-28 entry*) it is **not** a
+     stale binary: that branch measured 142, 162 and 163, never 71. **Neither source establishes a cause**
+     — record that rather than infer one, which is this entry's own thesis.
+  2. **`Test Run Aborted.`** printed no counts at all, and the re-run reported the *previous* count
+     unchanged, so an agent scrolling back for a `Passed:` line finds the earlier run's.
+  3. **The mutation never applied.** A `mkdir` failed earlier in an `&&` chain, so the script never ran and
+     the suite honestly printed `Passed: 163` over unmutated source — indistinguishable from a survivor.
+     **Never chain a mutation behind `&&` after setup that can fail**; run the setup separately and check it.
+  4. **The infra suite with no Node on `PATH`.** Same built output, two containers differing only in
+     `node`: `Passed: 165, Total: 165` in 34 s, against `Failed: 165, Passed: 0, Total: 165` in **227 ms**,
+     every failure from `Amazon.JSII.Runtime.NodeProcess..ctor` — CDK synthesis shells out to Node, so the
+     fixture cannot construct. **The `Total:` is correct here**, which is why the older rule *"know the
+     expected suite size and treat disagreement as the run being wrong"* (the 2026-08-26 entry below)
+     **agrees with this broken run**. Only the split and the 150x duration collapse give it away.
+  5. **Windows Application Control** (`0x800711C7`) — `Total: 156`, every test failed in its fixture
+     constructor (gh#588 / PR #590). **The 2026-08-26 entry below records the SHORT presentation of this
+     block; this is the other one** — a full, ordinary-looking total that reads as 156 real regressions,
+     so a denominator check passes it. The split and where the failures originate are the tell.
+     **Persistent here** — the 2026-09-08 correction under that entry.
+
+- **[2026-09-08] A green check is evidence about a commit, not about a branch (gh#611).** Same shape as the
+  *`Total:` is discovery* entry dated 2026-09-08 — mechanism 2 (*a re-run reporting the previous run's result*) — arriving in the
+  tooling agents use to verify their work. Verifying gh#600 / PR #603 (also gh#608 / PR #610),
+  `gh pr checks --watch` printed **13 passing checks** for a head it was **not** describing: a commit had been
+  pushed to the branch, GitHub had not yet associated it with the pull request, and `pulls/603` still reported
+  the *previous* `head.sha`. The watch reported that older commit's results as though they were current, with
+  no indication anything was stale. The same push left orphan `7c2dad2` on the branch ref that GitHub never
+  attached to the PR and for which **no CI ever fired** — branch tip and PR head disagreed, and only the PR
+  head was built. The checks named were real, they did pass, and they described a commit the author was no
+  longer working on.
+  - **After a push, confirm the PR head moved** — `gh pr view <n> --json headRefOid` — before waiting on
+    checks at all.
+  - **Never quote a CI result without checking the run describes the head you mean** — read the run's own
+    `headSha` via `gh run list --json headSha,conclusion,databaseId` (or
+    `gh api repos/:owner/:repo/actions/runs/<id>`) and compare it to the SHA you are reporting. `gh pr
+    checks`, with or without `--watch`, does not guarantee this.
+
 - **[2026-08-28] A restore can backdate a source file's mtime, MSBuild skips the compile, and `dotnet test`
   scores a stale binary with a plausible `Total:` (gh#302).** Found by PR #298's author (gh#286) with a
   `Copy-Item` restore: the timestamp went **backwards**, the compile was skipped, and the host ran the
@@ -139,6 +215,29 @@ at one this rule's own pull request retires.
   - **General form:** a present, plausible `Total:` is not evidence the run measured the code you think it
     did. Same family as `--no-build` in the 2026-08-26 entry (a well-formed total about bytes you did not
     just produce), different cause.
+
+- **[2026-09-08] When the defect you are mutating is a RACE, inject the racing condition — do not sample for
+  it (gh#596).** The complement of the *`Total:` is discovery* entry dated 2026-09-08 above: that one is
+  about a run that did not measure what it claims, this one about a run that measures **honestly** and still
+  carries no signal, because the code under test is nondeterministic. Score the run by that one, then ask
+  this one whether the answer would survive a different machine.
+  gh#596 was `TelemetryCompositionTests`' HttpClient assertion passing on *other* collections'
+  spans: the exporter is fed by a process-global `ActivityListener`, so whether deleting
+  `AddHttpClientInstrumentation` is caught turns on whether a sibling collection emits inside the test's
+  few-millisecond window. The issue measured **111** and **103** spans there where the test makes one
+  request. In the pinned SDK container at `764e666` a probe printed **`count=1`** — no foreign span at all —
+  and the mutation therefore **reddened 17 of 17** full-suite Release runs: 16 on the branch, at 1, 2, 4, 8
+  and all 20 CPUs, and a 17th run independently by the reviewer. Both measurements are real; the container
+  simply finishes the tier in 12–20 s and the window never overlaps anything.
+  - **What it costs:** "the mutation reddens under the full suite" is then not evidence the assertion
+    measures what it claims, and re-running to catch the other outcome does not converge — 17 found none.
+    **The issue's own "would leave this assertion green" was written in the conditional off an UNMUTATED
+    probe**, and reached the branch restated in the past tense; a derived outcome carries the derivation
+    with it or it is read later as a measurement nobody can reproduce.
+  - **Remedy:** raise the interfering signal yourself, once, deterministically, from a background thread
+    inside the window — for gh#596, one span on the app-owned source the pipeline subscribes to, which is
+    exactly what a sibling suite contributes. That turned a 17-run coin-flip into a five-run matrix: green
+    before, red after, and green again on the same input with the registration restored.
 
 - **[2026-08-26] `dotnet test` on this Windows box can score a run it never fully executed — Smart App
   Control blocks freshly built assemblies (gh#242, corrected under gh#281).** It comes back either as no
@@ -208,6 +307,13 @@ at one this rule's own pull request retires.
       gate rewrite with no tier able to run at all. **Its limit:** it scores a rule *as reimplemented against
       the metadata reader*, not the shipped test executing — indirect evidence, never a substitute for a
       `Total:` line.
+    - **[2026-09-08] On this host the block is PERSISTENT, not intermittent, and a green `dotnet build` says
+      nothing about it (gh#600).** Reproduced during gh#588 / PR #590 across three paths, both
+      configurations, sandbox disabled, after full `bin`/`obj` wipes: every freshly built test assembly
+      fails to load, while `dotnet build` and `dotnet run` are unaffected — **only the VSTest reflection
+      load fails**. Cite CI on the pushed head rather than a local count. **Supersedes every "intermittent"
+      statement about the block** — this file's 2026-08-23 heading and bullets below, and
+      `docker-compose.dev.yml`'s header.
 
 - **[2026-08-25] A conflict resolver that never ran let `git rebase` commit conflict markers, silently
   (gh#187).** The script sat at `/tmp/fix.py`; **the `python` on PATH is Windows-native and cannot see MSYS's
@@ -346,6 +452,23 @@ at one this rule's own pull request retires.
   commit reworded them — and it went **red on correct text** twice, on backticks and on `e.g. ES`.
   `SerializationFailureTests` (gh#73)'s interceptor also matched EF's write batches, spending both firings in
   attempt one and leaving the retry unopposed. The reviewer found all four, not the author (gh#87).
+- **[2026-09-07] Tightening a constructor signature breaks `develop` from a branch that never conflicted with
+  yours (gh#572).** gh#562 made `telemetry` required on `BarCacheService`, `IndicatorCacheService`,
+  `FootprintCacheService` and `IndicatorProjector`, threading it through every construction site **on its
+  base**; gh#500 added session-bar suites against the old optional signature. Both were green, neither
+  touched the other's files, Git merged both happily — and `develop` went red with `CS7036` across two test
+  projects **at `abd6ea0`**, where the three errors stay reproducible now that the branch has moved on.
+  **A required-parameter change is incompatible with any construction site added in parallel, and no
+  textual conflict warns you.** Before merging a signature tightening, `git grep` for the type's
+  construction sites **on `origin/develop` as it stands now**, not on the base you branched from, and check
+  the open PRs for suites that build it. The same shape covers a new required interface member and a
+  narrowed return type.
+  **The fix landed through gh#505's PR #569, not through gh#572's own** — #569 was building on the same red
+  `develop` and had to repair the identical two files to compile at all, so it carried the repair with it and
+  gh#572's PR arrived redundant and conflicting. That is the second half of the lesson: **a red `develop` is
+  repaired by whichever branch notices first, and every other branch is already carrying the same edit.**
+  Before opening a fix for a broken shared base, check whether an in-flight PR has absorbed it; before
+  rebasing one, expect your own hunks to come back as conflicts that resolve **to `develop`'s side**.
 
 ## Notes & communications
 
@@ -394,12 +517,14 @@ at one this rule's own pull request retires.
     indistinguishable from a genuinely bad `--filter`, so the detection rule has to be *"`Total:` is absent
     or below what I expected"* and can never be *"look for an error"*.
   - **`C:/tmp` is a coin flip, not a fix.** The block tracks **freshly-produced binaries**, not the path: it
-    has been hit from `C:/tmp` as well, on a rebuild, minutes after the same directory worked. Retrying often
-    clears it. Moving is worth trying and is not a remedy to rely on.
+    has been hit from `C:/tmp` as well, on a rebuild, minutes after the same directory worked. Retrying
+    cleared it often in 2026-08; **[2026-09-08] on this host it no longer does** — see the 2026-09-08
+    correction under the 2026-08-26 entry above. Moving is worth trying and is not a remedy to rely on.
   - Found during the reviews of gh#73/PR #79 and gh#82/PR #83, both of which hit it from both locations.
 
 - **[2026-08-23] Docker IS up now, so the integration tier runs locally — and the Application Control block
-  is INTERMITTENT, not gone.** Two corrections from gh#42 to what this file said on 2026-08-22, pointing in
+  is INTERMITTENT, not gone — [2026-09-08] and now PERSISTENT, not intermittent (the correction under the
+  2026-08-26 entry above).** Two corrections from gh#42 to what this file said on 2026-08-22, pointing in
   opposite directions. Both corrected entries were retired under gh#254; the compose command and the Smart
   App Control rationale they carried are in `docker-compose.dev.yml`'s header.
   - **The tier runs.** Docker Engine 29.6.2 is up on Adam's machine; `dotnet test
@@ -411,7 +536,8 @@ at one this rule's own pull request retires.
     `MarqSpec.Mcp.TopstepX.dll`, with no code change between. **A host run succeeding once does not mean the
     block is gone**, and the failure arrives as an xUnit *"No test is available / Catastrophic failure"*,
     which reads like a broken test project rather than an OS policy. Look for the hex code before believing
-    the runner.
+    the runner. **[2026-09-08] "Unpredictably" no longer holds on this host** — see the 2026-09-08
+    correction under the 2026-08-26 entry above.
   - **The container fallback works and is the reliable path**, now that Docker is up:
     `docker compose -f docker-compose.yml -f docker-compose.dev.yml run --rm --no-deps sdk dotnet test
     MarqSpec.Mcp.TopstepX.Tests`. (Expect `MINVER1001` warnings — the container does not see the git

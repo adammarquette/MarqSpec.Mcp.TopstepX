@@ -5,6 +5,7 @@ using MarqSpec.Mcp.TopstepX.Data.Entities;
 using MarqSpec.Mcp.TopstepX.Domain;
 using MarqSpec.Mcp.TopstepX.Domain.MarketData;
 using MarqSpec.Mcp.TopstepX.MarketData;
+using MarqSpec.Mcp.TopstepX.Telemetry;
 using MarqSpec.Mcp.TopstepX.Tests.MarketData;
 using MarqSpec.Mcp.TopstepX.Tools;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -64,6 +65,7 @@ public sealed class FootprintAndVolumeProfileStoreTests : IAsyncLifetime
 
     private readonly TapeAvailabilityHolder _tape = new();
     private readonly TapeTools _tools;
+    private readonly HostTelemetry _telemetry = new();
 
     /// <param name="fixture">The shared container.</param>
     public FootprintAndVolumeProfileStoreTests(SeriesStoreFixture fixture)
@@ -95,7 +97,8 @@ public sealed class FootprintAndVolumeProfileStoreTests : IAsyncLifetime
                 _database,
                 new FootprintProjector(_database, NullLogger<FootprintProjector>.Instance),
                 clock,
-                NullLogger<FootprintCacheService>.Instance));
+                NullLogger<FootprintCacheService>.Instance,
+                _telemetry));
     }
 
     /// <inheritdoc />
@@ -105,6 +108,7 @@ public sealed class FootprintAndVolumeProfileStoreTests : IAsyncLifetime
     public Task DisposeAsync()
     {
         _database.Dispose();
+        _telemetry.Dispose();
         return Task.CompletedTask;
     }
 

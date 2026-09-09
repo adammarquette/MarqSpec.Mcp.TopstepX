@@ -165,9 +165,8 @@ public sealed record Synthesised(Template Template, JsonObject Json)
     public static string Text(JsonNode? node) => node?.ToJsonString() ?? "null";
 
     /// <summary>
-    /// The logical ids a resource's <c>DependsOn</c> names, empty when it names none. CloudFormation admits
-    /// both a bare string and an array there, so both are normalised — a test that read only the array shape
-    /// would pass on a single dependency by never looking at it.
+    /// The logical ids a resource's <c>DependsOn</c> names, empty when it names none. CDK synthesises arrays
+    /// here; a bare string is valid CloudFormation but unreachable in this tree.
     /// </summary>
     /// <remarks>
     /// This reads the resource, not its <c>Properties</c>: <c>DependsOn</c> is a resource attribute, and an
@@ -177,7 +176,6 @@ public sealed record Synthesised(Template Template, JsonObject Json)
     public static IReadOnlyList<string> DependenciesOf(JsonObject resource) => resource["DependsOn"] switch
     {
         JsonArray array => array.Select(d => d!.GetValue<string>()).ToList(),
-        JsonValue one => [one.GetValue<string>()],
         _ => [],
     };
 

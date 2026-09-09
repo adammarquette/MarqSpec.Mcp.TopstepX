@@ -1082,14 +1082,30 @@ currently blocked.* Service Quotas `L-3032A538` (*Fargate On-Demand vCPU resourc
 increase can place the in-flight services rather than rolling back the issued certificate.
 Maintainer raises the quota; this card does not invent a number.
 
+## Update (2026-09-09) — quota 64, delete+redeploy, `CREATE_FAILED`
+
+Fargate On-Demand vCPU quota `L-3032A538` is **64** (was **0** on the first deploy). The first
+`topstepx-mcp-staging` stack then rolled to **`ROLLBACK_COMPLETE`** — not updatable. gh#519 deleted
+it, removed **RETAIN** orphans (six secret shells, three log groups, EFS + access point, ALB
+access-log bucket, backup vault, Cognito pool), and redeployed with `ZoneMode.Lookup` of
+`Z00545362JA49XMTT3U7Q` unchanged.
+
+The redeploy issued `*.staging.marqspec.com`, stood up the ALB and Route 53 alias, and placed the
+postgres task (**1/1**) after filling the postgres shell during `CREATE_IN_PROGRESS`. The server
+task failed the ECS circuit breaker: release images **`v0.3.0` / `v0.3.1` still implement
+`UseBearerTokenGate` only**, while `EnvironmentStack` sets `Mcp__Auth__Mode=OAuth` (gh#512 is on
+`develop`, not yet in a published tag). Stack left **`CREATE_FAILED`** (`--no-rollback`); server
+**0/1**; `/health` **503**. Step 6 and #526–#528 remain open until a release ships OAuth and the
+maintainer fills the remaining shells.
+
 ## Follow-ups
 
 - gh#516, gh#517, gh#518 built decisions 7, 9 and 8; gh#529 gates decision 4's rule. gh#516 also
   still owns the outbound-path fork with the maintainer.
 - gh#519 stood the account up, confirmed `staging.`, chose `us-east-1`, created public zone
   `Z00545362JA49XMTT3U7Q`, swapped Cloudflare NS onto it, and changed staging to `ZoneMode.Lookup`
-  of that zone. Remaining on that card: secret fills the maintainer still owns, live quotes
-  this slice could not take (empty shells, #526–#528), and production (out of scope).
+  of that zone. Remaining on that card: a release image with OAuth, secret fills the maintainer
+  still owns, live quotes this slice could not take (#526–#528), and production (out of scope).
 - gh#520 and gh#521 build decision 8's pipeline and its check; gh#520 also rewrites the platform contract's
   "How the pipeline is shaped".
 - gh#522 builds decision 10 and records the restore drill; ADR-0004 gains the dated update saying the store

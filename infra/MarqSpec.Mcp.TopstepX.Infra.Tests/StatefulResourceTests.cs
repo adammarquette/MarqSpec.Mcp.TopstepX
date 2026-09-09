@@ -97,7 +97,12 @@ public sealed class StatefulResourceTests(EnvironmentTemplates templates) : ICla
         var groups = t.Resources("AWS::Logs::LogGroup").Values.Select(t.Properties).ToList();
 
         groups.Select(g => g["LogGroupName"]!.GetValue<string>())
-            .Should().BeEquivalentTo([$"/topstepx-mcp/{env}/server", $"/topstepx-mcp/{env}/postgres"]);
+            .Should().BeEquivalentTo(
+            [
+                $"/topstepx-mcp/{env}/server",
+                $"/topstepx-mcp/{env}/postgres",
+                $"aws-waf-logs-topstepx-mcp-{env}",
+            ]);
         groups.Should().OnlyContain(g => g["RetentionInDays"]!.GetValue<int>() == 30);
     }
 

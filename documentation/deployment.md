@@ -1,8 +1,184 @@
 # Deployment runbook
 
 Operational steps for the AWS environments (ADR-0023, gh#509). Started by gh#527's cost section; the
-alarm table is gh#526; WAF lockout is gh#528. Rotation, scale-to-zero, restore and "which release is
-running" land with gh#519 / gh#523.
+alarm table is gh#526; WAF lockout is gh#528. Rotation, restore and "which release is running" still
+land with gh#523. **gh#519 stood the account up once** (2026-09-09): region, OIDC stack, GitHub
+`aws-production` environment, and the DNS fail-closed that stopped the staging EnvironmentStack.
+
+## Account
+
+| | |
+|---|---|
+| Account | `045296582762` |
+| Region | **us-east-1** (chosen 2026-09-09; same as ADR-0023's cost basis, now a choice) |
+| Operator principal on the first deploy | `arn:aws:iam::045296582762:root` |
+| CDK bootstrap | `aws://045296582762/us-east-1` (`CDKToolkit` `CREATE_COMPLETE`) |
+| OIDC stack | `topstepx-mcp-github-oidc` |
+| Staging stack | **not deployed** — public NS for `marqspec.com` is Cloudflare, not the Route 53 zone |
+| Production stack | not deployed (out of scope for gh#519) |
+
+`infra/cdk.json` still carries AWS's documentation-example account and `us-east-1` as context placeholders.
+A credentialed deploy **overrides** them (`-c account=045296582762 -c region=us-east-1`). CI synth stays
+on the placeholders and `--no-lookups`. The first credentialed synth wrote the real hosted-zone and AZ
+lookups into `infra/cdk.context.json` **beside** the placeholder keys; do not delete the placeholder
+keys or `cdk synth --no-lookups` in CI misses and fails.
+
+**Outbound path is still a fork.** `Program.cs` requires `-c outbound=` to construct any stack. The
+2026-09-09 OIDC deploy passed `PublicIpPerTask` as **synth context only**. That is not a `Program.cs`
+literal and does not close ADR-0023's 2026-09-06 fork.
+
+Assisted-by: Cursor Grok 4.6 (Cursor)
+
+## Hostnames and DNS
+
+Confirmed spelling: **`staging.marqspec.com`**, hostname **`topstepx-mcp.staging.marqspec.com`**.
+`stage.` was a one-time epic typo. Evidence on #519 (2026-09-09): epic #509's decided target, the CDK
+app's `RootDomain`, and no `stage.` / `staging.` record in Route 53 or public DNS.
+
+**Do not `cdk deploy topstepx-mcp-staging` until public NS matches a plan the maintainer has written.**
+Measured 2026-09-09:
+
+| Who answers `NS marqspec.com` | Values |
+|---|---|
+| Route 53 zone `Z063685735CT6R1B1I8YZ` | `ns-1890.awsdns-44.co.uk`, `ns-638.awsdns-15.net`, `ns-1360.awsdns-42.org`, `ns-445.awsdns-55.com` |
+| Public DNS | `peyton.ns.cloudflare.com`, `meadow.ns.cloudflare.com` |
+
+`CreateAndDelegate` writes the `staging.` NS set into that Route 53 apex. ACM validates in **public**
+DNS. Deploying today would sit in `CREATE_IN_PROGRESS` while ACM caches Cloudflare NXDOMAIN (ADR-0023
+2026-09-07 certificate-ordering entry). Maintainer chooses: point the apex at the Route 53 set, or
+add a Cloudflare NS record for `staging.marqspec.com` after a sequenced zone create.
+
+When that is done, the live checks (quote on #519, tokens redacted) are:
+
+```bash
+# public NS of the delegated root must be the stack-created zone
+dig +short NS staging.marqspec.com
+
+# ACM wildcard ISSUED
+aws acm list-certificates --region us-east-1 \
+  --query "CertificateSummaryList[?DomainName=='*.staging.marqspec.com']"
+
+curl -sSI https://topstepx-mcp.staging.marqspec.com/health
+curl -sS -D- -o /dev/null -X POST https://topstepx-mcp.staging.marqspec.com/mcp
+curl -sS https://topstepx-mcp.staging.marqspec.com/.well-known/oauth-protected-resource/mcp
+```
+
+Assisted-by: Cursor Grok 4.6 (Cursor)
+
+## First deploy (what ran)
+
+From `infra/`, pinned CLI (`npm ci` then `npx cdk`). Never `:latest`.
+
+```bash
+npx cdk bootstrap aws://045296582762/us-east-1 \
+  -c outbound=PublicIpPerTask -c account=045296582762 -c region=us-east-1
+
+npx cdk deploy topstepx-mcp-github-oidc \
+  -c outbound=PublicIpPerTask -c account=045296582762 -c region=us-east-1 \
+  --parameters AlertsEmail="$ALERTS_EMAIL" \
+  --require-approval never
+```
+
+`AlertsEmail` is a CloudFormation parameter with no default. Pass it; do not commit it. SNS will send
+a confirmation to that address.
+
+When DNS allows a staging deploy, pass digest and version as parameters (the stack writes SSM; do
+**not** `put-parameter`). Latest published release on 2026-09-09:
+
+- tag `v0.3.0` → version `0.3.0`
+- digest `sha256:a5f88e0b3cad253cb76ef44338dea8a785f2ca9c56134836e80ee6f2519f17a8`
+
+```bash
+npx cdk deploy topstepx-mcp-staging \
+  -c outbound=<still the maintainer's fork> -c account=045296582762 -c region=us-east-1 \
+  --parameters ImageDigest=sha256:<64 hex> \
+  --parameters Version=0.3.0 \
+  --parameters ProjectXDataTier=Simulated \
+  --parameters AlertsEmail="$ALERTS_EMAIL"
+```
+
+Assisted-by: Cursor Grok 4.6 (Cursor)
+
+## OIDC and the GitHub environment
+
+Read-back, 2026-09-09 (quoted on #519):
+
+```bash
+aws iam get-role --role-name GitHubDeploy-staging --query Role.AssumeRolePolicyDocument
+aws iam get-role --role-name GitHubDeploy-production --query Role.AssumeRolePolicyDocument
+aws iam get-open-id-connect-provider \
+  --open-id-connect-provider-arn arn:aws:iam::045296582762:oidc-provider/token.actions.githubusercontent.com
+
+gh api repos/adammarquette/MarqSpec.Mcp.TopstepX/environments/aws-production \
+  --jq '[.protection_rules[]|select(.type=="required_reviewers")|.reviewers[]|"\(.type):\(.reviewer.login)"]'
+```
+
+What those answered: staging `sub` is the tag pattern and `main` only; production `sub` is
+`environment:aws-production` only; provider `ClientIDList` is `sts.amazonaws.com`; `ThumbprintList`
+is one 40-hex value IAM filled in — **not drift, do not "correct" the template**. `aws-production`
+requires `User:adammarquette`.
+
+Assisted-by: Cursor Grok 4.6 (Cursor)
+
+## Secrets
+
+Six shells per environment, created **by the EnvironmentStack** as empty JSON documents. They do not
+exist until that stack does. **Do not create them by hand** — a console secret is configuration this
+repository cannot replay.
+
+| Secret id | Keys (empty until filled) | Who fills |
+|---|---|---|
+| `topstepx-mcp/<env>/postgres` | `password`, `connectionString` | generate once; never a default |
+| `topstepx-mcp/<env>/projectx` | `apiKey` (TopstepX **username**), `apiSecret` (API **key**) | maintainer; practice + `ProjectXDataTier=Simulated` |
+| `topstepx-mcp/<env>/cohere` | `apiKey` | maintainer; empty is a supported state |
+| `topstepx-mcp/<env>/claude-connector` | `clientId`, `clientSecret` | copy from Cognito; see below |
+| `topstepx-mcp/<env>/deploy-check` | `clientId`, `clientSecret` | copy from Cognito; see below |
+| `topstepx-mcp/<env>/otel` | `endpoint`, `authorization` | maintainer; Grafana Cloud |
+
+**Never put a client secret on the command line.** A here-doc or a `0600` file, then delete the file.
+`describe-user-pool-client` prints the secret; pipe it into the file, do not let it hit the shell
+history or a tracker.
+
+```bash
+# after the EnvironmentStack exists — values stay in the file, not in argv
+umask 077
+aws cognito-idp describe-user-pool-client \
+  --user-pool-id "$POOL_ID" --client-id "$DEPLOY_CHECK_CLIENT_ID" \
+  --query 'UserPoolClient.ClientSecret' --output text > /tmp/deploy-check.secret
+# build {"clientId":"...","clientSecret":"..."} in an editor or jq --rawfile, then:
+aws secretsmanager put-secret-value \
+  --secret-id topstepx-mcp/staging/deploy-check \
+  --secret-string file:///tmp/deploy-check.json
+rm -f /tmp/deploy-check.secret /tmp/deploy-check.json
+```
+
+Same pair for `claude-connector`. Then `aws ecs update-service --force-new-deployment` on that
+environment's server service so the task re-reads every `valueFrom` (the OTEL sidecar included).
+
+**Never call `secretsmanager get-secret-value`.** The runbook records ARNs and client ids, never
+values. After the staging stack exists, paste the secret ARNs and the two client-id outputs here.
+
+Maintainer still owes: practice ProjectX credentials, optional Cohere key, Grafana OTLP pair, one
+Cognito user (self-sign-up is off). Do not mint fake brokerage credentials. MFA stays `OPTIONAL`
+(TOTP only) as gh#517 shipped it unless the maintainer says otherwise.
+
+Assisted-by: Cursor Grok 4.6 (Cursor)
+
+## Deployment check
+
+Once the hostname answers and the `deploy-check` shell is filled, from the environment (never as
+arguments):
+
+```bash
+MCP_CHECK_CLIENT_ID=… MCP_CHECK_CLIENT_SECRET=… MCP_CHECK_TOKEN_URL=… \
+  scripts/check-deployment.sh https://topstepx-mcp.staging.marqspec.com 0.3.0
+```
+
+An unfilled shell fails `UNSET` before any request. A wrong secret reaches the token endpoint and
+comes back `NO TOKEN`. Neither stream may contain the secret or the bearer
+(`scripts/check-deployment-selftest.sh`).
+
+Assisted-by: Cursor Grok 4.6 (Cursor)
 
 ## Cost
 
@@ -10,10 +186,18 @@ The account carries one monthly AWS Budgets COST limit (default **300** USD) on 
 `topstepx-mcp-github-oidc` stack — parameters `BudgetAmount` and `AlertsEmail`. Thresholds fire at 50 %,
 80 % and 100 % of actual spend and at 100 % of forecast (gh#527, ADR-0023 2026-09-08 entry).
 
-**Reading the bill by environment.** After cost-allocation tags are Active (gh#519 activates
-`Project` and `Environment` with `aws ce update-cost-allocation-tags-status` and quotes the read-back):
+Live `aws budgets describe-budgets` on 2026-09-09: `topstepx-mcp` = 300 USD monthly COST, and a
+pre-existing `Monthly Budget` of 10 USD that this stack did not create.
+
+**Reading the bill by environment.** Cost-allocation tags `Project` and `Environment` are **not yet
+Active**. `ce UpdateCostAllocationTagsStatus` on 2026-09-09 answered `Tag keys not found` —
+Cost Explorer had not discovered them (`ListCostAllocationTags` showed only `Name` and
+`aws:createdBy`). Re-run after an EnvironmentStack has billed for a day:
 
 ```bash
+aws ce update-cost-allocation-tags-status --cost-allocation-tags-status \
+  TagKey=Project,Status=Active TagKey=Environment,Status=Active
+aws ce list-cost-allocation-tags --status Active
 aws ce get-cost-and-usage \
   --time-period Start=YYYY-MM-DD,End=YYYY-MM-DD \
   --granularity MONTHLY \
@@ -21,18 +205,19 @@ aws ce get-cost-and-usage \
   --group-by Type=TAG,Key=Environment
 ```
 
-Expect a `staging` row and a `production` row once each environment has billed for a day. Amounts are not
-required for the first check — the shape is. Group by `Project` to confirm everything under this account
-that this app owns carries `topstepx-mcp`.
+Expect a `staging` row and a `production` row once each environment has billed for a day. Amounts are
+not required for the first check — the shape is. Group by `Project` to confirm everything under this
+account that this app owns carries `topstepx-mcp`.
 
-Assisted-by: Composer (Cursor)
+Assisted-by: Cursor Grok 4.6 (Cursor)
 
 ## Alarms
 
 Each environment has one SNS topic `topstepx-mcp-<env>-alerts`. The subscription address is stack
 parameter `AlertsEmail` — confirm the email once after the first deploy (SNS sends a confirmation).
 gh#522's "no dump object in 26 h" alarm is still open and will publish here when it lands. Live
-task-count and rollback emails on staging are #519's measurements, not this card's ship gate.
+task-count and rollback emails on staging are still outstanding: no EnvironmentStack, so no services
+to scale to zero.
 
 What is **not** alarmed, by decision (ADR-0023, gh#526): a server that is up, healthy and recording
 nothing because the tape recorder lost the hub (ADR-0016). That needs an app-emitted metric no card
@@ -56,7 +241,7 @@ Assisted-by: Cursor Grok 4.6 (Cursor)
 The WAF rate-based rule (gh#528, ADR-0023 2026-09-08 entry) blocks the operator's own address the same as
 anyone else's. A load generator, a `check-deployment.sh` loop, or a browser refresh storm from one IP at
 more than **300 requests / 5 minutes** (stack parameter `WafRateLimit`) starts receiving **403** from the
-ALB, not from the server.
+ALB, not from the server. The 2026-09-09 card could not fire this: no ALB.
 
 **Unblock.** Wait out the 5-minute evaluation window after the flood stops, or raise the parameter for
 the window and put it back:
@@ -70,6 +255,6 @@ npx cdk deploy topstepx-mcp-staging --parameters WafRateLimit=300
 Do not add your IP to an allow-list in the template. The rate rule is the lock; an operator exception
 would be a hole the next session inherits. Staging's managed groups are count-mode and will not lock you
 out. Production's groups block; a false positive there is a dated ADR-0023 entry plus a rule exclusion
-(after #519 quotes the log line), not a console click.
+(after a week of staging logs quotes the log line), not a console click.
 
-Assisted-by: Composer (Cursor)
+Assisted-by: Cursor Grok 4.6 (Cursor)

@@ -58,10 +58,10 @@ there is also what makes the answer **inspectable and template-tested** (gh#516)
 compose file's comments.
 
 Hostnames: **`topstepx-mcp.marqspec.com`** for production and **`topstepx-mcp.staging.marqspec.com`** for
-staging, one load balancer per environment (gh#511). The `staging.` spelling is gh#509's; its review left
-`stage.` open as the maintainer's to confirm in gh#519, so until then the names above are the epic's working
-spelling rather than a settled fact — a document quoting one should cite this paragraph **and its caveat**
-rather than assert the name as confirmed.
+staging, one load balancer per environment (gh#511). The `staging.` spelling is **confirmed** (gh#519,
+2026-09-09): epic #509's decided target, the CDK `RootDomain`, and no `stage.` record in Route 53 or
+public DNS. Public NS for the apex is still Cloudflare, so the first staging deploy is waiting on a
+DNS cutover ([ADR-0023](0023-aws-deployment-topology.md) 2026-09-09 entry).
 
 ### Token — OAuth 2.1, Cognito-issued; the static token stays local
 
@@ -227,8 +227,8 @@ Application Load Balancer per environment, two Fargate services (the released se
 Timescale image by digest on EFS), Cognito in the same stack as the issuer this record decided on, GitHub
 OIDC deploy roles, and the `aws-production` environment — with every alternative rejected on the way, RDS
 and Terraform among them. Nothing here changes: the bind, token and certificate replacements stand as
-written, and ADR-0023 carries them rather than restating them. The hostname spelling stays a caveat on both
-records until gh#519 confirms it, exactly as the *Bind* section says.
+written, and ADR-0023 carries them rather than restating them. The hostname spelling is confirmed
+`staging.` (gh#519, 2026-09-09).
 
 ## Update (2026-09-08) — which connector assumptions gh#510 confirmed or overturned
 
@@ -258,7 +258,8 @@ the three assumptions in *What this assumes about the connector* above.
 
 - gh#510 lands as a dated update on ADR-0007; when it does, a dated update here says which of the three
   assumptions it confirmed and which, if any, it overturned.
-- gh#511 — the topology ADR — cites this record and carries the hostname spelling once gh#519 confirms it.
+- gh#511 — the topology ADR — cites this record and carries the hostname spelling (confirmed `staging.`
+  on gh#519).
 - gh#512, gh#513, gh#515 may start once this record merges; gh#517 after gh#511 and gh#512.
 - gh#524 — Cowork registers the staging endpoint — is the measurement that replaces *"reported, not
   verified"* in ADR-0007 and `README.md`, and the first assumption above with it.

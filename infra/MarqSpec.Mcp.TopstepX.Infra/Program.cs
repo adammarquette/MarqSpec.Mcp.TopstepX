@@ -49,13 +49,14 @@ _ = new EnvironmentStack(app, "topstepx-mcp-production", new EnvironmentStackPro
     Env = env,
 });
 
-// `staging.` is the epic's working spelling; gh#519 confirms it before the first `cdk deploy`, because a
-// delegated zone renamed later is a re-delegation at the apex (ADR-0023 §1, ADR-0021 Bind).
+// `staging.` is confirmed (gh#519). The public zone already exists (Z00545362JA49XMTT3U7Q) and
+// Cloudflare already delegates to its NS. Lookup, never CreateAndDelegate: a second zone would mint
+// new NS and undo that swap (ADR-0023 2026-09-09 staging-lookup entry).
 _ = new EnvironmentStack(app, "topstepx-mcp-staging", new EnvironmentStackProps
 {
     EnvName = "staging",
     RootDomain = "staging.marqspec.com",
-    ZoneMode = ZoneMode.CreateAndDelegate,
+    ZoneMode = ZoneMode.Lookup,
     OutboundPath = outbound,
     // The OTLP collector sidecar (gh#537, ADR-0019 decision 5). BOTH environments get it, and staging is
     // first only in the order gh#519 fills the two shells -- one stack class, two environments, and a

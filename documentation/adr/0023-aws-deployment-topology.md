@@ -67,9 +67,10 @@ decisions, each standing on its own.
 
 `EnvironmentStack(EnvName, RootDomain, ZoneMode)` under `infra/`, instantiated for **production** on
 `marqspec.com` (hosted zone looked up — the zone already exists and holds the apex) and for **staging** on
-`staging.marqspec.com` (hosted zone created by the stack and delegated by an `NS` record at the apex). The
+`staging.marqspec.com` (hosted zone **looked up** — public zone `Z00545362JA49XMTT3U7Q`, created by hand
+so Cloudflare could be pointed at a stable NS set; see the 2026-09-09 staging-lookup entry). The
 two environments are therefore **the same template with a different root**, and gh#516's template tests
-assert that the two synthesised stacks differ only where `RootDomain`, `EnvName`, the zone mode and the two
+assert that the two synthesised stacks differ only where `RootDomain`, `EnvName` and the two
 tape flags appear. A staging that is its own delegated root rather than a subdomain of production's zone is
 what makes the wildcard certificate, the Cognito domain and the host rule the same code in both.
 
@@ -86,9 +87,8 @@ Hostnames: **`topstepx-mcp.marqspec.com`** and **`topstepx-mcp.staging.marqspec.
 environment. The `staging.` spelling is **confirmed** (gh#519, 2026-09-09 entry): epic #509's decided
 target, this app's `RootDomain`, and no `stage.` record in Route 53 or public DNS. `stage.` was a
 one-time epic typo. **Public NS for `marqspec.com` is Cloudflare, not the Route 53 zone.** Staging's
-own public zone `Z00545362JA49XMTT3U7Q` exists; the first EnvironmentStack deploy is stopped until
-Cloudflare's `staging` NS set is swapped to that zone's four nameservers (2026-09-09 staging-zone
-entry). A document quoting a hostname cites this paragraph.
+own public zone `Z00545362JA49XMTT3U7Q` is what staging looks up; Cloudflare's `staging` NS set
+matches that zone (2026-09-09 staging-lookup entry). A document quoting a hostname cites this paragraph.
 
 ### 2. One Application Load Balancer per environment is the reverse proxy — there is no sidecar
 
@@ -1052,14 +1052,44 @@ Name `staging`). Replace the current four (apex NS on `Z063685735CT6R1B1I8YZ`) w
 **EnvironmentStack still not deployed.** ACM would hang until Cloudflare answers those four for
 `staging.marqspec.com`. Do not `cdk deploy` `topstepx-mcp-staging`. Production stays undeployed.
 
+## Update (2026-09-09) — staging looks up the existing zone; do not create a second one
+
+gh#519. Decision 1's zone *mode* for staging changes here; the hostname spelling and the zone id do not.
+
+Public NS for `staging.marqspec.com` now matches zone `Z00545362JA49XMTT3U7Q` (`ns-193`, `ns-833`,
+`ns-1299`, `ns-1770` — Cloudflare and 8.8.8.8, 2026-09-09). `ZoneMode.CreateAndDelegate` would
+mint a **new** four names and undo that swap. Staging therefore uses `ZoneMode.Lookup` of
+`staging.marqspec.com`, the same path production uses for the apex. The zone id is committed in
+`infra/cdk.context.json` under both the placeholder account (CI `--no-lookups`) and
+`045296582762`. `CreateAndDelegate` stays a named mode and stays template-tested (gh#588) so the
+certificate-behind-delegation edge cannot rot; the app's staging stack must not take it.
+
+**Outbound path** is still the 2026-09-06 fork. This deploy passes `-c outbound=PublicIpPerTask` as
+synth context only — the last #519 session's choice for the OIDC stack — not a `Program.cs` literal.
+
+**Cognito rotation vs `ALLOW_REFRESH_TOKEN_AUTH`.** The first `cdk deploy topstepx-mcp-staging`
+(2026-09-09) failed `InvalidRequest` on `ClaudeConnectorClient`: *"ALLOW_REFRESH_TOKEN_AUTH is not
+a permitted ExplicitAuthFlow when refresh token rotation is enabled."* AWS documentation agrees
+(refresh tokens / rotation). The connector keeps rotation and pins `ExplicitAuthFlows` to the empty
+list so Cognito does not apply its default (SRP + custom + refresh). `deploy-check` has no rotation
+and still carries refresh-only. Measured; not a guess.
+
+**Fargate On-Demand vCPU quota is 0.** After the Cognito fix, ACM issued `*.staging.marqspec.com`
+(DNS validation against the looked-up zone; public CNAME visible at 8.8.8.8). The ALB answers
+HTTPS. Both ECS services stay at running 0: *unable to place a task because your account is
+currently blocked.* Service Quotas `L-3032A538` (*Fargate On-Demand vCPU resource count*) is
+**0**; `fargateVCPULimit` is enabled. The stack was left `CREATE_IN_PROGRESS` so a later quota
+increase can place the in-flight services rather than rolling back the issued certificate.
+Maintainer raises the quota; this card does not invent a number.
+
 ## Follow-ups
 
 - gh#516, gh#517, gh#518 built decisions 7, 9 and 8; gh#529 gates decision 4's rule. gh#516 also
   still owns the outbound-path fork with the maintainer.
 - gh#519 stood the account up, confirmed `staging.`, chose `us-east-1`, created public zone
-  `Z00545362JA49XMTT3U7Q`, and stopped EnvironmentStack pending the Cloudflare NS swap. Remaining
-  on that card: the swap, the staging deploy, secret fills, discovery measurements, live
-  alarm/WAF/CE quotes.
+  `Z00545362JA49XMTT3U7Q`, swapped Cloudflare NS onto it, and changed staging to `ZoneMode.Lookup`
+  of that zone. Remaining on that card: secret fills the maintainer still owns, live quotes
+  this slice could not take (empty shells, #526–#528), and production (out of scope).
 - gh#520 and gh#521 build decision 8's pipeline and its check; gh#520 also rewrites the platform contract's
   "How the pipeline is shaped".
 - gh#522 builds decision 10 and records the restore drill; ADR-0004 gains the dated update saying the store

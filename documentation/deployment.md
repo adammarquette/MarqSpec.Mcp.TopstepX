@@ -3,8 +3,8 @@
 Operational steps for the AWS environments (ADR-0023, gh#509). Started by gh#527's cost section; the
 alarm table is gh#526; WAF lockout is gh#528. Rotation, restore and "which release is running" still
 land with gh#523. **gh#519 stood the account up once** (2026-09-09): region, OIDC stack, GitHub
-`aws-production` environment, the DNS fail-closed, and the hand-created staging zone waiting on a
-Cloudflare NS swap.
+`aws-production` environment, the hand-created staging zone, the Cloudflare NS swap onto
+`Z00545362JA49XMTT3U7Q`, and staging's `ZoneMode.Lookup` of that zone (never a second zone).
 
 ## Account
 
@@ -15,7 +15,7 @@ Cloudflare NS swap.
 | Operator principal on the first deploy | `arn:aws:iam::045296582762:root` |
 | CDK bootstrap | `aws://045296582762/us-east-1` (`CDKToolkit` `CREATE_COMPLETE`) |
 | OIDC stack | `topstepx-mcp-github-oidc` |
-| Staging stack | **not deployed** — waiting on Cloudflare NS swap to zone `Z00545362JA49XMTT3U7Q` |
+| Staging stack | `topstepx-mcp-staging` — looks up zone `Z00545362JA49XMTT3U7Q`; ACM `*.staging.marqspec.com` **ISSUED**; stack left `CREATE_IN_PROGRESS` because Fargate On-Demand vCPU quota is **0** |
 | Production stack | not deployed (out of scope for gh#519) |
 
 `infra/cdk.json` still carries AWS's documentation-example account and `us-east-1` as context placeholders.
@@ -36,18 +36,18 @@ Confirmed spelling: **`staging.marqspec.com`**, hostname **`topstepx-mcp.staging
 `stage.` was a one-time epic typo. Evidence on #519 (2026-09-09): epic #509's decided target and the CDK
 app's `RootDomain`.
 
-**Staging zone created 2026-09-09; waiting on Cloudflare NS swap.** Public hosted zone
-`Z00545362JA49XMTT3U7Q` (`staging.marqspec.com.`, account `045296582762`). Four NS, quoted on #519:
+**Staging zone looked up, not created.** Public hosted zone
+`Z00545362JA49XMTT3U7Q` (`staging.marqspec.com.`, account `045296582762`). Four NS, quoted on #519
+and now served by Cloudflare and 8.8.8.8 (2026-09-09):
 
 - `ns-833.awsdns-40.net`
 - `ns-1770.awsdns-29.co.uk`
 - `ns-193.awsdns-24.com`
 - `ns-1299.awsdns-34.org`
 
-Cloudflare already has Type NS / Name `staging` pointed at the **apex** zone's four
-(`ns-445.awsdns-55.com` and siblings on `Z063685735CT6R1B1I8YZ`). Those names do not serve
-staging. **Replace the current four with the four above.** Do not `cdk deploy topstepx-mcp-staging`
-until public `NS staging.marqspec.com` matches this zone — ACM would hang (ADR-0023).
+`EnvironmentStack` **looks this zone up**. Do not `CreateAndDelegate`: a second public
+`staging.marqspec.com` zone would mint new NS and undo the Cloudflare swap. The zone id is in
+`infra/cdk.context.json` under both the placeholder account and `045296582762`.
 
 Apex is still Cloudflare (unchanged):
 
@@ -90,20 +90,29 @@ npx cdk deploy topstepx-mcp-github-oidc \
 `AlertsEmail` is a CloudFormation parameter with no default. Pass it; do not commit it. SNS will send
 a confirmation to that address.
 
-When DNS allows a staging deploy, pass digest and version as parameters (the stack writes SSM; do
-**not** `put-parameter`). Latest published release on 2026-09-09:
+Pass digest and version as parameters (the stack writes SSM; do **not** `put-parameter`).
+Latest published release on 2026-09-09:
 
 - tag `v0.3.0` → version `0.3.0`
 - digest `sha256:a5f88e0b3cad253cb76ef44338dea8a785f2ca9c56134836e80ee6f2519f17a8`
 
+Outbound is still a fork. This deploy passes `PublicIpPerTask` as **synth context only**, the same
+choice the 2026-09-09 OIDC session used; it is not a `Program.cs` literal.
+
 ```bash
 npx cdk deploy topstepx-mcp-staging \
-  -c outbound=<still the maintainer's fork> -c account=045296582762 -c region=us-east-1 \
-  --parameters ImageDigest=sha256:<64 hex> \
+  -c outbound=PublicIpPerTask -c account=045296582762 -c region=us-east-1 \
+  --parameters ImageDigest=sha256:a5f88e0b3cad253cb76ef44338dea8a785f2ca9c56134836e80ee6f2519f17a8 \
   --parameters Version=0.3.0 \
   --parameters ProjectXDataTier=Simulated \
   --parameters AlertsEmail="$ALERTS_EMAIL"
 ```
+
+The 2026-09-09 staging deploy created the ALB, issued `*.staging.marqspec.com`, and left the
+stack `CREATE_IN_PROGRESS`. `https://topstepx-mcp.staging.marqspec.com/health` answers **503**
+(TLS works; no healthy target). ECS: *unable to place a task because your account is currently
+blocked* — Service Quotas `Fargate On-Demand vCPU resource count` (`L-3032A538`) is **0**.
+Raise that quota, then the in-flight services can place. Do not `cdk deploy` production.
 
 Assisted-by: Cursor Grok 4.6 (Cursor)
 
@@ -164,11 +173,30 @@ Same pair for `claude-connector`. Then `aws ecs update-service --force-new-deplo
 environment's server service so the task re-reads every `valueFrom` (the OTEL sidecar included).
 
 **Never call `secretsmanager get-secret-value`.** The runbook records ARNs and client ids, never
-values. After the staging stack exists, paste the secret ARNs and the two client-id outputs here.
+values.
 
-Maintainer still owes: practice ProjectX credentials, optional Cohere key, Grafana OTLP pair, one
-Cognito user (self-sign-up is off). Do not mint fake brokerage credentials. MFA stays `OPTIONAL`
-(TOTP only) as gh#517 shipped it unless the maintainer says otherwise.
+Staging shells (2026-09-09, still empty — CloudFormation `SecretString` must stay the empty
+document). ARNs:
+
+| Secret id | ARN |
+|---|---|
+| `topstepx-mcp/staging/postgres` | `arn:aws:secretsmanager:us-east-1:045296582762:secret:topstepx-mcp/staging/postgres-KsnnKl` |
+| `topstepx-mcp/staging/projectx` | `arn:aws:secretsmanager:us-east-1:045296582762:secret:topstepx-mcp/staging/projectx-d7tjje` |
+| `topstepx-mcp/staging/cohere` | `arn:aws:secretsmanager:us-east-1:045296582762:secret:topstepx-mcp/staging/cohere-H308Gb` |
+| `topstepx-mcp/staging/claude-connector` | `arn:aws:secretsmanager:us-east-1:045296582762:secret:topstepx-mcp/staging/claude-connector-vA5Eap` |
+| `topstepx-mcp/staging/deploy-check` | `arn:aws:secretsmanager:us-east-1:045296582762:secret:topstepx-mcp/staging/deploy-check-PdXtvJ` |
+| `topstepx-mcp/staging/otel` | `arn:aws:secretsmanager:us-east-1:045296582762:secret:topstepx-mcp/staging/otel-ZUtNcC` |
+
+Client ids (not secrets): `claude-connector` `5n6l3vjohgai9uj4jmcfd55lr8`; `deploy-check`
+`dlgj9ubhbstgm9oqqovl2kjl2`. Pool `us-east-1_9OM1VPCKu`. Issuer
+`https://cognito-idp.us-east-1.amazonaws.com/us-east-1_9OM1VPCKu`.
+
+Maintainer still owes: a Fargate On-Demand vCPU quota above 0 (`L-3032A538` is **0**; ECS events
+say the account is blocked and no task places); then generate the postgres password and
+connection string into that shell (never on the command line); practice ProjectX credentials;
+optional Cohere key; Grafana OTLP pair; copy both Cognito client secrets into their shells;
+one Cognito user (self-sign-up is off). Do not mint fake brokerage credentials. MFA stays
+`OPTIONAL` (TOTP only) as gh#517 shipped it unless the maintainer says otherwise.
 
 Assisted-by: Cursor Grok 4.6 (Cursor)
 

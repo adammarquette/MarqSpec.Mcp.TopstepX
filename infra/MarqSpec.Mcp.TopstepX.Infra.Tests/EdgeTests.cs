@@ -119,16 +119,34 @@ public sealed class EdgeTests(EnvironmentTemplates templates) : IClassFixture<En
         Synthesised.Text(alias["AliasTarget"]!["HostedZoneId"]).Should().Contain($"[\"{albId}\",\"CanonicalHostedZoneID\"]");
     }
 
-    [Fact]
-    public void Production_looks_its_zone_up_and_creates_none()
+    [Theory]
+    [MemberData(nameof(EnvironmentTemplates.Both), MemberType = typeof(EnvironmentTemplates))]
+    public void Both_environments_look_their_zone_up_and_create_none(string env, string _)
     {
-        templates.Production.Resources("AWS::Route53::HostedZone").Should().BeEmpty();
+        templates.For(env).Resources("AWS::Route53::HostedZone").Should().BeEmpty(
+            "staging's public zone Z00545362JA49XMTT3U7Q already exists and Cloudflare already delegates "
+            + "to its NS. CreateAndDelegate would mint a second zone and undo that swap (gh#519)");
+    }
+
+    [Theory]
+    [MemberData(nameof(EnvironmentTemplates.Both), MemberType = typeof(EnvironmentTemplates))]
+    public void Both_certificates_are_ordered_behind_nothing(string env, string _)
+    {
+        var (_, cert) = templates.For(env).Single("AWS::CertificateManager::Certificate");
+
+        Synthesised.DependenciesOf(cert).Should().BeEmpty(
+            "both zones are looked up -- they already exist and are already delegated, so there is nothing "
+            + "to wait for. gh#588's DependsOn edge belongs only to CreateAndDelegate");
     }
 
     [Fact]
-    public void Staging_creates_its_zone_and_delegates_it_at_the_apex()
+    public void CreateAndDelegate_creates_a_zone_and_orders_the_certificate_behind_the_delegation()
     {
-        var t = templates.Staging;
+        var t = Synthesised.Environment(
+            "staging", "staging.marqspec.com", ZoneMode.CreateAndDelegate,
+            EnvironmentTemplates.FixtureShape, recordTapeDefault: false, warmIndicatorsDefault: false,
+            Synthesised.DeployedTelemetry);
+
         var (zoneId, zone) = t.Single("AWS::Route53::HostedZone");
         t.Properties(zone)["Name"]!.GetValue<string>().Should().Be("staging.marqspec.com.");
 
@@ -139,32 +157,13 @@ public sealed class EdgeTests(EnvironmentTemplates templates) : IClassFixture<En
         delegation["Name"]!.GetValue<string>().Should().Be("staging.marqspec.com.");
         Synthesised.LogicalIdOf(delegation["HostedZoneId"]).Should().NotBe(zoneId, "the NS record lives in the parent zone");
         Synthesised.LogicalIdOf(delegation["ResourceRecords"]).Should().Be(zoneId, "its values are the new zone's name servers");
-    }
 
-    [Fact]
-    public void Stagings_certificate_is_ordered_behind_the_delegation()
-    {
-        var t = templates.Staging;
         var (_, cert) = t.Single("AWS::CertificateManager::Certificate");
         var delegationId = t.Resources("AWS::Route53::RecordSet")
             .Single(r => t.Properties(r.Value)["Type"]!.GetValue<string>() == "NS").Key;
-
         Synthesised.DependenciesOf(cert).Should().Contain(
             delegationId,
-            "ACM validates *.staging.marqspec.com by writing a record into a zone this same stack creates, and "
-            + "polls PUBLIC DNS for it -- which cannot resolve until the apex delegates. Both resources "
-            + "reference only the zone, so without this edge CloudFormation may create them concurrently and "
-            + "the stack sits in CREATE_IN_PROGRESS rather than failing (gh#588)");
-    }
-
-    [Fact]
-    public void Productions_certificate_is_ordered_behind_nothing()
-    {
-        var (_, cert) = templates.Production.Single("AWS::CertificateManager::Certificate");
-
-        Synthesised.DependenciesOf(cert).Should().BeEmpty(
-            "production's zone is looked up -- it already exists and is already delegated, so there is nothing "
-            + "to wait for. This is the other direction of gh#588: the staging fix must not reach the "
-            + "environment that has no delegation of its own");
+            "the CreateAndDelegate path still races ACM against public NS (gh#588). Staging itself must "
+            + "not take this path: a second zone would break the Cloudflare swap (gh#519)");
     }
 }

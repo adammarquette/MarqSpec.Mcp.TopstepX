@@ -3,6 +3,14 @@
     "Id": "/hostedzone/Z0000000000000000000",
     "Name": "marqspec.com."
   },
+  "hosted-zone:account=123456789012:domainName=staging.marqspec.com:region=us-east-1": {
+    "Id": "/hostedzone/Z0000000000000000000",
+    "Name": "staging.marqspec.com."
+  },
+  "hosted-zone:account=045296582762:domainName=staging.marqspec.com:region=us-east-1": {
+    "Id": "/hostedzone/Z00545362JA49XMTT3U7Q",
+    "Name": "staging.marqspec.com."
+  },
   "availability-zones:account=123456789012:region=us-east-1": [
     "us-east-1a",
     "us-east-1b"

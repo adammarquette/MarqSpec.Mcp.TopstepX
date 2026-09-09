@@ -124,9 +124,17 @@ public sealed class CognitoTests(EnvironmentTemplates templates) : IClassFixture
         client["RefreshTokenRotation"]!["RetryGracePeriodSeconds"]!.GetValue<int>().Should().Be(30, "one client-side retry succeeds; a replay a minute later does not");
         client["EnableTokenRevocation"]!.GetValue<bool>().Should().BeTrue();
         client["PreventUserExistenceErrors"]!.GetValue<string>().Should().Be("ENABLED", "a wrong username and a wrong password answer alike");
-        // The hosted UI's code grant and its refresh are the only ways this client obtains a token: no
-        // username/password flow, no SRP, no custom challenge -- each is a door nobody decided on.
-        Strings(client["ExplicitAuthFlows"]).Should().Equal("ALLOW_REFRESH_TOKEN_AUTH");
+        // Rotation is not compatible with ALLOW_REFRESH_TOKEN_AUTH (Cognito; measured on the first
+        // staging deploy, 2026-09-09). Refresh goes through GetTokensFromRefreshToken. The property
+        // is still present and empty so Cognito does not apply its default (SRP + custom + refresh).
+        client.ContainsKey("ExplicitAuthFlows").Should().BeTrue(
+            "an omitted property is Cognito's default (SRP + custom + refresh) and rotation refuses the refresh flow");
+        Strings(client["ExplicitAuthFlows"]).Should().BeEmpty(
+            "ALLOW_REFRESH_TOKEN_AUTH plus rotation is InvalidRequest; refresh is GetTokensFromRefreshToken");
+        Strings(client["ExplicitAuthFlows"]).Should().NotContain("ALLOW_USER_PASSWORD_AUTH");
+        Strings(client["ExplicitAuthFlows"]).Should().NotContain("ALLOW_USER_SRP_AUTH");
+        Strings(client["ExplicitAuthFlows"]).Should().NotContain("ALLOW_CUSTOM_AUTH");
+        Strings(client["ExplicitAuthFlows"]).Should().NotContain("ALLOW_ADMIN_USER_PASSWORD_AUTH");
     }
 
     [Theory]

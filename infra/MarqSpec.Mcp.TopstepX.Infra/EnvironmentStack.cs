@@ -393,10 +393,12 @@ public sealed class EnvironmentStack : Stack
         });
 
         // Both clients are CONFIDENTIAL (a generated secret), and each gets tokens by exactly one grant.
-        // ExplicitAuthFlows carries only the refresh (AllowOnlyRefresh): no username/password, no SRP, no
-        // custom challenge -- the hosted UI's code flow is the only door for a person, and client_credentials
-        // the only one for the check. Scopes are built from the resource server's own reference, so the
-        // client is created after the server it names and the scope cannot drift from the server's identifier.
+        // The L2 omits ExplicitAuthFlows when every InitiateAuth flow is off, and an omitted property is
+        // Cognito's default (SRP + custom + refresh). That default is refused: no username/password, no
+        // SRP, no custom challenge -- the hosted UI's code flow is the only door for a person, and
+        // client_credentials the only one for the check. Rotation on the connector is additionally
+        // incompatible with ALLOW_REFRESH_TOKEN_AUTH (Cognito; measured 2026-09-09). Scopes are built
+        // from the resource server's own reference, so the client is created after the server it names.
         var connector = pool.AddClient("ClaudeConnectorClient", new UserPoolClientOptions
         {
             UserPoolClientName = "claude-connector",
@@ -433,7 +435,7 @@ public sealed class EnvironmentStack : Stack
             EnableTokenRevocation = true,
             PreventUserExistenceErrors = true,
         });
-        AllowOnlyRefresh(connector);
+        NoInitiateAuthFlows(connector);
         AllowOnlyRefresh(deployCheck);
 
         // What gh#519's runbook records, read off the stack rather than a console: the issuer, the two client
@@ -1034,10 +1036,20 @@ public sealed class EnvironmentStack : Stack
     /// <summary>
     /// Pins a client's <c>ExplicitAuthFlows</c> to the refresh alone. The L2 omits the property when every
     /// flow is off, and an omitted property is Cognito's default — SRP, custom challenge and refresh — so
-    /// "no direct authentication" has to be said on the L1 or it is not said at all.
+    /// "no direct authentication" has to be said on the L1 or it is not said at all. Do not use this on
+    /// a client that enables refresh-token rotation: Cognito refuses
+    /// <c>ALLOW_REFRESH_TOKEN_AUTH</c> in that combination (measured 2026-09-09).
     /// </summary>
     private static void AllowOnlyRefresh(UserPoolClient client) =>
         ((CfnUserPoolClient)client.Node.DefaultChild!).ExplicitAuthFlows = ["ALLOW_REFRESH_TOKEN_AUTH"];
+
+    /// <summary>
+    /// Pins <c>ExplicitAuthFlows</c> to the empty list so Cognito does not apply its default. Used on the
+    /// rotating connector client, whose refresh is <c>GetTokensFromRefreshToken</c>, not
+    /// <c>REFRESH_TOKEN_AUTH</c>.
+    /// </summary>
+    private static void NoInitiateAuthFlows(UserPoolClient client) =>
+        ((CfnUserPoolClient)client.Node.DefaultChild!).ExplicitAuthFlows = [];
 
     private CfnParameter Flag(string name, bool @default, string description) =>
         new(this, name, new CfnParameterProps

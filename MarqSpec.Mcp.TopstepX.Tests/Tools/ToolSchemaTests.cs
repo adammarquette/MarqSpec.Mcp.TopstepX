@@ -351,7 +351,7 @@ public sealed class ToolSchemaTests
     /// <summary>The bar-series counter that can read zero even after a genuine fetch.</summary>
     private const string AmbiguousCounter = "fetchedBuckets";
 
-    /// <summary>The bar-series counter whose zero is the exact statement that nothing was fetched.</summary>
+    /// <summary>The bar-series counter whose zero is the exact statement that no BARS were fetched.</summary>
     private const string ExactTest = "venueRequests";
 
     public static TheoryData<string> EveryTool()
@@ -409,7 +409,7 @@ public sealed class ToolSchemaTests
         //
         // The general class stays UNGATED, and deliberately: whether a sentence describes what its payload
         // means is not reachable by reflection, and the absent-field gate above says the same about its own
-        // prose half. This pins one retraction across all fifteen descriptions so it cannot drift back.
+        // prose half. This pins one retraction across every description on the surface so it cannot drift back.
         MethodInfo method = ToolMethods().Single(m => m.DeclaringType!.Name + "." + m.Name == tool);
         string description = method.GetCustomAttribute<DescriptionAttribute>()?.Description ?? string.Empty;
 
@@ -423,7 +423,8 @@ public sealed class ToolSchemaTests
             "{0} names `{1}`, which can read ZERO even after a genuine fetch -- a range the venue answers "
             + "empty (R-1.7), and a write that loses a serialization race (gh#73). Offered alone it "
             + "undercounts venue traffic and never overcounts it. Name `{2}` beside it: `{2} == 0` is the "
-            + "exact test for an answer served entirely from the store. Current text: \"{3}\"",
+            + "exact test for no bar fetch -- narrower than \"served entirely from the store\", since a "
+            + "memo-covered read still makes one contract search venueRequests does not count (gh#504). Current text: \"{3}\"",
             tool,
             AmbiguousCounter,
             ExactTest,

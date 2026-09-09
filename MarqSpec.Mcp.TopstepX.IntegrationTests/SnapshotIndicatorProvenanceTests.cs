@@ -6,8 +6,10 @@ using MarqSpec.Mcp.TopstepX.Data.Entities;
 using MarqSpec.Mcp.TopstepX.Domain;
 using MarqSpec.Mcp.TopstepX.Domain.MarketData;
 using MarqSpec.Mcp.TopstepX.MarketData;
+using MarqSpec.Mcp.TopstepX.Telemetry;
 using MarqSpec.Mcp.TopstepX.Tests.MarketData;
 using MarqSpec.Mcp.TopstepX.Tools;
+using MarqSpec.Mcp.TopstepX.Venue;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Storage;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -78,7 +80,7 @@ public sealed class SnapshotIndicatorProvenanceTests(SeriesStoreFixture fixture)
     /// Stated rather than read off the catalogue, so a batched read that quietly dropped a name — the join's
     /// natural failure — is a red test rather than a smaller map that agrees with itself.
     /// </remarks>
-    private const int IndicatorCount = 11;
+    private const int IndicatorCount = 12;
 
     /// <summary>ATR(3) over the expiring run, hand-checked.</summary>
     /// <remarks>
@@ -98,6 +100,7 @@ public sealed class SnapshotIndicatorProvenanceTests(SeriesStoreFixture fixture)
 
     private readonly SeriesStoreFixture _fixture = fixture;
     private readonly TopstepXDbContext _database = fixture.CreateContext();
+    private readonly HostTelemetry _telemetry = new();
 
     /// <inheritdoc />
     public Task InitializeAsync() => _fixture.ResetAsync();
@@ -106,6 +109,7 @@ public sealed class SnapshotIndicatorProvenanceTests(SeriesStoreFixture fixture)
     public Task DisposeAsync()
     {
         _database.Dispose();
+        _telemetry.Dispose();
         return Task.CompletedTask;
     }
 
@@ -156,14 +160,15 @@ public sealed class SnapshotIndicatorProvenanceTests(SeriesStoreFixture fixture)
     [Fact]
     public async Task EveryReadingInTheMap_IsTheOneGetIndicatorAtWouldHaveReturned_AcrossARoll()
     {
-        // The equivalence the batched read has to keep (gh#388). The snapshot used to COMPOSE eleven
-        // get_indicator_at calls, so per-indicator provenance was true by construction; it now composes ONE
-        // query per (instrument, resolution) that returns the latest row for every (Indicator, Period) at
-        // once, with the ContractId folded in. Collapsing eleven as-of reads into one join is exactly where
-        // a bucket -- or worse, a contract -- gets attributed to the wrong indicator, and the resulting
-        // number is plausible and is acted on. So the two shapes are compared here rather than trusted:
-        // the fixture spans a roll, so the eleven readings genuinely disagree about both bucket and
-        // contract, and an implementation that broadcast one bucket across the map goes red.
+        // The equivalence the batched read has to keep (gh#388). The snapshot used to COMPOSE one
+        // get_indicator_at call per catalogue name, so per-indicator provenance was true by construction; it
+        // now composes ONE query per (instrument, resolution) that returns the latest row for every
+        // (Indicator, Period) at once, with the ContractId folded in. Collapsing every as-of read into one
+        // join is exactly where a bucket -- or worse, a contract -- gets attributed to the wrong indicator,
+        // and the resulting number is plausible and is acted on. So the two shapes are compared here rather
+        // than trusted: the fixture spans a roll, so the readings genuinely disagree about both bucket and
+        // contract, and an implementation that broadcast one bucket across the map goes red. The comparison
+        // walks the catalogue rather than a literal count, so it does not go stale as names are added.
         (SnapshotTools snapshot, IndicatorTools indicators) = await ComposeBothAsync();
 
         ToolPayloads.MarketSnapshot payload =
@@ -180,7 +185,8 @@ public sealed class SnapshotIndicatorProvenanceTests(SeriesStoreFixture fixture)
         foreach ((string name, ToolPayloads.IndicatorReading? composed) in slice.Indicators)
         {
             ToolPayloads.IndicatorReading single =
-                await indicators.GetIndicatorAt("ES", 5, name, asOf, CancellationToken.None);
+                await indicators.GetIndicatorAt(
+                    "ES", 5, name, asOf, cancellationToken: CancellationToken.None);
 
             if (single.Value is null)
             {
@@ -207,7 +213,7 @@ public sealed class SnapshotIndicatorProvenanceTests(SeriesStoreFixture fixture)
                 name);
         }
 
-        // And the comparison has to have had something to catch. A map whose eleven readings all sat on one
+        // And the comparison has to have had something to catch. A map whose readings all sat on one
         // bucket would satisfy every assertion above against an implementation that broadcast one bucket.
         slice.Indicators.Values
             .Where(r => r is not null)
@@ -398,7 +404,8 @@ public sealed class SnapshotIndicatorProvenanceTests(SeriesStoreFixture fixture)
         // would fill the bar-less case's window and take it off the branch under test.
         CountingGateway gateway = new([]);
 
-        IndicatorProjector projector = new(_database, catalog, NullLogger<IndicatorProjector>.Instance);
+        IndicatorProjector projector =
+            new(_database, catalog, NullLogger<IndicatorProjector>.Instance, _telemetry);
 
         // WRAPPED IN THE TRANSACTION PRODUCTION USES (gh#387). The projector refuses to run outside one --
         // it writes its values with a statement the store runs as it is sent, while its removals wait for
@@ -415,12 +422,20 @@ public sealed class SnapshotIndicatorProvenanceTests(SeriesStoreFixture fixture)
         }
 
         BarCacheService cache = new(
-            _database, gateway, calendar, projector, clock, NullLogger<BarCacheService>.Instance);
+            _database,
+            gateway,
+            calendar,
+            projector,
+            new InstrumentRegistry(wrapped),
+            new ContractDirectory(clock),
+            clock,
+            NullLogger<BarCacheService>.Instance,
+            _telemetry);
 
         InstrumentResolver resolver = new(new InstrumentRegistry(wrapped), new StoreAvailabilityHolder());
         ToolGuards guards = new(wrapped);
 
-        // THE ONE INSTANCE BOTH SHAPES GO THROUGH. The claim is that the batched map and the eleven
+        // THE ONE INSTANCE BOTH SHAPES GO THROUGH. The claim is that the batched map and the per-name
         // as-of reads agree, and after gh#414 those two live on the same type -- so handing the snapshot a
         // second IndicatorTools would let them agree by having been given the same fixture twice while
         // disagreeing about the same one, which is the trap this fixture's own remarks name.
@@ -429,7 +444,7 @@ public sealed class SnapshotIndicatorProvenanceTests(SeriesStoreFixture fixture)
             _database,
             catalog,
             new IndicatorCacheService(
-                _database, catalog, projector, clock, NullLogger<IndicatorCacheService>.Instance),
+                _database, catalog, projector, clock, NullLogger<IndicatorCacheService>.Instance, _telemetry),
             gateway,
             guards);
 

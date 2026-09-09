@@ -1,8 +1,9 @@
-using System.Globalization;
+using System.Diagnostics;
 using MarqSpec.Mcp.TopstepX.Data;
 using MarqSpec.Mcp.TopstepX.Data.Entities;
 using MarqSpec.Mcp.TopstepX.Domain;
 using MarqSpec.Mcp.TopstepX.Domain.MarketData;
+using MarqSpec.Mcp.TopstepX.Telemetry;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 
@@ -46,16 +47,19 @@ namespace MarqSpec.Mcp.TopstepX.MarketData;
 /// <param name="projector">The whole-tape replay.</param>
 /// <param name="clock">The clock, stamped on rows a projection actually changes.</param>
 /// <param name="logger">The logger. A read that silently replayed a year of prints would be invisible.</param>
+/// <param name="telemetry">The app-owned meter and activity source.</param>
 public sealed class FootprintCacheService(
     TopstepXDbContext database,
     FootprintProjector projector,
     TimeProvider clock,
-    ILogger<FootprintCacheService> logger)
+    ILogger<FootprintCacheService> logger,
+    HostTelemetry telemetry)
 {
     private readonly TopstepXDbContext _database = database;
     private readonly FootprintProjector _projector = projector;
     private readonly TimeProvider _clock = clock;
     private readonly ILogger<FootprintCacheService> _logger = logger;
+    private readonly HostTelemetry _telemetry = telemetry;
 
     /// <summary>
     /// Series this scope has already found complete.
@@ -96,9 +100,16 @@ public sealed class FootprintCacheService(
                 "A bar size must be positive.");
         }
 
+        // ONE SPAN AND ONE MEASUREMENT PER READ, including the memoised ones. The scope memo below is a store
+        // optimisation; a caller that asked twice was served twice, and a rate that fell because a memo was
+        // added would read as traffic that stopped (gh#536).
+        using Activity? span = _telemetry.StartCacheRead(
+            CacheSeries.Footprint, instrument.Symbol, resolutionMinutes);
+
         (string, string, int) key = (venue, instrument.Symbol, resolutionMinutes);
         if (_complete.Contains(key))
         {
+            Hit(instrument, resolutionMinutes);
             return false;
         }
 
@@ -110,6 +121,7 @@ public sealed class FootprintCacheService(
         if (prints.Count == 0)
         {
             _complete.Add(key);
+            Hit(instrument, resolutionMinutes);
             return false;
         }
 
@@ -126,10 +138,16 @@ public sealed class FootprintCacheService(
         if (CellsReflectTape(expected, stored))
         {
             _complete.Add(key);
+            Hit(instrument, resolutionMinutes);
             return false;
         }
 
-        string what = instrument.Symbol + " " + resolutionMinutes.ToString(CultureInfo.InvariantCulture) + "m";
+        // A tape the cells reflect NOTHING of is a miss; one they partly reflect is a partial. The two are
+        // worth separating because only the first is a cold read -- the second is a tape that grew, which is
+        // the ordinary state of a live instrument and must not read as a cache that is not working.
+        string outcome = stored.Count == 0 ? CacheOutcome.Miss : CacheOutcome.Partial;
+
+        string what = new SeriesKey.Resolution(venue, instrument.Symbol, resolutionMinutes).Describe();
 
         _logger.LogInformation(
             "The stored tape has prints {Instrument} {Resolution}m cells do not yet reflect. "
@@ -156,8 +174,13 @@ public sealed class FootprintCacheService(
 
         Projections++;
         _complete.Add(key);
+        _telemetry.CacheRead(CacheSeries.Footprint, instrument.Symbol, resolutionMinutes, outcome);
         return true;
     }
+
+    private void Hit(InstrumentId instrument, int resolutionMinutes) =>
+        _telemetry.CacheRead(
+            CacheSeries.Footprint, instrument.Symbol, resolutionMinutes, CacheOutcome.Hit);
 
     private async Task<List<TradePrint>> LoadPrintsAsync(
         string venue,

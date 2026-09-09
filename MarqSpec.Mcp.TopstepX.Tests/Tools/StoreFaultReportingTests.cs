@@ -209,7 +209,7 @@ public sealed class StoreFaultReportingTests
     [Fact]
     public async Task ALostRace_IsDescribedWithoutNarratingAUnitOfWorkTheBoundaryNeverSaw()
     {
-        // The guard speaks for all fifteen tools. "The coverage ledger and the indicator projection over the
+        // The guard speaks for every tool on the surface. "The coverage ledger and the indicator projection over the
         // same series" is a fact about SeriesUnitOfWork, and it is true today only because every unique key
         // in the schema happens to be bars-family. Handed to the tool that adds the next one, it is a false
         // statement wearing a boundary-shaped guarantee.

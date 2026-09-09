@@ -6,7 +6,9 @@ using MarqSpec.Mcp.TopstepX.Data.Entities;
 using MarqSpec.Mcp.TopstepX.Domain;
 using MarqSpec.Mcp.TopstepX.Domain.MarketData;
 using MarqSpec.Mcp.TopstepX.MarketData;
+using MarqSpec.Mcp.TopstepX.Telemetry;
 using MarqSpec.Mcp.TopstepX.Tools;
+using MarqSpec.Mcp.TopstepX.Venue;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -155,10 +157,19 @@ public sealed class SnapshotQueryCountTests(SchemaFixture fixture)
                 + "map of nulls would meet every count below having read nothing");
         }
 
-        // The batched read, identified by the group-max the store actually ran. Its presence is the
-        // translation claim: EF would have thrown rather than sent this if Npgsql could not build it.
+        // The batched read, identified by the group-max the store actually ran AND by the contract it
+        // carries out of the join. Its presence is the translation claim: EF would have thrown rather than
+        // sent this if Npgsql could not build it.
+        //
+        // THE SECOND CLAUSE IS LOAD-BEARING (gh#531). The read-triggered projection's probe now runs a
+        // group-max over the same column of the same table to ask how far each (Indicator, Period) reaches,
+        // so the first clause alone counts four statements on a two-resolution call and cannot say which two
+        // are the read this test is about. What separates them is what the batched read exists to do: join
+        // the latest row back to its bar and carry that bar's contract, which is the whole of the N+1 it
+        // replaced. The probe selects three columns and joins nothing.
         int batched = counted.Commands.Count(c =>
-            c.Contains("max(i.\"BucketStart\")", StringComparison.Ordinal));
+            c.Contains("max(i.\"BucketStart\")", StringComparison.Ordinal)
+            && c.Contains("\"ContractId\"", StringComparison.Ordinal));
 
         batched.Should().Be(
             SnapshotTools.DefaultResolutionMinutes.Count,
@@ -205,7 +216,8 @@ public sealed class SnapshotQueryCountTests(SchemaFixture fixture)
         foreach ((string name, ToolPayloads.IndicatorReading? composed) in slice.Indicators)
         {
             ToolPayloads.IndicatorReading single =
-                await indicators.GetIndicatorAt("ES", 5, name, asOf, CancellationToken.None);
+                await indicators.GetIndicatorAt(
+                    "ES", 5, name, asOf, cancellationToken: CancellationToken.None);
 
             if (single.Value is null)
             {
@@ -254,14 +266,17 @@ public sealed class SnapshotQueryCountTests(SchemaFixture fixture)
 
         await database.SaveChangesAsync();
 
+        using HostTelemetry telemetry = new();
         IndicatorCatalog catalog = new(Options.Create(new IndicatorOptions()), Calendar);
-        IndicatorProjector projector = new(database, catalog, NullLogger<IndicatorProjector>.Instance);
+        IndicatorProjector projector =
+            new(database, catalog, NullLogger<IndicatorProjector>.Instance, telemetry);
         IndicatorCacheService warm = new(
             database,
             catalog,
             projector,
             new FakeTimeProvider(Start),
-            NullLogger<IndicatorCacheService>.Instance);
+            NullLogger<IndicatorCacheService>.Instance,
+            telemetry);
 
         foreach (int resolution in new[] { 5, 60 })
         {
@@ -291,10 +306,20 @@ public sealed class SnapshotQueryCountTests(SchemaFixture fixture)
 
         SeriesGateway gateway = new(Venue, [], Contract);
 
-        IndicatorProjector projector = new(database, catalog, NullLogger<IndicatorProjector>.Instance);
+        using HostTelemetry telemetry = new();
+        IndicatorProjector projector =
+            new(database, catalog, NullLogger<IndicatorProjector>.Instance, telemetry);
 
         BarCacheService cache = new(
-            database, gateway, calendar, projector, clock, NullLogger<BarCacheService>.Instance);
+            database,
+            gateway,
+            calendar,
+            projector,
+            new InstrumentRegistry(wrapped),
+            new ContractDirectory(clock),
+            clock,
+            NullLogger<BarCacheService>.Instance,
+            telemetry);
 
         InstrumentResolver resolver = new(new InstrumentRegistry(wrapped), new StoreAvailabilityHolder());
         ToolGuards guards = new(wrapped);
@@ -307,7 +332,7 @@ public sealed class SnapshotQueryCountTests(SchemaFixture fixture)
             database,
             catalog,
             new IndicatorCacheService(
-                database, catalog, projector, clock, NullLogger<IndicatorCacheService>.Instance),
+                database, catalog, projector, clock, NullLogger<IndicatorCacheService>.Instance, telemetry),
             gateway,
             guards);
 

@@ -21,7 +21,21 @@
   <ItemGroup>
     <PackageReference Include="ModelContextProtocol" />
     <PackageReference Include="ModelContextProtocol.AspNetCore" />
+    <!-- The OAuth mode of the HTTP gate (gh#512). Only the HTTP transport under Mcp__Auth__Mode=OAuth uses it. -->
+    <PackageReference Include="Microsoft.AspNetCore.Authentication.JwtBearer" />
     <PackageReference Include="MarqSpec.Client.ProjectX" />
+
+    <!--
+      Telemetry (ADR-0019). HERE AND NOWHERE ELSE: the host owns every seam, and instrumentation is a seam.
+      `Domain` references nothing at all and `Data` stores what it is handed, so neither gains a package here
+      or ever.
+    -->
+    <PackageReference Include="OpenTelemetry.Extensions.Hosting" />
+    <PackageReference Include="OpenTelemetry.Exporter.OpenTelemetryProtocol" />
+    <PackageReference Include="OpenTelemetry.Instrumentation.AspNetCore" />
+    <PackageReference Include="OpenTelemetry.Instrumentation.Http" />
+    <PackageReference Include="OpenTelemetry.Instrumentation.Runtime" />
+    <PackageReference Include="Npgsql.OpenTelemetry" />
     <PackageReference Include="Microsoft.EntityFrameworkCore.Design">
       <PrivateAssets>all</PrivateAssets>
       <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>

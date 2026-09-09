@@ -8,6 +8,7 @@ using MarqSpec.Mcp.TopstepX.Data.Entities;
 using MarqSpec.Mcp.TopstepX.Domain;
 using MarqSpec.Mcp.TopstepX.Domain.MarketData;
 using MarqSpec.Mcp.TopstepX.MarketData;
+using MarqSpec.Mcp.TopstepX.Telemetry;
 using MarqSpec.Mcp.TopstepX.Tests.MarketData;
 using MarqSpec.Mcp.TopstepX.Tools;
 using Microsoft.EntityFrameworkCore;
@@ -61,6 +62,7 @@ public sealed class FootprintAndVolumeProfileToolTests : IDisposable
 
     private readonly TapeAvailabilityHolder _tape = new();
     private readonly TapeTools _tools;
+    private readonly HostTelemetry _telemetry = new();
 
     public FootprintAndVolumeProfileToolTests()
     {
@@ -88,10 +90,15 @@ public sealed class FootprintAndVolumeProfileToolTests : IDisposable
                 _database,
                 new FootprintProjector(_database, NullLogger<FootprintProjector>.Instance),
                 clock,
-                NullLogger<FootprintCacheService>.Instance));
+                NullLogger<FootprintCacheService>.Instance,
+                _telemetry));
     }
 
-    public void Dispose() => _database.Dispose();
+    public void Dispose()
+    {
+        _database.Dispose();
+        _telemetry.Dispose();
+    }
 
     [Fact]
     public async Task GetVolumeProfile_ReportsTheCoveredWindow_NotTheAsk_AndTheFrontContract()

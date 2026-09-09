@@ -58,6 +58,12 @@ services:
     environment:
       ConnectionStrings__Default: "${ConnectionStrings__Default:-Host=postgres;Port=5432;Database=topstepx_mcp;Username=topstepx;Password=changeme-local}"
 
+      # 0 here, deliberately, and not because 0 is a safe default -- because this stack does not need it.
+      # depends_on above is service_healthy against pg_isready, so Postgres is answering before this service
+      # starts. A deployment with no cross-service ordering is the case the key exists for (ECS sets 90), and
+      # setting it here would only mask a compose stack whose health gate had stopped working (gh#514).
+      Store__StartupWaitSeconds: "${Store__StartupWaitSeconds:-0}"
+
       ProjectX__ApiKey: "${ProjectX__ApiKey:-}"
       ProjectX__ApiSecret: "${ProjectX__ApiSecret:-}"
       # Defaulted so `docker compose up` with credentials and no tier does not fail startup. The
@@ -83,10 +89,34 @@ services:
       # unexamined (gh#415).
       Mcp__HttpBearerToken: "${Mcp__HttpBearerToken:-changeme-local}"
 
+      # THIS STACK IS THE STATIC MODE, BY CONSTRUCTION (ADR-0007, ADR-0021, gh#512). StaticToken is the
+      # default and the mode the token default above belongs to. The OAuth keys are forwarded for parity
+      # with .env.example -- a key documented there and not forwarded here is a setting that silently does
+      # nothing in a container -- but switching this stack to OAuth is NOT a .env edit: startup refuses
+      # Mode=OAuth beside a static token, and the token default above cannot be blanked from .env. That is
+      # deliberate. A remote instance is a different artefact with bind, token and certificate all replaced
+      # at once, never this stack with one line changed; see .env.example for what each key is.
+      Mcp__Auth__Mode: "${Mcp__Auth__Mode:-StaticToken}"
+      Mcp__OAuth__Issuer: "${Mcp__OAuth__Issuer:-}"
+      Mcp__OAuth__ClientIds: "${Mcp__OAuth__ClientIds:-}"
+      Mcp__OAuth__RequiredScope: "${Mcp__OAuth__RequiredScope:-topstepx-mcp/read}"
+      Mcp__OAuth__ResourceUrl: "${Mcp__OAuth__ResourceUrl:-}"
+
       MarketData__SessionCloseCentral: "${MarketData__SessionCloseCentral:-16:00}"
       MarketData__Holidays: "${MarketData__Holidays:-}"
       MarketData__MaxRows: "${MarketData__MaxRows:-5000}"
       MarketData__Instruments: "${MarketData__Instruments:-ES,NQ}"
+      # The named sessions session bars are aggregated over. HH:mm-HH:mm in Central WALL-CLOCK time,
+      # parsed exactly; the base is the resolution each is DERIVED from and must divide 60 (ADR-0022).
+      # A bad value fails startup naming the key and the rule. These eight defaults are the shipped four.
+      MarketData__Sessions__full__Window: "${MarketData__Sessions__full__Window:-17:00-16:00}"
+      MarketData__Sessions__full__BaseResolutionMinutes: "${MarketData__Sessions__full__BaseResolutionMinutes:-60}"
+      MarketData__Sessions__rth__Window: "${MarketData__Sessions__rth__Window:-08:30-15:00}"
+      MarketData__Sessions__rth__BaseResolutionMinutes: "${MarketData__Sessions__rth__BaseResolutionMinutes:-30}"
+      MarketData__Sessions__asia__Window: "${MarketData__Sessions__asia__Window:-17:00-02:00}"
+      MarketData__Sessions__asia__BaseResolutionMinutes: "${MarketData__Sessions__asia__BaseResolutionMinutes:-30}"
+      MarketData__Sessions__europe__Window: "${MarketData__Sessions__europe__Window:-02:00-08:30}"
+      MarketData__Sessions__europe__BaseResolutionMinutes: "${MarketData__Sessions__europe__BaseResolutionMinutes:-30}"
       # Off by default: the composed server is HTTP, and HTTP is not consent to record (ADR-0016).
       MarketData__RecordTape: "${MarketData__RecordTape:-false}"
       # Off by default: HTTP is not consent to warm either (ADR-0014, gh#350).
@@ -98,6 +128,14 @@ services:
       Indicators__EmaPeriod: "${Indicators__EmaPeriod:-20}"
       Indicators__MacdSlowPeriod: "${Indicators__MacdSlowPeriod:-26}"
       Indicators__BollingerPeriod: "${Indicators__BollingerPeriod:-20}"
+      Indicators__RollingVwapPeriod: "${Indicators__RollingVwapPeriod:-20}"
+      Indicators__AdditionalAtrPeriods: "${Indicators__AdditionalAtrPeriods:-}"
+      Indicators__AdditionalRsiPeriods: "${Indicators__AdditionalRsiPeriods:-}"
+      Indicators__AdditionalSmaPeriods: "${Indicators__AdditionalSmaPeriods:-}"
+      Indicators__AdditionalEmaPeriods: "${Indicators__AdditionalEmaPeriods:-}"
+      Indicators__AdditionalMacdSlowPeriods: "${Indicators__AdditionalMacdSlowPeriods:-}"
+      Indicators__AdditionalBollingerPeriods: "${Indicators__AdditionalBollingerPeriods:-}"
+      Indicators__AdditionalRollingVwapPeriods: "${Indicators__AdditionalRollingVwapPeriods:-}"
 
       # Detection defaults for get_key_levels. Source, PivotLookback and PivotRightLookback are also
       # per-call arguments on the tool; the width, the floor and the two caps are settable only here,
@@ -125,6 +163,25 @@ services:
 
       Embeddings__ApiKey: "${Embeddings__ApiKey:-}"
       Embeddings__Model: "${Embeddings__Model:-embed-v4.0}"
+
+      # Telemetry (ADR-0019). ALL FOUR ARE PURE FORWARDING, and Otel__Endpoint's empty default is the
+      # feature rather than a placeholder: with it unset the server registers no telemetry at all, so a
+      # `docker compose up` that asks for nothing pays nothing and starts nothing that dials out.
+      #
+      # NO VALUE SHIPS FOR Otel__Headers, and that is the PFX password's rule rather than
+      # Mcp__HttpBearerToken's: it carries a hosted collector's TOKEN, sent off this machine, so a loopback
+      # bind is not what would make a default tolerable. THIS REPOSITORY IS PUBLIC.
+      #
+      # The other two default to the application's own defaults, so the composed server and a bare
+      # `dotnet run` describe themselves identically to a collector. The collector that receives any of this
+      # is the `lgtm` service below, behind the `observability` profile and OFF by default: set
+      # Otel__Endpoint=http://lgtm:4317 in `.env` and add `--profile observability` to `docker compose up` to
+      # point this server at it. No `depends_on` ties the two together -- this server starts identically
+      # whether or not `lgtm` exists, or is even running.
+      Otel__Endpoint: "${Otel__Endpoint:-}"
+      Otel__Headers: "${Otel__Headers:-}"
+      Otel__Protocol: "${Otel__Protocol:-grpc}"
+      Otel__ServiceName: "${Otel__ServiceName:-marqspec-mcp-topstepx}"
 
       ASPNETCORE_ENVIRONMENT: "${ASPNETCORE_ENVIRONMENT:-Development}"
 
@@ -195,6 +252,20 @@ services:
       Kestrel__Certificates__Default__Password: "${Kestrel__Certificates__Default__Password:-}"
 
       Logging__LogLevel__Default: "${Logging__LogLevel__Default:-Information}"
+
+      # Hosting (gh#515). Both default to today's unchanged behaviour -- plaintext console logging and no
+      # forwarded-headers middleware -- and are the AWS deployment's (gh#509) values to flip, not this stack's.
+      # See .env.example for what each does and what was measured.
+      Logging__Console__FormatterName: "${Logging__Console__FormatterName:-simple}"
+      ASPNETCORE_FORWARDEDHEADERS_ENABLED: "${ASPNETCORE_FORWARDEDHEADERS_ENABLED:-false}"
+
+      # What GET /health reports as `version` and `digest` (gh#513). Both blank here and reported as
+      # "unknown", which is the honest answer for this stack: it BUILDS FROM THE WORKING TREE rather than
+      # running a published image, so there is no tag and no digest to name. The AWS deployment's (gh#509)
+      # task definition sets them; nothing in this repository declares a version in a file (ADR-0001), which
+      # is why the value has to arrive from outside the process at all.
+      Deployment__Version: "${Deployment__Version:-}"
+      Deployment__ImageDigest: "${Deployment__ImageDigest:-}"
     volumes:
       # The DIRECTORY, not the file. Docker creates a missing bind source as a directory, so mounting
       # ./certs/localhost.pfx directly would silently manufacture a directory of that name and Kestrel would
@@ -211,6 +282,51 @@ services:
       # TLS does not replace this bind and does not license widening it. It is confidentiality on the wire;
       # the token is authorisation, and loopback is what makes the token's local default tolerable.
       - "127.0.0.1:8443:8443"
+
+  # grafana/otel-lgtm: one image carrying an OTLP collector, Loki, Tempo, Prometheus and Grafana with the
+  # datasources pre-wired (ADR-0019 decision 5, gh#535). PROFILE-GATED and OFF BY DEFAULT: plain
+  # `docker compose up` never starts this, only `docker compose --profile observability up` does, and the
+  # server carries no `depends_on` on it either way -- the server must start with the profile off, and it
+  # does, because `Otel__Endpoint` above stays unset by default regardless of whether this service exists.
+  #
+  # Point the server at it with one line in `.env`: `Otel__Endpoint=http://lgtm:4317` -- `lgtm` resolves on
+  # the compose network only, which is deliberate (see the ports note below).
+  lgtm:
+    # Pinned to a release tag, not `latest` -- an unpinned tag turns "which LGTM did I test the dashboard
+    # against" into a question nobody can answer later, the same reasoning as postgres's `pg17` above.
+    # Re-pin deliberately, in its own change, so a Grafana/Tempo/Loki bump is a decision rather than whatever
+    # `docker pull` happens to fetch that day. Checked against Docker Hub 2026-09-06: multi-arch (amd64 +
+    # arm64), pushed 2026-09-04.
+    image: grafana/otel-lgtm:0.32.1
+    profiles: ["observability"]
+    environment:
+      # The image ships two ways in unconfigured: anonymous access at ORG_ROLE=Admin -- not a lesser role --
+      # (GF_AUTH_ANONYMOUS_ENABLED=true, GF_AUTH_ANONYMOUS_ORG_ROLE=Admin, read from
+      # docker/run-grafana.sh in grafana/docker-otel-lgtm) AND a built-in `admin` / `admin` login (the
+      # image's own README). Neither is a bar lowered here -- `admin` below is exactly what the image ships
+      # when nobody sets this. CHANGING THIS PASSWORD ALONE DOES NOT LOCK THE PORT DOWN (gh#553): a visitor
+      # who never logs in already has Admin through the anonymous session, forwarded below. Change both in
+      # `.env` before this port is reachable by anyone besides the operator at the keyboard; the loopback
+      # bind two lines down is what makes the shipped defaults tolerable meanwhile, the same coupling as
+      # POSTGRES_PASSWORD and Mcp__HttpBearerToken above.
+      GF_SECURITY_ADMIN_PASSWORD: "${GF_SECURITY_ADMIN_PASSWORD:-admin}"
+      # Blank means the image's own default (true) -- see .env.example. Forwarding it, unset, changes
+      # nothing; set to `false` in `.env` to require the login above for every session.
+      GF_AUTH_ANONYMOUS_ENABLED: "${GF_AUTH_ANONYMOUS_ENABLED:-}"
+    ports:
+      # GRAFANA ONLY, loopback-only -- same posture as gh#415/gh#421 above. The collector's OTLP ports
+      # (4317 grpc, 4318 http), Tempo's query API (3200) and Prometheus (9090) are deliberately NOT
+      # published: the server reaches this container by its compose-network name, `lgtm`, on the ports the
+      # image exposes internally, and nothing outside this stack has a reason to reach any of them directly.
+      # `docker port lgtm` after `up` is expected to name only this one line.
+      - "127.0.0.1:3000:3000"
+    volumes:
+      # Both READ-ONLY, and both required together: the JSON is the dashboard, the YAML is what tells
+      # Grafana's file provisioner to load JSON files from this directory (grafana/docker-otel-lgtm's own
+      # documented shape for a custom dashboard, README.md "Add custom dashboards"). Datasources need no
+      # mount of ours -- Loki, Tempo and Prometheus arrive pre-wired inside the image.
+      - "./observability/grafana/dashboards/mcp-server.json:/otel-lgtm/grafana/conf/provisioning/dashboards/custom/mcp-server.json:ro"
+      - "./observability/grafana/provisioning/dashboards.yaml:/otel-lgtm/grafana/conf/provisioning/dashboards/custom.yaml:ro"
 
 volumes:
   postgres-data:

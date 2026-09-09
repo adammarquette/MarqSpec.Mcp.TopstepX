@@ -6,8 +6,10 @@ using MarqSpec.Mcp.TopstepX.Data.Entities;
 using MarqSpec.Mcp.TopstepX.Domain;
 using MarqSpec.Mcp.TopstepX.Domain.MarketData;
 using MarqSpec.Mcp.TopstepX.MarketData;
+using MarqSpec.Mcp.TopstepX.Telemetry;
 using MarqSpec.Mcp.TopstepX.Tests.MarketData;
 using MarqSpec.Mcp.TopstepX.Tools;
+using MarqSpec.Mcp.TopstepX.Venue;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Storage;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -59,6 +61,7 @@ public sealed class IndicatorReadProjectionTests : IAsyncLifetime
     private readonly TopstepXDbContext _database;
     private readonly CountingGateway _gateway;
     private readonly FakeTimeProvider _clock;
+    private readonly HostTelemetry _telemetry = new();
 
     /// <param name="fixture">The shared container.</param>
     public IndicatorReadProjectionTests(SeriesStoreFixture fixture)
@@ -79,6 +82,7 @@ public sealed class IndicatorReadProjectionTests : IAsyncLifetime
     public Task DisposeAsync()
     {
         _database.Dispose();
+        _telemetry.Dispose();
         return Task.CompletedTask;
     }
 
@@ -137,7 +141,7 @@ public sealed class IndicatorReadProjectionTests : IAsyncLifetime
         _gateway.ResetCounters();
 
         ToolPayloads.IndicatorSeries series = await tools.GetIndicators(
-            "ES", Resolution, "rsi", Bucket(0), Bucket(SeededBars), CancellationToken.None);
+            "ES", Resolution, "rsi", Bucket(0), Bucket(SeededBars), cancellationToken: CancellationToken.None);
 
         series.Period.Should().Be(5, "the read must answer under the period the catalogue is configured for");
         series.Values.Should().NotBeEmpty(
@@ -160,7 +164,7 @@ public sealed class IndicatorReadProjectionTests : IAsyncLifetime
         IndicatorTools tools = Tools(wider);
 
         ToolPayloads.IndicatorSeries fromRead = await tools.GetIndicators(
-            "ES", Resolution, "rsi", Bucket(0), Bucket(SeededBars), CancellationToken.None);
+            "ES", Resolution, "rsi", Bucket(0), Bucket(SeededBars), cancellationToken: CancellationToken.None);
 
         // WRAPPED IN THE TRANSACTION PRODUCTION USES (gh#387). The projector refuses to run outside one --
         // it writes its values with a statement the store runs as it is sent, while its removals wait for
@@ -170,7 +174,8 @@ public sealed class IndicatorReadProjectionTests : IAsyncLifetime
         await using IDbContextTransaction replay = await _database.Database
             .BeginTransactionAsync(IsolationLevel.RepeatableRead, CancellationToken.None);
 
-        int changed = await new IndicatorProjector(_database, wider, NullLogger<IndicatorProjector>.Instance)
+        int changed = await new IndicatorProjector(
+            _database, wider, NullLogger<IndicatorProjector>.Instance, _telemetry)
             .ProjectAsync("test", _es, Resolution, _clock.GetUtcNow(), CancellationToken.None);
         await _database.SaveChangesAsync();
         await replay.CommitAsync(CancellationToken.None);
@@ -215,7 +220,7 @@ public sealed class IndicatorReadProjectionTests : IAsyncLifetime
 
         IndicatorTools tools = Tools(Catalog(rsiPeriod: 3));
         ToolPayloads.IndicatorSeries series = await tools.GetIndicators(
-            "ES", Resolution, "macd-signal", Bucket(0), Bucket(6), CancellationToken.None);
+            "ES", Resolution, "macd-signal", Bucket(0), Bucket(6), cancellationToken: CancellationToken.None);
 
         series.Values.Should().BeEmpty("thirty-four bars are needed and six are stored");
     }
@@ -236,10 +241,11 @@ public sealed class IndicatorReadProjectionTests : IAsyncLifetime
     [Fact]
     public async Task OneSeriesIsProbedOncePerScope_HoweverManyIndicatorsAreRead()
     {
-        // get_market_snapshot asks GetIndicatorAt once per indicator per resolution -- eleven times over the
-        // same series -- and every one of those would otherwise re-ask the store whether the series is
-        // complete. The scope is the request, and within it a series that was complete stays complete:
-        // nothing writes a bar without projecting over it in the same unit of work.
+        // get_market_snapshot asks GetIndicatorAt once per catalogue name per resolution -- a dozen times
+        // over the same series at the shipped catalogue, and more as names are added -- and every one of
+        // those would otherwise re-ask the store whether the series is complete. The scope is the request,
+        // and within it a series that was complete stays complete: nothing writes a bar without projecting
+        // over it in the same unit of work.
         await WarmAsync(Catalog(rsiPeriod: 3));
 
         IndicatorCacheService indicators = Cache(Catalog(rsiPeriod: 3));
@@ -274,7 +280,8 @@ public sealed class IndicatorReadProjectionTests : IAsyncLifetime
     [Fact]
     public async Task AColdRead_IncrementsTheProcessReplayCounterOnce_EvenAcrossElevenCallsInOneScope()
     {
-        // get_market_snapshot asks get_indicator_at eleven times over one series. The scope memo already
+        // get_market_snapshot asks get_indicator_at once per catalogue name over one series; the eleven below
+        // are a round number standing for that. The scope memo already
         // collapses those to one replay; the process counter must follow that, not the call count, and it
         // must outlive the scope so a later request can read it without scraping a log (gh#347).
         await WarmAsync(Catalog(rsiPeriod: 3));
@@ -311,7 +318,7 @@ public sealed class IndicatorReadProjectionTests : IAsyncLifetime
         _gateway.ResetCounters();
 
         ToolPayloads.IndicatorReading reading = await tools.GetIndicatorAt(
-            "ES", Resolution, "rsi", Bucket(SeededBars), CancellationToken.None);
+            "ES", Resolution, "rsi", Bucket(SeededBars), cancellationToken: CancellationToken.None);
 
         reading.Value.Should().NotBeNull();
         _gateway.BarRequests.Should().Be(0);
@@ -368,11 +375,16 @@ public sealed class IndicatorReadProjectionTests : IAsyncLifetime
         // compared to each other, and come back in whatever order the database happened to hand them.
         //
         // A single-element fixture cannot observe that: with one row there is no tie for an incomplete sort
-        // to mis-order. This file's own dominant idiom manufactures one instead -- warm at rsiPeriod 3, then
-        // read at rsiPeriod 19. ReconcileAsync (IndicatorProjector.cs:278) deliberately leaves a stored row
-        // the new catalogue does not own standing rather than deleting it, so (rsi, 3) survives sitting
-        // beside the freshly projected (rsi, 19). Every other pair keeps the same period across both
-        // catalogues, so rsi is the only tie -- exactly the shape the helper cannot resolve today.
+        // to mis-order. So one is manufactured -- warm at rsiPeriod 3, then read under a catalogue whose
+        // PRIMARY rsi is 19 and which ALSO computes 3. Both rows are then pairs the catalogue owns, and both
+        // stand. Every other pair keeps the same period across both catalogues, so rsi is the only tie --
+        // exactly the shape the helper cannot resolve today.
+        //
+        // The tie used to be built the other way: warm at 3, read at 19 alone, and rely on the reconcile
+        // LEAVING a row the new catalogue does not own. gh#571 reversed that -- a pair nothing recomputes is
+        // an orphan and is swept -- so the second row now has to be one the catalogue really carries. That is
+        // a better fixture for this test in any case: it is about ordering, and it should not turn on which
+        // rows a destructive pass decides to keep.
         //
         // Period 19, not the file's usual 5: on the twelve rows this fixture seeds, Postgres's planner
         // prefers an index scan over the composite index on (Instrument, ResolutionMinutes, Indicator,
@@ -385,7 +397,7 @@ public sealed class IndicatorReadProjectionTests : IAsyncLifetime
         // that actually exercises the missing comparison instead of passing by looking like it does.
         await WarmAsync(Catalog(rsiPeriod: 3));
 
-        IndicatorCacheService indicators = Cache(Catalog(rsiPeriod: 19));
+        IndicatorCacheService indicators = Cache(Catalog(rsiPeriod: 19, alsoRsiPeriods: "3"));
         bool projected = await indicators.EnsureProjectedAsync("test", _es, Resolution, CancellationToken.None);
 
         projected.Should().BeTrue("rsi at period 19 has never been computed for this series");
@@ -538,9 +550,19 @@ public sealed class IndicatorReadProjectionTests : IAsyncLifetime
         return [.. held.Select(v => (v.Indicator, v.Period))];
     }
 
-    private static IndicatorCatalog Catalog(int rsiPeriod) =>
+    /// <param name="rsiPeriod">The PRIMARY RSI period this catalogue computes at.</param>
+    /// <param name="alsoRsiPeriods">
+    /// Further RSI periods, comma-separated, that this catalogue <b>also</b> computes — so a second
+    /// <c>(rsi, period)</c> row is one the catalogue owns rather than one it has left behind.
+    /// </param>
+    private static IndicatorCatalog Catalog(int rsiPeriod, string? alsoRsiPeriods = null) =>
         new(
-            Options.Create(new IndicatorOptions { AtrPeriod = 3, RsiPeriod = rsiPeriod }),
+            Options.Create(new IndicatorOptions
+            {
+                AtrPeriod = 3,
+                RsiPeriod = rsiPeriod,
+                AdditionalRsiPeriods = alsoRsiPeriods,
+            }),
             Calendar());
 
     private static IOptions<MarketDataOptions> MarketData() =>
@@ -559,9 +581,12 @@ public sealed class IndicatorReadProjectionTests : IAsyncLifetime
             _database,
             _gateway,
             Calendar(),
-            new IndicatorProjector(_database, catalog, NullLogger<IndicatorProjector>.Instance),
+            new IndicatorProjector(_database, catalog, NullLogger<IndicatorProjector>.Instance, _telemetry),
+            new InstrumentRegistry(MarketData()),
+            new ContractDirectory(_clock),
             _clock,
-            NullLogger<BarCacheService>.Instance);
+            NullLogger<BarCacheService>.Instance,
+            _telemetry);
 
         BarReadResult warmed = await cache.GetBarsAsync(
             _es, Resolution, new BarRange(Bucket(0), Bucket(bars)), CancellationToken.None);
@@ -572,8 +597,14 @@ public sealed class IndicatorReadProjectionTests : IAsyncLifetime
     private IndicatorCacheService Cache(
         IndicatorCatalog catalog,
         IndicatorReadProjectionCounter? readTriggeredReplays = null) =>
-        new(_database, catalog, new IndicatorProjector(_database, catalog, NullLogger<IndicatorProjector>.Instance),
-            _clock, NullLogger<IndicatorCacheService>.Instance, readTriggeredReplays);
+        new(
+            _database,
+            catalog,
+            new IndicatorProjector(_database, catalog, NullLogger<IndicatorProjector>.Instance, _telemetry),
+            _clock,
+            NullLogger<IndicatorCacheService>.Instance,
+            _telemetry,
+            readTriggeredReplays);
 
     private IndicatorTools Tools(IndicatorCatalog catalog) =>
         new(

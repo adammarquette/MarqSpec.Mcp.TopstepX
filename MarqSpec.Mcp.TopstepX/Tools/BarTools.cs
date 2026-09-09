@@ -46,14 +46,34 @@ public sealed class BarTools(
         "Reads OHLCV bars for an instrument over a time window. Served from a local cache; the vendor is "
         + "called only for buckets genuinely missing, where 'genuinely' excludes weekends, the daily "
         + "maintenance window and holidays. The response reports `venueRequests` and `fetchedBuckets`, and "
-        + "only the first is evidence of a vendor round trip: `venueRequests == 0` is the exact test for "
-        + "an answer served entirely from the store, while `fetchedBuckets` counts how much the answer "
-        + "changed the store and can read zero even after a genuine fetch. Never returns a truncated "
-        + "series: an over-cap window is refused with the real count. The response also carries "
-        + "`contracts`: bars are keyed by the symbol, so a window spanning a quarterly roll contains TWO "
-        + "contracts. `contracts.span` is SingleContract, SpansRoll, or Unknown — Unknown means the "
-        + "provenance was never recorded, NOT that there was no roll. Adjacent quarters do not trade at "
-        + "the same price; do not read a series across a roll as one.")]
+        + "only the first is evidence of a bar fetch: `venueRequests` counts HISTORY requests alone, so "
+        + "`venueRequests == 0` is the exact test for no bar fetch — NOT for no vendor call at all, "
+        + "because a read whose gaps the empty-range memo covers still makes one contract search per "
+        + "request. It undercounts vendor traffic and never overcounts it. `fetchedBuckets` counts how "
+        + "much the answer changed the store and can read zero even after a genuine fetch. Never returns "
+        + "a truncated series: an over-cap window is refused with the real count. The response also "
+        + "carries `contracts`: bars are keyed by the symbol, so a window spanning a quarterly roll "
+        + "contains TWO contracts. `contracts.span` is SingleContract, SpansRoll, or Unknown — Unknown "
+        + "means the provenance was never recorded, NOT that there was no roll. Adjacent quarters do "
+        + "not trade at the same price; do not read a series across a roll as one. "
+        + "`history.selection` is a SEPARATE question from `contracts.span` and must not be read as one of "
+        + "its values: span asks whether these bars cross a roll, history asks whether the contracts they "
+        + "were CHOSEN FROM were the ones this product's contract-month cycle names. A window can be "
+        + "SingleContract and still have been decided among survivors. AsTheCycleNames means every expiry "
+        + "the cycle named was listed by the vendor and the volume decision ran over all of them. "
+        + "NarrowedByTheVenue means the vendor did not list some of them, so the decision ran over what was "
+        + "left — the bars are a real series from a real contract, and when the only survivor was the "
+        + "vendor's own active contract that stretch is the thin, complete-looking series this selection "
+        + "exists to prevent you acting on. FellBackToTheFront is worse still: NONE of the cycle's expiries "
+        + "was listed, so no volume decision ran for that stretch at all. AsTheFrontAlone is the whole-read "
+        + "form of that risk: there was no contract-month cycle to decide against — this server does not "
+        + "serve that instrument, or the vendor's active contract has an expiry that does not read against "
+        + "the cycle — so the entire window is fetched from the vendor's active contract. It is recorded "
+        + "where the plan is cut, not inferred from `venueRequests`. `history.unresolved` names the "
+        + "expiries that fell away, e.g. M26. NotDecidedHere means THIS call decided no history: every "
+        + "bucket was already stored, or the window sits in the present band. It is in no case a statement "
+        + "that the stored history is whole: bars fetched by an earlier degraded read read back exactly "
+        + "like any other, and nothing recorded about them says otherwise.")]
     public async Task<ToolPayloads.BarSeries> GetBars(
         [Description("The instrument symbol, e.g. ES.")] string symbol,
         [Description("The bar size in minutes, e.g. 1, 5, 15, 60.")] int resolutionMinutes,
@@ -73,7 +93,8 @@ public sealed class BarTools(
             [.. result.Bars.Select(ToolPayloads.ToPoint)],
             result.FetchedBuckets,
             result.VenueRequests,
-            ToolPayloads.ToCoverage(result.Bars));
+            ToolPayloads.ToCoverage(result.Bars),
+            result.History);
     }
 
     /// <summary>Reads the most recent closed bars.</summary>
@@ -90,7 +111,9 @@ public sealed class BarTools(
     [McpServerTool(ReadOnly = true, Idempotent = true, Title = "Get latest bars")]
     [Description(
         "Reads the most recent closed bars for an instrument. Anchored on the last CLOSED bucket, never a "
-        + "forming one. This is usually the tool to reach for over get_bars, which needs explicit dates.")]
+        + "forming one. This is usually the tool to reach for over get_bars, which needs explicit dates. "
+        + "The response shape is get_bars', `contracts` and `history` included, and those two mean exactly "
+        + "what they mean there — read `history.selection` before treating a deep lookback as ordinary.")]
     public async Task<ToolPayloads.BarSeries> GetLatestBars(
         [Description("The instrument symbol, e.g. ES.")] string symbol,
         [Description("The bar size in minutes.")] int resolutionMinutes,
@@ -122,7 +145,8 @@ public sealed class BarTools(
             [.. tail.Select(ToolPayloads.ToPoint)],
             result.FetchedBuckets,
             result.VenueRequests,
-            ToolPayloads.ToCoverage(tail));
+            ToolPayloads.ToCoverage(tail),
+            result.History);
     }
 
     private async Task<BarReadResult> ReadAsync(

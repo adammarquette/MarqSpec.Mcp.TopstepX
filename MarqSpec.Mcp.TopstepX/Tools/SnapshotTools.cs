@@ -176,11 +176,12 @@ public sealed class SnapshotTools(
                 ? series.Bars[^1].T
                 : _clock.GetUtcNow();
 
-            // ONE query for the whole map, not eleven -- and not twenty-two, which is what it was once each
-            // read went back to Bars for its bucket's contract. A default snapshot cost 60 statements and 44
-            // of them were this block (gh#388). What the batch must not do is collapse the PROVENANCE with
-            // the queries: it groups by (Indicator, Period) and takes each group's own latest bucket, so the
-            // eleven readings still disagree about bucket and contract wherever they legitimately do.
+            // ONE query for the whole map, not one per catalogue name -- and not two per name, which is what
+            // it was once each read went back to Bars for its bucket's contract. Against the eleven names the
+            // catalogue held then, a default snapshot cost 60 statements and 44 of them were this block
+            // (gh#388). What the batch must not do is collapse the PROVENANCE with the queries: it groups by
+            // (Indicator, Period) and takes each group's own latest bucket, so the readings still disagree
+            // about bucket and contract wherever they legitimately do.
             IReadOnlyDictionary<string, ToolPayloads.IndicatorReading> readings = await _indicators
                 .GetLatestIndicatorReadings(symbol, resolution, asOf, cancellationToken)
                 .ConfigureAwait(false);

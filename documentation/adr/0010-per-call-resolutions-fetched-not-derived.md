@@ -87,10 +87,10 @@ so here is what the code actually does rather than what the shape of the problem
 vendor pages and writes fifteen hundred bars still projects once.
 
 **Each pass recomputes the whole stored series.** `ProjectAsync` loads every bar for
-`(Venue, Instrument, ResolutionMinutes)` — not the window, not the newly-arrived buckets — and recomputes all
-eleven indicators from the start. It has to: seeding from a moving window would make a value depend on how much
-history happened to be loaded, which is the property [ADR-0006](0006-indicators-as-projections.md) exists to
-protect.
+`(Venue, Instrument, ResolutionMinutes)` — not the window, not the newly-arrived buckets — and recomputes
+every configured `(name, period)` instance from the start. It has to: seeding from a moving window would make
+a value depend on how much history happened to be loaded, which is the property
+[ADR-0006](0006-indicators-as-projections.md) exists to protect.
 
 So the cost of a pass scales with the **length of the series**, and a series only grows. Resolution drives that
 length directly. Per hour of covered span:
@@ -156,6 +156,8 @@ correct bar, and the guard's failure mode is silent.
 | [2026-08-23](#update-2026-08-23--the-range-is-1-to-10080-and-the-ceiling-is-not-sufficient-on-its-own) | Read "any positive" as "1 to 10,080"; the range is now closed at both ends |
 | [2026-08-23](#update-2026-08-23--maxbucketsperpass-is-a-second-cap-on-the-same-quantity-and-it-is-now-stated-at-the-boundary) | The cost bound named in *Alternatives* is now a **tool error**, not a fault one layer down |
 | [2026-08-28](#update-2026-08-28--gh49s-snapshot-default-shipped) | gh#49 closed: `get_market_snapshot` defaults `[5, 60]` |
+| [2026-09-06](#update-2026-09-06--the-ceiling-is-the-session-and-the-day-is-a-session-bar) | Read "1 to 10,080" as **1 to 1,379**; the day and the week are session bars, and the completeness-guard exception below is taken by [ADR-0022](0022-session-bars-derived-complete-or-absent.md) |
+| [2026-09-08](#update-2026-09-08--the-ceiling-is-half-the-shortest-session-because-the-grid-is-not-session-aligned) | Read "1 to 1,379" as **1 to 660**; the UTC bucket grid is not session-aligned, so a bucket wider than half a session is not guaranteed to fit inside one — and the session in that bound is the *shortest* one, 1,320 minutes, not the nominal 1,380 (gh#538, PR #607 review) |
 
 ## Update (2026-08-23) — any meant any positive, and four tools did not enforce it
 
@@ -331,7 +333,90 @@ no allow-list, and a timeframe is still fetched rather than derived. What this r
 open is now closed: `SnapshotTools.DefaultResolutionMinutes` is `[5, 60]`, and the catalogue documents that
 default. An agent that omits the set is no longer guessing.
 
+## Update (2026-09-06) — the ceiling is the session, and the day is a session bar
+
+**Point 1 stands and point 2 gains its first exception, on the terms point 2 itself set.** Resolution is still
+a per-call parameter, there is still no allow-list, and a *bar* timeframe is still fetched rather than derived.
+Two things change: **the servable range is 1 to 1,379 minutes**, and the derivation this record forbade is
+taken — once, for session bars — by [ADR-0022](0022-session-bars-derived-complete-or-absent.md).
+
+**The 2026-08-23 ceiling was right about the top of the range and silent about the middle.** It closed at
+10,080 because above a week a timeframe is a calendar month or a quarter, whose length in minutes is not
+fixed. True, and it admitted two values that were never servable either: the day at 1,440 and the week at
+10,080. `BarSessionCalendar.IsExpectedBucket` expects a bucket only when it **closes inside** its session
+(ADR-0005's fourth session rule), and a session is 24 hours less the venue's one-hour maintenance window — so
+nothing 1,380 minutes or wider has ever been an expected bucket. `get_bars` at 1,440 therefore found nothing
+missing, asked the venue for nothing, and answered an **empty series** with `venueRequests: 0`. An empty
+series is this surface's word for *the venue published nothing here*; a caller cannot tell it from a shut
+market (gh#498).
+
+**So `ToolGuards.MaxResolutionMinutes` is 1,379** — one minute short of a session — and the refusal says where
+the answer lives rather than only saying no, because a silent refusal swaps one wrong answer for a second: a
+caller reading "coarser than the largest bar" concludes the market has no daily data. **This is still not a
+supported-resolutions list.** The range is contiguous and the Decision's reason for rejecting a list — it caps
+cost by capping the questions — is untouched by closing an end at the point where a bucket stops being able to
+close.
+
+**The bound is on *meaning* a second time, and it is a different meaning.** The 10,080 ceiling was about what
+a minute count can express; this one is about what the session calendar can hold. A 1,379-minute bar is legal
+and a 1,380-minute one is not, and the difference is the maintenance hour rather than anything arithmetic —
+which is why the constant is written as `(24 * 60) - 60 - 1` and explained where it sits.
+
+**The completeness guard this record named is now owned by somebody.** The Decision rejected derivation
+because it *"means owning a guard that produces no bar rather than a partial one"*, in a path where a partial
+bar carries no marker of its own — and because the venue already supplied complete, correctly-aligned bars for
+one request each, so the guard bought nothing free. For `rth`, `asia` and `europe` the venue supplies nothing
+at all: there is no such bar unit. ADR-0022 therefore builds them from stored base bars behind exactly the
+guard this record specified — a session bar exists only when **every** expected base bucket is stored and all
+came from one contract, and otherwise it is **absent with a stated reason**, never partial. Point 3's
+condition for revisiting is untouched: this is not the continuous-aggregate route, and it is not driven by
+vendor call volume — session reads make no vendor call at all.
+
+**One measurement worth carrying, from gh#494.** The vendor *does* have a `Day` unit, and it returns one bar
+per trade date stamped at the 17:00 Central open — the same trade date this repository already models. That
+makes fetching `full` a real option rather than a dismissed one; ADR-0022 records why it was not taken for
+this slice, and carries the cross-check as a follow-up.
+
+## Update (2026-09-08) — the ceiling stays below the pigeonhole bound, because the grid is not session-aligned
+
+**Point 1 stands, point 2 is untouched, and the number in the update above moves once more: the servable range
+is 1 to 660 minutes.** Resolution is still a per-call parameter, there is still no allow-list, and the range
+is still contiguous — this closes an end, it does not enumerate.
+
+**The 2026-09-06 ceiling was right about what a session bar *is* and wrong about where the line falls.** It
+drew at 1,380 because nothing that wide can close inside a session. True — and it left a residue
+[ADR-0022](0022-session-bars-derived-complete-or-absent.md) recorded rather than fixed: a bucket **narrower**
+than a session can also fail to fit inside one, because `BarGapDetector.AlignUp` anchors buckets on a grid
+struck from the .NET epoch and not on the session open. At 1,379 minutes a bucket is expected only when that
+grid lands within a minute of the open, so `get_bars` at 1,379 answered an **empty series** with
+`venueRequests: 0` on all but a handful of scattered trade dates — the same fault, one minute lower (gh#538).
+
+**The bound is derived rather than chosen, which is what makes it re-checkable.** A session of `S` minutes
+admits an `r`-minute bucket exactly when a multiple of `r` lands in `[open, close - r]`, a run of `S - r + 1`
+consecutive whole minutes; a run of `n` consecutive integers is certain to hold a multiple of `r` only while
+`n >= r`; so the guarantee holds exactly while `r <= (S + 1) / 2`.
+
+**`S` is 1,380 for every admissible close since gh#613.** Closes before 02:00 Central — whose reopen would
+fall inside the wall-clock hour spring-forward deletes — are refused at calendar construction, naming the
+close and the shortened length. The pigeonhole bound on 1,380 is **690**; `ToolGuards.MaxResolutionMinutes`
+stays at **660** until a separate card justifies raising it. Widths from 661 to 690 fit every admitted session
+but are refused with the band above the ceiling because `ValidateResolution` is deliberately `static` and reads
+no configuration.
+
+**The bound is on *meaning* a third time, and it is a third meaning.** 10,080 was about what a minute count
+can express. 1,380 was about what the session calendar can hold. This one is about where the **bucket grid**
+falls: 660 is legal and 661 is not, and the difference is neither arithmetic nor calendar but alignment —
+plus the conservative ceiling below the pigeonhole bound until a separate trade raises it.
+
+**It is a refusal and not a warning field**, for the reason `R-2.3` refuses a substituted number: an empty
+series carrying a flag is still an empty series, and a caller reads it as a market that printed nothing.
+ADR-0022's *Update (2026-09-08)* carries that argument, the widths the bound over-rejects, and the sweeps
+that measure both.
+
 ## Follow-ups
 
 - gh#49 — closed; see the 2026-08-28 update. `get_market_snapshot` defaults `[5, 60]`.
 - gh#43 — extract the gateway's documented rate limits. That is the evidence that would move point 3 above.
+- gh#496 — the session-bars epic. [ADR-0022](0022-session-bars-derived-complete-or-absent.md) holds the
+  derivation decision this record's point 2 delegated to a future guard; the storage, tool and projection
+  slices are gh#499, gh#500 and gh#501.

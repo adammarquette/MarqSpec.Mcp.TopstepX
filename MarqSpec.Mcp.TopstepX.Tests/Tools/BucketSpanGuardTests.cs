@@ -8,8 +8,10 @@ using MarqSpec.Mcp.TopstepX.Data.Entities;
 using MarqSpec.Mcp.TopstepX.Domain;
 using MarqSpec.Mcp.TopstepX.Domain.MarketData;
 using MarqSpec.Mcp.TopstepX.MarketData;
+using MarqSpec.Mcp.TopstepX.Telemetry;
 using MarqSpec.Mcp.TopstepX.Tests.MarketData;
 using MarqSpec.Mcp.TopstepX.Tools;
+using MarqSpec.Mcp.TopstepX.Venue;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
@@ -73,6 +75,7 @@ public sealed class BucketSpanGuardTests : IDisposable
     private readonly IndicatorCatalog _catalog;
     private readonly BarSessionCalendar _calendar;
     private readonly FakeTimeProvider _clock;
+    private readonly HostTelemetry _telemetry = new();
 
     public BucketSpanGuardTests()
     {
@@ -109,12 +112,25 @@ public sealed class BucketSpanGuardTests : IDisposable
         _clock = new FakeTimeProvider(Bucket(SeededBars).AddHours(2));
         _gateway = new CountingGateway([]);
 
-        IndicatorProjector projector = new(_database, _catalog, NullLogger<IndicatorProjector>.Instance);
+        IndicatorProjector projector =
+            new(_database, _catalog, NullLogger<IndicatorProjector>.Instance, _telemetry);
         _cache = new BarCacheService(
-            _database, _gateway, _calendar, projector, _clock, NullLogger<BarCacheService>.Instance);
+            _database,
+            _gateway,
+            _calendar,
+            projector,
+            new InstrumentRegistry(Options.Create(new MarketDataOptions())),
+            new ContractDirectory(_clock),
+            _clock,
+            NullLogger<BarCacheService>.Instance,
+            _telemetry);
     }
 
-    public void Dispose() => _database.Dispose();
+    public void Dispose()
+    {
+        _database.Dispose();
+        _telemetry.Dispose();
+    }
 
     private static DateTimeOffset SessionStart =>
         MarketClock.FromMarket(new DateOnly(2026, 8, 18), new TimeOnly(9, 0)).ToUniversalTime();
@@ -359,9 +375,10 @@ public sealed class BucketSpanGuardTests : IDisposable
             new IndicatorCacheService(
                 _database,
                 _catalog,
-                new IndicatorProjector(_database, _catalog, NullLogger<IndicatorProjector>.Instance),
+                new IndicatorProjector(_database, _catalog, NullLogger<IndicatorProjector>.Instance, _telemetry),
                 _clock,
-                NullLogger<IndicatorCacheService>.Instance),
+                NullLogger<IndicatorCacheService>.Instance,
+                _telemetry),
             _gateway,
             guards);
 
@@ -387,7 +404,8 @@ public sealed class BucketSpanGuardTests : IDisposable
                 _database,
                 new FootprintProjector(_database, NullLogger<FootprintProjector>.Instance),
                 _clock,
-                NullLogger<FootprintCacheService>.Instance));
+                NullLogger<FootprintCacheService>.Instance,
+                _telemetry));
 
         ContractRollTools roll = new(
             resolver, _database, _gateway, new LevelMethodCatalog(_calendar), front, _clock);

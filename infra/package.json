@@ -1,0 +1,8 @@
+{
+  "name": "marqspec-mcp-topstepx-infra",
+  "private": true,
+  "description": "Pins the AWS CDK CLI that `cdk synth` runs through in CI. The constructs themselves are the Amazon.CDK.Lib NuGet package, pinned in Directory.Packages.props; this file exists only so the CLI is a version and not whatever npx resolves today.",
+  "devDependencies": {
+    "aws-cdk": "2.1140.0"
+  }
+}

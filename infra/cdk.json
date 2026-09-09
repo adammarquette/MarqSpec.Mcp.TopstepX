@@ -1,0 +1,12 @@
+{
+  "app": "dotnet run --project MarqSpec.Mcp.TopstepX.Infra/MarqSpec.Mcp.TopstepX.Infra.csproj --configuration Release",
+  "output": "cdk.out",
+  "versionReporting": false,
+  "context": {
+    "account": "123456789012",
+    "region": "us-east-1",
+    "@aws-cdk/core:newStyleStackSynthesis": true,
+    "@aws-cdk/aws-ecs:removeDefaultDeploymentAlarm": true,
+    "@aws-cdk/aws-elasticloadbalancingv2:albDropInvalidHeaderFields": true
+  }
+}

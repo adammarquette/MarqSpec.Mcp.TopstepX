@@ -38,20 +38,20 @@ rather than reword it.
 
 | Document | ~tok | Read it when |
 |---|---:|---|
-| [`prd.md`](prd.md) | 8.3K | You need **what is required**, or you are citing an `R-#`. Ids are stable and never renumbered, and a citation that does not resolve here fails CI. |
-| [`architecture.md`](architecture.md) | 11.1K | You need **how the pieces fit** — the cache-aside path, the projection, the transports. |
-| [`mcp-tool-catalogue`](mcp-tool-catalog.md) | 15.7K | You are adding, changing or calling a tool. The tool surface is a contract; this is it. |
-| [`data-dictionary.md`](data-dictionary.md) | 7.4K | You need the data model — the nine tables, their keys, and why each key is shaped that way. |
-
+| [`prd.md`](prd.md) | 15.0K | You need **what is required**, or you are citing an `R-#`. Ids are stable and never renumbered, and a citation that does not resolve here fails CI. |
+| [`architecture.md`](architecture.md) | 23.8K | You need **how the pieces fit** — the cache-aside path, the projection, the transports. |
+| [`mcp-tool-catalogue`](mcp-tool-catalog.md) | 24.7K | You are adding, changing or calling a tool. The tool surface is a contract; this is it. |
+| [`data-dictionary.md`](data-dictionary.md) | 12.5K | You need the data model — the eleven tables, their keys, and why each key is shaped that way. |
 ## Working agreements
 
 | Document | ~tok | Read it when |
 |---|---:|---|
-| [`AGENT-MEMORY.md`](AGENT-MEMORY.md) | 11.6K | **Before starting any work.** It grows by *append, don't overwrite* and shrinks by the retirement rule in its own header (gh#254), so this row moves in both directions — correct it in the pull request that moves the file. |
+| [`AGENT-MEMORY.md`](AGENT-MEMORY.md) | 14.6K | **Before starting any work.** It grows by *append, don't overwrite* and shrinks by the retirement rule in its own header (gh#254), so this row moves in both directions — correct it in the pull request that moves the file. |
 | [`project-board-workflow.md`](project-board-workflow.md) | 6.3K | You are filing, grooming or moving a card. **The board is project #5; #4 is retired.** The board makes two of the seven transitions by itself; the other five are somebody's deliberate act. |
+| [`deployment.md`](deployment.md) | 4.3K | You are operating a deployed environment — account and region, staging zone lookup (`Z00545362JA49XMTT3U7Q`), delete+redeploy after `ROLLBACK_COMPLETE`, Fargate quota 64, secret ARNs (gh#519), cost (gh#527), what pages you (gh#526), WAF lockout (gh#528), and later rotation / restore (gh#523). |
 | [`work-estimate-rubric.md`](work-estimate-rubric.md) | 1.0K | You are setting a `Work Estimate` on an issue. |
 | [`agents/README.md`](agents/README.md) | 1.0K | You are wearing a role hat. **This row prices the index, not the route it serves** — each contract behind it is a separate read, and the index prices all five in its own gated `~tok` column (gh#178). Reviewer, Platform and Coordinator contracts **never auto-load**; open them yourself. |
-| [`../CONTRIBUTING.md`](../CONTRIBUTING.md) | 5.0K | Branching, claiming, commits, PRs, and the Definition of Done. |
+| [`../CONTRIBUTING.md`](../CONTRIBUTING.md) | 5.4K | Branching, claiming, commits, PRs, and the Definition of Done. |
 | [`../AGENTS.md`](../AGENTS.md) | 3.0K | Loads automatically. The non-negotiables and the role routing table. |
 
 ## Decisions — [`adr/`](adr/README.md)
@@ -69,13 +69,18 @@ The market-hub subscription — and the standing choice it reversed — is
 
 ## Reference — [`wiki/`](wiki/index.md)
 
-External domain knowledge: the vendor API, market sessions and settlement. **Ingested reference, not repo
-truth** — when the wiki and a repo document disagree, the repo document wins. Route through
-[`wiki/index.md`](wiki/index.md); never sweep the folder.
+External domain knowledge: the vendor API, market sessions and settlement, and how the indicators and levels
+are constructed. **Ingested reference, not repo truth** — when the wiki and a repo document disagree, the repo
+document wins. Route through [`wiki/index.md`](wiki/index.md); never sweep the folder.
 
 [`wiki/pages/projectx-gateway-api.md`](wiki/pages/projectx-gateway-api.md) is the highest-value page in this
 repository. Read it before writing anything that touches the gateway — it records behaviours that each cost
 real debugging time to find and none of which are guessable from the API's shape.
+
+[`wiki/pages/technical-indicator-definitions.md`](wiki/pages/technical-indicator-definitions.md) is the one to
+open before changing an indicator or reconciling one of our numbers against a chart. It records which of ours
+are Wilder-smoothed and which are not — a difference that makes two *correct* implementations disagree, which
+is how a reconciliation turns into a wrong fix.
 
 ## What is not here
 

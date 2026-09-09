@@ -1,0 +1,529 @@
+using MarqSpec.Mcp.TopstepX.Domain.MarketData;
+
+namespace MarqSpec.Mcp.TopstepX.MarketData;
+
+/// <summary>
+/// One piece of an outstanding range, and the contracts it is to be fetched from.
+/// </summary>
+/// <param name="Range">The piece, half-open as every range in this system is.</param>
+/// <param name="Candidates">
+/// The contract ids to ask, nearest expiry first. Exactly one for a present slice; one or more for a
+/// historical one, whose winner is decided from the bars afterwards by <c>HistoricalContractPolicy</c>.
+/// </param>
+/// <param name="Present">
+/// Whether this piece sits in the present band — the stretch the venue's own active contract answers for
+/// (ADR-0020 §1). A present slice is fetched exactly as it is today; a historical one is not.
+/// <b>It is not a routing flag.</b> A whole-read fallback also asks the front, and must not be labelled
+/// present just to send it down that path (gh#598).
+/// </param>
+/// <param name="FellBackToFront">
+/// Whether the candidate set is the venue's own pick because <b>nothing survived the existence check</b>,
+/// rather than because the cycle named it.
+/// </param>
+/// <param name="WholeReadFallback">
+/// Whether this piece exists because the <b>whole plan</b> could not be cut against a cycle — the registry
+/// does not serve the instrument, or the venue front's expiry does not read against the product's cycle
+/// (gh#598). Sibling of <paramref name="Present"/>, not a third state of it: the range is still not in the
+/// present band, even when it is months old and still fetched from the front.
+/// </param>
+/// <remarks>
+/// <para>
+/// <b><see cref="FellBackToFront"/> is not "the candidates happen to be the front".</b> A historical slice
+/// whose cycle names two expiries the venue lists only one of resolves, legitimately, to a set of one — and
+/// that one is often the front itself. That slice is an ordinary answer: a candidate did survive, its bars
+/// are the trade date's, and an empty answer from it is a fact worth memoising permanently. A slice that
+/// fell back has no surviving candidate at all, is a <i>degradation</i> logged by the caller, and must earn
+/// no permanent memo. Conflating the two would make every one-listed-candidate range re-fetched forever.
+/// </para>
+/// <para>
+/// <b>Which is why the drops themselves are carried, in <see cref="RangeSlice.Unresolved"/>.</b> Between
+/// those two cases sits a third the flag cannot express: a set the venue <i>narrowed</i> to one survivor.
+/// Read off the candidate list alone it is the ordinary answer above, and when the survivor is the front it
+/// is byte-identical to it (gh#570).
+/// </para>
+/// </remarks>
+public sealed record RangeSlice(
+    BarRange Range,
+    IReadOnlyList<string> Candidates,
+    bool Present,
+    bool FellBackToFront = false,
+    bool WholeReadFallback = false)
+{
+    /// <summary>
+    /// The expiries the cycle named for this slice's trade dates that the venue does not list, nearest first.
+    /// Empty for a present slice, which constructs no candidate and can therefore drop none.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>Without this, a narrowed set and a named one are the same slice</b> (gh#570). A cycle naming two
+    /// expiries the venue lists only one of leaves a set of one — and when that one is the venue's own pick,
+    /// the slice is byte-identical to a slice the cycle genuinely named the front alone for. The first is a
+    /// degradation: the volume decision ADR-0020 exists for ran over what survived an existence check rather
+    /// than over the cycle, and the answer will change when the directory's negative lapses. The second is an
+    /// ordinary answer. Neither throws and neither comes back empty, so the difference has to be carried
+    /// rather than inferred.
+    /// </para>
+    /// <para>
+    /// It is recorded for a <see cref="FellBackToFront"/> slice too, where it names every expiry that fell
+    /// away — the same fact at full strength.
+    /// </para>
+    /// </remarks>
+    public IReadOnlyList<ContractExpiry> Unresolved { get; init; } = [];
+
+    /// <summary>
+    /// Whether this slice asks the venue's own pick and nothing else <b>because the cycle named it</b>.
+    /// </summary>
+    /// <param name="frontContractId">The contract the venue marks active.</param>
+    /// <returns>
+    /// <see langword="true"/> when the front is the whole candidate set and every expiry the cycle named for
+    /// this slice resolved to it.
+    /// </returns>
+    /// <remarks>
+    /// Two such slices side by side ask the same contract the same question, so the caller merges them and a
+    /// range cut at the tenure start buys no page boundary the old shape did not have. A slice that fell back,
+    /// whose set was <i>narrowed</i> by a venue negative, or whose whole plan fell back (gh#598) is not one
+    /// of these, however identical its candidate list looks: merged into the present band it would stop being
+    /// history at all — no candidate set, no volume decision, and no warning — for a stretch the front is
+    /// not the answer for.
+    /// </remarks>
+    public bool IsCycleFrontSlice(string frontContractId) =>
+        !FellBackToFront
+        && !WholeReadFallback
+        && Unresolved.Count == 0
+        && Candidates.Count == 1
+        && string.Equals(Candidates[0], frontContractId, StringComparison.Ordinal);
+}
+
+/// <summary>
+/// Cuts the ranges a read still owes the venue into the present band and the historical bands, and names
+/// what each is to be fetched from (ADR-0020 §1–2, gh#505).
+/// </summary>
+/// <remarks>
+/// <para>
+/// <b>Pure, and deliberately container-free.</b> It reaches no store, no venue and no clock: the tenure start
+/// is handed in as a value, and every candidate id arrives through a lookup the caller has already resolved.
+/// That is what makes the cutting testable without a database, and it is the same discipline
+/// <c>HistoricalContractPolicy</c> keeps one layer down (ADR-0006).
+/// </para>
+/// <para>
+/// It lives in the host rather than in <c>Domain</c> because it is a fact about <i>this fetch flow</i> —
+/// which band the venue's pick owns — rather than about the market.
+/// </para>
+/// </remarks>
+public static class HistoricalRangePlanner
+{
+    /// <summary>
+    /// Every outstanding range as one slice on the venue's own pick, because there is <b>no cycle to cut
+    /// against</b> (gh#598).
+    /// </summary>
+    /// <param name="outstanding">The ranges the read still owes, ascending and non-overlapping.</param>
+    /// <param name="frontContractId">The contract the venue marks active.</param>
+    /// <returns>
+    /// One slice per non-empty range, <see cref="RangeSlice.WholeReadFallback"/> set and
+    /// <see cref="RangeSlice.Present"/> false — a months-old fallback is not the present band.
+    /// </returns>
+    /// <exception cref="ArgumentNullException">A required argument is null.</exception>
+    /// <remarks>
+    /// <para>
+    /// <b>This is the other cut, and it used to lie about the band.</b> Both of <c>R-1.14</c>'s whole-read
+    /// conditions — an instrument the registry does not serve, and a front whose expiry does not read
+    /// against the cycle — answer through this method. Labelling those ranges <c>Present: true</c> routed
+    /// them to the front and made <see cref="SelectionOf"/> skip them, so a months-old fallback reported
+    /// <see cref="HistorySelection.NotDecidedHere"/> like a warm read. The sibling records the degradation
+    /// where the plan is cut; the fetch still asks the front and still earns the empty-range memo, because
+    /// an empty answer from <c>F</c> is a true statement about <c>F</c>.
+    /// </para>
+    /// <para>
+    /// Pure for the same reason <see cref="PlanSlices"/> is: no store, no venue, no clock.
+    /// </para>
+    /// </remarks>
+    public static IReadOnlyList<RangeSlice> FromTheFront(
+        IReadOnlyList<BarRange> outstanding,
+        string frontContractId)
+    {
+        ArgumentNullException.ThrowIfNull(outstanding);
+        ArgumentException.ThrowIfNullOrWhiteSpace(frontContractId);
+
+        List<RangeSlice> slices = [];
+
+        foreach (BarRange range in outstanding)
+        {
+            if (range is null || range.IsEmpty)
+            {
+                continue;
+            }
+
+            slices.Add(new RangeSlice(range, [frontContractId], Present: false, WholeReadFallback: true));
+        }
+
+        return slices;
+    }
+
+    /// <summary>
+    /// Cuts each outstanding range at the tenure start, and each historical piece wherever the trade date's
+    /// candidate set changes.
+    /// </summary>
+    /// <param name="outstanding">The ranges the read still owes, ascending and non-overlapping.</param>
+    /// <param name="tenureStart">
+    /// The first bucket of the store's trailing run of the venue front, <c>T(F)</c>. At or after it is the
+    /// present band; before it is history.
+    /// </param>
+    /// <param name="frontContractId">The contract the venue marks active.</param>
+    /// <param name="calendar">The session calendar deciding which trade date a bucket belongs to.</param>
+    /// <param name="cycle">The product's contract month cycle.</param>
+    /// <param name="depth">How many listed expiries are candidates for one historical trade date.</param>
+    /// <param name="resolveContractId">
+    /// The venue contract id for a constructed expiry, or <see langword="null"/> when the venue does not list
+    /// it. Synchronous by design: the caller existence-checks every candidate before planning, so the planner
+    /// never reaches the venue.
+    /// </param>
+    /// <returns>The slices, ascending, non-overlapping, and covering the input exactly.</returns>
+    /// <exception cref="ArgumentNullException">A required argument is null.</exception>
+    /// <exception cref="ArgumentOutOfRangeException"><paramref name="depth"/> is below one.</exception>
+    public static IReadOnlyList<RangeSlice> PlanSlices(
+        IReadOnlyList<BarRange> outstanding,
+        DateTimeOffset tenureStart,
+        string frontContractId,
+        BarSessionCalendar calendar,
+        ContractMonthCycle cycle,
+        int depth,
+        Func<ContractExpiry, string?> resolveContractId)
+    {
+        ArgumentNullException.ThrowIfNull(outstanding);
+        ArgumentException.ThrowIfNullOrWhiteSpace(frontContractId);
+        ArgumentNullException.ThrowIfNull(calendar);
+        ArgumentNullException.ThrowIfNull(cycle);
+        ArgumentNullException.ThrowIfNull(resolveContractId);
+        if (depth < 1)
+        {
+            throw new ArgumentOutOfRangeException(nameof(depth), depth, "At least one candidate is needed.");
+        }
+
+        List<RangeSlice> slices = [];
+
+        foreach (BarRange range in outstanding)
+        {
+            if (range is null || range.IsEmpty)
+            {
+                continue;
+            }
+
+            // History first, then the present: the two pieces of one range are already in ascending order
+            // that way, and the input is ascending, so the whole answer is.
+            if (range.Start < tenureStart)
+            {
+                DateTimeOffset end = range.End <= tenureStart ? range.End : tenureStart;
+                for (DateTimeOffset from = range.Start; from < end;)
+                {
+                    ContractExpiry[] expiries =
+                        [.. cycle.CandidatesFor(TradeDateOf(calendar, from), depth)];
+                    DateTimeOffset next = NextCandidateChange(from, end, calendar, cycle, depth, expiries[0]);
+
+                    // No listed candidate left is a DEGRADATION, not an empty answer: the slice is fetched
+                    // from the venue's own pick, which is today's behaviour, and the caller logs the warning
+                    // and withholds the permanent memo. A slice with nothing to ask would report a quiet
+                    // market instead -- the plausible-looking absence this server exists to refuse.
+                    //
+                    // WHAT FELL AWAY IS CARRIED, NOT JUST WHETHER EVERYTHING DID (gh#570). A set narrowed to
+                    // one survivor is a degradation too, and when that survivor is the front the slice is
+                    // otherwise indistinguishable from one the cycle named the front alone for -- so the
+                    // caller could neither warn about it nor refuse to merge it.
+                    (IReadOnlyList<string> candidates, IReadOnlyList<ContractExpiry> unresolved) =
+                        Listed(expiries, resolveContractId);
+                    slices.Add(new RangeSlice(
+                        new BarRange(from, next),
+                        candidates.Count > 0 ? candidates : [frontContractId],
+                        Present: false,
+                        FellBackToFront: candidates.Count == 0)
+                    {
+                        Unresolved = unresolved,
+                    });
+
+                    from = next;
+                }
+            }
+
+            if (range.End > tenureStart)
+            {
+                DateTimeOffset start = range.Start >= tenureStart ? range.Start : tenureStart;
+                slices.Add(new RangeSlice(
+                    new BarRange(start, range.End), [frontContractId], Present: true));
+            }
+        }
+
+        return slices;
+    }
+
+    /// <summary>
+    /// Merges adjacent slices the <b>cycle</b> brings down to the venue's own pick, and only it.
+    /// </summary>
+    /// <param name="slices">The slices for one range, ascending and contiguous.</param>
+    /// <param name="front">The contract the venue marks active.</param>
+    /// <returns>The slices, adjacent cycle-front pieces merged into one present slice.</returns>
+    /// <exception cref="ArgumentNullException">A required argument is null.</exception>
+    /// <remarks>
+    /// <para>
+    /// <b>A historical slice with exactly one candidate is decided before it is fetched.</b>
+    /// <c>HistoricalContractPolicy.Decide</c> over a single contract can only choose that contract, so such
+    /// a slice writes the same bars under the same id as the present treatment does, and an empty answer
+    /// from it earns the same memo. When that one candidate is the front itself, the historical and present
+    /// pieces of one range are the same question asked twice.
+    /// </para>
+    /// <para>
+    /// <b>Merging them is what keeps the paging identical.</b> A range cut at the tenure start pays a page
+    /// boundary at the cut, so a store holding one attributed bucket would silently cost one venue request
+    /// more per read than the same store did before ADR-0020 — a cost with no answer behind it, since both
+    /// halves ask the same contract. Adjacent slices asking the same contracts the same question are one
+    /// slice; <see cref="PlanSlices"/> already applies that rule to trade-date boundaries.
+    /// </para>
+    /// <para>
+    /// <b>The test is what the CYCLE named, never what happened to survive</b> (gh#570), and that distinction
+    /// is the whole of this issue. A cycle naming two expiries the venue lists only one of leaves a candidate
+    /// list of exactly the front — character for character the list a depth-one cycle produces — so a rule
+    /// reading the list alone folded a real historical stretch into the present band on the strength of one
+    /// <c>ContractDirectory</c> negative, stored the front's bars under it, and logged nothing.
+    /// <see cref="RangeSlice.IsCycleFrontSlice"/> refuses that slice, and refuses a slice that
+    /// <see cref="RangeSlice.FellBackToFront"/> for the same reason at full strength: a candidate list that
+    /// is the front by degradation rather than by the cycle. Merged, either would stop being history at all —
+    /// no candidate set for the ledger to test per candidate, no volume decision, and no warning — for a
+    /// stretch the front is not the answer for; and the fallen-back one would additionally be handed the
+    /// permanent memo it must not earn.
+    /// </para>
+    /// <para>
+    /// <b>What is left is a DEPTH-ONE product, and nothing this server serves is one.</b> The live venue
+    /// lists the active expiry alone and still answers by id for expired ones (ADR-0020, gh#494), so a real
+    /// historical slice normally resolves its full candidate depth and is never merged; and every instrument
+    /// in <c>InstrumentRegistry</c> carries a depth of at least two, pinned by
+    /// <c>InstrumentRegistryCycleTests.EveryServedInstrumentHasACycleAndADepth</c>. So this is
+    /// <b>insurance rather than a hot path</b>. It is kept because it fires the day a single-candidate
+    /// product is added, and without it every straddling read of that product would silently pay one extra
+    /// paced history request for ever — and because deleting it would leave <c>IsCycleFrontSlice</c> with no
+    /// caller and reduce gh#570's "not folded into the present band" to a statement about nothing. It is
+    /// <b>exercised at depth one</b> rather than left to go quietly green once the depth-two population
+    /// stopped reaching it (gh#570 review).
+    /// </para>
+    /// <para>
+    /// Here rather than in the caller so the merge sits beside the cutting it undoes, and so the depth-one
+    /// branch above is reachable from the cheap tier at all: it is pure, it reads no service state, and the
+    /// host assembly declares no <c>InternalsVisibleTo</c>.
+    /// </para>
+    /// </remarks>
+    public static IReadOnlyList<RangeSlice> Coalesce(IReadOnlyList<RangeSlice> slices, string front)
+    {
+        ArgumentNullException.ThrowIfNull(slices);
+        ArgumentException.ThrowIfNullOrWhiteSpace(front);
+
+        List<RangeSlice> merged = [];
+
+        foreach (RangeSlice slice in slices)
+        {
+            if (merged.Count > 0
+                && merged[^1].Range.End == slice.Range.Start
+                && merged[^1].IsCycleFrontSlice(front)
+                && slice.IsCycleFrontSlice(front))
+            {
+                merged[^1] = new RangeSlice(
+                    new BarRange(merged[^1].Range.Start, slice.Range.End), [front], Present: true);
+                continue;
+            }
+
+            merged.Add(slice);
+        }
+
+        return merged;
+    }
+
+    /// <summary>
+    /// What these slices let the read tell its <b>caller</b> about how its history was decided (gh#592).
+    /// </summary>
+    /// <param name="slices">The slices this read is fetching, present and historical alike.</param>
+    /// <returns>The worst degradation among them, and every expiry that fell away.</returns>
+    /// <exception cref="ArgumentNullException"><paramref name="slices"/> is null.</exception>
+    /// <remarks>
+    /// <para>
+    /// <b>gh#570 made the narrowing visible to an operator; this makes it visible to a caller.</b> The
+    /// warning <c>BarCacheService</c> logs is not on the caller's path — an MCP client never sees a log line
+    /// — so from the wire a narrowed series and a whole one were the same object: a real series, from a real
+    /// contract, complete-looking, with nothing anywhere saying the volume decision ran over survivors rather
+    /// than over the cycle. That is the plausible-number failure this server exists to refuse, one layer up
+    /// from the bars.
+    /// </para>
+    /// <para>
+    /// <b>Derived here, from the plan, because here is the only place it exists.</b> Once the bars are stored
+    /// the fact is gone: nothing in <c>Bars</c> records that a bucket was written under a narrowed set, and
+    /// ADR-0020 §5 forbids a read from re-deciding attributed history to reconstruct it. A read that plans
+    /// nothing therefore answers <see cref="HistorySelection.NotDecidedHere"/> — not a whole cycle.
+    /// </para>
+    /// <para>
+    /// <b>Pure, and public for the reason <see cref="Coalesce"/> is</b>: it reads no store, no clock and no
+    /// venue, so the cheap tier can pin all five states directly, and this assembly declares no
+    /// <c>InternalsVisibleTo</c>.
+    /// </para>
+    /// <para>
+    /// A <b>present</b> slice constructs no candidate and can therefore drop none, so it neither degrades the
+    /// answer nor promotes it past <see cref="HistorySelection.NotDecidedHere"/> — a present-only read
+    /// decided no history at all. A <see cref="RangeSlice.WholeReadFallback"/> slice is the other cut: it
+    /// also asks the front alone, and it <i>is</i> a degradation, reported as
+    /// <see cref="HistorySelection.AsTheFrontAlone"/>.
+    /// </para>
+    /// </remarks>
+    public static HistoryCandidates SelectionOf(IReadOnlyList<RangeSlice> slices)
+    {
+        ArgumentNullException.ThrowIfNull(slices);
+
+        HistorySelection selection = HistorySelection.NotDecidedHere;
+        List<string> unresolved = [];
+
+        foreach (RangeSlice slice in slices)
+        {
+            if (slice.WholeReadFallback)
+            {
+                if (HistorySelection.AsTheFrontAlone > selection)
+                {
+                    selection = HistorySelection.AsTheFrontAlone;
+                }
+
+                continue;
+            }
+
+            if (slice.Present)
+            {
+                continue;
+            }
+
+            // The RANK is the point: one value has to stand for a whole read, and it stands for the worst
+            // thing in it. A read holding one fallen-back stretch and one clean one is not a clean read.
+            HistorySelection here = slice.FellBackToFront
+                ? HistorySelection.FellBackToTheFront
+                : slice.Unresolved.Count > 0
+                    ? HistorySelection.NarrowedByTheVenue
+                    : HistorySelection.AsTheCycleNames;
+
+            if (here > selection)
+            {
+                selection = here;
+            }
+
+            foreach (ContractExpiry expiry in slice.Unresolved)
+            {
+                if (!unresolved.Contains(expiry.Code, StringComparer.Ordinal))
+                {
+                    unresolved.Add(expiry.Code);
+                }
+            }
+        }
+
+        return new HistoryCandidates(selection, unresolved);
+    }
+
+    /// <summary>
+    /// The trade date a bucket belongs to, falling back to its UTC date for a bucket the calendar places
+    /// outside every session — exactly as <c>HistoricalContractPolicy</c> groups bars.
+    /// </summary>
+    /// <param name="calendar">The session calendar.</param>
+    /// <param name="instant">The instant.</param>
+    /// <returns>The trade date.</returns>
+    private static DateOnly TradeDateOf(BarSessionCalendar calendar, DateTimeOffset instant) =>
+        calendar.TradeDateFor(instant) ?? DateOnly.FromDateTime(instant.UtcDateTime);
+
+    /// <summary>
+    /// The first instant in <c>(from, end)</c> whose trade date names a different candidate set, or
+    /// <paramref name="end"/> when the set holds for the whole stretch.
+    /// </summary>
+    /// <param name="from">The start of the stretch, whose candidate set is the one being left.</param>
+    /// <param name="end">The end of the stretch, exclusive.</param>
+    /// <param name="calendar">The session calendar.</param>
+    /// <param name="cycle">The product's contract month cycle.</param>
+    /// <param name="depth">How many listed expiries are candidates.</param>
+    /// <param name="nearest">The nearest candidate at <paramref name="from"/>.</param>
+    /// <returns>The change instant, or <paramref name="end"/>.</returns>
+    /// <remarks>
+    /// <para>
+    /// <b>A binary search rather than a scan, and it is exact.</b> The candidate set is a function of the
+    /// trade date alone, the trade date is non-decreasing in the instant, and
+    /// <c>ContractMonthCycle.CandidatesFor</c> only ever moves the nearest expiry <i>forward</i> — so
+    /// "the set has changed" is false then true across the stretch and never returns. A step scan would have
+    /// to pick a granularity, and would land the cut at a step boundary rather than where the trade date
+    /// actually turns — which is the session open on the last day of the outgoing month, <b>except</b> when
+    /// that turn falls inside a weekend, a declared holiday or the maintenance window: there
+    /// <c>TradeDateFor</c> answers nothing, the <c>?? DateOnly.FromDateTime(utc)</c> fallback stands in, and
+    /// the cut lands at the first UTC midnight of the new month instead. Exact in both cases, because the
+    /// search asks the same function the fetch will.
+    /// </para>
+    /// <para>
+    /// The tie-break is <c>Rank</c> rather than set equality: a month change that does not move the nearest
+    /// expiry (April to May on a quarterly cycle) is not a boundary, and splitting there would produce two
+    /// adjacent slices asking the same contracts the same question.
+    /// </para>
+    /// </remarks>
+    private static DateTimeOffset NextCandidateChange(
+        DateTimeOffset from,
+        DateTimeOffset end,
+        BarSessionCalendar calendar,
+        ContractMonthCycle cycle,
+        int depth,
+        ContractExpiry nearest)
+    {
+        long lo = from.UtcTicks;
+        long hi = end.UtcTicks;
+
+        if (!HasChanged(hi - 1))
+        {
+            return end;
+        }
+
+        while (hi - lo > 1)
+        {
+            long mid = lo + ((hi - lo) / 2);
+            if (HasChanged(mid))
+            {
+                hi = mid;
+            }
+            else
+            {
+                lo = mid;
+            }
+        }
+
+        return new DateTimeOffset(hi, TimeSpan.Zero);
+
+        bool HasChanged(long ticks) =>
+            cycle.CandidatesFor(
+                TradeDateOf(calendar, new DateTimeOffset(ticks, TimeSpan.Zero)), depth)[0].Rank > nearest.Rank;
+    }
+
+    /// <summary>The venue ids for a candidate set, and the expiries that had none.</summary>
+    /// <param name="expiries">The candidates, nearest first.</param>
+    /// <param name="resolveContractId">The expiry-to-id lookup.</param>
+    /// <returns>The ids and the unresolved expiries, both nearest expiry first.</returns>
+    /// <remarks>
+    /// <b>The drops are returned rather than discarded</b> (gh#570). A dropped expiry is the whole difference
+    /// between a candidate set the cycle named and one a venue negative narrowed, and the two are the same
+    /// list of ids afterwards — so the fact has to leave this method or it is gone. An expiry that resolves to
+    /// an id already in the set is <i>not</i> a drop: the venue answered for it, and two expiries mapping to
+    /// one id is the venue's business.
+    /// </remarks>
+    private static (IReadOnlyList<string> Ids, IReadOnlyList<ContractExpiry> Unresolved) Listed(
+        IReadOnlyList<ContractExpiry> expiries,
+        Func<ContractExpiry, string?> resolveContractId)
+    {
+        List<string> ids = [];
+        List<ContractExpiry> unresolved = [];
+
+        foreach (ContractExpiry expiry in expiries)
+        {
+            if (resolveContractId(expiry) is not { } contractId)
+            {
+                unresolved.Add(expiry);
+                continue;
+            }
+
+            if (!ids.Contains(contractId, StringComparer.Ordinal))
+            {
+                ids.Add(contractId);
+            }
+        }
+
+        return (ids, unresolved);
+    }
+}

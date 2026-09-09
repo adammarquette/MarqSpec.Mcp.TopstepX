@@ -37,6 +37,10 @@ namespace MarqSpec.Mcp.TopstepX.Data.Migrations
                     b.Property<int>("ResolutionMinutes")
                         .HasColumnType("integer");
 
+                    b.Property<string>("ContractId")
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
                     b.Property<DateTimeOffset>("RangeStart")
                         .HasColumnType("timestamp with time zone");
 
@@ -49,9 +53,9 @@ namespace MarqSpec.Mcp.TopstepX.Data.Migrations
                     b.Property<DateTimeOffset>("RecordedAt")
                         .HasColumnType("timestamp with time zone");
 
-                    b.HasKey("Venue", "Instrument", "ResolutionMinutes", "RangeStart", "RangeEnd");
+                    b.HasKey("Venue", "Instrument", "ResolutionMinutes", "ContractId", "RangeStart", "RangeEnd");
 
-                    b.HasIndex("Instrument", "ResolutionMinutes", "RangeStart", "RangeEnd");
+                    b.HasIndex("Instrument", "ResolutionMinutes", "ContractId", "RangeStart", "RangeEnd");
 
                     b.ToTable("BarCoverage", (string)null);
                 });
@@ -239,6 +243,110 @@ namespace MarqSpec.Mcp.TopstepX.Data.Migrations
                     b.HasIndex("Instrument", "RecordedAt");
 
                     b.ToTable("Observations", (string)null);
+                });
+
+            modelBuilder.Entity("MarqSpec.Mcp.TopstepX.Data.Entities.SessionBarRecord", b =>
+                {
+                    b.Property<string>("Venue")
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
+                    b.Property<string>("Instrument")
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)");
+
+                    b.Property<string>("Session")
+                        .HasMaxLength(16)
+                        .HasColumnType("character varying(16)");
+
+                    b.Property<DateOnly>("TradeDate")
+                        .HasColumnType("date");
+
+                    b.Property<int>("BaseBucketCount")
+                        .HasColumnType("integer");
+
+                    b.Property<int>("BaseResolutionMinutes")
+                        .HasColumnType("integer");
+
+                    b.Property<decimal>("Close")
+                        .HasColumnType("numeric(18,8)");
+
+                    b.Property<DateTimeOffset>("CloseUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("ContractId")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
+                    b.Property<decimal>("High")
+                        .HasColumnType("numeric(18,8)");
+
+                    b.Property<decimal>("Low")
+                        .HasColumnType("numeric(18,8)");
+
+                    b.Property<decimal>("Open")
+                        .HasColumnType("numeric(18,8)");
+
+                    b.Property<DateTimeOffset>("OpenUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<DateTimeOffset>("RecordedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<long>("Volume")
+                        .HasColumnType("bigint");
+
+                    b.Property<string>("WindowCentral")
+                        .IsRequired()
+                        .HasMaxLength(11)
+                        .HasColumnType("character varying(11)");
+
+                    b.HasKey("Venue", "Instrument", "Session", "TradeDate");
+
+                    b.HasIndex("Instrument", "Session", "CloseUtc");
+
+                    b.HasIndex("Venue", "Instrument", "Session", "OpenUtc")
+                        .IsUnique();
+
+                    b.ToTable("SessionBars", (string)null);
+                });
+
+            modelBuilder.Entity("MarqSpec.Mcp.TopstepX.Data.Entities.SessionIndicatorValueRecord", b =>
+                {
+                    b.Property<string>("Venue")
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
+                    b.Property<string>("Instrument")
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)");
+
+                    b.Property<string>("Session")
+                        .HasMaxLength(16)
+                        .HasColumnType("character varying(16)");
+
+                    b.Property<string>("Indicator")
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)");
+
+                    b.Property<int>("Period")
+                        .HasColumnType("integer");
+
+                    b.Property<DateTimeOffset>("BucketStart")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<DateTimeOffset>("RecordedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<decimal>("Value")
+                        .HasColumnType("numeric(18,8)");
+
+                    b.HasKey("Venue", "Instrument", "Session", "Indicator", "Period", "BucketStart");
+
+                    b.HasIndex("Instrument", "Session", "Indicator", "Period", "BucketStart");
+
+                    b.ToTable("SessionIndicatorValues", (string)null);
                 });
 
             modelBuilder.Entity("MarqSpec.Mcp.TopstepX.Data.Entities.TapeCoverageRecord", b =>

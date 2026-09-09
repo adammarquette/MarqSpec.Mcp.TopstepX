@@ -1,0 +1,30 @@
+{
+  "hosted-zone:account=123456789012:domainName=marqspec.com:region=us-east-1": {
+    "Id": "/hostedzone/Z0000000000000000000",
+    "Name": "marqspec.com."
+  },
+  "hosted-zone:account=123456789012:domainName=staging.marqspec.com:region=us-east-1": {
+    "Id": "/hostedzone/Z0000000000000000000",
+    "Name": "staging.marqspec.com."
+  },
+  "hosted-zone:account=045296582762:domainName=staging.marqspec.com:region=us-east-1": {
+    "Id": "/hostedzone/Z00545362JA49XMTT3U7Q",
+    "Name": "staging.marqspec.com."
+  },
+  "availability-zones:account=123456789012:region=us-east-1": [
+    "us-east-1a",
+    "us-east-1b"
+  ],
+  "hosted-zone:account=045296582762:domainName=marqspec.com:region=us-east-1": {
+    "Id": "/hostedzone/Z063685735CT6R1B1I8YZ",
+    "Name": "marqspec.com."
+  },
+  "availability-zones:account=045296582762:region=us-east-1": [
+    "us-east-1a",
+    "us-east-1b",
+    "us-east-1c",
+    "us-east-1d",
+    "us-east-1e",
+    "us-east-1f"
+  ]
+}

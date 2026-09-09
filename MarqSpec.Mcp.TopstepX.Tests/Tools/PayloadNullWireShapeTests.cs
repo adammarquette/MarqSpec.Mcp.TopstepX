@@ -90,6 +90,22 @@ public sealed class PayloadNullWireShapeTests
     }
 
     [Fact]
+    public void ASessionIndicatorReading_DropsTheValueKey_WhenItCannotMeasure()
+    {
+        JsonElement reading = Wire(new ToolPayloads.SessionIndicatorReading(
+            Value: null, TradeDate: null, BucketStart: null, ContractId: null));
+
+        // FOUR nullable fields rather than three, and the wire form is the same `{}` get_indicator_at's
+        // reading takes (gh#501). A session reading carries the trade date as well as the opening instant,
+        // and adding a field to a record every one of whose properties is nullable does not change what
+        // cannot-measure looks like -- it is still an object with nothing in it, so `reading.value === null`
+        // is still `undefined === null` and still false.
+        reading.TryGetProperty("value", out _).Should().BeFalse(
+            "cannot-measure DROPS the key, so `\"value\" in reading` is the test");
+        reading.EnumerateObject().Should().BeEmpty();
+    }
+
+    [Fact]
     public void VolumeFront_OmitsAbsentAnswers_AndNeverWritesWhy()
     {
         JsonElement front = Wire(new ToolPayloads.VolumeFrontInfo(
@@ -279,6 +295,28 @@ public sealed class PayloadNullWireShapeTests
             + "share a contract");
         atr.GetProperty("value").GetDecimal().Should().Be(
             12.5m, "the value is unaffected: an absent contract does not make a reading unmeasured");
+    }
+
+    [Fact]
+    public void ASessionAbsence_WritesItsReasonAsAnEnumName()
+    {
+        // The third wire shape a caller has to know about, and the one ADR-0008 turns on: an absence reason
+        // is a NAME from a vocabulary this repository defines, not an integer. Serialised as `1` it would be
+        // a code with no legend on the wire, and a reader acting on "the session is incomplete" would be
+        // acting on a number that means nothing without this assembly beside it.
+        JsonElement absence = Wire(new ToolPayloads.SessionAbsence(
+            TradeDate: new DateOnly(2026, 8, 3),
+            Reason: SessionBarAbsence.Incomplete,
+            ExpectedBuckets: 13,
+            MissingBuckets: 2));
+
+        JsonElement reason = absence.GetProperty("reason");
+
+        reason.ValueKind.Should().Be(
+            JsonValueKind.String, "an enum on this surface is a name, never an ordinal");
+        reason.GetString().Should().Be("Incomplete");
+        absence.GetProperty("missingBuckets").GetInt32().Should().Be(
+            2, "and the counts beside it are always present -- an absence is an answer, not a null");
     }
 
     private static ToolPayloads.ContractCoverage EmptyCoverage =>

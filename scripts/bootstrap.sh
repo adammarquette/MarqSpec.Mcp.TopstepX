@@ -292,9 +292,9 @@ if ! $DRY_RUN; then
 fi
 
 # ---------------------------------------------------------------------------
-# 4. The release approval environment.
+# 4. The approval environments.
 # ---------------------------------------------------------------------------
-step "4. Release approval environment"
+step "4. Approval environments"
 
 # gh#108. `release.yml`'s first job declares `environment: production` and is named "Await release approval".
 # That name is the whole of the claim: an `environment:` key CREATES NOTHING. If the environment does not
@@ -307,11 +307,24 @@ step "4. Release approval environment"
 # therefore inherits the `environment:` key, so it inherits the dependency -- and without this step it
 # inherits it unsatisfied, which is the failure mode above by default rather than by accident.
 #
-# `production` is hardcoded rather than parsed out of the workflows: this script takes a repo SLUG and may be
+# TWO environments, each a separate human approval on a separate consequence (gh#518, ADR-0023 §8):
+#
+#   - `production`      gates the GHCR PUBLISH -- `release.yml`'s `gate` job, the only thing between a merge
+#                       and a public image tag that cannot be un-pulled (gh#108);
+#   - `aws-production`  gates WHAT RUNS -- the production deploy jobs declare it, and the IAM role those jobs
+#                       assume trusts ONLY a token carrying `sub = repo:<owner/repo>:environment:aws-production`,
+#                       a claim GitHub mints only for a job that declared the environment and passed its rule.
+#                       So the reviewer rule here is the approval AND the credential's precondition: an
+#                       `aws-production` with no reviewer would let the deploy role be assumed by any job in
+#                       this repository that names the environment.
+#
+# The names are hardcoded rather than parsed out of the workflows: this script takes a repo SLUG and may be
 # run from anywhere, with no checkout to read. Keeping the two in step is check-release-gate.sh's job -- it
-# discovers the name from the workflows and fails naming it, which is what a repo that renamed its
-# environment would see.
-ENV_NAME="production"
+# discovers every name from the workflows and fails naming it, which is what a repo that renamed an
+# environment would see. The OTHER direction is held by a template test: the environment the production
+# deploy role trusts must appear on this line (infra/…/GitHubOidcStackTests.cs reads it), so the trust
+# condition and the setting cannot drift apart on the one name a deploy token must carry.
+ENV_NAMES="production aws-production"
 
 # CREATE-ONLY, NEVER OVERWRITE. An environment that already exists is READ and reported, never written.
 #
@@ -326,61 +339,150 @@ ENV_NAME="production"
 # So the hazard here is not omission, it is the payload below: it names `reviewers` explicitly, so running it
 # over a live environment would replace whatever reviewer list is there with exactly one account. On a repo
 # that had added a second maintainer, a re-run would quietly drop them. Reading first and refusing to write
-# costs one GET and removes the question.
+# costs one GET and removes the question. Generalising to a list changes none of this: each name is read on
+# its own, and an existing `production` is left exactly as it is while a missing `aws-production` is created
+# beside it -- which is the state this repository is in on the day gh#518 lands.
 #
 # The read is fatal on anything except a clean 404, for the same reason the ruleset reads are: a read that did
 # not succeed is not evidence of absence, and creating on top of that guess is how the setting gets replaced.
-env_status=0
-env_read="$(gh api "repos/$REPO/environments/$ENV_NAME" 2>&1)" || env_status=$?
+ENV_REVIEWERS_JQ='[.protection_rules[]?|select(.type=="required_reviewers")|.reviewers[]?|"\(.type):\(.reviewer.login // .reviewer.slug)"]|join(", ")'
 
-if [ "$env_status" -eq 0 ]; then
-  reviewers="$(gh_read "repos/$REPO/environments/$ENV_NAME" \
-    --jq '[.protection_rules[]?|select(.type=="required_reviewers")|.reviewers[]?|"\(.type):\(.reviewer.login // .reviewer.slug)"]|join(", ")')" || exit 1
-  if [ -n "$reviewers" ]; then
-    info "  $ENV_NAME exists and requires: $reviewers"
-    info "  left untouched — a PUT here would REPLACE that reviewer list (gh#108)"
-  else
-    warn "  $ENV_NAME exists but requires NO reviewers — the release approval gate is inert"
-    warn "  Add a reviewer in Settings > Environments > $ENV_NAME, or delete it and re-run this script."
-  fi
-elif printf '%s' "$env_read" | grep -q 'HTTP 404'; then
-  # The account running this script is an admin of the repo, so it is the one reviewer that is certainly
-  # valid. The API takes numeric ids, not logins.
-  #
-  # `prevent_self_review` is left at its default of FALSE, deliberately (gh#108). True would mean the person
-  # who cut the release cannot approve it -- which, while one person is the entire review pool, means nobody
-  # can and the gate becomes a wall. Revisit it the day a second maintainer exists; it is a decision, not an
-  # oversight.
-  ACTOR_LOGIN="$(gh_read "user" --jq .login)" || exit 1
-  ACTOR_ID="$(gh_read "user" --jq .id)" || exit 1
-  info "  creating $ENV_NAME, required reviewer: $ACTOR_LOGIN"
-  if ! $DRY_RUN; then
-    printf '{"reviewers":[{"type":"User","id":%s}]}' "$ACTOR_ID" \
-      | gh api -X PUT "repos/$REPO/environments/$ENV_NAME" --input - >/dev/null
-    # Read back what was left behind, per the same reasoning as the ruleset verification above: "the API
-    # accepted my payload" and "the gate is now real" are different claims.
-    left="$(gh_read "repos/$REPO/environments/$ENV_NAME" \
-      --jq '[.protection_rules[]?|select(.type=="required_reviewers")|.reviewers[]?|"\(.type):\(.reviewer.login // .reviewer.slug)"]|join(", ")')" || exit 1
-    if [ -n "$left" ]; then
-      ok "  $ENV_NAME now requires: $left"
+for ENV_NAME in $ENV_NAMES; do
+  env_status=0
+  env_read="$(gh api "repos/$REPO/environments/$ENV_NAME" 2>&1)" || env_status=$?
+
+  if [ "$env_status" -eq 0 ]; then
+    reviewers="$(gh_read "repos/$REPO/environments/$ENV_NAME" --jq "$ENV_REVIEWERS_JQ")" || exit 1
+    if [ -n "$reviewers" ]; then
+      info "  $ENV_NAME exists and requires: $reviewers"
+      info "  left untouched — a PUT here would REPLACE that reviewer list (gh#108)"
     else
-      warn "  $ENV_NAME was created but requires NO reviewers. The release gate is inert; fix it by hand."
+      warn "  $ENV_NAME exists but requires NO reviewers — the approval it gates is inert"
+      warn "  Add a reviewer in Settings > Environments > $ENV_NAME, or delete it and re-run this script."
+    fi
+  elif printf '%s' "$env_read" | grep -q 'HTTP 404'; then
+    # The account running this script is an admin of the repo, so it is the one reviewer that is certainly
+    # valid. The API takes numeric ids, not logins.
+    #
+    # `prevent_self_review` is left at its default of FALSE, deliberately (gh#108). True would mean the person
+    # who cut the release cannot approve it -- which, while one person is the entire review pool, means nobody
+    # can and the gate becomes a wall. Revisit it the day a second maintainer exists; it is a decision, not an
+    # oversight. The same decision, for the same reason, on every environment this list names.
+    ACTOR_LOGIN="$(gh_read "user" --jq .login)" || exit 1
+    ACTOR_ID="$(gh_read "user" --jq .id)" || exit 1
+    info "  creating $ENV_NAME, required reviewer: $ACTOR_LOGIN"
+    if ! $DRY_RUN; then
+      printf '{"reviewers":[{"type":"User","id":%s}]}' "$ACTOR_ID" \
+        | gh api -X PUT "repos/$REPO/environments/$ENV_NAME" --input - >/dev/null
+      # Read back what was left behind, per the same reasoning as the ruleset verification above: "the API
+      # accepted my payload" and "the gate is now real" are different claims.
+      left="$(gh_read "repos/$REPO/environments/$ENV_NAME" --jq "$ENV_REVIEWERS_JQ")" || exit 1
+      if [ -n "$left" ]; then
+        ok "  $ENV_NAME now requires: $left"
+      else
+        warn "  $ENV_NAME was created but requires NO reviewers. The approval it gates is inert; fix it by hand."
+      fi
+    else
+      info "  [dry-run] PUT repos/$REPO/environments/$ENV_NAME"
     fi
   else
-    info "  [dry-run] PUT repos/$REPO/environments/$ENV_NAME"
-  fi
-else
-  die "read failed (exit $env_status): gh api repos/$REPO/environments/$ENV_NAME
+    die "read failed (exit $env_status): gh api repos/$REPO/environments/$ENV_NAME
 $env_read
 
 Stopping rather than guessing. Creating the environment on top of a read that did not succeed would REPLACE
 whatever is there, reviewers included -- gh#114 at a different endpoint. Nothing further has been written."
+  fi
+done
+
+# ---------------------------------------------------------------------------
+# 5. The published image's visibility -- READ ONLY.
+# ---------------------------------------------------------------------------
+step "5. Published image visibility (read-only)"
+
+# gh#518, ADR-0023 §5. The deployment pulls `ghcr.io/<owner>/<repo>@<digest>` from ECS with NO registry
+# credential, which is only true while the package is PUBLIC. Visibility is a GitHub package setting -- not
+# a file, not a workflow -- and a flip to private is found by a failed task pull at the next deploy unless
+# something reads it back. This step reads it back. It WRITES NOTHING: the fallback for a private package is
+# `repositoryCredentials` on the task definition (ADR-0023 §5), which is a change to `infra/`, not a setting
+# this script should flip for anyone.
+#
+# The read is `GET /{users|orgs}/{owner}/packages/container/{name}` -- the package name is the repository
+# name lowercased, the same rule scripts/image-reference.sh applies to the reference the release pushes. It
+# needs the `read:packages` scope, which `gh auth login`'s default token does NOT carry (measured on this
+# repository's maintainer token, 2026-09-07: `repo, workflow, read:org, gist, project` and a 403 from this
+# endpoint). Because nothing downstream decides on this read, EVERY failure in this step WARNS rather than
+# dies -- but it warns naming which failure, since "no package yet" (a repo that has never released) and
+# "could not look" are different states and only one of them is fine.
+#
+# THAT APPLIES TO BOTH READS IN THIS STEP, and until gh#586's review it did not. The owner-type read went
+# through `gh_read`, which `die`s -- so a secondary rate limit on `GET /users/<owner>`, a read the token is
+# always entitled to make, killed the whole script HERE: after steps 1-4 had already written branches, merge
+# settings, rulesets and environments, and BEFORE step 6 created a single label. A half-bootstrapped
+# repository, under a comment promising that could not happen. `gh_read`'s message was wrong for it twice
+# over -- it says "nothing further has been written" (steps 1-4 have) and explains itself in terms of a
+# whole-object PUT this step does not make.
+#
+# So it warns and SKIPS the visibility read instead. The rule the rest of this script runs on is unchanged:
+# a read that DECIDES A WRITE is fatal, because a payload assembled from state nobody observed deletes what
+# it could not see (gh#114). Nothing in this step writes anything, so there is nothing to assemble and the
+# cost of a failed read is one missing line in the report. What is NOT done is guessing the path: `users/`
+# and `orgs/` are different endpoints and the wrong one 404s, which this step would then report as "nothing
+# has been released" -- a confident wrong answer about a setting, which is the failure this whole file
+# exists to stop.
+OWNER="${REPO%%/*}"
+PACKAGE="$(printf '%s' "${REPO#*/}" | tr '[:upper:]' '[:lower:]')"
+
+PACKAGE_PATH=""
+owner_status=0
+owner_read="$(gh api "users/$OWNER" --jq .type 2>&1)" || owner_status=$?
+if [ "$owner_status" -eq 0 ]; then
+  case "$owner_read" in
+    Organization) PACKAGE_PATH="orgs/$OWNER/packages/container/$PACKAGE" ;;
+    *)            PACKAGE_PATH="users/$OWNER/packages/container/$PACKAGE" ;;
+  esac
+else
+  warn "  could not read the owner type (exit $owner_status): gh api users/$OWNER"
+  printf '%s\n' "$owner_read" | sed 's/^/  | /' >&2
+  warn "  Skipping the visibility read: users/ and orgs/ are different endpoints and guessing one would report"
+  warn "  a 404 as 'nothing has been released'. Nothing here was verified, and nothing in this step writes —"
+  warn "  steps 1-4 are applied and step 6 still runs. Re-run to fill in this line."
+fi
+
+if [ -n "$PACKAGE_PATH" ]; then
+  package_status=0
+  package_read="$(gh api "$PACKAGE_PATH" --jq .visibility 2>&1)" || package_status=$?
+  if [ "$package_status" -eq 0 ]; then
+    if [ "$package_read" = "public" ]; then
+      ok "  ghcr.io/$(printf '%s' "$OWNER" | tr '[:upper:]' '[:lower:]')/$PACKAGE is public — ECS pulls it with no registry credential"
+    else
+      warn "  ghcr.io/$(printf '%s' "$OWNER" | tr '[:upper:]' '[:lower:]')/$PACKAGE visibility is '$package_read', not public"
+      warn "  A deployment pulling it with no registry credential FAILS at the task pull. Either make the package"
+      warn "  public again (Package settings > Danger Zone) or add repositoryCredentials to the task definition"
+      warn "  (ADR-0023 §5's fallback). This script changes neither."
+    fi
+  elif printf '%s' "$package_read" | grep -q 'HTTP 404'; then
+    # NAMING THE ASSUMPTION, because "nothing has been released" is a claim and a 404 is only evidence for it
+    # under one (gh#586 review). A missing `read:packages` scope answers 403 and is caught by the branch
+    # below, so it is not what reaches here. What can still reach here is a package that EXISTS and is
+    # PRIVATE to a token that cannot see it -- 404 is what GitHub answers for "no such package" and for "not
+    # yours to know about" alike. The line says so rather than deciding for the reader.
+    info "  no container package named $PACKAGE under $OWNER — nothing has been released yet, assuming this token"
+    info "  could see one if it were there (a private package a token cannot see also answers 404; a missing"
+    info "  read:packages scope answers 403 and is reported separately). Re-run after the first release."
+  elif printf '%s' "$package_read" | grep -q 'read:packages'; then
+    warn "  could not read the package visibility: the token lacks the read:packages scope"
+    warn "  Grant it once with:  gh auth refresh -s read:packages   and re-run. Nothing here was verified."
+  else
+    warn "  could not read the package visibility (exit $package_status): gh api $PACKAGE_PATH"
+    printf '%s\n' "$package_read" | sed 's/^/  | /' >&2
+    warn "  Nothing here was verified; a read that did not succeed says nothing about the setting."
+  fi
 fi
 
 # ---------------------------------------------------------------------------
-# 5. Labels.
+# 6. Labels.
 # ---------------------------------------------------------------------------
-step "5. Label taxonomy"
+step "6. Label taxonomy"
 # Repo labels, not board-only fields, so an agent reading the raw issue through `gh` sees them.
 
 create_label() {

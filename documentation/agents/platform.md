@@ -10,6 +10,7 @@ root [`AGENTS.md`](../../AGENTS.md) still applies. It owns the artifacts below *
 | The published image | [`Dockerfile`](../../Dockerfile) — built by `ci.yml`'s `image` job, pushed to GHCR only by `release.yml` |
 | Local stack | [`docker-compose.yml`](../../docker-compose.yml) (Postgres + server) and [`docker-compose.dev.yml`](../../docker-compose.dev.yml) (SDK overlay) |
 | Build and dependency properties | `Directory.Build.props`, `Directory.Packages.props` (Central Package Management — package *versions*, since nothing here is packaged), `global.json` |
+| Infrastructure as code | [`infra/`](../../infra/) — the CDK app, its template tests, `cdk.json`, the committed context and the pinned CLI; see [Infrastructure](#infrastructure) below |
 | Repo governance that lives in GitHub settings | [ADR-0001](../adr/0001-tag-driven-versioning.md), reproduced by `bootstrap.sh` |
 | Platform decisions | [ADR-0001](../adr/0001-tag-driven-versioning.md) |
 
@@ -507,7 +508,7 @@ by mutation, not as a description of the workflow files.**
 
 | Context | develop | staging | main | Reported by |
 |---|---|---|---|---|
-| `build & unit tests` | required | required | required | `ci.yml` |
+| `build & unit tests` | required | required | required | `ci.yml` — also carries the infra template tests and, since gh#529, the additive-migration gate; [see below](#build--unit-tests-also-refuses-an-unacknowledged-destructive-migration) |
 | `integration tests` | required | required | required | `ci.yml` |
 | `docs` | required | required | required | `ci.yml` — seven steps since gh#438, see below |
 | `coverage` | required | required | required | `ci.yml` |
@@ -712,6 +713,150 @@ All of it rides in the one job **because `docs` is already required on all three
 needed a ruleset write and [the table above](#what-is-required-and-what-only-reports) does not change — the
 same argument as `commit-hygiene`'s merge-commit refusal below. Four new jobs would have meant four new
 required contexts added by hand, and a context nobody adds is a check that only ever reports (gh#26).
+
+### `build & unit tests` also refuses an unacknowledged destructive migration
+
+**[`check-migrations-additive.sh`](../../scripts/check-migrations-additive.sh) and its self-test ride in
+`build & unit tests`** (gh#529), on the same argument as everything in `docs`: that context is already
+required on all three rungs, so the gate enforces by wiring and
+[the table above](#the-required-context-table) does not change. They run **before `setup-dotnet`** — the gate
+needs no SDK, so a pull request whose only fault is a `DropColumn` fails in seconds rather than after a
+restore, a build and two test tiers.
+
+**What a green run licenses, exactly: that no operation in the gate's enumerated set appears *unacknowledged*
+anywhere in a migration the diff adds or changes, except inside its `Down()`.** Not that a migration is safe,
+and not that an acknowledged one is right — judging that is the reviewer's, and the marker is the sentence
+they judge. That sentence said *"in the `Up()` body"* for two review rounds after the scan had stopped being
+the `Up()` body, eleven lines above a paragraph of this same section saying so — **the licensing sentence is
+the one a reader quotes, so it is the one that has to move first**. The enumeration, and what is deliberately
+left out of it, is in the script's header rather than restated here; `AlterColumn` is covered wholesale
+because **a narrowing is not distinguishable from a widening statically**, and `DropIndex` is covered only
+when a `DropColumn` sits in the same migration, because an index is recreatable and a lone one would put a
+marker on every reindex.
+
+Three things about it generalise:
+
+- **The scoping is the diff, not an exclusion list.** `git merge-base origin/develop HEAD`, then
+  `git diff --diff-filter=ACMR` from there — so the **seven** migrations already on `develop` are never read,
+  and that stays true without a list anyone has to maintain. It matters: one of them,
+  `20260827071708_DropPriceLevels`, is genuinely destructive, and a gate that reddened it would have been
+  disabled on day one. **That same migration is the measurement that the detector is not inert** — pointed at
+  `f49dd5b~1` the gate reads six files, finds it in real EF-generated code at
+  `…DropPriceLevels.cs:14  DropTable`, and passes the other five. Prose saying "it only reads the diff" would
+  otherwise be indistinguishable from a detector that reads nothing. **Six of the seven have a destructive
+  `Down()`** — `DropPriceLevels`' `Down()` re-creates its table — which is what makes the `Down()` exclusion
+  not a close call. Every one of those numbers said *five* until review counted them; two migrations landed
+  on `develop` while this branch was open, and a count in prose is exactly the claim that stops being true.
+  **Nothing under that directory is excluded by NAME any more.** `Foo.Designer.cs` declares
+  `partial class Foo`, so a helper written there is a member of the migration class — harmless while no
+  helper was read anywhere, and the one place a helper stayed invisible the moment round one widened the
+  scan past `Up()`. The generated mirrors are read on the same passes, exempt only from needing an `Up()`,
+  and **counted separately**, so the green line's `N migration file(s)` still counts migrations: the same run
+  above reports six migrations and six generated partials, and reports nothing from any of the six.
+  **Widening what a gate reads changes what its evidence number means, and that number is the thing three
+  documents quote.**
+- **The escape hatch is in the file and its scope is adjacency.** `// destructive-migration: <why>` in the
+  unbroken comment block directly above the operation. A blank line ends the block, and so does the previous
+  operation, so two destructive calls on two lines always need two markers — a blanket marker at the top of a
+  generated file silencing everything below it is the exact failure the gate exists for. The reason must be
+  non-empty: a bare `// destructive-migration:` is a rubber stamp, not an acknowledgement.
+- **Adjacency did not deliver the rule it was supposed to, and that is the finding to carry.** *One marker
+  acknowledges one operation* was stated in five documents and was **false** for two calls sharing a line:
+  the upward walk starts at `line - 1` for both and lands on the same marker, so a reason naming only
+  `Legacy` acknowledged a `DropTable` written beside it. Worse, the match was a **boolean**, so two
+  *identical* calls on one line were reported as **one operation** — the green line, whose whole job is to
+  carry its own evidence, undercounting in the quiet direction. The gate now counts occurrences and
+  **refuses** a line carrying more than one, because there is one sentence and two acts and nothing says
+  which act it describes. **A property that follows from a mechanism is not tested by testing the
+  mechanism**: every fixture put one operation per line, so nothing here could see it. **A refusal's wording
+  has to fit the case where the thing it names is absent** — the first version opened *"One marker
+  acknowledges ONE operation"* on a line where there is usually no marker at all; the actionable half leads
+  now. And **a two-number summary has to say what each number counts**: `1 refusal(s) over 2 destructive
+  operation(s)` read as two problems where there was one, because the second number counts the acknowledged
+  operations too. Both numbers stay — one refusal really can cover two acts — and both are labelled.
+- **The first fixture written for it found a defect in the rule, not in the code.** The marker was specified
+  as *the line immediately above*; a two-line reason — which the gate's own `explain` text prints — then
+  fails, so the documented form would have been refused. Adjacency had to become the comment *block* rather
+  than the line. **A rule stated in prose and never fed to its own implementation is the shape gh#178 names**:
+  write the fixture for the documented form before believing the form.
+- **What a text gate is actually defeated by is FORMATTING, and `dotnet format` is not the backstop it
+  looks like.** Every shape three review rounds got a green run out of both compiles *and* passes
+  `dotnet format --verify-no-changes` — they are enumerated in the self-test's cases and in the gate's own
+  header, which is where they belong. The useful contrast is `migrationBuilder . DropColumn (`, which the
+  gate also missed and `Format` *does* catch, with three `error WHITESPACE`. That was recorded as **defence
+  in depth that exists by luck, and only for the shape nobody writes** — and the generalisation survives
+  while the live dependency did not: **`Format` is a later step in the SAME JOB**, and this gate's whole
+  placement argument is that it runs *before* `setup-dotnet`. A future split of the gate into a job of its
+  own — which this section contemplates — takes the backstop away with nothing going red. **Ask which of a
+  text gate's blind spots another required step happens to cover, treat the answer as luck rather than
+  design — and then check whether the lucky step could be moved by a change nobody would think to connect to
+  this one.**
+- **Round one widened WHAT IS SCANNED; every round since has had its hole in WHAT DECIDES THE BOUNDARY of
+  that scan.** `Down()` was located by matching a raw line, so a `//` comment inside `Up()` naming the method
+  set the excluded span from that comment to the real declaration — switching off the rest of `Up()` while
+  reporting the `Down()` body's own drop at a line number a reader would act on. **The accidental path and
+  the deliberate one are the same line**: the migration most likely to say "there is no `Down()` worth
+  writing" is the destructive one. **Generalise it: a finding needle that is too loose costs a false
+  positive; a boundary needle that is too loose excludes code, and nothing reports what was never read.**
+- **Only one end of a boundary fails silently, and that is where every one of these bugs has been.** Where
+  the excluded span *begins* is the quiet direction; where it *ends*, and both ends of a `Sql(` region, fail
+  loud — a false match there scans **more**, or refuses a declaration and reddens the whole file. Three
+  un-predicated patterns are left un-predicated for exactly that reason. **So the question to ask of any
+  widening is not "is this looser" but "which END did I widen":** the two widenings that touched the
+  beginning are the two that were then defeated, one apiece, by a `static` local function and by a decoy
+  overload. Both had been added to fix the round before. **The rule then predicted the next round's two
+  shapes before anyone went looking** (gh#601): both are `down_start`, both were silent, and the fix
+  narrows that end on three counts and widens nothing — a narrowed `down_start` can only scan more. A rule
+  that names where to look is worth more than the bugs it has already explained.
+- **A condition on a boundary must test what the line DECLARES, not a property of the line — and requiring
+  the word `override` was still a property of the line.** A comment test, a string-interior test and a
+  modifier-keyword test are all properties of the line, and a `static` local function passes all three.
+  Requiring `override` read like a fact about the thing being matched, because `Migration.Up`/`Down` are
+  `protected virtual` and a real one always is one. **It was not, and this bullet said it was** (gh#601):
+  the needle was matched **unanchored against the whole line**, so the *word* `override` in a trailing
+  comment — `static void Down(MigrationBuilder b) { } // no override needed on a local shim` — satisfied it
+  and the local-function hole re-opened. A fifth *text* property, not a structural one. And even satisfied
+  honestly it says the wrong thing: a one-line `public override void Down(MigrationBuilder b) { }` inside a
+  nested `private sealed class Fake : Shim` **forges nothing** — it is a real override that is simply not
+  the migration's, and no reading of the text distinguishes them. What replaced both text tests is one
+  anchored pattern: at the class's own member indent, a modifier run carrying `override`, and the signature
+  immediately after it with nothing between. The indent is **where the declaration sits** and the contiguity
+  is **what it declares**, and no wording on the line can forge either; the third piece was needed because
+  anchoring the modifiers alone leaves the mirror shape, a genuine `override void Up(…)` whose trailing
+  comment names `void Down(MigrationBuilder)`. `declares()` went from five conditions to three, and the two
+  it lost were the two that admitted decoys. **Counting text conditions is the diagnostic: five that each
+  admit a decoy are weaker than one structural one, and each new one is evidence you are describing the
+  thing at the wrong level.**
+
+The gate's **decision ledger** lives in `check-migrations-additive-selftest.sh` — the fourth gate here to
+need one — split into seven measured mutation sweeps and a tail listed as exercised-but-not-mutated, which is
+not a claim of coverage. **The per-row narrations belong there and not here**: this file carried a copy of
+the mutant-8 row that still said "survived" after the ledger said "closed", which is exactly the drift the
+same-PR rule exists to stop and is cheaper to obey when a measured number has one home. Read the rows there;
+what generalises past this gate is:
+
+- **A ledger row lies in a third way nobody had named: its mechanism moves underneath it.** Review re-ran the
+  first sweep's row 1 rather than reading it and got **1** case where the row claimed **7** — and not the
+  case the row named, which stayed green. It has since measured 39 and then 41, because the same regex came
+  to decide first where `Down()` ends, then whether `Down()` is found at all, then whether `Up()` is. One
+  mutant, four numbers, four mechanisms — and by the last of them the cases redden for a reason the row's own
+  sentence does not give, so the row is now its own example of *a mutation that reddens for the wrong reason
+  reads as caught*. **When a fix moves code a ledger row names, that row is part of the diff.** A row also
+  has to name the **blob** it was measured against, and the ledger has to say which rows have been re-run and
+  which have not — otherwise the reader infers it from the two that happen to mention it.
+- **A survivor is the honest output of a sweep, and the row stays after it is closed.** A sweep with no
+  survivors usually means the sweep was too timid.
+- **Guards come in pairs, and a pair hides a dead half.** Four conditions now decide whether a line may set
+  a boundary, and the obvious decoys fail more than one — so a fixture apiece is written to defeat *exactly
+  one*. **Adding a condition can silently un-pin an existing one**: the fourth would have made the third
+  unfailable, and the fixture had to be strengthened in the same change to keep it separable. One condition
+  is pinned by nothing and is **subsumed** by another; that is recorded in the ledger rather than papered
+  over, because an unpinnable guard nobody has labelled is indistinguishable from a guard that works.
+- **A prediction in a ledger row can be tested, and this one failed.** That subsumed row said the day
+  `MEMBER_RE` was widened would be the day the comment test started carrying weight. It was widened the very
+  next round, and the widening instead took weight *away* from the member test. It is kept and marked rather
+  than rewritten — a wrong prediction with its outcome recorded is worth more than a tidy row that never
+  risked anything.
 
 ### Size-gate targeting and decision ledgers
 
@@ -1098,6 +1243,10 @@ found.
 | `production` environment carries a `required_reviewers` rule | `release.yml`'s `gate` job — the only thing between a merge and a public GHCR tag | [`check-release-gate.sh`](../../scripts/check-release-gate.sh), in `ci.yml` and in `release.yml` | gh#108 |
 | `required_status_checks` on `protect-develop` / `-staging` / `-main` | every merge gate in the table above; `no-order-path` carries ADR-0002 | `bootstrap.sh` step 3, which reads the contexts back per rung | gh#26, gh#72, gh#114; and gh#125, the one that went the other way — set correctly and recorded in `bootstrap.sh`, but not in the table above |
 | ruleset `enforcement: active` | all of the above | `bootstrap.sh` step 3 | `MarqSpec.Client.ProjectX`, disabled from creation |
+| the two Cognito client secrets' **values** in `topstepx-mcp/<env>/{claude-connector,deploy-check}` | the connector login (gh#524) and `check-deployment.sh`'s `client_credentials` token (gh#521); the stack creates the shells empty and no custom resource fills them ([ADR-0023](../adr/0023-aws-deployment-topology.md), 2026-09-07 Cognito entry) | gh#521's check, but read the shape carefully — an EMPTY shell fails it at `UNSET <the first empty value>` **before any request**, naming that value and saying nothing about the deployment. *Which* value depends on where the id is read from, and this repository has not settled that: `MCP_CHECK_CLIENT_ID` if both come out of the shell as ADR-0023 §"the `clientId` is duplicated into the shell" describes, `…_SECRET` if the id came from the stack output as gh#520 plans. A non-empty WRONG credential is the other path and is the one that comes back `NO TOKEN … answered 401`, after assertions 1 and 2 have passed. All measured 2026-09-07; this row said the opposite until then | never; not yet deployed (gh#519 writes them by hand) |
+| `aws-production` environment carries a `required_reviewers` rule | gh#520's two production deploy jobs — the approval on **what runs**, and the **precondition of the credential**: `GitHubDeploy-production` trusts only a token carrying `sub = …:environment:aws-production`, which GitHub mints only for a job that declared the environment and passed its rule ([ADR-0023](../adr/0023-aws-deployment-topology.md) §8 and its 2026-09-07 `aws-production` entry). Without the rule, any job in this repository naming the environment could assume the role | [`check-release-gate.sh`](../../scripts/check-release-gate.sh) on every pull request once a workflow names it — its self-test's two-environment case is the pre-creation shape; `bootstrap.sh` step 4 creates it and reports it, and a template test reads the script's `ENV_NAMES=` line against the trust condition | never; created 2026-09-09 (gh#519), read-back `User:adammarquette` |
+| `GitHubDeploy-staging` trust policy — `sub` StringLike `…:ref:refs/tags/v*` and `…:ref:refs/heads/main`, exactly two | `release.yml`'s staging deploy and `deploy.yml`'s dispatch on `main` (gh#520); a wider subject is a role any run of a public repository's fork could try, a narrower one refuses the rollback path | `GitHubOidcStackTests` on every pull request — the named test and the every-role test; on the account, `aws iam get-role --role-name GitHubDeploy-staging`, recorded on ADR-0023's 2026-09-07 staging entry and quoted on #519 (2026-09-09) | never; deployed 2026-09-09 (gh#519) |
+| `GitHubDeploy-production` trust policy — `sub` StringEquals `…:environment:aws-production`, no `StringLike` | both production deploy jobs (gh#520) | the same tests; `aws iam get-role --role-name GitHubDeploy-production`, recorded on ADR-0023's 2026-09-07 production entry and quoted on #519 (2026-09-09) | never; deployed 2026-09-09 (gh#519) |
 
 ### The release approval gate (gh#108)
 
@@ -1148,15 +1297,33 @@ output" reads a missing environment as a healthy one. The check keys on the exit
 
 **And it is made to fail on every run.**
 [`check-release-gate-selftest.sh`](../../scripts/check-release-gate-selftest.sh) runs in the same job,
-feeding the real script five fixtures with known faults and requiring it to reject each one — **matching on
+feeding the real script six fixtures with known faults and requiring it to reject each one — **matching on
 the words that name each fault, never on exit status**, since exit 1 is also what "gh is required" produces
-and a self-test satisfied by status alone goes green on a runner with no `gh` on it. **And a sixth fixture
-that is genuinely sound, which it must accept**: five rejections would all be satisfied by `exit 1`, and a
+and a self-test satisfied by status alone goes green on a runner with no `gh` on it. **And a seventh fixture
+that is genuinely sound, which it must accept**: six rejections would all be satisfied by `exit 1`, and a
 gate that says no to everything is exactly as useless as one that says yes to everything, and rather harder
 to notice. That case uses the mapping spelling of `environment:`, which no workflow here uses today, so
 nothing else would notice if it stopped being understood.
 
-One of the five earns its place from a defect gh#108 shipped and gh#140 fixed: an `environment:` mapping with
+**And "never on exit status" is now enforced on the harness, not only practised by its cases** (gh#586
+review). `expect_red` took its needles as trailing arguments, so a call with none ran its match loop zero
+times and fell straight through to `ok "rejected"` — satisfied by exit status alone, the one thing that
+file's header refuses. Measured rather than argued: a needle-less case added to the **shipped** code printed
+`rejected  PROBE: no needle at all` in green and the suite exited 0 still claiming six rejections; against
+the guard it dies naming the case, and the probe was removed. It fails the **suite** rather than counting a
+failure, because a self-test that cannot assert is not a result to tally. Six calls pass at least one needle
+today; nothing could have told you when one stopped.
+
+The sixth rejection is gh#518's, and it asserts *which* environment a red run names rather than that it goes
+red: two environments in one workflow set — the real, protected `production` beside one that does not exist
+— and three needles on the same run, the missing one by its whole quoted name, `PROTECTED    production` for
+the sound one, and the tally `1 of 2`. That is the shape a workflow naming `aws-production` produces until
+the maintainer has run `bootstrap.sh`, and a gate that went red about the environment that is fine would
+send the reader to the wrong setting. Proven by making the gate's tally line lie (`$failed of $failed`):
+that case alone went red — *"never said: 1 of 2 environment(s) would not stop an unattended publish"* —
+while the five older rejections and the acceptance stayed green, since none of them asserts the count.
+
+One of the six earns its place from a defect gh#108 shipped and gh#140 fixed: an `environment:` mapping with
 no `name:` under it stayed pending into the *next* file and bound itself to that file's top-level `name:`,
 reporting a workflow's own name as an environment — red, but for the wrong reason, naming a setting nobody
 ever asked for, and sending the reader to look for it. On a gate whose whole job is to be believed about
@@ -1194,7 +1361,23 @@ A ruleset `PUT` **replaces**: a rule missing from the payload is deleted. An env
 the hazard at the environment endpoint is not omission but the payload — `bootstrap.sh`'s create payload
 names `reviewers` explicitly, and running it over a live environment would replace whatever list is there
 with one account. Step 4 therefore **creates only, and never writes over an environment that already
-exists**; it reports what an existing one requires and warns when that is nothing.
+exists**; it reports what an existing one requires and warns when that is nothing. Since gh#518 it walks a
+list — `ENV_NAMES="production aws-production"` — reading each name on its own, so an existing `production` is
+left exactly as it is while a missing `aws-production` is created beside it; a template test reads that line
+against the production deploy role's trust condition, so the environment the role trusts is always one the
+script creates. Step 5 is **read-only** and new on the same card: it reads the GHCR package's visibility
+back, because ECS pulls the image with no registry credential only while the package is public
+([ADR-0023](../adr/0023-aws-deployment-topology.md) §5), and it reports a 404 (nothing released yet), a 403
+for the missing `read:packages` scope — which the default `gh auth login` token lacks, measured on the
+maintainer's own token — and any other failure as three different states, none of them as "public". **Every
+read in that step warns and skips rather than dying, and both of them do** — the owner-type read went through
+`gh_read`, which `die`s, so a secondary rate limit on a *public* endpoint killed the script between step 4's
+writes and step 6's labels, leaving a half-bootstrapped repository under a comment promising it could not
+(gh#586 review). The rule the rest of the script runs on is unchanged and is the reason this step is the
+exception: **a read that decides a write is fatal**, and this one decides nothing. What it will not do is
+guess `users/` versus `orgs/` — the wrong endpoint 404s, and this step reads a 404 as "nothing has been
+released". That reading now names its own assumption, since a private package a token cannot see answers 404
+too; the missing-scope case is a 403 and is reported separately.
 
 ## How the pipeline is shaped
 
@@ -1212,6 +1395,264 @@ the claims worth testing and an in-memory provider proves none of them ([ADR-000
 Branches map to intent rather than to environments — there is no deployment here, only a published image:
 `develop` integrates, `staging` holds what is promoted but unreleased, `main` is what has shipped, and a `v*`
 tag on `main` is what triggers a release.
+
+### Infrastructure
+
+**The AWS resources the deployment will run on are code under [`infra/`](../../infra/), and a pull request
+proves the template it proposes** ([ADR-0023](../adr/0023-aws-deployment-topology.md) §7, gh#516). The
+sentence above is still true — nothing deploys yet; the deploy jobs are gh#520's, and that pull request is
+the one that rewrites it. What exists today:
+
+- **Two projects in the solution.** `infra/MarqSpec.Mcp.TopstepX.Infra/` is the CDK app — one
+  `EnvironmentStack` instantiated for production (`marqspec.com`, zone looked up) and staging
+  (`staging.marqspec.com`, zone looked up — `Z00545362JA49XMTT3U7Q`; never CreateAndDelegate), differing only in its props, plus the
+  `GitHubOidcStack`. `infra/MarqSpec.Mcp.TopstepX.Infra.Tests/` is xUnit over `Amazon.CDK.Assertions`.
+  Both ride `build & unit tests`' existing Restore, Format and Build steps, `NuGetAudit` and CodeQL, with
+  no ruleset write. **Neither references a product project or the venue package**, so ADR-0002's gate has
+  nothing to read there and `check-no-order-path.sh`'s list is unchanged on purpose; the `Dockerfile`
+  restores the host project alone, and the published `/app` was checked for an `Infra` assembly and holds
+  none.
+- **What CI checks, and what a green run licenses.** After the unit tests, `build & unit tests` runs the
+  template tests (107 at gh#516 — the security groups, the listeners, the health probe, the digest
+  parameter, `RETAIN` on everything stateful, every `.env.example` key outside the compose-only set present
+  in the task, every credential a `valueFrom`, the two environments differing only where their props say;
+  139 at gh#517, adding the Cognito pool, its two clients and the issuer and client ids reaching the task as
+  references; 142 at gh#518, adding the every-role trust shape on the OIDC stack, a template with no account
+  id and no thumbprint, and the `bootstrap.sh` lockstep on the `aws-production` name; 163 at gh#537, adding
+  the OTLP collector sidecar — two containers and the sixth shell with telemetry props, one container and no
+  `Otel__*` key without them, the three pipelines' composed stages, and no `arn:aws` or unrecognised
+  twelve-digit run anywhere in the template; 165 at gh#588, adding staging's certificate ordered behind
+  its `NS` delegation and production's ordered behind nothing; 170 at gh#527, adding `Project` /
+  `Environment` cost-allocation tags on every taggable environment resource, `Project` alone on the OIDC
+  stack, and one account monthly `AWS::Budgets::Budget` whose amount and subscriber Ref parameters; 190 at
+  gh#526, adding one SNS email topic per environment, seven CloudWatch alarms, the EventBridge rollback
+  rule — `resources` service ARNs, not `detail.clusterArn` — and the migration metric filter whose
+  pattern is the host log lines; 192 after the filter-shape pin; 203 at
+  gh#528, adding one REGIONAL web ACL associated with each ALB, the rate-based block at parameter
+  `WafRateLimit`, managed groups count on staging and none/block on production, and the 30-day
+  `aws-waf-logs-*` group) and then
+  `cdk synth --no-lookups` **once per outbound shape** through the CLI pinned in
+  `infra/package.json`. **No credential exists on the runner, by construction**: `--no-lookups` makes a
+  context miss fail the synth rather than call AWS, and `infra/cdk.context.json` carries the hosted-zone
+  and availability-zone answers under a placeholder account. A green run says the app runs, every stack
+  synthesises and the template says what the tests assert — nothing about whether an account accepts it.
+  The tests need Node on `PATH` at run time and nowhere else: the constructs are jsii, and every call goes
+  through one Node process the runtime spawns. **The test project runs its classes serially** for the same
+  reason — parallel class fixtures raced on the runtime's first-use tarball extraction, measured as an
+  `IOException` in every test of the second class and one run hung four and a half minutes.
+- **Account and region at deploy.** The account (`123456789012`, AWS's documentation example) still sits
+  in `cdk.json` and is overridden with `-c account=045296582762` at deploy — do not replace the
+  placeholder or CI's `--no-lookups` synth looks up the wrong context key. The region is **chosen
+  `us-east-1`** (gh#519, 2026-09-09); `cdk.json` already named that value as the cost-basis placeholder
+  and a credentialed deploy passes `-c region=us-east-1` the same way. `cdk.context.json` now carries
+  **both** the placeholder hosted-zone / AZ keys (CI) and the real-account keys from the first
+  credentialed synth. And **the tasks' outbound path is not chosen**: `OutboundPath` is a required enum with
+  no default, the app refuses to synthesise without `-c outbound=…`, CI passes every value, and the choice
+  is the maintainer's dated entry on ADR-0023 — gh#519 passed `PublicIpPerTask` as synth context only.
+  When the fork closes, the loop in `ci.yml` collapses to one plain synth and the value becomes a literal
+  in `Program.cs`.
+- **Secrets are shells.** The six
+  `topstepx-mcp/<env>/{postgres,projectx,cohere,claude-connector,deploy-check,otel}`
+  secrets are created with every JSON key the task definitions and the deployment check read and every
+  value empty; gh#519 writes the values by hand, once. **Never edit a shell's literal afterwards**:
+  CloudFormation creates a new secret version whenever the `SecretString` property changes, and that
+  version is the live one — an edit would put an empty document over a real credential. A new key is a new
+  secret.
+- **The authorization server is in the stack** (gh#517, [ADR-0023](../adr/0023-aws-deployment-topology.md)
+  §9 and its 2026-09-07 Cognito entry): one user pool per environment, the `topstepx-mcp` resource server
+  with its `read` scope, the confidential `claude-connector` client on the code grant with the Claude
+  callback alone, the `deploy-check` client on `client_credentials` alone, and the Cognito prefix domain.
+  **`Mcp__OAuth__Issuer` and `Mcp__OAuth__ClientIds` reach the task as `Fn::GetAtt` and `Ref`s of those
+  constructs, and the template test refuses a string** — a literal issuer would deploy and validate against
+  whatever it named. The two client secrets are shells like the others, read once with
+  `describe-user-pool-client` and written by hand; no custom resource touches them, and the stack is
+  asserted to contain no Lambda. What is **not** measured yet — the discovery document's `S256`
+  advertisement, its tolerance of the `resource` parameter, the token-endpoint auth methods — still
+  waits on gh#519's leftover: no EnvironmentStack, because public NS is Cloudflare (2026-09-09).
+- **The server task carries a second container** (gh#537, [ADR-0019](../adr/0019-otlp-as-the-telemetry-boundary.md)
+  §5, ADR-0023 §11): an OTLP collector that receives on the task's loopback and exports to Grafana Cloud.
+  `Essential=false` with a hard 128 MiB cap, no port mapping, and its Grafana endpoint and token as
+  `valueFrom`s on the sixth shell — so an unhealthy sidecar leaves the server answering, and a template
+  carries no backend hostname or credential. **Filling that shell takes an
+  `aws ecs update-service --force-new-deployment`**: a `valueFrom` is read once at container start, and ECS
+  does not restart a stopped non-essential container, which is exactly what an unfilled shell leaves behind —
+  so without the second command the secret is written, the service reads healthy, and nothing is exported. Its configuration is a **checked-in file**,
+  `infra/MarqSpec.Mcp.TopstepX.Infra/Collector/otel-collector-config.yaml`, embedded in the assembly, read at
+  synth time into `OTEL_COLLECTOR_CONFIG` and started with `--config=env:…` — a Fargate task has no disk to
+  mount one from, and a test compares the file, the embedded resource and the task's value so it cannot
+  become decorative. **The whole sidecar hangs off `EnvironmentStackProps.Telemetry` being non-null**, and
+  the absent case is the template this stack had before that card; both shapes are asserted. Edit that file
+  the way you bump an image digest: deliberately, and never with an endpoint or a token in it.
+- **The image is a digest in a parameter.** `ImageDigest` and `Version` have no default and are passed on
+  `cdk deploy --parameters`; the stack writes the same two values to `/topstepx-mcp/<env>/image-digest`
+  and `/version` in SSM as the written history, so the history cannot say one thing while the task runs
+  another. The Timescale image is a literal digest in `EnvironmentStack.PostgresImage`, read off the `pg17`
+  tag on a stated date; bump it in a pull request that says why.
+- **Local loop.** `dotnet test infra/MarqSpec.Mcp.TopstepX.Infra.Tests` for the tests; in `infra/`,
+  `npm ci` once and then `npx cdk synth --no-lookups -c outbound=<shape>` for the templates under
+  `infra/cdk.out/`, which is ignored. Nothing here needs an AWS profile, and a command that asks for one is
+  a lookup the committed context does not cover — add the entry, do not add a credential.
+
+### The deployment check (gh#521)
+
+**A green `cdk deploy` proves CloudFormation converged, and nothing else.**
+[`check-deployment.sh`](../../scripts/check-deployment.sh) is what asks the deployed hostname itself,
+from outside it, and it is `check-image-entrypoint.sh`'s rule one layer out — assert the reply, not the
+absence of a failure. gh#416's criterion applies verbatim: *a green startup log is not evidence that a client
+can connect*.
+
+```console
+$ MCP_CHECK_CLIENT_ID=… MCP_CHECK_CLIENT_SECRET=… MCP_CHECK_TOKEN_URL=… \
+    scripts/check-deployment.sh https://topstepx-mcp.staging.marqspec.com 0.4.0
+```
+
+The two arguments are the **origin** and the release `/health` must report. The Cognito deploy-check client
+(ADR-0023 §9) arrives in the **environment and never in an argument**, because an argument is in every `ps`
+on the box, and reaches curl through a `--config` file for the same reason. The token endpoint's response
+body is never printed on any path. **Its secret is one of the shells gh#517 created empty** and gh#519 writes
+by hand; the settings table above carries the row.
+
+**An unfilled shell and a wrong secret are two different runs, and the first version of this sentence had
+them the wrong way round** — it said an unfilled shell surfaces as a `401` from the issuer rather than as
+"the secret is empty", endorsing the same claim in the settings row. Measured against the fixture,
+2026-09-07:
+
+```console
+$ MCP_CHECK_CLIENT_ID= MCP_CHECK_CLIENT_SECRET= …   # the shell as created: BOTH values empty
+  UNSET  MCP_CHECK_CLIENT_ID is empty or unset
+…  NOTHING HAS BEEN CHECKED: no request was made, so this says nothing at all about the deployment.
+AN UNFILLED SECRET SHELL ARRIVES EXACTLY LIKE THIS. …
+
+$ MCP_CHECK_CLIENT_SECRET=a-wrong-but-non-empty-secret …
+  OK  /health: 200, status ok, store available, version 9.9.9-fixture
+  OK  /mcp refuses an anonymous call with 401, and the document it names claims …
+  NO TOKEN  the token endpoint answered 401
+```
+
+The empty case never reaches the network; the wrong-secret case passes assertions 1 and 2 first. **An
+operator sent to look for a `401` who is handed `UNSET` goes hunting a fault they do not have**, which is why
+this is worth two sentences rather than one — and the general form is worth more than either: *a document
+that says how a check fails is asserting a measurable thing, so measure it*.
+
+**Then the correction was made narrower than the thing it corrected, which is the part worth keeping.** The
+gate's `UNSET` arm gained the paragraph above, gated on the SECRET being the missing value — and the shell it
+describes is `{"clientId":"","clientSecret":""}`, **both** empty, so an operator reading the whole document
+out of it stops at the *id* and the paragraph explaining unfilled shells did not print on an unfilled shell.
+*Its own premise was the input it did not reach.* It now fires on either name. **Which name comes first is
+not this gate's to decide, and the repository disagrees with itself about it**: ADR-0023 duplicates the
+client id into the shell so this check reads one document, which makes it `MCP_CHECK_CLIENT_ID`; gh#520 plans
+to take the id from a stack output and only the secret from Secrets Manager, which makes it
+`MCP_CHECK_CLIENT_SECRET`. That disagreement predates this gate and is not settled here — the text and the
+row are written to be true under either, which is what a document should do when the thing it describes is
+still a fork. *A conditional claim that does not state its condition is the same defect as a wrong one, one
+step further back.*
+
+The self-test asserts on every case, red ones included, that **neither** the client secret nor the bearer
+appears in either stream.
+
+**"A heredoc, so `bash -x` does not trace it" is the shape of a claim that is true and does not hold, and
+this paragraph made it.** The heredoc really is untraced — and the review measured the secret in the trace
+anyway, at line 45, from the `[ -z "${!name-}" ]` loop three screens *above* it, on the sound path; the
+bearer was at 249 and 250 from its own assignment. The operator that paragraph was written for — debugging
+gh#519's first red deploy with `bash -x` — would have pasted both into a public tracker. **A leak is a
+property of every line that touches the value, so a defence sited at one line is a claim about that line
+only.** It holds now because it is built three times over: the environment check is by LENGTH (`${#VAR}`
+traces a number), the token goes from the response body into the config file **through a file** and never a
+shell variable, and the heredoc stays. Re-measure after any edit — `bash -x` with sentinel values, then grep
+the trace — and note that the self-test's leak assertion watched only the *secret* until this review, so a
+gate printing the bearer passed it.
+
+**And `-q` is curl's first parameter, which is not a detail.** curl reads `$CURL_HOME/.curlrc`,
+`$XDG_CONFIG_HOME/curlrc` or `~/.curlrc` **before its arguments** unless `-q` comes first. Without it, one
+line saying `insecure` in an operator's home directory turned verification off for the whole gate: measured
+on the unmutated script, it **accepted** a self-signed certificate and printed that the certificate had
+verified. **CI could not have caught it** — a runner has no curlrc, so the property was decided by whichever
+`$HOME` the gate ran under, and this gate's real subject is an operator's machine, by hand, against staging.
+Generalise it past this script: *a gate that shells out to a tool with an ambient config file has that
+config file in its trust boundary*, and `curl`, `git`, `ssh` and `aws` all have one.
+
+**What a green run licenses, exactly.** That hostname, at the moment it ran: an unauthenticated `/health`
+naming the expected release with its store attached; an anonymous `POST /mcp` refused `401` with a
+`resource_metadata` challenge whose document names this resource byte for byte; a `client_credentials` token
+minted; and `initialize` and `tools/list` answered with at least 18 tools over a TLS connection made with
+verification **enforced** — which is a claim about the option list, held up by the self-test, rather than a
+number read off the wire (see the fifth bullet below).
+It licenses **nothing** about the venue, the embedding provider, or any tool that reaches either — the gate
+deliberately calls no tool, because a store-only deployment has to pass — and nothing about latency, load,
+or the other tasks behind the load balancer: one request reaches one of them.
+
+**An https base URL is required, except on loopback**, where plain http is accepted and the TLS assertion
+prints `NOT MEASURED`. That is `OAuthOptions.IssuerProblems()`'s rule reused — **narrower** than the
+product's, which uses `Uri.IsLoopback` and so accepts all of `127/8` where the gate accepts exactly
+`127.0.0.1`, `localhost` and `[::1]`; the difference fails closed, since `http://127.0.0.2` is refused rather
+than exempted. It is what makes a
+fixture possible at all. It does **not** forgive an unverifiable certificate on an https loopback URL, which
+is the one thing that leaves the `-k` question testable. The same rule is applied to `MCP_CHECK_TOKEN_URL`
+from **one shared classifier** rather than a second copy (gh#123): that request carries the client secret,
+so plain http off loopback is refused before anything is sent.
+
+**Wired into `build & unit tests`, beside `cdk synth`**, and it needs no Docker. Only the **self-test** runs
+in CI — there is no deployed hostname for the gate itself to point at until gh#519 has run — so it rides in
+a job that is already required on all three rungs, no ruleset write, and
+[the required-context table](#the-required-context-table) does not change. **`docs` is still seven steps**;
+nothing was added there.
+
+[`check-deployment-selftest.sh`](../../scripts/check-deployment-selftest.sh) serves the gate a fixture that
+is a correct deployment in every respect but one — a few lines of Python `http.server`, no product code —
+and requires it to reject each fault **by name**, never by exit status, since the gate also exits 1 for
+"curl is required" and for an unset variable. Nine cases: a sound one it must accept **writing zero bytes to
+stderr** (gh#239, gh#271, measured before being asserted), then a wrong version, a `/mcp` answering an
+anonymous POST `200`, a metadata document naming somebody else's resource, seventeen tools against a floor
+of eighteen, a token endpoint answering `200` with no token in it, a self-signed certificate, a plain-http
+token endpoint off loopback, and that same certificate again with an `insecure` curlrc in scope. **Its
+header lists what it does not cover** — roughly twenty named failures in the gate, nine pinned — so that
+nine cases are not read as the assertion list. Five things worth carrying:
+
+- **The tool count is a measurement, not a guess.** `inputSchema` is required exactly once per entry of a
+  `tools/list` reply and appears in no JSON Schema vocabulary, so counting it counts tools — checked against
+  a real reply from this server on 2026-09-07, twenty tools and twenty occurrences. The floor is 18 and the
+  faulty fixture serves **17**, one under, because a fixture that is wildly wrong is satisfied by a gate that
+  is only roughly right.
+- **Only the two certificate cases can reach the `-k` question, and they are two questions.** Every other
+  fault is content, and a gate could be checked for those over plain http forever while quietly bypassing
+  verification. Case 7 says no `-k` is **written** in the gate — add `--insecure` to its one option list and
+  seven cases stay green while that one reddens. Case 9 says none can be **supplied** to it, which is the
+  half the first version missed entirely: delete `-q` and eight cases stay green. Deleting either leaves a
+  hole the other cannot see. **Case 9 carries a precondition** proving `CURL_HOME` is honoured at all — a
+  curlrc naming a dead proxy must stop an ordinary curl — because without it the case would pass on a
+  platform that ignores the variable, having exercised nothing. *Coverage owed to a fixture's incidental
+  shape is coverage the table cannot see it lacks.*
+- **A reassuring line about a check not performed, produced by trying to avoid one.** Assertion 4 printed
+  *"the certificate chain and the host name verified … (ssl_verify_result 0)"*, which reads as an independent
+  measurement and is not one: with verification on, a non-zero result is curl exit 60 and the run ended back
+  at assertion 1; with verification off it is 0. The number is therefore **0 on every run that reaches
+  assertion 4** — under `-k`, under a curlrc and under a clean run alike. It now states the inference
+  instead — *verification was enforced (no `-k`, and `-q` disables any curlrc) and the connection completed*
+  — with the premises held up by cases 7 and 9 rather than by the line itself, and the non-zero branch marked
+  unreachable and defensive-only in a comment. **The failure mode was the one being guarded against**: an
+  earlier draft of this section reasoned about the ordering of the assertions instead of running the flag.
+- **`MSYS_NO_PATHCONV=1` is the wrong tool here, and the sibling gates that carry it are not a precedent.**
+  They hand paths to a Linux container, where MSYS rewriting `/app/…` is pure damage. This hands paths to a
+  Windows `python.exe`, where the rewriting is what makes them usable — turn it off and the interpreter is
+  given `/tmp/…`, resolves it against the current drive, and reports a file that is not there. So paths reach
+  python through **argv**, which MSYS converts, never through the environment, which it does not; and
+  openssl's `/CN=…` subject is excluded by prefix with `MSYS2_ARG_CONV_EXCL` rather than by turning the whole
+  line off, which would hand that same native-Windows openssl a `/tmp` path it cannot open.
+- **`command -v python3` succeeds on a Windows checkout where no interpreter exists** — it finds the
+  WindowsApps execution alias, a stub that prints *"Python was not found"* and exits 49. The self-test
+  resolves an interpreter by **running** one, which is the gh#126 family ("tell 'no match' from 'I could not
+  look'") wearing a different hat: a probe that reads as a working detection right up to the point where
+  every case fails for a reason that is not the gate's.
+
+**What no run of it has proven yet, and cannot until staging has a hostname.** There is no deployed
+instance: gh#519 bootstrapped the account and the OIDC stack (2026-09-09) and stopped EnvironmentStack
+because public NS is Cloudflare, not the Route 53 zone. The gate has never met a real hostname: no TLS
+certificate from a real issuer, no Cognito token, no `initialize` past a real resource server. Assertions
+1 and 2 have been run against **real product code** — the host in `OAuth` mode on loopback answers
+`/health`, the `401` and the RFC 9728 document, and the gate passes both — and assertion 3 stops there,
+correctly, for want of a pool. The first run against the staging hostname is gh#521's own acceptance
+criterion and it is a human's. **The runbook** is [`documentation/deployment.md`](../deployment.md); the
+file/here-doc secret-write shape and the live OIDC read-back live there.
 
 ## Definition of done
 

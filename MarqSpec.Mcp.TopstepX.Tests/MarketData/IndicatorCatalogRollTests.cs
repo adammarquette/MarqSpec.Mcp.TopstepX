@@ -15,9 +15,10 @@ namespace MarqSpec.Mcp.TopstepX.Tests.MarketData;
 /// <remarks>
 /// <para>
 /// ADR-0011 claims the roll guard sits on the shared path so that <b>a new indicator inherits the rule rather
-/// than remembering it</b>. That is a claim about indicators nobody has written yet, so it cannot be pinned by
-/// naming the ones that exist: a test listing today's eleven would stay green on the day someone adds a
-/// twelfth that computes straight through a roll.
+/// than remembering it</b>. That is a claim about indicators nobody had written yet, so it cannot be pinned
+/// by naming the ones that exist: a test that lists today's members stays green on the day a new one
+/// computes straight through a roll. The twelfth, <c>vwap-rolling</c>, arrived exactly that way under
+/// gh#495, and this sweep needed no update.
 /// </para>
 /// <para>
 /// So this walks <see cref="IndicatorCatalog.All"/> — the closed vocabulary the projection and the tool
@@ -27,9 +28,10 @@ namespace MarqSpec.Mcp.TopstepX.Tests.MarketData;
 /// </para>
 /// <para>
 /// <b>The second sweep asserts a result, and until gh#285 it asserted only <c>NotThrow</c> over thirty
-/// bars.</b> Two of the eleven declared a warm-up of 35 — <c>macd-signal</c> and <c>macd-histogram</c>, both
-/// <c>MacdSlowPeriod</c> 26 + <c>Macd.SignalPeriod</c> 9 — and both answered that fixture with 0 non-null
-/// values out of 30, so it passed for them because nothing was computed rather than because something was.
+/// bars.</b> Two of the catalogue's members declared a warm-up of 35 — <c>macd-signal</c> and
+/// <c>macd-histogram</c>, both <c>MacdSlowPeriod</c> 26 + <c>Macd.SignalPeriod</c> 9 — and both answered
+/// that fixture with 0 non-null values out of 30, so it passed for them because nothing was computed rather
+/// than because something was.
 /// A <c>Compute</c> that returned a list of nulls for every member would have passed it too. The fixture is
 /// now <see cref="RunLength"/> bars, derived from the catalogue rather than chosen, and the sweep counts
 /// values; <see cref="TheValueSweepGoesRed_WhenAnIndicatorComputesNothing"/> is the run that proves it can
@@ -44,15 +46,30 @@ public sealed class IndicatorCatalogRollTests
     private static DateTimeOffset SessionStart =>
         MarketClock.FromMarket(new DateOnly(2026, 8, 18), new TimeOnly(9, 0)).ToUniversalTime();
 
-    private static IndicatorCatalog Catalog() =>
-        new(Options.Create(new IndicatorOptions()), BarSessionCalendar.Parse("16:00", []));
+    /// <summary>The catalogue, optionally widened with an additional EMA period.</summary>
+    /// <param name="additionalEmaPeriods">The <c>Indicators__AdditionalEmaPeriods</c> list, or none.</param>
+    /// <returns>The catalogue.</returns>
+    /// <remarks>
+    /// Period <b>3</b> where the sweeps widen it, and small deliberately: <see cref="RunLength"/> is derived
+    /// from the catalogue's longest warm-up, so a long additional period would lengthen every fixture in this
+    /// file to say nothing the primary instances do not already say. Three also has an EMA smoothing factor
+    /// of exactly <c>0.5</c> in <c>decimal</c>.
+    /// </remarks>
+    private static IndicatorCatalog Catalog(string? additionalEmaPeriods = null) =>
+        new(
+            Options.Create(new IndicatorOptions { AdditionalEmaPeriods = additionalEmaPeriods }),
+            BarSessionCalendar.Parse("16:00", []));
 
     /// <summary>Bars per contiguous single-contract run — <b>derived from the catalogue, never chosen</b>.</summary>
     /// <remarks>
     /// <para>
-    /// The longest warm-up in <see cref="IndicatorCatalog.All"/> plus <see cref="Headroom"/>. Today that is
-    /// <c>34 + 5 = 39</c>, and nothing here says thirty-nine: an indicator added with a longer warm-up than any
-    /// existing one widens the fixture by arriving, which is the one thing a hand-picked number cannot do.
+    /// The longest warm-up in <see cref="IndicatorCatalog.All"/> plus <see cref="Headroom"/>. On the shipped
+    /// periods that is <c>34 + 5 = 39</c>, and nothing here says thirty-nine: an indicator added with a longer
+    /// warm-up than any existing one widens the fixture by arriving, which is the one thing a hand-picked
+    /// number cannot do. It takes the catalogue rather than building one, because that is no longer a single
+    /// catalogue: since gh#495 an operator's additional period is another instance in <c>All</c> carrying a
+    /// warm-up of its own, and a fixture sized from the default catalogue would be the same short reading
+    /// gh#285 was opened about — a length measured against a list it was not written beside.
     /// </para>
     /// <para>
     /// <b>A hand-picked number is what gh#285 was opened about.</b> The run this replaced was thirty bars,
@@ -61,13 +78,21 @@ public sealed class IndicatorCatalogRollTests
     /// them. The list did not go stale; it was already short of the catalogue it was written beside.
     /// </para>
     /// </remarks>
-    private static int RunLength => Catalog().All.Max(indicator => indicator.WarmupBars) + Headroom;
+    /// <param name="catalog">The catalogue the run has to be long enough for.</param>
+    /// <returns>The bars per contiguous run.</returns>
+    private static int RunLength(IndicatorCatalog catalog) =>
+        catalog.All.Max(indicator => indicator.WarmupBars) + Headroom;
 
     private static DateTimeOffset At(int index) => SessionStart.AddMinutes(5 * index);
 
     /// <summary>One contiguous run of one contract, sawtoothing over five prices.</summary>
-    private static IEnumerable<Bar> Run(string contractId, decimal baseline, int startIndex) =>
-        Enumerable.Range(0, RunLength).Select(i =>
+    /// <param name="contractId">The contract every bar in the run belongs to.</param>
+    /// <param name="baseline">The price the sawtooth starts from.</param>
+    /// <param name="startIndex">The bucket index the run starts at.</param>
+    /// <param name="runLength">How many bars the run holds — <see cref="RunLength"/>, never a chosen number.</param>
+    /// <returns>The bars.</returns>
+    private static IEnumerable<Bar> Run(string contractId, decimal baseline, int startIndex, int runLength) =>
+        Enumerable.Range(0, runLength).Select(i =>
         {
             decimal close = baseline + (i % 5);
             return new Bar(At(startIndex + i), close, close + 1m, close - 1m, close, 1_000, contractId);
@@ -85,11 +110,19 @@ public sealed class IndicatorCatalogRollTests
     /// tabled in gh#285's pull request. Each side clears the longest warm-up now, because
     /// <see cref="RunLength"/> is that warm-up plus <see cref="Headroom"/>.
     /// </remarks>
-    private static IReadOnlyList<Bar> Spliced() =>
-        [.. Run("CON.F.US.EP.U26", 100m, 0), .. Run("CON.F.US.EP.Z26", 140m, RunLength)];
+    /// <param name="runLength">How many bars each run holds.</param>
+    /// <returns>The spliced series.</returns>
+    private static IReadOnlyList<Bar> Spliced(int runLength) =>
+    [
+        .. Run("CON.F.US.EP.U26", 100m, 0, runLength),
+        .. Run("CON.F.US.EP.Z26", 140m, runLength, runLength),
+    ];
 
     /// <summary>One run, one contract — the clean series every indicator must still answer with values.</summary>
-    private static IReadOnlyList<Bar> SingleContract() => [.. Run("CON.F.US.EP.U26", 100m, 0)];
+    /// <param name="runLength">How many bars the run holds.</param>
+    /// <returns>The clean series.</returns>
+    private static IReadOnlyList<Bar> SingleContract(int runLength) =>
+        [.. Run("CON.F.US.EP.U26", 100m, 0, runLength)];
 
     /// <summary>
     /// Computes, failing by name rather than by stack trace if the indicator throws instead of answering.
@@ -152,11 +185,16 @@ public sealed class IndicatorCatalogRollTests
             + "get_indicators answering an empty series, green, on every instrument.");
     }
 
-    [Fact]
-    public void EveryConfiguredIndicator_RefusesASplicedSeries()
+    [Theory]
+    [InlineData(null)]
+    [InlineData("3")]
+    public void EveryConfiguredIndicator_RefusesASplicedSeries(string? additionalEmaPeriods)
     {
-        IndicatorCatalog catalog = Catalog();
-        IReadOnlyList<Bar> spliced = Spliced();
+        // The second case widens the catalogue with an additional EMA period (gh#495). ADR-0011's claim is
+        // that a new indicator INHERITS the roll guard rather than remembering it, and since gh#495 the
+        // ordinary way an instance appears that no line of code names is an operator configuring a period.
+        IndicatorCatalog catalog = Catalog(additionalEmaPeriods);
+        IReadOnlyList<Bar> spliced = Spliced(RunLength(catalog));
 
         catalog.All.Should().NotBeEmpty("the sweep must actually cover something");
 
@@ -171,22 +209,31 @@ public sealed class IndicatorCatalogRollTests
         }
     }
 
-    [Fact]
-    public void EveryConfiguredIndicator_StillComputesValuesOverASingleContractSeries()
+    [Theory]
+    [InlineData(null)]
+    [InlineData("3")]
+    public void EveryConfiguredIndicator_StillComputesValuesOverASingleContractSeries(
+        string? additionalEmaPeriods)
     {
         // The other half, and it asserts a RESULT. A guard that refused everything would pass the sweep above
         // and break the server; so would an indicator whose warm-up arithmetic is wrong and that quietly
         // returns nulls forever. The two failures look nothing alike from outside, so both are asserted.
-        AssertEveryIndicatorComputesAValue(Catalog().All, SingleContract());
+        //
+        // The widened case is the one gh#495 needs: a configured period the projection writes but never
+        // computes a value for reads back as an empty series, and an empty series is indistinguishable from
+        // a market that produced none.
+        IndicatorCatalog catalog = Catalog(additionalEmaPeriods);
+
+        AssertEveryIndicatorComputesAValue(catalog.All, SingleContract(RunLength(catalog)));
     }
 
     [Fact]
     public void TheValueSweepGoesRed_WhenAnIndicatorComputesNothing()
     {
         // The red half of the sweep above. Without it, the sweep is a gate nobody has watched fail — and for
-        // two of eleven members it was already inert without anything going red to say so (gh#285).
+        // two of the catalogue's members it was already inert without anything going red to say so (gh#285).
         AllNullIndicator mute = new();
-        IReadOnlyList<Bar> clean = SingleContract();
+        IReadOnlyList<Bar> clean = SingleContract(RunLength(Catalog()));
 
         // It throws nothing and its series is aligned one-to-one with the bars. The only thing wrong with it
         // is that every entry is null, so the sweep has to go red for the nulls and not for a length.

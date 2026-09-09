@@ -232,6 +232,8 @@ public sealed class CompositionRootTests
     [InlineData(typeof(AccountTools))]
     [InlineData(typeof(SnapshotTools))]
     [InlineData(typeof(ObservationTools))]
+    [InlineData(typeof(SessionBarTools))]
+    [InlineData(typeof(SessionIndicatorTools))]
     public void EveryToolTypeCanBeResolvedFromARequestScope(Type toolType)
     {
         // The MCP SDK activates a tool type per call from the request scope, and it resolves constructor
@@ -310,16 +312,45 @@ public sealed class CompositionRootTests
     /// <c>MarketDataTools.cs</c> (origin/develop at 9de6563, before gh#391) and diffed byte-for-byte
     /// against the post-split output -- see the PR body for how.
     /// </summary>
+    /// <remarks>
+    /// <b>The baseline moved once since, deliberately, for <c>period</c> (gh#495).</b>
+    /// <c>get_indicators</c> and <c>get_indicator_at</c> gained an optional <c>period</c> that SELECTS among
+    /// the periods an operator configured, so their entries below were recaptured from the actual output and
+    /// the differences are exactly two: the new <c>period</c> property, appended, with
+    /// <c>"type":["integer","null"]</c> and <c>"default":null</c> -- and the description text saying what it
+    /// selects. <b><c>required</c> is unchanged on both</b>, which is the half that matters: an optional
+    /// argument that landed in <c>required</c> would break every existing caller, and a moved baseline is
+    /// the one way that goes green. Anything else appearing in a future diff here is a regression, not an
+    /// update; recapture only what a card asked for, and say which card.
+    /// <para>
+    /// <b>And once more for <c>get_bars</c>'s description (gh#504).</b> Making the coverage ledger per
+    /// contract means a memo-covered read resolves the instrument's contracts first, so
+    /// <c>venueRequests == 0</c> stopped proving "no vendor round trip" and only ever proved "no bar fetch".
+    /// The sentence saying otherwise was the one an MCP client reads, so it was corrected and this baseline
+    /// recaptured from the actual output. <b>The diff is exactly one field</b> — <c>description</c> on
+    /// <c>get_bars</c>. Name, title, input schema, <c>required</c> and the annotations are untouched.
+    /// </para>
+    /// <para>
+    /// <b>And once more for both bar tools' descriptions (gh#592).</b> The response gained <c>history</c>,
+    /// which says whether this call's historical half was decided over the contracts the product's cycle
+    /// names or only over what the vendor happened to list. A field an MCP client is never told about is a
+    /// field it cannot act on — and the whole point of this one is that the payload it sits on otherwise
+    /// looks ordinary — so the descriptions say what each value means and, explicitly, that it is not one of
+    /// <c>contracts.span</c>'s. <b>The diff is exactly two fields</b> — <c>description</c> on
+    /// <c>get_bars</c> and on <c>get_latest_bars</c>. Input schemas, <c>required</c> and the annotations are
+    /// untouched: nothing here is a new argument.
+    /// </para>
+    /// </remarks>
     private static readonly Dictionary<string, string> _knownGoodToolJson = new(StringComparer.Ordinal)
     {
         ["get_bars"] =
-            """{"name":"get_bars","title":"Get bars","description":"Reads OHLCV bars for an instrument over a time window. Served from a local cache; the vendor is called only for buckets genuinely missing, where 'genuinely' excludes weekends, the daily maintenance window and holidays. The response reports `venueRequests` and `fetchedBuckets`, and only the first is evidence of a vendor round trip: `venueRequests == 0` is the exact test for an answer served entirely from the store, while `fetchedBuckets` counts how much the answer changed the store and can read zero even after a genuine fetch. Never returns a truncated series: an over-cap window is refused with the real count. The response also carries `contracts`: bars are keyed by the symbol, so a window spanning a quarterly roll contains TWO contracts. `contracts.span` is SingleContract, SpansRoll, or Unknown — Unknown means the provenance was never recorded, NOT that there was no roll. Adjacent quarters do not trade at the same price; do not read a series across a roll as one.","inputSchema":{"type":"object","properties":{"symbol":{"description":"The instrument symbol, e.g. ES.","type":"string"},"resolutionMinutes":{"description":"The bar size in minutes, e.g. 1, 5, 15, 60.","type":"integer"},"fromUtc":{"description":"Window start, ISO-8601 UTC, inclusive.","type":"string","format":"date-time"},"toUtc":{"description":"Window end, ISO-8601 UTC, exclusive.","type":"string","format":"date-time"}},"required":["symbol","resolutionMinutes","fromUtc","toUtc"]},"outputSchema":null,"annotations":{"title":"Get bars","destructiveHint":null,"idempotentHint":true,"openWorldHint":null,"readOnlyHint":true},"icons":null,"_meta":null}""",
+            """{"name":"get_bars","title":"Get bars","description":"Reads OHLCV bars for an instrument over a time window. Served from a local cache; the vendor is called only for buckets genuinely missing, where 'genuinely' excludes weekends, the daily maintenance window and holidays. The response reports `venueRequests` and `fetchedBuckets`, and only the first is evidence of a bar fetch: `venueRequests` counts HISTORY requests alone, so `venueRequests == 0` is the exact test for no bar fetch \u2014 NOT for no vendor call at all, because a read whose gaps the empty-range memo covers still makes one contract search per request. It undercounts vendor traffic and never overcounts it. `fetchedBuckets` counts how much the answer changed the store and can read zero even after a genuine fetch. Never returns a truncated series: an over-cap window is refused with the real count. The response also carries `contracts`: bars are keyed by the symbol, so a window spanning a quarterly roll contains TWO contracts. `contracts.span` is SingleContract, SpansRoll, or Unknown \u2014 Unknown means the provenance was never recorded, NOT that there was no roll. Adjacent quarters do not trade at the same price; do not read a series across a roll as one. `history.selection` is a SEPARATE question from `contracts.span` and must not be read as one of its values: span asks whether these bars cross a roll, history asks whether the contracts they were CHOSEN FROM were the ones this product's contract-month cycle names. A window can be SingleContract and still have been decided among survivors. AsTheCycleNames means every expiry the cycle named was listed by the vendor and the volume decision ran over all of them. NarrowedByTheVenue means the vendor did not list some of them, so the decision ran over what was left \u2014 the bars are a real series from a real contract, and when the only survivor was the vendor's own active contract that stretch is the thin, complete-looking series this selection exists to prevent you acting on. FellBackToTheFront is worse still: NONE of the cycle's expiries was listed, so no volume decision ran for that stretch at all. AsTheFrontAlone is the whole-read form of that risk: there was no contract-month cycle to decide against \u2014 this server does not serve that instrument, or the vendor's active contract has an expiry that does not read against the cycle \u2014 so the entire window is fetched from the vendor's active contract. It is recorded where the plan is cut, not inferred from `venueRequests`. `history.unresolved` names the expiries that fell away, e.g. M26. NotDecidedHere means THIS call decided no history: every bucket was already stored, or the window sits in the present band. It is in no case a statement that the stored history is whole: bars fetched by an earlier degraded read read back exactly like any other, and nothing recorded about them says otherwise.","inputSchema":{"type":"object","properties":{"symbol":{"description":"The instrument symbol, e.g. ES.","type":"string"},"resolutionMinutes":{"description":"The bar size in minutes, e.g. 1, 5, 15, 60.","type":"integer"},"fromUtc":{"description":"Window start, ISO-8601 UTC, inclusive.","type":"string","format":"date-time"},"toUtc":{"description":"Window end, ISO-8601 UTC, exclusive.","type":"string","format":"date-time"}},"required":["symbol","resolutionMinutes","fromUtc","toUtc"]},"outputSchema":null,"annotations":{"title":"Get bars","destructiveHint":null,"idempotentHint":true,"openWorldHint":null,"readOnlyHint":true},"icons":null,"_meta":null}""",
         ["get_latest_bars"] =
-            """{"name":"get_latest_bars","title":"Get latest bars","description":"Reads the most recent closed bars for an instrument. Anchored on the last CLOSED bucket, never a forming one. This is usually the tool to reach for over get_bars, which needs explicit dates.","inputSchema":{"type":"object","properties":{"symbol":{"description":"The instrument symbol, e.g. ES.","type":"string"},"resolutionMinutes":{"description":"The bar size in minutes.","type":"integer"},"count":{"description":"How many bars to return.","type":"integer"}},"required":["symbol","resolutionMinutes","count"]},"outputSchema":null,"annotations":{"title":"Get latest bars","destructiveHint":null,"idempotentHint":true,"openWorldHint":null,"readOnlyHint":true},"icons":null,"_meta":null}""",
+            """{"name":"get_latest_bars","title":"Get latest bars","description":"Reads the most recent closed bars for an instrument. Anchored on the last CLOSED bucket, never a forming one. This is usually the tool to reach for over get_bars, which needs explicit dates. The response shape is get_bars', `contracts` and `history` included, and those two mean exactly what they mean there \u2014 read `history.selection` before treating a deep lookback as ordinary.","inputSchema":{"type":"object","properties":{"symbol":{"description":"The instrument symbol, e.g. ES.","type":"string"},"resolutionMinutes":{"description":"The bar size in minutes.","type":"integer"},"count":{"description":"How many bars to return.","type":"integer"}},"required":["symbol","resolutionMinutes","count"]},"outputSchema":null,"annotations":{"title":"Get latest bars","destructiveHint":null,"idempotentHint":true,"openWorldHint":null,"readOnlyHint":true},"icons":null,"_meta":null}""",
         ["get_indicators"] =
-            """{"name":"get_indicators","title":"Get indicators","description":"Reads an indicator series from a local cache. The VENDOR IS NEVER CALLED: every value is computed from bars this server already holds. A series the cache has no values for — after an indicator is added or a period is changed — is computed and stored by the first read that asks for it, which for a year of 5-minute bars costs about eight seconds once. An HTTP process with MarketData__WarmIndicators on starts that replay at boot (stdio never does). A read that arrives before warmup finishes that series still pays the eight seconds, or can contend with it; once that series is written, the first read is a probe. Known indicators: atr, rsi, sma, ema, macd, macd-signal, macd-histogram, vwap, bb-upper, bb-middle, bb-lower. An unknown name is an error listing these, because a typo that returned no data would read as 'no signal'. Buckets where the indicator could not yet measure are ABSENT rather than zero. Values are never smoothed across a contract roll, so expect a run of absent values just after one; `contracts.span` says whether the window contains a roll — and Unknown there means the provenance was never recorded, not that there was none.","inputSchema":{"type":"object","properties":{"symbol":{"description":"The instrument symbol, e.g. ES.","type":"string"},"resolutionMinutes":{"description":"The bar size in minutes.","type":"integer"},"indicator":{"description":"The indicator name, e.g. rsi.","type":"string"},"fromUtc":{"description":"Window start, ISO-8601 UTC, inclusive.","type":"string","format":"date-time"},"toUtc":{"description":"Window end, ISO-8601 UTC, exclusive.","type":"string","format":"date-time"}},"required":["symbol","resolutionMinutes","indicator","fromUtc","toUtc"]},"outputSchema":null,"annotations":{"title":"Get indicators","destructiveHint":null,"idempotentHint":true,"openWorldHint":null,"readOnlyHint":true},"icons":null,"_meta":null}""",
+            """{"name":"get_indicators","title":"Get indicators","description":"Reads an indicator series from a local cache. The VENDOR IS NEVER CALLED: every value is computed from bars this server already holds. A series the cache has no values for — after an indicator is added or a period is changed — is computed and stored by the first read that asks for it. At the shipped catalogue that costs about eight seconds once for a year of 5-minute bars, and it grows with the number of series the operator configures: every additional period is one more series in the same replay. An HTTP process with MarketData__WarmIndicators on starts that replay at boot (stdio never does). A read that arrives before warmup finishes that series still pays that cost, or can contend with it; once that series is written, the first read is a probe. Known indicators: atr, rsi, sma, ema, macd, macd-signal, macd-histogram, vwap, vwap-rolling, bb-upper, bb-middle, bb-lower. An unknown name is an error listing these, because a typo that returned no data would read as 'no signal'. Each name is computed at its primary configured period and, where the operator configured them, at additional periods; pass period to select one. A long period needs that many bars inside ONE contract run before it measures, so a freshly configured ema at 200 reads as ABSENT until the current contract has 200 stored bars. Buckets where the indicator could not yet measure are ABSENT rather than zero. Values are never smoothed across a contract roll, so expect a run of absent values just after one; `contracts.span` says whether the window contains a roll — and Unknown there means the provenance was never recorded, not that there was none.","inputSchema":{"type":"object","properties":{"symbol":{"description":"The instrument symbol, e.g. ES.","type":"string"},"resolutionMinutes":{"description":"The bar size in minutes.","type":"integer"},"indicator":{"description":"The indicator name, e.g. rsi.","type":"string"},"fromUtc":{"description":"Window start, ISO-8601 UTC, inclusive.","type":"string","format":"date-time"},"toUtc":{"description":"Window end, ISO-8601 UTC, exclusive.","type":"string","format":"date-time"},"period":{"description":"Which configured period to read, e.g. 200. Omit for the indicator's primary configured period, which is also the one get_market_snapshot reports. Only periods the operator configured are readable: any other is an error listing the configured ones, never an empty series. Not accepted for vwap, which is anchored to the session. For macd, macd-signal and macd-histogram this is the SLOW length.","type":["integer","null"],"default":null}},"required":["symbol","resolutionMinutes","indicator","fromUtc","toUtc"]},"outputSchema":null,"annotations":{"title":"Get indicators","destructiveHint":null,"idempotentHint":true,"openWorldHint":null,"readOnlyHint":true},"icons":null,"_meta":null}""",
         ["get_indicator_at"] =
-            """{"name":"get_indicator_at","title":"Get indicator as of","description":"Reads one indicator value as of a moment, from the same local cache get_indicators reads, and on the same terms: no vendor call, and a series with no stored values is computed by the first read that needs it — or at HTTP startup when MarketData__WarmIndicators is on, once warmup has finished that series. A read before then is still the first-read cost. Returns the value at or BEFORE that moment, never after — a later value is information the market did not have. Cannot-measure DROPS the `value` KEY instead of sending null, so the whole reading arrives as `{}`: test whether the key is THERE, never whether it equals null. An ABSENT value means CANNOT MEASURE, not zero and not neutral — refuse to conclude rather than substitute. `contractId` names the contract the value belongs to when it is known; two readings from different contracts are not comparable.","inputSchema":{"type":"object","properties":{"symbol":{"description":"The instrument symbol, e.g. ES.","type":"string"},"resolutionMinutes":{"description":"The bar size in minutes.","type":"integer"},"indicator":{"description":"The indicator name, e.g. atr.","type":"string"},"asOfUtc":{"description":"The moment, ISO-8601 UTC.","type":"string","format":"date-time"}},"required":["symbol","resolutionMinutes","indicator","asOfUtc"]},"outputSchema":null,"annotations":{"title":"Get indicator as of","destructiveHint":null,"idempotentHint":true,"openWorldHint":null,"readOnlyHint":true},"icons":null,"_meta":null}""",
+            """{"name":"get_indicator_at","title":"Get indicator as of","description":"Reads one indicator value as of a moment, from the same local cache get_indicators reads, and on the same terms: no vendor call, and a series with no stored values is computed by the first read that needs it — or at HTTP startup when MarketData__WarmIndicators is on, once warmup has finished that series. A read before then is still the first-read cost. period selects among the operator's configured periods on the same terms as get_indicators. Returns the value at or BEFORE that moment, never after — a later value is information the market did not have. Cannot-measure DROPS the `value` KEY instead of sending null, so the whole reading arrives as `{}`: test whether the key is THERE, never whether it equals null. An ABSENT value means CANNOT MEASURE, not zero and not neutral — refuse to conclude rather than substitute. `contractId` names the contract the value belongs to when it is known; two readings from different contracts are not comparable.","inputSchema":{"type":"object","properties":{"symbol":{"description":"The instrument symbol, e.g. ES.","type":"string"},"resolutionMinutes":{"description":"The bar size in minutes.","type":"integer"},"indicator":{"description":"The indicator name, e.g. atr.","type":"string"},"asOfUtc":{"description":"The moment, ISO-8601 UTC.","type":"string","format":"date-time"},"period":{"description":"Which configured period to read, e.g. 200. Omit for the indicator's primary configured period, which is also the one get_market_snapshot reports. Only periods the operator configured are readable: any other is an error listing the configured ones, never an empty series. Not accepted for vwap, which is anchored to the session. For macd, macd-signal and macd-histogram this is the SLOW length.","type":["integer","null"],"default":null}},"required":["symbol","resolutionMinutes","indicator","asOfUtc"]},"outputSchema":null,"annotations":{"title":"Get indicator as of","destructiveHint":null,"idempotentHint":true,"openWorldHint":null,"readOnlyHint":true},"icons":null,"_meta":null}""",
         ["get_key_levels"] =
             """{"name":"get_key_levels","title":"Get key levels","description":"Detects support and resistance as ZONES rather than lines, sized in ATR multiples so a zone is comparably wide across instruments. Significance is prominence in ATR multiples, so a 2.0 on ES and a 2.0 on NQ mean the same thing. A zone's support/resistance label is assigned relative to the CURRENT price, not to how it formed — a broken resistance is today's support. Detection is confined to the contract in front: if the lookback spans a quarterly roll, `detectedOverBars` is smaller than the lookback asked for, because a level from the expiring contract sits at a price the current one has never traded. The SAME truncation also happens when the window holds bars with no recorded contract — history cached before this server tracked provenance. Read `contracts.span` to tell the two apart: `SpansRoll` means the store has two DIFFERENT recorded contracts — a real roll — even when an unattributed run also sits in the window. `Unknown` means at least one run's contract was never recorded and the known ones never disagree — genuinely cannot tell whether a roll happened there, NOT a statement that it did not. Read `detectedOverBars` — fewer bars behind a level is less weight for it either way. Overlapping zones MERGE whichever side of price they formed on, so one reported zone can be a support and a resistance that ran into each other; `touchCount` is how many pivots went into it. `pivotSource`, `pivotLookback` and `pivotRightLookback` tune the detection for one call; OMIT them and this server's configured defaults apply. They carry no default of their own, because the default is an operator setting rather than a constant — omitting one asks for the configured value, it does not name a particular one. Zone width, the significance floor and the two caps are operator settings only, so every level this server reports is sized, filtered and capped alike and two of them can be compared. Each method returns at most `detection.maxLevels` levels, the most significant ones; `methods[i].levels.length == detection.maxLevels` is the per-method signal that that method was cut, and `capped` is true when any requested method stopped there. The top-level `levels` array is the union, ordered by price — its length is not a completeness signal. Levels below a method's cap are absent rather than folded into the ones you can see. The response reports the detection it actually ran under as `detection`, so an empty `levels` can be told from a market with no structure — read it with `detectedOverBars`. `methods` selects which detectors run — `swing`, `session`, `pivot-classic`, `pivot-fibonacci`, `pivot-camarilla`, `pivot-woodie`, `pivot-demark`, `volume-poc`, `volume-vah`, `volume-val`, `volume-traded` — comma-separated; Omit for swing. The response names each method's zones and a family-aware confluence score, with the tolerance it was computed against. Methods that share a family share one budget. A requested method that contributed nothing is named, with why.","inputSchema":{"type":"object","properties":{"symbol":{"description":"The instrument symbol, e.g. ES.","type":"string"},"resolutionMinutes":{"description":"The timeframe in minutes.","type":"integer"},"lookbackBars":{"description":"How many bars of history to detect over. Omit for 500.","type":"integer","default":500},"pivotSource":{"description":"Which price on a bar a pivot is measured from: HeikinAshiBody, Body or HighLow. Omit to use this server's configured source. HeikinAshiBody smooths single-bar noise into structure and is the shipped default. Body reads open and close only, HighLow reads the raw wicks. NOTE: on a continuous intraday series, where a bar opens at the previous close, a body high ties with its neighbour's on every bar and Body can find NO pivots at all — an empty level set there is a property of the source, not a market without structure. An unknown name is an error listing the three.","type":["string","null"],"default":null},"pivotLookback":{"description":"How many bars to its LEFT a pivot must dominate; larger means fewer, more structural levels. Omit to use this server's configured lookback. The window is asymmetric: detection needs this + `pivotRightLookback` + 1 bars to find even one pivot — and the window it runs over is whatever the store holds, cut back to the contract in front, which can be far less than `lookbackBars` asked for. When that happens the answer is an EMPTY level set, not an error: compare `detection.pivotLookback` against `detectedOverBars` to tell that from a market with no structure.","type":["integer","null"],"default":null},"pivotRightLookback":{"description":"How many bars to its RIGHT a pivot must dominate — the confirmation window. Omit to use this server's configured value. It is shorter than the left one by default because the two sides answer different questions: the left asks how much history the level stood clear of, the right only has to show the extreme held. It is also the lag: the last this-many bars of the series can never produce a pivot, so the newest structure is always missing from the answer. There is no zero — a pivot judged only by the bars before it repaints as soon as the next one arrives.","type":["integer","null"],"default":null},"methods":{"description":"Which level methods to run, comma-separated: swing, session, pivot-classic, pivot-fibonacci, pivot-camarilla, pivot-woodie, pivot-demark, volume-poc, volume-vah, volume-val, volume-traded. Omit for swing. An unknown name is an error listing the known ones — never an empty level set. Session and every pivot-* method refuse when a bucket of this resolutionMinutes overhangs a session close. Volume-* methods consume the tape-derived profile for the window; they never spread a bar's volume across its range.","type":["string","null"],"default":null}},"required":["symbol","resolutionMinutes"]},"outputSchema":null,"annotations":{"title":"Get key levels","destructiveHint":null,"idempotentHint":true,"openWorldHint":null,"readOnlyHint":true},"icons":null,"_meta":null}""",
         ["get_footprint"] =
@@ -337,6 +368,8 @@ public sealed class CompositionRootTests
     [InlineData(typeof(TapeTools), typeof(FootprintCacheService))]
     [InlineData(typeof(ContractRollTools), typeof(VolumeFrontReader))]
     [InlineData(typeof(SnapshotTools), typeof(IndicatorCatalogNames))]
+    [InlineData(typeof(SessionBarTools), typeof(SessionBarService))]
+    [InlineData(typeof(SessionIndicatorTools), typeof(SessionCatalog))]
     public void AMarketDataToolTypeFailsTheContainerBuild_WhenOneOfItsOwnDependenciesIsUnregistered(
         Type toolType,
         Type dependency)
@@ -350,12 +383,19 @@ public sealed class CompositionRootTests
         // gh#347/gh#348 exist to count). Splitting one type into five multiplies the number of constructors
         // that hole could reopen in, so each of them is driven here.
         //
-        // Each pair is a dependency that type ALONE takes among the five, which is what makes the assertion
-        // discriminating: BarTools is the only one holding a BarCacheService, TapeTools the only one holding
-        // a FootprintCacheService, ContractRollTools' VolumeFrontReader reaches it through TapeTools too but
-        // the message names both. Assert on the message naming the SERVICE and the CONSUMING TYPE, because
-        // .NET validates every registered descriptor on build -- "something threw" would be satisfied by any
-        // other type in the container failing for its own reasons.
+        // WHAT EACH PAIR HAS TO BE is a dependency that type genuinely holds, whose absence fails the build
+        // naming BOTH it and the type -- which is what the two assertions below check, and it is why they
+        // assert on the message rather than on "something threw": .NET validates every registered descriptor
+        // on build, so a bare throw would be satisfied by any other type failing for its own reasons.
+        //
+        // MOST pairs are stronger than that: the dependency is one that type ALONE takes among the family --
+        // BarTools is the only one holding a BarCacheService, TapeTools the only one holding a
+        // FootprintCacheService, ContractRollTools' VolumeFrontReader reaches it through TapeTools too but the
+        // message names both. SessionIndicatorTools has no such dependency and cannot be given one honestly
+        // (gh#501): all eight of its collaborators are shared with IndicatorTools or SessionBarTools, so its
+        // row names SessionCatalog, which SessionBarTools takes as well. Dropping it fails the build naming
+        // both types, so the case still pins that this constructor is validated at build time and not at call
+        // time -- it just does not, on its own, distinguish which of the two consumers was hurt.
         WebApplicationBuilder builder = WebApplication.CreateBuilder();
         builder.Configuration.AddInMemoryCollection(_baseSettings);
 
@@ -408,6 +448,24 @@ public sealed class CompositionRootTests
         using IServiceScope scope = provider.CreateScope();
 
         Func<object> resolve = () => scope.ServiceProvider.GetRequiredService<IndicatorRebuilder>();
+
+        resolve.Should().NotThrow();
+    }
+
+    [Fact]
+    public void TheReselectVerbCanBeResolved()
+    {
+        // BarReselector is reachable from NO tool, so the theory above -- which walks the tool types -- does
+        // not cover it, and `GetRequiredService<BarReselector>()` in the reselect-bars branch is verified by
+        // nothing else. That branch migrates the store and exits the process, so a missing registration
+        // surfaces as an operator running a repair command over months of history and getting a container
+        // exception instead. This repository has already shipped a verb that had never been executed
+        // anywhere (gh#37); leaving its one resolution unchecked would repeat exactly that.
+        using ServiceProvider provider =
+            Build(new Dictionary<string, string?>(), new McpOptions { Transport = McpTransport.Stdio });
+        using IServiceScope scope = provider.CreateScope();
+
+        Func<object> resolve = () => scope.ServiceProvider.GetRequiredService<BarReselector>();
 
         resolve.Should().NotThrow();
     }
@@ -474,6 +532,38 @@ public sealed class CompositionRootTests
     }
 
     [Fact]
+    public void TheSessionBarServiceCanBeResolved()
+    {
+        // SessionBarTools reaches SessionBarService now (gh#500), so the theories above DO cover it: the
+        // request-scope walk activates the tool type, and the unregistered-dependency theory drops this very
+        // service and demands the container build fail. This stays as the DIRECT check. Both of those reach
+        // the reader through a tool constructor, so a slice that moved the service behind a different seam
+        // would take them with it and leave nothing asking the container for it at all -- which is exactly
+        // the hole IndicatorRebuilder shipped through, and it costs one Fact to keep shut.
+        using ServiceProvider provider =
+            Build(new Dictionary<string, string?>(), new McpOptions { Transport = McpTransport.Stdio });
+        using IServiceScope scope = provider.CreateScope();
+
+        Func<object> resolve = () => scope.ServiceProvider.GetRequiredService<SessionBarService>();
+
+        resolve.Should().NotThrow();
+    }
+
+    [Fact]
+    public void TheSessionCatalogCanBeResolved()
+    {
+        // A singleton, so it resolves from the root rather than a scope -- and resolving it is the whole
+        // point: SessionCatalog validates the configured definitions in its CONSTRUCTOR, and a singleton
+        // resolves lazily, so a catalogue nothing ever asks for is a refusal that never happens.
+        using ServiceProvider provider =
+            Build(new Dictionary<string, string?>(), new McpOptions { Transport = McpTransport.Stdio });
+
+        Func<object> resolve = () => provider.GetRequiredService<SessionCatalog>();
+
+        resolve.Should().NotThrow();
+    }
+
+    [Fact]
     public void TheKeyLevelDetectionSection_Binds_IncludingItsSource()
     {
         // Bound from configuration rather than constructed, which is the whole of gh#244 on this side of the
@@ -514,5 +604,26 @@ public sealed class CompositionRootTests
 
         provider.GetRequiredService<IOptions<KeyLevelDetectionOptions>>().Value.Defaults()
             .Should().Be(new KeyLevelOptions(20, PivotSource.HeikinAshiBody, 0.5m, 0.5m, 15, 2.5m, 12));
+    }
+
+    [Fact]
+    public void TheHost_RefusesToStart_WhenAnAdditionalMacdSlowPeriodIsNotAboveTheFastLength()
+    {
+        // MACD's fast length is fixed at 12 (IndicatorOptions' remarks), so a configured additional slow
+        // period of 12 or less would throw the first time IndicatorCatalog tried to build a MacdLineIndicator
+        // from it -- a boot-time refusal that names the setting is the alternative to a first-call crash.
+        Dictionary<string, string?> configured = new()
+        {
+            ["Indicators:AdditionalMacdSlowPeriods"] = "12",
+        };
+
+        Action start = () =>
+        {
+            using ServiceProvider provider = Build(configured, new McpOptions { Transport = McpTransport.Stdio });
+            _ = provider.GetRequiredService<IOptions<IndicatorOptions>>().Value;
+        };
+
+        start.Should().Throw<OptionsValidationException>()
+            .WithMessage("*Indicators__AdditionalMacdSlowPeriods*");
     }
 }

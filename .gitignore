@@ -401,3 +401,7 @@ artifacts/
 # one `git add -A` commits another session's worktree as an embedded repo reference, which clones as an empty
 # directory nobody can explain.
 .worktrees/
+
+# The CDK synthesised cloud assembly (infra/cdk.out). Build output, same as bin/ and obj/; the template CI
+# checks is re-synthesised on every run, never committed (gh#516).
+cdk.out/

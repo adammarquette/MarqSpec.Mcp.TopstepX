@@ -212,6 +212,68 @@ jobs:
           # version is stamped into the assembly (ADR-0001).
           fetch-depth: 0
 
+      # gh#529, ADR-0023 §4 and §12. The deploy shape is desired 1, min 0%, max 100%: the new task runs
+      # MigrateAsync alone, and if it then fails the circuit breaker restores the PREVIOUS task definition
+      # OVER THE MIGRATED SCHEMA. So a migration that lands before a code rollback must be additive, and a
+      # dropped column is an old binary crashing against a store nothing can put back. That rule was prose
+      # in an ADR; nothing in CI read a migration — SchemaTests pins what the schema IS, not how it got
+      # there.
+      #
+      # NEEDS NO SDK, so it runs BEFORE setup-dotnet: a pull request whose only fault is an unacknowledged
+      # DropColumn fails in seconds instead of after a restore, a build and two test tiers.
+      #
+      # THE FETCH IS PART OF THE GATE. The gate diffs against origin/develop, and actions/checkout's
+      # refspec is not something to infer from `fetch-depth: 0` — this makes the ref present on every
+      # event shape. The default shell is `bash -e`, so a failed fetch fails the step rather than leaving
+      # the gate to resolve nothing; and the gate itself refuses an unresolvable base rather than reading
+      # it as an empty diff.
+      #
+      # It rides in this job because `build & unit tests` is already required on all three rungs — no
+      # ruleset write, and `image`'s and `coverage`'s `needs:` lists are untouched, so the skip argument
+      # in documentation/agents/platform.md is unchanged. Moving it to a job of its own would mean adding
+      # a required context by hand, and a context nobody adds only ever reports (gh#26).
+      - name: New migrations are additive, or acknowledged in the file
+        run: |
+          git fetch --no-tags --quiet origin +refs/heads/develop:refs/remotes/origin/develop
+          ./scripts/check-migrations-additive.sh
+
+      # THE GATE ABOVE HAS TO BE ABLE TO FAIL, and it is line matching in shell — one loosened needle or a
+      # terminator regex that stops finding Down() turns it into a step that passes on anything while the
+      # run page stays green. This runs the real script against 57 fixtures whose faults are known and
+      # requires it to reject each BY FILE, LINE AND OPERATION — never on exit status, which is also what
+      # "the Migrations directory is missing" and "that base ref names no commit" produce — and to accept
+      # the additive shapes WITHOUT WRITING A BYTE TO STDERR (gh#239). Two of its cases invoke the gate
+      # with no argument, which is the only invocation the step above makes. That count said 35 against a
+      # suite of 49 from the day this step was written (gh#601 found it): a number in a comment nothing
+      # re-measures is the drift the size gate exists to stop, one layer down — re-count it in the pull
+      # request that adds a case, and the self-test prints the number to paste.
+      #
+      # THIRTEEN OF THOSE CASES ARE SHAPES THAT GOT A GREEN RUN OUT OF THIS GATE, and every one of them
+      # compiled and passed `dotnet format --verify-no-changes`. Counted here rather than asserted, because
+      # the line above it said 35 for a suite of 49 and this one said SEVEN over a list of five, then NINE
+      # over a list of nine, then NINE over a list that had grown a tenth — a count in a comment drifts
+      # from the list beside it as readily as from the code:
+      # two operations on one line under one marker; two IDENTICAL ones, which a boolean match counted as
+      # one; a `.DropColumn` whose `(` sat on the next line; an operation in a sibling member the Up()-body
+      # scan never reached; one swallowed by a Sql( region whose `;` sat on its own line — and, from gh#601,
+      # a `Down` local function and a `Down` overload whose trailing COMMENT carried the word `override`,
+      # a one-line GENUINE `override` of a NESTED type's `Down(` that is simply not the migration's, and an
+      # `Up()` whose trailing comment named the `Down(` signature — and, from gh#612, a file-scoped
+      # namespace with a sibling `override` of `Down(` and a second partial holding a no-modifier helper,
+      # a one-line `Down() { }` as last member of that first partial with the helper in a later one,
+      # the same later-partial helper in this repository's block-namespace style with no sibling type,
+      # and an unmatched `{` in a `Sql(` string so the class span never closes. MOST CAME FROM REVIEW;
+      # the `Up()`-comment find is the exception and the attribution matters — it was found by auditing
+      # the fix for the other three, which is the same route as the no-modifier sibling above it, and a
+      # list that credits review with every find hides how many an audit is worth. A gate an ordinary
+      # formatting choice walks past is the failure this card exists to prevent, so each is a fixture
+      # rather than a fix and a note.
+      #
+      # Ordered after it so a genuinely destructive migration is reported first. Hermetic: mktemp -d, no
+      # network, no token.
+      - name: Prove the additive-migration gate can still fail
+        run: ./scripts/check-migrations-additive-selftest.sh
+
       - uses: actions/setup-dotnet@v6
         with:
           # net10.0 ONLY. This is an application, not the multi-targeting library the template came from —
@@ -237,6 +299,73 @@ jobs:
           --logger "trx;LogFileName=unit-tests.trx"
           --collect:"XPlat Code Coverage"
           --results-directory ./TestResults
+
+      # gh#516. The infrastructure under infra/ is CDK in C#, in the solution, so the Restore, Format and
+      # Build steps above already cover it; these two steps are what make a pull request PROVE the template
+      # it proposes (ADR-0023 §7). They ride in this job because `build & unit tests` is already required
+      # on all three rungs -- no ruleset write, and nothing is added to `image`'s or `coverage`'s `needs`,
+      # so the skip argument in documentation/agents/platform.md is untouched.
+      #
+      # NO CREDENTIALS, by construction: the runner holds none, `--no-lookups` makes a context miss fail
+      # the synth rather than call AWS, and infra/cdk.context.json carries the hosted-zone and AZ lookups.
+      # A green run here therefore licenses exactly this: the app runs, every stack synthesises, and the
+      # template says what the tests assert. It says nothing about whether the account will accept it.
+      #
+      # The template tests are the cheaper, sharper half and run first. NO `--collect`: the coverage gate
+      # measures the PRODUCT (scripts/check-coverage-floor.py), and instrumenting the infra assembly would
+      # move that figure for a change in code no tool call ever executes.
+      #
+      # Both need Node on PATH at RUN time (the constructs are jsii; the tests spawn the same kernel);
+      # ubuntu-latest ships one, and setup-node pins the major and caches the CLI install.
+      - name: Infrastructure template tests
+        run: >-
+          dotnet test infra/MarqSpec.Mcp.TopstepX.Infra.Tests/MarqSpec.Mcp.TopstepX.Infra.Tests.csproj
+          --configuration Release --no-build
+          --logger "trx;LogFileName=infra-tests.trx"
+          --results-directory ./TestResults
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: infra/package-lock.json
+
+      # EVERY SHAPE, because the tasks' outbound path is a fork ADR-0023's decision log leaves to the
+      # maintainer: the app refuses to synthesise without `-c outbound=…`, and this step passes each value
+      # the property admits rather than picking one. When the maintainer decides, the loop collapses to one
+      # plain `npx cdk synth` and the choice becomes a literal in infra/…/Program.cs. Each iteration is a
+      # separate `dotnet run`; the loop aborts on the first failure under this shell's `-e`, and the listing
+      # afterwards is what shows three templates per shape actually landed.
+      - name: Synthesise every outbound shape, with no credentials
+        working-directory: infra
+        run: |
+          npm ci --no-audit --no-fund
+          for outbound in PublicIpPerTask NatGateway VpcEndpointsWithPublicIp VpcEndpointsWithNatGateway; do
+            echo "== outbound=$outbound"
+            npx cdk synth --quiet --no-lookups -c "outbound=$outbound"
+          done
+          ls -1 cdk.out/*.template.json
+
+      # gh#521. `scripts/check-deployment.sh` asks a DEPLOYED hostname whether it answers -- /health and the
+      # release it names, the 401 and the metadata document a connector reads before it has a token, a
+      # Cognito token, then initialize and tools/list over verified TLS. The GATE itself cannot run here:
+      # there is no deployed instance until gh#519, and pointing it at one would need a real certificate, a
+      # real pool and a stamped version, none of which a runner has.
+      #
+      # WHAT RUNS HERE IS THE SELF-TEST, and it is the whole point of the card rather than a formality: a
+      # deployment check that cannot fail is worse than none, because it is BELIEVED. It serves the real gate
+      # a fixture that is a correct deployment in exactly one wrong way -- a stale version, an unprotected
+      # /mcp, a metadata document naming somebody else, seventeen tools, a token endpoint minting nothing, a
+      # self-signed certificate, a plain-http token endpoint -- and requires it to reject each BY NAME, plus
+      # a sound one it must accept writing nothing at all to stderr. The fixture is a few lines of Python
+      # http.server; there is no product code in it, no network beyond loopback and no credential anywhere.
+      #
+      # IT RIDES IN THIS JOB for the reason everything else added here does: `build & unit tests` is already
+      # required on all three rungs, so this enforces by wiring rather than by a ruleset write, and a new
+      # context nobody adds is a check that only ever reports (gh#26). NO DOCKER -- python3, curl and openssl
+      # are all it needs, and ubuntu-latest ships all three. `docs` is untouched and is still seven steps.
+      - name: Prove the deployment check can still fail
+        run: ./scripts/check-deployment-selftest.sh
 
       - name: Upload unit test results
         if: always()

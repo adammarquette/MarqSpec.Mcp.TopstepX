@@ -19,7 +19,7 @@
 
   <ItemGroup Label="Build">
     <!-- Versioning from the git tag. Build-time only; never a runtime dependency. -->
-    <PackageVersion Include="MinVer" Version="7.0.0" />
+    <PackageVersion Include="MinVer" Version="8.0.0" />
   </ItemGroup>
 
   <ItemGroup Label="MCP">
@@ -30,6 +30,13 @@
     -->
     <PackageVersion Include="ModelContextProtocol" Version="2.2.0" />
     <PackageVersion Include="ModelContextProtocol.AspNetCore" Version="2.2.0" />
+    <!--
+      The OAuth 2.1 resource-server half of the HTTP transport (ADR-0007, ADR-0021, gh#512): validates a
+      Cognito-issued JWT against the issuer's published keys, discovered from its OpenID configuration. Host
+      only — it is a request-pipeline seam. 10.0.x to match the framework line the web host already pulls, for
+      the same transitive-pinning reason as the Microsoft.Extensions.* packages below.
+    -->
+    <PackageVersion Include="Microsoft.AspNetCore.Authentication.JwtBearer" Version="10.0.11" />
   </ItemGroup>
 
   <ItemGroup Label="Venue">
@@ -72,6 +79,47 @@
     <PackageVersion Include="Microsoft.Extensions.Options.ConfigurationExtensions" Version="10.0.11" />
   </ItemGroup>
 
+  <ItemGroup Label="Telemetry">
+    <!--
+      OTLP is the telemetry boundary (ADR-0019). Referenced from the HOST ONLY: `Domain` references nothing
+      and may read no clock, store or config singleton (ADR-0006), and an `ActivitySource` there would be all
+      three at once; `Data` stores what it is handed. The instrumentation packages are subscriptions to
+      sources that already exist — ASP.NET Core's, HttpClient's, the runtime's, Npgsql's and the MCP SDK's
+      `Experimental.ModelContextProtocol` — so nothing here is a second telemetry system.
+
+      One line pins the OpenTelemetry SDK and its exporter together on purpose: the exporter, the hosting
+      extensions and the three instrumentation packages ship from one repository on one version train, and a
+      mixed set is how a `TracerProviderBuilder` overload resolves against an SDK that does not have it.
+
+      DELIBERATELY ABSENT: OpenTelemetry.Exporter.Console. There is no configuration under which writing
+      telemetry to stdout is safe in this host — under stdio stdout IS the protocol frame (R-5.5) — so there
+      is no flag and no package (ADR-0019, invariant 4).
+    -->
+    <PackageVersion Include="OpenTelemetry.Extensions.Hosting" Version="1.18.0" />
+    <PackageVersion Include="OpenTelemetry.Exporter.OpenTelemetryProtocol" Version="1.18.0" />
+    <PackageVersion Include="OpenTelemetry.Instrumentation.AspNetCore" Version="1.18.0" />
+    <PackageVersion Include="OpenTelemetry.Instrumentation.Http" Version="1.18.0" />
+    <PackageVersion Include="OpenTelemetry.Instrumentation.Runtime" Version="1.18.0" />
+    <!--
+      Npgsql's own OpenTelemetry bridge, versioned with Npgsql rather than with the SDK above: it is the
+      provider's package, and it tracks the driver it instruments.
+    -->
+    <PackageVersion Include="Npgsql.OpenTelemetry" Version="10.0.3" />
+  </ItemGroup>
+
+  <ItemGroup Label="Infrastructure">
+    <!--
+      The AWS CDK, for the `infra/` app (ADR-0023 §7). Both are jsii packages: every construct call — in the
+      app AND in the template tests — runs through a Node process the runtime spawns, so `dotnet run` and
+      `dotnet test` of those two projects need Node on PATH, while `dotnet build` does not. In v2 the
+      assertions library is the `Amazon.CDK.Assertions` NAMESPACE inside this one package; the separately
+      published `Amazon.CDK.Assertions` package is the v1 line and must not be added. Nothing under `infra/`
+      is restored by the Dockerfile, so neither package reaches the image.
+    -->
+    <PackageVersion Include="Amazon.CDK.Lib" Version="2.268.0" />
+    <PackageVersion Include="Constructs" Version="10.8.1" />
+  </ItemGroup>
+
   <ItemGroup Label="Test stack">
     <PackageVersion Include="Microsoft.NET.Test.Sdk" Version="18.9.0" />
     <PackageVersion Include="xunit" Version="2.9.3" />
@@ -83,10 +131,18 @@
          at 15:58 on a Tuesday or at 03:00 on a Sunday exactly. -->
     <PackageVersion Include="Microsoft.Extensions.TimeProvider.Testing" Version="10.9.0" />
     <!--
+      MetricCollector, for the unit tier only. The same family and the same version as FakeTimeProvider above
+      — they ship together, and a split version pair is a downgrade warning waiting for the next bump. It is
+      what lets a test read the MEASUREMENT and its TAGS off an app-owned instrument (gh#536) rather than
+      asserting that a method was called: an instrument nothing listens to records nothing, so the only honest
+      test of one is a real listener over the real code path.
+    -->
+    <PackageVersion Include="Microsoft.Extensions.Diagnostics.Testing" Version="10.9.0" />
+    <!--
       A real Postgres for the integration tier. The bar store's hypertable and the HNSW vector index are
       Timescale/pgvector features; an in-memory provider would pass a suite that proves nothing about them.
     -->
-    <PackageVersion Include="Testcontainers.PostgreSql" Version="4.14.0" />
+    <PackageVersion Include="Testcontainers.PostgreSql" Version="4.15.0" />
     <!--
       For the unit tier only. The cache's central claim — that a repeated read costs ZERO vendor calls — is
       about logic, not SQL, so it is pinned by a fast in-memory test rather than only by a container the suite
@@ -94,6 +150,12 @@
       still need a real Postgres; an in-memory provider would pass a suite that proves nothing about them.
     -->
     <PackageVersion Include="Microsoft.EntityFrameworkCore.InMemory" Version="10.0.11" />
+    <!--
+      The in-memory span and metric exporters, for the unit tier only. The telemetry claims worth pinning are
+      about what an exported span CARRIES — and, more sharply, what it must never carry (ADR-0019) — so they
+      are asserted against real exported activities rather than against the builder that produced them.
+    -->
+    <PackageVersion Include="OpenTelemetry.Exporter.InMemory" Version="1.18.0" />
   </ItemGroup>
 
 </Project>

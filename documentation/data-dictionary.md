@@ -5,10 +5,13 @@
 [ADR-0005](adr/0005-session-aware-gap-detection.md) (`BarCoverage`),
 [ADR-0006](adr/0006-indicators-as-projections.md) (`IndicatorValues`),
 [ADR-0011](adr/0011-contract-roll-boundary.md) (`Bars.ContractId`),
+[ADR-0022](adr/0022-session-bars-derived-complete-or-absent.md) (`SessionBars`),
 gh#215 (`Trades`, `TapeCoverage`, `FootprintCells`),
-gh#404 (`TapeLeases`)
+gh#404 (`TapeLeases`),
+gh#499 (`SessionBars`),
+gh#501 (`SessionIndicatorValues`)
 
-One Postgres database, nine tables — §4 is a retired number, not a tenth. Entities live in
+One Postgres database, eleven tables — §4 is a retired number, not a twelfth. Entities live in
 `MarqSpec.Mcp.TopstepX.Data/Entities/`; the schema is whatever the migrations say, and this page is kept in
 lockstep with them in the same PR.
 
@@ -20,8 +23,9 @@ lockstep with them in the same PR.
   representation, and an indicator accumulating over thousands of bars drifts.
 - **`Instrument` is the normalised venue-neutral symbol** (`ES`), upper-cased at the boundary — not a contract
   id. `CON.F.US.EP.U26` is one contract that quotes `ES` this quarter. On `Bars` the contract is recorded
-  **beside** the key ([ADR-0011](adr/0011-contract-roll-boundary.md)). On `Trades` and `TapeCoverage` it is
-  **in** the key: a print that cannot be attributed has no meaning (gh#215).
+  **beside** the key ([ADR-0011](adr/0011-contract-roll-boundary.md)). On `Trades`, `TapeCoverage` and
+  `BarCoverage` it is **in** the key: a print that cannot be attributed has no meaning (gh#215), and neither
+  has an empty answer, which without a contract asserts "empty" on behalf of every contract (gh#504).
 - **`Venue` is part of every market-data key.** The same product on two venues is two series, and a future
   second venue must not silently overwrite the first.
 - **No tenancy.** `trading-copilot` scopes rows to an owner and exempts market data; here there is nothing but
@@ -69,6 +73,38 @@ the venue does sometimes publish and which otherwise pinned the window's span at
 ([ADR-0011](adr/0011-contract-roll-boundary.md), gh#412). It is bounded by what the venue will still restate;
 deleting and refetching by hand is no longer the only remedy.
 
+**What this table does NOT record: which candidate set the bucket was chosen from** (gh#592). Under
+`R-1.14` a historical bucket is the winner of a volume decision among the expiries the product's cycle names
+— *when the venue lists them*. When it lists only some, the decision runs over the survivors, and when the
+sole survivor is the venue's own active contract the row that lands is byte-identical to the row an
+undegraded read would have written: same bucket, same prices, same `ContractId`, same `RecordedAt`. **The
+difference is not in any column here and cannot be added to one after the fact**, for the reason `ContractId`
+is never backfilled — inferring it would be the plausible-wrong-number failure a column further along.
+
+So the fact is captured where it exists, at the moment the fetch is planned, and reported on **that read's
+payload** as `history.selection`
+([tool catalogue — `history`](mcp-tool-catalog.md#history--which-contracts-the-history-was-chosen-from-r-114-gh592)).
+It is not stored, and a later read of the same window says `NotDecidedHere` rather than reconstructing it —
+[ADR-0020](adr/0020-historical-contract-selection.md) §5 forbids a read from re-deciding attributed history,
+which is the same rule that makes the fact unrecoverable in the first place.
+
+**A read heals a null; a read never rewrites a bucket that already carries one.** Those are two different
+rules and only the first fills this column. Keeping an attributed bucket is what makes a warm read
+byte-identical to the one before it and what stops one day being split between two contracts, so a window
+filled under a policy since corrected stays wrong until somebody decides otherwise
+([ADR-0020](adr/0020-historical-contract-selection.md) §5). **Revising provenance in bulk is an operator's
+verb** — `reselect-bars <symbol> <fromUtc> <toUtc>` (`R-1.15`, gh#506) — bounded to the window they name,
+widened to the whole trade dates it intersects, counted and logged. It re-decides each trade date from the
+candidates' volume with nothing pinned, rewrites the winner's buckets through the ordinary upsert, and
+**deletes the rows the winner does not restate**: those another contract held, and — counted apart, because a
+contract must not be reported as losing a bucket it never held — those carrying no contract at all. That last
+case is a real loss of a row written before this column existed and which the venue no longer answers for;
+it is bounded by the operator's window and by the trade date having been decided at all. `IndicatorValues`
+is re-projected in the same transaction, so nothing the projection walks is left standing over a deleted bar
+— **and it walks only the `(Indicator, Period)` pairs the catalogue currently computes** (§2, `R-2.8`). There
+is no foreign key between the two tables, so a value under a pair the catalogue was later reconfigured away
+from is orphaned by the delete and nothing here removes it: **gh#571**.
+
 **Deliberately no retention policy.** This is a record, not a pipeline.
 
 Index: `(Instrument, ResolutionMinutes, BucketStart)` — the shape of every read. `ContractId` is not indexed:
@@ -79,7 +115,7 @@ it is read alongside rows a window already selected, never searched on.
 | Column | Type | Note |
 |---|---|---|
 | `Venue` `Instrument` `ResolutionMinutes` | | PK |
-| `Indicator` | `varchar(32)` | PK · lowercase stable name — `atr`, `rsi`, `macd-signal` |
+| `Indicator` | `varchar(32)` | PK · lowercase stable name — `atr`, `rsi`, `macd-signal`, `vwap-rolling` |
 | `Period` | `integer` | PK · part of identity; ATR(14) and ATR(3) are different numbers |
 | `BucketStart` | `timestamptz` | PK · the hypertable's time dimension |
 | `Value` | `numeric(18,8)` | |
@@ -89,9 +125,24 @@ Nothing here is authoritative — every row is reproducible from §1, and that i
 replay reaching for the ATR behind a past decision should find the number that was actually used.
 
 `Period` is `0` for indicators that take none (VWAP is anchored, not windowed), which keeps them from colliding
-with a windowed indicator of the same name.
+with a windowed indicator of the same name. A VWAP with a lookback is a **different calculation**, so it is a
+different name — `vwap-rolling`, at its own period — rather than `vwap` at a non-zero one.
+
+**One name can have several periods here, and every one of them was configured.** Each indicator has a PRIMARY
+period (`Indicators__*Period`) and may have additional ones (`Indicators__Additional*Periods`); the catalogue
+owns every `(Indicator, Period)` instance, and the projection, the read-time probe and the reconcile all walk
+that same set. That is what makes `period` on `get_indicators` a **selection** rather than a computation
+([ADR-0018](adr/0018-period-selection-among-configured-periods.md)): the key carries the period, so a
+selectable one always names rows this store's own projection wrote.
 
 Index: `(Instrument, ResolutionMinutes, Indicator, Period, BucketStart)` — the shape of every read.
+
+**§12 is this table's session flavour, and it is written by the same code.** A named session series is
+projected into `SessionIndicatorValues` under `Session` where this key carries `ResolutionMinutes`; which of
+the two a pass reads and writes is decided by a `SeriesKey` and by nothing else, so every rule stated in this
+section — the rounding, the skip-unchanged comparison, the unscoped reconcile, the whole-series guard, the
+transaction requirement — holds there unchanged (`R-2.14`, gh#501). The one difference in vocabulary is that
+a session series has no session-anchored `vwap`.
 
 **There is no `ContractId` here, and that is deliberate.** A value is always computed inside a single contract
 run — the projection never smooths across a roll ([ADR-0011](adr/0011-contract-roll-boundary.md)) — so the
@@ -105,13 +156,54 @@ back to a row on the quarter *before* the seam.
 **There is no foreign key to §1 either**, and that is a consequence worth knowing: deleting bars does not
 delete the values derived from them, it orphans them. A projection is a rebuildable view over §1 rather than a
 child row of it, so the cascade would be wrong — but the absence means *the projection itself* has to remove
-what the bars no longer justify. It does: a pass deletes every value it is configured to produce that this
-pass did not, scoped to the `(Indicator, Period)` pairs the catalogue computes so that a series left behind by
-a period change is not swept up with it.
+what the bars no longer justify. It does. A pass removes **three** kinds of row from the series it projected,
+counted apart and logged apart because they call for different follow-ups (gh#571):
+
+| Kind | What it is | How it got there |
+|---|---|---|
+| Unjustified | The pair is computed and the bucket has a bar, but the pass produced no value | The warm-up restarting at a contract seam ([ADR-0011](adr/0011-contract-roll-boundary.md)) |
+| Retired | The `(Indicator, Period)` pair is one the catalogue no longer computes | `Indicators__*Period` or `Indicators__Additional*Periods` changed |
+| Orphaned | The `BucketStart` has no bar in §1 | Bars deleted — a base revision, a session-bar discard, `reselect-bars` |
+
+**A retired pair's rows used to be left alone, and that was wrong** — see ADR-0006's 2026-09-07 update. They
+are not another series: they are this one, under a window nothing computes any more, so no replay confirms or
+corrects them and `rebuild-indicators` reports an empty diff over them. A row §1 cannot reproduce is the one
+thing this table must not hold, and getting it back costs one configuration line and one replay.
+
+**`rebuild-indicators` walks the union of §1's series and this table's**, for the same reason: a series whose
+every bar is gone is in neither §1 nor the verb's old worklist, so nothing ever visited it again.
 
 That sweep is **not** scoped by bucket range, so a pass has to read the whole series and read it in **one
 snapshot** — otherwise it removes values a concurrent write justified between its two reads, and the loss
-arrives as an absence (`R-2.9`, gh#73). A pass that finds the two disagree refuses rather than deleting.
+arrives as an absence (`R-2.9`, gh#73). A pass that finds the two disagree refuses rather than deleting. It is
+otherwise **bounded by the series in hand**: the classification is over rows the pass already read, and costs
+no additional query.
+
+**A read does not sweep, and the two orphan kinds differ sharply in what that costs.** `get_indicators`
+projects only when its probe finds a *configured* pair missing — meaning the store holds no value for it, or
+holds values that stop short of the bars by more than that indicator's warm-up
+([ADR-0014](adr/0014-indicators-are-projected-on-read-too.md),
+[ADR-0018](adr/0018-period-selection-among-configured-periods.md) *Update*, gh#531) — and
+`EnsureProjectedAsync` returns before that probe entirely when the series holds **no bars**. So:
+
+- **Retired rows are unreachable** while they stand — the read refuses a period the catalogue does not carry,
+  before the store is touched. They stand until a fill or `rebuild-indicators` visits the series.
+- **Orphaned rows also stand**, and for a series whose bars are **all** gone no read will ever run the pass
+  that would remove them.
+
+**So an operator upgrading past gh#571 runs `rebuild-indicators` once.** That is the only thing that reaches
+a bar-less series.
+
+**No read serves an orphan, though** (`R-2.14`, gh#577). All three read paths join §1: a stored value is
+served only where §1 still holds the bar at its `BucketStart`. Until then they did not — `get_indicators`
+returned 37 ATR points over zero bars, `get_indicator_at` returned `65.32947503` with a null contract, and
+`get_market_snapshot` LEFT-joined §1 on purpose, its comment arguing that an inner join would turn a known
+number with unknown provenance into *cannot-measure*. That argument is answered rather than overridden:
+**`ContractId` is nullable**, so a bar that exists with no recorded contract still matches the join and is
+still served with its unknown provenance; what the LEFT join actually decided was the case where the bar row
+is absent, and there nothing recomputes the number at all. The rule is per **value**, so a partial delete
+still serves what the surviving bars justify. Nothing is rewritten and no migration is implied — the join is
+evaluated at read time, and the rows stand until the sweep above reaches them.
 
 **The write half reaches the composite key with `ON CONFLICT … DO UPDATE`**, not by reading the values into a
 dictionary and deciding (gh#133) — a pass recomputes the whole series *its own snapshot* can see, so two fills
@@ -131,6 +223,7 @@ refuses.
 | Column | Type | Note |
 |---|---|---|
 | `Venue` `Instrument` `ResolutionMinutes` | | PK |
+| `ContractId` | `varchar(64)` | PK · **required**. The contract that was asked, and answered empty |
 | `RangeStart` `RangeEnd` | `timestamptz` | PK · half-open `[Start, End)` |
 | `RecordedAt` | `timestamptz` | |
 | `ExpiresAt` | `timestamptz` | Null means never — settled history |
@@ -141,6 +234,25 @@ fixed watchlist on a timer, so it never faces "an agent asked for an arbitrary c
 Records that the venue was asked for a range and answered **empty**. Without it, a range the vendor genuinely
 has no data for — before the contract listed, a cancelled session — is expected by the calendar and absent from
 the store, which is indistinguishable from "not fetched yet", and is re-requested on every call.
+
+**The question the row answers changed with gh#504.** It is no longer "did the venue have bars for this
+range?" but "did **contract C** have bars for this range?" — the same question §7 and §8 already ask of a
+print and a subscription, arriving here because bars record the contract that produced them
+([ADR-0011](adr/0011-contract-roll-boundary.md)) and the history fetch is becoming roll-aware (gh#497). Those
+have different answers over one range: an expiring front holds nothing for a window the incoming front
+covers. So a range is answered only when **every** candidate contract has an unexpired empty row whose union
+covers it, and a candidate with no rows answers nothing rather than being vacuously covered. One contract's
+empty answer never speaks for another's.
+
+**Migration `BarCoverageIsPerContract` deleted every existing row rather than backfilling one**, on the rule
+that a missing fact is missing and never a default. Which contract answered is not recoverable from anything
+the row holds — venue, symbol, resolution and the two range ends are the same whichever contract was asked — and a
+guessed provenance is indistinguishable from a recorded one once written. Recent rows expire within fifteen
+minutes regardless; the permanent, settled ones were exactly the hazard, stamped by the venue-front contract
+over ranges the new policy must ask other contracts about, and left in place they would hide real bars
+forever. **The one-time cost is one paced page per previously-empty settled range**, spent the next time
+something reads that range and visible to an operator as a bump in `venueRequests`. It is paid once and does
+not recur.
 
 `ExpiresAt` is asymmetric: short near `now` (a bucket empty only because it has not printed yet will print), and
 null for settled history (a hole in 2024 will not fill in). **Null means *never*, not *not recorded*** — so the
@@ -153,15 +265,29 @@ written per page slice, so a three-page empty answer leaves three abutting rows 
 covers the range. A lookup that asks whether one row contains the range answers "no" forever and re-fetches
 every page on every read (gh#408); the containment test is made against the union of the unexpired rows, with
 touching rows merged — half-open slices abut exactly — and a genuine gap between two rows still covering
-nothing.
+nothing. **The union is taken per contract**, over that candidate's own rows only: merging across contracts
+would invent a claim nobody made, which is the per-contract question above restated where the merge happens.
 
-Index: `(Instrument, ResolutionMinutes, RangeStart, RangeEnd)` — the shape of every coverage lookup.
+**`reselect-bars` deletes every row that *overlaps* its window, not every row contained in it** (`R-1.15`,
+gh#506). Overlap rather than containment because a straddling claim is the ordinary shape here, not an edge
+case: `MemoiseEmpty` cuts a claim at the settled age and the union above merges touching rows, so a permanent
+memo routinely reaches into a window from outside it. Left standing, that memo would answer "empty" for a
+range whose contract decision has just been overturned and suppress the very next read of it — a permanent
+hole, written by the policy the verb was run to undo. Deleting on overlap can drop a claim about time outside
+the operator's window; that costs **one re-ask**, which is the cheap direction. Every contract's rows go, for
+the venue, instrument and resolution being re-decided, since which contract will answer that range is exactly
+what the run has just changed.
 
-**The write reaches the composite key with `ON CONFLICT … DO UPDATE`**, not by reading the row and deciding
-(gh#122) — so two callers recording the same empty range concurrently both land, instead of the loser faulting
-on the key. There is no pre-read and no skip-unchanged rule: the ledger holds the **latest answer** for a
-range rather than a history of asking, so `RecordedAt` moves on every ask and there is no unchanged write to
-skip.
+Index: `(Instrument, ResolutionMinutes, ContractId, RangeStart, RangeEnd)` — the shape of every coverage
+lookup.
+
+**The write reaches the composite key with `ON CONFLICT … DO UPDATE`** on
+`(Venue, Instrument, ResolutionMinutes, ContractId, RangeStart, RangeEnd)`, not by reading the row and
+deciding (gh#122) — so two callers recording the same empty range concurrently both land, instead of the loser
+faulting on the key. The target *is* the key, so growing one grows the other: a statement whose list no longer
+matches fails at runtime with a `42P10`, not at compile time. There is no pre-read and no skip-unchanged rule:
+the ledger holds the **latest answer** for a range rather than a history of asking, so `RecordedAt` moves on
+every ask and there is no unchanged write to skip.
 
 ## §4 `PriceLevels` — dropped 2026-08-27 (gh#276)
 
@@ -172,9 +298,11 @@ constrained, indexed table with no pending purpose. Migration `20260827071708_Dr
 its four CHECK constraints and its index.
 
 **Levels are still computed on every `get_key_levels` call and returned**, and now there is no level store at
-all rather than an empty one. That is what keeps per-call detection parameters sound: ADR-0006 bans the same
-freedom for indicators because their storage key is `(Indicator, Period)`, and here there is no key for a
-parameter to fall out of.
+all rather than an empty one. That is what keeps per-call detection parameters sound: ADR-0006 bans **ad-hoc**
+per-call parameters for indicators because their storage key is `(Indicator, Period)`, and here there is no key
+for a parameter to fall out of. An indicator call may still **select** among the configured periods
+([ADR-0018](adr/0018-period-selection-among-configured-periods.md)) — that is the one parameter the key
+carries, which is exactly why it is not the same freedom.
 
 **The number is retired, not reused.** §5 and §6 keep theirs — `ObservationRecord`, `EmbeddingRecord` and
 [ADR-0009](adr/0009-cohere-embeddings.md) cite them by number, and renumbering would silently repoint every
@@ -278,7 +406,7 @@ The hypertable is **conditional**, following [ADR-0004](adr/0004-one-postgres-ti
 
 Index: `(Instrument, ContractId, TradeTimeUtc)` — the shape of every read.
 
-**Volume-front is a read over this table, not a filter and not a tenth table** (gh#219). Per
+**Volume-front is a read over this table, not a filter and not a twelfth table** (gh#219). Per
 `(instrument, contract)` per session, total `Size`. The highest-volume contract is the tape's
 front; the session it overtook the previous one is the changeover. `Unknown` direction still
 counts as size — unlike §9, which refuses it so an unstated side cannot look like a buy. Both
@@ -366,7 +494,7 @@ tape yields empty cells, not a fabricated profile. **Two reads that need the con
 
 Not a hypertable. The tape is the high-volume series; this is its projection, rebuildable.
 
-**A volume profile is not a tenth table.** Point of control and the 70% value area are an aggregate over
+**A volume profile is not a twelfth table.** Point of control and the 70% value area are an aggregate over
 these cells plus §8 (`R-9`, gh#221). The host reads the cells and the listening ledger and calls Domain;
 nothing here is written for that answer. A window that spans a roll or a listening hole is confined to
 the newest contiguous run of one contract, and the reported window is that run, not the ask.
@@ -432,6 +560,123 @@ the market and the tape, not about which process is running. Putting "someone el
 either would make an availability signal indistinguishable from a data fact.
 
 Not a hypertable, and not a time series at all — at most one row per instrument per venue.
+
+## §11 `SessionBars` — the derived session series
+
+| Column | Type | Note |
+|---|---|---|
+| `Venue` | `varchar(64)` | PK |
+| `Instrument` | `varchar(32)` | PK |
+| `Session` | `varchar(16)` | PK · the definition's storage key, e.g. `rth`. Sixteen because a name must match `^[a-z][a-z0-9-]{0,15}$` |
+| `TradeDate` | `date` | PK · the CME trade date the session calendar already models ([ADR-0005](adr/0005-session-aware-gap-detection.md)) |
+| `OpenUtc` | `timestamptz` | When the session opened, inclusive. Recorded and **uniquely indexed**, never key |
+| `CloseUtc` | `timestamptz` | When the session closed, exclusive |
+| `Open` `High` `Low` `Close` | `numeric(18,8)` | The first bucket's open, the extremes, the last bucket's close |
+| `Volume` | `bigint` | Every base bucket in the window, summed |
+| `ContractId` | `varchar(64)` | **NOT NULL.** The one venue contract every base bucket came from |
+| `BaseResolutionMinutes` | `integer` | The size of the base bars this was aggregated from — provenance |
+| `BaseBucketCount` | `integer` | How many base buckets it was built from — every one the calendar expected |
+| `WindowCentral` | `varchar(11)` | The window in Central wall-clock, e.g. `08:30-15:00`. Eleven because `HH:mm-HH:mm` is exactly eleven characters |
+| `RecordedAt` | `timestamptz` | When this row was last written or revised |
+
+**A plain table, not a hypertable.** A session bar is one row per trade date, so one instrument's `rth` series
+is 250-odd rows a year and all four shipped sessions together are a thousand — a decade of them is five figures.
+§1 stores a row per minute per resolution and earns the chunking, the compression and the time-dimension
+planning [ADR-0004](adr/0004-one-postgres-timescale-pgvector.md) buys; a table this size is answered by a
+B-tree probe on its own key, and chunking it would add partitions to manage for no read it makes faster. Same
+call as §3, §8, §9 and §10, and for the same reason: the shape of every read here is a key probe over a handful
+of rows, not a scan of a time dimension.
+
+**Keyed by trade date, not by instant.** A session is identified by the CME trade date the calendar already
+models, and its UTC bounds *move*: 17:00 Central is 22:00Z in summer and 23:00Z in winter, so the instant is
+not the identity and keying on it would make one session two rows across a daylight-saving change
+([ADR-0005](adr/0005-session-aware-gap-detection.md),
+[ADR-0022](adr/0022-session-bars-derived-complete-or-absent.md)). The instants are still what a caller acts on,
+so they are recorded — and `(Venue, Instrument, Session, OpenUtc)` carries a **unique** index, which is where
+*two rows for one opening* is made unrepresentable. That index is a calendar-bug guard and nothing else: it is
+deliberately **not** the conflict target of the write, because a `DO UPDATE` aimed at it would turn the failure
+it exists to raise into a silent revision. The composite primary key is the idempotence guard, on §1's terms,
+and the write reaches it directly with one `ON CONFLICT … DO UPDATE` rather than by reading and deciding
+(gh#103).
+
+**`ContractId` is `NOT NULL` here and nullable on §1, and the asymmetry is deliberate.** On §1 null means *not
+recorded* — a bucket written before the column existed, healed the next time something reads that range. Here
+there is no unknown state to represent: a session bar exists only when every one of its base buckets came from
+one contract, and a session whose buckets carry no contract is `ProvenanceUnknown` and is **never written**. It
+is §9's inverse stated the other way round — §9 has no `ContractId` because a cell is always computed inside a
+single contract run, and this table has a non-null one for the same reason it can name the run.
+
+**`WindowCentral` and `BaseResolutionMinutes` are the definition travelling with the row**
+([ADR-0022](adr/0022-session-bars-derived-complete-or-absent.md) §4/§5). A `Bar` carries an open time and not a
+size, so nothing downstream could tell an `rth` bar built from 30-minute bars from one built from 5-minute bars
+— and the finer one is the dangerous case, because it passes the completeness guard and produces a bar whose
+high, low and volume come from a thirteenth of the session. This row is the only place the definition that
+produced it can be stated, so a row whose pair disagrees with the definition standing today is **discarded and
+rebuilt, never served**. The discard is scoped to one venue, one instrument and one session name, and is
+*unscoped by date* on purpose: a changed definition invalidates that whole series, not the window the current
+call happens to ask about.
+
+**No absence column, and no session coverage ledger.** An incomplete session is not stored at all — no row, no
+marker, no ledger — and its absence is re-derived from the base series on every read. A stored absence would go
+stale the moment the missing base buckets arrived, and a session that heals would keep reading as missing until
+something invalidated the record; §3's ledger is the right shape for *the venue answered and had nothing*, which
+is a fact about the venue, and the wrong shape for *the store does not hold this yet*, which is a fact about §1
+that §1 already carries ([ADR-0022](adr/0022-session-bars-derived-complete-or-absent.md), its rejected
+per-session ledger).
+
+**Deliberately no retention policy**, for §1's reason: this is a record, not a pipeline.
+
+Indexes: `(Venue, Instrument, Session, OpenUtc)` **unique**, the guard above; and
+`(Instrument, Session, CloseUtc)` — the shape of every read, one instrument and one session over a window
+ending at the close.
+
+## §12 `SessionIndicatorValues` — a projection over §11
+
+| Column | Type | Note |
+|---|---|---|
+| `Venue` `Instrument` | | PK |
+| `Session` | `varchar(16)` | PK · the closed session vocabulary, same name and same width as §11 |
+| `Indicator` | `varchar(32)` | PK · lowercase stable name — `atr`, `rsi`, `macd-signal`, `vwap-rolling` |
+| `Period` | `integer` | PK · part of identity, and it counts **sessions** here — an `sma` at 20 over `rth` is twenty trading days |
+| `BucketStart` | `timestamptz` | PK · the session bar's `OpenUtc` |
+| `Value` | `numeric(18,8)` | |
+| `RecordedAt` | `timestamptz` | Bumped only when `Value` actually changes |
+
+Nothing here is authoritative — every row is reproducible from §11, on §2's terms exactly. Also no retention,
+for §2's reason: an observation citing a session's RSI should be checkable against the number actually used.
+
+**§2's table with `Session` where `ResolutionMinutes` sits, and it is not a second projection.** One
+`IndicatorProjector` writes both; a `SeriesKey` decides which pair of tables a pass reads and writes, and the
+catalogue decides what it computes over them (`R-2.14`, gh#501). So the rounding to this column's own scale,
+the skip-unchanged comparison, the contract segmenting, the unscoped reconcile, the whole-series guard and the
+transaction requirement are the same code and need no restating here. **The vocabulary is the one difference**:
+`IndicatorCatalog.ForSeries` drops session-anchored `vwap` for a session series, because a session that *is*
+one bar has no intra-session volume distribution to weight. `vwap-rolling` stays, and reads as an N-session
+rolling VWAP.
+
+**`BucketStart` is the session's `OpenUtc`, not its trade date**, and that diverges from §11's own primary key
+deliberately: a value is keyed by the instant the bar it describes begins, the way every other projection in
+this store is. §11's **unique** `(Venue, Instrument, Session, OpenUtc)` index is what makes it sound — exactly
+one session bar per opening, so exactly one bar for a value here to belong to.
+
+**There is no `ContractId` here**, on §2's and §9's reasoning: a value is always computed inside a single
+contract run, so the contract is a property of the session bar at `BucketStart` and a second copy would be a
+column free to disagree with the row it describes. `get_session_indicator_at` joins §11 on
+`(Venue, Instrument, Session, OpenUtc)` for it — and for `TradeDate`, which is not here either. That join is
+also where the as-of comparison lives: it is `SessionBars.CloseUtc <= asOfUtc`, the session's **close**, since
+this table carries no close at all and a session open hours before it ends would otherwise answer a question
+with a number still forming.
+
+**There is no foreign key to §11 either**, and the consequence is §2's: deleting session bars orphans their
+values rather than removing them, and it is the projection's reconcile that actually reaches them. A session
+read does that inside the same transaction that wrote the bars, so bars never commit without the values they
+justify.
+
+**A plain table, not a hypertable**, for §11's reason and measured on its shape: one value per trade date per
+`(Indicator, Period)`, so a year of `rth` at the shipped catalogue is a few thousand rows. Same call as §3, §8,
+§9, §10 and §11.
+
+Index: `(Instrument, Session, Indicator, Period, BucketStart)` — the shape of every read, mirroring §2's.
 
 ---
 *Changing an entity or a migration? Update the section above in the same PR. A data dictionary that lags the

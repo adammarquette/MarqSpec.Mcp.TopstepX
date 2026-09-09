@@ -1,0 +1,524 @@
+using System.Globalization;
+using FluentAssertions;
+using MarqSpec.Mcp.TopstepX.Configuration;
+using MarqSpec.Mcp.TopstepX.Domain.MarketData;
+using MarqSpec.Mcp.TopstepX.Tools;
+using Microsoft.Extensions.Options;
+using ModelContextProtocol;
+
+namespace MarqSpec.Mcp.TopstepX.Tests.Tools;
+
+/// <summary>
+/// What a session-bar read refuses, and what it hands back when it does not (gh#500).
+/// </summary>
+/// <remarks>
+/// <para>
+/// A session window is not a bar window. The caps still bind — the row cap on how many trade dates one answer
+/// may carry, the detection cap on the base buckets underneath them — but they bind on different quantities,
+/// so <c>ValidateWindow</c> cannot be reused: it would measure rows in session-length buckets, and
+/// <c>ValidateResolution</c> refuses anything a session long before it got there.
+/// </para>
+/// <para>
+/// <b>No store and no container.</b> Every case here refuses, or resolves a date list from the calendar
+/// alone; neither reaches a connection, which is what keeps these in the unit tier (gh#387). The fixture is
+/// two objects — the guards and a calendar — because that is all the guards take.
+/// </para>
+/// </remarks>
+public sealed class SessionGuardTests
+{
+    /// <summary>A count inside <c>MaxRows</c> that a sparse calendar still cannot satisfy.</summary>
+    private const int UnsatisfiableCount = 5_000;
+
+    /// <summary>
+    /// The span the sparse calendar declares holidays over — the walk's, plus a margin at both ends.
+    /// </summary>
+    /// <remarks>
+    /// <b>Read off <see cref="SessionWindows.LastClosedWalkSpanDays"/> rather than restated.</b> The span used
+    /// to be a local inside <c>LastClosedTradeDates</c>, so this fixture wrote <c>(count * 4) + 15</c> out
+    /// again with a comment admitting it was a copy; the accessor exists now, and one number in one place
+    /// cannot drift from itself. The 85 is margin: it covers the cursor's own day (the walk starts one day
+    /// <i>ahead</i> of <c>now</c>'s market date) and leaves room for the span to grow a little before this
+    /// fixture stops covering it.
+    /// </remarks>
+    private static int SparseCalendarDays =>
+        SessionWindows.LastClosedWalkSpanDays(UnsatisfiableCount) + 85;
+
+    /// <summary>The shipped `rth` session: 08:30–15:00 Central, derived from 30-minute base bars.</summary>
+    private static SessionDefinition Rth =>
+        SessionDefinition.Defaults.Single(static d => d.Name == "rth");
+
+    /// <summary>The shipped `asia` session: 17:00–02:00 Central, so it straddles the calendar date.</summary>
+    private static SessionDefinition Asia =>
+        SessionDefinition.Defaults.Single(static d => d.Name == "asia");
+
+    /// <summary>A calendar with no declared holidays, so every weekday is a trade date.</summary>
+    private static BarSessionCalendar Calendar => BarSessionCalendar.Parse("16:00", []);
+
+    /// <summary>The start of a window one base bucket wider than a single gap-detection pass.</summary>
+    private static DateTimeOffset OverTheBucketCapFrom => new(2026, 1, 1, 0, 0, 0, TimeSpan.Zero);
+
+    /// <summary>Its end — <c>MaxBucketsPerPass + 1</c> buckets at the `rth` base of 30 minutes.</summary>
+    private static DateTimeOffset OverTheBucketCapTo =>
+        OverTheBucketCapFrom.AddTicks(
+            (BarGapDetector.MaxBucketsPerPass + 1L) * Rth.BaseResolutionMinutes * TimeSpan.TicksPerMinute);
+
+    [Fact]
+    public void ValidateSessionWindow_RefusesAnEmptyWindow()
+    {
+        // The same fault ValidateWindow names first, and it has to be named here too: TradeDatesIn answers an
+        // empty window with an empty list, which reads as "no session traded" rather than "you asked for
+        // nothing".
+        DateTimeOffset instant = new(2026, 8, 3, 0, 0, 0, TimeSpan.Zero);
+
+        Action refuse = () => Guards().ValidateSessionWindow(instant, instant, Rth, Calendar);
+
+        refuse.Should().Throw<McpException>().WithMessage("*empty or inverted*");
+    }
+
+    [Fact]
+    public void ValidateSessionWindow_RefusesAnEndPastTheCalendarHorizon()
+    {
+        // The calendar walk starts by asking which market date the end falls on and stepping a day past it,
+        // so an end at the top of the DateOnly range faults inside the Domain (gh#110's shape, one tool
+        // along) rather than refusing on this boundary.
+        DateTimeOffset from = new(2026, 8, 3, 0, 0, 0, TimeSpan.Zero);
+
+        Action refuse = () =>
+            Guards().ValidateSessionWindow(from, DateTimeOffset.MaxValue, Rth, Calendar);
+
+        refuse.Should().Throw<McpException>().Which.Message
+            .Should().Contain("toUtc", "the refusal names the parameter the caller can change")
+            .And.Contain(
+                "session calendar can reason about", "and says which bound it is past");
+    }
+
+    [Fact]
+    public void ValidateSessionWindow_RefusesAWindowOverTheBaseBucketCap_NamingTheWindow()
+    {
+        // The detection cap binds in BASE buckets -- the 30-minute bars `rth` is aggregated from -- because
+        // those are what a read enumerates. One bucket over, at a row count (about 3,700 trade dates) that is
+        // comfortably inside MaxRows: the two caps are on different quantities and neither implies the other.
+        Action refuse = () =>
+            Guards().ValidateSessionWindow(OverTheBucketCapFrom, OverTheBucketCapTo, Rth, Calendar);
+
+        refuse.Should().Throw<McpException>().Which.Message
+            .Should().Contain("That window", "the refusal names what the caller can narrow")
+            .And.Contain("250001", "and the real bucket count, not the cap alone")
+            .And.Contain("gap-detection pass", "which is the bound it is over");
+    }
+
+    [Fact]
+    public void ValidateSessionWindow_RefusesTheBucketCap_NamingOnlyRemediesThisToolHas()
+    {
+        // The shared refusal offers three ways out, and two of them are get_bars's: a session-bar caller has
+        // no bar count and no resolution argument -- the base resolution is the operator's, on the session
+        // definition. Advice a caller cannot act on reads as a dead end, and sends them looking for a
+        // parameter that is not there.
+        Action refuse = () => Guards().ValidateSessionWindow(OverTheBucketCapFrom, OverTheBucketCapTo, Rth, Calendar);
+
+        refuse.Should().Throw<McpException>().Which.Message
+            .Should().Contain("Narrow the window", "which is the one lever this caller does have")
+            .And.NotContain("ask for fewer bars", "there is no bar count on this tool")
+            .And.NotContain(
+                "use a coarser resolution",
+                "and no resolution argument either -- the base resolution belongs to the session definition, "
+                + "so the remedy points at the operator rather than at the caller");
+    }
+
+    [Fact]
+    public void ValidateSessionWindow_RefusesMoreTradeDatesThanMaxRows_NamingTheRealCount()
+    {
+        // Two weeks of August 2026 hold ten weekday `rth` sessions -- Mon 3rd to Fri 14th, the 17th's session
+        // closing after the window ends. Hand-counted, so the message is checked against the calendar rather
+        // than against the walk that produced it.
+        DateTimeOffset from = new(2026, 8, 3, 0, 0, 0, TimeSpan.Zero);
+        DateTimeOffset to = new(2026, 8, 17, 0, 0, 0, TimeSpan.Zero);
+
+        Action refuse = () => Guards(maxRows: 3).ValidateSessionWindow(from, to, Rth, Calendar);
+
+        refuse.Should().Throw<McpException>().Which.Message
+            .Should().Contain(
+                "names 10 rth trade dates",
+                "the caller is told how many rows the window really asks for, not merely that it is too many")
+            .And.Contain("cap of 3", "and the cap it is over")
+            .And.Contain(
+                "refused rather than truncated",
+                "because a shortened series is indistinguishable from a complete one");
+    }
+
+    [Fact]
+    public void ValidateSessionWindow_RefusesTheBucketCapBeforeTheRowCap()
+    {
+        // BOTH caps are breached here -- MaxRows of 3 against about 3,700 trade dates, and one base bucket
+        // over the detection cap -- so the ORDER is what decides which refusal the caller gets, and the order
+        // is the opposite of ValidateWindow's. It has to be: the row count is not arithmetic on this surface,
+        // it is a calendar walk over every day the window touches (5,208 of them here), and the bucket span
+        // is what bounds that walk. Measuring rows first would mean doing the unbounded work to find out that
+        // the work was unbounded.
+        Action refuse = () => Guards(maxRows: 3)
+            .ValidateSessionWindow(OverTheBucketCapFrom, OverTheBucketCapTo, Rth, Calendar);
+
+        refuse.Should().Throw<McpException>().Which.Message
+            .Should().Contain("gap-detection pass", "the base-bucket cap is the one measured first")
+            .And.NotContain(
+                "trade dates",
+                "the row cap is not reached at all -- reaching it means running the very walk the bucket "
+                + "span was checked to bound");
+    }
+
+    [Fact]
+    public void ValidateSessionWindow_ListsOnlyWhollyContainedSessions()
+    {
+        // Opens half an hour after Monday's `rth` open and ends exactly on Wednesday's close. Monday is
+        // clipped, so it is left out rather than served short: a session bar built from part of a session is
+        // a wrong number wearing an ordinary face. Wednesday's close lands on the end, and the window is
+        // half-open, so it is in.
+        //
+        // Both instants carry a NON-ZERO offset -- 09:00-05:00 is 14:00Z, 15:00-05:00 is 20:00Z -- because
+        // the plan's window is stored UTC, and DateTimeOffset equality compares instants: a plan that forgot
+        // to normalise would still compare equal, and only the offset says it happened.
+        DateTimeOffset from = new(2026, 8, 3, 9, 0, 0, TimeSpan.FromHours(-5));
+        DateTimeOffset to = new(2026, 8, 5, 15, 0, 0, TimeSpan.FromHours(-5));
+
+        SessionWindowPlan plan = Guards().ValidateSessionWindow(from, to, Rth, Calendar);
+
+        plan.TradeDates.Should().Equal(
+            [new DateOnly(2026, 8, 4), new DateOnly(2026, 8, 5)],
+            "a session only partly inside the window is excluded, never truncated");
+        plan.Window.Should().Be(
+            new BarRange(from.ToUniversalTime(), to.ToUniversalTime()),
+            "the plan reports the window it validated");
+        plan.Window.Start.Offset.Should().Be(
+            TimeSpan.Zero, "the store and the wire are UTC, so the plan normalises rather than passing on an offset");
+        plan.Window.End.Offset.Should().Be(TimeSpan.Zero, "and the same at the other end");
+    }
+
+    [Fact]
+    public void ValidateSessionWindow_RefusesAWindowThatClipsEverySession_NamingTheNearestWhole()
+    {
+        // The exact scenario from gh#568: nine hours of a Monday over an `rth` session that runs 13:30Z to
+        // 20:00Z (08:30-15:00 Central, CDT in August). The window overlaps the session heavily and still
+        // clips its last two hours, so TradeDatesIn admits nothing -- and left unrefused this answers exactly
+        // like the EMPTY window ValidateSessionWindow_RefusesAnEmptyWindow already refuses to avoid: bars: []
+        // and absent: [] both, reading as "ES did not trade" rather than "the window is narrower than any
+        // session".
+        DateTimeOffset from = new(2026, 8, 3, 9, 0, 0, TimeSpan.Zero);
+        DateTimeOffset to = new(2026, 8, 3, 18, 0, 0, TimeSpan.Zero);
+
+        Action refuse = () => Guards().ValidateSessionWindow(from, to, Rth, Calendar);
+
+        refuse.Should().Throw<McpException>().Which.Message
+            .Should().Contain(
+                "2026-08-03T09:00:00.0000000+00:00 .. 2026-08-03T18:00:00.0000000+00:00",
+                "the refusal names the window that was asked for")
+            .And.Contain("no whole rth session", "and the session it names none of")
+            .And.Contain(
+                "nearest whole rth session is 2026-08-03",
+                "and the trade date the nearest whole session sits on")
+            .And.Contain(
+                "2026-08-03T13:30:00.0000000+00:00 to 2026-08-03T20:00:00.0000000+00:00",
+                "with its bounds in UTC, so the caller can widen to it")
+            .And.Contain("Widen the window", "and says what to do about it");
+    }
+
+    [Fact]
+    public void ValidateSessionWindow_IncludesExactlyOneSession_WhenTheWindowExactlyContainsIt()
+    {
+        // The boundary the clipped-window refusal must not move: a window whose edges land EXACTLY on one
+        // session's open and close still names that one session, not zero. Off-by-one at a session edge is
+        // the classic defect a new zero-count guard could introduce.
+        DateTimeOffset from = new(2026, 8, 3, 13, 30, 0, TimeSpan.Zero);
+        DateTimeOffset to = new(2026, 8, 3, 20, 0, 0, TimeSpan.Zero);
+
+        SessionWindowPlan plan = Guards().ValidateSessionWindow(from, to, Rth, Calendar);
+
+        plan.TradeDates.Should().Equal([new DateOnly(2026, 8, 3)], "the window contains exactly one whole session");
+    }
+
+    [Fact]
+    public void ValidateSessionWindow_RefusesWhenTheWindowEndsOneTickBeforeTheSessionCloses()
+    {
+        // One tick short of ValidateSessionWindow_IncludesExactlyOneSession_WhenTheWindowExactlyContainsIt's
+        // window -- the session's own close is excluded by one tick, so the session is clipped and the count
+        // drops from one straight to zero rather than to some smaller whole number. Pins the boundary from
+        // the other side of the off-by-one this guard could get wrong.
+        DateTimeOffset from = new(2026, 8, 3, 13, 30, 0, TimeSpan.Zero);
+        DateTimeOffset to = new DateTimeOffset(2026, 8, 3, 20, 0, 0, TimeSpan.Zero).AddTicks(-1);
+
+        Action refuse = () => Guards().ValidateSessionWindow(from, to, Rth, Calendar);
+
+        refuse.Should().Throw<McpException>().Which.Message
+            .Should().Contain("no whole rth session", "one tick short of the close is still clipped")
+            .And.Contain(
+                "nearest whole rth session is 2026-08-03",
+                "and the nearest whole session is the very one the window just missed");
+    }
+
+    [Fact]
+    public void ValidateSessionWindow_NamesTheSessionNeedingTheLeastWidening_WhenTheWindowStraddlesTwoTradeDates()
+    {
+        // "Nearest" is a claim the message makes, so it has to be measured rather than assumed. This window
+        // opens one minute before Monday's `rth` close and ends an hour before Tuesday's: Monday's session
+        // needs the START pulled back 6h29m to fit, Tuesday's needs only the END pushed out by 1h. Naming
+        // Monday -- the trade date the window's start happens to fall on -- would advise a widening more than
+        // six times larger than the one that answers, and would hand back the wrong day's data to a caller
+        // who wanted the end of their window.
+        DateTimeOffset from = new(2026, 8, 3, 19, 59, 0, TimeSpan.Zero);
+        DateTimeOffset to = new(2026, 8, 4, 19, 0, 0, TimeSpan.Zero);
+
+        Action refuse = () => Guards().ValidateSessionWindow(from, to, Rth, Calendar);
+
+        refuse.Should().Throw<McpException>().Which.Message
+            .Should().Contain(
+                "nearest whole rth session is 2026-08-04",
+                "Tuesday's session is the one a smaller widening reaches")
+            .And.Contain(
+                "2026-08-04T13:30:00.0000000+00:00 to 2026-08-04T20:00:00.0000000+00:00",
+                "with Tuesday's bounds, not Monday's")
+            .And.NotContain("2026-08-03's", "Monday is the further of the two candidates, not the nearer");
+    }
+
+    [Fact]
+    public void ValidateSessionWindow_ScansPastTheMaintenanceHour_ForTheSessionOnItsFarSide()
+    {
+        // `TradeDateFor` answers NULL inside the maintenance hour, so a candidate set built from the window's
+        // two endpoints alone loses whichever endpoint lands in a gap -- and the session on the far side of
+        // that gap is usually the nearest one. This window starts at 21:00Z, inside maintenance, and ends in
+        // Tuesday's evening leg: scoring by widening, Monday's `rth` needs 7h30m and Tuesday's needs 21h30m,
+        // yet only Tuesday was ever a candidate. The scan has to cover the trade dates the window touches,
+        // not only the two its endpoints happen to resolve to.
+        DateTimeOffset from = new(2026, 8, 3, 21, 0, 0, TimeSpan.Zero);
+        DateTimeOffset to = new(2026, 8, 3, 22, 30, 0, TimeSpan.Zero);
+
+        Action refuse = () => Guards().ValidateSessionWindow(from, to, Rth, Calendar);
+
+        refuse.Should().Throw<McpException>().Which.Message
+            .Should().Contain(
+                "nearest whole rth session is 2026-08-03",
+                "Monday's session is 7h30m of widening away where Tuesday's is 21h30m")
+            .And.Contain(
+                "2026-08-03T13:30:00.0000000+00:00 to 2026-08-03T20:00:00.0000000+00:00",
+                "with Monday's bounds, the ones a caller can actually reach from here");
+    }
+
+    [Fact]
+    public void ValidateSessionWindow_ScansBackPastTheWeekend_ForFridaysSession()
+    {
+        // The same hole, two days wide. A Saturday-through-Sunday window ends exactly at Sunday's reopen, so
+        // its END resolves to Monday 08-10 while its START, a Saturday, resolves to nothing at all. Monday is
+        // 22h of widening away; the Friday on the near side of the weekend is 10h30m, and was never
+        // considered. Weekends are the largest single share of the refusals that name the wrong session, and
+        // of those that name none at all.
+        DateTimeOffset from = new(2026, 8, 8, 0, 0, 0, TimeSpan.Zero);
+        DateTimeOffset to = new(2026, 8, 9, 22, 0, 0, TimeSpan.Zero);
+
+        Action refuse = () => Guards().ValidateSessionWindow(from, to, Rth, Calendar);
+
+        refuse.Should().Throw<McpException>().Which.Message
+            .Should().Contain(
+                "nearest whole rth session is 2026-08-07",
+                "Friday is 10h30m of widening back where Monday is 22h forward")
+            .And.Contain(
+                "2026-08-07T13:30:00.0000000+00:00 to 2026-08-07T20:00:00.0000000+00:00",
+                "with Friday's bounds");
+    }
+
+    [Fact]
+    public void ValidateSessionWindow_NamesBounds_ForAWindowWhollyInsideAWeekend()
+    {
+        // The bounds-LESS arm shrinks to what it should always have been: a window with no whole session
+        // anywhere near it. A Saturday is not that -- Friday's session sits one day back -- and reporting no
+        // bounds there told a caller "no session can be named" when what was true is only "no session sits on
+        // a trade date either of your endpoints resolves to". The arm survives; it just stops swallowing
+        // every weekend, holiday and maintenance hour.
+        DateTimeOffset from = new(2026, 8, 8, 6, 0, 0, TimeSpan.Zero);
+        DateTimeOffset to = new(2026, 8, 8, 18, 0, 0, TimeSpan.Zero);
+
+        Action refuse = () => Guards().ValidateSessionWindow(from, to, Rth, Calendar);
+
+        refuse.Should().Throw<McpException>().Which.Message
+            .Should().Contain(
+                "nearest whole rth session is 2026-08-07",
+                "Friday's session is one day back, not unnameable")
+            .And.NotContain(
+                "Widen the window to include a whole session.",
+                "the bounds-less arm is for a window with no session in reach, not for every weekend");
+    }
+
+    [Fact]
+    public void ValidateSessionWindow_ScansPastTwoMarketDates_WhenTheNEARERSessionIsFurtherOutInDates()
+    {
+        // Why the scan widens until nothing further can win, rather than by a fixed day at each end. This
+        // `asia` window sits deep inside a Saturday: BOTH its endpoints fall on market date 08-08, so a
+        // one-day margin reaches 08-07 and 08-09 and stops. Friday 08-07's session (08-06T22:00Z-08-07T07:00Z)
+        // is 46h of widening back; Monday 08-10's (08-09T22:00Z-08-10T07:00Z) is 27h forward, and lies TWO
+        // market dates out. Nearness is measured in time, not in dates, so the walk has to keep going while a
+        // further date could still hold a closer session.
+        DateTimeOffset from = new(2026, 8, 8, 20, 0, 0, TimeSpan.Zero);
+        DateTimeOffset to = new(2026, 8, 9, 4, 0, 0, TimeSpan.Zero);
+
+        Action refuse = () => Guards().ValidateSessionWindow(from, to, Asia, Calendar);
+
+        refuse.Should().Throw<McpException>().Which.Message
+            .Should().Contain(
+                "nearest whole asia session is 2026-08-10",
+                "Monday is 27h of widening where Friday is 46h")
+            .And.NotContain("2026-08-07's", "Friday is nearer in dates and further in time");
+    }
+
+    [Fact]
+    public void ValidateSessionWindow_NamesNoBounds_WhenTheClosureOutrunsTheScan()
+    {
+        // The bounds-less arm, and the cap that decides it: a closure longer than the span the closed-session
+        // walk gives itself to find ONE closed session leaves nothing worth calling nearest, and the refusal
+        // says only to widen. This is the awkward CORRECT input the widened scan must not swallow -- without
+        // a cap the walk would run to the end of the calendar looking for a session to name.
+        int cap = SessionWindows.LastClosedWalkSpanDays(1);
+        DateOnly shutdownStart = new(2026, 7, 1);
+        string[] closed = [.. Enumerable.Range(0, (2 * cap) + 10)
+            .Select(day => shutdownStart.AddDays(day).ToString("yyyy-MM-dd", CultureInfo.InvariantCulture))];
+        BarSessionCalendar shutdown = BarSessionCalendar.Parse("16:00", closed);
+        // Placed a clear cap's walk inside the closure at both ends: a midnight-UTC instant sits on the
+        // PREVIOUS market date, so the scan's first backward step is already two days ahead of the window's
+        // own calendar date.
+        DateTimeOffset from = new(
+            shutdownStart.AddDays(cap + 2).ToDateTime(TimeOnly.MinValue), TimeSpan.Zero);
+
+        Action refuse = () => Guards().ValidateSessionWindow(from, from.AddHours(9), Rth, shutdown);
+
+        refuse.Should().Throw<McpException>().Which.Message
+            .Should().Contain(
+                "Widen the window to include a whole session.",
+                "no session sits within the scan, so none can be named")
+            .And.NotContain("nearest whole", "and naming one would be inventing it");
+    }
+
+    [Fact]
+    public void ValidateSessionWindow_DoesNotBlameClipping_WhenTheWindowTouchesNoSessionAtAll()
+    {
+        // Monday's `rth` closes at 20:00Z and Tuesday's opens at 13:30Z; a window between the two touches no
+        // `rth` session, so there is nothing for it to have clipped. The refusal still stands -- zero whole
+        // sessions is zero whole sessions -- but a fixed "every session it touches is clipped at an edge"
+        // is vacuous here rather than true, and points a caller asking "did ES trade?" at the wrong remedy.
+        DateTimeOffset from = new(2026, 8, 3, 20, 30, 0, TimeSpan.Zero);
+        DateTimeOffset to = new(2026, 8, 4, 12, 0, 0, TimeSpan.Zero);
+
+        Action refuse = () => Guards().ValidateSessionWindow(from, to, Rth, Calendar);
+
+        refuse.Should().Throw<McpException>().Which.Message
+            .Should().Contain(
+                "no rth session both opens and closes inside it",
+                "which is true of a window that touches no session as much as of one that clips every session")
+            .And.NotContain("clipped", "a window between two sessions clipped neither");
+    }
+
+    [Fact]
+    public void ValidateSessionCount_TranslatesAnUnsatisfiableCount_IntoARefusalNamingCount()
+    {
+        // MaxRows admits 5,000 and the bounded walk covers (5,000 * 4) + 15 = 20,015 calendar days, so a
+        // calendar that trades every weekday satisfies this count comfortably -- the two bounds only disagree
+        // when the calendar is sparse. This one trades Fridays alone, which is what a holiday-dense calendar
+        // does to the walk: about 2,860 closed sessions in the span, and the Domain throws a raw
+        // ArgumentOutOfRangeException that must not reach a caller.
+        DateTimeOffset now = MarketClock.FromMarket(new DateOnly(2026, 8, 6), new TimeOnly(20, 0));
+
+        Action refuse = () => Guards().ValidateSessionCount(UnsatisfiableCount, Rth, FridaysOnly(now), now);
+
+        refuse.Should().Throw<McpException>().Which.Message
+            .Should().Contain("count 5000", "the refusal names the parameter and the value")
+            .And.Contain(
+                "than the calendar holds in the 20015 calendar days",
+                "the cause is the sparse calendar, not a walk that stopped early -- the server DOES walk "
+                + "the whole span, and a refusal that blames the span sends the reader to the wrong bug")
+            .And.Contain("Ask for fewer", "and says what to do about it");
+    }
+
+    [Fact]
+    public void ValidateSessionCount_RefusesANowPastTheCalendarHorizon_NamingNow()
+    {
+        // Two different faults arrive as the same exception type from the same call: a count the calendar
+        // cannot satisfy, and an instant the calendar cannot express (the walk starts one day AHEAD of now's
+        // market date, which at the top of the DateOnly range throws). Reporting the second as the first
+        // tells a caller to ask for fewer sessions, which will not fix an argument that is out of the
+        // calendar's reach -- so the instant is judged before the walk is entered at all.
+        Action refuse = () => Guards().ValidateSessionCount(3, Rth, Calendar, DateTimeOffset.MaxValue);
+
+        refuse.Should().Throw<McpException>().Which.Message
+            .Should().Contain("now", "the refusal names the argument that is out of reach")
+            .And.Contain("session calendar can reason about", "and the bound it is past")
+            .And.NotContain(
+                "Ask for fewer",
+                "an unrepresentable instant is not an unsatisfiable count, and a translation that cannot "
+                + "tell them apart misreports one of them every time");
+    }
+
+    [Fact]
+    public void ValidateSessionCount_RefusesACountWhoseBaseBucketsExceedThePass_BeforeAnyRead()
+    {
+        // THE CAP THE COUNT FORM WAS MISSING. MaxRows admits 5,000 sessions, and the service answers a count
+        // with ONE covering base read from the first session's open to the last one's close -- so a count the
+        // row cap allows can span more base buckets than a single gap-detection pass will enumerate, and
+        // BarGapDetector.ExpectedBuckets faults on it AFTER the store has already been opened. About 3,720
+        // `rth` sessions is where that starts at a 30-minute base; 4,000 is comfortably past it and still
+        // well inside MaxRows.
+        //
+        // Judged here rather than in the tool, so every refusal on this surface still fires before the read.
+        DateTimeOffset now = MarketClock.FromMarket(new DateOnly(2026, 8, 6), new TimeOnly(20, 0));
+
+        Action refuse = () => Guards().ValidateSessionCount(4_000, Rth, Calendar, now);
+
+        refuse.Should().Throw<McpException>().Which.Message
+            .Should().Contain("count 4000 rth sessions", "the refusal names the parameter and the value")
+            .And.Contain(
+                "gap-detection pass",
+                "and the bound it is over -- which is the base-bucket cap, not the row cap")
+            .And.Contain(
+                "Ask for fewer sessions.",
+                "and the one remedy this caller has: there is no window and no resolution to narrow");
+    }
+
+    [Fact]
+    public void ValidateSessionCount_ReturnsTheLastClosedDates_Ascending()
+    {
+        // Thursday evening, five hours after `rth` closed at 15:00 Central. Thursday's session IS one of the
+        // three -- it has closed -- and Friday's, which has not opened, is not. Oldest first, so a caller can
+        // read the list as a series without reversing it.
+        DateTimeOffset now = MarketClock.FromMarket(new DateOnly(2026, 8, 6), new TimeOnly(20, 0));
+
+        IReadOnlyList<DateOnly> dates = Guards().ValidateSessionCount(3, Rth, Calendar, now);
+
+        dates.Should().Equal(
+            [new DateOnly(2026, 8, 4), new DateOnly(2026, 8, 5), new DateOnly(2026, 8, 6)],
+            "the anchor is the last CLOSED session, never the one in progress");
+    }
+
+    private static ToolGuards Guards(int maxRows = 5_000) =>
+        new(Options.Create(new MarketDataOptions { MaxRows = maxRows }));
+
+    /// <summary>
+    /// A calendar whose only trading day is Friday, for the whole span the count walk can reach back over.
+    /// </summary>
+    /// <param name="now">The instant the walk starts from.</param>
+    /// <returns>The calendar.</returns>
+    /// <remarks>
+    /// Declared as holidays rather than modelled some other way because that is the only lever a calendar
+    /// has, and it is the real shape of the bug: a venue closed most of a stretch carries fewer closed
+    /// sessions than the walk's day span suggests.
+    /// </remarks>
+    private static BarSessionCalendar FridaysOnly(DateTimeOffset now)
+    {
+        DateOnly cursor = MarketClock.MarketDate(now).AddDays(1);
+        List<DateOnly> holidays = [];
+
+        for (int i = 0; i < SparseCalendarDays; i++)
+        {
+            DateOnly day = cursor.AddDays(-i);
+            if (day.DayOfWeek is not DayOfWeek.Friday)
+            {
+                holidays.Add(day);
+            }
+        }
+
+        return new BarSessionCalendar(new TimeOnly(16, 0), holidays);
+    }
+}

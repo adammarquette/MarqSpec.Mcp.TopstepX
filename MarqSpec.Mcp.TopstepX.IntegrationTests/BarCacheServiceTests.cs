@@ -5,8 +5,10 @@ using MarqSpec.Mcp.TopstepX.Data.Entities;
 using MarqSpec.Mcp.TopstepX.Domain;
 using MarqSpec.Mcp.TopstepX.Domain.MarketData;
 using MarqSpec.Mcp.TopstepX.MarketData;
+using MarqSpec.Mcp.TopstepX.Telemetry;
 using MarqSpec.Mcp.TopstepX.Tests.MarketData;
 using MarqSpec.Mcp.TopstepX.Tools;
+using MarqSpec.Mcp.TopstepX.Venue;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
@@ -40,6 +42,7 @@ public sealed class BarCacheServiceTests : IAsyncLifetime
     private readonly SeriesStoreFixture _fixture;
 
     private readonly TopstepXDbContext _database;
+    private readonly HostTelemetry _telemetry = new();
 
     /// <param name="fixture">The shared container.</param>
     public BarCacheServiceTests(SeriesStoreFixture fixture)
@@ -55,6 +58,7 @@ public sealed class BarCacheServiceTests : IAsyncLifetime
     public Task DisposeAsync()
     {
         _database.Dispose();
+        _telemetry.Dispose();
         return Task.CompletedTask;
     }
 
@@ -162,18 +166,45 @@ public sealed class BarCacheServiceTests : IAsyncLifetime
         DateTimeOffset now)
     {
         CountingGateway gateway = new(venueBars);
-        BarSessionCalendar calendar = BarSessionCalendar.Parse("16:00", []);
         FakeTimeProvider clock = new(now);
+
+        return (BuildAround(gateway, clock), gateway, clock);
+    }
+
+    /// <summary>
+    /// Builds the cache around a gateway the test already holds.
+    /// </summary>
+    /// <param name="gateway">The venue double.</param>
+    /// <param name="now">The instant to read at.</param>
+    /// <returns>The service.</returns>
+    /// <remarks>
+    /// The bar-script overloads above build the double themselves, which fixes it at one contract. A venue
+    /// that lists <b>two expiries</b> — the roll window — cannot be expressed that way, and it is the shape
+    /// the candidate set has to be pinned against (gh#504).
+    /// </remarks>
+    private BarCacheService BuildAround(CountingGateway gateway, DateTimeOffset now) =>
+        BuildAround(gateway, new FakeTimeProvider(now));
+
+    private BarCacheService BuildAround(CountingGateway gateway, TimeProvider clock)
+    {
+        BarSessionCalendar calendar = BarSessionCalendar.Parse("16:00", []);
 
         IndicatorCatalog catalog = new(
             Options.Create(new IndicatorOptions { AtrPeriod = 3, RsiPeriod = 3 }), calendar);
 
-        IndicatorProjector projector = new(_database, catalog, NullLogger<IndicatorProjector>.Instance);
+        IndicatorProjector projector =
+            new(_database, catalog, NullLogger<IndicatorProjector>.Instance, _telemetry);
 
-        BarCacheService cache = new(
-            _database, gateway, calendar, projector, clock, NullLogger<BarCacheService>.Instance);
-
-        return (cache, gateway, clock);
+        return new BarCacheService(
+            _database,
+            gateway,
+            calendar,
+            projector,
+            new InstrumentRegistry(Options.Create(new MarketDataOptions())),
+            new ContractDirectory(clock),
+            clock,
+            NullLogger<BarCacheService>.Instance,
+            _telemetry);
     }
 
     [Fact]
@@ -494,6 +525,183 @@ public sealed class BarCacheServiceTests : IAsyncLifetime
         _database.BarCoverage.Should().ContainSingle().Which.ExpiresAt.Should().BeNull(
             "a range two days behind the present is settled history, and an empty answer over it is believed "
             + "permanently");
+    }
+
+    [Fact]
+    public async Task AMemoStampedWithOneContract_DoesNotAnswerForAnother()
+    {
+        // gh#504, and the whole point of putting ContractId in the ledger's key. "The venue has nothing for
+        // this range" is not a fact about the range: it is a fact about the range AND the contract that was
+        // asked. An expiring front holds nothing for a window the incoming front covers, so a memo written by
+        // one contract standing in for another is a real bar the store never fetches -- an absent number
+        // served as an ordinary answer.
+        //
+        // RED against a contract-blind union: the seeded U26 memo answers the window, the front is never
+        // asked, the first read costs 0 requests and the ledger still holds one row.
+        (BarCacheService cache, CountingGateway gateway) = Build([], SettledNow);
+        BarRange window = new(SessionStart, SessionStart.AddHours(1));
+
+        // Seeded through the tracker, so the tracker is cleared afterwards for the reason SeedRowsAsync gives:
+        // the memo the read under test writes is ON CONFLICT SQL the tracker never sees, and a tracked seed
+        // would be handed back in its place.
+        _database.BarCoverage.Add(new BarCoverageRecord
+        {
+            Venue = "test",
+            Instrument = _es.Symbol,
+            ResolutionMinutes = 5,
+            ContractId = "CON.F.US.TEST.U26",
+            RangeStart = window.Start,
+            RangeEnd = window.End,
+            RecordedAt = SessionStart,
+            ExpiresAt = null,
+        });
+        await _database.SaveChangesAsync();
+        _database.ChangeTracker.Clear();
+
+        await cache.GetBarsAsync(_es, 5, window, CancellationToken.None);
+
+        gateway.BarRequests.Should().Be(
+            1, "the memo was another contract's answer, and the front was never asked");
+        (await _database.BarCoverage.AsNoTracking().ToListAsync())
+            .Select(c => c.ContractId)
+            .Should().BeEquivalentTo(
+                ["CON.F.US.TEST.U26", "CON.F.US.TEST.Z26"],
+                "the seeded memo stands, and the front's own empty answer is recorded beside it rather than "
+                + "over it");
+
+        gateway.ResetCounters();
+        BarReadResult second = await cache.GetBarsAsync(_es, 5, window, CancellationToken.None);
+
+        second.VenueRequests.Should().Be(0);
+        gateway.BarRequests.Should().Be(
+            0, "the front now has a memo of its own, so the range is answered for every candidate");
+    }
+
+    [Fact]
+    public async Task AVenueListingTwoExpiries_StillCoversFromTheFrontsMemo()
+    {
+        // gh#504 from the other side, and the guard on gh#408 staying closed. THE CANDIDATE SET IS THE FRONT
+        // CONTRACT ALONE HERE, and under gh#505 that is a measurement rather than a simplification: this
+        // window sits three days behind SettledNow, well inside the seven-day PresentHorizon, and the store
+        // holds no run of the front to anchor the band on -- so T(F) falls back to `now - PresentHorizon`
+        // and the whole range is PRESENT BAND. The present band is the venue's own pick by definition
+        // (ADR-0020 section 1), so the front is the only contract this read consults, and it is the only one
+        // whose memo can answer.
+        //
+        // The venue's whole resolved listing is still NOT the candidate set. It lists two expiries of one
+        // product through a roll window (InFrontMonthOrder), while the present band asks and stamps exactly
+        // one: a second listed contract can therefore never acquire a memo of its own, `All` over the
+        // listing can never be satisfied, and every previously-empty settled range would be re-fetched on
+        // EVERY read -- precisely the unbounded per-read cost gh#408 closed. What gh#505 widened is the
+        // HISTORICAL band, which this window is not in.
+        //
+        // RED against a candidate set taken from the whole listing: the H27 leg has no memo of its own, the
+        // range is left outstanding, and this read costs a paced page.
+        CountingGateway gateway = new(
+            new Dictionary<string, IEnumerable<Bar>>(StringComparer.Ordinal)
+            {
+                ["CON.F.US.TEST.Z26"] = [],
+                ["CON.F.US.TEST.H27"] = [],
+            },
+            frontContractId: "CON.F.US.TEST.Z26");
+        BarCacheService cache = BuildAround(gateway, SettledNow);
+        BarRange window = new(SessionStart, SessionStart.AddHours(1));
+
+        // Asserted rather than assumed: if the double ever goes back to listing the front alone, this fixture
+        // stops being about a roll window at all and would pass for the wrong reason.
+        (await gateway.ResolveContractsAsync(_es, CancellationToken.None)).Should().HaveCount(
+            2, "the roll window is the only shape in which this question has two answers");
+        gateway.ResetCounters();
+
+        // The front's own permanent memo over the whole window -- exactly what its first read would have
+        // written. Seeded through the tracker, so the tracker is cleared afterwards for the reason
+        // SeedRowsAsync gives.
+        _database.BarCoverage.Add(new BarCoverageRecord
+        {
+            Venue = "test",
+            Instrument = _es.Symbol,
+            ResolutionMinutes = 5,
+            ContractId = "CON.F.US.TEST.Z26",
+            RangeStart = window.Start,
+            RangeEnd = window.End,
+            RecordedAt = SessionStart,
+            ExpiresAt = null,
+        });
+        await _database.SaveChangesAsync();
+        _database.ChangeTracker.Clear();
+
+        BarReadResult result = await cache.GetBarsAsync(_es, 5, window, CancellationToken.None);
+
+        result.VenueRequests.Should().Be(0);
+        gateway.BarRequests.Should().Be(
+            0,
+            "the front answered this range empty and the front is the only contract this slice consults, so "
+            + "a second listed expiry does not put a settled range back on the venue");
+        (await _database.BarCoverage.AsNoTracking().ToListAsync()).Should().ContainSingle(
+            "nothing was asked, so nothing further was recorded");
+    }
+
+    [Fact]
+    public async Task TheMemoRecordsTheContractThatAnsweredEmpty()
+    {
+        // The write half, which the test above cannot isolate: it observes that a memo was written, not what
+        // was stamped on it. An unattributed memo -- a placeholder id, or an omitted column -- asserts "empty"
+        // on behalf of every contract, which is precisely what the key exists to stop.
+        //
+        // RED against a RecordCoverageSql that omits the column: the statement's ON CONFLICT target no longer
+        // matches the primary key and the write fails outright (42P10).
+        (BarCacheService cache, _) = Build([], SettledNow);
+
+        await cache.GetBarsAsync(
+            _es, 5, new BarRange(SessionStart, SessionStart.AddHours(1)), CancellationToken.None);
+
+        (await _database.BarCoverage.AsNoTracking().ToListAsync())
+            .Should().ContainSingle().Which.ContractId.Should().Be(
+                "CON.F.US.TEST.Z26",
+                "the contract that was asked is the contract the answer belongs to");
+    }
+
+    [Fact]
+    public async Task AnEmptyContractUniverse_RefusesEvenACoveredRange()
+    {
+        // gh#504, and the one behaviour change outside the roll case. An EMPTY contract universe is what the
+        // wrong ProjectX__DataTier looks like on this gateway -- it answers with no contracts rather than
+        // with an error -- and a range the ledger already held as covered used to be served quietly out of
+        // that universe. A silent empty answer from the wrong tier is exactly the shape the repo forbids: an
+        // absent number handed back as an ordinary one, with nothing saying the question was never asked.
+        //
+        // With no candidates there is nobody who could have answered the range empty, so it stays outstanding
+        // and reaches FetchAsync's existing refusal, which names the setting.
+        //
+        // RED against a build with `candidates.Count > 0 &&` deleted from ExcludeCoveredAsync: `All` over an
+        // empty candidate set is vacuously true, the range is dropped as covered, nothing is fetched and the
+        // read returns an empty series with no exception at all.
+        (BarCacheService cache, CountingGateway gateway) = Build([], SettledNow);
+        gateway.ListsTheInstrument = false;
+        BarRange window = new(SessionStart, SessionStart.AddHours(1));
+
+        // A covering, unexpired memo -- permanent, so no clock arrangement is holding this up. Seeded through
+        // the tracker, so the tracker is cleared afterwards for the reason SeedRowsAsync gives.
+        _database.BarCoverage.Add(new BarCoverageRecord
+        {
+            Venue = "test",
+            Instrument = _es.Symbol,
+            ResolutionMinutes = 5,
+            ContractId = "CON.F.US.TEST.Z26",
+            RangeStart = window.Start,
+            RangeEnd = window.End,
+            RecordedAt = SessionStart,
+            ExpiresAt = null,
+        });
+        await _database.SaveChangesAsync();
+        _database.ChangeTracker.Clear();
+
+        Func<Task> read = () => cache.GetBarsAsync(_es, 5, window, CancellationToken.None);
+
+        (await read.Should().ThrowAsync<VenueException>(
+            "a venue that lists no contracts cannot have answered anything, so a covered range is refused "
+            + "loudly rather than served from a universe that is empty because the tier is wrong"))
+            .WithMessage("*ProjectX__DataTier*");
     }
 
     [Fact]

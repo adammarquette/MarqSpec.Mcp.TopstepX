@@ -1,14 +1,22 @@
+using System.Reflection;
 using MarqSpec.Client.ProjectX.DependencyInjection;
 using MarqSpec.Mcp.TopstepX.Configuration;
 using MarqSpec.Mcp.TopstepX.Data;
 using MarqSpec.Mcp.TopstepX.Domain.MarketData;
 using MarqSpec.Mcp.TopstepX.Embeddings;
 using MarqSpec.Mcp.TopstepX.MarketData;
+using MarqSpec.Mcp.TopstepX.Telemetry;
 using MarqSpec.Mcp.TopstepX.Tools;
 using MarqSpec.Mcp.TopstepX.Venue;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
+using OpenTelemetry;
+using OpenTelemetry.Exporter;
+using OpenTelemetry.Logs;
+using OpenTelemetry.Metrics;
+using OpenTelemetry.Resources;
+using OpenTelemetry.Trace;
 
 namespace MarqSpec.Mcp.TopstepX;
 
@@ -19,6 +27,29 @@ public static class Program
     /// Where the stdio transport listens when nothing names an address: loopback, port assigned by the OS.
     /// </summary>
     private const string StdioLoopbackAddress = "http://127.0.0.1:0";
+
+    /// <summary>
+    /// The MCP SDK's own activity source and meter — one name, carrying both.
+    /// </summary>
+    /// <remarks>
+    /// Read off <c>ModelContextProtocol.Core</c> 2.2.0's assembly rather than assumed, and it is called
+    /// <i>Experimental</i> because it is: per-request spans tagged <c>mcp.method.name</c>,
+    /// <c>mcp.session.id</c> and <c>mcp.protocol.version</c>, plus <c>mcp.server.session.duration</c>, all of
+    /// which may be renamed on an SDK bump. ADR-0019 accepts that — subscribing is nearly free — and names
+    /// gh#536's app-owned instruments as the stable surface a dashboard should be built on instead.
+    /// </remarks>
+    private const string McpTelemetryName = "Experimental.ModelContextProtocol";
+
+    /// <summary>Npgsql's meter. Its activity source is subscribed by the driver's own extension.</summary>
+    private const string NpgsqlTelemetryName = "Npgsql";
+
+    /// <summary>
+    /// The health probe's path — the one request not worth a span.
+    /// </summary>
+    /// <remarks>
+    /// A path name rather than a reference to an endpoint, because there is no endpoint yet: gh#513 owns it.
+    /// </remarks>
+    private const string HealthProbePath = "/health";
 
     /// <summary>Runs the server, or a CLI verb.</summary>
     /// <param name="args">Command-line arguments.</param>
@@ -34,6 +65,14 @@ public static class Program
 
         ConfigureLogging(builder, mcp.Transport);
 
+        // Beside ConfigureLogging and after it, because it is the same subject seen from further out: the
+        // console is where lines go, this is where they go BEYOND the console (ADR-0019). Bound here rather
+        // than resolved from DI for the same reason McpOptions is — the providers have to be wired before
+        // Build(), and there is no container yet.
+        ConfigureTelemetry(
+            builder,
+            builder.Configuration.GetSection(OtelOptions.SectionName).Get<OtelOptions>() ?? new OtelOptions());
+
         // Before Build(), because it is the builder that carries the address into Kestrel (gh#392).
         ConfigureDefaultBinding(builder, mcp.Transport);
         ConfigureServices(builder, mcp);
@@ -45,6 +84,15 @@ public static class Program
         if (args.Length > 0 && string.Equals(args[0], "rebuild-indicators", StringComparison.Ordinal))
         {
             return await RebuildIndicatorsAsync(app, args).ConfigureAwait(false);
+        }
+
+        // Beside rebuild-indicators and above StoreAvailabilityHolder.Set for the same reason the precedent
+        // is: the verb validates its symbol against InstrumentRegistry directly and exits the process, so
+        // the holder the MCP tool surface consults is never set on this path. It does NOT skip the
+        // migration the way the rebuild does -- see ReselectBarsAsync (gh#506).
+        if (args.Length > 0 && string.Equals(args[0], "reselect-bars", StringComparison.Ordinal))
+        {
+            return await ReselectBarsAsync(app, args).ConfigureAwait(false);
         }
 
         // The result is published into DI rather than thrown: the tools that need a store ask it, and the
@@ -59,11 +107,7 @@ public static class Program
 
         if (mcp.Transport == McpTransport.Http)
         {
-            // BEFORE MapMcp, so the gate sits in front of the endpoint rather than beside it. Options
-            // validation already refuses to start the HTTP transport without a token; this is what makes that
-            // requirement mean something at request time (ADR-0007).
-            app.UseBearerTokenGate(mcp.HttpBearerToken);
-            app.MapMcp("/mcp");
+            MapHttpTransport(app, mcp);
         }
 
         // Both transports run through the same call. The shutdown-during-startup race it absorbs is reachable
@@ -75,6 +119,44 @@ public static class Program
         // transports. Under stdio Kestrel is simply not the transport, nothing is mapped in front of it, and
         // the session runs over stdin and stdout (ADR-0007).
         return await RunHostAsync(app).ConfigureAwait(false);
+    }
+
+    /// <summary>Builds the HTTP transport's request pipeline, in the one order that is correct.</summary>
+    /// <param name="app">The built host.</param>
+    /// <param name="mcp">The transport options, carrying which authentication mode the gate runs in.</param>
+    /// <remarks>
+    /// One method rather than a few lines inline, so the ordering is a thing a test can call. It is the
+    /// ordering that carries the whole of the carve-out, and nothing about reading the calls tells you that.
+    /// </remarks>
+    public static void MapHttpTransport(WebApplication app, McpOptions mcp)
+    {
+        ArgumentNullException.ThrowIfNull(app);
+        ArgumentNullException.ThrowIfNull(mcp);
+
+        // BEFORE the gate, and it works only because it is a terminal branch rather than a mapped endpoint:
+        // `WebApplication` runs every endpoint after every middleware whatever order they were added in, so
+        // a MapGet here would be answered 401 by the gate below and never reached. An ALB target-group probe
+        // carries no credential and is what this is for (gh#513, ADR-0021). Under EITHER mode: the load
+        // balancer has no credential under OAuth any more than it had a static token.
+        app.UseHealthEndpoint();
+
+        // BEFORE MapMcp, so the gate sits in front of the endpoint rather than beside it. Options validation
+        // already refuses to start the HTTP transport with no mode configured, or with both; this is what
+        // makes that requirement mean something at request time (ADR-0007). The gate is global in both
+        // modes, and the only things past it are the terminal branches above it.
+        if (mcp.Auth.Mode == McpAuthMode.OAuth)
+        {
+            // The RFC 9728 document the 401 names; a connector reads it before it has a token, so it is the
+            // second terminal branch in front of the gate and the last one (gh#512).
+            app.UseProtectedResourceMetadata(mcp.OAuth);
+            app.UseOAuthBearerGate(mcp.OAuth);
+        }
+        else
+        {
+            app.UseBearerTokenGate(mcp.HttpBearerToken);
+        }
+
+        app.MapMcp(McpOptions.McpEndpointPath);
     }
 
     /// <summary>Runs the built host, treating a shutdown asked for during startup as a shutdown.</summary>
@@ -237,6 +319,181 @@ public static class Program
     }
 
     /// <summary>
+    /// Subscribes the sources that already exist and exports them as OTLP — or, with no endpoint configured,
+    /// does nothing at all.
+    /// </summary>
+    /// <param name="builder">The host builder.</param>
+    /// <param name="otel">The telemetry settings, already bound from the <c>Otel</c> section.</param>
+    /// <remarks>
+    /// <para>
+    /// <b>OTLP and no other form (ADR-0019).</b> Traces, metrics and logs leave this host over one exporter,
+    /// to a collector that decides which backend they reach — so a backend swap is a deployment edit rather
+    /// than a code change, and the words Loki, Tempo, Prometheus and CloudWatch appear nowhere below.
+    /// </para>
+    /// <para>
+    /// <b>Nothing here writes a source of its own.</b> Every signal is a subscription to something that is
+    /// already emitting and going unread: the MCP SDK's <c>Experimental.ModelContextProtocol</c> activity
+    /// source and meter, Npgsql's, ASP.NET Core's, HttpClient's and the runtime's. App-owned meters and spans
+    /// — cache hit/miss, venue calls, hub reconnects — are gh#536, and they are the surface a dashboard that
+    /// must not break is built on: the SDK's is named <i>Experimental</i> and its instrument names may move on
+    /// a bump.
+    /// </para>
+    /// <para>
+    /// <b>Logs go through <see cref="ILogger{TCategoryName}"/> exactly as they already do.</b> The
+    /// OpenTelemetry logging provider attaches to the factory, so not one of the ~60 log sites changes, and
+    /// each record written while one of those spans is current is stamped with its trace and span id. That
+    /// stamp is the whole point — it is what lets a slow span lead to its log lines and back.
+    /// </para>
+    /// <para>
+    /// <b>NO CONSOLE EXPORTER, UNDER ANY TRANSPORT, BEHIND NO FLAG.</b> Under stdio stdout IS the protocol
+    /// frame (R-5.5), so telemetry written there does not degrade the trace — it corrupts the handshake, and
+    /// surfaces as an opaque protocol error naming neither telemetry nor stdout. The package is not
+    /// referenced either (ADR-0019, invariant 4).
+    /// </para>
+    /// <para>
+    /// <b>An absent endpoint returns before anything is registered.</b> Not a disabled exporter and not a
+    /// provider with no processor: no exporter thread, no retry queue, no startup warning about a collector
+    /// that is not there. That is ADR-0007's degradation rule applied to a fourth dependency, and it is what
+    /// keeps a stdio session on a laptop exactly as quiet as it is today.
+    /// </para>
+    /// </remarks>
+    public static void ConfigureTelemetry(WebApplicationBuilder builder, OtelOptions otel)
+    {
+        ArgumentNullException.ThrowIfNull(builder);
+        ArgumentNullException.ThrowIfNull(otel);
+
+        if (!otel.IsConfigured)
+        {
+            return;
+        }
+
+        Uri endpoint = otel.ResolveEndpoint();
+        OtlpExportProtocol protocol = otel.ResolveProtocol();
+        string headers = otel.Headers;
+        string serviceName = otel.ResolveServiceName();
+        string serviceVersion = ServiceVersion();
+
+        // One local, applied to all three exporters, so a protocol or a header set can never be right for
+        // traces and wrong for logs.
+        void ConfigureExporter(OtlpExporterOptions options)
+        {
+            options.Endpoint = endpoint;
+            options.Protocol = protocol;
+
+            if (!string.IsNullOrWhiteSpace(headers))
+            {
+                options.Headers = headers;
+            }
+        }
+
+        builder.Services.AddOpenTelemetry()
+            .ConfigureResource(resource => resource.AddService(
+                serviceName: serviceName,
+                serviceVersion: serviceVersion))
+            .WithTracing(tracing =>
+            {
+                tracing
+                    // FIRST, and the only one of these named by this repository. The rest are subscriptions
+                    // to sources that were already emitting; this one is the venue calls and the cache-aside
+                    // reads gh#536 added, and it is the source a `tools/call` trace hangs its detail off.
+                    .AddSource(HostTelemetry.Name)
+                    .AddSource(McpTelemetryName)
+                    .AddAspNetCoreInstrumentation(options => options.Filter = IsTraced)
+                    .AddHttpClientInstrumentation();
+
+                // FULLY QUALIFIED, and it has to be. `AddNpgsql` is also the name of EF Core's
+                // IServiceCollection extension, whose namespace is imported at the top of this file, so the
+                // unqualified call binds to that one and fails asking for a connection string — an error that
+                // names a parameter this line has no business having.
+                Npgsql.TracerProviderBuilderExtensions.AddNpgsql(tracing);
+
+                tracing.AddOtlpExporter(ConfigureExporter);
+            })
+            .WithMetrics(metrics =>
+            {
+                metrics
+                    // THE STABLE SURFACE. The SDK's meter below is named `Experimental` by its own authors
+                    // and may be renamed on a bump; a dashboard that must not break is built on this one
+                    // (ADR-0019 decision 6).
+                    .AddMeter(HostTelemetry.Name)
+                    .AddMeter(McpTelemetryName)
+                    .AddAspNetCoreInstrumentation()
+                    .AddHttpClientInstrumentation()
+                    .AddRuntimeInstrumentation();
+
+                // The driver's own subscription rather than a bare AddMeter(NpgsqlTelemetryName): it starts
+                // Npgsql's metrics reporter as well as listening to the meter, and a meter nothing reports to
+                // exports an empty set that reads exactly like an idle pool.
+                Npgsql.MeterProviderBuilderExtensions.AddNpgsqlInstrumentation(metrics);
+
+                metrics.AddOtlpExporter(ConfigureExporter);
+            });
+
+        builder.Logging.AddOpenTelemetry(logging =>
+        {
+            // Scopes and parsed state are what make a log record searchable beside the span it belongs to.
+            // Without them a record arrives as a rendered sentence and the structured fields the call site
+            // already passed — the instrument, the resolution, the window — are gone.
+            logging.IncludeScopes = true;
+            logging.ParseStateValues = true;
+
+            logging.AddOtlpExporter(ConfigureExporter);
+        });
+    }
+
+    /// <summary>Whether an ASP.NET Core request is worth a span.</summary>
+    /// <param name="context">The incoming request.</param>
+    /// <returns><see langword="false"/> for the health probe, <see langword="true"/> for everything else.</returns>
+    /// <remarks>
+    /// <para>
+    /// One exclusion, and it is a volume argument rather than a privacy one: a load balancer probes
+    /// <c>/health</c> every 30 seconds, which is 2,880 spans a day carrying no information, arriving in the
+    /// same search results and on the same bill as the tool calls somebody is looking for.
+    /// </para>
+    /// <para>
+    /// <b>Matched on the exact path, not a prefix.</b> A prefix match would silently swallow a future
+    /// <c>/health/detail</c> — an endpoint whose whole purpose would be to be worth reading. gh#513 owns the
+    /// endpoint itself and has not landed; this lands on the path name now so it is already in place when the
+    /// endpoint arrives, rather than being the thing everyone forgets afterwards.
+    /// </para>
+    /// </remarks>
+    private static bool IsTraced(HttpContext context) =>
+        !context.Request.Path.Equals(HealthProbePath, StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>The <c>service.version</c> resource attribute.</summary>
+    /// <returns>The assembly's informational version, without build metadata.</returns>
+    /// <remarks>
+    /// <para>
+    /// <b>The assembly's own stamp, and it is present rather than meaningful.</b> ADR-0001 makes the tag the
+    /// version and nothing declares one in a file; the container build never sees the repository's history, so
+    /// inside the published image this reads <c>0.0.0-alpha.0</c> by decision, with the release number carried
+    /// by the image tag and <c>org.opencontainers.image.version</c> instead.
+    /// </para>
+    /// <para>
+    /// <b>gh#513's <c>Deployment__Version</c> is what will make it mean something on a deployed instance</b>,
+    /// and it is deliberately not read here: that section does not exist yet, and a configuration key this
+    /// server reads while no document describes it and <c>docker-compose.yml</c> does not forward it is a
+    /// setting that silently does nothing in a container — the exact defect <c>.env.example</c>'s own header
+    /// warns about. It is one line to add when that card lands.
+    /// </para>
+    /// </remarks>
+    private static string ServiceVersion()
+    {
+        string? informational = typeof(Program).Assembly
+            .GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion;
+
+        if (string.IsNullOrWhiteSpace(informational))
+        {
+            return typeof(Program).Assembly.GetName().Version?.ToString() ?? "0.0.0";
+        }
+
+        // MinVer appends "+<sha>" build metadata. A resource attribute is a grouping key, and a version that
+        // changes with every commit groups nothing.
+        int metadata = informational.IndexOf('+', StringComparison.Ordinal);
+        return metadata < 0 ? informational : informational[..metadata];
+    }
+
+    /// <summary>
     /// Gives the stdio transport an ephemeral loopback address, unless one has been named explicitly.
     /// </summary>
     /// <param name="builder">The host builder.</param>
@@ -330,15 +587,57 @@ public static class Program
             .ValidateDataAnnotations()
             .ValidateOnStart();
 
-        services.AddOptions<McpOptions>()
-            .Bind(builder.Configuration.GetSection(McpOptions.SectionName))
-            .Validate(
-                o => o.Transport != McpTransport.Http || !string.IsNullOrWhiteSpace(o.HttpBearerToken),
-                "Mcp__HttpBearerToken is required when the HTTP transport is enabled. Nothing here can trade, "
-                + "but an open endpoint still exposes balances, positions and trade history.")
+        // Validated on start so a malformed endpoint, protocol or header list refuses at boot NAMING THE KEY,
+        // rather than at export time on a background thread — where the failure is a silent absence of
+        // telemetry, which is indistinguishable from the supported unconfigured state (ADR-0019).
+        services.AddOptions<OtelOptions>()
+            .Bind(builder.Configuration.GetSection(OtelOptions.SectionName))
+            .ValidateDataAnnotations()
             .ValidateOnStart();
 
+        // How long startup waits for a store that is not answering yet. Zero by default, which is one probe
+        // and no delay -- today's behaviour, and what every stdio launch relies on. Validated on start like
+        // its siblings so a typo is refused rather than clamped (gh#514).
+        services.AddOptions<StoreOptions>()
+            .Bind(builder.Configuration.GetSection(StoreOptions.SectionName))
+            .ValidateDataAnnotations()
+            .ValidateOnStart();
+
+        // Under HTTP, exactly one authentication mode, complete — the token for StaticToken, the issuer,
+        // client ids and resource URL for OAuth — and both directions of "both" refused, each naming its
+        // key. The rules are McpOptions.Validate, an IValidatableObject like KeyLevelDetectionOptions, so
+        // the token rule that used to be a lambda here now lives beside the ones it is exclusive with
+        // (ADR-0021, gh#512). Nothing under Mcp:Auth or Mcp:OAuth is read under stdio.
+        services.AddOptions<McpOptions>()
+            .Bind(builder.Configuration.GetSection(McpOptions.SectionName))
+            .ValidateDataAnnotations()
+            .ValidateOnStart();
+
+        // The JWT bearer handler the OAuth gate authenticates with, registered only in the mode that uses
+        // it: the static mode's container is byte for byte what it was, and stdio's too.
+        if (mcp.Transport == McpTransport.Http && mcp.Auth.Mode == McpAuthMode.OAuth)
+        {
+            services.AddOAuthBearerAuthentication(mcp.OAuth);
+        }
+
+        // What the liveness probe reports as `version` and `digest`. Optional, unvalidated, and defaulting to
+        // "unknown": nothing here declares a version in a file (ADR-0001), so a running task can only be told
+        // what it is by the deployment that started it — and a probe that refused to answer over a missing
+        // stamp would fail a healthy task for a cosmetic reason (gh#513).
+        services.AddOptions<DeploymentOptions>()
+            .Bind(builder.Configuration.GetSection(DeploymentOptions.SectionName));
+
         services.AddSingleton(TimeProvider.System);
+
+        // THE APP-OWNED METER AND ACTIVITY SOURCE (gh#536). A SINGLETON, and it has to be: a Meter is a
+        // process-wide publisher, and a scoped one would create a new publisher per request -- every counter
+        // starting from zero, and every subscriber having to discover a new instrument each time.
+        //
+        // REGISTERED HERE, UNCONDITIONALLY, whether or not Otel__Endpoint is set. An instrument nothing
+        // listens to costs a predicate and a return, and an ActivitySource nothing listens to returns null
+        // without allocating -- so there is no "is telemetry on" branch at any call site, and no
+        // configuration under which the counted path and the uncounted path can diverge (ADR-0019).
+        services.AddSingleton<HostTelemetry>();
 
         // Parsed once, at startup, and shared. It is a pure value, and parsing refuses a malformed session
         // close rather than guessing -- this value decides what counts as missing data.
@@ -347,6 +646,11 @@ public static class Program
             MarketDataOptions options = sp.GetRequiredService<IOptions<MarketDataOptions>>().Value;
             return BarSessionCalendar.Parse(options.SessionCloseCentral, options.HolidayList());
         });
+
+        // After the calendar, because it is stated against one: every definition is re-checked here against
+        // the same calendar MarketDataOptions.Validate used, so options that never went through
+        // ValidateOnStart cannot put an off-grid session into the served vocabulary (ADR-0022).
+        services.AddSingleton<SessionCatalog>();
 
         services.AddSingleton<InstrumentRegistry>();
         services.AddSingleton<IndicatorCatalog>();
@@ -431,6 +735,12 @@ public static class Program
         // Both branches use one lifetime deliberately. A lifetime that varies with configuration means the
         // container is a different shape in the configured case than in the unconfigured one, which is how
         // this got shipped: everything that ran locally ran unconfigured.
+        // SINGLETON, and registered on BOTH branches. It memoises "does the venue list this contract id?"
+        // across scopes, for the same reason the history pacer is shared: the vendor counts the lookup pool
+        // (200 / 60s) against the credential, not against a request scope. It holds no gateway -- the scoped
+        // one is passed in per call -- so it is safe here whether the venue is configured or not (ADR-0020).
+        services.AddSingleton<ContractDirectory>();
+
         if (venue.IsConfigured && venue.DataTier != ProjectXDataTier.Unspecified)
         {
             services.AddProjectXApiClient(builder.Configuration);
@@ -459,7 +769,19 @@ public static class Program
         services.AddScoped<FootprintCacheService>();
         services.AddScoped<VolumeProfileService>();
         services.AddScoped<TapeVolumeFrontService>();
+        // Scoped, and the lifetime is load-bearing rather than conventional: this service memoises the
+        // instrument's contract universe, and the scope is one request. A singleton would carry a pre-roll
+        // front across a quarterly roll and go on answering the ledger's per-contract question with a
+        // contract that has since retired (gh#504).
         services.AddScoped<BarCacheService>();
+
+        // The reselect-bars verb (gh#506). Scoped because BarCacheService is, and it re-decides a window
+        // through that service's seam -- the only thing on this path that reaches the venue.
+        services.AddScoped<BarReselector>();
+
+        // After BarCacheService, which it reads the base series through -- and which is the only thing on
+        // this path that can reach the venue (ADR-0022 §7).
+        services.AddScoped<SessionBarService>();
 
         // The tape recorder. Always registered so the container shape does not depend on the
         // switch — ExecuteAsync returns immediately unless the transport is HTTP and
@@ -509,6 +831,8 @@ public static class Program
         services.AddScoped<AccountTools>();
         services.AddScoped<SnapshotTools>();
         services.AddScoped<ObservationTools>();
+        services.AddScoped<SessionBarTools>();
+        services.AddScoped<SessionIndicatorTools>();
 
         // One registration, one tool set, two ways in (ADR-0007). The transport is the only thing that
         // differs, and it is chosen here rather than by a second AddMcpServer call — registering the server
@@ -562,13 +886,35 @@ public static class Program
         TopstepXDbContext database = scope.ServiceProvider.GetRequiredService<TopstepXDbContext>();
         ILogger logger = scope.ServiceProvider.GetRequiredService<ILoggerFactory>().CreateLogger("startup");
 
-        if (!await database.Database.CanConnectAsync().ConfigureAwait(false))
+        // The probe, the warning that names what it tried, and the bounded retry all live in StoreStartup so
+        // the credential-bearing connection string is handled somewhere a unit test can assert the password
+        // never reaches a log line (gh#514).
+        //
+        // `app.Lifetime.ApplicationStopping` rather than `CancellationToken.None`: this call runs before
+        // `RunHostAsync`'s `app.RunAsync()`, so today nothing has started that could request a stop and the
+        // token cannot fire AT THIS CALL SITE -- same reasoning `RunHostAsync` documents for its own read of
+        // `app.Lifetime`. That is not the same as saying a changed ordering would be handled correctly: if
+        // `MigrateAsync` ever moved to run after `StartAsync`, the token WOULD fire on a stop, and the
+        // resulting `OperationCanceledException` would propagate out of `ReachAsync` -- which has no catch --
+        // through this method and out of `Main`'s `await MigrateAsync(app)`, which sits BEFORE
+        // `RunHostAsync` and therefore outside its `catch (OperationCanceledException) when (stopping...)`.
+        // That is gh#76's crash shape, not its clean stop. Moving the call site would also need that catch
+        // moved (or duplicated) to cover it. Passing the token now is still strictly better than
+        // `CancellationToken.None` -- it costs nothing today and stops a 600-second wait from being
+        // uncancellable by construction -- it just is not, on its own, a promise that a future ordering is
+        // safe (PR #548 review, gh#551, gh#555 review).
+        StoreAvailability reached = await StoreStartup.ReachAsync(
+            token => database.Database.CanConnectAsync(token),
+            database.Database.GetConnectionString(),
+            TimeSpan.FromSeconds(
+                scope.ServiceProvider.GetRequiredService<IOptions<StoreOptions>>().Value.StartupWaitSeconds),
+            scope.ServiceProvider.GetRequiredService<TimeProvider>(),
+            logger,
+            app.Lifetime.ApplicationStopping).ConfigureAwait(false);
+
+        if (!reached.IsAvailable)
         {
-            // One line, not a stack trace. This is the first thing a new operator meets, and the stack trace
-            // it used to print named a socket rather than the thing they need to do.
-            StoreAvailability unavailable = StoreAvailability.Unavailable("Nothing answered on the configured connection string.");
-            logger.LogWarning("{Explanation}", unavailable.Explanation);
-            return unavailable;
+            return reached;
         }
 
         try
@@ -605,18 +951,138 @@ public static class Program
 
     private static async Task<int> RebuildIndicatorsAsync(WebApplication app, string[] args)
     {
-        using IServiceScope scope = app.Services.CreateScope();
-        IServiceProvider sp = scope.ServiceProvider;
+        try
+        {
+            using IServiceScope scope = app.Services.CreateScope();
+            IServiceProvider sp = scope.ServiceProvider;
 
-        // The loop itself lives in IndicatorRebuilder rather than here, so the verb can be run by a test. A
-        // private static in the composition root cannot be, and this verb shipped in Phase 2 having never
-        // been executed anywhere.
-        string? only = args.Length > 1 ? args[1] : null;
+            // The loop itself lives in IndicatorRebuilder rather than here, so the verb can be run by a
+            // test. A private static in the composition root cannot be, and this verb shipped in Phase 2
+            // having never been executed anywhere.
+            string? only = args.Length > 1 ? args[1] : null;
 
-        await sp.GetRequiredService<IndicatorRebuilder>()
-            .RebuildAsync(only, CancellationToken.None)
-            .ConfigureAwait(false);
+            await sp.GetRequiredService<IndicatorRebuilder>()
+                .RebuildAsync(only, CancellationToken.None)
+                .ConfigureAwait(false);
 
-        return 0;
+            return 0;
+        }
+        finally
+        {
+            await ShutDownLoggingAsync(app).ConfigureAwait(false);
+        }
     }
+
+    private static async Task<int> ReselectBarsAsync(WebApplication app, string[] args)
+    {
+        try
+        {
+            return await RunReselectAsync(app, args).ConfigureAwait(false);
+        }
+        finally
+        {
+            await ShutDownLoggingAsync(app).ConfigureAwait(false);
+        }
+    }
+
+    /// <summary>
+    /// Disposes the host a verb ran inside, so its report is not lost at process exit.
+    /// </summary>
+    /// <param name="app">The built host.</param>
+    /// <returns>A task.</returns>
+    /// <remarks>
+    /// <para>
+    /// <b>A verb returns from <c>Main</c> without ever calling <c>RunAsync</c>, so nothing else shuts the
+    /// host down.</b> The console logger writes from a background thread through a queue, and the OTLP
+    /// exporter batches on a timer; both flush on dispose and neither is guaranteed to have flushed when the
+    /// process exits on its own. The whole report of these verbs is log lines — the rebuild's counts, the
+    /// reselect's per-series numbers and its summary — so losing the tail is losing the answer, and it is
+    /// exactly the last lines, the summary among them, that a truncated queue drops.
+    /// </para>
+    /// <para>
+    /// In a <c>finally</c> around each verb body, and therefore on the refusal paths too: an operator who
+    /// mistyped a symbol needs the line saying so at least as much as one whose run succeeded.
+    /// </para>
+    /// </remarks>
+    private static ValueTask ShutDownLoggingAsync(WebApplication app) => app.DisposeAsync();
+
+    private static async Task<int> RunReselectAsync(WebApplication app, string[] args)
+    {
+        // Both singletons, so they are taken from the root provider rather than from a scope: this runs
+        // before the migration, and a scoped DbContext resolved here would be one nothing has verified a
+        // schema for.
+        ILogger logger = app.Services.GetRequiredService<ILoggerFactory>().CreateLogger("reselect-bars");
+
+        ReselectArguments parsed;
+
+        try
+        {
+            // BEFORE THE MIGRATION AND BEFORE ANYTHING TOUCHES THE STORE. A mistyped symbol or an inverted
+            // window is the operator's to correct, and learning it after a schema has been applied and a
+            // window's worth of provenance is halfway rewritten is the expensive way to be told.
+            parsed = ReselectArguments.Parse(args, app.Services.GetRequiredService<InstrumentRegistry>());
+        }
+        catch (ArgumentException ex)
+        {
+            // Through the logger, not Console.Error: the stdio transport's logging is already configured
+            // (ConfigureLogging), and a bare Console write would be the only one in this codebase -- on the
+            // one transport where stdout is the protocol.
+            logger.LogError("reselect-bars refused the command line: {Reason}", ex.Message);
+            return ReselectExit.From(ex);
+        }
+
+        // THE MIGRATION RUNS FIRST HERE, WHERE rebuild-indicators SKIPS IT ENTIRELY, and the difference is
+        // that this verb WRITES. A rebuild replays projections over bars already stored; a reselect rewrites
+        // the bars' provenance, deletes the rows a new winner does not restate and drops coverage claims.
+        // Doing that through a schema this build has not applied is a write nobody can reproduce, or a
+        // failure halfway across a window.
+        StoreAvailability store = await MigrateAsync(app).ConfigureAwait(false);
+
+        if (!store.IsAvailable)
+        {
+            // Said in the verb's own terms rather than by quoting the tool surface's sentence: degrading is a
+            // decision about READS -- the server starts, and the tools that need no store still answer. A
+            // verb whose only purpose is to write has nothing to offer past this point, and the reason it
+            // stopped is the operator's next step.
+            logger.LogError(
+                "reselect-bars cannot run: the store is unreachable or its migration did not complete "
+                + "({Reason}). This verb only writes, so it stops here rather than degrading; nothing in the "
+                + "window was re-decided. Bring the database up and run it again.",
+                store.Explanation);
+
+            return ReselectExit.Degraded;
+        }
+
+        using IServiceScope scope = app.Services.CreateScope();
+
+        // Resolved OUTSIDE the try, deliberately: GetRequiredService throws InvalidOperationException for a
+        // missing registration, and catching that here would report a container defect as a degraded venue
+        // read. CompositionRootTests.TheReselectVerbCanBeResolved is what covers it instead.
+        BarReselector reselector = scope.ServiceProvider.GetRequiredService<BarReselector>();
+
+        try
+        {
+            // The report is the reselector's own log lines -- one per series and one summary naming both the
+            // asked window and the whole trade dates it was widened to. Same shape as IndicatorRebuilder,
+            // and for the same reason: under stdio, stdout carries the protocol.
+            await reselector
+                .ReselectAsync(parsed.Instrument, parsed.Window, CancellationToken.None)
+                .ConfigureAwait(false);
+        }
+        catch (ReselectPlanException ex)
+        {
+            // THE NARROW TYPE, not its base InvalidOperationException: EF Core raises that base for its own
+            // defects, and catching it here would dress a bug in this repository up as a degraded venue plan
+            // -- with a tidy exit 3, on a run that may already have committed an earlier series.
+            logger.LogError(
+                "reselect-bars could not re-decide the window: {Reason} Any series logged above this line "
+                + "was committed before the run stopped.",
+                ex.Message);
+
+            return ReselectExit.From(ex);
+        }
+
+        return ReselectExit.Ok;
+    }
+
 }

@@ -463,6 +463,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **The AWS account was bootstrapped and the GitHub OIDC stack deployed; staging was not** (gh#519).
+  Region is `us-east-1`. Hostname spelling is confirmed `staging.marqspec.com`. Public NS for
+  `marqspec.com` is Cloudflare, not the Route 53 zone, so `topstepx-mcp-staging` was not deployed —
+  ACM would stall. `topstepx-mcp-github-oidc` is up; `aws-production` exists with reviewer
+  `adammarquette`; OIDC thumbprint is IAM fill-in, not drift. [`documentation/deployment.md`](documentation/deployment.md)
+  records the runbook (ARNs and client-id slots, no values). [ADR-0023](documentation/adr/0023-aws-deployment-topology.md)
+  and [ADR-0021](documentation/adr/0021-a-non-loopback-instance-is-supported.md) gain dated entries.
+  Practice ProjectX / Cohere / Grafana values and the Cognito user stay the maintainer's.
+
 - **Cowork's custom-connector dialog was measured on the maintainer's plan (gh#510).** The maintainer cancelled
   without submitting — no Authentication or OAuth-client choice, no request headers, a fake URL only to read
   the second screen (including Advanced → Transport), then cancel. Two screens: name and URL with Continue

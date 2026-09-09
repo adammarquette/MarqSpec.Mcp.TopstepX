@@ -1244,9 +1244,9 @@ found.
 | `required_status_checks` on `protect-develop` / `-staging` / `-main` | every merge gate in the table above; `no-order-path` carries ADR-0002 | `bootstrap.sh` step 3, which reads the contexts back per rung | gh#26, gh#72, gh#114; and gh#125, the one that went the other way — set correctly and recorded in `bootstrap.sh`, but not in the table above |
 | ruleset `enforcement: active` | all of the above | `bootstrap.sh` step 3 | `MarqSpec.Client.ProjectX`, disabled from creation |
 | the two Cognito client secrets' **values** in `topstepx-mcp/<env>/{claude-connector,deploy-check}` | the connector login (gh#524) and `check-deployment.sh`'s `client_credentials` token (gh#521); the stack creates the shells empty and no custom resource fills them ([ADR-0023](../adr/0023-aws-deployment-topology.md), 2026-09-07 Cognito entry) | gh#521's check, but read the shape carefully — an EMPTY shell fails it at `UNSET <the first empty value>` **before any request**, naming that value and saying nothing about the deployment. *Which* value depends on where the id is read from, and this repository has not settled that: `MCP_CHECK_CLIENT_ID` if both come out of the shell as ADR-0023 §"the `clientId` is duplicated into the shell" describes, `…_SECRET` if the id came from the stack output as gh#520 plans. A non-empty WRONG credential is the other path and is the one that comes back `NO TOKEN … answered 401`, after assertions 1 and 2 have passed. All measured 2026-09-07; this row said the opposite until then | never; not yet deployed (gh#519 writes them by hand) |
-| `aws-production` environment carries a `required_reviewers` rule | gh#520's two production deploy jobs — the approval on **what runs**, and the **precondition of the credential**: `GitHubDeploy-production` trusts only a token carrying `sub = …:environment:aws-production`, which GitHub mints only for a job that declared the environment and passed its rule ([ADR-0023](../adr/0023-aws-deployment-topology.md) §8 and its 2026-09-07 `aws-production` entry). Without the rule, any job in this repository naming the environment could assume the role | [`check-release-gate.sh`](../../scripts/check-release-gate.sh) on every pull request once a workflow names it — its self-test's two-environment case is the pre-creation shape; `bootstrap.sh` step 4 creates it and reports it, and a template test reads the script's `ENV_NAMES=` line against the trust condition | never; not yet created — the maintainer runs `bootstrap.sh` once (gh#518) |
-| `GitHubDeploy-staging` trust policy — `sub` StringLike `…:ref:refs/tags/v*` and `…:ref:refs/heads/main`, exactly two | `release.yml`'s staging deploy and `deploy.yml`'s dispatch on `main` (gh#520); a wider subject is a role any run of a public repository's fork could try, a narrower one refuses the rollback path | `GitHubOidcStackTests` on every pull request — the named test and the every-role test; on the account, `aws iam get-role --role-name GitHubDeploy-staging`, recorded on ADR-0023's 2026-09-07 staging entry | never; not yet deployed (gh#519) |
-| `GitHubDeploy-production` trust policy — `sub` StringEquals `…:environment:aws-production`, no `StringLike` | both production deploy jobs (gh#520) | the same tests; `aws iam get-role --role-name GitHubDeploy-production`, recorded on ADR-0023's 2026-09-07 production entry | never; not yet deployed (gh#519) |
+| `aws-production` environment carries a `required_reviewers` rule | gh#520's two production deploy jobs — the approval on **what runs**, and the **precondition of the credential**: `GitHubDeploy-production` trusts only a token carrying `sub = …:environment:aws-production`, which GitHub mints only for a job that declared the environment and passed its rule ([ADR-0023](../adr/0023-aws-deployment-topology.md) §8 and its 2026-09-07 `aws-production` entry). Without the rule, any job in this repository naming the environment could assume the role | [`check-release-gate.sh`](../../scripts/check-release-gate.sh) on every pull request once a workflow names it — its self-test's two-environment case is the pre-creation shape; `bootstrap.sh` step 4 creates it and reports it, and a template test reads the script's `ENV_NAMES=` line against the trust condition | never; created 2026-09-09 (gh#519), read-back `User:adammarquette` |
+| `GitHubDeploy-staging` trust policy — `sub` StringLike `…:ref:refs/tags/v*` and `…:ref:refs/heads/main`, exactly two | `release.yml`'s staging deploy and `deploy.yml`'s dispatch on `main` (gh#520); a wider subject is a role any run of a public repository's fork could try, a narrower one refuses the rollback path | `GitHubOidcStackTests` on every pull request — the named test and the every-role test; on the account, `aws iam get-role --role-name GitHubDeploy-staging`, recorded on ADR-0023's 2026-09-07 staging entry and quoted on #519 (2026-09-09) | never; deployed 2026-09-09 (gh#519) |
+| `GitHubDeploy-production` trust policy — `sub` StringEquals `…:environment:aws-production`, no `StringLike` | both production deploy jobs (gh#520) | the same tests; `aws iam get-role --role-name GitHubDeploy-production`, recorded on ADR-0023's 2026-09-07 production entry and quoted on #519 (2026-09-09) | never; deployed 2026-09-09 (gh#519) |
 
 ### The release approval gate (gh#108)
 
@@ -1440,15 +1440,17 @@ the one that rewrites it. What exists today:
   through one Node process the runtime spawns. **The test project runs its classes serially** for the same
   reason — parallel class fixtures raced on the runtime's first-use tarball extraction, measured as an
   `IOException` in every test of the second class and one run hung four and a half minutes.
-- **Three things are placeholders until gh#519.** The account (`123456789012`, AWS's documentation
-  example) and the region (`us-east-1`, ADR-0023's cost basis, not a choice) sit in `cdk.json`'s context and
-  are overridden with `-c account=… -c region=…` at deploy; the CDK refuses to deploy into an account the
-  credentials do not match, so a forgotten override fails loudly. The hosted-zone entry in
-  `cdk.context.json` is keyed on those placeholders and is replaced by a real lookup on the first
+- **Account and region at deploy.** The account (`123456789012`, AWS's documentation example) still sits
+  in `cdk.json` and is overridden with `-c account=045296582762` at deploy — do not replace the
+  placeholder or CI's `--no-lookups` synth looks up the wrong context key. The region is **chosen
+  `us-east-1`** (gh#519, 2026-09-09); `cdk.json` already named that value as the cost-basis placeholder
+  and a credentialed deploy passes `-c region=us-east-1` the same way. `cdk.context.json` now carries
+  **both** the placeholder hosted-zone / AZ keys (CI) and the real-account keys from the first
   credentialed synth. And **the tasks' outbound path is not chosen**: `OutboundPath` is a required enum with
   no default, the app refuses to synthesise without `-c outbound=…`, CI passes every value, and the choice
-  is the maintainer's dated entry on ADR-0023 — when it lands, the loop in `ci.yml` collapses to one plain
-  synth and the value becomes a literal in `Program.cs`.
+  is the maintainer's dated entry on ADR-0023 — gh#519 passed `PublicIpPerTask` as synth context only.
+  When the fork closes, the loop in `ci.yml` collapses to one plain synth and the value becomes a literal
+  in `Program.cs`.
 - **Secrets are shells.** The six
   `topstepx-mcp/<env>/{postgres,projectx,cohere,claude-connector,deploy-check,otel}`
   secrets are created with every JSON key the task definitions and the deployment check read and every
@@ -1465,8 +1467,8 @@ the one that rewrites it. What exists today:
   whatever it named. The two client secrets are shells like the others, read once with
   `describe-user-pool-client` and written by hand; no custom resource touches them, and the stack is
   asserted to contain no Lambda. What is **not** measured yet — the discovery document's `S256`
-  advertisement, its tolerance of the `resource` parameter, the token-endpoint auth methods — waits for
-  gh#519's first credentialed deploy, because no pool exists to measure.
+  advertisement, its tolerance of the `resource` parameter, the token-endpoint auth methods — still
+  waits on gh#519's leftover: no EnvironmentStack, because public NS is Cloudflare (2026-09-09).
 - **The server task carries a second container** (gh#537, [ADR-0019](../adr/0019-otlp-as-the-telemetry-boundary.md)
   §5, ADR-0023 §11): an OTLP collector that receives on the task's loopback and exports to Grafana Cloud.
   `Essential=false` with a hard 128 MiB cap, no port mapping, and its Grafana endpoint and token as
@@ -1642,14 +1644,15 @@ nine cases are not read as the assertion list. Five things worth carrying:
   look'") wearing a different hat: a probe that reads as a working detection right up to the point where
   every case fails for a reason that is not the gate's.
 
-**What no run of it has proven yet, and cannot until gh#519.** There is no deployed instance, so the gate has
-never met a real hostname: no TLS certificate from a real issuer, no Cognito token, no `initialize` past a
-real resource server. Assertions 1 and 2 have been run against **real product code** — the host in `OAuth`
-mode on loopback answers `/health`, the `401` and the RFC 9728 document, and the gate passes both — and
-assertion 3 stops there, correctly, for want of a pool. The first run against the staging hostname is
-gh#521's own acceptance criterion and it is a human's. **The runbook**, `documentation/deployment.md`, is
-gh#519's and does not exist yet; the usage above is the interim home for it, and that section moves there
-when it does.
+**What no run of it has proven yet, and cannot until staging has a hostname.** There is no deployed
+instance: gh#519 bootstrapped the account and the OIDC stack (2026-09-09) and stopped EnvironmentStack
+because public NS is Cloudflare, not the Route 53 zone. The gate has never met a real hostname: no TLS
+certificate from a real issuer, no Cognito token, no `initialize` past a real resource server. Assertions
+1 and 2 have been run against **real product code** — the host in `OAuth` mode on loopback answers
+`/health`, the `401` and the RFC 9728 document, and the gate passes both — and assertion 3 stops there,
+correctly, for want of a pool. The first run against the staging hostname is gh#521's own acceptance
+criterion and it is a human's. **The runbook** is [`documentation/deployment.md`](../deployment.md); the
+file/here-doc secret-write shape and the live OIDC read-back live there.
 
 ## Definition of done
 

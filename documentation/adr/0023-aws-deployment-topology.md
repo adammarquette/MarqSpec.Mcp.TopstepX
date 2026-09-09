@@ -83,13 +83,11 @@ have the maintainer's word on; the fork is written out verbatim in the decision 
 decides it with the maintainer and writes the answer back there.
 
 Hostnames: **`topstepx-mcp.marqspec.com`** and **`topstepx-mcp.staging.marqspec.com`**, one hostname per
-environment. The `staging.` spelling is gh#509's and this record's working spelling; `stage.` was written
-once on the epic, and ADR-0021 records that the choice is the maintainer's to confirm in gh#519; gh#519's
-step 2 is what says **before** the first `cdk deploy`, because a delegated zone renamed later is a
-re-delegation at the apex, not an edit.
-This record prefers `staging.` — it is the word every other document in the epic uses and the branch name
-of the promotion rung — but records it as the working spelling, not a settled fact, on the same terms
-ADR-0021 does. A document quoting a hostname cites this paragraph and its caveat.
+environment. The `staging.` spelling is **confirmed** (gh#519, 2026-09-09 entry): epic #509's decided
+target, this app's `RootDomain`, and no `stage.` record in Route 53 or public DNS. `stage.` was a
+one-time epic typo. **Public NS for `marqspec.com` is Cloudflare, not the Route 53 zone** — so the
+first EnvironmentStack deploy is stopped until the maintainer cuts DNS over (same entry). A document
+quoting a hostname cites this paragraph.
 
 ### 2. One Application Load Balancer per environment is the reverse proxy — there is no sidecar
 
@@ -288,15 +286,15 @@ client ids and `Mcp__OAuth__ResourceUrl=https://topstepx-mcp.<root>/mcp`, and **
 `auth.<root>` on the wildcard certificate. A Cognito custom domain needs an ACM certificate in **`us-east-1`**
 whatever region the pool is in, plus an `A` record already present at the parent — a cross-region
 certificate this stack cannot mint in-line unless the chosen region *is* `us-east-1`. The custom domain is
-an option this record names, not the plan; if the region chosen in gh#519 is `us-east-1`, gh#517 may take it
-and records that it did.
+an option this record names, not the plan; the region is `us-east-1` (gh#519) so it could be taken, and
+it was not — no pool exists yet.
 
 Cognito has no Dynamic Client Registration. That is accepted on ADR-0021's second assumption — Anthropic's
 documentation supports a pre-registered client id and secret — and it is the assumption gh#510 confirms or
 overturns; if it is overturned, **the issuer moves and the shape does not** (ADR-0021). Two measurements on
-the discovery document are gh#517's before anything builds on it: `code_challenge_methods_supported`
+the discovery document are gh#519's first live pool: `code_challenge_methods_supported`
 advertises `S256`, and the token endpoint tolerates the RFC 8707 `resource` parameter the MCP authorization
-specification has clients send. gh#517 records both here as a dated entry.
+specification has clients send. They remain unmeasured until an EnvironmentStack exists (2026-09-09 entry).
 
 ### 10. Backups: a daily `pg_dump` from a two-container task, and AWS Backup on the EFS
 
@@ -451,9 +449,10 @@ its own reason, not a drift.
   two IAM trust policies. gh#518 adds each to the platform contract's *settings that are load-bearing and
   unversioned* table, records each here as a dated entry with the read-back call, and teaches `bootstrap.sh`
   the new environment name.
-- **The hostname spelling is a caveat until gh#519**, and every document quoting one says so.
-- **The region is not chosen here.** gh#519 chooses it, records it as a dated entry, and the Cognito domain
-  decision (9) reads that entry.
+- **The hostname spelling is `staging.`**, confirmed on 2026-09-09 (gh#519). Public NS does not yet
+  match the Route 53 zone, so the staging EnvironmentStack has not been deployed.
+- **The region is `us-east-1`**, chosen on 2026-09-09 (gh#519). Decision 9's custom domain stays unused
+  (prefix domain) until an EnvironmentStack exists.
 - **The platform contract's "How the pipeline is shaped" still says *there is no deployment here, only a
   published image*, and that sentence is true today.** It changes in the same pull request as the deploy jobs
   (gh#520), not in this one — a document describing a deployment that does not exist would be the stale-doc
@@ -463,25 +462,30 @@ its own reason, not a drift.
 
 ## What this does not decide
 
-- **The region** — gh#519, as a dated entry here.
 - **The tasks' outbound path** — public IP per task, NAT gateway, or VPC endpoints plus one of those —
-  gh#516 with the maintainer, as a dated entry under the fork recorded in the decision log.
+  gh#516 with the maintainer, as a dated entry under the fork recorded in the decision log. gh#519's
+  OIDC deploy passed `PublicIpPerTask` as synth context only and did not close the fork.
 - **The resource-server implementation** — claims, metadata document, the `401` header — gh#512, under
   ADR-0021.
-- **The Cognito discovery-document measurements** and whether the custom domain is taken — gh#517.
+- **The Cognito discovery-document measurements** (S256, RFC 8707 `resource`,
+  `token_endpoint_auth_methods_supported`) and whether the custom domain is taken — gh#519. No pool
+  exists yet: public NS does not match the Route 53 zone, so EnvironmentStack was not deployed
+  (2026-09-09 entry).
 - **Whether production goes first**, ahead of the EFS measurement or the WAF — gh#520, gh#525, gh#528, each
   recorded here on a date if it does.
 - **The WAF's exclusions after a week of staging logs** — gh#519 (live WAF verify). The WAF rate-limit
   default, the alarms' thresholds and the budget's amount are decided in the 2026-09-08 entries below.
-- **The runbook** — `documentation/deployment.md`, started by gh#519 and routed with its own `~tok` row.
+  The rate-limit 403 and a week of count-mode logs wait on a hostname.
 
 ## Decision log
 
 Dated `## Update` entries land below this heading, oldest first, one per settings-only choice or measured
-decision the cards above own: the region (gh#519); each GitHub environment and IAM trust condition, with its
-read-back call (gh#518); the Cognito client ids and secret ARNs, and the discovery measurements (gh#517);
+decision the cards above own: the region, hostname spelling, OIDC read-back and EnvironmentStack
+account-literal question (gh#519); each GitHub environment and IAM trust condition, with its
+read-back call (gh#518); the Cognito client ids and secret ARNs, and the discovery measurements (gh#519
+once a pool exists; gh#517 built the pool);
 the EFS threshold, measurement and verdict (gh#525); what is alarmed and what is not (gh#526); the
-cost-allocation tag activation (gh#527); the WAF rate limit and managed-group mode (gh#528; exclusions
+cost-allocation tag activation (gh#527; live CE activation still gh#519); the WAF rate limit and managed-group mode (gh#528; exclusions
 with their log lines wait on #519); the
 additive-migration gate (gh#529); and, if it happens, the date production was approved ahead of gh#525 or
 gh#528. A choice made in a console and not written here does not exist.
@@ -585,14 +589,15 @@ custom-connector dialog (gh#524) is the `claude-connector` client id and secret,
 `https://topstepx-mcp.<root>/mcp`, and nothing else — the authorization and token endpoints are discovered
 from the issuer the server's RFC 9728 document names.
 
-**What this entry does not carry, and where it lands.** Decision 9 asked gh#517 for three measurements on
+**What this entry does not carry, and where it lands.** Decision 9 asked three measurements on
 the discovery document before anything builds on it — `code_challenge_methods_supported` advertising
 `S256`, the token endpoint tolerating the RFC 8707 `resource` parameter, and
 `token_endpoint_auth_methods_supported` — and the deploy-check token being accepted by `/mcp`. **None was
-made.** No pool exists: `cdk.json` still carries the placeholder account, and creating one outside the stack
-would be the console-only configuration the platform contract refuses. They are gh#519's first credentialed
-deploy's to take, quoted on gh#517 and recorded here as a dated entry; until that entry exists, the pre-
-registered-client assumption ADR-0021 states is still an assumption, and this entry does not narrow it.
+made.** gh#517 could not: no pool, placeholder account. gh#519 could not either: the account is real and
+the OIDC stack is up, but public NS is Cloudflare so EnvironmentStack (and the pool) was not deployed
+(2026-09-09 entry). Creating a pool outside the stack would be the console-only configuration the
+platform contract refuses. They stay gh#519's leftover after DNS. The pre-registered-client assumption
+ADR-0021 states is still an assumption, and this entry does not narrow it.
 
 ## Update (2026-09-07) — the `aws-production` environment: a GitHub setting, created by `bootstrap.sh` and read back with `gh api`
 
@@ -627,12 +632,8 @@ $ gh api repos/adammarquette/MarqSpec.Mcp.TopstepX/environments/aws-production \
 ["User:adammarquette"]
 ```
 
-**Status: not yet created.** The maintainer runs `bootstrap.sh` once and quotes that read-back on gh#518;
-until then the answer is `HTTP 404`, and `check-release-gate-selftest.sh`'s two-environment case is the
-exact shape a workflow naming both environments would produce against it — `production` reported
-`PROTECTED`, the second named as missing, `1 of 2`. That case is the pre-bootstrap state, held red on
-purpose so a red `release-gate` on gh#520's pull request sends the reader to this entry rather than to the
-environment that is fine.
+**Status: created 2026-09-09** (gh#519), create-only with `bootstrap.sh`'s payload. Read-back
+`["User:adammarquette"]`. Quoted on #519.
 
 ## Update (2026-09-07) — `GitHubDeploy-staging` trust: two subjects, a tag pattern and `main`, read back with `aws iam get-role`
 
@@ -677,9 +678,9 @@ answers `ClientIDList: ["sts.amazonaws.com"]`, and whatever `ThumbprintList` IAM
 created without one (the next entry). **A populated `ThumbprintList` in that answer is not drift**: IAM
 retrieves the issuer's top intermediate CA thumbprint itself when the property is omitted, so the read-back
 differing from the template on exactly that field is decision 2 working, and a `cdk diff` or a reviewer
-reading it as a resource someone edited by hand would be wrong. **Status: not deployed** — no account
-exists, and the values above are the synthesised template's, which CI proves on every pull request and
-which is the only artefact this entry can quote today. gh#519 replaces this paragraph's "would answer" with the answer.
+reading it as a resource someone edited by hand would be wrong. **Status: deployed 2026-09-09** (gh#519).
+Account `045296582762`. Read-back quoted on #519 and in the 2026-09-09 entry: staging trust matches
+the two subjects above; `ThumbprintList` is `ab9d0263244dd0326eb67015705a667e79cfe998`.
 
 ## Update (2026-09-07) — `GitHubDeploy-production` trust: the `environment:aws-production` claim, read back with `aws iam get-role`
 
@@ -706,7 +707,8 @@ this claim and nothing else can. The environment name in it is the constant
 $ aws iam get-role --role-name GitHubDeploy-production --query Role.AssumeRolePolicyDocument
 ```
 
-**Status: not deployed**, on the same terms as the staging entry.
+**Status: deployed 2026-09-09** (gh#519). Read-back quoted on #519: `sub` is exactly
+`repo:adammarquette/MarqSpec.Mcp.TopstepX:environment:aws-production`.
 
 ## Update (2026-09-07) — three choices on the OIDC stack that are not trust conditions
 
@@ -735,12 +737,12 @@ each is held by a template test (gh#518).
    a real account id after gh#519, in a generated file. Built from the pseudo-parameters the same template
    deploys into whichever account the credentials belong to, and the test refuses a twelve-digit run
    anywhere in it. `EnvironmentStack` is not changed here; whether its ARNs move the same way is gh#519's
-   call when the first real account id would otherwise land in `cdk.out`. **And it is a bigger question than
-   the same swap**: `EnvironmentStack.cs` names neither `Stack.Account` nor `Stack.Region` anywhere, so its
-   twelve-digit literals — in the ALB access-log bucket policy and the EFS and log-group grants — are
-   **CDK's own**, written by the grant helpers rather than by this repository. Moving them means overriding
-   generated policy documents or declining the helpers, not editing two properties, which is why it is a
-   card of its own rather than a rider on this one.
+call when the first real account id would otherwise land in `cdk.out`. **And it is a bigger question than
+the same swap**: `EnvironmentStack.cs` names neither `Stack.Account` nor `Stack.Region` anywhere, so its
+twelve-digit literals — in the ALB access-log bucket policy and the EFS and log-group grants — are
+**CDK's own**, written by the grant helpers rather than by this repository. Moving them means overriding
+generated policy documents or declining the helpers, not editing two properties. **Answered 2026-09-09**
+(gh#519): leave them. They appear in `cdk.out` under a concrete account and do not enter a tracked file.
 ## Update (2026-09-07) — decision 4's additive-migration rule is a gate, and this is what it reads
 
 Decision 4 states the rule the circuit breaker makes load-bearing: *a migration that lands before a code
@@ -883,9 +885,9 @@ admits the new difference on its own terms rather than by exception: its zone-mo
 `DependsOn` **whose value names the created zone or its delegation**, and no other.
 
 What this does not decide: the delegation record's `TTL`, which is the CDK default of `172800` — the two days
-a later change to the hostname spelling would have to wait out on any resolver that cached the `NS` set. That
-is one more reason gh#519 confirms `staging.` **before** the first `cdk deploy` rather than after it, and it
-is that card's to settle, not this entry's.
+a later change to the hostname spelling would have to wait out on any resolver that cached the `NS` set.
+gh#519 confirmed `staging.` before any EnvironmentStack deploy (2026-09-09); the remaining blocker is
+public NS, not the spelling.
 
 
 ## Update (2026-09-08) — account budget on the OIDC stack; Project / Environment cost tags
@@ -985,17 +987,70 @@ under the same helper the green tests use; each ALB has exactly one associated w
 blocks at `WafRateLimit`; default allow; managed groups override count on staging and none (block) on
 production; logs go to a 30-day `aws-waf-logs-*` group. Suite **203** at this entry.
 
+## Update (2026-09-09) — region, hostname spelling, OIDC read-back, DNS fail-closed
+
+gh#519. Decisions above are unchanged except where this entry names them.
+
+**Region: `us-east-1`.** The account had no stacks in `us-east-1` or `us-west-2`. The cost basis, the
+`cdk.json` placeholder, and the Cognito custom-domain option (a `us-east-1` ACM certificate) all already
+named this region. It is now a choice, not a basis. Custom domain was **not** taken: no EnvironmentStack,
+so no pool.
+
+**Hostname spelling: `staging.marqspec.com`**, hostname `topstepx-mcp.staging.marqspec.com`. Confirmed
+from epic #509's decided target, `Program.cs` `RootDomain`, and the absence of any `stage.` or `staging.`
+record in Route 53 zone `Z063685735CT6R1B1I8YZ` or in public DNS. `stage.` was a one-time epic typo.
+
+**DNS fail-closed — EnvironmentStack not deployed.** Issue step 3: public NS must match the Route 53
+zone or ACM validation stalls. Route 53 NS (2026-09-09): `ns-1890.awsdns-44.co.uk`,
+`ns-638.awsdns-15.net`, `ns-1360.awsdns-42.org`, `ns-445.awsdns-55.com`. Public NS:
+`peyton.ns.cloudflare.com`, `meadow.ns.cloudflare.com`. The stack would write the `staging.` delegation
+into an apex nobody queries. Quoted on #519. The maintainer cuts DNS over; this card does not guess
+which of Cloudflare or Route 53 should win.
+
+**What did deploy.** `cdk bootstrap aws://045296582762/us-east-1`. `cdk deploy topstepx-mcp-github-oidc`
+(AlertsEmail as a parameter, not a tracked literal). Stack
+`arn:aws:cloudformation:us-east-1:045296582762:stack/topstepx-mcp-github-oidc/739726b0-abfc-11f1-a318-0affef61a14f`.
+`aws-production` GitHub environment created create-only; read-back `["User:adammarquette"]`.
+
+**OIDC thumbprint is IAM fill-in, not drift.** `GetOpenIDConnectProvider` answered
+`ClientIDList: ["sts.amazonaws.com"]` and `ThumbprintList: ["ab9d0263244dd0326eb67015705a667e79cfe998"]`.
+The template still carries no 40-hex run. Do not write the thumbprint back. Both deploy-role trust
+documents match the 2026-09-07 entries.
+
+**EnvironmentStack account/region literals: leave them.** A credentialed synth of staging (not deployed)
+puts the real account id in CDK grant-helper output — EFS and log-group ARNs, ALB access-log prefix
+`/alb/AWSLogs/045296582762/*` — and nowhere in a tracked file (`cdk.out/` is gitignored). The OIDC
+template still has zero twelve-digit runs. Moving the EnvironmentStack literals means overriding grant
+helpers. Not worth it for this account.
+
+**Cognito discovery measurements, `/health`, WAF 403, alarm emails, CE `Environment=staging` row.** Not
+taken. No pool, no ALB, no hostname. They stay this card's leftover after DNS, not a new guess.
+
+**Cost-allocation tags.** `ce UpdateCostAllocationTagsStatus` for `Project` and `Environment` answered
+`Tag keys not found` (2026-09-09). `ListCostAllocationTags` showed only `Name` and `aws:createdBy`.
+Re-run after an EnvironmentStack has billed. Budget `topstepx-mcp` is 300 USD monthly COST; a
+pre-existing `Monthly Budget` of 10 USD is not this stack.
+
+**Outbound path.** Still a fork. The OIDC deploy passed `-c outbound=PublicIpPerTask` because
+`Program.cs` constructs every stack. That is synth context, not a literal, and not this entry closing
+the 2026-09-06 fork.
+
+**Runbook.** `documentation/deployment.md` records ARNs, client-id *slots*, and the file/here-doc
+secret-write shape. No credential-shaped value. Secret shells do not exist until EnvironmentStack does;
+do not mint them out of band.
+
 ## Follow-ups
 
-- gh#516, gh#517, gh#518 build decisions 7, 9 and 8; gh#529 gates decision 4's rule. All four cite this
-  record and may start once it merges. gh#516 also closes the outbound-path fork in the decision log, with
-  the maintainer, before any task definition names an address.
-- gh#519 stands staging up by hand once, confirms the hostname spelling and chooses the region — both as
-  dated entries here.
+- gh#516, gh#517, gh#518 built decisions 7, 9 and 8; gh#529 gates decision 4's rule. gh#516 also
+  still owns the outbound-path fork with the maintainer.
+- gh#519 stood the account up, confirmed `staging.`, chose `us-east-1`, and stopped EnvironmentStack
+  on the Cloudflare/Route 53 NS mismatch. Remaining on that card: DNS cutover, the staging deploy,
+  secret fills, discovery measurements, live alarm/WAF/CE quotes.
 - gh#520 and gh#521 build decision 8's pipeline and its check; gh#520 also rewrites the platform contract's
   "How the pipeline is shaped".
 - gh#522 builds decision 10 and records the restore drill; ADR-0004 gains the dated update saying the store
   has a backup story and what it is not.
 - gh#525 lands its dated entry in the decision log above. gh#526, gh#527 and gh#528 have.
-- gh#510's connector measurement lands on ADR-0007 and ADR-0021; if it overturns the pre-registered-client
-  assumption, decision 9's issuer reopens here as a dated entry and gh#517 is the card that changes.
+- gh#510's connector measurement landed on ADR-0007 and ADR-0021; if a later measurement overturns the
+  pre-registered-client assumption, decision 9's issuer reopens here as a dated entry and gh#517 is the
+  card that changes.

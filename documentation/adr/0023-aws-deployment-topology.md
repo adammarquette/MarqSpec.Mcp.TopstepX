@@ -1257,6 +1257,16 @@ image were not touched.
 
 Assisted-by: Cursor Grok 4.6 (Cursor)
 
+## Update (2026-09-10) — CloudWatch sidecar measured; X-Ray span missing
+
+Quoted on gh#646 against `0.5.0-rc.1` / task `f343c7d574904efc89925eab4597dcea`. Stream `otlp`
+carries `deployment.environment=staging` and the `tools/call` trace id
+`7fa91ffb17fe0a3681e0bc263f696a15`. The X-Ray span is **missing**:
+`GetTraceSegmentDestination` is still `XRay`, and `otlp_http/xray` answers 400. That is the
+ADR-0019 operator click, not a template change.
+
+Assisted-by: Cursor Grok 4.6 (Cursor)
+
 ## Follow-ups
 
 - gh#516, gh#517, gh#518 built decisions 7, 9 and 8; gh#529 gates decision 4's rule. gh#516 also

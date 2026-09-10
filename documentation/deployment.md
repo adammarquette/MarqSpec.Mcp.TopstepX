@@ -705,12 +705,30 @@ path (ADR-0019, gh#526). The local compose `observability` profile (gh#535, `gra
 is the laptop backend and is not this section.
 
 An unhealthy sidecar still leaves the server answering (`Essential=false`). Do not
-`cdk deploy` a template change to restart one; sister gh#522 owns the live stack.
+`cdk deploy` a template change to restart one.
 
-**Not yet measured on staging (gh#646).** A `tools/call` trace in X-Ray, matching log lines
-with the same trace id, and `deployment.environment=staging` on both, wait on a live deploy.
-Cite the #537 sidecar-kill quote below until that deploy happens: the task definition is
-unchanged on the non-essential / 128 MiB / loopback path.
+**Measured on staging, 2026-09-10, CloudWatch exporter** (quoted on #646; no secret
+value here). Release `0.5.0-rc.1` / `sha256:5ed69b53…`, task
+`f343c7d574904efc89925eab4597dcea`, task definition `topstepx-mcp-staging-server:10`.
+Both containers `RUNNING`. `/health` 200. `GetTraceSegmentDestination` is
+`Destination=XRay` `Status=ACTIVE` — Transaction Search (CloudWatch Logs destination)
+is **not** enabled.
+
+| Check | Result |
+|---|---|
+| Live server task | two containers; collector image `otel/opentelemetry-collector-contrib` by digest. Env names `AWS_OTLP_TRACES_ENDPOINT=https://xray.us-east-1.amazonaws.com/v1/traces`, `DEPLOYMENT_ENVIRONMENT=staging`, `SERVICE_VERSION=0.5.0-rc.1`. No Grafana host. No `otel` shell on the task. |
+| Collector start | `Everything is ready. Begin running and processing data.` (22:14:50Z) |
+| Authenticated `tools/call` (`list_instruments`) | HTTP **200**, `result` present, content length 192, 2026-09-10 22:23:49Z |
+| CloudWatch Logs stream `otlp` for that call | **observed.** `traceId=7fa91ffb17fe0a3681e0bc263f696a15`. `Method=tools/call` called and completed (7.3 ms); `ToolName=list_instruments` `IsError=false`; POST `/mcp` finished 200. Resource `deployment.environment=staging`, `service.version=0.5.0-rc.1`. |
+| X-Ray / Application Signals `tools/call` span | **missing.** `GetTraceSummaries` over the window: 0 traces. `BatchGetTraces` `1-7fa91ffb-17fe0a3681e0bc263f696a15`: 0 traces. No `aws/spans` log group. Application Signals lists the ECS services as `UNINSTRUMENTED` (infra-inferred). |
+| Why the span is missing | Collector `otlp_http/xray` **400** Permanent: `The OTLP API is supported with CloudWatch Logs as a Trace Segment Destination.` Drops around the call (2, then 6, then 6). ADR-0019 follow-up named this operator click; it is still not done. |
+| `deployment.environment=staging` on logs | **observed** on every `otlp` record of that trace. |
+| `deployment.environment=staging` on the X-Ray span | **missing** — there is no accepted span to read it from. The collector config upserts it; X-Ray never accepted a record to show it. |
+| Sidecar kill | not re-run (live task left alone). Cite the #537 quote below: the non-essential / 128 MiB / loopback path did not change. |
+
+**Still waiting on an operator click, not a template change:**
+`UpdateTraceSegmentDestination` to `CloudWatchLogs` (Transaction Search). Do not
+`cdk deploy` or `force-new-deployment` for that. Re-measure the X-Ray row after it.
 
 **Measured on staging, 2026-09-10, while the exporter still targeted Grafana Cloud**
 (quoted on #537; no secret value here). That destination is retired. The table stays as the

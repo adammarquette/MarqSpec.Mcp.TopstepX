@@ -342,6 +342,20 @@ path**; this card does not introduce Grafana alerting.
 `deployment.environment=staging` on both, wait on a live deploy. Sister gh#522 owns that stack this slice;
 this card does not `cdk deploy` or `force-new-deployment`.
 
+## Update — 2026-09-10: measured on staging; the X-Ray span is missing
+
+gh#520 put `0.5.0-rc.1` and the gh#648 sidecar on staging. Quoted on gh#646 (no secret):
+
+- Authenticated `tools/call` `list_instruments` answered HTTP 200 at 22:23:49Z.
+- Matching CloudWatch Logs (`/topstepx-mcp/staging/server` stream `otlp`) carry
+  `traceId=7fa91ffb17fe0a3681e0bc263f696a15` and `deployment.environment=staging`.
+- The `tools/call` span in X-Ray / Application Signals / Transaction Search is **missing**.
+  `GetTraceSegmentDestination` is `Destination=XRay`. The sidecar's `otlp_http/xray` exporter
+  is dropped with HTTP 400 asking for the CloudWatch Logs destination. The Follow-ups bullet
+  below is still the remaining click — not a template change, and not done from this card.
+
+Assisted-by: Cursor Grok 4.6 (Cursor)
+
 ## What this does not decide
 
 Package versions and the shape of the `Otel*` options object (gh#534), the app-owned instrument names and
@@ -355,6 +369,7 @@ OTLP endpoint is set.
 
 - **Enable Transaction Search in the account before treating X-Ray OTLP as Application Signals.** AWS requires
   it for the traces endpoint; it is an operator click, not a template resource, and it is not done here.
+  Measured still `Destination=XRay` on 2026-09-10 (gh#646): every `otlp_http/xray` export is a 400 drop.
 - **Revisit Grafana alerting versus the gh#526 CloudWatch alarms only if the local LGTM profile ever grows a
   pager.** Grafana Cloud is no longer the Fargate backend; introducing a second paging path still lands here
   as a dated `## Update`, not as a configuration change.

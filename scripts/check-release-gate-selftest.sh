@@ -60,7 +60,7 @@ expect_red() {
   # A CASE WITH NO NEEDLE IS SATISFIED BY EXIT STATUS ALONE, which is the one thing this file's header
   # refuses (gh#586 review). `for needle in "$@"` over zero arguments runs zero iterations and falls straight
   # through to `ok "rejected"` -- so a future case that forgets its needle reports the gate as sound on a
-  # runner where `check-release-gate.sh` exited 1 for "gh is required" and checked nothing. All six calls
+  # runner where `check-release-gate.sh` exited 1 for "gh is required" and checked nothing. All seven calls
   # below pass at least one needle today; this is what keeps it that way, and it fails the SUITE rather than
   # the case, because a self-test that cannot assert is not a result to tally.
   [ $# -ge 1 ] || die "SELF-TEST BROKEN  expect_red \"$label\": no needle.
@@ -191,13 +191,47 @@ expect_red "two environments where one is sound and the other does not exist" \
   'PROTECTED    production' \
   '1 of 2 environment(s) would not stop an unattended publish'
 
-# 7. AND IT MUST STILL SAY YES. A gate that rejects everything is exactly as useless as one that accepts
-#    everything, and every case above is a rejection -- so `exit 1` would satisfy all six. This one feeds it
+# 7. A workflow_dispatch *input* named `environment` is not a GitHub Environment (gh#520). deploy.yml
+#    has to call the choice that, and a discovery that treats every `environment:` key as a job
+#    environment reports `<unresolved-mapping>` on the input block — red, for the wrong reason, on
+#    the one workflow the rollback path needs. This fixture has ONLY that input and no job
+#    `environment:` key; the gate must say it found no environment, never an unresolved mapping.
+mkdir -p "$FIXTURES/dispatch-input"
+cat > "$FIXTURES/dispatch-input/deploy.yml" <<'YAML'
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: Target environment
+        required: true
+        type: choice
+        options:
+          - staging
+          - production
+jobs:
+  deploy-staging:
+    if: inputs.environment == 'staging'
+    runs-on: ubuntu-latest
+YAML
+expect_red "a workflow_dispatch input named environment is not an environment" \
+  "$FIXTURES/dispatch-input" \
+  'no `environment:` key found'
+
+# 8. AND IT MUST STILL SAY YES. A gate that rejects everything is exactly as useless as one that accepts
+#    everything, and every case above is a rejection -- so `exit 1` would satisfy all seven. This one feeds it
 #    the mapping form of `environment:` naming the REAL, protected environment and requires a pass, which also
 #    keeps that spelling covered: no workflow in this repo uses it today, so nothing else would notice if it
-#    stopped being understood.
+#    stopped being understood. The dispatch input named `environment` sits in the same file so a discovery
+#    that still walks every `environment:` key would report an unresolved mapping and reject a sound gate.
 mkdir -p "$FIXTURES/mapping"
 cat > "$FIXTURES/mapping/release.yml" <<'YAML'
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: not a GitHub Environment
+        type: choice
+        options: [staging, production]
 jobs:
   gate:
     name: Await release approval
@@ -234,4 +268,4 @@ if [ "$failures" -gt 0 ]; then
   exit 1
 fi
 
-ok "ok  check-release-gate.sh rejected all 6 bad fixtures, each for its own stated reason, and accepted the sound one."
+ok "ok  check-release-gate.sh rejected all 7 bad fixtures, each for its own stated reason, and accepted the sound one."

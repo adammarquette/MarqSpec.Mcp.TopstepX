@@ -6,7 +6,7 @@ root [`AGENTS.md`](../../AGENTS.md) still applies. It owns the artifacts below *
 
 | Artifact | Where |
 | --- | --- |
-| CI, branch-policy, CodeQL, release workflows | [`.github/workflows/`](../../.github/workflows/) |
+| CI, branch-policy, CodeQL, release and deploy workflows | [`.github/workflows/`](../../.github/workflows/) — `release.yml` publishes and deploys; [`deploy.yml`](../../.github/workflows/deploy.yml) redeploys or rolls back from `main` |
 | The published image | [`Dockerfile`](../../Dockerfile) — built by `ci.yml`'s `image` job, pushed to GHCR only by `release.yml` |
 | Local stack | [`docker-compose.yml`](../../docker-compose.yml) (Postgres + server) and [`docker-compose.dev.yml`](../../docker-compose.dev.yml) (SDK overlay) |
 | Build and dependency properties | `Directory.Build.props`, `Directory.Packages.props` (Central Package Management — package *versions*, since nothing here is packaged), `global.json` |
@@ -505,6 +505,9 @@ context list onto a fresh repo. **Read this table as a claim about GitHub settin
 by mutation, not as a description of the workflow files.**
 
 ### The required-context table
+
+**Unchanged by gh#520.** The deploy jobs ride the release path (`release.yml`, `deploy.yml`); they do not
+report a merge-gate context, and `release-gate` still only reports. Do not add a row here for them.
 
 | Context | develop | staging | main | Reported by |
 |---|---|---|---|---|
@@ -1297,10 +1300,10 @@ output" reads a missing environment as a healthy one. The check keys on the exit
 
 **And it is made to fail on every run.**
 [`check-release-gate-selftest.sh`](../../scripts/check-release-gate-selftest.sh) runs in the same job,
-feeding the real script six fixtures with known faults and requiring it to reject each one — **matching on
+feeding the real script seven fixtures with known faults and requiring it to reject each one — **matching on
 the words that name each fault, never on exit status**, since exit 1 is also what "gh is required" produces
-and a self-test satisfied by status alone goes green on a runner with no `gh` on it. **And a seventh fixture
-that is genuinely sound, which it must accept**: six rejections would all be satisfied by `exit 1`, and a
+and a self-test satisfied by status alone goes green on a runner with no `gh` on it. **And an eighth fixture
+that is genuinely sound, which it must accept**: seven rejections would all be satisfied by `exit 1`, and a
 gate that says no to everything is exactly as useless as one that says yes to everything, and rather harder
 to notice. That case uses the mapping spelling of `environment:`, which no workflow here uses today, so
 nothing else would notice if it stopped being understood.
@@ -1311,8 +1314,10 @@ times and fell straight through to `ok "rejected"` — satisfied by exit status 
 file's header refuses. Measured rather than argued: a needle-less case added to the **shipped** code printed
 `rejected  PROBE: no needle at all` in green and the suite exited 0 still claiming six rejections; against
 the guard it dies naming the case, and the probe was removed. It fails the **suite** rather than counting a
-failure, because a self-test that cannot assert is not a result to tally. Six calls pass at least one needle
-today; nothing could have told you when one stopped.
+failure, because a self-test that cannot assert is not a result to tally. Seven calls pass at least one needle
+today; nothing could have told you when one stopped. The seventh rejection is gh#520's: a
+`workflow_dispatch` input named `environment` is not a GitHub Environment, and a discovery that treated
+every `environment:` key as one reported `<unresolved-mapping>` on `deploy.yml`.
 
 The sixth rejection is gh#518's, and it asserts *which* environment a red run names rather than that it goes
 red: two environments in one workflow set — the real, protected `production` beside one that does not exist
@@ -1392,16 +1397,33 @@ only thing that pushes. The integration tier has never had a fake to run against
 `timescale/timescaledb-ha` Postgres itself, because hypertables, the HNSW index and the CHECK constraints are
 the claims worth testing and an in-memory provider proves none of them ([ADR-0004](../adr/0004-one-postgres-timescale-pgvector.md)).
 
-Branches map to intent rather than to environments — there is no deployment here, only a published image:
-`develop` integrates, `staging` holds what is promoted but unreleased, `main` is what has shipped, and a `v*`
-tag on `main` is what triggers a release.
+Branches still map to intent rather than to environments: `develop` integrates, `staging` holds what is
+promoted but unreleased, `main` is what has shipped, and a `v*` tag on `main` is what triggers a release.
+A published release now deploys that image by digest (gh#520). `publish` exposes
+`docker/build-push-action`'s digest; `deploy-staging` assumes `GitHubDeploy-staging` with **no
+`environment:` key** (staging is already behind the `production` approval on `gate`; a named staging
+environment would be a second manual approval, and loosening that gate is the inert-gate class
+`check-release-gate.sh` refuses) and runs [`deploy-environment.sh`](../../scripts/deploy-environment.sh),
+which passes `ImageDigest` and `Version` as `cdk deploy --parameters` and then
+[`check-deployment.sh`](../../scripts/check-deployment.sh) against the staging hostname. `deploy-production`
+needs `deploy-staging`, declares the literal `environment: aws-production`, and deploys the **same digest**.
+The token-endpoint URL and the deploy-check client id come from the stack outputs; the client secret is
+read from Secrets Manager at run time — no GitHub secret. Rollback is [`deploy.yml`](../../.github/workflows/deploy.yml),
+dispatched on `main` (`gh workflow run deploy.yml --ref main -f version=<previous> -f environment=staging`),
+resolving the digest with `docker buildx imagetools inspect` of the version tag. Nothing rebuilds on the
+way to production. `:latest` is still pushed (ADR-0001) and never referenced to decide what runs. The
+[required-context table](#the-required-context-table) is unchanged — `release-gate` still only reports;
+these jobs are the release path, not a new merge gate. `check-deploy-workflows.sh` holds the YAML to
+that topology on every pull request, beside the gate.
 
 ### Infrastructure
 
-**The AWS resources the deployment will run on are code under [`infra/`](../../infra/), and a pull request
+**The AWS resources the deployment runs on are code under [`infra/`](../../infra/), and a pull request
 proves the template it proposes** ([ADR-0023](../adr/0023-aws-deployment-topology.md) §7, gh#516). The
-sentence above is still true — nothing deploys yet; the deploy jobs are gh#520's, and that pull request is
-the one that rewrites it. What exists today:
+deploy jobs are in `release.yml` and `deploy.yml` (gh#520); a pull request proves their topology
+(`check-deploy-workflows.sh`) and the script they share (`deploy-environment-selftest.sh`). A live
+tag-deploy against staging, and the first `aws-production` approval, are later slices — this card does
+not `cdk deploy` a stack other sessions own, and does not approve production. What exists today:
 
 - **Two projects in the solution.** `infra/MarqSpec.Mcp.TopstepX.Infra/` is the CDK app — one
   `EnvironmentStack` instantiated for production (`marqspec.com`, zone looked up) and staging

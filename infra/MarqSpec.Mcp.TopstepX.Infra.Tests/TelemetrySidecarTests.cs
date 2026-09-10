@@ -203,6 +203,32 @@ public sealed partial class TelemetrySidecarTests(EnvironmentTemplates templates
                 "the managed policy is SSM, EC2 and logs:* on every resource, not the exporter's three actions");
     }
 
+    [Theory]
+    [MemberData(nameof(EnvironmentTemplates.Both), MemberType = typeof(EnvironmentTemplates))]
+    public void The_server_log_group_has_an_otlp_stream_the_exporter_does_not_create(string env, string _)
+    {
+        // The contrib otlp_http exporter names x-aws-log-stream: otlp and does not call CreateLogStream.
+        // AWS writes only to an existing pair; granting the action is not creating the stream (PR #648).
+        var t = templates.For(env);
+        var serverLogGroupId = t.Resources("AWS::Logs::LogGroup")
+            .Single(g => t.Properties(g.Value)["LogGroupName"]!.GetValue<string>() == $"/topstepx-mcp/{env}/server")
+            .Key;
+
+        var streams = t.Resources("AWS::Logs::LogStream").Values.Select(t.Properties).ToList();
+        var otlp = streams.Should().ContainSingle(s => s["LogStreamName"]!.GetValue<string>() == "otlp",
+            "one stream named otlp — the header the exporter sends").Which;
+
+        var groupRef = Synthesised.LogicalIdOf(otlp["LogGroupName"] ?? otlp["LogGroupId"]);
+        if (groupRef is null)
+        {
+            Synthesised.Text(otlp["LogGroupName"] ?? otlp["LogGroupId"]).Should().Contain(serverLogGroupId);
+        }
+        else
+        {
+            groupRef.Should().Be(serverLogGroupId, "the stream sits on the server group, not a second one");
+        }
+    }
+
     /// <summary>One pipeline of the collector's <c>service.pipelines</c> block.</summary>
     private sealed record PipelineStages(IReadOnlyList<string> Receivers, IReadOnlyList<string> Processors, IReadOnlyList<string> Exporters);
 
@@ -398,5 +424,8 @@ public sealed partial class TelemetrySidecarTests(EnvironmentTemplates templates
             .Should().NotContain($"topstepx-mcp/{env}/otel");
         t.Json.ToJsonString().Should().NotContain(Collector);
         t.Json.ToJsonString().Should().NotContain("opentelemetry-collector-contrib");
+        t.Resources("AWS::Logs::LogStream").Values.Select(t.Properties)
+            .Select(s => s["LogStreamName"] is JsonValue name ? name.GetValue<string>() : null)
+            .Should().NotContain("otlp", "the otlp stream exists only while the exporter that names it does");
     }
 }

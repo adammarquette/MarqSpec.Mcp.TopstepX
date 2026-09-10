@@ -429,7 +429,8 @@ CloudWatch is the Fargate backend (ADR-0019 2026-09-10 update). The server task 
 second container, `otel-collector`, `Essential=false`, 128 MiB, no port mapping. It receives
 OTLP on the task loopback and exports OTLP/HTTP under SigV4 on the task role: traces to X-Ray
 (Application Signals / Transaction Search), metrics to CloudWatch Metrics, logs to CloudWatch
-Logs (same `/topstepx-mcp/<env>/server` group, stream `otlp`). Endpoints are derived from
+Logs (same `/topstepx-mcp/<env>/server` group, stream `otlp`, created on that group by the
+stack — the exporter names it and does not). Endpoints are derived from
 region. There is no Grafana token and no `otel` shell in the template. Collector process logs
 share that group under the `otel-collector` stream prefix. CloudWatch alarms remain the paging
 path (ADR-0019, gh#526). The local compose `observability` profile (gh#535, `grafana/otel-lgtm`)

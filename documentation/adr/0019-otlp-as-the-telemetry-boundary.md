@@ -321,7 +321,7 @@ endpoints, each derived from `AWS::Region` — not a secret, not a Grafana host:
 |---|---|---|
 | traces | X-Ray (Application Signals / Transaction Search consume these) | `https://xray.{region}.amazonaws.com/v1/traces` |
 | metrics | CloudWatch Metrics | `https://monitoring.{region}.amazonaws.com/v1/metrics` |
-| logs | CloudWatch Logs, into the existing `/topstepx-mcp/<env>/server` group, stream `otlp` | `https://logs.{region}.amazonaws.com/v1/logs` |
+| logs | CloudWatch Logs, into the existing `/topstepx-mcp/<env>/server` group, stream `otlp` (an `AWS::Logs::LogStream` the stack creates — the exporter names it and does not) | `https://logs.{region}.amazonaws.com/v1/logs` |
 
 The three actions the task role is granted are `xray:PutTraceSegments`, `cloudwatch:PutMetricData`, and
 `logs:PutLogEvents` / `logs:CreateLogStream` on that server group. X-Ray and PutMetricData accept no

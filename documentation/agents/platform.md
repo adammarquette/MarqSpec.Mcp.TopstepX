@@ -1406,7 +1406,9 @@ environment would be a second manual approval, and loosening that gate is the in
 `check-release-gate.sh` refuses) and runs [`deploy-environment.sh`](../../scripts/deploy-environment.sh),
 which passes `ImageDigest` and `Version` as `cdk deploy --parameters` and then
 [`check-deployment.sh`](../../scripts/check-deployment.sh) against the staging hostname. `deploy-production`
-needs `deploy-staging`, declares the literal `environment: aws-production`, and deploys the **same digest**.
+needs `deploy-staging`, declares the literal `environment: aws-production`, starts an EFS backup only after
+`describe-stack-resources` succeeds and names a filesystem (a failed describe is a stop, not a first-create
+skip — gh#126), and deploys the **same digest**.
 The token-endpoint URL and the deploy-check client id come from the stack outputs; the client secret is
 read from Secrets Manager at run time — no GitHub secret. Rollback is [`deploy.yml`](../../.github/workflows/deploy.yml),
 dispatched on `main` (`gh workflow run deploy.yml --ref main -f version=<previous> -f environment=staging`),

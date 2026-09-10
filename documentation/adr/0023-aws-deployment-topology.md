@@ -1140,6 +1140,26 @@ task failed the ECS circuit breaker: release images **`v0.3.0` / `v0.3.1` still 
 **0/1**; `/health` **503**. Step 6 and #526–#528 remain open until a release ships OAuth and the
 maintainer fills the remaining shells.
 
+## Update (2026-09-10) — production describe is granted; a failed look is not a first create
+
+gh#520's production deploy starts an on-demand EFS backup by reading the filesystem id off
+`topstepx-mcp-production` with `cloudformation describe-stack-resources`. The first draft
+treated a failed describe as "no EFS yet" (`|| efs_id=""` → `NO BACKUP`) and continued.
+`GitHubDeploy-production` could `backup:StartBackupJob` and could not describe stack
+resources, so every live run was AccessDenied and every live run skipped the snapshot.
+That is gh#126's swallowed read: "I could not look" and "no EFS" were the same answer.
+
+The script now assigns the describe and checks its status. CloudFormation saying the stack
+does not exist, or a successful look that names no `AWS::EFS::FileSystem`, is still a first
+create and is named. Any other failure — AccessDenied included — stops the deploy. The
+production role is granted `cloudformation:DescribeStackResources` on
+`stack/topstepx-mcp-production/*` so a live run can tell those apart; staging is not. The
+OIDC stack is already in the account — the grant takes effect on the next `cdk deploy` of
+`topstepx-mcp-github-oidc` (maintainer). Until then a production run fails loud on the look
+rather than skipping the snapshot.
+
+Assisted-by: Cursor Grok 4.6 (Cursor)
+
 ## Follow-ups
 
 - gh#516, gh#517, gh#518 built decisions 7, 9 and 8; gh#529 gates decision 4's rule. gh#516 also

@@ -18,7 +18,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **A published release deploys staging by digest, then production behind `aws-production`.**
   `release.yml`'s `publish` exposes the image digest; `deploy-staging` assumes `GitHubDeploy-staging`
   with no Actions environment and passes `ImageDigest` and `Version` as CloudFormation parameters;
-  `deploy-production` waits on the literal `aws-production` environment and deploys the same digest.
+  `deploy-production` waits on the literal `aws-production` environment, starts an EFS backup
+  only after a successful describe names a filesystem (a failed describe stops the deploy),
+  and deploys the same digest.
   `deploy.yml` redeploys or rolls back either environment from a version tag
   (`gh workflow run deploy.yml --ref main`). The stack writes SSM history; the pipeline never
   `put-parameter`s and never reads `{{resolve:ssm}}` to decide what runs (gh#520, ADR-0023 §5).

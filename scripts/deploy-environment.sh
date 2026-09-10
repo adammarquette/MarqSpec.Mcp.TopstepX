@@ -17,8 +17,11 @@
 #
 # WHAT IT DOES NOT DO. It does not build an image, it does not assume an IAM role, it does not install
 # the SDK or the CDK CLI, and it does not wait for a backup job to finish. The workflow that calls it
-# has already done the first three. Production starts an EFS backup and proceeds; a first create with
-# no file system yet is named and skipped rather than invented.
+# has already done the first three. Production starts an EFS backup after a successful describe names
+# a filesystem and proceeds without waiting. A first create — the stack does not exist, or it exists
+# with no file system yet — is named and skipped. A failed describe (AccessDenied, or any other look
+# that did not complete) is a stop, never a skip: "I could not look" and "no EFS" are not the same
+# answer (gh#126).
 #
 # EVERY READ THAT DECIDES A VERDICT IS ASSIGNED ON ITS OWN LINE AND CHECKED (gh#126).
 #
@@ -142,13 +145,30 @@ ACCOUNT="$(run_aws sts get-caller-identity --query Account --output text)"
 
 # ---------------------------------------------------------------------------
 # Production starts an EFS backup and does not wait for it (gh#520).
+# The describe is assigned and checked (gh#126). AccessDenied and "no EFS"
+# are not the same answer: only a successful empty look, or a stack that
+# CloudFormation itself says does not exist, is a first create.
 # ---------------------------------------------------------------------------
 if [ "$ENV_NAME" = production ]; then
+  efs_err="$(mktemp)"
+  efs_status=0
   efs_id="$(run_aws cloudformation describe-stack-resources \
     --stack-name "$STACK" \
     --query "StackResources[?ResourceType=='AWS::EFS::FileSystem'].PhysicalResourceId" \
-    --output text)" || efs_id=""
-  if [ -z "$efs_id" ] || [ "$efs_id" = "None" ]; then
+    --output text 2>"$efs_err")" || efs_status=$?
+  efs_err_text="$(cat "$efs_err")"
+  rm -f "$efs_err"
+  if [ "$efs_status" -ne 0 ]; then
+    case "$efs_err_text" in
+      *"Stack with id ${STACK} does not exist"*)
+        info "NO BACKUP  $STACK does not exist yet — first create; deploy proceeds without a pre-deploy snapshot"
+        ;;
+      *)
+        die "could not describe stack resources on $STACK (exit $efs_status); refusing to skip the pre-deploy backup
+${efs_err_text}"
+        ;;
+    esac
+  elif [ -z "$efs_id" ] || [ "$efs_id" = "None" ]; then
     info "NO BACKUP  no EFS on $STACK yet — first create; deploy proceeds without a pre-deploy snapshot"
   else
     [ -n "$efs_id" ] || die "EFS physical id was empty after a successful describe"

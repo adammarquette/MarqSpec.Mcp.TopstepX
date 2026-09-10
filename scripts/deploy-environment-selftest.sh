@@ -47,11 +47,22 @@ case "$1 $2" in
     printf '%s\n' "123456789012"
     ;;
   "cloudformation describe-stack-resources")
-    if [ "${DEPLOY_ENVIRONMENT_FAKE_EFS:-fs-fixture}" = none ]; then
-      printf '%s\n' "None"
-    else
-      printf '%s\n' "${DEPLOY_ENVIRONMENT_FAKE_EFS:-fs-fixture}"
-    fi
+    case "${DEPLOY_ENVIRONMENT_FAKE_EFS:-fs-fixture}" in
+      none)
+        printf '%s\n' "None"
+        ;;
+      missing-stack)
+        printf 'An error occurred (ValidationError) when calling the DescribeStackResources operation: Stack with id topstepx-mcp-production does not exist\n' >&2
+        exit 254
+        ;;
+      denied)
+        printf 'An error occurred (AccessDenied) when calling the DescribeStackResources operation: User is not authorized to perform: cloudformation:DescribeStackResources\n' >&2
+        exit 254
+        ;;
+      *)
+        printf '%s\n' "${DEPLOY_ENVIRONMENT_FAKE_EFS:-fs-fixture}"
+        ;;
+    esac
     ;;
   "backup start-backup-job")
     printf '%s\n' "job-fixture"
@@ -191,6 +202,12 @@ DEPLOY_ENVIRONMENT_FAKE_SECRET=empty \
   expect_red "unfilled deploy-check shell" "$FIXTURES/empty-secret" staging 0.4.0 "$SOUND_DIGEST" -- \
   "empty deploy-check document"
 
+write_fakes "$FIXTURES/describe-denied"
+DEPLOY_ENVIRONMENT_FAKE_EFS=denied \
+  expect_red "describe-stack-resources AccessDenied is not a first create" \
+  "$FIXTURES/describe-denied" production 0.4.0 "$SOUND_DIGEST" -- \
+  "refusing to skip the pre-deploy backup" "AccessDenied"
+
 # --- sound staging ---------------------------------------------------------
 
 write_fakes "$FIXTURES/staging"
@@ -303,6 +320,30 @@ else
       red "SELF-TEST FAILED  first production create with no EFS"
       info "  It never said NO BACKUP."
       printf '%s\n' "$first_out" | sed 's/^/  | /'
+      failures=$((failures + 1))
+      ;;
+  esac
+fi
+
+# --- first production create: stack does not exist, named skip --------------
+
+write_fakes "$FIXTURES/missing-stack"
+missing_out=""
+missing_status=0
+missing_out="$(DEPLOY_ENVIRONMENT_FAKE_EFS=missing-stack run_script "$FIXTURES/missing-stack" production 0.4.0 "$SOUND_DIGEST" 2>&1)" || missing_status=$?
+if [ "$missing_status" -ne 0 ]; then
+  red "SELF-TEST FAILED  first production create when the stack does not exist"
+  printf '%s\n' "$missing_out" | sed 's/^/  | /'
+  failures=$((failures + 1))
+else
+  case "$missing_out" in
+    *"NO BACKUP"*"does not exist"*)
+      ok "accepted  first production create names a missing stack"
+      ;;
+    *)
+      red "SELF-TEST FAILED  first production create when the stack does not exist"
+      info "  It never said NO BACKUP and that the stack does not exist."
+      printf '%s\n' "$missing_out" | sed 's/^/  | /'
       failures=$((failures + 1))
       ;;
   esac

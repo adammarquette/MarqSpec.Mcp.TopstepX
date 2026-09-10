@@ -825,6 +825,15 @@ public sealed class EnvironmentStack : Stack
         // ADR-0019, not re-argued here; Grafana Cloud as the Fargate backend is retired by gh#646.
         if (props.Telemetry is not null)
         {
+            // The contrib otlp_http exporter names this stream and does not create it. AWS writes only
+            // to an existing group/stream pair; logs:CreateLogStream on the task role does not invoke
+            // that API (gh#646, PR #648).
+            _ = new LogStream(this, "OtlpLogStream", new LogStreamProps
+            {
+                LogGroup = serverLogs,
+                LogStreamName = "otlp",
+            });
+
             serverTask.AddToTaskRolePolicy(new PolicyStatement(new PolicyStatementProps
             {
                 Sid = "OtlpTraces",

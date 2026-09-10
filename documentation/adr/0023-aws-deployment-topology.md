@@ -1124,8 +1124,9 @@ maintainer fills the remaining shells.
   still owns the outbound-path fork with the maintainer.
 - gh#519 stood the account up, confirmed `staging.`, chose `us-east-1`, created public zone
   `Z00545362JA49XMTT3U7Q`, swapped Cloudflare NS onto it, and changed staging to `ZoneMode.Lookup`
-  of that zone. Remaining on that card: a release image with OAuth, secret fills the maintainer
-  still owns, live quotes this slice could not take (#526–#528), and production (out of scope).
+  of that zone. Staging runs **`v0.4.0`** (2026-09-10 entry). Remaining on that card: secret fills the
+  maintainer still owns, step 6 and #526–#528 live quotes still open until those are filled, IdP discovery
+  still omits S256 and RFC 8707 `resource`, and production (out of scope).
 - gh#520 and gh#521 build decision 8's pipeline and its check; gh#520 also rewrites the platform contract's
   "How the pipeline is shaped".
 - gh#522 builds decision 10 and records the restore drill; ADR-0004 gains the dated update saying the store

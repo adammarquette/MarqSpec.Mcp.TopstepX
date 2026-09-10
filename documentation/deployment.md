@@ -1,8 +1,8 @@
 # Deployment runbook
 
 Operational steps for the AWS environments (ADR-0023, gh#509). Started by gh#527's cost section; the
-alarm table is gh#526; WAF lockout is gh#528. Rotation, restore and "which release is running" still
-land with gh#523. **gh#519 stood the account up once** (2026-09-09): region, OIDC stack, GitHub
+alarm table is gh#526; WAF lockout is gh#528; Observability is gh#537. Rotation, restore and "which
+release is running" still land with gh#523. **gh#519 stood the account up once** (2026-09-09): region, OIDC stack, GitHub
 `aws-production` environment, the hand-created staging zone, the Cloudflare NS swap onto
 `Z00545362JA49XMTT3U7Q`, and staging's `ZoneMode.Lookup` of that zone (never a second zone).
 
@@ -319,6 +319,47 @@ yet owns. `/health` stays liveness-only (gh#513).
 | EventBridge `SERVICE_DEPLOYMENT_FAILED` | n/a | The circuit breaker rolled the deploy back. The previous task definition is still answering. Fix the digest / task, then redeploy. Filtered to this environment's service ARNs (`resources`) so staging does not page production. |
 | Migration / store-unavailable log line, ≥ 1 in 5 min | not breaching | The filter matches the `MigrateAsync` connection-dropped line and the startup `StoreAvailability` Unavailable warning. The store did not answer, or the connection dropped mid-migration. A schema defect that crashes the process pages as the task-count / rollback alarms instead. |
 | EFS `PercentIOLimit` > 80 % for 15 min | not breaching | The store's file system is at its Elastic I/O ceiling. Find what is driving I/O on the postgres volume; a quota increase or a throughput-mode change needs a dated ADR entry. |
+
+Assisted-by: Cursor Grok 4.6 (Cursor)
+
+## Observability
+
+Grafana Cloud is the backend (ADR-0019 §5). The server task carries a second container,
+`otel-collector`, `Essential=false`, 128 MiB, no port mapping. It receives OTLP on the task
+loopback and exports OTLP/HTTP. Its Grafana endpoint and token are `valueFrom`s on
+`topstepx-mcp/<env>/otel` (`endpoint`, `authorization`) — never in the template. Collector
+logs share `/topstepx-mcp/<env>/server` under the `otel-collector` stream prefix. CloudWatch
+alarms remain the paging path; Grafana is a place to look (ADR-0019, gh#526).
+
+A `valueFrom` is read once at container start. ECS does not restart a stopped non-essential
+container, so filling the shell without `aws ecs update-service --force-new-deployment` on
+that environment's server leaves a healthy service that exports nothing.
+
+**Measured on staging, 2026-09-10 (account `045296582762`, `us-east-1`, stack
+`topstepx-mcp-staging`).** No secret value is quoted.
+
+| Check | Result |
+|---|---|
+| Live server task | two containers; `otel-collector` image `otel/opentelemetry-collector-contrib` by digest |
+| `otel` keys | `endpoint` and `authorization` nonempty. Host class `grafana.net`, path `/otlp`, scheme `https`. `authorization` is `Basic <payload>` (not a raw `glc_…` token) |
+| Sidecar while the shell is filled | `RUNNING`. Every export to Grafana Cloud is `Unauthenticated` (`Permanent error`, `otlp_http/grafana`, signals logs and metrics). Data is dropped. |
+| Tempo `tools/call` span | **not observed.** Exports were dropped; this environment has no Grafana Cloud read credential. A missing number is missing. |
+| Loki lines with the same trace id | **not observed**, same reason. CloudWatch server logs (`Category` / `EventId` / `LogLevel` / `Message` / `State`) carry no `trace_id`. |
+| `deployment.environment=staging` | **not observed** in Tempo or Loki. The collector config upserts it; Grafana never accepted a record to show it. |
+| Authenticated `tools/call` (`list_instruments`) | HTTP **200**, `result` present, 2026-09-10 19:32Z and again 19:36Z |
+| Sidecar kill | emptied `endpoint` (authorization left in place), then `force-new-deployment`. Task `492fcc8e73da4620bd55f5071e3904a7`: server `RUNNING`, collector `STOPPED` exit **1**. Log: `Configuration references empty environment variable` `GRAFANA_OTLP_ENDPOINT`; `invalid configuration: exporters::otlp_http/grafana: at least one endpoint must be specified`. |
+| `/health` with sidecar dead | **200**, `status=ok`, `store=available`, `version=0.4.0` (19:36:16Z) |
+| `tools/call` with sidecar dead | HTTP **200**, `result` present |
+| Restore | original keys put back, `force-new-deployment`. Task `a840004ce71d46c489601648f048058b`: both containers `RUNNING`. `/health` 200 afterwards. |
+
+**When the sidecar is unhealthy.** Do nothing to the server. `Essential=false` is the
+degradation: the exporter drops on the floor and `/health` plus a tool call keep answering
+(measured above). Fix is the shell (key presence, then whether Grafana accepts the
+credential — nonempty is not the same as accepted) and a `force-new-deployment`. Do not
+`cdk deploy` a template change to restart a sidecar.
+
+Finding a Cowork call by session id in Grafana, and retention as configured, were **not
+measured** — nothing arrived in Tempo or Loki to look up.
 
 Assisted-by: Cursor Grok 4.6 (Cursor)
 

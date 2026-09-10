@@ -73,7 +73,9 @@ backing up with observations, not instead of them.
 gh#522. The restorable artefact is a daily `pg_dump -Fc` to a versioned S3 bucket
 (`topstepx-mcp-<env>-backups`, 90-day lifecycle, SSE) from a two-container Fargate task: the same
 `timescale/timescaledb-ha` digest writes the dump onto a shared ephemeral volume, then
-`public.ecr.aws/aws-cli/aws-cli` (by digest) uploads it, `dependsOn` SUCCESS. EventBridge Scheduler
+`public.ecr.aws/aws-cli/aws-cli` (by digest) uploads it, `dependsOn` SUCCESS. The dump container is
+`Essential=false` — ECS refuses a SUCCESS/COMPLETE dependency that is essential (2026-09-10 staging
+deploy). EventBridge Scheduler
 fires at 16:15 America/Chicago, inside the 16:00–17:00 Central maintenance window. A CloudWatch
 alarm pages the environment topic when no object is written in 26 h. The dump task role may
 `s3:PutObject` on that bucket only.

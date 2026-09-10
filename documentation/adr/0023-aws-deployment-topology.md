@@ -1246,6 +1246,15 @@ file — later cards link, they do not copy. The 2026-09-06 sentence that Observ
 gh#523 creating the file is closed: the file existed; this card added the leftover operator paths.
 A first-month billed figure is still missing (account stood up 2026-09-09).
 
+## Update (2026-09-10) — dump container is not essential (gh#522)
+
+ECS refused the first staging deploy of decision 10: *A dependency container with SUCCESS or
+COMPLETE condition cannot be an essential container.* The dump container exits 0 after writing
+`/dump/topstepx_mcp.dump`; upload `dependsOn` that SUCCESS and is the essential container. Dump
+is therefore `Essential=false`. Measured 2026-09-10 against `topstepx-mcp-staging` (stack returned
+`UPDATE_ROLLBACK_COMPLETE`). Zone `Z00545362JA49XMTT3U7Q` unchanged. `RecordTape` and the server
+image were not touched.
+
 Assisted-by: Cursor Grok 4.6 (Cursor)
 
 ## Follow-ups
@@ -1264,8 +1273,9 @@ Assisted-by: Cursor Grok 4.6 (Cursor)
   "How the pipeline is shaped".
 - gh#522 built decision 10's dump task, bucket, schedule and alarm; ADR-0004 gained the dated update
   saying the store has a backup story and what it is not. The restore procedure is in
-  `documentation/deployment.md`. Two consecutive dump days, the maintainer's drill, and a
-  disable-schedule alarm fire remain outstanding.
+  `documentation/deployment.md`. The first staging deploy failed because dump was essential under a
+  SUCCESS `dependsOn` (2026-09-10 entry); dump is now `Essential=false`. Two consecutive dump days,
+  the maintainer's drill, and a disable-schedule alarm fire remain outstanding.
 - gh#525 stated the EFS threshold and quoted pgbench plus both stop paths on 2026-09-10; the RTH
   tape session remains. gh#526, gh#527 and gh#528 have. gh#523 landed rotation, which-release,
   scale-to-zero and failed-deploy in the runbook; the first-month cost figure remains missing.

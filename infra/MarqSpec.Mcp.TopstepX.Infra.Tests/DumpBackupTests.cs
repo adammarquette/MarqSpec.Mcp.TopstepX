@@ -156,6 +156,10 @@ public sealed partial class DumpBackupTests(EnvironmentTemplates templates) : IC
         var dependsOn = upload["DependsOn"]!.AsArray().Should().ContainSingle().Which!;
         dependsOn["ContainerName"]!.GetValue<string>().Should().Be("dump");
         dependsOn["Condition"]!.GetValue<string>().Should().Be("SUCCESS");
+        dump["Essential"]!.GetValue<bool>().Should().BeFalse(
+            "ECS rejects SUCCESS/COMPLETE dependsOn when the dependency container is essential (2026-09-10 staging deploy)");
+        (upload["Essential"]?.GetValue<bool>() ?? true).Should().BeTrue(
+            "upload is the essential container; the task succeeds when the object lands");
 
         var dumpCommand = ContainerCommand(dump);
         dumpCommand.Should().Contain("pg_dump");

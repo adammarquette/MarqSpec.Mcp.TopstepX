@@ -201,6 +201,19 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: ./scripts/check-release-gate-selftest.sh
 
+      # gh#520. The deploy jobs and deploy.yml are YAML full of the same class of silent-green faults
+      # as the approval gate: an unversioned {{resolve:ssm}}, a put-parameter over stack-owned history,
+      # an expression-named environment, a :latest deploy. This reads the files. The required-context
+      # table is unchanged — release-gate still only reports.
+      - name: The deploy workflows keep the digest-as-parameter shape
+        run: ./scripts/check-deploy-workflows.sh
+
+      - name: Self-test — that check still rejects a broken deploy path
+        run: ./scripts/check-deploy-workflows-selftest.sh
+
+      - name: Self-test — deploy-environment.sh still refuses :latest and never writes SSM
+        run: ./scripts/deploy-environment-selftest.sh
+
   build-test:
     name: build & unit tests
     runs-on: ubuntu-latest

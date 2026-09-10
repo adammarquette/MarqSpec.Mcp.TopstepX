@@ -81,7 +81,10 @@ fi
 #
 # Both spellings Actions accepts: the scalar `environment: production`, and the mapping form whose name sits
 # on a following `name:` line. Whole-line comments are skipped, so release.yml's prose about the gate does not
-# become a phantom environment.
+# become a phantom environment. Only a JOB-level key counts: `deploy.yml` names a workflow_dispatch *input*
+# `environment` (gh#520), and that block is `environment:` with `description:` / `type:` under it — which
+# used to be reported as `<unresolved-mapping>` and fail a sound rollback workflow. Discovery starts at
+# `jobs:` and matches the job-property indent this repository writes (four spaces).
 #
 # A `${{ }}` expression cannot be resolved from the file and is reported as an ERROR rather than skipped: an
 # environment named at run time is precisely one this check cannot vouch for, and saying nothing about it
@@ -120,9 +123,11 @@ discovered="$(
     function indent_of(s,   t) { t = s; sub(/[^ \t].*$/, "", t); return length(t) }
     function close_pending() { print pendingfile "\t<unresolved-mapping>"; pending = 0 }
 
-    FNR == 1 && pending { close_pending() }
+    FNR == 1 { if (pending) close_pending(); injobs = 0 }
     /^[[:space:]]*#/ { next }
-    match($0, /^[[:space:]]*environment:[[:space:]]*/) {
+    $0 == "jobs:" { injobs = 1; next }
+    !injobs { next }
+    match($0, /^    environment:[[:space:]]*/) {
       if (pending) close_pending()
       rest = substr($0, RSTART + RLENGTH)
       sub(/[[:space:]]*#.*$/, "", rest)

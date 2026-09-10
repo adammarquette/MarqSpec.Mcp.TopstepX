@@ -1,8 +1,8 @@
 # Deployment runbook
 
 Operational steps for the AWS environments (ADR-0023, gh#509). Started by gh#527's cost section; the
-alarm table is gh#526; WAF lockout is gh#528; Observability is gh#537; store restore is gh#522.
-Rotation and "which release is running" still land with gh#523. **gh#519 stood the account up once** (2026-09-09): region, OIDC stack, GitHub
+alarm table is gh#526; WAF lockout is gh#528; Observability is gh#537; store restore is gh#522;
+pipeline deploy is gh#520. Rotation and "which release is running" still land with gh#523. **gh#519 stood the account up once** (2026-09-09): region, OIDC stack, GitHub
 `aws-production` environment, the hand-created staging zone, the Cloudflare NS swap onto
 `Z00545362JA49XMTT3U7Q`, and staging's `ZoneMode.Lookup` of that zone (never a second zone).
 
@@ -71,6 +71,44 @@ curl -sSI https://topstepx-mcp.staging.marqspec.com/health
 curl -sS -D- -o /dev/null -X POST https://topstepx-mcp.staging.marqspec.com/mcp
 curl -sS https://topstepx-mcp.staging.marqspec.com/.well-known/oauth-protected-resource/mcp
 ```
+
+Assisted-by: Cursor Grok 4.6 (Cursor)
+
+## Pipeline deploy and rollback (gh#520)
+
+A published GitHub release deploys **staging** with no further hands after `publish`, then waits on the
+`aws-production` environment for production. Nothing rebuilds. The image is the digest `publish`
+exposed (or, on a dispatch, the digest `docker buildx imagetools inspect` reads off the version tag).
+
+`cdk deploy` passes `ImageDigest` and `Version` as stack parameters. The stack writes
+`/topstepx-mcp/<env>/image-digest` and `/version` as the history. **Do not `put-parameter`.** An
+unversioned `{{resolve:ssm}}` does not redeploy — an identical template is *no changes* and the old
+digest keeps running (ADR-0023 §5).
+
+The token-endpoint URL and the deploy-check client id come from the stack outputs
+(`HostedUiBaseUrl` + `/oauth2/token`, `DeployCheckClientId`). The client secret is read from
+`topstepx-mcp/<env>/deploy-check` in Secrets Manager at run time. Neither is a workflow literal and
+neither is a GitHub secret.
+
+The deploy role ARN is built from the repository variable `AWS_ACCOUNT_ID` (not a secret; not a
+twelve-digit literal in a tracked file). Region is `us-east-1`. Outbound is still a fork: the
+pipeline passes `PublicIpPerTask` as synth context to match the standing stack (gh#519), not as a
+`Program.cs` literal.
+
+```bash
+# rollback / redeploy — always from main. GitHubDeploy-staging trusts that branch and the v* tag
+# pattern, exactly two. Any other ref is a role the staging job cannot assume.
+gh workflow run deploy.yml --ref main -f version=0.4.0 -f environment=staging
+```
+
+`:latest` is still pushed on every tag (ADR-0001) and is never what a deploy references.
+
+**Do not approve the first `aws-production` run until gh#525 has closed**, or a dated ADR-0023 entry
+says production went first. The maintainer approves production. gh#528 (WAF) is already closed.
+
+**This card does not `cdk deploy` or force-new-deployment on the live `topstepx-mcp-staging` stack.**
+Sister sessions own that stack. A green pull request here licenses the workflow topology and the
+script self-tests, not a live tag-deploy.
 
 Assisted-by: Cursor Grok 4.6 (Cursor)
 

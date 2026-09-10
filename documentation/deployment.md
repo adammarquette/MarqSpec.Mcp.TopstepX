@@ -464,6 +464,39 @@ measured** — nothing arrived in Tempo or Loki to look up.
 
 Assisted-by: Cursor Grok 4.6 (Cursor)
 
+## Postgres task stop (gh#525)
+
+Staging, 2026-09-10, release **0.4.0**. Cluster `topstepx-mcp-staging`, service
+`topstepx-mcp-staging-postgres`, Exec enabled. Desired count stays **1** — two Postgres on one EFS
+is a corrupted store. Threshold and numbers are the ADR-0023 2026-09-10 gh#525 entry; this is the
+operator path.
+
+**Graceful.** `aws ecs stop-task` on the running postgres task. Quoted on #525: stop issued
+19:27:50Z → old `stoppedAt` 19:28:45Z → replacement `pg_isready` 19:30:09Z (**139 s**). Postgres
+exits 0 well under `stopTimeout` 120 s. A second stop (19:45:35Z, repeated 19:45:37Z) was the same
+shape: `stoppedAt` 19:46:24Z exit 0, `pg_isready` 19:47:48Z (**133 s**).
+
+**`kill -9 1` via ECS Exec does not dirty-kill this task.** PID 1 is `postgres`. `kill -9 1`
+returned 0; the process stayed `Ss` and the task stayed HEALTHY. The kernel ignores fatal signals
+to the namespace init. The cgroup v1 `freezer.state` is read-only from inside the task. A second
+`stop-task` on a task already `DEACTIVATING` is a no-op. `postmaster.pid` did **not** have to be
+removed by hand on either path — the replacement wrote a fresh file and reached `ready`. No
+entrypoint wrapper.
+
+```bash
+aws ecs stop-task --cluster topstepx-mcp-staging \
+  --task "$TASK" --reason "operator restart"
+# wait until list-tasks shows a different RUNNING task, then:
+aws ecs execute-command --cluster topstepx-mcp-staging --task "$NEW" \
+  --container postgres --interactive \
+  --command "pg_isready -U topstepx -d topstepx_mcp"
+```
+
+Zone `Z00545362JA49XMTT3U7Q` unchanged. `MarketData__RecordTape` stayed `false` on
+`topstepx-mcp-staging-server:6`.
+
+Assisted-by: Cursor Grok 4.6 (Cursor)
+
 ## I locked myself out
 
 The WAF rate-based rule (gh#528, ADR-0023 2026-09-08 entry) blocks the operator's own address the same as

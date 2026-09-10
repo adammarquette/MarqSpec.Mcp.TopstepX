@@ -428,10 +428,11 @@ its own reason, not a drift.
   service (decision 4). A client mid-session sees the server go away and come back with no session.
 - **The additive-migration rule is load-bearing and is a gate, not a sentence** — gh#529, before the first
   production deploy that could need a rollback.
-- **EFS is a measured risk, not an assumed one.** gh#525 states the threshold first, measures the tape load
-  and a hard task kill on staging, and writes the decision here. Until that entry exists, production on EFS
-  is a decision the maintainer takes with the measurement pending, and gh#520's first `aws-production`
-  approval either follows the entry or is recorded here, on a date, as having preceded it.
+- **EFS is a measured risk, not an assumed one.** The 2026-09-10 gh#525 entry states the threshold
+  first, then the numbers taken that afternoon (pgbench and both stop paths). A full RTH tape session
+  did not fit that day and is still open; production on EFS is not approved by that entry, and
+  gh#520's first `aws-production` approval either follows the tape quote or is recorded here, on a
+  date, as having preceded it.
 - **Cost is an order of magnitude, checked by the bill.** gh#527's estimate basis is roughly 95 USD per
   environment per month, priced on `us-east-1` on-demand as a basis and not as a chosen region — the region
   is still gh#519's — for two Fargate services, one ALB with its two public IPv4 addresses, EFS Elastic
@@ -1160,6 +1161,58 @@ rather than skipping the snapshot.
 
 Assisted-by: Cursor Grok 4.6 (Cursor)
 
+## Update (2026-09-10) — EFS escalation threshold, then measurement (gh#525)
+
+**Threshold first, stated 2026-09-10 afternoon America/Chicago before any pgbench, kill, or tape
+number on this card**, on staging release **0.4.0**. Quoted on #525 at that hour. EC2 + EBS is
+triggered if **any** of the following is crossed:
+
+- Trades insert **p99 > 25 ms**. `TradeTapeRecorder` commits one `Trades` row per print. Serial
+  capacity at 25 ms is ~40 prints/s; a multi-instrument cash-open burst exceeds that and a hole
+  cannot be backfilled ([ADR-0016](0016-subscribe-to-the-market-hub.md)). 25 ms is also an order of
+  magnitude above a typical EBS gp3 commit, so crossing it names NFS as the cause.
+- Forced `CALL run_job` on the Trades compression policy **> 120 s** for one RTH session's chunk.
+  120 s is postgres `stopTimeout` (decision 3). A job that cannot finish before SIGKILL on a
+  routine stop races the next task's recovery.
+- EFS **`PercentIOLimit` > 80 % for 15 min** — already the alarm (2026-09-08 entry). Same number
+  is now also the escalation trigger.
+
+Any one crossing files an EC2 + EBS card with the number that triggered it. All three stay under:
+EFS stays. Production is not approved by this entry.
+
+**Measurement (after the threshold), staging `0.4.0`, 2026-09-10, quoted on #525.** EFS
+`fs-0ed26bca5aabea73e`. Postgres 17.10. Cluster `topstepx-mcp-staging`. Zone
+`Z00545362JA49XMTT3U7Q` unchanged. `MarketData__RecordTape` stayed `false` (`describe-task-definition`
+`topstepx-mcp-staging-server:6`). No `aws-production` approval. No EC2 + EBS card — the tape
+triggers have no session numbers yet, and nothing measured today crossed PercentIOLimit.
+
+- **Portable pgbench** (ECS Exec, dedicated `pgbench_525`, dropped afterwards). `pgbench -i -s 10`
+  19:25:38Z–19:25:59Z, **done in 11.19 s**. `pgbench -T 60 -c 4` 19:26:12Z–19:27:12Z: TPC-B, scale
+  10, simple, 4 clients, 1 thread, **8609** txns, 0 failed, **latency average 27.862 ms**, initial
+  connection 49.928 ms, **tps 143.563**. Default `pgbench` does not print p99; this average is not
+  the Trades-insert trigger above.
+- **EFS over that window** (1-minute Maximum / Sum, `us-east-1`). `PercentIOLimit` peak **0.133 %**
+  at 14:26 CDT (pgbench run); **0.172 %** at 14:28 CDT (first replacement). `TotalIOBytes` Sum
+  **714 224 952** (14:25, init), **203 380 296** (14:26), **36 249 696** (14:27). `MeteredIOBytes`
+  Sum **585 811 998** / **139 774 587** / **36 249 696** on the same three minutes. Far under 80 %.
+- **Graceful `stop-task`** on `29c34aa477294b1bb2f9ac5d32c92853` at 19:27:50Z (`UserInitiated`).
+  Old `stoppedAt` 19:28:45Z. Replacement `2307ed8a32ce484784c334fc379728f4` `startedAt` 19:29:54Z;
+  `pg_isready` accepting at **19:30:09Z** (**139 s** stop-to-ready).
+- **Hard path.** `kill -9 1` via ECS Exec at 19:30:28Z returned 0; PID 1 is `postgres` and stayed
+  `Ss`, task stayed HEALTHY — namespace init ignores fatal signals from inside. cgroup v1
+  `freezer.state` is read-only from the task, so the process cannot be frozen to outlive
+  `stopTimeout`. A second `stop-task` on an already-`DEACTIVATING` task is a no-op. The path we
+  can actually exercise is therefore always graceful: stop issued 19:45:35Z (twice at 19:45:37Z),
+  old `stoppedAt` 19:46:24Z **exit 0**, replacement `5691894cbd034a8999f2150554153ab3` `startedAt`
+  19:47:39Z, `pg_isready` **19:47:48Z** (**133 s**). `postmaster.pid` was present with a fresh
+  start time and `ready` — **not removed by hand**. No entrypoint wrapper. Runbook step is the
+  stop-task timing and the `kill -9 1` no-op, in [`deployment.md`](../deployment.md).
+
+A full RTH tape session did not fit on 2026-09-10 afternoon America/Chicago (RTH already underway).
+Trades rows, insert p50/p99, WAL sync, checkpoint durations, and forced `CALL run_job` are **not**
+invented. Until that session is quoted, the EFS-vs-EC2 verdict is **not** closed — EFS is still
+the store, and the threshold above is what a later session is measured against.
+
 ## Follow-ups
 
 - gh#516, gh#517, gh#518 built decisions 7, 9 and 8; gh#529 gates decision 4's rule. gh#516 also
@@ -1178,7 +1231,8 @@ Assisted-by: Cursor Grok 4.6 (Cursor)
   saying the store has a backup story and what it is not. The restore procedure is in
   `documentation/deployment.md`. Two consecutive dump days, the maintainer's drill, and a
   disable-schedule alarm fire remain outstanding.
-- gh#525 lands its dated entry in the decision log above. gh#526, gh#527 and gh#528 have.
+- gh#525 stated the EFS threshold and quoted pgbench plus both stop paths on 2026-09-10; the RTH
+  tape session remains. gh#526, gh#527 and gh#528 have.
 - gh#510's connector measurement landed on ADR-0007 and ADR-0021; if a later measurement overturns the
   pre-registered-client assumption, decision 9's issuer reopens here as a dated entry and gh#517 is the
   card that changes.

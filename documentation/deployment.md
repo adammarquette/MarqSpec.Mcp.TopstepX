@@ -1,8 +1,8 @@
 # Deployment runbook
 
 Operational steps for the AWS environments (ADR-0023, gh#509). Started by gh#527's cost section; the
-alarm table is gh#526; WAF lockout is gh#528; Observability is gh#537. Rotation, restore and "which
-release is running" still land with gh#523. **gh#519 stood the account up once** (2026-09-09): region, OIDC stack, GitHub
+alarm table is gh#526; WAF lockout is gh#528; Observability is gh#537; store restore is gh#522.
+Rotation and "which release is running" still land with gh#523. **gh#519 stood the account up once** (2026-09-09): region, OIDC stack, GitHub
 `aws-production` environment, the hand-created staging zone, the Cloudflare NS swap onto
 `Z00545362JA49XMTT3U7Q`, and staging's `ZoneMode.Lookup` of that zone (never a second zone).
 
@@ -295,8 +295,8 @@ was still `PendingConfirmation` with CloudWatch delivered **0** at the #519 quot
 `SubscriptionsConfirmed` **1**, `SubscriptionsPending` **0**; CloudWatch
 `NumberOfNotificationsDelivered` last 6 h **Sum = 1** (datapoint 12:51 CDT). Inbox contents
 were not read.
-`OKActions` is empty — a return to OK does not page. gh#522's "no dump object in 26 h" alarm is
-still open and will publish here when it lands.
+`OKActions` is empty — a return to OK does not page. gh#522's "no dump object in 26 h" alarm
+publishes here.
 
 Quoted on #519, 2026-09-10: `update-service --desired-count 0` at 12:49:43 CDT → alarm
 `topstepx-mcp-staging-server-running-tasks` **ALARM** at 12:51:39 → desired 1 at 12:52:24 →
@@ -319,6 +319,59 @@ yet owns. `/health` stays liveness-only (gh#513).
 | EventBridge `SERVICE_DEPLOYMENT_FAILED` | n/a | The circuit breaker rolled the deploy back. The previous task definition is still answering. Fix the digest / task, then redeploy. Filtered to this environment's service ARNs (`resources`) so staging does not page production. |
 | Migration / store-unavailable log line, ≥ 1 in 5 min | not breaching | The filter matches the `MigrateAsync` connection-dropped line and the startup `StoreAvailability` Unavailable warning. The store did not answer, or the connection dropped mid-migration. A schema defect that crashes the process pages as the task-count / rollback alarms instead. |
 | EFS `PercentIOLimit` > 80 % for 15 min | not breaching | The store's file system is at its Elastic I/O ceiling. Find what is driving I/O on the postgres volume; a quota increase or a throughput-mode change needs a dated ADR entry. |
+| S3 `PutRequests` on `topstepx-mcp-<env>-backups` < 1 for 26 h | breaching | Yesterday's `pg_dump` did not land. Check `/topstepx-mcp/<env>/pg-dump`, the EventBridge Scheduler rule `topstepx-mcp-<env>-pg-dump`, and `aws s3 ls s3://topstepx-mcp-<env>-backups/`. Do not treat the EFS AWS Backup vault as a restore. |
+
+Assisted-by: Cursor Grok 4.6 (Cursor)
+
+## Restore a `pg_dump`
+
+The restorable artefact is an object in `s3://topstepx-mcp-<env>-backups/`, not the EFS AWS Backup
+vault (ADR-0004 2026-09-10, ADR-0023 §10). Restore onto a **new** access point and a **fresh**
+postgres task. Do not mount the live `/postgres` access point, do not raise the live service's
+desired count above 1, and do not change `RecordTape` or the server image — those are other cards.
+
+The staging drill is the maintainer's. The steps below have not been run against a dump from this
+bucket; do not treat the `SchemaTests` expectations as measured results.
+
+1. **Pick yesterday's dump.** `aws s3 ls s3://topstepx-mcp-staging-backups/` and copy one
+   `topstepx_mcp-*.dump` object to a working path the restore task can read (ECS Exec into the
+   fresh task and `aws s3 cp`, or a sidecar). The dump task role may `s3:PutObject` only, so the
+   operator principal copies it.
+2. **New access point** on the existing file system, uid/gid `1000`, a new path
+   (`/postgres-restore-<date>`), permissions `700`. Same POSIX user the image runs as. Do not
+   reuse the live `/postgres` point.
+3. **Fresh postgres task** — same `timescale/timescaledb-ha` digest as `EnvironmentStack.PostgresImage`,
+   `PGDATA` under the new mount, same `topstepx-mcp/<env>/postgres` password secret, in the
+   postgres security group, desired count 1 on a one-off task (not the live `topstepx-mcp-<env>-postgres`
+   service). Wait until `pg_isready` succeeds and the empty `topstepx_mcp` database exists.
+4. **`timescaledb_pre_restore`**, then **`pg_restore -Fc`**, then **`timescaledb_post_restore`**:
+
+   ```bash
+   psql -U topstepx -d topstepx_mcp -c 'SELECT timescaledb_pre_restore();'
+   pg_restore -Fc -U topstepx -d topstepx_mcp /path/to/topstepx_mcp.dump
+   psql -U topstepx -d topstepx_mcp -c 'SELECT timescaledb_post_restore();'
+   ```
+
+   Skipping the two Timescale calls leaves the hypertable catalogue wrong (ADR-0004, ADR-0023 §10).
+5. **SchemaTests queries by hand** — `SchemaTests.cs` lines 44–87 and
+   `BarsAndIndicatorValues_CarryNoRetentionPolicy`. Record the three counts; do not invent them.
+
+   ```sql
+   SELECT count(*) FROM timescaledb_information.hypertables
+     WHERE hypertable_name IN ('Bars', 'IndicatorValues', 'Trades');
+   -- SchemaTests.TimeSeriesTables_AreHypertables: one row per name, three hypertables.
+
+   SELECT count(*) FROM timescaledb_information.jobs
+     WHERE proc_name = 'policy_compression' AND hypertable_name = 'Trades';
+   -- SchemaTests.Trades_CarriesACompressionPolicy: 1.
+
+   SELECT count(*) FROM timescaledb_information.jobs
+     WHERE proc_name = 'policy_retention';
+   -- SchemaTests.BarsAndIndicatorValues_CarryNoRetentionPolicy: 0.
+   ```
+
+6. Tear the drill task down. Cut-over of the live service onto the restored access point is a
+   separate, deliberate act — not this procedure's last step.
 
 Assisted-by: Cursor Grok 4.6 (Cursor)
 

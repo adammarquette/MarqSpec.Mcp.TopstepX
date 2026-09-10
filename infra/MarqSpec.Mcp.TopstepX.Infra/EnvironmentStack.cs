@@ -14,6 +14,8 @@ using Amazon.CDK.AWS.Logs;
 using Amazon.CDK.AWS.Route53;
 using Amazon.CDK.AWS.Route53.Targets;
 using Amazon.CDK.AWS.S3;
+using CfnSchedule = Amazon.CDK.AWS.Scheduler.CfnSchedule;
+using CfnScheduleProps = Amazon.CDK.AWS.Scheduler.CfnScheduleProps;
 using Amazon.CDK.AWS.ServiceDiscovery;
 using Amazon.CDK.AWS.SNS;
 using Amazon.CDK.AWS.SNS.Subscriptions;
@@ -35,16 +37,16 @@ namespace MarqSpec.Mcp.TopstepX.Infra;
 /// One deployed environment (ADR-0023): a VPC and its four security groups in loopback's role, one
 /// Application Load Balancer as the whole edge, an ECS cluster running the released server image by digest
 /// and the Timescale store on EFS, the Cognito user pool that issues the tokens the server checks, the
-/// secret shells, the deployment history, the logs, the backup plan, the CloudWatch / EventBridge
-/// paging path (gh#526) and the WAF on each ALB (gh#528). Instantiated twice — production and staging —
-/// from the same class; what differs is in <see cref="EnvironmentStackProps"/> and nowhere else.
+/// secret shells, the deployment history, the logs, the backup plan, the daily <c>pg_dump</c>
+/// task (gh#522), the CloudWatch / EventBridge paging path (gh#526) and the WAF on each ALB
+/// (gh#528). Instantiated twice — production and staging — from the same class; what differs is
+/// in <see cref="EnvironmentStackProps"/> and nowhere else.
 /// </summary>
 /// <remarks>
-/// What is <b>not</b> here, by card: the account budget (gh#527 — on <see cref="GitHubOidcStack"/>),
-/// the <c>pg_dump</c> task and its "no dump in 26 h" alarm (gh#522 — still open;
-/// the alerts topic is here for that card to attach to). The WAF (gh#528) is here —
-/// one REGIONAL web ACL per ALB. Cost-allocation tags (gh#527) and the OTLP sidecar (gh#537) are here.
-/// Cognito (gh#517) is here. The alarms (gh#526) are here.
+/// What is <b>not</b> here, by card: the account budget (gh#527 — on <see cref="GitHubOidcStack"/>).
+/// The WAF (gh#528) is here — one REGIONAL web ACL per ALB. Cost-allocation tags (gh#527) and the
+/// OTLP sidecar (gh#537) are here. Cognito (gh#517) is here. The alarms (gh#526) are here, including
+/// gh#522's "no dump in 26 h" alarm on the environment topic.
 /// <para>
 /// <b>Operational defaults this card took</b>, traced to neither ADR-0023 nor gh#516 and none a cost or
 /// exposure choice — named here so nobody hunts for where they were decided: the AWS Backup rule runs at
@@ -68,6 +70,16 @@ public sealed class EnvironmentStack : Stack
     /// deliberately, in a pull request that says why, never by re-reading the tag.
     /// </summary>
     public const string PostgresImage = "timescale/timescaledb-ha@sha256:567690e00aa9a485b45e2feec09c0e46288ca817891342f5575ba14da6a8592e";
+
+    /// <summary>
+    /// <c>public.ecr.aws/aws-cli/aws-cli:2.31.22</c> by digest — the multi-arch index digest, read
+    /// with <c>docker buildx imagetools inspect public.ecr.aws/aws-cli/aws-cli:2.31.22</c> on
+    /// 2026-09-10. The Timescale image's <c>/usr/bin/aws</c> is an 815-byte Python wrapper that
+    /// crashes (<c>KeyError: opsworkscm</c>); it is not a working CLI, so the dump task's second
+    /// container is this one (gh#522). The tag moves; this does not. Bump it deliberately, in a
+    /// pull request that says why, never by re-reading the tag (ADR-0023 §12).
+    /// </summary>
+    public const string AwsCliImage = "public.ecr.aws/aws-cli/aws-cli@sha256:b89c0c0a5c8a0e58ae90d8729100e7a85d7e84a91d385f605faa67e4ac5f233d";
 
     /// <summary>
     /// <c>otel/opentelemetry-collector-contrib:0.160.0</c> by digest — the multi-arch index digest, read
@@ -102,6 +114,9 @@ public sealed class EnvironmentStack : Stack
 
     /// <summary>The name of the role AWS Backup assumes for the store's plan; the OIDC stack may pass it and nothing else.</summary>
     public static string BackupRoleName(string envName) => $"topstepx-mcp-{envName}-backup";
+
+    /// <summary>The versioned bucket daily <c>pg_dump</c> objects land in (gh#522, ADR-0023 §10).</summary>
+    public static string BackupsBucketName(string envName) => $"topstepx-mcp-{envName}-backups";
 
     /// <summary>The environment's hostname: <c>topstepx-mcp.&lt;root&gt;</c>.</summary>
     public string Hostname { get; }
@@ -607,6 +622,139 @@ public sealed class EnvironmentStack : Stack
             },
         });
 
+        // ── Store: daily pg_dump to S3 (gh#522, ADR-0023 §10) ────────────────────────────────────────────
+        // The restorable artefact. EFS AWS Backup above is file-level and, on a running Postgres,
+        // crash-consistent at best — not a restore. Verified on the pinned Timescale digest
+        // (2026-09-10): `command -v aws` prints `/usr/bin/aws`, but that wrapper is 815 bytes from
+        // 2022 and `aws --version` raises `KeyError: opsworkscm`. It is not a working CLI, and
+        // pgbackrest-to-S3 would be a different design (an archive command beside the live server).
+        // So: Timescale dumps to a shared ephemeral volume; public.ecr.aws/aws-cli/aws-cli uploads;
+        // upload dependsOn SUCCESS.
+        var backups = new Bucket(this, "Backups", new BucketProps
+        {
+            BucketName = BackupsBucketName(env),
+            Encryption = BucketEncryption.S3_MANAGED,
+            BlockPublicAccess = BlockPublicAccess.BLOCK_ALL,
+            EnforceSSL = true,
+            Versioned = true,
+            LifecycleRules = [new LifecycleRule { Expiration = Duration.Days(90) }],
+            Metrics = [new BucketMetrics { Id = "EntireBucket" }],
+            RemovalPolicy = RemovalPolicy.RETAIN,
+        });
+        var dumpLogs = new LogGroup(this, "PgDumpLogs", new LogGroupProps
+        {
+            LogGroupName = $"/topstepx-mcp/{env}/pg-dump",
+            Retention = RetentionDays.ONE_MONTH,
+            RemovalPolicy = RemovalPolicy.RETAIN,
+        });
+        var dumpTask = new FargateTaskDefinition(this, "PgDumpTask", new FargateTaskDefinitionProps
+        {
+            Family = $"topstepx-mcp-{env}-pg-dump",
+            Cpu = 512,
+            MemoryLimitMiB = 1024,
+            RuntimePlatform = new RuntimePlatform { CpuArchitecture = CpuArchitecture.X86_64, OperatingSystemFamily = OperatingSystemFamily.LINUX },
+            Volumes = [new Amazon.CDK.AWS.ECS.Volume { Name = "dump" }],
+        });
+        dumpTask.AddToTaskRolePolicy(new PolicyStatement(new PolicyStatementProps
+        {
+            Sid = "PutDumpObject",
+            Actions = ["s3:PutObject"],
+            Resources = [backups.ArnForObjects("*")],
+        }));
+        backups.AddToResourcePolicy(new PolicyStatement(new PolicyStatementProps
+        {
+            Sid = "DumpTaskPutOnly",
+            Principals = [new ArnPrincipal(dumpTask.TaskRole.RoleArn)],
+            Actions = ["s3:PutObject"],
+            Resources = [backups.ArnForObjects("*")],
+        }));
+        var dump = dumpTask.AddContainer("dump", new ContainerDefinitionOptions
+        {
+            ContainerName = "dump",
+            Image = ContainerImage.FromRegistry(PostgresImage),
+            // The image's entrypoint starts Postgres. Override it. User 0 so the ephemeral
+            // volume (root-owned) is writable; this container never binds 5432.
+            EntryPoint = ["sh", "-ec"],
+            Command = ["pg_dump -Fc -f /dump/topstepx_mcp.dump"],
+            User = "0",
+            Logging = LogDrivers.AwsLogs(new AwsLogDriverProps { LogGroup = dumpLogs, StreamPrefix = "dump" }),
+            Environment = new Dictionary<string, string>
+            {
+                ["PGHOST"] = $"postgres.{env}.topstepx.internal",
+                ["PGUSER"] = PostgresUser,
+                ["PGDATABASE"] = PostgresDatabase,
+                ["PGPORT"] = "5432",
+            },
+            Secrets = new Dictionary<string, EcsSecret> { ["PGPASSWORD"] = EcsSecret.FromSecretsManager(postgresSecret, "password") },
+        });
+        dump.AddMountPoints(new MountPoint { ContainerPath = "/dump", SourceVolume = "dump", ReadOnly = false });
+        var upload = dumpTask.AddContainer("upload", new ContainerDefinitionOptions
+        {
+            ContainerName = "upload",
+            Image = ContainerImage.FromRegistry(AwsCliImage),
+            EntryPoint = ["sh", "-ec"],
+            Command = ["aws s3 cp /dump/topstepx_mcp.dump \"s3://${DUMP_BUCKET}/topstepx_mcp-$(date -u +%Y-%m-%dT%H:%M:%SZ).dump\""],
+            Logging = LogDrivers.AwsLogs(new AwsLogDriverProps { LogGroup = dumpLogs, StreamPrefix = "upload" }),
+            Environment = new Dictionary<string, string> { ["DUMP_BUCKET"] = backups.BucketName },
+        });
+        upload.AddMountPoints(new MountPoint { ContainerPath = "/dump", SourceVolume = "dump", ReadOnly = true });
+        upload.AddContainerDependencies(new ContainerDependency
+        {
+            Container = dump,
+            Condition = ContainerDependencyCondition.SUCCESS,
+        });
+
+        var dumpSchedulerRole = new Role(this, "PgDumpSchedulerRole", new RoleProps
+        {
+            AssumedBy = new ServicePrincipal("scheduler.amazonaws.com"),
+            Description = $"EventBridge Scheduler role that starts the {env} pg_dump task (gh#522).",
+        });
+        dumpSchedulerRole.AddToPolicy(new PolicyStatement(new PolicyStatementProps
+        {
+            Sid = "RunDumpTask",
+            Actions = ["ecs:RunTask"],
+            Resources = [dumpTask.TaskDefinitionArn],
+            Conditions = new Dictionary<string, object>
+            {
+                ["ArnEquals"] = new Dictionary<string, object> { ["ecs:cluster"] = cluster.ClusterArn },
+            },
+        }));
+        dumpSchedulerRole.AddToPolicy(new PolicyStatement(new PolicyStatementProps
+        {
+            Sid = "PassDumpRoles",
+            Actions = ["iam:PassRole"],
+            Resources = [dumpTask.TaskRole.RoleArn, dumpTask.ExecutionRole!.RoleArn],
+        }));
+        _ = new CfnSchedule(this, "PgDumpSchedule", new CfnScheduleProps
+        {
+            Name = $"topstepx-mcp-{env}-pg-dump",
+            Description = "Daily pg_dump in the 16:00–17:00 America/Chicago maintenance window (gh#522, ADR-0023 §10).",
+            FlexibleTimeWindow = new CfnSchedule.FlexibleTimeWindowProperty { Mode = "OFF" },
+            ScheduleExpression = "cron(15 16 * * ? *)",
+            ScheduleExpressionTimezone = "America/Chicago",
+            State = "ENABLED",
+            Target = new CfnSchedule.TargetProperty
+            {
+                Arn = cluster.ClusterArn,
+                RoleArn = dumpSchedulerRole.RoleArn,
+                EcsParameters = new CfnSchedule.EcsParametersProperty
+                {
+                    TaskDefinitionArn = dumpTask.TaskDefinitionArn,
+                    LaunchType = "FARGATE",
+                    TaskCount = 1,
+                    NetworkConfiguration = new CfnSchedule.NetworkConfigurationProperty
+                    {
+                        AwsvpcConfiguration = new CfnSchedule.AwsVpcConfigurationProperty
+                        {
+                            AssignPublicIp = natShape ? "DISABLED" : "ENABLED",
+                            SecurityGroups = [serverSg.SecurityGroupId],
+                            Subnets = vpc.SelectSubnets(taskSubnets).SubnetIds,
+                        },
+                    },
+                },
+            },
+        });
+
         // ── Server: the released image ──────────────────────────────────────────────────────────────────
         var serverTask = new FargateTaskDefinition(this, "ServerTask", new FargateTaskDefinitionProps
         {
@@ -819,9 +967,8 @@ public sealed class EnvironmentStack : Stack
         });
         targetGroup.AddTarget(server);
 
-        // ── Paging: one SNS email topic and the alarms that publish to it (gh#526) ───────────────────────
-        // The address is a parameter, never a literal. #522's "no dump in 26 h" alarm is still open; the
-        // topic exists so that card attaches rather than creating a second one.
+        // ── Paging: one SNS email topic and the alarms that publish to it (gh#526, gh#522) ───────────────
+        // The address is a parameter, never a literal. The dump-missing alarm publishes here.
         var alerts = new Topic(this, "Alerts", new TopicProps
         {
             TopicName = $"topstepx-mcp-{env}-alerts",
@@ -901,6 +1048,23 @@ public sealed class EnvironmentStack : Stack
             }),
             threshold: 80, ComparisonOperator.GREATER_THAN_THRESHOLD, TreatMissingData.NOT_BREACHING,
             "EFS PercentIOLimit > 80 % for 15 min. The store is on Elastic throughput, so this is the file system's I/O ceiling. Find what is writing the volume; a quota increase or a mode change needs a dated ADR entry.");
+
+        Page(this, alerts, "DumpMissing", $"topstepx-mcp-{env}-dump-missing",
+            new Metric(new MetricProps
+            {
+                Namespace = "AWS/S3",
+                MetricName = "PutRequests",
+                DimensionsMap = new Dictionary<string, string>
+                {
+                    ["BucketName"] = backups.BucketName,
+                    ["FilterId"] = "EntireBucket",
+                },
+                Period = Duration.Hours(1),
+                Statistic = Stats.SUM,
+            }),
+            threshold: 1, ComparisonOperator.LESS_THAN_THRESHOLD, TreatMissingData.BREACHING,
+            "No PutRequests on the backups bucket in 26 h. The daily pg_dump did not write an object (gh#522).",
+            evaluationPeriods: 26);
     }
 
     /// <summary>
@@ -931,7 +1095,8 @@ public sealed class EnvironmentStack : Stack
         double threshold,
         ComparisonOperator comparison,
         TreatMissingData missing,
-        string description)
+        string description,
+        int evaluationPeriods = 1)
     {
         var alarm = new Alarm(stack, id, new AlarmProps
         {
@@ -939,7 +1104,7 @@ public sealed class EnvironmentStack : Stack
             Metric = metric,
             Threshold = threshold,
             ComparisonOperator = comparison,
-            EvaluationPeriods = 1,
+            EvaluationPeriods = evaluationPeriods,
             TreatMissingData = missing,
             AlarmDescription = description,
         });

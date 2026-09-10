@@ -304,7 +304,8 @@ Postgres, crash-consistent at best; it is not a restore story.** The restorable 
 to a versioned S3 bucket with a 90-day lifecycle, on an EventBridge Scheduler rule in the maintenance
 window after 16:00 Central and before the 17:00 open, with a "no object written in 26 h" alarm (gh#522).
 A restore needs `timescaledb_pre_restore()` / `timescaledb_post_restore()` around it or the hypertable
-catalogue comes back wrong, and gh#522 runs that drill on staging and records every command.
+catalogue comes back wrong. The procedure is in [`deployment.md`](../deployment.md); the staging
+drill is still the maintainer's.
 
 **The backup task is two containers.** The first draft ran `pg_dump … | aws s3 cp -` inside the Timescale
 image, which does not ship the AWS CLI (gh#522 verifies and quotes it before building). So the Timescale
@@ -927,7 +928,7 @@ gh#526. Decisions above are unchanged; this records what pages, what does not, a
 - **Topic:** `topstepx-mcp-<env>-alerts` on each `EnvironmentStack`, email subscription whose endpoint
   is parameter `AlertsEmail` (no default — a default would be a literal in a public repository). The
   OIDC stack's budget `AlertsEmail` is a different parameter on a different stack; pass the same
-  address on each deploy. #522's "no dump in 26 h" alarm is still open and will publish here.
+  address on each deploy. #522's "no dump in 26 h" alarm publishes here.
 - **Alarmed:** `server` and `postgres` `RunningTaskCount` < 1 for 5 min (Container Insights; missing
   data **breaching**); ALB `UnHealthyHostCount` ≥ 1 for 5 min on the server target group (missing
   not breaching); ALB `HTTPCode_ELB_5XX_Count` and `HTTPCode_Target_5XX_Count` above parameter
@@ -1153,8 +1154,10 @@ maintainer fills the remaining shells.
   S256 and RFC 8707 `resource`, and production (out of scope).
 - gh#520 and gh#521 build decision 8's pipeline and its check; gh#520 also rewrites the platform contract's
   "How the pipeline is shaped".
-- gh#522 builds decision 10 and records the restore drill; ADR-0004 gains the dated update saying the store
-  has a backup story and what it is not.
+- gh#522 built decision 10's dump task, bucket, schedule and alarm; ADR-0004 gained the dated update
+  saying the store has a backup story and what it is not. The restore procedure is in
+  `documentation/deployment.md`. Two consecutive dump days, the maintainer's drill, and a
+  disable-schedule alarm fire remain outstanding.
 - gh#525 lands its dated entry in the decision log above. gh#526, gh#527 and gh#528 have.
 - gh#510's connector measurement landed on ADR-0007 and ADR-0021; if a later measurement overturns the
   pre-registered-client assumption, decision 9's issuer reopens here as a dated entry and gh#517 is the

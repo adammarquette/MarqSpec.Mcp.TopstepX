@@ -1430,7 +1430,9 @@ the one that rewrites it. What exists today:
   pattern is the host log lines; 192 after the filter-shape pin; 203 at
   gh#528, adding one REGIONAL web ACL associated with each ALB, the rate-based block at parameter
   `WafRateLimit`, managed groups count on staging and none/block on production, and the 30-day
-  `aws-waf-logs-*` group) and then
+  `aws-waf-logs-*` group; 220 at gh#522, adding the versioned backups bucket, the two-container
+  `pg_dump` task, the EventBridge Scheduler rule, the dump-missing alarm, and the bucket-policy /
+  schedule assertions) and then
   `cdk synth --no-lookups` **once per outbound shape** through the CLI pinned in
   `infra/package.json`. **No credential exists on the runner, by construction**: `--no-lookups` makes a
   context miss fail the synth rather than call AWS, and `infra/cdk.context.json` carries the hosted-zone

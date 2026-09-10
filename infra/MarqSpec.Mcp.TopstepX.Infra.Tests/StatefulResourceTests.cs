@@ -101,6 +101,7 @@ public sealed class StatefulResourceTests(EnvironmentTemplates templates) : ICla
             [
                 $"/topstepx-mcp/{env}/server",
                 $"/topstepx-mcp/{env}/postgres",
+                $"/topstepx-mcp/{env}/pg-dump",
                 $"aws-waf-logs-topstepx-mcp-{env}",
             ]);
         groups.Should().OnlyContain(g => g["RetentionInDays"]!.GetValue<int>() == 30);

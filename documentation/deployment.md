@@ -16,7 +16,7 @@ pipeline deploy is gh#520; rotation, which-release, scale-to-zero and a failed d
 | Operator principal on the first deploy | `arn:aws:iam::045296582762:root` |
 | CDK bootstrap | `aws://045296582762/us-east-1` (`CDKToolkit` `CREATE_COMPLETE`) |
 | OIDC stack | `topstepx-mcp-github-oidc` |
-| Staging stack | `topstepx-mcp-staging` — looks up zone `Z00545362JA49XMTT3U7Q`; ACM `*.staging.marqspec.com` **ISSUED**; Route 53 alias to ALB; stack **`CREATE_COMPLETE`** (2026-09-10 v0.4.0 redeploy) — postgres **1/1**, server **1/1** |
+| Staging stack | `topstepx-mcp-staging` — looks up zone `Z00545362JA49XMTT3U7Q`; ACM `*.staging.marqspec.com` **ISSUED**; Route 53 alias to ALB; stack **`UPDATE_COMPLETE`** (2026-09-10 gh#522 dump/backup; v0.4.0 digest unchanged) — postgres **1/1**, server **1/1**; bucket `topstepx-mcp-staging-backups`; scheduler `topstepx-mcp-staging-pg-dump` ENABLED `cron(15 16 * * ? *)` America/Chicago; alarm `topstepx-mcp-staging-dump-missing` |
 | Fargate On-Demand vCPU (`L-3032A538`) | **64** (raised 2026-09-09; was 0 on the first deploy) |
 | Production stack | not deployed (out of scope for gh#519) |
 
@@ -641,6 +641,10 @@ The restorable artefact is an object in `s3://topstepx-mcp-<env>-backups/`, not 
 vault (ADR-0004 2026-09-10, ADR-0023 §10). Restore onto a **new** access point and a **fresh**
 postgres task. Do not mount the live `/postgres` access point, do not raise the live service's
 desired count above 1, and do not change `RecordTape` or the server image — those are other cards.
+
+Staging dump resources deployed 2026-09-10 (gh#522 live slice): bucket exists, scheduler
+ENABLED, alarm exists. First object is not due until 16:15 America/Chicago. Two consecutive
+dump days, the restore drill, and a disable-schedule alarm fire remain outstanding.
 
 The staging drill is the maintainer's. The steps below have not been run against a dump from this
 bucket; do not treat the `SchemaTests` expectations as measured results.

@@ -680,6 +680,10 @@ public sealed class EnvironmentStack : Stack
             EntryPoint = ["sh", "-ec"],
             Command = ["pg_dump -Fc -f /dump/topstepx_mcp.dump"],
             User = "0",
+            // ECS refuses SUCCESS/COMPLETE dependsOn when the dependency is essential
+            // (2026-09-10 staging deploy). Dump exits 0 after writing the file; upload
+            // is the essential container and starts only after that success.
+            Essential = false,
             Logging = LogDrivers.AwsLogs(new AwsLogDriverProps { LogGroup = dumpLogs, StreamPrefix = "dump" }),
             Environment = new Dictionary<string, string>
             {

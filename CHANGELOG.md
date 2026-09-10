@@ -24,6 +24,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `deploy.yml` redeploys or rolls back either environment from a version tag
   (`gh workflow run deploy.yml --ref main`). The stack writes SSM history; the pipeline never
   `put-parameter`s and never reads `{{resolve:ssm}}` to decide what runs (gh#520, ADR-0023 §5).
+  This repository was created after GitHub's 2026-07-15 immutable OIDC cutoff, so both deploy
+  roles trust `repo:owner@id/name@id:…` — a name-only `repo:owner/name` subject does not match.
 
 ## [0.4.0] - 2026-09-09
 

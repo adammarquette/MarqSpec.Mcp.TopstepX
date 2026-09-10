@@ -94,7 +94,9 @@ neither is a GitHub secret.
 The deploy role ARN is built from the repository variable `AWS_ACCOUNT_ID` (not a secret; not a
 twelve-digit literal in a tracked file). Region is `us-east-1`. Outbound is still a fork: the
 pipeline passes `PublicIpPerTask` as synth context to match the standing stack (gh#519), not as a
-`Program.cs` literal.
+`Program.cs` literal. Both roles trust this repository's immutable Actions OIDC prefix
+(`repo:owner@id/name@id`, created after 2026-07-15) — a name-only `repo:owner/name` subject
+does not match (gh#520, 2026-09-10).
 
 ```bash
 # rollback / redeploy — always from main. GitHubDeploy-staging trusts that branch and the v* tag

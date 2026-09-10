@@ -12,7 +12,7 @@ namespace MarqSpec.Mcp.TopstepX.Infra.Tests;
 /// </summary>
 public sealed class GitHubOidcStackTests
 {
-    private const string Repository = "repo:adammarquette/MarqSpec.Mcp.TopstepX";
+    private static readonly string Repository = $"repo:{GitHubOidcStack.OidcSubjectRepository}";
 
     private static readonly Synthesised _stack = Synthesised.GitHubOidc();
 

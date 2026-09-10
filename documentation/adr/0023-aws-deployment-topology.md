@@ -1267,6 +1267,30 @@ ADR-0019 operator click, not a template change.
 
 Assisted-by: Cursor Grok 4.6 (Cursor)
 
+## Update (2026-09-10) — Actions OIDC `sub` is immutable `owner@id/name@id` (gh#520)
+
+Decision 8's two subjects stand. What they did not anticipate is that this repository was
+created on 2026-08-21, after GitHub's 2026-07-15 cutoff, so every Actions OIDC token carries
+`repo:adammarquette@14438151/MarqSpec.Mcp.TopstepX@1342280460:…` and a name-only
+`repo:adammarquette/MarqSpec.Mcp.TopstepX:…` trust never matches.
+
+Measured on throwaway `v0.5.0-rc.1` run 34534162932: `deploy-staging` failed
+`sts:AssumeRoleWithWebIdentity` against the 2026-09-07 name-based document. `GET
+/repos/…/actions/oidc/customization/sub` returned `use_immutable_subject: true` and
+`sub_claim_prefix: repo:adammarquette@14438151/MarqSpec.Mcp.TopstepX@1342280460`.
+`PUT use_immutable_subject=false` was accepted and did not stick — a post-cutoff
+repository cannot opt out. The live roles and `GitHubOidcStack` now trust that prefix
+on the same two staging patterns and the same production environment claim. Zone
+`Z00545362JA49XMTT3U7Q` unchanged. `RecordTape` was not touched.
+
+```console
+$ gh api repos/adammarquette/MarqSpec.Mcp.TopstepX/actions/oidc/customization/sub
+# use_immutable_subject=true
+# sub_claim_prefix=repo:adammarquette@14438151/MarqSpec.Mcp.TopstepX@1342280460
+```
+
+Assisted-by: Cursor Grok 4.6 (Cursor)
+
 ## Follow-ups
 
 - gh#516, gh#517, gh#518 built decisions 7, 9 and 8; gh#529 gates decision 4's rule. gh#516 also

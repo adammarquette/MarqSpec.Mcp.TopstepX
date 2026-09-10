@@ -12,7 +12,9 @@ namespace MarqSpec.Mcp.TopstepX.Infra.Tests;
 /// </summary>
 public sealed class GitHubOidcStackTests
 {
-    private static readonly string Repository = $"repo:{GitHubOidcStack.OidcSubjectRepository}";
+    // Literal, not interpolated from GitHubOidcStack.OidcSubjectRepository: a stack that emits the
+    // name-only sub (the document that failed AssumeRoleWithWebIdentity on run 34534162932) must fail.
+    private const string Repository = "repo:adammarquette@14438151/MarqSpec.Mcp.TopstepX@1342280460";
 
     private static readonly Synthesised _stack = Synthesised.GitHubOidc();
 
@@ -67,6 +69,8 @@ public sealed class GitHubOidcStackTests
         text.Should().NotContain("repo:*");
         text.Should().NotContain("refs/heads/*");
         text.Should().NotContain(":ref:*");
+        text.Should().NotContain("repo:adammarquette/MarqSpec.Mcp.TopstepX:",
+            "the name-only subject never matches a token this repository mints; a third role must not sneak it past the named tests");
     }
 
     [Theory]

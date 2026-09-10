@@ -209,12 +209,14 @@ Client ids (not secrets): `claude-connector` `p0j5iptk20n76i6pqanhopkn4`; `deplo
 `https://cognito-idp.us-east-1.amazonaws.com/us-east-1_lVKjeSrgi`. Hosted UI
 `https://topstepx-mcp-staging.auth.us-east-1.amazoncognito.com`.
 
-Maintainer still owes: practice ProjectX credentials; optional Cohere key; Grafana OTLP pair;
-copy both Cognito client secrets into their shells; one Cognito user (self-sign-up is off). Do not
-mint fake brokerage credentials. MFA stays `OPTIONAL` (TOTP only) as gh#517 shipped it unless the
-maintainer says otherwise. **Postgres shell filled during deploy**; the five other shells remain empty.
+All six staging shells were filled 2026-09-10 (quoted on #519, values never recorded here).
+`otel.authorization` is the Grafana Cloud **header value** (`Basic <payload>`), not a raw `glc_…`
+token and not `Authorization=Basic …`. One Cognito user exists and is `CONFIRMED` (self-sign-up
+is off). MFA stays `OPTIONAL` (TOTP only) as gh#517 shipped it unless the maintainer says otherwise.
+A `valueFrom` is read at task start: after any shell write, `aws ecs update-service
+--force-new-deployment` on that environment's server (done 2026-09-10 12:06 CDT).
 
-Assisted-by: Composer (Cursor)
+Assisted-by: Cursor Grok 4.6 (Cursor)
 
 ## Deployment check
 
@@ -226,9 +228,17 @@ MCP_CHECK_CLIENT_ID=… MCP_CHECK_CLIENT_SECRET=… MCP_CHECK_TOKEN_URL=… \
   scripts/check-deployment.sh https://topstepx-mcp.staging.marqspec.com 0.4.0
 ```
 
-An unfilled shell fails `UNSET` before any request. A wrong secret reaches the token endpoint and
-comes back `NO TOKEN`. Neither stream may contain the secret or the bearer
+`MCP_CHECK_TOKEN_URL` is the hosted-UI token endpoint
+`https://topstepx-mcp-staging.auth.us-east-1.amazoncognito.com/oauth2/token`. An unfilled shell
+fails `UNSET` before any request. A wrong secret reaches the token endpoint and comes back
+`NO TOKEN`. Neither stream may contain the secret or the bearer
 (`scripts/check-deployment-selftest.sh`).
+
+Quoted on #519, 2026-09-10 ~17:35 UTC: exit 0 — `/health` 200 `0.4.0`, anonymous `/mcp` 401,
+token minted, `initialize` + `tools/list` **22** tools (floor 18). ECS Exec on the postgres task:
+hypertables `Bars`, `IndicatorValues`, `Trades` (count **3**); `policy_compression` job 1000 on
+`Trades` scheduled. Cognito discovery still **omits** `code_challenge_methods_supported` — not a
+pool setting; PKCE `S256` is accepted on authorize/token anyway.
 
 Assisted-by: Cursor Grok 4.6 (Cursor)
 
@@ -238,17 +248,17 @@ The account carries one monthly AWS Budgets COST limit (default **300** USD) on 
 `topstepx-mcp-github-oidc` stack — parameters `BudgetAmount` and `AlertsEmail`. Thresholds fire at 50 %,
 80 % and 100 % of actual spend and at 100 % of forecast (gh#527, ADR-0023 2026-09-08 entry).
 
-Live `aws budgets describe-budgets` on 2026-09-09: `topstepx-mcp` = 300 USD monthly COST, and a
-pre-existing `Monthly Budget` of 10 USD that this stack did not create.
+Live `aws budgets describe-budget --budget-name topstepx-mcp` on 2026-09-10: monthly COST **300 USD**,
+notifications ACTUAL 50 / 80 / 100 % and FORECASTED 100 % (all OK). A pre-existing `Monthly Budget`
+of 10 USD is still present and is not this stack.
 
-**Reading the bill by environment.** Cost-allocation tags `Project` and `Environment` are **not yet
-Active**. `ce UpdateCostAllocationTagsStatus` on 2026-09-09 answered `Tag keys not found` —
-Cost Explorer had not discovered them (`ListCostAllocationTags` showed only `Name` and
-`aws:createdBy`). Re-run after an EnvironmentStack has billed for a day:
+**Reading the bill by environment.** `Project` and `Environment` were activated 2026-09-10 17:41Z
+(`ce UpdateCostAllocationTagsStatus` → `Errors: []`; `list-cost-allocation-tags --status Active`
+shows both). Cost Explorer grouped by `Environment` for 2026-09-09–11 still only returns
+`Environment$` (empty) — no `staging` row until a day of billing against the Active tags. Amounts
+are not required; the shape is. Re-query after a day:
 
 ```bash
-aws ce update-cost-allocation-tags-status --cost-allocation-tags-status \
-  TagKey=Project,Status=Active TagKey=Environment,Status=Active
 aws ce list-cost-allocation-tags --status Active
 aws ce get-cost-and-usage \
   --time-period Start=YYYY-MM-DD,End=YYYY-MM-DD \
@@ -257,19 +267,25 @@ aws ce get-cost-and-usage \
   --group-by Type=TAG,Key=Environment
 ```
 
-Expect a `staging` row and a `production` row once each environment has billed for a day. Amounts are
-not required for the first check — the shape is. Group by `Project` to confirm everything under this
-account that this app owns carries `topstepx-mcp`.
+Expect a `staging` row (and later a `production` row). Group by `Project` to confirm everything
+under this account that this app owns carries `topstepx-mcp`.
 
 Assisted-by: Cursor Grok 4.6 (Cursor)
 
 ## Alarms
 
 Each environment has one SNS topic `topstepx-mcp-<env>-alerts`. The subscription address is stack
-parameter `AlertsEmail` — confirm the email once after the first deploy (SNS sends a confirmation).
-gh#522's "no dump object in 26 h" alarm is still open and will publish here when it lands. Live
-task-count and rollback emails on staging are still outstanding (gh#526): `topstepx-mcp-staging` has ALB
-and SNS up; verify alarms after the server task places, not "no EnvironmentStack".
+parameter `AlertsEmail`. SNS sends a confirmation (often to **spam**); staging's email subscription
+was still `PendingConfirmation` until 2026-09-10 and delivered **0** notifications until confirmed.
+`OKActions` is empty — a return to OK does not page. gh#522's "no dump object in 26 h" alarm is
+still open and will publish here when it lands.
+
+Quoted on #519, 2026-09-10: `update-service --desired-count 0` at 12:49:43 CDT → alarm
+`topstepx-mcp-staging-server-running-tasks` **ALARM** at 12:51:39 → desired 1 at 12:52:24 →
+**OK** at 12:58:39. A forced bad digest (`:7`) produced `CannotPullContainerError`; after ~12 min
+the circuit breaker had not emitted `SERVICE_DEPLOYMENT_FAILED` (`failedTasks=2`); operator
+restored `:6` at 13:11. No rollback email until that event fires **and** the SNS subscription is
+confirmed.
 
 What is **not** alarmed, by decision (ADR-0023, gh#526): a server that is up, healthy and recording
 nothing because the tape recorder lost the hub (ADR-0016). That needs an app-emitted metric no card
@@ -293,8 +309,10 @@ Assisted-by: Cursor Grok 4.6 (Cursor)
 The WAF rate-based rule (gh#528, ADR-0023 2026-09-08 entry) blocks the operator's own address the same as
 anyone else's. A load generator, a `check-deployment.sh` loop, or a browser refresh storm from one IP at
 more than **300 requests / 5 minutes** (stack parameter `WafRateLimit`) starts receiving **403** from the
-ALB, not from the server. Live WAF lockout on staging is still outstanding (gh#528) — the ALB exists;
-measure after tasks place.
+ALB, not from the server. Quoted on #519, 2026-09-10: 650 GET `/health` from one IP → 440 × 200,
+then **210 × 403** (first 403 at request 441, 80.6 s). After five minutes
+`scripts/check-deployment.sh` 0.4.0 was green again. A week of staging **count-mode** managed-rule
+logs against Cowork traffic has not elapsed; the exclusion list stays empty until it does.
 
 **Unblock.** Wait out the 5-minute evaluation window after the flood stops, or raise the parameter for
 the window and put it back:

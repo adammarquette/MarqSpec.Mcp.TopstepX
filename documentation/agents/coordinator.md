@@ -83,6 +83,26 @@ Each implementer: claims with `scripts/claim.sh`, owns the `In Progress` → `In
 PR against `develop` with a plain `Closes #N` in ordinary prose, and reports back. They stop at `In Review`.
 They do not review their own PR.
 
+## Parallel cohort
+
+After a maintainer merge, **scan remaining open PRs into `develop` first**. `CONFLICTING`, or a head SHA
+behind the last verdict, are pick-order 2 and 1 — they land before any new `Todo` (gh#648 / gh#649 /
+gh#650).
+
+**Parallel is the default.** Dispatch every ready `Todo` whose `scripts/claim.sh <id> --check` exits 0,
+except issues that share a hard mutex. Oldest-first still orders the queue; it does not serialise it.
+
+**Keep the pipeline full.** When a card hits `Ready to Merge` or a PR merges, pick the next ready `Todo`
+(oldest first). Do not wait for the user to name a next cohort.
+
+A conflict fix is a **rebase onto `origin/develop`**. `commit-hygiene` refuses merge commits.
+
+**Live-stack mutex.** At most one in-flight issue may `cdk deploy` or force-new-deployment a named stack.
+Others that need that stack wait, and say so on the issue.
+
+**You own re-dispatch of the same claim.** The reviewer posts a verdict and stops; they do not launch the
+fix agent.
+
 ## The approval loop
 
 When the PR is open and the card is `In Review`, launch a reviewer wearing the

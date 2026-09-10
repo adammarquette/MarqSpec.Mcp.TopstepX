@@ -43,9 +43,9 @@ public sealed record EnvironmentStackProps
 
     /// <summary>
     /// The OTLP collector sidecar, or <c>null</c> for no telemetry at all (gh#537). <b>Null is not a
-    /// degraded mode</b>: it is the shape this stack had before gh#537 — one container in the server task,
-    /// no <c>Otel__*</c> key on it and no <c>otel</c> secret shell — which is ADR-0019 decision 3 reaching
-    /// the deployment. See <see cref="Infra.TelemetryProps"/> for why the endpoint and token are not on it.
+    /// degraded mode</b>: it is the shape this stack had before gh#537 — one container in the server task
+    /// and no <c>Otel__*</c> key on it — which is ADR-0019 decision 3 reaching the deployment. See
+    /// <see cref="Infra.TelemetryProps"/> for why the backend is not named here.
     /// </summary>
     public TelemetryProps? Telemetry { get; init; }
 

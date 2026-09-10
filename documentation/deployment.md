@@ -215,7 +215,7 @@ repository cannot replay.
 | `topstepx-mcp/<env>/cohere` | `apiKey` | maintainer; empty is a supported state |
 | `topstepx-mcp/<env>/claude-connector` | `clientId`, `clientSecret` | copy from Cognito; see below |
 | `topstepx-mcp/<env>/deploy-check` | `clientId`, `clientSecret` | copy from Cognito; see below |
-| `topstepx-mcp/<env>/otel` | `endpoint`, `authorization` | maintainer; Grafana Cloud |
+| `topstepx-mcp/<env>/otel` | *(removed from the template, gh#646)* | RETAIN orphan if it still exists in the account; do not fill. CloudWatch OTLP is SigV4 on the task role |
 
 **Never put a client secret on the command line.** A here-doc or a `0600` file, then delete the file.
 `describe-user-pool-client` prints the secret; pipe it into the file, do not let it hit the shell
@@ -425,19 +425,27 @@ Assisted-by: Cursor Grok 4.6 (Cursor)
 
 ## Observability
 
-Grafana Cloud is the backend (ADR-0019 §5). The server task carries a second container,
-`otel-collector`, `Essential=false`, 128 MiB, no port mapping. It receives OTLP on the task
-loopback and exports OTLP/HTTP. Its Grafana endpoint and token are `valueFrom`s on
-`topstepx-mcp/<env>/otel` (`endpoint`, `authorization`) — never in the template. Collector
-logs share `/topstepx-mcp/<env>/server` under the `otel-collector` stream prefix. CloudWatch
-alarms remain the paging path; Grafana is a place to look (ADR-0019, gh#526).
+CloudWatch is the Fargate backend (ADR-0019 2026-09-10 update). The server task carries a
+second container, `otel-collector`, `Essential=false`, 128 MiB, no port mapping. It receives
+OTLP on the task loopback and exports OTLP/HTTP under SigV4 on the task role: traces to X-Ray
+(Application Signals / Transaction Search), metrics to CloudWatch Metrics, logs to CloudWatch
+Logs (same `/topstepx-mcp/<env>/server` group, stream `otlp`). Endpoints are derived from
+region. There is no Grafana token and no `otel` shell in the template. Collector process logs
+share that group under the `otel-collector` stream prefix. CloudWatch alarms remain the paging
+path (ADR-0019, gh#526). The local compose `observability` profile (gh#535, `grafana/otel-lgtm`)
+is the laptop backend and is not this section.
 
-A `valueFrom` is read once at container start. ECS does not restart a stopped non-essential
-container, so filling the shell without `aws ecs update-service --force-new-deployment` on
-that environment's server leaves a healthy service that exports nothing.
+An unhealthy sidecar still leaves the server answering (`Essential=false`). Do not
+`cdk deploy` a template change to restart one; sister gh#522 owns the live stack.
 
-**Measured on staging, 2026-09-10 (account `045296582762`, `us-east-1`, stack
-`topstepx-mcp-staging`).** No secret value is quoted.
+**Not yet measured on staging (gh#646).** A `tools/call` trace in X-Ray, matching log lines
+with the same trace id, and `deployment.environment=staging` on both, wait on a live deploy.
+Cite the #537 sidecar-kill quote below until that deploy happens: the task definition is
+unchanged on the non-essential / 128 MiB / loopback path.
+
+**Measured on staging, 2026-09-10, while the exporter still targeted Grafana Cloud**
+(quoted on #537; no secret value here). That destination is retired. The table stays as the
+quote of what was observed, not as the current backend.
 
 | Check | Result |
 |---|---|
@@ -455,9 +463,10 @@ that environment's server leaves a healthy service that exports nothing.
 
 **When the sidecar is unhealthy.** Do nothing to the server. `Essential=false` is the
 degradation: the exporter drops on the floor and `/health` plus a tool call keep answering
-(measured above). Fix is the shell (key presence, then whether Grafana accepts the
-credential — nonempty is not the same as accepted) and a `force-new-deployment`. Do not
-`cdk deploy` a template change to restart a sidecar.
+(measured above, under the Grafana exporter). Fix is the collector configuration and the
+task-role statements, then a new task definition via the pipeline — not a shell write.
+Do not `cdk deploy` a template change from this card to restart a sidecar; sister gh#522
+owns that stack.
 
 Finding a Cowork call by session id in Grafana, and retention as configured, were **not
 measured** — nothing arrived in Tempo or Loki to look up.

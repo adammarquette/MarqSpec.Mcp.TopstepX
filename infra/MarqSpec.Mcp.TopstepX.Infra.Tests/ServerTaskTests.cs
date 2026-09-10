@@ -121,8 +121,8 @@ public sealed class ServerTaskTests(EnvironmentTemplates templates) : IClassFixt
         // The deferred set is now EMPTY — gh#537 retired the last of it, the Otel__* keys, in the pull
         // request that built the sidecar they were waiting for. What is left is one key excluded for a
         // reason rather than for a date, and this test names it rather than letting EnvExample excuse it
-        // out of sight: the backend token is the SIDECAR's, and TelemetrySidecarTests asserts it reaches
-        // that container and not this one.
+        // out of sight: AWS auth is SigV4 on the task role (gh#646), so `Otel__Headers` is absent by
+        // decision and TelemetrySidecarTests asserts that absence on both containers.
         EnvExample.Keys().Where(EnvExample.IsDeferred).Should().BeEmpty("no card is still owed a key here");
         expected.Should().Contain(["Otel__Endpoint", "Otel__Protocol", "Otel__ServiceName"], "the sidecar's card owns these now");
         expected.Should().NotContain("Otel__Headers");
@@ -294,8 +294,13 @@ public sealed class ServerTaskTests(EnvironmentTemplates templates) : IClassFixt
             {
                 // ECS Exec is the one thing here with no resource-level permission at all: its four
                 // ssmmessages channel actions, and the logs:DescribeLogGroups its session logging needs.
-                // Anything else on `*` is a decision nobody made.
-                actions.Should().OnlyContain(a => a.StartsWith("ssmmessages:", StringComparison.Ordinal) || a == "logs:DescribeLogGroups",
+                // X-Ray PutTraceSegments and CloudWatch PutMetricData are the other two: neither API
+                // accepts a resource ARN (gh#646). Anything else on `*` is a decision nobody made.
+                actions.Should().OnlyContain(
+                    a => a.StartsWith("ssmmessages:", StringComparison.Ordinal)
+                         || a == "logs:DescribeLogGroups"
+                         || a == "xray:PutTraceSegments"
+                         || a == "cloudwatch:PutMetricData",
                     $"least privilege: {string.Join(", ", actions)} on every resource");
             }
         }

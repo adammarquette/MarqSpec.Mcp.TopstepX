@@ -1213,6 +1213,31 @@ Trades rows, insert p50/p99, WAL sync, checkpoint durations, and forced `CALL ru
 invented. Until that session is quoted, the EFS-vs-EC2 verdict is **not** closed — EFS is still
 the store, and the threshold above is what a later session is measured against.
 
+## Update (2026-09-10) — the sidecar exports to CloudWatch; the sixth shell is gone
+
+§11 and the 2026-09-07 sidecar entry named Grafana Cloud as the Fargate backend and created
+`topstepx-mcp/<env>/otel` to hold its hostname and Basic token. gh#646 retires both.
+[ADR-0019's 2026-09-10 update](0019-otlp-as-the-telemetry-boundary.md) is where the three CloudWatch
+OTLP surfaces are named (X-Ray traces, CloudWatch Metrics, CloudWatch Logs); what lands on **this**
+topology is four things.
+
+**The sidecar still sits in the server task**, `Essential=false`, 128 MiB, no port mapping, loopback
+receiver, same `/topstepx-mcp/<env>/server` group under `otel-collector`. Those limits did not move.
+
+**The sixth secret shell is gone from the template.** Auth is SigV4 on the server task role — three
+named statements, `OtlpTraces` / `OtlpMetrics` / `OtlpLogs`, not `CloudWatchAgentServerPolicy`. The
+three AWS OTLP URLs are `Fn::Sub` over `AWS::Region`. The next EnvironmentStack deploy drops the
+`otel` resource; `Retain` orphans the live secret rather than editing its `SecretString`. Do not
+fill it again.
+
+**`Otel__Endpoint` on the server is unchanged** — `http://127.0.0.1:4317`. Decision 2 still holds:
+the host never names CloudWatch. `Otel__Headers` stays absent.
+
+**gh#526 alarms remain the paging path.** Grafana alerting is not introduced. The local compose
+`observability` profile (gh#535) is not this topology.
+
+A `tools/call` span in X-Ray is not claimed here. Sister gh#522 owns the live stack this slice.
+
 ## Follow-ups
 
 - gh#516, gh#517, gh#518 built decisions 7, 9 and 8; gh#529 gates decision 4's rule. gh#516 also

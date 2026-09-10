@@ -37,11 +37,10 @@ public static class EnvExample
 
     /// <summary>
     /// The one <c>Otel__*</c> key the server task must NOT carry (gh#537). <c>Otel__Headers</c> is where a
-    /// backend token would go, and on AWS the token belongs to the collector sidecar beside the server, as
-    /// a <c>valueFrom</c> on <i>that</i> container: the server exports to the task's own loopback, which
-    /// crosses no network and takes no credential. So this is not a deferral — no later card adds it — it is
-    /// a key that is absent by decision (ADR-0019 invariant 4), and <c>TelemetrySidecarTests</c> asserts the
-    /// absence rather than this file merely excusing it.
+    /// backend token would go. On AWS, auth is SigV4 on the task role (gh#646) and the server exports to the
+    /// task's own loopback, which crosses no network and takes no credential. So this is not a deferral —
+    /// no later card adds it — it is a key that is absent by decision (ADR-0019 invariant 4), and
+    /// <c>TelemetrySidecarTests</c> asserts the absence rather than this file merely excusing it.
     /// </summary>
     public static bool IsCollectorOwned(string key) =>
         key is "Otel__Headers";

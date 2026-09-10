@@ -331,16 +331,8 @@ public sealed class EnvironmentStack : Stack
             "The claude-connector app client's id and secret, pasted into the Cowork custom-connector dialog (gh#524); the secret is read once with describe-user-pool-client.");
         _ = Shell("DeployCheckSecret", env, "deploy-check", """{"clientId":"","clientSecret":""}""",
             "The deploy-check app client's id and secret, read at run time by the deployment check (gh#521) for a client_credentials token; never a GitHub secret.");
-        // The sixth shell exists only when the sidecar does (gh#537). It is the telemetry backend's whole
-        // identity: `endpoint` is the Grafana Cloud OTLP gateway -- which names the stack, and so the account
-        // -- and `authorization` is the header value that authenticates to it. gh#537's body asked for these
-        // as two ARNs on TelemetryProps; an ARN carries an account id, and a literal account id in a public
-        // repository is what the root contract's second non-negotiable refuses, so they are a shell like the
-        // other five and gh#519 fills them once the Grafana Cloud stack exists.
-        var otelSecret = props.Telemetry is null
-            ? null
-            : Shell("OtelSecret", env, "otel", """{"endpoint":"","authorization":""}""",
-                "The OTLP collector sidecar's Grafana Cloud endpoint and Authorization header value (gh#537, ADR-0019 decision 5). Read by the sidecar alone; the server never sees either.");
+        // gh#646 retired the Grafana `otel` shell. CloudWatch OTLP is SigV4 on the task role, so nothing
+        // secret remains for the sidecar; the three AWS OTLP URLs are derived from AWS::Region below.
 
         // The written history the pipeline leaves on every deploy (ADR-0023 §5): the same two parameters
         // the task definition reads, so the history cannot say one thing while the task runs another.
@@ -793,10 +785,10 @@ public sealed class EnvironmentStack : Stack
             ["Deployment__ImageDigest"] = imageDigest.ValueAsString,
         };
 
-        // The telemetry seam (gh#537, ADR-0019). WITH a sidecar the server is told one endpoint -- the
-        // container beside it, on the task's own loopback -- and nothing about the backend: decision 2, "one
-        // OTLP exporter, nothing vendor-specific in the host". `Otel__Headers` is deliberately NOT here: it
-        // is where a backend token would go, and the token is the sidecar's.
+        // The telemetry seam (gh#537, gh#646, ADR-0019). WITH a sidecar the server is told one endpoint --
+        // the container beside it, on the task's own loopback -- and nothing about the backend: decision 2,
+        // "one OTLP exporter, nothing vendor-specific in the host". `Otel__Headers` is deliberately NOT
+        // here: AWS auth is SigV4 on this task role, never a header the host would send.
         //
         // WITHOUT one, not one Otel__ key is set, and that is not a degraded mode -- it is decision 3, absent
         // configuration is today's behaviour exactly: no exporter registered, no background thread, no retry
@@ -827,19 +819,38 @@ public sealed class EnvironmentStack : Stack
         });
 
         // ── Server: the OTLP collector sidecar ──────────────────────────────────────────────────────────
-        // gh#537, ADR-0019 decision 5, ADR-0023 §11: the second container in this task receives what the
-        // server exports on the loopback and forwards it to Grafana Cloud. Self-hosting Loki, Tempo and
-        // Grafana as further Fargate services was rejected in ADR-0019, not re-argued here.
-        if (props.Telemetry is not null && otelSecret is not null)
+        // gh#537, gh#646, ADR-0019 decision 5, ADR-0023 §11: the second container in this task receives
+        // what the server exports on the loopback and forwards it to CloudWatch (X-Ray, Metrics, Logs)
+        // under SigV4. Self-hosting Loki, Tempo and Grafana as further Fargate services was rejected in
+        // ADR-0019, not re-argued here; Grafana Cloud as the Fargate backend is retired by gh#646.
+        if (props.Telemetry is not null)
         {
+            serverTask.AddToTaskRolePolicy(new PolicyStatement(new PolicyStatementProps
+            {
+                Sid = "OtlpTraces",
+                Actions = ["xray:PutTraceSegments"],
+                Resources = ["*"],
+            }));
+            serverTask.AddToTaskRolePolicy(new PolicyStatement(new PolicyStatementProps
+            {
+                Sid = "OtlpMetrics",
+                Actions = ["cloudwatch:PutMetricData"],
+                Resources = ["*"],
+            }));
+            serverTask.AddToTaskRolePolicy(new PolicyStatement(new PolicyStatementProps
+            {
+                Sid = "OtlpLogs",
+                Actions = ["logs:PutLogEvents", "logs:CreateLogStream"],
+                Resources = [serverLogs.LogGroupArn, Fn.Join(":", [serverLogs.LogGroupArn, "*"])],
+            }));
+
             serverTask.AddContainer("OtelCollector", new ContainerDefinitionOptions
             {
                 ContainerName = "otel-collector",
                 Image = ContainerImage.FromRegistry(props.Telemetry.CollectorImage),
                 // NOT essential, and capped. Between them these are the whole answer to "what happens when
                 // the sidecar is unhealthy": the task keeps running, the server keeps answering, and the
-                // exporter drops on the floor (ADR-0019). An unfilled shell fails the collector's own config
-                // validation and lands in exactly that state, which is the state staging starts in.
+                // exporter drops on the floor (ADR-0019).
                 Essential = false,
                 MemoryLimitMiB = props.Telemetry.MemoryLimitMiB,
                 // Same group as the server, different stream prefix -- one place to read an environment.
@@ -853,14 +864,14 @@ public sealed class EnvironmentStack : Stack
                     // to mount a file from and baking it into an image would make a one-line edit a registry
                     // push. The collector is started against the variable, below.
                     ["OTEL_COLLECTOR_CONFIG"] = CollectorConfiguration.Yaml,
-                    // The two resource attributes that let one Grafana stack tell the environments apart.
+                    // The two resource attributes that let one CloudWatch account tell the environments apart.
                     ["DEPLOYMENT_ENVIRONMENT"] = env,
                     ["SERVICE_VERSION"] = version.ValueAsString,
-                },
-                Secrets = new Dictionary<string, EcsSecret>
-                {
-                    ["GRAFANA_OTLP_ENDPOINT"] = EcsSecret.FromSecretsManager(otelSecret, "endpoint"),
-                    ["GRAFANA_OTLP_AUTHORIZATION"] = EcsSecret.FromSecretsManager(otelSecret, "authorization"),
+                    ["AWS_REGION"] = Fn.Ref("AWS::Region"),
+                    ["AWS_OTLP_TRACES_ENDPOINT"] = Fn.Sub("https://xray.${AWS::Region}.amazonaws.com/v1/traces"),
+                    ["AWS_OTLP_METRICS_ENDPOINT"] = Fn.Sub("https://monitoring.${AWS::Region}.amazonaws.com/v1/metrics"),
+                    ["AWS_OTLP_LOGS_ENDPOINT"] = Fn.Sub("https://logs.${AWS::Region}.amazonaws.com/v1/logs"),
+                    ["AWS_OTLP_LOG_GROUP"] = $"/topstepx-mcp/{env}/server",
                 },
                 Command = ["--config=env:OTEL_COLLECTOR_CONFIG"],
             });

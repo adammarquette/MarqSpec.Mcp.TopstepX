@@ -1238,6 +1238,16 @@ the host never names CloudWatch. `Otel__Headers` stays absent.
 
 A `tools/call` span in X-Ray is not claimed here. Sister gh#522 owns the live stack this slice.
 
+## Update (2026-09-10) — the remaining operator paths live in the runbook
+
+gh#523 filled [deployment.md](../deployment.md) for which release is running, rotation, scale-to-zero,
+and a failed deploy (dispatch `deploy.yml` from `main`). Restore stays the gh#522 section in that
+file — later cards link, they do not copy. The 2026-09-06 sentence that Observability waited on
+gh#523 creating the file is closed: the file existed; this card added the leftover operator paths.
+A first-month billed figure is still missing (account stood up 2026-09-09).
+
+Assisted-by: Cursor Grok 4.6 (Cursor)
+
 ## Follow-ups
 
 - gh#516, gh#517, gh#518 built decisions 7, 9 and 8; gh#529 gates decision 4's rule. gh#516 also
@@ -1257,7 +1267,8 @@ A `tools/call` span in X-Ray is not claimed here. Sister gh#522 owns the live st
   `documentation/deployment.md`. Two consecutive dump days, the maintainer's drill, and a
   disable-schedule alarm fire remain outstanding.
 - gh#525 stated the EFS threshold and quoted pgbench plus both stop paths on 2026-09-10; the RTH
-  tape session remains. gh#526, gh#527 and gh#528 have.
+  tape session remains. gh#526, gh#527 and gh#528 have. gh#523 landed rotation, which-release,
+  scale-to-zero and failed-deploy in the runbook; the first-month cost figure remains missing.
 - gh#510's connector measurement landed on ADR-0007 and ADR-0021; if a later measurement overturns the
   pre-registered-client assumption, decision 9's issuer reopens here as a dated entry and gh#517 is the
   card that changes.

@@ -1,8 +1,9 @@
 # Deployment runbook
 
 Operational steps for the AWS environments (ADR-0023, gh#509). Started by gh#527's cost section; the
-alarm table is gh#526; WAF lockout is gh#528; Observability is gh#537; store restore is gh#522;
-pipeline deploy is gh#520. Rotation and "which release is running" still land with gh#523. **gh#519 stood the account up once** (2026-09-09): region, OIDC stack, GitHub
+alarm table is gh#526; WAF lockout is gh#528; Observability is gh#537 / gh#646; store restore is gh#522;
+pipeline deploy is gh#520; rotation, which-release, scale-to-zero and a failed deploy are gh#523.
+**gh#519 stood the account up once** (2026-09-09): region, OIDC stack, GitHub
 `aws-production` environment, the hand-created staging zone, the Cloudflare NS swap onto
 `Z00545362JA49XMTT3U7Q`, and staging's `ZoneMode.Lookup` of that zone (never a second zone).
 
@@ -11,7 +12,7 @@ pipeline deploy is gh#520. Rotation and "which release is running" still land wi
 | | |
 |---|---|
 | Account | `045296582762` |
-| Region | **us-east-1** (chosen 2026-09-09; same as ADR-0023's cost basis, now a choice) |
+| Region | **us-east-1** (chosen 2026-09-09; same as ADR-0023's cost basis, now a choice). A profile defaulted elsewhere reports `ClusterNotFound` / `Stack with id topstepx-mcp-staging does not exist` — measured 2026-09-10 against a `us-east-2` default. Pass `--region us-east-1` or export it. |
 | Operator principal on the first deploy | `arn:aws:iam::045296582762:root` |
 | CDK bootstrap | `aws://045296582762/us-east-1` (`CDKToolkit` `CREATE_COMPLETE`) |
 | OIDC stack | `topstepx-mcp-github-oidc` |
@@ -119,6 +120,97 @@ says production went first. The maintainer approves production. gh#528 (WAF) is 
 **This card does not `cdk deploy` or force-new-deployment on the live `topstepx-mcp-staging` stack.**
 Sister sessions own that stack. A green pull request here licenses the workflow topology and the
 script self-tests, not a live tag-deploy.
+
+Assisted-by: Cursor Grok 4.6 (Cursor)
+
+## Which release is running
+
+Three reads, and they must agree. The assembly inside the image is not a fourth — it is
+`0.0.0-alpha.0` / `0.0.0.0` on every published tag ([ADR-0001](adr/0001-tag-driven-versioning.md)
+2026-08-25). `/health` reports `Deployment__Version` and `Deployment__ImageDigest` as the task was
+started (gh#513), not `serverInfo.version`.
+
+```bash
+curl -sS https://topstepx-mcp.staging.marqspec.com/health
+
+aws ecs describe-services --region us-east-1 \
+  --cluster topstepx-mcp-staging \
+  --services topstepx-mcp-staging-server \
+  --query 'services[0].{desired:desiredCount,running:runningCount,taskDef:taskDefinition,breaker:deploymentConfiguration.deploymentCircuitBreaker}'
+
+aws ecs describe-task-definition --region us-east-1 \
+  --task-definition topstepx-mcp-staging-server:6 \
+  --query 'taskDefinition.containerDefinitions[].{name:name,image:image}'
+
+aws ssm get-parameter --region us-east-1 --name /topstepx-mcp/staging/version
+aws ssm get-parameter --region us-east-1 --name /topstepx-mcp/staging/image-digest
+aws ssm get-parameter-history --region us-east-1 --name /topstepx-mcp/staging/version
+aws ssm get-parameter-history --region us-east-1 --name /topstepx-mcp/staging/image-digest
+```
+
+Quoted on staging, 2026-09-10 (gh#523). Tokens are not secrets; the digest is already on the image.
+
+```json
+{"status":"ok","store":"available","version":"0.4.0","digest":"sha256:8f388466165056252ec309bea65563e22a168671764f2ba8654c5aa335f03ce2"}
+```
+
+`describe-services`: `desired`/`running` **1**, `taskDef`
+`…/task-definition/topstepx-mcp-staging-server:6`, breaker `{enable: true, rollback: true,
+resetOnHealthyTask: true, thresholdConfiguration: {type: BOUNDED_PERCENT, value: 50}}`.
+`describe-task-definition`: server image
+`ghcr.io/adammarquette/marqspec.mcp.topstepx@sha256:8f388466165056252ec309bea65563e22a168671764f2ba8654c5aa335f03ce2`
+(plus the `otel-collector` digest, which is not the release). SSM both `Type=String`, `Version=1`,
+value `0.4.0` / that same `sha256:…`. History is one row each — this stack has been written once.
+Do **not** `put-parameter`; the stack writes these (ADR-0023 §5).
+
+A disagreement is the diagnosis: `/health` is what the running task was started with; the task
+definition is what ECS will start next; SSM is what the last `cdk deploy` wrote. After a circuit
+breaker rollback they diverge — see [Diagnosing a failed deploy](#diagnosing-a-failed-deploy).
+
+Assisted-by: Cursor Grok 4.6 (Cursor)
+
+## Diagnosing a failed deploy
+
+The server service is min-healthy **0 %** / max **100 %** with the circuit breaker on and rollback
+on (ADR-0023 §4). A bad image drains the old task, fails to start, and ECS puts the previous task
+definition back. CloudFormation / SSM may already show the new `ImageDigest` and `Version`.
+
+```bash
+aws ecs describe-services --region us-east-1 \
+  --cluster topstepx-mcp-staging \
+  --services topstepx-mcp-staging-server \
+  --query 'services[0].{deployments:deployments[].{status:status,desired:desiredCount,running:runningCount,failed:failedTasks,rollout:rolloutState,taskDef:taskDefinition},events:events[0:8]}'
+
+aws logs filter-log-events --region us-east-1 \
+  --log-group-name /topstepx-mcp/staging/server \
+  --filter-pattern '?"The connection dropped while applying migrations." ?"The database is not reachable, so cached market data and observations are unavailable."' \
+  --limit 5
+
+aws cloudwatch describe-alarms --region us-east-1 \
+  --alarm-names topstepx-mcp-staging-migration-failure \
+  --query 'MetricAlarms[0].{Name:AlarmName,State:StateValue}'
+```
+
+Healthy shape, quoted 2026-09-10: one `PRIMARY` deployment, `rollout=COMPLETED`, `failed=0`,
+`taskDef` `…-server:6`; events open with `has reached a steady state` and `deployment completed`.
+The metric filter on `/topstepx-mcp/staging/server` is the two phrases above (filter name
+`MigrationFailureFilterD64C4D08-rVAFM7BCWSpg`). `filter-log-events` over the last two days:
+`{events: [], searchedLogStreams: [], nextToken: …}` — no matching line. Alarm
+`topstepx-mcp-staging-migration-failure` **OK**. Do not quote a log `message`; it can name a
+connection string.
+
+gh#519 already forced a bad digest (`:7`): `CannotPullContainerError`, `failedTasks=2` after
+~12 min, no `SERVICE_DEPLOYMENT_FAILED` event, operator restored `:6`. An EventBridge miss is
+not a healthy deploy.
+
+**When to dispatch the previous version.** `deploy.yml` is the rollback
+(`gh workflow run deploy.yml --ref main -f version=<previous> -f environment=staging`). Use it
+when a *successful* stack update left a published version you do not want — SSM and the task
+definition already name that version, and `/health` may still show the previous digest if the
+breaker rolled ECS back. Dispatch from `main` only; the workflow never rebuilds; it resolves the
+tag's digest on GHCR. **Do not dispatch** when CloudFormation itself rolled back (the stack still
+has the old parameters). **Do not `cdk deploy` from a laptop to undo a pipeline run.** `gh workflow
+view deploy.yml` on 2026-09-10: id `355246622`, **Total runs 0**.
 
 Assisted-by: Cursor Grok 4.6 (Cursor)
 
@@ -280,6 +372,100 @@ A `valueFrom` is read at task start: after any shell write, `aws ecs update-serv
 
 Assisted-by: Cursor Grok 4.6 (Cursor)
 
+## Rotation
+
+Never put a secret, a password or a username on the argv. A `0600` file or a here-doc written
+with `jq --rawfile`, then `file://` / `--cli-input-json file://`, then `rm`.
+`describe-user-pool-client` prints `ClientSecret` — redirect the whole document and delete it.
+**Never** `get-secret-value`. `--region us-east-1` on every call.
+
+Quoted 2026-09-10, shapes only. `describe-secret` on all six staging shells: `Name`, `ARN`,
+`LastChangedDate`, `LastAccessedDate` — no `SecretString`. Pool `us-east-1_lVKjeSrgi`
+(`MfaConfiguration=OPTIONAL`, `EstimatedNumberOfUsers=1`). `list-users` count **1**,
+`UserStatus=CONFIRMED`, `Enabled=true` (no username). Both clients `HAS_SECRET true` after a
+describe redirected to a file and deleted:
+
+| Client | Id | Flows / rotation that must be re-passed |
+|---|---|---|
+| `claude-connector` | `p0j5iptk20n76i6pqanhopkn4` | `AllowedOAuthFlows=["code"]`, scopes `openid` + `topstepx-mcp/read`, callback `https://claude.ai/api/mcp/auth_callback` only, `ExplicitAuthFlows` **empty** (describe returns the key absent), `RefreshTokenRotation={ENABLED, 30s}` |
+| `deploy-check` | `4eo7b5pabtj0gog7c9is3hgm52` | `AllowedOAuthFlows=["client_credentials"]`, scope `topstepx-mcp/read`, no callback, `ExplicitAuthFlows=["ALLOW_REFRESH_TOKEN_AUTH"]`, no refresh-token rotation |
+
+`update-user-pool-client --generate-cli-skeleton` does **not** list `GenerateSecret` — that is
+the `--generate-secret` flag. Omitting `ExplicitAuthFlows` lets Cognito apply defaults and
+breaks rotation ([ADR-0023](adr/0023-aws-deployment-topology.md) 2026-09-10 Cognito entry).
+Rebuild the JSON from the describe file; do not type values onto the command line.
+
+### Cognito `claude-connector`
+
+1. Describe to a `0600` file. Build the update document from it (`UserPoolId`, `ClientId`, every
+   OAuth / validity / rotation field above, `ExplicitAuthFlows: []`). Drop `ClientSecret`.
+2. `aws cognito-idp update-user-pool-client --region us-east-1 --cli-input-json file:///tmp/rotate-client.json --generate-secret`
+3. Describe again to a new file; write `{"clientId":"…","clientSecret":"…"}` with `jq --rawfile`.
+   `aws secretsmanager put-secret-value --secret-id topstepx-mcp/staging/claude-connector --secret-string file:///tmp/claude-connector.json`
+4. Re-enter the new secret in the Cowork custom-connector dialog. The server does **not** read
+   this shell — no `force-new-deployment`.
+5. `rm` every file. Old Cowork sessions fail until step 4.
+
+### Cognito `deploy-check`
+
+Same three steps against `4eo7b5pabtj0gog7c9is3hgm52` and `topstepx-mcp/staging/deploy-check`.
+The pipeline reads the shell at run time (gh#520). No server restart. **Do not rotate during an
+in-flight `deploy.yml` run.**
+
+### Maintainer password, then every token
+
+One `CONFIRMED` user. Username stays in a file.
+
+```bash
+# /tmp/user and /tmp/pass are 0600; jq --rawfile so neither value hits argv
+jq -n --rawfile user /tmp/user --rawfile pw /tmp/pass --arg pool us-east-1_lVKjeSrgi \
+  '{UserPoolId:$pool, Username:($user|rtrimstr("\n")), Password:($pw|rtrimstr("\n")), Permanent:true}' \
+  > /tmp/set-pass.json
+aws cognito-idp admin-set-user-password --region us-east-1 \
+  --cli-input-json file:///tmp/set-pass.json
+jq -n --rawfile user /tmp/user --arg pool us-east-1_lVKjeSrgi \
+  '{UserPoolId:$pool, Username:($user|rtrimstr("\n"))}' > /tmp/signout.json
+aws cognito-idp admin-user-global-sign-out --region us-east-1 \
+  --cli-input-json file:///tmp/signout.json
+rm -f /tmp/user /tmp/pass /tmp/set-pass.json /tmp/signout.json
+```
+
+`admin-set-user-password --generate-cli-skeleton` keys: `UserPoolId`, `Username`, `Password`,
+`Permanent`. `admin-user-global-sign-out`: `UserPoolId`, `Username`. Sign-out is per user; this
+pool has one. The password change itself was not applied — it would lock the maintainer.
+
+### Postgres password — ALTER, then the secret, then the server
+
+`POSTGRES_PASSWORD` is first-init only. The running postmaster takes `ALTER USER` immediately
+for *new* connections; existing server connections keep working until they reconnect. Secret
+first, or server restart first, is an outage.
+
+1. ECS Exec into the live postgres task (Exec is on; server Exec is off):
+
+   ```bash
+   aws ecs execute-command --region us-east-1 \
+     --cluster topstepx-mcp-staging \
+     --task "$TASK" --container postgres --interactive \
+     --command "psql -U topstepx -d topstepx_mcp"
+   ```
+
+   At the prompt: `\password topstepx` (psql prompts twice; nothing on argv). Quoted 2026-09-10,
+   same exec, read-only: `psql -U topstepx -d topstepx_mcp -tAc SELECT\ current_user` → `topstepx`
+   (session `ecs-execute-command-esd5zitx9lejvay7g59pheucge`). `ALTER` was not applied.
+
+2. Write `{"password":"…","connectionString":"Host=postgres.staging.topstepx.internal;Port=5432;Database=topstepx_mcp;Username=topstepx;Password=…"}`
+   with `jq --rawfile`. Both keys. `put-secret-value --secret-id topstepx-mcp/staging/postgres --secret-string file://…`
+3. `aws ecs update-service --region us-east-1 --cluster topstepx-mcp-staging --service topstepx-mcp-staging-server --force-new-deployment`
+4. Do **not** restart postgres. The next dump task reads the new shell on its own.
+
+### ProjectX and Cohere
+
+`put-secret-value` from a `0600` file (`apiKey`+`apiSecret` / `apiKey`), then
+`force-new-deployment` on the server. Empty Cohere is a supported state. No Cognito step.
+`describe-secret` shape is the same as the six-shell quote above.
+
+Assisted-by: Cursor Grok 4.6 (Cursor)
+
 ## Deployment check
 
 Once the hostname answers and the `deploy-check` shell is filled, from the environment (never as
@@ -332,6 +518,69 @@ aws ce get-cost-and-usage \
 Expect a `staging` row (and later a `production` row). Group by `Project` to confirm everything
 under this account that this app owns carries `topstepx-mcp`.
 
+**First full month.** The account was stood up 2026-09-09. A first-month billed figure does not
+exist yet — the number is missing, not estimated. Re-query after October 2026 closes:
+
+```bash
+aws ce get-cost-and-usage --region us-east-1 \
+  --time-period Start=2026-09-01,End=2026-10-01 \
+  --granularity MONTHLY --metrics UnblendedCost
+aws budgets describe-budget --account-id 045296582762 --budget-name topstepx-mcp \
+  --query 'Budget.{Limit:BudgetLimit,Actual:CalculatedSpend.ActualSpend,Forecast:CalculatedSpend.ForecastedSpend}'
+```
+
+Quoted 2026-09-10 for 2026-09-01–11, `Estimated: true`: account UnblendedCost
+`Amount=1.5353811425` `Unit=USD`. Grouped by `Environment` still only `Environment$` (empty tag)
+at that same amount. Budget `topstepx-mcp` Limit `300.0` USD, Actual `1.535`, Forecast `1.029`.
+By service the same window (still estimated, not a month): Route 53, ECS, ELB, VPC, WAF, EFS,
+Secrets Manager, S3, CloudWatch, Tax — and zeros for ACM, CloudFormation, Cognito, SNS. ADR-0023's
+~95 USD/environment plan figure is not a bill.
+
+Assisted-by: Cursor Grok 4.6 (Cursor)
+
+## Scale to zero
+
+Staging only. Both services, desired **0**, when the environment is idle. Production is not
+this procedure. Restore **postgres first**, then server — the server needs the store.
+
+```bash
+aws ecs update-service --region us-east-1 \
+  --cluster topstepx-mcp-staging --service topstepx-mcp-staging-server --desired-count 0
+aws ecs update-service --region us-east-1 \
+  --cluster topstepx-mcp-staging --service topstepx-mcp-staging-postgres --desired-count 0
+# wait until describe-services shows running 0 / pending 0 on both
+```
+
+Quoted 2026-09-10: each `update-service` returns `{desired: 0, running: 1, pending: 0,
+status: ACTIVE}` (the running task has not drained yet). Minutes later both are
+`desired 0 / running 0 / pending 0`. `GET /health` is **503** — the ALB is still answering.
+`topstepx-mcp-staging-server-running-tasks` and `…-postgres-running-tasks` go **ALARM**
+(5 min breaching; server ALARM 15:42:39 CDT, postgres 15:41:33 CDT on this drill).
+
+**What stays billable** with desired 0: the internet-facing ALB `topstepx-mcp-staging` (2 AZs,
+two public IPv4s — do not list them), EFS `fs-0ed26bca5aabea73e` Elastic
+(`LifeCycleState=available`, still holding the store), Secrets Manager, WAF, Route 53, S3,
+CloudWatch, Cognito. No NAT (none in the account for this project). Fargate compute and the
+per-task public IPs (`AssignPublicIp=ENABLED`) go away — server ENI had a public association
+while running; it is gone at 0.
+
+**Restore.** Postgres, then server. Wait for `running=1` and `/health` 200.
+
+```bash
+aws ecs update-service --region us-east-1 \
+  --cluster topstepx-mcp-staging --service topstepx-mcp-staging-postgres --desired-count 1
+aws ecs update-service --region us-east-1 \
+  --cluster topstepx-mcp-staging --service topstepx-mcp-staging-server --desired-count 1
+```
+
+Quoted: each returns `{desired: 1, running: 0, pending: 0}`. Within ~90 s both were `1/1` and
+`/health` was `{"status":"ok","store":"available","version":"0.4.0","digest":"sha256:8f388466…"}`.
+The two task-count alarms stay ALARM through the next 5-minute **Average** bucket after
+restore (server reason on this drill: `1 datapoint [0.8 (10/09/26 20:37:00)] was less than
+the threshold (1.0)` while `describe-services` was already 1/1). Both returned **OK** on
+datapoint `1.0` at 20:43 UTC. `OKActions` is empty — a return to OK does not page. Do not
+raise either desired count above 1.
+
 Assisted-by: Cursor Grok 4.6 (Cursor)
 
 ## Alarms
@@ -372,6 +621,9 @@ yet owns. `/health` stays liveness-only (gh#513).
 Assisted-by: Cursor Grok 4.6 (Cursor)
 
 ## Restore a `pg_dump`
+
+This is the [gh#522](https://github.com/adammarquette/MarqSpec.Mcp.TopstepX/issues/522) drill.
+Later cards link here; they do not copy these steps.
 
 The restorable artefact is an object in `s3://topstepx-mcp-<env>-backups/`, not the EFS AWS Backup
 vault (ADR-0004 2026-09-10, ADR-0023 §10). Restore onto a **new** access point and a **fresh**

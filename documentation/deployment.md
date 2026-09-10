@@ -15,7 +15,7 @@ land with gh#523. **gh#519 stood the account up once** (2026-09-09): region, OID
 | Operator principal on the first deploy | `arn:aws:iam::045296582762:root` |
 | CDK bootstrap | `aws://045296582762/us-east-1` (`CDKToolkit` `CREATE_COMPLETE`) |
 | OIDC stack | `topstepx-mcp-github-oidc` |
-| Staging stack | `topstepx-mcp-staging` — looks up zone `Z00545362JA49XMTT3U7Q`; ACM `*.staging.marqspec.com` **ISSUED**; Route 53 alias to ALB; stack **`CREATE_FAILED`** (2026-09-09 redeploy) — postgres **1/1**, server **0/1** |
+| Staging stack | `topstepx-mcp-staging` — looks up zone `Z00545362JA49XMTT3U7Q`; ACM `*.staging.marqspec.com` **ISSUED**; Route 53 alias to ALB; stack **`CREATE_COMPLETE`** (2026-09-10 v0.4.0 redeploy) — postgres **1/1**, server **1/1** |
 | Fargate On-Demand vCPU (`L-3032A538`) | **64** (raised 2026-09-09; was 0 on the first deploy) |
 | Production stack | not deployed (out of scope for gh#519) |
 
@@ -92,10 +92,11 @@ npx cdk deploy topstepx-mcp-github-oidc \
 a confirmation to that address.
 
 Pass digest and version as parameters (the stack writes SSM; do **not** `put-parameter`).
-Latest published release on 2026-09-09:
+Latest published release on 2026-09-10:
 
-- tag `v0.3.0` → version `0.3.0`
-- digest `sha256:a5f88e0b3cad253cb76ef44338dea8a785f2ca9c56134836e80ee6f2519f17a8`
+- tag `v0.4.0` → version `0.4.0` (commit `01a8fdf`, gh#512 OAuth on `main`)
+- digest `sha256:8f388466165056252ec309bea65563e22a168671764f2ba8654c5aa335f03ce2`
+  (`docker buildx imagetools inspect ghcr.io/adammarquette/marqspec.mcp.topstepx:0.4.0`)
 
 Outbound is still a fork. This deploy passes `PublicIpPerTask` as **synth context only**, the same
 choice the 2026-09-09 OIDC session used; it is not a `Program.cs` literal.
@@ -103,8 +104,8 @@ choice the 2026-09-09 OIDC session used; it is not a `Program.cs` literal.
 ```bash
 npx cdk deploy topstepx-mcp-staging \
   -c outbound=PublicIpPerTask -c account=045296582762 -c region=us-east-1 \
-  --parameters ImageDigest=sha256:a5f88e0b3cad253cb76ef44338dea8a785f2ca9c56134836e80ee6f2519f17a8 \
-  --parameters Version=0.3.0 \
+  --parameters ImageDigest=sha256:8f388466165056252ec309bea65563e22a168671764f2ba8654c5aa335f03ce2 \
+  --parameters Version=0.4.0 \
   --parameters ProjectXDataTier=Simulated \
   --parameters AlertsEmail="$ALERTS_EMAIL"
 ```
@@ -125,9 +126,10 @@ landed in **`ROLLBACK_COMPLETE`** — it cannot be updated; **delete, then deplo
    An empty shell makes the postgres task exit and triggers the ECS circuit breaker.
 4. Prefer `cdk deploy --no-rollback` on a failed create so partial resources (issued cert, ALB)
    survive for inspection; the stack stays `CREATE_FAILED` until the failing resource is fixed.
-5. Use a **release image that ships gh#512 OAuth** — tags `v0.3.0` and `v0.3.1` still call
-   `UseBearerTokenGate` only, while `EnvironmentStack` sets `Mcp__Auth__Mode=OAuth`. The server
-   refuses to start until a release contains the OAuth transport.
+5. Use a **release image that ships gh#512 OAuth** — `v0.4.0` and later. Tags `v0.3.0` / `v0.3.1`
+   still call `UseBearerTokenGate` only while `EnvironmentStack` sets `Mcp__Auth__Mode=OAuth`.
+6. Delete the WAF log group orphan `aws-waf-logs-topstepx-mcp-staging` if early validation fails on
+   redeploy — it is RETAIN and not removed by stack delete alone.
 
 Assisted-by: Composer (Cursor)
 
@@ -190,27 +192,27 @@ environment's server service so the task re-reads every `valueFrom` (the OTEL si
 **Never call `secretsmanager get-secret-value`.** The runbook records ARNs and client ids, never
 values.
 
-Staging shells after the 2026-09-09 redeploy (CloudFormation `SecretString` stays the empty
+Staging shells after the 2026-09-10 v0.4.0 redeploy (CloudFormation `SecretString` stays the empty
 document; ARNs rotate when RETAIN secrets are deleted and recreated). ARNs:
 
 | Secret id | ARN |
 |---|---|
-| `topstepx-mcp/staging/postgres` | `arn:aws:secretsmanager:us-east-1:045296582762:secret:topstepx-mcp/staging/postgres-kwZEj1` |
-| `topstepx-mcp/staging/projectx` | `arn:aws:secretsmanager:us-east-1:045296582762:secret:topstepx-mcp/staging/projectx-7KFfX9` |
-| `topstepx-mcp/staging/cohere` | `arn:aws:secretsmanager:us-east-1:045296582762:secret:topstepx-mcp/staging/cohere-NdFNzm` |
-| `topstepx-mcp/staging/claude-connector` | `arn:aws:secretsmanager:us-east-1:045296582762:secret:topstepx-mcp/staging/claude-connector-YE4yt6` |
-| `topstepx-mcp/staging/deploy-check` | `arn:aws:secretsmanager:us-east-1:045296582762:secret:topstepx-mcp/staging/deploy-check-HuS8p0` |
-| `topstepx-mcp/staging/otel` | `arn:aws:secretsmanager:us-east-1:045296582762:secret:topstepx-mcp/staging/otel-YAd9yz` |
+| `topstepx-mcp/staging/postgres` | `arn:aws:secretsmanager:us-east-1:045296582762:secret:topstepx-mcp/staging/postgres-6L8EYk` |
+| `topstepx-mcp/staging/projectx` | `arn:aws:secretsmanager:us-east-1:045296582762:secret:topstepx-mcp/staging/projectx-3mkBBC` |
+| `topstepx-mcp/staging/cohere` | `arn:aws:secretsmanager:us-east-1:045296582762:secret:topstepx-mcp/staging/cohere-NJGFdO` |
+| `topstepx-mcp/staging/claude-connector` | `arn:aws:secretsmanager:us-east-1:045296582762:secret:topstepx-mcp/staging/claude-connector-d5l9Gt` |
+| `topstepx-mcp/staging/deploy-check` | `arn:aws:secretsmanager:us-east-1:045296582762:secret:topstepx-mcp/staging/deploy-check-r55uRq` |
+| `topstepx-mcp/staging/otel` | `arn:aws:secretsmanager:us-east-1:045296582762:secret:topstepx-mcp/staging/otel-iRxs7l` |
 
-Client ids (not secrets): `claude-connector` `336o017ejvc91sl63ictlk7vrp`; `deploy-check`
-`10khmvfs1sb5b2hn3kk34bqbc`. Pool `us-east-1_PCefbBDnZ`. Issuer
-`https://cognito-idp.us-east-1.amazonaws.com/us-east-1_PCefbBDnZ`.
+Client ids (not secrets): `claude-connector` `p0j5iptk20n76i6pqanhopkn4`; `deploy-check`
+`4eo7b5pabtj0gog7c9is3hgm52`. Pool `us-east-1_lVKjeSrgi`. Issuer
+`https://cognito-idp.us-east-1.amazonaws.com/us-east-1_lVKjeSrgi`. Hosted UI
+`https://topstepx-mcp-staging.auth.us-east-1.amazoncognito.com`.
 
 Maintainer still owes: practice ProjectX credentials; optional Cohere key; Grafana OTLP pair;
 copy both Cognito client secrets into their shells; one Cognito user (self-sign-up is off). Do not
 mint fake brokerage credentials. MFA stays `OPTIONAL` (TOTP only) as gh#517 shipped it unless the
-maintainer says otherwise. **Release image:** cut a tag after gh#512 OAuth is on `main` — `v0.3.1`
-still lacks it.
+maintainer says otherwise. **Postgres shell filled during deploy**; the five other shells remain empty.
 
 Assisted-by: Composer (Cursor)
 
@@ -221,7 +223,7 @@ arguments):
 
 ```bash
 MCP_CHECK_CLIENT_ID=… MCP_CHECK_CLIENT_SECRET=… MCP_CHECK_TOKEN_URL=… \
-  scripts/check-deployment.sh https://topstepx-mcp.staging.marqspec.com 0.3.0
+  scripts/check-deployment.sh https://topstepx-mcp.staging.marqspec.com 0.4.0
 ```
 
 An unfilled shell fails `UNSET` before any request. A wrong secret reaches the token endpoint and

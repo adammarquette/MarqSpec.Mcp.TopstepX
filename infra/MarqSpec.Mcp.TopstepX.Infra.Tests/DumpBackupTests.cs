@@ -49,9 +49,16 @@ public sealed partial class DumpBackupTests(EnvironmentTemplates templates) : IC
         props["PublicAccessBlockConfiguration"]!["BlockPublicAcls"]!.GetValue<bool>().Should().BeTrue();
         props["PublicAccessBlockConfiguration"]!["RestrictPublicBuckets"]!.GetValue<bool>().Should().BeTrue();
 
-        var rule = props["LifecycleConfiguration"]!["Rules"]!.AsArray().Should().ContainSingle().Which!;
-        rule["Status"]!.GetValue<string>().Should().Be("Enabled");
-        rule["ExpirationInDays"]!.GetValue<int>().Should().Be(90);
+        var rules = props["LifecycleConfiguration"]!["Rules"]!.AsArray();
+        var expire = rules.Should().ContainSingle(r => r!["ExpirationInDays"] != null).Which!;
+        expire["Status"]!.GetValue<string>().Should().Be("Enabled");
+        expire["ExpirationInDays"]!.GetValue<int>().Should().Be(90);
+        expire["NoncurrentVersionExpiration"]!["NoncurrentDays"]!.GetValue<int>().Should().Be(90,
+            "Expiration on a versioned bucket only writes a delete marker; NoncurrentVersionExpiration removes the dump bytes");
+
+        var deleteMarkers = rules.Should().ContainSingle(r =>
+            r!["ExpiredObjectDeleteMarker"] != null && r["ExpiredObjectDeleteMarker"]!.GetValue<bool>()).Which!;
+        deleteMarkers["Status"]!.GetValue<string>().Should().Be("Enabled");
 
         bucket["DeletionPolicy"]!.GetValue<string>().Should().Be("Retain");
         bucket["UpdateReplacePolicy"]!.GetValue<string>().Should().Be("Retain");

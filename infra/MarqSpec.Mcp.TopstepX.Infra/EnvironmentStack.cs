@@ -14,8 +14,6 @@ using Amazon.CDK.AWS.Logs;
 using Amazon.CDK.AWS.Route53;
 using Amazon.CDK.AWS.Route53.Targets;
 using Amazon.CDK.AWS.S3;
-using CfnSchedule = Amazon.CDK.AWS.Scheduler.CfnSchedule;
-using CfnScheduleProps = Amazon.CDK.AWS.Scheduler.CfnScheduleProps;
 using Amazon.CDK.AWS.ServiceDiscovery;
 using Amazon.CDK.AWS.SNS;
 using Amazon.CDK.AWS.SNS.Subscriptions;
@@ -24,6 +22,8 @@ using Amazon.CDK.AWS.WAFv2;
 using Constructs;
 using CfnParameter = Amazon.CDK.CfnParameter;
 using CfnParameterProps = Amazon.CDK.CfnParameterProps;
+using CfnSchedule = Amazon.CDK.AWS.Scheduler.CfnSchedule;
+using CfnScheduleProps = Amazon.CDK.AWS.Scheduler.CfnScheduleProps;
 using EcsSecret = Amazon.CDK.AWS.ECS.Secret;
 using EventTargets = Amazon.CDK.AWS.Events.Targets;
 using FileSystem = Amazon.CDK.AWS.EFS.FileSystem;
@@ -637,7 +637,18 @@ public sealed class EnvironmentStack : Stack
             BlockPublicAccess = BlockPublicAccess.BLOCK_ALL,
             EnforceSSL = true,
             Versioned = true,
-            LifecycleRules = [new LifecycleRule { Expiration = Duration.Days(90) }],
+            // Expiration alone on a versioned bucket only writes a delete marker; the dump
+            // stays as a noncurrent version and is still billed (gh#522). Both current and
+            // noncurrent must expire, and expired delete markers must be cleaned up.
+            LifecycleRules =
+            [
+                new LifecycleRule
+                {
+                    Expiration = Duration.Days(90),
+                    NoncurrentVersionExpiration = Duration.Days(90),
+                },
+                new LifecycleRule { ExpiredObjectDeleteMarker = true },
+            ],
             Metrics = [new BucketMetrics { Id = "EntireBucket" }],
             RemovalPolicy = RemovalPolicy.RETAIN,
         });

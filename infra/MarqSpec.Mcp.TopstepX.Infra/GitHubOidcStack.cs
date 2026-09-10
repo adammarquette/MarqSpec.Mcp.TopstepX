@@ -188,6 +188,16 @@ public sealed class GitHubOidcStack : Stack
 
         if (envName == "production")
         {
+            // The pre-deploy snapshot looks the filesystem up on this environment's stack. Without
+            // the describe, AccessDenied and "no EFS yet" are the same answer and the backup is
+            // skipped on every live run (gh#520 review). Scoped to this stack; staging never starts
+            // a backup and does not need the look.
+            statements.Add(new PolicyStatement(new PolicyStatementProps
+            {
+                Sid = "DescribeStoreFileSystem",
+                Actions = ["cloudformation:DescribeStackResources"],
+                Resources = [$"arn:{partition}:cloudformation:{region}:{account}:stack/topstepx-mcp-{envName}/*"],
+            }));
             // gh#520's production job starts an EFS backup before it deploys the same digest.
             statements.Add(new PolicyStatement(new PolicyStatementProps
             {

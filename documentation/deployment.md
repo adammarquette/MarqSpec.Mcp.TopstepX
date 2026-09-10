@@ -103,6 +103,16 @@ gh workflow run deploy.yml --ref main -f version=0.4.0 -f environment=staging
 
 `:latest` is still pushed on every tag (ADR-0001) and is never what a deploy references.
 
+Production starts an on-demand EFS snapshot before `cdk deploy` and does not wait for it. The
+filesystem id comes from `cloudformation describe-stack-resources` on `topstepx-mcp-production`.
+A successful empty look, or CloudFormation saying that stack does not exist, is a first create
+and is named (`NO BACKUP`) rather than invented. **A failed describe is a stop** — AccessDenied
+and a missing filesystem are not the same answer. `GitHubDeploy-production` is granted that
+describe on this stack; until the OIDC stack is next deployed, a live production run fails
+loud on the look instead of skipping the snapshot.
+
+Assisted-by: Cursor Grok 4.6 (Cursor)
+
 **Do not approve the first `aws-production` run until gh#525 has closed**, or a dated ADR-0023 entry
 says production went first. The maintainer approves production. gh#528 (WAF) is already closed.
 

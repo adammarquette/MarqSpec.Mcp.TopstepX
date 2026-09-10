@@ -100,6 +100,20 @@ public sealed class GitHubOidcStackTests
     }
 
     [Fact]
+    public void Only_the_production_role_may_describe_the_production_stack_to_find_efs()
+    {
+        var (staging, _) = DeployRole("GitHubDeploy-staging");
+        var (production, _) = DeployRole("GitHubDeploy-production");
+
+        Synthesised.Text(staging["Policies"]).Should().NotContain("cloudformation:DescribeStackResources");
+        var text = Synthesised.Text(production["Policies"]);
+        text.Should().Contain("cloudformation:DescribeStackResources",
+            "the pre-deploy snapshot looks the filesystem up; AccessDenied and a missing filesystem must not be the same answer");
+        text.Should().Contain("stack/topstepx-mcp-production/");
+        text.Should().NotContain("stack/topstepx-mcp-staging/");
+    }
+
+    [Fact]
     public void No_access_key_exists_anywhere()
     {
         _stack.Resources("AWS::IAM::AccessKey").Should().BeEmpty();

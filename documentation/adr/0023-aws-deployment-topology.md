@@ -1082,6 +1082,26 @@ currently blocked.* Service Quotas `L-3032A538` (*Fargate On-Demand vCPU resourc
 increase can place the in-flight services rather than rolling back the issued certificate.
 Maintainer raises the quota; this card does not invent a number.
 
+## Update (2026-09-10) — v0.4.0 redeploy, `CREATE_COMPLETE`
+
+Release **`v0.4.0`** (`01a8fdf`, digest
+`sha256:8f388466165056252ec309bea65563e22a168671764f2ba8654c5aa335f03ce2`) ships gh#512 OAuth.
+gh#519 deleted `topstepx-mcp-staging` (`CREATE_FAILED` from the v0.3.x image mismatch), removed
+**RETAIN** orphans (six secret shells, server/postgres log groups, EFS + access point, ALB access-log
+bucket, backup vault, Cognito pool `us-east-1_PCefbBDnZ`, and the WAF log group
+`aws-waf-logs-topstepx-mcp-staging`), and redeployed with `ZoneMode.Lookup` of
+`Z00545362JA49XMTT3U7Q` unchanged.
+
+Postgres shell filled during `CREATE_IN_PROGRESS`. Stack **`CREATE_COMPLETE`**; postgres **1/1**,
+server **1/1** on `0.4.0`. **`GET /health` → 200** (`{"status":"ok","store":"available",…}`); a
+`HEAD` probe still hits the OAuth gate (**401** — ALB uses `GET`). ACM `*.staging.marqspec.com`
+**ISSUED**; Route 53 alias **A → ALB**. Cognito pool **`us-east-1_lVKjeSrgi`**. IdP discovery:
+`token_endpoint_auth_methods_supported` = `client_secret_basic, client_secret_post`;
+**`code_challenge_methods_supported` still absent** (S256 not advertised); no RFC 8707 `resource`
+key. Protected-resource metadata at `/.well-known/oauth-protected-resource/mcp` names the Cognito
+issuer. Five secret shells (projectx, cohere, both Cognito clients, otel) and one Cognito user
+remain maintainer hands; #526–#528 live measurements still open until those are filled.
+
 ## Update (2026-09-09) — quota 64, delete+redeploy, `CREATE_FAILED`
 
 Fargate On-Demand vCPU quota `L-3032A538` is **64** (was **0** on the first deploy). The first

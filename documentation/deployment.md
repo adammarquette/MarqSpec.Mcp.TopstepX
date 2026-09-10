@@ -111,8 +111,9 @@ filesystem id comes from `cloudformation describe-stack-resources` on `topstepx-
 A successful empty look, or CloudFormation saying that stack does not exist, is a first create
 and is named (`NO BACKUP`) rather than invented. **A failed describe is a stop** — AccessDenied
 and a missing filesystem are not the same answer. `GitHubDeploy-production` is granted that
-describe on this stack; until the OIDC stack is next deployed, a live production run fails
-loud on the look instead of skipping the snapshot.
+describe on this stack. **2026-09-10 OIDC stack redeployed** (`topstepx-mcp-github-oidc`
+`UPDATE_COMPLETE`): CloudFormation now carries that grant and the immutable `sub` prefix.
+A live production run no longer fails AccessDenied on the look for want of a template update.
 
 Assisted-by: Cursor Grok 4.6 (Cursor)
 
@@ -298,6 +299,11 @@ What those answered: staging `sub` is the tag pattern and `main` only; productio
 `environment:aws-production` only; provider `ClientIDList` is `sts.amazonaws.com`; `ThumbprintList`
 is one 40-hex value IAM filled in — **not drift, do not "correct" the template**. `aws-production`
 requires `User:adammarquette`.
+
+**2026-09-10 OIDC stack redeployed** (`topstepx-mcp-github-oidc` `UPDATE_COMPLETE`). Synthesised
+and live trusts both use `repo:adammarquette@14438151/MarqSpec.Mcp.TopstepX@1342280460` — not the
+name-only `sub`. Same two staging patterns; production still `environment:aws-production` only.
+Quoted on #520.
 
 Assisted-by: Cursor Grok 4.6 (Cursor)
 

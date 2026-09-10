@@ -1477,13 +1477,13 @@ not `cdk deploy` a stack other sessions own, and does not approve production. Wh
   is the maintainer's dated entry on ADR-0023 — gh#519 passed `PublicIpPerTask` as synth context only.
   When the fork closes, the loop in `ci.yml` collapses to one plain synth and the value becomes a literal
   in `Program.cs`.
-- **Secrets are shells.** The six
-  `topstepx-mcp/<env>/{postgres,projectx,cohere,claude-connector,deploy-check,otel}`
+- **Secrets are shells.** The five
+  `topstepx-mcp/<env>/{postgres,projectx,cohere,claude-connector,deploy-check}`
   secrets are created with every JSON key the task definitions and the deployment check read and every
   value empty; gh#519 writes the values by hand, once. **Never edit a shell's literal afterwards**:
   CloudFormation creates a new secret version whenever the `SecretString` property changes, and that
   version is the live one — an edit would put an empty document over a real credential. A new key is a new
-  secret.
+  secret. gh#646 retired the sixth (`otel`): CloudWatch OTLP is SigV4 on the task role.
 - **The authorization server is in the stack** (gh#517, [ADR-0023](../adr/0023-aws-deployment-topology.md)
   §9 and its 2026-09-07 Cognito entry): one user pool per environment, the `topstepx-mcp` resource server
   with its `read` scope, the confidential `claude-connector` client on the code grant with the Claude
@@ -1495,20 +1495,19 @@ not `cdk deploy` a stack other sessions own, and does not approve production. Wh
   asserted to contain no Lambda. What is **not** measured yet — the discovery document's `S256`
   advertisement, its tolerance of the `resource` parameter, the token-endpoint auth methods — still
   waits on gh#519's leftover: no EnvironmentStack, because public NS is Cloudflare (2026-09-09).
-- **The server task carries a second container** (gh#537, [ADR-0019](../adr/0019-otlp-as-the-telemetry-boundary.md)
-  §5, ADR-0023 §11): an OTLP collector that receives on the task's loopback and exports to Grafana Cloud.
-  `Essential=false` with a hard 128 MiB cap, no port mapping, and its Grafana endpoint and token as
-  `valueFrom`s on the sixth shell — so an unhealthy sidecar leaves the server answering, and a template
-  carries no backend hostname or credential. **Filling that shell takes an
-  `aws ecs update-service --force-new-deployment`**: a `valueFrom` is read once at container start, and ECS
-  does not restart a stopped non-essential container, which is exactly what an unfilled shell leaves behind —
-  so without the second command the secret is written, the service reads healthy, and nothing is exported. Its configuration is a **checked-in file**,
+- **The server task carries a second container** (gh#537, gh#646, [ADR-0019](../adr/0019-otlp-as-the-telemetry-boundary.md)
+  §5 and its 2026-09-10 update, ADR-0023 §11): an OTLP collector that receives on the task's loopback and
+  exports to CloudWatch (X-Ray traces, CloudWatch Metrics, CloudWatch Logs) under SigV4 on the task role.
+  `Essential=false` with a hard 128 MiB cap, no port mapping, endpoints derived from `AWS::Region` — so an
+  unhealthy sidecar leaves the server answering, and a template carries no Grafana hostname, token, account
+  id or ARN. Its configuration is a **checked-in file**,
   `infra/MarqSpec.Mcp.TopstepX.Infra/Collector/otel-collector-config.yaml`, embedded in the assembly, read at
   synth time into `OTEL_COLLECTOR_CONFIG` and started with `--config=env:…` — a Fargate task has no disk to
   mount one from, and a test compares the file, the embedded resource and the task's value so it cannot
   become decorative. **The whole sidecar hangs off `EnvironmentStackProps.Telemetry` being non-null**, and
-  the absent case is the template this stack had before that card; both shapes are asserted. Edit that file
-  the way you bump an image digest: deliberately, and never with an endpoint or a token in it.
+  the absent case is the template this stack had before gh#537; both shapes are asserted. Edit that file
+  the way you bump an image digest: deliberately, and never with a token in it. The local compose
+  `observability` profile (gh#535) stays Grafana LGTM and is not this sidecar.
 - **The image is a digest in a parameter.** `ImageDigest` and `Version` have no default and are passed on
   `cdk deploy --parameters`; the stack writes the same two values to `/topstepx-mcp/<env>/image-digest`
   and `/version` in SSM as the written history, so the history cannot say one thing while the task runs

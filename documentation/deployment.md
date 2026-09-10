@@ -138,8 +138,12 @@ aws ecs describe-services --region us-east-1 \
   --services topstepx-mcp-staging-server \
   --query 'services[0].{desired:desiredCount,running:runningCount,taskDef:taskDefinition,breaker:deploymentConfiguration.deploymentCircuitBreaker}'
 
+TASK_DEF=$(aws ecs describe-services --region us-east-1 \
+  --cluster topstepx-mcp-staging \
+  --services topstepx-mcp-staging-server \
+  --query 'services[0].taskDefinition' --output text)
 aws ecs describe-task-definition --region us-east-1 \
-  --task-definition topstepx-mcp-staging-server:6 \
+  --task-definition "$TASK_DEF" \
   --query 'taskDefinition.containerDefinitions[].{name:name,image:image}'
 
 aws ssm get-parameter --region us-east-1 --name /topstepx-mcp/staging/version
@@ -209,8 +213,9 @@ when a *successful* stack update left a published version you do not want — SS
 definition already name that version, and `/health` may still show the previous digest if the
 breaker rolled ECS back. Dispatch from `main` only; the workflow never rebuilds; it resolves the
 tag's digest on GHCR. **Do not dispatch** when CloudFormation itself rolled back (the stack still
-has the old parameters). **Do not `cdk deploy` from a laptop to undo a pipeline run.** `gh workflow
-view deploy.yml` on 2026-09-10: id `355246622`, **Total runs 0**.
+has the old parameters). **Do not `cdk deploy` from a laptop to undo a pipeline run.**
+`gh workflow run deploy.yml` was not applied. `gh workflow view deploy.yml` on 2026-09-10: id
+`355246622`, **Total runs 0**.
 
 Assisted-by: Cursor Grok 4.6 (Cursor)
 
@@ -406,11 +411,14 @@ Rebuild the JSON from the describe file; do not type values onto the command lin
    this shell — no `force-new-deployment`.
 5. `rm` every file. Old Cowork sessions fail until step 4.
 
+`--generate-secret` and the following `put-secret-value` were not applied — Cowork still holds
+the secret this card found.
+
 ### Cognito `deploy-check`
 
 Same three steps against `4eo7b5pabtj0gog7c9is3hgm52` and `topstepx-mcp/staging/deploy-check`.
 The pipeline reads the shell at run time (gh#520). No server restart. **Do not rotate during an
-in-flight `deploy.yml` run.**
+in-flight `deploy.yml` run.** `--generate-secret` and `put-secret-value` were not applied.
 
 ### Maintainer password, then every token
 
@@ -433,6 +441,7 @@ rm -f /tmp/user /tmp/pass /tmp/set-pass.json /tmp/signout.json
 `admin-set-user-password --generate-cli-skeleton` keys: `UserPoolId`, `Username`, `Password`,
 `Permanent`. `admin-user-global-sign-out`: `UserPoolId`, `Username`. Sign-out is per user; this
 pool has one. The password change itself was not applied — it would lock the maintainer.
+`admin-user-global-sign-out` was not applied — existing sessions stay valid.
 
 ### Postgres password — ALTER, then the secret, then the server
 
@@ -458,11 +467,14 @@ first, or server restart first, is an outage.
 3. `aws ecs update-service --region us-east-1 --cluster topstepx-mcp-staging --service topstepx-mcp-staging-server --force-new-deployment`
 4. Do **not** restart postgres. The next dump task reads the new shell on its own.
 
+`put-secret-value` and `force-new-deployment` were not applied. Desired count stays 1.
+
 ### ProjectX and Cohere
 
 `put-secret-value` from a `0600` file (`apiKey`+`apiSecret` / `apiKey`), then
 `force-new-deployment` on the server. Empty Cohere is a supported state. No Cognito step.
-`describe-secret` shape is the same as the six-shell quote above.
+`describe-secret` shape is the same as the six-shell quote above. `put-secret-value` and
+`force-new-deployment` were not applied.
 
 Assisted-by: Cursor Grok 4.6 (Cursor)
 

@@ -209,10 +209,24 @@ Client ids (not secrets): `claude-connector` `p0j5iptk20n76i6pqanhopkn4`; `deplo
 `https://cognito-idp.us-east-1.amazonaws.com/us-east-1_lVKjeSrgi`. Hosted UI
 `https://topstepx-mcp-staging.auth.us-east-1.amazoncognito.com`.
 
-All six staging shells were filled 2026-09-10 (quoted on #519, values never recorded here).
+All six staging shells have every expected key nonempty as of the #519 addendum at
+2026-09-10 18:51 UTC (values never recorded here):
+
+| Secret id | Keys nonempty |
+|---|---|
+| `topstepx-mcp/staging/postgres` | `password`, `connectionString` |
+| `topstepx-mcp/staging/projectx` | `apiKey`, `apiSecret` |
+| `topstepx-mcp/staging/cohere` | `apiKey` |
+| `topstepx-mcp/staging/claude-connector` | `clientId`, `clientSecret` |
+| `topstepx-mcp/staging/deploy-check` | `clientId`, `clientSecret` |
+| `topstepx-mcp/staging/otel` | `endpoint`, `authorization` |
+
 `otel.authorization` is the Grafana Cloud **header value** (`Basic <payload>`), not a raw `glc_…`
-token and not `Authorization=Basic …`. One Cognito user exists and is `CONFIRMED` (self-sign-up
-is off). MFA stays `OPTIONAL` (TOTP only) as gh#517 shipped it unless the maintainer says otherwise.
+token and not `Authorization=Basic …`. One Cognito user exists and is `CONFIRMED` (pool
+`us-east-1_lVKjeSrgi`, `list-users` count **1**, same 18:51 UTC quote; no username or email).
+Self-sign-up is off. MFA stays `OPTIONAL` (TOTP only) as gh#517 shipped it unless the
+maintainer says otherwise. `scripts/check-deployment.sh` is `client_credentials` and does
+not prove a user.
 A `valueFrom` is read at task start: after any shell write, `aws ecs update-service
 --force-new-deployment` on that environment's server (done 2026-09-10 12:06 CDT).
 
@@ -275,8 +289,12 @@ Assisted-by: Cursor Grok 4.6 (Cursor)
 ## Alarms
 
 Each environment has one SNS topic `topstepx-mcp-<env>-alerts`. The subscription address is stack
-parameter `AlertsEmail`. SNS sends a confirmation (often to **spam**); staging's email subscription
-was still `PendingConfirmation` until 2026-09-10 and delivered **0** notifications until confirmed.
+parameter `AlertsEmail`. SNS sends a confirmation (often to **spam**). Staging's email subscription
+was still `PendingConfirmation` with CloudWatch delivered **0** at the #519 quote of 2026-09-10
+18:19 UTC. Re-measured 18:51 UTC: `PendingConfirmation` **false**, topic
+`SubscriptionsConfirmed` **1**, `SubscriptionsPending` **0**; CloudWatch
+`NumberOfNotificationsDelivered` last 6 h **Sum = 1** (datapoint 12:51 CDT). Inbox contents
+were not read.
 `OKActions` is empty — a return to OK does not page. gh#522's "no dump object in 26 h" alarm is
 still open and will publish here when it lands.
 
@@ -284,8 +302,8 @@ Quoted on #519, 2026-09-10: `update-service --desired-count 0` at 12:49:43 CDT �
 `topstepx-mcp-staging-server-running-tasks` **ALARM** at 12:51:39 → desired 1 at 12:52:24 →
 **OK** at 12:58:39. A forced bad digest (`:7`) produced `CannotPullContainerError`; after ~12 min
 the circuit breaker had not emitted `SERVICE_DEPLOYMENT_FAILED` (`failedTasks=2`); operator
-restored `:6` at 13:11. No rollback email until that event fires **and** the SNS subscription is
-confirmed.
+restored `:6` at 13:11. No rollback email — the EventBridge event did not fire, even though
+the SNS subscription is now confirmed (18:51 UTC quote).
 
 What is **not** alarmed, by decision (ADR-0023, gh#526): a server that is up, healthy and recording
 nothing because the tape recorder lost the hub (ADR-0016). That needs an app-emitted metric no card

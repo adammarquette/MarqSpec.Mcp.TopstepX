@@ -1104,17 +1104,24 @@ afternoon entry below records the fills and the live quotes.
 
 ## Update (2026-09-10) — shells filled, step 6 and #526–#528 quoted
 
-gh#519 filled all six staging shells (ARNs and client ids in the runbook, never values) and
-created one `CONFIRMED` Cognito user. Force-new-deployment 12:06 CDT so the task re-read every
-`valueFrom`. `scripts/check-deployment.sh` 0.4.0 exit 0 (`tools/list` 22). ECS Exec: three
-hypertables, `Trades` compression job 1000 scheduled. Task-count alarm ALARM/OK on desired-count
-0/1. WAF rate rule 403 after 440 `/health` GETs. Cost-allocation tags `Project` and `Environment`
-**Active**; Cost Explorer still only groups `Environment$` until a day of tagged billing. SNS
-email subscription was `PendingConfirmation` (confirm mail in spam) until the maintainer
-confirmed it the same afternoon. A forced nonexistent digest did **not** trip
-`SERVICE_DEPLOYMENT_FAILED` within 12 minutes (`failedTasks=2`); `:6` restored by hand. IdP
-discovery still omits `S256` and RFC 8707 `resource` — measured, not a pool setting. A week of
-WAF count-mode logs against Cowork traffic has not elapsed.
+gh#519 filled all six staging shells (ARNs and client ids in the runbook, never values). The
+18:51 UTC addendum on the card itemizes every expected key as nonempty (`postgres`
+password/connectionString, `projectx` apiKey/apiSecret, `cohere` apiKey, `claude-connector`
+and `deploy-check` clientId/clientSecret, `otel` endpoint/authorization). Same quote:
+`list-users` on `us-east-1_lVKjeSrgi` is count **1**, `UserStatus` **CONFIRMED** (no
+username or email). `scripts/check-deployment.sh` is `client_credentials` and does not prove
+a user. Force-new-deployment 12:06 CDT so the task re-read every `valueFrom`.
+`scripts/check-deployment.sh` 0.4.0 exit 0 (`tools/list` 22) proves `deploy-check` only.
+ECS Exec: three hypertables, `Trades` compression job 1000 scheduled. Task-count alarm
+ALARM/OK on desired-count 0/1. WAF rate rule 403 after 440 `/health` GETs. Cost-allocation
+tags `Project` and `Environment` **Active**; Cost Explorer still only groups `Environment$`
+until a day of tagged billing. SNS email subscription was still `PendingConfirmation`
+(delivered 0) at 18:19 UTC; re-measured 18:51 UTC `PendingConfirmation` **false**,
+`SubscriptionsConfirmed` **1**, `SubscriptionsPending` **0**, CloudWatch delivered last
+6 h **Sum = 1**. A forced nonexistent digest did **not** trip `SERVICE_DEPLOYMENT_FAILED`
+within 12 minutes (`failedTasks=2`); `:6` restored by hand. IdP discovery still omits
+`S256` and RFC 8707 `resource` — measured, not a pool setting. A week of WAF count-mode
+logs against Cowork traffic has not elapsed.
 
 ## Update (2026-09-09) — quota 64, delete+redeploy, `CREATE_FAILED`
 
@@ -1138,7 +1145,8 @@ maintainer fills the remaining shells.
   still owns the outbound-path fork with the maintainer.
 - gh#519 stood the account up, confirmed `staging.`, chose `us-east-1`, created public zone
   `Z00545362JA49XMTT3U7Q`, swapped Cloudflare NS onto it, and changed staging to `ZoneMode.Lookup`
-  of that zone. Staging runs **`v0.4.0`** (2026-09-10 entries). Shells filled, step 6 and the
+  of that zone. Staging runs **`v0.4.0`** (2026-09-10 entries). Shells filled (18:51 UTC key-presence
+  quote), one `CONFIRMED` Cognito user (same quote), step 6, SNS confirm (18:51 UTC), and the
   #526–#528 quotes that could be taken are on the issue. Remaining: Cost Explorer `Environment=staging`
   row after a day of Active tags, a week of WAF count-mode logs before production block mode, a
   circuit-breaker `SERVICE_DEPLOYMENT_FAILED` email if one is still wanted, IdP discovery still omits

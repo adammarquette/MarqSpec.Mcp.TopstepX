@@ -237,3 +237,20 @@ outright and the re-add finds it genuinely absent — measured, and pinned by
 That closed one *producer*. It left the probe asking the weaker question, which is what this update changes:
 `APairWhoseValuesStopShortOfTheBars_IsReplayedByTheNextRead` was red on `develop` and is what the completeness
 test is measured by.
+
+## Update — 2026-09-11: the shipped catalogue lists additional EMA and SMA periods (gh#659)
+
+**The Consequences sentence *"The shipped default is unchanged — no `Indicators__Additional*Periods` is set"*
+is no longer true of the three-copy catalogue.** `.env.example`, `docker-compose.yml` defaults, and
+`ServerConfiguration.Fixed` now ship the same two lists:
+
+- `Indicators__AdditionalEmaPeriods=10,13,24,48,200`
+- `Indicators__AdditionalSmaPeriods=9,22`
+
+Primaries stay `Indicators__EmaPeriod=20` and `Indicators__SmaPeriod=20`. `get_market_snapshot`'s
+`indicators{}` map is still primary-only. The C# `IndicatorOptions` class defaults for the additional lists
+stay empty — a hand-built test catalogue that omits them still computes only the primary.
+
+ATR, RSI, MACD, Bollinger and rolling-VWAP additional lists remain empty. Cold replay still grows with the
+instance count, as already stated above; this change is the instance-count growth arriving in the shipped
+catalogue rather than only in an operator override the next deploy would overwrite.

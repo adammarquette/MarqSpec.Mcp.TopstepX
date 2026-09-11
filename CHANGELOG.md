@@ -13,6 +13,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **The shipped indicator catalogue now lists additional EMA periods 10, 13, 24, 48, 200 and SMA
+  periods 9, 22.** Primaries stay 20. The three copies — `.env.example`, `docker-compose.yml`
+  defaults, and `ServerConfiguration.Fixed` — carry the same two strings; ATR, RSI, MACD,
+  Bollinger and rolling-VWAP additional lists stay empty. The C# `IndicatorOptions` class
+  defaults for the additional lists stay empty, so a hand-built test catalogue that omits them
+  still computes only the primary. `get_market_snapshot`'s map stays primary-only
+  ([ADR-0018](documentation/adr/0018-period-selection-among-configured-periods.md), gh#659).
+
 ### Added
 
 - **A published release deploys staging by digest, then production behind `aws-production`.**

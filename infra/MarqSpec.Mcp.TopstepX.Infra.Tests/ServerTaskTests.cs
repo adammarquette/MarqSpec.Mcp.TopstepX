@@ -158,6 +158,8 @@ public sealed class ServerTaskTests(EnvironmentTemplates templates) : IClassFixt
         environment["MarketData__Instruments"].Should().Be("ES,NQ", "every MarketData__ key at its .env.example default");
         environment["Indicators__AtrPeriod"].Should().Be("14");
         environment["KeyLevels__PivotLookback"].Should().Be("20");
+        environment["Indicators__AdditionalEmaPeriods"].Should().Be("10,13,24,48,200");
+        environment["Indicators__AdditionalSmaPeriods"].Should().Be("9,22");
     }
 
     [Theory]

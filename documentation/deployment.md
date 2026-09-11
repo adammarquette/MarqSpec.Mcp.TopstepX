@@ -840,33 +840,25 @@ Zone `Z00545362JA49XMTT3U7Q` unchanged. `MarketData__RecordTape` stayed `false` 
 ## Tape load (gh#525)
 
 Staging, 2026-09-11, release **0.5.0-rc.1**. Not an 08:30-open full RTH. `RecordTape=true`
-from **11:38:14 CT / 16:38:14Z** through cash close **15:00 CT / 20:00Z** (and left on
-until restored — last `Trades.RecordedAt` 21:24:23Z). Verdict and the three triggers are
-the ADR-0023 2026-09-11 entry: **EFS stays**.
+from **11:38:14 CT / 16:38:14Z** through cash close **15:00 CT / 20:00Z** (left on until
+the 23:32Z flip — last `Trades.RecordedAt` 21:24:23Z). Numbers are the ADR-0023
+2026-09-11 entry. That entry does **not** close EFS-vs-EC2: remaining-cash insert p99
+is not the 08:30 burst the 25 ms line was written for, and `CALL run_job(1000)` at
+16.5 ms was a `compress_after: 7 days` no-op, so the first real compression is
+unmeasured.
 
-**Restore.** This card owns `topstepx-mcp-staging` for the parameter flip only. Do not
-`cdk deploy` from a laptop that would rewrite the #656 callback allowlist. Flip
-`RecordTape` with the live template and every other parameter reused:
+**Do not set `RecordTape=false`.** gh#660 supersedes that restore. Staging keeps
+recording so volume profile / footprint accumulate (no backfill — ADR-0016 /
+ADR-0004). `:12` quoting `MarketData__RecordTape=false` is what the 23:32Z
+`--use-previous-template` flip left; it is not the next operator's step. #660 owns
+amending ADR-0023 §12 and the next stack update that turns recording back on. Do
+not `cdk deploy` this card over that update. Do not rewrite the #656 callback
+allowlist from a laptop.
 
-```bash
-aws cloudformation update-stack --region us-east-1 \
-  --stack-name topstepx-mcp-staging --use-previous-template \
-  --parameters ParameterKey=RecordTape,ParameterValue=false \
-    ParameterKey=WarmIndicators,UsePreviousValue=true \
-    ParameterKey=ImageDigest,UsePreviousValue=true \
-    ParameterKey=Version,UsePreviousValue=true \
-    ParameterKey=AlertsEmail,UsePreviousValue=true \
-    ParameterKey=Http5xxAlarmThreshold,UsePreviousValue=true \
-    ParameterKey=WafRateLimit,UsePreviousValue=true \
-    ParameterKey=ProjectXDataTier,UsePreviousValue=true \
-    ParameterKey=BootstrapVersion,UsePreviousValue=true \
-  --capabilities CAPABILITY_IAM CAPABILITY_NAMED_IAM
-```
-
-Quoted afterwards on `topstepx-mcp-staging-server:12`:
-`MarketData__RecordTape=false`, `WarmIndicators=false`, `Deployment__Version=0.5.0-rc.1`,
-`ProjectX__DataTier=Simulated`. Zone `Z00545362JA49XMTT3U7Q` unchanged. Do not approve
-`aws-production` from this path.
+Quoted on `topstepx-mcp-staging-server:12` after the 23:32Z flip (fact, not
+instruction): `MarketData__RecordTape=false`, `WarmIndicators=false`,
+`Deployment__Version=0.5.0-rc.1`, `ProjectX__DataTier=Simulated`. Zone
+`Z00545362JA49XMTT3U7Q` unchanged. Do not approve `aws-production` from this path.
 
 Assisted-by: Cursor Grok 4.6 (Cursor)
 

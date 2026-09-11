@@ -429,11 +429,15 @@ its own reason, not a drift.
 - **The additive-migration rule is load-bearing and is a gate, not a sentence** — gh#529, before the first
   production deploy that could need a rollback.
 - **EFS is a measured risk, not an assumed one.** The 2026-09-10 gh#525 entry states the
-  threshold first, then that afternoon's pgbench and both stop paths. The 2026-09-11 entry
-  quotes the remaining-cash tape window that actually ran and records the verdict: **EFS
-  stays**. Production on EFS is still not approved by those entries; gh#520's first
-  `aws-production` approval either follows them or is recorded here, on a date, as having
-  preceded them.
+  threshold first, then that afternoon's pgbench and both stop paths, and leaves the
+  EFS-vs-EC2 verdict **not** closed until a cash-open tape session is quoted. The
+  2026-09-11 entry quotes the remaining-cash window that actually ran (11:38–15:00 CT).
+  It does not invent an 08:30-open RTH, does not treat remaining-cash insert p99 as that
+  burst, and does not treat the ineligible `run_job` as a compression duration. The
+  verdict stays open: the first 08:30 open on this store and the first real Trades
+  compression remain unmeasured. Production on EFS is still not approved by those
+  entries; gh#520's first `aws-production` approval either follows a closed verdict or
+  is recorded here, on a date, as having preceded it.
 - **Cost is an order of magnitude, checked by the bill.** gh#527's estimate basis is roughly 95 USD per
   environment per month, priced on `us-east-1` on-demand as a basis and not as a chosen region — the region
   is still gh#519's — for two Fargate services, one ALB with its two public IPv4 addresses, EFS Elastic
@@ -1316,13 +1320,13 @@ Cognito entry measured them. `deploy-check` is unchanged.
 
 Assisted-by: Cursor Grok 4.6 (Cursor)
 
-## Update (2026-09-11) — EFS stays after the remaining-cash tape window (gh#525)
+## Update (2026-09-11) — remaining-cash tape window quoted; EFS-vs-EC2 verdict not closed (gh#525)
 
 Threshold first: the 2026-09-10 entry, quoted on #525 at comment 5624227604 before any
 tape number. EC2 + EBS if any of Trades insert **p99 > 25 ms**, forced `CALL run_job` on
 the Trades compression policy **> 120 s**, or EFS **`PercentIOLimit` > 80 % for 15 min**.
-This entry is the measurement of the window that actually ran, then the verdict. It does
-not invent an 08:30-open full RTH.
+This entry is the measurement of the window that actually ran. It does not invent an
+08:30-open full RTH, and it does not close the 2026-09-10 verdict.
 
 **Window, staging `0.5.0-rc.1`**, digest
 `sha256:5ed69b53ec37e001f76fdb797c6e9b312a7742bae19a73cdc04a6bff5d8123c9`.
@@ -1342,7 +1346,9 @@ end was cash close **15:00 CT / 20:00Z**. Zone `Z00545362JA49XMTT3U7Q` unchanged
 16:38:14Z–20:00:00Z. `pg_stat_statements` is not installed. **n = 316 975**, **p50 =
 11.0 ms**, **p99 = 23.0 ms**, avg 12.0 ms, min 5 ms, max 673 ms. Hourly p99 24 / 22 / 23
 / 22 ms (16–19Z). A 54-row 20:00Z remainder printed p99 27 ms — not the window trigger.
-**p99 23.0 ms does not cross 25 ms.**
+**p99 23.0 ms is a remaining-cash quote (11:38–15:00 CT).** The 25 ms line was written
+for a multi-instrument cash-open burst (~40 prints/s). That 08:30 burst was **not** in
+this window. This number does not close the insert-p99 trigger.
 
 **WAL.** `track_wal_io_timing=off`, so `wal_sync_time` stays **0** and cannot be
 measured. Snapshots: 16:41Z (start quote) wal_records 263 950, wal_bytes 169 132 169,
@@ -1361,9 +1367,13 @@ over the window **10 915 287 088**; `MeteredIOBytes` Sum **10 914 145 682**. Pea
 **Forced `CALL run_job(1000)`** at 23:32:18.389092Z–23:32:18.405627Z — **16.5 ms**.
 Policy `compress_after: 7 days`. The only Trades chunk `_hyper_3_1_chunk` (2026-09-10
 … 2026-09-17) stayed uncompressed. The open week bucket was not `compress_chunk`'d.
+16.5 ms is the job deciding the chunk is ineligible, not the wall time of compressing
+a session. Disclosing the ineligibility does not make 16.5 ms a compression duration.
+The first real compression on this hypertable is **unmeasured**. This number is not a
+120 s trigger reading — not a cross, and not an under.
 
-**`RecordTape` restored.** CloudFormation `--use-previous-template` flipped only
-`RecordTape=false` (other parameters `UsePreviousValue`). Quoted
+**`RecordTape` at quote time.** CloudFormation `--use-previous-template` at 23:32Z
+flipped only `RecordTape=false` (other parameters `UsePreviousValue`). Quoted
 `aws ecs describe-task-definition --task-definition topstepx-mcp-staging-server:12`:
 
 ```
@@ -1373,8 +1383,20 @@ MarketData__WarmIndicators = false
 MarketData__RecordTape = false
 ```
 
-**Verdict: EFS stays.** No trigger crossed. No EC2 + EBS card. Hard-kill paths stay the
-2026-09-10 entry; they were not re-run.
+That `:12` value is a fact of the 23:32Z flip, not the standing operator path.
+gh#660 (filed 2026-09-11, commented on #525 at 23:32Z) **supersedes** this card's
+"turn it back off" acceptance half: staging keeps recording so `get_volume_profile`
+/ footprint accumulate (no backfill — [ADR-0016](0016-subscribe-to-the-market-hub.md)
+/ [ADR-0004](0004-one-postgres-timescale-pgvector.md)). #660 owns amending §12.
+This entry does not tell the next operator to set `RecordTape=false`.
+
+**Verdict: not closed.** Remaining-cash insert p99 and `PercentIOLimit` in this
+window stayed under their lines; that does not close triggers written for cash-open
+and for a real compression. The first 08:30 open on this store is the first time
+insert p99 is measured under the load the 25 ms line named. The first eligible
+`compress_chunk` is the first 120 s reading. No EC2 + EBS card from this window —
+an unmeasured signal is not "under trigger." Hard-kill paths stay the 2026-09-10
+entry; they were not re-run. No `aws-production` approval.
 
 Assisted-by: Cursor Grok 4.6 (Cursor)
 
@@ -1398,9 +1420,12 @@ Assisted-by: Cursor Grok 4.6 (Cursor)
   SUCCESS `dependsOn` (2026-09-10 entry); dump is now `Essential=false`. Two consecutive dump days,
   the maintainer's drill, and a disable-schedule alarm fire remain outstanding.
 - gh#525 stated the EFS threshold and quoted pgbench plus both stop paths on 2026-09-10,
-  then the remaining-cash tape window on 2026-09-11; **EFS stays**. gh#526, gh#527 and
-  gh#528 have. gh#523 landed rotation, which-release, scale-to-zero and failed-deploy in
-  the runbook; the first-month cost figure remains missing.
+  then the remaining-cash tape window on 2026-09-11. The EFS-vs-EC2 verdict is **not**
+  closed: the 08:30 cash-open burst was not in that window, and the forced `run_job`
+  was a `compress_after` no-op, so the first real compression is unmeasured. gh#660
+  supersedes the "set `RecordTape` back to false" half; that card owns amending §12.
+  gh#526, gh#527 and gh#528 have. gh#523 landed rotation, which-release, scale-to-zero
+  and failed-deploy in the runbook; the first-month cost figure remains missing.
 - gh#510's connector measurement landed on ADR-0007 and ADR-0021; if a later measurement overturns the
   pre-registered-client assumption, decision 9's issuer reopens here as a dated entry and gh#517 is the
   card that changes.

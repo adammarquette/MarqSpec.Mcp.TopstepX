@@ -82,7 +82,7 @@ public static class ServerConfiguration
         ["Indicators__AdditionalAtrPeriods"] = "",
         ["Indicators__AdditionalRsiPeriods"] = "",
         ["Indicators__AdditionalSmaPeriods"] = "9,22",
-        ["Indicators__AdditionalEmaPeriods"] = "10,13,24,48,200",
+        ["Indicators__AdditionalEmaPeriods"] = "9,10,13,21,24,48,200",
         ["Indicators__AdditionalMacdSlowPeriods"] = "",
         ["Indicators__AdditionalBollingerPeriods"] = "",
         ["Indicators__AdditionalRollingVwapPeriods"] = "",

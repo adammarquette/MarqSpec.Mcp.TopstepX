@@ -244,7 +244,7 @@ test is measured by.
 is no longer true of the three-copy catalogue.** `.env.example`, `docker-compose.yml` defaults, and
 `ServerConfiguration.Fixed` now ship the same two lists:
 
-- `Indicators__AdditionalEmaPeriods=10,13,24,48,200`
+- `Indicators__AdditionalEmaPeriods=9,10,13,21,24,48,200`
 - `Indicators__AdditionalSmaPeriods=9,22`
 
 Primaries stay `Indicators__EmaPeriod=20` and `Indicators__SmaPeriod=20`. `get_market_snapshot`'s

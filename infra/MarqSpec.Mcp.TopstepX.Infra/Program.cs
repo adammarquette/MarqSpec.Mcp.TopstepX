@@ -64,7 +64,7 @@ _ = new EnvironmentStack(app, "topstepx-mcp-staging", new EnvironmentStackProps
     // Until a shell is filled the collector fails its own config validation and stops; it is not essential,
     // so the server answers exactly as it does today.
     Telemetry = new TelemetryProps(),
-    RecordTapeDefault = false,
+    RecordTapeDefault = true,
     WarmIndicatorsDefault = false,
     Env = env,
 });

@@ -847,13 +847,12 @@ is not the 08:30 burst the 25 ms line was written for, and `CALL run_job(1000)` 
 16.5 ms was a `compress_after: 7 days` no-op, so the first real compression is
 unmeasured.
 
-**Do not set `RecordTape=false`.** gh#660 supersedes that restore. Staging keeps
-recording so volume profile / footprint accumulate (no backfill — ADR-0016 /
-ADR-0004). `:12` quoting `MarketData__RecordTape=false` is what the 23:32Z
-`--use-previous-template` flip left; it is not the next operator's step. #660 owns
-amending ADR-0023 §12 and the next stack update that turns recording back on. Do
-not `cdk deploy` this card over that update. Do not rewrite the #656 callback
-allowlist from a laptop.
+**Do not set `RecordTape=false`.** gh#660 superseded that restore. Staging's standing
+`RecordTapeDefault` is `true` (ADR-0023 §12) so volume profile / footprint accumulate
+(no backfill — ADR-0016 / ADR-0004). `:12` quoting `MarketData__RecordTape=false` is
+what the 23:32Z `--use-previous-template` flip left; it is not the next operator's
+step. Local compose stays `false`. Do not `cdk deploy` this card over a later update.
+Do not rewrite the #656 callback allowlist from a laptop.
 
 Quoted on `topstepx-mcp-staging-server:12` after the 23:32Z flip (fact, not
 instruction): `MarketData__RecordTape=false`, `WarmIndicators=false`,

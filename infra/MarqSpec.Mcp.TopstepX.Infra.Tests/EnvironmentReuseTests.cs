@@ -23,7 +23,7 @@ public sealed partial class EnvironmentReuseTests(EnvironmentTemplates templates
             Synthesised.DeployedTelemetry, "topstepx-mcp");
 
     private static readonly Synthesised _stagingShape =
-        Synthesised.Environment("staging", "staging.marqspec.com", ZoneMode.Lookup, EnvironmentTemplates.FixtureShape, false, false,
+        Synthesised.Environment("staging", "staging.marqspec.com", ZoneMode.Lookup, EnvironmentTemplates.FixtureShape, true, false,
             Synthesised.DeployedTelemetry, "topstepx-mcp");
 
     [Fact]

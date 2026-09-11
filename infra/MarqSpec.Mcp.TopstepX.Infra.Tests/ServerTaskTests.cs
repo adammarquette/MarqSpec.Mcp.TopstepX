@@ -182,17 +182,17 @@ public sealed class ServerTaskTests(EnvironmentTemplates templates) : IClassFixt
     }
 
     [Theory]
-    [InlineData("production", "true")]
-    [InlineData("staging", "false")]
-    public void The_tape_flags_are_parameters_defaulting_true_in_production_and_false_in_staging(string env, string expectedDefault)
+    [InlineData("production", "RecordTape", "true")]
+    [InlineData("production", "WarmIndicators", "true")]
+    [InlineData("staging", "RecordTape", "true")]
+    [InlineData("staging", "WarmIndicators", "false")]
+    public void The_tape_flags_are_parameters_defaulting_true_except_warm_indicators_false_in_staging(
+        string env, string flag, string expectedDefault)
     {
         var t = templates.For(env);
-        foreach (var name in new[] { "RecordTape", "WarmIndicators" })
-        {
-            var parameter = t.Parameter(name).Should().NotBeNull().And.Subject!;
-            parameter["Default"]!.GetValue<string>().Should().Be(expectedDefault);
-            parameter["AllowedValues"]!.AsArray().Select(v => v!.GetValue<string>()).Should().BeEquivalentTo(["true", "false"]);
-        }
+        var parameter = t.Parameter(flag).Should().NotBeNull().And.Subject!;
+        parameter["Default"]!.GetValue<string>().Should().Be(expectedDefault);
+        parameter["AllowedValues"]!.AsArray().Select(v => v!.GetValue<string>()).Should().BeEquivalentTo(["true", "false"]);
 
         var environment = Synthesised.EnvironmentOf(ServerContainer(t));
         Synthesised.Text(environment["MarketData__RecordTape"]).Should().Be("{\"Ref\":\"RecordTape\"}");

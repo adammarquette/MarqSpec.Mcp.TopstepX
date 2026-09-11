@@ -37,6 +37,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   This repository was created after GitHub's 2026-07-15 immutable OIDC cutoff, so both deploy
   roles trust `repo:owner@id/name@id:…` — a name-only `repo:owner/name` subject does not match.
 
+### Changed
+
+- **Staging records the trade tape by default.** `RecordTapeDefault` on `topstepx-mcp-staging` is
+  now `true`, matching production. `WarmIndicatorsDefault` on staging stays `false`. Volume
+  profile and footprint have no backfill; a staging MCP that only answers a leftover window is
+  not a rehearsal of production (gh#660, ADR-0023 §12). Local compose still defaults
+  `MarketData__RecordTape` to `false`.
+
 ## [0.4.0] - 2026-09-09
 
 A **minor** bump: session-bar and session-indicator MCP tools, OAuth 2.1 on the HTTP

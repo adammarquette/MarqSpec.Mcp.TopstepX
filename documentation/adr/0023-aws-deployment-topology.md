@@ -338,9 +338,13 @@ Each is stated somewhere above; they are listed once so a card can cite a line.
 - **A migration that lands before a code rollback is additive**, or carries gh#529's in-file marker naming
   the release after which rollback is no longer possible.
 - **One server task per environment** — in-memory sessions, one lease holder, one migrator.
-- **`MarketData__RecordTape` and `WarmIndicators` are stack parameters: `true` in production, `false` in
-  staging.** Staging carries practice credentials and does not record the tape, except when gh#525 switches
-  it on for the measurement and back off, quoted.
+- **`MarketData__RecordTape` and `WarmIndicators` are stack parameters.** `RecordTape` defaults `true` in
+  both environments. `WarmIndicators` defaults `true` in production and `false` in staging. Staging carries
+  practice credentials and records the tape on them — one recorder per instrument
+  ([ADR-0016](0016-subscribe-to-the-market-hub.md)), the same shape as production. Volume profile and
+  footprint have no backfill from bars (ADR-0004, ADR-0016); a staging MCP that answers
+  `get_volume_profile` only for a leftover window is not a rehearsal of production (gh#660). Local compose
+  stays `false` and must not point at production credentials.
 - **The deployed store is the image the integration tier tests** — `timescale/timescaledb-ha:pg17` by
   digest, never a managed Postgres without the extension.
 - **`ASPNETCORE_HTTP_PORTS` is never cleared in a task definition**, and no `Kestrel__*` key appears in one.
@@ -1398,6 +1402,22 @@ insert p99 is measured under the load the 25 ms line named. The first eligible
 an unmeasured signal is not "under trigger." Hard-kill paths stay the 2026-09-10
 entry; they were not re-run. No `aws-production` approval.
 
+## Update (2026-09-11) — staging records the tape (gh#660)
+
+§12's sentence that staging does not record, except when gh#525 switches the flag on for the
+measurement and back off, is replaced. Staging's `RecordTapeDefault` is now `true`, the same
+parameter default as production. `WarmIndicatorsDefault` on staging stays `false`.
+
+Volume profile and footprint aggregate stored tape cells. The tape only goes forward: there is no
+historical footprint for a window before recording began, and bars cannot backfill it (ADR-0016,
+ADR-0004). A leftover Friday window on staging is not a rehearsal of production. gh#525 still
+measures EFS under tape load; it no longer turns the flag back off. Local
+`docker-compose.yml` keeps `MarketData__RecordTape: "${MarketData__RecordTape:-false}"` — this
+entry does not point a laptop at production credentials.
+
+The next staging deploy that picks up the new default is what starts listening. Quote
+`describe-task-definition` on gh#660 when that task is running.
+
 Assisted-by: Cursor Grok 4.6 (Cursor)
 
 ## Follow-ups
@@ -1423,9 +1443,9 @@ Assisted-by: Cursor Grok 4.6 (Cursor)
   then the remaining-cash tape window on 2026-09-11. The EFS-vs-EC2 verdict is **not**
   closed: the 08:30 cash-open burst was not in that window, and the forced `run_job`
   was a `compress_after` no-op, so the first real compression is unmeasured. gh#660
-  supersedes the "set `RecordTape` back to false" half; that card owns amending §12.
-  gh#526, gh#527 and gh#528 have. gh#523 landed rotation, which-release, scale-to-zero
-  and failed-deploy in the runbook; the first-month cost figure remains missing.
+  supersedes the "set `RecordTape` back to false" half and amends §12 so staging
+  keeps recording. gh#526, gh#527 and gh#528 have. gh#523 landed rotation, which-release,
+  scale-to-zero and failed-deploy in the runbook; the first-month cost figure remains missing.
 - gh#510's connector measurement landed on ADR-0007 and ADR-0021; if a later measurement overturns the
   pre-registered-client assumption, decision 9's issuer reopens here as a dated entry and gh#517 is the
   card that changes.

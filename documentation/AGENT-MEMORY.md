@@ -58,8 +58,8 @@ at one this rule's own pull request retires.
 ## Practices to follow
 
 - **[2026-09-10] Never point local compose at production's credential while production records (gh#523).**
-  ADR-0023 §12 says `MarketData__RecordTape` is `true` in production and `false` in staging, and that
-  staging carries practice credentials. It does not say what a laptop must not do. `docker-compose.yml`
+  ADR-0023 §12 says `MarketData__RecordTape` is `true` in both environments; staging records on
+  practice credentials (gh#660). It does not say what a laptop must not do. `docker-compose.yml`
   defaults `RecordTape` false and a local `changeme-local` password; overriding `ProjectX__ApiKey` /
   `ProjectX__ApiSecret` or `ConnectionStrings__Default` with production's values while production is
   the one recording puts a second writer on the venue login or on the live store. Staging's practice

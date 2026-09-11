@@ -176,7 +176,7 @@ public sealed class EnvironmentStack : Stack
             MinLength = 1,
         });
         var recordTape = Flag("RecordTape", props.RecordTapeDefault,
-            "MarketData__RecordTape: subscribe to the market hub and record the tape (ADR-0016). One recorder per tape: on only where the tape is meant to be recorded (gh#525's measurement switches it on and back off).");
+            "MarketData__RecordTape: subscribe to the market hub and record the tape (ADR-0016). One recorder per tape. Defaults on in both environments so volume profile and footprint accumulate (gh#660); leave it on.");
         var warmIndicators = Flag("WarmIndicators", props.WarmIndicatorsDefault,
             "MarketData__WarmIndicators: replay stored indicator series at process start (ADR-0014).");
         // NO DEFAULT, like the digest: the product never defaults this because the wrong tier answers an

@@ -687,8 +687,10 @@ postgres task. Do not mount the live `/postgres` access point, do not raise the 
 desired count above 1, and do not change `RecordTape` or the server image — those are other cards.
 
 Staging dump resources deployed 2026-09-10 (gh#522 live slice): bucket exists, scheduler
-ENABLED, alarm exists. First object is not due until 16:15 America/Chicago. Two consecutive
-dump days, the restore drill, and a disable-schedule alarm fire remain outstanding.
+ENABLED, alarm exists. Two consecutive dump days are quoted on #522 without hands:
+`topstepx_mcp-2026-09-10T21:16:38Z.dump` (33452 bytes, 2026-09-10T21:16:40Z) and
+`topstepx_mcp-2026-09-11T21:16:46Z.dump` (2943564 bytes, 2026-09-11T21:16:49Z). The
+maintainer restore drill and a disable-schedule alarm fire remain outstanding.
 
 The staging drill is the maintainer's. The steps below have not been run against a dump from this
 bucket; do not treat the `SchemaTests` expectations as measured results.

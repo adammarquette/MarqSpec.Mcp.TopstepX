@@ -810,8 +810,8 @@ Assisted-by: Cursor Grok 4.6 (Cursor)
 
 Staging, 2026-09-10, release **0.4.0**. Cluster `topstepx-mcp-staging`, service
 `topstepx-mcp-staging-postgres`, Exec enabled. Desired count stays **1** — two Postgres on one EFS
-is a corrupted store. Threshold and numbers are the ADR-0023 2026-09-10 gh#525 entry; this is the
-operator path.
+is a corrupted store. Threshold and numbers are the ADR-0023 2026-09-10 and 2026-09-11
+gh#525 entries; this is the operator path.
 
 **Graceful.** `aws ecs stop-task` on the running postgres task. Quoted on #525: stop issued
 19:27:50Z → old `stoppedAt` 19:28:45Z → replacement `pg_isready` 19:30:09Z (**139 s**). Postgres
@@ -835,7 +835,38 @@ aws ecs execute-command --cluster topstepx-mcp-staging --task "$NEW" \
 ```
 
 Zone `Z00545362JA49XMTT3U7Q` unchanged. `MarketData__RecordTape` stayed `false` on
-`topstepx-mcp-staging-server:6`.
+`topstepx-mcp-staging-server:6` for those stops.
+
+## Tape load (gh#525)
+
+Staging, 2026-09-11, release **0.5.0-rc.1**. Not an 08:30-open full RTH. `RecordTape=true`
+from **11:38:14 CT / 16:38:14Z** through cash close **15:00 CT / 20:00Z** (and left on
+until restored — last `Trades.RecordedAt` 21:24:23Z). Verdict and the three triggers are
+the ADR-0023 2026-09-11 entry: **EFS stays**.
+
+**Restore.** This card owns `topstepx-mcp-staging` for the parameter flip only. Do not
+`cdk deploy` from a laptop that would rewrite the #656 callback allowlist. Flip
+`RecordTape` with the live template and every other parameter reused:
+
+```bash
+aws cloudformation update-stack --region us-east-1 \
+  --stack-name topstepx-mcp-staging --use-previous-template \
+  --parameters ParameterKey=RecordTape,ParameterValue=false \
+    ParameterKey=WarmIndicators,UsePreviousValue=true \
+    ParameterKey=ImageDigest,UsePreviousValue=true \
+    ParameterKey=Version,UsePreviousValue=true \
+    ParameterKey=AlertsEmail,UsePreviousValue=true \
+    ParameterKey=Http5xxAlarmThreshold,UsePreviousValue=true \
+    ParameterKey=WafRateLimit,UsePreviousValue=true \
+    ParameterKey=ProjectXDataTier,UsePreviousValue=true \
+    ParameterKey=BootstrapVersion,UsePreviousValue=true \
+  --capabilities CAPABILITY_IAM CAPABILITY_NAMED_IAM
+```
+
+Quoted afterwards on `topstepx-mcp-staging-server:12`:
+`MarketData__RecordTape=false`, `WarmIndicators=false`, `Deployment__Version=0.5.0-rc.1`,
+`ProjectX__DataTier=Simulated`. Zone `Z00545362JA49XMTT3U7Q` unchanged. Do not approve
+`aws-production` from this path.
 
 Assisted-by: Cursor Grok 4.6 (Cursor)
 

@@ -428,11 +428,12 @@ its own reason, not a drift.
   service (decision 4). A client mid-session sees the server go away and come back with no session.
 - **The additive-migration rule is load-bearing and is a gate, not a sentence** — gh#529, before the first
   production deploy that could need a rollback.
-- **EFS is a measured risk, not an assumed one.** The 2026-09-10 gh#525 entry states the threshold
-  first, then the numbers taken that afternoon (pgbench and both stop paths). A full RTH tape session
-  did not fit that day and is still open; production on EFS is not approved by that entry, and
-  gh#520's first `aws-production` approval either follows the tape quote or is recorded here, on a
-  date, as having preceded it.
+- **EFS is a measured risk, not an assumed one.** The 2026-09-10 gh#525 entry states the
+  threshold first, then that afternoon's pgbench and both stop paths. The 2026-09-11 entry
+  quotes the remaining-cash tape window that actually ran and records the verdict: **EFS
+  stays**. Production on EFS is still not approved by those entries; gh#520's first
+  `aws-production` approval either follows them or is recorded here, on a date, as having
+  preceded them.
 - **Cost is an order of magnitude, checked by the bill.** gh#527's estimate basis is roughly 95 USD per
   environment per month, priced on `us-east-1` on-demand as a basis and not as a chosen region — the region
   is still gh#519's — for two Fargate services, one ALB with its two public IPv4 addresses, EFS Elastic
@@ -1315,6 +1316,68 @@ Cognito entry measured them. `deploy-check` is unchanged.
 
 Assisted-by: Cursor Grok 4.6 (Cursor)
 
+## Update (2026-09-11) — EFS stays after the remaining-cash tape window (gh#525)
+
+Threshold first: the 2026-09-10 entry, quoted on #525 at comment 5624227604 before any
+tape number. EC2 + EBS if any of Trades insert **p99 > 25 ms**, forced `CALL run_job` on
+the Trades compression policy **> 120 s**, or EFS **`PercentIOLimit` > 80 % for 15 min**.
+This entry is the measurement of the window that actually ran, then the verdict. It does
+not invent an 08:30-open full RTH.
+
+**Window, staging `0.5.0-rc.1`**, digest
+`sha256:5ed69b53ec37e001f76fdb797c6e9b312a7742bae19a73cdc04a6bff5d8123c9`.
+`ProjectXDataTier=Simulated`. Cluster `topstepx-mcp-staging`. EFS `fs-0ed26bca5aabea73e`.
+Postgres task `8bf520ccd7414b67ac1db65171c55ecb` (family `:6`). Server task
+`73200669fea841feabf2d2a3507acda3` on `topstepx-mcp-staging-server:11` with
+`MarketData__RecordTape=true` from **2026-09-11 16:38:14.648333Z / 11:38:14 CT**. Planned
+end was cash close **15:00 CT / 20:00Z**. Zone `Z00545362JA49XMTT3U7Q` unchanged. No
+`aws-production` approval.
+
+**Trades.** `min(RecordedAt)` equals that start — nothing earlier. **321 023** rows with
+`RecordedAt < 20:00Z`. `RecordTape` stayed true past the planned end: last `RecordedAt`
+**21:24:23.422214Z**, **347 450** total (**347 448** by 21:00Z).
+
+**Insert latency** from EF `Executed DbCommand` (`EventId` 20101,
+`INSERT INTO "Trades"`), CloudWatch Logs Insights on `/topstepx-mcp/staging/server` for
+16:38:14Z–20:00:00Z. `pg_stat_statements` is not installed. **n = 316 975**, **p50 =
+11.0 ms**, **p99 = 23.0 ms**, avg 12.0 ms, min 5 ms, max 673 ms. Hourly p99 24 / 22 / 23
+/ 22 ms (16–19Z). A 54-row 20:00Z remainder printed p99 27 ms — not the window trigger.
+**p99 23.0 ms does not cross 25 ms.**
+
+**WAL.** `track_wal_io_timing=off`, so `wal_sync_time` stays **0** and cannot be
+measured. Snapshots: 16:41Z (start quote) wal_records 263 950, wal_bytes 169 132 169,
+wal_sync 14 064; after the store range 23:3xZ wal_records 4 015 203, wal_bytes
+547 996 993, wal_sync 355 866. `fsync=on`, `wal_sync_method=fdatasync`.
+
+**Checkpoints** in the cash window: **40** `checkpoint complete` lines. Longest
+**2026-09-11 19:38:49.597Z** write=83.613 s, sync=0.039 s, **total=83.725 s** (spreading,
+not insert p99). Max sync **0.077 s**.
+
+**EFS** 1-minute Maximum / Sum, 16:38:14Z–20:00:00Z. `PercentIOLimit` peak **0.162 %**
+at 14:58 CT. No minute > 80 %; no 15-minute stretch near the alarm. `TotalIOBytes` Sum
+over the window **10 915 287 088**; `MeteredIOBytes` Sum **10 914 145 682**. Peak minute
+`TotalIOBytes` **161 819 388** (same 14:58 CT).
+
+**Forced `CALL run_job(1000)`** at 23:32:18.389092Z–23:32:18.405627Z — **16.5 ms**.
+Policy `compress_after: 7 days`. The only Trades chunk `_hyper_3_1_chunk` (2026-09-10
+… 2026-09-17) stayed uncompressed. The open week bucket was not `compress_chunk`'d.
+
+**`RecordTape` restored.** CloudFormation `--use-previous-template` flipped only
+`RecordTape=false` (other parameters `UsePreviousValue`). Quoted
+`aws ecs describe-task-definition --task-definition topstepx-mcp-staging-server:12`:
+
+```
+Deployment__Version = 0.5.0-rc.1
+ProjectX__DataTier = Simulated
+MarketData__WarmIndicators = false
+MarketData__RecordTape = false
+```
+
+**Verdict: EFS stays.** No trigger crossed. No EC2 + EBS card. Hard-kill paths stay the
+2026-09-10 entry; they were not re-run.
+
+Assisted-by: Cursor Grok 4.6 (Cursor)
+
 ## Follow-ups
 
 - gh#516, gh#517, gh#518 built decisions 7, 9 and 8; gh#529 gates decision 4's rule. gh#516 also
@@ -1334,9 +1397,10 @@ Assisted-by: Cursor Grok 4.6 (Cursor)
   `documentation/deployment.md`. The first staging deploy failed because dump was essential under a
   SUCCESS `dependsOn` (2026-09-10 entry); dump is now `Essential=false`. Two consecutive dump days,
   the maintainer's drill, and a disable-schedule alarm fire remain outstanding.
-- gh#525 stated the EFS threshold and quoted pgbench plus both stop paths on 2026-09-10; the RTH
-  tape session remains. gh#526, gh#527 and gh#528 have. gh#523 landed rotation, which-release,
-  scale-to-zero and failed-deploy in the runbook; the first-month cost figure remains missing.
+- gh#525 stated the EFS threshold and quoted pgbench plus both stop paths on 2026-09-10,
+  then the remaining-cash tape window on 2026-09-11; **EFS stays**. gh#526, gh#527 and
+  gh#528 have. gh#523 landed rotation, which-release, scale-to-zero and failed-deploy in
+  the runbook; the first-month cost figure remains missing.
 - gh#510's connector measurement landed on ADR-0007 and ADR-0021; if a later measurement overturns the
   pre-registered-client assumption, decision 9's issuer reopens here as a dated entry and gh#517 is the
   card that changes.

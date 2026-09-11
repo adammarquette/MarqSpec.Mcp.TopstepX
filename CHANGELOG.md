@@ -15,7 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- **The shipped indicator catalogue now lists additional EMA periods 10, 13, 24, 48, 200 and SMA
+- **The shipped indicator catalogue now lists additional EMA periods 9, 10, 13, 21, 24, 48, 200 and SMA
   periods 9, 22.** Primaries stay 20. The three copies — `.env.example`, `docker-compose.yml`
   defaults, and `ServerConfiguration.Fixed` — carry the same two strings; ATR, RSI, MACD,
   Bollinger and rolling-VWAP additional lists stay empty. The C# `IndicatorOptions` class

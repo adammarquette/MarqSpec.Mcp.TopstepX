@@ -385,6 +385,42 @@ A `valueFrom` is read at task start: after any shell write, `aws ecs update-serv
 
 Assisted-by: Cursor Grok 4.6 (Cursor)
 
+## MCP host callback allowlist (gh#656)
+
+The code-grant door is the confidential `claude-connector` client
+(`p0j5iptk20n76i6pqanhopkn4` on staging). Cognito matches **exact** redirect URIs. There is no
+Dynamic Client Registration, no Client ID Metadata Documents, and no wildcard. A host that cannot
+name one of these URLs is unsupported on this issuer.
+
+| Host | Callback the host must send |
+|---|---|
+| Claude Cowork | `https://claude.ai/api/mcp/auth_callback` |
+| Cursor Desktop | `http://localhost:8787/callback` |
+| Cursor Cloud / Agents | `https://www.cursor.com/agents/mcp/oauth/callback` |
+| Gemini CLI | `http://localhost:7777/oauth/callback` |
+| OpenAI / ChatGPT Apps | `https://chatgpt.com/connector_platform_oauth_redirect` |
+
+**Cursor.** `auth.CLIENT_ID` stays this client. Desktop sends `http://localhost:8787/callback`;
+Agents send `https://www.cursor.com/agents/mcp/oauth/callback`. Point the connector at
+`https://topstepx-mcp.staging.marqspec.com/mcp` (or the production resource when that stack exists).
+The secret is the one already in `topstepx-mcp/<env>/claude-connector` — do not rotate it for a new
+host.
+
+**Gemini CLI.** Current Gemini docs also allow an OS-assigned random localhost port. That is
+**unsupported** here. The host config must pin `redirectUri` to `http://localhost:7777/oauth/callback`.
+
+**OpenAI / ChatGPT Apps.** Use the stable / legacy redirect above. Per-app
+`https://chatgpt.com/connector/oauth/{callback_id}` cannot be pre-registered without the id, and
+this issuer will not grow DCR or CIMD to accept it.
+
+**Add a host.** A pull request that adds one URL to `EnvironmentStack.CallbackUrls`, one
+template-test assertion, and one row in this table. Never a console-only
+`update-user-pool-client`: the next `cdk deploy` reverts it. Rebuild any hand update from a
+describe file and re-pass `ExplicitAuthFlows: []` plus refresh-token rotation (2026-09-10 Cognito
+entry). A sixth host is the same card leftover, not a new client.
+
+Assisted-by: Cursor Grok 4.6 (Cursor)
+
 ## Rotation
 
 Never put a secret, a password or a username on the argv. A `0600` file or a here-doc written
@@ -400,7 +436,7 @@ describe redirected to a file and deleted:
 
 | Client | Id | Flows / rotation that must be re-passed |
 |---|---|---|
-| `claude-connector` | `p0j5iptk20n76i6pqanhopkn4` | `AllowedOAuthFlows=["code"]`, scopes `openid` + `topstepx-mcp/read`, callback `https://claude.ai/api/mcp/auth_callback` only, `ExplicitAuthFlows` **empty** (describe returns the key absent), `RefreshTokenRotation={ENABLED, 30s}` |
+| `claude-connector` | `p0j5iptk20n76i6pqanhopkn4` | `AllowedOAuthFlows=["code"]`, scopes `openid` + `topstepx-mcp/read`, callbacks = the [MCP-host allowlist](#mcp-host-callback-allowlist-gh656) (five URLs; not Claude alone), `ExplicitAuthFlows` **empty** (describe returns the key absent), `RefreshTokenRotation={ENABLED, 30s}` |
 | `deploy-check` | `4eo7b5pabtj0gog7c9is3hgm52` | `AllowedOAuthFlows=["client_credentials"]`, scope `topstepx-mcp/read`, no callback, `ExplicitAuthFlows=["ALLOW_REFRESH_TOKEN_AUTH"]`, no refresh-token rotation |
 
 `update-user-pool-client --generate-cli-skeleton` does **not** list `GenerateSecret` — that is

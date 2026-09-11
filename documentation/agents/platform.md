@@ -1486,8 +1486,8 @@ not `cdk deploy` a stack other sessions own, and does not approve production. Wh
   secret. gh#646 retired the sixth (`otel`): CloudWatch OTLP is SigV4 on the task role.
 - **The authorization server is in the stack** (gh#517, [ADR-0023](../adr/0023-aws-deployment-topology.md)
   §9 and its 2026-09-07 Cognito entry): one user pool per environment, the `topstepx-mcp` resource server
-  with its `read` scope, the confidential `claude-connector` client on the code grant with the Claude
-  callback alone, the `deploy-check` client on `client_credentials` alone, and the Cognito prefix domain.
+  with its `read` scope, the confidential `claude-connector` client on the code grant with the closed
+  MCP-host callback allowlist (gh#656), the `deploy-check` client on `client_credentials` alone, and the Cognito prefix domain.
   **`Mcp__OAuth__Issuer` and `Mcp__OAuth__ClientIds` reach the task as `Fn::GetAtt` and `Ref`s of those
   constructs, and the template test refuses a string** — a literal issuer would deploy and validate against
   whatever it named. The two client secrets are shells like the others, read once with

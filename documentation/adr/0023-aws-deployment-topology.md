@@ -1291,6 +1291,30 @@ $ gh api repos/adammarquette/MarqSpec.Mcp.TopstepX/actions/oidc/customization/su
 
 Assisted-by: Cursor Grok 4.6 (Cursor)
 
+## Update (2026-09-11) — decision 9's Claude-only callback is superseded
+
+Decision 9 and the 2026-09-07 Cognito entry pinned `claude-connector` to
+`https://claude.ai/api/mcp/auth_callback` **and no other**. That sentence is superseded. The client stays the
+same confidential code-grant client (logical id `ClaudeConnectorClient`, name `claude-connector`, secret not
+rotated — CloudFormation updates `CallbackURLs` in place). The door is this closed allowlist, owned by the
+stack (gh#656):
+
+| Host | Callback |
+|---|---|
+| Claude Cowork | `https://claude.ai/api/mcp/auth_callback` |
+| Cursor Desktop | `http://localhost:8787/callback` |
+| Cursor Cloud / Agents | `https://www.cursor.com/agents/mcp/oauth/callback` |
+| Gemini CLI | `http://localhost:7777/oauth/callback` |
+| OpenAI / ChatGPT Apps | `https://chatgpt.com/connector_platform_oauth_redirect` |
+
+Cognito matches exact URIs. No wildcards, no DCR, no CIMD. Gemini must pin `redirectUri` to the row above;
+an OS-assigned random port is unsupported. Adding a sixth host is a pull request — one URL on
+`EnvironmentStack`, one template-test assertion, one `deployment.md` row — never a console-only
+`update-user-pool-client`. `ExplicitAuthFlows: []` and refresh-token rotation stay as the 2026-09-10
+Cognito entry measured them. `deploy-check` is unchanged.
+
+Assisted-by: Cursor Grok 4.6 (Cursor)
+
 ## Follow-ups
 
 - gh#516, gh#517, gh#518 built decisions 7, 9 and 8; gh#529 gates decision 4's rule. gh#516 also

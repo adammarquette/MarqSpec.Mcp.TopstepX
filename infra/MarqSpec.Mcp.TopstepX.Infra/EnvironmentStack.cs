@@ -414,9 +414,17 @@ public sealed class EnvironmentStack : Stack
             {
                 Flows = new OAuthFlows { AuthorizationCodeGrant = true, ImplicitCodeGrant = false, ClientCredentials = false },
                 Scopes = [OAuthScope.OPENID, OAuthScope.ResourceServer(resourceServer, readScope)],
-                // The Claude callback and no other: the path Anthropic's documentation names for a server
-                // registered as a pre-registered client (ADR-0021's second assumption, gh#510).
-                CallbackUrls = ["https://claude.ai/api/mcp/auth_callback"],
+                // Closed allowlist of known MCP-host callbacks (gh#656). Cognito matches exact URIs;
+                // no wildcards, no DCR, no CIMD. Adding a host is a stack change — one URL here, one
+                // template-test assertion, one deployment.md row. Never a console-only update.
+                CallbackUrls =
+                [
+                    "https://claude.ai/api/mcp/auth_callback",
+                    "http://localhost:8787/callback",
+                    "https://www.cursor.com/agents/mcp/oauth/callback",
+                    "http://localhost:7777/oauth/callback",
+                    "https://chatgpt.com/connector_platform_oauth_redirect",
+                ],
             },
             SupportedIdentityProviders = [UserPoolClientIdentityProvider.COGNITO],
             AccessTokenValidity = Duration.Hours(1),

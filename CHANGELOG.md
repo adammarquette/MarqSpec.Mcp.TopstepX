@@ -13,15 +13,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Changed
+## [0.5.0] - 2026-09-11
 
-- **The shipped indicator catalogue now lists additional EMA periods 9, 10, 13, 21, 24, 48, 200 and SMA
-  periods 9, 22.** Primaries stay 20. The three copies — `.env.example`, `docker-compose.yml`
-  defaults, and `ServerConfiguration.Fixed` — carry the same two strings; ATR, RSI, MACD,
-  Bollinger and rolling-VWAP additional lists stay empty. The C# `IndicatorOptions` class
-  defaults for the additional lists stay empty, so a hand-built test catalogue that omits them
-  still computes only the primary. `get_market_snapshot`'s map stays primary-only
-  ([ADR-0018](documentation/adr/0018-period-selection-among-configured-periods.md), gh#659).
+A **minor** bump: a published release now deploys staging by digest (then production
+behind `aws-production`), the shipped indicator catalogue lists the additional EMA and
+SMA periods a default deploy had been omitting, staging keeps the trade tape on,
+Cognito accepts the known MCP-host callbacks, daily dumps land in S3, and the Fargate
+sidecar exports OTLP to CloudWatch rather than Grafana Cloud. `v0.5.0-rc.1` was a
+throwaway staging deploy of the immutable OIDC-subject fix; this heading is the first
+published 0.5.0.
 
 ### Added
 
@@ -36,14 +36,65 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `put-parameter`s and never reads `{{resolve:ssm}}` to decide what runs (gh#520, ADR-0023 §5).
   This repository was created after GitHub's 2026-07-15 immutable OIDC cutoff, so both deploy
   roles trust `repo:owner@id/name@id:…` — a name-only `repo:owner/name` subject does not match.
+  `v0.5.0-rc.1`'s first `deploy-staging` failed `AssumeRoleWithWebIdentity` on that mismatch.
+
+- **Daily `pg_dump` to S3 from a two-container scheduled task.** The Timescale image's
+  `/usr/bin/aws` crashes (`KeyError: opsworkscm`), so the dump writes to an ephemeral volume
+  and `aws-cli` by digest uploads it. The dump container is non-essential so ECS accepts a
+  `SUCCESS` `dependsOn`. Expiration on the versioned bucket is `NoncurrentVersionExpiration`
+  at 90 days plus expired-delete-marker cleanup — a current-version expiration only writes a
+  delete marker and left bytes billed. EFS AWS Backup remains crash-consistent, not a restore
+  (gh#522).
+
+- **The Fargate OTLP sidecar exports to CloudWatch, not Grafana Cloud.** The collector
+  targets X-Ray, CloudWatch Metrics and CloudWatch Logs under SigV4 on the task role. The
+  `otel` shell is gone so nothing secret remains in the template. The CloudWatch logs
+  exporter writes only to an existing stream, so the stack creates `AWS::Logs::LogStream`
+  `otlp` on the server group (gh#646).
+
+- **The `claude-connector` code-grant door accepts the closed MCP-host callback allowlist,
+  not Claude Cowork's URL alone.** Same confidential client. Cognito matches exact redirect
+  URIs; a sixth host is a stack PR. The five registered callbacks are Claude Cowork, Cursor
+  Desktop (`http://localhost:8787/callback`), Cursor Cloud / Agents, Gemini CLI
+  (`http://localhost:7777/oauth/callback`), and the stable ChatGPT Apps redirect (gh#656).
 
 ### Changed
+
+- **The shipped indicator catalogue now lists additional EMA periods 9, 10, 13, 21, 24, 48, 200 and SMA
+  periods 9, 22.** Primaries stay 20. The three copies — `.env.example`, `docker-compose.yml`
+  defaults, and `ServerConfiguration.Fixed` — carry the same two strings; ATR, RSI, MACD,
+  Bollinger and rolling-VWAP additional lists stay empty. The C# `IndicatorOptions` class
+  defaults for the additional lists stay empty, so a hand-built test catalogue that omits them
+  still computes only the primary. `get_market_snapshot`'s map stays primary-only
+  ([ADR-0018](documentation/adr/0018-period-selection-among-configured-periods.md), gh#659).
 
 - **Staging records the trade tape by default.** `RecordTapeDefault` on `topstepx-mcp-staging` is
   now `true`, matching production. `WarmIndicatorsDefault` on staging stays `false`. Volume
   profile and footprint have no backfill; a staging MCP that only answers a leftover window is
   not a rehearsal of production (gh#660, ADR-0023 §12). Local compose still defaults
-  `MarketData__RecordTape` to `false`.
+  `MarketData__RecordTape` to `false`. The CloudFormation `RecordTape` Description and
+  `RecordTapeDefault` XML no longer tell operators to turn it off after a measurement.
+
+- **The deployment runbook and ADR-0023 now quote the v0.4.0 staging live state** —
+  `CREATE_COMPLETE` observations, the v0.4.0 digest, filled secret ARNs, SNS confirm, Cognito
+  user, six shell keys, sidecar-kill path, and the WAF log-group orphan — rather than leaving
+  those as outstanding first-deploy steps (gh#519).
+
+- **`deployment.md` now has the remaining operator paths** — which release is running, secret
+  rotation, scale-to-zero, and a failed-deploy dispatch — with staging output shapes.
+  Copy-paste of which-release reads the live task definition rather than hardcoding a
+  revision. First-month Cost Explorer is still missing (gh#523).
+
+- **The 2026-09-11 remaining-cash EFS tape measure is quoted, and the write-up does not close
+  what it did not measure.** The window that ran stayed under every stated trigger; cash-open
+  insert p99 and the first eligible `compress_chunk` remain unmeasured. 16.5 ms was
+  `compress_after` ineligibility, not a 120 s reading. Do not approve the first
+  `aws-production` run until gh#525 closes or a dated ADR-0023 entry says production went
+  first (gh#525).
+
+- **The coordinator contract now writes the parallel cohort loop** — post-merge scan, parallel
+  default, pipeline refill, rebase, live-stack mutex, and who re-dispatches — so a session
+  does not wait for the user to restate them (gh#651).
 
 ## [0.4.0] - 2026-09-09
 
@@ -993,7 +1044,8 @@ First tagged release. Read-only MCP server over the ProjectX/TopstepX gateway: c
 projections, contract-aware series, observations with semantic search, fifteen tools on stdio and streamable
 HTTP. The tag was re-cut after the first publish failed on an uppercase image reference (gh#115).
 
-[Unreleased]: https://github.com/adammarquette/MarqSpec.Mcp.TopstepX/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/adammarquette/MarqSpec.Mcp.TopstepX/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/adammarquette/MarqSpec.Mcp.TopstepX/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/adammarquette/MarqSpec.Mcp.TopstepX/compare/v0.3.1...v0.4.0
 [0.3.1]: https://github.com/adammarquette/MarqSpec.Mcp.TopstepX/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/adammarquette/MarqSpec.Mcp.TopstepX/compare/v0.2.0...v0.3.0

@@ -7,8 +7,7 @@ namespace MarqSpec.Mcp.TopstepX.Infra;
 /// <remarks>
 /// <para>
 /// <b>Presence is the switch.</b> <see cref="EnvironmentStackProps.Telemetry"/> is nullable and null is
-/// today's behaviour exactly — one container in the server task, no <c>Otel__*</c> key on it, and no
-/// <c>topstepx-mcp/&lt;env&gt;/otel</c> secret in the stack. That is
+/// today's behaviour exactly — one container in the server task and no <c>Otel__*</c> key on it. That is
 /// <see href="https://github.com/adammarquette/MarqSpec.Mcp.TopstepX/blob/develop/documentation/adr/0019-otlp-as-the-telemetry-boundary.md">ADR-0019</see>
 /// decision 3 — <i>absent configuration is today's behaviour, exactly</i> — reaching the deployment: the
 /// server registers no exporter, no background thread and no retry queue, because there is no endpoint to
@@ -17,13 +16,10 @@ namespace MarqSpec.Mcp.TopstepX.Infra;
 /// that ships.
 /// </para>
 /// <para>
-/// <b>What is NOT here: the endpoint and the token.</b> gh#537's body asked for them as two secret ARNs on
-/// this record. An ARN carries an account id, and a literal account id under <c>infra/</c> is exactly what
-/// the root contract's second non-negotiable refuses — so the stack creates a <b>shell</b> instead, the
-/// sixth of ADR-0023 §6's, named <c>topstepx-mcp/&lt;env&gt;/otel</c> with <c>endpoint</c> and
-/// <c>authorization</c> empty, and the sidecar reads it by reference. gh#519 writes the two values by hand
-/// once the Grafana Cloud stack exists, exactly as it does for the other five. Nothing about the backend
-/// reaches this repository.
+/// <b>What is NOT here: a backend hostname or a token.</b> gh#537 asked for Grafana endpoint and token as
+/// two secret ARNs; gh#646 retired both. The sidecar exports to CloudWatch OTLP under SigV4 on the task
+/// role. The three AWS URLs are derived from <c>AWS::Region</c> at synth time — not a Grafana host, not a
+/// secret. Nothing about an account, an ARN or a token reaches this repository.
 /// </para>
 /// </remarks>
 public sealed record TelemetryProps

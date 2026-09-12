@@ -121,8 +121,8 @@ public sealed class ServerTaskTests(EnvironmentTemplates templates) : IClassFixt
         // The deferred set is now EMPTY — gh#537 retired the last of it, the Otel__* keys, in the pull
         // request that built the sidecar they were waiting for. What is left is one key excluded for a
         // reason rather than for a date, and this test names it rather than letting EnvExample excuse it
-        // out of sight: the backend token is the SIDECAR's, and TelemetrySidecarTests asserts it reaches
-        // that container and not this one.
+        // out of sight: AWS auth is SigV4 on the task role (gh#646), so `Otel__Headers` is absent by
+        // decision and TelemetrySidecarTests asserts that absence on both containers.
         EnvExample.Keys().Where(EnvExample.IsDeferred).Should().BeEmpty("no card is still owed a key here");
         expected.Should().Contain(["Otel__Endpoint", "Otel__Protocol", "Otel__ServiceName"], "the sidecar's card owns these now");
         expected.Should().NotContain("Otel__Headers");
@@ -158,6 +158,8 @@ public sealed class ServerTaskTests(EnvironmentTemplates templates) : IClassFixt
         environment["MarketData__Instruments"].Should().Be("ES,NQ", "every MarketData__ key at its .env.example default");
         environment["Indicators__AtrPeriod"].Should().Be("14");
         environment["KeyLevels__PivotLookback"].Should().Be("20");
+        environment["Indicators__AdditionalEmaPeriods"].Should().Be("9,10,13,21,24,48,200");
+        environment["Indicators__AdditionalSmaPeriods"].Should().Be("9,22");
     }
 
     [Theory]
@@ -180,17 +182,17 @@ public sealed class ServerTaskTests(EnvironmentTemplates templates) : IClassFixt
     }
 
     [Theory]
-    [InlineData("production", "true")]
-    [InlineData("staging", "false")]
-    public void The_tape_flags_are_parameters_defaulting_true_in_production_and_false_in_staging(string env, string expectedDefault)
+    [InlineData("production", "RecordTape", "true")]
+    [InlineData("production", "WarmIndicators", "true")]
+    [InlineData("staging", "RecordTape", "true")]
+    [InlineData("staging", "WarmIndicators", "false")]
+    public void The_tape_flags_are_parameters_defaulting_true_except_warm_indicators_false_in_staging(
+        string env, string flag, string expectedDefault)
     {
         var t = templates.For(env);
-        foreach (var name in new[] { "RecordTape", "WarmIndicators" })
-        {
-            var parameter = t.Parameter(name).Should().NotBeNull().And.Subject!;
-            parameter["Default"]!.GetValue<string>().Should().Be(expectedDefault);
-            parameter["AllowedValues"]!.AsArray().Select(v => v!.GetValue<string>()).Should().BeEquivalentTo(["true", "false"]);
-        }
+        var parameter = t.Parameter(flag).Should().NotBeNull().And.Subject!;
+        parameter["Default"]!.GetValue<string>().Should().Be(expectedDefault);
+        parameter["AllowedValues"]!.AsArray().Select(v => v!.GetValue<string>()).Should().BeEquivalentTo(["true", "false"]);
 
         var environment = Synthesised.EnvironmentOf(ServerContainer(t));
         Synthesised.Text(environment["MarketData__RecordTape"]).Should().Be("{\"Ref\":\"RecordTape\"}");
@@ -294,8 +296,13 @@ public sealed class ServerTaskTests(EnvironmentTemplates templates) : IClassFixt
             {
                 // ECS Exec is the one thing here with no resource-level permission at all: its four
                 // ssmmessages channel actions, and the logs:DescribeLogGroups its session logging needs.
-                // Anything else on `*` is a decision nobody made.
-                actions.Should().OnlyContain(a => a.StartsWith("ssmmessages:", StringComparison.Ordinal) || a == "logs:DescribeLogGroups",
+                // X-Ray PutTraceSegments and CloudWatch PutMetricData are the other two: neither API
+                // accepts a resource ARN (gh#646). Anything else on `*` is a decision nobody made.
+                actions.Should().OnlyContain(
+                    a => a.StartsWith("ssmmessages:", StringComparison.Ordinal)
+                         || a == "logs:DescribeLogGroups"
+                         || a == "xray:PutTraceSegments"
+                         || a == "cloudwatch:PutMetricData",
                     $"least privilege: {string.Join(", ", actions)} on every resource");
             }
         }

@@ -8,7 +8,7 @@ namespace MarqSpec.Mcp.TopstepX.Infra.Tests;
 /// <summary>
 /// Amazon Cognito is the authorization server, in the same stack (ADR-0023 §9): one user pool with self-sign-up
 /// off, the <c>topstepx-mcp</c> resource server with its one <c>read</c> scope, the confidential
-/// <c>claude-connector</c> client on the authorization-code grant with PKCE and the Claude callback alone, the
+/// <c>claude-connector</c> client on the authorization-code grant with PKCE and the MCP-host callback allowlist, the
 /// <c>deploy-check</c> client on <c>client_credentials</c> alone, the Cognito-provided hosted-UI domain — and
 /// the issuer and the two client ids reaching the server task as references to those constructs, never as
 /// literals. A literal issuer would deploy and validate against whatever it named (gh#517's 2026-09-07
@@ -16,7 +16,14 @@ namespace MarqSpec.Mcp.TopstepX.Infra.Tests;
 /// </summary>
 public sealed class CognitoTests(EnvironmentTemplates templates) : IClassFixture<EnvironmentTemplates>
 {
-    private const string ClaudeCallback = "https://claude.ai/api/mcp/auth_callback";
+    private static readonly string[] _connectorCallbackAllowlist =
+    [
+        "https://claude.ai/api/mcp/auth_callback",
+        "http://localhost:8787/callback",
+        "https://www.cursor.com/agents/mcp/oauth/callback",
+        "http://localhost:7777/oauth/callback",
+        "https://chatgpt.com/connector_platform_oauth_redirect",
+    ];
 
     private static (string LogicalId, JsonObject Properties) Client(Synthesised t, string name)
     {
@@ -87,7 +94,7 @@ public sealed class CognitoTests(EnvironmentTemplates templates) : IClassFixture
 
     [Theory]
     [MemberData(nameof(EnvironmentTemplates.Both), MemberType = typeof(EnvironmentTemplates))]
-    public void The_connector_client_is_confidential_on_the_code_grant_with_openid_and_read_and_the_claude_callback_only(string env, string _)
+    public void The_connector_client_is_confidential_on_the_code_grant_with_openid_and_read_and_the_mcp_host_callback_allowlist(string env, string _)
     {
         var t = templates.For(env);
         var (poolId, _) = t.Single("AWS::Cognito::UserPool");
@@ -98,7 +105,8 @@ public sealed class CognitoTests(EnvironmentTemplates templates) : IClassFixture
         client["GenerateSecret"]!.GetValue<bool>().Should().BeTrue("a confidential client: the secret is pasted into the connector dialog");
         Strings(client["AllowedOAuthFlows"]).Should().Equal("code");
         client["AllowedOAuthFlowsUserPoolClient"]!.GetValue<bool>().Should().BeTrue();
-        Strings(client["CallbackURLs"]).Should().Equal(ClaudeCallback);
+        Strings(client["CallbackURLs"]).Should().BeEquivalentTo(_connectorCallbackAllowlist,
+            "the door is this closed set — a dropped or extra host fails here, not as redirect_mismatch");
         client.ContainsKey("LogoutURLs").Should().BeFalse();
         Strings(client["SupportedIdentityProviders"]).Should().Equal("COGNITO");
 

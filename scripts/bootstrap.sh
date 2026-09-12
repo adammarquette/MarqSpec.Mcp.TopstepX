@@ -479,6 +479,30 @@ if [ -n "$PACKAGE_PATH" ]; then
   fi
 fi
 
+# gh#520, 2026-09-10. Repositories created after 2026-07-15 mint an immutable Actions OIDC sub
+# (owner@id/name@id). A trust policy written for repo:owner/name never matches. This read
+# reports the prefix the tokens actually carry so the next OIDC stack is not assembled from a
+# guess. It WRITES NOTHING — PUT use_immutable_subject=false was accepted on this repository
+# and did not stick. Assigned, then checked (gh#126). A failed look warns and skips.
+oidc_status=0
+oidc_prefix="$(gh api "repos/$REPO/actions/oidc/customization/sub" --jq .sub_claim_prefix 2>&1)" || oidc_status=$?
+if [ "$oidc_status" -eq 0 ]; then
+  if [ -z "$oidc_prefix" ]; then
+    warn "  actions/oidc/customization/sub answered with an empty sub_claim_prefix"
+    warn "  Nothing here was verified; a look that did not yield a prefix says nothing about the setting."
+  else
+    info "  Actions OIDC sub_claim_prefix=$oidc_prefix"
+    case "$oidc_prefix" in
+      *@*) ok "  prefix is immutable (owner@id/name@id) — GitHubDeploy-* must trust this exact segment" ;;
+      *) warn "  prefix is name-only ($oidc_prefix). A stack that trusts owner@id/name@id will not assume." ;;
+    esac
+  fi
+else
+  warn "  could not read actions/oidc/customization/sub (exit $oidc_status)"
+  printf '%s\n' "$oidc_prefix" | sed 's/^/  | /' >&2
+  warn "  Skipping the OIDC prefix read. Nothing here was verified, and nothing in this step writes."
+fi
+
 # ---------------------------------------------------------------------------
 # 6. Labels.
 # ---------------------------------------------------------------------------

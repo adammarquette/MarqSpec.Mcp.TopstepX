@@ -84,8 +84,9 @@ public sealed class EdgeTests(EnvironmentTemplates templates) : IClassFixture<En
         int.Parse(attributes["idle_timeout.timeout_seconds"].Trim('"'), System.Globalization.CultureInfo.InvariantCulture)
             .Should().BeGreaterThanOrEqualTo(600, "a Streamable HTTP response can be long-lived and the 60 s default cuts it mid-stream");
         attributes["access_logs.s3.enabled"].Should().Be("\"true\"");
-        var (bucketId, _) = t.Single("AWS::S3::Bucket");
-        attributes["access_logs.s3.bucket"].Should().Be($"{{\"Ref\":\"{bucketId}\"}}");
+        var accessLogBucketId = t.Resources("AWS::S3::Bucket")
+            .Single(kv => !t.Properties(kv.Value).ContainsKey("BucketName")).Key;
+        attributes["access_logs.s3.bucket"].Should().Be($"{{\"Ref\":\"{accessLogBucketId}\"}}");
     }
 
     [Theory]

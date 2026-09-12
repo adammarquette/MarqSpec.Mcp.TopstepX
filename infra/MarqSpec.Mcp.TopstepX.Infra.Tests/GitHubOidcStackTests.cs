@@ -12,7 +12,9 @@ namespace MarqSpec.Mcp.TopstepX.Infra.Tests;
 /// </summary>
 public sealed class GitHubOidcStackTests
 {
-    private const string Repository = "repo:adammarquette/MarqSpec.Mcp.TopstepX";
+    // Literal, not interpolated from GitHubOidcStack.OidcSubjectRepository: a stack that emits the
+    // name-only sub (the document that failed AssumeRoleWithWebIdentity on run 34534162932) must fail.
+    private const string Repository = "repo:adammarquette@14438151/MarqSpec.Mcp.TopstepX@1342280460";
 
     private static readonly Synthesised _stack = Synthesised.GitHubOidc();
 
@@ -67,6 +69,8 @@ public sealed class GitHubOidcStackTests
         text.Should().NotContain("repo:*");
         text.Should().NotContain("refs/heads/*");
         text.Should().NotContain(":ref:*");
+        text.Should().NotContain("repo:adammarquette/MarqSpec.Mcp.TopstepX:",
+            "the name-only subject never matches a token this repository mints; a third role must not sneak it past the named tests");
     }
 
     [Theory]
@@ -97,6 +101,20 @@ public sealed class GitHubOidcStackTests
 
         Synthesised.Text(staging["Policies"]).Should().NotContain("backup:StartBackupJob");
         Synthesised.Text(production["Policies"]).Should().Contain("backup:StartBackupJob");
+    }
+
+    [Fact]
+    public void Only_the_production_role_may_describe_the_production_stack_to_find_efs()
+    {
+        var (staging, _) = DeployRole("GitHubDeploy-staging");
+        var (production, _) = DeployRole("GitHubDeploy-production");
+
+        Synthesised.Text(staging["Policies"]).Should().NotContain("cloudformation:DescribeStackResources");
+        var text = Synthesised.Text(production["Policies"]);
+        text.Should().Contain("cloudformation:DescribeStackResources",
+            "the pre-deploy snapshot looks the filesystem up; AccessDenied and a missing filesystem must not be the same answer");
+        text.Should().Contain("stack/topstepx-mcp-production/");
+        text.Should().NotContain("stack/topstepx-mcp-staging/");
     }
 
     [Fact]

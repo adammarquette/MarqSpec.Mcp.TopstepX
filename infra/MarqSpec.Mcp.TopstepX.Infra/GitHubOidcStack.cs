@@ -23,6 +23,14 @@ public sealed class GitHubOidcStack : Stack
     public const string Repository = "adammarquette/MarqSpec.Mcp.TopstepX";
     public const string ProductionEnvironment = "aws-production";
 
+    /// <summary>
+    /// The repository segment GitHub puts in this repo's Actions OIDC <c>sub</c>. Created 2026-08-21,
+    /// after the 2026-07-15 immutable-subject cutoff, so tokens carry <c>owner@id/name@id</c> and a
+    /// name-only <c>repo:owner/name</c> trust never matches (gh#520, 2026-09-10). Read back from
+    /// <c>GET /repos/…/actions/oidc/customization/sub</c> <c>sub_claim_prefix</c>.
+    /// </summary>
+    public const string OidcSubjectRepository = "adammarquette@14438151/MarqSpec.Mcp.TopstepX@1342280460";
+
     private const string Issuer = "token.actions.githubusercontent.com";
 
     public GitHubOidcStack(Construct scope, string id, StackProps? props = null)
@@ -54,7 +62,7 @@ public sealed class GitHubOidcStack : Stack
             ["StringEquals"] = new Dictionary<string, object> { [$"{Issuer}:aud"] = "sts.amazonaws.com" },
             ["StringLike"] = new Dictionary<string, object>
             {
-                [$"{Issuer}:sub"] = new[] { $"repo:{Repository}:ref:refs/tags/v*", $"repo:{Repository}:ref:refs/heads/main" },
+                [$"{Issuer}:sub"] = new[] { $"repo:{OidcSubjectRepository}:ref:refs/tags/v*", $"repo:{OidcSubjectRepository}:ref:refs/heads/main" },
             },
         });
 
@@ -74,7 +82,7 @@ public sealed class GitHubOidcStack : Stack
             ["StringEquals"] = new Dictionary<string, object>
             {
                 [$"{Issuer}:aud"] = "sts.amazonaws.com",
-                [$"{Issuer}:sub"] = $"repo:{Repository}:environment:{ProductionEnvironment}",
+                [$"{Issuer}:sub"] = $"repo:{OidcSubjectRepository}:environment:{ProductionEnvironment}",
             },
         });
 
@@ -188,6 +196,16 @@ public sealed class GitHubOidcStack : Stack
 
         if (envName == "production")
         {
+            // The pre-deploy snapshot looks the filesystem up on this environment's stack. Without
+            // the describe, AccessDenied and "no EFS yet" are the same answer and the backup is
+            // skipped on every live run (gh#520 review). Scoped to this stack; staging never starts
+            // a backup and does not need the look.
+            statements.Add(new PolicyStatement(new PolicyStatementProps
+            {
+                Sid = "DescribeStoreFileSystem",
+                Actions = ["cloudformation:DescribeStackResources"],
+                Resources = [$"arn:{partition}:cloudformation:{region}:{account}:stack/topstepx-mcp-{envName}/*"],
+            }));
             // gh#520's production job starts an EFS backup before it deploys the same digest.
             statements.Add(new PolicyStatement(new PolicyStatementProps
             {

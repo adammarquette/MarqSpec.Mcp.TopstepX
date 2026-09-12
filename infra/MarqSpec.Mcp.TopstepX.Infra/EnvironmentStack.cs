@@ -22,6 +22,8 @@ using Amazon.CDK.AWS.WAFv2;
 using Constructs;
 using CfnParameter = Amazon.CDK.CfnParameter;
 using CfnParameterProps = Amazon.CDK.CfnParameterProps;
+using CfnSchedule = Amazon.CDK.AWS.Scheduler.CfnSchedule;
+using CfnScheduleProps = Amazon.CDK.AWS.Scheduler.CfnScheduleProps;
 using EcsSecret = Amazon.CDK.AWS.ECS.Secret;
 using EventTargets = Amazon.CDK.AWS.Events.Targets;
 using FileSystem = Amazon.CDK.AWS.EFS.FileSystem;
@@ -35,16 +37,16 @@ namespace MarqSpec.Mcp.TopstepX.Infra;
 /// One deployed environment (ADR-0023): a VPC and its four security groups in loopback's role, one
 /// Application Load Balancer as the whole edge, an ECS cluster running the released server image by digest
 /// and the Timescale store on EFS, the Cognito user pool that issues the tokens the server checks, the
-/// secret shells, the deployment history, the logs, the backup plan, the CloudWatch / EventBridge
-/// paging path (gh#526) and the WAF on each ALB (gh#528). Instantiated twice — production and staging —
-/// from the same class; what differs is in <see cref="EnvironmentStackProps"/> and nowhere else.
+/// secret shells, the deployment history, the logs, the backup plan, the daily <c>pg_dump</c>
+/// task (gh#522), the CloudWatch / EventBridge paging path (gh#526) and the WAF on each ALB
+/// (gh#528). Instantiated twice — production and staging — from the same class; what differs is
+/// in <see cref="EnvironmentStackProps"/> and nowhere else.
 /// </summary>
 /// <remarks>
-/// What is <b>not</b> here, by card: the account budget (gh#527 — on <see cref="GitHubOidcStack"/>),
-/// the <c>pg_dump</c> task and its "no dump in 26 h" alarm (gh#522 — still open;
-/// the alerts topic is here for that card to attach to). The WAF (gh#528) is here —
-/// one REGIONAL web ACL per ALB. Cost-allocation tags (gh#527) and the OTLP sidecar (gh#537) are here.
-/// Cognito (gh#517) is here. The alarms (gh#526) are here.
+/// What is <b>not</b> here, by card: the account budget (gh#527 — on <see cref="GitHubOidcStack"/>).
+/// The WAF (gh#528) is here — one REGIONAL web ACL per ALB. Cost-allocation tags (gh#527) and the
+/// OTLP sidecar (gh#537) are here. Cognito (gh#517) is here. The alarms (gh#526) are here, including
+/// gh#522's "no dump in 26 h" alarm on the environment topic.
 /// <para>
 /// <b>Operational defaults this card took</b>, traced to neither ADR-0023 nor gh#516 and none a cost or
 /// exposure choice — named here so nobody hunts for where they were decided: the AWS Backup rule runs at
@@ -68,6 +70,16 @@ public sealed class EnvironmentStack : Stack
     /// deliberately, in a pull request that says why, never by re-reading the tag.
     /// </summary>
     public const string PostgresImage = "timescale/timescaledb-ha@sha256:567690e00aa9a485b45e2feec09c0e46288ca817891342f5575ba14da6a8592e";
+
+    /// <summary>
+    /// <c>public.ecr.aws/aws-cli/aws-cli:2.31.22</c> by digest — the multi-arch index digest, read
+    /// with <c>docker buildx imagetools inspect public.ecr.aws/aws-cli/aws-cli:2.31.22</c> on
+    /// 2026-09-10. The Timescale image's <c>/usr/bin/aws</c> is an 815-byte Python wrapper that
+    /// crashes (<c>KeyError: opsworkscm</c>); it is not a working CLI, so the dump task's second
+    /// container is this one (gh#522). The tag moves; this does not. Bump it deliberately, in a
+    /// pull request that says why, never by re-reading the tag (ADR-0023 §12).
+    /// </summary>
+    public const string AwsCliImage = "public.ecr.aws/aws-cli/aws-cli@sha256:b89c0c0a5c8a0e58ae90d8729100e7a85d7e84a91d385f605faa67e4ac5f233d";
 
     /// <summary>
     /// <c>otel/opentelemetry-collector-contrib:0.160.0</c> by digest — the multi-arch index digest, read
@@ -102,6 +114,9 @@ public sealed class EnvironmentStack : Stack
 
     /// <summary>The name of the role AWS Backup assumes for the store's plan; the OIDC stack may pass it and nothing else.</summary>
     public static string BackupRoleName(string envName) => $"topstepx-mcp-{envName}-backup";
+
+    /// <summary>The versioned bucket daily <c>pg_dump</c> objects land in (gh#522, ADR-0023 §10).</summary>
+    public static string BackupsBucketName(string envName) => $"topstepx-mcp-{envName}-backups";
 
     /// <summary>The environment's hostname: <c>topstepx-mcp.&lt;root&gt;</c>.</summary>
     public string Hostname { get; }
@@ -161,7 +176,7 @@ public sealed class EnvironmentStack : Stack
             MinLength = 1,
         });
         var recordTape = Flag("RecordTape", props.RecordTapeDefault,
-            "MarketData__RecordTape: subscribe to the market hub and record the tape (ADR-0016). One recorder per tape: on only where the tape is meant to be recorded (gh#525's measurement switches it on and back off).");
+            "MarketData__RecordTape: subscribe to the market hub and record the tape (ADR-0016). One recorder per tape. Defaults on in both environments so volume profile and footprint accumulate (gh#660); leave it on.");
         var warmIndicators = Flag("WarmIndicators", props.WarmIndicatorsDefault,
             "MarketData__WarmIndicators: replay stored indicator series at process start (ADR-0014).");
         // NO DEFAULT, like the digest: the product never defaults this because the wrong tier answers an
@@ -316,16 +331,8 @@ public sealed class EnvironmentStack : Stack
             "The claude-connector app client's id and secret, pasted into the Cowork custom-connector dialog (gh#524); the secret is read once with describe-user-pool-client.");
         _ = Shell("DeployCheckSecret", env, "deploy-check", """{"clientId":"","clientSecret":""}""",
             "The deploy-check app client's id and secret, read at run time by the deployment check (gh#521) for a client_credentials token; never a GitHub secret.");
-        // The sixth shell exists only when the sidecar does (gh#537). It is the telemetry backend's whole
-        // identity: `endpoint` is the Grafana Cloud OTLP gateway -- which names the stack, and so the account
-        // -- and `authorization` is the header value that authenticates to it. gh#537's body asked for these
-        // as two ARNs on TelemetryProps; an ARN carries an account id, and a literal account id in a public
-        // repository is what the root contract's second non-negotiable refuses, so they are a shell like the
-        // other five and gh#519 fills them once the Grafana Cloud stack exists.
-        var otelSecret = props.Telemetry is null
-            ? null
-            : Shell("OtelSecret", env, "otel", """{"endpoint":"","authorization":""}""",
-                "The OTLP collector sidecar's Grafana Cloud endpoint and Authorization header value (gh#537, ADR-0019 decision 5). Read by the sidecar alone; the server never sees either.");
+        // gh#646 retired the Grafana `otel` shell. CloudWatch OTLP is SigV4 on the task role, so nothing
+        // secret remains for the sidecar; the three AWS OTLP URLs are derived from AWS::Region below.
 
         // The written history the pipeline leaves on every deploy (ADR-0023 §5): the same two parameters
         // the task definition reads, so the history cannot say one thing while the task runs another.
@@ -407,9 +414,17 @@ public sealed class EnvironmentStack : Stack
             {
                 Flows = new OAuthFlows { AuthorizationCodeGrant = true, ImplicitCodeGrant = false, ClientCredentials = false },
                 Scopes = [OAuthScope.OPENID, OAuthScope.ResourceServer(resourceServer, readScope)],
-                // The Claude callback and no other: the path Anthropic's documentation names for a server
-                // registered as a pre-registered client (ADR-0021's second assumption, gh#510).
-                CallbackUrls = ["https://claude.ai/api/mcp/auth_callback"],
+                // Closed allowlist of known MCP-host callbacks (gh#656). Cognito matches exact URIs;
+                // no wildcards, no DCR, no CIMD. Adding a host is a stack change — one URL here, one
+                // template-test assertion, one deployment.md row. Never a console-only update.
+                CallbackUrls =
+                [
+                    "https://claude.ai/api/mcp/auth_callback",
+                    "http://localhost:8787/callback",
+                    "https://www.cursor.com/agents/mcp/oauth/callback",
+                    "http://localhost:7777/oauth/callback",
+                    "https://chatgpt.com/connector_platform_oauth_redirect",
+                ],
             },
             SupportedIdentityProviders = [UserPoolClientIdentityProvider.COGNITO],
             AccessTokenValidity = Duration.Hours(1),
@@ -607,6 +622,154 @@ public sealed class EnvironmentStack : Stack
             },
         });
 
+        // ── Store: daily pg_dump to S3 (gh#522, ADR-0023 §10) ────────────────────────────────────────────
+        // The restorable artefact. EFS AWS Backup above is file-level and, on a running Postgres,
+        // crash-consistent at best — not a restore. Verified on the pinned Timescale digest
+        // (2026-09-10): `command -v aws` prints `/usr/bin/aws`, but that wrapper is 815 bytes from
+        // 2022 and `aws --version` raises `KeyError: opsworkscm`. It is not a working CLI, and
+        // pgbackrest-to-S3 would be a different design (an archive command beside the live server).
+        // So: Timescale dumps to a shared ephemeral volume; public.ecr.aws/aws-cli/aws-cli uploads;
+        // upload dependsOn SUCCESS.
+        var backups = new Bucket(this, "Backups", new BucketProps
+        {
+            BucketName = BackupsBucketName(env),
+            Encryption = BucketEncryption.S3_MANAGED,
+            BlockPublicAccess = BlockPublicAccess.BLOCK_ALL,
+            EnforceSSL = true,
+            Versioned = true,
+            // Expiration alone on a versioned bucket only writes a delete marker; the dump
+            // stays as a noncurrent version and is still billed (gh#522). Both current and
+            // noncurrent must expire, and expired delete markers must be cleaned up.
+            LifecycleRules =
+            [
+                new LifecycleRule
+                {
+                    Expiration = Duration.Days(90),
+                    NoncurrentVersionExpiration = Duration.Days(90),
+                },
+                new LifecycleRule { ExpiredObjectDeleteMarker = true },
+            ],
+            Metrics = [new BucketMetrics { Id = "EntireBucket" }],
+            RemovalPolicy = RemovalPolicy.RETAIN,
+        });
+        var dumpLogs = new LogGroup(this, "PgDumpLogs", new LogGroupProps
+        {
+            LogGroupName = $"/topstepx-mcp/{env}/pg-dump",
+            Retention = RetentionDays.ONE_MONTH,
+            RemovalPolicy = RemovalPolicy.RETAIN,
+        });
+        var dumpTask = new FargateTaskDefinition(this, "PgDumpTask", new FargateTaskDefinitionProps
+        {
+            Family = $"topstepx-mcp-{env}-pg-dump",
+            Cpu = 512,
+            MemoryLimitMiB = 1024,
+            RuntimePlatform = new RuntimePlatform { CpuArchitecture = CpuArchitecture.X86_64, OperatingSystemFamily = OperatingSystemFamily.LINUX },
+            Volumes = [new Amazon.CDK.AWS.ECS.Volume { Name = "dump" }],
+        });
+        dumpTask.AddToTaskRolePolicy(new PolicyStatement(new PolicyStatementProps
+        {
+            Sid = "PutDumpObject",
+            Actions = ["s3:PutObject"],
+            Resources = [backups.ArnForObjects("*")],
+        }));
+        backups.AddToResourcePolicy(new PolicyStatement(new PolicyStatementProps
+        {
+            Sid = "DumpTaskPutOnly",
+            Principals = [new ArnPrincipal(dumpTask.TaskRole.RoleArn)],
+            Actions = ["s3:PutObject"],
+            Resources = [backups.ArnForObjects("*")],
+        }));
+        var dump = dumpTask.AddContainer("dump", new ContainerDefinitionOptions
+        {
+            ContainerName = "dump",
+            Image = ContainerImage.FromRegistry(PostgresImage),
+            // The image's entrypoint starts Postgres. Override it. User 0 so the ephemeral
+            // volume (root-owned) is writable; this container never binds 5432.
+            EntryPoint = ["sh", "-ec"],
+            Command = ["pg_dump -Fc -f /dump/topstepx_mcp.dump"],
+            User = "0",
+            // ECS refuses SUCCESS/COMPLETE dependsOn when the dependency is essential
+            // (2026-09-10 staging deploy). Dump exits 0 after writing the file; upload
+            // is the essential container and starts only after that success.
+            Essential = false,
+            Logging = LogDrivers.AwsLogs(new AwsLogDriverProps { LogGroup = dumpLogs, StreamPrefix = "dump" }),
+            Environment = new Dictionary<string, string>
+            {
+                ["PGHOST"] = $"postgres.{env}.topstepx.internal",
+                ["PGUSER"] = PostgresUser,
+                ["PGDATABASE"] = PostgresDatabase,
+                ["PGPORT"] = "5432",
+            },
+            Secrets = new Dictionary<string, EcsSecret> { ["PGPASSWORD"] = EcsSecret.FromSecretsManager(postgresSecret, "password") },
+        });
+        dump.AddMountPoints(new MountPoint { ContainerPath = "/dump", SourceVolume = "dump", ReadOnly = false });
+        var upload = dumpTask.AddContainer("upload", new ContainerDefinitionOptions
+        {
+            ContainerName = "upload",
+            Image = ContainerImage.FromRegistry(AwsCliImage),
+            EntryPoint = ["sh", "-ec"],
+            Command = ["aws s3 cp /dump/topstepx_mcp.dump \"s3://${DUMP_BUCKET}/topstepx_mcp-$(date -u +%Y-%m-%dT%H:%M:%SZ).dump\""],
+            Logging = LogDrivers.AwsLogs(new AwsLogDriverProps { LogGroup = dumpLogs, StreamPrefix = "upload" }),
+            Environment = new Dictionary<string, string> { ["DUMP_BUCKET"] = backups.BucketName },
+        });
+        upload.AddMountPoints(new MountPoint { ContainerPath = "/dump", SourceVolume = "dump", ReadOnly = true });
+        upload.AddContainerDependencies(new ContainerDependency
+        {
+            Container = dump,
+            Condition = ContainerDependencyCondition.SUCCESS,
+        });
+
+        var dumpSchedulerRole = new Role(this, "PgDumpSchedulerRole", new RoleProps
+        {
+            AssumedBy = new ServicePrincipal("scheduler.amazonaws.com"),
+            Description = $"EventBridge Scheduler role that starts the {env} pg_dump task (gh#522).",
+        });
+        dumpSchedulerRole.AddToPolicy(new PolicyStatement(new PolicyStatementProps
+        {
+            Sid = "RunDumpTask",
+            Actions = ["ecs:RunTask"],
+            Resources = [dumpTask.TaskDefinitionArn],
+            Conditions = new Dictionary<string, object>
+            {
+                ["ArnEquals"] = new Dictionary<string, object> { ["ecs:cluster"] = cluster.ClusterArn },
+            },
+        }));
+        dumpSchedulerRole.AddToPolicy(new PolicyStatement(new PolicyStatementProps
+        {
+            Sid = "PassDumpRoles",
+            Actions = ["iam:PassRole"],
+            Resources = [dumpTask.TaskRole.RoleArn, dumpTask.ExecutionRole!.RoleArn],
+        }));
+        _ = new CfnSchedule(this, "PgDumpSchedule", new CfnScheduleProps
+        {
+            Name = $"topstepx-mcp-{env}-pg-dump",
+            Description = "Daily pg_dump in the 16:00–17:00 America/Chicago maintenance window (gh#522, ADR-0023 §10).",
+            FlexibleTimeWindow = new CfnSchedule.FlexibleTimeWindowProperty { Mode = "OFF" },
+            ScheduleExpression = "cron(15 16 * * ? *)",
+            ScheduleExpressionTimezone = "America/Chicago",
+            State = "ENABLED",
+            Target = new CfnSchedule.TargetProperty
+            {
+                Arn = cluster.ClusterArn,
+                RoleArn = dumpSchedulerRole.RoleArn,
+                EcsParameters = new CfnSchedule.EcsParametersProperty
+                {
+                    TaskDefinitionArn = dumpTask.TaskDefinitionArn,
+                    LaunchType = "FARGATE",
+                    TaskCount = 1,
+                    NetworkConfiguration = new CfnSchedule.NetworkConfigurationProperty
+                    {
+                        AwsvpcConfiguration = new CfnSchedule.AwsVpcConfigurationProperty
+                        {
+                            AssignPublicIp = natShape ? "DISABLED" : "ENABLED",
+                            SecurityGroups = [serverSg.SecurityGroupId],
+                            Subnets = vpc.SelectSubnets(taskSubnets).SubnetIds,
+                        },
+                    },
+                },
+            },
+        });
+
         // ── Server: the released image ──────────────────────────────────────────────────────────────────
         var serverTask = new FargateTaskDefinition(this, "ServerTask", new FargateTaskDefinitionProps
         {
@@ -634,10 +797,10 @@ public sealed class EnvironmentStack : Stack
             ["Deployment__ImageDigest"] = imageDigest.ValueAsString,
         };
 
-        // The telemetry seam (gh#537, ADR-0019). WITH a sidecar the server is told one endpoint -- the
-        // container beside it, on the task's own loopback -- and nothing about the backend: decision 2, "one
-        // OTLP exporter, nothing vendor-specific in the host". `Otel__Headers` is deliberately NOT here: it
-        // is where a backend token would go, and the token is the sidecar's.
+        // The telemetry seam (gh#537, gh#646, ADR-0019). WITH a sidecar the server is told one endpoint --
+        // the container beside it, on the task's own loopback -- and nothing about the backend: decision 2,
+        // "one OTLP exporter, nothing vendor-specific in the host". `Otel__Headers` is deliberately NOT
+        // here: AWS auth is SigV4 on this task role, never a header the host would send.
         //
         // WITHOUT one, not one Otel__ key is set, and that is not a degraded mode -- it is decision 3, absent
         // configuration is today's behaviour exactly: no exporter registered, no background thread, no retry
@@ -668,19 +831,47 @@ public sealed class EnvironmentStack : Stack
         });
 
         // ── Server: the OTLP collector sidecar ──────────────────────────────────────────────────────────
-        // gh#537, ADR-0019 decision 5, ADR-0023 §11: the second container in this task receives what the
-        // server exports on the loopback and forwards it to Grafana Cloud. Self-hosting Loki, Tempo and
-        // Grafana as further Fargate services was rejected in ADR-0019, not re-argued here.
-        if (props.Telemetry is not null && otelSecret is not null)
+        // gh#537, gh#646, ADR-0019 decision 5, ADR-0023 §11: the second container in this task receives
+        // what the server exports on the loopback and forwards it to CloudWatch (X-Ray, Metrics, Logs)
+        // under SigV4. Self-hosting Loki, Tempo and Grafana as further Fargate services was rejected in
+        // ADR-0019, not re-argued here; Grafana Cloud as the Fargate backend is retired by gh#646.
+        if (props.Telemetry is not null)
         {
+            // The contrib otlp_http exporter names this stream and does not create it. AWS writes only
+            // to an existing group/stream pair; logs:CreateLogStream on the task role does not invoke
+            // that API (gh#646, PR #648).
+            _ = new LogStream(this, "OtlpLogStream", new LogStreamProps
+            {
+                LogGroup = serverLogs,
+                LogStreamName = "otlp",
+            });
+
+            serverTask.AddToTaskRolePolicy(new PolicyStatement(new PolicyStatementProps
+            {
+                Sid = "OtlpTraces",
+                Actions = ["xray:PutTraceSegments"],
+                Resources = ["*"],
+            }));
+            serverTask.AddToTaskRolePolicy(new PolicyStatement(new PolicyStatementProps
+            {
+                Sid = "OtlpMetrics",
+                Actions = ["cloudwatch:PutMetricData"],
+                Resources = ["*"],
+            }));
+            serverTask.AddToTaskRolePolicy(new PolicyStatement(new PolicyStatementProps
+            {
+                Sid = "OtlpLogs",
+                Actions = ["logs:PutLogEvents", "logs:CreateLogStream"],
+                Resources = [serverLogs.LogGroupArn, Fn.Join(":", [serverLogs.LogGroupArn, "*"])],
+            }));
+
             serverTask.AddContainer("OtelCollector", new ContainerDefinitionOptions
             {
                 ContainerName = "otel-collector",
                 Image = ContainerImage.FromRegistry(props.Telemetry.CollectorImage),
                 // NOT essential, and capped. Between them these are the whole answer to "what happens when
                 // the sidecar is unhealthy": the task keeps running, the server keeps answering, and the
-                // exporter drops on the floor (ADR-0019). An unfilled shell fails the collector's own config
-                // validation and lands in exactly that state, which is the state staging starts in.
+                // exporter drops on the floor (ADR-0019).
                 Essential = false,
                 MemoryLimitMiB = props.Telemetry.MemoryLimitMiB,
                 // Same group as the server, different stream prefix -- one place to read an environment.
@@ -694,14 +885,14 @@ public sealed class EnvironmentStack : Stack
                     // to mount a file from and baking it into an image would make a one-line edit a registry
                     // push. The collector is started against the variable, below.
                     ["OTEL_COLLECTOR_CONFIG"] = CollectorConfiguration.Yaml,
-                    // The two resource attributes that let one Grafana stack tell the environments apart.
+                    // The two resource attributes that let one CloudWatch account tell the environments apart.
                     ["DEPLOYMENT_ENVIRONMENT"] = env,
                     ["SERVICE_VERSION"] = version.ValueAsString,
-                },
-                Secrets = new Dictionary<string, EcsSecret>
-                {
-                    ["GRAFANA_OTLP_ENDPOINT"] = EcsSecret.FromSecretsManager(otelSecret, "endpoint"),
-                    ["GRAFANA_OTLP_AUTHORIZATION"] = EcsSecret.FromSecretsManager(otelSecret, "authorization"),
+                    ["AWS_REGION"] = Fn.Ref("AWS::Region"),
+                    ["AWS_OTLP_TRACES_ENDPOINT"] = Fn.Sub("https://xray.${AWS::Region}.amazonaws.com/v1/traces"),
+                    ["AWS_OTLP_METRICS_ENDPOINT"] = Fn.Sub("https://monitoring.${AWS::Region}.amazonaws.com/v1/metrics"),
+                    ["AWS_OTLP_LOGS_ENDPOINT"] = Fn.Sub("https://logs.${AWS::Region}.amazonaws.com/v1/logs"),
+                    ["AWS_OTLP_LOG_GROUP"] = $"/topstepx-mcp/{env}/server",
                 },
                 Command = ["--config=env:OTEL_COLLECTOR_CONFIG"],
             });
@@ -819,9 +1010,8 @@ public sealed class EnvironmentStack : Stack
         });
         targetGroup.AddTarget(server);
 
-        // ── Paging: one SNS email topic and the alarms that publish to it (gh#526) ───────────────────────
-        // The address is a parameter, never a literal. #522's "no dump in 26 h" alarm is still open; the
-        // topic exists so that card attaches rather than creating a second one.
+        // ── Paging: one SNS email topic and the alarms that publish to it (gh#526, gh#522) ───────────────
+        // The address is a parameter, never a literal. The dump-missing alarm publishes here.
         var alerts = new Topic(this, "Alerts", new TopicProps
         {
             TopicName = $"topstepx-mcp-{env}-alerts",
@@ -901,6 +1091,23 @@ public sealed class EnvironmentStack : Stack
             }),
             threshold: 80, ComparisonOperator.GREATER_THAN_THRESHOLD, TreatMissingData.NOT_BREACHING,
             "EFS PercentIOLimit > 80 % for 15 min. The store is on Elastic throughput, so this is the file system's I/O ceiling. Find what is writing the volume; a quota increase or a mode change needs a dated ADR entry.");
+
+        Page(this, alerts, "DumpMissing", $"topstepx-mcp-{env}-dump-missing",
+            new Metric(new MetricProps
+            {
+                Namespace = "AWS/S3",
+                MetricName = "PutRequests",
+                DimensionsMap = new Dictionary<string, string>
+                {
+                    ["BucketName"] = backups.BucketName,
+                    ["FilterId"] = "EntireBucket",
+                },
+                Period = Duration.Hours(1),
+                Statistic = Stats.SUM,
+            }),
+            threshold: 1, ComparisonOperator.LESS_THAN_THRESHOLD, TreatMissingData.BREACHING,
+            "No PutRequests on the backups bucket in 26 h. The daily pg_dump did not write an object (gh#522).",
+            evaluationPeriods: 26);
     }
 
     /// <summary>
@@ -931,7 +1138,8 @@ public sealed class EnvironmentStack : Stack
         double threshold,
         ComparisonOperator comparison,
         TreatMissingData missing,
-        string description)
+        string description,
+        int evaluationPeriods = 1)
     {
         var alarm = new Alarm(stack, id, new AlarmProps
         {
@@ -939,7 +1147,7 @@ public sealed class EnvironmentStack : Stack
             Metric = metric,
             Threshold = threshold,
             ComparisonOperator = comparison,
-            EvaluationPeriods = 1,
+            EvaluationPeriods = evaluationPeriods,
             TreatMissingData = missing,
             AlarmDescription = description,
         });

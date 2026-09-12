@@ -6,7 +6,7 @@ root [`AGENTS.md`](../../AGENTS.md) still applies. It owns the artifacts below *
 
 | Artifact | Where |
 | --- | --- |
-| CI, branch-policy, CodeQL, release workflows | [`.github/workflows/`](../../.github/workflows/) |
+| CI, branch-policy, CodeQL, release and deploy workflows | [`.github/workflows/`](../../.github/workflows/) — `release.yml` publishes and deploys; [`deploy.yml`](../../.github/workflows/deploy.yml) redeploys or rolls back from `main` |
 | The published image | [`Dockerfile`](../../Dockerfile) — built by `ci.yml`'s `image` job, pushed to GHCR only by `release.yml` |
 | Local stack | [`docker-compose.yml`](../../docker-compose.yml) (Postgres + server) and [`docker-compose.dev.yml`](../../docker-compose.dev.yml) (SDK overlay) |
 | Build and dependency properties | `Directory.Build.props`, `Directory.Packages.props` (Central Package Management — package *versions*, since nothing here is packaged), `global.json` |
@@ -505,6 +505,9 @@ context list onto a fresh repo. **Read this table as a claim about GitHub settin
 by mutation, not as a description of the workflow files.**
 
 ### The required-context table
+
+**Unchanged by gh#520.** The deploy jobs ride the release path (`release.yml`, `deploy.yml`); they do not
+report a merge-gate context, and `release-gate` still only reports. Do not add a row here for them.
 
 | Context | develop | staging | main | Reported by |
 |---|---|---|---|---|
@@ -1245,8 +1248,8 @@ found.
 | ruleset `enforcement: active` | all of the above | `bootstrap.sh` step 3 | `MarqSpec.Client.ProjectX`, disabled from creation |
 | the two Cognito client secrets' **values** in `topstepx-mcp/<env>/{claude-connector,deploy-check}` | the connector login (gh#524) and `check-deployment.sh`'s `client_credentials` token (gh#521); the stack creates the shells empty and no custom resource fills them ([ADR-0023](../adr/0023-aws-deployment-topology.md), 2026-09-07 Cognito entry) | gh#521's check, but read the shape carefully — an EMPTY shell fails it at `UNSET <the first empty value>` **before any request**, naming that value and saying nothing about the deployment. *Which* value depends on where the id is read from, and this repository has not settled that: `MCP_CHECK_CLIENT_ID` if both come out of the shell as ADR-0023 §"the `clientId` is duplicated into the shell" describes, `…_SECRET` if the id came from the stack output as gh#520 plans. A non-empty WRONG credential is the other path and is the one that comes back `NO TOKEN … answered 401`, after assertions 1 and 2 have passed. All measured 2026-09-07; this row said the opposite until then | never; not yet deployed (gh#519 writes them by hand) |
 | `aws-production` environment carries a `required_reviewers` rule | gh#520's two production deploy jobs — the approval on **what runs**, and the **precondition of the credential**: `GitHubDeploy-production` trusts only a token carrying `sub = …:environment:aws-production`, which GitHub mints only for a job that declared the environment and passed its rule ([ADR-0023](../adr/0023-aws-deployment-topology.md) §8 and its 2026-09-07 `aws-production` entry). Without the rule, any job in this repository naming the environment could assume the role | [`check-release-gate.sh`](../../scripts/check-release-gate.sh) on every pull request once a workflow names it — its self-test's two-environment case is the pre-creation shape; `bootstrap.sh` step 4 creates it and reports it, and a template test reads the script's `ENV_NAMES=` line against the trust condition | never; created 2026-09-09 (gh#519), read-back `User:adammarquette` |
-| `GitHubDeploy-staging` trust policy — `sub` StringLike `…:ref:refs/tags/v*` and `…:ref:refs/heads/main`, exactly two | `release.yml`'s staging deploy and `deploy.yml`'s dispatch on `main` (gh#520); a wider subject is a role any run of a public repository's fork could try, a narrower one refuses the rollback path | `GitHubOidcStackTests` on every pull request — the named test and the every-role test; on the account, `aws iam get-role --role-name GitHubDeploy-staging`, recorded on ADR-0023's 2026-09-07 staging entry and quoted on #519 (2026-09-09) | never; deployed 2026-09-09 (gh#519) |
-| `GitHubDeploy-production` trust policy — `sub` StringEquals `…:environment:aws-production`, no `StringLike` | both production deploy jobs (gh#520) | the same tests; `aws iam get-role --role-name GitHubDeploy-production`, recorded on ADR-0023's 2026-09-07 production entry and quoted on #519 (2026-09-09) | never; deployed 2026-09-09 (gh#519) |
+| `GitHubDeploy-staging` trust policy — `sub` StringLike `…:ref:refs/tags/v*` and `…:ref:refs/heads/main`, exactly two, on this repo's immutable `owner@id/name@id` prefix (created 2026-08-21, after GitHub's 2026-07-15 cutoff; a name-only `repo:owner/name` never matches) | `release.yml`'s staging deploy and `deploy.yml`'s dispatch on `main` (gh#520); a wider subject is a role any run of a public repository's fork could try, a narrower one refuses the rollback path | `GitHubOidcStackTests` on every pull request — the named test and the every-role test; on the account, `aws iam get-role --role-name GitHubDeploy-staging`; `gh api repos/…/actions/oidc/customization/sub` `sub_claim_prefix`; recorded on ADR-0023's 2026-09-07 staging entry and the 2026-09-10 immutable-subject entry | never; deployed 2026-09-09 (gh#519); first assume failed 2026-09-10 until the prefix matched (gh#520) |
+| `GitHubDeploy-production` trust policy — `sub` StringEquals `…:environment:aws-production` on the same immutable prefix, no `StringLike` | both production deploy jobs (gh#520) | the same tests; `aws iam get-role --role-name GitHubDeploy-production`, recorded on ADR-0023's 2026-09-07 production entry and the 2026-09-10 immutable-subject entry | never; deployed 2026-09-09 (gh#519); prefix aligned 2026-09-10 (gh#520) |
 
 ### The release approval gate (gh#108)
 
@@ -1297,10 +1300,10 @@ output" reads a missing environment as a healthy one. The check keys on the exit
 
 **And it is made to fail on every run.**
 [`check-release-gate-selftest.sh`](../../scripts/check-release-gate-selftest.sh) runs in the same job,
-feeding the real script six fixtures with known faults and requiring it to reject each one — **matching on
+feeding the real script seven fixtures with known faults and requiring it to reject each one — **matching on
 the words that name each fault, never on exit status**, since exit 1 is also what "gh is required" produces
-and a self-test satisfied by status alone goes green on a runner with no `gh` on it. **And a seventh fixture
-that is genuinely sound, which it must accept**: six rejections would all be satisfied by `exit 1`, and a
+and a self-test satisfied by status alone goes green on a runner with no `gh` on it. **And an eighth fixture
+that is genuinely sound, which it must accept**: seven rejections would all be satisfied by `exit 1`, and a
 gate that says no to everything is exactly as useless as one that says yes to everything, and rather harder
 to notice. That case uses the mapping spelling of `environment:`, which no workflow here uses today, so
 nothing else would notice if it stopped being understood.
@@ -1311,8 +1314,10 @@ times and fell straight through to `ok "rejected"` — satisfied by exit status 
 file's header refuses. Measured rather than argued: a needle-less case added to the **shipped** code printed
 `rejected  PROBE: no needle at all` in green and the suite exited 0 still claiming six rejections; against
 the guard it dies naming the case, and the probe was removed. It fails the **suite** rather than counting a
-failure, because a self-test that cannot assert is not a result to tally. Six calls pass at least one needle
-today; nothing could have told you when one stopped.
+failure, because a self-test that cannot assert is not a result to tally. Seven calls pass at least one needle
+today; nothing could have told you when one stopped. The seventh rejection is gh#520's: a
+`workflow_dispatch` input named `environment` is not a GitHub Environment, and a discovery that treated
+every `environment:` key as one reported `<unresolved-mapping>` on `deploy.yml`.
 
 The sixth rejection is gh#518's, and it asserts *which* environment a red run names rather than that it goes
 red: two environments in one workflow set — the real, protected `production` beside one that does not exist
@@ -1392,16 +1397,35 @@ only thing that pushes. The integration tier has never had a fake to run against
 `timescale/timescaledb-ha` Postgres itself, because hypertables, the HNSW index and the CHECK constraints are
 the claims worth testing and an in-memory provider proves none of them ([ADR-0004](../adr/0004-one-postgres-timescale-pgvector.md)).
 
-Branches map to intent rather than to environments — there is no deployment here, only a published image:
-`develop` integrates, `staging` holds what is promoted but unreleased, `main` is what has shipped, and a `v*`
-tag on `main` is what triggers a release.
+Branches still map to intent rather than to environments: `develop` integrates, `staging` holds what is
+promoted but unreleased, `main` is what has shipped, and a `v*` tag on `main` is what triggers a release.
+A published release now deploys that image by digest (gh#520). `publish` exposes
+`docker/build-push-action`'s digest; `deploy-staging` assumes `GitHubDeploy-staging` with **no
+`environment:` key** (staging is already behind the `production` approval on `gate`; a named staging
+environment would be a second manual approval, and loosening that gate is the inert-gate class
+`check-release-gate.sh` refuses) and runs [`deploy-environment.sh`](../../scripts/deploy-environment.sh),
+which passes `ImageDigest` and `Version` as `cdk deploy --parameters` and then
+[`check-deployment.sh`](../../scripts/check-deployment.sh) against the staging hostname. `deploy-production`
+needs `deploy-staging`, declares the literal `environment: aws-production`, starts an EFS backup only after
+`describe-stack-resources` succeeds and names a filesystem (a failed describe is a stop, not a first-create
+skip — gh#126), and deploys the **same digest**.
+The token-endpoint URL and the deploy-check client id come from the stack outputs; the client secret is
+read from Secrets Manager at run time — no GitHub secret. Rollback is [`deploy.yml`](../../.github/workflows/deploy.yml),
+dispatched on `main` (`gh workflow run deploy.yml --ref main -f version=<previous> -f environment=staging`),
+resolving the digest with `docker buildx imagetools inspect` of the version tag. Nothing rebuilds on the
+way to production. `:latest` is still pushed (ADR-0001) and never referenced to decide what runs. The
+[required-context table](#the-required-context-table) is unchanged — `release-gate` still only reports;
+these jobs are the release path, not a new merge gate. `check-deploy-workflows.sh` holds the YAML to
+that topology on every pull request, beside the gate.
 
 ### Infrastructure
 
-**The AWS resources the deployment will run on are code under [`infra/`](../../infra/), and a pull request
+**The AWS resources the deployment runs on are code under [`infra/`](../../infra/), and a pull request
 proves the template it proposes** ([ADR-0023](../adr/0023-aws-deployment-topology.md) §7, gh#516). The
-sentence above is still true — nothing deploys yet; the deploy jobs are gh#520's, and that pull request is
-the one that rewrites it. What exists today:
+deploy jobs are in `release.yml` and `deploy.yml` (gh#520); a pull request proves their topology
+(`check-deploy-workflows.sh`) and the script they share (`deploy-environment-selftest.sh`). A live
+tag-deploy against staging, and the first `aws-production` approval, are later slices — this card does
+not `cdk deploy` a stack other sessions own, and does not approve production. What exists today:
 
 - **Two projects in the solution.** `infra/MarqSpec.Mcp.TopstepX.Infra/` is the CDK app — one
   `EnvironmentStack` instantiated for production (`marqspec.com`, zone looked up) and staging
@@ -1430,7 +1454,9 @@ the one that rewrites it. What exists today:
   pattern is the host log lines; 192 after the filter-shape pin; 203 at
   gh#528, adding one REGIONAL web ACL associated with each ALB, the rate-based block at parameter
   `WafRateLimit`, managed groups count on staging and none/block on production, and the 30-day
-  `aws-waf-logs-*` group) and then
+  `aws-waf-logs-*` group; 220 at gh#522, adding the versioned backups bucket, the two-container
+  `pg_dump` task, the EventBridge Scheduler rule, the dump-missing alarm, and the bucket-policy /
+  schedule assertions) and then
   `cdk synth --no-lookups` **once per outbound shape** through the CLI pinned in
   `infra/package.json`. **No credential exists on the runner, by construction**: `--no-lookups` makes a
   context miss fail the synth rather than call AWS, and `infra/cdk.context.json` carries the hosted-zone
@@ -1451,17 +1477,17 @@ the one that rewrites it. What exists today:
   is the maintainer's dated entry on ADR-0023 — gh#519 passed `PublicIpPerTask` as synth context only.
   When the fork closes, the loop in `ci.yml` collapses to one plain synth and the value becomes a literal
   in `Program.cs`.
-- **Secrets are shells.** The six
-  `topstepx-mcp/<env>/{postgres,projectx,cohere,claude-connector,deploy-check,otel}`
+- **Secrets are shells.** The five
+  `topstepx-mcp/<env>/{postgres,projectx,cohere,claude-connector,deploy-check}`
   secrets are created with every JSON key the task definitions and the deployment check read and every
   value empty; gh#519 writes the values by hand, once. **Never edit a shell's literal afterwards**:
   CloudFormation creates a new secret version whenever the `SecretString` property changes, and that
   version is the live one — an edit would put an empty document over a real credential. A new key is a new
-  secret.
+  secret. gh#646 retired the sixth (`otel`): CloudWatch OTLP is SigV4 on the task role.
 - **The authorization server is in the stack** (gh#517, [ADR-0023](../adr/0023-aws-deployment-topology.md)
   §9 and its 2026-09-07 Cognito entry): one user pool per environment, the `topstepx-mcp` resource server
-  with its `read` scope, the confidential `claude-connector` client on the code grant with the Claude
-  callback alone, the `deploy-check` client on `client_credentials` alone, and the Cognito prefix domain.
+  with its `read` scope, the confidential `claude-connector` client on the code grant with the closed
+  MCP-host callback allowlist (gh#656), the `deploy-check` client on `client_credentials` alone, and the Cognito prefix domain.
   **`Mcp__OAuth__Issuer` and `Mcp__OAuth__ClientIds` reach the task as `Fn::GetAtt` and `Ref`s of those
   constructs, and the template test refuses a string** — a literal issuer would deploy and validate against
   whatever it named. The two client secrets are shells like the others, read once with
@@ -1469,20 +1495,19 @@ the one that rewrites it. What exists today:
   asserted to contain no Lambda. What is **not** measured yet — the discovery document's `S256`
   advertisement, its tolerance of the `resource` parameter, the token-endpoint auth methods — still
   waits on gh#519's leftover: no EnvironmentStack, because public NS is Cloudflare (2026-09-09).
-- **The server task carries a second container** (gh#537, [ADR-0019](../adr/0019-otlp-as-the-telemetry-boundary.md)
-  §5, ADR-0023 §11): an OTLP collector that receives on the task's loopback and exports to Grafana Cloud.
-  `Essential=false` with a hard 128 MiB cap, no port mapping, and its Grafana endpoint and token as
-  `valueFrom`s on the sixth shell — so an unhealthy sidecar leaves the server answering, and a template
-  carries no backend hostname or credential. **Filling that shell takes an
-  `aws ecs update-service --force-new-deployment`**: a `valueFrom` is read once at container start, and ECS
-  does not restart a stopped non-essential container, which is exactly what an unfilled shell leaves behind —
-  so without the second command the secret is written, the service reads healthy, and nothing is exported. Its configuration is a **checked-in file**,
+- **The server task carries a second container** (gh#537, gh#646, [ADR-0019](../adr/0019-otlp-as-the-telemetry-boundary.md)
+  §5 and its 2026-09-10 update, ADR-0023 §11): an OTLP collector that receives on the task's loopback and
+  exports to CloudWatch (X-Ray traces, CloudWatch Metrics, CloudWatch Logs) under SigV4 on the task role.
+  `Essential=false` with a hard 128 MiB cap, no port mapping, endpoints derived from `AWS::Region` — so an
+  unhealthy sidecar leaves the server answering, and a template carries no Grafana hostname, token, account
+  id or ARN. Its configuration is a **checked-in file**,
   `infra/MarqSpec.Mcp.TopstepX.Infra/Collector/otel-collector-config.yaml`, embedded in the assembly, read at
   synth time into `OTEL_COLLECTOR_CONFIG` and started with `--config=env:…` — a Fargate task has no disk to
   mount one from, and a test compares the file, the embedded resource and the task's value so it cannot
   become decorative. **The whole sidecar hangs off `EnvironmentStackProps.Telemetry` being non-null**, and
-  the absent case is the template this stack had before that card; both shapes are asserted. Edit that file
-  the way you bump an image digest: deliberately, and never with an endpoint or a token in it.
+  the absent case is the template this stack had before gh#537; both shapes are asserted. Edit that file
+  the way you bump an image digest: deliberately, and never with a token in it. The local compose
+  `observability` profile (gh#535) stays Grafana LGTM and is not this sidecar.
 - **The image is a digest in a parameter.** `ImageDigest` and `Version` have no default and are passed on
   `cdk deploy --parameters`; the stack writes the same two values to `/topstepx-mcp/<env>/image-digest`
   and `/version` in SSM as the written history, so the history cannot say one thing while the task runs

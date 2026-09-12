@@ -67,3 +67,27 @@ return an ordinary empty window — a quiet market — for prints that were reco
 
 `Trades` and `TapeCoverage` are a system of record. Losing the store loses those prints. They are worth
 backing up with observations, not instead of them.
+
+## Update (2026-09-10) — the store has a backup story, and EFS backup is not it
+
+gh#522. The restorable artefact is a daily `pg_dump -Fc` to a versioned S3 bucket
+(`topstepx-mcp-<env>-backups`, 90-day lifecycle, SSE) from a two-container Fargate task: the same
+`timescale/timescaledb-ha` digest writes the dump onto a shared ephemeral volume, then
+`public.ecr.aws/aws-cli/aws-cli` (by digest) uploads it, `dependsOn` SUCCESS. The dump container is
+`Essential=false` — ECS refuses a SUCCESS/COMPLETE dependency that is essential (2026-09-10 staging
+deploy). EventBridge Scheduler
+fires at 16:15 America/Chicago, inside the 16:00–17:00 Central maintenance window. A CloudWatch
+alarm pages the environment topic when no object is written in 26 h. The dump task role may
+`s3:PutObject` on that bucket only.
+
+Verified on the pinned Timescale digest: `command -v aws` prints `/usr/bin/aws`, but that wrapper is
+815 bytes from 2022 and `aws --version` raises `KeyError: opsworkscm`. It is not a working CLI.
+`pgbackrest` against an S3 repository would be a different design — an archive command beside the
+live server — and is not this.
+
+The EFS AWS Backup plan (daily, 35-day, already in the stack) is file-level and, on a running
+Postgres, crash-consistent at best. **It is not a restore.** A restore needs a fresh access point
+and a fresh postgres task, then `timescaledb_pre_restore()` / `pg_restore -Fc` /
+`timescaledb_post_restore()`, or the hypertable catalogue comes back wrong. The procedure is in
+[`deployment.md`](../deployment.md); the staging drill and the two consecutive dump days are still
+outstanding. Point-in-time recovery and WAL archiving stay out of scope.

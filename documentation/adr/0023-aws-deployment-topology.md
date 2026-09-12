@@ -304,7 +304,8 @@ Postgres, crash-consistent at best; it is not a restore story.** The restorable 
 to a versioned S3 bucket with a 90-day lifecycle, on an EventBridge Scheduler rule in the maintenance
 window after 16:00 Central and before the 17:00 open, with a "no object written in 26 h" alarm (gh#522).
 A restore needs `timescaledb_pre_restore()` / `timescaledb_post_restore()` around it or the hypertable
-catalogue comes back wrong, and gh#522 runs that drill on staging and records every command.
+catalogue comes back wrong. The procedure is in [`deployment.md`](../deployment.md); the staging
+drill is still the maintainer's.
 
 **The backup task is two containers.** The first draft ran `pg_dump … | aws s3 cp -` inside the Timescale
 image, which does not ship the AWS CLI (gh#522 verifies and quotes it before building). So the Timescale
@@ -337,9 +338,13 @@ Each is stated somewhere above; they are listed once so a card can cite a line.
 - **A migration that lands before a code rollback is additive**, or carries gh#529's in-file marker naming
   the release after which rollback is no longer possible.
 - **One server task per environment** — in-memory sessions, one lease holder, one migrator.
-- **`MarketData__RecordTape` and `WarmIndicators` are stack parameters: `true` in production, `false` in
-  staging.** Staging carries practice credentials and does not record the tape, except when gh#525 switches
-  it on for the measurement and back off, quoted.
+- **`MarketData__RecordTape` and `WarmIndicators` are stack parameters.** `RecordTape` defaults `true` in
+  both environments. `WarmIndicators` defaults `true` in production and `false` in staging. Staging carries
+  practice credentials and records the tape on them — one recorder per instrument
+  ([ADR-0016](0016-subscribe-to-the-market-hub.md)), the same shape as production. Volume profile and
+  footprint have no backfill from bars (ADR-0004, ADR-0016); a staging MCP that answers
+  `get_volume_profile` only for a leftover window is not a rehearsal of production (gh#660). Local compose
+  stays `false` and must not point at production credentials.
 - **The deployed store is the image the integration tier tests** — `timescale/timescaledb-ha:pg17` by
   digest, never a managed Postgres without the extension.
 - **`ASPNETCORE_HTTP_PORTS` is never cleared in a task definition**, and no `Kestrel__*` key appears in one.
@@ -427,10 +432,16 @@ its own reason, not a drift.
   service (decision 4). A client mid-session sees the server go away and come back with no session.
 - **The additive-migration rule is load-bearing and is a gate, not a sentence** — gh#529, before the first
   production deploy that could need a rollback.
-- **EFS is a measured risk, not an assumed one.** gh#525 states the threshold first, measures the tape load
-  and a hard task kill on staging, and writes the decision here. Until that entry exists, production on EFS
-  is a decision the maintainer takes with the measurement pending, and gh#520's first `aws-production`
-  approval either follows the entry or is recorded here, on a date, as having preceded it.
+- **EFS is a measured risk, not an assumed one.** The 2026-09-10 gh#525 entry states the
+  threshold first, then that afternoon's pgbench and both stop paths, and leaves the
+  EFS-vs-EC2 verdict **not** closed until a cash-open tape session is quoted. The
+  2026-09-11 entry quotes the remaining-cash window that actually ran (11:38–15:00 CT).
+  It does not invent an 08:30-open RTH, does not treat remaining-cash insert p99 as that
+  burst, and does not treat the ineligible `run_job` as a compression duration. The
+  verdict stays open: the first 08:30 open on this store and the first real Trades
+  compression remain unmeasured. Production on EFS is still not approved by those
+  entries; gh#520's first `aws-production` approval either follows a closed verdict or
+  is recorded here, on a date, as having preceded it.
 - **Cost is an order of magnitude, checked by the bill.** gh#527's estimate basis is roughly 95 USD per
   environment per month, priced on `us-east-1` on-demand as a basis and not as a chosen region — the region
   is still gh#519's — for two Fargate services, one ALB with its two public IPv4 addresses, EFS Elastic
@@ -927,7 +938,7 @@ gh#526. Decisions above are unchanged; this records what pages, what does not, a
 - **Topic:** `topstepx-mcp-<env>-alerts` on each `EnvironmentStack`, email subscription whose endpoint
   is parameter `AlertsEmail` (no default — a default would be a literal in a public repository). The
   OIDC stack's budget `AlertsEmail` is a different parameter on a different stack; pass the same
-  address on each deploy. #522's "no dump in 26 h" alarm is still open and will publish here.
+  address on each deploy. #522's "no dump in 26 h" alarm publishes here.
 - **Alarmed:** `server` and `postgres` `RunningTaskCount` < 1 for 5 min (Container Insights; missing
   data **breaching**); ALB `UnHealthyHostCount` ≥ 1 for 5 min on the server target group (missing
   not breaching); ALB `HTTPCode_ELB_5XX_Count` and `HTTPCode_Target_5XX_Count` above parameter
@@ -1082,6 +1093,47 @@ currently blocked.* Service Quotas `L-3032A538` (*Fargate On-Demand vCPU resourc
 increase can place the in-flight services rather than rolling back the issued certificate.
 Maintainer raises the quota; this card does not invent a number.
 
+## Update (2026-09-10) — v0.4.0 redeploy, `CREATE_COMPLETE`
+
+Release **`v0.4.0`** (`01a8fdf`, digest
+`sha256:8f388466165056252ec309bea65563e22a168671764f2ba8654c5aa335f03ce2`) ships gh#512 OAuth.
+gh#519 deleted `topstepx-mcp-staging` (`CREATE_FAILED` from the v0.3.x image mismatch), removed
+**RETAIN** orphans (six secret shells, server/postgres log groups, EFS + access point, ALB access-log
+bucket, backup vault, Cognito pool `us-east-1_PCefbBDnZ`, and the WAF log group
+`aws-waf-logs-topstepx-mcp-staging`), and redeployed with `ZoneMode.Lookup` of
+`Z00545362JA49XMTT3U7Q` unchanged.
+
+Postgres shell filled during `CREATE_IN_PROGRESS`. Stack **`CREATE_COMPLETE`**; postgres **1/1**,
+server **1/1** on `0.4.0`. **`GET /health` → 200** (`{"status":"ok","store":"available",…}`); a
+`HEAD` probe still hits the OAuth gate (**401** — ALB uses `GET`). ACM `*.staging.marqspec.com`
+**ISSUED**; Route 53 alias **A → ALB**. Cognito pool **`us-east-1_lVKjeSrgi`**. IdP discovery:
+`token_endpoint_auth_methods_supported` = `client_secret_basic, client_secret_post`;
+**`code_challenge_methods_supported` still absent** (S256 not advertised); no RFC 8707 `resource`
+key. Protected-resource metadata at `/.well-known/oauth-protected-resource/mcp` names the Cognito
+issuer. At that hour five secret shells and one Cognito user were still empty; the 2026-09-10
+afternoon entry below records the fills and the live quotes.
+
+## Update (2026-09-10) — shells filled, step 6 and #526–#528 quoted
+
+gh#519 filled all six staging shells (ARNs and client ids in the runbook, never values). The
+18:51 UTC addendum on the card itemizes every expected key as nonempty (`postgres`
+password/connectionString, `projectx` apiKey/apiSecret, `cohere` apiKey, `claude-connector`
+and `deploy-check` clientId/clientSecret, `otel` endpoint/authorization). Same quote:
+`list-users` on `us-east-1_lVKjeSrgi` is count **1**, `UserStatus` **CONFIRMED** (no
+username or email). `scripts/check-deployment.sh` is `client_credentials` and does not prove
+a user. Force-new-deployment 12:06 CDT so the task re-read every `valueFrom`.
+`scripts/check-deployment.sh` 0.4.0 exit 0 (`tools/list` 22) proves `deploy-check` only.
+ECS Exec: three hypertables, `Trades` compression job 1000 scheduled. Task-count alarm
+ALARM/OK on desired-count 0/1. WAF rate rule 403 after 440 `/health` GETs. Cost-allocation
+tags `Project` and `Environment` **Active**; Cost Explorer still only groups `Environment$`
+until a day of tagged billing. SNS email subscription was still `PendingConfirmation`
+(delivered 0) at 18:19 UTC; re-measured 18:51 UTC `PendingConfirmation` **false**,
+`SubscriptionsConfirmed` **1**, `SubscriptionsPending` **0**, CloudWatch delivered last
+6 h **Sum = 1**. A forced nonexistent digest did **not** trip `SERVICE_DEPLOYMENT_FAILED`
+within 12 minutes (`failedTasks=2`); `:6` restored by hand. IdP discovery still omits
+`S256` and RFC 8707 `resource` — measured, not a pool setting. A week of WAF count-mode
+logs against Cowork traffic has not elapsed.
+
 ## Update (2026-09-09) — quota 64, delete+redeploy, `CREATE_FAILED`
 
 Fargate On-Demand vCPU quota `L-3032A538` is **64** (was **0** on the first deploy). The first
@@ -1098,19 +1150,302 @@ task failed the ECS circuit breaker: release images **`v0.3.0` / `v0.3.1` still 
 **0/1**; `/health` **503**. Step 6 and #526–#528 remain open until a release ships OAuth and the
 maintainer fills the remaining shells.
 
+## Update (2026-09-10) — production describe is granted; a failed look is not a first create
+
+gh#520's production deploy starts an on-demand EFS backup by reading the filesystem id off
+`topstepx-mcp-production` with `cloudformation describe-stack-resources`. The first draft
+treated a failed describe as "no EFS yet" (`|| efs_id=""` → `NO BACKUP`) and continued.
+`GitHubDeploy-production` could `backup:StartBackupJob` and could not describe stack
+resources, so every live run was AccessDenied and every live run skipped the snapshot.
+That is gh#126's swallowed read: "I could not look" and "no EFS" were the same answer.
+
+The script now assigns the describe and checks its status. CloudFormation saying the stack
+does not exist, or a successful look that names no `AWS::EFS::FileSystem`, is still a first
+create and is named. Any other failure — AccessDenied included — stops the deploy. The
+production role is granted `cloudformation:DescribeStackResources` on
+`stack/topstepx-mcp-production/*` so a live run can tell those apart; staging is not. The
+OIDC stack is already in the account — the grant takes effect on the next `cdk deploy` of
+`topstepx-mcp-github-oidc` (maintainer). Until then a production run fails loud on the look
+rather than skipping the snapshot.
+
+Assisted-by: Cursor Grok 4.6 (Cursor)
+
+## Update (2026-09-10) — EFS escalation threshold, then measurement (gh#525)
+
+**Threshold first, stated 2026-09-10 afternoon America/Chicago before any pgbench, kill, or tape
+number on this card**, on staging release **0.4.0**. Quoted on #525 at that hour. EC2 + EBS is
+triggered if **any** of the following is crossed:
+
+- Trades insert **p99 > 25 ms**. `TradeTapeRecorder` commits one `Trades` row per print. Serial
+  capacity at 25 ms is ~40 prints/s; a multi-instrument cash-open burst exceeds that and a hole
+  cannot be backfilled ([ADR-0016](0016-subscribe-to-the-market-hub.md)). 25 ms is also an order of
+  magnitude above a typical EBS gp3 commit, so crossing it names NFS as the cause.
+- Forced `CALL run_job` on the Trades compression policy **> 120 s** for one RTH session's chunk.
+  120 s is postgres `stopTimeout` (decision 3). A job that cannot finish before SIGKILL on a
+  routine stop races the next task's recovery.
+- EFS **`PercentIOLimit` > 80 % for 15 min** — already the alarm (2026-09-08 entry). Same number
+  is now also the escalation trigger.
+
+Any one crossing files an EC2 + EBS card with the number that triggered it. All three stay under:
+EFS stays. Production is not approved by this entry.
+
+**Measurement (after the threshold), staging `0.4.0`, 2026-09-10, quoted on #525.** EFS
+`fs-0ed26bca5aabea73e`. Postgres 17.10. Cluster `topstepx-mcp-staging`. Zone
+`Z00545362JA49XMTT3U7Q` unchanged. `MarketData__RecordTape` stayed `false` (`describe-task-definition`
+`topstepx-mcp-staging-server:6`). No `aws-production` approval. No EC2 + EBS card — the tape
+triggers have no session numbers yet, and nothing measured today crossed PercentIOLimit.
+
+- **Portable pgbench** (ECS Exec, dedicated `pgbench_525`, dropped afterwards). `pgbench -i -s 10`
+  19:25:38Z–19:25:59Z, **done in 11.19 s**. `pgbench -T 60 -c 4` 19:26:12Z–19:27:12Z: TPC-B, scale
+  10, simple, 4 clients, 1 thread, **8609** txns, 0 failed, **latency average 27.862 ms**, initial
+  connection 49.928 ms, **tps 143.563**. Default `pgbench` does not print p99; this average is not
+  the Trades-insert trigger above.
+- **EFS over that window** (1-minute Maximum / Sum, `us-east-1`). `PercentIOLimit` peak **0.133 %**
+  at 14:26 CDT (pgbench run); **0.172 %** at 14:28 CDT (first replacement). `TotalIOBytes` Sum
+  **714 224 952** (14:25, init), **203 380 296** (14:26), **36 249 696** (14:27). `MeteredIOBytes`
+  Sum **585 811 998** / **139 774 587** / **36 249 696** on the same three minutes. Far under 80 %.
+- **Graceful `stop-task`** on `29c34aa477294b1bb2f9ac5d32c92853` at 19:27:50Z (`UserInitiated`).
+  Old `stoppedAt` 19:28:45Z. Replacement `2307ed8a32ce484784c334fc379728f4` `startedAt` 19:29:54Z;
+  `pg_isready` accepting at **19:30:09Z** (**139 s** stop-to-ready).
+- **Hard path.** `kill -9 1` via ECS Exec at 19:30:28Z returned 0; PID 1 is `postgres` and stayed
+  `Ss`, task stayed HEALTHY — namespace init ignores fatal signals from inside. cgroup v1
+  `freezer.state` is read-only from the task, so the process cannot be frozen to outlive
+  `stopTimeout`. A second `stop-task` on an already-`DEACTIVATING` task is a no-op. The path we
+  can actually exercise is therefore always graceful: stop issued 19:45:35Z (twice at 19:45:37Z),
+  old `stoppedAt` 19:46:24Z **exit 0**, replacement `5691894cbd034a8999f2150554153ab3` `startedAt`
+  19:47:39Z, `pg_isready` **19:47:48Z** (**133 s**). `postmaster.pid` was present with a fresh
+  start time and `ready` — **not removed by hand**. No entrypoint wrapper. Runbook step is the
+  stop-task timing and the `kill -9 1` no-op, in [`deployment.md`](../deployment.md).
+
+A full RTH tape session did not fit on 2026-09-10 afternoon America/Chicago (RTH already underway).
+Trades rows, insert p50/p99, WAL sync, checkpoint durations, and forced `CALL run_job` are **not**
+invented. Until that session is quoted, the EFS-vs-EC2 verdict is **not** closed — EFS is still
+the store, and the threshold above is what a later session is measured against.
+
+## Update (2026-09-10) — the sidecar exports to CloudWatch; the sixth shell is gone
+
+§11 and the 2026-09-07 sidecar entry named Grafana Cloud as the Fargate backend and created
+`topstepx-mcp/<env>/otel` to hold its hostname and Basic token. gh#646 retires both.
+[ADR-0019's 2026-09-10 update](0019-otlp-as-the-telemetry-boundary.md) is where the three CloudWatch
+OTLP surfaces are named (X-Ray traces, CloudWatch Metrics, CloudWatch Logs); what lands on **this**
+topology is four things.
+
+**The sidecar still sits in the server task**, `Essential=false`, 128 MiB, no port mapping, loopback
+receiver, same `/topstepx-mcp/<env>/server` group under `otel-collector`. Those limits did not move.
+
+**The sixth secret shell is gone from the template.** Auth is SigV4 on the server task role — three
+named statements, `OtlpTraces` / `OtlpMetrics` / `OtlpLogs`, not `CloudWatchAgentServerPolicy`. The
+three AWS OTLP URLs are `Fn::Sub` over `AWS::Region`. The next EnvironmentStack deploy drops the
+`otel` resource; `Retain` orphans the live secret rather than editing its `SecretString`. Do not
+fill it again.
+
+**`Otel__Endpoint` on the server is unchanged** — `http://127.0.0.1:4317`. Decision 2 still holds:
+the host never names CloudWatch. `Otel__Headers` stays absent.
+
+**gh#526 alarms remain the paging path.** Grafana alerting is not introduced. The local compose
+`observability` profile (gh#535) is not this topology.
+
+A `tools/call` span in X-Ray is not claimed here. Sister gh#522 owns the live stack this slice.
+
+## Update (2026-09-10) — the remaining operator paths live in the runbook
+
+gh#523 filled [deployment.md](../deployment.md) for which release is running, rotation, scale-to-zero,
+and a failed deploy (dispatch `deploy.yml` from `main`). Restore stays the gh#522 section in that
+file — later cards link, they do not copy. The 2026-09-06 sentence that Observability waited on
+gh#523 creating the file is closed: the file existed; this card added the leftover operator paths.
+A first-month billed figure is still missing (account stood up 2026-09-09).
+
+## Update (2026-09-10) — dump container is not essential (gh#522)
+
+ECS refused the first staging deploy of decision 10: *A dependency container with SUCCESS or
+COMPLETE condition cannot be an essential container.* The dump container exits 0 after writing
+`/dump/topstepx_mcp.dump`; upload `dependsOn` that SUCCESS and is the essential container. Dump
+is therefore `Essential=false`. Measured 2026-09-10 against `topstepx-mcp-staging` (stack returned
+`UPDATE_ROLLBACK_COMPLETE`). Zone `Z00545362JA49XMTT3U7Q` unchanged. `RecordTape` and the server
+image were not touched.
+
+Assisted-by: Cursor Grok 4.6 (Cursor)
+
+## Update (2026-09-10) — CloudWatch sidecar measured; X-Ray span missing
+
+Quoted on gh#646 against `0.5.0-rc.1` / task `f343c7d574904efc89925eab4597dcea`. Stream `otlp`
+carries `deployment.environment=staging` and the `tools/call` trace id
+`7fa91ffb17fe0a3681e0bc263f696a15`. The X-Ray span is **missing**:
+`GetTraceSegmentDestination` is still `XRay`, and `otlp_http/xray` answers 400. That is the
+ADR-0019 operator click, not a template change.
+
+Assisted-by: Cursor Grok 4.6 (Cursor)
+
+## Update (2026-09-10) — Actions OIDC `sub` is immutable `owner@id/name@id` (gh#520)
+
+Decision 8's two subjects stand. What they did not anticipate is that this repository was
+created on 2026-08-21, after GitHub's 2026-07-15 cutoff, so every Actions OIDC token carries
+`repo:adammarquette@14438151/MarqSpec.Mcp.TopstepX@1342280460:…` and a name-only
+`repo:adammarquette/MarqSpec.Mcp.TopstepX:…` trust never matches.
+
+Measured on throwaway `v0.5.0-rc.1` run 34534162932: `deploy-staging` failed
+`sts:AssumeRoleWithWebIdentity` against the 2026-09-07 name-based document. `GET
+/repos/…/actions/oidc/customization/sub` returned `use_immutable_subject: true` and
+`sub_claim_prefix: repo:adammarquette@14438151/MarqSpec.Mcp.TopstepX@1342280460`.
+`PUT use_immutable_subject=false` was accepted and did not stick — a post-cutoff
+repository cannot opt out. The live roles and `GitHubOidcStack` now trust that prefix
+on the same two staging patterns and the same production environment claim. Zone
+`Z00545362JA49XMTT3U7Q` unchanged. `RecordTape` was not touched.
+
+```console
+$ gh api repos/adammarquette/MarqSpec.Mcp.TopstepX/actions/oidc/customization/sub
+# use_immutable_subject=true
+# sub_claim_prefix=repo:adammarquette@14438151/MarqSpec.Mcp.TopstepX@1342280460
+```
+
+Assisted-by: Cursor Grok 4.6 (Cursor)
+
+## Update (2026-09-11) — decision 9's Claude-only callback is superseded
+
+Decision 9 and the 2026-09-07 Cognito entry pinned `claude-connector` to
+`https://claude.ai/api/mcp/auth_callback` **and no other**. That sentence is superseded. The client stays the
+same confidential code-grant client (logical id `ClaudeConnectorClient`, name `claude-connector`, secret not
+rotated — CloudFormation updates `CallbackURLs` in place). The door is this closed allowlist, owned by the
+stack (gh#656):
+
+| Host | Callback |
+|---|---|
+| Claude Cowork | `https://claude.ai/api/mcp/auth_callback` |
+| Cursor Desktop | `http://localhost:8787/callback` |
+| Cursor Cloud / Agents | `https://www.cursor.com/agents/mcp/oauth/callback` |
+| Gemini CLI | `http://localhost:7777/oauth/callback` |
+| OpenAI / ChatGPT Apps | `https://chatgpt.com/connector_platform_oauth_redirect` |
+
+Cognito matches exact URIs. No wildcards, no DCR, no CIMD. Gemini must pin `redirectUri` to the row above;
+an OS-assigned random port is unsupported. Adding a sixth host is a pull request — one URL on
+`EnvironmentStack`, one template-test assertion, one `deployment.md` row — never a console-only
+`update-user-pool-client`. `ExplicitAuthFlows: []` and refresh-token rotation stay as the 2026-09-10
+Cognito entry measured them. `deploy-check` is unchanged.
+
+Assisted-by: Cursor Grok 4.6 (Cursor)
+
+## Update (2026-09-11) — remaining-cash tape window quoted; EFS-vs-EC2 verdict not closed (gh#525)
+
+Threshold first: the 2026-09-10 entry, quoted on #525 at comment 5624227604 before any
+tape number. EC2 + EBS if any of Trades insert **p99 > 25 ms**, forced `CALL run_job` on
+the Trades compression policy **> 120 s**, or EFS **`PercentIOLimit` > 80 % for 15 min**.
+This entry is the measurement of the window that actually ran. It does not invent an
+08:30-open full RTH, and it does not close the 2026-09-10 verdict.
+
+**Window, staging `0.5.0-rc.1`**, digest
+`sha256:5ed69b53ec37e001f76fdb797c6e9b312a7742bae19a73cdc04a6bff5d8123c9`.
+`ProjectXDataTier=Simulated`. Cluster `topstepx-mcp-staging`. EFS `fs-0ed26bca5aabea73e`.
+Postgres task `8bf520ccd7414b67ac1db65171c55ecb` (family `:6`). Server task
+`73200669fea841feabf2d2a3507acda3` on `topstepx-mcp-staging-server:11` with
+`MarketData__RecordTape=true` from **2026-09-11 16:38:14.648333Z / 11:38:14 CT**. Planned
+end was cash close **15:00 CT / 20:00Z**. Zone `Z00545362JA49XMTT3U7Q` unchanged. No
+`aws-production` approval.
+
+**Trades.** `min(RecordedAt)` equals that start — nothing earlier. **321 023** rows with
+`RecordedAt < 20:00Z`. `RecordTape` stayed true past the planned end: last `RecordedAt`
+**21:24:23.422214Z**, **347 450** total (**347 448** by 21:00Z).
+
+**Insert latency** from EF `Executed DbCommand` (`EventId` 20101,
+`INSERT INTO "Trades"`), CloudWatch Logs Insights on `/topstepx-mcp/staging/server` for
+16:38:14Z–20:00:00Z. `pg_stat_statements` is not installed. **n = 316 975**, **p50 =
+11.0 ms**, **p99 = 23.0 ms**, avg 12.0 ms, min 5 ms, max 673 ms. Hourly p99 24 / 22 / 23
+/ 22 ms (16–19Z). A 54-row 20:00Z remainder printed p99 27 ms — not the window trigger.
+**p99 23.0 ms is a remaining-cash quote (11:38–15:00 CT).** The 25 ms line was written
+for a multi-instrument cash-open burst (~40 prints/s). That 08:30 burst was **not** in
+this window. This number does not close the insert-p99 trigger.
+
+**WAL.** `track_wal_io_timing=off`, so `wal_sync_time` stays **0** and cannot be
+measured. Snapshots: 16:41Z (start quote) wal_records 263 950, wal_bytes 169 132 169,
+wal_sync 14 064; after the store range 23:3xZ wal_records 4 015 203, wal_bytes
+547 996 993, wal_sync 355 866. `fsync=on`, `wal_sync_method=fdatasync`.
+
+**Checkpoints** in the cash window: **40** `checkpoint complete` lines. Longest
+**2026-09-11 19:38:49.597Z** write=83.613 s, sync=0.039 s, **total=83.725 s** (spreading,
+not insert p99). Max sync **0.077 s**.
+
+**EFS** 1-minute Maximum / Sum, 16:38:14Z–20:00:00Z. `PercentIOLimit` peak **0.162 %**
+at 14:58 CT. No minute > 80 %; no 15-minute stretch near the alarm. `TotalIOBytes` Sum
+over the window **10 915 287 088**; `MeteredIOBytes` Sum **10 914 145 682**. Peak minute
+`TotalIOBytes` **161 819 388** (same 14:58 CT).
+
+**Forced `CALL run_job(1000)`** at 23:32:18.389092Z–23:32:18.405627Z — **16.5 ms**.
+Policy `compress_after: 7 days`. The only Trades chunk `_hyper_3_1_chunk` (2026-09-10
+… 2026-09-17) stayed uncompressed. The open week bucket was not `compress_chunk`'d.
+16.5 ms is the job deciding the chunk is ineligible, not the wall time of compressing
+a session. Disclosing the ineligibility does not make 16.5 ms a compression duration.
+The first real compression on this hypertable is **unmeasured**. This number is not a
+120 s trigger reading — not a cross, and not an under.
+
+**`RecordTape` at quote time.** CloudFormation `--use-previous-template` at 23:32Z
+flipped only `RecordTape=false` (other parameters `UsePreviousValue`). Quoted
+`aws ecs describe-task-definition --task-definition topstepx-mcp-staging-server:12`:
+
+```
+Deployment__Version = 0.5.0-rc.1
+ProjectX__DataTier = Simulated
+MarketData__WarmIndicators = false
+MarketData__RecordTape = false
+```
+
+That `:12` value is a fact of the 23:32Z flip, not the standing operator path.
+gh#660 (filed 2026-09-11, commented on #525 at 23:32Z) **supersedes** this card's
+"turn it back off" acceptance half: staging keeps recording so `get_volume_profile`
+/ footprint accumulate (no backfill — [ADR-0016](0016-subscribe-to-the-market-hub.md)
+/ [ADR-0004](0004-one-postgres-timescale-pgvector.md)). #660 owns amending §12.
+This entry does not tell the next operator to set `RecordTape=false`.
+
+**Verdict: not closed.** Remaining-cash insert p99 and `PercentIOLimit` in this
+window stayed under their lines; that does not close triggers written for cash-open
+and for a real compression. The first 08:30 open on this store is the first time
+insert p99 is measured under the load the 25 ms line named. The first eligible
+`compress_chunk` is the first 120 s reading. No EC2 + EBS card from this window —
+an unmeasured signal is not "under trigger." Hard-kill paths stay the 2026-09-10
+entry; they were not re-run. No `aws-production` approval.
+
+## Update (2026-09-11) — staging records the tape (gh#660)
+
+§12's sentence that staging does not record, except when gh#525 switches the flag on for the
+measurement and back off, is replaced. Staging's `RecordTapeDefault` is now `true`, the same
+parameter default as production. `WarmIndicatorsDefault` on staging stays `false`.
+
+Volume profile and footprint aggregate stored tape cells. The tape only goes forward: there is no
+historical footprint for a window before recording began, and bars cannot backfill it (ADR-0016,
+ADR-0004). A leftover Friday window on staging is not a rehearsal of production. gh#525 still
+measures EFS under tape load; it no longer turns the flag back off. Local
+`docker-compose.yml` keeps `MarketData__RecordTape: "${MarketData__RecordTape:-false}"` — this
+entry does not point a laptop at production credentials.
+
+The next staging deploy that picks up the new default is what starts listening. Quote
+`describe-task-definition` on gh#660 when that task is running.
+
+Assisted-by: Cursor Grok 4.6 (Cursor)
+
 ## Follow-ups
 
 - gh#516, gh#517, gh#518 built decisions 7, 9 and 8; gh#529 gates decision 4's rule. gh#516 also
   still owns the outbound-path fork with the maintainer.
 - gh#519 stood the account up, confirmed `staging.`, chose `us-east-1`, created public zone
   `Z00545362JA49XMTT3U7Q`, swapped Cloudflare NS onto it, and changed staging to `ZoneMode.Lookup`
-  of that zone. Remaining on that card: a release image with OAuth, secret fills the maintainer
-  still owns, live quotes this slice could not take (#526–#528), and production (out of scope).
+  of that zone. Staging runs **`v0.4.0`** (2026-09-10 entries). Shells filled (18:51 UTC key-presence
+  quote), one `CONFIRMED` Cognito user (same quote), step 6, SNS confirm (18:51 UTC), and the
+  #526–#528 quotes that could be taken are on the issue. Remaining: Cost Explorer `Environment=staging`
+  row after a day of Active tags, a week of WAF count-mode logs before production block mode, a
+  circuit-breaker `SERVICE_DEPLOYMENT_FAILED` email if one is still wanted, IdP discovery still omits
+  S256 and RFC 8707 `resource`, and production (out of scope).
 - gh#520 and gh#521 build decision 8's pipeline and its check; gh#520 also rewrites the platform contract's
   "How the pipeline is shaped".
-- gh#522 builds decision 10 and records the restore drill; ADR-0004 gains the dated update saying the store
-  has a backup story and what it is not.
-- gh#525 lands its dated entry in the decision log above. gh#526, gh#527 and gh#528 have.
+- gh#522 built decision 10's dump task, bucket, schedule and alarm; ADR-0004 gained the dated update
+  saying the store has a backup story and what it is not. The restore procedure is in
+  `documentation/deployment.md`. The first staging deploy failed because dump was essential under a
+  SUCCESS `dependsOn` (2026-09-10 entry); dump is now `Essential=false`. Two consecutive dump days,
+  the maintainer's drill, and a disable-schedule alarm fire remain outstanding.
+- gh#525 stated the EFS threshold and quoted pgbench plus both stop paths on 2026-09-10,
+  then the remaining-cash tape window on 2026-09-11. The EFS-vs-EC2 verdict is **not**
+  closed: the 08:30 cash-open burst was not in that window, and the forced `run_job`
+  was a `compress_after` no-op, so the first real compression is unmeasured. gh#660
+  supersedes the "set `RecordTape` back to false" half and amends §12 so staging
+  keeps recording. gh#526, gh#527 and gh#528 have. gh#523 landed rotation, which-release,
+  scale-to-zero and failed-deploy in the runbook; the first-month cost figure remains missing.
 - gh#510's connector measurement landed on ADR-0007 and ADR-0021; if a later measurement overturns the
   pre-registered-client assumption, decision 9's issuer reopens here as a dated entry and gh#517 is the
   card that changes.

@@ -9,8 +9,8 @@ namespace MarqSpec.Mcp.TopstepX.Infra;
 /// <remarks>
 /// Embedded rather than read from a path so a <c>cdk synth</c> works from wherever the CLI runs the app, and
 /// so the file cannot be edited into a template without a rebuild. The file itself explains why the
-/// configuration travels as an environment variable rather than as a mounted file, and why no endpoint or
-/// token may appear in it.
+/// configuration travels as an environment variable rather than as a mounted file, and why no token may
+/// appear in it.
 /// </remarks>
 public static class CollectorConfiguration
 {

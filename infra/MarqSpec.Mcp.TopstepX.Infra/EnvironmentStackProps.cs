@@ -32,9 +32,9 @@ public sealed record EnvironmentStackProps
     public required OutboundPath OutboundPath { get; init; }
 
     /// <summary>
-    /// The default of the <c>RecordTape</c> stack parameter — <c>true</c> in production, <c>false</c> in
-    /// staging (ADR-0023 §12). A parameter rather than a literal so gh#525 can switch staging on for its
-    /// measurement and back off without a code change.
+    /// The default of the <c>RecordTape</c> stack parameter — <c>true</c> in both environments
+    /// (ADR-0023 §12). A parameter rather than a literal so an operator can still override it without a
+    /// code change; the standing default is on so volume profile and footprint accumulate (gh#660).
     /// </summary>
     public required bool RecordTapeDefault { get; init; }
 
@@ -43,9 +43,9 @@ public sealed record EnvironmentStackProps
 
     /// <summary>
     /// The OTLP collector sidecar, or <c>null</c> for no telemetry at all (gh#537). <b>Null is not a
-    /// degraded mode</b>: it is the shape this stack had before gh#537 — one container in the server task,
-    /// no <c>Otel__*</c> key on it and no <c>otel</c> secret shell — which is ADR-0019 decision 3 reaching
-    /// the deployment. See <see cref="Infra.TelemetryProps"/> for why the endpoint and token are not on it.
+    /// degraded mode</b>: it is the shape this stack had before gh#537 — one container in the server task
+    /// and no <c>Otel__*</c> key on it — which is ADR-0019 decision 3 reaching the deployment. See
+    /// <see cref="Infra.TelemetryProps"/> for why the backend is not named here.
     /// </summary>
     public TelemetryProps? Telemetry { get; init; }
 

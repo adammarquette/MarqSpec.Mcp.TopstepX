@@ -255,6 +255,17 @@ the three assumptions in *What this assumes about the connector* above.
 3. **Whether Cowork can register a local stdio server instead is not assumed either way.** **Not measured** by
    this dialog, which is the remote custom-connector path only.
 
+## Update (2026-09-11) — the door is a closed MCP-host allowlist, not Claude's callback alone
+
+Assumption 2 still holds on the **pre-registered confidential client**: Cognito has no Dynamic Client
+Registration and no Client ID Metadata Documents, so a host that cannot name a stable redirect URI stays
+unsupported on this issuer. What it no longer holds is the **Claude-only callback**. That was a host-specific
+lock, not an authorization decision. gh#656 keeps `claude-connector` and replaces the single Cowork URL with
+the closed allowlist recorded on [ADR-0023](0023-aws-deployment-topology.md) §9's 2026-09-11 update and in
+`EnvironmentStack`. Adding a host is a stack change. The issuer does not reopen.
+
+Assisted-by: Cursor Grok 4.6 (Cursor)
+
 ## Follow-ups
 
 - gh#510 lands as a dated update on ADR-0007; when it does, a dated update here says which of the three

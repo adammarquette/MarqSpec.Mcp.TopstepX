@@ -4,7 +4,12 @@ name: Release container image
 # replaced rather than adapted: packing an app produces something that succeeds and that nobody consumes.
 #
 # Triggered by a published GitHub release, so the tag is the version (ADR-0001) and cutting a release is a
-# deliberate act rather than a side effect of a merge.
+# deliberate act rather than a side effect of a merge. After `publish`, `deploy-staging` assumes
+# GitHubDeploy-staging with no `environment:` key — staging is already behind the `production` approval on
+# `gate`, and a named staging environment would be a second manual approval that check-release-gate.sh
+# would then require. `deploy-production` waits on the literal `aws-production` environment and deploys
+# the same digest. Both pass ImageDigest and Version as stack parameters (ADR-0023 §5); neither writes
+# SSM and neither references :latest. Rollback is `deploy.yml`, dispatched on main.
 
 on:
   release:
@@ -62,6 +67,12 @@ jobs:
     name: Build and publish to GHCR
     needs: gate
     runs-on: ubuntu-latest
+    outputs:
+      # build-push-action's image digest, the only input `cdk deploy` needs to move the task (gh#520).
+      # Assigned on its own line and checked in the deploy jobs (gh#126). The build step's `with:` is
+      # untouched — only `id: push` was added so this output exists.
+      digest: ${{ steps.push.outputs.digest }}
+      version: ${{ steps.tag.outputs.version }}
     permissions:
       contents: read
       packages: write
@@ -84,6 +95,7 @@ jobs:
           fetch-depth: 0
 
       - name: Verify the tag looks like a version
+        id: tag
         run: |
           TAG="${GITHUB_REF_NAME}"
           if ! printf '%s' "$TAG" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$'; then
@@ -91,6 +103,7 @@ jobs:
             exit 1
           fi
           echo "VERSION=${TAG#v}" >> "$GITHUB_ENV"
+          echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
 
       # The reference comes from scripts/image-reference.sh, and NOT from `${{ github.repository }}`
       # directly, because that carries the repository's DISPLAY case and an OCI repository name must be
@@ -139,6 +152,7 @@ jobs:
       # this one through the REGISTRY exporter (`push`). No pull-request run can cover a push to GHCR without
       # handing every PR a write credential, so `docker-container` + `push: true` still first executes here.
       - name: Build and push
+        id: push
         uses: docker/build-push-action@v7
         with:
           context: .
@@ -191,3 +205,104 @@ jobs:
           # the other.
           DOCKER_BUILD_RECORD_UPLOAD: false
           DOCKER_BUILD_SUMMARY: false
+
+  # NO `environment:` KEY. Staging is already behind the `production` approval on `gate`, and the OIDC
+  # role's `sub` binds this job to a `v*` tag. A named `environment: staging` would be a second manual
+  # approval; loosening check-release-gate.sh to allow an unprotected one is the inert-gate class that
+  # script exists to refuse (gh#520, ADR-0023 §8).
+  deploy-staging:
+    name: Deploy staging
+    needs: publish
+    runs-on: ubuntu-latest
+    outputs:
+      # Passed through so deploy-production can read them: a job may only see outputs of jobs it
+      # `needs`, and production needs this job, not publish, so the same digest is the one staging
+      # just deployed rather than a second read of publish.
+      digest: ${{ needs.publish.outputs.digest }}
+      version: ${{ needs.publish.outputs.version }}
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: The deploy role account is a variable, not a literal
+        run: |
+          account="${{ vars.AWS_ACCOUNT_ID }}"
+          [ -n "$account" ] || { echo "::error::repository variable AWS_ACCOUNT_ID is empty"; exit 1; }
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::${{ vars.AWS_ACCOUNT_ID }}:role/GitHubDeploy-staging
+          aws-region: us-east-1
+
+      - uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: 10.0.x
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: infra/package-lock.json
+
+      - name: Install the pinned CDK CLI
+        working-directory: infra
+        run: npm ci --no-audit --no-fund
+
+      - name: Deploy the published digest and check the hostname
+        run: |
+          digest="${{ needs.publish.outputs.digest }}"
+          [ -n "$digest" ] || { echo "::error::publish exposed no digest"; exit 1; }
+          version="${{ needs.publish.outputs.version }}"
+          [ -n "$version" ] || { echo "::error::publish exposed no version"; exit 1; }
+          ./scripts/deploy-environment.sh staging "$version" "$digest"
+
+  # The approval on WHAT RUNS, and the precondition of the credential: GitHubDeploy-production trusts
+  # only a token whose `sub` is `environment:aws-production`, which GitHub mints only after this
+  # environment's required-reviewers rule passes (ADR-0023 §8). Do not approve the first production
+  # deploy until gh#525 has closed, or a dated ADR-0023 entry says production went first.
+  deploy-production:
+    name: Deploy production
+    needs: deploy-staging
+    runs-on: ubuntu-latest
+    environment: aws-production
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: The deploy role account is a variable, not a literal
+        run: |
+          account="${{ vars.AWS_ACCOUNT_ID }}"
+          [ -n "$account" ] || { echo "::error::repository variable AWS_ACCOUNT_ID is empty"; exit 1; }
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::${{ vars.AWS_ACCOUNT_ID }}:role/GitHubDeploy-production
+          aws-region: us-east-1
+
+      - uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: 10.0.x
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: infra/package-lock.json
+
+      - name: Install the pinned CDK CLI
+        working-directory: infra
+        run: npm ci --no-audit --no-fund
+
+      - name: Deploy the same digest and check the hostname
+        run: |
+          digest="${{ needs.deploy-staging.outputs.digest }}"
+          [ -n "$digest" ] || { echo "::error::deploy-staging exposed no digest"; exit 1; }
+          version="${{ needs.deploy-staging.outputs.version }}"
+          [ -n "$version" ] || { echo "::error::deploy-staging exposed no version"; exit 1; }
+          ./scripts/deploy-environment.sh production "$version" "$digest"

@@ -57,7 +57,7 @@ public sealed record Synthesised(Template Template, JsonObject Json)
             telemetry: telemetry ?? DeployedTelemetry);
 
     public static Synthesised Staging(OutboundPath outboundPath, TelemetryProps? telemetry = null) =>
-        Environment("staging", "staging.marqspec.com", ZoneMode.Lookup, outboundPath, recordTapeDefault: false, warmIndicatorsDefault: false,
+        Environment("staging", "staging.marqspec.com", ZoneMode.Lookup, outboundPath, recordTapeDefault: true, warmIndicatorsDefault: false,
             telemetry: telemetry ?? DeployedTelemetry);
 
     /// <summary>
@@ -67,7 +67,7 @@ public sealed record Synthesised(Template Template, JsonObject Json)
     /// </summary>
     public static Synthesised WithoutTelemetry(string envName) => envName == "production"
         ? Environment("production", "marqspec.com", ZoneMode.Lookup, EnvironmentTemplates.FixtureShape, true, true, telemetry: null)
-        : Environment("staging", "staging.marqspec.com", ZoneMode.Lookup, EnvironmentTemplates.FixtureShape, false, false, telemetry: null);
+        : Environment("staging", "staging.marqspec.com", ZoneMode.Lookup, EnvironmentTemplates.FixtureShape, true, false, telemetry: null);
 
     /// <summary>The OIDC stack, for the assertions that read it beside an environment.</summary>
     public static Synthesised GitHubOidc() =>

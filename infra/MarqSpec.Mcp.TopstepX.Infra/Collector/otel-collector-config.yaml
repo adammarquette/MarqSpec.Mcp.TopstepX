@@ -1,19 +1,20 @@
-# The OTLP collector sidecar's configuration (gh#537, ADR-0019 decision 5, ADR-0023 §11).
+# The OTLP collector sidecar's configuration (gh#537, gh#646, ADR-0019 decision 5, ADR-0023 §11).
 #
-# THERE IS NO ENDPOINT AND NO TOKEN IN THIS FILE, and there never may be. Both arrive as container secrets
-# from `topstepx-mcp/<env>/otel` and are read here as `${env:...}` — this repository is public, and the
+# THERE IS NO TOKEN IN THIS FILE, and there never may be. Auth is SigV4 on the task role. The three
+# AWS OTLP URLs arrive as `${env:...}` from region/context — this repository is public, and the
 # sibling ProjectX client has already leaked and rotated a real credential once.
 #
 # HOW IT REACHES THE COLLECTOR. There is no file to mount: a Fargate task has no local disk to put one on
 # and building a config into an image would make a one-line change a registry push. So EnvironmentStack
 # reads this file at synth time, puts its text in the sidecar's OTEL_COLLECTOR_CONFIG environment variable,
 # and starts the collector with `--config=env:OTEL_COLLECTOR_CONFIG`. `${env:NAME}` inside is expanded by the
-# collector after it resolves the config, whichever provider the config came from, so the two secrets stay
-# secrets. A template test asserts the task carries THIS file byte for byte, so it cannot become decorative.
+# collector after it resolves the config, whichever provider the config came from. A template test asserts
+# the task carries THIS file byte for byte, so it cannot become decorative.
 #
 # WHAT IT DOES. Receives OTLP on the task's loopback from the server container beside it, stamps the
-# environment and the release on every record so one Grafana stack tells the two environments apart,
-# batches, and exports to Grafana Cloud over OTLP/HTTP.
+# environment and the release on every record so one CloudWatch account tells the two environments apart,
+# batches, and exports to CloudWatch over OTLP/HTTP: traces to X-Ray (Application Signals / Transaction
+# Search), metrics to CloudWatch Metrics, logs to CloudWatch Logs.
 #
 # IT NAMES NEITHER ENVIRONMENT, and cannot: this file is byte-identical in both task definitions, and
 # EnvironmentReuseTests compares the two synthesised stacks after replacing each one's own name with a
@@ -43,7 +44,7 @@ processors:
     limit_percentage: 75
     spike_limit_percentage: 15
 
-  # The two attributes that make one Grafana stack able to tell the environments apart. Both values are
+  # The two attributes that make one CloudWatch account able to tell the environments apart. Both values are
   # plain environment variables the task definition sets — the environment name is a literal, the version is
   # the `Version` CloudFormation parameter, the same one the deployment stamp and the SSM history read
   # (ADR-0023 §5), so a span cannot claim a release the task is not running.
@@ -60,20 +61,60 @@ processors:
     timeout: 5s
     send_batch_size: 512
 
+extensions:
+  sigv4auth/traces:
+    region: ${env:AWS_REGION}
+    service: xray
+  sigv4auth/metrics:
+    region: ${env:AWS_REGION}
+    service: monitoring
+  sigv4auth/logs:
+    region: ${env:AWS_REGION}
+    service: logs
+
 exporters:
   # `otlp_http`, not the `otlphttp` alias: measured against the pinned image on 2026-09-07, the alias starts
   # and logs `"otlphttp" alias is deprecated; use "otlp_http" instead` once per signal. A deprecation warning
   # in a log group nobody reads is how a collector stops starting on a bump nobody connected to it.
-  otlp_http/grafana:
-    endpoint: ${env:GRAFANA_OTLP_ENDPOINT}
+  #
+  # Three exporters, one per CloudWatch OTLP signal (gh#646). Endpoints are AWS URLs the task derives from
+  # `AWS::Region`; each request is signed by the matching sigv4auth extension. The host never learns these
+  # names — it still exports only to the loopback.
+  otlp_http/xray:
+    traces_endpoint: ${env:AWS_OTLP_TRACES_ENDPOINT}
+    compression: gzip
+    auth:
+      authenticator: sigv4auth/traces
+    retry_on_failure:
+      enabled: true
+    sending_queue:
+      enabled: true
+
+  otlp_http/metrics:
+    metrics_endpoint: ${env:AWS_OTLP_METRICS_ENDPOINT}
+    compression: gzip
+    auth:
+      authenticator: sigv4auth/metrics
+    retry_on_failure:
+      enabled: true
+    sending_queue:
+      enabled: true
+
+  otlp_http/logs:
+    logs_endpoint: ${env:AWS_OTLP_LOGS_ENDPOINT}
+    compression: gzip
     headers:
-      authorization: ${env:GRAFANA_OTLP_AUTHORIZATION}
+      x-aws-log-group: ${env:AWS_OTLP_LOG_GROUP}
+      x-aws-log-stream: otlp
+    auth:
+      authenticator: sigv4auth/logs
     retry_on_failure:
       enabled: true
     sending_queue:
       enabled: true
 
 service:
+  extensions: [sigv4auth/traces, sigv4auth/metrics, sigv4auth/logs]
   telemetry:
     logs:
       # One JSON object per line, for the same reason the server's console formatter is json (gh#515):
@@ -85,12 +126,12 @@ service:
     traces:
       receivers: [otlp]
       processors: [memory_limiter, resource, batch]
-      exporters: [otlp_http/grafana]
+      exporters: [otlp_http/xray]
     metrics:
       receivers: [otlp]
       processors: [memory_limiter, resource, batch]
-      exporters: [otlp_http/grafana]
+      exporters: [otlp_http/metrics]
     logs:
       receivers: [otlp]
       processors: [memory_limiter, resource, batch]
-      exporters: [otlp_http/grafana]
+      exporters: [otlp_http/logs]

@@ -77,7 +77,7 @@ public sealed class AlarmTests(EnvironmentTemplates templates) : IClassFixture<E
         var t = templates.For(env);
         var (topicId, _) = Topic(t, env);
         var alarms = t.Resources("AWS::CloudWatch::Alarm");
-        alarms.Should().HaveCountGreaterThanOrEqualTo(7, "task counts, unhealthy, two 5xx, migration, EFS");
+        alarms.Should().HaveCountGreaterThanOrEqualTo(8, "task counts, unhealthy, two 5xx, migration, EFS, dump-missing");
 
         foreach (var (logicalId, resource) in alarms)
         {

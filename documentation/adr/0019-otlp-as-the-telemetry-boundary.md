@@ -6,7 +6,7 @@ the same boundary shape as [ADR-0003](0003-client-as-package.md) · instrumentat
 [ADR-0006](0006-indicators-as-projections.md)'s pure `Domain` · degradation is
 [ADR-0007](0007-dual-transport.md)'s rule applied to a fourth dependency ·
 the hub numbers it makes visible are [ADR-0016](0016-subscribe-to-the-market-hub.md)'s ·
-gh#509 · gh#515 · gh#525 · gh#526 · gh#532 · gh#533 ·
+gh#509 · gh#515 · gh#525 · gh#526 · gh#532 · gh#533 · gh#646 ·
 `Program.cs` `ConfigureLogging`, `MarqSpec.Mcp.TopstepX.Tests/CompositionRootTests.cs:67`
 
 ## Context
@@ -307,19 +307,72 @@ of.
 - **A second paging path is now a decision, not a drift.** Wiring Grafana alerting to a pager requires an
   `## Update` here, so it cannot happen by someone finding the alerting tab.
 
+## Update — 2026-09-10: the Fargate backend is CloudWatch, not Grafana Cloud
+
+Decision 5 named Grafana Cloud as the AWS destination. Staging's sidecar reached it and every export was
+dropped as `Unauthenticated` (quoted on gh#537, 2026-09-10). gh#646 retires that destination. **Decision 2
+is unchanged**: the host still knows an endpoint, optional headers and a service name, and never names a
+backend. What moved is the sidecar's exporter, which is a deployment edit.
+
+**On AWS the sidecar exports to CloudWatch over OTLP/HTTP, signed with SigV4 on the server task role.** Three
+endpoints, each derived from `AWS::Region` — not a secret, not a Grafana host:
+
+| Signal | CloudWatch surface | URL |
+|---|---|---|
+| traces | X-Ray (Application Signals / Transaction Search consume these) | `https://xray.{region}.amazonaws.com/v1/traces` |
+| metrics | CloudWatch Metrics | `https://monitoring.{region}.amazonaws.com/v1/metrics` |
+| logs | CloudWatch Logs, into the existing `/topstepx-mcp/<env>/server` group, stream `otlp` (an `AWS::Logs::LogStream` the stack creates — the exporter names it and does not) | `https://logs.{region}.amazonaws.com/v1/logs` |
+
+The three actions the task role is granted are `xray:PutTraceSegments`, `cloudwatch:PutMetricData`, and
+`logs:PutLogEvents` / `logs:CreateLogStream` on that server group. X-Ray and PutMetricData accept no
+resource ARN; the logs statement is scoped. `CloudWatchAgentServerPolicy` is not attached.
+
+**The `topstepx-mcp/<env>/otel` shell is gone from the template.** It existed to hold a Grafana hostname and
+a Basic token. Neither is a credential CloudWatch asks for. The next EnvironmentStack deploy drops the
+resource; `DeletionPolicy: Retain` orphans the live secret rather than editing its `SecretString` — §6's
+rule, applied to a shell that no longer has a reader. Do not `put-secret-value` it, and do not put an
+account id, ARN or token in a tracked file to replace it.
+
+**What did not move.** The sidecar stays `Essential=false`, 128 MiB, loopback receiver, no port mapping.
+`Otel__Endpoint` on the server is still `http://127.0.0.1:4317`. The local compose `observability` profile
+(gh#535, `grafana/otel-lgtm`) is still the laptop backend. **gh#526 CloudWatch alarms remain the paging
+path**; this card does not introduce Grafana alerting.
+
+**Not measured here.** A `tools/call` trace in X-Ray, matching log lines with the same trace id, and
+`deployment.environment=staging` on both, wait on a live deploy. Sister gh#522 owns that stack this slice;
+this card does not `cdk deploy` or `force-new-deployment`.
+
+## Update — 2026-09-10: measured on staging; the X-Ray span is missing
+
+gh#520 put `0.5.0-rc.1` and the gh#648 sidecar on staging. Quoted on gh#646 (no secret):
+
+- Authenticated `tools/call` `list_instruments` answered HTTP 200 at 22:23:49Z.
+- Matching CloudWatch Logs (`/topstepx-mcp/staging/server` stream `otlp`) carry
+  `traceId=7fa91ffb17fe0a3681e0bc263f696a15` and `deployment.environment=staging`.
+- The `tools/call` span in X-Ray / Application Signals / Transaction Search is **missing**.
+  `GetTraceSegmentDestination` is `Destination=XRay`. The sidecar's `otlp_http/xray` exporter
+  is dropped with HTTP 400 asking for the CloudWatch Logs destination. The Follow-ups bullet
+  below is still the remaining click — not a template change, and not done from this card.
+
+Assisted-by: Cursor Grok 4.6 (Cursor)
+
 ## What this does not decide
 
 Package versions and the shape of the `Otel*` options object (gh#534), the app-owned instrument names and
 their units (gh#536), the compose profile's service layout and dashboard content (gh#535), and the collector
-sidecar's image, resource limits and secret wiring (gh#537 — **decided, in the 2026-09-07 update above**).
+sidecar's image, resource limits and secret wiring (gh#537 — **decided, in the 2026-09-07 update above**;
+the Fargate backend those secrets pointed at is **CloudWatch, in the 2026-09-10 update above**).
 Each of those cards may cite this record; none of them reopens it. gh#515's JSON console formatter for CloudWatch is untouched and remains the log path when no
 OTLP endpoint is set.
 
 ## Follow-ups
 
-- **Revisit Grafana alerting versus the gh#526 CloudWatch alarms once both have run against a real incident.**
-  If Grafana alerting is to become the paging path, it lands here as a dated `## Update`, not as a
-  configuration change.
+- **Enable Transaction Search in the account before treating X-Ray OTLP as Application Signals.** AWS requires
+  it for the traces endpoint; it is an operator click, not a template resource, and it is not done here.
+  Measured still `Destination=XRay` on 2026-09-10 (gh#646): every `otlp_http/xray` export is a 400 drop.
+- **Revisit Grafana alerting versus the gh#526 CloudWatch alarms only if the local LGTM profile ever grows a
+  pager.** Grafana Cloud is no longer the Fargate backend; introducing a second paging path still lands here
+  as a dated `## Update`, not as a configuration change.
 - **Re-read the `Experimental.ModelContextProtocol` instrument names on every SDK bump**, and record the drift
   here if a rename breaks the checked-in dashboard — that history is the evidence for how stable the
   experimental surface actually is.

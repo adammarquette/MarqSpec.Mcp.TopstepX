@@ -240,6 +240,24 @@ endpoint), and it carries no real venue credential or database by default. It ex
 debugging the HTTP transport itself — with `curl`, the MCP inspector, or a client that accepts plaintext
 loopback HTTP — without standing up the composed stack to do it.
 
+### Use it remotely
+
+Two hostnames, same tool surface, OAuth 2.1 — not the compose stack's shared bearer token:
+
+| Environment | Origin | MCP resource |
+|---|---|---|
+| Staging | `https://topstepx-mcp.staging.marqspec.com` | `https://topstepx-mcp.staging.marqspec.com/mcp` |
+| Production | `https://topstepx-mcp.marqspec.com` | `https://topstepx-mcp.marqspec.com/mcp` |
+
+A remote client is a **pre-registered** confidential app in that environment's Cognito user pool (the
+`claude-connector` client on authorization-code + PKCE). There is no Dynamic Client Registration and no
+shared secret in this file. Point the connector at the MCP resource; an unauthenticated call returns
+`401` with a `resource_metadata` challenge whose document names the issuer. `/health` answers anyone.
+
+Production is reached only after an `aws-production` approval on a digest that already passed staging
+(gh#520). How a release gets there — and how to roll one back — is
+[the runbook](documentation/deployment.md).
+
 ### The OAuth mode — a resource server for the remote instance
 
 Everything above authenticates with **one shared secret**, `Mcp__Auth__Mode=StaticToken`, the default. The

@@ -57,6 +57,15 @@ at one this rule's own pull request retires.
 
 ## Practices to follow
 
+- **[2026-09-10] Never point local compose at production's credential while production records (gh#523).**
+  ADR-0023 §12 says `MarketData__RecordTape` is `true` in both environments; staging records on
+  practice credentials (gh#660). It does not say what a laptop must not do. `docker-compose.yml`
+  defaults `RecordTape` false and a local `changeme-local` password; overriding `ProjectX__ApiKey` /
+  `ProjectX__ApiSecret` or `ConnectionStrings__Default` with production's values while production is
+  the one recording puts a second writer on the venue login or on the live store. Staging's practice
+  pair is the local override, or nothing. The rotation runbook in [`deployment.md`](deployment.md)
+  is not this rule.
+
 - **[2026-09-07] The `dotnet ef migrations add` invocation that works in this repo, and the CRLF it leaves
   behind (gh#504).** Two projects are involved — the entities and the `DbContext` live in
   `MarqSpec.Mcp.TopstepX.Data`, the host that configures them in `MarqSpec.Mcp.TopstepX` — so the command

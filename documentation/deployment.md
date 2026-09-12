@@ -849,15 +849,22 @@ unmeasured.
 
 **Do not set `RecordTape=false`.** gh#660 superseded that restore. Staging's standing
 `RecordTapeDefault` is `true` (ADR-0023 §12) so volume profile / footprint accumulate
-(no backfill — ADR-0016 / ADR-0004). `:12` quoting `MarketData__RecordTape=false` is
-what the 23:32Z `--use-previous-template` flip left; it is not the next operator's
-step. Local compose stays `false`. Do not `cdk deploy` this card over a later update.
-Do not rewrite the #656 callback allowlist from a laptop.
+(no backfill — ADR-0016 / ADR-0004). Local compose stays `false`. Do not rewrite
+the #656 callback allowlist from a laptop. Do not approve `aws-production` from
+this path.
 
-Quoted on `topstepx-mcp-staging-server:12` after the 23:32Z flip (fact, not
-instruction): `MarketData__RecordTape=false`, `WarmIndicators=false`,
-`Deployment__Version=0.5.0-rc.1`, `ProjectX__DataTier=Simulated`. Zone
-`Z00545362JA49XMTT3U7Q` unchanged. Do not approve `aws-production` from this path.
+`:12` after the 23:32Z `--use-previous-template` flip and `:13` after the v0.5.0
+digest deploy both quoted `MarketData__RecordTape=false`. `deploy-environment.sh`
+passes only `ImageDigest` and `Version`, so CloudFormation kept the 23:32Z
+parameter — the CDK default was already `true`. That retain is a fact of those
+two revisions, not the next operator's step.
+
+Quoted on `topstepx-mcp-staging-server:14` after the 2026-09-12
+`update-stack --use-previous-template` that set only `RecordTape=true` (same
+digest `sha256:ea0b23b998edd9be2bdc8ac7924163d2ed98bb4641ce39ff7cdac71ac5065732`,
+`Version=0.5.0`): `MarketData__RecordTape=true`, `WarmIndicators=false`,
+`Deployment__Version=0.5.0`, `ProjectX__DataTier=Simulated`. Zone
+`Z00545362JA49XMTT3U7Q` unchanged.
 
 Assisted-by: Cursor Grok 4.6 (Cursor)
 

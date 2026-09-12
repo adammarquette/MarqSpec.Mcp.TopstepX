@@ -1420,6 +1420,31 @@ The next staging deploy that picks up the new default is what starts listening. 
 
 Assisted-by: Cursor Grok 4.6 (Cursor)
 
+## Update (2026-09-12) — live staging RecordTape is on (gh#660 leftover)
+
+The 2026-09-11 entry said the next staging deploy that picks up the default starts
+listening. `v0.5.0` / `sha256:ea0b23b998edd9be2bdc8ac7924163d2ed98bb4641ce39ff7cdac71ac5065732`
+landed on `topstepx-mcp-staging-server:13` with CloudFormation `RecordTape=false`:
+`deploy-environment.sh` passes only `ImageDigest` and `Version`, so the 23:32Z
+value was retained. The CDK `RecordTapeDefault` was already `true`.
+
+2026-09-12 `update-stack --use-previous-template` set `RecordTape=true` and kept
+the same digest and `Version=0.5.0`. Quoted
+`aws ecs describe-task-definition --task-definition topstepx-mcp-staging-server:14`:
+
+```
+Deployment__Version = 0.5.0
+Deployment__ImageDigest = sha256:ea0b23b998edd9be2bdc8ac7924163d2ed98bb4641ce39ff7cdac71ac5065732
+ProjectX__DataTier = Simulated
+MarketData__WarmIndicators = false
+MarketData__RecordTape = true
+```
+
+Local compose stays `false`. Production was not touched. The silent retain in
+`deploy-environment.sh` is noted on gh#660; this card did not change the script.
+
+Assisted-by: Cursor Grok 4.6 (Cursor)
+
 ## Follow-ups
 
 - gh#516, gh#517, gh#518 built decisions 7, 9 and 8; gh#529 gates decision 4's rule. gh#516 also

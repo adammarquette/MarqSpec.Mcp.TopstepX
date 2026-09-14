@@ -80,6 +80,14 @@ public sealed class IndicatorCatalog
         [
             (o.AtrPeriods(), period => [new AtrIndicator(period)]),
             (o.RsiPeriods(), period => [new RsiIndicator(period)]),
+            // Three instances from one period, for the reason MACD and Bollinger are: an ADX whose DI were
+            // absent would answer "how much trend" with no way to ask which side it is on.
+            (o.AdxPeriods(), period =>
+            [
+                new AdxIndicator(period),
+                new PlusDiIndicator(period),
+                new MinusDiIndicator(period),
+            ]),
             (o.SmaPeriods(), period => [new SmaIndicator(period)]),
             (o.EmaPeriods(), period => [new EmaIndicator(period)]),
             (o.MacdSlowPeriods(), period =>

@@ -263,8 +263,9 @@ public sealed class ToolSurfaceTests : IDisposable
         // An indicator the tools accept but the projection never writes reads back as an empty series.
         Catalog().KnownNames.Should().BeEquivalentTo(
         [
-            "atr", "bb-lower", "bb-middle", "bb-upper", "ema",
-            "macd", "macd-histogram", "macd-signal", "rsi", "sma", "vwap", "vwap-rolling",
+            "adx", "atr", "bb-lower", "bb-middle", "bb-upper", "ema",
+            "macd", "macd-histogram", "macd-signal", "minus-di", "plus-di", "rsi", "sma", "vwap",
+            "vwap-rolling",
         ]);
     }
 

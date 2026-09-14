@@ -58,6 +58,8 @@ happens here:
 | `macd-histogram` | `Macd.Histogram` | — | `n + 8` |
 | `bb-middle` / `bb-upper` / `bb-lower` | `BollingerBands.cs` | SMA ± 2σ | `n` |
 | `vwap` | `VolumeWeightedAveragePrice.cs` | none — anchored, not windowed | `1` |
+| `plus-di` / `minus-di` | `DirectionalMovement.cs` | **Wilder** | `n + 1` |
+| `adx` | `DirectionalMovement.Adx` | **Wilder**, over a Wilder-smoothed input | `2n` |
 
 ### True Range, and ATR
 
@@ -101,6 +103,47 @@ form needs a special case to return 100.
 
 > **Our seed is computed from the gain and loss *totals*, not the averages.** The `/n` in each average cancels
 > in the ratio, and dividing first introduces a non-terminating decimal for most periods. Same value, no drift.
+
+### Directional Movement — `+DI`, `−DI` and ADX
+
+Wilder's directional movement compares each bar's extremes with the previous bar's, and counts **only the
+larger** of the two moves, and only outward:
+
+```
+up = Hᵢ − Hᵢ₋₁            down = Lᵢ₋₁ − Lᵢ
++DM = up   if up > down and up > 0, else 0
+−DM = down if down > up and down > 0, else 0
+```
+
+Wilder-smooth `+DM`, `−DM` and true range exactly as ATR is smoothed, then express each side as a percentage
+of the range it moved through. The smoothed true range is the shared denominator:
+
+```
++DI = 100 × +DMₙ / TRₙ            −DI = 100 × −DMₙ / TRₙ
+```
+
+**DX** is how lopsided that pair is, and **ADX** is DX Wilder-smoothed in turn:
+
+```
+DX  = 100 × |+DI − −DI| / (+DI + −DI)
+ADX = Wilder-smoothed DX, seeded on the mean of the first n
+```
+
+Wilder's default `n` is 14, shared by all three. Warm-up is `n + 1` for the DI — directional movement needs a
+previous bar — and `2n` for ADX, which cannot start until it has `n` values of DX to average.
+
+> **ADX says how much trend, never which way.** It rises on a strong move in either direction, so a collapse
+> and a melt-up score alike; the side lives in `+DI` and `−DI`. Reading a high ADX as bullish is the standard
+> misuse.
+
+> **The true range cancels out of DX.** Both DI carry `TRₙ` as their denominator, so DX depends only on how
+> one-sided the movement was and not on how large it was. A quiet one-way drift can print a higher ADX than a
+> violent two-way session.
+
+> **Two absences, and neither is a zero.** A flat series gives `TRₙ = 0` and both DI go absent together — one
+> reported while the other is null would read as a one-sided market rather than an unmeasurable one. And
+> `+DI + −DI = 0` leaves DX with no denominator, which **restarts ADX's warm-up** rather than resuming a
+> running value from before the break. Zero is a real DX elsewhere: it is what a perfect DI cross prints.
 
 ### Moving averages
 
@@ -239,8 +282,7 @@ R1 = X/2 − L         S1 = X/2 − H
 one arrives with a starting point rather than a blank page. Confirm against a primary source before
 implementing — and put the confirmed definition in the section above when you do.
 
-**Trend** — ADX and the Directional Movement Index (Wilder's `+DI`/`−DI` and their smoothed spread); Parabolic
-SAR (an accelerating trailing stop that flips on touch); TRIX (rate of change of a triple-smoothed EMA); Aroon
+**Trend** — Parabolic SAR (an accelerating trailing stop that flips on touch); TRIX (rate of change of a triple-smoothed EMA); Aroon
 (bars since the window's high and low); the Coppock and KST momentum composites; Ichimoku Cloud; linear
 regression and standard-deviation channels.
 

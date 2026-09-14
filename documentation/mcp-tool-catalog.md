@@ -545,7 +545,8 @@ operator's configured periods on exactly the terms `get_indicators` states, refu
 `macd`, `macd-signal` and `macd-histogram` it is the **SLOW** length.
 
 **The session vocabulary is `get_indicators`' minus `vwap`** — `atr`, `rsi`, `sma`, `ema`, `macd`,
-`macd-signal`, `macd-histogram`, `bb-upper`, `bb-middle`, `bb-lower`, `vwap-rolling`. **Asking for `vwap` is
+`macd-signal`, `macd-histogram`, `bb-upper`, `bb-middle`, `bb-lower`, `vwap-rolling`, `adx`, `plus-di`,
+`minus-di`. **Asking for `vwap` is
 an error naming `vwap-rolling`**, not an empty series: session-anchored VWAP weights a session's own volume
 distribution and a session that *is* one bar has none, and
 [ADR-0022](adr/0022-session-bars-derived-complete-or-absent.md) requires the surface say so rather than omit
@@ -624,8 +625,15 @@ how much of the window has bars underneath it.
 
 `indicator` is a **closed vocabulary**, held in `IndicatorCatalog` and named in full by the tool's own
 description — `atr`, `rsi`, `sma`, `ema`, `macd`, `macd-signal`, `macd-histogram`, `vwap`, `vwap-rolling`,
-`bb-upper`, `bb-middle`, `bb-lower`. An unknown name **errors and lists the known ones** rather than returning
-an empty series — a typo must not read as "no data".
+`bb-upper`, `bb-middle`, `bb-lower`, `adx`, `plus-di`, `minus-di`. An unknown name **errors and lists the
+known ones** rather than returning an empty series — a typo must not read as "no data".
+
+**`adx` is direction-blind, and the two `-di` legs are what carry the side.** ADX rises on a strong move
+either way, so a collapse and a melt-up score alike and reading it alone as bullish is the classic misuse.
+All three share one period — ADX is a smoothing of the spread between the DI, so computing them at different
+windows would publish an ADX no pair of this server's own DI explains (`gh#670`). **`adx` warms up twice
+over**: it smooths a value that is itself smoothed, so its first value lands at `2 × period − 1` where the DI
+land at `period`, and a caller reaching back only as far as the DI need reads the difference as a hole.
 
 **`vwap-rolling` is the volume-weighted average price over the trailing `period` bars**, and it is a separate
 member rather than `vwap` at a period because it is a different calculation: `vwap` is anchored to the

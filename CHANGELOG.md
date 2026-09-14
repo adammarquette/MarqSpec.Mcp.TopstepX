@@ -13,6 +13,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`adx`, `plus-di` and `minus-di` in the indicator catalogue, at Wilder's default 14.** Readable on
+  `get_indicators` / `get_indicator_at` and on the session twins, at the primary period and at any additional
+  `Indicators__AdditionalAdxPeriods` an operator configures. The three share one period: ADX is a smoothing of
+  the spread between the DI, so separate windows would publish an ADX no pair of this server's own DI
+  explains. `adx` warms up in `2n` bars where the DI need `n + 1` — it smooths a value that is itself
+  smoothed — so a freshly rolled contract carries DI rows for buckets `adx` has none for. A flat series
+  reports both DI as absent rather than zero, and a DX with no denominator restarts ADX's warm-up rather than
+  resuming a value from before the break (gh#670).
+
 ## [0.5.0] - 2026-09-11
 
 A **minor** bump: a published release now deploys staging by digest (then production

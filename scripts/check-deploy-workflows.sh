@@ -18,14 +18,150 @@
 #   * `environment: staging` is a second manual approval on every release, which is the inert-gate class
 #     that gate refuses to loosen;
 #   * `:latest` is whatever was tagged last, including a pre-release (ADR-0001);
-#   * a twelve-digit account id in an ARN is a secret-shaped literal in a public repository.
+#   * a twelve-digit account id in an ARN is a secret-shaped literal in a public repository;
+#   * an action `uses:` reaching a BRANCH rather than a pin, or four sites pinned to different
+#     majors, hands whoever owns that ref the choice of what runs against the deploy roles (gh#678).
 #
 # None of those is a CloudFormation event. This reads the workflow files.
 #
+# THE PIN ASSERTION IS THE CREDENTIAL SEAM (gh#678). `aws-actions/configure-aws-credentials` appears
+# four times — release.yml's two deploy jobs and deploy.yml's two — and this gate knew nothing about
+# it until gh#678. gh#672 moved all four from @v4 to @v6 in one commit on 2026-09-14; they moved
+# together, and nothing required them to, so a partial apply would have been equally green. These
+# steps first execute at a REAL release or a REAL dispatch, never on a pull request, so a pin change
+# is green on the pull request that makes it and first speaks with the production role assumed.
+#
+# It is applied to EVERY `uses:` in these two files rather than to that one action, because every
+# step in a deploy job runs inside a job that already holds the assumed role — in release.yml's
+# `deploy-production`, `setup-dotnet` and `setup-node` both sit AFTER the credential step — so the
+# seam is the job's whole step list and not the one action in it. The agreement half stays per
+# ACTION: `docker/build-push-action@v7` and `actions/setup-node@v7` are unrelated, and a file-wide
+# "one ref" rule would be a coincidence, not a property.
+#
 # WHAT A GREEN RUN LICENSES: the YAML in this directory has the topology gh#520 named — digest as a
 # parameter, staging ungated by an Actions environment, production behind the literal `aws-production`,
-# dispatch on `main`, no `:latest` on a deploy, no SSM write, no dynamic reference, no account-id ARN.
+# dispatch on `main`, no `:latest` on a deploy, no SSM write, no dynamic reference, no account-id ARN —
+# and every `uses:` in the two deploy workflows resolves to a pinned ref, with every occurrence of one
+# action agreeing on which pin, the credential action among them and present. "EVERY" MEANS EVERY
+# `uses:` KEY THESE FILES CAN BE SHOWN TO HOLD — opening its line, or inside a flow mapping — and a key
+# in either position that this cannot parse is a REFUSAL rather than a skip. Those two positions are
+# the enumeration; what falls outside it is under WHAT IT DOES NOT READ, stated rather than implied.
 # It licenses nothing about whether a run has ever reached AWS.
+#
+# THAT SENTENCE WAS FALSE FOR ONE ROUND OF REVIEW, AND THE WAY IT WAS FALSE IS THE INTERESTING PART
+# (PR #681). It said "every `uses:`" while `collect_uses` required `uses:` to OPEN its line AND to be
+# followed by the ref on that same line. Both halves leaked, and two independent review passes walked
+# through a different one:
+#
+#   - { uses: aws-actions/configure-aws-credentials@main, with: { … } }     # a flow mapping
+#
+#         uses:
+#           aws-actions/configure-aws-credentials@main                      # the ref wrapped
+#
+# `yaml.safe_load` resolves each to the step Actions runs, and the gate exited 0 on both. NOT ONE RULE
+# WAS DEFEATED. The pin rule, the agreement rule and the vacuity guard all held; they simply held over
+# a population with a hole in it, and the run reported green having read one `uses:` less. The evidence
+# line said so — `23 uses:` became `22`, `4 time(s)` became `3` — and nothing compared it to anything,
+# because that line is asserted only against the self-test's fixed fixture and on a real tree is
+# printed and forgotten. A derived count is not evidence unless something is entitled to contradict it.
+# THE SECOND SPELLING IS THE ARGUMENT: the blind spot was a LINE SHAPE, not a flourish — the wrapped
+# form is what a formatter emits and it keeps its `name:` key, so it reads as an ordinary step — and
+# nothing says the list stops at two.
+#
+# SO THE POPULATION IS NOW CLOSED, AND THAT IS WHAT MAKES THE LICENCE ABOVE TRUE. Every `uses:` key
+# this gate can locate in the two files is either read as an action reference or REFUSED BY NAME —
+# file, line and text — and a refusal is a red run. The count stays derived and stays unasserted as a
+# number, which is gh#678's own requirement; what changed is that the set it is derived from can no
+# longer quietly shrink. This is the same decision as the ref allowlist below, one level up: enumerate
+# what you can actually parse, and fail CLOSED on everything else rather than issuing a licence over
+# text you never read. Teaching the parser each spelling was the alternative and was declined — it
+# closes one and leaves the next standing, which is precisely what the second review demonstrated by
+# finding a second spelling before the first had been fixed.
+#
+# AND THEN A THIRD PASS WALKED PAST THE CLOSED POPULATION, WHICH IS THE PART WORTH KEEPING. The two
+# positions were tested against the line AFTER the trailing comment had been stripped, and the strip
+# was `sub(/[[:space:]]+#.*$/, "")` — blind to quotes. So the reviewer wrote the step name, with the
+# ordering chosen so `role-to-assume:` survived the cut and the per-job assertions still passed:
+#
+#   - { with: { … }, name: "Configure AWS credentials # staging", uses: …@main }
+#
+# The `#` is inside a quoted scalar and is not a comment. The strip cut the line there anyway, the
+# `uses:` key went with it, NEITHER position matched, and the row fell out through `next` — the same
+# silent SKIP as the first two rounds, reached one step earlier than any rule could refuse it. It did
+# not have to look like a comment: `env: { NOTE: "see gh #678" }` in that position did it too. The run
+# reported `22 uses:`, `3 time(s)`, and — new this round, and strictly worse — `reach release.yml:
+# every uses: on 12 line(s) read as an action reference`, a POSITIVE assertion of completeness that
+# was false. A skip that says nothing is a hole; a skip standing under a green completeness assertion
+# is the same hole with a certificate.
+#
+# THE ORDER OF OPERATIONS WAS THE DEFECT, NOT THE REGEX. So there are two changes and only the second
+# is durable. The comment rule is now quote-aware and shared with strip_comments() rather than
+# duplicated (it had the identical blindness one layer down, where it hid a `:latest` pull in a deploy
+# job from refuse_in_job — older than these pin rules and reachable without them). That is one more
+# spelling of correctness and it will be wrong again: a backslash-escaped quote already defeats it.
+# THE PART THAT CLOSES THE CLASS IS THE GUARD: the key test is applied to the line BEFORE the cut as
+# well as after, and a key that was there before and is gone after is REFUSED. A comment can only ever
+# delete text, never create a key, so that comparison needs no theory of what a comment is — whatever
+# the rule gets wrong next, the outcome is red rather than green. Fix the reader, then make the
+# reader's own mistakes fail closed; the first alone is what the last two rounds each shipped.
+#
+# ACTION IDENTITY IS CASE-FOLDED, and that is a measurement rather than a guess. Agreement was keyed on
+# an exact string, so re-casing deploy.yml's two sites to `aws-actions/Configure-AWS-Credentials@v5`
+# while release.yml stayed at `@v6` read as two unrelated actions, each internally in agreement — `8
+# distinct action(s)`, green, staging on one major and production on another, which is gh#678's
+# scenario written out. GitHub resolves owner/repo case-insensitively: on 2026-09-14,
+# `repos/AWS-Actions/Configure-AWS-Credentials` answered 200 with `full_name`
+# `aws-actions/configure-aws-credentials`, and `repos/AWS-Actions/Configure-AWS-Credentials/tarball/v6`
+# — the path an action's source is fetched through — answered 200 with
+# `filename=aws-actions-configure-aws-credentials-v6-…`, while a misspelt name 404s on both, so the 200
+# is the resolver folding case and not the API being permissive. That was measured over the REST API;
+# no Actions job was run to confirm the runner's own resolver. IT DOES NOT HAVE TO BE, because the
+# refusal is right either way: either the two spellings are one action pinned two ways, or one of them
+# names a repository that does not exist. Both are red, and only the wording of the diagnostic depends
+# on which.
+#
+# WHAT IT DOES NOT READ, stated rather than left to be discovered:
+#
+#   * `ci.yml` and `codeql.yml` share actions with these two files (`actions/checkout`,
+#     `actions/setup-dotnet`, `docker/*`) and are outside this gate's subject, so agreement is held
+#     across the deploy pair and not across that boundary. platform.md already names an unrelated half
+#     of that hazard — the buildx/build-push major shared between `ci.yml` and `release.yml` (gh#54) —
+#     and closing it is a separate card.
+#   * ONE SPELLING OF A STEP'S ACTION IS PARSED: a `uses:` that opens its line, optionally after a
+#     `- `, followed by the ref on the SAME line. That is what every site in both files writes and
+#     what every other workflow here writes. Any other shape in a key position — a flow mapping, the
+#     ref wrapped onto the following line, `uses :`, an empty value — is a refusal naming the line,
+#     not a silent skip, so this bounds what a green run means to FIX rather than what it certifies.
+#     The cost of the refusal is a one-line diff or a pull request widening `collect_uses` and saying
+#     why; the cost of the skip was the reviewer's `@main`, twice, in two spellings.
+#   * A `uses:` INSIDE A `run:` SCRIPT is deliberately not a key here, and the position test alone was
+#     not enough to say so. Review measured that this gate had no false positive on such a line before
+#     the reach rule; it then gained one, because `[{,] uses:` is a pattern like any other and fires on
+#     ordinary JSON — `echo {"uses": "x"}` in a shell script was refused, on a gate whose entire
+#     subject is a parse hole, which is how a gate gets deleted by the first person it wrongly stops.
+#     The fix is not a longer pattern: NOTHING INSIDE A BLOCK SCALAR IS YAML, so nothing inside one can
+#     be a key, and collect_uses now tracks `run: |` regions structurally. That also retires an older
+#     false positive review had recorded and left alone — a `uses:`-shaped line inside a `run:` heredoc
+#     used to be parsed as a real action reference and could redden the agreement rule. write_sound
+#     carries the prose line, the JSON line and a trailing comment, so neither direction can be widened
+#     back in silence.
+#   * A `uses` key reached through an ALIAS MERGE, written with a tag or escape that hides the token,
+#     or written as a YAML EXPLICIT KEY —
+#
+#         - ? uses
+#           : aws-actions/configure-aws-credentials@main
+#
+#     — is outside the two positions and is SKIPPED, not refused. `safe_load` resolves that last one to
+#     the step Actions runs and this gate exits 0 on it; it was demonstrated in review on PR #681 and
+#     deliberately left here rather than pattern-matched, because a third key spelling answered with a
+#     third pattern is the loop the population rule exists to get out of. Nothing in this repository
+#     writes any of them. Closing them needs a YAML parser rather than another pattern, and that is a
+#     card, not a line. Recorded as the residual it is — the honest bound on the licence above.
+#   * A DIGEST-PINNED CONTAINER ACTION — `uses: docker://alpine@sha256:<64 hex>` — is refused, because
+#     `sha256:…` is not one of the two pin shapes below. It is genuinely pinned, so that refusal is
+#     wrong on its merits; no such spelling exists in either file, so it costs nothing today. Raised
+#     in review on this card and left for its own, beside the SHA-versus-tag question gh#678 also
+#     defers. Named here so the next author meets it as a known bound rather than as a surprise.
 
 set -euo pipefail
 
@@ -51,11 +187,46 @@ pass() {
   ok "ok  $*"
 }
 
+# ONE COMMENT RULE, INJECTED INTO EVERY awk THAT NEEDS IT. Both this file's readers have to answer
+# "where does this line stop being YAML", and two copies of that notion in two passes is two notions
+# that drift — the rule gh#155 wrote down for `issue-link`'s stripper, and the shape PR #681's third
+# review found here: `strip_comments()` and `collect_uses()` each carried `sub(/[[:space:]]+#.*$/)`,
+# and fixing one would have left the other.
+#
+# A `#` OPENS A COMMENT ONLY OUTSIDE A QUOTED SCALAR, which is YAML's own rule and not a refinement.
+# `name: "Configure AWS credentials # staging"` is a step name; the old regex read it as a comment,
+# deleted the rest of the line — the `uses:` key included — and the readers below then had nothing to
+# refuse. The same cut hid `docker pull …:latest` from refuse_in_job behind `echo "tag # note" && …`.
+#
+# IT IS A RULE, NOT A YAML PARSER, AND IT IS NOT TREATED AS ONE. A backslash-escaped quote inside a
+# double-quoted scalar still closes the quote as far as this scan is concerned. That is why
+# collect_uses guards the strip rather than trusting it: whatever this gets wrong next is a refusal
+# naming the line, not a silent skip.
+AWK_COMMENT_RULE='
+function comment_at(s,   i, c, q, n) {
+  n = length(s); q = ""
+  for (i = 1; i <= n; i++) {
+    c = substr(s, i, 1)
+    if (q != "") { if (c == q) q = ""; continue }
+    if (c == "\"" || c == sq) { q = c; continue }
+    if (c == "#" && (i == 1 || substr(s, i - 1, 1) ~ /[[:space:]]/)) return i
+  }
+  return 0
+}
+function strip_comment(s,   at) {
+  at = comment_at(s)
+  if (at == 0) return s
+  s = substr(s, 1, at - 1)
+  sub(/[[:space:]]+$/, "", s)
+  return s
+}
+'
+
 # Strip whole-line comments and trailing comments so a sentence ABOUT an environment key is not one.
 strip_comments() {
-  awk '
+  awk -v sq="'" "$AWK_COMMENT_RULE"'
     /^[[:space:]]*#/ { next }
-    { sub(/[[:space:]]+#.*$/, ""); print }
+    { print strip_comment($0) }
   ' "$1"
 }
 
@@ -240,12 +411,293 @@ if require_file "$DEPLOY"; then
   refuse_account_arn "$DEPLOY"
 fi
 
+# ---------------------------------------------------------------------------
+# Action pins, over BOTH files at once (gh#678)
+# ---------------------------------------------------------------------------
+
+# A pinned ref is a release tag (`v6`, `v6.1`, `v6.1.2`) or a 40-character commit SHA. Anything else
+# — `main`, `master`, `develop`, a branch under any other name, or no ref at all — is a moving target
+# somebody else owns.
+#
+# THIS IS AN ALLOWLIST OF PIN SHAPES, NOT A BLOCKLIST OF BRANCH NAMES, and that is the decision. A
+# blocklist of {main, master} passes `@develop`, `@HEAD` and every branch nobody thought to name. The
+# allowlist fails CLOSED: an unrecognised-but-honest ref is refused, the run names the ref it could
+# not read as a pin, and the author either writes a tag or widens this line in a pull request that
+# says why. Which direction to fail in is decided per construct here, and for this one the costs are
+# not close — the wrong direction is a production deploy under a ref a third party moves, this
+# direction is a red check and a one-line diff.
+#
+# A COMMIT SHA IS ACCEPTED AND NOT REQUIRED. Whether these sites should pin by SHA rather than by tag
+# is a real question with its own trade-off, and gh#678 leaves it to its own card; this gate has to
+# pass on whatever is pinned today, which is `@v6`.
+PINNED_REF_RE='^(v[0-9]+(\.[0-9]+){0,2}|[0-9a-f]{40})$'
+CREDENTIAL_ACTION='aws-actions/configure-aws-credentials'
+
+SCRATCH="$(mktemp -d)"
+trap 'rm -rf "$SCRATCH"' EXIT
+USES_TSV="$SCRATCH/uses.tsv"
+UNREAD_TSV="$SCRATCH/unread.tsv"
+
+# Every `uses:` in one file, as "<file>\t<line>\t<action>\t<action-lowercased>\t<ref>", plus a row in
+# <unread> for every `uses:` KEY on a line this cannot parse. This reads the file itself rather than
+# strip_comments()'s output, which DROPS lines: both diagnostics name a line number an author will
+# open the file at, so the numbering has to survive the strip. The comment RULE is still the shared
+# one — what differs is only that the lines are numbered here, and that a cut which removes a key is
+# caught rather than trusted.
+#
+# THE TWO TESTS ARE ONE PROGRAM BECAUSE THEY ARE ONE NOTION. "Is this a `uses:` key" and "is it a
+# `uses:` key I can read" differ only in strictness, and two copies of that notion in two passes is
+# two notions that drift — the rule gh#155 wrote down for `issue-link`'s stripper, met again here. The
+# broad test is built to be strictly WIDER than the narrow one by construction: its first alternative
+# is the narrow prefix with the quote and the pre-colon space forgiven.
+#
+# The lowercased action is a fifth column rather than a fourth, and that ordering is load-bearing:
+# `IFS=$'\t' read` collapses CONSECUTIVE tabs, because tab is an IFS whitespace character. With the
+# ref fourth, a bare action's empty ref would merge with the next delimiter and every row for an
+# unpinned action would read its own name as its ref — a fail-open on the one shape the pin rule
+# exists to catch. Keeping the only field that can be empty LAST means there are never two tabs in a
+# row.
+collect_uses() {
+  local file="$1" unread="$2"
+  [ -f "$file" ] || return 0
+  awk -v file="$file" -v sq="'" -v unread="$unread" "$AWK_COMMENT_RULE"'
+    function emit_unread(text) {
+      sub(/^[[:space:]]+/, "", text)
+      printf "%s\t%d\t%s\n", file, FNR, text >> unread
+    }
+    function indent_of(s,   t) { t = s; sub(/[^[:space:]].*$/, "", t); return length(t) }
+    # A `uses:` KEY, by POSITION: opening its line (after an optional `- `), or following a `{` or a
+    # `,` inside a flow mapping. Quoted either side of the word and spaced before the colon, because
+    # `"uses" :` is the same key to YAML and a matcher that misses it hands back the hole.
+    #
+    # POSITION AND NOT THE BARE TOKEN, and that is the line between failing closed and reddening
+    # correct YAML. `- run: echo "this step uses: nothing"` is prose inside a script, not a key; a
+    # matcher of the bare token refuses it, on a required-adjacent gate, which is how a gate gets
+    # deleted by the first person it wrongly stops. Review measured that the gate had no such false
+    # positive before this rule and it must not gain one, so write_sound carries that exact line.
+    #
+    # A POSITION IS STILL A PATTERN, THOUGH, AND THIS ONE GAINED THE FALSE POSITIVE ANYWAY: `[{,]`
+    # fires on `echo {"uses": "x"}` in the same shell script. Patterns do not fix that; the block
+    # scalar rule above does, by ruling the whole region out of YAML before any pattern is consulted.
+    # Both lines are in write_sound.
+    BEGIN {
+      k = "[\"" sq "]?uses[\"" sq "]?[[:space:]]*:"
+      key_re = "^[[:space:]]*(-[[:space:]]+)?" k "|[{,][[:space:]]*" k
+      block_indent = -1
+    }
+    # NOTHING INSIDE A BLOCK SCALAR IS YAML, so nothing inside one can be a key. That is structural
+    # rather than another spelling, and it is the half the key-POSITION matcher got wrong: `[{,] uses:`
+    # fires on ordinary JSON in a shell script — `echo {"uses": "x"}` — and refusing a correct workflow
+    # on a required-adjacent gate is how the gate gets deleted by the first person it wrongly stops.
+    # The block runs from a `key: |` or `key: >` to the first non-blank line indented no further than
+    # that key, which is YAML s own rule for where it ends.
+    {
+      raw = $0
+      if (block_indent >= 0) {
+        if (raw ~ /^[[:space:]]*$/) next
+        if (indent_of(raw) > block_indent) next
+        block_indent = -1
+      }
+      if (raw ~ /^[[:space:]]*#/) next
+      cut = comment_at(raw)
+      line = (cut > 0) ? substr(raw, 1, cut - 1) : raw
+      sub(/[[:space:]]+$/, "", line)
+      if (line ~ /:[[:space:]]*[|>][0-9+-]*$/) block_indent = indent_of(raw)
+    }
+    # THE COMMENT STRIP MAY NEVER DELETE A `uses:` KEY, and this is the line that makes the rest of
+    # this function safe to get wrong. The strip ran FIRST and the position tests ran on its output,
+    # so a `#` the rule read wrongly removed the key and the row fell out through `next` — a SKIP, the
+    # exact shape every round of this review has blocked on, reached before any rule could refuse it.
+    # Comparing the two tells the difference: a comment can only ever DELETE text, never create a key,
+    # so a key that was there before the cut and is gone after it is a key this gate cannot vouch for.
+    # It is refused by file, line and raw text. The quote-aware rule above is what makes that rare;
+    # THIS is what makes the next thing the rule gets wrong red instead of green.
+    cut > 0 && raw ~ key_re && line !~ key_re { emit_unread(raw); next }
+    line !~ key_re { next }
+    line ~ /^[[:space:]]*(-[[:space:]]+)?uses:[[:space:]]/ {
+      spec = line
+      sub(/^[[:space:]]*(-[[:space:]]+)?uses:[[:space:]]+/, "", spec)
+      sub(/[[:space:]].*$/, "", spec)
+      # `uses: "actions/checkout@v7"` is legal YAML. Left quoted, the ref reads as v7" and a correct
+      # workflow is refused, which is how a gate gets deleted by the first person it wrongly stops.
+      first = substr(spec, 1, 1)
+      if (first == sq || first == "\"") spec = substr(spec, 2)
+      n = length(spec)
+      if (n > 0) { last = substr(spec, n, 1); if (last == sq || last == "\"") spec = substr(spec, 1, n - 1) }
+      # `- uses:` with the value on the next line parses to nothing here. It used to be dropped in
+      # silence, which is the same hole as the flow mapping wearing a shorter spelling.
+      if (spec == "") { emit_unread(line); next }
+      at = index(spec, "@")
+      if (at > 0) printf "%s\t%d\t%s\t%s\t%s\n", file, FNR, substr(spec, 1, at - 1), tolower(substr(spec, 1, at - 1)), substr(spec, at + 1)
+      else        printf "%s\t%d\t%s\t%s\t\n", file, FNR, spec, tolower(spec)
+      next
+    }
+    { emit_unread(line) }
+  ' "$file"
+}
+
+: > "$USES_TSV"
+: > "$UNREAD_TSV"
+collect_uses "$RELEASE" "$UNREAD_TSV" >> "$USES_TSV"
+collect_uses "$DEPLOY" "$UNREAD_TSV" >> "$USES_TSV"
+
+# A `uses:` THIS GATE COULD NOT READ IS A FAILURE, NOT A SKIP (gh#678, PR #681 review). Asserted per
+# file rather than as one total: a total is satisfied by a line stopping being read here and another
+# starting to be read there, and — the actual defect — on a real tree no total is compared to anything
+# at all. "I read every one there is" needs no literal to maintain, so it holds on this repository's
+# workflows and on a fifth deploy job nobody has written yet.
+for pin_file in "$RELEASE" "$DEPLOY"; do
+  [ -f "$pin_file" ] || continue
+  checked=$((checked + 1))
+  # Redirect to a FILE rather than read `mapfile < <(awk …)`: a process substitution's status is never
+  # examined, so an awk that died would leave the loop running zero times and falling through to the
+  # pass (gh#126, gh#164). As a simple command its status IS examined — `set -e` aborts the run — so
+  # "could not look" stops being spelt the same way as "nothing to report", which is the exact
+  # confusion this assertion exists to refuse one level down.
+  awk -F'\t' -v f="$pin_file" '$1 == f { print }' "$UNREAD_TSV" > "$SCRATCH/unread-one.tsv"
+  unread_rows=()
+  mapfile -t unread_rows < "$SCRATCH/unread-one.tsv"
+  if [ "${#unread_rows[@]}" -gt 0 ]; then
+    unread_detail=""
+    for row in "${unread_rows[@]}"; do
+      IFS=$'\t' read -r x_file x_line x_text <<<"$row"
+      unread_detail="$unread_detail
+  $x_file:$x_line  $x_text"
+    done
+    fail "${pin_file##*/} writes \`uses:\` on ${#unread_rows[@]} line(s) this gate did not read as an action reference:$unread_detail
+  Every rule below runs over the list of action references this gate could parse, so a \`uses:\` that
+  is not on that list is a step Actions runs and this gate never saw — the pin rule, the agreement
+  rule and the credential-presence rule then all hold over a smaller population and the run reports
+  green. That is how \`configure-aws-credentials@main\` reached the staging credential seam with
+  EXIT=0 under review. This gate reads one spelling: \`uses:\` opening its line, optionally after a
+  \`- \`, which is what every other site in these two files writes. Write the step that way, or widen
+  collect_uses in a pull request that says why; do not delete the assertion to make this green."
+  else
+    read_here="$(awk -F'\t' -v f="$pin_file" '$1 == f { n++ } END { print n + 0 }' "$USES_TSV")"
+    pass "reach   ${pin_file##*/}: every uses: on $read_here line(s) read as an action reference"
+  fi
+done
+
+# Read back as lines from a FILE rather than from a capture or a process substitution: a capture
+# strips trailing newlines and a process substitution's exit status is never examined, so the loop
+# would run zero times and fall through to the success path (gh#126, gh#164).
+uses_rows=()
+mapfile -t uses_rows < "$USES_TSV"
+
+local_exempt=0
+pin_examined=0
+for row in "${uses_rows[@]}"; do
+  IFS=$'\t' read -r u_file u_line u_action u_action_lc u_ref <<<"$row"
+  # A local action is this repository's own tree at this pull request's own SHA. There is no third
+  # party to pin and no ref to write, so requiring one would refuse correct YAML.
+  case "$u_action" in
+    ./*)
+      local_exempt=$((local_exempt + 1))
+      continue
+      ;;
+  esac
+  checked=$((checked + 1))
+  pin_examined=$((pin_examined + 1))
+  if [ -z "$u_ref" ]; then
+    fail "$u_file:$u_line  uses $u_action with no ref at all — a bare action runs whatever its default branch holds today"
+  elif [[ ! "$u_ref" =~ $PINNED_REF_RE ]]; then
+    fail "$u_file:$u_line  uses $u_action@$u_ref, and '$u_ref' is not a pinned ref (expected a vN[.N[.N]] release tag or a 40-character commit SHA)"
+  fi
+done
+
+# Agreement is per ACTION and across BOTH files, never within each: the four credential sites are two
+# in release.yml and two in deploy.yml, and a merge resolution, a hand-fix during an incident or a
+# partial Dependabot apply moves one file without the other. IDENTITY rather than major-equality is
+# deliberate — `@v6` beside `@v6.1.0` is two different resolutions of the same step, and Dependabot
+# moves every occurrence of an action to one exact ref anyway, so requiring identity costs nothing
+# real and removes the question of which part of the ref is the part that matters.
+#
+# The action count and the occurrence count are both DERIVED from the files. Hardcoding four would
+# pass while silently checking a stale number, which is the inert-gate class this gate's own header
+# refuses; a fifth deploy job is covered by wiring rather than by its author remembering this script.
+#
+# IDENTITY IS THE LOWERCASED NAME (column 4), never the verbatim one. Keyed on the verbatim string,
+# `aws-actions/Configure-AWS-Credentials@v5` in one file and `aws-actions/configure-aws-credentials@v6`
+# in the other were two actions that each agreed with themselves — green, on staging and production
+# assuming their roles under two different majors. The header records what was measured about
+# GitHub's resolver and why the refusal is correct whichever way that measurement had gone. The
+# verbatim spellings are still what the diagnostic prints, because the author has to find the line.
+actions_total="$(awk -F'\t' '$3 !~ /^\.\// { if (!($4 in a)) { a[$4]; n++ } } END { print n + 0 }' "$USES_TSV")"
+
+awk -F'\t' '
+  $3 ~ /^\.\// { next }
+  {
+    act = $4
+    ref = ($5 == "" ? "<no ref>" : $5)
+    if (!(act in seen_act)) { order[++nact] = act; seen_act[act] = 1 }
+    key = act SUBSEP ref
+    if (!(key in seen_ref)) { seen_ref[key] = 1; ndistinct[act]++; reforder[act, ndistinct[act]] = ref }
+    loc[key] = loc[key] (loc[key] == "" ? "" : ", ") $1 ":" $2
+    skey = act SUBSEP $3
+    if (!(skey in seen_spell)) { seen_spell[skey] = 1; nspell[act]++; spellorder[act, nspell[act]] = $3 }
+  }
+  END {
+    for (i = 1; i <= nact; i++) {
+      act = order[i]
+      if (ndistinct[act] < 2) continue
+      msg = ""
+      for (j = 1; j <= ndistinct[act]; j++) {
+        ref = reforder[act, j]
+        msg = msg (msg == "" ? "" : "; ") "@" ref " at " loc[act SUBSEP ref]
+      }
+      # Only when the disagreeing sites are also spelt differently, so the ordinary message stays the
+      # ordinary message and the case clause is evidence that the fold is what caught this one.
+      spelt = ""
+      if (nspell[act] > 1) {
+        for (j = 1; j <= nspell[act]; j++) spelt = spelt (spelt == "" ? "" : ", ") spellorder[act, j]
+        spelt = "  (written " nspell[act] " ways — " spelt " — which GitHub resolves case-insensitively to one action)"
+      }
+      printf "%s is pinned %d different ways across the deploy workflows — %s%s\n", act, ndistinct[act], msg, spelt
+    }
+  }
+' "$USES_TSV" > "$SCRATCH/disagree.txt"
+
+disagreements=()
+mapfile -t disagreements < "$SCRATCH/disagree.txt"
+
+checked=$((checked + actions_total))
+for line in "${disagreements[@]}"; do
+  [ -n "$line" ] || continue
+  fail "$line"
+done
+
+# The rules above hold over whatever list they were handed, so an empty list passes every one of them
+# having read nothing. That is the inert gate in its purest form, and it is reachable: this gate is
+# the only thing that reads these `uses:` lines at all.
+cred_count="$(awk -F'\t' -v a="$CREDENTIAL_ACTION" 'BEGIN { a = tolower(a) } $4 == a { n++ } END { print n + 0 }' "$USES_TSV")"
+checked=$((checked + 1))
+if [ "$cred_count" -eq 0 ]; then
+  fail "no \`uses: $CREDENTIAL_ACTION@…\` in $RELEASE or $DEPLOY.
+  The pin assertions above then held over an empty list — they read nothing, so they say nothing.
+  Every deploy job assumes its role through that action (ADR-0023 §8), so its absence is either the
+  credential seam moving somewhere this gate cannot see it, or this assertion quietly checking a
+  population that stopped existing."
+fi
+
+# LC_ALL=C so the ref list a reader is shown does not re-order with the machine's locale.
+cred_refs="$(awk -F'\t' -v a="$CREDENTIAL_ACTION" 'BEGIN { a = tolower(a) } $4 == a { print ($5 == "" ? "<no ref>" : $5) }' "$USES_TSV" | LC_ALL=C sort -u | tr '\n' ' ')"
+cred_refs="${cred_refs%" "}"
+[ -n "$cred_refs" ] || cred_refs="<none>"
+
+# The pass carries its own evidence: a green run that read nothing looks exactly like a green run
+# that read everything unless it says how much it read (gh#126).
+pass "pins    $pin_examined uses: examined across $actions_total distinct action(s), $local_exempt local action(s) exempt; $CREDENTIAL_ACTION appears $cred_count time(s) at $cred_refs"
+
 info ""
 if [ "$failed" -gt 0 ]; then
   die "$failed of $checked deploy-workflow assertion(s) failed.
 
 A digest that enters the stack through SSM, :latest, or an expression-named environment is a deploy that
-looks green and runs the wrong image — or that check-release-gate.sh cannot vouch for. Fix the workflow;
+looks green and runs the wrong image — or that check-release-gate.sh cannot vouch for. An action ref that
+is not a pin, occurrences of one action that disagree about which pin, or a \`uses:\` written in a spelling
+this gate cannot read, is that same failure on the credential seam: these steps first execute at a real
+release or a real dispatch, never on a pull request, so the first evidence arrives with the deploy role
+already assumed. Fix the workflow;
 do not delete the assertion to make this green."
 fi
 

@@ -74,6 +74,7 @@ public static class ServerConfiguration
 
         ["Indicators__AtrPeriod"] = "14",
         ["Indicators__RsiPeriod"] = "14",
+        ["Indicators__AdxPeriod"] = "14",
         ["Indicators__SmaPeriod"] = "20",
         ["Indicators__EmaPeriod"] = "20",
         ["Indicators__MacdSlowPeriod"] = "26",
@@ -81,6 +82,7 @@ public static class ServerConfiguration
         ["Indicators__RollingVwapPeriod"] = "20",
         ["Indicators__AdditionalAtrPeriods"] = "",
         ["Indicators__AdditionalRsiPeriods"] = "",
+        ["Indicators__AdditionalAdxPeriods"] = "",
         ["Indicators__AdditionalSmaPeriods"] = "9,22",
         ["Indicators__AdditionalEmaPeriods"] = "9,10,13,21,24,48,200",
         ["Indicators__AdditionalMacdSlowPeriods"] = "",

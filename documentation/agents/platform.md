@@ -1429,7 +1429,7 @@ that action is a failure rather than a pin rule passing over an empty list. The 
 allowlist-not-blocklist direction and what the gate deliberately does not read are in the script's own
 header, not here.
 
-**"Every" was false for two rounds of review, and how it was false is the part to carry** (PR #681).
+**"Every" was false for three rounds of review, and how it was false is the part to carry** (PR #681).
 The parser wanted `uses:` to OPEN its line *and* to carry the ref on that same line. One reviewer
 respelt `release.yml`'s `deploy-staging` credential step as a YAML flow mapping — `- { uses: …@main,
 with: { … } }` — and a second, independently and before the first was fixed, simply **wrapped the ref
@@ -1451,8 +1451,13 @@ unrelated actions, each in agreement with itself. Four things generalise:
   matcher is a key *position* — opening a line, or after a `{` or `,` — never the bare `uses:` token,
   because the token also appears in prose inside a `run:` script and refusing that reddens correct
   YAML on a gate whose whole point is a parse hole. Review had measured the absence of that false
-  positive **before** the rule existed, so it was a property to preserve rather than one to discover;
-  the sound fixture now carries such a line, and so does a `#` comment.
+  positive **before** the rule existed, so it was a property to preserve rather than one to discover.
+  **It was not preserved.** A position is still a pattern: `[{,] uses:` fired on `echo '{ "uses": "x" }'`
+  in that same shell script, and the third pass found a correct workflow refused. Answering a pattern
+  with a longer pattern is the loop again — the fix is that **nothing inside a block scalar is YAML**,
+  so the `run: |` region is ruled out structurally before any matcher is consulted, which also retired
+  an older false positive nobody had fixed. The sound fixture carries the prose line, the JSON line, a
+  whole-line comment and a trailing comment, so neither direction can be narrowed back in silence.
 - **A derived count is not evidence unless something is entitled to contradict it.** This gate printed
   `23 uses:` and `4 time(s)`; the mutation moved them to `22` and `3` and nothing noticed, because that
   line is asserted only against the self-test's fixed fixture and on a real tree is printed and
@@ -1466,6 +1471,24 @@ unrelated actions, each in agreement with itself. Four things generalise:
   assertion alone is **green** on it — and the fold alone is green on both line shapes. Three evasions,
   two rules, a fixture each, and taking either rule as covering the other axis would have shipped half
   a fix.
+- **Closing the population did not close it, because the population was selected from text the reader
+  had already edited.** The third pass wrote the staging step as
+  `- { with: { … }, name: "Configure AWS credentials # staging", uses: …@main }`. That `#` is inside a
+  quoted scalar and is not a comment; the strip — `sub(/[[:space:]]+#.*$/, "")` — cut there anyway, the
+  `uses:` key went with it, **neither position matched**, and the row fell out through `next`. A skip
+  again, one step upstream of any rule that could refuse it, and this time under a green
+  `reach … every uses: on 12 line(s) read as an action reference`. The key ordering is the craft:
+  `with:` before the `#` keeps `role-to-assume:` alive so the per-job assertions still pass, and the
+  `#` need not look like a comment — `env: { NOTE: "see gh #678" }` does it too. **The same regex sat
+  in `strip_comments()`**, older than the pin rules, where `echo "tag # note" && docker pull …:latest`
+  hid a `:latest` pull in a deploy job from `refuse_in_job`; one shared quote-aware rule now serves
+  both, because two copies of one notion is two notions that drift (gh#155). **The durable half is not
+  that rule.** A character scan is not a YAML parser and a backslash-escaped quote already defeats it,
+  so the key test is applied to the line **before** the cut as well as after, and a key that was there
+  before and is gone after is refused by file, line and raw text. A comment can only ever *delete*
+  text, never create a key, so that comparison needs no theory of what a comment is. **Fix the reader,
+  then make the reader's own mistakes fail closed** — each of the three rounds had shipped only the
+  first half, which is why there were three.
 
 **Case is folded because GitHub's resolver folds it, measured rather than assumed** (2026-09-14):
 `repos/AWS-Actions/Configure-AWS-Credentials` answers `200` with `full_name`

@@ -21,7 +21,8 @@ namespace MarqSpec.Mcp.TopstepX.Tests.MarketData;
 /// last. Same number, different window, nothing in the payload saying so.
 /// </para>
 /// <para>
-/// <b>The vocabulary is unchanged.</b> <see cref="IndicatorCatalog.KnownNames"/> is still twelve names, and
+/// <b>The vocabulary widens only when a NAME is added.</b> <see cref="IndicatorCatalog.KnownNames"/> is
+/// fifteen names since the directional family landed (gh#670), and
 /// <see cref="IndicatorCatalog.Resolve(string)"/> still answers with the primary — every existing call site
 /// (<c>KeyLevelTools</c>'s ATR, the two indicator reads, the snapshot's key set) means "the configured one"
 /// and keeps meaning it. Periods are SELECTED, never invented: a period the server does not compute would
@@ -30,11 +31,11 @@ namespace MarqSpec.Mcp.TopstepX.Tests.MarketData;
 /// </remarks>
 public sealed class IndicatorCatalogPeriodTests
 {
-    /// <summary>The twelve names, in the order the catalogue builds its primaries.</summary>
+    /// <summary>The fifteen names, in the order the catalogue builds its primaries.</summary>
     private static readonly string[] _primaryNames =
     [
-        "atr", "rsi", "sma", "ema", "macd", "macd-signal", "macd-histogram", "vwap",
-        "bb-upper", "bb-middle", "bb-lower", "vwap-rolling",
+        "atr", "rsi", "adx", "plus-di", "minus-di", "sma", "ema", "macd", "macd-signal", "macd-histogram",
+        "vwap", "bb-upper", "bb-middle", "bb-lower", "vwap-rolling",
     ];
 
     private static BarSessionCalendar Calendar() => BarSessionCalendar.Parse("16:00", []);
@@ -55,6 +56,8 @@ public sealed class IndicatorCatalogPeriodTests
         AdditionalAtrPeriods = "7",
         RsiPeriod = 14,
         AdditionalRsiPeriods = "21",
+        AdxPeriod = 14,
+        AdditionalAdxPeriods = "28",
         SmaPeriod = 20,
         AdditionalSmaPeriods = "50",
         EmaPeriod = 20,
@@ -83,16 +86,20 @@ public sealed class IndicatorCatalogPeriodTests
     {
         IndicatorCatalog catalog = WideCatalog();
 
-        // Twelve primaries, in today's order — the order the projection has always written in.
+        // Fifteen primaries, in today's order — the order the projection has always written in.
         Keys(catalog.Primaries).Select(k => k.Name).Should().Equal(_primaryNames);
 
-        // Every configured (name, period), and no more: atr 2, rsi 2, sma 2, ema 6, the three macd legs at
-        // two slow lengths each, vwap once, the three bands at two windows each, vwap-rolling 2.
+        // Every configured (name, period), and no more: atr 2, rsi 2, the three directional legs at two
+        // periods each, sma 2, ema 6, the three macd legs at two slow lengths each, vwap once, the three
+        // bands at two windows each, vwap-rolling 2.
         Keys(catalog.All).Should().BeEquivalentTo(
             new (string, int)[]
             {
                 ("atr", 14), ("atr", 7),
                 ("rsi", 14), ("rsi", 21),
+                ("adx", 14), ("adx", 28),
+                ("plus-di", 14), ("plus-di", 28),
+                ("minus-di", 14), ("minus-di", 28),
                 ("sma", 20), ("sma", 50),
                 ("ema", 20), ("ema", 10), ("ema", 13), ("ema", 24), ("ema", 48), ("ema", 200),
                 ("macd", 26), ("macd", 52),
@@ -120,15 +127,15 @@ public sealed class IndicatorCatalogPeriodTests
     }
 
     [Fact]
-    public void KnownNames_StayTwelve_WhenAdditionalPeriodsAreConfigured()
+    public void KnownNames_StayFifteen_WhenAdditionalPeriodsAreConfigured()
     {
         // The vocabulary is a set of NAMES, not of instances. Widening the periods must not add a name: the
-        // tool descriptions list these twelve, ToolSurfaceTests pins that list, and get_market_snapshot keys
-        // its map by them. An operator adding an EMA at 200 has not added an indicator.
+        // tool descriptions list these fifteen, ToolSurfaceTests pins that list, and get_market_snapshot
+        // keys its map by them. An operator adding an EMA at 200 has not added an indicator.
         WideCatalog().KnownNames.Should().BeEquivalentTo(
             _primaryNames, "additional periods widen the instances, never the vocabulary");
 
-        WideCatalog().KnownNames.Should().HaveCount(12);
+        WideCatalog().KnownNames.Should().HaveCount(15);
     }
 
     [Fact]
@@ -209,8 +216,8 @@ public sealed class IndicatorCatalogPeriodTests
         Action resolve = () => catalog.Resolve("stochastic", 14);
 
         resolve.Should().Throw<KeyNotFoundException>().WithMessage(
-            "Unknown indicator 'stochastic'. Known indicators: atr, bb-lower, bb-middle, bb-upper, ema, "
-            + "macd, macd-histogram, macd-signal, rsi, sma, vwap, vwap-rolling.");
+            "Unknown indicator 'stochastic'. Known indicators: adx, atr, bb-lower, bb-middle, bb-upper, "
+            + "ema, macd, macd-histogram, macd-signal, minus-di, plus-di, rsi, sma, vwap, vwap-rolling.");
     }
 
     [Fact]

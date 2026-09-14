@@ -1418,6 +1418,16 @@ way to production. `:latest` is still pushed (ADR-0001) and never referenced to 
 these jobs are the release path, not a new merge gate. `check-deploy-workflows.sh` holds the YAML to
 that topology on every pull request, beside the gate.
 
+**Since gh#678 it also holds every `uses:` in those two files to a pinned ref** — a `vN` release tag or
+a commit SHA, never a branch — and requires every occurrence of one action to agree on which pin,
+**across the two files rather than within each**. The credential action is why:
+`aws-actions/configure-aws-credentials` sits in all four deploy jobs, gh#672 moved all four from `@v4`
+to `@v6` in one commit, and nothing required them to move together — a partial apply would have been
+equally green, because a deploy workflow's steps first execute at a real release or a real dispatch and
+never on a pull request. The occurrence count is **derived**, and zero occurrences of that action is a
+failure rather than a pin rule passing over an empty list. The reasoning, the allowlist-not-blocklist
+direction and what the gate deliberately does not read are in the script's own header, not here.
+
 ### Infrastructure
 
 **The AWS resources the deployment runs on are code under [`infra/`](../../infra/), and a pull request

@@ -490,9 +490,16 @@ public sealed class IndicatorTests
     /// </summary>
     /// <remarks>
     /// <para>
-    /// Every bar of the rally is built to hold <b>true range 8</b> and <b>+DM 4</b> with <b>−DM 0</b>: the
-    /// high and the low each rise by 4, so the up move is 4 and the down move is −4, and the close sits at
-    /// the high so neither gap term can exceed the bar's own 8-point range.
+    /// Every bar of the rally holds <b>+DM 4</b> and <b>−DM 0</b> — the high and the low each rise by 4, so
+    /// the up move is 4 and the down move is −4.
+    /// </para>
+    /// <para>
+    /// <b>True range deliberately VARIES across the seed window — 4, 8, 8, 12 — and that is the point.</b>
+    /// Those four sum to 32, so the mean is exactly 8 and every number below is unchanged by the variation.
+    /// A window where every bar carried 8 would be satisfied identically by a mean-of-n seed, a
+    /// first-observation seed and a last-observation seed, so nothing could make Wilder's seeding half fail:
+    /// the recursion from index 5 on is the same either way. Varying it separates them — seeding from bar 1
+    /// alone reads +DI 100 and from bar 4 alone reads 33.3, against the mean's 50.
     /// </para>
     /// <para>
     /// <b>Period 4, not Wilder's 14, and that is what makes the expectations exact.</b> Wilder's smoothing
@@ -508,10 +515,10 @@ public sealed class IndicatorTests
     private static IReadOnlyList<Bar> RallyThenReversal() =>
     [
         Bar(0, 12, 4, 12),
-        Bar(1, 16, 8, 16),
-        Bar(2, 20, 12, 20),
-        Bar(3, 24, 16, 24),
-        Bar(4, 28, 20, 28),
+        Bar(1, 16, 12, 14), // true range 4  — the seed window's low end
+        Bar(2, 20, 12, 18), // true range 8
+        Bar(3, 24, 16, 16), // true range 8
+        Bar(4, 28, 20, 28), // true range 12 — the high end; the four average to exactly 8
         Bar(5, 32, 24, 32),
         Bar(6, 36, 28, 36),
         Bar(7, 40, 32, 36), // closes below its high, so bar 8's true range is 16
@@ -544,6 +551,18 @@ public sealed class IndicatorTests
         // +DI is 100 × 4 / 8 = 50. Not one bar of the rally moved the low down, so −DM is 0 throughout.
         plus[4].Should().Be(50m);
         minus[4].Should().Be(0m);
+    }
+
+    [Fact]
+    public void DirectionalIndicators_SeedOnTheWindowsMean_NotOnOneObservationInIt()
+    {
+        // Wilder seeds on the MEAN of the first `period` observations. The true ranges inside that window
+        // are 4, 8, 8 and 12, which average to 8 — so this pins the seeding half of the Wilder trap, the
+        // half a uniform window cannot test. Seeding from bar 1 alone would read 100 × 4 / 4 = 100 here,
+        // and from bar 4 alone 100 × 4 / 12 = 33.3; only the mean gives 50.
+        IReadOnlyList<decimal?> plus = DirectionalMovement.PlusDi(RallyThenReversal(), 4);
+
+        plus[4].Should().Be(50m);
     }
 
     [Fact]

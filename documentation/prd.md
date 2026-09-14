@@ -245,10 +245,11 @@ The server serves OHLCV bars for a futures instrument at a requested resolution 
   read will recompute it. It also repairs `R-2.11`'s accepted skew, and warms a series ahead of its first
   caller.
 - **R-2.6** Supported at v1: ATR, RSI, SMA, EMA, MACD (line, signal, histogram), session-anchored VWAP,
-  rolling VWAP (`vwap-rolling`, the volume-weighted average price over the trailing `period` bars) and
-  Bollinger bands. The set is a **closed vocabulary** at the tool boundary — an unknown name is an error that
-  names the known ones. **A different calculation is a different name**: a VWAP with a lookback is not a
-  parameterised session VWAP, so it is its own member rather than `vwap` at a period
+  rolling VWAP (`vwap-rolling`, the volume-weighted average price over the trailing `period` bars),
+  Bollinger bands, and Wilder's directional family — `adx` with its `plus-di` and `minus-di` legs, one
+  period across all three (gh#670). The set is a **closed vocabulary** at the tool boundary — an unknown
+  name is an error that names the known ones. **A different calculation is a different name**: a VWAP with a
+  lookback is not a parameterised session VWAP, so it is its own member rather than `vwap` at a period
   ([ADR-0018](adr/0018-period-selection-among-configured-periods.md)).
 - **R-2.7** **No indicator value is computed across a contract roll.** Adjacent quarters do not trade at the
   same price, so a value smoothed across the seam reports a bookkeeping gap as market movement. The projection

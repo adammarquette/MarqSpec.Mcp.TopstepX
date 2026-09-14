@@ -78,6 +78,33 @@
 # closes one and leaves the next standing, which is precisely what the second review demonstrated by
 # finding a second spelling before the first had been fixed.
 #
+# AND THEN A THIRD PASS WALKED PAST THE CLOSED POPULATION, WHICH IS THE PART WORTH KEEPING. The two
+# positions were tested against the line AFTER the trailing comment had been stripped, and the strip
+# was `sub(/[[:space:]]+#.*$/, "")` — blind to quotes. So the reviewer wrote the step name, with the
+# ordering chosen so `role-to-assume:` survived the cut and the per-job assertions still passed:
+#
+#   - { with: { … }, name: "Configure AWS credentials # staging", uses: …@main }
+#
+# The `#` is inside a quoted scalar and is not a comment. The strip cut the line there anyway, the
+# `uses:` key went with it, NEITHER position matched, and the row fell out through `next` — the same
+# silent SKIP as the first two rounds, reached one step earlier than any rule could refuse it. It did
+# not have to look like a comment: `env: { NOTE: "see gh #678" }` in that position did it too. The run
+# reported `22 uses:`, `3 time(s)`, and — new this round, and strictly worse — `reach release.yml:
+# every uses: on 12 line(s) read as an action reference`, a POSITIVE assertion of completeness that
+# was false. A skip that says nothing is a hole; a skip standing under a green completeness assertion
+# is the same hole with a certificate.
+#
+# THE ORDER OF OPERATIONS WAS THE DEFECT, NOT THE REGEX. So there are two changes and only the second
+# is durable. The comment rule is now quote-aware and shared with strip_comments() rather than
+# duplicated (it had the identical blindness one layer down, where it hid a `:latest` pull in a deploy
+# job from refuse_in_job — older than these pin rules and reachable without them). That is one more
+# spelling of correctness and it will be wrong again: a backslash-escaped quote already defeats it.
+# THE PART THAT CLOSES THE CLASS IS THE GUARD: the key test is applied to the line BEFORE the cut as
+# well as after, and a key that was there before and is gone after is REFUSED. A comment can only ever
+# delete text, never create a key, so that comparison needs no theory of what a comment is — whatever
+# the rule gets wrong next, the outcome is red rather than green. Fix the reader, then make the
+# reader's own mistakes fail closed; the first alone is what the last two rounds each shipped.
+#
 # ACTION IDENTITY IS CASE-FOLDED, and that is a measurement rather than a guess. Agreement was keyed on
 # an exact string, so re-casing deploy.yml's two sites to `aws-actions/Configure-AWS-Credentials@v5`
 # while release.yml stayed at `@v6` read as two unrelated actions, each internally in agreement — `8
@@ -107,14 +134,29 @@
 #     not a silent skip, so this bounds what a green run means to FIX rather than what it certifies.
 #     The cost of the refusal is a one-line diff or a pull request widening `collect_uses` and saying
 #     why; the cost of the skip was the reviewer's `@main`, twice, in two spellings.
-#   * A `uses:` INSIDE A `run:` SCRIPT is deliberately not a key here. Review measured that this gate
-#     had no false positive on such a line before the reach rule, and it was not going to gain one:
-#     the position test is what keeps prose in a shell script out, and write_sound carries that line
-#     so nothing can widen the matcher back to the bare token in silence.
-#   * A `uses` key reached through an ALIAS MERGE, or written with a tag or escape that hides the
-#     token, is outside the two positions. Nothing in this repository writes one and none has been
-#     demonstrated against this gate; closing it needs a YAML parser rather than another pattern.
-#     Recorded as the residual it is.
+#   * A `uses:` INSIDE A `run:` SCRIPT is deliberately not a key here, and the position test alone was
+#     not enough to say so. Review measured that this gate had no false positive on such a line before
+#     the reach rule; it then gained one, because `[{,] uses:` is a pattern like any other and fires on
+#     ordinary JSON — `echo {"uses": "x"}` in a shell script was refused, on a gate whose entire
+#     subject is a parse hole, which is how a gate gets deleted by the first person it wrongly stops.
+#     The fix is not a longer pattern: NOTHING INSIDE A BLOCK SCALAR IS YAML, so nothing inside one can
+#     be a key, and collect_uses now tracks `run: |` regions structurally. That also retires an older
+#     false positive review had recorded and left alone — a `uses:`-shaped line inside a `run:` heredoc
+#     used to be parsed as a real action reference and could redden the agreement rule. write_sound
+#     carries the prose line, the JSON line and a trailing comment, so neither direction can be widened
+#     back in silence.
+#   * A `uses` key reached through an ALIAS MERGE, written with a tag or escape that hides the token,
+#     or written as a YAML EXPLICIT KEY —
+#
+#         - ? uses
+#           : aws-actions/configure-aws-credentials@main
+#
+#     — is outside the two positions and is SKIPPED, not refused. `safe_load` resolves that last one to
+#     the step Actions runs and this gate exits 0 on it; it was demonstrated in review on PR #681 and
+#     deliberately left here rather than pattern-matched, because a third key spelling answered with a
+#     third pattern is the loop the population rule exists to get out of. Nothing in this repository
+#     writes any of them. Closing them needs a YAML parser rather than another pattern, and that is a
+#     card, not a line. Recorded as the residual it is — the honest bound on the licence above.
 #   * A DIGEST-PINNED CONTAINER ACTION — `uses: docker://alpine@sha256:<64 hex>` — is refused, because
 #     `sha256:…` is not one of the two pin shapes below. It is genuinely pinned, so that refusal is
 #     wrong on its merits; no such spelling exists in either file, so it costs nothing today. Raised
@@ -145,11 +187,46 @@ pass() {
   ok "ok  $*"
 }
 
+# ONE COMMENT RULE, INJECTED INTO EVERY awk THAT NEEDS IT. Both this file's readers have to answer
+# "where does this line stop being YAML", and two copies of that notion in two passes is two notions
+# that drift — the rule gh#155 wrote down for `issue-link`'s stripper, and the shape PR #681's third
+# review found here: `strip_comments()` and `collect_uses()` each carried `sub(/[[:space:]]+#.*$/)`,
+# and fixing one would have left the other.
+#
+# A `#` OPENS A COMMENT ONLY OUTSIDE A QUOTED SCALAR, which is YAML's own rule and not a refinement.
+# `name: "Configure AWS credentials # staging"` is a step name; the old regex read it as a comment,
+# deleted the rest of the line — the `uses:` key included — and the readers below then had nothing to
+# refuse. The same cut hid `docker pull …:latest` from refuse_in_job behind `echo "tag # note" && …`.
+#
+# IT IS A RULE, NOT A YAML PARSER, AND IT IS NOT TREATED AS ONE. A backslash-escaped quote inside a
+# double-quoted scalar still closes the quote as far as this scan is concerned. That is why
+# collect_uses guards the strip rather than trusting it: whatever this gets wrong next is a refusal
+# naming the line, not a silent skip.
+AWK_COMMENT_RULE='
+function comment_at(s,   i, c, q, n) {
+  n = length(s); q = ""
+  for (i = 1; i <= n; i++) {
+    c = substr(s, i, 1)
+    if (q != "") { if (c == q) q = ""; continue }
+    if (c == "\"" || c == sq) { q = c; continue }
+    if (c == "#" && (i == 1 || substr(s, i - 1, 1) ~ /[[:space:]]/)) return i
+  }
+  return 0
+}
+function strip_comment(s,   at) {
+  at = comment_at(s)
+  if (at == 0) return s
+  s = substr(s, 1, at - 1)
+  sub(/[[:space:]]+$/, "", s)
+  return s
+}
+'
+
 # Strip whole-line comments and trailing comments so a sentence ABOUT an environment key is not one.
 strip_comments() {
-  awk '
+  awk -v sq="'" "$AWK_COMMENT_RULE"'
     /^[[:space:]]*#/ { next }
-    { sub(/[[:space:]]+#.*$/, ""); print }
+    { print strip_comment($0) }
   ' "$1"
 }
 
@@ -362,9 +439,11 @@ USES_TSV="$SCRATCH/uses.tsv"
 UNREAD_TSV="$SCRATCH/unread.tsv"
 
 # Every `uses:` in one file, as "<file>\t<line>\t<action>\t<action-lowercased>\t<ref>", plus a row in
-# <unread> for every `uses:` KEY on a line this cannot parse. Comments are stripped HERE and not
-# through strip_comments(), which DROPS lines: both diagnostics name a line number an author will open
-# the file at, so the numbering has to survive the strip.
+# <unread> for every `uses:` KEY on a line this cannot parse. This reads the file itself rather than
+# strip_comments()'s output, which DROPS lines: both diagnostics name a line number an author will
+# open the file at, so the numbering has to survive the strip. The comment RULE is still the shared
+# one — what differs is only that the lines are numbered here, and that a cut which removes a key is
+# caught rather than trusted.
 #
 # THE TWO TESTS ARE ONE PROGRAM BECAUSE THEY ARE ONE NOTION. "Is this a `uses:` key" and "is it a
 # `uses:` key I can read" differ only in strictness, and two copies of that notion in two passes is
@@ -381,11 +460,12 @@ UNREAD_TSV="$SCRATCH/unread.tsv"
 collect_uses() {
   local file="$1" unread="$2"
   [ -f "$file" ] || return 0
-  awk -v file="$file" -v sq="'" -v unread="$unread" '
+  awk -v file="$file" -v sq="'" -v unread="$unread" "$AWK_COMMENT_RULE"'
     function emit_unread(text) {
       sub(/^[[:space:]]+/, "", text)
       printf "%s\t%d\t%s\n", file, FNR, text >> unread
     }
+    function indent_of(s,   t) { t = s; sub(/[^[:space:]].*$/, "", t); return length(t) }
     # A `uses:` KEY, by POSITION: opening its line (after an optional `- `), or following a `{` or a
     # `,` inside a flow mapping. Quoted either side of the word and spaced before the colon, because
     # `"uses" :` is the same key to YAML and a matcher that misses it hands back the hole.
@@ -395,15 +475,44 @@ collect_uses() {
     # matcher of the bare token refuses it, on a required-adjacent gate, which is how a gate gets
     # deleted by the first person it wrongly stops. Review measured that the gate had no such false
     # positive before this rule and it must not gain one, so write_sound carries that exact line.
+    #
+    # A POSITION IS STILL A PATTERN, THOUGH, AND THIS ONE GAINED THE FALSE POSITIVE ANYWAY: `[{,]`
+    # fires on `echo {"uses": "x"}` in the same shell script. Patterns do not fix that; the block
+    # scalar rule above does, by ruling the whole region out of YAML before any pattern is consulted.
+    # Both lines are in write_sound.
     BEGIN {
       k = "[\"" sq "]?uses[\"" sq "]?[[:space:]]*:"
       key_re = "^[[:space:]]*(-[[:space:]]+)?" k "|[{,][[:space:]]*" k
+      block_indent = -1
     }
-    /^[[:space:]]*#/ { next }
+    # NOTHING INSIDE A BLOCK SCALAR IS YAML, so nothing inside one can be a key. That is structural
+    # rather than another spelling, and it is the half the key-POSITION matcher got wrong: `[{,] uses:`
+    # fires on ordinary JSON in a shell script — `echo {"uses": "x"}` — and refusing a correct workflow
+    # on a required-adjacent gate is how the gate gets deleted by the first person it wrongly stops.
+    # The block runs from a `key: |` or `key: >` to the first non-blank line indented no further than
+    # that key, which is YAML s own rule for where it ends.
     {
-      line = $0
-      sub(/[[:space:]]+#.*$/, "", line)
+      raw = $0
+      if (block_indent >= 0) {
+        if (raw ~ /^[[:space:]]*$/) next
+        if (indent_of(raw) > block_indent) next
+        block_indent = -1
+      }
+      if (raw ~ /^[[:space:]]*#/) next
+      cut = comment_at(raw)
+      line = (cut > 0) ? substr(raw, 1, cut - 1) : raw
+      sub(/[[:space:]]+$/, "", line)
+      if (line ~ /:[[:space:]]*[|>][0-9+-]*$/) block_indent = indent_of(raw)
     }
+    # THE COMMENT STRIP MAY NEVER DELETE A `uses:` KEY, and this is the line that makes the rest of
+    # this function safe to get wrong. The strip ran FIRST and the position tests ran on its output,
+    # so a `#` the rule read wrongly removed the key and the row fell out through `next` — a SKIP, the
+    # exact shape every round of this review has blocked on, reached before any rule could refuse it.
+    # Comparing the two tells the difference: a comment can only ever DELETE text, never create a key,
+    # so a key that was there before the cut and is gone after it is a key this gate cannot vouch for.
+    # It is refused by file, line and raw text. The quote-aware rule above is what makes that rare;
+    # THIS is what makes the next thing the rule gets wrong red instead of green.
+    cut > 0 && raw ~ key_re && line !~ key_re { emit_unread(raw); next }
     line !~ key_re { next }
     line ~ /^[[:space:]]*(-[[:space:]]+)?uses:[[:space:]]/ {
       spec = line

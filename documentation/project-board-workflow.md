@@ -129,12 +129,17 @@ closed four days earlier, while every one of the three was still correctly `Bloc
 nothing had recorded. A coordinator read all three stated reasons, found every named blocker closed, and
 dispatched three implementers before discovering that each card's scope had already shipped.
 
-- **Who owes the re-statement.** The [coordinator](agents/coordinator.md) does. It already passes every
-  `Blocked` card on the cadence its own Definition of Done requires — "in-flight work watched" — so the
-  obligation sits with the actor that is there anyway, not with whichever agent happens to notice a blocker
-  close first. All-closed is not the same question as all-clear: before trusting it, confirm nothing shipped
-  the card's scope already ([coordinator.md](agents/coordinator.md) states the check). Say what the card is
-  waiting on **now**, or move it out of `Blocked` if truly nothing remains.
+- **Who owes the re-statement.** The [coordinator](agents/coordinator.md) does — **not** because its Pick
+  order reaches `Blocked` cards (it does not: `Blocked` is none of that order's four priorities, so nothing
+  there would ever have opened one), but because this obligation has its own trigger, stated in
+  `coordinator.md` rather than merely asserted here: a sweep of every `Blocked` card **before each pass**
+  through Pick order, on the actor that is already there for every other column rather than on whichever
+  agent happens to notice something resolve first. The sweep checks what the reason actually names, not
+  whether it names an issue — a human action or a measurement has no `gh#N` to poll, and is the population
+  most likely to go stale silently under a narrower check. All-resolved is not the same question as
+  all-clear: before trusting it, confirm nothing shipped the card's scope already
+  ([coordinator.md](agents/coordinator.md) states the check and the sweep that triggers it). Say what the
+  card is waiting on **now**, or move it out of `Blocked` if truly nothing remains.
 - **Where a reader looks.** Post the re-statement as a **new comment**, not a body edit — this corpus already
   keeps state in dated entries rather than in place (ADR-0023's `## Update` sections). Name it in the first
   line — put the words `Blocked reason re-stated` there, the way [case 5](#5-two-reviewers-split-verdict)'s

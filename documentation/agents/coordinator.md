@@ -22,14 +22,24 @@ hat yourself.
 **The workable queue is `Todo` on project #5, not the `backlog` label.** That label means *deferred*; picking
 one is inventing schedule. Colloquial "backlog" means ready `Todo`.
 
-**A `Blocked` card whose stated blockers have all closed is not thereby ready.** Read the reason, but do not
-stop at "every named blocker is closed" — that is necessary, not sufficient. Before moving it to `Todo`,
-confirm no PR has already delivered its scope: `gh pr list --state merged --search <id>` and read what is on
-`develop`. That check is what would have caught gh#520, gh#522 and gh#525 — three cards moved to `Todo` and
-dispatched on 2026-09-14 with every named blocker closed, whose scope had in fact already shipped four days
-earlier (gh#677). If it shipped, the card's remaining wait is outside agent reach — re-state it and leave the
-card `Blocked`, per
-[board case 3](../project-board-workflow.md#3-blocked-needs-a-reason-and-no-column-can-hold-it).
+**Sweep every `Blocked` card before each pass through Pick order below — nothing else ever will.** `Blocked`
+is none of Pick order's four priorities and is never picked by them, so without this sweep no procedure here
+ever revisits one; a card would sit on a stated reason forever, however stale. For each `Blocked` card: has
+anything the reason names happened since it was last stated — a blocker issue closing, a human action taken,
+a measurement made, a date passing? Match the check to what the reason actually says, not to whether it names
+an issue — gh#522's restore drill and gh#525's compression-eligibility date have no `gh#N` to poll, and that
+population goes stale exactly as silently if the question stops at "did a blocker close."
+
+- **The reason names something still outstanding** — move on; it still holds.
+- **Something it named happened.** All-resolved is not all-clear: confirm no PR has already delivered the
+  card's own scope before treating it as ready — `gh pr list --state merged --search <id>` and read what is
+  on `develop`. That check is what would have caught gh#520, gh#522 and gh#525 — three cards moved to `Todo`
+  and dispatched on 2026-09-14 with every named blocker closed, whose scope had in fact already shipped four
+  days earlier (gh#677).
+- **It shipped.** The card's remaining wait is outside agent reach — re-state it and leave the card
+  `Blocked`, per
+  [board case 3](../project-board-workflow.md#3-blocked-needs-a-reason-and-no-column-can-hold-it).
+- **Nothing remains.** Move it to `Todo` — it now competes in Pick order like any other card.
 
 **Ready to dispatch** — skip and comment if any of these fail. A thin issue is a defect, not a guess; send it
 back saying what is missing, and it gets re-scored.
@@ -164,6 +174,7 @@ the maintainer can clear.
 
 ## Definition of done
 
-Every dispatched issue matched its hat and tier · in-flight work watched · `Blocked` reasons re-stated when
-their named blockers close · stalls announced on the issue before takeover · every `In Review` PR has a
-reviewer on the current head · cards follow verdicts and conflict kickbacks · nothing merged.
+Every dispatched issue matched its hat and tier · in-flight work watched · `Blocked` swept every pass against
+what each reason actually names, and reasons re-stated when it resolves · stalls announced on the issue
+before takeover · every `In Review` PR has a reviewer on the current head · cards follow verdicts and
+conflict kickbacks · nothing merged.

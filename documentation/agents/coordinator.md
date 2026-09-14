@@ -22,6 +22,15 @@ hat yourself.
 **The workable queue is `Todo` on project #5, not the `backlog` label.** That label means *deferred*; picking
 one is inventing schedule. Colloquial "backlog" means ready `Todo`.
 
+**A `Blocked` card whose stated blockers have all closed is not thereby ready.** Read the reason, but do not
+stop at "every named blocker is closed" — that is necessary, not sufficient. Before moving it to `Todo`,
+confirm no PR has already delivered its scope: `gh pr list --state merged --search <id>` and read what is on
+`develop`. That check is what would have caught gh#520, gh#522 and gh#525 — three cards moved to `Todo` and
+dispatched on 2026-09-14 with every named blocker closed, whose scope had in fact already shipped four days
+earlier (gh#677). If it shipped, the card's remaining wait is outside agent reach — re-state it and leave the
+card `Blocked`, per
+[board case 3](../project-board-workflow.md#3-blocked-needs-a-reason-and-no-column-can-hold-it).
+
 **Ready to dispatch** — skip and comment if any of these fail. A thin issue is a defect, not a guess; send it
 back saying what is missing, and it gets re-scored.
 
@@ -155,6 +164,6 @@ the maintainer can clear.
 
 ## Definition of done
 
-Every dispatched issue matched its hat and tier · in-flight work watched · stalls announced on the issue
-before takeover · every `In Review` PR has a reviewer on the current head · cards follow verdicts and
-conflict kickbacks · nothing merged.
+Every dispatched issue matched its hat and tier · in-flight work watched · `Blocked` reasons re-stated when
+their named blockers close · stalls announced on the issue before takeover · every `In Review` PR has a
+reviewer on the current head · cards follow verdicts and conflict kickbacks · nothing merged.

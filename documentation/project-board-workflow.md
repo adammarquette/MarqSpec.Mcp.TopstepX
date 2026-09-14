@@ -120,6 +120,34 @@ take it. Two kinds, which clear differently — so say which:
 - **Waiting on a change to land.** gh#155 waited on gh#173 because both edit `branch-policy.yml`. It clears on
   a merge, and whoever merges the blocker says so on the blocked issue.
 
+**The reason goes stale, and nothing re-states it by itself.** The comment above is written once, when the
+card is set to `Blocked`, and nothing edits or repeats it when the named blocker later closes. A stale reason
+still *reads* as current, so a reader doing exactly what this case already asks — read the reason, check
+whether it still holds — reaches a confident wrong answer: the named blocker really is closed, so the card
+must be ready. **Measured on 2026-09-14 (gh#677):** gh#520, gh#522 and gh#525 each named a blocker that had
+closed four days earlier, while every one of the three was still correctly `Blocked`, on a different reason
+nothing had recorded. A coordinator read all three stated reasons, found every named blocker closed, and
+dispatched three implementers before discovering that each card's scope had already shipped.
+
+- **Who owes the re-statement.** The [coordinator](agents/coordinator.md) does. It already passes every
+  `Blocked` card on the cadence its own Definition of Done requires — "in-flight work watched" — so the
+  obligation sits with the actor that is there anyway, not with whichever agent happens to notice a blocker
+  close first. All-closed is not the same question as all-clear: before trusting it, confirm nothing shipped
+  the card's scope already ([coordinator.md](agents/coordinator.md) states the check). Say what the card is
+  waiting on **now**, or move it out of `Blocked` if truly nothing remains.
+- **Where a reader looks.** Post the re-statement as a **new comment**, not a body edit — this corpus already
+  keeps state in dated entries rather than in place (ADR-0023's `## Update` sections). Name it in the first
+  line — put the words `Blocked reason re-stated` there, the way [case 5](#5-two-reviewers-split-verdict)'s
+  verdict line always opens with `Verdict: Approve` or `Verdict: Request changes` — so it is greppable. **The
+  most recent such comment wins**; a reason in the body or an earlier comment does not survive a later one.
+  gh#520, gh#522 and gh#525 each carry exactly one, posted 2026-09-14.
+- **The two `Blocked` populations read alike and are not.** `backlog` already marks one: deferred, trigger not
+  fired. It does not mark the other, which is what all three examples above are: implementation **shipped**,
+  `Blocked` only on a human action, a live measurement, or a date nothing agent-side can move — a release cut
+  and the `aws-production` approval (gh#520), a restore drill (gh#522), a compression-eligibility date
+  (gh#525). Label that population `shipped-awaiting-human` ([below](#labels)) rather than leave it reading the
+  same as `backlog`'s silence.
+
 ### 4. An agent stalls or dies mid-work
 
 A card in `In Progress` looks identical whether the work is live or the session died. **The column is not the
@@ -342,6 +370,7 @@ Repo labels, not board-only fields, so an agent reading the raw issue through `g
 | `work:docs` | Documentation-only |
 | `safety-critical` | Touches the read-only boundary or its enforcement. Floors the estimate at 4 |
 | `backlog` | Deferred — valid direction, not scheduled; revisit when its trigger fires |
+| `shipped-awaiting-human` | The other `Blocked` population — implementation merged; blocked only on a human action, a live measurement, or a date nothing agent-side can move. Companion to `backlog`, not a replacement ([case 3](#3-blocked-needs-a-reason-and-no-column-can-hold-it)) |
 | `ladder-exception` | A justified deviation from the `develop → staging` rule, reason stated in the PR |
 | `Work Estimate: 1–5` | Capability the work demands. See the [rubric](work-estimate-rubric.md) |
 

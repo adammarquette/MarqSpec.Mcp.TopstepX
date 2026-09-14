@@ -490,8 +490,10 @@ public sealed class IndicatorTests
     /// </summary>
     /// <remarks>
     /// <para>
-    /// Every bar of the rally holds <b>+DM 4</b> and <b>−DM 0</b> — the high and the low each rise by 4, so
-    /// the up move is 4 and the down move is −4.
+    /// Every bar of the rally holds <b>+DM 4</b> and <b>−DM 0</b> — the high rises by 4 on every one of
+    /// them, and the low never falls, so the up move is always 4 and the down move is never positive. The
+    /// low's rise is <i>not</i> a uniform 4: bar 1's climbs 8 and bar 2's holds still, which is how the true
+    /// ranges below come out uneven while the directional movement stays constant.
     /// </para>
     /// <para>
     /// <b>True range deliberately VARIES across the seed window — 4, 8, 8, 12 — and that is the point.</b>
@@ -547,7 +549,7 @@ public sealed class IndicatorTests
         IReadOnlyList<decimal?> plus = DirectionalMovement.PlusDi(bars, 4);
         IReadOnlyList<decimal?> minus = DirectionalMovement.MinusDi(bars, 4);
 
-        // Smoothed +DM is (4 + 4 + 4 + 4) / 4 = 4 and smoothed true range is (8 + 8 + 8 + 8) / 4 = 8, so
+        // Smoothed +DM is (4 + 4 + 4 + 4) / 4 = 4 and smoothed true range is (4 + 8 + 8 + 12) / 4 = 8, so
         // +DI is 100 × 4 / 8 = 50. Not one bar of the rally moved the low down, so −DM is 0 throughout.
         plus[4].Should().Be(50m);
         minus[4].Should().Be(0m);

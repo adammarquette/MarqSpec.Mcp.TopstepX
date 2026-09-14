@@ -9,7 +9,7 @@
 # image. A self-test satisfied by exit status alone would go green on a runner where the gate exited 1
 # for "no such directory". Each case matches on the words that name ITS OWN fault.
 #
-# THE ACTION-PIN CASES (gh#678) ARE 8-12, AND EACH TRIPS EXACTLY ONE RULE. That is deliberate and it is
+# THE ACTION-PIN CASES (gh#678) ARE 8-16, AND EACH TRIPS EXACTLY ONE RULE. That is deliberate and it is
 # why they are built by MUTATING the sound pair rather than by hand-writing a blob: a fixture that
 # breaks two rules at once is refused by the conjunction and pins neither of them, which is
 # check-doc-sizes-selftest.sh's lesson arriving at a third gate. So case 9 rewrites `@v6` to `@main` in
@@ -17,11 +17,25 @@
 # fixture is that `main` is not a pin. Cases 10 and 11 do the same for a bare action and for `@master`.
 # Case 8 is the mirror: every ref is a pin, and the fault is that they disagree across the two files.
 #
-# TWO OF THE GATE'S FORGIVENESSES ARE PINNED BY THE SOUND CASE INSTEAD OF BY A RED ONE — a quoted
-# `uses:` and a local `./` action, both in write_sound's deploy.yml. Neither spelling appears in this
-# repository's real workflows, so nothing else here would notice if the gate stopped understanding
-# them; delete either forgiveness and case 13 goes red on a topology that is genuinely sound. That is
-# check-release-gate-selftest.sh's mapping-spelling case, one gate over.
+# CASES 13-16 ARE THE EVASIONS PR #681's TWO REVIEW PASSES DEMONSTRATED, plus the branch that shares
+# their root. None of them defeated a rule: each left the POPULATION those rules run over, so every
+# rule held and the run reported green having read one `uses:` less. 13 spells a step as a YAML flow
+# mapping and 15 wraps the ref onto the following line — the two halves of one line-shape assumption,
+# and 15 was found by a second reviewer before 13 had been fixed, which is why the gate refuses what
+# it cannot parse rather than learning spellings one at a time. 16 is an empty value, the same drop
+# reached past the quote forgiveness. 14 is the other axis entirely: re-casing the action name in one
+# file, which the exact-string agreement key read as a second, unrelated action. A fixture per
+# decision, and no needle reaches another's rule.
+#
+# FOUR OF THE GATE'S FORGIVENESSES ARE PINNED BY THE SOUND CASE INSTEAD OF BY A RED ONE — a quoted
+# `uses:`, a local `./` action, a whole-line COMMENT that mentions `uses:`, and a `uses:` inside a
+# `run:` SCRIPT, all in write_sound's deploy.yml. None of those spellings appears in this repository's
+# real workflows, so nothing else here would notice if the gate stopped understanding them; delete any
+# one forgiveness and case 17 goes red on a topology that is genuinely sound. The last of the four is
+# the one the reach rule could most easily have broken — a matcher of the bare `uses:` token rather
+# than of a key POSITION reddens correct YAML, and review had measured that this gate held that
+# property before the rule existed. That is check-release-gate-selftest.sh's mapping-spelling case,
+# one gate over.
 
 set -euo pipefail
 
@@ -159,6 +173,12 @@ jobs:
       # there is no third party to pin and no ref to write. Refusing it would block a legitimate
       # pull request, which is how a gate gets deleted by the first person it wrongly stops.
       - uses: ./.github/actions/announce-deploy
+      # A `uses:` INSIDE A run: SCRIPT. Prose in a shell command, not a key — and the reach rule has
+      # to tell those apart by POSITION, because a matcher of the bare token reddens this line and
+      # this line is correct YAML. Review measured that the gate had no such false positive before
+      # the reach rule existed; this is what stops one being added later in silence.
+      - run: |
+          echo "the step below uses: a pinned ref"
       - run: docker buildx imagetools inspect
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v6
@@ -436,7 +456,85 @@ expect_red "the credential action is absent from both deploy workflows" \
   'aws-actions/configure-aws-credentials' \
   'read nothing'
 
-# 13. AND IT MUST STILL SAY YES.
+# 13. The staging credential step, rewritten from the block form into a YAML FLOW MAPPING — the same
+#     step, the spelling `collect_uses` cannot read. Everything else about the fixture is sound: the ref
+#     stays `@v6`, so it is a pin and it agrees with the three sites still read; `GitHubDeploy-staging`
+#     rides along inside the flow map, so `require_in_job` is satisfied; the credential action is still
+#     present three times, so the vacuity guard does not fire. The ONLY thing wrong is that one `uses:`
+#     reaches Actions and does not reach this gate — and every rule above then holds over a population
+#     with a hole in it and reports green, which is how the reviewer of PR #681 got `@main` onto the
+#     staging credential seam with `EXIT=0`. Confirmed valid YAML resolving to the identical step
+#     (`yaml.safe_load`, 2026-09-14) before it was written down; a fixture that is not the step it
+#     claims to be pins nothing.
+#
+#     Written with `s` and `d` inside a `1,/…/` range rather than with `c\`: the range stops at the
+#     first `aws-region:`, which is the STAGING step, so production's identical block is untouched and
+#     this stays a one-step mutation. All three commands are POSIX, for the reason `mutate` exists.
+write_sound "$FIXTURES/pin-flow-mapping"
+mutate "$FIXTURES/pin-flow-mapping/release.yml" '1,/^          aws-region: us-east-1$/{
+s#^      - name: Configure AWS credentials$#      - { uses: aws-actions/configure-aws-credentials@v6, with: { role-to-assume: "arn:aws:iam::${{ vars.AWS_ACCOUNT_ID }}:role/GitHubDeploy-staging", aws-region: us-east-1 } }#
+/^        uses: aws-actions\/configure-aws-credentials@v6$/d
+/^        with:$/d
+/^          role-to-assume: arn:aws:iam/d
+/^          aws-region: us-east-1$/d
+}'
+expect_red "a credential step written as a YAML flow mapping" \
+  "$FIXTURES/pin-flow-mapping" \
+  'release.yml:' \
+  'did not read as an action reference' \
+  'do not delete the assertion'
+
+# 14. The credential action RE-CASED in deploy.yml only, and left at a different pin. GitHub resolves
+#     owner/repo case-insensitively — `repos/AWS-Actions/Configure-AWS-Credentials` answers 200 and
+#     reports `full_name` `aws-actions/configure-aws-credentials`, and its `/tarball/v6` answers 200
+#     with `filename=aws-actions-configure-aws-credentials-v6-…`, while a misspelt name 404s on both
+#     (measured 2026-09-14) — so these four sites are ONE action pinned two ways, which is gh#678's
+#     own scenario: staging on one major and production on another. Keyed on an exact string they
+#     were two unrelated actions, each internally in agreement — green, reporting `4 distinct
+#     action(s)` and the credential action `2 time(s)` over THIS fixture, and `8` and `2` over the
+#     real workflows. Every ref here is a pin and every line is read, so the only rule this can trip
+#     is the agreement one, and it can only trip it if identity is folded.
+write_sound "$FIXTURES/pin-case"
+mutate "$FIXTURES/pin-case/deploy.yml" 's#aws-actions/configure-aws-credentials@v6#aws-actions/Configure-AWS-Credentials@v5#'
+expect_red "the credential action is re-cased in one file and pinned differently there" \
+  "$FIXTURES/pin-case" \
+  'is pinned 2 different ways' \
+  'aws-actions/Configure-AWS-Credentials' \
+  'v5' \
+  'v6' \
+  'release.yml:' \
+  'deploy.yml:' \
+  'case-insensitively'
+
+# 15. The SAME credential step with the ref WRAPPED onto the following line. `collect_uses` wanted
+#     `uses:` to open its line AND the ref to sit on that same line, and this defeats the second half
+#     while the flow mapping in case 13 defeats the first. `yaml.safe_load` resolves it to the same
+#     step, `name:` key and all, so it reads as an ordinary step rather than as a flourish — it is
+#     what a line-wrapping formatter emits. Found by a second, independent review pass BEFORE the
+#     first spelling had been fixed, which is the whole argument for refusing what cannot be parsed
+#     instead of teaching the parser one spelling at a time. Everything else is sound: @v6, three
+#     sites still read, GitHubDeploy-staging still in the job.
+write_sound "$FIXTURES/pin-wrapped"
+mutate "$FIXTURES/pin-wrapped/release.yml" '1,/^          aws-region: us-east-1$/s#^        uses: aws-actions/configure-aws-credentials@v6$#        uses:\
+          aws-actions/configure-aws-credentials@v6#'
+expect_red "the credential step wraps its ref onto the following line" \
+  "$FIXTURES/pin-wrapped" \
+  'release.yml:' \
+  'did not read as an action reference' \
+  'do not delete the assertion'
+
+# 16. An EMPTY value. `- uses: ""` matches the shape the parser reads and then parses to nothing,
+#     which used to fall out of the loop in silence — the same hole as 13 and 15 reached through the
+#     branch that survives the quote forgiveness rather than through the line test. One case, one
+#     decision: delete `if (spec == "") { emit_unread(line) }` and only this fixture notices.
+write_sound "$FIXTURES/pin-empty"
+mutate "$FIXTURES/pin-empty/release.yml" '1,/^          aws-region: us-east-1$/s#^        uses: aws-actions/configure-aws-credentials@v6$#        uses: ""#'
+expect_red "a uses: with an empty value" \
+  "$FIXTURES/pin-empty" \
+  'release.yml:' \
+  'did not read as an action reference'
+
+# 17. AND IT MUST STILL SAY YES.
 write_sound "$FIXTURES/sound"
 green_out=""
 green_status=0
@@ -476,6 +574,37 @@ else
       failures=$((failures + 1))
       ;;
   esac
+
+  # AND THE REACH IS ASSERTED PER FILE, which is the half the evidence line above cannot carry. That
+  # line is one total over both files, so a `uses:` that stops being read in release.yml and a `uses:`
+  # that starts being read in deploy.yml cancel — and more to the point, on the REAL tree nothing
+  # compares the total to anything at all (it is printed, and gh#678's whole subject is a number that
+  # is trusted because it looks measured). The per-file reach line is a different claim: not *how many
+  # I read* but *I read every one there is*, so it holds on any tree without a literal to maintain.
+  # Cases 13, 15 and 16 are the mutations that kill it. The counts here — 3 and 4 — also pin the split
+  # between the two files, which a single total cannot.
+  #
+  # TWO MORE FORGIVENESSES ARE PINNED BY THIS CASE ALONE, alongside the quoted `uses:` and the local
+  # `./` action, and both are about the reach rule reading too MUCH rather than too little.
+  # write_sound's deploy.yml carries a whole-line COMMENT containing `uses:`, and a `run:` step whose
+  # shell string contains one. Stop stripping comments, or match the bare token instead of a key
+  # position, and each becomes a `uses:` the gate must refuse — so this sound pair goes red on prose,
+  # on a gate that exists to close a parse hole. Both directions have to be held at once.
+  for reach_expected in \
+    'reach   release.yml: every uses: on 3 line(s) read as an action reference' \
+    'reach   deploy.yml: every uses: on 4 line(s) read as an action reference'
+  do
+    case "$green_out" in
+      *"$reach_expected"*) ok "accepted  and said so: $reach_expected" ;;
+      *)
+        red "SELF-TEST FAILED  the per-file reach line on a sound pair"
+        info "  It passed, but never said: \"$reach_expected\""
+        info "  A gate that reads one spelling of uses: and says nothing about the rest licenses the rest."
+        printf '%s\n' "$green_out" | sed 's/^/  | /'
+        failures=$((failures + 1))
+        ;;
+    esac
+  done
 fi
 
 info ""
@@ -485,4 +614,4 @@ if [ "$failures" -gt 0 ]; then
   exit 1
 fi
 
-ok "ok  check-deploy-workflows.sh rejected all 12 bad fixtures, each for its own stated reason, and accepted the sound one."
+ok "ok  check-deploy-workflows.sh rejected all 16 bad fixtures, each for its own stated reason, and accepted the sound one."

@@ -523,6 +523,7 @@ create_label 'epic'             '6f42c1' 'Epic - work stream tracking multiple t
 create_label 'safety-critical'  'b60205' 'Safety-critical path - high-rigor suites; floors Work Estimate at 4'
 create_label 'ladder-exception' 'fbca04' 'Justified exception to the develop to staging promotion rule'
 create_label 'backlog'          'c5def5' 'Deferred - valid direction, not scheduled'
+create_label 'shipped-awaiting-human' 'c2f5d7' 'Blocked population 2: implementation merged, waiting only on a human action, measurement or date'
 create_label 'work:code'        '1d76db' 'Coding Agent: production code + unit tests (test-first)'
 create_label 'work:qa'          '006b75' 'QA/SDET Agent: integration tests, written independently'
 create_label 'work:platform'    '5319e7' 'Platform Agent: CI/CD, container, local test environment, release'

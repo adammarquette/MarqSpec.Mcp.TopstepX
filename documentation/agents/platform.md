@@ -1420,13 +1420,60 @@ that topology on every pull request, beside the gate.
 
 **Since gh#678 it also holds every `uses:` in those two files to a pinned ref** — a `vN` release tag or
 a commit SHA, never a branch — and requires every occurrence of one action to agree on which pin,
-**across the two files rather than within each**. The credential action is why:
-`aws-actions/configure-aws-credentials` sits in all four deploy jobs, gh#672 moved all four from `@v4`
-to `@v6` in one commit, and nothing required them to move together — a partial apply would have been
-equally green, because a deploy workflow's steps first execute at a real release or a real dispatch and
-never on a pull request. The occurrence count is **derived**, and zero occurrences of that action is a
-failure rather than a pin rule passing over an empty list. The reasoning, the allowlist-not-blocklist
-direction and what the gate deliberately does not read are in the script's own header, not here.
+**across the two files rather than within each**, with action identity **case-folded**. The credential
+action is why: `aws-actions/configure-aws-credentials` sits in all four deploy jobs, gh#672 moved all
+four from `@v4` to `@v6` in one commit, and nothing required them to move together — a partial apply
+would have been equally green, because a deploy workflow's steps first execute at a real release or a
+real dispatch and never on a pull request. The occurrence count is **derived**, and zero occurrences of
+that action is a failure rather than a pin rule passing over an empty list. The reasoning, the
+allowlist-not-blocklist direction and what the gate deliberately does not read are in the script's own
+header, not here.
+
+**"Every" was false for two rounds of review, and how it was false is the part to carry** (PR #681).
+The parser wanted `uses:` to OPEN its line *and* to carry the ref on that same line. One reviewer
+respelt `release.yml`'s `deploy-staging` credential step as a YAML flow mapping — `- { uses: …@main,
+with: { … } }` — and a second, independently and before the first was fixed, simply **wrapped the ref
+onto the following line**, which is what a formatter emits and which keeps its `name:` key so it reads
+as an ordinary step. `yaml.safe_load` resolves both to the step Actions runs; the gate exited **0** on
+both. **Not one rule was defeated.** The pin rule, the agreement rule and the vacuity guard all held;
+they held over a population with a hole in it. A third mutation worked the same way on a different
+axis — `Configure-AWS-Credentials@v5` in `deploy.yml` against `@v6` in `release.yml` read as two
+unrelated actions, each in agreement with itself. Four things generalise:
+
+- **A gate that selects its population by pattern licenses the whole population, not the part it
+  matched.** So the population is now closed: every `uses:` key the gate can locate is either read as
+  an action reference or **refused by file, line and text**, which is the allowlist-fails-closed
+  decision the ref rule already made, one level up. Teaching the parser each spelling was the other
+  option and was declined — it closes one and leaves the next standing, which is not a prediction: the
+  second spelling was found while the first was still open. **Either close the population or narrow
+  the sentence; a licence wider than the reach is the defect, not the wording.**
+- **Closing a population reads too much as easily as too little, and only one of the two is loud.** The
+  matcher is a key *position* — opening a line, or after a `{` or `,` — never the bare `uses:` token,
+  because the token also appears in prose inside a `run:` script and refusing that reddens correct
+  YAML on a gate whose whole point is a parse hole. Review had measured the absence of that false
+  positive **before** the rule existed, so it was a property to preserve rather than one to discover;
+  the sound fixture now carries such a line, and so does a `#` comment.
+- **A derived count is not evidence unless something is entitled to contradict it.** This gate printed
+  `23 uses:` and `4 time(s)`; the mutation moved them to `22` and `3` and nothing noticed, because that
+  line is asserted only against the self-test's fixed fixture and on a real tree is printed and
+  forgotten. The fix is **not** to write the number down — hardcoding is what gh#678 forbids — but to
+  assert the property the number reports: a **per-file** *every `uses:` here was read*, which needs no
+  literal and holds on a fifth deploy job nobody has written yet. A per-file claim also survives one
+  file losing a line while another gains one, which a single total does not.
+- **Which mutation each rule catches is a measurement, and a reviewer's "this one assertion catches
+  both" is a claim to re-run.** It was true of the two line-shape evasions and **false** of the
+  re-casing: nothing shrank there, all 23 `uses:` lines were read before and after, so the reach
+  assertion alone is **green** on it — and the fold alone is green on both line shapes. Three evasions,
+  two rules, a fixture each, and taking either rule as covering the other axis would have shipped half
+  a fix.
+
+**Case is folded because GitHub's resolver folds it, measured rather than assumed** (2026-09-14):
+`repos/AWS-Actions/Configure-AWS-Credentials` answers `200` with `full_name`
+`aws-actions/configure-aws-credentials`, and its `/tarball/v6` — the path an action's source is fetched
+through — `200` with `filename=aws-actions-configure-aws-credentials-v6-…`, while a misspelt name
+`404`s on both, so that `200` is the fold and not a permissive API. **No Actions job was run**, and the
+refusal does not depend on one: either the two spellings are one action pinned two ways, or one names a
+repository that does not exist, and both are red. Only the diagnostic's wording turns on the answer.
 
 ### Infrastructure
 

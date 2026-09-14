@@ -9,7 +9,7 @@
 # image. A self-test satisfied by exit status alone would go green on a runner where the gate exited 1
 # for "no such directory". Each case matches on the words that name ITS OWN fault.
 #
-# THE ACTION-PIN CASES (gh#678) ARE 8-16, AND EACH TRIPS EXACTLY ONE RULE. That is deliberate and it is
+# THE ACTION-PIN CASES (gh#678) ARE 8-19, AND EACH TRIPS EXACTLY ONE RULE. That is deliberate and it is
 # why they are built by MUTATING the sound pair rather than by hand-writing a blob: a fixture that
 # breaks two rules at once is refused by the conjunction and pins neither of them, which is
 # check-doc-sizes-selftest.sh's lesson arriving at a third gate. So case 9 rewrites `@v6` to `@main` in
@@ -17,7 +17,7 @@
 # fixture is that `main` is not a pin. Cases 10 and 11 do the same for a bare action and for `@master`.
 # Case 8 is the mirror: every ref is a pin, and the fault is that they disagree across the two files.
 #
-# CASES 13-16 ARE THE EVASIONS PR #681's TWO REVIEW PASSES DEMONSTRATED, plus the branch that shares
+# CASES 13-19 ARE THE EVASIONS PR #681's THREE REVIEW PASSES DEMONSTRATED, plus the branch that shares
 # their root. None of them defeated a rule: each left the POPULATION those rules run over, so every
 # rule held and the run reported green having read one `uses:` less. 13 spells a step as a YAML flow
 # mapping and 15 wraps the ref onto the following line — the two halves of one line-shape assumption,
@@ -27,15 +27,25 @@
 # file, which the exact-string agreement key read as a second, unrelated action. A fixture per
 # decision, and no needle reaches another's rule.
 #
-# FOUR OF THE GATE'S FORGIVENESSES ARE PINNED BY THE SOUND CASE INSTEAD OF BY A RED ONE — a quoted
-# `uses:`, a local `./` action, a whole-line COMMENT that mentions `uses:`, and a `uses:` inside a
-# `run:` SCRIPT, all in write_sound's deploy.yml. None of those spellings appears in this repository's
-# real workflows, so nothing else here would notice if the gate stopped understanding them; delete any
-# one forgiveness and case 17 goes red on a topology that is genuinely sound. The last of the four is
-# the one the reach rule could most easily have broken — a matcher of the bare `uses:` token rather
-# than of a key POSITION reddens correct YAML, and review had measured that this gate held that
-# property before the rule existed. That is check-release-gate-selftest.sh's mapping-spelling case,
-# one gate over.
+# 17-19 ARE THE THIRD PASS, AND THEY ARE ONE DEFECT AT THREE DEPTHS: the comment strip ran BEFORE the
+# tests that decide read-or-refuse, so a `#` that is not a comment deleted the key and the line was
+# skipped. 17 is that, in the very spelling the gate's header promises to refuse by name. 18 defeats
+# the FIX rather than the bug — a `#` the quote-aware rule still reads wrongly — and requires the
+# outcome to be a refusal anyway, because a character scan is a rule and not a YAML parser and the
+# card is about what happens when the parser is wrong. 19 is the same strip under the OLDER
+# assertions, where it hid a `:latest` pull in a deploy job from `refuse_in_job`.
+#
+# SIX OF THE GATE'S FORGIVENESSES ARE PINNED BY THE SOUND CASE INSTEAD OF BY A RED ONE — a quoted
+# `uses:`, a local `./` action, a whole-line COMMENT that mentions `uses:`, a TRAILING comment on a
+# `uses:` line, a `uses:` inside a `run:` SCRIPT, and ordinary JSON inside a `run:` BLOCK SCALAR, all
+# in write_sound's deploy.yml. None of those spellings appears in this repository's real workflows, so
+# nothing else here would notice if the gate stopped understanding them; delete any one forgiveness
+# and case 20 goes red on a topology that is genuinely sound. The last two are the ones the reach rule
+# could most easily have broken, and it broke one of them — a matcher of the bare `uses:` token
+# reddens the prose line, and the key-POSITION matcher that replaced it reddened the JSON line
+# instead. Review had measured the absence of that false positive before the rule existed, which makes
+# it a property to preserve rather than one to discover. That is check-release-gate-selftest.sh's
+# mapping-spelling case, one gate over.
 
 set -euo pipefail
 
@@ -155,7 +165,7 @@ jobs:
     steps:
       # A QUOTED uses:. Legal YAML that no workflow here writes, so only this case would notice the
       # gate reading the closing quote as part of the ref and calling v7 unpinned.
-      - uses: "actions/checkout@v7"
+      - uses: "actions/checkout@v7"  # and a real TRAILING COMMENT, which has to still be stripped
       - run: docker buildx imagetools inspect
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v6
@@ -177,8 +187,16 @@ jobs:
       # to tell those apart by POSITION, because a matcher of the bare token reddens this line and
       # this line is correct YAML. Review measured that the gate had no such false positive before
       # the reach rule existed; this is what stops one being added later in silence.
+      #
+      # THE SECOND LINE IS THE HALF THE POSITION TEST ALONE GOT WRONG (PR #681, third review). A
+      # position is still a pattern, and `[{,] uses:` fires on ordinary JSON in a shell script, so a
+      # CORRECT workflow was refused — which is how a required-adjacent gate gets deleted by the
+      # first person it wrongly stops, this suite's own stated criterion. Nothing inside a block
+      # scalar is YAML, so nothing inside one can be a key; that is a structural fact rather than
+      # another spelling, and it is what has to hold this line rather than the matcher being lucky.
       - run: |
           echo "the step below uses: a pinned ref"
+          echo '{ "uses": "x" }'
       - run: docker buildx imagetools inspect
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v6
@@ -534,7 +552,69 @@ expect_red "a uses: with an empty value" \
   'release.yml:' \
   'did not read as an action reference'
 
-# 17. AND IT MUST STILL SAY YES.
+# 17. A `#` INSIDE A QUOTED SCALAR, EARLIER ON THE LINE. `collect_uses` stripped the trailing comment
+#     BEFORE it applied the key-position tests, so a `#` that is not a comment truncated the line past
+#     the `uses:` key, neither matcher saw a key, and the row was `next`-ed — SKIPPED, which is the
+#     shape cases 13 and 15 already blocked on, reached one step earlier in the same function. The
+#     spelling is the flow mapping the header promises by name, so this fixture is the gate's own
+#     stated guarantee failing. Key ORDER is the trick and is why this fixture is written the way it
+#     is: `with:` comes before the `#` so `role-to-assume:` survives the strip and `require_in_job` is
+#     still satisfied — put `name:` first and the gate goes red for the WRONG reason, on the role
+#     assertion, with the reach line still printing green. The `#` does not have to look like a
+#     comment: `env: { NOTE: "see gh #678" }` in that position is the same skip. Confirmed by
+#     `yaml.safe_load` (2026-09-14) to resolve to the step Actions runs.
+write_sound "$FIXTURES/pin-quoted-hash"
+mutate "$FIXTURES/pin-quoted-hash/release.yml" '1,/^          aws-region: us-east-1$/{
+s|^      - name: Configure AWS credentials$|      - { with: { role-to-assume: "arn:aws:iam::${{ vars.AWS_ACCOUNT_ID }}:role/GitHubDeploy-staging", aws-region: us-east-1 }, name: "Configure AWS credentials # staging", uses: aws-actions/configure-aws-credentials@v6 }|
+/^        uses: aws-actions\/configure-aws-credentials@v6$/d
+/^        with:$/d
+/^          role-to-assume: arn:aws:iam/d
+/^          aws-region: us-east-1$/d
+}'
+expect_red "a quoted # earlier on the line hides the uses: key" \
+  "$FIXTURES/pin-quoted-hash" \
+  'release.yml:' \
+  'did not read as an action reference' \
+  'name: "Configure AWS credentials # staging"' \
+  'do not delete the assertion'
+
+# 18. THE COMMENT RULE IS A RULE, NOT A YAML PARSER, AND THIS IS THE CASE THAT SAYS WHAT HAPPENS WHEN
+#     IT IS WRONG. Case 17 is fixed by teaching the strip about quotes; this fixture defeats that
+#     teaching — a BACKSLASH-ESCAPED quote inside a double-quoted scalar closes the quote as far as a
+#     character scan is concerned, so the `#` after it reads as a comment and the strip cuts the
+#     `uses:` key off again. The point is not to win that argument: it is that the outcome must be a
+#     REFUSAL naming the line rather than a silent skip, which is what the whole card is about.
+#     Whatever the comment rule gets wrong next, the guard turns it into a red run — delete the
+#     "a comment strip may never delete a `uses:` key" test and only this fixture notices.
+write_sound "$FIXTURES/pin-escaped-quote"
+mutate "$FIXTURES/pin-escaped-quote/release.yml" '1,/^          aws-region: us-east-1$/{
+s|^      - name: Configure AWS credentials$|      - { with: { role-to-assume: "arn:aws:iam::${{ vars.AWS_ACCOUNT_ID }}:role/GitHubDeploy-staging", aws-region: us-east-1 }, name: "say \\" then # staging", uses: aws-actions/configure-aws-credentials@v6 }|
+/^        uses: aws-actions\/configure-aws-credentials@v6$/d
+/^        with:$/d
+/^          role-to-assume: arn:aws:iam/d
+/^          aws-region: us-east-1$/d
+}'
+expect_red "a # the comment rule reads wrongly is a refusal, not a skip" \
+  "$FIXTURES/pin-escaped-quote" \
+  'release.yml:' \
+  'did not read as an action reference' \
+  'then # staging'
+
+# 19. THE SAME STRIP, ONE LAYER DOWN, AND IT IS OLDER THAN THE PIN RULES. `strip_comments()` fed every
+#     environment / role / `:latest` / SSM assertion through the identical non-quote-aware regex, so a
+#     `#` inside a shell string swallowed the REST OF THE LINE and `refuse_in_job ":latest"` passed
+#     over text it never saw. That is the same defect as case 17 wearing a different rule, which is
+#     why one quote-aware rule now serves both instead of two copies drifting apart (gh#155). Measured
+#     against the REAL `release.yml` at PR #681's head: this line added to `deploy-staging` gave a
+#     green run of 77 assertions with a `:latest` pull in a deploy job.
+write_sound "$FIXTURES/quoted-hash-latest"
+mutate "$FIXTURES/quoted-hash-latest/release.yml" '1,/^      - run: \.\/scripts\/deploy-environment\.sh staging$/s|^      - run: \./scripts/deploy-environment\.sh staging$|      - run: echo "image tag # note" \&\& docker pull ghcr.io/x/y:latest\
+      - run: ./scripts/deploy-environment.sh staging|'
+expect_red "a quoted # hides a :latest pull from the deploy-job assertions" \
+  "$FIXTURES/quoted-hash-latest" \
+  "job 'deploy-staging' contains :latest"
+
+# 20. AND IT MUST STILL SAY YES.
 write_sound "$FIXTURES/sound"
 green_out=""
 green_status=0
@@ -581,15 +661,18 @@ else
   # compares the total to anything at all (it is printed, and gh#678's whole subject is a number that
   # is trusted because it looks measured). The per-file reach line is a different claim: not *how many
   # I read* but *I read every one there is*, so it holds on any tree without a literal to maintain.
-  # Cases 13, 15 and 16 are the mutations that kill it. The counts here — 3 and 4 — also pin the split
-  # between the two files, which a single total cannot.
+  # Cases 13, 15, 16, 17 and 18 are the mutations that kill it. The counts here — 3 and 4 — also pin
+  # the split between the two files, which a single total cannot.
   #
-  # TWO MORE FORGIVENESSES ARE PINNED BY THIS CASE ALONE, alongside the quoted `uses:` and the local
-  # `./` action, and both are about the reach rule reading too MUCH rather than too little.
-  # write_sound's deploy.yml carries a whole-line COMMENT containing `uses:`, and a `run:` step whose
-  # shell string contains one. Stop stripping comments, or match the bare token instead of a key
-  # position, and each becomes a `uses:` the gate must refuse — so this sound pair goes red on prose,
-  # on a gate that exists to close a parse hole. Both directions have to be held at once.
+  # FOUR MORE FORGIVENESSES ARE PINNED BY THIS CASE ALONE, alongside the quoted `uses:` and the local
+  # `./` action, and all four are about the reach rule reading too MUCH rather than too little.
+  # write_sound's deploy.yml carries a whole-line COMMENT containing `uses:`, a TRAILING comment on a
+  # `uses:` line, a `run:` step whose shell string contains one, and a `run:` BLOCK SCALAR holding
+  # JSON with a `"uses"` key. Stop stripping comments, start stripping them where a quote says not to,
+  # match the bare token instead of a key position, or forget that nothing inside a block scalar is
+  # YAML, and each becomes a `uses:` the gate must refuse — so this sound pair goes red on prose, on a
+  # gate that exists to close a parse hole. Both directions have to be held at once, and the third
+  # review pass found this gate holding only one of them.
   for reach_expected in \
     'reach   release.yml: every uses: on 3 line(s) read as an action reference' \
     'reach   deploy.yml: every uses: on 4 line(s) read as an action reference'
@@ -614,4 +697,4 @@ if [ "$failures" -gt 0 ]; then
   exit 1
 fi
 
-ok "ok  check-deploy-workflows.sh rejected all 16 bad fixtures, each for its own stated reason, and accepted the sound one."
+ok "ok  check-deploy-workflows.sh rejected all 19 bad fixtures, each for its own stated reason, and accepted the sound one."

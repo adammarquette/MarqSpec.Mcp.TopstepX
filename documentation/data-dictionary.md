@@ -115,7 +115,7 @@ it is read alongside rows a window already selected, never searched on.
 | Column | Type | Note |
 |---|---|---|
 | `Venue` `Instrument` `ResolutionMinutes` | | PK |
-| `Indicator` | `varchar(32)` | PK · lowercase stable name — `atr`, `rsi`, `macd-signal`, `vwap-rolling` |
+| `Indicator` | `varchar(32)` | PK · lowercase stable name — `atr`, `rsi`, `macd-signal`, `vwap-rolling`, `adx` |
 | `Period` | `integer` | PK · part of identity; ATR(14) and ATR(3) are different numbers |
 | `BucketStart` | `timestamptz` | PK · the hypertable's time dimension |
 | `Value` | `numeric(18,8)` | |
@@ -127,6 +127,11 @@ replay reaching for the ATR behind a past decision should find the number that w
 `Period` is `0` for indicators that take none (VWAP is anchored, not windowed), which keeps them from colliding
 with a windowed indicator of the same name. A VWAP with a lookback is a **different calculation**, so it is a
 different name — `vwap-rolling`, at its own period — rather than `vwap` at a non-zero one.
+
+**A name's warm-up decides how far into a contract run its first row lands, and they differ.** Most warm up in
+`n` or `n + 1` bars; `adx` takes `2n`, because it smooths a value that is itself smoothed. So a freshly rolled
+contract holds `plus-di` and `minus-di` rows for buckets where `adx` has none, and that gap is an absence the
+projection is correct to leave rather than a hole in the store (gh#670).
 
 **One name can have several periods here, and every one of them was configured.** Each indicator has a PRIMARY
 period (`Indicators__*Period`) and may have additional ones (`Indicators__Additional*Periods`); the catalogue
@@ -636,7 +641,7 @@ ending at the close.
 |---|---|---|
 | `Venue` `Instrument` | | PK |
 | `Session` | `varchar(16)` | PK · the closed session vocabulary, same name and same width as §11 |
-| `Indicator` | `varchar(32)` | PK · lowercase stable name — `atr`, `rsi`, `macd-signal`, `vwap-rolling` |
+| `Indicator` | `varchar(32)` | PK · lowercase stable name — `atr`, `rsi`, `macd-signal`, `vwap-rolling`, `adx` |
 | `Period` | `integer` | PK · part of identity, and it counts **sessions** here — an `sma` at 20 over `rth` is twenty trading days |
 | `BucketStart` | `timestamptz` | PK · the session bar's `OpenUtc` |
 | `Value` | `numeric(18,8)` | |

@@ -57,12 +57,12 @@ it before starting, and add dated entries only when nothing formal fits.
 
 ## The six that are never traded away
 
-- **No order path exists in this repository.** The gateway client this depends on has a complete order
-  surface — `PlaceOrderAsync`, `ModifyOrderAsync`, `CancelOrderAsync`, `ClosePositionAsync`. **None of it may
-  be called from product code**, and `scripts/check-no-order-path.sh` fails CI if it is
-  ([ADR-0002](documentation/adr/0002-read-only-venue-boundary.md)). If a task seems to need one, the task is
-  wrong or it belongs in `trading-copilot`. Do not add a flag, a guard or a "safe" wrapper — the boundary is
-  the *absence of the call*, and anything reachable is reachable.
+- **No ungated order path in product code.** [ADR-0024](documentation/adr/0024-gated-trading-actions-practice-v1.md)
+  (Accepted) supersedes [ADR-0002](documentation/adr/0002-read-only-venue-boundary.md): venue writes may exist
+  only behind the gated stack in that record (practice-only v1, enable flag, stage gate, audit, etc.). Until
+  gh#718 lands, `scripts/check-no-order-path.sh` still fails CI on **any** order-transmitting symbol in product
+  projects — treat that as the enforced boundary today. Do not add a shortcut, flag, or "safe" wrapper outside
+  the ADR-0024 design; anything reachable is reachable.
 - **No secrets in source.** Credentials arrive through the Options pattern and environment; never a literal,
   never a tracked `appsettings.json`, never a log line. **This repository is public**, and the sibling ProjectX
   client has already leaked and rotated a real credential once.

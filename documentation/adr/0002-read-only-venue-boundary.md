@@ -1,10 +1,12 @@
 # ADR-0002: No order path exists in this repository
 
-**Status:** Accepted · **Date:** 2026-08-21 · **Deciders:** Adam (operator)
+**Status:** Superseded by [ADR-0024](0024-gated-trading-actions-practice-v1.md) (2026-10-18) · **Date:**
+2026-08-21 · **Deciders:** Adam (operator)
 **Relates to:** PRD `R-4` · [ADR-0003](0003-client-as-package.md) (the dependency that makes this a live
 question) · [ADR-0016](0016-subscribe-to-the-market-hub.md) (the market hub is a read; this record is not
 reopened) · [architecture](../architecture.md) *What is deliberately absent* · enforced by
-`scripts/check-no-order-path.sh` (gh#11)
+`scripts/check-no-order-path.sh` (gh#11) · superseded in favour of a **gated** practice-only order path
+([ADR-0024](0024-gated-trading-actions-practice-v1.md)); the absolute CI ban remains until gh#718 lands
 
 ## Context
 
@@ -78,6 +80,18 @@ stop would not have. Auto-flatten belongs where the session model and the watchd
 - `record_observation` writes to this server's own database. That is not a venue transmission and is not
   constrained here.
 
+## Decision log
+
+### 2026-10-18 — Superseded by ADR-0024
+
+Adam accepted [ADR-0024](0024-gated-trading-actions-practice-v1.md) (PR #723): this repository may gain a
+**controlled** order path for **practice accounts only** in v1, behind enable flags, a hard stage gate, risk
+layers, idempotency, and audit logging — not an unguarded call surface. The decision above remains the
+historical reason the absolute ban existed; it is not deleted. **Enforcement:** `check-no-order-path.sh`
+stays as-is until gh#718 replaces the grep with a gated-allowance check; until then product code still must
+not transmit orders.
+
 ## Follow-ups
 
 - gh#11 — implement the gate and add it to the required checks on all three rungs.
+- gh#718 — evolve CI from absolute ban to gated allowance per [ADR-0024](0024-gated-trading-actions-practice-v1.md).

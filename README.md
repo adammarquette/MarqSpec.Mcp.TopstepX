@@ -254,9 +254,9 @@ A remote client is a **pre-registered** confidential app in that environment's C
 shared secret in this file. Point the connector at the MCP resource; an unauthenticated call returns
 `401` with a `resource_metadata` challenge whose document names the issuer. `/health` answers anyone.
 
-Production is reached only after an `aws-production` approval on a digest that already passed staging
-(gh#520). How a release gets there — and how to roll one back — is
-[the runbook](documentation/deployment.md).
+Published releases push a container image to GHCR after the `production` approval on the release workflow.
+Run that image with Docker or compose on your host — see
+[deployment](documentation/deployment.md) and [Run it](#run-it) above.
 
 ### The OAuth mode — a resource server for the remote instance
 
@@ -341,12 +341,10 @@ time in the sibling repo:
   so `docker compose up` with credentials and no tier does not fail startup.
 
 Two hosting knobs behind this transport, both configuration only (gh#515): `Logging__Console__FormatterName=json`
-switches the console to one JSON object per line, which is what the AWS deployment (gh#509) will set once it
-exists, for CloudWatch Logs Insights. `ASPNETCORE_FORWARDEDHEADERS_ENABLED=true` makes
-`HttpContext.Connection.RemoteIpAddress` the caller's own address behind a load balancer rather than the
-ALB's — and clears the framework's loopback-only trust on that header, safe there only because the ALB is the
-sole way to reach a Fargate task. Client IPs for a human will be the ALB's own access logs, not this
-application's console.
+switches the console to one JSON object per line, which helps log aggregation behind Docker or a reverse
+proxy. `ASPNETCORE_FORWARDEDHEADERS_ENABLED=true` makes `HttpContext.Connection.RemoteIpAddress` the caller's
+own address when a trusted reverse proxy forwards `X-Forwarded-For` — use it only when that proxy is the
+sole path to the server ([ADR-0021](documentation/adr/0021-a-non-loopback-instance-is-supported.md)).
 
 ### See what it is doing
 

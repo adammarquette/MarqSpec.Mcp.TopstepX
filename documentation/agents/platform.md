@@ -6,11 +6,11 @@ root [`AGENTS.md`](../../AGENTS.md) still applies. It owns the artifacts below *
 
 | Artifact | Where |
 | --- | --- |
-| CI, branch-policy, CodeQL, release and deploy workflows | [`.github/workflows/`](../../.github/workflows/) — `release.yml` publishes and deploys; [`deploy.yml`](../../.github/workflows/deploy.yml) redeploys or rolls back from `main` |
+| CI, branch-policy, CodeQL, release workflow | [`.github/workflows/`](../../.github/workflows/) — `release.yml` publishes the container to GHCR after approval; `ci.yml` builds and tests the image without pushing |
 | The published image | [`Dockerfile`](../../Dockerfile) — built by `ci.yml`'s `image` job, pushed to GHCR only by `release.yml` |
 | Local stack | [`docker-compose.yml`](../../docker-compose.yml) (Postgres + server) and [`docker-compose.dev.yml`](../../docker-compose.dev.yml) (SDK overlay) |
 | Build and dependency properties | `Directory.Build.props`, `Directory.Packages.props` (Central Package Management — package *versions*, since nothing here is packaged), `global.json` |
-| Infrastructure as code | [`infra/`](../../infra/) — the CDK app, its template tests, `cdk.json`, the committed context and the pinned CLI; see [Infrastructure](#infrastructure) below |
+| Deployment runbook | [`documentation/deployment.md`](../deployment.md) — Docker pull/run, compose, verify with `check-deployment.sh` |
 | Repo governance that lives in GitHub settings | [ADR-0001](../adr/0001-tag-driven-versioning.md), reproduced by `bootstrap.sh` |
 | Platform decisions | [ADR-0001](../adr/0001-tag-driven-versioning.md) |
 
@@ -1399,128 +1399,24 @@ the claims worth testing and an in-memory provider proves none of them ([ADR-000
 
 Branches still map to intent rather than to environments: `develop` integrates, `staging` holds what is
 promoted but unreleased, `main` is what has shipped, and a `v*` tag on `main` is what triggers a release.
-A published release now deploys that image by digest (gh#520). `publish` exposes
-`docker/build-push-action`'s digest; `deploy-staging` assumes `GitHubDeploy-staging` with **no
-`environment:` key** (staging is already behind the `production` approval on `gate`; a named staging
-environment would be a second manual approval, and loosening that gate is the inert-gate class
-`check-release-gate.sh` refuses) and runs [`deploy-environment.sh`](../../scripts/deploy-environment.sh),
-which passes `ImageDigest` and `Version` as `cdk deploy --parameters` and then
-[`check-deployment.sh`](../../scripts/check-deployment.sh) against the staging hostname. `deploy-production`
-needs `deploy-staging`, declares the literal `environment: aws-production`, starts an EFS backup only after
-`describe-stack-resources` succeeds and names a filesystem (a failed describe is a stop, not a first-create
-skip — gh#126), and deploys the **same digest**.
-The token-endpoint URL and the deploy-check client id come from the stack outputs; the client secret is
-read from Secrets Manager at run time — no GitHub secret. Rollback is [`deploy.yml`](../../.github/workflows/deploy.yml),
-dispatched on `main` (`gh workflow run deploy.yml --ref main -f version=<previous> -f environment=staging`),
-resolving the digest with `docker buildx imagetools inspect` of the version tag. Nothing rebuilds on the
-way to production. `:latest` is still pushed (ADR-0001) and never referenced to decide what runs. The
-[required-context table](#the-required-context-table) is unchanged — `release-gate` still only reports;
-these jobs are the release path, not a new merge gate. `check-deploy-workflows.sh` holds the YAML to
-that topology on every pull request, beside the gate.
+A published release pushes that image to GHCR after the `production` environment approval on `gate`.
+Operators deploy by pulling the tag or digest and running Docker or compose — see
+[`documentation/deployment.md`](../deployment.md). `:latest` is still pushed (ADR-0001) for convenience;
+pin by digest on production hosts. The [required-context table](#the-required-context-table) is unchanged —
+`release-gate` still only reports.
 
-### Infrastructure
+### Deployment (Docker)
 
-**The AWS resources the deployment runs on are code under [`infra/`](../../infra/), and a pull request
-proves the template it proposes** ([ADR-0023](../adr/0023-aws-deployment-topology.md) §7, gh#516). The
-deploy jobs are in `release.yml` and `deploy.yml` (gh#520); a pull request proves their topology
-(`check-deploy-workflows.sh`) and the script they share (`deploy-environment-selftest.sh`). A live
-tag-deploy against staging, and the first `aws-production` approval, are later slices — this card does
-not `cdk deploy` a stack other sessions own, and does not approve production. What exists today:
-
-- **Two projects in the solution.** `infra/MarqSpec.Mcp.TopstepX.Infra/` is the CDK app — one
-  `EnvironmentStack` instantiated for production (`marqspec.com`, zone looked up) and staging
-  (`staging.marqspec.com`, zone looked up — `Z00545362JA49XMTT3U7Q`; never CreateAndDelegate), differing only in its props, plus the
-  `GitHubOidcStack`. `infra/MarqSpec.Mcp.TopstepX.Infra.Tests/` is xUnit over `Amazon.CDK.Assertions`.
-  Both ride `build & unit tests`' existing Restore, Format and Build steps, `NuGetAudit` and CodeQL, with
-  no ruleset write. **Neither references a product project or the venue package**, so ADR-0002's gate has
-  nothing to read there and `check-no-order-path.sh`'s list is unchanged on purpose; the `Dockerfile`
-  restores the host project alone, and the published `/app` was checked for an `Infra` assembly and holds
-  none.
-- **What CI checks, and what a green run licenses.** After the unit tests, `build & unit tests` runs the
-  template tests (107 at gh#516 — the security groups, the listeners, the health probe, the digest
-  parameter, `RETAIN` on everything stateful, every `.env.example` key outside the compose-only set present
-  in the task, every credential a `valueFrom`, the two environments differing only where their props say;
-  139 at gh#517, adding the Cognito pool, its two clients and the issuer and client ids reaching the task as
-  references; 142 at gh#518, adding the every-role trust shape on the OIDC stack, a template with no account
-  id and no thumbprint, and the `bootstrap.sh` lockstep on the `aws-production` name; 163 at gh#537, adding
-  the OTLP collector sidecar — two containers and the sixth shell with telemetry props, one container and no
-  `Otel__*` key without them, the three pipelines' composed stages, and no `arn:aws` or unrecognised
-  twelve-digit run anywhere in the template; 165 at gh#588, adding staging's certificate ordered behind
-  its `NS` delegation and production's ordered behind nothing; 170 at gh#527, adding `Project` /
-  `Environment` cost-allocation tags on every taggable environment resource, `Project` alone on the OIDC
-  stack, and one account monthly `AWS::Budgets::Budget` whose amount and subscriber Ref parameters; 190 at
-  gh#526, adding one SNS email topic per environment, seven CloudWatch alarms, the EventBridge rollback
-  rule — `resources` service ARNs, not `detail.clusterArn` — and the migration metric filter whose
-  pattern is the host log lines; 192 after the filter-shape pin; 203 at
-  gh#528, adding one REGIONAL web ACL associated with each ALB, the rate-based block at parameter
-  `WafRateLimit`, managed groups count on staging and none/block on production, and the 30-day
-  `aws-waf-logs-*` group; 220 at gh#522, adding the versioned backups bucket, the two-container
-  `pg_dump` task, the EventBridge Scheduler rule, the dump-missing alarm, and the bucket-policy /
-  schedule assertions) and then
-  `cdk synth --no-lookups` **once per outbound shape** through the CLI pinned in
-  `infra/package.json`. **No credential exists on the runner, by construction**: `--no-lookups` makes a
-  context miss fail the synth rather than call AWS, and `infra/cdk.context.json` carries the hosted-zone
-  and availability-zone answers under a placeholder account. A green run says the app runs, every stack
-  synthesises and the template says what the tests assert — nothing about whether an account accepts it.
-  The tests need Node on `PATH` at run time and nowhere else: the constructs are jsii, and every call goes
-  through one Node process the runtime spawns. **The test project runs its classes serially** for the same
-  reason — parallel class fixtures raced on the runtime's first-use tarball extraction, measured as an
-  `IOException` in every test of the second class and one run hung four and a half minutes.
-- **Account and region at deploy.** The account (`123456789012`, AWS's documentation example) still sits
-  in `cdk.json` and is overridden with `-c account=045296582762` at deploy — do not replace the
-  placeholder or CI's `--no-lookups` synth looks up the wrong context key. The region is **chosen
-  `us-east-1`** (gh#519, 2026-09-09); `cdk.json` already named that value as the cost-basis placeholder
-  and a credentialed deploy passes `-c region=us-east-1` the same way. `cdk.context.json` now carries
-  **both** the placeholder hosted-zone / AZ keys (CI) and the real-account keys from the first
-  credentialed synth. And **the tasks' outbound path is not chosen**: `OutboundPath` is a required enum with
-  no default, the app refuses to synthesise without `-c outbound=…`, CI passes every value, and the choice
-  is the maintainer's dated entry on ADR-0023 — gh#519 passed `PublicIpPerTask` as synth context only.
-  When the fork closes, the loop in `ci.yml` collapses to one plain synth and the value becomes a literal
-  in `Program.cs`.
-- **Secrets are shells.** The five
-  `topstepx-mcp/<env>/{postgres,projectx,cohere,claude-connector,deploy-check}`
-  secrets are created with every JSON key the task definitions and the deployment check read and every
-  value empty; gh#519 writes the values by hand, once. **Never edit a shell's literal afterwards**:
-  CloudFormation creates a new secret version whenever the `SecretString` property changes, and that
-  version is the live one — an edit would put an empty document over a real credential. A new key is a new
-  secret. gh#646 retired the sixth (`otel`): CloudWatch OTLP is SigV4 on the task role.
-- **The authorization server is in the stack** (gh#517, [ADR-0023](../adr/0023-aws-deployment-topology.md)
-  §9 and its 2026-09-07 Cognito entry): one user pool per environment, the `topstepx-mcp` resource server
-  with its `read` scope, the confidential `claude-connector` client on the code grant with the closed
-  MCP-host callback allowlist (gh#656), the `deploy-check` client on `client_credentials` alone, and the Cognito prefix domain.
-  **`Mcp__OAuth__Issuer` and `Mcp__OAuth__ClientIds` reach the task as `Fn::GetAtt` and `Ref`s of those
-  constructs, and the template test refuses a string** — a literal issuer would deploy and validate against
-  whatever it named. The two client secrets are shells like the others, read once with
-  `describe-user-pool-client` and written by hand; no custom resource touches them, and the stack is
-  asserted to contain no Lambda. What is **not** measured yet — the discovery document's `S256`
-  advertisement, its tolerance of the `resource` parameter, the token-endpoint auth methods — still
-  waits on gh#519's leftover: no EnvironmentStack, because public NS is Cloudflare (2026-09-09).
-- **The server task carries a second container** (gh#537, gh#646, [ADR-0019](../adr/0019-otlp-as-the-telemetry-boundary.md)
-  §5 and its 2026-09-10 update, ADR-0023 §11): an OTLP collector that receives on the task's loopback and
-  exports to CloudWatch (X-Ray traces, CloudWatch Metrics, CloudWatch Logs) under SigV4 on the task role.
-  `Essential=false` with a hard 128 MiB cap, no port mapping, endpoints derived from `AWS::Region` — so an
-  unhealthy sidecar leaves the server answering, and a template carries no Grafana hostname, token, account
-  id or ARN. Its configuration is a **checked-in file**,
-  `infra/MarqSpec.Mcp.TopstepX.Infra/Collector/otel-collector-config.yaml`, embedded in the assembly, read at
-  synth time into `OTEL_COLLECTOR_CONFIG` and started with `--config=env:…` — a Fargate task has no disk to
-  mount one from, and a test compares the file, the embedded resource and the task's value so it cannot
-  become decorative. **The whole sidecar hangs off `EnvironmentStackProps.Telemetry` being non-null**, and
-  the absent case is the template this stack had before gh#537; both shapes are asserted. Edit that file
-  the way you bump an image digest: deliberately, and never with a token in it. The local compose
-  `observability` profile (gh#535) stays Grafana LGTM and is not this sidecar.
-- **The image is a digest in a parameter.** `ImageDigest` and `Version` have no default and are passed on
-  `cdk deploy --parameters`; the stack writes the same two values to `/topstepx-mcp/<env>/image-digest`
-  and `/version` in SSM as the written history, so the history cannot say one thing while the task runs
-  another. The Timescale image is a literal digest in `EnvironmentStack.PostgresImage`, read off the `pg17`
-  tag on a stated date; bump it in a pull request that says why.
-- **Local loop.** `dotnet test infra/MarqSpec.Mcp.TopstepX.Infra.Tests` for the tests; in `infra/`,
-  `npm ci` once and then `npx cdk synth --no-lookups -c outbound=<shape>` for the templates under
-  `infra/cdk.out/`, which is ignored. Nothing here needs an AWS profile, and a command that asks for one is
-  a lookup the committed context does not cover — add the entry, do not add a credential.
+There is **no** `infra/` CDK app in this repository anymore ([ADR-0023](../adr/0023-aws-deployment-topology.md)
+is superseded). The deployable artefact is the container CI builds from [`Dockerfile`](../../Dockerfile).
+`ci.yml`'s `image` job proves the Dockerfile on every pull request (`push: false`); `release.yml` is the
+only workflow that pushes to GHCR. Local and hosted runs use [`docker-compose.yml`](../../docker-compose.yml)
+(and optional [`docker-compose.dev.yml`](../../docker-compose.dev.yml)) with secrets from the environment,
+not from this tree.
 
 ### The deployment check (gh#521)
 
-**A green `cdk deploy` proves CloudFormation converged, and nothing else.**
+**A green container start proves the process launched, and nothing else.**
 [`check-deployment.sh`](../../scripts/check-deployment.sh) is what asks the deployed hostname itself,
 from outside it, and it is `check-image-entrypoint.sh`'s rule one layer out — assert the reply, not the
 absence of a failure. gh#416's criterion applies verbatim: *a green startup log is not evidence that a client

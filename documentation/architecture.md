@@ -749,8 +749,10 @@ One host, one tool registration, two ways in ([ADR-0007](adr/0007-dual-transport
   VPC behind an Application Load Balancer, OAuth 2.1 with Cognito-issued tokens in place of the static token,
   an ACM certificate in place of the local CA — is
   [ADR-0021](adr/0021-a-non-loopback-instance-is-supported.md), and is never compose with one line widened.
-  The infrastructure that shape runs on — Fargate behind one load balancer per environment, Timescale on
-  EFS, CDK in C#, Cognito as the issuer, OIDC deploys — is [ADR-0023](adr/0023-aws-deployment-topology.md).
+  Hosting that shape is Docker: the [`Dockerfile`](../Dockerfile) and compose stack in this repository, or
+  the GHCR image `release.yml` publishes — see [`deployment.md`](deployment.md). [ADR-0023](adr/0023-aws-deployment-topology.md)
+  described an AWS topology that was superseded; OAuth issuer and client configuration remain product
+  settings, not CDK outputs.
 
 ### The one path that answers without a credential
 

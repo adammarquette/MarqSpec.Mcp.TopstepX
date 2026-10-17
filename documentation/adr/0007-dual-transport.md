@@ -75,6 +75,7 @@ difference between the two entry points is a handful of lines.
 | [2026-09-06](#update-2026-09-06--the-remote-instance-is-decided-in-adr-0021) | The remote instance the 2026-09-01 TLS update left undecided is decided in ADR-0021 — the "same machine" scoping is superseded, the TLS decision and the composed shape are not |
 | [2026-09-06](#update-2026-09-06--the-route-table-gained-a-path-that-answers-without-a-credential) | `GET /health` answers unauthenticated in front of the gate, which stays global — and ordering alone would not have carved it out |
 | [2026-09-08](#update-2026-09-08--the-cowork-custom-connector-dialog-was-measured-on-this-plan) | The maintainer measured Cowork's custom-connector dialog on this plan — two screens, what each offered, and what was not shown (gh#510) |
+| [2026-10-17](#update-2026-10-17--stdio-binds-no-http-port) | stdio binds no HTTP port; the image-baked 8080 is not an opt-in (gh#696) |
 
 ## Update (2026-08-22) — starting is not the same as being ready
 
@@ -1242,3 +1243,25 @@ update carries the screen-by-screen observation only.
 - Callback / redirect URL.
 - Whether choosing `Use your own OAuth client` expands to client id + secret fields.
 - Any stated HTTPS or path requirement on the URL field.
+
+## Update (2026-10-17) — stdio binds no HTTP port
+
+The 2026-09-03 update recorded that a stdio container binds `http://[::]:8080` because the aspnet
+image names `ASPNETCORE_HTTP_PORTS=8080`, and it accepted that bind: separate network namespaces,
+`MapMcp` inside the HTTP branch, clearing the variable in the `Dockerfile` rejected because it
+would drop the HTTP transport to `localhost:5000`.
+
+**The collision half of that acceptance is false under host networking** (gh#696). Two
+`docker run --rm -i` instances sharing a namespace contend for 8080, and the second dies on
+`AddressInUse` before any tool is reachable — the same failure class as gh#392, through the door
+that update left open.
+
+**stdio now binds no HTTP port** unless the operator named a listener with `ASPNETCORE_URLS` or
+`ASPNETCORE_HTTPS_PORTS` (health or metrics). The image-baked `ASPNETCORE_HTTP_PORTS` is not that
+opt-in. The HTTP transport is untouched, and the variable is still not cleared in the image — that
+measurement stands. `WebApplication` still starts `GenericWebHostService`; gh#76's rejection of a
+second host type is not reopened. The server that service starts under default stdio is one that
+opens no socket.
+
+`TransportBindingTests` pins both sides: two stdio hosts inherit the image port and start
+together with empty `Urls`; an explicit URL or HTTPS port still survives.

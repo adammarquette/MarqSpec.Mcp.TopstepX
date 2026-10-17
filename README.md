@@ -163,12 +163,13 @@ info: startup[0]
       Shutdown was requested before the server finished starting, so it stopped without listening. On stdio this is what `docker run` WITHOUT `-i` looks like: stdin is closed before the handshake, so there is no client to serve. Pass `-i` (or start the server from an MCP client, which holds stdin open) to keep a session. No background service faulted on the way here, so this exit code is not covering for one.
 ```
 
-**`Now listening on: http://[::]:8080` is expected here, and it is not the HTTP transport.**
-`mcr.microsoft.com/dotnet/aspnet:10.0` bakes `ASPNETCORE_HTTP_PORTS=8080` into the image, so inside a
-container an address is always named and `WebApplication`'s Kestrel binds it under either transport
-([ADR-0007](documentation/adr/0007-dual-transport.md)). Nothing is served there — your session is the pipe —
-and the command above publishes no port at all. `EXPOSE 8443` in the `Dockerfile` describes the composed
-deployment rather than this one.
+**stdio binds no HTTP port.** `mcr.microsoft.com/dotnet/aspnet:10.0` still bakes
+`ASPNETCORE_HTTP_PORTS=8080` into the image — the HTTP transport needs that inherited port — but the
+host ignores it under stdio, so a second `docker run --rm -i` on host networking no longer dies on
+`AddressInUse` ([ADR-0007](documentation/adr/0007-dual-transport.md), gh#696). Your session is the
+pipe. An operator who wants a health or metrics listener under stdio names one with
+`ASPNETCORE_URLS` or `ASPNETCORE_HTTPS_PORTS`. `EXPOSE 8443` in the `Dockerfile` describes the
+composed deployment rather than this one.
 
 **Do not reach for `--entrypoint`.** It *replaces* the image's entrypoint rather than adding to it, so the
 container that runs is no longer this server: an image whose entrypoint named an assembly that did not exist

@@ -45,27 +45,22 @@ COPY --from=build --chown=64198:64198 /app .
 ENV DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=false
 
 # ASPNETCORE_HTTP_PORTS is INHERITED from mcr.microsoft.com/dotnet/aspnet:10.0 as 8080, and is left standing
-# deliberately. It is why ConfigureDefaultBinding's ephemeral loopback default never applies in here: an
-# address is always named inside the image, so stdio binds a fixed 8080 on every container interface rather
-# than 127.0.0.1:0 (gh#446; ADR-0007's 2026-09-03 update).
+# deliberately for the HTTP transport. Clearing it here was measured and REJECTED (ADR-0007, 2026-09-03):
+# `ASPNETCORE_HTTP_PORTS=""` under Mcp__Transport=Http drops Kestrel to http://localhost:5000, which
+# inside a container is unreachable from outside whatever `-p` mapping is given.
 #
-# That is not an exposure -- read off Program.cs, not measured. Nothing is published for a stdio container,
-# and MapMcp sits inside the Http branch of Program.cs, so the listener answers no MCP route to anyone; each
-# container has its own network namespace besides, so two of them cannot collide the way two host processes
-# did in gh#392.
-#
-# Clearing it here was measured and REJECTED. `ASPNETCORE_HTTP_PORTS=""` does give stdio a loopback ephemeral
-# port -- but under Mcp__Transport=Http it drops Kestrel to its own default, http://localhost:5000, which
-# inside a container is unreachable from outside whatever `-p` mapping is given. It fixes the transport that
-# serves nothing and silently breaks the one that serves everything -- and it would answer gh#444, whether the
-# HTTP transport is supported outside compose, as a side effect of a change about something else.
-# docker-compose.yml sets ASPNETCORE_HTTP_PORTS: "" explicitly, which is where that override belongs.
+# Under stdio the inherited variable is not an operator-named listener. ConfigureDefaultBinding ignores
+# it and starts a server that binds no port, so two `docker run --rm -i` containers sharing a network
+# namespace no longer collide on 8080 (gh#696). MapMcp stays inside the Http branch. An operator who
+# wants a health or metrics listener under stdio names one with ASPNETCORE_URLS or ASPNETCORE_HTTPS_PORTS.
+# docker-compose.yml sets ASPNETCORE_HTTP_PORTS: "" explicitly, which is where that override belongs
+# for the composed HTTPS path.
 
 # Documentary only -- EXPOSE publishes nothing. 8443 is right for the deployment this image supports:
 # docker-compose.yml sets ASPNETCORE_HTTPS_PORTS=8443 and clears ASPNETCORE_HTTP_PORTS above, because the
-# composed server has been HTTPS-only since gh#416. Outside compose, with no ASPNETCORE_* override, the
-# inherited ASPNETCORE_HTTP_PORTS=8080 named above is what actually binds -- measured, fresh build, `docker
-# run -i` with no compose: "Now listening on: http://[::]:8080" -- and EXPOSE still says 8443 for that case
-# too. A bare `docker run` is not the deployment this number describes.
+# composed server has been HTTPS-only since gh#416. A bare `docker run -i` is stdio and binds no HTTP
+# port (gh#696). The inherited ASPNETCORE_HTTP_PORTS=8080 still binds under Mcp__Transport=Http with no
+# override, which is the HTTP-without-compose recipe, not this EXPOSE. A bare `docker run` is not the
+# deployment this number describes.
 EXPOSE 8443
 ENTRYPOINT ["dotnet", "MarqSpec.Mcp.TopstepX.dll"]

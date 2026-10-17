@@ -728,8 +728,10 @@ One host, one tool registration, two ways in ([ADR-0007](adr/0007-dual-transport
 
 - **stdio** — what an MCP client launches locally. **All logging goes to stderr**; anything on stdout corrupts
   the protocol frame, and it surfaces as a confusing handshake error rather than as a logging problem. The
-  host still starts Kestrel in this mode, on an **ephemeral loopback port** it never serves from — a
-  well-known one stopped a second session starting at all (gh#392).
+  host still starts in this mode, but it **binds no HTTP port** unless the operator named one for
+  health or metrics — the aspnet image's inherited 8080 is not that opt-in, and two stdio containers
+  sharing a namespace collided on it (gh#696). A well-known port stopped a second *host* session
+  starting at all (gh#392).
   **Console logging is the floor, not the ceiling** — where the lines go *beyond* the console is
   [ADR-0019](adr/0019-otlp-as-the-telemetry-boundary.md): logs, traces and metrics leave the host as **OTLP and
   in no other form**, behind a collector the host never names, so the backend is a deployment edit rather than

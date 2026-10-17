@@ -8,8 +8,12 @@ using MarqSpec.Mcp.TopstepX.MarketData;
 using MarqSpec.Mcp.TopstepX.Telemetry;
 using MarqSpec.Mcp.TopstepX.Tools;
 using MarqSpec.Mcp.TopstepX.Venue;
+using Microsoft.AspNetCore.Hosting.Server;
+using Microsoft.AspNetCore.Hosting.Server.Features;
+using Microsoft.AspNetCore.Http.Features;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Options;
 using OpenTelemetry;
 using OpenTelemetry.Exporter;
@@ -23,11 +27,6 @@ namespace MarqSpec.Mcp.TopstepX;
 /// <summary>The composition root.</summary>
 public static class Program
 {
-    /// <summary>
-    /// Where the stdio transport listens when nothing names an address: loopback, port assigned by the OS.
-    /// </summary>
-    private const string StdioLoopbackAddress = "http://127.0.0.1:0";
-
     /// <summary>
     /// The MCP SDK's own activity source and meter — one name, carrying both.
     /// </summary>
@@ -114,10 +113,10 @@ public static class Program
         // from either -- it is a property of the host, not of stdio -- and a second `RunAsync` here is how the
         // HTTP branch would quietly keep the old behaviour (gh#76).
         //
-        // Stdio needs no branch of its own -- and NOT because the host never starts a listener. It does:
-        // `WebApplication` always adds Kestrel as a hosted service and always starts it, under both
-        // transports. Under stdio Kestrel is simply not the transport, nothing is mapped in front of it, and
-        // the session runs over stdin and stdout (ADR-0007).
+        // Stdio needs no branch of its own. WebApplication still starts GenericWebHostService (gh#76
+        // forbids a second host type). Under stdio that service starts a server that binds nothing
+        // unless the operator named a listener for health or metrics (gh#696). MapMcp stays inside
+        // the HTTP branch; the session runs over stdin and stdout (ADR-0007).
         return await RunHostAsync(app).ConfigureAwait(false);
     }
 
@@ -494,38 +493,34 @@ public static class Program
     }
 
     /// <summary>
-    /// Gives the stdio transport an ephemeral loopback address, unless one has been named explicitly.
+    /// Under stdio, binds no HTTP port unless the operator named a listener for health or metrics.
     /// </summary>
     /// <param name="builder">The host builder.</param>
     /// <param name="transport">The transport that was selected.</param>
     /// <remarks>
     /// <para>
-    /// <b>Kestrel still starts.</b> ADR-0007 settled that and gh#76 rejected not starting it; this changes
-    /// which address it takes, not whether it takes one. Under stdio the listener serves nothing —
-    /// <c>MapMcp</c> is inside the HTTP branch and the session runs over stdin and stdout — but it was still
-    /// holding the framework default <c>http://localhost:5000</c>, exclusively, for the life of the process.
+    /// <b>The host still starts.</b> ADR-0007's one-host decision and gh#76 still stand:
+    /// <see cref="WebApplication"/> always adds <c>GenericWebHostService</c>, and avoiding it would fork
+    /// the composition root. What changed (gh#696) is the <i>server</i> that service starts. Under stdio
+    /// with no operator-named address, that server binds nothing — the session is the pipe,
+    /// <c>MapMcp</c> is inside the HTTP branch, and a listener that serves nothing is a collision
+    /// waiting for a second instance.
     /// </para>
     /// <para>
-    /// So a second session could not start (gh#392): <c>IOException: Failed to bind to address
-    /// http://127.0.0.1:5000: address already in use</c>, raised before any tool was reachable and saying
-    /// nothing about stdio. That is an ordinary thing to do here — this repository runs parallel agent
-    /// sessions by design — and :5000 is contended by a great many other dev servers besides.
+    /// gh#392 stopped two host processes colliding on the framework default <c>:5000</c> by giving
+    /// stdio an ephemeral loopback address. That default never applied inside the image:
+    /// <c>mcr.microsoft.com/dotnet/aspnet:10.0</c> bakes <c>ASPNETCORE_HTTP_PORTS=8080</c>,
+    /// <c>HasOperatorNamedListener</c>'s predecessor treated it as an explicit address, and a stdio
+    /// container bound every interface on 8080. Two containers sharing a network namespace — host
+    /// networking, or a second <c>docker run</c> against the same stack — then died on
+    /// <c>AddressInUse</c> before any tool was reachable.
     /// </para>
     /// <para>
-    /// Port <b>0</b> rather than another well-known number, because any fixed choice is the same bug at a
-    /// different address; loopback rather than any interface, because nothing should reach this listener.
-    /// </para>
-    /// <para>
-    /// <b>An explicitly named address still wins</b>, under either transport — <c>ASPNETCORE_URLS</c>,
-    /// <c>ASPNETCORE_HTTP_PORTS</c> and <c>ASPNETCORE_HTTPS_PORTS</c> (which <c>docker-compose.yml</c> uses
-    /// to place the composed server on 8443, over TLS, since gh#416 — it named <c>ASPNETCORE_HTTP_PORTS</c>
-    /// and 8080 until then). A default that overrode any of them would not be a default.
-    /// </para>
-    /// <para>
-    /// Worth knowing while reading the three variables above: <c>mcr.microsoft.com/dotnet/aspnet:10.0</c>
-    /// sets <c>ASPNETCORE_HTTP_PORTS=8080</c> in the image, so inside the container an address is <i>always</i>
-    /// named and this method's stdio default never applies. Outside it — a client launching
-    /// <c>dotnet run</c> — nothing names one and the ephemeral loopback address is what gh#392 needs.
+    /// Clearing the variable in the <c>Dockerfile</c> was measured and rejected (ADR-0007, 2026-09-03):
+    /// under HTTP it drops Kestrel to <c>localhost:5000</c>, unreachable from outside the container.
+    /// So the image keeps the inherited port for the HTTP transport, and this method ignores it
+    /// under stdio. An operator who wants a health or metrics listener under stdio names one with
+    /// <c>ASPNETCORE_URLS</c> or <c>ASPNETCORE_HTTPS_PORTS</c>.
     /// </para>
     /// </remarks>
     public static void ConfigureDefaultBinding(WebApplicationBuilder builder, McpTransport transport)
@@ -533,27 +528,74 @@ public static class Program
         ArgumentNullException.ThrowIfNull(builder);
 
         // The HTTP transport is the one that is meant to be reachable, and it is told where to listen by
-        // configuration. Leave the framework's own defaulting alone.
+        // configuration — including the aspnet image's inherited 8080. Leave the framework's own
+        // defaulting alone. Clearing HTTP_PORTS here is the change ADR-0007 measured and rejected.
         if (transport == McpTransport.Http)
         {
             return;
         }
 
-        if (HasExplicitAddress(builder.Configuration))
+        if (HasOperatorNamedListener(builder.Configuration))
         {
             return;
         }
 
-        builder.WebHost.UseUrls(StdioLoopbackAddress);
+        SuppressStdioListener(builder);
     }
 
-    /// <summary>Whether an address has been named by any of the ways the framework reads one.</summary>
+    /// <summary>
+    /// Whether the operator named a listener, as distinct from the aspnet image naming one.
+    /// </summary>
     /// <param name="configuration">The configuration to read.</param>
-    /// <returns><see langword="true"/> when the operator has named an address.</returns>
-    private static bool HasExplicitAddress(IConfiguration configuration)
+    /// <returns>
+    /// <see langword="true"/> when <c>ASPNETCORE_URLS</c> or <c>ASPNETCORE_HTTPS_PORTS</c> is set.
+    /// <c>ASPNETCORE_HTTP_PORTS</c> is not this: the base image always sets it to 8080.
+    /// </returns>
+    private static bool HasOperatorNamedListener(IConfiguration configuration)
         => !string.IsNullOrWhiteSpace(configuration[WebHostDefaults.ServerUrlsKey])
-            || !string.IsNullOrWhiteSpace(configuration[WebHostDefaults.HttpPortsKey])
             || !string.IsNullOrWhiteSpace(configuration[WebHostDefaults.HttpsPortsKey]);
+
+    /// <summary>
+    /// Replaces Kestrel with a server that binds nothing, and clears the inherited HTTP port so a
+    /// later re-registration cannot pick it up.
+    /// </summary>
+    /// <param name="builder">The host builder.</param>
+    private static void SuppressStdioListener(WebApplicationBuilder builder)
+    {
+        builder.WebHost.UseSetting(WebHostDefaults.HttpPortsKey, string.Empty);
+        builder.WebHost.UseSetting(WebHostDefaults.ServerUrlsKey, string.Empty);
+        builder.Services.Replace(ServiceDescriptor.Singleton<IServer, SilentServer>());
+    }
+
+    /// <summary>
+    /// An <see cref="IServer"/> that starts and stops without opening a socket.
+    /// </summary>
+    /// <remarks>
+    /// <c>GenericWebHostService</c> still starts — that is gh#76 — and calls <see cref="StartAsync{TContext}"/>.
+    /// Completing immediately, including when the token is already cancelled, is what a stdio
+    /// <c>docker run</c> without <c>-i</c> needs: there is no <c>BindAsync</c> to throw.
+    /// </remarks>
+    private sealed class SilentServer : IServer
+    {
+        public IFeatureCollection Features { get; } = CreateFeatures();
+
+        private static IFeatureCollection CreateFeatures()
+        {
+            FeatureCollection features = new();
+            features.Set<IServerAddressesFeature>(new ServerAddressesFeature());
+            return features;
+        }
+
+        public Task StartAsync<TContext>(IHttpApplication<TContext> application, CancellationToken cancellationToken)
+            where TContext : notnull
+            => Task.CompletedTask;
+
+        public Task StopAsync(CancellationToken cancellationToken) => Task.CompletedTask;
+
+        public void Dispose()
+        {
+        }
+    }
 
     /// <summary>Registers everything the server needs.</summary>
     /// <param name="builder">The host builder.</param>

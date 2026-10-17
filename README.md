@@ -62,6 +62,11 @@ rm ./certs/localhost.key   # the PFX carries the key, encrypted
 docker compose up -d       # Postgres (TimescaleDB + pgvector) and the HTTPS server on :8443
 ```
 
+If the server is up but venue login fails because `api.topstepx.com` does not resolve inside the
+container, that is Docker's user-defined-network DNS, not a missing credential — see
+[vendor DNS on a custom Docker network](documentation/deployment.md#vendor-dns-on-a-custom-docker-network-gh697)
+(gh#697).
+
 **Only the server needs any of that.** `docker compose up -d postgres` and the containerised test loop under
 [Local development](CONTRIBUTING.md#local-development) render and run with **no `.env` and no certificate** —
 verified, because compose interpolates the whole file before it picks a service and an earlier draft of this

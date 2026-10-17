@@ -80,4 +80,66 @@ Running the new image on your infrastructure is separate from release — not au
 - **Rollback:** pull the previous tag or digest and restart. GHCR tags can be overwritten; prefer digest
   pinning on production hosts.
 
-Assisted-by: Cursor Cloud Agent
+## Troubleshooting
+
+### Vendor DNS on a custom Docker network (gh#697)
+
+Reported on a Debian host without systemd, dockerd started by hand: the composed server could not resolve
+`api.topstepx.com`, so venue login failed. Putting both the server and Postgres on `--network host` made
+the name resolve. The host itself could resolve it; only the container on the compose network could not.
+
+**Cause.** `docker compose up` attaches every service to a *user-defined* bridge (the project default
+network — you do not have to declare one). On that network Docker's embedded resolver at `127.0.0.11`
+answers service names (`postgres`) and forwards everything else to the daemon's upstreams. Those
+upstreams come from `daemon.json` / dockerd `--dns`, or else from the host's `resolv.conf` at daemon
+start. A manually started dockerd on a host without systemd often inherits a loopback stub
+(`127.0.0.53`, `127.0.0.1`) or an empty list — addresses that exist only in the host namespace. The
+container then fails public names while `Host=postgres` still works. The legacy default bridge
+(`docker0`) and `--network host` skip that forwarder and use the host resolver, which is why host
+networking unblocked the report.
+
+**Fix — pick one.** Do not add a `dns:` default to the committed compose file: a public resolver is
+wrong on a filtered or split-horizon network, and a working daemon already forwards correctly.
+
+1. **Compose `dns:`** on the service that dials the vendor (the server; Postgres does not need public
+   DNS):
+
+   ```yaml
+   services:
+     server:
+       dns:
+         - 8.8.8.8
+         - 1.1.1.1
+   ```
+
+   Use your network's recursive resolvers if you have them; the two above are the public stand-ins.
+
+2. **`docker run --dns`** for a one-off or the stdio recipe:
+
+   ```bash
+   docker run --rm -i --dns 8.8.8.8 \
+     ghcr.io/adammarquette/marqspec.mcp.topstepx:latest
+   ```
+
+3. **Host / daemon resolver** so every container inherits a usable upstream: `/etc/docker/daemon.json`
+   with `"dns": ["8.8.8.8", "1.1.1.1"]`, or start dockerd with `--dns 8.8.8.8`. Recreate containers
+   after the daemon reload. Prefer the host's real recursive address (not `127.0.0.53`) when the
+   container can reach it.
+
+4. **`--network host`** is the workaround the report used. It shares the host namespace, so the vendor
+   name resolves the way the host does — and compose service names stop working. If you take this path,
+   both the server and Postgres must share it and `ConnectionStrings__Default` must use `localhost`,
+   not `postgres`. Prefer (1)–(3).
+
+**Verify** from inside the server container (glibc `getent` is on the runtime image; `dig` / `nslookup`
+are not):
+
+```bash
+docker compose exec server getent hosts api.topstepx.com
+```
+
+A working resolver prints an address and the name. Empty output, or `Name or service not known`, is
+this failure. Confirm the host itself resolves the same name (`getent hosts api.topstepx.com` on the
+host) before blaming the container.
+
+Assisted-by: Cursor Grok 4.6 (Cursor)

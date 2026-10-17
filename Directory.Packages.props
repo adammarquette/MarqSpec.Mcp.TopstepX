@@ -142,7 +142,7 @@
       about what an exported span CARRIES — and, more sharply, what it must never carry (ADR-0019) — so they
       are asserted against real exported activities rather than against the builder that produced them.
     -->
-    <PackageVersion Include="OpenTelemetry.Exporter.InMemory" Version="1.19.0" />
+    <PackageVersion Include="OpenTelemetry.Exporter.InMemory" Version="1.20.0" />
   </ItemGroup>
 
 </Project>

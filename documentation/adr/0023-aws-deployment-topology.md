@@ -494,8 +494,9 @@ its own reason, not a drift.
 ## Update (2026-10-17) — superseded; deployment is Docker via GHCR
 
 The AWS CDK application (`infra/`), OIDC deploy workflows, and related CI gates were removed from the
-repository. Operators run the container this repository publishes — built from the root `Dockerfile`, exercised
-in CI, pushed to GHCR on release — with Docker or `docker-compose.yml`. Operational steps live in
+repository. `release.yml` now stops after the GHCR push — no `deploy-staging` / `deploy-production` jobs and
+no job outputs feeding them. Operators run the container this repository publishes — built from the root
+`Dockerfile`, exercised in CI — with Docker or `docker-compose.yml`. Operational steps live in
 [`deployment.md`](../deployment.md). This ADR remains as historical context for gh#509 and related work.
 
 Dated `## Update` entries land below this heading, oldest first, one per settings-only choice or measured

@@ -307,24 +307,15 @@ step "4. Approval environments"
 # therefore inherits the `environment:` key, so it inherits the dependency -- and without this step it
 # inherits it unsatisfied, which is the failure mode above by default rather than by accident.
 #
-# TWO environments, each a separate human approval on a separate consequence (gh#518, ADR-0023 §8):
+# ONE environment gates the GHCR publish — `release.yml`'s `gate` job, the only thing between a merge and a
+# public image tag that cannot be un-pulled (gh#108). Deployment is Docker-based: operators pull the image
+# GHCR publishes and run it with the Dockerfile and compose files in this repository (see
+# documentation/deployment.md). There is no cloud deploy job in CI.
 #
-#   - `production`      gates the GHCR PUBLISH -- `release.yml`'s `gate` job, the only thing between a merge
-#                       and a public image tag that cannot be un-pulled (gh#108);
-#   - `aws-production`  gates WHAT RUNS -- the production deploy jobs declare it, and the IAM role those jobs
-#                       assume trusts ONLY a token carrying `sub = repo:<owner/repo>:environment:aws-production`,
-#                       a claim GitHub mints only for a job that declared the environment and passed its rule.
-#                       So the reviewer rule here is the approval AND the credential's precondition: an
-#                       `aws-production` with no reviewer would let the deploy role be assumed by any job in
-#                       this repository that names the environment.
-#
-# The names are hardcoded rather than parsed out of the workflows: this script takes a repo SLUG and may be
-# run from anywhere, with no checkout to read. Keeping the two in step is check-release-gate.sh's job -- it
-# discovers every name from the workflows and fails naming it, which is what a repo that renamed an
-# environment would see. The OTHER direction is held by a template test: the environment the production
-# deploy role trusts must appear on this line (infra/…/GitHubOidcStackTests.cs reads it), so the trust
-# condition and the setting cannot drift apart on the one name a deploy token must carry.
-ENV_NAMES="production aws-production"
+# The name is hardcoded rather than parsed out of the workflows: this script takes a repo SLUG and may be run
+# from anywhere, with no checkout to read. Keeping it in step is check-release-gate.sh's job — it discovers
+# every `environment:` name from the workflows and fails naming one that is missing or unprotected.
+ENV_NAMES="production"
 
 # CREATE-ONLY, NEVER OVERWRITE. An environment that already exists is READ and reported, never written.
 #

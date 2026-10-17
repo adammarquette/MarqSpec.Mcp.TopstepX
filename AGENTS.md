@@ -36,7 +36,6 @@ Solution `MarqSpec.Mcp.TopstepX.slnx`, seven projects on `net10.0`:
 | `…​.Domain` | Pure: `Bar`, `InstrumentId`, `InstrumentSpec`, `IIndicator` and `ILevelMethod` + implementations, `BarSessionCalendar`, `BarGapDetector`, `KeyLevels`, `SessionLevels`, `VolumeLevels`, `FootprintAggregator`, `VolumeProfileAggregator`, `TapeVolumeFront`, `ContractExpiry`, `ContractMonthCycle`, `HistoricalContractPolicy`. **References nothing** |
 | `…​.Data` | EF Core entities, `DbContext`, migrations |
 | `…​.Tests` / `…​.IntegrationTests` | Unit; and Testcontainers-backed integration |
-| `infra/…​.Infra` / `infra/…​.Infra.Tests` | The AWS deployment as CDK in C#, and its template tests — synthesised in CI with no credentials ([ADR-0023](documentation/adr/0023-aws-deployment-topology.md)). **References no product project and no venue package** |
 
 The venue is reached through the **[`MarqSpec.Client.ProjectX`](https://github.com/adammarquette/MarqSpec.Client.ProjectX)
 NuGet package** — not a submodule ([ADR-0003](documentation/adr/0003-client-as-package.md)).

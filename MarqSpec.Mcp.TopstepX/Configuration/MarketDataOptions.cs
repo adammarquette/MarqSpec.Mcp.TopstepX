@@ -98,10 +98,12 @@ public sealed partial class MarketDataOptions : IValidatableObject
     /// </summary>
     /// <remarks>
     /// A closed list, so an unlisted symbol is an error naming these rather than an empty series. A wrong
-    /// symbol and a quiet market must not be indistinguishable (`R-5.3`).
+    /// symbol and a quiet market must not be indistinguishable (`R-5.3`). The shipped default is ES and NQ
+    /// plus the common micros MES, MNQ, MGC and MCL (gh#694); <c>.env.example</c> and compose state the
+    /// same string.
     /// </remarks>
     [Required]
-    public string Instruments { get; init; } = "ES,NQ";
+    public string Instruments { get; init; } = "ES,NQ,MES,MNQ,MGC,MCL";
 
     /// <summary>
     /// Whether the process may subscribe to the market hub and write prints to

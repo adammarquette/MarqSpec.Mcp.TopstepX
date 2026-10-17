@@ -20,6 +20,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   with the root `Dockerfile` and `docker-compose.yml` ([`documentation/deployment.md`](documentation/deployment.md)).
   ADR-0023 is superseded.
 
+### Changed
+
+- **Default `MarketData__Instruments` includes the common micros.** The shipped list is
+  `ES,NQ,MES,MNQ,MGC,MCL` — the same string in `MarketDataOptions`, `.env.example` and compose —
+  so MES / MNQ / MGC / MCL no longer return "Unknown instrument" out of the box (gh#694).
+
 ### Added
 
 - **`adx`, `plus-di` and `minus-di` in the indicator catalogue, at Wilder's default 14.** Readable on

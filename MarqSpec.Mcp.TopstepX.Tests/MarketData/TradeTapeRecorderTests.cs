@@ -237,7 +237,7 @@ public sealed class TradeTapeRecorderTests
     [Fact]
     public async Task APrintOnTheFirstContract_IsStillRecorded_WhenALaterSubscribeThrows()
     {
-        // Shipped default is ES,NQ. The connect-throws test never reaches subscribe, and the
+        // Two instruments, ES then NQ. The connect-throws test never reaches subscribe, and the
         // rest of this suite configures ES alone, so a throw on instrument 1 used to leave the
         // ES subscription live with no drain: prints TryWrite into an unread channel, then
         // log as full-channel drops, and Trades stays empty while ExecuteTask looks clean.
@@ -283,7 +283,7 @@ public sealed class TradeTapeRecorderTests
     [Fact]
     public async Task GetFootprintAndGetVolumeProfile_ForNq_Refuse_WhenOnlyEsIsSubscribed()
     {
-        // Shipped default is ES,NQ. ES subscribe succeeds; NQ is refused. Process-wide
+        // Two instruments, ES then NQ. ES subscribe succeeds; NQ is refused. Process-wide
         // Listening would let get_footprint("NQ") return stored cells while NQ's tape is silent.
         (TradeTapeRecorder recorder, FakeMarketHub hub, TopstepXDbContext database, ServiceProvider services, _) =
             Build(

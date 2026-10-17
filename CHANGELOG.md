@@ -13,6 +13,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Removed
+
+- **AWS CDK deployment infrastructure.** The `infra/` CDK application, OIDC deploy workflows, and related CI
+  gates are gone. Releases still publish the container to GHCR; run it with the root `Dockerfile` and
+  `docker-compose.yml` ([`documentation/deployment.md`](documentation/deployment.md)). ADR-0023 is superseded.
+
 ### Added
 
 - **`adx`, `plus-di` and `minus-di` in the indicator catalogue, at Wilder's default 14.** Readable on

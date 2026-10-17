@@ -506,12 +506,13 @@ by mutation, not as a description of the workflow files.**
 
 ### The required-context table
 
-**Unchanged by gh#520.** The deploy jobs ride the release path (`release.yml`, `deploy.yml`); they do not
-report a merge-gate context, and `release-gate` still only reports. Do not add a row here for them.
+**Release path is GHCR only.** `release.yml` publishes the container after the `production` environment
+approval; there is no cloud deploy job and no merge-gate context for deployment. `release-gate` still only
+reports.
 
 | Context | develop | staging | main | Reported by |
 |---|---|---|---|---|
-| `build & unit tests` | required | required | required | `ci.yml` — also carries the infra template tests and, since gh#529, the additive-migration gate; [see below](#build--unit-tests-also-refuses-an-unacknowledged-destructive-migration) |
+| `build & unit tests` | required | required | required | `ci.yml` — also carries, since gh#529, the additive-migration gate and the deployment-check self-test; [see below](#build--unit-tests-also-refuses-an-unacknowledged-destructive-migration) |
 | `integration tests` | required | required | required | `ci.yml` |
 | `docs` | required | required | required | `ci.yml` — seven steps since gh#438, see below |
 | `coverage` | required | required | required | `ci.yml` |
@@ -1246,10 +1247,7 @@ found.
 | `production` environment carries a `required_reviewers` rule | `release.yml`'s `gate` job — the only thing between a merge and a public GHCR tag | [`check-release-gate.sh`](../../scripts/check-release-gate.sh), in `ci.yml` and in `release.yml` | gh#108 |
 | `required_status_checks` on `protect-develop` / `-staging` / `-main` | every merge gate in the table above; `no-order-path` carries ADR-0002 | `bootstrap.sh` step 3, which reads the contexts back per rung | gh#26, gh#72, gh#114; and gh#125, the one that went the other way — set correctly and recorded in `bootstrap.sh`, but not in the table above |
 | ruleset `enforcement: active` | all of the above | `bootstrap.sh` step 3 | `MarqSpec.Client.ProjectX`, disabled from creation |
-| the two Cognito client secrets' **values** in `topstepx-mcp/<env>/{claude-connector,deploy-check}` | the connector login (gh#524) and `check-deployment.sh`'s `client_credentials` token (gh#521); the stack creates the shells empty and no custom resource fills them ([ADR-0023](../adr/0023-aws-deployment-topology.md), 2026-09-07 Cognito entry) | gh#521's check, but read the shape carefully — an EMPTY shell fails it at `UNSET <the first empty value>` **before any request**, naming that value and saying nothing about the deployment. *Which* value depends on where the id is read from, and this repository has not settled that: `MCP_CHECK_CLIENT_ID` if both come out of the shell as ADR-0023 §"the `clientId` is duplicated into the shell" describes, `…_SECRET` if the id came from the stack output as gh#520 plans. A non-empty WRONG credential is the other path and is the one that comes back `NO TOKEN … answered 401`, after assertions 1 and 2 have passed. All measured 2026-09-07; this row said the opposite until then | never; not yet deployed (gh#519 writes them by hand) |
-| `aws-production` environment carries a `required_reviewers` rule | gh#520's two production deploy jobs — the approval on **what runs**, and the **precondition of the credential**: `GitHubDeploy-production` trusts only a token carrying `sub = …:environment:aws-production`, which GitHub mints only for a job that declared the environment and passed its rule ([ADR-0023](../adr/0023-aws-deployment-topology.md) §8 and its 2026-09-07 `aws-production` entry). Without the rule, any job in this repository naming the environment could assume the role | [`check-release-gate.sh`](../../scripts/check-release-gate.sh) on every pull request once a workflow names it — its self-test's two-environment case is the pre-creation shape; `bootstrap.sh` step 4 creates it and reports it, and a template test reads the script's `ENV_NAMES=` line against the trust condition | never; created 2026-09-09 (gh#519), read-back `User:adammarquette` |
-| `GitHubDeploy-staging` trust policy — `sub` StringLike `…:ref:refs/tags/v*` and `…:ref:refs/heads/main`, exactly two, on this repo's immutable `owner@id/name@id` prefix (created 2026-08-21, after GitHub's 2026-07-15 cutoff; a name-only `repo:owner/name` never matches) | `release.yml`'s staging deploy and `deploy.yml`'s dispatch on `main` (gh#520); a wider subject is a role any run of a public repository's fork could try, a narrower one refuses the rollback path | `GitHubOidcStackTests` on every pull request — the named test and the every-role test; on the account, `aws iam get-role --role-name GitHubDeploy-staging`; `gh api repos/…/actions/oidc/customization/sub` `sub_claim_prefix`; recorded on ADR-0023's 2026-09-07 staging entry and the 2026-09-10 immutable-subject entry | never; deployed 2026-09-09 (gh#519); first assume failed 2026-09-10 until the prefix matched (gh#520) |
-| `GitHubDeploy-production` trust policy — `sub` StringEquals `…:environment:aws-production` on the same immutable prefix, no `StringLike` | both production deploy jobs (gh#520) | the same tests; `aws iam get-role --role-name GitHubDeploy-production`, recorded on ADR-0023's 2026-09-07 production entry and the 2026-09-10 immutable-subject entry | never; deployed 2026-09-09 (gh#519); prefix aligned 2026-09-10 (gh#520) |
+| OAuth deploy-check credentials (`MCP_CHECK_CLIENT_ID`, `MCP_CHECK_CLIENT_SECRET`, `MCP_CHECK_TOKEN_URL`) | [`check-deployment.sh`](../../scripts/check-deployment.sh) `client_credentials` flow against a running HTTPS instance (gh#521) | the self-test in `build & unit tests`; a human run before trusting a new deploy | operator-supplied per host — an empty id or secret fails at `UNSET` before any request; a wrong non-empty secret yields `NO TOKEN … answered 401` after `/health` and `/mcp` anonymous checks pass |
 
 ### The release approval gate (gh#108)
 
@@ -1300,10 +1298,10 @@ output" reads a missing environment as a healthy one. The check keys on the exit
 
 **And it is made to fail on every run.**
 [`check-release-gate-selftest.sh`](../../scripts/check-release-gate-selftest.sh) runs in the same job,
-feeding the real script seven fixtures with known faults and requiring it to reject each one — **matching on
+feeding the real script five fixtures with known faults and requiring it to reject each one — **matching on
 the words that name each fault, never on exit status**, since exit 1 is also what "gh is required" produces
-and a self-test satisfied by status alone goes green on a runner with no `gh` on it. **And an eighth fixture
-that is genuinely sound, which it must accept**: seven rejections would all be satisfied by `exit 1`, and a
+and a self-test satisfied by status alone goes green on a runner with no `gh` on it. **And a sixth fixture
+that is genuinely sound, which it must accept**: five rejections would all be satisfied by `exit 1`, and a
 gate that says no to everything is exactly as useless as one that says yes to everything, and rather harder
 to notice. That case uses the mapping spelling of `environment:`, which no workflow here uses today, so
 nothing else would notice if it stopped being understood.
@@ -1314,21 +1312,9 @@ times and fell straight through to `ok "rejected"` — satisfied by exit status 
 file's header refuses. Measured rather than argued: a needle-less case added to the **shipped** code printed
 `rejected  PROBE: no needle at all` in green and the suite exited 0 still claiming six rejections; against
 the guard it dies naming the case, and the probe was removed. It fails the **suite** rather than counting a
-failure, because a self-test that cannot assert is not a result to tally. Seven calls pass at least one needle
-today; nothing could have told you when one stopped. The seventh rejection is gh#520's: a
-`workflow_dispatch` input named `environment` is not a GitHub Environment, and a discovery that treated
-every `environment:` key as one reported `<unresolved-mapping>` on `deploy.yml`.
+failure, because a self-test that cannot assert is not a result to tally. Five calls pass at least one needle today; nothing could have told you when one stopped.
 
-The sixth rejection is gh#518's, and it asserts *which* environment a red run names rather than that it goes
-red: two environments in one workflow set — the real, protected `production` beside one that does not exist
-— and three needles on the same run, the missing one by its whole quoted name, `PROTECTED    production` for
-the sound one, and the tally `1 of 2`. That is the shape a workflow naming `aws-production` produces until
-the maintainer has run `bootstrap.sh`, and a gate that went red about the environment that is fine would
-send the reader to the wrong setting. Proven by making the gate's tally line lie (`$failed of $failed`):
-that case alone went red — *"never said: 1 of 2 environment(s) would not stop an unattended publish"* —
-while the five older rejections and the acceptance stayed green, since none of them asserts the count.
-
-One of the six earns its place from a defect gh#108 shipped and gh#140 fixed: an `environment:` mapping with
+One of the five earns its place from a defect gh#108 shipped and gh#140 fixed: an `environment:` mapping with
 no `name:` under it stayed pending into the *next* file and bound itself to that file's top-level `name:`,
 reporting a workflow's own name as an environment — red, but for the wrong reason, naming a setting nobody
 ever asked for, and sending the reader to look for it. On a gate whose whole job is to be believed about
@@ -1347,7 +1333,7 @@ gate it is verifying. That case was proven once by hand instead, on a throwaway 
 scaffolding added and removed inside gh#108's own PR, re-run against the code gh#140 shipped. Two jobs,
 both red on purpose: the real check pointed at
 `gh108-unprotected-throwaway` reported `UNPROTECTED … carries NO protection rules at all` and exited 1; and
-`check-release-gate.sh` replaced by `exit 0` had all six self-test cases report `SELF-TEST FAILED`,
+`check-release-gate.sh` replaced by `exit 0` had all self-test cases report `SELF-TEST FAILED`,
 the positive one included — it exits 0 but reports nothing, so "passed for some other reason" is what
 catches it. Keep that
 link with this paragraph — delete one and the other becomes an assertion, which is the thing this whole
@@ -1366,13 +1352,10 @@ A ruleset `PUT` **replaces**: a rule missing from the payload is deleted. An env
 the hazard at the environment endpoint is not omission but the payload — `bootstrap.sh`'s create payload
 names `reviewers` explicitly, and running it over a live environment would replace whatever list is there
 with one account. Step 4 therefore **creates only, and never writes over an environment that already
-exists**; it reports what an existing one requires and warns when that is nothing. Since gh#518 it walks a
-list — `ENV_NAMES="production aws-production"` — reading each name on its own, so an existing `production` is
-left exactly as it is while a missing `aws-production` is created beside it; a template test reads that line
-against the production deploy role's trust condition, so the environment the role trusts is always one the
-script creates. Step 5 is **read-only** and new on the same card: it reads the GHCR package's visibility
-back, because ECS pulls the image with no registry credential only while the package is public
-([ADR-0023](../adr/0023-aws-deployment-topology.md) §5), and it reports a 404 (nothing released yet), a 403
+exists**; it reports what an existing one requires and warns when that is nothing. It walks
+`ENV_NAMES="production"` — the only GitHub Environment this repository's workflows name for release approval.
+Step 5 is **read-only**: it reads the GHCR package's visibility back, because `docker pull` from a host
+with no registry credential only works while the package is public, and it reports a 404 (nothing released yet), a 403
 for the missing `read:packages` scope — which the default `gh auth login` token lacks, measured on the
 maintainer's own token — and any other failure as three different states, none of them as "public". **Every
 read in that step warns and skips rather than dying, and both of them do** — the owner-type read went through
@@ -1427,11 +1410,10 @@ $ MCP_CHECK_CLIENT_ID=… MCP_CHECK_CLIENT_SECRET=… MCP_CHECK_TOKEN_URL=… \
     scripts/check-deployment.sh https://topstepx-mcp.staging.marqspec.com 0.4.0
 ```
 
-The two arguments are the **origin** and the release `/health` must report. The Cognito deploy-check client
-(ADR-0023 §9) arrives in the **environment and never in an argument**, because an argument is in every `ps`
-on the box, and reaches curl through a `--config` file for the same reason. The token endpoint's response
-body is never printed on any path. **Its secret is one of the shells gh#517 created empty** and gh#519 writes
-by hand; the settings table above carries the row.
+The two arguments are the **origin** and the release `/health` must report. Deploy-check OAuth credentials
+(`MCP_CHECK_*`) arrive in the **environment and never in an argument**, because an argument is in every `ps`
+on the box, and reach curl through a `--config` file for the same reason. The token endpoint's response
+body is never printed on any path. The settings table above carries the row.
 
 **An unfilled shell and a wrong secret are two different runs, and the first version of this sentence had
 them the wrong way round** — it said an unfilled shell surfaces as a `401` from the issuer rather than as
@@ -1459,14 +1441,8 @@ that says how a check fails is asserting a measurable thing, so measure it*.
 gate's `UNSET` arm gained the paragraph above, gated on the SECRET being the missing value — and the shell it
 describes is `{"clientId":"","clientSecret":""}`, **both** empty, so an operator reading the whole document
 out of it stops at the *id* and the paragraph explaining unfilled shells did not print on an unfilled shell.
-*Its own premise was the input it did not reach.* It now fires on either name. **Which name comes first is
-not this gate's to decide, and the repository disagrees with itself about it**: ADR-0023 duplicates the
-client id into the shell so this check reads one document, which makes it `MCP_CHECK_CLIENT_ID`; gh#520 plans
-to take the id from a stack output and only the secret from Secrets Manager, which makes it
-`MCP_CHECK_CLIENT_SECRET`. That disagreement predates this gate and is not settled here — the text and the
-row are written to be true under either, which is what a document should do when the thing it describes is
-still a fork. *A conditional claim that does not state its condition is the same defect as a wrong one, one
-step further back.*
+*Its own premise was the input it did not reach.* It now fires on either name — `MCP_CHECK_CLIENT_ID` or
+`MCP_CHECK_CLIENT_SECRET` — whichever is empty first.
 
 The self-test asserts on every case, red ones included, that **neither** the client secret nor the bearer
 appears in either stream.
@@ -1512,8 +1488,8 @@ is the one thing that leaves the `-k` question testable. The same rule is applie
 from **one shared classifier** rather than a second copy (gh#123): that request carries the client secret,
 so plain http off loopback is refused before anything is sent.
 
-**Wired into `build & unit tests`, beside `cdk synth`**, and it needs no Docker. Only the **self-test** runs
-in CI — there is no deployed hostname for the gate itself to point at until gh#519 has run — so it rides in
+**Wired into `build & unit tests`**, and it needs no Docker. Only the **self-test** runs in CI — there is no
+required deployed hostname for the gate itself to point at — so it rides in
 a job that is already required on all three rungs, no ruleset write, and
 [the required-context table](#the-required-context-table) does not change. **`docs` is still seven steps**;
 nothing was added there.
@@ -1565,15 +1541,11 @@ nine cases are not read as the assertion list. Five things worth carrying:
   look'") wearing a different hat: a probe that reads as a working detection right up to the point where
   every case fails for a reason that is not the gate's.
 
-**What no run of it has proven yet, and cannot until staging has a hostname.** There is no deployed
-instance: gh#519 bootstrapped the account and the OIDC stack (2026-09-09) and stopped EnvironmentStack
-because public NS is Cloudflare, not the Route 53 zone. The gate has never met a real hostname: no TLS
-certificate from a real issuer, no Cognito token, no `initialize` past a real resource server. Assertions
-1 and 2 have been run against **real product code** — the host in `OAuth` mode on loopback answers
-`/health`, the `401` and the RFC 9728 document, and the gate passes both — and assertion 3 stops there,
-correctly, for want of a pool. The first run against the staging hostname is gh#521's own acceptance
-criterion and it is a human's. **The runbook** is [`documentation/deployment.md`](../deployment.md); the
-file/here-doc secret-write shape and the live OIDC read-back live there.
+**What no CI run of it proves: a specific deployed hostname.** The self-test uses a loopback fixture; a
+green CI run does not substitute for pointing the gate at the origin you actually run. Assertions 1 and 2
+have been run against **real product code** — the host in `OAuth` mode on loopback answers `/health`, the
+`401` and the RFC 9728 document — and assertion 3 needs a real issuer and deploy-check credentials from the
+operator. **The runbook** is [`documentation/deployment.md`](../deployment.md).
 
 ## Definition of done
 

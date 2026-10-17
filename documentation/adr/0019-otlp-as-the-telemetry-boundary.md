@@ -178,11 +178,20 @@ which needs an `IProjectXApiClient` — an interface carrying the venue's whole 
 would put `PlaceOrderAsync` into this repository to test a counter, which is the opposite of what
 [ADR-0002](0002-read-only-venue-boundary.md) asks for.
 
+## Update — 2026-10-17: AWS Fargate sidecar config removed from the repository
+
+The checked-in OTLP collector configuration that lived under `infra/MarqSpec.Mcp.TopstepX.Infra/Collector/`
+was removed with the AWS CDK app (gh#682). Deployment is Docker-based; operators who want telemetry set
+`Otel__Endpoint` (and optional headers) on the server container as documented in the README. The compose
+`observability` profile (Grafana LGTM) remains
+the local receiver path.
+
 ## Update — 2026-09-07: the sidecar's image, limits and secret wiring, and what has not met a collector
 
 *What this does not decide* left gh#537 "the collector sidecar's image, resource limits and secret wiring".
-They exist now, in `infra/MarqSpec.Mcp.TopstepX.Infra/` and its checked-in
-`Collector/otel-collector-config.yaml`, and this records them so they can be cited rather than rediscovered.
+They existed then in `infra/MarqSpec.Mcp.TopstepX.Infra/` and its checked-in
+`Collector/otel-collector-config.yaml` (removed 2026-10-17; see update above), and this records them so
+they can be cited rather than rediscovered.
 
 **The image** is `otel/opentelemetry-collector-contrib` by digest, pinned in `EnvironmentStack`. The
 *contrib* distribution and not the core one, for one reason: the `resource` processor that stamps

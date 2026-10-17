@@ -390,12 +390,11 @@ done
 # ---------------------------------------------------------------------------
 step "5. Published image visibility (read-only)"
 
-# gh#518, ADR-0023 §5. The deployment pulls `ghcr.io/<owner>/<repo>@<digest>` from ECS with NO registry
-# credential, which is only true while the package is PUBLIC. Visibility is a GitHub package setting -- not
-# a file, not a workflow -- and a flip to private is found by a failed task pull at the next deploy unless
-# something reads it back. This step reads it back. It WRITES NOTHING: the fallback for a private package is
-# `repositoryCredentials` on the task definition (ADR-0023 §5), which is a change to `infra/`, not a setting
-# this script should flip for anyone.
+# gh#518. Operators pull `ghcr.io/<owner>/<repo>@<digest>` with no registry credential only while the
+# package is PUBLIC. Visibility is a GitHub package setting -- not a file, not a workflow -- and a flip to
+# private breaks unauthenticated `docker pull` on the next deploy unless something reads it back. This step
+# reads it back. It WRITES NOTHING: making the package public again is a Package settings change, not
+# something this script performs.
 #
 # The read is `GET /{users|orgs}/{owner}/packages/container/{name}` -- the package name is the repository
 # name lowercased, the same rule scripts/image-reference.sh applies to the reference the release pushes. It
@@ -444,12 +443,11 @@ if [ -n "$PACKAGE_PATH" ]; then
   package_read="$(gh api "$PACKAGE_PATH" --jq .visibility 2>&1)" || package_status=$?
   if [ "$package_status" -eq 0 ]; then
     if [ "$package_read" = "public" ]; then
-      ok "  ghcr.io/$(printf '%s' "$OWNER" | tr '[:upper:]' '[:lower:]')/$PACKAGE is public — ECS pulls it with no registry credential"
+      ok "  ghcr.io/$(printf '%s' "$OWNER" | tr '[:upper:]' '[:lower:]')/$PACKAGE is public — unauthenticated docker pull works"
     else
       warn "  ghcr.io/$(printf '%s' "$OWNER" | tr '[:upper:]' '[:lower:]')/$PACKAGE visibility is '$package_read', not public"
-      warn "  A deployment pulling it with no registry credential FAILS at the task pull. Either make the package"
-      warn "  public again (Package settings > Danger Zone) or add repositoryCredentials to the task definition"
-      warn "  (ADR-0023 §5's fallback). This script changes neither."
+      warn "  A host pulling it with no registry credential FAILS at docker pull. Make the package public again"
+      warn "  (Package settings > Danger Zone) or configure registry credentials on the host. This script changes neither."
     fi
   elif printf '%s' "$package_read" | grep -q 'HTTP 404'; then
     # NAMING THE ASSUMPTION, because "nothing has been released" is a claim and a 404 is only evidence for it

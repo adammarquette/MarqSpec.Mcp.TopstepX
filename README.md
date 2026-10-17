@@ -254,8 +254,8 @@ A remote client is a **pre-registered** confidential app in that environment's C
 shared secret in this file. Point the connector at the MCP resource; an unauthenticated call returns
 `401` with a `resource_metadata` challenge whose document names the issuer. `/health` answers anyone.
 
-Published releases push a container image to GHCR after the `production` approval on the release workflow.
-Run that image with Docker or compose on your host — see
+Published releases only push a container image to GHCR (after the `production` approval on `release.yml`); there
+is no deploy job in that workflow. To run a release on your host, use Docker or compose — see
 [deployment](documentation/deployment.md) and [Run it](#run-it) above.
 
 ### The OAuth mode — a resource server for the remote instance

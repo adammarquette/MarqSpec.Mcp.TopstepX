@@ -5,8 +5,7 @@ name: Release container image
 #
 # Triggered by a published GitHub release, so the tag is the version (ADR-0001) and cutting a release is a
 # deliberate act rather than a side effect of a merge. After approval, `publish` builds and pushes the
-# container image to GHCR. Operators run that image with Docker or compose — see documentation/deployment.md
-# and the README. This workflow does not deploy to a cloud account.
+# container image to GHCR. That push is the whole release path in this repository — no further jobs run here.
 
 on:
   release:
@@ -64,12 +63,6 @@ jobs:
     name: Build and publish to GHCR
     needs: gate
     runs-on: ubuntu-latest
-    outputs:
-      # build-push-action's image digest — pin deployments to this value rather than a floating tag.
-      # Assigned on its own line and checked in the deploy jobs (gh#126). The build step's `with:` is
-      # untouched — only `id: push` was added so this output exists.
-      digest: ${{ steps.push.outputs.digest }}
-      version: ${{ steps.tag.outputs.version }}
     permissions:
       contents: read
       packages: write
@@ -92,7 +85,6 @@ jobs:
           fetch-depth: 0
 
       - name: Verify the tag looks like a version
-        id: tag
         run: |
           TAG="${GITHUB_REF_NAME}"
           if ! printf '%s' "$TAG" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$'; then
@@ -100,7 +92,6 @@ jobs:
             exit 1
           fi
           echo "VERSION=${TAG#v}" >> "$GITHUB_ENV"
-          echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
 
       # The reference comes from scripts/image-reference.sh, and NOT from `${{ github.repository }}`
       # directly, because that carries the repository's DISPLAY case and an OCI repository name must be
@@ -149,7 +140,6 @@ jobs:
       # this one through the REGISTRY exporter (`push`). No pull-request run can cover a push to GHCR without
       # handing every PR a write credential, so `docker-container` + `push: true` still first executes here.
       - name: Build and push
-        id: push
         uses: docker/build-push-action@v7
         with:
           context: .

@@ -62,13 +62,22 @@ MCP_CHECK_CLIENT_ID=… MCP_CHECK_CLIENT_SECRET=… MCP_CHECK_TOKEN_URL=… \
 CI runs [`check-deployment-selftest.sh`](../scripts/check-deployment-selftest.sh) against a loopback
 fixture so that gate can still fail without a live deployment.
 
-## Release and rollback (image only)
+## Release (GHCR only)
+
+The **release process in this repository** is only publishing the container to GHCR:
 
 1. Merge to `develop`, promote through the branch policy, cut a `v*` tag on `main`, and publish the GitHub
-   release — `release.yml` builds and pushes to GHCR after the `production` environment approval.
-2. On the host where you run Docker, `docker pull` the new tag (or digest), update your compose or run
-   command, and restart the server (and migrate Postgres if the release requires it).
-3. **Rollback** is the previous image tag or digest: pull that reference and restart. GHCR tags can be
-   overwritten; prefer digest pinning for production.
+   release.
+2. `release.yml` runs `verify-gate`, waits on the `production` environment approval, then builds and pushes
+   the image to GHCR. **No workflow job runs after that push.**
+
+Running the new image on your infrastructure is separate from release — not automated here.
+
+## Rollback and running a version (operator)
+
+- **Upgrade:** `docker pull` the release tag (or digest from the workflow log / GHCR), update compose or your
+  run command, restart the server (migrate Postgres if the release requires it).
+- **Rollback:** pull the previous tag or digest and restart. GHCR tags can be overwritten; prefer digest
+  pinning on production hosts.
 
 Assisted-by: Cursor Cloud Agent

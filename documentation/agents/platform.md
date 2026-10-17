@@ -6,7 +6,7 @@ root [`AGENTS.md`](../../AGENTS.md) still applies. It owns the artifacts below *
 
 | Artifact | Where |
 | --- | --- |
-| CI, branch-policy, CodeQL, release workflow | [`.github/workflows/`](../../.github/workflows/) — `release.yml` publishes the container to GHCR after approval; `ci.yml` builds and tests the image without pushing |
+| CI, branch-policy, CodeQL, release workflow | [`.github/workflows/`](../../.github/workflows/) — `release.yml` ends at the GHCR push after the `production` approval; `ci.yml` builds and tests the image without pushing |
 | The published image | [`Dockerfile`](../../Dockerfile) — built by `ci.yml`'s `image` job, pushed to GHCR only by `release.yml` |
 | Local stack | [`docker-compose.yml`](../../docker-compose.yml) (Postgres + server) and [`docker-compose.dev.yml`](../../docker-compose.dev.yml) (SDK overlay) |
 | Build and dependency properties | `Directory.Build.props`, `Directory.Packages.props` (Central Package Management — package *versions*, since nothing here is packaged), `global.json` |
@@ -1382,11 +1382,11 @@ the claims worth testing and an in-memory provider proves none of them ([ADR-000
 
 Branches still map to intent rather than to environments: `develop` integrates, `staging` holds what is
 promoted but unreleased, `main` is what has shipped, and a `v*` tag on `main` is what triggers a release.
-A published release pushes that image to GHCR after the `production` environment approval on `gate`.
-Operators deploy by pulling the tag or digest and running Docker or compose — see
-[`documentation/deployment.md`](../deployment.md). `:latest` is still pushed (ADR-0001) for convenience;
-pin by digest on production hosts. The [required-context table](#the-required-context-table) is unchanged —
-`release-gate` still only reports.
+A published release runs `verify-gate`, waits on `gate`, then `publish` — and **stops when the image is on
+GHCR**. There is no post-publish job in `release.yml`. Running that image on a host (Docker or compose) is
+operator work outside the release workflow; see [`documentation/deployment.md`](../deployment.md). `:latest`
+is still pushed (ADR-0001) for convenience. The [required-context table](#the-required-context-table) is
+unchanged — `release-gate` still only reports.
 
 ### Deployment (Docker)
 

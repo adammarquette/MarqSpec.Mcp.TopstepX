@@ -96,7 +96,7 @@
       is no flag and no package (ADR-0019, invariant 4).
     -->
     <PackageVersion Include="OpenTelemetry.Extensions.Hosting" Version="1.19.0" />
-    <PackageVersion Include="OpenTelemetry.Exporter.OpenTelemetryProtocol" Version="1.18.0" />
+    <PackageVersion Include="OpenTelemetry.Exporter.OpenTelemetryProtocol" Version="1.19.0" />
     <PackageVersion Include="OpenTelemetry.Instrumentation.AspNetCore" Version="1.18.0" />
     <PackageVersion Include="OpenTelemetry.Instrumentation.Http" Version="1.18.0" />
     <PackageVersion Include="OpenTelemetry.Instrumentation.Runtime" Version="1.18.0" />
@@ -121,7 +121,7 @@
   </ItemGroup>
 
   <ItemGroup Label="Test stack">
-    <PackageVersion Include="Microsoft.NET.Test.Sdk" Version="18.10.0" />
+    <PackageVersion Include="Microsoft.NET.Test.Sdk" Version="18.10.1" />
     <PackageVersion Include="xunit" Version="2.9.3" />
     <PackageVersion Include="xunit.runner.visualstudio" Version="4.0.0" />
     <!-- LICENSE CAP: FluentAssertions v8+ is commercially licensed. Do not bump past 7.x. -->
@@ -155,7 +155,7 @@
       about what an exported span CARRIES — and, more sharply, what it must never carry (ADR-0019) — so they
       are asserted against real exported activities rather than against the builder that produced them.
     -->
-    <PackageVersion Include="OpenTelemetry.Exporter.InMemory" Version="1.18.0" />
+    <PackageVersion Include="OpenTelemetry.Exporter.InMemory" Version="1.19.0" />
   </ItemGroup>
 
 </Project>

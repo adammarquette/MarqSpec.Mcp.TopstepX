@@ -25,7 +25,7 @@ retrospective justification is a press release. The useful ones name the option 
 | ADR | Title | Status |
 |---|---|---|
 | [0001](0001-tag-driven-versioning.md) | The git tag is the version | Accepted |
-| [0002](0002-read-only-venue-boundary.md) | **No order path exists in this repository** | Accepted · enforced by CI (gh#11) |
+| [0002](0002-read-only-venue-boundary.md) | **No order path exists in this repository** | Superseded by [0024](0024-gated-trading-actions-practice-v1.md) · CI still enforces absolute ban until gh#718 |
 | [0003](0003-client-as-package.md) | Consume `MarqSpec.Client.ProjectX` as a NuGet package, not a submodule | Accepted |
 | [0004](0004-one-postgres-timescale-pgvector.md) | One Postgres, two extensions | Accepted |
 | [0005](0005-session-aware-gap-detection.md) | Cache-aside is decided against the session calendar | Accepted · the reason the cache terminates · extended by [0022](0022-session-bars-derived-complete-or-absent.md), which reads session windows off the same calendar (gh#498) |
@@ -47,6 +47,7 @@ retrospective justification is a press release. The useful ones name the option 
 | [0021](0021-a-non-loopback-instance-is-supported.md) | **A non-loopback instance is supported** — bind, token and certificate each have a named replacement | Accepted · settles what [0007](0007-dual-transport.md)'s 2026-09-01 TLS update declined to, superseding its "same machine" scoping and nothing else · does not reopen [0002](0002-read-only-venue-boundary.md) · the topology is gh#511's record, which cites this one (gh#445, gh#509) · carried by [0023](0023-aws-deployment-topology.md) |
 | [0022](0022-session-bars-derived-complete-or-absent.md) | **Session bars are derived from stored base bars** — complete, or absent with a reason | Accepted · extends [0005](0005-session-aware-gap-detection.md) (the calendar now also defines session windows) and [0010](0010-per-call-resolutions-fetched-not-derived.md) (the completeness-guard exception it named), reopening neither · the ceiling is now the session, so the day and the week are refused (gh#496, gh#498) |
 | [0023](0023-aws-deployment-topology.md) | **The AWS deployment topology** (historical) — Fargate, CDK, Cognito, OIDC deploys | **Superseded** (2026-10-17) — deployment is Docker via the repo [`Dockerfile`](../../Dockerfile) and GHCR; see [`deployment.md`](../deployment.md). Record kept for history (gh#509, gh#682). |
+| [0024](0024-gated-trading-actions-practice-v1.md) | **Gated trading actions — practice accounts only in v1** | Accepted · supersedes [0002](0002-read-only-venue-boundary.md) under the constraints here · gh#706 (v1 epic), gh#722 (v2 epic) · PR #723 |
 
 *Adding a record? Add its row here in the same PR, and a routing entry in [`../README.md`](../README.md) if
 the corpus shape changes.*

@@ -274,23 +274,6 @@ public sealed class HostTelemetry : IDisposable
     /// <returns>A scope the caller disposes when the write has settled, however it settled.</returns>
     public ExecutionWriteScope ExecutionWrite(string operation) => new(this, operation);
 
-    /// <summary>Counts one gated execution write immediately.</summary>
-    /// <param name="operation">Which write, from <see cref="ExecutionOperation"/>.</param>
-    /// <param name="refusal">Why it stopped, from <see cref="ExecutionWriteRefusal"/>.</param>
-    public void RecordExecutionWrite(string operation, string refusal)
-    {
-        Activity? span = Activities.StartActivity("execution." + operation, ActivityKind.Internal);
-        span?.SetTag(OperationTag, operation);
-        span?.SetTag(RefusalTag, refusal);
-
-        _executionWrites.Add(
-            1,
-            new KeyValuePair<string, object?>(OperationTag, operation),
-            new KeyValuePair<string, object?>(RefusalTag, refusal));
-
-        span?.Dispose();
-    }
-
     /// <summary>Opens a span for one cache-aside read.</summary>
     /// <param name="series">Which series, from <see cref="CacheSeries"/>.</param>
     /// <param name="symbol">The venue-neutral instrument symbol.</param>
@@ -556,7 +539,7 @@ public sealed class HostTelemetry : IDisposable
 
             _closed = true;
 
-            string refusal = _refusal ?? ExecutionWriteRefusal.Transmitted;
+            string refusal = _refusal ?? ExecutionWriteRefusal.Error;
             _span?.SetTag(RefusalTag, refusal);
 
             _telemetry._executionWrites.Add(
@@ -699,6 +682,30 @@ public static class ExecutionWriteRefusal
     /// <summary>The venue marks the account inactive or not tradable.</summary>
     public const string AccountNotActive = "account_not_active";
 
+    /// <summary>The contract id is not a usable venue contract id.</summary>
+    public const string MalformedContractId = "malformed_contract_id";
+
+    /// <summary>The contract product is not mapped to a served instrument.</summary>
+    public const string ContractProductNotMapped = "contract_product_not_mapped";
+
+    /// <summary>Trading configuration failed validation.</summary>
+    public const string TradingConfigurationInvalid = "trading_configuration_invalid";
+
+    /// <summary>The modify target order was not found on a fresh fetch.</summary>
+    public const string OrderNotFound = "order_not_found";
+
+    /// <summary>Risk checks passed in dry-run; nothing was transmitted.</summary>
+    public const string Preview = "preview";
+
+    /// <summary>The call failed with an unhandled exception before a stable outcome was recorded.</summary>
+    public const string Error = "error";
+
+    /// <summary>The venue rejected the write with a definitive client error.</summary>
+    public const string VenueRejected = "venue_rejected";
+
+    /// <summary>The transmit outcome could not be classified safely for retry.</summary>
+    public const string OutcomeUnknown = "outcome_unknown";
+
     /// <summary>Every value.</summary>
     public static IReadOnlyList<string> All { get; } =
         [
@@ -713,6 +720,14 @@ public static class ExecutionWriteRefusal
             NonPracticeAccount,
             UnknownAccountStage,
             AccountNotActive,
+            MalformedContractId,
+            ContractProductNotMapped,
+            TradingConfigurationInvalid,
+            OrderNotFound,
+            Preview,
+            Error,
+            VenueRejected,
+            OutcomeUnknown,
         ];
 }
 

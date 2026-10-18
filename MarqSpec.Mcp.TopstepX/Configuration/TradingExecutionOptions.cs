@@ -9,9 +9,9 @@ namespace MarqSpec.Mcp.TopstepX.Configuration;
 /// </summary>
 /// <remarks>
 /// <para>
-/// <b>Configuration only in gh#708.</b> Nothing here registers MCP tools or calls the gateway order surface.
-/// A future <c>TradingRiskGate</c> reads these values together with a hard practice-only stage check that
-/// cannot be overridden by the allowlist (gh#711).
+/// <b>Master enable defaults off.</b> The risk gate and execution gateway adapter read these values; MCP order
+/// tools that call the gate ship separately (gh#713/#715). Practice-only stage cannot be overridden by the
+/// allowlist (gh#711).
 /// </para>
 /// <para>
 /// <b>Master enable is off by default.</b> <c>Trading__Enabled=false</c> is the safe posture until an operator

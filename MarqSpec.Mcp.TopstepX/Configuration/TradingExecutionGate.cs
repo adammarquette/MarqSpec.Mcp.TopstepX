@@ -12,10 +12,14 @@ namespace MarqSpec.Mcp.TopstepX.Configuration;
 /// <see cref="ProjectXExecutionGateway"/> (gh#718). Caps, allowlist, and dry-run layers remain for
 /// <c>TradingRiskGate</c> (gh#711) and still do not override practice-only (ADR-0024 §2).
 /// </remarks>
-public sealed class TradingExecutionGate(IOptions<TradingExecutionOptions> options, ITradingKillSwitch killSwitch)
+public sealed class TradingExecutionGate(
+    IOptions<TradingExecutionOptions> options,
+    ITradingKillSwitch killSwitch,
+    IAccountStageResolver stageResolver)
 {
     private readonly TradingExecutionOptions _options = options.Value;
     private readonly ITradingKillSwitch _killSwitch = killSwitch;
+    private readonly IAccountStageResolver _stageResolver = stageResolver;
 
     /// <summary>Refuses when master enable is off or the kill switch is engaged.</summary>
     /// <returns>A refusal, or <see langword="null"/> when trading may proceed past this layer.</returns>
@@ -141,12 +145,14 @@ public sealed class TradingExecutionGate(IOptions<TradingExecutionOptions> optio
     /// <param name="marketData">Read seam used to re-fetch account rows (ADR-0024 §2).</param>
     /// <param name="unknownStageSignal">Hook when stage parses as unknown.</param>
     /// <param name="cancellationToken">Cancellation.</param>
+    /// <param name="resolvedAccount">When the risk gate already fetched this account, pass it to skip a second list call.</param>
     /// <returns>A refusal, or <see langword="null"/> when a venue write may proceed to the adapter.</returns>
     public async Task<TradingExecutionRefusal?> RefuseWriteUnlessPermittedAsync(
         int accountId,
         IMarketDataGateway marketData,
         ITradingUnknownStageRefusalSignal unknownStageSignal,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        VenueAccount? resolvedAccount = null)
     {
         ArgumentNullException.ThrowIfNull(marketData);
         ArgumentNullException.ThrowIfNull(unknownStageSignal);
@@ -157,14 +163,18 @@ public sealed class TradingExecutionGate(IOptions<TradingExecutionOptions> optio
             return disabled;
         }
 
-        IReadOnlyList<VenueAccount> accounts = await marketData
-            .GetAccountsAsync(onlyActive: true, cancellationToken)
-            .ConfigureAwait(false);
-
-        VenueAccount? account = accounts.FirstOrDefault(candidate => candidate.AccountId == accountId);
+        VenueAccount? account = resolvedAccount?.AccountId == accountId ? resolvedAccount : null;
         if (account is null)
         {
-            return TradingExecutionRefusal.AccountNotFound(accountId);
+            IReadOnlyList<VenueAccount> accounts = await marketData
+                .GetAccountsAsync(onlyActive: true, cancellationToken)
+                .ConfigureAwait(false);
+
+            account = accounts.FirstOrDefault(candidate => candidate.AccountId == accountId);
+            if (account is null)
+            {
+                return TradingExecutionRefusal.AccountNotFound(accountId);
+            }
         }
 
         if (!account.CanTrade)
@@ -172,6 +182,7 @@ public sealed class TradingExecutionGate(IOptions<TradingExecutionOptions> optio
             return TradingExecutionRefusal.AccountNotActive(accountId);
         }
 
-        return RefuseIfStageBlocksWrite(account.Stage, accountId, unknownStageSignal);
+        AccountStage stage = _stageResolver.ResolveFromFreshVenueAccount(account);
+        return RefuseIfStageBlocksWrite(stage, accountId, unknownStageSignal);
     }
 }

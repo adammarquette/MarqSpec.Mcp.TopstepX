@@ -645,8 +645,8 @@ public static class Program
             .ValidateDataAnnotations()
             .ValidateOnStart();
 
-        // Trading write controls (ADR-0024 v1, gh#708). Validated on start; no MCP tools or venue order calls
-        // register here — only configuration, the kill switch, and the configuration gate future tools reuse.
+        // Trading write controls (ADR-0024 v1, gh#708). The risk gate and execution gateway register here;
+        // MCP order tools are not on this branch yet (gh#713/#715). Default Trading__Enabled=false.
         services.AddOptions<TradingExecutionOptions>()
             .Configure<IConfiguration>(TradingExecutionOptionsConfiguration.Bind)
             .ValidateDataAnnotations()
@@ -660,6 +660,7 @@ public static class Program
         services.AddScoped<ITradingAuditLogWriter, TradingAuditLogWriter>();
         services.AddScoped<ITradingDailyCapCoordinator, TradingDailyCapCoordinator>();
         services.AddScoped<TradingContractDenylist>();
+        services.AddScoped<TradingWriteVenueAccountCache>();
         services.AddScoped<TradingRiskGate>();
 
         // Under HTTP, exactly one authentication mode, complete — the token for StaticToken, the issuer,

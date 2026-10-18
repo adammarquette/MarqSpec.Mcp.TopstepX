@@ -431,16 +431,33 @@ public sealed class TradingRiskGateTests
     }
 
     [Fact]
-    public async Task TradingRiskGate_WritesAttemptedBeforeGatewaySend()
+    public async Task TradingRiskGate_WritesAttemptedAfterGatewayPermitsSend()
     {
         TradingRiskGate gate = Gate(new TradingExecutionOptions { Enabled = true });
         _gateway.PlaceOrderResult = ExecutionWriteResultFactory.Acknowledged(1);
         _gateway.OnPlaceOrder = () =>
         {
-            _audit.Entries.Should().ContainSingle(e => e.Outcome == TradingAuditOutcomes.Attempted);
+            _audit.Entries.Should().NotContain(e => e.Outcome == TradingAuditOutcomes.Attempted);
         };
 
         await gate.SubmitPlace(SamplePlace(PracticeAccountId), Context(dryRun: false), CancellationToken.None);
+
+        _audit.Entries.Should().Contain(e => e.Outcome == TradingAuditOutcomes.Attempted);
+    }
+
+    [Fact]
+    public async Task TradingRiskGate_DoesNotWriteAttempted_WhenGatewayRefuses()
+    {
+        _gateway.PlaceOrderResult = ExecutionWriteResultFactory.GateRefused(
+            TradingExecutionRefusal.KillSwitchEngaged);
+        TradingRiskGate gate = Gate(new TradingExecutionOptions { Enabled = true });
+
+        await gate.SubmitPlace(
+            SamplePlace(PracticeAccountId),
+            Context(dryRun: false),
+            CancellationToken.None);
+
+        _audit.Entries.Should().NotContain(e => e.Outcome == TradingAuditOutcomes.Attempted);
     }
 
     [Fact]
@@ -512,10 +529,13 @@ public sealed class TradingRiskGateTests
         IReadOnlyList<VenueOrder>? orders = null,
         string instruments = "MES")
     {
-        TradingExecutionGate executionGate = new(Options.Create(options), _killSwitch);
+        ProjectXAccountStageResolver stageResolver = new();
+        TradingExecutionGate executionGate = new(
+            Options.Create(options),
+            _killSwitch,
+            stageResolver);
         InstrumentRegistry registry = new(Options.Create(new MarketDataOptions { Instruments = instruments }));
         TradingContractDenylist denylist = new(Options.Create(options), registry);
-        ProjectXAccountStageResolver stageResolver = new();
 
         IReadOnlyList<VenueAccount> resolvedAccounts = accounts ?? DefaultAccounts(stageResolver);
 
@@ -528,6 +548,7 @@ public sealed class TradingRiskGateTests
             _daily,
             _audit,
             denylist,
+            new TradingWriteVenueAccountCache(),
             new HostTelemetry());
     }
 

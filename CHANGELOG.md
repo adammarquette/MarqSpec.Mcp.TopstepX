@@ -40,7 +40,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - **`TradingRiskGate` (gh#711).** Central practice-only gate with allowlist, symbol denylist, per-order and
-  daily caps, dry-run preview, and append-only audit rows before every outcome. MCP tools will call this type
+  daily caps, dry-run preview, and append-only audit rows before every outcome. Future MCP order tools will call
+  this type
   instead of `IExecutionGateway` directly (ADR-0024).
 
 - **`TradingExecutionOptions` — master enable, kill switch, allowlist, caps and symbol denylist (gh#708).**

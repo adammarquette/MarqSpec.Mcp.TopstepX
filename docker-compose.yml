@@ -163,7 +163,7 @@ services:
       KeyLevels__Weights__pivot-woodie: "${KeyLevels__Weights__pivot-woodie:-1}"
       KeyLevels__Weights__pivot-demark: "${KeyLevels__Weights__pivot-demark:-1}"
 
-      # Trading execution (ADR-0024 v1, gh#708). Configuration only — no order tools in this release.
+      # Trading execution (ADR-0024 v1, gh#708). Gate + gateway; no MCP order tools yet (gh#713/#715).
       Trading__Enabled: "${Trading__Enabled:-false}"
       Trading__KillSwitch: "${Trading__KillSwitch:-false}"
       Trading__KillSwitchFile: "${Trading__KillSwitchFile:-}"

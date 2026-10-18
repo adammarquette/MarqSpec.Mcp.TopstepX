@@ -1,5 +1,6 @@
 using FluentAssertions;
 using MarqSpec.Mcp.TopstepX.Configuration;
+using MarqSpec.Mcp.TopstepX.Venue;
 using Microsoft.Extensions.Options;
 
 namespace MarqSpec.Mcp.TopstepX.Tests.Configuration;
@@ -81,6 +82,39 @@ public sealed class TradingExecutionGateTests
             .Should().Be(TradingExecutionRefusal.OrderSizeExceedsLimit(4, 3));
     }
 
+    /// <summary>Unknown stage refuses and invokes the observability hook.</summary>
+    [Fact]
+    public void RefuseIfStageBlocksWrite_InvokesSignalAndRefuses_ForUnknown()
+    {
+        RecordingUnknownSignal signal = new();
+        TradingExecutionGate gate = Gate(new TradingExecutionOptions { Enabled = true });
+
+        gate.RefuseIfStageBlocksWrite(AccountStage.Unknown, accountId: 55, signal)
+            .Should().Be(TradingExecutionRefusal.UnknownAccountStage(55));
+
+        signal.RefusedAccountIds.Should().ContainSingle().Which.Should().Be(55);
+    }
+
+    /// <summary>Practice stage passes the practice-only layer.</summary>
+    [Fact]
+    public void RefuseIfStageBlocksWrite_Passes_ForPractice()
+    {
+        TradingExecutionGate gate = Gate(new TradingExecutionOptions { Enabled = true });
+
+        gate.RefuseIfStageBlocksWrite(AccountStage.Practice, accountId: 1, new NullTradingUnknownStageRefusalSignal())
+            .Should().BeNull();
+    }
+
+    /// <summary>Funded stage is refused before any adapter call.</summary>
+    [Fact]
+    public void RefuseIfStageBlocksWrite_Refuses_ForFunded()
+    {
+        TradingExecutionGate gate = Gate(new TradingExecutionOptions { Enabled = true });
+
+        gate.RefuseIfStageBlocksWrite(AccountStage.Funded, accountId: 9, new NullTradingUnknownStageRefusalSignal())
+            .Should().Be(TradingExecutionRefusal.NonPracticeAccountStage(9, AccountStage.Funded));
+    }
+
     /// <summary>Daily totals include the request being evaluated.</summary>
     [Fact]
     public void RefuseIfDailyLimitExceeded_ReturnsRefusal_WhenTheDayWouldOverflow()
@@ -105,5 +139,12 @@ public sealed class TradingExecutionGateTests
         public bool Engaged { get; set; }
 
         public bool IsEngaged => Engaged;
+    }
+
+    private sealed class RecordingUnknownSignal : ITradingUnknownStageRefusalSignal
+    {
+        public List<int> RefusedAccountIds { get; } = [];
+
+        public void UnknownStageWriteRefused(int accountId) => RefusedAccountIds.Add(accountId);
     }
 }

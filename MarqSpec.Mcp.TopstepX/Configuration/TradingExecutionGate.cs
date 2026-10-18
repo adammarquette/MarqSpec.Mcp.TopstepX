@@ -1,14 +1,16 @@
 using MarqSpec.Mcp.TopstepX.Domain;
+using MarqSpec.Mcp.TopstepX.Venue;
 using Microsoft.Extensions.Options;
 
 namespace MarqSpec.Mcp.TopstepX.Configuration;
 
 /// <summary>
-/// Configuration and kill-switch checks for trading writes — no venue calls, no stage parsing (gh#708).
+/// The sole pre-transmit gate for venue writes: master enable, kill switch, and practice-only stage (gh#710).
 /// </summary>
 /// <remarks>
-/// Practice-only enforcement from fresh account data is intentionally absent here; it lands in
-/// <c>TradingRiskGate</c> (gh#711) and cannot be overridden by the allowlist (ADR-0024 §2).
+/// Order-transmitting code must be reachable only through this type together with
+/// <see cref="GatedExecutionGateway"/> (gh#718). Caps, allowlist, and dry-run layers remain for
+/// <c>TradingRiskGate</c> (gh#711) and still do not override practice-only (ADR-0024 §2).
 /// </remarks>
 public sealed class TradingExecutionGate(IOptions<TradingExecutionOptions> options, ITradingKillSwitch killSwitch)
 {
@@ -97,5 +99,70 @@ public sealed class TradingExecutionGate(IOptions<TradingExecutionOptions> optio
             contractsAlreadyToday,
             requestedSize,
             _options.MaxContractsPerDay);
+    }
+
+    /// <summary>
+    /// Refuses when the parsed stage is not <see cref="AccountStage.Practice"/>. Unknown stages also invoke
+    /// <paramref name="unknownStageSignal"/> for future metrics (gh#733).
+    /// </summary>
+    /// <param name="stage">Stage from a fresh account row.</param>
+    /// <param name="accountId">The venue account id.</param>
+    /// <param name="unknownStageSignal">Hook for unknown-stage observability.</param>
+    /// <returns>A refusal, or <see langword="null"/> when the stage is practice.</returns>
+    public TradingExecutionRefusal? RefuseIfStageBlocksWrite(
+        AccountStage stage,
+        int accountId,
+        ITradingUnknownStageRefusalSignal unknownStageSignal)
+    {
+        ArgumentNullException.ThrowIfNull(unknownStageSignal);
+
+        if (stage == AccountStage.Practice)
+        {
+            return null;
+        }
+
+        if (stage == AccountStage.Unknown)
+        {
+            unknownStageSignal.UnknownStageWriteRefused(accountId);
+            return TradingExecutionRefusal.UnknownAccountStage(accountId);
+        }
+
+        return TradingExecutionRefusal.NonPracticeAccountStage(accountId, stage);
+    }
+
+    /// <summary>
+    /// Combined gate: disabled or halted, then fresh account fetch and practice-only stage check.
+    /// </summary>
+    /// <param name="accountId">The account the write targets.</param>
+    /// <param name="marketData">Read seam used to re-fetch account rows (ADR-0024 §2).</param>
+    /// <param name="unknownStageSignal">Hook when stage parses as unknown.</param>
+    /// <param name="cancellationToken">Cancellation.</param>
+    /// <returns>A refusal, or <see langword="null"/> when a venue write may proceed to the adapter.</returns>
+    public async Task<TradingExecutionRefusal?> RefuseWriteUnlessPermittedAsync(
+        int accountId,
+        IMarketDataGateway marketData,
+        ITradingUnknownStageRefusalSignal unknownStageSignal,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(marketData);
+        ArgumentNullException.ThrowIfNull(unknownStageSignal);
+
+        TradingExecutionRefusal? disabled = RefuseIfDisabledOrHalted();
+        if (disabled is not null)
+        {
+            return disabled;
+        }
+
+        IReadOnlyList<VenueAccount> accounts = await marketData
+            .GetAccountsAsync(onlyActive: false, cancellationToken)
+            .ConfigureAwait(false);
+
+        VenueAccount? account = accounts.FirstOrDefault(candidate => candidate.AccountId == accountId);
+        if (account is null)
+        {
+            return TradingExecutionRefusal.AccountNotFound(accountId);
+        }
+
+        return RefuseIfStageBlocksWrite(account.Stage, accountId, unknownStageSignal);
     }
 }

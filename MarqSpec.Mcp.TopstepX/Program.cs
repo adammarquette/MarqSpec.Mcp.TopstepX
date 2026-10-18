@@ -655,6 +655,7 @@ public static class Program
         services.AddSingleton<TradingKillSwitch>();
         services.AddSingleton<ITradingKillSwitch>(sp => sp.GetRequiredService<TradingKillSwitch>());
         services.AddSingleton<TradingExecutionGate>();
+        services.AddSingleton<ITradingUnknownStageRefusalSignal, NullTradingUnknownStageRefusalSignal>();
 
         // Under HTTP, exactly one authentication mode, complete — the token for StaticToken, the issuer,
         // client ids and resource URL for OAuth — and both directions of "both" refused, each naming its
@@ -804,10 +805,13 @@ public static class Program
             // independently and none of them would know (gh#43).
             services.AddSingleton(sp => VenueRequestPacer.ForHistory(sp.GetRequiredService<TimeProvider>()));
             services.AddScoped<IMarketDataGateway, ProjectXMarketDataGateway>();
+            services.AddScoped<ProjectXExecutionGateway>();
+            services.AddScoped<IExecutionGateway, GatedExecutionGateway>();
         }
         else
         {
             services.AddScoped<IMarketDataGateway, UnconfiguredMarketDataGateway>();
+            services.AddScoped<IExecutionGateway, UnconfiguredExecutionGateway>();
         }
 
         string connection = builder.Configuration.GetConnectionString("Default")

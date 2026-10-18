@@ -1,3 +1,5 @@
+using MarqSpec.Mcp.TopstepX.Venue;
+
 namespace MarqSpec.Mcp.TopstepX.Configuration;
 
 /// <summary>A configuration-layer reason a trading write must not proceed (gh#708, gh#711).</summary>
@@ -15,7 +17,7 @@ public readonly record struct TradingExecutionRefusal(string Code, string Messag
 
     /// <summary>
     /// The account id is not on the optional allowlist. Does not imply the account is permitted — the
-    /// practice-only stage gate still runs separately (gh#711).
+    /// practice-only stage gate still runs and cannot be bypassed (ADR-0024 §2).
     /// </summary>
     /// <param name="accountId">The refused account.</param>
     /// <returns>The refusal.</returns>
@@ -71,4 +73,37 @@ public readonly record struct TradingExecutionRefusal(string Code, string Messag
             + ", requested "
             + requestedSize.ToString(System.Globalization.CultureInfo.InvariantCulture)
             + ").");
+
+    /// <summary>The account id was not returned by a fresh account fetch.</summary>
+    /// <param name="accountId">The missing account.</param>
+    /// <returns>The refusal.</returns>
+    public static TradingExecutionRefusal AccountNotFound(int accountId) =>
+        new(
+            "account_not_found",
+            "Account id "
+            + accountId.ToString(System.Globalization.CultureInfo.InvariantCulture)
+            + " was not returned by the gateway account list. Use list_accounts and retry with a current id.");
+
+    /// <summary>The parsed stage is not practice (evaluation, funded, or other refused family).</summary>
+    /// <param name="accountId">The refused account.</param>
+    /// <param name="stage">The parsed stage.</param>
+    /// <returns>The refusal.</returns>
+    public static TradingExecutionRefusal NonPracticeAccountStage(int accountId, AccountStage stage) =>
+        new(
+            "non_practice_account",
+            "Account id "
+            + accountId.ToString(System.Globalization.CultureInfo.InvariantCulture)
+            + " parsed as stage "
+            + stage.ToString()
+            + ". v1 venue writes are practice-only (ADR-0024).");
+
+    /// <summary>The account name matched no known stage family.</summary>
+    /// <param name="accountId">The refused account.</param>
+    /// <returns>The refusal.</returns>
+    public static TradingExecutionRefusal UnknownAccountStage(int accountId) =>
+        new(
+            "unknown_account_stage",
+            "Account id "
+            + accountId.ToString(System.Globalization.CultureInfo.InvariantCulture)
+            + " parsed as Unknown stage. The server refuses rather than guess; fix the name parser or trade manually.");
 }

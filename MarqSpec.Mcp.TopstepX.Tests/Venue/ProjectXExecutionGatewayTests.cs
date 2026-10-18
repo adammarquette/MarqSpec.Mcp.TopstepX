@@ -10,7 +10,8 @@ using Microsoft.Extensions.Options;
 namespace MarqSpec.Mcp.TopstepX.Tests.Venue;
 
 /// <summary>Gated execution — master switch, practice-only stage, and broker ack (gh#710).</summary>
-public sealed class GatedExecutionGatewayTests
+[Trait("Gate", "ADR-0024")]
+public sealed class ProjectXExecutionGatewayTests
 {
     private const int PracticeAccountId = 100;
     private const int FundedAccountId = 200;
@@ -21,12 +22,12 @@ public sealed class GatedExecutionGatewayTests
     public async Task PlaceOrder_DoesNotCallTheClient_WhenTradingIsDisabled()
     {
         (ExecutionOrderClient fake, IProjectXApiClient client) = ExecutionOrderClient.Create();
-        GatedExecutionGateway gateway = Gateway(
+        IExecutionGateway gateway = Gateway(
             client,
             accounts: [PracticeAccount(PracticeAccountId)],
             enabled: false);
 
-        ExecutionWriteResult result = await gateway.PlaceOrderAsync(
+        ExecutionWriteResult result = await gateway.PlaceOrder(
             SamplePlaceCommand(PracticeAccountId),
             CancellationToken.None);
 
@@ -45,13 +46,13 @@ public sealed class GatedExecutionGatewayTests
     {
         (ExecutionOrderClient fake, IProjectXApiClient client) = ExecutionOrderClient.Create();
         RecordingUnknownSignal signal = new();
-        GatedExecutionGateway gateway = Gateway(
+        IExecutionGateway gateway = Gateway(
             client,
             accounts: [Account(accountId, stage)],
             enabled: true,
             unknownSignal: signal);
 
-        ExecutionWriteResult result = await gateway.PlaceOrderAsync(
+        ExecutionWriteResult result = await gateway.PlaceOrder(
             SamplePlaceCommand(accountId),
             CancellationToken.None);
 
@@ -83,12 +84,12 @@ public sealed class GatedExecutionGatewayTests
             ErrorCode = 0,
         };
 
-        GatedExecutionGateway gateway = Gateway(
+        IExecutionGateway gateway = Gateway(
             client,
             accounts: [PracticeAccount(PracticeAccountId)],
             enabled: true);
 
-        ExecutionWriteResult result = await gateway.PlaceOrderAsync(
+        ExecutionWriteResult result = await gateway.PlaceOrder(
             SamplePlaceCommand(PracticeAccountId),
             CancellationToken.None);
 
@@ -110,12 +111,12 @@ public sealed class GatedExecutionGatewayTests
             ErrorMessage = "rejected",
         };
 
-        GatedExecutionGateway gateway = Gateway(
+        IExecutionGateway gateway = Gateway(
             client,
             accounts: [PracticeAccount(PracticeAccountId)],
             enabled: true);
 
-        ExecutionWriteResult result = await gateway.PlaceOrderAsync(
+        ExecutionWriteResult result = await gateway.PlaceOrder(
             SamplePlaceCommand(PracticeAccountId),
             CancellationToken.None);
 
@@ -127,7 +128,7 @@ public sealed class GatedExecutionGatewayTests
         result.VenueErrorCode.Should().Be(3);
     }
 
-    private static GatedExecutionGateway Gateway(
+    private static IExecutionGateway Gateway(
         IProjectXApiClient client,
         IReadOnlyList<VenueAccount> accounts,
         bool enabled,
@@ -137,15 +138,12 @@ public sealed class GatedExecutionGatewayTests
             Options.Create(new TradingExecutionOptions { Enabled = enabled }),
             new FakeKillSwitch());
 
-        StubAccountsGateway marketData = new(accounts);
-        HostTelemetry telemetry = new();
-        ProjectXExecutionGateway adapter = new(client, telemetry);
-
-        return new GatedExecutionGateway(
+        return new ProjectXExecutionGateway(
             gate,
-            marketData,
-            adapter,
-            unknownSignal ?? new NullTradingUnknownStageRefusalSignal());
+            new StubAccountsGateway(accounts),
+            unknownSignal ?? new NullTradingUnknownStageRefusalSignal(),
+            client,
+            new HostTelemetry());
     }
 
     private static ExecutionPlaceOrderCommand SamplePlaceCommand(int accountId) =>

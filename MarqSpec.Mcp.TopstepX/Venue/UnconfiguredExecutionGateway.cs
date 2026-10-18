@@ -15,31 +15,31 @@ public sealed class UnconfiguredExecutionGateway : IExecutionGateway
         OrderId: null);
 
     /// <inheritdoc />
-    public Task<ExecutionWriteResult> PlaceOrderAsync(
+    public Task<ExecutionWriteResult> PlaceOrder(
         ExecutionPlaceOrderCommand command,
         CancellationToken cancellationToken) =>
         Task.FromResult(Refused);
 
     /// <inheritdoc />
-    public Task<ExecutionWriteResult> ModifyOrderAsync(
+    public Task<ExecutionWriteResult> ModifyOrder(
         ExecutionModifyOrderCommand command,
         CancellationToken cancellationToken) =>
         Task.FromResult(Refused);
 
     /// <inheritdoc />
-    public Task<ExecutionWriteResult> CancelOrderAsync(
+    public Task<ExecutionWriteResult> CancelOrder(
         ExecutionCancelOrderCommand command,
         CancellationToken cancellationToken) =>
         Task.FromResult(Refused);
 
     /// <inheritdoc />
-    public Task<ExecutionWriteResult> ClosePositionAsync(
+    public Task<ExecutionWriteResult> ClosePosition(
         ExecutionClosePositionCommand command,
         CancellationToken cancellationToken) =>
         Task.FromResult(Refused);
 
     /// <inheritdoc />
-    public Task<ExecutionWriteResult> PartialClosePositionAsync(
+    public Task<ExecutionWriteResult> PartialClosePosition(
         ExecutionPartialClosePositionCommand command,
         CancellationToken cancellationToken) =>
         Task.FromResult(Refused);

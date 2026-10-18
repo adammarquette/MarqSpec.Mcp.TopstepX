@@ -805,8 +805,7 @@ public static class Program
             // independently and none of them would know (gh#43).
             services.AddSingleton(sp => VenueRequestPacer.ForHistory(sp.GetRequiredService<TimeProvider>()));
             services.AddScoped<IMarketDataGateway, ProjectXMarketDataGateway>();
-            services.AddScoped<ProjectXExecutionGateway>();
-            services.AddScoped<IExecutionGateway, GatedExecutionGateway>();
+            services.AddScoped<IExecutionGateway, ProjectXExecutionGateway>();
         }
         else
         {

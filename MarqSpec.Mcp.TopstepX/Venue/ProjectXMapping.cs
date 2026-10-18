@@ -155,7 +155,7 @@ public static partial class ProjectXMapping
     /// and a caller should treat it as such.
     /// </para>
     /// </remarks>
-    public static AccountStage ResolveStage(string? name)
+    internal static AccountStage ResolveStage(string? name)
     {
         if (string.IsNullOrWhiteSpace(name))
         {

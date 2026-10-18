@@ -1,10 +1,12 @@
 using FluentAssertions;
 using MarqSpec.Client.ProjectX;
+using MarqSpec.Client.ProjectX.Exceptions;
 using MarqSpec.Mcp.TopstepX.Configuration;
 using MarqSpec.Mcp.TopstepX.Domain;
 using MarqSpec.Mcp.TopstepX.Domain.MarketData;
 using MarqSpec.Mcp.TopstepX.Telemetry;
 using MarqSpec.Mcp.TopstepX.Venue;
+using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 
 namespace MarqSpec.Mcp.TopstepX.Tests.Venue;
@@ -28,32 +30,64 @@ public sealed class ProjectXExecutionGatewayTests
     [MemberData(nameof(GateRefusalCases))]
     public async Task Write_DoesNotCallTheClient_WhenTheGateRefuses(WriteVerb verb, GateScenario scenario)
     {
+        RecordingUnknownSignal unknownSignal = new();
         (ExecutionOrderClient fake, IProjectXApiClient client) = ExecutionOrderClient.Create();
+        StubAccountsGateway accountsGateway = new(AccountsFor(scenario));
         IExecutionGateway gateway = Gateway(
             client,
-            accounts: AccountsFor(scenario),
+            accountsGateway,
+            unknownSignal,
             enabled: scenario != GateScenario.Disabled,
             killSwitchEngaged: scenario == GateScenario.KillSwitch);
 
-        ExecutionWriteResult result = await InvokeAsync(gateway, verb, AccountIdFor(scenario));
+        int accountId = AccountIdFor(scenario);
+        ExecutionWriteResult result = await InvokeAsync(gateway, verb, accountId);
 
         ClientCalls(fake, verb).Should().Be(0);
         result.Outcome.Should().Be(ExecutionWriteOutcome.NotTransmitted);
-        result.GateRefusal.Should().NotBeNull();
+        result.GateRefusal.Should().Be(ExpectedRefusal(scenario, accountId));
+        result.IsRetrySafe.Should().BeTrue();
+
+        if (scenario == GateScenario.Unknown)
+        {
+            unknownSignal.Invocations.Should().Be(1);
+        }
+        else
+        {
+            unknownSignal.Invocations.Should().Be(0);
+        }
+    }
+
+    [Fact]
+    public async Task PlaceOrder_RequestsOnlyActiveAccountsFromTheMarketDataGateway()
+    {
+        (ExecutionOrderClient fake, IProjectXApiClient client) = ExecutionOrderClient.Create();
+        StubAccountsGateway accountsGateway = new([PracticeAccount()]);
+        IExecutionGateway gateway = Gateway(
+            client,
+            accountsGateway,
+            new RecordingUnknownSignal(),
+            enabled: true,
+            killSwitchEngaged: false);
+
+        await gateway.PlaceOrder(SamplePlaceCommand(), CancellationToken.None);
+
+        accountsGateway.LastOnlyActive.Should().BeTrue();
+        fake.PlaceOrderCount.Should().Be(1);
     }
 
     [Fact]
     public async Task PlaceOrder_Acknowledges_WhenTheVenueReturnsSuccessWithOrderId()
     {
         (ExecutionOrderClient fake, IProjectXApiClient client) = ExecutionOrderClient.Create();
-        fake.PlaceOrderAnswer = _ => new MarqSpec.Client.ProjectX.Api.Models.PlaceOrderResponse
+        fake.PlaceOrderAnswer = (_, _) => Task.FromResult(new MarqSpec.Client.ProjectX.Api.Models.PlaceOrderResponse
         {
             Success = true,
             OrderId = 9001,
             ErrorCode = 0,
-        };
+        });
 
-        IExecutionGateway gateway = Gateway(client, accounts: [PracticeAccount()], enabled: true);
+        IExecutionGateway gateway = Gateway(client, [PracticeAccount()], enabled: true);
 
         ExecutionWriteResult result = await gateway.PlaceOrder(SamplePlaceCommand(), CancellationToken.None);
 
@@ -61,64 +95,276 @@ public sealed class ProjectXExecutionGatewayTests
         result.Outcome.Should().Be(ExecutionWriteOutcome.BrokerAcknowledged);
         result.VenueErrorCode.Should().BeNull();
         result.OrderId.Should().Be(9001);
+        result.IsRetrySafe.Should().BeFalse();
     }
 
     [Fact]
     public async Task PlaceOrder_IsVenueRejected_WhenTheVenueReturnsFailure()
     {
         (ExecutionOrderClient fake, IProjectXApiClient client) = ExecutionOrderClient.Create();
-        fake.PlaceOrderAnswer = _ => new MarqSpec.Client.ProjectX.Api.Models.PlaceOrderResponse
+        fake.PlaceOrderAnswer = (_, _) => Task.FromResult(new MarqSpec.Client.ProjectX.Api.Models.PlaceOrderResponse
         {
             Success = false,
             ErrorCode = 3,
             ErrorMessage = "rejected",
-        };
+        });
 
-        IExecutionGateway gateway = Gateway(client, accounts: [PracticeAccount()], enabled: true);
+        IExecutionGateway gateway = Gateway(client, [PracticeAccount()], enabled: true);
 
         ExecutionWriteResult result = await gateway.PlaceOrder(SamplePlaceCommand(), CancellationToken.None);
 
         result.Outcome.Should().Be(ExecutionWriteOutcome.VenueRejected);
         result.VenueErrorCode.Should().Be(3);
         result.OrderId.Should().BeNull();
-        result.Lifecycle.BrokerAcknowledged.Should().BeFalse();
+        result.IsRetrySafe.Should().BeTrue();
     }
 
     [Fact]
     public async Task PlaceOrder_IsNotLive_WhenSuccessArrivesWithoutOrderId()
     {
         (ExecutionOrderClient fake, IProjectXApiClient client) = ExecutionOrderClient.Create();
-        fake.PlaceOrderAnswer = _ => new MarqSpec.Client.ProjectX.Api.Models.PlaceOrderResponse
+        fake.PlaceOrderAnswer = (_, _) => Task.FromResult(new MarqSpec.Client.ProjectX.Api.Models.PlaceOrderResponse
         {
             Success = true,
             OrderId = null,
             ErrorCode = 0,
-        };
+        });
 
-        IExecutionGateway gateway = Gateway(client, accounts: [PracticeAccount()], enabled: true);
+        IExecutionGateway gateway = Gateway(client, [PracticeAccount()], enabled: true);
 
         ExecutionWriteResult result = await gateway.PlaceOrder(SamplePlaceCommand(), CancellationToken.None);
 
         result.Outcome.Should().Be(ExecutionWriteOutcome.BrokerSuccessWithoutOrderId);
         result.OrderId.Should().BeNull();
         result.VenueErrorCode.Should().BeNull();
-        result.Lifecycle.BrokerAcknowledged.Should().BeFalse();
+        result.IsRetrySafe.Should().BeFalse();
     }
 
     [Fact]
-    public async Task PlaceOrder_ReturnsTransmittedUnknown_WhenTheClientThrowsAfterSend()
+    public async Task PlaceOrder_ReturnsTransmittedUnknown_WhenTheGuardedCallTimesOut()
     {
         (ExecutionOrderClient fake, IProjectXApiClient client) = ExecutionOrderClient.Create();
-        fake.PlaceOrderAnswer = _ => throw new TimeoutException("simulated timeout");
+        fake.PlaceOrderAnswer = (_, _) => throw new TimeoutException("simulated timeout");
 
-        IExecutionGateway gateway = Gateway(client, accounts: [PracticeAccount()], enabled: true);
+        IExecutionGateway gateway = Gateway(client, [PracticeAccount()], enabled: true);
 
         ExecutionWriteResult result = await gateway.PlaceOrder(SamplePlaceCommand(), CancellationToken.None);
 
         result.Outcome.Should().Be(ExecutionWriteOutcome.TransmittedOutcomeUnknown);
-        result.Lifecycle.Transmitted.Should().BeTrue();
-        result.Lifecycle.BrokerAcknowledged.Should().BeFalse();
+        result.IsRetrySafe.Should().BeFalse();
+        fake.PlaceOrderCount.Should().Be(1);
     }
+
+    [Fact]
+    public async Task PlaceOrder_ReturnsTransmittedUnknown_WhenTheCallerCancelsMidFlight()
+    {
+        using CancellationTokenSource cancellation = new();
+        (ExecutionOrderClient fake, IProjectXApiClient client) = ExecutionOrderClient.Create();
+        fake.PlaceOrderAnswer = async (_, token) =>
+        {
+            await Task.Delay(Timeout.InfiniteTimeSpan, token);
+            return new MarqSpec.Client.ProjectX.Api.Models.PlaceOrderResponse { Success = true, OrderId = 1 };
+        };
+
+        IExecutionGateway gateway = Gateway(client, [PracticeAccount()], enabled: true);
+
+        Task<ExecutionWriteResult> pending = gateway.PlaceOrder(SamplePlaceCommand(), cancellation.Token);
+        await Task.Delay(50);
+        await cancellation.CancelAsync();
+
+        ExecutionWriteResult result = await pending;
+
+        result.Outcome.Should().Be(ExecutionWriteOutcome.TransmittedOutcomeUnknown);
+        result.IsRetrySafe.Should().BeFalse();
+        fake.PlaceOrderCount.Should().Be(1);
+    }
+
+    [Fact]
+    public async Task PlaceOrder_ReturnsNotTransmitted_WhenRequestMappingFailsBeforeAnyVenueCall()
+    {
+        (ExecutionOrderClient fake, IProjectXApiClient client) = ExecutionOrderClient.Create();
+        IExecutionGateway gateway = Gateway(client, [PracticeAccount()], enabled: true);
+
+        ExecutionPlaceOrderCommand invalid = SamplePlaceCommand() with
+        {
+            OrderType = (ExecutionOrderType)999,
+        };
+
+        ExecutionWriteResult result = await gateway.PlaceOrder(invalid, CancellationToken.None);
+
+        result.Outcome.Should().Be(ExecutionWriteOutcome.NotTransmitted);
+        result.GateRefusal.Should().BeNull();
+        result.IsRetrySafe.Should().BeTrue();
+        fake.PlaceOrderCount.Should().Be(0);
+    }
+
+    [Fact]
+    public async Task PlaceOrder_ReturnsNotTransmitted_WhenCredentialsAreRejected()
+    {
+        (ExecutionOrderClient fake, IProjectXApiClient client) = ExecutionOrderClient.Create();
+        fake.PlaceOrderAnswer = (_, _) => throw new ProjectXApiException("vendor secret", 401);
+
+        IExecutionGateway gateway = Gateway(client, [PracticeAccount()], enabled: true);
+
+        ExecutionWriteResult result = await gateway.PlaceOrder(SamplePlaceCommand(), CancellationToken.None);
+
+        result.Outcome.Should().Be(ExecutionWriteOutcome.NotTransmitted);
+        result.GateRefusal.Should().BeNull();
+        result.VenueErrorMessage.Should().BeNull();
+        result.IsRetrySafe.Should().BeTrue();
+        fake.PlaceOrderCount.Should().Be(1);
+    }
+
+    [Fact]
+    public async Task PlaceOrder_ReturnsVenueRejected_WhenTheGuardTranslatesA4xxApiException()
+    {
+        (ExecutionOrderClient fake, IProjectXApiClient client) = ExecutionOrderClient.Create();
+        fake.PlaceOrderAnswer = (_, _) => throw new ProjectXApiException("vendor secret", 403);
+
+        IExecutionGateway gateway = Gateway(client, [PracticeAccount()], enabled: true);
+
+        ExecutionWriteResult result = await gateway.PlaceOrder(SamplePlaceCommand(), CancellationToken.None);
+
+        result.Outcome.Should().Be(ExecutionWriteOutcome.VenueRejected);
+        result.VenueErrorCode.Should().Be(403);
+        result.VenueErrorMessage.Should().BeNull();
+        result.IsRetrySafe.Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task PlaceOrder_ReturnsTransmittedUnknown_WhenTheGuardTranslatesA5xxApiException()
+    {
+        (ExecutionOrderClient fake, IProjectXApiClient client) = ExecutionOrderClient.Create();
+        fake.PlaceOrderAnswer = (_, _) => throw new ProjectXApiException("vendor secret", 503);
+
+        IExecutionGateway gateway = Gateway(client, [PracticeAccount()], enabled: true);
+
+        ExecutionWriteResult result = await gateway.PlaceOrder(SamplePlaceCommand(), CancellationToken.None);
+
+        result.Outcome.Should().Be(ExecutionWriteOutcome.TransmittedOutcomeUnknown);
+        result.IsRetrySafe.Should().BeFalse();
+    }
+
+    [Theory]
+    [InlineData(WriteVerb.Modify)]
+    [InlineData(WriteVerb.Cancel)]
+    [InlineData(WriteVerb.Close)]
+    [InlineData(WriteVerb.PartialClose)]
+    public async Task NonPlaceVerb_Acknowledges_WhenTheVenueReturnsSuccess(WriteVerb verb)
+    {
+        (ExecutionOrderClient fake, IProjectXApiClient client) = ExecutionOrderClient.Create();
+        IExecutionGateway gateway = Gateway(client, [PracticeAccount()], enabled: true);
+
+        ExecutionWriteResult result = await InvokeAsync(gateway, verb, PracticeAccountId);
+
+        result.Outcome.Should().Be(ExecutionWriteOutcome.BrokerAcknowledged);
+        ClientCalls(fake, verb).Should().Be(1);
+    }
+
+    [Theory]
+    [InlineData(WriteVerb.Modify)]
+    [InlineData(WriteVerb.Cancel)]
+    [InlineData(WriteVerb.Close)]
+    [InlineData(WriteVerb.PartialClose)]
+    public async Task NonPlaceVerb_IsVenueRejected_WhenTheVenueReturnsFailure(WriteVerb verb)
+    {
+        (ExecutionOrderClient fake, IProjectXApiClient client) = ExecutionOrderClient.Create();
+        ConfigureFailure(fake, verb);
+
+        IExecutionGateway gateway = Gateway(client, [PracticeAccount()], enabled: true);
+
+        ExecutionWriteResult result = await InvokeAsync(gateway, verb, PracticeAccountId);
+
+        result.Outcome.Should().Be(ExecutionWriteOutcome.VenueRejected);
+        result.VenueErrorCode.Should().Be(7);
+        result.IsRetrySafe.Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task ModifyOrder_ReturnsTransmittedUnknown_WhenTheGuardTranslatesHttpFailure()
+    {
+        (ExecutionOrderClient fake, IProjectXApiClient client) = ExecutionOrderClient.Create();
+        fake.ModifyOrderAnswer = (_, _) => throw new HttpRequestException("network");
+
+        IExecutionGateway gateway = Gateway(client, [PracticeAccount()], enabled: true);
+
+        ExecutionWriteResult result = await gateway.ModifyOrder(
+            new ExecutionModifyOrderCommand(PracticeAccountId, OrderId: 1, Size: 1, LimitPrice: null, StopPrice: null),
+            CancellationToken.None);
+
+        result.Outcome.Should().Be(ExecutionWriteOutcome.TransmittedOutcomeUnknown);
+        result.IsRetrySafe.Should().BeFalse();
+        fake.ModifyOrderCount.Should().Be(1);
+    }
+
+    [Fact]
+    public async Task CancelOrder_ReturnsVenueRejected_WhenTheGuardTranslatesA4xxApiException()
+    {
+        (ExecutionOrderClient fake, IProjectXApiClient client) = ExecutionOrderClient.Create();
+        fake.CancelOrderAnswer = (_, _, _) => throw new ProjectXApiException("vendor secret", 400);
+
+        IExecutionGateway gateway = Gateway(client, [PracticeAccount()], enabled: true);
+
+        ExecutionWriteResult result = await gateway.CancelOrder(
+            new ExecutionCancelOrderCommand(PracticeAccountId, OrderId: 1),
+            CancellationToken.None);
+
+        result.Outcome.Should().Be(ExecutionWriteOutcome.VenueRejected);
+        result.VenueErrorCode.Should().Be(400);
+    }
+
+    private static void ConfigureFailure(ExecutionOrderClient fake, WriteVerb verb)
+    {
+        switch (verb)
+        {
+            case WriteVerb.Modify:
+                fake.ModifyOrderAnswer = (_, _) => Task.FromResult(new MarqSpec.Client.ProjectX.Api.Models.ModifyOrderResponse
+                {
+                    Success = false,
+                    ErrorCode = 7,
+                    ErrorMessage = "no",
+                });
+                break;
+            case WriteVerb.Cancel:
+                fake.CancelOrderAnswer = (_, _, _) => Task.FromResult(new MarqSpec.Client.ProjectX.Api.Models.CancelOrderResponse
+                {
+                    Success = false,
+                    ErrorCode = 7,
+                    ErrorMessage = "no",
+                });
+                break;
+            case WriteVerb.Close:
+                fake.ClosePositionAnswer = (_, _, _) => Task.FromResult(new MarqSpec.Client.ProjectX.Api.Models.ClosePositionResponse
+                {
+                    Success = false,
+                    ErrorCode = 7,
+                    ErrorMessage = "no",
+                });
+                break;
+            case WriteVerb.PartialClose:
+                fake.PartialClosePositionAnswer = (_, _, _, _) =>
+                    Task.FromResult(new MarqSpec.Client.ProjectX.Api.Models.PartialClosePositionResponse
+                    {
+                        Success = false,
+                        ErrorCode = 7,
+                        ErrorMessage = "no",
+                    });
+                break;
+            default:
+                throw new ArgumentOutOfRangeException(nameof(verb), verb, null);
+        }
+    }
+
+    private static TradingExecutionRefusal ExpectedRefusal(GateScenario scenario, int accountId) => scenario switch
+    {
+        GateScenario.Disabled => TradingExecutionRefusal.TradingDisabled,
+        GateScenario.KillSwitch => TradingExecutionRefusal.KillSwitchEngaged,
+        GateScenario.Funded => TradingExecutionRefusal.NonPracticeAccountStage(accountId, AccountStage.Funded),
+        GateScenario.Unknown => TradingExecutionRefusal.UnknownAccountStage(accountId),
+        GateScenario.AccountNotFound => TradingExecutionRefusal.AccountNotFound(accountId),
+        GateScenario.Inactive => TradingExecutionRefusal.AccountNotActive(accountId),
+        _ => throw new ArgumentOutOfRangeException(nameof(scenario), scenario, null),
+    };
 
     private static int AccountIdFor(GateScenario scenario) => scenario switch
     {
@@ -171,8 +417,21 @@ public sealed class ProjectXExecutionGatewayTests
     private static IExecutionGateway Gateway(
         IProjectXApiClient client,
         IReadOnlyList<VenueAccount> accounts,
+        bool enabled = true,
+        bool killSwitchEngaged = false) =>
+        Gateway(
+            client,
+            new StubAccountsGateway(accounts),
+            new RecordingUnknownSignal(),
+            enabled,
+            killSwitchEngaged);
+
+    private static IExecutionGateway Gateway(
+        IProjectXApiClient client,
+        StubAccountsGateway accountsGateway,
+        RecordingUnknownSignal unknownSignal,
         bool enabled,
-        bool killSwitchEngaged = false)
+        bool killSwitchEngaged)
     {
         TradingExecutionGate gate = new(
             Options.Create(new TradingExecutionOptions { Enabled = enabled }),
@@ -180,10 +439,11 @@ public sealed class ProjectXExecutionGatewayTests
 
         return new ProjectXExecutionGateway(
             gate,
-            new StubAccountsGateway(accounts),
-            new NullTradingUnknownStageRefusalSignal(),
+            accountsGateway,
+            unknownSignal,
             client,
-            new HostTelemetry());
+            new HostTelemetry(),
+            NullLogger<ProjectXExecutionGateway>.Instance);
     }
 
     private static ExecutionPlaceOrderCommand SamplePlaceCommand(int accountId = PracticeAccountId) =>
@@ -228,9 +488,16 @@ public sealed class ProjectXExecutionGatewayTests
         public bool IsEngaged => Engaged;
     }
 
+    private sealed class RecordingUnknownSignal : ITradingUnknownStageRefusalSignal
+    {
+        public int Invocations { get; private set; }
+
+        public void UnknownStageWriteRefused(int accountId) => Invocations++;
+    }
+
     private sealed class StubAccountsGateway(IReadOnlyList<VenueAccount> accounts) : IMarketDataGateway
     {
-        public int GetAccountsCallCount { get; private set; }
+        public bool? LastOnlyActive { get; private set; }
 
         public string VenueId => "stub";
 
@@ -238,8 +505,7 @@ public sealed class ProjectXExecutionGatewayTests
             bool onlyActive,
             CancellationToken cancellationToken)
         {
-            GetAccountsCallCount++;
-            _ = onlyActive;
+            LastOnlyActive = onlyActive;
             return Task.FromResult(accounts);
         }
 

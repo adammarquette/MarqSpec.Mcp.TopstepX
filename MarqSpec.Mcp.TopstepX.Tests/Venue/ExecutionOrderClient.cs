@@ -25,24 +25,24 @@ internal class ExecutionOrderClient : DispatchProxy
     public int PartialClosePositionCount { get; private set; }
 
     /// <summary>Scripted place response.</summary>
-    public Func<PlaceOrderRequest, PlaceOrderResponse> PlaceOrderAnswer { get; set; } = static _ =>
-        new PlaceOrderResponse { Success = true, OrderId = 42, ErrorCode = 0 };
+    public Func<PlaceOrderRequest, CancellationToken, Task<PlaceOrderResponse>> PlaceOrderAnswer { get; set; } =
+        static (_, _) => Task.FromResult(new PlaceOrderResponse { Success = true, OrderId = 42, ErrorCode = 0 });
 
     /// <summary>Scripted modify response.</summary>
-    public Func<ModifyOrderRequest, ModifyOrderResponse> ModifyOrderAnswer { get; set; } = static _ =>
-        new ModifyOrderResponse { Success = true, ErrorCode = 0 };
+    public Func<ModifyOrderRequest, CancellationToken, Task<ModifyOrderResponse>> ModifyOrderAnswer { get; set; } =
+        static (_, _) => Task.FromResult(new ModifyOrderResponse { Success = true, ErrorCode = 0 });
 
     /// <summary>Scripted cancel response.</summary>
-    public Func<int, long, CancelOrderResponse> CancelOrderAnswer { get; set; } = static (_, _) =>
-        new CancelOrderResponse { Success = true, ErrorCode = 0 };
+    public Func<int, long, CancellationToken, Task<CancelOrderResponse>> CancelOrderAnswer { get; set; } =
+        static (_, _, _) => Task.FromResult(new CancelOrderResponse { Success = true, ErrorCode = 0 });
 
     /// <summary>Scripted close response.</summary>
-    public Func<int, string, ClosePositionResponse> ClosePositionAnswer { get; set; } = static (_, _) =>
-        new ClosePositionResponse { Success = true, ErrorCode = 0 };
+    public Func<int, string, CancellationToken, Task<ClosePositionResponse>> ClosePositionAnswer { get; set; } =
+        static (_, _, _) => Task.FromResult(new ClosePositionResponse { Success = true, ErrorCode = 0 });
 
     /// <summary>Scripted partial close response.</summary>
-    public Func<int, string, int, PartialClosePositionResponse> PartialClosePositionAnswer { get; set; } =
-        static (_, _, _) => new PartialClosePositionResponse { Success = true, ErrorCode = 0 };
+    public Func<int, string, int, CancellationToken, Task<PartialClosePositionResponse>> PartialClosePositionAnswer { get; set; } =
+        static (_, _, _, _) => Task.FromResult(new PartialClosePositionResponse { Success = true, ErrorCode = 0 });
 
     /// <summary>Builds a proxy implementing the vendor client and this double as the same instance.</summary>
     public static (ExecutionOrderClient Fake, IProjectXApiClient Client) Create()
@@ -74,8 +74,7 @@ internal class ExecutionOrderClient : DispatchProxy
         PlaceOrderCount++;
         PlaceOrderRequest request = (PlaceOrderRequest)args[0]!;
         CancellationToken cancellation = (CancellationToken)args[1]!;
-        cancellation.ThrowIfCancellationRequested();
-        return Task.FromResult(PlaceOrderAnswer(request));
+        return PlaceOrderAnswer(request, cancellation);
     }
 
     private object InvokeModify(object?[] args)
@@ -83,8 +82,7 @@ internal class ExecutionOrderClient : DispatchProxy
         ModifyOrderCount++;
         ModifyOrderRequest request = (ModifyOrderRequest)args[0]!;
         CancellationToken cancellation = (CancellationToken)args[1]!;
-        cancellation.ThrowIfCancellationRequested();
-        return Task.FromResult(ModifyOrderAnswer(request));
+        return ModifyOrderAnswer(request, cancellation);
     }
 
     private object InvokeCancel(object?[] args)
@@ -93,8 +91,7 @@ internal class ExecutionOrderClient : DispatchProxy
         int accountId = (int)args[0]!;
         long orderId = (long)args[1]!;
         CancellationToken cancellation = (CancellationToken)args[2]!;
-        cancellation.ThrowIfCancellationRequested();
-        return Task.FromResult(CancelOrderAnswer(accountId, orderId));
+        return CancelOrderAnswer(accountId, orderId, cancellation);
     }
 
     private object InvokeClose(object?[] args)
@@ -103,8 +100,7 @@ internal class ExecutionOrderClient : DispatchProxy
         int accountId = (int)args[0]!;
         string contractId = (string)args[1]!;
         CancellationToken cancellation = (CancellationToken)args[2]!;
-        cancellation.ThrowIfCancellationRequested();
-        return Task.FromResult(ClosePositionAnswer(accountId, contractId));
+        return ClosePositionAnswer(accountId, contractId, cancellation);
     }
 
     private object InvokePartialClose(object?[] args)
@@ -114,7 +110,6 @@ internal class ExecutionOrderClient : DispatchProxy
         string contractId = (string)args[1]!;
         int size = (int)args[2]!;
         CancellationToken cancellation = (CancellationToken)args[3]!;
-        cancellation.ThrowIfCancellationRequested();
-        return Task.FromResult(PartialClosePositionAnswer(accountId, contractId, size));
+        return PartialClosePositionAnswer(accountId, contractId, size, cancellation);
     }
 }

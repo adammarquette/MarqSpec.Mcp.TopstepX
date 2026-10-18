@@ -15,7 +15,6 @@ public sealed class AccountStageResolverTests
     public void ResolveFromAccountName_MatchesProjectXMapping(string name, AccountStage expected)
     {
         _resolver.ResolveFromAccountName(name).Should().Be(expected);
-        ProjectXMapping.ResolveStage(name).Should().Be(expected);
     }
 
     [Fact]

@@ -6,4 +6,11 @@ public sealed class ProjectXAccountStageResolver : IAccountStageResolver
     /// <inheritdoc />
     public AccountStage ResolveFromAccountName(string? accountName) =>
         ProjectXMapping.ResolveStage(accountName);
+
+    /// <inheritdoc />
+    public AccountStage ResolveFromFreshVenueAccount(VenueAccount account)
+    {
+        ArgumentNullException.ThrowIfNull(account);
+        return account.Stage;
+    }
 }

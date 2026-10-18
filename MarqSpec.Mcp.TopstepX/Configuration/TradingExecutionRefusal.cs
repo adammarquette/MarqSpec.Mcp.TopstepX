@@ -38,6 +38,22 @@ public readonly record struct TradingExecutionRefusal(string Code, string Messag
             + symbol
             + " is on Trading__DeniedSymbols and cannot be traded through this server.");
 
+    /// <summary>The contract id is not a usable venue contract id.</summary>
+    public static TradingExecutionRefusal MalformedContractId(string contractId) =>
+        new(
+            "malformed_contract_id",
+            "Contract id '"
+            + contractId
+            + "' is not a usable CON.F.US.{product}.{expiry} id and cannot be traded.");
+
+    /// <summary>The contract product is not mapped to a served instrument.</summary>
+    public static TradingExecutionRefusal ContractProductNotMapped(string productCode) =>
+        new(
+            "contract_product_not_mapped",
+            "Contract product '"
+            + productCode
+            + "' is not mapped to an instrument this server serves, so the denylist cannot be evaluated safely.");
+
     /// <summary>The requested order size exceeds the configured per-order cap.</summary>
     /// <param name="requestedSize">The size that was asked for.</param>
     /// <param name="limit">The configured cap.</param>

@@ -92,7 +92,7 @@ public sealed class TradingRiskGate(TradingExecutionGate gate, IExecutionGateway
         if (gate.RefuseIfDisabledOrHalted() is { } halted)
         {
             return halted;
-        }
+        } if (ProjectXMapping.ResolveStage(account.Name) != AccountStage.Practice) throw new InvalidOperationException();
         return await gateway.CancelOrder();
     }
 }
@@ -329,7 +329,7 @@ base "$T"; echo 'public sealed class TradingRiskGate {}' >"$T/$H/Tools/RiskGate.
 run_case "fail: class TradingRiskGate declared in another file" 1 "GATE LOCATION  TradingRiskGate found at: $H/Tools/RiskGate.cs"
 
 base "$T"; sed -i 's/AccountStage.Practice/AccountStage.Funded/' "$T/$GF"
-run_case "fail: gate never names Practice" 1 "never compares against AccountStage.Practice"
+run_case "fail: gate never names Practice" 1 "never refuses a non-Practice stage"
 
 base "$T"; sed -i '/RefuseIfDisabledOrHalted/,+3d' "$T/$GF"
 run_case "fail: gate never checks disabled/halted" 1 "never calls RefuseIfDisabledOrHalted()"
@@ -362,13 +362,13 @@ base "$T"
 sed -i 's|^    public async Task<object> Cancel(Account account)$|    public Task<object> CancelOrderAsync(Account a) =>\n        gateway.CancelOrder();\n\n&|' "$T/$GF"
 run_case "fail: declared order-named member whose body calls the gateway unguarded" 1 "GATE ORDER  $GF:18"
 
-base "$T"; sed -i 's/if (stage != AccountStage.Practice) return Refuse(stage);/if (gate.RefuseIfStageBlocksWrite(stage) is { } s) return s;/' "$T/$GF"
+base "$T"; sed -i 's/if (stage != AccountStage.Practice) return Refuse(stage);/if (gate.RefuseIfStageBlocksWrite(stage) is { } s) return s;/; s/ if (ProjectXMapping.ResolveStage(account.Name) != AccountStage.Practice) throw new InvalidOperationException();/ _ = ProjectXMapping.ResolveStage(account.Name);/' "$T/$GF"
 printf 'public sealed class TradingExecutionGate {\n  public Refusal? RefuseIfStageBlocksWrite(AccountStage stage) { if (stage == AccountStage.Practice) return null; return Block; }\n}\n' >"$T/$H/Configuration/TradingExecutionGate.cs"
 run_case "pass: Practice compared in TradingExecutionGate.RefuseIfStageBlocksWrite" 0 "Practice checked via $H/Configuration/TradingExecutionGate.cs"
 
-base "$T"; sed -i 's/if (stage != AccountStage.Practice) return Refuse(stage);/if (gate.RefuseIfStageBlocksWrite(stage) is { } s) return s;/' "$T/$GF"
+base "$T"; sed -i 's/if (stage != AccountStage.Practice) return Refuse(stage);/if (gate.RefuseIfStageBlocksWrite(stage) is { } s) return s;/; s/ if (ProjectXMapping.ResolveStage(account.Name) != AccountStage.Practice) throw new InvalidOperationException();/ _ = ProjectXMapping.ResolveStage(account.Name);/' "$T/$GF"
 printf 'public sealed class TradingExecutionGate {\n  // AccountStage.Practice\n  public Refusal? RefuseIfStageBlocksWrite(AccountStage stage) => null;\n}\n' >"$T/$H/Configuration/TradingExecutionGate.cs"
-run_case "fail: delegated stage check that never names Practice in code" 1 "never compares against AccountStage.Practice"
+run_case "fail: delegated stage check that never names Practice in code" 1 "never refuses a non-Practice stage"
 
 # Declarations vs calls (review 5563414877): only an explicit [attr] [mods] Type Name[<T>]( before "=" is a
 # declaration; property and field initialisers and expression bodies are always probed.
@@ -395,16 +395,60 @@ run_case "pass: generic declaration named like an order method" 0 "$GREEN"
 # Delegated Practice check, tightened.
 delegate_stage() {
   sed -i 's/if (stage != AccountStage.Practice) return Refuse(stage);/if (gate.RefuseIfStageBlocksWrite(stage) is { } s) return s;/' "$T/$GF"
+  sed -i 's/ if (ProjectXMapping.ResolveStage(account.Name) != AccountStage.Practice) throw new InvalidOperationException();/ _ = ProjectXMapping.ResolveStage(account.Name);/' "$T/$GF"
 }
 base "$T"; delegate_stage; sed -i 's/gate.RefuseIfStageBlocksWrite(stage)/RefuseIfStageBlocksWrite(stage)/' "$T/$GF"
 printf 'public sealed class TradingExecutionGate {\n  public Refusal? RefuseIfStageBlocksWrite(AccountStage stage) { if (stage == AccountStage.Practice) return null; return Block; }\n}\n' >"$T/$H/Configuration/TradingExecutionGate.cs"
-run_case "fail: delegated stage check not CALLED through the execution gate" 1 "never compares against AccountStage.Practice"
+run_case "fail: delegated stage check not CALLED through the execution gate" 1 "never refuses a non-Practice stage"
 base "$T"; delegate_stage
 printf 'public sealed class TradingExecutionGate {\n  private static readonly AccountStage Allowed = AccountStage.Practice;\n  public Refusal? RefuseIfStageBlocksWrite(AccountStage stage)\n  {\n    return null;\n  }\n}\n' >"$T/$H/Configuration/TradingExecutionGate.cs"
-run_case "fail: Practice named in TradingExecutionGate.cs but outside RefuseIfStageBlocksWrite" 1 "never compares against AccountStage.Practice"
+run_case "fail: Practice named in TradingExecutionGate.cs but outside RefuseIfStageBlocksWrite" 1 "never refuses a non-Practice stage"
 base "$T"; delegate_stage
 printf 'public sealed class TradingExecutionGate {\n  public Refusal? RefuseIfStageBlocksWrite(\n      AccountStage stage)\n  {\n    if (stage == AccountStage.Practice)\n    {\n      return null;\n    }\n    return Block;\n  }\n}\n' >"$T/$H/Configuration/TradingExecutionGate.cs"
 run_case "pass: Practice inside a multi-line RefuseIfStageBlocksWrite body" 0 "Practice checked via $H/Configuration/TradingExecutionGate.cs"
+
+# IAccountStageResolver as the stage source (#734 makes ResolveStage internal), and the explicit refusal.
+use_resolver() {
+  sed -i 's/^    private const string Note = .*$/    private readonly IAccountStageResolver stages;/' "$T/$GF"
+  sed -i 's/ProjectXMapping.ResolveStage(account.Name)/(await stages.ResolveAsync(account.Id))/g' "$T/$GF"
+}
+base "$T"; use_resolver
+run_case "pass: stage from IAccountStageResolver + explicit refusal" 0 "$GREEN"
+
+base "$T"; use_resolver
+sed -i 's/^        } if ((await stages.ResolveAsync(account.Id)) != AccountStage.Practice) throw new InvalidOperationException();$/        } if (await EnsurePractice(account) is { } b) return b;/' "$T/$GF"
+sed -i 's/^}$/    private async Task<object?> EnsurePractice(Account a)\n    {\n        if (gate.RefuseIfDisabledOrHalted() is { } h) return h;\n        AccountStage st = await stages.ResolveAsync(a.Id);\n        if (st != AccountStage.Practice)\n        {\n            return Refuse(st);\n        }\n        return null;\n    }\n}/' "$T/$GF"
+run_case "pass: stage resolved via a gate helper that calls the resolver" 0 "$GREEN"
+
+base "$T"; use_resolver
+sed -i 's/^        } if ((await stages.ResolveAsync(account.Id)) != AccountStage.Practice) throw new InvalidOperationException();$/        } await gateway.CancelOrder(); _ = await stages.ResolveAsync(account.Id);/' "$T/$GF"
+run_case "fail: gateway call before the resolver in its member" 1 "GATE STAGE  $GF:22" "CancelOrder("
+
+base "$T"; use_resolver
+sed -i 's/^        if (gate.RefuseIfDisabledOrHalted() is { } halted) return halted;$/        var early = await stages.ResolveAsync(account.Id); if (gate.RefuseIfDisabledOrHalted() is { } halted) return halted;/' "$T/$GF"
+run_case "fail: resolver called before the disabled/halted check" 1 "GATE ORDER  $GF:10"
+
+base "$T"; sed -i 's/if (stage != AccountStage.Practice) return Refuse(stage);/if (stage != AccountStage.Practice) Log(stage);/; s/!= AccountStage.Practice) throw new InvalidOperationException();/!= AccountStage.Practice) Log();/' "$T/$GF"
+run_case "fail: Practice comparison that neither returns nor throws" 1 "never refuses a non-Practice stage"
+
+base "$T"; sed -i 's/if (stage != AccountStage.Practice) return Refuse(stage);/if (stage is not AccountStage.Practice)\n        {\n            throw new InvalidOperationException();\n        }/' "$T/$GF"
+run_case "pass: 'is not Practice' refusal throwing on the next line" 0 "$GREEN"
+
+base "$T"; sed -i 's/ProjectXMapping.ResolveStage(account.Name)/account.Stage/g' "$T/$GF"
+run_case "fail: no stage source at all" 1 "never resolves the account stage" "GATE STAGE"
+
+# #737's entry points are SubmitPlace/SubmitModify/SubmitCancel/SubmitClose/SubmitPartialClose: NOT order names
+# (no allowlisting), but members of the gate like any other and subject to both ordering rules.
+base "$T"; gate_insert '    public Task<object> SubmitPlace(Account a) => gateway.PlaceOrder();'
+run_case "fail: SubmitPlace calling the gateway unguarded" 1 "GATE ORDER  $GF:17" "GATE STAGE  $GF:17"
+base "$T"; gate_insert '    public Task<object> SubmitPlace(Account a) => Place(a);'
+run_case "pass: SubmitPlace delegating to a guarded member" 0 "$GREEN"
+base "$T"; gate_insert '    public async Task<object> SubmitPartialClose(\n        Account account)\n    {\n        if (gate.RefuseIfDisabledOrHalted() is { } h) return h;\n        if (ProjectXMapping.ResolveStage(account.Name) != AccountStage.Practice) throw new InvalidOperationException();\n        return await gateway.CancelOrder();\n    }'
+run_case "pass: multi-line SubmitPartialClose, guarded then staged" 0 "$GREEN"
+base "$T"; gate_insert '    public async Task<object> SubmitClose(\n        Account account)\n    {\n        if (gate.RefuseIfDisabledOrHalted() is { } h) return h;\n        await gateway.CancelOrder();\n    }'
+run_case "fail: multi-line SubmitClose with no stage resolution" 1 "GATE STAGE  $GF:21"
+base "$T"; echo 'class CloseTool(TradingRiskGate gate) { Task Go(Account a) => gate.SubmitClose(a); Task M(Account a) => gate.SubmitModify(a); }' >"$T/$H/Tools/CloseTool.cs"
+run_case "pass: tools may call Submit* (not order names, no allowlist)" 0 "$GREEN"
 
 # --- (6) gate tests ----------------------------------------------------------------------------------
 base "$T"; sed -i '/Trait/d' "$T/$H.Tests/TradingRiskGateTests.cs"

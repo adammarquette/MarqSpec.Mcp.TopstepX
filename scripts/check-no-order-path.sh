@@ -44,6 +44,14 @@
 #   (5) THE GATE exists at exactly GATE_FILE -- absent, or present anywhere else, FAILS (no skip). In EVERY
 #       member of TradingRiskGate, RefuseIfDisabledOrHalted( comes before any ResolveStage(, allowlist,
 #       denylist or order call in that member; the file calls ResolveStage( and names AccountStage.Practice.
+#       STAGE: the account stage comes from an IAccountStageResolver the gate declares (or ResolveStage(,
+#       internal from #734), and in every member a resolver call -- direct, or via a gate helper that makes one
+#       -- precedes any gateway call (".PlaceOrder(" etc.). PRACTICE: an explicit `stage != AccountStage.Practice`
+#       / `is not AccountStage.Practice` whose line (or, when the condition ends the line, the next code line)
+#       returns or throws.
+#       Entry points named Submit* (SubmitPlace, SubmitModify, ...) are NOT order names and are not allowlisted;
+#       they are gate members like any other. A private continuation that calls the gateway must itself be
+#       guarded and staged -- the check does not follow calls INTO helpers, only to stage-resolving ones.
 #       The Practice comparison may live in TradingExecutionGate.RefuseIfStageBlocksWrite( when the gate calls it.
 #       Member declarations named like order methods are not calls (matched explicitly: [attr] [modifiers]
 #       Type Name[<T>]( before any "="); initialisers and expression bodies are always probed. The delegated
@@ -309,69 +317,122 @@ else
   # before any probe within the same top-level member of class TradingRiskGate.
   # Portable across mawk and gawk (the runner has gawk, which rejects an -v '\\(' that mawk accepts): '[(]' for a
   # literal paren, no \< \>, so the order-call probe anchors on a non-identifier char.
-  decl_re='^[ \t]*(\[[^]]*\][ \t]*)*((public|private|internal|protected|static|async|virtual|override|sealed|new|extern|unsafe|partial|readonly|abstract)[ \t]+)*[A-Za-z_(][]A-Za-z0-9_.<>,?[() \t]*[ \t]+[A-Za-z_][A-Za-z0-9_]*[ \t]*(<[^>(]*>)?[ \t]*[(]'
-  order_report="$(awk -v decl_re="$decl_re" -v probe_re="ResolveStage[[:space:]]*[(]|RefuseIfNotAllowlisted[[:space:]]*[(]|RefuseIfSymbolDenied[[:space:]]*[(]|(^|[^A-Za-z0-9_])($ORDER_RE)[[:space:]]*[(]" '
-    BEGIN { depth = 0; classdepth = -1; member = 0; incomment = 0; inraw = 0 }
+  # Stage sources: ProjectXMapping.ResolveStage( (internal once #734 lands) or a call on any IAccountStageResolver
+  # the gate declares (field, parameter or local) -- e.g. _stages.ResolveAsync(.
+  resolver_names="$(grep -oE 'IAccountStageResolver[[:space:]]+[A-Za-z_][A-Za-z0-9_]*' "$GATE_FILE" | awk '{print $2}' | sort -u | paste -sd'|' - || true)"
+  res_re='ResolveStage[ \t]*[(]'
+  [ -n "$resolver_names" ] && res_re="$res_re|(^|[^A-Za-z0-9_])($resolver_names)[ \\t]*[.][ \\t]*[A-Za-z_][A-Za-z0-9_]*[ \\t]*[(]"
+  # Bracket forms only ([[], []], [(]): gawk on the runner mangles backslash escapes passed through -v.
+  decl_re='^[ \t]*([[][^]]*[]][ \t]*)*((public|private|internal|protected|static|async|virtual|override|sealed|new|extern|unsafe|partial|readonly|abstract)[ \t]+)*[A-Za-z_(][]A-Za-z0-9_.<>,?[() \t]*[ \t]+[A-Za-z_][A-Za-z0-9_]*[ \t]*(<[^>(]*>)?[ \t]*[(]'
+  # Members: a new member starts on a class-level line once the previous member has ENDED (a class-level line
+  # ending in ";" or "}"), so a multi-line signature, an attribute line or a next-line expression body all
+  # belong to their member. Two rules per member, checked on code with comments and strings stripped:
+  #   G  RefuseIfDisabledOrHalted( before any stage resolution, allowlist, denylist or order call;
+  #   S  a stage resolution (ResolveStage( / resolver call, or a call to a gate member that makes one) before
+  #      any GATEWAY call (".PlaceOrder(" etc.).
+  order_report="$(awk -v decl_re="$decl_re" -v res_re="$res_re" \
+      -v probe_re="RefuseIfNotAllowlisted[ \t]*[(]|RefuseIfSymbolDenied[ \t]*[(]|(^|[^A-Za-z0-9_])($ORDER_RE)[ \t]*[(]" \
+      -v gw_re="[.][ \t]*($ORDER_RE)[ \t]*[(]" '
+    BEGIN { depth = 0; classdepth = -1; member = 0; incomment = 0; inraw = 0; ended = 1; n = 0 }
     {
-      raw = $0; s = raw
-      if (inraw) { if (sub(/^.*\"\"\"/, "", s)) inraw = 0; else next }
-      gsub(/\"\"\"([^"]|\"[^"]|\"\"[^"])*\"\"\"/, "\"\"", s)
-      if (match(s, /\"\"\"/)) { s = substr(s, 1, RSTART - 1); inraw = 1 }
-      if (incomment) { if (sub(/.*\*\//, "", s)) incomment = 0; else next }
-      gsub(/\/\*.*\*\//, "", s)
-      if (match(s, /\/\*/)) { s = substr(s, 1, RSTART - 1); incomment = 1 }
-      sub(/\/\/.*/, "", s)
+      s = $0
+      if (inraw) { if (sub(/^.*"""/, "", s)) inraw = 0; else next }
+      gsub(/"""([^"]|"[^"]|""[^"])*"""/, "\"\"", s)
+      if (match(s, /"""/)) { s = substr(s, 1, RSTART - 1); inraw = 1 }
+      if (incomment) { if (sub(/.*[*][\/]/, "", s)) incomment = 0; else next }
+      gsub(/[\/][*].*[*][\/]/, "", s)
+      if (match(s, /[\/][*]/)) { s = substr(s, 1, RSTART - 1); incomment = 1 }
+      sub(/[\/][\/].*/, "", s)
       gsub(/"([^"\\]|\\.)*"/, "\"\"", s)
       start = depth
-      if (classdepth < 0 && s ~ /class[ \t]+TradingRiskGate/) { pending = 1 }
-      if (classdepth >= 0 && start == classdepth && s ~ /[^ \t]/) { member++; guarded = 0 }
-      # A member DECLARATION named like an order method (public Task<R> PlaceOrderAsync(...), with or without
-      # modifiers, an attribute, or type parameters) is not a call. Only text BEFORE the first "=" (so never an
-      # initialiser or expression body) is considered, and the declaration shape is matched explicitly:
-      # [attr] [modifiers] Type Name[<T>](. Only that Name is dropped; property/field initialisers and
-      # expression bodies keep every call in them.
-      if (classdepth >= 0 && start == classdepth) {
+      if (classdepth < 0 && s ~ /class[ \t]+TradingRiskGate/) pending = 1
+      if (classdepth >= 0 && start == classdepth && s ~ /[^ \t]/) {
+        if (ended) { member++; ended = 0 }
         eq = index(s, "="); pre = (eq > 0) ? substr(s, 1, eq - 1) : s
         if (match(pre, decl_re)) {
-          m = substr(pre, RSTART, RLENGTH)
-          sub(/[A-Za-z_][A-Za-z0-9_]*[ \t]*(<[^>(]*>)?[ \t]*[(]$/, "(", m)
-          s = substr(pre, 1, RSTART - 1) m substr(s, RSTART + RLENGTH)
-        }
-      }
-      if (classdepth >= 0 && start >= classdepth) {
-        d = index(s, "RefuseIfDisabledOrHalted(")
-        if (match(s, probe_re)) {
-          if (!guarded && (d == 0 || d > RSTART)) {
-            printf "%d:%s\n", NR, substr(s, RSTART, RLENGTH)
+          ds = RSTART; dl = RLENGTH; m = substr(pre, ds, dl)
+          if (match(m, /[A-Za-z_][A-Za-z0-9_]*[ \t]*(<[^>(]*>)?[ \t]*[(]$/)) {
+            nm = substr(m, RSTART); sub(/[^A-Za-z0-9_].*$/, "", nm)
+            if (!(member in mname)) mname[member] = nm
+            m = substr(m, 1, RSTART - 1) "("
           }
+          s = substr(s, 1, ds - 1) m substr(s, ds + dl)
         }
-        if (d > 0) guarded = 1
       }
-      n = length(s)
-      for (i = 1; i <= n; i++) {
+      if (classdepth >= 0 && start >= classdepth) { n++; L[n] = NR; S[n] = s; M[n] = member; if (s ~ res_re) res_in[member] = 1 }
+      len = length(s)
+      for (i = 1; i <= len; i++) {
         ch = substr(s, i, 1)
         if (ch == "{") { depth++; if (pending) { classdepth = depth; pending = 0 } }
         else if (ch == "}") depth--
       }
+      if (classdepth >= 0 && depth == classdepth && start >= classdepth && s ~ /[;}][ \t]*$/) ended = 1
     }
-    END { if (classdepth < 0) print "NOCLASS" }
+    END {
+      if (classdepth < 0) { print "NOCLASS"; exit }
+      helpers = ""
+      for (k in res_in) if (k in mname) helpers = helpers (helpers == "" ? "" : "|") mname[k]
+      help_re = (helpers == "") ? "^$x" : "(^|[^A-Za-z0-9_])(" helpers ")[ \t]*[(]"
+      cur = -1
+      for (j = 1; j <= n; j++) {
+        if (M[j] != cur) { cur = M[j]; guarded = 0; staged = 0 }
+        t = S[j]; d = index(t, "RefuseIfDisabledOrHalted(")
+        if (match(t, probe_re) || match(t, res_re)) {
+          if (!guarded && (d == 0 || d > RSTART)) printf "%d:%s\n", L[j], substr(t, RSTART, RLENGTH)
+        }
+        if (d > 0) guarded = 1
+        if (match(t, res_re) || match(t, help_re)) { sp = RSTART; st = 1 } else st = 0
+        if (match(t, gw_re)) {
+          if (!staged && (!st || sp > RSTART)) printf "STAGE %d:%s\n", L[j], substr(t, RSTART, RLENGTH)
+        }
+        if (st) staged = 1
+      }
+    }
   ' "$GATE_FILE")" || env_fail "CANNOT PARSE  awk failed over $GATE_FILE"
   if [ "$order_report" = "NOCLASS" ]; then
     fail "GATE  $GATE_FILE does not declare class TradingRiskGate"
   else
     while IFS= read -r r; do
       [ -n "$r" ] || continue
-      fail "GATE ORDER  $GATE_FILE:${r%%:*} '${r#*:}' runs before RefuseIfDisabledOrHalted() in its member" \
-        "Every member that touches the stage, allowlist, denylist or gateway checks the master and kill switch first."
+      case "$r" in
+        STAGE\ *)
+          r="${r#STAGE }"
+          fail "GATE STAGE  $GATE_FILE:${r%%:*} gateway call '${r#*:}' comes before the account stage is resolved in its member" \
+            "Resolve the stage (IAccountStageResolver, or ResolveStage) -- directly or via a gate helper -- before any gateway call." ;;
+        *)
+          fail "GATE ORDER  $GATE_FILE:${r%%:*} '${r#*:}' runs before RefuseIfDisabledOrHalted() in its member" \
+            "Every member that touches the stage, allowlist, denylist or gateway checks the master and kill switch first." ;;
+      esac
     done <<<"$order_report"
   fi
-  code="$(grep -vE '^[[:space:]]*(//|\*|/\*)' "$GATE_FILE" || true)"
+  code="$(grep -vE '^[[:space:]]*(//|\*|/\*)' "$GATE_FILE" | sed -E 's/"([^"\\]|\\.)*"/""/g; s|//.*$||' || true)"
   printf '%s\n' "$code" | grep -qE 'RefuseIfDisabledOrHalted[[:space:]]*\(' || fail "GATE  $GATE_FILE never calls RefuseIfDisabledOrHalted()"
-  printf '%s\n' "$code" | grep -qE 'ResolveStage[[:space:]]*\(' || fail "GATE  $GATE_FILE never calls ProjectXMapping.ResolveStage(...)"
+  if ! printf '%s\n' "$code" | grep -qE "ResolveStage[[:space:]]*\\(${resolver_names:+|(^|[^A-Za-z0-9_])($resolver_names)[[:space:]]*\\.[[:space:]]*[A-Za-z_][A-Za-z0-9_]*[[:space:]]*\\(}"; then
+    fail "GATE  $GATE_FILE never resolves the account stage" \
+      "Call an IAccountStageResolver the gate declares (or ProjectXMapping.ResolveStage) on every trading call."
+  fi
   # Practice: named in the gate itself, OR delegated -- the gate must CALL (".RefuseIfStageBlocksWrite(", not
   # declare it) and TradingExecutionGate.cs must name AccountStage.Practice INSIDE the body of a method
   # declared RefuseIfStageBlocksWrite(. Text-level, so EXEC_GATE is on CODEOWNERS and in the header.
-  if ! printf '%s\n' "$code" | grep -qE 'AccountStage\.Practice'; then
+  # An EXPLICIT refusal: `stage != AccountStage.Practice` / `is not AccountStage.Practice` whose own line, or the
+  # next code line (past a lone "{"), returns or throws. Merely naming Practice does not count.
+  practice_refusal="$(printf '%s\n' "$code" | awk '
+    { line[NR] = $0 }
+    END {
+      for (i = 1; i <= NR; i++) {
+        if (line[i] !~ /(!=|is[ \t]+not)[ \t]*AccountStage[.]Practice|AccountStage[.]Practice[ \t]*!=/) continue
+        if (line[i] ~ /(^|[^A-Za-z0-9_])(return|throw)([^A-Za-z0-9_]|$)/) { print "yes"; exit }
+        # Only a condition that ENDS its line (")" or "{") may have its return/throw on the next line.
+        if (line[i] !~ /[){][ \t]*$/) continue
+        for (j = i + 1; j <= NR; j++) {
+          if (line[j] ~ /^[ \t]*$/ || line[j] ~ /^[ \t]*[{][ \t]*$/) continue
+          if (line[j] ~ /^[ \t]*(return|throw)([^A-Za-z0-9_]|$)/) { print "yes"; exit }
+          break
+        }
+      }
+      print "no"
+    }')"
+  if [ "$practice_refusal" != "yes" ]; then
     if printf '%s\n' "$code" | grep -qE '\.[[:space:]]*RefuseIfStageBlocksWrite[[:space:]]*\(' && [ -f "$EXEC_GATE" ] \
       && in_body="$(awk '
         { s = $0; sub(/\/\/.*/, "", s); gsub(/"([^"\\]|\\.)*"/, "\"\"", s) }
@@ -386,9 +447,9 @@ else
         END { print (found ? "yes" : "no") }' "$EXEC_GATE")" && [ "$in_body" = "yes" ]; then
       practice_via="$EXEC_GATE"
     else
-      fail "GATE  $GATE_FILE never compares against AccountStage.Practice" \
-        "Name it in the gate, or CALL .RefuseIfStageBlocksWrite( and compare AccountStage.Practice inside that" \
-        "method's body in $EXEC_GATE."
+      fail "GATE  $GATE_FILE never refuses a non-Practice stage" \
+        "Write an explicit 'if (stage != AccountStage.Practice) return/throw ...', or CALL .RefuseIfStageBlocksWrite(" \
+        "with AccountStage.Practice compared inside that method's body in $EXEC_GATE."
     fi
   fi
 fi

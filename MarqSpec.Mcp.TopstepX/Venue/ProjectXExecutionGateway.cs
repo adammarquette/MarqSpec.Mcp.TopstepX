@@ -27,6 +27,7 @@ public sealed class ProjectXExecutionGateway : IExecutionGateway
     private readonly ITradingUnknownStageRefusalSignal _unknownStageSignal;
     private readonly IProjectXApiClient _client;
     private readonly VenueCallGuard _calls;
+    private readonly HostTelemetry _telemetry;
     private readonly ILogger<ProjectXExecutionGateway> _logger;
 
     /// <summary>Creates the gated adapter.</summary>
@@ -43,6 +44,7 @@ public sealed class ProjectXExecutionGateway : IExecutionGateway
         _unknownStageSignal = unknownStageSignal;
         _client = client;
         _calls = new VenueCallGuard(telemetry);
+        _telemetry = telemetry;
         _logger = logger;
     }
 
@@ -52,6 +54,7 @@ public sealed class ProjectXExecutionGateway : IExecutionGateway
         CancellationToken cancellationToken) =>
         ExecuteWhenPermittedAsync(
             command.AccountId,
+            ExecutionOperation.PlaceOrderOperation,
             cancellationToken,
             ct => TransmitPlaceOrderAsync(command, ct));
 
@@ -61,6 +64,7 @@ public sealed class ProjectXExecutionGateway : IExecutionGateway
         CancellationToken cancellationToken) =>
         ExecuteWhenPermittedAsync(
             command.AccountId,
+            ExecutionOperation.ModifyOrderOperation,
             cancellationToken,
             ct => TransmitModifyOrderAsync(command, ct));
 
@@ -70,6 +74,7 @@ public sealed class ProjectXExecutionGateway : IExecutionGateway
         CancellationToken cancellationToken) =>
         ExecuteWhenPermittedAsync(
             command.AccountId,
+            ExecutionOperation.CancelOrderOperation,
             cancellationToken,
             ct => TransmitCancelOrderAsync(command, ct));
 
@@ -79,6 +84,7 @@ public sealed class ProjectXExecutionGateway : IExecutionGateway
         CancellationToken cancellationToken) =>
         ExecuteWhenPermittedAsync(
             command.AccountId,
+            ExecutionOperation.ClosePositionOperation,
             cancellationToken,
             ct => TransmitClosePositionAsync(command, ct));
 
@@ -88,14 +94,18 @@ public sealed class ProjectXExecutionGateway : IExecutionGateway
         CancellationToken cancellationToken) =>
         ExecuteWhenPermittedAsync(
             command.AccountId,
+            ExecutionOperation.PartialClosePositionOperation,
             cancellationToken,
             ct => TransmitPartialClosePositionAsync(command, ct));
 
     private async Task<ExecutionWriteResult> ExecuteWhenPermittedAsync(
         int accountId,
+        string operation,
         CancellationToken cancellationToken,
         Func<CancellationToken, Task<ExecutionWriteResult>> transmit)
     {
+        using HostTelemetry.ExecutionWriteScope write = _telemetry.ExecutionWrite(operation);
+
         TradingExecutionRefusal? refusal = await _gate
             .RefuseWriteUnlessPermittedAsync(
                 accountId,
@@ -106,16 +116,20 @@ public sealed class ProjectXExecutionGateway : IExecutionGateway
 
         if (refusal is TradingExecutionRefusal gateRefusal)
         {
+            write.Refused(gateRefusal.Code);
             return GateRefused(gateRefusal);
         }
 
         cancellationToken.ThrowIfCancellationRequested();
         try
         {
-            return await transmit(cancellationToken).ConfigureAwait(false);
+            ExecutionWriteResult result = await transmit(cancellationToken).ConfigureAwait(false);
+            write.Refused(ExecutionWriteRefusal.Transmitted);
+            return result;
         }
         catch (Exception ex)
         {
+            write.Refused(ExecutionWriteRefusal.Transmitted);
             return ExecutionTransmitFault.MapOrRethrow(ex, transmitted: false, cancellationToken, _logger);
         }
     }

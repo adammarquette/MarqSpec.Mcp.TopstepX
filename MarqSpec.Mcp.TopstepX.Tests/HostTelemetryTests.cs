@@ -80,6 +80,31 @@ public sealed class HostTelemetryTests
     }
 
     [Fact]
+    public void AnExecutionWriteIsCountedWithItsOperationAndRefusalWhenItsScopeCloses()
+    {
+        using HostTelemetry telemetry = new();
+        using MetricCollector<long> writes = Collect(telemetry, HostTelemetry.ExecutionWritesInstrument);
+
+        List<Activity> spans = [];
+        using ActivityListener listener = Listen(spans, telemetry.Activities);
+
+        using (HostTelemetry.ExecutionWriteScope scope = telemetry.ExecutionWrite(ExecutionOperation.PlaceOrderOperation))
+        {
+            writes.LastMeasurement.Should().BeNull();
+            scope.Refused(ExecutionWriteRefusal.TradingDisabled);
+        }
+
+        writes.LastMeasurement!.Value.Should().Be(1);
+        writes.LastMeasurement.Tags[HostTelemetry.OperationTag].Should().Be(ExecutionOperation.PlaceOrderOperation);
+        writes.LastMeasurement.Tags[HostTelemetry.RefusalTag].Should().Be(ExecutionWriteRefusal.TradingDisabled);
+
+        Activity span = spans.Should().ContainSingle().Subject;
+        span.OperationName.Should().Be("execution." + ExecutionOperation.PlaceOrderOperation);
+        span.GetTagItem(HostTelemetry.OperationTag).Should().Be(ExecutionOperation.PlaceOrderOperation);
+        span.GetTagItem(HostTelemetry.RefusalTag).Should().Be(ExecutionWriteRefusal.TradingDisabled);
+    }
+
+    [Fact]
     public void AVenueCallIsCountedAndTimedWhenItsScopeCloses()
     {
         using HostTelemetry telemetry = new();

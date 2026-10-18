@@ -35,6 +35,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `Trading__MaxContractsPerOrder` and `Trading__MaxContractsPerDay`. No MCP trading tools or venue order calls
   ship in this change — configuration, validation, and refusal tests only.
 
+- **`TradingAuditLog` — append-only trading audit table.** EF entity and migration for every trading attempt
+  (preview and live): timestamp, account id, parsed stage, tool, idempotency key, request hash, dry-run flag,
+  outcome, and venue error code — no secrets. Postgres triggers refuse updates and deletes (gh#709, ADR-0024
+  Proposed §5, gh#707).
+
 - **`available` on every bar-series payload.** `get_bars`, `get_latest_bars`, `get_session_bars` and
   `get_latest_session_bars` report `available.earliest` / `available.latest` — the first and last bar this
   call actually returned. Both keys are omitted when the series is empty. A requested window past the

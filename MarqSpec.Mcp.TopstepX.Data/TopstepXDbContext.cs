@@ -78,6 +78,9 @@ public sealed class TopstepXDbContext(DbContextOptions<TopstepXDbContext> option
     /// <summary>Buy and sell volume per price per bar — a projection over <see cref="Trades"/>.</summary>
     public DbSet<FootprintCellRecord> FootprintCells => Set<FootprintCellRecord>();
 
+    /// <summary>Append-only ledger of every trading attempt (ADR-0024 §5, gh#709).</summary>
+    public DbSet<TradingAuditLogRecord> TradingAuditLog => Set<TradingAuditLogRecord>();
+
     /// <inheritdoc />
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -295,6 +298,23 @@ public sealed class TopstepXDbContext(DbContextOptions<TopstepXDbContext> option
             entity.Property(o => o.Kind).HasMaxLength(32);
 
             entity.HasIndex(o => new { o.Instrument, o.RecordedAt });
+        });
+
+        modelBuilder.Entity<TradingAuditLogRecord>(entity =>
+        {
+            entity.ToTable("TradingAuditLog");
+            entity.HasKey(a => a.Id);
+            entity.Property(a => a.Id).UseIdentityAlwaysColumn();
+
+            entity.Property(a => a.Tool).HasMaxLength(64);
+            entity.Property(a => a.IdempotencyKey).HasMaxLength(256);
+            entity.Property(a => a.RequestHash).HasMaxLength(64);
+            entity.Property(a => a.Outcome).HasMaxLength(32);
+            entity.Property(a => a.ParsedStage).HasMaxLength(16);
+            entity.Property(a => a.VenueErrorCode).HasMaxLength(64);
+
+            entity.HasIndex(a => new { a.AccountId, a.AttemptedAt });
+            entity.HasIndex(a => a.IdempotencyKey);
         });
 
         // pgvector only maps under Npgsql. Configuring this unconditionally breaks every provider-agnostic

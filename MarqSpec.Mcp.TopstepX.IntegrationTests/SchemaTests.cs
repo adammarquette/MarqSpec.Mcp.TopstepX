@@ -59,6 +59,7 @@ public sealed class SchemaTests(SchemaFixture fixture)
     [Theory]
     [InlineData("TapeCoverage")]
     [InlineData("FootprintCells")]
+    [InlineData("TradingAuditLog")]
     public async Task LedgerAndProjectionTables_AreNotHypertables(string table)
     {
         // TapeCoverage is a listening ledger (like BarCoverage); FootprintCells are a projection

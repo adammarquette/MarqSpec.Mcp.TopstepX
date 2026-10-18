@@ -9,9 +9,10 @@
 gh#215 (`Trades`, `TapeCoverage`, `FootprintCells`),
 gh#404 (`TapeLeases`),
 gh#499 (`SessionBars`),
-gh#501 (`SessionIndicatorValues`)
+gh#501 (`SessionIndicatorValues`),
+gh#709 (`TradingAuditLog`)
 
-One Postgres database, eleven tables — §4 is a retired number, not a twelfth. Entities live in
+One Postgres database, twelve tables — §4 is a retired number, not a thirteenth. Entities live in
 `MarqSpec.Mcp.TopstepX.Data/Entities/`; the schema is whatever the migrations say, and this page is kept in
 lockstep with them in the same PR.
 
@@ -682,6 +683,32 @@ justify.
 §9, §10 and §11.
 
 Index: `(Instrument, Session, Indicator, Period, BucketStart)` — the shape of every read, mirroring §2's.
+
+## §13 `TradingAuditLog` — append-only trading attempts
+
+| Column | Type | Note |
+|---|---|---|
+| `Id` | `bigint` | PK · `GENERATED ALWAYS AS IDENTITY` |
+| `AttemptedAt` | `timestamptz` | When the attempt was recorded, UTC |
+| `AccountId` | `integer` | Venue account id |
+| `ParsedStage` | `varchar(16)` | Stage from a **fresh** account fetch — `Practice`, `Evaluation`, `Funded`, `Unknown` |
+| `Tool` | `varchar(64)` | MCP tool name, e.g. `place_order` |
+| `IdempotencyKey` | `varchar(256)` | Caller-supplied key for the attempt |
+| `RequestHash` | `varchar(64)` | SHA-256 hex of the normalised request — **no raw body, no secrets** |
+| `DryRun` | `boolean` | Preview (`dryRun: true`) vs transmit |
+| `Outcome` | `varchar(32)` | Closed outcome name — e.g. `Preview`, `Refused`, `Succeeded`, `Failed` |
+| `VenueErrorCode` | `varchar(64)` | Venue business error when a write ran; null when no gateway write |
+
+One row for **every** trading attempt — preview, confirm, or live — before the outcome is returned
+([ADR-0024](adr/0024-gated-trading-actions-practice-v1.md) §5, gh#709). The idempotency store that suppresses
+duplicate venue calls is separate; this table is the audit trail, not the dedupe cache.
+
+**Append-only at the database.** `BEFORE UPDATE` and `BEFORE DELETE` triggers raise if either is attempted.
+Tests truncate the table between cases; production has no supported mutation path.
+
+**Not a hypertable** — volume is bounded by human-scale order attempts, not bar or tape rates.
+
+Indexes: `(AccountId, AttemptedAt)` for an account's history; `(IdempotencyKey)` for correlating retries.
 
 ---
 *Changing an entity or a migration? Update the section above in the same PR. A data dictionary that lags the

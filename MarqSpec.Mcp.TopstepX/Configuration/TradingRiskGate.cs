@@ -6,9 +6,10 @@ namespace MarqSpec.Mcp.TopstepX.Configuration;
 /// Central trading gate: master switch, practice-only stage, caps, dry-run preview, and audit (ADR-0024, gh#711).
 /// </summary>
 /// <remarks>
-/// MCP tools call this type only — never <see cref="IExecutionGateway"/> directly. Every member that touches
-/// stage resolution, allowlist, denylist, or the gateway re-checks <see cref="TradingExecutionGate.RefuseIfDisabledOrHalted"/>
-/// first. Daily caps use UTC midnight until a session boundary is chosen explicitly.
+/// MCP tools call this type only — never the execution gateway directly. Every member that touches
+/// stage resolution, allowlist, denylist, or the gateway re-checks
+/// <see cref="TradingExecutionGate.RefuseIfDisabledOrHalted"/> first. Daily caps charge once on the
+/// <see cref="TradingAuditOutcomes.Attempted"/> row; outcome rows use zero contract count.
 /// </remarks>
 public sealed class TradingRiskGate
 {
@@ -170,11 +171,11 @@ public sealed class TradingRiskGate
                     cancellationToken).ConfigureAwait(false);
             }
 
-            return await TransmitAsync(
+            return await TransmitWithCapChargeAsync(
                 command.AccountId,
                 stage,
                 audit,
-                command.Size,
+                capChargeSize: command.Size,
                 ct => _gateway.PlaceOrder(command, ct),
                 cancellationToken).ConfigureAwait(false);
         }
@@ -227,6 +228,18 @@ public sealed class TradingRiskGate
                 cancellationToken).ConfigureAwait(false);
         }
 
+        if (await RefuseModifyContractAsync(command, cancellationToken).ConfigureAwait(false)
+            is TradingExecutionRefusal contractRefusal)
+        {
+            return await RefuseAsync(
+                command.AccountId,
+                FormatStage(stage),
+                audit,
+                contractCount: capSize,
+                contractRefusal,
+                cancellationToken).ConfigureAwait(false);
+        }
+
         if (command.Size is int modifySize
             && _executionGate.RefuseIfOrderSizeExceedsLimit(modifySize) is TradingExecutionRefusal size)
         {
@@ -239,42 +252,40 @@ public sealed class TradingRiskGate
                 cancellationToken).ConfigureAwait(false);
         }
 
-        if (capSize > 0)
+        await using (await _dailyCap.AcquireAccountDayLockAsync(command.AccountId, cancellationToken)
+                         .ConfigureAwait(false))
         {
-            await using (await _dailyCap.AcquireAccountDayLockAsync(command.AccountId, cancellationToken)
-                             .ConfigureAwait(false))
-            {
-                if (await RefuseDailyCapAsync(command.AccountId, capSize, cancellationToken).ConfigureAwait(false)
+            if (capSize > 0
+                && await RefuseDailyCapAsync(command.AccountId, capSize, cancellationToken).ConfigureAwait(false)
                     is TradingExecutionRefusal daily)
-                {
-                    return await RefuseAsync(
-                        command.AccountId,
-                        FormatStage(stage),
-                        audit,
-                        contractCount: capSize,
-                        daily,
-                        cancellationToken).ConfigureAwait(false);
-                }
+            {
+                return await RefuseAsync(
+                    command.AccountId,
+                    FormatStage(stage),
+                    audit,
+                    contractCount: capSize,
+                    daily,
+                    cancellationToken).ConfigureAwait(false);
             }
-        }
 
-        if (context.DryRun)
-        {
-            return await PreviewAsync(
+            if (context.DryRun)
+            {
+                return await PreviewAsync(
+                    command.AccountId,
+                    stage,
+                    audit,
+                    contractCount: capSize,
+                    cancellationToken).ConfigureAwait(false);
+            }
+
+            return await TransmitWithCapChargeAsync(
                 command.AccountId,
                 stage,
                 audit,
-                contractCount: capSize,
+                capChargeSize: capSize,
+                ct => _gateway.ModifyOrder(command, ct),
                 cancellationToken).ConfigureAwait(false);
         }
-
-        return await TransmitAsync(
-            command.AccountId,
-            stage,
-            audit,
-            capSize,
-            ct => _gateway.ModifyOrder(command, ct),
-            cancellationToken).ConfigureAwait(false);
     }
 
     private async Task<TradingRiskGateResult> RunCancelAsync(
@@ -333,11 +344,10 @@ public sealed class TradingRiskGate
                 cancellationToken).ConfigureAwait(false);
         }
 
-        return await TransmitAsync(
+        return await TransmitWithoutCapChargeAsync(
             command.AccountId,
             stage,
             audit,
-            contractCount: 0,
             ct => _gateway.CancelOrder(command, ct),
             cancellationToken).ConfigureAwait(false);
     }
@@ -409,11 +419,10 @@ public sealed class TradingRiskGate
                 cancellationToken).ConfigureAwait(false);
         }
 
-        return await TransmitAsync(
+        return await TransmitWithoutCapChargeAsync(
             command.AccountId,
             stage,
             audit,
-            contractCount: 0,
             ct => _gateway.ClosePosition(command, ct),
             cancellationToken).ConfigureAwait(false);
     }
@@ -486,23 +495,61 @@ public sealed class TradingRiskGate
                 cancellationToken).ConfigureAwait(false);
         }
 
-        if (context.DryRun)
+        await using (await _dailyCap.AcquireAccountDayLockAsync(command.AccountId, cancellationToken)
+                         .ConfigureAwait(false))
         {
-            return await PreviewAsync(
+            if (await RefuseDailyCapAsync(command.AccountId, command.Size, cancellationToken).ConfigureAwait(false)
+                is TradingExecutionRefusal daily)
+            {
+                return await RefuseAsync(
+                    command.AccountId,
+                    FormatStage(stage),
+                    audit,
+                    contractCount: command.Size,
+                    daily,
+                    cancellationToken).ConfigureAwait(false);
+            }
+
+            if (context.DryRun)
+            {
+                return await PreviewAsync(
+                    command.AccountId,
+                    stage,
+                    audit,
+                    contractCount: command.Size,
+                    cancellationToken).ConfigureAwait(false);
+            }
+
+            return await TransmitWithCapChargeAsync(
                 command.AccountId,
                 stage,
                 audit,
-                contractCount: command.Size,
+                capChargeSize: command.Size,
+                ct => _gateway.PartialClosePosition(command, ct),
                 cancellationToken).ConfigureAwait(false);
         }
+    }
 
-        return await TransmitAsync(
-            command.AccountId,
-            stage,
-            audit,
-            command.Size,
-            ct => _gateway.PartialClosePosition(command, ct),
-            cancellationToken).ConfigureAwait(false);
+    private async Task<TradingExecutionRefusal?> RefuseModifyContractAsync(
+        ExecutionModifyOrderCommand command,
+        CancellationToken cancellationToken)
+    {
+        if (_executionGate.RefuseIfDisabledOrHalted() is TradingExecutionRefusal disabled)
+        {
+            return disabled;
+        }
+
+        IReadOnlyList<VenueOrder> orders = await _marketData
+            .GetOrdersAsync(command.AccountId, window: null, cancellationToken)
+            .ConfigureAwait(false);
+
+        VenueOrder? order = orders.FirstOrDefault(candidate => candidate.OrderId == command.OrderId);
+        if (order is null)
+        {
+            return TradingExecutionRefusal.OrderNotFound(command.OrderId);
+        }
+
+        return RefuseContract(order.ContractId);
     }
 
     private async Task<(AccountStage Stage, TradingExecutionRefusal? Refusal)> ResolvePracticeStageAsync(
@@ -578,11 +625,11 @@ public sealed class TradingRiskGate
         return _executionGate.RefuseIfDailyLimitExceeded(accountId, already, requestedSize);
     }
 
-    private async Task<TradingRiskGateResult> TransmitAsync(
+    private async Task<TradingRiskGateResult> TransmitWithCapChargeAsync(
         int accountId,
         AccountStage stage,
         AuditEnvelope audit,
-        int contractCount,
+        int capChargeSize,
         Func<CancellationToken, Task<ExecutionWriteResult>> send,
         CancellationToken cancellationToken)
     {
@@ -592,7 +639,7 @@ public sealed class TradingRiskGate
                 accountId,
                 FormatStage(stage),
                 audit,
-                contractCount,
+                capChargeSize,
                 disabled,
                 cancellationToken).ConfigureAwait(false);
         }
@@ -602,10 +649,50 @@ public sealed class TradingRiskGate
             FormatStage(stage),
             audit,
             TradingAuditOutcomes.Attempted,
-            contractCount,
+            capChargeSize,
             venueErrorCode: null,
             cancellationToken).ConfigureAwait(false);
 
+        return await SendAndFinalizeAsync(accountId, stage, audit, send, cancellationToken).ConfigureAwait(false);
+    }
+
+    private async Task<TradingRiskGateResult> TransmitWithoutCapChargeAsync(
+        int accountId,
+        AccountStage stage,
+        AuditEnvelope audit,
+        Func<CancellationToken, Task<ExecutionWriteResult>> send,
+        CancellationToken cancellationToken)
+    {
+        if (_executionGate.RefuseIfDisabledOrHalted() is TradingExecutionRefusal disabled)
+        {
+            return await RefuseAsync(
+                accountId,
+                FormatStage(stage),
+                audit,
+                contractCount: 0,
+                disabled,
+                cancellationToken).ConfigureAwait(false);
+        }
+
+        await WriteAuditAsync(
+            accountId,
+            FormatStage(stage),
+            audit,
+            TradingAuditOutcomes.Attempted,
+            contractCount: 0,
+            venueErrorCode: null,
+            cancellationToken).ConfigureAwait(false);
+
+        return await SendAndFinalizeAsync(accountId, stage, audit, send, cancellationToken).ConfigureAwait(false);
+    }
+
+    private async Task<TradingRiskGateResult> SendAndFinalizeAsync(
+        int accountId,
+        AccountStage stage,
+        AuditEnvelope audit,
+        Func<CancellationToken, Task<ExecutionWriteResult>> send,
+        CancellationToken cancellationToken)
+    {
         ExecutionWriteResult write;
         try
         {
@@ -618,18 +705,13 @@ public sealed class TradingRiskGate
                 FormatStage(stage),
                 audit,
                 TradingAuditOutcomes.Unknown,
-                contractCount,
+                contractCount: 0,
                 venueErrorCode: ex.GetType().Name,
                 CancellationToken.None).ConfigureAwait(false);
             throw;
         }
 
-        return await MapWriteAsync(
-            accountId,
-            stage,
-            audit,
-            contractCount,
-            write).ConfigureAwait(false);
+        return await MapWriteAsync(accountId, stage, audit, write).ConfigureAwait(false);
     }
 
     private async Task<TradingRiskGateResult> PreviewAsync(
@@ -700,7 +782,6 @@ public sealed class TradingRiskGate
         int accountId,
         AccountStage stage,
         AuditEnvelope audit,
-        int contractCount,
         ExecutionWriteResult write)
     {
         if (write.GateRefusal is TradingExecutionRefusal gateRefusal)
@@ -709,20 +790,20 @@ public sealed class TradingRiskGate
                 accountId,
                 FormatStage(stage),
                 audit,
-                contractCount,
+                contractCount: 0,
                 gateRefusal,
                 CancellationToken.None).ConfigureAwait(false);
         }
 
         (string outcome, TradingAttemptOutcome attemptOutcome) = MapExecutionOutcome(write.Outcome);
 
-        string? venueCode = write.VenueErrorCode?.ToString(System.Globalization.CultureInfo.InvariantCulture);
+        string? venueCode = write.VendorErrorCode?.ToString(System.Globalization.CultureInfo.InvariantCulture);
         await WriteAuditAsync(
             accountId,
             FormatStage(stage),
             audit,
             outcome,
-            contractCount,
+            contractCount: 0,
             venueCode,
             CancellationToken.None).ConfigureAwait(false);
 
@@ -776,8 +857,8 @@ public sealed class TradingRiskGate
                 TradingAttemptOutcome.Unknown),
             ExecutionWriteOutcome.VenueRejected => (TradingAuditOutcomes.Failed, TradingAttemptOutcome.Failed),
             ExecutionWriteOutcome.BrokerSuccessWithoutOrderId => (
-                TradingAuditOutcomes.Failed,
-                TradingAttemptOutcome.Failed),
+                TradingAuditOutcomes.Unknown,
+                TradingAttemptOutcome.Unknown),
             ExecutionWriteOutcome.NotTransmitted => (
                 TradingAuditOutcomes.Refused,
                 TradingAttemptOutcome.Refused),

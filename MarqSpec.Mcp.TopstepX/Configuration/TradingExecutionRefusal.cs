@@ -132,4 +132,16 @@ public readonly record struct TradingExecutionRefusal(string Code, string Messag
             "Account id "
             + accountId.ToString(System.Globalization.CultureInfo.InvariantCulture)
             + " is inactive or not tradable on the gateway. Refresh list_accounts and use an active practice account.");
+
+    /// <summary>Trading configuration failed validation and cannot be applied safely.</summary>
+    public static TradingExecutionRefusal InvalidConfiguration(string detail) =>
+        new("trading_configuration_invalid", detail);
+
+    /// <summary>The modify target order was not returned by a fresh order fetch.</summary>
+    public static TradingExecutionRefusal OrderNotFound(long orderId) =>
+        new(
+            "order_not_found",
+            "Order id "
+            + orderId.ToString(System.Globalization.CultureInfo.InvariantCulture)
+            + " was not returned by the gateway order list for this account.");
 }

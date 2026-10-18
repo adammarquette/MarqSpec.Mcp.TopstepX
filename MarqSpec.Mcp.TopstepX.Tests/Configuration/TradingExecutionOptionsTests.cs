@@ -2,7 +2,6 @@ using FluentAssertions;
 using MarqSpec.Mcp.TopstepX.Configuration;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.Extensions.Configuration;
-using Microsoft.Extensions.Configuration.EnvironmentVariables;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
 
@@ -125,17 +124,7 @@ public sealed class TradingExecutionOptionsTests
     /// <returns>The bound and validated options.</returns>
     private static TradingExecutionOptions Bind(Dictionary<string, string?> configured)
     {
-        WebApplicationBuilder builder = WebApplication.CreateBuilder();
-
-        IConfigurationBuilder sources = builder.Configuration;
-        foreach (EnvironmentVariablesConfigurationSource ambient in sources.Sources
-            .OfType<EnvironmentVariablesConfigurationSource>()
-            .Where(source => string.IsNullOrEmpty(source.Prefix))
-            .ToList())
-        {
-            sources.Sources.Remove(ambient);
-        }
-
+        WebApplicationBuilder builder = CompositionRootTestHost.CreateIsolatedBuilder();
         builder.Configuration.AddInMemoryCollection(configured);
 
         Program.ConfigureServices(builder, new McpOptions { Transport = McpTransport.Stdio });

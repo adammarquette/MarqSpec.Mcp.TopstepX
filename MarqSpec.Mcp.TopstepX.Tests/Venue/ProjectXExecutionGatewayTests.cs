@@ -334,29 +334,32 @@ public sealed class ProjectXExecutionGatewayTests
         result.VendorErrorCode.Should().BeNull();
     }
 
-    [Fact]
-    public async Task ModifyOrder_ReturnsTransmittedUnknown_WhenTheCallerCancelsMidFlight()
+    public static IEnumerable<object[]> MidFlightCancelVerbs =>
+    [
+        [WriteVerb.Modify],
+        [WriteVerb.Cancel],
+        [WriteVerb.Close],
+        [WriteVerb.PartialClose],
+    ];
+
+    [Theory]
+    [MemberData(nameof(MidFlightCancelVerbs))]
+    public async Task Write_ReturnsTransmittedUnknown_WhenTheCallerCancelsMidFlight(WriteVerb verb)
     {
         using CancellationTokenSource cancellation = new();
         (ExecutionOrderClient fake, IProjectXApiClient client) = ExecutionOrderClient.Create();
-        fake.ModifyOrderAnswer = async (_, token) =>
-        {
-            await Task.Delay(Timeout.InfiniteTimeSpan, token);
-            return new MarqSpec.Client.ProjectX.Api.Models.ModifyOrderResponse { Success = true };
-        };
+        ConfigureMidFlightDelay(fake, verb);
 
         IExecutionGateway gateway = Gateway(client, [PracticeAccount()], enabled: true);
 
-        Task<ExecutionWriteResult> pending = gateway.ModifyOrder(
-            new ExecutionModifyOrderCommand(PracticeAccountId, OrderId: 1, Size: 1, LimitPrice: null, StopPrice: null),
-            cancellation.Token);
+        Task<ExecutionWriteResult> pending = InvokeAsync(gateway, verb, PracticeAccountId, cancellation.Token);
         await Task.Delay(50);
         await cancellation.CancelAsync();
 
         ExecutionWriteResult result = await pending;
 
         result.Outcome.Should().Be(ExecutionWriteOutcome.TransmittedOutcomeUnknown);
-        fake.ModifyOrderCount.Should().Be(1);
+        ClientCalls(fake, verb).Should().Be(1);
     }
 
     [Fact]
@@ -376,6 +379,22 @@ public sealed class ProjectXExecutionGatewayTests
     }
 
     [Fact]
+    public async Task PartialClosePosition_ReturnsTransmittedUnknown_WhenTheGuardedCallTimesOut()
+    {
+        (ExecutionOrderClient fake, IProjectXApiClient client) = ExecutionOrderClient.Create();
+        fake.PartialClosePositionAnswer = (_, _, _, _) => throw new TimeoutException("simulated timeout");
+
+        IExecutionGateway gateway = Gateway(client, [PracticeAccount()], enabled: true);
+
+        ExecutionWriteResult result = await gateway.PartialClosePosition(
+            new ExecutionPartialClosePositionCommand(PracticeAccountId, ContractId: "CON.F.US.EP.Z26", Size: 1),
+            CancellationToken.None);
+
+        result.Outcome.Should().Be(ExecutionWriteOutcome.TransmittedOutcomeUnknown);
+        fake.PartialClosePositionCount.Should().Be(1);
+    }
+
+    [Fact]
     public async Task PlaceOrder_Rethrows_WhenCancelledBeforeTransmitStarts()
     {
         using CancellationTokenSource cancellation = new();
@@ -388,6 +407,43 @@ public sealed class ProjectXExecutionGatewayTests
 
         await act.Should().ThrowAsync<OperationCanceledException>();
         fake.PlaceOrderCount.Should().Be(0);
+    }
+
+    private static void ConfigureMidFlightDelay(ExecutionOrderClient fake, WriteVerb verb)
+    {
+        switch (verb)
+        {
+            case WriteVerb.Modify:
+                fake.ModifyOrderAnswer = async (_, token) =>
+                {
+                    await Task.Delay(Timeout.InfiniteTimeSpan, token);
+                    return new MarqSpec.Client.ProjectX.Api.Models.ModifyOrderResponse { Success = true };
+                };
+                break;
+            case WriteVerb.Cancel:
+                fake.CancelOrderAnswer = async (_, _, token) =>
+                {
+                    await Task.Delay(Timeout.InfiniteTimeSpan, token);
+                    return new MarqSpec.Client.ProjectX.Api.Models.CancelOrderResponse { Success = true };
+                };
+                break;
+            case WriteVerb.Close:
+                fake.ClosePositionAnswer = async (_, _, token) =>
+                {
+                    await Task.Delay(Timeout.InfiniteTimeSpan, token);
+                    return new MarqSpec.Client.ProjectX.Api.Models.ClosePositionResponse { Success = true };
+                };
+                break;
+            case WriteVerb.PartialClose:
+                fake.PartialClosePositionAnswer = async (_, _, _, token) =>
+                {
+                    await Task.Delay(Timeout.InfiniteTimeSpan, token);
+                    return new MarqSpec.Client.ProjectX.Api.Models.PartialClosePositionResponse { Success = true };
+                };
+                break;
+            default:
+                throw new ArgumentOutOfRangeException(nameof(verb), verb, null);
+        }
     }
 
     private static void ConfigureFailure(ExecutionOrderClient fake, WriteVerb verb)
@@ -474,20 +530,21 @@ public sealed class ProjectXExecutionGatewayTests
     private static Task<ExecutionWriteResult> InvokeAsync(
         IExecutionGateway gateway,
         WriteVerb verb,
-        int accountId) =>
+        int accountId,
+        CancellationToken cancellationToken = default) =>
         verb switch
         {
-            WriteVerb.Place => gateway.PlaceOrder(SamplePlaceCommand(accountId), CancellationToken.None),
+            WriteVerb.Place => gateway.PlaceOrder(SamplePlaceCommand(accountId), cancellationToken),
             WriteVerb.Modify => gateway.ModifyOrder(
                 new ExecutionModifyOrderCommand(accountId, OrderId: 1, Size: 1, LimitPrice: null, StopPrice: null),
-                CancellationToken.None),
-            WriteVerb.Cancel => gateway.CancelOrder(new ExecutionCancelOrderCommand(accountId, OrderId: 1), CancellationToken.None),
+                cancellationToken),
+            WriteVerb.Cancel => gateway.CancelOrder(new ExecutionCancelOrderCommand(accountId, OrderId: 1), cancellationToken),
             WriteVerb.Close => gateway.ClosePosition(
                 new ExecutionClosePositionCommand(accountId, ContractId: "CON.F.US.EP.Z26"),
-                CancellationToken.None),
+                cancellationToken),
             WriteVerb.PartialClose => gateway.PartialClosePosition(
                 new ExecutionPartialClosePositionCommand(accountId, ContractId: "CON.F.US.EP.Z26", Size: 1),
-                CancellationToken.None),
+                cancellationToken),
             _ => throw new ArgumentOutOfRangeException(nameof(verb), verb, null),
         };
 

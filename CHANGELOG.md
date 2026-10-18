@@ -22,6 +22,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **`no-order-path` now gates the order path instead of forbidding it** (gh#718, ADR-0024). The required
+  check of the same name changes meaning: from "no order path exists" (ADR-0002) to a tripwire for "orders
+  only through `TradingRiskGate` -> `IExecutionGateway`, `Trading__Enabled` off by default, Practice accounts
+  only". It discovers product projects (any csproj without a test SDK / `IsTestProject`), fails on any search it could not run, confines order names and the
+  gateway to the seam (Program.cs to its `AddScoped` registrations), checks the master-switch default across
+  options, code (including `nameof(Enabled)` and `["Enabled"]` key idioms), appsettings, compose, Dockerfile and `.env.example`, requires the gate at
+  `Configuration/TradingRiskGate.cs` with the disabled/halted check first in every member, and requires
+  `Gate=ADR-0024` tests that actually execute. Railway variables are outside what CI can see.
+  New: `scripts/check-no-order-path-selftest.sh`, `scripts/check-gate-tests-ran.sh`, CODEOWNERS entries for the
+  allowlisted files.
+
 - **Default `MarketData__Instruments` includes the common micros.** The shipped list is
   `ES,NQ,MES,MNQ,MGC,MCL` — the same string in `MarketDataOptions`, `.env.example` and compose —
   so MES / MNQ / MGC / MCL no longer return "Unknown instrument" out of the box (gh#694).

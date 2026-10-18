@@ -57,12 +57,19 @@ it before starting, and add dated entries only when nothing formal fits.
 
 ## The six that are never traded away
 
-- **No ungated order path in product code.** [ADR-0024](documentation/adr/0024-gated-trading-actions-practice-v1.md)
-  (Accepted) supersedes [ADR-0002](documentation/adr/0002-read-only-venue-boundary.md): venue writes may exist
-  only behind the gated stack in that record (practice-only v1, enable flag, stage gate, audit, etc.). Until
-  gh#718 lands, `scripts/check-no-order-path.sh` still fails CI on **any** order-transmitting symbol in product
-  projects — treat that as the enforced boundary today. Do not add a shortcut, flag, or "safe" wrapper outside
-  the ADR-0024 design; anything reachable is reachable.
+- **Orders only behind the ADR-0024 gate.** [ADR-0024](documentation/adr/0024-gated-trading-actions-practice-v1.md)
+  (Accepted) supersedes [ADR-0002](documentation/adr/0002-read-only-venue-boundary.md). The venue's order surface
+  (`PlaceOrder`, `ModifyOrder`, `CancelOrder`, `ClosePosition`, `PartialClosePosition`, with or without `Async`,
+  and their request types) is reached only through `TradingRiskGate` -> `IExecutionGateway`, behind
+  `Trading__Enabled` (default **false**), disabled/halted checked first, **Practice accounts only** (gh#718).
+  `scripts/check-no-order-path.sh` is a **tripwire, not a guarantee**: it catches the obvious breaches
+  (order names or the gateway outside the seam, `\u` escapes, reflection, route literals, a non-false
+  default) but cannot see a reflection call on a built string, an innocuous wrapper inside an allowlisted
+  file, or a venue method it does not list. The boundary is held by that tripwire **plus** review,
+  [CODEOWNERS](.github/CODEOWNERS) on the allowlisted files (not independent review for PRs authored from
+  the owning account), and the `Gate=ADR-0024` tests. **Railway's service
+  variables are not CI-verifiable**: for a Railway deploy the off-by-default rests on the code default.
+  Do not widen the script's allowlists to get green.
 - **No secrets in source.** Credentials arrive through the Options pattern and environment; never a literal,
   never a tracked `appsettings.json`, never a log line. **This repository is public**, and the sibling ProjectX
   client has already leaked and rotated a real credential once.

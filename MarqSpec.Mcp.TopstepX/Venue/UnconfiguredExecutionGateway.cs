@@ -10,8 +10,8 @@ public sealed class UnconfiguredExecutionGateway : IExecutionGateway
         new TradingExecutionRefusal(
             "venue_not_configured",
             "Venue credentials are not configured, so trading writes cannot reach the gateway."),
-        VenueErrorCode: null,
-        VenueErrorMessage: null,
+        HttpStatusCode: null,
+        VendorErrorCode: null,
         OrderId: null);
 
     /// <inheritdoc />

@@ -49,14 +49,14 @@ public enum ExecutionWriteOutcome
 /// <summary>Outcome of one gated execution write.</summary>
 /// <param name="Outcome">The terminal outcome.</param>
 /// <param name="GateRefusal">Set when the combined gate refused before transmit.</param>
-/// <param name="VenueErrorCode">Venue error code on rejection only.</param>
-/// <param name="VenueErrorMessage">Venue message on rejection or uncertain transmit.</param>
+/// <param name="HttpStatusCode">HTTP status when the guard translated a gateway refusal.</param>
+/// <param name="VendorErrorCode">Vendor business error code from a parsed response body.</param>
 /// <param name="OrderId">Assigned order id after a broker-acked place.</param>
 public sealed record ExecutionWriteResult(
     ExecutionWriteOutcome Outcome,
     TradingExecutionRefusal? GateRefusal,
-    int? VenueErrorCode,
-    string? VenueErrorMessage,
+    int? HttpStatusCode,
+    int? VendorErrorCode,
     long? OrderId)
 {
     /// <summary>

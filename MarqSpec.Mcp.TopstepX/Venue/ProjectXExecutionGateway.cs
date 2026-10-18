@@ -15,8 +15,9 @@ namespace MarqSpec.Mcp.TopstepX.Venue;
 /// <see cref="TradingExecutionGate.RefuseWriteUnlessPermittedAsync"/> first.
 /// </para>
 /// <para>
-/// Order POSTs rely on the ProjectX HTTP client having no transport-level retry handler; a retry would
-/// duplicate an order before this adapter observes an outcome.
+/// Non-idempotent venue writes (place, modify, close, partial close) rely on
+/// <see cref="ProjectXHttpResilienceConfiguration.SuppressTransportRetriesOnVenueWrites"/> because the
+/// pinned ProjectX client only exempts <c>/api/Order/place</c> from its standard resilience handler.
 /// </para>
 /// </remarks>
 public sealed class ProjectXExecutionGateway : IExecutionGateway
@@ -123,8 +124,8 @@ public sealed class ProjectXExecutionGateway : IExecutionGateway
         new(
             ExecutionWriteOutcome.NotTransmitted,
             refusal,
-            VenueErrorCode: null,
-            VenueErrorMessage: null,
+            HttpStatusCode: null,
+            VendorErrorCode: null,
             OrderId: null);
 
     private async Task<ExecutionWriteResult> InvokeVenueCallAsync<TResponse>(
@@ -197,7 +198,7 @@ public sealed class ProjectXExecutionGateway : IExecutionGateway
             ExecutionOperation.ModifyOrderOperation,
             "modifying an order",
             ct => _client.ModifyOrderAsync(request, ct),
-            response => MapSimpleResponse(response.Success, response.ErrorCode, response.ErrorMessage));
+            response => MapSimpleResponse(response.Success, response.ErrorCode));
     }
 
     private Task<ExecutionWriteResult> TransmitCancelOrderAsync(
@@ -208,7 +209,7 @@ public sealed class ProjectXExecutionGateway : IExecutionGateway
             ExecutionOperation.CancelOrderOperation,
             "canceling an order",
             ct => _client.CancelOrderAsync(command.AccountId, command.OrderId, ct),
-            response => MapSimpleResponse(response.Success, response.ErrorCode, response.ErrorMessage));
+            response => MapSimpleResponse(response.Success, response.ErrorCode));
 
     private Task<ExecutionWriteResult> TransmitClosePositionAsync(
         ExecutionClosePositionCommand command,
@@ -218,7 +219,7 @@ public sealed class ProjectXExecutionGateway : IExecutionGateway
             ExecutionOperation.ClosePositionOperation,
             "closing a position",
             ct => _client.ClosePositionAsync(command.AccountId, command.ContractId, ct),
-            response => MapSimpleResponse(response.Success, response.ErrorCode, response.ErrorMessage));
+            response => MapSimpleResponse(response.Success, response.ErrorCode));
 
     private Task<ExecutionWriteResult> TransmitPartialClosePositionAsync(
         ExecutionPartialClosePositionCommand command,
@@ -232,7 +233,7 @@ public sealed class ProjectXExecutionGateway : IExecutionGateway
                 command.ContractId,
                 command.Size,
                 ct),
-            response => MapSimpleResponse(response.Success, response.ErrorCode, response.ErrorMessage));
+            response => MapSimpleResponse(response.Success, response.ErrorCode));
 
     private static ExecutionWriteResult MapPlaceResponse(PlaceOrderResponse response)
     {
@@ -241,8 +242,8 @@ public sealed class ProjectXExecutionGateway : IExecutionGateway
             return new ExecutionWriteResult(
                 ExecutionWriteOutcome.BrokerAcknowledged,
                 GateRefusal: null,
-                VenueErrorCode: null,
-                VenueErrorMessage: null,
+                HttpStatusCode: null,
+                VendorErrorCode: null,
                 OrderId: orderId);
         }
 
@@ -251,39 +252,36 @@ public sealed class ProjectXExecutionGateway : IExecutionGateway
             return new ExecutionWriteResult(
                 ExecutionWriteOutcome.BrokerSuccessWithoutOrderId,
                 GateRefusal: null,
-                VenueErrorCode: null,
-                VenueErrorMessage: ExecutionVenueText.Sanitize(response.ErrorMessage),
+                HttpStatusCode: null,
+                VendorErrorCode: null,
                 OrderId: null);
         }
 
         return new ExecutionWriteResult(
             ExecutionWriteOutcome.VenueRejected,
             GateRefusal: null,
-            VenueErrorCode: response.ErrorCode,
-            VenueErrorMessage: ExecutionVenueText.Sanitize(response.ErrorMessage),
+            HttpStatusCode: null,
+            VendorErrorCode: response.ErrorCode,
             OrderId: null);
     }
 
-    private static ExecutionWriteResult MapSimpleResponse(
-        bool success,
-        int errorCode,
-        string? errorMessage)
+    private static ExecutionWriteResult MapSimpleResponse(bool success, int errorCode)
     {
         if (success)
         {
             return new ExecutionWriteResult(
                 ExecutionWriteOutcome.BrokerAcknowledged,
                 GateRefusal: null,
-                VenueErrorCode: null,
-                VenueErrorMessage: null,
+                HttpStatusCode: null,
+                VendorErrorCode: null,
                 OrderId: null);
         }
 
         return new ExecutionWriteResult(
             ExecutionWriteOutcome.VenueRejected,
             GateRefusal: null,
-            VenueErrorCode: errorCode,
-            VenueErrorMessage: ExecutionVenueText.Sanitize(errorMessage),
+            HttpStatusCode: null,
+            VendorErrorCode: errorCode,
             OrderId: null);
     }
 

@@ -93,7 +93,8 @@ public sealed class ProjectXExecutionGatewayTests
 
         fake.PlaceOrderCount.Should().Be(1);
         result.Outcome.Should().Be(ExecutionWriteOutcome.BrokerAcknowledged);
-        result.VenueErrorCode.Should().BeNull();
+        result.VendorErrorCode.Should().BeNull();
+        result.HttpStatusCode.Should().BeNull();
         result.OrderId.Should().Be(9001);
         result.IsRetrySafe.Should().BeFalse();
     }
@@ -114,7 +115,8 @@ public sealed class ProjectXExecutionGatewayTests
         ExecutionWriteResult result = await gateway.PlaceOrder(SamplePlaceCommand(), CancellationToken.None);
 
         result.Outcome.Should().Be(ExecutionWriteOutcome.VenueRejected);
-        result.VenueErrorCode.Should().Be(3);
+        result.VendorErrorCode.Should().Be(3);
+        result.HttpStatusCode.Should().BeNull();
         result.OrderId.Should().BeNull();
         result.IsRetrySafe.Should().BeTrue();
     }
@@ -136,7 +138,8 @@ public sealed class ProjectXExecutionGatewayTests
 
         result.Outcome.Should().Be(ExecutionWriteOutcome.BrokerSuccessWithoutOrderId);
         result.OrderId.Should().BeNull();
-        result.VenueErrorCode.Should().BeNull();
+        result.VendorErrorCode.Should().BeNull();
+        result.HttpStatusCode.Should().BeNull();
         result.IsRetrySafe.Should().BeFalse();
     }
 
@@ -199,7 +202,7 @@ public sealed class ProjectXExecutionGatewayTests
     }
 
     [Fact]
-    public async Task PlaceOrder_ReturnsNotTransmitted_WhenCredentialsAreRejected()
+    public async Task PlaceOrder_ReturnsNotTransmitted_WhenTheGuardTranslates401()
     {
         (ExecutionOrderClient fake, IProjectXApiClient client) = ExecutionOrderClient.Create();
         fake.PlaceOrderAnswer = (_, _) => throw new ProjectXApiException("vendor secret", 401);
@@ -210,7 +213,23 @@ public sealed class ProjectXExecutionGatewayTests
 
         result.Outcome.Should().Be(ExecutionWriteOutcome.NotTransmitted);
         result.GateRefusal.Should().BeNull();
-        result.VenueErrorMessage.Should().BeNull();
+        result.IsRetrySafe.Should().BeTrue();
+        fake.PlaceOrderCount.Should().Be(1);
+    }
+
+    [Fact]
+    public async Task PlaceOrder_ReturnsNotTransmitted_WhenTheGuardTranslatesAuthenticationFailure()
+    {
+        (ExecutionOrderClient fake, IProjectXApiClient client) = ExecutionOrderClient.Create();
+        fake.PlaceOrderAnswer = (_, _) => throw new AuthenticationException("vendor secret");
+
+        IExecutionGateway gateway = Gateway(client, [PracticeAccount()], enabled: true);
+
+        ExecutionWriteResult result = await gateway.PlaceOrder(SamplePlaceCommand(), CancellationToken.None);
+
+        result.Outcome.Should().Be(ExecutionWriteOutcome.NotTransmitted);
+        result.HttpStatusCode.Should().BeNull();
+        result.VendorErrorCode.Should().BeNull();
         result.IsRetrySafe.Should().BeTrue();
         fake.PlaceOrderCount.Should().Be(1);
     }
@@ -226,8 +245,8 @@ public sealed class ProjectXExecutionGatewayTests
         ExecutionWriteResult result = await gateway.PlaceOrder(SamplePlaceCommand(), CancellationToken.None);
 
         result.Outcome.Should().Be(ExecutionWriteOutcome.VenueRejected);
-        result.VenueErrorCode.Should().Be(403);
-        result.VenueErrorMessage.Should().BeNull();
+        result.HttpStatusCode.Should().Be(403);
+        result.VendorErrorCode.Should().BeNull();
         result.IsRetrySafe.Should().BeTrue();
     }
 
@@ -276,7 +295,8 @@ public sealed class ProjectXExecutionGatewayTests
         ExecutionWriteResult result = await InvokeAsync(gateway, verb, PracticeAccountId);
 
         result.Outcome.Should().Be(ExecutionWriteOutcome.VenueRejected);
-        result.VenueErrorCode.Should().Be(7);
+        result.VendorErrorCode.Should().Be(7);
+        result.HttpStatusCode.Should().BeNull();
         result.IsRetrySafe.Should().BeTrue();
     }
 
@@ -310,7 +330,64 @@ public sealed class ProjectXExecutionGatewayTests
             CancellationToken.None);
 
         result.Outcome.Should().Be(ExecutionWriteOutcome.VenueRejected);
-        result.VenueErrorCode.Should().Be(400);
+        result.HttpStatusCode.Should().Be(400);
+        result.VendorErrorCode.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task ModifyOrder_ReturnsTransmittedUnknown_WhenTheCallerCancelsMidFlight()
+    {
+        using CancellationTokenSource cancellation = new();
+        (ExecutionOrderClient fake, IProjectXApiClient client) = ExecutionOrderClient.Create();
+        fake.ModifyOrderAnswer = async (_, token) =>
+        {
+            await Task.Delay(Timeout.InfiniteTimeSpan, token);
+            return new MarqSpec.Client.ProjectX.Api.Models.ModifyOrderResponse { Success = true };
+        };
+
+        IExecutionGateway gateway = Gateway(client, [PracticeAccount()], enabled: true);
+
+        Task<ExecutionWriteResult> pending = gateway.ModifyOrder(
+            new ExecutionModifyOrderCommand(PracticeAccountId, OrderId: 1, Size: 1, LimitPrice: null, StopPrice: null),
+            cancellation.Token);
+        await Task.Delay(50);
+        await cancellation.CancelAsync();
+
+        ExecutionWriteResult result = await pending;
+
+        result.Outcome.Should().Be(ExecutionWriteOutcome.TransmittedOutcomeUnknown);
+        fake.ModifyOrderCount.Should().Be(1);
+    }
+
+    [Fact]
+    public async Task ClosePosition_ReturnsTransmittedUnknown_WhenTheGuardedCallTimesOut()
+    {
+        (ExecutionOrderClient fake, IProjectXApiClient client) = ExecutionOrderClient.Create();
+        fake.ClosePositionAnswer = (_, _, _) => throw new TimeoutException("simulated timeout");
+
+        IExecutionGateway gateway = Gateway(client, [PracticeAccount()], enabled: true);
+
+        ExecutionWriteResult result = await gateway.ClosePosition(
+            new ExecutionClosePositionCommand(PracticeAccountId, ContractId: "CON.F.US.EP.Z26"),
+            CancellationToken.None);
+
+        result.Outcome.Should().Be(ExecutionWriteOutcome.TransmittedOutcomeUnknown);
+        fake.ClosePositionCount.Should().Be(1);
+    }
+
+    [Fact]
+    public async Task PlaceOrder_Rethrows_WhenCancelledBeforeTransmitStarts()
+    {
+        using CancellationTokenSource cancellation = new();
+        await cancellation.CancelAsync();
+
+        (ExecutionOrderClient fake, IProjectXApiClient client) = ExecutionOrderClient.Create();
+        IExecutionGateway gateway = Gateway(client, [PracticeAccount()], enabled: true);
+
+        Func<Task> act = () => gateway.PlaceOrder(SamplePlaceCommand(), cancellation.Token);
+
+        await act.Should().ThrowAsync<OperationCanceledException>();
+        fake.PlaceOrderCount.Should().Be(0);
     }
 
     private static void ConfigureFailure(ExecutionOrderClient fake, WriteVerb verb)

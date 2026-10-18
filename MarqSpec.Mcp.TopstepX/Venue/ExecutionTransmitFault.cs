@@ -1,5 +1,4 @@
 using System.Reflection;
-using MarqSpec.Client.ProjectX.Exceptions;
 using Microsoft.Extensions.Logging;
 
 namespace MarqSpec.Mcp.TopstepX.Venue;
@@ -8,11 +7,6 @@ namespace MarqSpec.Mcp.TopstepX.Venue;
 internal static class ExecutionTransmitFault
 {
     /// <summary>Maps an exception after an execution transmit attempt.</summary>
-    /// <param name="exception">What escaped the guarded call.</param>
-    /// <param name="transmitted">True once the guarded delegate started (the request may have left).</param>
-    /// <param name="cancellationToken">The caller's token.</param>
-    /// <param name="logger">Where definite failures are logged without vendor text.</param>
-    /// <returns>A terminal write result, or rethrows caller cancellation before transmit.</returns>
     public static ExecutionWriteResult MapOrRethrow(
         Exception exception,
         bool transmitted,
@@ -25,8 +19,7 @@ internal static class ExecutionTransmitFault
         {
             if (transmitted)
             {
-                return OutcomeUnknown(
-                    "The venue did not return a response; the write may have been placed.");
+                return OutcomeUnknown();
             }
 
             throw exception;
@@ -37,21 +30,14 @@ internal static class ExecutionTransmitFault
             return MapVenueException(venue, transmitted, logger);
         }
 
-        if (exception is AuthenticationException auth)
-        {
-            LogDefiniteFailure(logger, auth, httpStatus: null);
-            return NotTransmittedVenueFailure();
-        }
-
         if (!transmitted)
         {
-            LogDefiniteFailure(logger, exception, httpStatus: null);
+            LogDefiniteFailure(logger, exception.GetType().Name, httpStatus: null);
             return NotTransmittedVenueFailure();
         }
 
-        LogUncertainFailure(logger, exception, httpStatus: null);
-        return OutcomeUnknown(
-            "The venue did not return a response; the write may have been placed.");
+        LogUncertainFailure(logger, exception.GetType().Name, httpStatus: null);
+        return OutcomeUnknown();
     }
 
     private static Exception Unwrap(Exception exception) =>
@@ -69,68 +55,56 @@ internal static class ExecutionTransmitFault
     {
         if (venue.ErrorCode == 401)
         {
-            LogDefiniteFailure(logger, venue, httpStatus: 401);
+            LogDefiniteFailure(logger, venue.GetType().Name, httpStatus: 401);
             return NotTransmittedVenueFailure();
         }
 
         if (venue.ErrorCode is int code && code is >= 400 and < 500)
         {
-            LogDefiniteFailure(logger, venue, httpStatus: code);
+            LogDefiniteFailure(logger, venue.GetType().Name, httpStatus: code);
             return new ExecutionWriteResult(
                 ExecutionWriteOutcome.VenueRejected,
                 GateRefusal: null,
-                VenueErrorCode: code,
-                VenueErrorMessage: null,
+                HttpStatusCode: code,
+                VendorErrorCode: null,
                 OrderId: null);
-        }
-
-        if (!transmitted && IsCredentialRefusal(venue))
-        {
-            LogDefiniteFailure(logger, venue, httpStatus: venue.ErrorCode);
-            return NotTransmittedVenueFailure();
         }
 
         if (!transmitted)
         {
-            LogDefiniteFailure(logger, venue, httpStatus: venue.ErrorCode);
+            LogDefiniteFailure(logger, venue.GetType().Name, httpStatus: venue.ErrorCode);
             return NotTransmittedVenueFailure();
         }
 
-        LogUncertainFailure(logger, venue, httpStatus: venue.ErrorCode);
-        return OutcomeUnknown(
-            "The venue did not return a response; the write may have been placed.");
+        LogUncertainFailure(logger, venue.GetType().Name, httpStatus: venue.ErrorCode);
+        return OutcomeUnknown();
     }
-
-    private static bool IsCredentialRefusal(VenueException venue) =>
-        venue.Message.Contains("credentials", StringComparison.OrdinalIgnoreCase);
 
     private static ExecutionWriteResult NotTransmittedVenueFailure() =>
         new(
             ExecutionWriteOutcome.NotTransmitted,
             GateRefusal: null,
-            VenueErrorCode: null,
-            VenueErrorMessage: null,
+            HttpStatusCode: null,
+            VendorErrorCode: null,
             OrderId: null);
 
-    private static ExecutionWriteResult OutcomeUnknown(string message) =>
+    private static ExecutionWriteResult OutcomeUnknown() =>
         new(
             ExecutionWriteOutcome.TransmittedOutcomeUnknown,
             GateRefusal: null,
-            VenueErrorCode: null,
-            VenueErrorMessage: message,
+            HttpStatusCode: null,
+            VendorErrorCode: null,
             OrderId: null);
 
-    private static void LogDefiniteFailure(ILogger logger, Exception exception, int? httpStatus) =>
+    private static void LogDefiniteFailure(ILogger logger, string exceptionType, int? httpStatus) =>
         logger.LogWarning(
-            exception,
             "Execution transmit failed before a definitive venue response (retry-safe). ExceptionType={ExceptionType} HttpStatus={HttpStatus}",
-            exception.GetType().Name,
+            exceptionType,
             httpStatus);
 
-    private static void LogUncertainFailure(ILogger logger, Exception exception, int? httpStatus) =>
+    private static void LogUncertainFailure(ILogger logger, string exceptionType, int? httpStatus) =>
         logger.LogWarning(
-            exception,
             "Execution transmit outcome unknown (do not auto-retry). ExceptionType={ExceptionType} HttpStatus={HttpStatus}",
-            exception.GetType().Name,
+            exceptionType,
             httpStatus);
 }

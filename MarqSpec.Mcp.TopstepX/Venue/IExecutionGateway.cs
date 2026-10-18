@@ -12,6 +12,17 @@ namespace MarqSpec.Mcp.TopstepX.Venue;
 /// <para>
 /// Future MCP tools reach writes through <c>TradingRiskGate</c> (gh#711), not this interface directly.
 /// </para>
+/// <para>
+/// <b>Never auto-retry.</b> When <see cref="ExecutionWriteResult.Outcome"/> is
+/// <see cref="ExecutionWriteOutcome.TransmittedOutcomeUnknown"/> or
+/// <see cref="ExecutionWriteOutcome.BrokerSuccessWithoutOrderId"/>, the caller must reconcile open orders and
+/// positions before attempting the same command again. Only retry when
+/// <see cref="ExecutionWriteResult.IsRetrySafe"/> is true.
+/// </para>
+/// <para>
+/// The ProjectX HTTP client registered by <c>AddProjectXApiClient</c> must not attach transport-level retry
+/// handlers to order POST endpoints; a duplicate would be placed before this seam observes an outcome.
+/// </para>
 /// </remarks>
 public interface IExecutionGateway
 {

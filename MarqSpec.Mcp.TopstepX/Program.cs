@@ -798,6 +798,8 @@ public static class Program
 
         if (venue.IsConfigured && venue.DataTier != ProjectXDataTier.Unspecified)
         {
+            // Order POSTs must not use transport-level retries — a duplicate would land before
+            // IExecutionGateway can report TransmittedOutcomeUnknown (ADR-0024, gh#710).
             services.AddProjectXApiClient(builder.Configuration);
 
             // SINGLETON, while the gateway consuming it is scoped. The vendor's 50-requests-per-30-seconds

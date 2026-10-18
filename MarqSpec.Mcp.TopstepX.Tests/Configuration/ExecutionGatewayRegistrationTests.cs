@@ -3,6 +3,7 @@ using MarqSpec.Mcp.TopstepX.Configuration;
 using MarqSpec.Mcp.TopstepX.Venue;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.Configuration.EnvironmentVariables;
 using Microsoft.Extensions.DependencyInjection;
 
 namespace MarqSpec.Mcp.TopstepX.Tests.Configuration;
@@ -58,6 +59,16 @@ public sealed class ExecutionGatewayRegistrationTests
     private static ServiceProvider Build(Dictionary<string, string?> extra)
     {
         WebApplicationBuilder builder = WebApplication.CreateBuilder();
+
+        IConfigurationBuilder sources = builder.Configuration;
+        foreach (EnvironmentVariablesConfigurationSource ambient in sources.Sources
+            .OfType<EnvironmentVariablesConfigurationSource>()
+            .Where(source => string.IsNullOrEmpty(source.Prefix))
+            .ToList())
+        {
+            sources.Sources.Remove(ambient);
+        }
+
         builder.Configuration.AddInMemoryCollection(_baseSettings.Concat(extra));
 
         Program.ConfigureServices(builder, new McpOptions { Transport = McpTransport.Stdio });

@@ -46,29 +46,6 @@ public enum ExecutionWriteOutcome
     BrokerAcknowledged = 4,
 }
 
-/// <summary>
-/// Whether a venue write was transmitted and whether the broker acknowledged it (ADR-0024 §5).
-/// </summary>
-/// <param name="Transmitted">True after the gateway order call may have reached the venue.</param>
-/// <param name="BrokerAcknowledged">True only when the outcome is <see cref="ExecutionWriteOutcome.BrokerAcknowledged"/>.</param>
-public readonly record struct ExecutionWriteLifecycle(bool Transmitted, bool BrokerAcknowledged)
-{
-    /// <summary>Gate refused before any venue write.</summary>
-    public static ExecutionWriteLifecycle NotTransmitted { get; } = new(false, false);
-
-    /// <summary>Sent, outcome unknown (timeout or transport failure).</summary>
-    public static ExecutionWriteLifecycle TransmittedOutcomeUnknown { get; } = new(true, false);
-
-    /// <summary>Venue responded without broker success — not live.</summary>
-    public static ExecutionWriteLifecycle VenueRejected { get; } = new(true, false);
-
-    /// <summary>Success without an assigned order id — not live.</summary>
-    public static ExecutionWriteLifecycle BrokerSuccessWithoutOrderId { get; } = new(true, false);
-
-    /// <summary>Broker acknowledged the write.</summary>
-    public static ExecutionWriteLifecycle Acknowledged { get; } = new(true, true);
-}
-
 /// <summary>Outcome of one gated execution write.</summary>
 /// <param name="Outcome">The terminal outcome.</param>
 /// <param name="GateRefusal">Set when the combined gate refused before transmit.</param>
@@ -82,18 +59,16 @@ public sealed record ExecutionWriteResult(
     string? VenueErrorMessage,
     long? OrderId)
 {
-    /// <summary>Projection for callers that reason about transmission and ack separately.</summary>
-    public ExecutionWriteLifecycle Lifecycle => Outcome switch
-    {
-        ExecutionWriteOutcome.NotTransmitted => ExecutionWriteLifecycle.NotTransmitted,
-        ExecutionWriteOutcome.TransmittedOutcomeUnknown => ExecutionWriteLifecycle.TransmittedOutcomeUnknown,
-        ExecutionWriteOutcome.VenueRejected => ExecutionWriteLifecycle.VenueRejected,
-        ExecutionWriteOutcome.BrokerSuccessWithoutOrderId => ExecutionWriteLifecycle.BrokerSuccessWithoutOrderId,
-        ExecutionWriteOutcome.BrokerAcknowledged => ExecutionWriteLifecycle.Acknowledged,
-        _ => ExecutionWriteLifecycle.NotTransmitted,
-    };
+    /// <summary>
+    /// True when repeating the same command without reconciliation is unlikely to duplicate a live order.
+    /// </summary>
+    /// <remarks>
+    /// <see cref="ExecutionWriteOutcome.TransmittedOutcomeUnknown"/> and
+    /// <see cref="ExecutionWriteOutcome.BrokerSuccessWithoutOrderId"/> are never retry-safe.
+    /// </remarks>
+    public bool IsRetrySafe => Outcome is ExecutionWriteOutcome.NotTransmitted
+        or ExecutionWriteOutcome.VenueRejected;
 }
-
 
 /// <summary>Inputs for placing an order through the execution gateway.</summary>
 public sealed record ExecutionPlaceOrderCommand(

@@ -47,7 +47,11 @@ public sealed class TradingExecutionGate(IOptions<TradingExecutionOptions> optio
             return null;
         }
 
-        IReadOnlyList<int> allowed = _options.AllowedAccountIdList();
+        if (!_options.TryGetAllowedAccountIdList(out IReadOnlyList<int> allowed, out string? configError))
+        {
+            return TradingExecutionRefusal.InvalidConfiguration(configError!);
+        }
+
         return allowed.Contains(accountId)
             ? null
             : TradingExecutionRefusal.AccountNotAllowlisted(accountId);
@@ -103,7 +107,7 @@ public sealed class TradingExecutionGate(IOptions<TradingExecutionOptions> optio
 
     /// <summary>
     /// Refuses when the parsed stage is not <see cref="AccountStage.Practice"/>. Unknown stages also invoke
-    /// <paramref name="unknownStageSignal"/> for future metrics (gh#733).
+    /// <paramref name="unknownStageSignal"/> for future metrics (gh#732).
     /// </summary>
     /// <param name="stage">Stage from a fresh account row.</param>
     /// <param name="accountId">The venue account id.</param>

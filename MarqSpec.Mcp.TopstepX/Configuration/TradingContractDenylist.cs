@@ -9,6 +9,9 @@ public sealed class TradingContractDenylist(
     IOptions<TradingExecutionOptions> options,
     InstrumentRegistry instruments)
 {
+    /// <summary>Expected prefix for venue contract ids (fail closed when absent).</summary>
+    public const string RequiredContractIdPrefix = "CON.F.US.";
+
     private readonly TradingExecutionOptions _options = options.Value;
 
     /// <summary>
@@ -16,12 +19,22 @@ public sealed class TradingContractDenylist(
     /// </summary>
     public TradingExecutionRefusal? RefuseIfContractDenied(string contractId)
     {
+        if (string.IsNullOrWhiteSpace(contractId)
+            || !contractId.StartsWith(RequiredContractIdPrefix, StringComparison.Ordinal))
+        {
+            return TradingExecutionRefusal.MalformedContractId(contractId);
+        }
+
         if (!TryGetProductCode(contractId, out string productCode))
         {
             return TradingExecutionRefusal.MalformedContractId(contractId);
         }
 
-        IReadOnlySet<string> deniedSymbols = _options.DeniedSymbolSet();
+        if (!_options.TryGetDeniedSymbolSet(out IReadOnlySet<string> deniedSymbols, out string? configError))
+        {
+            return TradingExecutionRefusal.InvalidConfiguration(configError!);
+        }
+
         if (deniedSymbols.Count == 0)
         {
             return RequiresKnownInstrument(productCode);

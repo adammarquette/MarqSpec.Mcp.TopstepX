@@ -1,10 +1,9 @@
 using MarqSpec.Mcp.TopstepX.Data;
 using Microsoft.EntityFrameworkCore;
-using Microsoft.EntityFrameworkCore.Storage;
 
 namespace MarqSpec.Mcp.TopstepX.Configuration;
 
-/// <summary>Postgres advisory xact lock plus conservative audit rollups for the UTC calendar day.</summary>
+/// <summary>Postgres session advisory lock plus Attempted-row rollups for the Topstep session day.</summary>
 public sealed class TradingDailyCapCoordinator(TopstepXDbContext database, TimeProvider clock)
     : ITradingDailyCapCoordinator
 {
@@ -15,14 +14,7 @@ public sealed class TradingDailyCapCoordinator(TopstepXDbContext database, TimeP
     [
         TradingMcpTools.PlaceOrderOperation,
         TradingMcpTools.ModifyOrderOperation,
-    ];
-
-    private static readonly string[] _conservativeOutcomes =
-    [
-        TradingAuditOutcomes.Attempted,
-        TradingAuditOutcomes.Live,
-        TradingAuditOutcomes.Failed,
-        TradingAuditOutcomes.Unknown,
+        TradingMcpTools.PartialClosePositionOperation,
     ];
 
     /// <inheritdoc />
@@ -30,18 +22,14 @@ public sealed class TradingDailyCapCoordinator(TopstepXDbContext database, TimeP
         int accountId,
         CancellationToken cancellationToken)
     {
-        IDbContextTransaction transaction = await database.Database
-            .BeginTransactionAsync(cancellationToken)
-            .ConfigureAwait(false);
-
         await database.Database
             .ExecuteSqlRawAsync(
-                "SELECT pg_advisory_xact_lock({0}, {1})",
+                "SELECT pg_advisory_lock({0}, {1})",
                 [AdvisoryLockClassId, accountId],
                 cancellationToken)
             .ConfigureAwait(false);
 
-        return new TransactionScope(transaction);
+        return new SessionLock(database, AdvisoryLockClassId, accountId);
     }
 
     /// <inheritdoc />
@@ -49,29 +37,26 @@ public sealed class TradingDailyCapCoordinator(TopstepXDbContext database, TimeP
         int accountId,
         CancellationToken cancellationToken)
     {
-        DateTimeOffset dayStart = UtcDayStart(clock.GetUtcNow());
+        DateTimeOffset sessionStart = TradingCapSessionCalendar.SessionDayStartUtc(clock.GetUtcNow());
 
         return await database.TradingAuditLog
             .AsNoTracking()
             .Where(row =>
                 row.AccountId == accountId
-                && row.AttemptedAt >= dayStart
+                && row.AttemptedAt >= sessionStart
                 && _capTools.Contains(row.Tool)
-                && _conservativeOutcomes.Contains(row.Outcome))
+                && row.Outcome == TradingAuditOutcomes.Attempted)
             .SumAsync(row => row.ContractCount, cancellationToken)
             .ConfigureAwait(false);
     }
 
-    /// <summary>UTC midnight boundary used for daily caps until session-aware caps land.</summary>
-    public static DateTimeOffset UtcDayStart(DateTimeOffset instant) =>
-        new(instant.Year, instant.Month, instant.Day, 0, 0, 0, TimeSpan.Zero);
-
-    private sealed class TransactionScope(IDbContextTransaction transaction) : IAsyncDisposable
+    private sealed class SessionLock(TopstepXDbContext database, int classId, int accountId) : IAsyncDisposable
     {
         public async ValueTask DisposeAsync()
         {
-            await transaction.CommitAsync().ConfigureAwait(false);
-            await transaction.DisposeAsync().ConfigureAwait(false);
+            await database.Database
+                .ExecuteSqlRawAsync("SELECT pg_advisory_unlock({0}, {1})", [classId, accountId])
+                .ConfigureAwait(false);
         }
     }
 }

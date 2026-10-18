@@ -227,7 +227,9 @@ public sealed class TradingRiskGateTests
     public async Task TradingRiskGate_DailyCapCountsModifySizeIncreases()
     {
         _daily.ContractsToday = 9;
-        TradingRiskGate gate = Gate(new TradingExecutionOptions { Enabled = true, MaxContractsPerDay = 10 });
+        TradingRiskGate gate = Gate(
+            new TradingExecutionOptions { Enabled = true, MaxContractsPerDay = 10 },
+            orders: [OpenOrder(1, MesContract)]);
 
         TradingRiskGateResult result = await gate.SubmitModify(
             new ExecutionModifyOrderCommand(PracticeAccountId, OrderId: 1, Size: 2, null, null),
@@ -267,9 +269,12 @@ public sealed class TradingRiskGateTests
 
         _gateway.PlaceOrderCalls.Should().Be(1);
         result.Outcome.Should().Be(TradingAttemptOutcome.Live);
-        _audit.Entries.Should().Contain(e => e.Outcome == TradingAuditOutcomes.Attempted);
-        _audit.Entries.Should().Contain(e => e.Outcome == TradingAuditOutcomes.Live);
+        _audit.Entries.Should().Contain(e =>
+            e.Outcome == TradingAuditOutcomes.Attempted && e.ContractCount == 1);
+        _audit.Entries.Should().Contain(e =>
+            e.Outcome == TradingAuditOutcomes.Live && e.ContractCount == 0);
         _audit.Entries.Single(e => e.Outcome == TradingAuditOutcomes.Live).UsedNoneToken.Should().BeTrue();
+        result.IsRetrySafe.Should().BeFalse();
     }
 
     [Fact]
@@ -284,7 +289,9 @@ public sealed class TradingRiskGateTests
             CancellationToken.None);
 
         result.Outcome.Should().Be(TradingAttemptOutcome.Failed);
-        _audit.Entries.Should().Contain(e => e.Outcome == TradingAuditOutcomes.Failed);
+        _audit.Entries.Should().Contain(e =>
+            e.Outcome == TradingAuditOutcomes.Failed && e.ContractCount == 0);
+        result.IsRetrySafe.Should().BeTrue();
     }
 
     [Fact]
@@ -300,6 +307,23 @@ public sealed class TradingRiskGateTests
 
         result.Outcome.Should().Be(TradingAttemptOutcome.Unknown);
         _audit.Entries.Should().Contain(e => e.Outcome == TradingAuditOutcomes.Unknown);
+        result.IsRetrySafe.Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task TradingRiskGate_MapsUnknown_WhenBrokerAcknowledgedWithoutOrderId()
+    {
+        _gateway.PlaceOrderResult = ExecutionWriteResultFactory.BrokerSuccessWithoutOrderId();
+        TradingRiskGate gate = Gate(new TradingExecutionOptions { Enabled = true });
+
+        TradingRiskGateResult result = await gate.SubmitPlace(
+            SamplePlace(PracticeAccountId),
+            Context(dryRun: false),
+            CancellationToken.None);
+
+        result.Outcome.Should().Be(TradingAttemptOutcome.Unknown);
+        _audit.Entries.Should().Contain(e => e.Outcome == TradingAuditOutcomes.Unknown);
+        result.IsRetrySafe.Should().BeFalse();
     }
 
     [Fact]
@@ -405,9 +429,86 @@ public sealed class TradingRiskGateTests
         _daily.LockAcquisitions.Should().Be(1);
     }
 
+    [Fact]
+    public async Task TradingRiskGate_WritesAttemptedBeforeGatewaySend()
+    {
+        TradingRiskGate gate = Gate(new TradingExecutionOptions { Enabled = true });
+        _gateway.PlaceOrderResult = ExecutionWriteResultFactory.Acknowledged(1);
+        _gateway.OnPlaceOrder = () =>
+        {
+            _audit.Entries.Should().ContainSingle(e => e.Outcome == TradingAuditOutcomes.Attempted);
+        };
+
+        await gate.SubmitPlace(SamplePlace(PracticeAccountId), Context(dryRun: false), CancellationToken.None);
+    }
+
+    [Fact]
+    public async Task TradingRiskGate_SubmitModify_HoldsDailyCapLockThroughGatewaySend()
+    {
+        TradingRiskGate gate = Gate(
+            new TradingExecutionOptions { Enabled = true },
+            orders: [OpenOrder(1, MesContract)]);
+        _gateway.OnModifyOrder = () => _daily.LockHeldDuringLastCapSend = _daily.LockActive;
+
+        await gate.SubmitModify(
+            new ExecutionModifyOrderCommand(PracticeAccountId, OrderId: 1, Size: 1, null, null),
+            Context(dryRun: false),
+            CancellationToken.None);
+
+        _daily.LockHeldDuringLastCapSend.Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task TradingRiskGate_SubmitModify_RefusesDeniedContract_FromOpenOrder()
+    {
+        TradingRiskGate gate = Gate(
+            new TradingExecutionOptions { Enabled = true, DeniedSymbols = "CL" },
+            instruments: "MES,CL",
+            orders: [OpenOrder(1, CleContract)]);
+
+        TradingRiskGateResult result = await gate.SubmitModify(
+            new ExecutionModifyOrderCommand(PracticeAccountId, OrderId: 1, Size: 1, null, null),
+            Context(dryRun: false),
+            CancellationToken.None);
+
+        result.Refusal.Should().Be(TradingExecutionRefusal.SymbolDenied("CL"));
+        _gateway.ModifyOrderCalls.Should().Be(0);
+    }
+
+    [Fact]
+    public async Task TradingRiskGate_RefusesInvalidDeniedSymbols_WithAudit_NotThrow()
+    {
+        TradingRiskGate gate = Gate(new TradingExecutionOptions { Enabled = true, DeniedSymbols = "CL,," });
+
+        TradingRiskGateResult result = await gate.SubmitPlace(
+            SamplePlace(PracticeAccountId),
+            Context(dryRun: false),
+            CancellationToken.None);
+
+        result.Outcome.Should().Be(TradingAttemptOutcome.Refused);
+        result.Refusal!.Value.Code.Should().Be("trading_configuration_invalid");
+        _audit.Entries.Should().ContainSingle(e => e.Outcome == TradingAuditOutcomes.Refused);
+    }
+
+    [Fact]
+    public async Task TradingRiskGate_DailyCapCountsPartialCloseSize()
+    {
+        _daily.ContractsToday = 9;
+        TradingRiskGate gate = Gate(new TradingExecutionOptions { Enabled = true, MaxContractsPerDay = 10 });
+        _gateway.OnPartialClose = () => _daily.LockHeldDuringLastCapSend = _daily.LockActive;
+
+        await gate.SubmitPartialClose(
+            new ExecutionPartialClosePositionCommand(PracticeAccountId, MesContract, Size: 2),
+            Context(dryRun: false),
+            CancellationToken.None);
+
+        _daily.LockAcquisitions.Should().Be(1);
+    }
+
     private TradingRiskGate Gate(
         TradingExecutionOptions options,
         IReadOnlyList<VenueAccount>? accounts = null,
+        IReadOnlyList<VenueOrder>? orders = null,
         string instruments = "MES")
     {
         TradingExecutionGate executionGate = new(Options.Create(options), _killSwitch);
@@ -420,13 +521,26 @@ public sealed class TradingRiskGateTests
         return new TradingRiskGate(
             executionGate,
             _gateway,
-            new StubMarketDataGateway(resolvedAccounts),
+            new StubMarketDataGateway(resolvedAccounts, orders ?? []),
             stageResolver,
             _unknownSignal,
             _daily,
             _audit,
             denylist);
     }
+
+    private static VenueOrder OpenOrder(long orderId, string contractId) =>
+        new(
+            orderId,
+            contractId,
+            VenueSide.Buy,
+            Size: 1,
+            FilledSize: 0,
+            VenueOrderStatus.Open,
+            LimitPrice: 6800m,
+            StopPrice: null,
+            FilledPrice: null,
+            CreatedAt: DateTimeOffset.UtcNow);
 
     private static IReadOnlyList<VenueAccount> DefaultAccounts(IAccountStageResolver stageResolver) =>
     [
@@ -463,7 +577,9 @@ public sealed class TradingRiskGateTests
         public bool IsEngaged { get; set; }
     }
 
-    private sealed class StubMarketDataGateway(IReadOnlyList<VenueAccount> accounts) : IMarketDataGateway
+    private sealed class StubMarketDataGateway(
+        IReadOnlyList<VenueAccount> accounts,
+        IReadOnlyList<VenueOrder> orders) : IMarketDataGateway
     {
         public string VenueId => "stub";
 
@@ -499,8 +615,12 @@ public sealed class TradingRiskGateTests
         public Task<IReadOnlyList<VenueOrder>> GetOrdersAsync(
             int accountId,
             BarRange? window,
-            CancellationToken cancellationToken) =>
-            throw new NotSupportedException();
+            CancellationToken cancellationToken)
+        {
+            _ = accountId;
+            _ = window;
+            return Task.FromResult(orders);
+        }
 
         public Task<IReadOnlyList<VenueTrade>> GetTradesAsync(
             int accountId,
@@ -525,10 +645,17 @@ public sealed class TradingRiskGateTests
 
         public Exception? PlaceOrderException { get; set; }
 
+        public Action? OnPlaceOrder { get; set; }
+
+        public Action? OnPartialClose { get; set; }
+
+        public Action? OnModifyOrder { get; set; }
+
         public Task<ExecutionWriteResult> PlaceOrder(
             ExecutionPlaceOrderCommand command,
             CancellationToken cancellationToken)
         {
+            OnPlaceOrder?.Invoke();
             PlaceOrderCalls++;
             if (PlaceOrderException is not null)
             {
@@ -542,7 +669,16 @@ public sealed class TradingRiskGateTests
             ExecutionModifyOrderCommand command,
             CancellationToken cancellationToken)
         {
+            OnModifyOrder?.Invoke();
             ModifyOrderCalls++;
+            return Task.FromResult(PlaceOrderResult);
+        }
+
+        public Task<ExecutionWriteResult> PartialClosePosition(
+            ExecutionPartialClosePositionCommand command,
+            CancellationToken cancellationToken)
+        {
+            OnPartialClose?.Invoke();
             return Task.FromResult(PlaceOrderResult);
         }
 
@@ -559,10 +695,6 @@ public sealed class TradingRiskGateTests
             CancellationToken cancellationToken) =>
             throw new NotSupportedException();
 
-        public Task<ExecutionWriteResult> PartialClosePosition(
-            ExecutionPartialClosePositionCommand command,
-            CancellationToken cancellationToken) =>
-            throw new NotSupportedException();
     }
 
     private sealed class RecordingAuditLog : ITradingAuditLogWriter
@@ -587,6 +719,8 @@ public sealed class TradingRiskGateTests
         public string ParsedStage => Request.ParsedStage;
 
         public string? VenueErrorCode => Request.VenueErrorCode;
+
+        public int ContractCount => Request.ContractCount;
     }
 
     private sealed class FakeDailyCapCoordinator : ITradingDailyCapCoordinator
@@ -595,10 +729,15 @@ public sealed class TradingRiskGateTests
 
         public int LockAcquisitions { get; private set; }
 
+        public bool LockActive { get; private set; }
+
+        public bool LockHeldDuringLastCapSend { get; set; }
+
         public Task<IAsyncDisposable> AcquireAccountDayLockAsync(int accountId, CancellationToken cancellationToken)
         {
             LockAcquisitions++;
-            return Task.FromResult<IAsyncDisposable>(new NoopLock());
+            LockActive = true;
+            return Task.FromResult<IAsyncDisposable>(new NoopLock(this));
         }
 
         public Task<int> GetConservativeContractTotalTodayUtcAsync(
@@ -606,9 +745,13 @@ public sealed class TradingRiskGateTests
             CancellationToken cancellationToken) =>
             Task.FromResult(ContractsToday);
 
-        private sealed class NoopLock : IAsyncDisposable
+        private sealed class NoopLock(FakeDailyCapCoordinator owner) : IAsyncDisposable
         {
-            public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+            public ValueTask DisposeAsync()
+            {
+                owner.LockActive = false;
+                return ValueTask.CompletedTask;
+            }
         }
     }
 
@@ -625,40 +768,48 @@ public sealed class TradingRiskGateTests
             new(
                 ExecutionWriteOutcome.BrokerAcknowledged,
                 GateRefusal: null,
-                VenueErrorCode: null,
-                VenueErrorMessage: null,
+                HttpStatusCode: null,
+                VendorErrorCode: null,
                 OrderId: orderId);
 
         public static ExecutionWriteResult VenueRejected() =>
             new(
                 ExecutionWriteOutcome.VenueRejected,
                 GateRefusal: null,
-                VenueErrorCode: 3,
-                VenueErrorMessage: "rejected",
+                HttpStatusCode: 400,
+                VendorErrorCode: 3,
                 OrderId: null);
 
         public static ExecutionWriteResult TransmittedOutcomeUnknown() =>
             new(
                 ExecutionWriteOutcome.TransmittedOutcomeUnknown,
                 GateRefusal: null,
-                VenueErrorCode: null,
-                VenueErrorMessage: "timeout",
+                HttpStatusCode: null,
+                VendorErrorCode: null,
+                OrderId: null);
+
+        public static ExecutionWriteResult BrokerSuccessWithoutOrderId() =>
+            new(
+                ExecutionWriteOutcome.BrokerSuccessWithoutOrderId,
+                GateRefusal: null,
+                HttpStatusCode: 200,
+                VendorErrorCode: null,
                 OrderId: null);
 
         public static ExecutionWriteResult UnrecognizedOutcome() =>
             new(
                 (ExecutionWriteOutcome)999,
                 GateRefusal: null,
-                VenueErrorCode: null,
-                VenueErrorMessage: null,
+                HttpStatusCode: null,
+                VendorErrorCode: null,
                 OrderId: null);
 
         public static ExecutionWriteResult GateRefused(TradingExecutionRefusal refusal) =>
             new(
                 ExecutionWriteOutcome.NotTransmitted,
                 refusal,
-                VenueErrorCode: null,
-                VenueErrorMessage: null,
+                HttpStatusCode: null,
+                VendorErrorCode: null,
                 OrderId: null);
     }
 }

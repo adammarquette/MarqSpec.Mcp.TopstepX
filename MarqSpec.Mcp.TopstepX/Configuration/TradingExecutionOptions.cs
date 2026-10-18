@@ -83,12 +83,40 @@ public sealed class TradingExecutionOptions : IValidatableObject
     /// <exception cref="InvalidOperationException">The list fails a rule <see cref="Validate"/> would refuse.</exception>
     public IReadOnlySet<string> DeniedSymbolSet()
     {
-        if (!TryParseDeniedSymbols(DeniedSymbols, out IReadOnlySet<string> parsed, out ValidationResult? error))
+        if (!TryGetDeniedSymbolSet(out IReadOnlySet<string> parsed, out string? _))
         {
-            throw new InvalidOperationException(error!.ErrorMessage);
+            throw new InvalidOperationException("Trading__DeniedSymbols failed validation.");
         }
 
         return parsed;
+    }
+
+    /// <summary>Parses <see cref="DeniedSymbols"/> without throwing (for gate paths that must audit first).</summary>
+    public bool TryGetDeniedSymbolSet(out IReadOnlySet<string> parsed, out string? errorMessage)
+    {
+        if (TryParseDeniedSymbols(DeniedSymbols, out parsed, out ValidationResult? error))
+        {
+            errorMessage = null;
+            return true;
+        }
+
+        errorMessage = error!.ErrorMessage;
+        parsed = new HashSet<string>(StringComparer.Ordinal);
+        return false;
+    }
+
+    /// <summary>Parses <see cref="AllowedAccountIds"/> without throwing.</summary>
+    public bool TryGetAllowedAccountIdList(out IReadOnlyList<int> parsed, out string? errorMessage)
+    {
+        if (TryParseAccountIds(AllowedAccountIds, out parsed, out ValidationResult? error))
+        {
+            errorMessage = null;
+            return true;
+        }
+
+        errorMessage = error!.ErrorMessage;
+        parsed = [];
+        return false;
     }
 
     /// <inheritdoc />

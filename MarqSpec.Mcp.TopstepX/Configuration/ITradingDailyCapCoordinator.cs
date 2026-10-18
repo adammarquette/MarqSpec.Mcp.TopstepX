@@ -9,7 +9,7 @@ public interface ITradingDailyCapCoordinator
     Task<IAsyncDisposable> AcquireAccountDayLockAsync(int accountId, CancellationToken cancellationToken);
 
     /// <summary>
-    /// Contracts counted toward the UTC-day cap, including failed and in-flight transmits.
+    /// Contracts charged on <see cref="TradingAuditOutcomes.Attempted"/> rows for the current Topstep session day.
     /// </summary>
     Task<int> GetConservativeContractTotalTodayUtcAsync(int accountId, CancellationToken cancellationToken);
 }

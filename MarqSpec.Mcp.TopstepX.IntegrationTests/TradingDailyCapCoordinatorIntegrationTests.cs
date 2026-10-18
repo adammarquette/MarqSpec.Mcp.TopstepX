@@ -7,7 +7,7 @@ using Microsoft.Extensions.Time.Testing;
 
 namespace MarqSpec.Mcp.TopstepX.IntegrationTests;
 
-/// <summary>Conservative UTC-day rollups and advisory locking for trading caps (gh#711).</summary>
+/// <summary>Attempted-row session-day rollups and advisory locking for trading caps (gh#711).</summary>
 [Collection(SeriesStoreCollection.Name)]
 public sealed class TradingDailyCapCoordinatorIntegrationTests(SeriesStoreFixture fixture) : IAsyncLifetime
 {
@@ -27,23 +27,23 @@ public sealed class TradingDailyCapCoordinatorIntegrationTests(SeriesStoreFixtur
     }
 
     [Fact]
-    public async Task TradingDailyCapCoordinator_CountsFailedAndAttemptedConservatively()
+    public async Task TradingDailyCapCoordinator_CountsOnlyAttemptedRows_ForSessionDay()
     {
         TradingDailyCapCoordinator coordinator = new(_database, _clock);
-        DateTimeOffset dayStart = TradingDailyCapCoordinator.UtcDayStart(_clock.GetUtcNow());
+        DateTimeOffset sessionStart = TradingCapSessionCalendar.SessionDayStartUtc(_clock.GetUtcNow());
 
         _database.TradingAuditLog.AddRange(
-            Row(dayStart.AddHours(1), TradingAuditOutcomes.Live, 2),
-            Row(dayStart.AddHours(2), TradingAuditOutcomes.Failed, 3),
-            Row(dayStart.AddHours(3), TradingAuditOutcomes.Attempted, 1),
-            Row(dayStart.AddDays(-1), TradingAuditOutcomes.Live, 99));
+            Row(sessionStart.AddHours(1), TradingAuditOutcomes.Live, 2),
+            Row(sessionStart.AddHours(2), TradingAuditOutcomes.Failed, 3),
+            Row(sessionStart.AddHours(3), TradingAuditOutcomes.Attempted, 4),
+            Row(sessionStart.AddDays(-1), TradingAuditOutcomes.Attempted, 99));
         await _database.SaveChangesAsync();
 
         int total = await coordinator.GetConservativeContractTotalTodayUtcAsync(
             accountId: 100,
             CancellationToken.None);
 
-        total.Should().Be(6);
+        total.Should().Be(4);
     }
 
     [Fact]

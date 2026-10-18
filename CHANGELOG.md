@@ -28,6 +28,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`TradingExecutionOptions` — master enable, kill switch, allowlist, caps and symbol denylist (gh#708).**
+  `Trading__Enabled` defaults to false. `Trading__KillSwitch` and an optional watched
+  `Trading__KillSwitchFile` halt writes without redeploying; `Trading__AllowedAccountIds` is a secondary
+  filter only and cannot override the practice-only stage rule in ADR-0024 v1. Caps:
+  `Trading__MaxContractsPerOrder` and `Trading__MaxContractsPerDay`. No MCP trading tools or venue order calls
+  ship in this change — configuration, validation, and refusal tests only.
+
 - **`available` on every bar-series payload.** `get_bars`, `get_latest_bars`, `get_session_bars` and
   `get_latest_session_bars` report `available.earliest` / `available.latest` — the first and last bar this
   call actually returned. Both keys are omitted when the series is empty. A requested window past the

@@ -163,6 +163,15 @@ services:
       KeyLevels__Weights__pivot-woodie: "${KeyLevels__Weights__pivot-woodie:-1}"
       KeyLevels__Weights__pivot-demark: "${KeyLevels__Weights__pivot-demark:-1}"
 
+      # Trading execution (ADR-0024 v1, gh#708). Configuration only — no order tools in this release.
+      Trading__Enabled: "${Trading__Enabled:-false}"
+      Trading__KillSwitch: "${Trading__KillSwitch:-false}"
+      Trading__KillSwitchFile: "${Trading__KillSwitchFile:-}"
+      Trading__AllowedAccountIds: "${Trading__AllowedAccountIds:-}"
+      Trading__DeniedSymbols: "${Trading__DeniedSymbols:-}"
+      Trading__MaxContractsPerOrder: "${Trading__MaxContractsPerOrder:-5}"
+      Trading__MaxContractsPerDay: "${Trading__MaxContractsPerDay:-50}"
+
       Embeddings__ApiKey: "${Embeddings__ApiKey:-}"
       Embeddings__Model: "${Embeddings__Model:-embed-v4.0}"
 

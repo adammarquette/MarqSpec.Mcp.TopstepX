@@ -645,6 +645,17 @@ public static class Program
             .ValidateDataAnnotations()
             .ValidateOnStart();
 
+        // Trading write controls (ADR-0024 v1, gh#708). Validated on start; no MCP tools or venue order calls
+        // register here — only configuration, the kill switch, and the configuration gate future tools reuse.
+        services.AddOptions<TradingExecutionOptions>()
+            .Bind(builder.Configuration.GetSection(TradingExecutionOptions.SectionName))
+            .ValidateDataAnnotations()
+            .ValidateOnStart();
+
+        services.AddSingleton<TradingKillSwitch>();
+        services.AddSingleton<ITradingKillSwitch>(sp => sp.GetRequiredService<TradingKillSwitch>());
+        services.AddSingleton<TradingExecutionGate>();
+
         // Under HTTP, exactly one authentication mode, complete — the token for StaticToken, the issuer,
         // client ids and resource URL for OAuth — and both directions of "both" refused, each naming its
         // key. The rules are McpOptions.Validate, an IValidatableObject like KeyLevelDetectionOptions, so

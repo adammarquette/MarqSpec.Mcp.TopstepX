@@ -556,6 +556,29 @@ public static class VenueOperation
         [ResolveContracts, FindContract, GetBars, GetAccounts, GetPositions, GetOrders, GetTrades];
 }
 
+/// <summary>Which venue write a gated execution call was — separate from read vocabulary (gh#710).</summary>
+public static class ExecutionOperation
+{
+    /// <summary>Placing an order.</summary>
+    public const string PlaceOrder = "place_order";
+
+    /// <summary>Modifying an open order.</summary>
+    public const string ModifyOrder = "modify_order";
+
+    /// <summary>Canceling an order.</summary>
+    public const string CancelOrder = "cancel_order";
+
+    /// <summary>Flattening a position.</summary>
+    public const string ClosePosition = "close_position";
+
+    /// <summary>Partially closing a position.</summary>
+    public const string PartialClosePosition = "partial_close_position";
+
+    /// <summary>Every value.</summary>
+    public static IReadOnlyList<string> All { get; } =
+        [PlaceOrder, ModifyOrder, CancelOrder, ClosePosition, PartialClosePosition];
+}
+
 /// <summary>Why a bar range was outstanding — the <c>reason</c> tag's closed vocabulary.</summary>
 public static class GapReason
 {

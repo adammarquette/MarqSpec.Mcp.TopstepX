@@ -124,19 +124,48 @@ jobs:
       - name: Prove the claim script can still tell a live claim from a dead one
         run: ./scripts/claim-selftest.sh
 
-  # ADR-0002's enforcement. Its own job rather than a step inside build-test, so a failure reads as "the
-  # read-only boundary was crossed" rather than as a build break -- and so it is a required check in its own
-  # right, which a step buried in another job cannot be.
+  # ADR-0024's TRIPWIRE (gh#718; was ADR-0002's enforcement) -- a text check backed by review, CODEOWNERS on
+  # the allowlisted files and the Gate=ADR-0024 tests, not a proof. Red until TradingRiskGate (gh#711) exists.
   #
-  # Needs no SDK: it is a grep over source, and it should answer in seconds.
+  # Its own job rather than a step inside build-test, so a failure reads as "the gated order boundary was
+  # crossed" rather than as a build break -- and so it is a required check in its own right. The JOB NAME IS
+  # UNCHANGED on purpose: it is a required context on all three rungs (bootstrap.sh step 3), and renaming it
+  # would drop that requirement in silence.
+  #
+  # The static checks need no SDK and answer in seconds, so they run first. The SDK is installed only for the
+  # last step, which RUNS the [Trait("Gate","ADR-0024")] tests and fails unless tests EXECUTED and passed --
+  # a filter that silently selects zero (or only skipped) tests is the green-on-nothing this repository keeps
+  # paying for.
   no-order-path:
     name: no-order-path
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
 
-      - name: No order path in product code
+      - name: Prove the order-path gate can still fail
+        run: ./scripts/check-no-order-path-selftest.sh
+
+      # !cancelled(), not the default success(): a red self-test or boundary check must not hide whether the
+      # gate tests exist and pass. Each step still fails the job on its own.
+      - name: Order path only behind the ADR-0024 gate
+        if: ${{ !cancelled() }}
         run: ./scripts/check-no-order-path.sh
+
+      - uses: actions/setup-dotnet@v6
+        if: ${{ !cancelled() }}
+        with:
+          dotnet-version: 10.0.x
+
+      # Counts tests that EXECUTED and passed: skipped [Fact(Skip=...)] tests do not satisfy it (gh#718 review).
+      - name: ADR-0024 gate tests exist and run
+        if: ${{ !cancelled() }}
+        run: |
+          dotnet test MarqSpec.Mcp.TopstepX.Tests/MarqSpec.Mcp.TopstepX.Tests.csproj \
+            --configuration Release \
+            --filter "Gate=ADR-0024" \
+            --logger "trx;LogFileName=gate-tests.trx" \
+            --results-directory "$RUNNER_TEMP/gate-tests"
+          ./scripts/check-gate-tests-ran.sh "$RUNNER_TEMP/gate-tests/gate-tests.trx"
 
   # gh#43. The pacer that keeps the bar paging loop inside the vendor's 50-requests-per-30-seconds allowance
   # is unit-tested; its CONNECTION to the loop was not, and deleting the await left all 208 tests green.

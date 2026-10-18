@@ -82,6 +82,9 @@ public sealed class HostTelemetry : IDisposable
     /// <summary>Indicator values a projection pass wrote.</summary>
     public const string IndicatorProjectionsInstrument = "mcp.indicator.projections";
 
+    /// <summary>One gated execution write, refused or transmitted (ADR-0024, gh#710).</summary>
+    public const string ExecutionWritesInstrument = "mcp.execution.writes";
+
     /// <summary>Which cache-aside series a read was of. Values: <see cref="CacheSeries"/>.</summary>
     public const string SeriesTag = "series";
 
@@ -110,6 +113,9 @@ public sealed class HostTelemetry : IDisposable
     /// <summary>Which venue read this was. Values: <see cref="VenueOperation"/>.</summary>
     public const string OperationTag = "operation";
 
+    /// <summary>Why an execution write stopped before or at the venue. Values: <see cref="ExecutionWriteRefusal"/>.</summary>
+    public const string RefusalTag = "refusal";
+
     /// <summary>Why a range was outstanding. Values: <see cref="GapReason"/>.</summary>
     public const string ReasonTag = "reason";
 
@@ -131,6 +137,7 @@ public sealed class HostTelemetry : IDisposable
     private readonly Counter<long> _tapeReconnects;
     private readonly Counter<long> _tapeLeaseChanges;
     private readonly Counter<long> _indicatorProjections;
+    private readonly Counter<long> _executionWrites;
 
     /// <summary>Creates the meter and the activity source.</summary>
     /// <remarks>
@@ -183,6 +190,11 @@ public sealed class HostTelemetry : IDisposable
             IndicatorProjectionsInstrument,
             unit: "{value}",
             description: "Indicator values a projection pass wrote, by indicator.");
+
+        _executionWrites = _meter.CreateCounter<long>(
+            ExecutionWritesInstrument,
+            unit: "{write}",
+            description: "Gated execution writes, by operation and by refusal reason.");
     }
 
     /// <summary>The spans this repository names. Children of the SDK's <c>tools/call</c> span.</summary>
@@ -256,6 +268,28 @@ public sealed class HostTelemetry : IDisposable
     /// request, not by the answer.
     /// </remarks>
     public VenueCallScope VenueCall(string operation) => new(this, operation);
+
+    /// <summary>Opens a span for one gated execution write and counts it when the scope closes.</summary>
+    /// <param name="operation">Which write, from <see cref="ExecutionOperation"/>.</param>
+    /// <returns>A scope the caller disposes when the write has settled, however it settled.</returns>
+    public ExecutionWriteScope ExecutionWrite(string operation) => new(this, operation);
+
+    /// <summary>Counts one gated execution write immediately.</summary>
+    /// <param name="operation">Which write, from <see cref="ExecutionOperation"/>.</param>
+    /// <param name="refusal">Why it stopped, from <see cref="ExecutionWriteRefusal"/>.</param>
+    public void RecordExecutionWrite(string operation, string refusal)
+    {
+        Activity? span = Activities.StartActivity("execution." + operation, ActivityKind.Internal);
+        span?.SetTag(OperationTag, operation);
+        span?.SetTag(RefusalTag, refusal);
+
+        _executionWrites.Add(
+            1,
+            new KeyValuePair<string, object?>(OperationTag, operation),
+            new KeyValuePair<string, object?>(RefusalTag, refusal));
+
+        span?.Dispose();
+    }
 
     /// <summary>Opens a span for one cache-aside read.</summary>
     /// <param name="series">Which series, from <see cref="CacheSeries"/>.</param>
@@ -489,6 +523,50 @@ public sealed class HostTelemetry : IDisposable
             _span?.Dispose();
         }
     }
+
+    /// <summary>One gated execution write, from entry to refusal or transmit.</summary>
+    public sealed class ExecutionWriteScope : IDisposable
+    {
+        private readonly HostTelemetry _telemetry;
+        private readonly string _operation;
+        private readonly Activity? _span;
+        private string? _refusal;
+        private bool _closed;
+
+        internal ExecutionWriteScope(HostTelemetry telemetry, string operation)
+        {
+            _telemetry = telemetry;
+            _operation = operation;
+
+            _span = telemetry.Activities.StartActivity("execution." + operation, ActivityKind.Internal);
+            _span?.SetTag(OperationTag, operation);
+        }
+
+        /// <summary>Sets the refusal reason recorded when the scope closes.</summary>
+        /// <param name="refusal">A stable code from <see cref="ExecutionWriteRefusal"/>.</param>
+        public void Refused(string refusal) => _refusal = refusal;
+
+        /// <inheritdoc />
+        public void Dispose()
+        {
+            if (_closed)
+            {
+                return;
+            }
+
+            _closed = true;
+
+            string refusal = _refusal ?? ExecutionWriteRefusal.Transmitted;
+            _span?.SetTag(RefusalTag, refusal);
+
+            _telemetry._executionWrites.Add(
+                1,
+                new KeyValuePair<string, object?>(OperationTag, _operation),
+                new KeyValuePair<string, object?>(RefusalTag, refusal));
+
+            _span?.Dispose();
+        }
+    }
 }
 
 /// <summary>Which cache-aside series a read was of — the <c>series</c> tag's closed vocabulary.</summary>
@@ -582,6 +660,59 @@ public static class ExecutionOperation
             CancelOrderOperation,
             ClosePositionOperation,
             PartialClosePositionOperation,
+        ];
+}
+
+/// <summary>Why an execution write stopped — the <c>refusal</c> tag's closed vocabulary (gh#710).</summary>
+public static class ExecutionWriteRefusal
+{
+    /// <summary>The gate permitted the write and the adapter reached the venue.</summary>
+    public const string Transmitted = "transmitted";
+
+    /// <summary>Master enable is off (<c>Trading__Enabled=false</c>).</summary>
+    public const string TradingDisabled = "trading_disabled";
+
+    /// <summary>The kill switch is engaged.</summary>
+    public const string KillSwitch = "kill_switch";
+
+    /// <summary>The account id is not on the optional allowlist.</summary>
+    public const string AccountNotAllowlisted = "account_not_allowlisted";
+
+    /// <summary>The symbol is on the denylist.</summary>
+    public const string SymbolDenied = "symbol_denied";
+
+    /// <summary>The requested size exceeds the per-order cap.</summary>
+    public const string OrderSizeExceedsLimit = "order_size_exceeds_limit";
+
+    /// <summary>The day total would exceed the daily cap.</summary>
+    public const string DailyContractLimitExceeded = "daily_contract_limit_exceeded";
+
+    /// <summary>The account id was not returned by a fresh account fetch.</summary>
+    public const string AccountNotFound = "account_not_found";
+
+    /// <summary>The parsed stage is not practice.</summary>
+    public const string NonPracticeAccount = "non_practice_account";
+
+    /// <summary>The account name matched no known stage family.</summary>
+    public const string UnknownAccountStage = "unknown_account_stage";
+
+    /// <summary>The venue marks the account inactive or not tradable.</summary>
+    public const string AccountNotActive = "account_not_active";
+
+    /// <summary>Every value.</summary>
+    public static IReadOnlyList<string> All { get; } =
+        [
+            Transmitted,
+            TradingDisabled,
+            KillSwitch,
+            AccountNotAllowlisted,
+            SymbolDenied,
+            OrderSizeExceedsLimit,
+            DailyContractLimitExceeded,
+            AccountNotFound,
+            NonPracticeAccount,
+            UnknownAccountStage,
+            AccountNotActive,
         ];
 }
 

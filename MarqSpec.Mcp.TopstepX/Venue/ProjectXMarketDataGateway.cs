@@ -15,7 +15,7 @@ namespace MarqSpec.Mcp.TopstepX.Venue;
 /// </summary>
 /// <remarks>
 /// <para>
-/// <b>This type calls no order method, and the CI gate proves it</b> (ADR-0002). The client underneath has a
+/// <b>This type calls no order method, and the CI gate proves it</b> (ADR-0024). The client underneath has a
 /// complete order surface — this is the first point in the repository where those calls are actually
 /// reachable, and it is precisely why <c>scripts/check-no-order-path.sh</c> exists.
 /// </para>

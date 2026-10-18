@@ -11,6 +11,8 @@ namespace MarqSpec.Mcp.TopstepX.Venue;
 /// </para>
 /// <para>
 /// Future MCP tools reach writes through <c>TradingRiskGate</c> (gh#711), not this interface directly.
+/// Direct calls emit no execution-write OpenTelemetry — <c>TradingRiskGate.RunWithTelemetry</c> owns that
+/// counter and span per ADR-0019.
 /// </para>
 /// <para>
 /// <b>Never auto-retry.</b> When <see cref="ExecutionWriteResult.Outcome"/> is

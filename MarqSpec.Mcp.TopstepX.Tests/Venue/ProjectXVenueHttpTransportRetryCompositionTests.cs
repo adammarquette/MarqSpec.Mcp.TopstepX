@@ -94,6 +94,40 @@ public sealed class ProjectXVenueHttpTransportRetryCompositionTests
     }
 
     [Fact]
+    public async Task ConfiguredCompositionRoot_SendsModifyOnce_OnServiceUnavailable_WhenBaseUrlHasPathPrefix()
+    {
+        ProjectXVenueHttpPrimaryHandler handler = new();
+        Dictionary<string, string?> settings = new(_venueSettings)
+        {
+            ["ProjectX:BaseUrl"] = "https://gateway.test/proxy/",
+        };
+
+        using ServiceProvider provider = CompositionRootTestHost.BuildVenueConfigured(
+            settings,
+            services =>
+            {
+                services.AddSingleton(handler);
+                services.AddSingleton<IHttpMessageHandlerBuilderFilter, ProjectXVenueHttpClientHandlerFilter>();
+            });
+
+        using IServiceScope scope = provider.CreateScope();
+        IProjectXApiClient client = scope.ServiceProvider.GetRequiredService<IProjectXApiClient>();
+
+        Func<Task> modify = () => client.ModifyOrderAsync(
+            new MarqSpec.Client.ProjectX.Api.Models.ModifyOrderRequest
+            {
+                AccountId = 1,
+                OrderId = 1,
+                Size = 1,
+            },
+            CancellationToken.None);
+
+        await modify.Should().ThrowAsync<Exception>();
+
+        handler.AttemptsForPath("/proxy/api/Order/modify").Should().Be(1);
+    }
+
+    [Fact]
     public async Task ConfiguredCompositionRoot_RetriesReadRoutes_OnServiceUnavailable()
     {
         ProjectXVenueHttpPrimaryHandler handler = new();

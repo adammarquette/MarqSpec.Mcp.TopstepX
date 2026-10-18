@@ -525,9 +525,9 @@ public sealed class HostTelemetry : IDisposable
             _span?.SetTag(OperationTag, operation);
         }
 
-        /// <summary>Sets the refusal reason recorded when the scope closes.</summary>
-        /// <param name="refusal">A stable code from <see cref="ExecutionWriteRefusal"/>.</param>
-        public void Refused(string refusal) => _refusal = refusal;
+        /// <summary>Sets the outcome tag recorded when the scope closes.</summary>
+        /// <param name="outcomeTag">A stable code from <see cref="ExecutionWriteRefusal"/>.</param>
+        public void Outcome(string outcomeTag) => _refusal = outcomeTag;
 
         /// <inheritdoc />
         public void Dispose()

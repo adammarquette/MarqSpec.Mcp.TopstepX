@@ -358,8 +358,9 @@ internal static class ProjectXVenueWriteRoutes
         }
 
         string path = uri.AbsolutePath;
-        if (!path.StartsWith(OrderPrefix, StringComparison.OrdinalIgnoreCase)
-            && !path.StartsWith(PositionPrefix, StringComparison.OrdinalIgnoreCase))
+        bool isOrderWrite = path.Contains(OrderPrefix, StringComparison.OrdinalIgnoreCase);
+        bool isPositionWrite = path.Contains(PositionPrefix, StringComparison.OrdinalIgnoreCase);
+        if (!isOrderWrite && !isPositionWrite)
         {
             return false;
         }

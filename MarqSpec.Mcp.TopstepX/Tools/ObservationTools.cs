@@ -14,7 +14,7 @@ namespace MarqSpec.Mcp.TopstepX.Tools;
 /// </summary>
 /// <remarks>
 /// <para>
-/// <b>These write to this server's own database, not to the venue.</b> ADR-0002's boundary is about what
+/// <b>These write to this server's own database, not to the venue.</b> ADR-0024's venue boundary is about what
 /// reaches the gateway, and nothing here does.
 /// </para>
 /// <para>

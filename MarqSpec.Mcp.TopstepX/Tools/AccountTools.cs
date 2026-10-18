@@ -11,7 +11,7 @@ namespace MarqSpec.Mcp.TopstepX.Tools;
 /// </summary>
 /// <remarks>
 /// Reading what already happened transmits nothing. There is no tool here that places, modifies, cancels or
-/// closes anything, and there is no method on <see cref="IMarketDataGateway"/> that could (ADR-0002).
+/// closes anything, and there is no method on <see cref="IMarketDataGateway"/> that could (ADR-0024).
 /// </remarks>
 [McpServerToolType]
 public sealed class AccountTools(IMarketDataGateway gateway, ToolGuards guards)

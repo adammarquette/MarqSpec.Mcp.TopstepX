@@ -106,4 +106,14 @@ public readonly record struct TradingExecutionRefusal(string Code, string Messag
             "Account id "
             + accountId.ToString(System.Globalization.CultureInfo.InvariantCulture)
             + " parsed as Unknown stage. The server refuses rather than guess; fix the name parser or trade manually.");
+
+    /// <summary>The venue marks the account inactive or not tradable.</summary>
+    /// <param name="accountId">The refused account.</param>
+    /// <returns>The refusal.</returns>
+    public static TradingExecutionRefusal AccountNotActive(int accountId) =>
+        new(
+            "account_not_active",
+            "Account id "
+            + accountId.ToString(System.Globalization.CultureInfo.InvariantCulture)
+            + " is inactive or not tradable on the gateway. Refresh list_accounts and use an active practice account.");
 }

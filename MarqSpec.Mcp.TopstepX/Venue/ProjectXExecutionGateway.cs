@@ -6,7 +6,7 @@ using MarqSpec.Mcp.TopstepX.Telemetry;
 namespace MarqSpec.Mcp.TopstepX.Venue;
 
 /// <summary>
-/// Combined practice gate and ProjectX order adapter (ADR-0024, gh#710).
+/// ProjectX order adapter that calls <see cref="TradingExecutionGate"/> before every transmit (ADR-0024, gh#710).
 /// </summary>
 /// <remarks>
 /// <b>The only product file that may name the venue order surface</b> (gh#718). Every transmit runs
@@ -93,17 +93,43 @@ public sealed class ProjectXExecutionGateway : IExecutionGateway
                 cancellationToken)
             .ConfigureAwait(false);
 
-        if (refusal is not null)
+        if (refusal is TradingExecutionRefusal gateRefusal)
         {
-            return new ExecutionWriteResult(
-                ExecutionWriteLifecycle.NotTransmitted,
-                refusal,
-                VenueErrorCode: null,
-                VenueErrorMessage: null,
-                OrderId: null);
+            return GateRefused(gateRefusal);
         }
 
-        return await transmit(cancellationToken).ConfigureAwait(false);
+        return await RunTransmitAsync(transmit, cancellationToken).ConfigureAwait(false);
+    }
+
+    private static ExecutionWriteResult GateRefused(TradingExecutionRefusal refusal) =>
+        new(
+            ExecutionWriteOutcome.NotTransmitted,
+            refusal,
+            VenueErrorCode: null,
+            VenueErrorMessage: null,
+            OrderId: null);
+
+    private static async Task<ExecutionWriteResult> RunTransmitAsync(
+        Func<CancellationToken, Task<ExecutionWriteResult>> transmit,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            return await transmit(cancellationToken).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception)
+        {
+            return new ExecutionWriteResult(
+                ExecutionWriteOutcome.TransmittedOutcomeUnknown,
+                GateRefusal: null,
+                VenueErrorCode: null,
+                VenueErrorMessage: "The venue did not return a response; the write may have been placed.",
+                OrderId: null);
+        }
     }
 
     private async Task<ExecutionWriteResult> TransmitPlaceOrderAsync(
@@ -148,7 +174,7 @@ public sealed class ProjectXExecutionGateway : IExecutionGateway
             () => _client.ModifyOrderAsync(request, cancellationToken),
             "modifying an order").ConfigureAwait(false);
 
-        return MapSimpleResponse(response.Success, response.ErrorCode, response.ErrorMessage, orderId: null);
+        return MapSimpleResponse(response.Success, response.ErrorCode, response.ErrorMessage);
     }
 
     private async Task<ExecutionWriteResult> TransmitCancelOrderAsync(
@@ -160,7 +186,7 @@ public sealed class ProjectXExecutionGateway : IExecutionGateway
             () => _client.CancelOrderAsync(command.AccountId, command.OrderId, cancellationToken),
             "canceling an order").ConfigureAwait(false);
 
-        return MapSimpleResponse(response.Success, response.ErrorCode, response.ErrorMessage, orderId: null);
+        return MapSimpleResponse(response.Success, response.ErrorCode, response.ErrorMessage);
     }
 
     private async Task<ExecutionWriteResult> TransmitClosePositionAsync(
@@ -172,7 +198,7 @@ public sealed class ProjectXExecutionGateway : IExecutionGateway
             () => _client.ClosePositionAsync(command.AccountId, command.ContractId, cancellationToken),
             "closing a position").ConfigureAwait(false);
 
-        return MapSimpleResponse(response.Success, response.ErrorCode, response.ErrorMessage, orderId: null);
+        return MapSimpleResponse(response.Success, response.ErrorCode, response.ErrorMessage);
     }
 
     private async Task<ExecutionWriteResult> TransmitPartialClosePositionAsync(
@@ -188,7 +214,7 @@ public sealed class ProjectXExecutionGateway : IExecutionGateway
                 cancellationToken),
             "partially closing a position").ConfigureAwait(false);
 
-        return MapSimpleResponse(response.Success, response.ErrorCode, response.ErrorMessage, orderId: null);
+        return MapSimpleResponse(response.Success, response.ErrorCode, response.ErrorMessage);
     }
 
     private static ExecutionWriteResult MapPlaceResponse(PlaceOrderResponse response)
@@ -196,15 +222,25 @@ public sealed class ProjectXExecutionGateway : IExecutionGateway
         if (response.Success && response.OrderId is long orderId)
         {
             return new ExecutionWriteResult(
-                ExecutionWriteLifecycle.Acknowledged,
+                ExecutionWriteOutcome.BrokerAcknowledged,
                 GateRefusal: null,
-                VenueErrorCode: response.ErrorCode,
-                VenueErrorMessage: response.ErrorMessage,
+                VenueErrorCode: null,
+                VenueErrorMessage: null,
                 OrderId: orderId);
         }
 
+        if (response.Success)
+        {
+            return new ExecutionWriteResult(
+                ExecutionWriteOutcome.BrokerSuccessWithoutOrderId,
+                GateRefusal: null,
+                VenueErrorCode: null,
+                VenueErrorMessage: response.ErrorMessage,
+                OrderId: null);
+        }
+
         return new ExecutionWriteResult(
-            ExecutionWriteLifecycle.PendingOrRejected,
+            ExecutionWriteOutcome.VenueRejected,
             GateRefusal: null,
             VenueErrorCode: response.ErrorCode,
             VenueErrorMessage: response.ErrorMessage,
@@ -214,19 +250,24 @@ public sealed class ProjectXExecutionGateway : IExecutionGateway
     private static ExecutionWriteResult MapSimpleResponse(
         bool success,
         int errorCode,
-        string? errorMessage,
-        long? orderId)
+        string? errorMessage)
     {
-        ExecutionWriteLifecycle lifecycle = success
-            ? ExecutionWriteLifecycle.Acknowledged
-            : ExecutionWriteLifecycle.PendingOrRejected;
+        if (success)
+        {
+            return new ExecutionWriteResult(
+                ExecutionWriteOutcome.BrokerAcknowledged,
+                GateRefusal: null,
+                VenueErrorCode: null,
+                VenueErrorMessage: null,
+                OrderId: null);
+        }
 
         return new ExecutionWriteResult(
-            lifecycle,
+            ExecutionWriteOutcome.VenueRejected,
             GateRefusal: null,
             VenueErrorCode: errorCode,
             VenueErrorMessage: errorMessage,
-            OrderId: orderId);
+            OrderId: null);
     }
 
     private static OrderType ToOrderType(ExecutionOrderType orderType) => orderType switch

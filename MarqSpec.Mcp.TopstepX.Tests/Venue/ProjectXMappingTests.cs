@@ -202,7 +202,7 @@ public sealed class ProjectXMappingTests
     [InlineData("EXPRESSJUL7", AccountStage.Funded)]
     public void AccountNameFamilies_ResolveToTheirStage(string name, AccountStage expected)
     {
-        ProjectXMapping.ResolveStage(name).Should().Be(expected);
+        new ProjectXAccountStageResolver().ResolveFromAccountName(name).Should().Be(expected);
     }
 
     [Theory]
@@ -216,13 +216,13 @@ public sealed class ProjectXMappingTests
     {
         // Unknown is NOT a synonym for practice. Misreading a funded account as practice is the expensive
         // direction -- it is the one where a breach costs a real payout.
-        ProjectXMapping.ResolveStage(name).Should().Be(AccountStage.Unknown);
+        new ProjectXAccountStageResolver().ResolveFromAccountName(name).Should().Be(AccountStage.Unknown);
     }
 
     [Fact]
     public void AccountNameMatchingIsCaseInsensitive()
     {
-        ProjectXMapping.ResolveStage("prac-50k-1234").Should().Be(AccountStage.Practice);
+        new ProjectXAccountStageResolver().ResolveFromAccountName("prac-50k-1234").Should().Be(AccountStage.Practice);
     }
 
     [Fact]

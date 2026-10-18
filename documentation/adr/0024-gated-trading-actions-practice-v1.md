@@ -40,7 +40,7 @@ Owner decisions recorded 2026-10-18 (PR #723):
 1. **Supersede ADR-0002** — gated venue writes in this repository, not only in `trading-copilot`.
 2. **Broker acknowledgment** — an order is **not** treated as live until the broker ack arrives (see §5).
 3. **`Unknown` stage** — refuse the write **and** raise an alert plus emit a metric via OpenTelemetry
-   ([ADR-0019](0019-otlp-as-the-telemetry-boundary.md)); implementation tracked separately (see Follow-ups).
+   ([ADR-0019](0019-otlp-as-the-telemetry-boundary.md)); implementation in gh#733.
 4. **OAuth scopes** — adopt the proposed Cognito resource-server scope names (see §5).
 5. **Real money (gh#722)** — the operator intends evaluation/funded trading if practice v1 shows promise;
    **v1 stays practice-only**. Opening gh#722 requires meeting the promotion criteria in §8.
@@ -320,6 +320,7 @@ not start until v1 is shipped and a separate ADR amendment is accepted.
 | gh#717 | Human confirmation / `confirm_trading_action` |
 | gh#718 | CI gate for controlled order path |
 | gh#719 | OAuth write scope |
+| gh#733 | OpenTelemetry metric + alert on `Unknown` stage refusal |
 | gh#720 | Integration tests (mocked gateway) |
 | gh#721 | Tool catalogue section |
 | gh#722 | **Epic: v2 trading on evaluation/funded accounts** (out of v1 scope) |

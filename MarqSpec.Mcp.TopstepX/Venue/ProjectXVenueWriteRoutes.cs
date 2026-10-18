@@ -1,6 +1,17 @@
 namespace MarqSpec.Mcp.TopstepX.Venue;
 
-/// <summary>ProjectX REST routes used by <see cref="IExecutionGateway"/> (ADR-0024, gh#710).</summary>
+/// <summary>ProjectX REST routes reached by gated execution writes (ADR-0024, gh#710).</summary>
+/// <remarks>
+/// <para>
+/// Transport retries are suppressed for every POST under <c>/api/Order/</c> and <c>/api/Position/</c> except
+/// routes allowlisted as reads (<see cref="IsAllowlistedReadPost"/>). A new vendor write therefore defaults to
+/// no-retry without editing an explicit verb list — only new <b>read</b> POST routes need an allowlist entry.
+/// </para>
+/// <para>
+/// Explicit constants remain for documentation and tests; matching uses the prefix + allowlist rule, not
+/// <c>EndsWith</c> on these literals alone (so paths like <c>/api/Order/placeBracket</c> are covered).
+/// </para>
+/// </remarks>
 internal static class ProjectXVenueWriteRoutes
 {
     /// <summary>Places an order.</summary>
@@ -18,9 +29,11 @@ internal static class ProjectXVenueWriteRoutes
     /// <summary>Partially closes a position.</summary>
     public const string PartialCloseContract = "/api/Position/partialCloseContract";
 
-    /// <summary>
-    /// True for every gated execution write route; transport retries are suppressed for all five verbs.
-    /// </summary>
+    private const string OrderPrefix = "/api/Order/";
+
+    private const string PositionPrefix = "/api/Position/";
+
+    /// <summary>True when the host must not transport-retry this POST.</summary>
     public static bool IsExecutionGatewayWriteRoute(HttpRequestMessage? request)
     {
         if (request?.RequestUri is not Uri uri)
@@ -28,11 +41,22 @@ internal static class ProjectXVenueWriteRoutes
             return false;
         }
 
+        if (!HttpMethods.IsPost(request.Method.Method))
+        {
+            return false;
+        }
+
         string path = uri.AbsolutePath;
-        return path.EndsWith(Place, StringComparison.OrdinalIgnoreCase)
-            || path.EndsWith(Modify, StringComparison.OrdinalIgnoreCase)
-            || path.EndsWith(Cancel, StringComparison.OrdinalIgnoreCase)
-            || path.EndsWith(CloseContract, StringComparison.OrdinalIgnoreCase)
-            || path.EndsWith(PartialCloseContract, StringComparison.OrdinalIgnoreCase);
+        if (!path.StartsWith(OrderPrefix, StringComparison.OrdinalIgnoreCase)
+            && !path.StartsWith(PositionPrefix, StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        return !IsAllowlistedReadPost(path);
     }
+
+    private static bool IsAllowlistedReadPost(string absolutePath) =>
+        absolutePath.EndsWith("/search", StringComparison.OrdinalIgnoreCase)
+        || absolutePath.EndsWith("/searchOpen", StringComparison.OrdinalIgnoreCase);
 }

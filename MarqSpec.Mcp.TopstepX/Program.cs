@@ -802,6 +802,8 @@ public static class Program
 
         if (venue.IsConfigured && venue.DataTier != ProjectXDataTier.Unspecified)
         {
+            // Order POSTs must not use transport-level retries — a duplicate would land before
+            // the execution gateway can report TransmittedOutcomeUnknown (ADR-0024, gh#710).
             services.AddProjectXApiClient(builder.Configuration);
             services.SuppressTransportRetriesOnVenueWrites();
 

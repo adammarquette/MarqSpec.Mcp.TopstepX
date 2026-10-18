@@ -19,4 +19,14 @@ public sealed class ProjectXVenueWriteRoutesTests
         using HttpRequestMessage read = new(HttpMethod.Post, "https://gateway.test/api/Order/search");
         ProjectXVenueWriteRoutes.IsExecutionGatewayWriteRoute(read).Should().BeFalse();
     }
+
+    [Fact]
+    public void WriteRoutes_WithPrefixedBasePath_StillMatchOrderAndPositionSegments()
+    {
+        using HttpRequestMessage modify = new(HttpMethod.Post, "https://gateway.test/proxy/api/Order/modify");
+        using HttpRequestMessage close = new(HttpMethod.Post, "https://gateway.test/proxy/api/Position/closeContract");
+
+        ProjectXVenueWriteRoutes.IsExecutionGatewayWriteRoute(modify).Should().BeTrue();
+        ProjectXVenueWriteRoutes.IsExecutionGatewayWriteRoute(close).Should().BeTrue();
+    }
 }

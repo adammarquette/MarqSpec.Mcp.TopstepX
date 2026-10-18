@@ -13,10 +13,6 @@ namespace MarqSpec.Mcp.TopstepX.Venue;
 /// <c>/Order/place</c> non-retry exemption). This host wraps that handler: gated execution POSTs under the
 /// order and position API prefixes never retry, and every other request delegates to the client's predicate.
 /// </para>
-/// <para>
-/// The dead branch that would run when <c>previous</c> is null never executes in the real composition root
-/// because <c>AddProjectXApiClient</c> always sets <c>ShouldHandle</c> first.
-/// </para>
 /// </remarks>
 internal static class ProjectXHttpResilienceConfiguration
 {
@@ -26,10 +22,7 @@ internal static class ProjectXHttpResilienceConfiguration
         services.PostConfigureAll<HttpStandardResilienceOptions>(options =>
         {
             HttpRetryStrategyOptions retry = options.Retry;
-            var previous = retry.ShouldHandle
-                ?? throw new InvalidOperationException(
-                    "AddProjectXApiClient must register HttpStandardResilienceOptions.Retry.ShouldHandle before "
-                    + nameof(SuppressTransportRetriesOnVenueWrites) + ".");
+            var previous = retry.ShouldHandle!;
 
             retry.ShouldHandle = args =>
             {

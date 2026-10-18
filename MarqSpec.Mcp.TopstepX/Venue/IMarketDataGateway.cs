@@ -9,7 +9,7 @@ namespace MarqSpec.Mcp.TopstepX.Venue;
 /// <remarks>
 /// <para>
 /// <b>There is no order method on this interface, and that is the design.</b> The read-only boundary
-/// (ADR-0002) is enforced by a CI gate over the implementation, but it is also expressed here, in the shape of
+/// (ADR-0024) is enforced by a CI gate over the implementation, but it is also expressed here, in the shape of
 /// the seam: a caller holding an <see cref="IMarketDataGateway"/> has no order method to reach for. A boundary
 /// that has to be remembered is weaker than one that cannot be typed.
 /// </para>

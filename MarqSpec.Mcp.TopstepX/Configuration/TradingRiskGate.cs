@@ -104,12 +104,12 @@ public sealed class TradingRiskGate
         try
         {
             TradingRiskGateResult result = await body().ConfigureAwait(false);
-            write.Refused(ExecutionWriteRefusalForResult.For(result));
+            write.Outcome(ExecutionWriteRefusalForResult.For(result));
             return result;
         }
         catch (Exception)
         {
-            write.Refused(ExecutionWriteRefusal.Error);
+            write.Outcome(ExecutionWriteRefusal.Error);
             throw;
         }
         finally
@@ -711,6 +711,27 @@ public sealed class TradingRiskGate
                 cancellationToken).ConfigureAwait(false);
         }
 
+        if (await RefuseGatewayWriteUnlessPermittedAsync(accountId, cancellationToken).ConfigureAwait(false)
+            is TradingExecutionRefusal gatewayRefusal)
+        {
+            return await RefuseAsync(
+                accountId,
+                FormatStage(stage),
+                audit,
+                capChargeSize,
+                gatewayRefusal,
+                cancellationToken).ConfigureAwait(false);
+        }
+
+        await WriteAuditAsync(
+            accountId,
+            FormatStage(stage),
+            audit,
+            TradingAuditOutcomes.Attempted,
+            capChargeSize,
+            venueErrorCode: null,
+            cancellationToken).ConfigureAwait(false);
+
         return await SendAndFinalizeAsync(
             accountId,
             stage,
@@ -738,20 +759,51 @@ public sealed class TradingRiskGate
                 cancellationToken).ConfigureAwait(false);
         }
 
+        if (await RefuseGatewayWriteUnlessPermittedAsync(accountId, cancellationToken).ConfigureAwait(false)
+            is TradingExecutionRefusal gatewayRefusal)
+        {
+            return await RefuseAsync(
+                accountId,
+                FormatStage(stage),
+                audit,
+                contractCount: 0,
+                gatewayRefusal,
+                cancellationToken).ConfigureAwait(false);
+        }
+
+        await WriteAuditAsync(
+            accountId,
+            FormatStage(stage),
+            audit,
+            TradingAuditOutcomes.Attempted,
+            contractCount: 0,
+            venueErrorCode: null,
+            cancellationToken).ConfigureAwait(false);
+
         return await SendAndFinalizeAsync(
             accountId,
             stage,
             audit,
-            attemptContractCount: 0,
+            capChargeApplied: 0,
             send,
             cancellationToken).ConfigureAwait(false);
     }
+
+    private Task<TradingExecutionRefusal?> RefuseGatewayWriteUnlessPermittedAsync(
+        int accountId,
+        CancellationToken cancellationToken) =>
+        _executionGate.RefuseWriteUnlessPermittedAsync(
+            accountId,
+            _marketData,
+            _unknownStageSignal,
+            cancellationToken,
+            _accountCache.TryGet(accountId));
 
     private async Task<TradingRiskGateResult> SendAndFinalizeAsync(
         int accountId,
         AccountStage stage,
         AuditEnvelope audit,
-        int attemptContractCount,
+        int capChargeApplied,
         Func<CancellationToken, Task<ExecutionWriteResult>> send,
         CancellationToken cancellationToken)
     {
@@ -767,25 +819,13 @@ public sealed class TradingRiskGate
                 FormatStage(stage),
                 audit,
                 TradingAuditOutcomes.Unknown,
-                contractCount: 0,
+                contractCount: capChargeApplied,
                 venueErrorCode: ex.GetType().Name,
                 CancellationToken.None).ConfigureAwait(false);
             throw;
         }
 
-        if (write.GateRefusal is null)
-        {
-            await WriteAuditAsync(
-                accountId,
-                FormatStage(stage),
-                audit,
-                TradingAuditOutcomes.Attempted,
-                attemptContractCount,
-                venueErrorCode: null,
-                cancellationToken).ConfigureAwait(false);
-        }
-
-        return await MapWriteAsync(accountId, stage, audit, write).ConfigureAwait(false);
+        return await MapWriteAsync(accountId, stage, audit, capChargeApplied, write).ConfigureAwait(false);
     }
 
     private async Task<TradingRiskGateResult> PreviewAsync(
@@ -864,10 +904,23 @@ public sealed class TradingRiskGate
         int accountId,
         AccountStage stage,
         AuditEnvelope audit,
+        int capChargeApplied,
         ExecutionWriteResult write)
     {
         if (write.GateRefusal is TradingExecutionRefusal gateRefusal)
         {
+            if (capChargeApplied != 0)
+            {
+                await WriteAuditAsync(
+                    accountId,
+                    FormatStage(stage),
+                    audit,
+                    TradingAuditOutcomes.Attempted,
+                    contractCount: -capChargeApplied,
+                    venueErrorCode: gateRefusal.Code,
+                    CancellationToken.None).ConfigureAwait(false);
+            }
+
             return await RefuseAsync(
                 accountId,
                 FormatStage(stage),

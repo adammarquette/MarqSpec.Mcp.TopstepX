@@ -30,7 +30,7 @@ public enum ExecutionOrderType
 /// <summary>How a gated venue write ended (ADR-0024 §5).</summary>
 public enum ExecutionWriteOutcome
 {
-    /// <summary>The combined gate refused before any venue call.</summary>
+    /// <summary>No venue write was transmitted (gate refusal, mapping failure, or guard refusal before ack).</summary>
     NotTransmitted = 0,
 
     /// <summary>The request may have reached the venue; the response was not received.</summary>

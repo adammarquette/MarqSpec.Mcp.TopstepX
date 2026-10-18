@@ -1,3 +1,5 @@
+using System.Reflection;
+using System.Xml.Linq;
 using FluentAssertions;
 using MarqSpec.Client.ProjectX;
 
@@ -7,12 +9,35 @@ namespace MarqSpec.Mcp.TopstepX.Tests.Venue;
 public sealed class ProjectXClientPackageVersionTests
 {
     [Fact]
-    public void MarqSpecClientProjectX_AssemblyVersion_IsPinnedAt3_0_0()
+    public void MarqSpecClientProjectX_InformationalVersion_IsPinnedAt3_0_0()
     {
-        Version version = typeof(IProjectXApiClient).Assembly.GetName().Version!;
+        Assembly assembly = typeof(IProjectXApiClient).Assembly;
+        string informational = assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()!.InformationalVersion;
 
-        version.Major.Should().Be(3);
-        version.Minor.Should().Be(0);
-        version.Build.Should().Be(0);
+        informational.Should().StartWith("3.0.0");
+    }
+
+    [Fact]
+    public void DirectoryPackagesProps_PinsMarqSpecClientProjectXAt3_0_0()
+    {
+        string propsPath = Path.GetFullPath(
+            Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "Directory.Packages.props"));
+        XDocument props = XDocument.Load(propsPath);
+
+        string? version = props.Root?
+            .Elements("ItemGroup")
+            .SelectMany(group => group.Elements("PackageVersion"))
+            .FirstOrDefault(element => element.Attribute("Include")?.Value == "MarqSpec.Client.ProjectX")
+            ?.Attribute("Version")
+            ?.Value;
+
+        version.Should().Be("3.0.0");
+    }
+
+    [Fact]
+    public void InformationalVersionPin_WouldFailFor3_1_0()
+    {
+        const string bumped = "3.1.0+abc123";
+        bumped.Should().NotStartWith("3.0.0");
     }
 }

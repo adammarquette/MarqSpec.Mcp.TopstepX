@@ -388,7 +388,11 @@ public sealed class TradingRiskGateTests
 
         await act.Should().ThrowAsync<InvalidOperationException>();
         _audit.Entries.Should().Contain(e =>
-            e.Outcome == TradingAuditOutcomes.Unknown && e.VenueErrorCode == nameof(InvalidOperationException));
+            e.Outcome == TradingAuditOutcomes.Attempted && e.ContractCount == SamplePlace(PracticeAccountId).Size);
+        _audit.Entries.Should().Contain(e =>
+            e.Outcome == TradingAuditOutcomes.Unknown
+            && e.VenueErrorCode == nameof(InvalidOperationException)
+            && e.ContractCount == SamplePlace(PracticeAccountId).Size);
     }
 
     [Fact]
@@ -431,33 +435,54 @@ public sealed class TradingRiskGateTests
     }
 
     [Fact]
-    public async Task TradingRiskGate_WritesAttemptedAfterGatewayPermitsSend()
+    public async Task TradingRiskGate_WritesAttemptedBeforeGatewaySend()
     {
         TradingRiskGate gate = Gate(new TradingExecutionOptions { Enabled = true });
         _gateway.PlaceOrderResult = ExecutionWriteResultFactory.Acknowledged(1);
         _gateway.OnPlaceOrder = () =>
         {
-            _audit.Entries.Should().NotContain(e => e.Outcome == TradingAuditOutcomes.Attempted);
+            _audit.Entries.Should().ContainSingle(e => e.Outcome == TradingAuditOutcomes.Attempted);
         };
 
         await gate.SubmitPlace(SamplePlace(PracticeAccountId), Context(dryRun: false), CancellationToken.None);
-
-        _audit.Entries.Should().Contain(e => e.Outcome == TradingAuditOutcomes.Attempted);
     }
 
     [Fact]
-    public async Task TradingRiskGate_DoesNotWriteAttempted_WhenGatewayRefuses()
+    public async Task TradingRiskGate_GatewayRefusal_ReleasesCapChargeAfterWriteAhead()
     {
         _gateway.PlaceOrderResult = ExecutionWriteResultFactory.GateRefused(
             TradingExecutionRefusal.KillSwitchEngaged);
         TradingRiskGate gate = Gate(new TradingExecutionOptions { Enabled = true });
+        int placeSize = SamplePlace(PracticeAccountId).Size;
 
         await gate.SubmitPlace(
             SamplePlace(PracticeAccountId),
             Context(dryRun: false),
             CancellationToken.None);
 
-        _audit.Entries.Should().NotContain(e => e.Outcome == TradingAuditOutcomes.Attempted);
+        int attemptedNet = _audit.Entries
+            .Where(e => e.Outcome == TradingAuditOutcomes.Attempted)
+            .Sum(e => e.ContractCount);
+        attemptedNet.Should().Be(0);
+        _audit.Entries.Should().Contain(e => e.Outcome == TradingAuditOutcomes.Refused);
+    }
+
+    [Fact]
+    public async Task TradingRiskGate_RecordsOutcome_WhenCallerCancelsAfterTransmit()
+    {
+        using CancellationTokenSource cts = new();
+        _gateway.PlaceOrderResult = ExecutionWriteResultFactory.TransmittedOutcomeUnknown();
+        _gateway.OnPlaceOrder = () => cts.Cancel();
+        TradingRiskGate gate = Gate(new TradingExecutionOptions { Enabled = true });
+
+        TradingRiskGateResult result = await gate.SubmitPlace(
+            SamplePlace(PracticeAccountId),
+            Context(dryRun: false),
+            cts.Token);
+
+        result.Outcome.Should().Be(TradingAttemptOutcome.Unknown);
+        _audit.Entries.Should().Contain(e => e.Outcome == TradingAuditOutcomes.Attempted);
+        _audit.Entries.Should().Contain(e => e.Outcome == TradingAuditOutcomes.Unknown);
     }
 
     [Fact]

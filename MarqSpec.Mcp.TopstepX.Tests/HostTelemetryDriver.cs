@@ -182,7 +182,7 @@ internal static class HostTelemetryDriver
                     // are written — so a drive that only called the method would measure nothing at all.
                     if (returned is HostTelemetry.ExecutionWriteScope writeScope)
                     {
-                        writeScope.Refused(candidate);
+                        writeScope.Outcome(candidate);
                     }
 
                     (returned as IDisposable)?.Dispose();

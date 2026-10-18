@@ -91,7 +91,7 @@ public sealed class HostTelemetryTests
         using (HostTelemetry.ExecutionWriteScope scope = telemetry.ExecutionWrite(ExecutionOperation.PlaceOrderOperation))
         {
             writes.LastMeasurement.Should().BeNull();
-            scope.Refused(ExecutionWriteRefusal.TradingDisabled);
+            scope.Outcome(ExecutionWriteRefusal.TradingDisabled);
         }
 
         writes.LastMeasurement!.Value.Should().Be(1);

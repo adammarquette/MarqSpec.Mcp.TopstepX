@@ -656,6 +656,7 @@ public static class Program
         services.AddSingleton<ITradingKillSwitch>(sp => sp.GetRequiredService<TradingKillSwitch>());
         services.AddSingleton<TradingExecutionGate>();
         services.AddSingleton<ITradingUnknownStageRefusalSignal, NullTradingUnknownStageRefusalSignal>();
+        services.AddSingleton<IAccountStageResolver, ProjectXAccountStageResolver>();
 
         // Under HTTP, exactly one authentication mode, complete — the token for StaticToken, the issuer,
         // client ids and resource URL for OAuth — and both directions of "both" refused, each naming its

@@ -193,7 +193,8 @@ public sealed class HistoryPagingTests : IDisposable
                 ApiSecret = "key",
             }),
             NullLogger<ProjectXMarketDataGateway>.Instance,
-            _telemetry);
+            _telemetry,
+            new ProjectXAccountStageResolver());
 
         return (fake, gateway);
     }

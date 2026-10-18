@@ -11,8 +11,8 @@ namespace MarqSpec.Mcp.TopstepX.Venue;
 /// </summary>
 /// <remarks>
 /// The package's <c>ShouldRetryOutcome</c> exempts only <see cref="ProjectXVenueWriteRoutes.Place"/>.
-/// This host wraps the registered resilience handler so modify, close and partial-close never retry on
-/// transport faults, <c>429</c> or <c>5xx</c>.
+/// This host wraps the registered resilience handler so every <see cref="IExecutionGateway"/> route
+/// (place, modify, cancel, close, partial close) never retries on transport faults, <c>429</c> or <c>5xx</c>.
 /// </remarks>
 internal static class ProjectXHttpResilienceConfiguration
 {
@@ -35,7 +35,7 @@ internal static class ProjectXHttpResilienceConfiguration
             retry.ShouldHandle = args =>
             {
                 HttpRequestMessage? request = args.Context.GetRequestMessage();
-                if (ProjectXVenueWriteRoutes.IsNonIdempotentWrite(request))
+                if (ProjectXVenueWriteRoutes.IsExecutionGatewayWriteRoute(request))
                 {
                     return ValueTask.FromResult(false);
                 }
@@ -58,7 +58,7 @@ internal static class ProjectXHttpResilienceConfiguration
         HttpRequestMessage? request,
         Exception? exception,
         HttpResponseMessage? response) =>
-        !ProjectXVenueWriteRoutes.IsNonIdempotentWrite(request)
+        !ProjectXVenueWriteRoutes.IsExecutionGatewayWriteRoute(request)
         && ClientShouldRetry(request, exception, response);
 
     private static bool ClientShouldRetry(

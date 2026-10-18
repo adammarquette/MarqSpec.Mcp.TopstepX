@@ -14,4 +14,12 @@ public interface IAccountStageResolver
     /// <param name="accountName">The gateway account name, or null when absent.</param>
     /// <returns>The parsed stage.</returns>
     AccountStage ResolveFromAccountName(string? accountName);
+
+    /// <summary>
+    /// Reads the stage from a fresh <see cref="VenueAccount"/> row (already mapped via
+    /// <see cref="ResolveFromAccountName"/> at the gateway boundary).
+    /// </summary>
+    /// <param name="account">A row from a fresh account fetch.</param>
+    /// <returns>The practice stage for gate checks.</returns>
+    AccountStage ResolveFromFreshVenueAccount(VenueAccount account);
 }

@@ -42,8 +42,11 @@ public sealed class TradingAuditLogRecord
     /// <summary>Whether the attempt was a dry-run preview rather than a transmit.</summary>
     public required bool DryRun { get; set; }
 
+    /// <summary>Contracts requested or transmitted — used for daily cap rollups on place attempts.</summary>
+    public int ContractCount { get; set; }
+
     /// <summary>
-    /// A closed outcome name for the attempt, e.g. <c>Preview</c>, <c>Refused</c>, <c>Succeeded</c>,
+    /// A closed outcome name for the attempt, e.g. <c>Preview</c>, <c>Refused</c>, <c>Live</c>,
     /// <c>Failed</c>.
     /// </summary>
     public required string Outcome { get; set; }

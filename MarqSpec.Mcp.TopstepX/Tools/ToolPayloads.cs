@@ -118,6 +118,25 @@ public static class ToolPayloads
         ContractSpan Span,
         IReadOnlyList<ContractSegmentInfo> Segments);
 
+    /// <summary>
+    /// The first and last bar a series actually contains.
+    /// </summary>
+    /// <param name="Earliest">
+    /// When the first returned bar opened, or <see langword="null"/> when the series is empty.
+    /// <b>A property, so it is omitted from the wire object</b> rather than serialised as <c>null</c>: the
+    /// caller's test is key presence, never a comparison to null.
+    /// </param>
+    /// <param name="Latest">
+    /// When the last returned bar opened, or <see langword="null"/> when the series is empty. Omitted the
+    /// same way as <paramref name="Earliest"/>.
+    /// </param>
+    /// <remarks>
+    /// Reported rather than left for the caller to scan <c>bars[0]</c> / <c>bars.at(-1)</c>, because an empty
+    /// series has neither, and because a window the vendor answers only in part is otherwise
+    /// indistinguishable from a market that did not trade (gh#695, R-1.16).
+    /// </remarks>
+    public sealed record AvailableBarRange(DateTimeOffset? Earliest, DateTimeOffset? Latest);
+
     /// <summary>A bar series, and what it cost to produce.</summary>
     /// <param name="Symbol">The normalised instrument.</param>
     /// <param name="ResolutionMinutes">The bar size.</param>
@@ -156,6 +175,12 @@ public static class ToolPayloads
     /// the ones the product's cycle names. A window can be <c>SingleContract</c> and still have been decided
     /// among survivors of a venue negative.
     /// </param>
+    /// <param name="Available">
+    /// The first and last bar this call actually returned. Compare <c>available.earliest</c> to the window
+    /// asked for: a later earliest means the vendor (and this store) have no bars before that instant, which
+    /// on Simulated-tier minute bars is a rolling window of weeks rather than a market that did not trade
+    /// (gh#695, R-1.16). Both timestamps are omitted when the series is empty.
+    /// </param>
     public sealed record BarSeries(
         string Symbol,
         int ResolutionMinutes,
@@ -163,7 +188,8 @@ public static class ToolPayloads
         int FetchedBuckets,
         int VenueRequests,
         ContractCoverage Contracts,
-        HistoryCandidates History);
+        HistoryCandidates History,
+        AvailableBarRange Available);
 
     /// <summary>One session's OHLCV, on the trade date it belongs to.</summary>
     /// <param name="TradeDate">The CME trade date, the key a caller joins these on.</param>
@@ -253,6 +279,11 @@ public static class ToolPayloads
     /// <see cref="BarSeries.History"/> describes — the base bars a session is derived from are read through
     /// the same cache-aside path, so the same degradation reaches this answer.
     /// </param>
+    /// <param name="Available">
+    /// The first and last <b>session open</b> this call actually returned — <c>t</c> on this series, the
+    /// same thing it means on every other. Omitted timestamps mean no session bar was built (gh#695,
+    /// R-1.16).
+    /// </param>
     public sealed record SessionBarSeries(
         string Symbol,
         string Session,
@@ -262,7 +293,8 @@ public static class ToolPayloads
         int FetchedBuckets,
         int VenueRequests,
         ContractCoverage Contracts,
-        HistoryCandidates History);
+        HistoryCandidates History,
+        AvailableBarRange Available);
 
     /// <summary>An indicator series.</summary>
     /// <param name="Symbol">The normalised instrument.</param>
@@ -754,6 +786,68 @@ public static class ToolPayloads
     {
         ArgumentNullException.ThrowIfNull(bar);
         return new BarPoint(bar.OpenTime, bar.Open, bar.High, bar.Low, bar.Close, bar.Volume);
+    }
+
+    /// <summary>The first and last open in a bar series, or omitted timestamps when there are none.</summary>
+    /// <param name="bars">The bars, typically already ascending.</param>
+    /// <returns>The range actually present, not the window that was asked for.</returns>
+    public static AvailableBarRange ToAvailableRange(IReadOnlyList<BarPoint> bars)
+    {
+        ArgumentNullException.ThrowIfNull(bars);
+
+        if (bars.Count == 0)
+        {
+            return new AvailableBarRange(null, null);
+        }
+
+        DateTimeOffset earliest = bars[0].T;
+        DateTimeOffset latest = bars[0].T;
+        for (int i = 1; i < bars.Count; i++)
+        {
+            DateTimeOffset at = bars[i].T;
+            if (at < earliest)
+            {
+                earliest = at;
+            }
+
+            if (at > latest)
+            {
+                latest = at;
+            }
+        }
+
+        return new AvailableBarRange(earliest, latest);
+    }
+
+    /// <summary>The first and last session open in a session-bar series.</summary>
+    /// <param name="bars">The session bars.</param>
+    /// <returns>The range actually present. <c>t</c> is the session open, as on every other series.</returns>
+    public static AvailableBarRange ToAvailableRange(IReadOnlyList<SessionBarPoint> bars)
+    {
+        ArgumentNullException.ThrowIfNull(bars);
+
+        if (bars.Count == 0)
+        {
+            return new AvailableBarRange(null, null);
+        }
+
+        DateTimeOffset earliest = bars[0].T;
+        DateTimeOffset latest = bars[0].T;
+        for (int i = 1; i < bars.Count; i++)
+        {
+            DateTimeOffset at = bars[i].T;
+            if (at < earliest)
+            {
+                earliest = at;
+            }
+
+            if (at > latest)
+            {
+                latest = at;
+            }
+        }
+
+        return new AvailableBarRange(earliest, latest);
     }
 
     /// <summary>One footprint cell on the wire.</summary>

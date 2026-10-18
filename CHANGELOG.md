@@ -28,6 +28,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`available` on every bar-series payload.** `get_bars`, `get_latest_bars`, `get_session_bars` and
+  `get_latest_session_bars` report `available.earliest` / `available.latest` — the first and last bar this
+  call actually returned. Both keys are omitted when the series is empty. A requested window past the
+  vendor's depth comes back short with no error; the timestamps are how a caller tells that from a quiet
+  market. Paging at the silent 1000-bar cap and pacing at 50 requests / 30 seconds were already in the
+  gateway; unit tests now drive that walk against a scripted `retrieveBars` (gh#695, `R-1.16`).
+
 - **`adx`, `plus-di` and `minus-di` in the indicator catalogue, at Wilder's default 14.** Readable on
   `get_indicators` / `get_indicator_at` and on the session twins, at the primary period and at any additional
   `Indicators__AdditionalAdxPeriods` an operator configures. The three share one period: ADX is a smoothing of

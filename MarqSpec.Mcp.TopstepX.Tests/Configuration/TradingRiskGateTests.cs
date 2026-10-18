@@ -3,6 +3,7 @@ using MarqSpec.Mcp.TopstepX.Configuration;
 using MarqSpec.Mcp.TopstepX.Domain;
 using MarqSpec.Mcp.TopstepX.Domain.MarketData;
 using MarqSpec.Mcp.TopstepX.MarketData;
+using MarqSpec.Mcp.TopstepX.Telemetry;
 using MarqSpec.Mcp.TopstepX.Venue;
 using Microsoft.Extensions.Options;
 
@@ -40,8 +41,8 @@ public sealed class TradingRiskGateTests
         _gateway.PlaceOrderCalls.Should().Be(0);
         result.Outcome.Should().Be(TradingAttemptOutcome.Refused);
         result.Refusal.Should().Be(TradingExecutionRefusal.TradingDisabled);
-        _audit.Entries.Should().ContainSingle();
-        _audit.Entries[0].ParsedStage.Should().Be("Unresolved");
+        _audit.Entries.Should().BeEmpty();
+        _daily.LockAcquisitions.Should().Be(0);
     }
 
     [Fact]
@@ -526,7 +527,8 @@ public sealed class TradingRiskGateTests
             _unknownSignal,
             _daily,
             _audit,
-            denylist);
+            denylist,
+            new HostTelemetry());
     }
 
     private static VenueOrder OpenOrder(long orderId, string contractId) =>

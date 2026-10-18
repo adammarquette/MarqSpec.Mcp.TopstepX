@@ -638,6 +638,19 @@ public static class ToolPayloads
         bool IsVisible,
         decimal Balance);
 
+    /// <summary>Result of a gated trading write MCP tool (ADR-0024, gh#711).</summary>
+    /// <param name="Outcome">Attempt outcome from the risk gate vocabulary.</param>
+    /// <param name="ParsedStage">Stage resolved for the account, or unknown when not resolved.</param>
+    /// <param name="RefusalCode">Stable refusal code when refused; omitted when absent.</param>
+    /// <param name="OrderId">Assigned order id after a broker-acked place; omitted when absent.</param>
+    /// <param name="WouldTransmit">True on dry-run preview that would have transmitted.</param>
+    public sealed record TradingWriteResult(
+        string Outcome,
+        AccountStage ParsedStage,
+        string? RefusalCode,
+        long? OrderId,
+        bool WouldTransmit);
+
     /// <summary>Everything about one instrument at one moment, in one call.</summary>
     /// <param name="Symbol">The instrument.</param>
     /// <param name="Session">Where the market is in its session.</param>

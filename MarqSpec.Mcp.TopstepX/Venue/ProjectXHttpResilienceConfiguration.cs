@@ -1,5 +1,4 @@
-using System.Reflection;
-using MarqSpec.Client.ProjectX.DependencyInjection;
+using System.Net;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Http.Resilience;
 using Polly;
@@ -10,30 +9,12 @@ namespace MarqSpec.Mcp.TopstepX.Venue;
 /// Host-side retry policy for the ProjectX HTTP client (MarqSpec.Client.ProjectX 3.0.0, gh#734).
 /// </summary>
 /// <remarks>
-/// The package's <c>ShouldRetryOutcome</c> exempts only <see cref="ProjectXVenueWriteRoutes.Place"/>.
-/// This host wraps the registered resilience handler so every gated execution POST under
-/// <c>/api/Order/</c> and <c>/api/Position/</c> (except allowlisted reads) never retries on transport
-/// faults, <c>429</c> or <c>5xx</c>.
+/// The package's built-in retry predicate exempts only the place-order route from auto-retry. This host wraps
+/// the registered resilience handler so every gated execution POST under the order and position API prefixes
+/// (except allowlisted reads) never retries on transport faults, <c>429</c> or <c>5xx</c>.
 /// </remarks>
 internal static class ProjectXHttpResilienceConfiguration
 {
-    private static readonly MethodInfo? _clientShouldRetryOutcome = typeof(ServiceCollectionExtensions)
-        .GetMethod(
-            "ShouldRetryOutcome",
-            BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic,
-            binder: null,
-            [typeof(HttpRequestMessage), typeof(Exception), typeof(HttpResponseMessage)],
-            modifiers: null);
-
-    static ProjectXHttpResilienceConfiguration()
-    {
-        if (_clientShouldRetryOutcome is null)
-        {
-            throw new InvalidOperationException(
-                "MarqSpec.Client.ProjectX 3.0.0 must expose ShouldRetryOutcome for the host retry wrapper.");
-        }
-    }
-
     /// <summary>Chains the client retry predicate after the execution write guard.</summary>
     public static IServiceCollection SuppressTransportRetriesOnVenueWrites(this IServiceCollection services)
     {
@@ -56,16 +37,40 @@ internal static class ProjectXHttpResilienceConfiguration
                 }
 
                 return ValueTask.FromResult(
-                    ClientShouldRetry(request, args.Outcome.Exception, args.Outcome.Result));
+                    PinnedClientShouldRetryOutcome(
+                        request,
+                        args.Outcome.Exception,
+                        args.Outcome.Result));
             };
         });
 
         return services;
     }
 
-    private static bool ClientShouldRetry(
+    /// <summary>
+    /// Explicit copy of MarqSpec.Client.ProjectX 3.0.0 <c>ShouldRetryOutcome</c> (internal on the package).
+    /// </summary>
+    private static bool PinnedClientShouldRetryOutcome(
         HttpRequestMessage? request,
         Exception? exception,
-        HttpResponseMessage? response) =>
-        (bool)_clientShouldRetryOutcome!.Invoke(null, [request, exception, response])!;
+        HttpResponseMessage? response)
+    {
+        if (ProjectXVenueWriteRoutes.IsPinnedClientOrderPlacementExempt(request))
+        {
+            return false;
+        }
+
+        if (exception is HttpRequestException
+            || response?.StatusCode == HttpStatusCode.TooManyRequests)
+        {
+            return true;
+        }
+
+        if (response is null)
+        {
+            return false;
+        }
+
+        return response.StatusCode >= HttpStatusCode.InternalServerError;
+    }
 }

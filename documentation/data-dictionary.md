@@ -700,7 +700,7 @@ Index: `(Instrument, Session, Indicator, Period, BucketStart)` — the shape of 
 | `VenueErrorCode` | `varchar(64)` | Venue business error when a write ran; null when no gateway write |
 
 One row for **every** trading attempt — preview, confirm, or live — before the outcome is returned
-([ADR-0024](adr/0024-gated-trading-actions-practice-v1.md) §5, gh#709). The idempotency store that suppresses
+(ADR-0024 Proposed §5, gh#707 / gh#709). The idempotency store that suppresses
 duplicate venue calls is separate; this table is the audit trail, not the dedupe cache.
 
 **Append-only at the database.** `BEFORE UPDATE` and `BEFORE DELETE` triggers raise if either is attempted.

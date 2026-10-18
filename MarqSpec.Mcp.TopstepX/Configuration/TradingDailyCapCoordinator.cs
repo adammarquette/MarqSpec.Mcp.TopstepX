@@ -1,3 +1,4 @@
+using System.Data;
 using MarqSpec.Mcp.TopstepX.Data;
 using Microsoft.EntityFrameworkCore;
 
@@ -22,12 +23,26 @@ public sealed class TradingDailyCapCoordinator(TopstepXDbContext database, TimeP
         int accountId,
         CancellationToken cancellationToken)
     {
-        await database.Database
-            .ExecuteSqlRawAsync(
-                "SELECT pg_advisory_lock({0}, {1})",
-                [AdvisoryLockClassId, accountId],
-                cancellationToken)
-            .ConfigureAwait(false);
+        await database.Database.OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
+
+        try
+        {
+            await database.Database
+                .ExecuteSqlRawAsync(
+                    "SELECT pg_advisory_lock({0}, {1})",
+                    [AdvisoryLockClassId, accountId],
+                    cancellationToken)
+                .ConfigureAwait(false);
+        }
+        catch
+        {
+            if (database.Database.GetDbConnection().State == ConnectionState.Open)
+            {
+                await database.Database.CloseConnectionAsync().ConfigureAwait(false);
+            }
+
+            throw;
+        }
 
         return new SessionLock(database, AdvisoryLockClassId, accountId);
     }
@@ -54,9 +69,19 @@ public sealed class TradingDailyCapCoordinator(TopstepXDbContext database, TimeP
     {
         public async ValueTask DisposeAsync()
         {
-            await database.Database
-                .ExecuteSqlRawAsync("SELECT pg_advisory_unlock({0}, {1})", [classId, accountId])
-                .ConfigureAwait(false);
+            try
+            {
+                await database.Database
+                    .ExecuteSqlRawAsync("SELECT pg_advisory_unlock({0}, {1})", [classId, accountId])
+                    .ConfigureAwait(false);
+            }
+            finally
+            {
+                if (database.Database.GetDbConnection().State == ConnectionState.Open)
+                {
+                    await database.Database.CloseConnectionAsync().ConfigureAwait(false);
+                }
+            }
         }
     }
 }

@@ -1,6 +1,7 @@
 using System.Text.Json;
 using FluentAssertions;
 using MarqSpec.Mcp.TopstepX.Domain.MarketData;
+using MarqSpec.Mcp.TopstepX.MarketData;
 using MarqSpec.Mcp.TopstepX.Tools;
 using MarqSpec.Mcp.TopstepX.Venue;
 using ModelContextProtocol;
@@ -295,6 +296,50 @@ public sealed class PayloadNullWireShapeTests
             + "share a contract");
         atr.GetProperty("value").GetDecimal().Should().Be(
             12.5m, "the value is unaffected: an absent contract does not make a reading unmeasured");
+    }
+
+    [Fact]
+    public void AvailableBarRange_OmitsBothTimestamps_WhenTheSeriesIsEmpty()
+    {
+        JsonElement series = Wire(new ToolPayloads.BarSeries(
+            Symbol: "ES",
+            ResolutionMinutes: 1,
+            Bars: [],
+            FetchedBuckets: 0,
+            VenueRequests: 2,
+            Contracts: EmptyCoverage,
+            History: HistoryCandidates.NotDecidedHere,
+            Available: new ToolPayloads.AvailableBarRange(null, null)));
+
+        JsonElement available = series.GetProperty("available");
+        available.TryGetProperty("earliest", out _).Should().BeFalse(
+            "an empty series DROPS both keys, so `\"earliest\" in available` is the test");
+        available.TryGetProperty("latest", out _).Should().BeFalse();
+        available.EnumerateObject().Should().BeEmpty();
+    }
+
+    [Fact]
+    public void AvailableBarRange_WritesBothTimestamps_WhenTheSeriesHasBars()
+    {
+        DateTimeOffset first = new(2026, 8, 18, 14, 30, 0, TimeSpan.Zero);
+        DateTimeOffset last = first.AddMinutes(1);
+        JsonElement series = Wire(new ToolPayloads.BarSeries(
+            Symbol: "ES",
+            ResolutionMinutes: 1,
+            Bars:
+            [
+                new ToolPayloads.BarPoint(first, 1m, 2m, 0m, 1m, 10),
+                new ToolPayloads.BarPoint(last, 1m, 2m, 0m, 1m, 10),
+            ],
+            FetchedBuckets: 2,
+            VenueRequests: 2,
+            Contracts: EmptyCoverage,
+            History: HistoryCandidates.NotDecidedHere,
+            Available: new ToolPayloads.AvailableBarRange(first, last)));
+
+        JsonElement available = series.GetProperty("available");
+        available.GetProperty("earliest").GetDateTimeOffset().Should().Be(first);
+        available.GetProperty("latest").GetDateTimeOffset().Should().Be(last);
     }
 
     [Fact]

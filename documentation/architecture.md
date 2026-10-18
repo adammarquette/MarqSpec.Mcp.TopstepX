@@ -147,7 +147,12 @@ ADR-0022's *Update (2026-09-08)* (gh#538).
 5. **Fetch** each remaining range, paged at `1000 × barSize` — the gateway caps a history call at 1000 bars and
    silently truncates past it. The pages are **paced** to the vendor's 50-per-30-seconds allowance on the
    history endpoint, shared process-wide, because a cold year of five-minute bars is 106 requests back to back
-   (`R-1.10`, [wiki — rate limits](wiki/pages/projectx-gateway-api.md#rate-limits)). Every bar is **stamped
+   (`R-1.10`, [wiki — rate limits](wiki/pages/projectx-gateway-api.md#rate-limits)). Past the vendor's depth a
+   page returns **empty with no error** — Simulated-tier minute bars are a rolling ~63 days, hourly about a
+   year ([wiki — history depth](wiki/pages/projectx-gateway-api.md#expired-contracts-and-history-depth--measured-2026-09-06-on-the-simulated-tier))
+   — so the walk still issues those pages rather than inventing a skip that would also skip the empty-range
+   memo (`R-1.7`). The tool payload reports the range that actually came back as `available.earliest` /
+   `available.latest` (`R-1.16`, gh#695). Every bar is **stamped
    with the contract it was fetched from**, here and nowhere else: one layer up, the series is keyed by the
    symbol alone and the fact is gone ([ADR-0011](adr/0011-contract-roll-boundary.md)).
 

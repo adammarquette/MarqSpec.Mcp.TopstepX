@@ -73,7 +73,13 @@ public sealed class BarTools(
         + "expiries that fell away, e.g. M26. NotDecidedHere means THIS call decided no history: every "
         + "bucket was already stored, or the window sits in the present band. It is in no case a statement "
         + "that the stored history is whole: bars fetched by an earlier degraded read read back exactly "
-        + "like any other, and nothing recorded about them says otherwise.")]
+        + "like any other, and nothing recorded about them says otherwise. "
+        + "`available.earliest` and `available.latest` are the first and last bar this call actually "
+        + "returned. Both keys are omitted when the series is empty — never whether they equal null. "
+        + "Compare `available.earliest` to `fromUtc`: a later earliest means the vendor and this store "
+        + "have no bars before that instant. On Simulated-tier minute bars that edge is a rolling window "
+        + "of about nine weeks, not a quiet market; hourly history reaches about a year. The numbers are "
+        + "on the gateway wiki and they age — the timestamps in `available` are the measurement.")]
     public async Task<ToolPayloads.BarSeries> GetBars(
         [Description("The instrument symbol, e.g. ES.")] string symbol,
         [Description("The bar size in minutes, e.g. 1, 5, 15, 60.")] int resolutionMinutes,
@@ -87,14 +93,16 @@ public sealed class BarTools(
         BarReadResult result = await ReadAsync(instrument, resolutionMinutes, window, cancellationToken)
             .ConfigureAwait(false);
 
+        IReadOnlyList<ToolPayloads.BarPoint> points = [.. result.Bars.Select(ToolPayloads.ToPoint)];
         return new ToolPayloads.BarSeries(
             instrument.Symbol,
             resolutionMinutes,
-            [.. result.Bars.Select(ToolPayloads.ToPoint)],
+            points,
             result.FetchedBuckets,
             result.VenueRequests,
             ToolPayloads.ToCoverage(result.Bars),
-            result.History);
+            result.History,
+            ToolPayloads.ToAvailableRange(points));
     }
 
     /// <summary>Reads the most recent closed bars.</summary>
@@ -112,8 +120,9 @@ public sealed class BarTools(
     [Description(
         "Reads the most recent closed bars for an instrument. Anchored on the last CLOSED bucket, never a "
         + "forming one. This is usually the tool to reach for over get_bars, which needs explicit dates. "
-        + "The response shape is get_bars', `contracts` and `history` included, and those two mean exactly "
-        + "what they mean there — read `history.selection` before treating a deep lookback as ordinary.")]
+        + "The response shape is get_bars', `contracts`, `history` and `available` included, and those "
+        + "mean exactly what they mean there — read `history.selection` before treating a deep lookback as "
+        + "ordinary, and read `available.earliest` before treating a short series as a quiet market.")]
     public async Task<ToolPayloads.BarSeries> GetLatestBars(
         [Description("The instrument symbol, e.g. ES.")] string symbol,
         [Description("The bar size in minutes.")] int resolutionMinutes,
@@ -139,14 +148,16 @@ public sealed class BarTools(
             ? result.Bars
             : [.. result.Bars.Skip(result.Bars.Count - wanted)];
 
+        IReadOnlyList<ToolPayloads.BarPoint> points = [.. tail.Select(ToolPayloads.ToPoint)];
         return new ToolPayloads.BarSeries(
             instrument.Symbol,
             resolutionMinutes,
-            [.. tail.Select(ToolPayloads.ToPoint)],
+            points,
             result.FetchedBuckets,
             result.VenueRequests,
             ToolPayloads.ToCoverage(tail),
-            result.History);
+            result.History,
+            ToolPayloads.ToAvailableRange(points));
     }
 
     private async Task<BarReadResult> ReadAsync(

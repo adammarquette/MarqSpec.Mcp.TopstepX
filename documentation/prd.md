@@ -219,6 +219,19 @@ The server serves OHLCV bars for a futures instrument at a requested resolution 
   and the schema is migrated, and the run commits **one series at a time**, so a failure partway names how
   far it got rather than undoing what came before. See
   [ADR-0020](adr/0020-historical-contract-selection.md) §5 (gh#506, gh#497).
+- **R-1.16** A bar-series answer reports the **range actually returned** — `available.earliest` and
+  `available.latest`, the first and last bar open this call produced — rather than leaving the caller to
+  infer it from `bars[0]` / `bars.at(-1)`. Both timestamps are omitted when the series is empty; the
+  `available` object itself is always present. Compare `available.earliest` to the window asked for: a
+  later earliest means the vendor (and this store) have no bars before that instant, which on
+  Simulated-tier minute bars is a rolling window of weeks rather than a market that did not trade
+  (gh#695). The gateway already pages a fetch wider than the vendor's silent 1000-bar cap (`R-1.4`) and
+  paces those pages (`R-1.10`); past the vendor's depth a page returns **empty with no error** (`R-1.7`),
+  so paging alone cannot invent bars the vendor does not hold. Hourly history reaches about a year;
+  minute history is on the order of nine weeks — numbers measured 2026-09-06 and recorded on the
+  [gateway wiki](wiki/pages/projectx-gateway-api.md#expired-contracts-and-history-depth--measured-2026-09-06-on-the-simulated-tier),
+  which age. The timestamps in `available` are the measurement. Session-bar tools report the same object
+  over session opens.
 
 ## R-2 — Pre-computed indicators
 
@@ -525,8 +538,8 @@ The server serves OHLCV bars for a futures instrument at a requested resolution 
 - **R-5.11** **`get_session_bars`** and **`get_latest_session_bars`** return one OHLCV bar per whole trading
   session: `get_session_bars(symbol, session, fromUtc, toUtc)` over the trade dates a window wholly contains,
   and `get_latest_session_bars(symbol, session, count)` over the most recent **closed** sessions, never the
-  one in progress. Both answer `{ symbol, session, baseResolutionMinutes, bars, absent, fetchedBuckets,
-  venueRequests, contracts }`, with the bars and the absences partitioning the trade dates asked for
+  one in progress.   Both answer `{ symbol, session, baseResolutionMinutes, bars, absent, fetchedBuckets,
+  venueRequests, contracts, history, available }`, with the bars and the absences partitioning the trade dates asked for
   (`R-1.13`, `R-1.12`) and `baseResolutionMinutes` saying what "complete" was measured in. `session` is a
   closed vocabulary — an unknown name is an error listing the configured ones, never an empty series, on the
   same terms as an unknown instrument (R-5.3). They are their own tool type rather than a `session` argument

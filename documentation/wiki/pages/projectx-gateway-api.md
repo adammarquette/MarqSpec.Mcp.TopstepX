@@ -6,7 +6,7 @@
 > https://gateway.docs.projectx.com/docs/intro
 > **Access:** vendor docs are public, no auth wall; behavioural claims below were observed against a live
 > practice login. Nothing is reproduced verbatim.
-> **Informs:** `R-1` (incl. `R-1.10`), `R-4`, `R-5`, `R-7`, `R-8`, `Q-1`, `Q-3`
+> **Informs:** `R-1` (incl. `R-1.10`, `R-1.16`), `R-4`, `R-5`, `R-7`, `R-8`, `Q-1`, `Q-3`
 >
 > *Addition, 2026-08-23 (gh#43):* **[Rate limits](#rate-limits)** added. Read from the vendor's own
 > documentation that day and marked **documented, not observed** — no 429 has ever been provoked from this
@@ -195,6 +195,11 @@ Three things to know:
 1. **One call caps at 1000 bars, and the excess is silently truncated** rather than reported. A wider window
    must be walked in pages of `1000 × barSize`, or the answer is quietly short — and those pages must be
    **paced**, because this endpoint carries the gateway's tightest limit. See [Rate limits](#rate-limits).
+   This server already does both (`R-1.4`, `R-1.10`). A window that is *short* after that walk is vendor
+   depth, not a missed page: past the edge the same call returns **empty with no error**. See
+   [history depth](#expired-contracts-and-history-depth--measured-2026-09-06-on-the-simulated-tier). Bar
+   tools report the range that actually came back as `available.earliest` / `available.latest` (`R-1.16`,
+   gh#695) so a caller can tell that edge from a quiet market.
 2. **`includePartialBar: false` is not sufficient.** Drop still-forming bars on the client side as well
    (`OpenTime + barSize <= now`). A half-formed bar stored as final is indistinguishable from data, and
    corrupts everything derived from it.

@@ -279,7 +279,8 @@ The workhorse. Cache-aside: served from the store, with only genuinely missing b
 
 Returns `{ symbol, resolutionMinutes, bars: [{ t, o, h, l, c, v }], fetchedBuckets, venueRequests,
 contracts: { span, segments: [{ contractId, firstBucket, lastBucket, barCount }] },
-history: { selection, unresolved: [expiryCode] } }`.
+history: { selection, unresolved: [expiryCode] },
+available: { earliest, latest } }`.
 
 `fetchedBuckets` and `venueRequests` are both in the response, and **they answer different questions.** Only
 one of them is evidence of a round trip.
@@ -361,11 +362,28 @@ minute of deliberate delay on top of the round trips, and a *narrow* read pays o
 just spent the allowance (`R-1.10`). A read served from the store issues no venue request at all and so cannot
 be paced.
 
+#### `available` — the range this call actually returned (`R-1.16`, gh#695)
+
+**Not the window asked for.** `available.earliest` and `available.latest` are the first and last bar open in
+the series that came back. Both keys are omitted when the series is empty — never whether they equal `null`;
+the `available` object itself is always there, as `{}` on an empty answer. Compare `available.earliest` to
+`fromUtc`: a later earliest means the vendor (and this store) have no bars before that instant.
+
+That is the shape of Simulated-tier **minute** history: a rolling window of about nine weeks, measured
+2026-09-06 as 63 days on every contract alike, with empty pages and no error past the edge. Hourly history
+reaches about a year. The numbers live on the
+[gateway wiki](wiki/pages/projectx-gateway-api.md#expired-contracts-and-history-depth--measured-2026-09-06-on-the-simulated-tier)
+and they age; the timestamps are the measurement. Paging at the silent 1000-bar cap (`R-1.4`) and pacing at
+50 requests / 30 seconds (`R-1.10`) were already how a wider window is walked — they cannot invent bars the
+vendor does not hold.
+
 ### `get_latest_bars(symbol, resolutionMinutes, count)`
 The recent window, which is what an agent actually asks for. Same shape as `get_bars`, anchored on the last
-**closed** bucket. `count` is bounded by `MaxRows`. The look-back is four bar spans per bar wanted **plus
+**closed** bucket — `contracts`, `history` and `available` included, and those mean what they mean there.
+`count` is bounded by `MaxRows`. The look-back is four bar spans per bar wanted **plus
 four days** (`ToolGuards.LookbackWindow`), and a coarse resolution with a large `count` is refused for
-reaching back past the start of the calendar — one of the cross-axis pairs above.
+reaching back past the start of the calendar — one of the cross-axis pairs above. Read `available.earliest`
+before treating a short series as a quiet market.
 
 ### `get_session_bars(symbol, session, fromUtc, toUtc)`
 One OHLCV bar per **whole** trading session over a window — the day, the overnight, or any named slice of it.
@@ -379,7 +397,8 @@ description trying to describe both.
 Returns `{ symbol, session, baseResolutionMinutes, bars: [{ tradeDate, t, closeUtc, o, h, l, c, v }],
 absent: [{ tradeDate, reason, expectedBuckets, missingBuckets }], fetchedBuckets, venueRequests,
 contracts: { span, segments: [{ contractId, firstBucket, lastBucket, barCount }] },
-history: { selection, unresolved: [expiryCode] } }`.
+history: { selection, unresolved: [expiryCode] },
+available: { earliest, latest } }`.
 
 `tradeDate` is the CME trade date and the key to join the two lists on. `t` is when the session opened — the
 same thing `t` means on every other series here — and `closeUtc` when it closed, exclusive, carried beside it

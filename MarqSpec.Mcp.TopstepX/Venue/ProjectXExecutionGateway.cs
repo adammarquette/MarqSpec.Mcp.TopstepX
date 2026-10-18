@@ -27,7 +27,7 @@ public sealed class ProjectXExecutionGateway : IExecutionGateway
     private readonly ITradingUnknownStageRefusalSignal _unknownStageSignal;
     private readonly IProjectXApiClient _client;
     private readonly VenueCallGuard _calls;
-    private readonly HostTelemetry _telemetry;
+    private readonly TradingWriteVenueAccountCache _accountCache;
     private readonly ILogger<ProjectXExecutionGateway> _logger;
 
     /// <summary>Creates the gated adapter.</summary>
@@ -36,6 +36,7 @@ public sealed class ProjectXExecutionGateway : IExecutionGateway
         IMarketDataGateway marketData,
         ITradingUnknownStageRefusalSignal unknownStageSignal,
         IProjectXApiClient client,
+        TradingWriteVenueAccountCache accountCache,
         HostTelemetry telemetry,
         ILogger<ProjectXExecutionGateway> logger)
     {
@@ -43,8 +44,8 @@ public sealed class ProjectXExecutionGateway : IExecutionGateway
         _marketData = marketData;
         _unknownStageSignal = unknownStageSignal;
         _client = client;
+        _accountCache = accountCache;
         _calls = new VenueCallGuard(telemetry);
-        _telemetry = telemetry;
         _logger = logger;
     }
 
@@ -104,32 +105,27 @@ public sealed class ProjectXExecutionGateway : IExecutionGateway
         CancellationToken cancellationToken,
         Func<CancellationToken, Task<ExecutionWriteResult>> transmit)
     {
-        using HostTelemetry.ExecutionWriteScope write = _telemetry.ExecutionWrite(operation);
-
         TradingExecutionRefusal? refusal = await _gate
             .RefuseWriteUnlessPermittedAsync(
                 accountId,
                 _marketData,
                 _unknownStageSignal,
-                cancellationToken)
+                cancellationToken,
+                _accountCache.TryGet(accountId))
             .ConfigureAwait(false);
 
         if (refusal is TradingExecutionRefusal gateRefusal)
         {
-            write.Refused(gateRefusal.Code);
             return GateRefused(gateRefusal);
         }
 
         cancellationToken.ThrowIfCancellationRequested();
         try
         {
-            ExecutionWriteResult result = await transmit(cancellationToken).ConfigureAwait(false);
-            write.Refused(ExecutionWriteRefusal.Transmitted);
-            return result;
+            return await transmit(cancellationToken).ConfigureAwait(false);
         }
         catch (Exception ex)
         {
-            write.Refused(ExecutionWriteRefusal.Transmitted);
             return ExecutionTransmitFault.MapOrRethrow(ex, transmitted: false, cancellationToken, _logger);
         }
     }
@@ -374,10 +370,4 @@ internal static class ProjectXVenueWriteRoutes
     private static bool IsAllowlistedReadPost(string absolutePath) =>
         absolutePath.EndsWith("/search", StringComparison.OrdinalIgnoreCase)
         || absolutePath.EndsWith("/searchOpen", StringComparison.OrdinalIgnoreCase);
-
-    /// <summary>
-    /// Matches MarqSpec.Client.ProjectX 3.0.0 <c>IsOrderPlacement</c> for the host retry wrapper (gh#734).
-    /// </summary>
-    internal static bool IsPinnedClientOrderPlacementExempt(HttpRequestMessage? request) =>
-        request?.RequestUri?.AbsolutePath.EndsWith(Place, StringComparison.OrdinalIgnoreCase) ?? false;
 }

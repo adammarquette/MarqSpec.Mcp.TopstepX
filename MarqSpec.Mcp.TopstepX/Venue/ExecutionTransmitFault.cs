@@ -59,6 +59,18 @@ internal static class ExecutionTransmitFault
             return NotTransmittedVenueFailure();
         }
 
+        if (venue.ErrorCode == 408)
+        {
+            if (!transmitted)
+            {
+                LogDefiniteFailure(logger, venue.GetType().Name, httpStatus: 408);
+                return NotTransmittedVenueFailure();
+            }
+
+            LogUncertainFailure(logger, venue.GetType().Name, httpStatus: 408);
+            return OutcomeUnknown();
+        }
+
         if (venue.ErrorCode is int code && code is >= 400 and < 500)
         {
             LogDefiniteFailure(logger, venue.GetType().Name, httpStatus: code);

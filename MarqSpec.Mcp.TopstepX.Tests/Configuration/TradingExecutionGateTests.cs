@@ -134,7 +134,7 @@ public sealed class TradingExecutionGateTests
 
     private TradingExecutionGate Gate(TradingExecutionOptions options)
     {
-        return new TradingExecutionGate(Options.Create(options), _killSwitch);
+        return new TradingExecutionGate(Options.Create(options), _killSwitch, new ProjectXAccountStageResolver());
     }
 
     private sealed class FakeKillSwitch : ITradingKillSwitch
@@ -160,7 +160,8 @@ public sealed class TradingExecutionGateTests
         FakeKillSwitch killSwitch = new() { Engaged = true };
         TradingExecutionGate gate = new(
             Options.Create(new TradingExecutionOptions { Enabled = true }),
-            killSwitch);
+            killSwitch,
+            new ProjectXAccountStageResolver());
 
         TradingExecutionRefusal? refusal = await gate.RefuseWriteUnlessPermittedAsync(
             accountId: 1,

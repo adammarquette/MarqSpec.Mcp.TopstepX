@@ -112,9 +112,11 @@ public sealed class TradingRiskGateDisabledTelemetryTests
         _daily.LockAcquisitions.Should().Be(0);
         assertGateway();
 
-        writes.LastMeasurement!.Value.Should().Be(1);
-        writes.LastMeasurement.Tags[HostTelemetry.OperationTag].Should().Be(expectedOperation);
-        writes.LastMeasurement.Tags[HostTelemetry.RefusalTag].Should().Be(ExecutionWriteRefusal.TradingDisabled);
+        IReadOnlyList<CollectedMeasurement<long>> measurements = writes.GetMeasurementSnapshot();
+        measurements.Should().ContainSingle();
+        measurements[0].Value.Should().Be(1);
+        measurements[0].Tags[HostTelemetry.OperationTag].Should().Be(expectedOperation);
+        measurements[0].Tags[HostTelemetry.RefusalTag].Should().Be(ExecutionWriteRefusal.TradingDisabled);
 
         Activity span = spans.Should().ContainSingle().Subject;
         span.OperationName.Should().Be("execution." + expectedOperation);
@@ -124,10 +126,13 @@ public sealed class TradingRiskGateDisabledTelemetryTests
 
     private TradingRiskGate Gate(HostTelemetry telemetry, TradingExecutionOptions options)
     {
-        TradingExecutionGate executionGate = new(Options.Create(options), _killSwitch);
+        ProjectXAccountStageResolver stageResolver = new();
+        TradingExecutionGate executionGate = new(
+            Options.Create(options),
+            _killSwitch,
+            stageResolver);
         InstrumentRegistry registry = new(Options.Create(new MarketDataOptions { Instruments = "MES" }));
         TradingContractDenylist denylist = new(Options.Create(options), registry);
-        ProjectXAccountStageResolver stageResolver = new();
 
         IReadOnlyList<VenueAccount> accounts =
         [
@@ -143,6 +148,7 @@ public sealed class TradingRiskGateDisabledTelemetryTests
             _daily,
             _audit,
             denylist,
+            new TradingWriteVenueAccountCache(),
             telemetry);
     }
 

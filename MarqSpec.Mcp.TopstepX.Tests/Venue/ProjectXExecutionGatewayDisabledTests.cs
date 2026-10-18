@@ -1,4 +1,3 @@
-using System.Diagnostics;
 using FluentAssertions;
 using MarqSpec.Client.ProjectX;
 using MarqSpec.Mcp.TopstepX.Configuration;
@@ -12,11 +11,9 @@ using Microsoft.Extensions.Options;
 
 namespace MarqSpec.Mcp.TopstepX.Tests.Venue;
 
-/// <summary>
-/// Adam's acceptance criteria for master enable off: refusal before the vendor, plus OTel (gh#710, #734).
-/// </summary>
+/// <summary>Execution gateway refuses before the vendor when master enable is off (gh#710, #734).</summary>
 [Trait("Gate", "ADR-0024")]
-public sealed class ProjectXExecutionGatewayTradingRiskGateTelemetryTests
+public sealed class ProjectXExecutionGatewayDisabledTests
 {
     private const int PracticeAccountId = 100;
 
@@ -26,43 +23,23 @@ public sealed class ProjectXExecutionGatewayTradingRiskGateTelemetryTests
 
     [Theory]
     [MemberData(nameof(DisabledWriteVerbs))]
-    public async Task TradingRiskGate_WhenTradingDisabled_RefusesBeforeVendorAndEmitsTelemetry(
+    public async Task ExecutionGateway_WhenTradingDisabled_RefusesBeforeVendorWithoutExecutionTelemetry(
         ProjectXExecutionGatewayTests.WriteVerb verb)
     {
         (ExecutionOrderClient fake, IProjectXApiClient client) = ExecutionOrderClient.Create();
         using HostTelemetry telemetry = new();
         using MetricCollector<long> writes = new(telemetry, HostTelemetry.Name, HostTelemetry.ExecutionWritesInstrument);
 
-        List<Activity> spans = [];
-        using ActivityListener listener = Listen(spans, telemetry.Activities);
-
-        IExecutionGateway gateway = Gateway(client, telemetry, enabled: false);
+        IExecutionGateway gateway = Gateway(client, enabled: false);
 
         ExecutionWriteResult result = await InvokeAsync(gateway, verb, PracticeAccountId);
 
         ClientCalls(fake, verb).Should().Be(0);
         result.Outcome.Should().Be(ExecutionWriteOutcome.NotTransmitted);
         result.GateRefusal.Should().Be(TradingExecutionRefusal.TradingDisabled);
-
-        CollectedMeasurement<long> measurement = writes.LastMeasurement!;
-        measurement.Value.Should().Be(1);
-        measurement.Tags[HostTelemetry.OperationTag].Should().Be(ExpectedOperation(verb));
-        measurement.Tags[HostTelemetry.RefusalTag].Should().Be(ExecutionWriteRefusal.TradingDisabled);
-
-        Activity span = spans.Should().ContainSingle().Subject;
-        span.OperationName.Should().Be("execution." + ExpectedOperation(verb));
-        span.GetTagItem(HostTelemetry.RefusalTag).Should().Be(ExecutionWriteRefusal.TradingDisabled);
+        writes.GetMeasurementSnapshot().Should().BeEmpty(
+            "execution-write telemetry is owned by TradingRiskGate, not the gateway adapter");
     }
-
-    private static string ExpectedOperation(ProjectXExecutionGatewayTests.WriteVerb verb) => verb switch
-    {
-        ProjectXExecutionGatewayTests.WriteVerb.Place => ExecutionOperation.PlaceOrderOperation,
-        ProjectXExecutionGatewayTests.WriteVerb.Modify => ExecutionOperation.ModifyOrderOperation,
-        ProjectXExecutionGatewayTests.WriteVerb.Cancel => ExecutionOperation.CancelOrderOperation,
-        ProjectXExecutionGatewayTests.WriteVerb.Close => ExecutionOperation.ClosePositionOperation,
-        ProjectXExecutionGatewayTests.WriteVerb.PartialClose => ExecutionOperation.PartialClosePositionOperation,
-        _ => throw new ArgumentOutOfRangeException(nameof(verb), verb, null),
-    };
 
     private static int ClientCalls(ExecutionOrderClient fake, ProjectXExecutionGatewayTests.WriteVerb verb) =>
         verb switch
@@ -97,21 +74,20 @@ public sealed class ProjectXExecutionGatewayTradingRiskGateTelemetryTests
             _ => throw new ArgumentOutOfRangeException(nameof(verb), verb, null),
         };
 
-    private static IExecutionGateway Gateway(
-        IProjectXApiClient client,
-        HostTelemetry telemetry,
-        bool enabled)
+    private static IExecutionGateway Gateway(IProjectXApiClient client, bool enabled)
     {
         TradingExecutionGate gate = new(
             Options.Create(new TradingExecutionOptions { Enabled = enabled }),
-            new FakeKillSwitch());
+            new FakeKillSwitch(),
+            new ProjectXAccountStageResolver());
 
         return new ProjectXExecutionGateway(
             gate,
             new StubAccountsGateway([PracticeAccount()]),
             new NoOpUnknownSignal(),
             client,
-            telemetry,
+            new TradingWriteVenueAccountCache(),
+            new HostTelemetry(),
             NullLogger<ProjectXExecutionGateway>.Instance);
     }
 
@@ -128,20 +104,6 @@ public sealed class ProjectXExecutionGatewayTradingRiskGateTelemetryTests
 
     private static VenueAccount PracticeAccount() =>
         new(PracticeAccountId, AccountStage.Practice, CanTrade: true, IsVisible: true, Balance: 50_000m);
-
-    private static ActivityListener Listen(List<Activity> into, ActivitySource source)
-    {
-        ActivityListener listener = new()
-        {
-            ShouldListenTo = candidate => ReferenceEquals(candidate, source),
-            Sample = (ref ActivityCreationOptions<ActivityContext> options) =>
-                ActivitySamplingResult.AllDataAndRecorded,
-            ActivityStopped = into.Add,
-        };
-
-        ActivitySource.AddActivityListener(listener);
-        return listener;
-    }
 
     private sealed class FakeKillSwitch : ITradingKillSwitch
     {

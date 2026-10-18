@@ -569,13 +569,15 @@ public sealed class ProjectXExecutionGatewayTests
     {
         TradingExecutionGate gate = new(
             Options.Create(new TradingExecutionOptions { Enabled = enabled }),
-            new FakeKillSwitch { Engaged = killSwitchEngaged });
+            new FakeKillSwitch { Engaged = killSwitchEngaged },
+            new ProjectXAccountStageResolver());
 
         return new ProjectXExecutionGateway(
             gate,
             accountsGateway,
             unknownSignal,
             client,
+            new TradingWriteVenueAccountCache(),
             new HostTelemetry(),
             NullLogger<ProjectXExecutionGateway>.Instance);
     }

@@ -1,5 +1,7 @@
 using FluentAssertions;
 using MarqSpec.Mcp.TopstepX.Configuration;
+using MarqSpec.Mcp.TopstepX.Domain;
+using MarqSpec.Mcp.TopstepX.Domain.MarketData;
 using MarqSpec.Mcp.TopstepX.Venue;
 using Microsoft.Extensions.Options;
 
@@ -147,5 +149,115 @@ public sealed class TradingExecutionGateTests
         public List<int> RefusedAccountIds { get; } = [];
 
         public void UnknownStageWriteRefused(int accountId) => RefusedAccountIds.Add(accountId);
+    }
+
+    /// <summary>Kill switch refuses before any account fetch.</summary>
+    [Fact]
+    [Trait("Gate", "ADR-0024")]
+    public async Task RefuseWriteUnlessPermittedAsync_RefusesOnKillSwitch_WithoutCallingMarketData()
+    {
+        CountingAccountsGateway marketData = new([Account(1, AccountStage.Practice)]);
+        FakeKillSwitch killSwitch = new() { Engaged = true };
+        TradingExecutionGate gate = new(
+            Options.Create(new TradingExecutionOptions { Enabled = true }),
+            killSwitch);
+
+        TradingExecutionRefusal? refusal = await gate.RefuseWriteUnlessPermittedAsync(
+            accountId: 1,
+            marketData,
+            new NullTradingUnknownStageRefusalSignal(),
+            CancellationToken.None);
+
+        refusal.Should().Be(TradingExecutionRefusal.KillSwitchEngaged);
+        marketData.GetAccountsCallCount.Should().Be(0);
+    }
+
+    /// <summary>Missing account id refuses after a fresh fetch.</summary>
+    [Fact]
+    [Trait("Gate", "ADR-0024")]
+    public async Task RefuseWriteUnlessPermittedAsync_ReturnsAccountNotFound_WhenIdIsMissing()
+    {
+        CountingAccountsGateway marketData = new([Account(1, AccountStage.Practice)]);
+        TradingExecutionGate gate = Gate(new TradingExecutionOptions { Enabled = true });
+
+        TradingExecutionRefusal? refusal = await gate.RefuseWriteUnlessPermittedAsync(
+            accountId: 999,
+            marketData,
+            new NullTradingUnknownStageRefusalSignal(),
+            CancellationToken.None);
+
+        refusal.Should().Be(TradingExecutionRefusal.AccountNotFound(999));
+        marketData.GetAccountsCallCount.Should().Be(1);
+    }
+
+    /// <summary>Inactive accounts refuse even when the stage is practice.</summary>
+    [Fact]
+    [Trait("Gate", "ADR-0024")]
+    public async Task RefuseWriteUnlessPermittedAsync_ReturnsAccountNotActive_WhenCanTradeIsFalse()
+    {
+        CountingAccountsGateway marketData = new([Account(1, AccountStage.Practice, canTrade: false)]);
+        TradingExecutionGate gate = Gate(new TradingExecutionOptions { Enabled = true });
+
+        TradingExecutionRefusal? refusal = await gate.RefuseWriteUnlessPermittedAsync(
+            accountId: 1,
+            marketData,
+            new NullTradingUnknownStageRefusalSignal(),
+            CancellationToken.None);
+
+        refusal.Should().Be(TradingExecutionRefusal.AccountNotActive(1));
+    }
+
+    private static VenueAccount Account(int accountId, AccountStage stage, bool canTrade = true) =>
+        new(accountId, stage, CanTrade: canTrade, IsVisible: true, Balance: 50_000m);
+
+    private sealed class CountingAccountsGateway(IReadOnlyList<VenueAccount> accounts) : IMarketDataGateway
+    {
+        public int GetAccountsCallCount { get; private set; }
+
+        public string VenueId => "stub";
+
+        public Task<IReadOnlyList<VenueAccount>> GetAccountsAsync(
+            bool onlyActive,
+            CancellationToken cancellationToken)
+        {
+            GetAccountsCallCount++;
+            _ = onlyActive;
+            return Task.FromResult(accounts);
+        }
+
+        public Task<IReadOnlyList<VenueContract>> ResolveContractsAsync(
+            InstrumentId instrument,
+            CancellationToken cancellationToken) =>
+            throw new NotSupportedException();
+
+        public Task<VenueContract?> FindContractAsync(
+            InstrumentId instrument,
+            ContractExpiry expiry,
+            CancellationToken cancellationToken) =>
+            throw new NotSupportedException();
+
+        public Task<IReadOnlyList<Bar>> GetBarsAsync(
+            string contractId,
+            BarRange window,
+            TimeSpan barSize,
+            CancellationToken cancellationToken) =>
+            throw new NotSupportedException();
+
+        public Task<IReadOnlyList<VenuePosition>> GetOpenPositionsAsync(
+            int accountId,
+            CancellationToken cancellationToken) =>
+            throw new NotSupportedException();
+
+        public Task<IReadOnlyList<VenueOrder>> GetOrdersAsync(
+            int accountId,
+            BarRange? window,
+            CancellationToken cancellationToken) =>
+            throw new NotSupportedException();
+
+        public Task<IReadOnlyList<VenueTrade>> GetTradesAsync(
+            int accountId,
+            BarRange window,
+            CancellationToken cancellationToken) =>
+            throw new NotSupportedException();
     }
 }

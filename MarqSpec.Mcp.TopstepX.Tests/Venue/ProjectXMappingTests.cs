@@ -230,15 +230,17 @@ public sealed class ProjectXMappingTests
     {
         // The name is vendor free text on a channel a model reads (ADR-0008). Everything it usefully carries
         // is already in the stage.
-        VenueAccount mapped = ProjectXMapping.ToAccount(new TradingAccount
-        {
-            Id = 9001,
-            Name = "50KTC-V2-DLL-0000",
-            Balance = 50_000m,
-            CanTrade = true,
-            IsVisible = true,
-            Simulated = true,
-        });
+        VenueAccount mapped = ProjectXMapping.ToAccount(
+            new TradingAccount
+            {
+                Id = 9001,
+                Name = "50KTC-V2-DLL-0000",
+                Balance = 50_000m,
+                CanTrade = true,
+                IsVisible = true,
+                Simulated = true,
+            },
+            new ProjectXAccountStageResolver());
 
         mapped.Stage.Should().Be(AccountStage.Evaluation);
         mapped.AccountId.Should().Be(9001);

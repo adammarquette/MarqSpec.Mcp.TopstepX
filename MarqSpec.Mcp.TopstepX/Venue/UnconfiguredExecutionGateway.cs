@@ -6,7 +6,7 @@ namespace MarqSpec.Mcp.TopstepX.Venue;
 public sealed class UnconfiguredExecutionGateway : IExecutionGateway
 {
     private static ExecutionWriteResult Refused { get; } = new(
-        ExecutionWriteLifecycle.NotTransmitted,
+        ExecutionWriteOutcome.NotTransmitted,
         new TradingExecutionRefusal(
             "venue_not_configured",
             "Venue credentials are not configured, so trading writes cannot reach the gateway."),

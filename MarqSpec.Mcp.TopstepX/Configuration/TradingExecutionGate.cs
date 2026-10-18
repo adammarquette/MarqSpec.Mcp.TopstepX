@@ -154,13 +154,18 @@ public sealed class TradingExecutionGate(IOptions<TradingExecutionOptions> optio
         }
 
         IReadOnlyList<VenueAccount> accounts = await marketData
-            .GetAccountsAsync(onlyActive: false, cancellationToken)
+            .GetAccountsAsync(onlyActive: true, cancellationToken)
             .ConfigureAwait(false);
 
         VenueAccount? account = accounts.FirstOrDefault(candidate => candidate.AccountId == accountId);
         if (account is null)
         {
             return TradingExecutionRefusal.AccountNotFound(accountId);
+        }
+
+        if (!account.CanTrade)
+        {
+            return TradingExecutionRefusal.AccountNotActive(accountId);
         }
 
         return RefuseIfStageBlocksWrite(account.Stage, accountId, unknownStageSignal);

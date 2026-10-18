@@ -19,6 +19,16 @@
   </ItemGroup>
 
   <ItemGroup>
+    <!--
+      gh#720 Tier B: drafted against ADR-0024 section 4/5 for tools that do not exist yet (gh#711-#717). Kept in the
+      tree for review and excluded from compilation until those slices land; TradingCompositionTests'
+      "no write tool registered" sentinel goes red at that moment, which is the cue to remove this line.
+    -->
+    <Compile Remove="Trading\TierBDraft\**" />
+    <None Include="Trading\TierBDraft\**" />
+  </ItemGroup>
+
+  <ItemGroup>
     <Using Include="Xunit" />
   </ItemGroup>
 

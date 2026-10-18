@@ -14,11 +14,48 @@ namespace MarqSpec.Mcp.TopstepX.Tests.Configuration;
 /// </summary>
 public sealed class TradingExecutionOptionsTests
 {
-    /// <summary>Master enable is off when the key is absent.</summary>
+    /// <summary>Master enable is off on a freshly constructed options instance.</summary>
     [Fact]
-    public void Enabled_DefaultsToFalse_WhenTheKeyIsAbsent()
+    [Trait("Gate", "ADR-0024")]
+    public void Enabled_DefaultsToFalse_OnNewInstance()
+    {
+        new TradingExecutionOptions().Enabled.Should().BeFalse();
+    }
+
+    /// <summary>Master enable is off when the Trading section binds empty.</summary>
+    [Fact]
+    [Trait("Gate", "ADR-0024")]
+    public void Enabled_DefaultsToFalse_WhenTradingSectionIsEmpty()
     {
         Bind([]).Enabled.Should().BeFalse();
+    }
+
+    /// <summary>Master enable is off when the key is absent from configuration.</summary>
+    [Fact]
+    [Trait("Gate", "ADR-0024")]
+    public void Enabled_DefaultsToFalse_WhenTheKeyIsAbsent()
+    {
+        Bind(new Dictionary<string, string?> { ["Trading:KillSwitch"] = "false" }).Enabled.Should().BeFalse();
+    }
+
+    /// <summary>Explicit true binds under canonical and lowercase configuration keys.</summary>
+    [Theory]
+    [InlineData("Trading:Enabled")]
+    [InlineData("trading:enabled")]
+    [Trait("Gate", "ADR-0024")]
+    public void Enabled_BindsTrue_WhenExplicitlyTrue(string configurationKey)
+    {
+        Bind(new Dictionary<string, string?> { [configurationKey] = "true" }).Enabled.Should().BeTrue();
+    }
+
+    /// <summary>An empty value keeps master enable off for both key casings.</summary>
+    [Theory]
+    [InlineData("Trading:Enabled")]
+    [InlineData("trading:enabled")]
+    [Trait("Gate", "ADR-0024")]
+    public void Enabled_StaysFalse_WhenTheKeyIsEmpty(string configurationKey)
+    {
+        Bind(new Dictionary<string, string?> { [configurationKey] = string.Empty }).Enabled.Should().BeFalse();
     }
 
     /// <summary>The shipped caps are conservative defaults an operator can widen.</summary>

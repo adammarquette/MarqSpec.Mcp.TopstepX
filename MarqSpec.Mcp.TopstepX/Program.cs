@@ -648,7 +648,7 @@ public static class Program
         // Trading write controls (ADR-0024 v1, gh#708). Validated on start; no MCP tools or venue order calls
         // register here — only configuration, the kill switch, and the configuration gate future tools reuse.
         services.AddOptions<TradingExecutionOptions>()
-            .Bind(builder.Configuration.GetSection(TradingExecutionOptions.SectionName))
+            .Configure<IConfiguration>(TradingExecutionOptionsConfiguration.Bind)
             .ValidateDataAnnotations()
             .ValidateOnStart();
 

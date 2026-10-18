@@ -339,6 +339,22 @@ base "$T"
 sed -i 's|^    public async Task<object> Cancel(Account account)$|    private const string Doc = """ResolveStage( { """;\n    public Task<object> Leak() => gateway.CancelOrder();\n&|' "$T/$GF"
 run_case "fail: code after a one-line raw string is still checked" 1 "GATE ORDER  $GF:18"
 
+base "$T"
+sed -i 's|^    public async Task<object> Cancel(Account account)$|    public Task<object> PlaceOrderAsync(Account a) =>\n        Place(a);\n\n&|' "$T/$GF"
+run_case "pass: a member DECLARED with an order name that delegates to a guarded member" 0 "$GREEN"
+
+base "$T"
+sed -i 's|^    public async Task<object> Cancel(Account account)$|    public Task<object> CancelOrderAsync(Account a) =>\n        gateway.CancelOrder();\n\n&|' "$T/$GF"
+run_case "fail: declared order-named member whose body calls the gateway unguarded" 1 "GATE ORDER  $GF:18"
+
+base "$T"; sed -i 's/if (stage != AccountStage.Practice) return Refuse(stage);/if (gate.RefuseIfStageBlocksWrite(stage) is { } s) return s;/' "$T/$GF"
+printf 'public sealed class TradingExecutionGate {\n  public Refusal? RefuseIfStageBlocksWrite(AccountStage stage) { if (stage == AccountStage.Practice) return null; return Block; }\n}\n' >"$T/$H/Configuration/TradingExecutionGate.cs"
+run_case "pass: Practice compared in TradingExecutionGate.RefuseIfStageBlocksWrite" 0 "Practice checked via $H/Configuration/TradingExecutionGate.cs"
+
+base "$T"; sed -i 's/if (stage != AccountStage.Practice) return Refuse(stage);/if (gate.RefuseIfStageBlocksWrite(stage) is { } s) return s;/' "$T/$GF"
+printf 'public sealed class TradingExecutionGate {\n  // AccountStage.Practice\n  public Refusal? RefuseIfStageBlocksWrite(AccountStage stage) => null;\n}\n' >"$T/$H/Configuration/TradingExecutionGate.cs"
+run_case "fail: delegated stage check that never names Practice in code" 1 "never compares against AccountStage.Practice"
+
 # --- (6) gate tests ----------------------------------------------------------------------------------
 base "$T"; sed -i '/Trait/d' "$T/$H.Tests/TradingRiskGateTests.cs"
 run_case "fail: no ADR-0024 tagged tests" 1 "GATE TESTS  no test class"

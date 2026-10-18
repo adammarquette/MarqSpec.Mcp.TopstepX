@@ -43,6 +43,8 @@
 #   (5) THE GATE exists at exactly GATE_FILE -- absent, or present anywhere else, FAILS (no skip). In EVERY
 #       member of TradingRiskGate, RefuseIfDisabledOrHalted( comes before any ResolveStage(, allowlist,
 #       denylist or order call in that member; the file calls ResolveStage( and names AccountStage.Practice.
+#       The Practice comparison may live in TradingExecutionGate.RefuseIfStageBlocksWrite( when the gate calls it.
+#       Member declarations named like order methods are not calls; only their bodies are probed.
 #       Limits (documented, not fixed): it proves Practice is NAMED, not that the comparison is the right way
 #       round; a guard inside an unrelated nested block (`if (x) { RefuseIfDisabledOrHalted(); }`) marks the
 #       member guarded; comments, "..." strings and raw """...""" strings are stripped first. A private helper
@@ -84,6 +86,7 @@ ORDER_RE='(PlaceOrder|ModifyOrder|CancelOrder|ClosePosition|PartialClosePosition
 TRAIT_RE='\[Trait\("Gate",[[:space:]]*"ADR-0024"\)\]'
 
 failures=0
+practice_via=""
 fail() { die "  $1"; shift; local l; for l in "$@"; do die "              $l"; done; failures=$((failures + 1)); }
 env_fail() { die "  $1"; die "That is an environment failure rather than a verdict on the code, and it is NOT a pass."; exit 1; }
 
@@ -308,6 +311,11 @@ else
       start = depth
       if (classdepth < 0 && s ~ /class[ \t]+TradingRiskGate/) { pending = 1 }
       if (classdepth >= 0 && start == classdepth && s ~ /[^ \t]/) { member++; guarded = 0 }
+      # A member DECLARATION named like an order method (public Task<R> PlaceOrderAsync(...)) is not a call:
+      # drop the declared name so only calls in its body or expression body are probed.
+      if (classdepth >= 0 && start == classdepth && s ~ /^[ \t]*(public|private|internal|protected)[ \t]/) {
+        sub(/[A-Za-z_][A-Za-z0-9_]*[ \t]*[(]/, "(", s)
+      }
       if (classdepth >= 0 && start >= classdepth) {
         d = index(s, "RefuseIfDisabledOrHalted(")
         if (match(s, probe_re)) {
@@ -338,7 +346,19 @@ else
   code="$(grep -vE '^[[:space:]]*(//|\*|/\*)' "$GATE_FILE" || true)"
   printf '%s\n' "$code" | grep -qE 'RefuseIfDisabledOrHalted[[:space:]]*\(' || fail "GATE  $GATE_FILE never calls RefuseIfDisabledOrHalted()"
   printf '%s\n' "$code" | grep -qE 'ResolveStage[[:space:]]*\(' || fail "GATE  $GATE_FILE never calls ProjectXMapping.ResolveStage(...)"
-  printf '%s\n' "$code" | grep -qE 'AccountStage\.Practice' || fail "GATE  $GATE_FILE never compares against AccountStage.Practice"
+  # Practice: named in the gate itself, OR delegated to TradingExecutionGate.RefuseIfStageBlocksWrite( -- in
+  # which case THAT file must name AccountStage.Practice in code (gh#711 keeps the comparison there).
+  if ! printf '%s\n' "$code" | grep -qE 'AccountStage\.Practice'; then
+    exec_gate="$HOST/Configuration/TradingExecutionGate.cs"
+    if printf '%s\n' "$code" | grep -qE 'RefuseIfStageBlocksWrite[[:space:]]*\(' && [ -f "$exec_gate" ] \
+      && grep -vE '^[[:space:]]*(//|\*|/\*)' "$exec_gate" | grep -qE 'AccountStage\.Practice' \
+      && grep -qE 'RefuseIfStageBlocksWrite[[:space:]]*\(' "$exec_gate"; then
+      practice_via="$exec_gate"
+    else
+      fail "GATE  $GATE_FILE never compares against AccountStage.Practice" \
+        "Name it in the gate, or call RefuseIfStageBlocksWrite( from a TradingExecutionGate.cs that names it."
+    fi
+  fi
 fi
 
 # --- (6) gate tests exist ---------------------------------------------------------------------------------
@@ -368,4 +388,4 @@ EXPLAIN
   exit 1
 fi
 
-ok "Gated order boundary tripwire holds: $searched .cs file(s) across ${#PRODUCT_DIRS[@]} discovered product project(s) (${PRODUCT_DIRS[*]}); $order_hits order-name reference(s), all in the seam; $registrations Program.cs registration(s); $trait_count ADR-0024 gate test file(s); gate ordering checked."
+ok "Gated order boundary tripwire holds: $searched .cs file(s) across ${#PRODUCT_DIRS[@]} discovered product project(s) (${PRODUCT_DIRS[*]}); $order_hits order-name reference(s), all in the seam; $registrations Program.cs registration(s); $trait_count ADR-0024 gate test file(s); gate ordering checked${practice_via:+; Practice checked via $practice_via}."

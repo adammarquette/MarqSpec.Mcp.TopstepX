@@ -11,20 +11,30 @@ namespace MarqSpec.Mcp.TopstepX.Venue;
 /// </summary>
 /// <remarks>
 /// The package's <c>ShouldRetryOutcome</c> exempts only <see cref="ProjectXVenueWriteRoutes.Place"/>.
-/// This host wraps the registered resilience handler so every <see cref="IExecutionGateway"/> route
-/// (place, modify, cancel, close, partial close) never retries on transport faults, <c>429</c> or <c>5xx</c>.
+/// This host wraps the registered resilience handler so every gated execution POST under
+/// <c>/api/Order/</c> and <c>/api/Position/</c> (except allowlisted reads) never retries on transport
+/// faults, <c>429</c> or <c>5xx</c>.
 /// </remarks>
 internal static class ProjectXHttpResilienceConfiguration
 {
-    private static readonly MethodInfo _clientShouldRetryOutcome = typeof(ServiceCollectionExtensions)
+    private static readonly MethodInfo? _clientShouldRetryOutcome = typeof(ServiceCollectionExtensions)
         .GetMethod(
             "ShouldRetryOutcome",
             BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic,
             binder: null,
             [typeof(HttpRequestMessage), typeof(Exception), typeof(HttpResponseMessage)],
-            modifiers: null)!;
+            modifiers: null);
 
-    /// <summary>Chains the client retry predicate after the non-idempotent write guard.</summary>
+    static ProjectXHttpResilienceConfiguration()
+    {
+        if (_clientShouldRetryOutcome is null)
+        {
+            throw new InvalidOperationException(
+                "MarqSpec.Client.ProjectX 3.0.0 must expose ShouldRetryOutcome for the host retry wrapper.");
+        }
+    }
+
+    /// <summary>Chains the client retry predicate after the execution write guard.</summary>
     public static IServiceCollection SuppressTransportRetriesOnVenueWrites(this IServiceCollection services)
     {
         services.PostConfigureAll<HttpStandardResilienceOptions>(options =>
@@ -53,17 +63,9 @@ internal static class ProjectXHttpResilienceConfiguration
         return services;
     }
 
-    /// <summary>Evaluates the effective retry decision used by the host (unit-tested).</summary>
-    public static bool ShouldRetryHttpOutcome(
-        HttpRequestMessage? request,
-        Exception? exception,
-        HttpResponseMessage? response) =>
-        !ProjectXVenueWriteRoutes.IsExecutionGatewayWriteRoute(request)
-        && ClientShouldRetry(request, exception, response);
-
     private static bool ClientShouldRetry(
         HttpRequestMessage? request,
         Exception? exception,
         HttpResponseMessage? response) =>
-        (bool)_clientShouldRetryOutcome.Invoke(null, [request, exception, response])!;
+        (bool)_clientShouldRetryOutcome!.Invoke(null, [request, exception, response])!;
 }

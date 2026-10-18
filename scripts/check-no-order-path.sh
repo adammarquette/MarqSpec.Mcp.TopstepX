@@ -34,7 +34,8 @@
 #         - no product code sets it: no `Enabled = true`, no "Trading:Enabled"/"Trading__Enabled" key literal
 #           (Configure/PostConfigure/AddInMemoryCollection/SetEnvironmentVariable), any casing, and -- outside
 #           the options file -- neither of this repo's own key idioms for it: nameof(Enabled) (as in
-#           SectionName + "__" + nameof(Enabled)) or an indexer ["Enabled"] (GetSection(SectionName)["Enabled"]);
+#           SectionName + "__" + nameof(Enabled)) or any literal that is "Enabled" or ends ":Enabled"/"__Enabled"
+#           (["Enabled"], ConfigurationPath.Combine(SectionName, "Enabled"), $"{SectionName}:Enabled");
 #         - every appsettings*.json, keys flattened (":" and "__") and lower-cased as .NET binds them;
 #         - every docker-compose*.y(a)ml / compose*.y(a)ml at any depth passes ${Trading__Enabled:-false} (or false), any key casing;
 #         - Dockerfile ENV/ARG and .env.example never set it to anything but false.
@@ -44,7 +45,14 @@
 #       member of TradingRiskGate, RefuseIfDisabledOrHalted( comes before any ResolveStage(, allowlist,
 #       denylist or order call in that member; the file calls ResolveStage( and names AccountStage.Practice.
 #       The Practice comparison may live in TradingExecutionGate.RefuseIfStageBlocksWrite( when the gate calls it.
-#       Member declarations named like order methods are not calls; only their bodies are probed.
+#       Member declarations named like order methods are not calls (matched explicitly: [attr] [modifiers]
+#       Type Name[<T>]( before any "="); initialisers and expression bodies are always probed. The delegated
+#       Practice check needs a .RefuseIfStageBlocksWrite( CALL and AccountStage.Practice inside that method's
+#       body in TradingExecutionGate.cs. FILES THE BOUNDARY RESTS ON (all on CODEOWNERS): the seam files, the
+#       gate, TradingExecutionGate.cs, TradingExecutionOptions.cs, TradingExecutionOptionsConfiguration.cs
+#       (exempt from the key-idiom check because it binds the section by hand), Program.cs.
+#       A product csproj that adds an xunit/test-SDK reference is treated as a test project and skipped --
+#       deliberate evasion, left to review.
 #       Limits (documented, not fixed): it proves Practice is NAMED, not that the comparison is the right way
 #       round; a guard inside an unrelated nested block (`if (x) { RefuseIfDisabledOrHalted(); }`) marks the
 #       member guarded; comments, "..." strings and raw """...""" strings are stripped first. A private helper
@@ -72,6 +80,8 @@ GATEWAY_STUB="$HOST/Venue/UnconfiguredExecutionGateway.cs"
 GATE_FILE="$HOST/Configuration/TradingRiskGate.cs"   # beside TradingExecutionGate (gh#708)
 PROGRAM="$HOST/Program.cs"
 OPTIONS_FILE="$HOST/Configuration/TradingExecutionOptions.cs"
+CONFIG_FILE="$HOST/Configuration/TradingExecutionOptionsConfiguration.cs"   # rebuilds the Trading section (gh#734)
+EXEC_GATE="$HOST/Configuration/TradingExecutionGate.cs"                     # disabled/halted + Practice (gh#708)
 
 # (1) Who may NAME an order method, each for its own reason:
 #   the interface declares them; the adapter implements them against the venue client (the ONLY file that
@@ -207,11 +217,14 @@ while IFS= read -r hit; do
   fail "MASTER SWITCH  code-side override at ${hit%%:*}:$(cut -d: -f2 <<<"$hit")" "${text#"${text%%[![:space:]]*}"}" \
     "Only configuration may turn trading on; product code must not set Trading:Enabled or Enabled = true."
 done <<<"$hits"
-hits="$(grep_r -nE 'nameof[[:space:]]*\([[:space:]]*(TradingExecutionOptions[[:space:]]*\.[[:space:]]*)?Enabled[[:space:]]*\)|\[[[:space:]]*"[Ee][Nn][Aa][Bb][Ll][Ee][Dd]"[[:space:]]*\]' "${PRODUCT_DIRS[@]}")" \
+# Any literal that IS "Enabled" or ENDS in ":Enabled"/"__Enabled" (covers ["Enabled"], Combine(Section, "Enabled"),
+# SectionName + ":Enabled", $"{SectionName}:Enabled", ":" + "Enabled"), and nameof(Enabled), any casing.
+hits="$(grep_r -niE 'nameof[[:space:]]*\([[:space:]]*(TradingExecutionOptions[[:space:]]*\.[[:space:]]*)?Enabled[[:space:]]*\)|"([^"]*(:|__))?enabled"' "${PRODUCT_DIRS[@]}")" \
   || env_fail "CANNOT SEARCH  grep failed looking for nameof(Enabled) / [\"Enabled\"] key idioms"
 while IFS= read -r hit; do
   [ -n "$hit" ] || continue
   [ "${hit%%:*}" = "$OPTIONS_FILE" ] && continue
+  [ "${hit%%:*}" = "$CONFIG_FILE" ] && continue   # the binder reads the key by design; CODEOWNERS-owned
   text="${hit#*:}"; text="${text#*:}"
   fail "MASTER SWITCH  key idiom for Enabled at ${hit%%:*}:$(cut -d: -f2 <<<"$hit")" "${text#"${text%%[![:space:]]*}"}" \
     "SectionName + \"__\" + nameof(Enabled) or GetSection(SectionName)[\"Enabled\"] builds the master-switch key in code."
@@ -296,7 +309,8 @@ else
   # before any probe within the same top-level member of class TradingRiskGate.
   # Portable across mawk and gawk (the runner has gawk, which rejects an -v '\\(' that mawk accepts): '[(]' for a
   # literal paren, no \< \>, so the order-call probe anchors on a non-identifier char.
-  order_report="$(awk -v probe_re="ResolveStage[[:space:]]*[(]|RefuseIfNotAllowlisted[[:space:]]*[(]|RefuseIfSymbolDenied[[:space:]]*[(]|(^|[^A-Za-z0-9_])($ORDER_RE)[[:space:]]*[(]" '
+  decl_re='^[ \t]*(\[[^]]*\][ \t]*)*((public|private|internal|protected|static|async|virtual|override|sealed|new|extern|unsafe|partial|readonly|abstract)[ \t]+)*[A-Za-z_(][]A-Za-z0-9_.<>,?[() \t]*[ \t]+[A-Za-z_][A-Za-z0-9_]*[ \t]*(<[^>(]*>)?[ \t]*[(]'
+  order_report="$(awk -v decl_re="$decl_re" -v probe_re="ResolveStage[[:space:]]*[(]|RefuseIfNotAllowlisted[[:space:]]*[(]|RefuseIfSymbolDenied[[:space:]]*[(]|(^|[^A-Za-z0-9_])($ORDER_RE)[[:space:]]*[(]" '
     BEGIN { depth = 0; classdepth = -1; member = 0; incomment = 0; inraw = 0 }
     {
       raw = $0; s = raw
@@ -311,10 +325,18 @@ else
       start = depth
       if (classdepth < 0 && s ~ /class[ \t]+TradingRiskGate/) { pending = 1 }
       if (classdepth >= 0 && start == classdepth && s ~ /[^ \t]/) { member++; guarded = 0 }
-      # A member DECLARATION named like an order method (public Task<R> PlaceOrderAsync(...)) is not a call:
-      # drop the declared name so only calls in its body or expression body are probed.
-      if (classdepth >= 0 && start == classdepth && s ~ /^[ \t]*(public|private|internal|protected)[ \t]/) {
-        sub(/[A-Za-z_][A-Za-z0-9_]*[ \t]*[(]/, "(", s)
+      # A member DECLARATION named like an order method (public Task<R> PlaceOrderAsync(...), with or without
+      # modifiers, an attribute, or type parameters) is not a call. Only text BEFORE the first "=" (so never an
+      # initialiser or expression body) is considered, and the declaration shape is matched explicitly:
+      # [attr] [modifiers] Type Name[<T>](. Only that Name is dropped; property/field initialisers and
+      # expression bodies keep every call in them.
+      if (classdepth >= 0 && start == classdepth) {
+        eq = index(s, "="); pre = (eq > 0) ? substr(s, 1, eq - 1) : s
+        if (match(pre, decl_re)) {
+          m = substr(pre, RSTART, RLENGTH)
+          sub(/[A-Za-z_][A-Za-z0-9_]*[ \t]*(<[^>(]*>)?[ \t]*[(]$/, "(", m)
+          s = substr(pre, 1, RSTART - 1) m substr(s, RSTART + RLENGTH)
+        }
       }
       if (classdepth >= 0 && start >= classdepth) {
         d = index(s, "RefuseIfDisabledOrHalted(")
@@ -346,17 +368,27 @@ else
   code="$(grep -vE '^[[:space:]]*(//|\*|/\*)' "$GATE_FILE" || true)"
   printf '%s\n' "$code" | grep -qE 'RefuseIfDisabledOrHalted[[:space:]]*\(' || fail "GATE  $GATE_FILE never calls RefuseIfDisabledOrHalted()"
   printf '%s\n' "$code" | grep -qE 'ResolveStage[[:space:]]*\(' || fail "GATE  $GATE_FILE never calls ProjectXMapping.ResolveStage(...)"
-  # Practice: named in the gate itself, OR delegated to TradingExecutionGate.RefuseIfStageBlocksWrite( -- in
-  # which case THAT file must name AccountStage.Practice in code (gh#711 keeps the comparison there).
+  # Practice: named in the gate itself, OR delegated -- the gate must CALL (".RefuseIfStageBlocksWrite(", not
+  # declare it) and TradingExecutionGate.cs must name AccountStage.Practice INSIDE the body of a method
+  # declared RefuseIfStageBlocksWrite(. Text-level, so EXEC_GATE is on CODEOWNERS and in the header.
   if ! printf '%s\n' "$code" | grep -qE 'AccountStage\.Practice'; then
-    exec_gate="$HOST/Configuration/TradingExecutionGate.cs"
-    if printf '%s\n' "$code" | grep -qE 'RefuseIfStageBlocksWrite[[:space:]]*\(' && [ -f "$exec_gate" ] \
-      && grep -vE '^[[:space:]]*(//|\*|/\*)' "$exec_gate" | grep -qE 'AccountStage\.Practice' \
-      && grep -qE 'RefuseIfStageBlocksWrite[[:space:]]*\(' "$exec_gate"; then
-      practice_via="$exec_gate"
+    if printf '%s\n' "$code" | grep -qE '\.[[:space:]]*RefuseIfStageBlocksWrite[[:space:]]*\(' && [ -f "$EXEC_GATE" ] \
+      && in_body="$(awk '
+        { s = $0; sub(/\/\/.*/, "", s); gsub(/"([^"\\]|\\.)*"/, "\"\"", s) }
+        !inm && s ~ /(public|internal|private|protected)[^=;]*[ \t]RefuseIfStageBlocksWrite[ \t]*[(]/ { inm = 1; d = 0; opened = 0 }
+        inm {
+          if (s ~ /AccountStage\.Practice/) found = 1
+          n = length(s)
+          for (i = 1; i <= n; i++) { c = substr(s, i, 1); if (c == "{") { d++; opened = 1 } else if (c == "}") d-- }
+          if (opened && d == 0) inm = 0
+          if (!opened && s ~ /=>/ && s ~ /;[ \t]*$/) inm = 0
+        }
+        END { print (found ? "yes" : "no") }' "$EXEC_GATE")" && [ "$in_body" = "yes" ]; then
+      practice_via="$EXEC_GATE"
     else
       fail "GATE  $GATE_FILE never compares against AccountStage.Practice" \
-        "Name it in the gate, or call RefuseIfStageBlocksWrite( from a TradingExecutionGate.cs that names it."
+        "Name it in the gate, or CALL .RefuseIfStageBlocksWrite( and compare AccountStage.Practice inside that" \
+        "method's body in $EXEC_GATE."
     fi
   fi
 fi

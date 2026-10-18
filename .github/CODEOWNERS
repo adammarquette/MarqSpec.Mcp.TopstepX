@@ -4,13 +4,16 @@
 
 # ADR-0024 gated order boundary (gh#718). Already covered by `*` above; listed explicitly so the allowlist in
 # scripts/check-no-order-path.sh and its owners are reviewed together. Keep this list in step with
-# ORDER_ALLOWED / GATEWAY_ALLOWED / GATE_FILE in that script -- a file allowlisted there and owned by nobody
+# ORDER_ALLOWED / GATEWAY_ALLOWED / GATE_FILE / EXEC_GATE / OPTIONS_FILE / CONFIG_FILE in that script -- a
+# file allowlisted there and owned by nobody
 # here is a hole in the tripwire.
 /MarqSpec.Mcp.TopstepX/Venue/IExecutionGateway.cs              @adammarquette
 /MarqSpec.Mcp.TopstepX/Venue/ProjectXExecutionGateway.cs       @adammarquette
 /MarqSpec.Mcp.TopstepX/Venue/UnconfiguredExecutionGateway.cs   @adammarquette
 /MarqSpec.Mcp.TopstepX/Configuration/TradingRiskGate.cs        @adammarquette
 /MarqSpec.Mcp.TopstepX/Configuration/TradingExecutionOptions.cs @adammarquette
+/MarqSpec.Mcp.TopstepX/Configuration/TradingExecutionGate.cs  @adammarquette
+/MarqSpec.Mcp.TopstepX/Configuration/TradingExecutionOptionsConfiguration.cs @adammarquette
 /MarqSpec.Mcp.TopstepX/Program.cs                              @adammarquette
 /scripts/check-no-order-path.sh                                @adammarquette
 /scripts/check-no-order-path-selftest.sh                       @adammarquette

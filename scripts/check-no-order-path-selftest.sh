@@ -270,6 +270,21 @@ run_case "fail: GetSection(SectionName)[\"Enabled\"]" 1 "key idiom for Enabled a
 base "$T"; echo 'section[ "enabled" ] = "1";' >"$T/$H/Tools/Idx2.cs"
 run_case "fail: lowercase [\"enabled\"] indexer" 1 "key idiom for Enabled at $H/Tools/Idx2.cs:1"
 
+base "$T"; echo 'var k = ConfigurationPath.Combine(TradingExecutionOptions.SectionName, "Enabled");' >"$T/$H/Tools/Comb.cs"
+run_case "fail: ConfigurationPath.Combine(SectionName, \"Enabled\")" 1 "key idiom for Enabled at $H/Tools/Comb.cs:1"
+
+base "$T"; echo 'var k = $"{TradingExecutionOptions.SectionName}:Enabled";' >"$T/$H/Tools/Interp.cs"
+run_case "fail: interpolated \$\"{SectionName}:Enabled\"" 1 "key idiom for Enabled at $H/Tools/Interp.cs:1"
+
+base "$T"; echo 'var k = TradingExecutionOptions.SectionName + ":Enabled";' >"$T/$H/Tools/Concat.cs"
+run_case "fail: SectionName + \":Enabled\"" 1 "key idiom for Enabled at $H/Tools/Concat.cs:1"
+
+base "$T"; echo 'pairs.Add(new(TradingExecutionOptions.SectionName + ":" + "Enabled", "true"));' >"$T/$H/Tools/Concat2.cs"
+run_case "fail: SectionName + \":\" + \"Enabled\"" 1 "key idiom for Enabled at $H/Tools/Concat2.cs:1"
+
+base "$T"; echo 'if (child.Key.Equals("Enabled", StringComparison.OrdinalIgnoreCase)) { continue; }' >"$T/$H/Configuration/TradingExecutionOptionsConfiguration.cs"
+run_case "pass: the CODEOWNERS-owned binder may read the Enabled key" 0 "$GREEN"
+
 base "$T"; printf '    string k = SectionName + "__" + nameof(Enabled);\n' >>"$T/$H/Configuration/TradingExecutionOptions.cs"
 run_case "pass: the idiom inside the options file itself is not an override" 0 "$GREEN"
 
@@ -354,6 +369,42 @@ run_case "pass: Practice compared in TradingExecutionGate.RefuseIfStageBlocksWri
 base "$T"; sed -i 's/if (stage != AccountStage.Practice) return Refuse(stage);/if (gate.RefuseIfStageBlocksWrite(stage) is { } s) return s;/' "$T/$GF"
 printf 'public sealed class TradingExecutionGate {\n  // AccountStage.Practice\n  public Refusal? RefuseIfStageBlocksWrite(AccountStage stage) => null;\n}\n' >"$T/$H/Configuration/TradingExecutionGate.cs"
 run_case "fail: delegated stage check that never names Practice in code" 1 "never compares against AccountStage.Practice"
+
+# Declarations vs calls (review 5563414877): only an explicit [attr] [mods] Type Name[<T>]( before "=" is a
+# declaration; property and field initialisers and expression bodies are always probed.
+gate_insert() { # gate_insert <sed replacement lines, \n-separated> -- inserted before the Cancel member
+  sed -i "s|^    public async Task<object> Cancel(Account account)\$|$1\n\n&|" "$T/$GF"
+}
+base "$T"; gate_insert '    public Task<object> Leak => gateway.PlaceOrder();'
+run_case "fail: expression-bodied property calling the gateway" 1 "GATE ORDER  $GF:17" "PlaceOrder("
+base "$T"; gate_insert '    private readonly Task _leak = gateway.CancelOrder();'
+run_case "fail: field initialiser calling the gateway" 1 "GATE ORDER  $GF:17" "CancelOrder("
+base "$T"; gate_insert '    public Task<T> Leak<T>() => (Task<T>)(object)gateway.CancelOrder();'
+run_case "fail: generic method calling the gateway" 1 "GATE ORDER  $GF:17" "CancelOrder("
+base "$T"; gate_insert '    public Task<object> Leak =>\n        gateway.CancelOrder();'
+run_case "fail: property whose expression body is on the next line" 1 "GATE ORDER  $GF:18"
+base "$T"; gate_insert '    async Task<object> PlaceOrderAsync(Account a) => await Place(a);'
+run_case "pass: declaration with no access modifier" 0 "$GREEN"
+base "$T"; gate_insert '    [Obsolete] public Task<object> CancelOrderAsync(Account a) => Cancel(a);'
+run_case "pass: declaration with an attribute on the same line" 0 "$GREEN"
+base "$T"; gate_insert '    static internal Task<object> ClosePositionAsync() => Task.FromResult<object>(null);'
+run_case "pass: static-first modifiers" 0 "$GREEN"
+base "$T"; gate_insert '    public Task<T> PlaceOrder<T>(T x) => Wrap(x);'
+run_case "pass: generic declaration named like an order method" 0 "$GREEN"
+
+# Delegated Practice check, tightened.
+delegate_stage() {
+  sed -i 's/if (stage != AccountStage.Practice) return Refuse(stage);/if (gate.RefuseIfStageBlocksWrite(stage) is { } s) return s;/' "$T/$GF"
+}
+base "$T"; delegate_stage; sed -i 's/gate.RefuseIfStageBlocksWrite(stage)/RefuseIfStageBlocksWrite(stage)/' "$T/$GF"
+printf 'public sealed class TradingExecutionGate {\n  public Refusal? RefuseIfStageBlocksWrite(AccountStage stage) { if (stage == AccountStage.Practice) return null; return Block; }\n}\n' >"$T/$H/Configuration/TradingExecutionGate.cs"
+run_case "fail: delegated stage check not CALLED through the execution gate" 1 "never compares against AccountStage.Practice"
+base "$T"; delegate_stage
+printf 'public sealed class TradingExecutionGate {\n  private static readonly AccountStage Allowed = AccountStage.Practice;\n  public Refusal? RefuseIfStageBlocksWrite(AccountStage stage)\n  {\n    return null;\n  }\n}\n' >"$T/$H/Configuration/TradingExecutionGate.cs"
+run_case "fail: Practice named in TradingExecutionGate.cs but outside RefuseIfStageBlocksWrite" 1 "never compares against AccountStage.Practice"
+base "$T"; delegate_stage
+printf 'public sealed class TradingExecutionGate {\n  public Refusal? RefuseIfStageBlocksWrite(\n      AccountStage stage)\n  {\n    if (stage == AccountStage.Practice)\n    {\n      return null;\n    }\n    return Block;\n  }\n}\n' >"$T/$H/Configuration/TradingExecutionGate.cs"
+run_case "pass: Practice inside a multi-line RefuseIfStageBlocksWrite body" 0 "Practice checked via $H/Configuration/TradingExecutionGate.cs"
 
 # --- (6) gate tests ----------------------------------------------------------------------------------
 base "$T"; sed -i '/Trait/d' "$T/$H.Tests/TradingRiskGateTests.cs"

@@ -123,7 +123,7 @@ public sealed class ProjectXExecutionGateway : IExecutionGateway
         };
 
         PlaceOrderResponse response = await _calls.RunAsync(
-            ExecutionOperation.PlaceOrder,
+            ExecutionOperation.PlaceOrderOperation,
             () => _client.PlaceOrderAsync(request, cancellationToken),
             "placing an order").ConfigureAwait(false);
 
@@ -144,7 +144,7 @@ public sealed class ProjectXExecutionGateway : IExecutionGateway
         };
 
         ModifyOrderResponse response = await _calls.RunAsync(
-            ExecutionOperation.ModifyOrder,
+            ExecutionOperation.ModifyOrderOperation,
             () => _client.ModifyOrderAsync(request, cancellationToken),
             "modifying an order").ConfigureAwait(false);
 
@@ -156,7 +156,7 @@ public sealed class ProjectXExecutionGateway : IExecutionGateway
         CancellationToken cancellationToken)
     {
         CancelOrderResponse response = await _calls.RunAsync(
-            ExecutionOperation.CancelOrder,
+            ExecutionOperation.CancelOrderOperation,
             () => _client.CancelOrderAsync(command.AccountId, command.OrderId, cancellationToken),
             "canceling an order").ConfigureAwait(false);
 
@@ -168,7 +168,7 @@ public sealed class ProjectXExecutionGateway : IExecutionGateway
         CancellationToken cancellationToken)
     {
         ClosePositionResponse response = await _calls.RunAsync(
-            ExecutionOperation.ClosePosition,
+            ExecutionOperation.ClosePositionOperation,
             () => _client.ClosePositionAsync(command.AccountId, command.ContractId, cancellationToken),
             "closing a position").ConfigureAwait(false);
 
@@ -180,7 +180,7 @@ public sealed class ProjectXExecutionGateway : IExecutionGateway
         CancellationToken cancellationToken)
     {
         PartialClosePositionResponse response = await _calls.RunAsync(
-            ExecutionOperation.PartialClosePosition,
+            ExecutionOperation.PartialClosePositionOperation,
             () => _client.PartialClosePositionAsync(
                 command.AccountId,
                 command.ContractId,

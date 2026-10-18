@@ -560,23 +560,29 @@ public static class VenueOperation
 public static class ExecutionOperation
 {
     /// <summary>Placing an order.</summary>
-    public const string PlaceOrder = "place_order";
+    public const string PlaceOrderOperation = "place_order";
 
     /// <summary>Modifying an open order.</summary>
-    public const string ModifyOrder = "modify_order";
+    public const string ModifyOrderOperation = "modify_order";
 
     /// <summary>Canceling an order.</summary>
-    public const string CancelOrder = "cancel_order";
+    public const string CancelOrderOperation = "cancel_order";
 
     /// <summary>Flattening a position.</summary>
-    public const string ClosePosition = "close_position";
+    public const string ClosePositionOperation = "close_position";
 
     /// <summary>Partially closing a position.</summary>
-    public const string PartialClosePosition = "partial_close_position";
+    public const string PartialClosePositionOperation = "partial_close_position";
 
     /// <summary>Every value.</summary>
     public static IReadOnlyList<string> All { get; } =
-        [PlaceOrder, ModifyOrder, CancelOrder, ClosePosition, PartialClosePosition];
+        [
+            PlaceOrderOperation,
+            ModifyOrderOperation,
+            CancelOrderOperation,
+            ClosePositionOperation,
+            PartialClosePositionOperation,
+        ];
 }
 
 /// <summary>Why a bar range was outstanding — the <c>reason</c> tag's closed vocabulary.</summary>

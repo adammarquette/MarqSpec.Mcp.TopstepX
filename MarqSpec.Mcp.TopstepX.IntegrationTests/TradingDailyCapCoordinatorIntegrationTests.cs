@@ -53,7 +53,7 @@ public sealed class TradingDailyCapCoordinatorIntegrationTests(SeriesStoreFixtur
         TradingDailyCapCoordinator first = new(_database, _clock);
         TradingDailyCapCoordinator second = new(other, _clock);
 
-        await using IAsyncDisposable firstLock = await first.AcquireAccountDayLockAsync(100, CancellationToken.None);
+        IAsyncDisposable firstLock = await first.AcquireAccountDayLockAsync(100, CancellationToken.None);
 
         Task<IAsyncDisposable> blocked = second.AcquireAccountDayLockAsync(100, CancellationToken.None);
         Task completed = await Task.WhenAny(blocked, Task.Delay(TimeSpan.FromMilliseconds(200)));

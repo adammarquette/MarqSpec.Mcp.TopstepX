@@ -15,7 +15,7 @@ namespace MarqSpec.Mcp.TopstepX.Venue;
 /// <see cref="TradingExecutionGate.RefuseWriteUnlessPermittedAsync"/> first.
 /// </para>
 /// <para>
-/// Non-idempotent venue writes (place, modify, close, partial close) rely on
+/// All gated venue writes (place, modify, cancel, close, partial close) rely on
 /// <see cref="ProjectXHttpResilienceConfiguration.SuppressTransportRetriesOnVenueWrites"/> because the
 /// pinned ProjectX client only exempts <c>/api/Order/place</c> from its standard resilience handler.
 /// </para>

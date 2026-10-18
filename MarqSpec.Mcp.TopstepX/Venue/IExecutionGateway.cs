@@ -22,7 +22,8 @@ namespace MarqSpec.Mcp.TopstepX.Venue;
 /// <para>
 /// The host wraps <c>AddProjectXApiClient</c> with
 /// <see cref="ProjectXHttpResilienceConfiguration.SuppressTransportRetriesOnVenueWrites"/> so place, modify,
-/// close and partial-close never transport-retry (the pinned client exempts only <c>/api/Order/place</c>).
+/// cancel, close and partial-close never transport-retry (the pinned client exempts only
+/// <c>/api/Order/place</c> without this host wrap).
 /// </para>
 /// </remarks>
 public interface IExecutionGateway

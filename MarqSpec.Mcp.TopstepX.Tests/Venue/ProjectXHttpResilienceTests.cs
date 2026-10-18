@@ -11,9 +11,10 @@ public sealed class ProjectXHttpResilienceTests
     [Theory]
     [InlineData("/api/Order/place")]
     [InlineData("/api/Order/modify")]
+    [InlineData("/api/Order/cancel")]
     [InlineData("/api/Position/closeContract")]
     [InlineData("/api/Position/partialCloseContract")]
-    public void HostPolicy_DoesNotRetryNonIdempotentWrites_OnTransientFaults(string path)
+    public void HostPolicy_DoesNotRetryExecutionGatewayWrites_OnTransientFaults(string path)
     {
         using HttpRequestMessage request = new(HttpMethod.Post, "https://gateway.example" + path);
         using HttpResponseMessage response = new(HttpStatusCode.ServiceUnavailable);
@@ -25,12 +26,12 @@ public sealed class ProjectXHttpResilienceTests
     [Theory]
     [InlineData(HttpStatusCode.TooManyRequests)]
     [InlineData(HttpStatusCode.InternalServerError)]
-    public void HostPolicy_StillRetriesCancel_OnTransientFaults(HttpStatusCode status)
+    public void HostPolicy_StillRetriesReads_OnTransientFaults(HttpStatusCode status)
     {
-        using HttpRequestMessage request = new(HttpMethod.Post, "https://gateway.example/api/Order/cancel");
+        using HttpRequestMessage request = new(HttpMethod.Post, "https://gateway.example/api/History/retrieveBars");
         using HttpResponseMessage response = new(status);
 
         ProjectXHttpResilienceConfiguration.ShouldRetryHttpOutcome(request, exception: null, response)
-            .Should().BeTrue("cancel is idempotent and keeps the client's standard retry policy");
+            .Should().BeTrue("reads keep the pinned client's standard retry policy");
     }
 }

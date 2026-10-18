@@ -125,6 +125,7 @@ public sealed class VenueCallGuardTests
 
         VenueException thrown = (await rejected.Should().ThrowAsync<VenueException>()).Which;
         thrown.Message.Should().Contain("ProjectX__ApiKey is the USERNAME");
+        thrown.ErrorCode.Should().Be(401);
     }
 
     [Fact]

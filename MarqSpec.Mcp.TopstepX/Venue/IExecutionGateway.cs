@@ -20,8 +20,9 @@ namespace MarqSpec.Mcp.TopstepX.Venue;
 /// <see cref="ExecutionWriteResult.IsRetrySafe"/> is true.
 /// </para>
 /// <para>
-/// The ProjectX HTTP client registered by <c>AddProjectXApiClient</c> must not attach transport-level retry
-/// handlers to order POST endpoints; a duplicate would be placed before this seam observes an outcome.
+/// The host wraps <c>AddProjectXApiClient</c> with
+/// <see cref="ProjectXHttpResilienceConfiguration.SuppressTransportRetriesOnVenueWrites"/> so place, modify,
+/// close and partial-close never transport-retry (the pinned client exempts only <c>/api/Order/place</c>).
 /// </para>
 /// </remarks>
 public interface IExecutionGateway

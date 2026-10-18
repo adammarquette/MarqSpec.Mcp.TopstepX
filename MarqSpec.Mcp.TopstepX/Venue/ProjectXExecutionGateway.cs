@@ -1,37 +1,115 @@
 using MarqSpec.Client.ProjectX;
 using MarqSpec.Client.ProjectX.Api.Models;
+using MarqSpec.Mcp.TopstepX.Configuration;
 using MarqSpec.Mcp.TopstepX.Telemetry;
 
 namespace MarqSpec.Mcp.TopstepX.Venue;
 
 /// <summary>
-/// ProjectX order adapter — reachable only from <see cref="GatedExecutionGateway"/> (gh#710).
+/// Combined practice gate and ProjectX order adapter (ADR-0024, gh#710).
 /// </summary>
 /// <remarks>
-/// This type is the only product code that calls the venue order surface. Until gh#718 evolves CI, that
-/// remains a deliberate violation of the legacy absolute ban (ADR-0024).
+/// <b>The only product file that may name the venue order surface</b> (gh#718). Every transmit runs
+/// <see cref="TradingExecutionGate.RefuseWriteUnlessPermittedAsync"/> first.
 /// </remarks>
-public sealed class ProjectXExecutionGateway
+public sealed class ProjectXExecutionGateway : IExecutionGateway
 {
+    private readonly TradingExecutionGate _gate;
+    private readonly IMarketDataGateway _marketData;
+    private readonly ITradingUnknownStageRefusalSignal _unknownStageSignal;
     private readonly IProjectXApiClient _client;
     private readonly VenueCallGuard _calls;
 
-    /// <summary>Creates the adapter.</summary>
-    /// <param name="client">The vendor client.</param>
-    /// <param name="telemetry">App-owned telemetry (ADR-0019).</param>
-    public ProjectXExecutionGateway(IProjectXApiClient client, HostTelemetry telemetry)
+    /// <summary>Creates the gated adapter.</summary>
+    public ProjectXExecutionGateway(
+        TradingExecutionGate gate,
+        IMarketDataGateway marketData,
+        ITradingUnknownStageRefusalSignal unknownStageSignal,
+        IProjectXApiClient client,
+        HostTelemetry telemetry)
     {
+        _gate = gate;
+        _marketData = marketData;
+        _unknownStageSignal = unknownStageSignal;
         _client = client;
         _calls = new VenueCallGuard(telemetry);
     }
 
-    /// <summary>Places an order after the combined gate has permitted the account.</summary>
-    public async Task<ExecutionWriteResult> PlaceOrderAsync(
+    /// <inheritdoc />
+    public Task<ExecutionWriteResult> PlaceOrder(
+        ExecutionPlaceOrderCommand command,
+        CancellationToken cancellationToken) =>
+        ExecuteWhenPermittedAsync(
+            command.AccountId,
+            cancellationToken,
+            ct => TransmitPlaceOrderAsync(command, ct));
+
+    /// <inheritdoc />
+    public Task<ExecutionWriteResult> ModifyOrder(
+        ExecutionModifyOrderCommand command,
+        CancellationToken cancellationToken) =>
+        ExecuteWhenPermittedAsync(
+            command.AccountId,
+            cancellationToken,
+            ct => TransmitModifyOrderAsync(command, ct));
+
+    /// <inheritdoc />
+    public Task<ExecutionWriteResult> CancelOrder(
+        ExecutionCancelOrderCommand command,
+        CancellationToken cancellationToken) =>
+        ExecuteWhenPermittedAsync(
+            command.AccountId,
+            cancellationToken,
+            ct => TransmitCancelOrderAsync(command, ct));
+
+    /// <inheritdoc />
+    public Task<ExecutionWriteResult> ClosePosition(
+        ExecutionClosePositionCommand command,
+        CancellationToken cancellationToken) =>
+        ExecuteWhenPermittedAsync(
+            command.AccountId,
+            cancellationToken,
+            ct => TransmitClosePositionAsync(command, ct));
+
+    /// <inheritdoc />
+    public Task<ExecutionWriteResult> PartialClosePosition(
+        ExecutionPartialClosePositionCommand command,
+        CancellationToken cancellationToken) =>
+        ExecuteWhenPermittedAsync(
+            command.AccountId,
+            cancellationToken,
+            ct => TransmitPartialClosePositionAsync(command, ct));
+
+    private async Task<ExecutionWriteResult> ExecuteWhenPermittedAsync(
+        int accountId,
+        CancellationToken cancellationToken,
+        Func<CancellationToken, Task<ExecutionWriteResult>> transmit)
+    {
+        TradingExecutionRefusal? refusal = await _gate
+            .RefuseWriteUnlessPermittedAsync(
+                accountId,
+                _marketData,
+                _unknownStageSignal,
+                cancellationToken)
+            .ConfigureAwait(false);
+
+        if (refusal is not null)
+        {
+            return new ExecutionWriteResult(
+                ExecutionWriteLifecycle.NotTransmitted,
+                refusal,
+                VenueErrorCode: null,
+                VenueErrorMessage: null,
+                OrderId: null);
+        }
+
+        return await transmit(cancellationToken).ConfigureAwait(false);
+    }
+
+    private async Task<ExecutionWriteResult> TransmitPlaceOrderAsync(
         ExecutionPlaceOrderCommand command,
         CancellationToken cancellationToken)
     {
-        ArgumentNullException.ThrowIfNull(command);
-
         PlaceOrderRequest request = new()
         {
             AccountId = command.AccountId,
@@ -52,13 +130,10 @@ public sealed class ProjectXExecutionGateway
         return MapPlaceResponse(response);
     }
 
-    /// <summary>Modifies an order after the combined gate has permitted the account.</summary>
-    public async Task<ExecutionWriteResult> ModifyOrderAsync(
+    private async Task<ExecutionWriteResult> TransmitModifyOrderAsync(
         ExecutionModifyOrderCommand command,
         CancellationToken cancellationToken)
     {
-        ArgumentNullException.ThrowIfNull(command);
-
         ModifyOrderRequest request = new()
         {
             AccountId = command.AccountId,
@@ -76,13 +151,10 @@ public sealed class ProjectXExecutionGateway
         return MapSimpleResponse(response.Success, response.ErrorCode, response.ErrorMessage, orderId: null);
     }
 
-    /// <summary>Cancels an order after the combined gate has permitted the account.</summary>
-    public async Task<ExecutionWriteResult> CancelOrderAsync(
+    private async Task<ExecutionWriteResult> TransmitCancelOrderAsync(
         ExecutionCancelOrderCommand command,
         CancellationToken cancellationToken)
     {
-        ArgumentNullException.ThrowIfNull(command);
-
         CancelOrderResponse response = await _calls.RunAsync(
             ExecutionOperation.CancelOrder,
             () => _client.CancelOrderAsync(command.AccountId, command.OrderId, cancellationToken),
@@ -91,13 +163,10 @@ public sealed class ProjectXExecutionGateway
         return MapSimpleResponse(response.Success, response.ErrorCode, response.ErrorMessage, orderId: null);
     }
 
-    /// <summary>Flattens a position after the combined gate has permitted the account.</summary>
-    public async Task<ExecutionWriteResult> ClosePositionAsync(
+    private async Task<ExecutionWriteResult> TransmitClosePositionAsync(
         ExecutionClosePositionCommand command,
         CancellationToken cancellationToken)
     {
-        ArgumentNullException.ThrowIfNull(command);
-
         ClosePositionResponse response = await _calls.RunAsync(
             ExecutionOperation.ClosePosition,
             () => _client.ClosePositionAsync(command.AccountId, command.ContractId, cancellationToken),
@@ -106,13 +175,10 @@ public sealed class ProjectXExecutionGateway
         return MapSimpleResponse(response.Success, response.ErrorCode, response.ErrorMessage, orderId: null);
     }
 
-    /// <summary>Partially closes a position after the combined gate has permitted the account.</summary>
-    public async Task<ExecutionWriteResult> PartialClosePositionAsync(
+    private async Task<ExecutionWriteResult> TransmitPartialClosePositionAsync(
         ExecutionPartialClosePositionCommand command,
         CancellationToken cancellationToken)
     {
-        ArgumentNullException.ThrowIfNull(command);
-
         PartialClosePositionResponse response = await _calls.RunAsync(
             ExecutionOperation.PartialClosePosition,
             () => _client.PartialClosePositionAsync(

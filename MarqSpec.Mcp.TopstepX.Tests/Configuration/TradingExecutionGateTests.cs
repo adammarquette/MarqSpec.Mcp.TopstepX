@@ -6,6 +6,7 @@ using Microsoft.Extensions.Options;
 namespace MarqSpec.Mcp.TopstepX.Tests.Configuration;
 
 /// <summary>Configuration-layer refusals for trading writes before any MCP tool exists (gh#708).</summary>
+[Trait("Gate", "ADR-0024")]
 public sealed class TradingExecutionGateTests
 {
     private readonly FakeKillSwitch _killSwitch = new();

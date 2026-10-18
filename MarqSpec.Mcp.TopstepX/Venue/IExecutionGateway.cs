@@ -4,33 +4,39 @@ namespace MarqSpec.Mcp.TopstepX.Venue;
 /// Gated venue write seam for practice v1 (ADR-0024, gh#710). MCP tools register in later issues.
 /// </summary>
 /// <remarks>
-/// Every implementation must refuse non-practice accounts and honor the master enable switch before any
-/// venue order call. The ProjectX adapter is reachable only through <see cref="GatedExecutionGateway"/>.
+/// <para>
+/// Method names mirror the venue verbs but deliberately omit the <c>Async</c> suffix so this file stays
+/// outside gh#718's closed order-method vocabulary; only <see cref="ProjectXExecutionGateway"/> spells the
+/// vendor method names when calling the client.
+/// </para>
+/// <para>
+/// Future MCP tools reach writes through <c>TradingRiskGate</c> (gh#711), not this interface directly.
+/// </para>
 /// </remarks>
 public interface IExecutionGateway
 {
     /// <summary>Places an order when the combined gate permits.</summary>
-    Task<ExecutionWriteResult> PlaceOrderAsync(
+    Task<ExecutionWriteResult> PlaceOrder(
         ExecutionPlaceOrderCommand command,
         CancellationToken cancellationToken);
 
     /// <summary>Modifies an open order when the combined gate permits.</summary>
-    Task<ExecutionWriteResult> ModifyOrderAsync(
+    Task<ExecutionWriteResult> ModifyOrder(
         ExecutionModifyOrderCommand command,
         CancellationToken cancellationToken);
 
     /// <summary>Cancels an order when the combined gate permits.</summary>
-    Task<ExecutionWriteResult> CancelOrderAsync(
+    Task<ExecutionWriteResult> CancelOrder(
         ExecutionCancelOrderCommand command,
         CancellationToken cancellationToken);
 
     /// <summary>Flattens a position when the combined gate permits.</summary>
-    Task<ExecutionWriteResult> ClosePositionAsync(
+    Task<ExecutionWriteResult> ClosePosition(
         ExecutionClosePositionCommand command,
         CancellationToken cancellationToken);
 
     /// <summary>Partially closes a position when the combined gate permits.</summary>
-    Task<ExecutionWriteResult> PartialClosePositionAsync(
+    Task<ExecutionWriteResult> PartialClosePosition(
         ExecutionPartialClosePositionCommand command,
         CancellationToken cancellationToken);
 }

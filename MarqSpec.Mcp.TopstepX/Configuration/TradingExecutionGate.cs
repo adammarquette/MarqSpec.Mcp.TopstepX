@@ -9,7 +9,7 @@ namespace MarqSpec.Mcp.TopstepX.Configuration;
 /// </summary>
 /// <remarks>
 /// Order-transmitting code must be reachable only through this type together with
-/// <see cref="GatedExecutionGateway"/> (gh#718). Caps, allowlist, and dry-run layers remain for
+/// <see cref="ProjectXExecutionGateway"/> (gh#718). Caps, allowlist, and dry-run layers remain for
 /// <c>TradingRiskGate</c> (gh#711) and still do not override practice-only (ADR-0024 §2).
 /// </remarks>
 public sealed class TradingExecutionGate(IOptions<TradingExecutionOptions> options, ITradingKillSwitch killSwitch)

@@ -696,7 +696,8 @@ Index: `(Instrument, Session, Indicator, Period, BucketStart)` — the shape of 
 | `IdempotencyKey` | `varchar(256)` | Caller-supplied key for the attempt |
 | `RequestHash` | `varchar(64)` | SHA-256 hex of the normalised request — **no raw body, no secrets** |
 | `DryRun` | `boolean` | Preview (`dryRun: true`) vs transmit |
-| `Outcome` | `varchar(32)` | Closed outcome name — e.g. `Preview`, `Refused`, `Succeeded`, `Failed` |
+| `ContractCount` | `integer` | Contracts requested or acked — daily cap rollups on `place_order` |
+| `Outcome` | `varchar(32)` | Closed outcome name — e.g. `Preview`, `Refused`, `Live`, `Failed` |
 | `VenueErrorCode` | `varchar(64)` | Venue business error when a write ran; null when no gateway write |
 
 One row for **every** trading attempt — preview, confirm, or live — before the outcome is returned

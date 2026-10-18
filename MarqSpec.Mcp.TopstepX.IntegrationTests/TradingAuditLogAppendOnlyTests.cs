@@ -131,6 +131,7 @@ public sealed class TradingAuditLogAppendOnlyTests(SeriesStoreFixture fixture) :
             IdempotencyKey = "key-append-test",
             RequestHash = new string('a', 64),
             DryRun = dryRun,
+            ContractCount = 0,
             Outcome = dryRun ? "Preview" : "Failed",
             VenueErrorCode = venueErrorCode,
         };

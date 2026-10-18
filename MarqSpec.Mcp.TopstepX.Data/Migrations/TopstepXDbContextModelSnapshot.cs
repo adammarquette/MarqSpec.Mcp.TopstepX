@@ -465,6 +465,9 @@ namespace MarqSpec.Mcp.TopstepX.Data.Migrations
                     b.Property<DateTimeOffset>("AttemptedAt")
                         .HasColumnType("timestamp with time zone");
 
+                    b.Property<int>("ContractCount")
+                        .HasColumnType("integer");
+
                     b.Property<bool>("DryRun")
                         .HasColumnType("boolean");
 

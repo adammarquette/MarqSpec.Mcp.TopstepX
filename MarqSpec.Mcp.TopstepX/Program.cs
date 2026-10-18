@@ -657,6 +657,10 @@ public static class Program
         services.AddSingleton<TradingExecutionGate>();
         services.AddSingleton<ITradingUnknownStageRefusalSignal, NullTradingUnknownStageRefusalSignal>();
         services.AddSingleton<IAccountStageResolver, ProjectXAccountStageResolver>();
+        services.AddScoped<ITradingAuditLogWriter, TradingAuditLogWriter>();
+        services.AddScoped<ITradingDailyCapCoordinator, TradingDailyCapCoordinator>();
+        services.AddScoped<TradingContractDenylist>();
+        services.AddScoped<TradingRiskGate>();
 
         // Under HTTP, exactly one authentication mode, complete — the token for StaticToken, the issuer,
         // client ids and resource URL for OAuth — and both directions of "both" refused, each naming its

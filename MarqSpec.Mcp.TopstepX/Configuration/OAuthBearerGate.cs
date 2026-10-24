@@ -30,10 +30,12 @@ namespace MarqSpec.Mcp.TopstepX.Configuration;
 /// <para>
 /// <b>What reaches a log line.</b> On success, <c>sub</c> and <c>client_id</c> as a scope on everything the
 /// request logs, so an operator can say who asked. On refusal, the method, the path and a fixed reason
-/// naming a claim. Method and path are the caller's, so <see cref="LogText.Sanitize"/> escapes CR, LF and
-/// the other control characters and the results are logged as structured parameters — a line break in
-/// either value cannot open a second entry. <b>Never the token</b>: <c>SaveToken</c> is off so it is not
-/// retained on the authentication properties either, and THIS REPOSITORY IS PUBLIC.
+/// naming a claim. Method, path, the two scope values and the reason all pass through
+/// <see cref="LogText.Sanitize"/> — CR, LF, the other controls, the Unicode line separators, the bidi
+/// overrides and a literal backslash are escaped, the escaped text is capped, and the results are logged
+/// as structured parameters. A line break in any of them cannot open a second entry. <b>Never the token</b>:
+/// <c>SaveToken</c> is off so it is not retained on the authentication properties either, and THIS REPOSITORY
+/// IS PUBLIC.
 /// </para>
 /// <para>
 /// <b>An unreachable issuer fails closed.</b> A token that cannot be verified is refused; nothing here
@@ -183,11 +185,14 @@ public static class OAuthBearerGate
 
             context.User = result.Principal;
 
-            // The policy has already required both to be present and single-valued.
+            // The policy has already required both to be present and single-valued. They are still the
+            // caller's strings: escape them before they become a scope on every line this request logs.
             Dictionary<string, object> scope = new(StringComparer.Ordinal)
             {
-                ["auth.sub"] = result.Principal.FindFirst(CognitoAccessTokenPolicy.SubjectClaim)?.Value ?? string.Empty,
-                ["auth.client_id"] = result.Principal.FindFirst(CognitoAccessTokenPolicy.ClientIdClaim)?.Value ?? string.Empty,
+                ["auth.sub"] = LogText.Sanitize(
+                    result.Principal.FindFirst(CognitoAccessTokenPolicy.SubjectClaim)?.Value),
+                ["auth.client_id"] = LogText.Sanitize(
+                    result.Principal.FindFirst(CognitoAccessTokenPolicy.ClientIdClaim)?.Value),
             };
 
             using (logger.BeginScope(scope))

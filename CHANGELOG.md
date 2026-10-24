@@ -72,6 +72,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   reports both DI as absent rather than zero, and a DX with no denominator restarts ADX's warm-up rather than
   resuming a value from before the break (gh#670).
 
+### Fixed
+
+- **The OAuth refusal line cannot be forged.** `LogText.Sanitize` escapes CR, LF, the other C0/C1 controls,
+  U+2028, U+2029, the bidi overrides and isolates, and a literal backslash, then caps the escaped text so an
+  8 KB control-character path cannot expand to about 48 KB. The gate logs method, path, reason, `sub` and
+  `client_id` through it, and the `reselect-bars` command-line refusal does too. The token is still never
+  logged (gh#747, [ADR-0007](documentation/adr/0007-dual-transport.md)).
+
 ## [0.5.0] - 2026-09-11
 
 A **minor** bump: a published release now deploys staging by digest (then production

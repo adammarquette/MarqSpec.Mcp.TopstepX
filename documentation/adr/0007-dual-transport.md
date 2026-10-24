@@ -76,6 +76,7 @@ difference between the two entry points is a handful of lines.
 | [2026-09-06](#update-2026-09-06--the-route-table-gained-a-path-that-answers-without-a-credential) | `GET /health` answers unauthenticated in front of the gate, which stays global — and ordering alone would not have carved it out |
 | [2026-09-08](#update-2026-09-08--the-cowork-custom-connector-dialog-was-measured-on-this-plan) | The maintainer measured Cowork's custom-connector dialog on this plan — two screens, what each offered, and what was not shown (gh#510) |
 | [2026-10-17](#update-2026-10-17--stdio-binds-no-http-port) | stdio binds no HTTP port; the image-baked 8080 is not an opt-in (gh#696) |
+| [2026-10-24](#update-2026-10-24--the-refusal-line-cannot-be-forged) | The OAuth refusal line escapes controls, line separators, bidi marks and a literal backslash, and caps the escaped text (gh#747) |
 
 ## Update (2026-08-22) — starting is not the same as being ready
 
@@ -1270,10 +1271,23 @@ together with empty `Urls`; an explicit URL or HTTPS port still survives.
 
 The gate's own refusal line logs the request method and path (gh#747). Both are chosen by the caller, and
 under this mode the listener is reachable from the internet, so a CR or LF in either value is a second log
-entry — CodeQL `cs/log-forging` at `OAuthBearerGate.UseOAuthBearerGate`. `LogText.Sanitize` escapes CR, LF
-and the other control characters (`\p{Cc}` as `\u00XX`), and the call passes those strings as structured
-parameters. The reason is still a type name or a fixed phrase naming a claim. The token is still never
-logged. `AForgedMethodOrPath_CannotOpenASecondLogEntry` pins the forged line;
+entry — CodeQL `cs/log-forging` at `OAuthBearerGate.UseOAuthBearerGate`. `LogText.Sanitize` escapes CR, LF,
+the other C0/C1 controls, U+2028, U+2029, the bidi overrides and isolates (U+202A–U+202E, U+2066–U+2069),
+and a literal backslash, each as `\uXXXX`. Escaping the backslash means the six characters `\u000D` in the
+input are not the escape a real CR becomes. The escaped text is capped at 1024 characters, with
+` [truncated]` appended when it is longer, because one control expands to six characters and an 8 KB path of
+them would otherwise be about 48 KB. The call passes the results as structured parameters. The same helper
+covers `sub` and `client_id` on the success scope, and the `reselect-bars` command-line refusal. The reason
+is still a type name or a fixed phrase naming a claim. The token is still never logged. `LogTextTests` pins
+each character class, the forged escape, the output cap, and a missing value.
+`AForgedMethodOrPath_CannotOpenASecondLogEntry` pins the forged line;
+`APercentEncodedLineBreakInThePath_CannotOpenASecondLogEntry` pins a `%0D%0A` path;
+`AnEightKilobyteControlPath_IsCappedOnTheRefusalLine` pins the cap on the gate's own record;
+`ASubjectOrClientIdWithALineBreak_CannotForgeTheScope` pins the scope;
 `AnOrdinaryRefusal_LogsTheMethodAndPath` pins that an ordinary refusal is unchanged.
+
+The heading date is the calendar date recorded on the commit that introduced this update, `4c1869d`
+(`git log -1 --format=fuller 4c1869d`: author and committer both `Sat Oct 24 01:24:51 2026 +0000`). The
+acceptance date in the header of this record is unchanged: 2026-08-21, from `c04d86f4`.
 
 The handler filter and the query-string URL note above are unchanged.

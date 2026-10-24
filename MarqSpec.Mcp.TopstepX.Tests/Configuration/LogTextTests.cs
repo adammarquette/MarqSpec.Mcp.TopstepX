@@ -1,0 +1,119 @@
+using FluentAssertions;
+using MarqSpec.Mcp.TopstepX.Configuration;
+
+namespace MarqSpec.Mcp.TopstepX.Tests.Configuration;
+
+/// <summary>
+/// What may be placed in a log record: controls, line separators, bidi marks and a literal backslash are
+/// escaped, the escaped text is capped, and a missing value stays missing (gh#747).
+/// </summary>
+public sealed class LogTextTests
+{
+    [Theory]
+    [InlineData('\r', "\\u000D")]
+    [InlineData('\n', "\\u000A")]
+    [InlineData('\0', "\\u0000")]
+    [InlineData('\t', "\\u0009")]
+    [InlineData('\u001b', "\\u001B")]
+    [InlineData('\u007f', "\\u007F")]
+    [InlineData('\u0085', "\\u0085")]
+    public void EachControlClass_IsEscaped(char input, string expected)
+    {
+        // C0 (CR, LF, NUL, TAB, ESC), DEL, and a C1 (NEL). One escape, and no raw control left.
+        string sanitized = LogText.Sanitize(input.ToString());
+
+        sanitized.Should().Be(expected);
+        sanitized.Any(char.IsControl).Should().BeFalse();
+    }
+
+    [Theory]
+    [InlineData('\u2028', "\\u2028")]
+    [InlineData('\u2029', "\\u2029")]
+    public void ALineOrParagraphSeparator_IsEscaped(char input, string expected)
+    {
+        // U+2028 and U+2029 break a line in some log viewers and are not in \p{Cc}.
+        string sanitized = LogText.Sanitize(input.ToString());
+
+        sanitized.Should().Be(expected);
+        sanitized.Should().NotContain(input.ToString());
+    }
+
+    [Theory]
+    [InlineData('\u202A', "\\u202A")]
+    [InlineData('\u202B', "\\u202B")]
+    [InlineData('\u202C', "\\u202C")]
+    [InlineData('\u202D', "\\u202D")]
+    [InlineData('\u202E', "\\u202E")]
+    [InlineData('\u2066', "\\u2066")]
+    [InlineData('\u2067', "\\u2067")]
+    [InlineData('\u2068', "\\u2068")]
+    [InlineData('\u2069', "\\u2069")]
+    public void ABidiOverrideOrIsolate_IsEscaped(char input, string expected)
+    {
+        // Overrides U+202A–U+202E and isolates U+2066–U+2069 can hide the rest of a log line.
+        string sanitized = LogText.Sanitize(input.ToString());
+
+        sanitized.Should().Be(expected);
+        sanitized.Should().NotContain(input.ToString());
+    }
+
+    [Fact]
+    public void ALiteralBackslash_CannotPassAsAnEscape()
+    {
+        // The six characters \u000D must not survive as the escape a real CR becomes.
+        LogText.Sanitize("\\u000D").Should().Be("\\u005Cu000D");
+        LogText.Sanitize("\r").Should().Be("\\u000D");
+        LogText.Sanitize("\\u000D").Should().NotBe(LogText.Sanitize("\r"));
+        LogText.Sanitize("a\\b").Should().Be("a\\u005Cb");
+    }
+
+    [Fact]
+    public void AnEightKilobyteRunOfControls_IsCappedAfterEscaping()
+    {
+        // 8192 controls × 6 characters is 49152. The cap applies to that expansion, not to the input.
+        const int inputLength = 8192;
+        string result = LogText.Sanitize(new string('\r', inputLength));
+
+        (inputLength * 6).Should().Be(49_152);
+        result.Should().EndWith(LogText.TruncationMarker);
+        string body = result[..^LogText.TruncationMarker.Length];
+        body.Length.Should().BeLessThanOrEqualTo(LogText.MaxSanitizedLength);
+        body.Length.Should().BePositive();
+        (body.Length % 6).Should().Be(0, "the cap ends on an escape boundary");
+        result.Length.Should().BeLessThan(inputLength);
+        result.Any(char.IsControl).Should().BeFalse();
+        result.Should().NotContain("\u2028").And.NotContain("\u2029");
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    public void AMissingValue_StaysMissing(string? value)
+    {
+        LogText.Sanitize(value).Should().BeEmpty();
+    }
+
+    [Fact]
+    public void OrdinaryText_IsUnchanged()
+    {
+        const string ordinary = "POST /mcp: no bearer token.";
+
+        LogText.Sanitize(ordinary).Should().Be(ordinary);
+    }
+
+    [Fact]
+    public void OrdinaryTextAtTheCap_IsNotMarked()
+    {
+        string value = new('a', LogText.MaxSanitizedLength);
+
+        LogText.Sanitize(value).Should().Be(value);
+    }
+
+    [Fact]
+    public void OrdinaryTextPastTheCap_IsMarkedTruncated()
+    {
+        string value = new('a', LogText.MaxSanitizedLength + 1);
+
+        LogText.Sanitize(value).Should().Be(value[..LogText.MaxSanitizedLength] + LogText.TruncationMarker);
+    }
+}

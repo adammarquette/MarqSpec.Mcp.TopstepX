@@ -6,6 +6,7 @@ using MarqSpec.Mcp.TopstepX.Configuration;
 using MarqSpec.Mcp.TopstepX.MarketData;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
+using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
@@ -70,7 +71,10 @@ public sealed class OAuthBearerGateTests
         }
     }
 
-    private static async Task<Host> StartAsync(string issuer, Dictionary<string, string?>? extra = null)
+    private static async Task<Host> StartAsync(
+        string issuer,
+        Dictionary<string, string?>? extra = null,
+        Action<HttpContext>? beforeGate = null)
     {
         Dictionary<string, string?> settings = new()
         {
@@ -98,6 +102,18 @@ public sealed class OAuthBearerGateTests
 
         WebApplication app = builder.Build();
         app.Services.GetRequiredService<StoreAvailabilityHolder>().Set(StoreAvailability.Available());
+
+        // Ahead of the gate, so a test can place a method or path on the request that the HTTP parser
+        // would have rejected — CR and LF end the request line — while the gate still logs what it sees.
+        if (beforeGate is not null)
+        {
+            app.Use((context, next) =>
+            {
+                beforeGate(context);
+                return next(context);
+            });
+        }
+
         Program.MapHttpTransport(app, mcp);
         await app.StartAsync();
 
@@ -219,6 +235,51 @@ public sealed class OAuthBearerGateTests
 
         ShouldBeRefused(response);
         host.Logs.Everything().Should().NotContain(token);
+    }
+
+    [Fact]
+    public async Task AnOrdinaryRefusal_LogsTheMethodAndPath()
+    {
+        // The sanitizer must not mangle a request an operator would recognise. This is the awkward
+        // *correct* input beside the forged one: a real method, a real path, and the gate's own reason.
+        await using StubIssuer issuer = await StubIssuer.StartAsync();
+        await using Host host = await StartAsync(issuer.Issuer);
+
+        using HttpResponseMessage response = await host.Client.SendAsync(InitializeWith(null));
+
+        ShouldBeRefused(response);
+        host.Logs.Lines().Should().ContainSingle(line => line.StartsWith("Refused ", StringComparison.Ordinal))
+            .Which.Should().Be("Refused POST /mcp: no bearer token.");
+    }
+
+    [Fact]
+    public async Task AForgedMethodOrPath_CannotOpenASecondLogEntry()
+    {
+        // Method and path are attacker-chosen on a listener the internet can reach (ADR-0007). A CR or LF
+        // copied into the refusal record is a second log entry. The HTTP parser rejects a raw CR/LF in the
+        // request line, so this places the values on the request the gate reads. The record keeps the text
+        // and escapes the controls, including the other C0/C1 controls beside CR and LF.
+        const string forgedMethod = "GET\r\n\0\t\u001b\u007f\u0085INFO forged-method";
+        const string forgedPath = "/mcp\r\nINFO forged-path";
+        await using StubIssuer issuer = await StubIssuer.StartAsync();
+        await using Host host = await StartAsync(issuer.Issuer, beforeGate: context =>
+        {
+            context.Request.Method = forgedMethod;
+            context.Request.Path = forgedPath;
+        });
+
+        using HttpResponseMessage response = await host.Client.GetAsync("/mcp");
+
+        ShouldBeRefused(response);
+        string refusal = host.Logs.Lines()
+            .Should().ContainSingle(line => line.StartsWith("Refused ", StringComparison.Ordinal))
+            .Which;
+        refusal.Should().Be(
+            "Refused GET\\u000D\\u000A\\u0000\\u0009\\u001B\\u007F\\u0085INFO forged-method "
+            + "/mcp\\u000D\\u000AINFO forged-path: no bearer token.");
+        refusal.Any(char.IsControl).Should().BeFalse();
+        // Hosting diagnostics still echo the request line (ADR-0007 leaves that with gh#515). The pin is
+        // the gate's own record: one line, no control character, the forged text still inside it.
     }
 
     // ── the negatives ────────────────────────────────────────────────────────────────────────────────────
@@ -615,6 +676,14 @@ public sealed class OAuthBearerGateTests
                     .Where(pair => string.Equals(pair.Key, key, StringComparison.Ordinal))
                     .Select(pair => pair.Value?.ToString() ?? string.Empty)
                     .ToList();
+            }
+        }
+
+        public IReadOnlyList<string> Lines()
+        {
+            lock (_gate)
+            {
+                return [.. _lines];
             }
         }
 

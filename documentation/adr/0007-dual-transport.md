@@ -1265,3 +1265,15 @@ opens no socket.
 
 `TransportBindingTests` pins both sides: two stdio hosts inherit the image port and start
 together with empty `Urls`; an explicit URL or HTTPS port still survives.
+
+## Update (2026-10-24) — the refusal line cannot be forged
+
+The gate's own refusal line logs the request method and path (gh#747). Both are chosen by the caller, and
+under this mode the listener is reachable from the internet, so a CR or LF in either value is a second log
+entry — CodeQL `cs/log-forging` at `OAuthBearerGate.UseOAuthBearerGate`. `LogText.Sanitize` escapes CR, LF
+and the other control characters (`\p{Cc}` as `\u00XX`), and the call passes those strings as structured
+parameters. The reason is still a type name or a fixed phrase naming a claim. The token is still never
+logged. `AForgedMethodOrPath_CannotOpenASecondLogEntry` pins the forged line;
+`AnOrdinaryRefusal_LogsTheMethodAndPath` pins that an ordinary refusal is unchanged.
+
+The handler filter and the query-string URL note above are unchanged.

@@ -24,7 +24,9 @@ images stay private on GHCR, and TopstepX ships only as an image.
 3. **Two roles from one image.** `server` is public and runs OAuth; its resource URL is its own Railway
    domain over https. `recorder` records the tape, is private, has no OAuth keys, and runs one replica.
 4. **Staging is disposable; production keeps the data.** Outside production there is no volume, no backups
-   and no tape export, so every redeploy starts with an empty database. Production requires the volume.
+   and no tape export, so every redeploy starts with an empty database. Production requires the volume, and its
+   recorder alone runs the gh#755 export to its own `/data/tape-exports` volume (as root via `RAILWAY_RUN_UID=0`
+   until the image drops privileges itself; an open item for Maker).
 5. **Secrets are environment shared variables.** The file references them and never stores them. The GHCR
    pull credential is a dashboard setting.
 6. **CI checks the template offline.** `railway-template` evaluates it for every environment name; the

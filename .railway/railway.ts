@@ -38,6 +38,9 @@ const POSTGRES_IMAGE =
 // The mount ROOT is root-owned and holds lost+found, so PGDATA is a subdirectory of it.
 const PG_MOUNT = "/home/postgres/pgdata";
 
+// gh#755's export directory (TapeExport__Path default). Production's recorder only.
+const EXPORT_MOUNT = "/data/tape-exports";
+
 // One retry budget for every service: enough to ride out a Postgres restart, few enough to surface a crash loop.
 const RESTART = { restartPolicyType: "ON_FAILURE", restartPolicyMaxRetries: 10 } as const;
 
@@ -48,6 +51,8 @@ export default defineRailway((ctx) => {
   // and with it backups and any tape export. Every other environment is DISPOSABLE: Postgres runs on the
   // container's ephemeral storage, so each redeploy starts from an empty database. The check enforces both.
   const pgdata = production ? volume("postgres-data", { sizeMB: 10240 }) : undefined;
+  // The tape export target (gh#755), production only, mounted on exactly one service: the recorder.
+  const exports = production ? volume("tape-exports", { sizeMB: 10240 }) : undefined;
 
   const postgres = service("postgres", {
     source: image(POSTGRES_IMAGE),
@@ -138,6 +143,7 @@ export default defineRailway((ctx) => {
     source: server_image(),
     healthcheck: "/health",
     healthcheckTimeout: HEALTHCHECK_TIMEOUT,
+    ...(exports ? { volumeMounts: { [EXPORT_MOUNT]: exports } } : {}),
     replicas: 1,
     deploy: {
       ...RESTART,
@@ -155,8 +161,23 @@ export default defineRailway((ctx) => {
       ASPNETCORE_FORWARDEDHEADERS_ENABLED: "false",
       MarketData__RecordTape: "true",
       Otel__ServiceName: "marqspec-mcp-topstepx-recorder",
+      // gh#755 export (contract from PR #765). Production: on, daily 06:00 UTC, to the recorder's own volume.
+      // Staging: off, no Drive keys, no volume. Drive upload is optional and not configured here; if added,
+      // TapeExport__Drive__ServiceAccountJson may only be ctx.shared.TAPE_EXPORT_DRIVE_SERVICE_ACCOUNT_JSON.
+      TapeExport__Enabled: production ? "true" : "false",
+      ...(production
+        ? {
+            TapeExport__Schedule: "06:00",
+            TapeExport__Path: EXPORT_MOUNT,
+            TapeExport__Format: "csv.gz+parquet",
+            // The image runs as uid 64198 and Railway mounts volumes root-owned; this image has no
+            // root-then-drop entrypoint, so the documented Railway remedy runs the recorder as root in
+            // production. Interim: see deployment.md (a privilege-dropping entrypoint is a Maker item).
+            RAILWAY_RUN_UID: "0",
+          }
+        : {}),
     },
   });
 
-  return project("marqspec-mcp-topstepx", { resources: pgdata ? [postgres, pgdata, server, recorder] : [postgres, server, recorder] });
+  return project("marqspec-mcp-topstepx", { resources: [postgres, server, recorder, ...(pgdata ? [pgdata] : []), ...(exports ? [exports] : [])] });
 });

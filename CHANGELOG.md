@@ -13,6 +13,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Five gated order tools, with a durable idempotency claim** (gh#750). `place_order`, `modify_order`,
+  `cancel_order`, `close_position` and `partial_close_position` call `TradingRiskGate` only.
+  `Trading__Enabled` still defaults to false, including cancel and close. Before a send the gate writes an
+  `Unknown` audit row keyed by account, tool and idempotency key. A unique index makes that claim survive a
+  restart, a redeploy and a second replica, and a throw or a lost acknowledgment cannot be retried into a
+  second send. Refusals and previews are not replayed. Size, price and partial-close checks refuse before
+  any audit row. A venue exception returns `OutcomeUnknown` with `retrySafety`. When trading is enabled,
+  an empty `Trading__AllowedAccountIds` fails startup. The kill switch still blocks cancel and close;
+  that block is pending Adam's decision.
+
 ### Removed
 
 - **AWS CDK deployment infrastructure.** The `infra/` CDK application, OIDC deploy workflows, and related CI

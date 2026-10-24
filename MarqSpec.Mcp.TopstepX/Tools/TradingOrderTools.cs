@@ -1,7 +1,6 @@
 using System.ComponentModel;
 using MarqSpec.Mcp.TopstepX.Configuration;
 using MarqSpec.Mcp.TopstepX.Venue;
-using ModelContextProtocol;
 using ModelContextProtocol.Server;
 
 namespace MarqSpec.Mcp.TopstepX.Tools;
@@ -18,6 +17,12 @@ namespace MarqSpec.Mcp.TopstepX.Tools;
 [McpServerToolType]
 public sealed class TradingOrderTools(TradingRiskGate gate)
 {
+    private const string Stakes =
+        "This writes on a live practice account and the stakes are real. Non-practice accounts are refused. "
+        + "Use a fresh idempotencyKey for each order; the key is scoped to this account and this tool, and "
+        + "the longest key is 256 characters. never retry OutcomeUnknown; reconcile via list_open_orders, "
+        + "list_positions and recent trades (get_orders, get_positions and get_trades). ";
+
     private readonly TradingRiskGate _gate = gate;
 
     /// <summary>Places an order when the trading gate permits.</summary>
@@ -40,20 +45,21 @@ public sealed class TradingOrderTools(TradingRiskGate gate)
         Destructive = true,
         Title = "Place order")]
     [Description(
-        "Places an order only through the trading risk gate. Trading__Enabled defaults to false and refuses "
+        Stakes
+        + "Places an order only through the trading risk gate. Trading__Enabled defaults to false and refuses "
         + "this call before any vendor send, and the kill switch blocks it the same way. idempotencyKey is "
-        + "required; a replay of that key returns the original result and does not send again. status is "
+        + "required; a replay of that key returns the stored transmit and does not send again. status is "
         + "Preview, Refused, Live, Failed, or Unknown. Live means the broker acknowledged the order. "
         + "retrySafety is SafeToRetry, NotSafeToRetry, or OutcomeUnknown. refusalCode, resultCode and "
         + "orderId are omitted when this call has nothing to report for them.")]
     public Task<ToolPayloads.TradingWriteResult> SubmitPlace(
-        [Description("The venue account id, from list_accounts.")] int accountId,
+        [Description("The venue account id from list_accounts. Practice accounts only; a non-practice account is refused.")] int accountId,
         [Description("The venue contract id, e.g. CON.F.US.MES.Z26.")] string contractId,
         [Description("Order type: Limit, Market, Stop, StopLimit, TrailingStop, JoinBid, JoinAsk.")]
         ExecutionOrderType orderType,
         [Description("Buy or Sell. Unknown is refused.")] VenueSide side,
         [Description("Contract size, a positive number of contracts.")] int size,
-        [Description("Caller-supplied idempotency key. A replay returns the original result and does not send again.")]
+        [Description("Caller-supplied idempotency key, at most 256 characters, scoped to this account and place_order. Use a fresh key per order.")]
         string idempotencyKey,
         [Description("Limit price when the order type uses one. Omit otherwise.")] decimal? limitPrice = null,
         [Description("Stop price when the order type uses one. Omit otherwise.")] decimal? stopPrice = null,
@@ -91,16 +97,17 @@ public sealed class TradingOrderTools(TradingRiskGate gate)
         Destructive = true,
         Title = "Modify order")]
     [Description(
-        "Modifies an open order only through the trading risk gate. Trading__Enabled defaults to false and "
+        Stakes
+        + "Modifies an open order only through the trading risk gate. Trading__Enabled defaults to false and "
         + "refuses this call before any vendor send, and the kill switch blocks it the same way. "
-        + "idempotencyKey is required; a replay of that key returns the original result and does not send "
-        + "again. status is Preview, Refused, Live, Failed, or Unknown. retrySafety is SafeToRetry, "
-        + "NotSafeToRetry, or OutcomeUnknown. refusalCode, resultCode and orderId are omitted when this "
-        + "call has nothing to report for them.")]
+        + "idempotencyKey is required; a replay of that key returns the stored transmit and does not send "
+        + "again. A supplied size is checked against the per-order and daily caps. status is Preview, "
+        + "Refused, Live, Failed, or Unknown. retrySafety is SafeToRetry, NotSafeToRetry, or OutcomeUnknown. "
+        + "refusalCode, resultCode and orderId are omitted when this call has nothing to report for them.")]
     public Task<ToolPayloads.TradingWriteResult> SubmitModify(
-        [Description("The venue account id.")] int accountId,
+        [Description("The venue account id from list_accounts. Practice accounts only; a non-practice account is refused.")] int accountId,
         [Description("The order id to modify.")] long orderId,
-        [Description("Caller-supplied idempotency key. A replay returns the original result and does not send again.")]
+        [Description("Caller-supplied idempotency key, at most 256 characters, scoped to this account and modify_order. Use a fresh key per order.")]
         string idempotencyKey,
         [Description("New size. Omit to leave the size unchanged.")] int? size = null,
         [Description("New limit price. Omit to leave it unchanged.")] decimal? limitPrice = null,
@@ -127,16 +134,17 @@ public sealed class TradingOrderTools(TradingRiskGate gate)
         Destructive = true,
         Title = "Cancel order")]
     [Description(
-        "Cancels an order only through the trading risk gate. Trading__Enabled defaults to false and refuses "
+        Stakes
+        + "Cancels an order only through the trading risk gate. Trading__Enabled defaults to false and refuses "
         + "this call before any vendor send. The kill switch blocks cancel too; there is no carve-out. "
-        + "idempotencyKey is required; a replay of that key returns the original result and does not send "
+        + "idempotencyKey is required; a replay of that key returns the stored transmit and does not send "
         + "again. status is Preview, Refused, Live, Failed, or Unknown. retrySafety is SafeToRetry, "
         + "NotSafeToRetry, or OutcomeUnknown. refusalCode, resultCode and orderId are omitted when this "
         + "call has nothing to report for them.")]
     public Task<ToolPayloads.TradingWriteResult> SubmitCancel(
-        [Description("The venue account id.")] int accountId,
+        [Description("The venue account id from list_accounts. Practice accounts only; a non-practice account is refused.")] int accountId,
         [Description("The order id to cancel.")] long orderId,
-        [Description("Caller-supplied idempotency key. A replay returns the original result and does not send again.")]
+        [Description("Caller-supplied idempotency key, at most 256 characters, scoped to this account and cancel_order. Use a fresh key per order.")]
         string idempotencyKey,
         [Description("When true, run the same gates and return a preview. Omit for false.")] bool dryRun = false,
         CancellationToken cancellationToken = default) =>
@@ -160,16 +168,17 @@ public sealed class TradingOrderTools(TradingRiskGate gate)
         Destructive = true,
         Title = "Close position")]
     [Description(
-        "Flattens a position only through the trading risk gate. Trading__Enabled defaults to false and "
+        Stakes
+        + "Flattens a position only through the trading risk gate. Trading__Enabled defaults to false and "
         + "refuses this call before any vendor send. The kill switch blocks close too; there is no carve-out. "
-        + "idempotencyKey is required; a replay of that key returns the original result and does not send "
+        + "idempotencyKey is required; a replay of that key returns the stored transmit and does not send "
         + "again. status is Preview, Refused, Live, Failed, or Unknown. retrySafety is SafeToRetry, "
         + "NotSafeToRetry, or OutcomeUnknown. refusalCode, resultCode and orderId are omitted when this "
         + "call has nothing to report for them.")]
     public Task<ToolPayloads.TradingWriteResult> SubmitClose(
-        [Description("The venue account id.")] int accountId,
+        [Description("The venue account id from list_accounts. Practice accounts only; a non-practice account is refused.")] int accountId,
         [Description("The contract id to flatten, e.g. CON.F.US.MES.Z26.")] string contractId,
-        [Description("Caller-supplied idempotency key. A replay returns the original result and does not send again.")]
+        [Description("Caller-supplied idempotency key, at most 256 characters, scoped to this account and close_position. Use a fresh key per order.")]
         string idempotencyKey,
         [Description("When true, run the same gates and return a preview. Omit for false.")] bool dryRun = false,
         CancellationToken cancellationToken = default) =>
@@ -194,17 +203,19 @@ public sealed class TradingOrderTools(TradingRiskGate gate)
         Destructive = true,
         Title = "Partial close position")]
     [Description(
-        "Reduces a position only through the trading risk gate. Trading__Enabled defaults to false and "
+        Stakes
+        + "Reduces a position only through the trading risk gate. Trading__Enabled defaults to false and "
         + "refuses this call before any vendor send. The kill switch blocks a partial close too; there is "
-        + "no carve-out. idempotencyKey is required; a replay of that key returns the original result and "
-        + "does not send again. status is Preview, Refused, Live, Failed, or Unknown. retrySafety is "
-        + "SafeToRetry, NotSafeToRetry, or OutcomeUnknown. refusalCode, resultCode and orderId are omitted "
-        + "when this call has nothing to report for them.")]
+        + "no carve-out. The size is checked against the open position before any audit row. idempotencyKey "
+        + "is required; a replay of that key returns the stored transmit and does not send again. status is "
+        + "Preview, Refused, Live, Failed, or Unknown. retrySafety is SafeToRetry, NotSafeToRetry, or "
+        + "OutcomeUnknown. refusalCode, resultCode and orderId are omitted when this call has nothing to "
+        + "report for them.")]
     public Task<ToolPayloads.TradingWriteResult> SubmitPartialClose(
-        [Description("The venue account id.")] int accountId,
+        [Description("The venue account id from list_accounts. Practice accounts only; a non-practice account is refused.")] int accountId,
         [Description("The contract id, e.g. CON.F.US.MES.Z26.")] string contractId,
-        [Description("Contracts to close, a positive number.")] int size,
-        [Description("Caller-supplied idempotency key. A replay returns the original result and does not send again.")]
+        [Description("Contracts to close, a positive number no larger than the open position.")] int size,
+        [Description("Caller-supplied idempotency key, at most 256 characters, scoped to this account and partial_close_position. Use a fresh key per order.")]
         string idempotencyKey,
         [Description("When true, run the same gates and return a preview. Omit for false.")] bool dryRun = false,
         CancellationToken cancellationToken = default) =>
@@ -224,9 +235,15 @@ public sealed class TradingOrderTools(TradingRiskGate gate)
             TradingRiskGateResult result = await attempt.ConfigureAwait(false);
             return ToolPayloads.FromGate(result);
         }
-        catch (VenueException ex)
+        catch (VenueException)
         {
-            throw new McpException("The venue could not answer: " + ex.Message);
+            return new ToolPayloads.TradingWriteResult(
+                nameof(TradingAttemptOutcome.Unknown),
+                ToolPayloads.TradingRetrySafety.OutcomeUnknown,
+                AccountStage.Unknown,
+                RefusalCode: null,
+                ResultCode: null,
+                OrderId: null);
         }
     }
 }

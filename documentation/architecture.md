@@ -1092,7 +1092,9 @@ dating today's pick. It does not fetch bars and does not write a roll row.
   validated** (gh#708) — master enable off by default, kill switch, secondary account allowlist, contract caps
   and a symbol denylist. The five MCP tools `place_order`, `modify_order`, `cancel_order`, `close_position`
   and `partial_close_position` call that gate and no other write path (gh#750). The kill switch blocks cancel
-  and close. `check-no-order-path.sh` still confines order-method names to the execution seam. Bracket fields,
+  and close; that block is pending Adam's decision and is unchanged. Idempotency is the pre-send `Unknown`
+  audit row, unique per account, tool and key, not process memory. `check-no-order-path.sh` still confines
+  order-method names to the execution seam. Bracket fields,
   `confirm_trading_action` and the OAuth trade scope are later slices (gh#713, gh#717, gh#719).
 - **Market-hub recording is opted in, not implied by HTTP.** The standing choice not to subscribe is reversed
   ([ADR-0016](adr/0016-subscribe-to-the-market-hub.md)). The first first-party `BackgroundService` records

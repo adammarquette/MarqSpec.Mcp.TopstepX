@@ -315,6 +315,14 @@ public sealed class TopstepXDbContext(DbContextOptions<TopstepXDbContext> option
 
             entity.HasIndex(a => new { a.AccountId, a.AttemptedAt });
             entity.HasIndex(a => a.IdempotencyKey);
+
+            // One pre-send Unknown claim per (account, tool, key). Empty keys stay out so unkeyed gate
+            // callers can still append. A later Live or Failed row is a different outcome and is allowed.
+            // Cap-release Attempted rows are also a different outcome, so a negative charge can still append.
+            entity.HasIndex(a => new { a.AccountId, a.Tool, a.IdempotencyKey })
+                .IsUnique()
+                .HasDatabaseName("IX_TradingAuditLog_AccountId_Tool_IdempotencyKey_Unknown")
+                .HasFilter("\"Outcome\" = 'Unknown' AND \"IdempotencyKey\" <> ''");
         });
 
         // pgvector only maps under Npgsql. Configuring this unconditionally breaks every provider-agnostic

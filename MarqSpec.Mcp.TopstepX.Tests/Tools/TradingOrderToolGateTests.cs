@@ -6,11 +6,11 @@ using MarqSpec.Mcp.TopstepX.Domain;
 using MarqSpec.Mcp.TopstepX.Domain.MarketData;
 using MarqSpec.Mcp.TopstepX.MarketData;
 using MarqSpec.Mcp.TopstepX.Telemetry;
+using MarqSpec.Mcp.TopstepX.Tests.Configuration;
 using MarqSpec.Mcp.TopstepX.Tools;
 using MarqSpec.Mcp.TopstepX.Venue;
 using Microsoft.Extensions.Diagnostics.Metrics.Testing;
 using Microsoft.Extensions.Options;
-using Microsoft.Extensions.Time.Testing;
 using ModelContextProtocol.Server;
 
 namespace MarqSpec.Mcp.TopstepX.Tests.Tools;
@@ -26,17 +26,10 @@ public sealed class TradingOrderToolGateTests
     private const string MesContract = "CON.F.US.MES.Z26";
     private const long OpenOrderId = 7;
 
-    private readonly FakeTimeProvider _clock = new(new DateTimeOffset(2026, 10, 24, 0, 0, 0, TimeSpan.Zero));
-    private readonly InMemoryTradingIdempotencyStore _store;
     private readonly FakeKillSwitch _killSwitch = new();
     private readonly CountingGateway _gateway = new();
     private readonly RecordingAuditLog _audit = new();
     private readonly FakeDailyCapCoordinator _daily = new();
-
-    public TradingOrderToolGateTests()
-    {
-        _store = new InMemoryTradingIdempotencyStore(_clock);
-    }
 
     public static TheoryData<string> EveryOrderTool()
     {
@@ -152,7 +145,10 @@ public sealed class TradingOrderToolGateTests
         replay.Should().Be(first);
         CallsFor(operation).Should().Be(1);
         writes.GetMeasurementSnapshot().Should().HaveCount(2);
+        writes.GetMeasurementSnapshot()[1].Tags[HostTelemetry.ReplayTag].Should().Be(ExecutionWriteReplay.True);
+        writes.GetMeasurementSnapshot()[0].Tags[HostTelemetry.ReplayTag].Should().Be(ExecutionWriteReplay.False);
         spans.Should().HaveCount(2);
+        spans[1].GetTagItem(HostTelemetry.ReplayTag).Should().Be(ExecutionWriteReplay.True);
         spans.Should().OnlyContain(span => span.OperationName == "execution." + operation);
     }
 
@@ -232,7 +228,7 @@ public sealed class TradingOrderToolGateTests
     }
 
     [Fact]
-    public async Task TradingRiskGate_PlaceOrder_ReplaysADisabledRefusal_WithoutSending_AfterTradingIsEnabled()
+    public async Task TradingRiskGate_PlaceOrder_DoesNotReplayADisabledRefusal_AfterTradingIsEnabled()
     {
         using HostTelemetry disabledTelemetry = new();
         TradingOrderTools disabled = Tools(disabledTelemetry, new TradingExecutionOptions());
@@ -240,24 +236,245 @@ public sealed class TradingOrderToolGateTests
 
         using HostTelemetry enabledTelemetry = new();
         TradingOrderTools enabled = Tools(enabledTelemetry, new TradingExecutionOptions { Enabled = true });
-        ToolPayloads.TradingWriteResult replay = await Call(enabled, TradingMcpTools.PlaceOrderOperation, "held-key");
+        _gateway.Next = Acknowledged(42);
+        ToolPayloads.TradingWriteResult sent = await Call(enabled, TradingMcpTools.PlaceOrderOperation, "held-key");
 
         refusal.RefusalCode.Should().Be(TradingExecutionRefusal.TradingDisabled.Code);
-        replay.Should().Be(refusal);
+        refusal.RetrySafety.Should().Be(ToolPayloads.TradingRetrySafety.SafeToRetry);
+        sent.Status.Should().Be(nameof(TradingAttemptOutcome.Live));
+        _gateway.PlaceOrderCalls.Should().Be(1);
+        _audit.Entries.Should().NotContain(entry =>
+            entry.Outcome == TradingAuditOutcomes.Unknown && entry.IdempotencyKey == "held-key"
+            && entry.RequestHash == string.Empty);
+    }
+
+    [Fact]
+    public async Task TradingRiskGate_PlaceOrder_ReplaysFromTheAuditStore_AfterANewGateInstance()
+    {
+        _gateway.Next = Acknowledged(42);
+        using HostTelemetry firstTelemetry = new();
+        TradingOrderTools first = Tools(firstTelemetry, new TradingExecutionOptions { Enabled = true });
+        ToolPayloads.TradingWriteResult sent = await Call(first, TradingMcpTools.PlaceOrderOperation, "durable-key");
+
+        using HostTelemetry secondTelemetry = new();
+        TradingOrderTools restarted = Tools(secondTelemetry, new TradingExecutionOptions { Enabled = true });
+        ToolPayloads.TradingWriteResult replay = await Call(
+            restarted,
+            TradingMcpTools.PlaceOrderOperation,
+            "durable-key");
+
+        sent.OrderId.Should().Be(42);
+        replay.Should().Be(sent);
+        _gateway.PlaceOrderCalls.Should().Be(1);
+    }
+
+    [Fact]
+    public async Task TradingRiskGate_PlaceOrder_ThrowingSend_ThenTheSameKey_SendsZeroMoreTimes()
+    {
+        _gateway.PlaceException = new VenueException("the venue dropped the socket");
+        using HostTelemetry telemetry = new();
+        TradingOrderTools tools = Tools(telemetry, new TradingExecutionOptions { Enabled = true });
+
+        ToolPayloads.TradingWriteResult first = await Call(tools, TradingMcpTools.PlaceOrderOperation, "thrown-key");
+        _gateway.PlaceException = null;
+        _gateway.Next = Acknowledged(99);
+        using HostTelemetry restartedTelemetry = new();
+        TradingOrderTools restarted = Tools(restartedTelemetry, new TradingExecutionOptions { Enabled = true });
+        ToolPayloads.TradingWriteResult retry = await Call(
+            restarted,
+            TradingMcpTools.PlaceOrderOperation,
+            "thrown-key");
+
+        first.Status.Should().Be(nameof(TradingAttemptOutcome.Unknown));
+        first.RetrySafety.Should().Be(ToolPayloads.TradingRetrySafety.OutcomeUnknown);
+        retry.Status.Should().Be(nameof(TradingAttemptOutcome.Unknown));
+        retry.RetrySafety.Should().Be(ToolPayloads.TradingRetrySafety.OutcomeUnknown);
+        _gateway.PlaceOrderCalls.Should().Be(1);
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(-2)]
+    public async Task TradingRiskGate_PlaceOrder_RefusesANonPositiveSize_BeforeAnyAuditRow(int size)
+    {
+        using HostTelemetry telemetry = new();
+        TradingOrderTools tools = Tools(telemetry, new TradingExecutionOptions { Enabled = true });
+
+        ToolPayloads.TradingWriteResult result = await tools.SubmitPlace(
+            PracticeAccountId,
+            MesContract,
+            ExecutionOrderType.Market,
+            VenueSide.Buy,
+            size,
+            "size-key");
+
+        result.RefusalCode.Should().Be(ExecutionWriteRefusal.SizeNotPositive);
+        result.RetrySafety.Should().Be(ToolPayloads.TradingRetrySafety.SafeToRetry);
+        _audit.Entries.Should().BeEmpty();
         _gateway.PlaceOrderCalls.Should().Be(0);
     }
 
     [Fact]
-    public async Task TradingRiskGate_PlaceOrder_SendsAgain_AfterTheIdempotencyWindow()
+    public async Task TradingRiskGate_PlaceOrder_RefusesALimitMissingItsPrice_BeforeAnyAuditRow()
     {
-        _gateway.Next = Acknowledged(42);
         using HostTelemetry telemetry = new();
         TradingOrderTools tools = Tools(telemetry, new TradingExecutionOptions { Enabled = true });
 
-        await Call(tools, TradingMcpTools.PlaceOrderOperation, "aged-key");
-        _clock.Advance(InMemoryTradingIdempotencyStore.Lifetime);
-        await Call(tools, TradingMcpTools.PlaceOrderOperation, "aged-key");
+        ToolPayloads.TradingWriteResult result = await tools.SubmitPlace(
+            PracticeAccountId,
+            MesContract,
+            ExecutionOrderType.Limit,
+            VenueSide.Buy,
+            1,
+            "price-key");
 
+        result.RefusalCode.Should().Be(ExecutionWriteRefusal.PriceRequired);
+        _audit.Entries.Should().BeEmpty();
+        _gateway.PlaceOrderCalls.Should().Be(0);
+    }
+
+    [Fact]
+    public async Task TradingRiskGate_PlaceOrder_RefusesANonPositivePrice_BeforeAnyAuditRow()
+    {
+        using HostTelemetry telemetry = new();
+        TradingOrderTools tools = Tools(telemetry, new TradingExecutionOptions { Enabled = true });
+
+        ToolPayloads.TradingWriteResult result = await tools.SubmitPlace(
+            PracticeAccountId,
+            MesContract,
+            ExecutionOrderType.Market,
+            VenueSide.Buy,
+            1,
+            "neg-price-key",
+            limitPrice: -1m);
+
+        result.RefusalCode.Should().Be(ExecutionWriteRefusal.PriceNotPositive);
+        _audit.Entries.Should().BeEmpty();
+        _gateway.PlaceOrderCalls.Should().Be(0);
+    }
+
+    [Fact]
+    public async Task TradingRiskGate_PlaceOrder_RefusesAStopMissingItsPrice_BeforeAnyAuditRow()
+    {
+        using HostTelemetry telemetry = new();
+        TradingOrderTools tools = Tools(telemetry, new TradingExecutionOptions { Enabled = true });
+
+        ToolPayloads.TradingWriteResult result = await tools.SubmitPlace(
+            PracticeAccountId,
+            MesContract,
+            ExecutionOrderType.Stop,
+            VenueSide.Sell,
+            1,
+            "stop-key");
+
+        result.RefusalCode.Should().Be(ExecutionWriteRefusal.PriceRequired);
+        _audit.Entries.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task TradingRiskGate_ModifyOrder_RefusesANonPositiveSize_AndRunsTheCapWhenSizeIsSet()
+    {
+        _daily.ContractsToday = 10;
+        using HostTelemetry telemetry = new();
+        TradingOrderTools tools = Tools(
+            telemetry,
+            new TradingExecutionOptions { Enabled = true, MaxContractsPerDay = 10 });
+
+        ToolPayloads.TradingWriteResult negative = await tools.SubmitModify(
+            PracticeAccountId,
+            OpenOrderId,
+            "mod-neg",
+            size: -3);
+
+        negative.RefusalCode.Should().Be(ExecutionWriteRefusal.SizeNotPositive);
+        _audit.Entries.Should().BeEmpty();
+        _gateway.ModifyOrderCalls.Should().Be(0);
+
+        ToolPayloads.TradingWriteResult overCap = await tools.SubmitModify(
+            PracticeAccountId,
+            OpenOrderId,
+            "mod-cap",
+            size: 1);
+
+        overCap.RefusalCode.Should().Be(ExecutionWriteRefusal.DailyContractLimitExceeded);
+        _gateway.ModifyOrderCalls.Should().Be(0);
+        _audit.Entries.Should().NotContain(entry => entry.ContractCount < 0);
+    }
+
+    [Fact]
+    public async Task TradingRiskGate_PartialClose_RefusesWhenTheSizeExceedsTheOpenPosition()
+    {
+        using HostTelemetry telemetry = new();
+        TradingOrderTools tools = Tools(telemetry, new TradingExecutionOptions { Enabled = true });
+
+        ToolPayloads.TradingWriteResult result = await tools.SubmitPartialClose(
+            PracticeAccountId,
+            MesContract,
+            size: 4,
+            idempotencyKey: "too-big");
+
+        result.RefusalCode.Should().Be(ExecutionWriteRefusal.PartialCloseExceedsPosition);
+        _audit.Entries.Should().BeEmpty();
+        _gateway.PartialClosePositionCalls.Should().Be(0);
+    }
+
+    [Fact]
+    public async Task TradingRiskGate_PlaceOrder_IncludesDryRunInTheRequestHash()
+    {
+        using HostTelemetry telemetry = new();
+        TradingOrderTools tools = Tools(telemetry, new TradingExecutionOptions { Enabled = true });
+        ExecutionPlaceOrderCommand command = new(
+            PracticeAccountId,
+            MesContract,
+            ExecutionOrderType.Limit,
+            VenueSide.Buy,
+            1,
+            6800m,
+            null,
+            null);
+
+        await tools.SubmitPlace(
+            command.AccountId,
+            command.ContractId,
+            command.OrderType,
+            command.Side,
+            command.Size,
+            "hash-key",
+            command.LimitPrice,
+            dryRun: true);
+
+        _audit.Entries.Should().Contain(entry =>
+            entry.Outcome == TradingAuditOutcomes.Preview
+            && entry.RequestHash == TradingRequestHasher.HashPlace(command, dryRun: true));
+        _audit.Entries.Should().NotContain(entry =>
+            entry.RequestHash == TradingRequestHasher.HashPlace(command, dryRun: false));
+        _gateway.PlaceOrderCalls.Should().Be(0);
+    }
+
+    [Fact]
+    public async Task TradingRiskGate_PlaceOrder_SameKeyOnAnotherAccount_IsADifferentClaim()
+    {
+        _gateway.Next = Acknowledged(42);
+        using HostTelemetry telemetry = new();
+        TradingRiskGate gate = Gate(telemetry, new TradingExecutionOptions { Enabled = true });
+        ExecutionPlaceOrderCommand first = new(
+            PracticeAccountId,
+            MesContract,
+            ExecutionOrderType.Market,
+            VenueSide.Buy,
+            1,
+            null,
+            null,
+            null);
+        ExecutionPlaceOrderCommand second = first with { AccountId = 101 };
+
+        await gate.SubmitPlace(first, new TradingRiskAttemptContext(false, "shared-key"), CancellationToken.None);
+        TradingRiskGateResult otherAccount = await gate.SubmitPlace(
+            second,
+            new TradingRiskAttemptContext(false, "shared-key"),
+            CancellationToken.None);
+
+        otherAccount.Outcome.Should().Be(TradingAttemptOutcome.Live);
         _gateway.PlaceOrderCalls.Should().Be(2);
     }
 
@@ -297,6 +514,7 @@ public sealed class TradingOrderToolGateTests
         IReadOnlyList<VenueAccount> accounts =
         [
             new(PracticeAccountId, AccountStage.Practice, CanTrade: true, IsVisible: true, Balance: 50_000m),
+            new(101, AccountStage.Practice, CanTrade: true, IsVisible: true, Balance: 50_000m),
         ];
         IReadOnlyList<VenueOrder> orders = [OpenOrder()];
 
@@ -310,8 +528,7 @@ public sealed class TradingOrderToolGateTests
             _audit,
             denylist,
             new TradingWriteVenueAccountCache(),
-            telemetry,
-            _store);
+            telemetry);
     }
 
     private static Task<ToolPayloads.TradingWriteResult> Call(
@@ -456,11 +673,18 @@ public sealed class TradingOrderToolGateTests
 
         public ExecutionWriteResult Next { get; set; } = Acknowledged(42);
 
+        public Exception? PlaceException { get; set; }
+
         public Task<ExecutionWriteResult> PlaceOrder(
             ExecutionPlaceOrderCommand command,
             CancellationToken cancellationToken)
         {
             PlaceOrderCalls++;
+            if (PlaceException is not null)
+            {
+                throw PlaceException;
+            }
+
             return Task.FromResult(Next);
         }
 
@@ -506,11 +730,21 @@ public sealed class TradingOrderToolGateTests
             Entries.Add(request);
             return Task.CompletedTask;
         }
+
+        public Task<TradingAuditClaimResult> TryClaimUnknownAsync(
+            TradingAuditWriteRequest request,
+            CancellationToken cancellationToken)
+        {
+            _ = cancellationToken;
+            return Task.FromResult(TradingAuditClaimMemory.TryClaim(Entries, request));
+        }
     }
 
     private sealed class FakeDailyCapCoordinator : ITradingDailyCapCoordinator
     {
         public int LockAcquisitions { get; private set; }
+
+        public int ContractsToday { get; set; }
 
         public Task<IAsyncDisposable> AcquireAccountDayLockAsync(int accountId, CancellationToken cancellationToken)
         {
@@ -521,7 +755,7 @@ public sealed class TradingOrderToolGateTests
         public Task<int> GetConservativeContractTotalTodayUtcAsync(
             int accountId,
             CancellationToken cancellationToken) =>
-            Task.FromResult(0);
+            Task.FromResult(ContractsToday);
 
         private sealed class NoopLock : IAsyncDisposable
         {
@@ -560,8 +794,16 @@ public sealed class TradingOrderToolGateTests
 
         public Task<IReadOnlyList<VenuePosition>> GetOpenPositionsAsync(
             int accountId,
-            CancellationToken cancellationToken) =>
-            throw new NotSupportedException();
+            CancellationToken cancellationToken)
+        {
+            _ = accountId;
+            _ = cancellationToken;
+            IReadOnlyList<VenuePosition> positions =
+            [
+                new(MesContract, SignedSize: 3, AveragePrice: 6800m, OpenedAt: DateTimeOffset.UnixEpoch),
+            ];
+            return Task.FromResult(positions);
+        }
 
         public Task<IReadOnlyList<VenueOrder>> GetOrdersAsync(
             int accountId,

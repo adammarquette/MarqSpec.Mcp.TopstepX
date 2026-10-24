@@ -142,13 +142,50 @@ public readonly record struct TradingExecutionRefusal(string Code, string Messag
     public static TradingExecutionRefusal IdempotencyKeyRequired { get; } =
         new(
             ExecutionWriteRefusal.IdempotencyKeyRequired,
-            "idempotencyKey is required and must be at most 256 characters. A replay of the same key returns the original result and does not send again.");
+            "idempotencyKey is required and must be at most "
+            + TradingAuditClaims.MaxKeyLength.ToString(System.Globalization.CultureInfo.InvariantCulture)
+            + " characters. A replay of the same account, tool and key returns the stored transmit and does not send again.");
 
     /// <summary>The idempotency key is already stored for a different request.</summary>
     public static TradingExecutionRefusal IdempotencyConflict { get; } =
         new(
             ExecutionWriteRefusal.IdempotencyConflict,
-            "idempotencyKey was already used for a different account, tool or request. Use a new key for a new attempt.");
+            "idempotencyKey was already used for a different request on this account and tool. Use a fresh key for a new order.");
+
+    /// <summary>Size was missing or not a positive contract count.</summary>
+    /// <param name="size">The size that was refused.</param>
+    /// <returns>The refusal.</returns>
+    public static TradingExecutionRefusal SizeNotPositive(int size) =>
+        new(
+            ExecutionWriteRefusal.SizeNotPositive,
+            "Size "
+            + size.ToString(System.Globalization.CultureInfo.InvariantCulture)
+            + " must be greater than 0.");
+
+    /// <summary>A limit, stop, stop-limit or trailing order was missing the price that type requires.</summary>
+    public static TradingExecutionRefusal PriceRequired { get; } =
+        new(
+            ExecutionWriteRefusal.PriceRequired,
+            "A limit order needs a positive limitPrice, a stop order needs a positive stopPrice, a stop-limit needs both, and a trailing stop needs a positive trailPrice.");
+
+    /// <summary>A supplied price was zero or negative.</summary>
+    public static TradingExecutionRefusal PriceNotPositive { get; } =
+        new(
+            ExecutionWriteRefusal.PriceNotPositive,
+            "Every supplied price must be greater than 0.");
+
+    /// <summary>A partial close asked for more contracts than the open position holds.</summary>
+    /// <param name="requested">Contracts the caller asked to close.</param>
+    /// <param name="open">Absolute size of the open position, or zero when there is none.</param>
+    /// <returns>The refusal.</returns>
+    public static TradingExecutionRefusal PartialCloseExceedsPosition(int requested, int open) =>
+        new(
+            ExecutionWriteRefusal.PartialCloseExceedsPosition,
+            "Partial close of "
+            + requested.ToString(System.Globalization.CultureInfo.InvariantCulture)
+            + " contracts exceeds the open position size of "
+            + open.ToString(System.Globalization.CultureInfo.InvariantCulture)
+            + ".");
 
     /// <summary>The modify target order was not returned by a fresh order fetch.</summary>
     public static TradingExecutionRefusal OrderNotFound(long orderId) =>

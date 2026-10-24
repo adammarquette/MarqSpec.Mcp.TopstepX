@@ -44,7 +44,11 @@ public sealed class TradingExecutionOptionsTests
     [Trait("Gate", "ADR-0024")]
     public void Enabled_BindsTrue_WhenExplicitlyTrue(string configurationKey)
     {
-        Bind(new Dictionary<string, string?> { [configurationKey] = "true" }).Enabled.Should().BeTrue();
+        Bind(new Dictionary<string, string?>
+        {
+            [configurationKey] = "true",
+            ["Trading:AllowedAccountIds"] = "123",
+        }).Enabled.Should().BeTrue();
     }
 
     /// <summary>An empty value keeps master enable off for both key casings.</summary>
@@ -78,6 +82,20 @@ public sealed class TradingExecutionOptionsTests
 
         options.AllowedAccountIdList().Should().Equal(123, 456);
         options.IsAllowlistConfigured.Should().BeTrue();
+    }
+
+    /// <summary>An enabled server with an empty allowlist does not start.</summary>
+    [Fact]
+    [Trait("Gate", "ADR-0024")]
+    public void TradingRiskGate_EnabledWithoutAllowedAccountIds_FailsStartup()
+    {
+        Action bind = () => Bind(new Dictionary<string, string?>
+        {
+            ["Trading:Enabled"] = "true",
+        });
+
+        bind.Should().Throw<OptionsValidationException>()
+            .WithMessage("*Trading__AllowedAccountIds*");
     }
 
     /// <summary>A duplicate account id is refused at startup.</summary>

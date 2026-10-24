@@ -476,6 +476,9 @@ namespace MarqSpec.Mcp.TopstepX.Data.Migrations
                         .HasMaxLength(256)
                         .HasColumnType("character varying(256)");
 
+                    b.Property<long?>("OrderId")
+                        .HasColumnType("bigint");
+
                     b.Property<string>("Outcome")
                         .IsRequired()
                         .HasMaxLength(32)
@@ -505,6 +508,11 @@ namespace MarqSpec.Mcp.TopstepX.Data.Migrations
                     b.HasIndex("IdempotencyKey");
 
                     b.HasIndex("AccountId", "AttemptedAt");
+
+                    b.HasIndex("AccountId", "Tool", "IdempotencyKey")
+                        .IsUnique()
+                        .HasDatabaseName("IX_TradingAuditLog_AccountId_Tool_IdempotencyKey_Unknown")
+                        .HasFilter("\"Outcome\" = 'Unknown' AND \"IdempotencyKey\" <> ''");
 
                     b.ToTable("TradingAuditLog", (string)null);
                 });

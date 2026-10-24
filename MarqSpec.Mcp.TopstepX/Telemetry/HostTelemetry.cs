@@ -116,6 +116,12 @@ public sealed class HostTelemetry : IDisposable
     /// <summary>Why an execution write stopped before or at the venue. Values: <see cref="ExecutionWriteRefusal"/>.</summary>
     public const string RefusalTag = "refusal";
 
+    /// <summary>
+    /// Whether this execution-write measurement is a replay of a stored transmit. Values:
+    /// <see cref="ExecutionWriteReplay"/>. A sum of new outcomes filters <see cref="ExecutionWriteReplay.False"/>.
+    /// </summary>
+    public const string ReplayTag = "replay";
+
     /// <summary>Why a range was outstanding. Values: <see cref="GapReason"/>.</summary>
     public const string ReasonTag = "reason";
 
@@ -514,6 +520,7 @@ public sealed class HostTelemetry : IDisposable
         private readonly string _operation;
         private readonly Activity? _span;
         private string? _refusal;
+        private string _replay = ExecutionWriteReplay.False;
         private bool _closed;
 
         internal ExecutionWriteScope(HostTelemetry telemetry, string operation)
@@ -529,6 +536,12 @@ public sealed class HostTelemetry : IDisposable
         /// <param name="outcomeTag">A stable code from <see cref="ExecutionWriteRefusal"/>.</param>
         public void Outcome(string outcomeTag) => _refusal = outcomeTag;
 
+        /// <summary>
+        /// Marks this measurement as a replay of a stored transmit. A dashboard that counts new outcomes
+        /// excludes <see cref="ExecutionWriteReplay.True"/>.
+        /// </summary>
+        public void MarkReplay() => _replay = ExecutionWriteReplay.True;
+
         /// <inheritdoc />
         public void Dispose()
         {
@@ -541,11 +554,13 @@ public sealed class HostTelemetry : IDisposable
 
             string refusal = _refusal ?? ExecutionWriteRefusal.Error;
             _span?.SetTag(RefusalTag, refusal);
+            _span?.SetTag(ReplayTag, _replay);
 
             _telemetry._executionWrites.Add(
                 1,
                 new KeyValuePair<string, object?>(OperationTag, _operation),
-                new KeyValuePair<string, object?>(RefusalTag, refusal));
+                new KeyValuePair<string, object?>(RefusalTag, refusal),
+                new KeyValuePair<string, object?>(ReplayTag, _replay));
 
             _span?.Dispose();
         }
@@ -712,6 +727,18 @@ public static class ExecutionWriteRefusal
     /// <summary>The idempotency key is already stored for a different request.</summary>
     public const string IdempotencyConflict = "idempotency_conflict";
 
+    /// <summary>Size was not a positive contract count, so no audit row was written.</summary>
+    public const string SizeNotPositive = "size_not_positive";
+
+    /// <summary>A limit or stop order was missing the price that type requires.</summary>
+    public const string PriceRequired = "price_required";
+
+    /// <summary>A supplied price was zero or negative.</summary>
+    public const string PriceNotPositive = "price_not_positive";
+
+    /// <summary>A partial close asked for more contracts than the open position holds.</summary>
+    public const string PartialCloseExceedsPosition = "partial_close_exceeds_position";
+
     /// <summary>Every value.</summary>
     public static IReadOnlyList<string> All { get; } =
         [
@@ -736,7 +763,24 @@ public static class ExecutionWriteRefusal
             OutcomeUnknown,
             IdempotencyKeyRequired,
             IdempotencyConflict,
+            SizeNotPositive,
+            PriceRequired,
+            PriceNotPositive,
+            PartialCloseExceedsPosition,
         ];
+}
+
+/// <summary>Whether an execution-write measurement replays a stored transmit — the <c>replay</c> tag.</summary>
+public static class ExecutionWriteReplay
+{
+    /// <summary>This measurement is a replay. It is not a new outcome.</summary>
+    public const string True = "true";
+
+    /// <summary>This measurement is the attempt itself.</summary>
+    public const string False = "false";
+
+    /// <summary>Every value.</summary>
+    public static IReadOnlyList<string> All { get; } = [True, False];
 }
 
 /// <summary>Why a bar range was outstanding — the <c>reason</c> tag's closed vocabulary.</summary>

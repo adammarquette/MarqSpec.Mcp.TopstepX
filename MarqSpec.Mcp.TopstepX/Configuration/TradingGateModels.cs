@@ -49,7 +49,8 @@ public sealed record TradingRiskGateResult(
     AccountStage ParsedStage,
     TradingExecutionRefusal? Refusal,
     ExecutionWriteResult? WriteResult,
-    TradingExecutionPreview? Preview)
+    TradingExecutionPreview? Preview,
+    bool IsReplay = false)
 {
     /// <summary>
     /// Whether repeating the same command without reconciliation is unlikely to duplicate a live order.

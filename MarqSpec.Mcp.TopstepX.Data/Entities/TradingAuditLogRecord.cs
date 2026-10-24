@@ -56,4 +56,10 @@ public sealed class TradingAuditLogRecord
     /// no write ran.
     /// </summary>
     public string? VenueErrorCode { get; set; }
+
+    /// <summary>
+    /// Broker order id on a <c>Live</c> row, so a replay can return it. Null on the pre-send claim and on
+    /// every row the venue did not assign an id to.
+    /// </summary>
+    public long? OrderId { get; set; }
 }

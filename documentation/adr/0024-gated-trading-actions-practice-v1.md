@@ -169,9 +169,9 @@ Shared parameters on every write:
 
 | Parameter | Required | Notes |
 |---|---|---|
-| `accountId` | yes | Venue id from `list_accounts` |
-| `idempotencyKey` | yes | Opaque string; duplicate → prior outcome, **no second venue call** |
-| `dryRun` | no (default false) | When true: run stage + risk checks, return **preview** payload, **no venue write** |
+| `accountId` | yes | Venue id from `list_accounts`. Practice accounts only; a non-practice account is refused |
+| `idempotencyKey` | yes | Opaque string, at most `TradingAuditClaims.MaxKeyLength` (256), scoped to this account and this tool. A fresh key per order. The same key on another account or another tool is a different claim. A duplicate of the same request replays the stored **transmit** and makes **no second venue call** |
+| `dryRun` | no (default false) | When true: run stage + risk checks, return **preview** payload, **no venue write**. `dryRun` is part of the request hash |
 
 **v1 practice gate runs for both `dryRun` true and false** so previews cannot be mistaken for permission to
 trade on a funded account.
@@ -196,19 +196,32 @@ for bracket visibility — **read-only**, no stage gate beyond existing auth.
 Layers are ordered; an earlier refusal **must not** call the gateway for a write.
 
 1. **Master enable** — `Trading__Enabled=false` by default. gh#750 registers the tools and refuses every call
-   when the flag is false, before the vendor client, with no audit row and no gateway call. The kill switch
-   blocks cancel and close on that same path.
-2. **Kill switch** — env or file flag the operator can flip without redeploy; checked on every call.
+   when the flag is false, before the vendor client, with no audit row and no gateway call. The idempotency
+   claim is taken only after this check. The kill switch blocks cancel and close on that same path.
+   **Pending Adam:** whether a halt should keep blocking cancel and close. v1 keeps the block. A carve-out
+   would be a write the switch does not cover, and v1 has no separate flatten privilege. Do not change it
+   until Adam decides.
+2. **Kill switch** — env or file flag the operator can flip without redeploy; checked on every call, including
+   cancel and close. Same pending decision as the master-enable bullet.
 3. **Practice-only stage gate (hard, v1)** — fresh account fetch + `ResolveStage` as §2; **cannot be overridden
    by config** in v1.
-4. **Optional account allowlist** — secondary: if configured, `accountId` must appear; does **not** bypass stage.
+4. **Account allowlist** — secondary: `accountId` must appear when the list is set; it does **not** bypass
+   stage. When `Trading__Enabled` is true, an empty `Trading__AllowedAccountIds` fails startup. While the
+   master switch is off, an empty list is still valid.
 5. **Size / contract caps** — max contracts per order and per day per account; symbol denylist optional.
+   Size must be greater than 0, and a limit or stop needs a positive price, before any audit row. Modify
+   runs the cap when a size is supplied and does not treat a missing size as zero. A partial close is
+   checked against the open position before the cap charge.
 6. **Dry-run / preview** — `dryRun: true` or human-confirmation flow returns structured preview + short-lived
    `confirmationToken`; confirm re-runs gates 1–5 before transmit.
-7. **Idempotency** — store `(idempotencyKey, accountId, tool, request hash)` → outcome; duplicates return stored
-   outcome.
-8. **Audit log** — append-only row for every attempt (preview, confirm, live): timestamps, accountId, parsed
-   stage, tool, idempotency key, dry-run flag, result code, **no secrets**.
+7. **Idempotency** — the audit log is the store. Before a send, the gate inserts one `Unknown` row keyed by
+   `(AccountId, Tool, IdempotencyKey)` with the request hash (`dryRun` included). A partial unique index
+   rejects a second claim, including across replicas. A replay reads that row and any later `Live` or
+   `Failed` row and does not send. Refusals and previews are not claims. A disabled refusal is not stored,
+   so enabling trading does not replay it into a send.
+8. **Audit log** — append-only. The pre-send `Unknown` claim (contract count 0) is the idempotency record.
+   The `Attempted` row still carries the key and is the cap charge. Later `Live` (with `OrderId`) or
+   `Failed` rows are what a replay prefers. No secrets.
 9. **HTTP OAuth** — when `Mcp__Auth__Mode=OAuth`, trading tools require a **write scope** distinct from read
    (gh#719). Stdio/local deployments rely on process boundary + enable flag.
 
@@ -230,11 +243,17 @@ An order is **not treated as live** until the **broker acknowledgment** arrives.
 
 - **`dryRun: true`** and preview paths return `status: Preview` and **never** call the venue for a write.
 - **Live transmit** calls the gateway; the MCP outcome is **`Live` only after** the broker acknowledgment.
-  A request sent but not acked, a timeout, or `success: false` is **not** live. The idempotency store keeps
-  the original result — `Refused`, `Failed`, `Unknown`, `Preview` or `Live` — and a replay of that key returns
-  it without a second send. It is never rewritten as `Live`. `retrySafety` is `SafeToRetry`,
-  `NotSafeToRetry` (broker acknowledged), or `OutcomeUnknown` (reconcile before a new key). The store is
-  process-local and expires after 24 hours; a restart forgets every key (gh#712, gh#750).
+  A request sent but not acked, a timeout, or `success: false` is **not** live. The pre-send audit row is
+  `Unknown` **before** the send, so a throw, a lost acknowledgment, or an audit write that fails after an
+  ack leaves a claim that blocks a second send. A replay returns that `Unknown` unless a later `Live` or
+  `Failed` row exists, and it is never rewritten as `Live`.
+  **Why an unacknowledged result is stored:** the earlier rule was "do not cache an unacked result as
+  success." Caching it as `Unknown` is the opposite of caching it as success. The row exists so a crash
+  cannot be retried into a second order and cannot be reported as `Live`. Refusals and previews are not
+  stored as claims and are not replayed as `SafeToRetry`. `retrySafety` is `SafeToRetry` (refusal, preview,
+  or venue rejection), `NotSafeToRetry` (broker acknowledged), or `OutcomeUnknown` (reconcile; do not retry
+  the same key). The claim survives a restart, a redeploy and a second replica (gh#712, gh#750). A replay
+  is tagged `replay=true` on `mcp.execution.writes` so it is not counted as a new outcome.
 - **`confirm_trading_action`** follows the same rule: confirming a preview performs the transmit and applies
   the ack rule above.
 
@@ -244,6 +263,17 @@ Trader Jon is never the sole approval for live capital at risk.
 
 **Relation to `trading-copilot`:** v1 does not port watchdog, auto-flatten, or session model. Practice-only v1
 reduces blast radius but does not replace disciplined operator process.
+
+#### Model-driven writes (threat model)
+
+The caller is a language model. These are the write-path threats and the control that answers each.
+
+| Threat | What goes wrong | Control |
+|---|---|---|
+| Prompt injection | A document or tool result tells the model to place, resize, or flatten. Free text would ride along in `customTag` or an account name. | Payloads stay numeric (ADR-0008). `customTag` is not a parameter. Tool descriptions state that this is a live practice account with real stakes, that non-practice accounts are refused, and that `OutcomeUnknown` is never retried. |
+| Key reuse | The model resends the last call, or reuses one key for two orders. A restart used to forget the key and send again. | The claim is `(account, tool, key)` in the audit log, unique at the store, written as `Unknown` before the send. The same key replays. A different hash on that triple is `idempotency_conflict`. Callers use a fresh key per order. `dryRun` is inside the hash, and a preview is not a claim. |
+| Cap tampering | A negative size writes a negative `Attempted` row and lowers the daily cap. A modify treats a missing size as 0 and skips the cap. A partial close ignores the open position. | Size must be greater than 0, and a limit or stop needs a positive price, before any audit row (`size_not_positive`, `price_required`, `price_not_positive`). Modify runs the per-order and daily cap when a size is supplied and does not invent one. Partial close is refused when it exceeds the open position (`partial_close_exceeds_position`), before the cap charge. |
+| Replay | A replay is counted as a new fill, or a `trading_disabled` refusal is replayed after trading is turned on and becomes a send. | Only transmitted outcomes are claims. A replay is tagged `replay=true`. Enabling trading does not replay a disabled refusal. `OutcomeUnknown` tells the caller to reconcile with `list_open_orders`, `list_positions` and recent trades (`get_orders`, `get_positions`, `get_trades`) instead of retrying. |
 
 ### 6. Testing strategy
 

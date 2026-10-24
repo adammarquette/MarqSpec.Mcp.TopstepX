@@ -5,6 +5,7 @@ using MarqSpec.Mcp.TopstepX.Configuration;
 using MarqSpec.Mcp.TopstepX.Domain;
 using MarqSpec.Mcp.TopstepX.Domain.MarketData;
 using MarqSpec.Mcp.TopstepX.Telemetry;
+using MarqSpec.Mcp.TopstepX.Tests.Configuration;
 using MarqSpec.Mcp.TopstepX.Venue;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
@@ -568,7 +569,7 @@ public sealed class ProjectXExecutionGatewayTests
         bool killSwitchEngaged)
     {
         TradingExecutionGate gate = new(
-            Options.Create(new TradingExecutionOptions { Enabled = enabled }),
+            TradingOptionsMonitors.Fixed(new TradingExecutionOptions { Enabled = enabled }),
             new FakeKillSwitch { Engaged = killSwitchEngaged },
             new ProjectXAccountStageResolver());
 

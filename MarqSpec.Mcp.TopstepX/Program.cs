@@ -652,6 +652,8 @@ public static class Program
             .Configure<IConfiguration>(TradingExecutionOptionsConfiguration.Bind)
             .ValidateDataAnnotations()
             .ValidateOnStart();
+        services.AddSingleton<IOptionsChangeTokenSource<TradingExecutionOptions>>(
+            new ConfigurationChangeTokenSource<TradingExecutionOptions>(builder.Configuration));
 
         services.AddSingleton<TradingKillSwitch>();
         services.AddSingleton<ITradingKillSwitch>(sp => sp.GetRequiredService<TradingKillSwitch>());

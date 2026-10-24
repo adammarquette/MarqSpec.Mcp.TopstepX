@@ -27,7 +27,7 @@ public sealed class TradingOrderTools(TradingRiskGate gate)
     private const string Stakes =
         "This writes on a live practice account and the stakes are real. Non-practice accounts are refused. "
         + "Use a fresh idempotencyKey for each order; the key is scoped to this account and this tool, and "
-        + "the longest key is 256 characters. never retry OutcomeUnknown; reconcile via get_orders, "
+        + "the longest key is 256 characters. Never retry OutcomeUnknown; reconcile via get_orders, "
         + "get_positions and get_trades. ";
 
     private readonly TradingRiskGate _gate = gate;
@@ -251,12 +251,22 @@ public sealed class TradingOrderTools(TradingRiskGate gate)
         {
             return BeforeSendFault();
         }
+        catch (TimeoutException)
+        {
+            return BeforeSendFault();
+        }
         catch (DbUpdateException)
         {
             return BeforeSendFault();
         }
         catch (NpgsqlException)
         {
+            return BeforeSendFault();
+        }
+        catch (Exception)
+        {
+            // Anything that escaped the gate was a read or a store fault before the send. A throw from the
+            // send, including a timeout, is caught there and returned as OutcomeUnknown.
             return BeforeSendFault();
         }
     }

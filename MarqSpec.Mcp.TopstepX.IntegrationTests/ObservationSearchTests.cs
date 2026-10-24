@@ -16,8 +16,14 @@ namespace MarqSpec.Mcp.TopstepX.IntegrationTests;
 /// </remarks>
 /// <param name="fixture">The shared container.</param>
 [Collection(SchemaCollection.Name)]
-public sealed class ObservationSearchTests(SchemaFixture fixture)
+public sealed class ObservationSearchTests(SchemaFixture fixture) : IAsyncLifetime
 {
+    /// <inheritdoc />
+    public Task InitializeAsync() => fixture.ResetAsync();
+
+    /// <inheritdoc />
+    public Task DisposeAsync() => Task.CompletedTask;
+
     /// <summary>
     /// A private instrument per test, used as both the seed symbol and the search filter.
     /// </summary>

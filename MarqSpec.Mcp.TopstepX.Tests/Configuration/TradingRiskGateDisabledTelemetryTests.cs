@@ -128,7 +128,7 @@ public sealed class TradingRiskGateDisabledTelemetryTests
     {
         ProjectXAccountStageResolver stageResolver = new();
         TradingExecutionGate executionGate = new(
-            Options.Create(options),
+            TradingOptionsMonitors.Fixed(options),
             _killSwitch,
             stageResolver);
         InstrumentRegistry registry = new(Options.Create(new MarketDataOptions { Instruments = "MES" }));

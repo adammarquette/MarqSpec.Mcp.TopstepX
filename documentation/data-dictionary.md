@@ -707,9 +707,14 @@ over-long-key refusal writes no row, and neither does `trading_disabled` before 
 stage, allowlist, denylist, caps, a blank key, an idempotency conflict, a gateway refusal, and
 `trading_disabled` after the claim write `Refused`. The idempotency claim **is** a row in this table: one
 `Unknown` row inserted before the send, unique on `(AccountId, Tool, IdempotencyKey)` where
-`Outcome = 'Unknown'` and the key is not empty. The migration that creates that index reclassifies older
-duplicate Unknown rows to `Attempted` at contract count 0, keeping the earliest Unknown. A later `Live`,
-then `Failed`, then `Refused` row for the same key is what a replay prefers. Empty keys are outside the
+`Outcome = 'Unknown'` and the key is not empty. The migration `AddTradingAuditIdempotencyClaim` that creates
+that index temporarily disables `trading_audit_log_reject_update` — the `BEFORE UPDATE` trigger that rejects
+audit updates, because the table is append-only and those rows cannot be rewritten while the trigger is on —
+rewrites every extra `Unknown` row for the same account, tool and key to `Attempted` at contract count 0
+with `VenueErrorCode` `duplicate_unknown_claim`, keeps the earliest `Unknown` (`MIN(Id)`), then re-enables
+the trigger before the index is created. A replay prefers a later `Live`, then `Failed`, then a `Refused`
+row written after the current claim with the same request hash. An earlier refusal, or a later refusal with
+a different hash, does not override that claim. Empty keys are outside the
 unique index. `modify_order` charges the full new size on its `Attempted` row, not a delta.
 
 **The cap charge sits on `Attempted`, and outcome rows stay at `0`.** A gateway refusal after the write-ahead
@@ -717,7 +722,9 @@ appends a second `Attempted` row with the negated count, then `Refused` at `0`, 
 to zero. A thrown send leaves that charge on the write-ahead row; its `Unknown` row is `0`.
 
 **Append-only at the database.** `BEFORE UPDATE` and `BEFORE DELETE` triggers raise if either is attempted.
-Tests truncate the table between cases; production has no supported mutation path.
+The idempotency migration is the one supported exception: it disables `trading_audit_log_reject_update` for
+the duplicate-`Unknown` rewrite described above, then enables it again before the unique index is created.
+Tests truncate the table between cases; production has no other mutation path.
 
 **Not a hypertable** — volume is bounded by human-scale order attempts, not bar or tape rates.
 

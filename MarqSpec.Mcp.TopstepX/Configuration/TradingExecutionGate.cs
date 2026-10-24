@@ -13,7 +13,7 @@ namespace MarqSpec.Mcp.TopstepX.Configuration;
 /// <c>TradingRiskGate</c> (gh#711) and still do not override practice-only (ADR-0024 §2).
 /// </remarks>
 public sealed class TradingExecutionGate(
-    IOptions<TradingExecutionOptions> options,
+    IOptionsMonitor<TradingExecutionOptions> options,
     ITradingKillSwitch killSwitch,
     IAccountStageResolver stageResolver)
 {
@@ -21,10 +21,11 @@ public sealed class TradingExecutionGate(
     private readonly IAccountStageResolver _stageResolver = stageResolver;
 
     /// <summary>
-    /// The bound options, read on every check. A master-switch change during a call is visible to the next
-    /// check in that call (ADR-0024).
+    /// The bound options, read on every check through <see cref="IOptionsMonitor{TOptions}.CurrentValue"/>.
+    /// A configuration reload turns the master switch off without restarting the process, and a change during
+    /// a call is visible to the next check in that call (ADR-0024).
     /// </summary>
-    private TradingExecutionOptions Current => options.Value;
+    private TradingExecutionOptions Current => options.CurrentValue;
 
     /// <summary>Refuses when master enable is off or the kill switch is engaged.</summary>
     /// <returns>A refusal, or <see langword="null"/> when trading may proceed past this layer.</returns>

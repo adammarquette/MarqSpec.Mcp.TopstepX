@@ -36,8 +36,14 @@ namespace MarqSpec.Mcp.TopstepX.IntegrationTests;
 /// </remarks>
 /// <param name="fixture">The shared container.</param>
 [Collection(SchemaCollection.Name)]
-public sealed class IndicatorReadProjectionConcurrencyTests(SchemaFixture fixture)
+public sealed class IndicatorReadProjectionConcurrencyTests(SchemaFixture fixture) : IAsyncLifetime
 {
+    /// <inheritdoc />
+    public Task InitializeAsync() => _fixture.ResetAsync();
+
+    /// <inheritdoc />
+    public Task DisposeAsync() => Task.CompletedTask;
+
     private readonly SchemaFixture _fixture = fixture;
 
     /// <summary>Far enough past every bucket these tests use that none of them is still forming.</summary>

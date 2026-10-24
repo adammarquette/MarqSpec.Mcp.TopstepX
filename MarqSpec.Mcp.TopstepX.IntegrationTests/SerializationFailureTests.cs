@@ -27,8 +27,14 @@ namespace MarqSpec.Mcp.TopstepX.IntegrationTests;
 /// </remarks>
 /// <param name="fixture">The shared container.</param>
 [Collection(SchemaCollection.Name)]
-public sealed class SerializationFailureTests(SchemaFixture fixture)
+public sealed class SerializationFailureTests(SchemaFixture fixture) : IAsyncLifetime
 {
+    /// <inheritdoc />
+    public Task InitializeAsync() => _fixture.ResetAsync();
+
+    /// <inheritdoc />
+    public Task DisposeAsync() => Task.CompletedTask;
+
     private readonly SchemaFixture _fixture = fixture;
 
     private static DateTimeOffset Now => ConcurrencyHarness.Bucket(120);

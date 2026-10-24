@@ -19,13 +19,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `cancel_order`, `close_position` and `partial_close_position` call `TradingRiskGate` only. They are
   registered only when `Trading__Enabled` is true, and each method still refuses when it is false.
   Before a send the gate writes an `Unknown` audit row keyed by account, tool and idempotency key. A unique
-  index makes that claim survive a restart, a redeploy and a second replica. Duplicate Unknown rows that
-  already share a key are reclassified before that index is created. A throw during the send, or an audit
-  write that fails after an ack, returns structured `OutcomeUnknown` and does not rethrow. A fault before
-  the send is a retryable error. A refusal recorded after the claim is replayed as that refusal. A key
-  longer than 256 characters is `idempotency_key_too_long` and writes no row. Modify charges the full new
-  size. When trading is enabled, an empty `Trading__AllowedAccountIds` fails startup. The kill switch still
-  blocks cancel and close; that block is pending Adam's decision.
+  index makes that claim survive a restart, a redeploy and a second replica. The migration that creates it
+  temporarily disables the append-only update trigger, reclassifies duplicate Unknown rows, and re-enables
+  the trigger. A throw during the send, including a timeout, or an audit write that fails after an ack,
+  returns structured `OutcomeUnknown` and does not rethrow. A fault that reaches the tool, including a
+  timeout or any other exception, is a retryable error from before the send. A replay ignores a `Refused`
+  row written before the claim, and a later refusal with a different request hash. A refusal recorded after
+  the claim with the same hash is replayed as that refusal. The master switch is read through
+  `IOptionsMonitor`, so turning trading off takes effect without a restart. A key longer than 256 characters
+  is `idempotency_key_too_long` and writes no row. Modify charges the full new size. When trading is enabled,
+  an empty `Trading__AllowedAccountIds` fails startup. The kill switch still blocks cancel and close; that
+  block is pending Adam's decision.
 
 ### Removed
 

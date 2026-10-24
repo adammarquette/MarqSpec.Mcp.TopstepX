@@ -34,8 +34,14 @@ namespace MarqSpec.Mcp.TopstepX.IntegrationTests;
 /// </remarks>
 /// <param name="fixture">The shared container.</param>
 [Collection(SchemaCollection.Name)]
-public sealed class AdvisoryLockLifetimeTests(SchemaFixture fixture)
+public sealed class AdvisoryLockLifetimeTests(SchemaFixture fixture) : IAsyncLifetime
 {
+    /// <inheritdoc />
+    public Task InitializeAsync() => _fixture.ResetAsync();
+
+    /// <inheritdoc />
+    public Task DisposeAsync() => Task.CompletedTask;
+
     /// <summary>
     /// The advisory-lock class these tests take their keys under.
     /// </summary>

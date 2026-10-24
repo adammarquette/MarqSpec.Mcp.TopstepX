@@ -26,8 +26,14 @@ namespace MarqSpec.Mcp.TopstepX.IntegrationTests;
 /// </remarks>
 /// <param name="fixture">The shared container.</param>
 [Collection(SchemaCollection.Name)]
-public sealed class EmbeddingWriterTests(SchemaFixture fixture)
+public sealed class EmbeddingWriterTests(SchemaFixture fixture) : IAsyncLifetime
 {
+    /// <inheritdoc />
+    public Task InitializeAsync() => fixture.ResetAsync();
+
+    /// <inheritdoc />
+    public Task DisposeAsync() => Task.CompletedTask;
+
     private const string Model = "embed-v4.0-test";
 
     /// <summary>A provider that counts calls and answers however the test needs.</summary>

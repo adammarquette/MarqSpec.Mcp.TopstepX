@@ -107,10 +107,15 @@ public sealed class VolumeProfileService(
                 "A bar size must be positive.");
         }
 
-        // Floor the ask, then let the ledger confine it. A hole that begins inside the
-        // bar stays at the ledger start; coverage that reaches the open keeps the whole bar.
+        // Align both ends, then let the ledger confine them. A hole that begins inside
+        // the bar stays at the ledger start; a ledger that ends inside a bar is not extended.
         CoveredTapeWindow window = await ConfineAsync(
-                venue, instrument, AlignAsk(start, resolutionMinutes), end, cancellationToken, health)
+                venue,
+                instrument,
+                AlignAskStart(start, resolutionMinutes),
+                AlignAskEnd(end, resolutionMinutes),
+                cancellationToken,
+                health)
             .ConfigureAwait(false);
 
         DateTimeOffset loadFrom = window.Start.AddMinutes(-resolutionMinutes);
@@ -168,11 +173,12 @@ public sealed class VolumeProfileService(
     /// <see cref="FootprintAggregator.Aggregate"/> is pure, and this method does not call
     /// <c>SaveChanges</c> (ADR-0016). Volume profile is
     /// <see cref="VolumeProfileAggregator.From"/> over these same cells.
-    /// The ask is floored to the bar open before the ledger confines it, the same rule as
-    /// the stored-cell path. When coverage reaches that open, the window reports it and
-    /// the edge bar is complete. When the ledger begins later, the window stays there, so
-    /// a hole is not backdated. The query is the only bound on the prints: an overlap
-    /// filter would hide a print the predicate let through, so the contract, the inclusive
+    /// The ask is floored and its end is aligned up before the ledger confines it, the
+    /// same rule as the stored-cell path. When coverage reaches those boundaries the edge
+    /// bars are complete and the window reports them. When the ledger begins later or ends
+    /// sooner, the window stays on the ledger. Prints are not filtered to one contract
+    /// first: a bucket whose prints span two contracts is dropped by
+    /// <see cref="FootprintAggregator"/>, the same as the stored projection. The inclusive
     /// start and the exclusive end are what decide which prints become cells.
     /// </remarks>
     /// <exception cref="NoClosedTapeException">No closed tape overlaps the ask.</exception>
@@ -200,8 +206,8 @@ public sealed class VolumeProfileService(
         CoveredTapeWindow window = await ConfineAsync(
                 venue,
                 instrument,
-                AlignAsk(start, resolutionMinutes),
-                end,
+                AlignAskStart(start, resolutionMinutes),
+                AlignAskEnd(end, resolutionMinutes),
                 cancellationToken,
                 health)
             .ConfigureAwait(false);
@@ -210,7 +216,6 @@ public sealed class VolumeProfileService(
             .AsNoTracking()
             .Where(trade => trade.Venue == venue
                 && trade.Instrument == instrument.Symbol
-                && trade.ContractId == window.ContractId
                 && trade.TradeTimeUtc >= window.Start
                 && trade.TradeTimeUtc < window.End)
             .ToListAsync(cancellationToken)
@@ -234,11 +239,20 @@ public sealed class VolumeProfileService(
 
     /// <summary>
     /// Floors an ask to the bar that contains it. Confine then runs on that instant, so
-    /// both paths include the edge bar when the ledger reaches its open, and a ledger that
-    /// begins later is not pulled backward over a hole. The end is not moved.
+    /// both paths include the opening edge bar when the ledger reaches its open, and a
+    /// ledger that begins later is not pulled backward over a hole.
     /// </summary>
-    private static DateTimeOffset AlignAsk(DateTimeOffset start, int resolutionMinutes) =>
+    private static DateTimeOffset AlignAskStart(DateTimeOffset start, int resolutionMinutes) =>
         BarGapDetector.AlignDown(start, TimeSpan.FromMinutes(resolutionMinutes));
+
+    /// <summary>
+    /// Aligns an ask's end up to the bar close. Confine then runs on that instant, so
+    /// both paths include the closing edge bar when the ledger reaches that close, and a
+    /// ledger that ends sooner is not extended past the tape. An end already on a boundary
+    /// is unchanged.
+    /// </summary>
+    private static DateTimeOffset AlignAskEnd(DateTimeOffset end, int resolutionMinutes) =>
+        BarGapDetector.AlignUp(end, TimeSpan.FromMinutes(resolutionMinutes));
 
     /// <summary>
     /// Confines the ask to the newest contiguous listening run, or refuses when no tape overlaps.

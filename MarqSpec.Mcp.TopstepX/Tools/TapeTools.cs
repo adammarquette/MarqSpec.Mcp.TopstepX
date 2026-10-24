@@ -15,9 +15,10 @@ namespace MarqSpec.Mcp.TopstepX.Tools;
 /// <c>get_footprint</c> and <c>get_volume_profile</c> — reads over the tape-derived footprint cells.
 /// </summary>
 /// <remarks>
-/// One of the five tool types gh#414 split <c>MarketDataTools</c> into. The volume-front lookup this shares with <see cref="ContractRollTools"/> is
-/// <see cref="VolumeFrontReader"/>, injected rather than inherited, so neither type can reach the other's
-/// store or catalogue to get it.
+/// One of the five tool types gh#414 split <c>MarketDataTools</c> into. The volume-front
+/// lookup this shares with <see cref="ContractRollTools"/> is <see cref="VolumeFrontReader"/>,
+/// injected rather than inherited, so neither type can reach the other's store or catalogue
+/// to get it.
 /// </remarks>
 /// <param name="resolver">Turns a caller's symbol into an instrument, refusing first if the store is absent.</param>
 /// <param name="database">The store the cells are read from.</param>
@@ -69,7 +70,8 @@ public sealed class TapeTools(
         + "footprint before recording began, and a window before that refuses and names the earliest "
         + "covered time. `covered` is the TapeCoverage window, not the ask. An ask that starts "
         + "inside a bar is floored to that bar's open when the tape covers it, and "
-        + "`covered.start` is that open. A roll, a listening hole, "
+        + "`covered.start` is that open. An ask that ends inside a bar is aligned up to that "
+        + "bar's close when the tape covers it, and `covered.end` is that close. A roll, a listening hole, "
         + "a gap at the start, or a cut at the end sets `covered.narrowed`. That is the only "
         + "short-window flag, and `covered.end` is when the data ends. When this process is not the "
         + "recorder, the closed window is aggregated from stored prints in memory, nothing is written, "
@@ -140,6 +142,8 @@ public sealed class TapeTools(
         + "began, and a window before that refuses and names the earliest covered time. `covered` is "
         + "the TapeCoverage window, not the ask. An ask that starts inside a bar is floored to "
         + "that bar's open when the tape covers it, and `covered.start` is that open. "
+        + "An ask that ends inside a bar is aligned up to that bar's close when the tape "
+        + "covers it, and `covered.end` is that close. "
         + "A roll, a listening hole, a gap at the start, or a "
         + "cut at the end sets `covered.narrowed`. That is the only short-window flag, and "
         + "`covered.end` is when the data ends. When this process is not the recorder, the closed "

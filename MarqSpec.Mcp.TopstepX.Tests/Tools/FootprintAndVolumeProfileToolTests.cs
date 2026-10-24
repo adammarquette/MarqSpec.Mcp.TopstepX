@@ -446,15 +446,14 @@ public sealed class FootprintAndVolumeProfileToolTests : IDisposable
             Coverage(Front, _sixteen, TapeCoverageRecord.StillListeningEnd));
         await SeedTradesAsync(Trade(_bucket1430.AddMinutes(1), 1, Front, 50, TradeDirection.Buy));
 
-        TapeAvailabilityHolder tape = new();
         int reads = 0;
-        tape.ForOverride = _ =>
+        TapeAvailabilityHolder tape = new(_ =>
         {
             reads++;
             return reads == 1
                 ? TapeAvailability.NeverStartedBecauseStdio()
                 : TapeAvailability.Listening();
-        };
+        });
         TapeTools tools = ToolsOver(tape, new VolumeProfileService(_database, tape));
 
         ToolPayloads.FootprintSeries footprint = await tools.GetFootprint(
@@ -585,7 +584,8 @@ public sealed class FootprintAndVolumeProfileToolTests : IDisposable
     [Fact]
     public async Task GetFootprint_WhenTheCoveredWindowExceedsTheCellCap_RefusesRatherThanTruncating()
     {
-        // Two prices are two cells. A cap of one refuses. Removing the cap returns both.
+        // One bar, two prices. A two-hour ask at this cap dies in the window-size check
+        // before the cell cap. Removing the cell cap returns both cells.
         await SeedCoverageAsync(Coverage(Front, _fourteen, _sixteen));
         await SeedTradesAsync(
             Trade(_bucket1430.AddMinutes(1), 1, Front, 10, TradeDirection.Buy, 5000m),
@@ -595,11 +595,10 @@ public sealed class FootprintAndVolumeProfileToolTests : IDisposable
             _tape, new VolumeProfileService(_database, _tape), maxRows: 1);
 
         Func<Task> footprint = () => tools.GetFootprint(
-            "ES", FiveMinutes, _fourteen, _sixteen, CancellationToken.None);
+            "ES", FiveMinutes, _bucket1430, _bucket1430.AddMinutes(FiveMinutes), CancellationToken.None);
 
         (await footprint.Should().ThrowAsync<McpException>())
-            .WithMessage("*cap*")
-            .WithMessage("*truncated*");
+            .WithMessage("*holds 2 footprint cells*");
     }
 
     [Fact]

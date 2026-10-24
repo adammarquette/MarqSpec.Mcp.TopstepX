@@ -518,8 +518,13 @@ The server serves OHLCV bars for a futures instrument at a requested resolution 
   there is no second timestamp. The ask is floored to the bar open
   (`floor(Start, resolution)`) before the ledger confines it, on both paths. When coverage
   reaches that open, the edge bar is complete and `covered.start` is that open; the floor
-  itself is not a narrowing. When the ledger begins later in the bar, `covered.start` stays
-  the ledger start, so a hole is not backdated. The end is not aligned.
+  itself is not a narrowing.   When the ledger begins later in the bar, `covered.start` stays
+  the ledger start, so a hole is not backdated. The end is aligned up
+  (`ceiling(End, resolution)`) before the ledger confines it, on both paths.
+  When coverage reaches that close, the edge bar is complete and `covered.end`
+  is that close; the alignment itself is not a narrowing. When the ledger ends
+  sooner, `covered.end` stays the ledger end, so the window is not extended past
+  the tape.
   A still-open sentinel is not coverage in that case. A window with no closed tape still refuses with
   a sentence naming the fix — under stdio, run a separate HTTP recorder on the same database; the
   sentence does not say to stop a recorder. Never reported healthy by default, never answered as an
@@ -716,8 +721,11 @@ The server serves OHLCV bars for a futures instrument at a requested resolution 
   open before the ledger confines it, on both paths. When coverage reaches that open, the
   edge bar is complete and `covered.start` is that open; the floor itself is not a narrowing.
   When the ledger begins later in the bar, `covered.start` stays the ledger start, so a hole
-  is not backdated. The end is not aligned. A
-  still-open sentinel is not closed coverage. A window with no closed tape still
+  is not backdated. The end is aligned up (`ceiling(End, resolution)`) before the ledger
+  confines it, on both paths. When coverage reaches that close, the edge bar is complete
+  and `covered.end` is that close; the alignment itself is not a narrowing. When the ledger
+  ends sooner, `covered.end` stays the ledger end, so the window is not extended past the
+  tape. A still-open sentinel is not closed coverage. A window with no closed tape still
   refuses with a sentence naming the fix, and that sentence does not say to stop the recorder —
   an empty profile and an absent tape must not look the
   same (gh#218). A recorder that is reconnecting, connected but not subscribed, or stopped refuses

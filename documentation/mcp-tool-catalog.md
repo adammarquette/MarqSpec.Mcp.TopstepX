@@ -935,7 +935,10 @@ the end, a hole, or a roll sets `covered.narrowed`. That is the only short-windo
 confines it, on both paths. When coverage reaches that open, the edge bar is complete and
 `covered.start` is that open; the floor itself is not a narrowing. When the ledger begins
 later in the bar, `covered.start` stays the ledger start, so a hole is not backdated. The
-end is not aligned.
+end is aligned up to the bar close before the ledger confines it, on both paths. When
+coverage reaches that close, the edge bar is complete and `covered.end` is that close; the
+alignment itself is not a narrowing. When the ledger ends sooner, `covered.end` stays the
+ledger end.
 A still-open sentinel is not that coverage.
 **A window with no closed tape still refuses** with a sentence naming the fix — under stdio, run a
 separate HTTP recorder on the same database; the sentence does not say to stop a recorder. An empty

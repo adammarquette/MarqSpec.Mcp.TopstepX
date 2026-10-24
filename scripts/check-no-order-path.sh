@@ -406,8 +406,10 @@ else
     done <<<"$order_report"
   fi
   code="$(grep -vE '^[[:space:]]*(//|\*|/\*)' "$GATE_FILE" | sed -E 's/"([^"\\]|\\.)*"/""/g; s|//.*$||' || true)"
-  printf '%s\n' "$code" | grep -qE 'RefuseIfDisabledOrHalted[[:space:]]*\(' || fail "GATE  $GATE_FILE never calls RefuseIfDisabledOrHalted()"
-  if ! printf '%s\n' "$code" | grep -qE "ResolveStage[[:space:]]*\\(${resolver_names:+|(^|[^A-Za-z0-9_])($resolver_names)[[:space:]]*\\.[[:space:]]*[A-Za-z_][A-Za-z0-9_]*[[:space:]]*\\(}"; then
+  # Not a pipe. grep -q exits at the first match and closes its input; under pipefail, printf's SIGPIPE
+  # is then a false "never calls". A here-string keeps the same pattern and the same exit status.
+  grep -qE 'RefuseIfDisabledOrHalted[[:space:]]*\(' <<<"$code" || fail "GATE  $GATE_FILE never calls RefuseIfDisabledOrHalted()"
+  if ! grep -qE "ResolveStage[[:space:]]*\\(${resolver_names:+|(^|[^A-Za-z0-9_])($resolver_names)[[:space:]]*\\.[[:space:]]*[A-Za-z_][A-Za-z0-9_]*[[:space:]]*\\(}" <<<"$code"; then
     fail "GATE  $GATE_FILE never resolves the account stage" \
       "Call an IAccountStageResolver the gate declares (or ProjectXMapping.ResolveStage) on every trading call."
   fi
@@ -433,7 +435,7 @@ else
       print "no"
     }')"
   if [ "$practice_refusal" != "yes" ]; then
-    if printf '%s\n' "$code" | grep -qE '\.[[:space:]]*RefuseIfStageBlocksWrite[[:space:]]*\(' && [ -f "$EXEC_GATE" ] \
+    if grep -qE '\.[[:space:]]*RefuseIfStageBlocksWrite[[:space:]]*\(' <<<"$code" && [ -f "$EXEC_GATE" ] \
       && in_body="$(awk '
         { s = $0; sub(/\/\/.*/, "", s); gsub(/"([^"\\]|\\.)*"/, "\"\"", s) }
         !inm && s ~ /(public|internal|private|protected)[^=;]*[ \t]RefuseIfStageBlocksWrite[ \t]*[(]/ { inm = 1; d = 0; opened = 0 }

@@ -258,9 +258,9 @@ NAMED='[single-server]' expect reject template server-multi-region 'replicas: 1,
 NAMED='[single-server]' expect reject template server-per-region-replicas 'replicas: 1,
     deploy: { ...RESTART },' 'replicas: { "us-west2": 1, "us-east4": 1 },
     deploy: { ...RESTART },'
-expect reject template server-deploy-num-replicas 'replicas: 1,
-    deploy: { ...RESTART },' 'replicas: 1,
-    deploy: { ...RESTART, numReplicas: 3 },'
+# replicas: 1 overrides deploy.numReplicas in SDK 3.16.0, so the raw deploy field is tested without it.
+NAMED='[single-server]' expect reject template server-deploy-num-replicas 'replicas: 1,
+    deploy: { ...RESTART },' 'deploy: { ...RESTART, numReplicas: 3 },'
 expect reject template startup-wait-zero 'Store__StartupWaitSeconds: "90"' 'Store__StartupWaitSeconds: "0"'
 expect reject template restart-retries-zero 'restartPolicyMaxRetries: 10 }' 'restartPolicyMaxRetries: 0 }'
 expect reject template server-records-tape 'MarketData__RecordTape: "false"' 'MarketData__RecordTape: "true"'

@@ -446,13 +446,21 @@ public sealed class FootprintAndVolumeProfileToolTests : IDisposable
             Coverage(Front, _sixteen, TapeCoverageRecord.StillListeningEnd));
         await SeedTradesAsync(Trade(_bucket1430.AddMinutes(1), 1, Front, 50, TradeDirection.Buy));
 
-        FlippingHolder tape = new();
+        TapeAvailabilityHolder tape = new();
+        int reads = 0;
+        tape.ForOverride = _ =>
+        {
+            reads++;
+            return reads == 1
+                ? TapeAvailability.NeverStartedBecauseStdio()
+                : TapeAvailability.Listening();
+        };
         TapeTools tools = ToolsOver(tape, new VolumeProfileService(_database, tape));
 
         ToolPayloads.FootprintSeries footprint = await tools.GetFootprint(
             "ES", FiveMinutes, _fourteen, _eighteen, CancellationToken.None);
 
-        tape.Reads.Should().Be(1);
+        reads.Should().Be(1);
         footprint.Live.Should().BeFalse();
         footprint.Reason.Should().Be(TapeClosedReadReason.NeverStarted);
         footprint.Covered.End.Should().Be(_sixteen);
@@ -545,13 +553,53 @@ public sealed class FootprintAndVolumeProfileToolTests : IDisposable
         TapeTools tools = ToolsOver(
             _tape,
             new VolumeProfileService(_database, _tape),
-            new RefusingFront());
+            new VolumeFrontReader((_, _, _, _) =>
+                throw new McpException("The front month could not be read.")));
 
         Func<Task> footprint = () => tools.GetFootprint(
             "ES", FiveMinutes, _fourteen, _sixteen, CancellationToken.None);
 
         (await footprint.Should().ThrowAsync<McpException>()).WithMessage("*front*");
         reads.GetMeasurementSnapshot().Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task GetFootprint_WhenClosedTapeProducesNoCell_RefusesSayingTheTapeProducedNone()
+    {
+        // Unknown direction is not volume. Cells at another bar size are what the stored-cell
+        // refusal would name. Deleting the in-memory branch falls through to that sentence,
+        // which says to ask for a resolution that has been projected.
+        await SeedCoverageAsync(Coverage(Front, _fourteen, _sixteen));
+        await SeedTradesAsync(Trade(_bucket1430.AddMinutes(1), 1, Front, 50, TradeDirection.Unknown));
+        await SeedCellsAsync(Cell(_bucket1430, 5000m, buy: 4, sell: 1, resolutionMinutes: 1));
+        _tape.Set(TapeAvailability.NeverStartedBecauseStdio());
+
+        Func<Task> footprint = () => _tools.GetFootprint(
+            "ES", FiveMinutes, _fourteen, _sixteen, CancellationToken.None);
+
+        McpException ex = (await footprint.Should().ThrowAsync<McpException>()).Which;
+        ex.Message.Should().Contain("produced none");
+        ex.Message.Should().NotContain("projected");
+    }
+
+    [Fact]
+    public async Task GetFootprint_WhenTheCoveredWindowExceedsTheCellCap_RefusesRatherThanTruncating()
+    {
+        // Two prices are two cells. A cap of one refuses. Removing the cap returns both.
+        await SeedCoverageAsync(Coverage(Front, _fourteen, _sixteen));
+        await SeedTradesAsync(
+            Trade(_bucket1430.AddMinutes(1), 1, Front, 10, TradeDirection.Buy, 5000m),
+            Trade(_bucket1430.AddMinutes(1), 2, Front, 10, TradeDirection.Buy, 5001m));
+        _tape.Set(TapeAvailability.NeverStartedBecauseStdio());
+        TapeTools tools = ToolsOver(
+            _tape, new VolumeProfileService(_database, _tape), maxRows: 1);
+
+        Func<Task> footprint = () => tools.GetFootprint(
+            "ES", FiveMinutes, _fourteen, _sixteen, CancellationToken.None);
+
+        (await footprint.Should().ThrowAsync<McpException>())
+            .WithMessage("*cap*")
+            .WithMessage("*truncated*");
     }
 
     [Fact]
@@ -571,18 +619,25 @@ public sealed class FootprintAndVolumeProfileToolTests : IDisposable
 
         codes.Should().OnlyHaveUniqueItems();
         codes.Should().HaveCount(reasons.Length);
-        TapeTools.WireReason(TapeUnavailableReason.None).Should().Be("listening");
+        TapeTools.WireReason(TapeUnavailableReason.None).Should().Be(TapeWireReason.Listening);
+        TapeWireReason.Listening.Should().Be("listening");
         TapeTools.WireReason(TapeUnavailableReason.NeverStarted).Should().Be(TapeClosedReadReason.NeverStarted);
-        TapeTools.WireReason(TapeUnavailableReason.Reconnecting).Should().Be("reconnecting");
+        TapeTools.WireReason(TapeUnavailableReason.Reconnecting).Should().Be(TapeWireReason.Reconnecting);
+        TapeWireReason.Reconnecting.Should().Be("reconnecting");
         TapeTools.WireReason(TapeUnavailableReason.ConnectedButNotSubscribed)
-            .Should().Be("connected_but_not_subscribed");
-        TapeTools.WireReason(TapeUnavailableReason.Stopped).Should().Be("stopped");
+            .Should().Be(TapeWireReason.ConnectedButNotSubscribed);
+        TapeWireReason.ConnectedButNotSubscribed.Should().Be("connected_but_not_subscribed");
+        TapeTools.WireReason(TapeUnavailableReason.Stopped).Should().Be(TapeWireReason.Stopped);
+        TapeWireReason.Stopped.Should().Be("stopped");
         TapeTools.WireReason(TapeUnavailableReason.HeldByAnotherRecorder)
             .Should().Be(TapeClosedReadReason.HeldByAnotherRecorder);
-        TapeTools.WireReason(TapeUnavailableReason.ClaimTakenOver).Should().Be("claim_taken_over");
-        TapeTools.WireReason(TapeUnavailableReason.ClaimLapsed).Should().Be("claim_lapsed");
+        TapeTools.WireReason(TapeUnavailableReason.ClaimTakenOver).Should().Be(TapeWireReason.ClaimTakenOver);
+        TapeWireReason.ClaimTakenOver.Should().Be("claim_taken_over");
+        TapeTools.WireReason(TapeUnavailableReason.ClaimLapsed).Should().Be(TapeWireReason.ClaimLapsed);
+        TapeWireReason.ClaimLapsed.Should().Be("claim_lapsed");
         TapeTools.WireReason(TapeUnavailableReason.StoppedForSessionConflict)
-            .Should().Be("stopped_for_session_conflict");
+            .Should().Be(TapeWireReason.StoppedForSessionConflict);
+        TapeWireReason.StoppedForSessionConflict.Should().Be("stopped_for_session_conflict");
     }
 
     [Fact]
@@ -803,12 +858,13 @@ public sealed class FootprintAndVolumeProfileToolTests : IDisposable
     private TapeTools ToolsOver(
         TapeAvailabilityHolder tape,
         VolumeProfileService profiles,
-        VolumeFrontReader? front = null)
+        VolumeFrontReader? front = null,
+        int maxRows = 5_000)
     {
         IOptions<MarketDataOptions> options = Options.Create(new MarketDataOptions
         {
             Instruments = "ES,NQ",
-            MaxRows = 5_000,
+            MaxRows = maxRows,
             SessionCloseCentral = "16:00",
         });
         BarSessionCalendar calendar = BarSessionCalendar.Parse("16:00", []);
@@ -824,36 +880,6 @@ public sealed class FootprintAndVolumeProfileToolTests : IDisposable
             front ?? new VolumeFrontReader(new TapeVolumeFrontService(_database, gateway, calendar)),
             _footprints,
             _telemetry);
-    }
-
-    /// <summary>The first read is stdio. A second read is listening, which must not be the one used.</summary>
-    private sealed class FlippingHolder : TapeAvailabilityHolder
-    {
-        public int Reads { get; private set; }
-
-        public override TapeAvailability For(string instrument)
-        {
-            Reads++;
-            return Reads == 1
-                ? TapeAvailability.NeverStartedBecauseStdio()
-                : TapeAvailability.Listening();
-        }
-    }
-
-    /// <summary>The front month refuses after the cells are already in hand.</summary>
-    private sealed class RefusingFront : VolumeFrontReader
-    {
-        public RefusingFront()
-            : base(null!)
-        {
-        }
-
-        public override Task<ToolPayloads.VolumeFrontInfo> ReadAsync(
-            InstrumentId instrument,
-            CancellationToken cancellationToken,
-            DateTimeOffset? asOfUtc = null,
-            bool resolveGateway = true) =>
-            throw new McpException("The front month could not be read.");
     }
 
     private void WroteNothing()
@@ -903,14 +929,15 @@ public sealed class FootprintAndVolumeProfileToolTests : IDisposable
         long sequence,
         string contractId,
         long size,
-        TradeDirection direction) => new()
+        TradeDirection direction,
+        decimal price = 5000m) => new()
         {
             Venue = Venue,
             Instrument = _es.Symbol,
             ContractId = contractId,
             TradeTimeUtc = when,
             Sequence = sequence,
-            Price = 5000m,
+            Price = price,
             Size = size,
             Direction = direction,
             RecordedAt = _recorded,
@@ -933,11 +960,12 @@ public sealed class FootprintAndVolumeProfileToolTests : IDisposable
         DateTimeOffset bucket,
         decimal price,
         long buy,
-        long sell) => new()
+        long sell,
+        int resolutionMinutes = FiveMinutes) => new()
         {
             Venue = Venue,
             Instrument = _es.Symbol,
-            ResolutionMinutes = FiveMinutes,
+            ResolutionMinutes = resolutionMinutes,
             BucketStart = bucket,
             Price = price,
             BuyVolume = buy,

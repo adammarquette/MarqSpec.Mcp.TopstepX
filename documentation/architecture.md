@@ -1275,8 +1275,11 @@ and does not fault the host. Loading the files back with DuckDB or pandas is
   is not the recorder for that instrument, write nothing, and set `live` false, with `reason`
   (gh#728). `live` true means this process is listening, not that the cells are current. A gap at
   the start or a cut at the end is `covered.narrowed`, the only short-window flag, and
-  `covered.end` is when the data ends. The recorder status is read once per call. A window with no closed
-  tape still refuses with a sentence naming the fix, and that sentence does not say to stop the
+  `covered.end` is when the data ends. The ask is floored to the bar open before the ledger
+  confines it. When coverage reaches that open, `covered.start` is that open; a ledger that
+  begins later in the bar is not backdated. The recorder status is read
+  once per call. A window with no closed tape still refuses with a sentence naming the fix,
+  and that sentence does not say to stop the
   recorder. A recorder that is reconnecting, not
   subscribed, or stopped still refuses, closed cells included, as do a claim taken over and a claim
   lapsed — those are not "another recorder holds the claim". A still-open sentinel is coverage only while that

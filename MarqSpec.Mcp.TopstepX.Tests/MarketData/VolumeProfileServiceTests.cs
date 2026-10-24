@@ -191,6 +191,149 @@ public sealed class VolumeProfileServiceTests : IDisposable
         await read.Should().ThrowAsync<ArgumentException>().WithMessage("*volume*");
     }
 
+    [Fact]
+    public async Task AggregateClosedCoverage_KeepsAPrintAtTheAlignedStart_AndDropsOneJustBeforeIt()
+    {
+        // 14:33 on 5-minute bars floors to 14:30. The print at that open counts. One tick
+        // earlier is the previous bar. There is no overlap filter on this path, so removing
+        // or widening >= window.Start returns that tick, and narrowing it to > drops the open.
+        DateTimeOffset askStart = _fourteen.AddMinutes(33);
+        DateTimeOffset aligned = _fourteen.AddMinutes(30);
+        await SeedCoverageAsync(Coverage(Next, _fourteen, _sixteen));
+        await SeedTradesAsync(
+            Trade(aligned, 1, Next, 10),
+            Trade(aligned.AddTicks(-1), 2, Next, 7));
+
+        FootprintRead read = await Aggregate(askStart, _sixteen);
+
+        read.Window.Start.Should().Be(aligned);
+        read.Window.End.Should().Be(_sixteen);
+        read.Window.Narrowed.Should().BeFalse();
+        read.Cells.Should().ContainSingle()
+            .Which.Should().Be(new FootprintCell(_es.Symbol, FiveMinutes, aligned, 5000m, 10, 0));
+    }
+
+    [Fact]
+    public async Task AggregateClosedCoverage_DropsAPrintAtTheWindowEnd()
+    {
+        // 16:02 sits inside the 16:00 bar, so the print at that instant would survive an
+        // overlap filter. Widening < window.End to <= keeps it. The end is not floored.
+        DateTimeOffset end = _sixteen.AddMinutes(2);
+        await SeedCoverageAsync(Coverage(Next, _fourteen, _sixteen.AddHours(2)));
+        await SeedTradesAsync(
+            Trade(_sixteen.AddMinutes(-2), 1, Next, 10),
+            Trade(end, 2, Next, 3));
+
+        FootprintRead read = await Aggregate(_fourteen, end);
+
+        read.Window.End.Should().Be(end);
+        read.Cells.Should().ContainSingle()
+            .Which.Should().Be(new FootprintCell(
+                _es.Symbol, FiveMinutes, _sixteen.AddMinutes(-5), 5000m, 10, 0));
+    }
+
+    [Fact]
+    public async Task AggregateClosedCoverage_DropsAPrintAfterTheWindowEnd()
+    {
+        // One minute past 16:02 is still the 16:00 bar. <= window.End does not admit it.
+        // Removing the upper bound does.
+        DateTimeOffset end = _sixteen.AddMinutes(2);
+        await SeedCoverageAsync(Coverage(Next, _fourteen, _sixteen.AddHours(2)));
+        await SeedTradesAsync(
+            Trade(_sixteen.AddMinutes(-2), 1, Next, 10),
+            Trade(end.AddMinutes(1), 2, Next, 4));
+
+        FootprintRead read = await Aggregate(_fourteen, end);
+
+        read.Window.End.Should().Be(end);
+        read.Cells.Should().ContainSingle()
+            .Which.Should().Be(new FootprintCell(
+                _es.Symbol, FiveMinutes, _sixteen.AddMinutes(-5), 5000m, 10, 0));
+    }
+
+    [Fact]
+    public async Task AggregateClosedCoverage_DropsAPrintOnAnotherContract()
+    {
+        // Same bucket as the kept print. A mixed bucket produces no cell, so removing the
+        // contract filter loses the baseline instead of adding the other size.
+        await SeedCoverageAsync(Coverage(Next, _fourteen, _sixteen));
+        await SeedTradesAsync(
+            Trade(_bucket1430.AddMinutes(1), 1, Next, 10),
+            Trade(_bucket1430.AddMinutes(2), 2, Front, 99));
+
+        FootprintRead read = await Aggregate(_fourteen, _sixteen);
+
+        read.Window.ContractId.Should().Be(Next);
+        read.Cells.Should().ContainSingle()
+            .Which.Should().Be(new FootprintCell(_es.Symbol, FiveMinutes, _bucket1430, 5000m, 10, 0));
+    }
+
+    [Fact]
+    public async Task ReadCellsAndAggregateClosedCoverage_WhenTheAskStartsInsideABar_ReturnTheSameCompleteBar()
+    {
+        // 14:31 and 14:34 are one 14:30 bar. The stored cell is that whole bar. A clipped
+        // in-memory read would keep only the 14:34 print, and an unaligned report would
+        // say the window opens at 14:33.
+        DateTimeOffset askStart = _fourteen.AddMinutes(33);
+        DateTimeOffset bar = _fourteen.AddMinutes(30);
+        await SeedEdgeBarAsync(bar);
+
+        FootprintRead stored = await ReadStored(askStart, _sixteen);
+        FootprintRead tape = await Aggregate(askStart, _sixteen);
+
+        stored.Window.Start.Should().Be(bar);
+        stored.Window.End.Should().Be(_sixteen);
+        stored.Window.Narrowed.Should().BeFalse();
+        stored.Cells.Should().ContainSingle()
+            .Which.Should().Be(new FootprintCell(_es.Symbol, FiveMinutes, bar, 5000m, 30, 0));
+        tape.Should().BeEquivalentTo(stored);
+    }
+
+    [Fact]
+    public async Task ReadCellsAndAggregateClosedCoverage_WhenTheAskStartsOnABar_ReturnTheSameCells()
+    {
+        DateTimeOffset bar = _fourteen.AddMinutes(30);
+        await SeedEdgeBarAsync(bar);
+
+        FootprintRead stored = await ReadStored(bar, _sixteen);
+        FootprintRead tape = await Aggregate(bar, _sixteen);
+
+        stored.Window.Start.Should().Be(bar);
+        stored.Window.Narrowed.Should().BeFalse();
+        tape.Should().BeEquivalentTo(stored);
+    }
+
+    private async Task SeedEdgeBarAsync(DateTimeOffset bar)
+    {
+        await SeedCoverageAsync(Coverage(Next, _fourteen, _sixteen));
+        await SeedTradesAsync(
+            Trade(bar.AddMinutes(1), 1, Next, 10),
+            Trade(bar.AddMinutes(4), 2, Next, 20));
+        await SeedCellsAsync(
+            Cell(bar.AddMinutes(-5), 5000m, buy: 100, sell: 0),
+            Cell(bar, 5000m, buy: 30, sell: 0));
+    }
+
+    private Task<FootprintRead> Aggregate(DateTimeOffset start, DateTimeOffset end) =>
+        new VolumeProfileService(_database).AggregateClosedCoverageAsync(
+            Venue,
+            _es,
+            FiveMinutes,
+            start,
+            end,
+            CancellationToken.None,
+            TapeAvailability.NeverStartedBecauseStdio());
+
+    private Task<FootprintRead> ReadStored(DateTimeOffset start, DateTimeOffset end) =>
+        new VolumeProfileService(_database).ReadCellsAsync(
+            Venue,
+            _es,
+            FiveMinutes,
+            start,
+            end,
+            CancellationToken.None,
+            TapeAvailability.Listening());
+
     private async Task SeedCoverageAsync(params TapeCoverageRecord[] rows)
     {
         _database.TapeCoverage.AddRange(rows);
@@ -202,6 +345,29 @@ public sealed class VolumeProfileServiceTests : IDisposable
         _database.FootprintCells.AddRange(cells);
         await _database.SaveChangesAsync();
     }
+
+    private async Task SeedTradesAsync(params TradeRecord[] trades)
+    {
+        _database.Trades.AddRange(trades);
+        await _database.SaveChangesAsync();
+    }
+
+    private static TradeRecord Trade(
+        DateTimeOffset when,
+        long sequence,
+        string contractId,
+        long size) => new()
+        {
+            Venue = Venue,
+            Instrument = _es.Symbol,
+            ContractId = contractId,
+            TradeTimeUtc = when,
+            Sequence = sequence,
+            Price = 5000m,
+            Size = size,
+            Direction = TradeDirection.Buy,
+            RecordedAt = _recorded,
+        };
 
     private static TapeCoverageRecord Coverage(
         string contractId,

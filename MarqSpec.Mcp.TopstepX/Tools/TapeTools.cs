@@ -67,7 +67,9 @@ public sealed class TapeTools(
     [Description(
         "Buy and sell volume by price by bar. The tape only goes forward: there is no historical "
         + "footprint before recording began, and a window before that refuses and names the earliest "
-        + "covered time. `covered` is the TapeCoverage window, not the ask. A roll, a listening hole, "
+        + "covered time. `covered` is the TapeCoverage window, not the ask. An ask that starts "
+        + "inside a bar is floored to that bar's open when the tape covers it, and "
+        + "`covered.start` is that open. A roll, a listening hole, "
         + "a gap at the start, or a cut at the end sets `covered.narrowed`. That is the only "
         + "short-window flag, and `covered.end` is when the data ends. When this process is not the "
         + "recorder, the closed window is aggregated from stored prints in memory, nothing is written, "
@@ -136,7 +138,9 @@ public sealed class TapeTools(
         "Volume by price, the point of control, and the 70% value area, over the same cells as "
         + "get_footprint. The tape only goes forward: there is no historical footprint before recording "
         + "began, and a window before that refuses and names the earliest covered time. `covered` is "
-        + "the TapeCoverage window, not the ask. A roll, a listening hole, a gap at the start, or a "
+        + "the TapeCoverage window, not the ask. An ask that starts inside a bar is floored to "
+        + "that bar's open when the tape covers it, and `covered.start` is that open. "
+        + "A roll, a listening hole, a gap at the start, or a "
         + "cut at the end sets `covered.narrowed`. That is the only short-window flag, and "
         + "`covered.end` is when the data ends. When this process is not the recorder, the closed "
         + "window is aggregated from stored prints in memory, nothing is written, and `live` is false. "
@@ -288,21 +292,23 @@ public sealed class TapeTools(
             or TapeUnavailableReason.HeldByAnotherRecorder;
 
     /// <summary>
-    /// The closed code beside <c>live</c>. One arm per <see cref="TapeUnavailableReason"/>, so a
-    /// new value does not compile into a fallback. Listening is a code, not a promise the cells
-    /// are current. The refusing states still refuse; their codes exist so the mapping is total.
+    /// The closed code beside <c>live</c>. Every named <see cref="TapeUnavailableReason"/> has
+    /// an arm. The discard throws, so a new named value still compiles and
+    /// <c>WireReason_NamesEveryTapeUnavailableReason</c> is what fails; an unnamed value hits
+    /// the same throw. Listening is a code, not a promise the cells are current. The refusing
+    /// states still refuse; their codes exist so the mapping is total.
     /// </summary>
     internal static string WireReason(TapeUnavailableReason reason) => reason switch
     {
-        TapeUnavailableReason.None => "listening",
+        TapeUnavailableReason.None => TapeWireReason.Listening,
         TapeUnavailableReason.NeverStarted => TapeClosedReadReason.NeverStarted,
-        TapeUnavailableReason.Reconnecting => "reconnecting",
-        TapeUnavailableReason.ConnectedButNotSubscribed => "connected_but_not_subscribed",
-        TapeUnavailableReason.Stopped => "stopped",
+        TapeUnavailableReason.Reconnecting => TapeWireReason.Reconnecting,
+        TapeUnavailableReason.ConnectedButNotSubscribed => TapeWireReason.ConnectedButNotSubscribed,
+        TapeUnavailableReason.Stopped => TapeWireReason.Stopped,
         TapeUnavailableReason.HeldByAnotherRecorder => TapeClosedReadReason.HeldByAnotherRecorder,
-        TapeUnavailableReason.ClaimTakenOver => "claim_taken_over",
-        TapeUnavailableReason.ClaimLapsed => "claim_lapsed",
-        TapeUnavailableReason.StoppedForSessionConflict => "stopped_for_session_conflict",
+        TapeUnavailableReason.ClaimTakenOver => TapeWireReason.ClaimTakenOver,
+        TapeUnavailableReason.ClaimLapsed => TapeWireReason.ClaimLapsed,
+        TapeUnavailableReason.StoppedForSessionConflict => TapeWireReason.StoppedForSessionConflict,
         _ => throw new InvalidOperationException(
             "TapeUnavailableReason." + reason + " has no wire code."),
     };
@@ -428,4 +434,36 @@ public sealed class TapeTools(
         CancellationToken cancellationToken) =>
         _footprints.EnsureProjectedAsync(
             _venue, instrument, resolutionMinutes, cancellationToken);
+}
+
+/// <summary>
+/// Wire spellings for <see cref="TapeUnavailableReason"/> values that are not a closed-read
+/// counter tag. <see cref="TapeClosedReadReason"/> keeps the two that are counted, so the
+/// counter and the payload cannot spell those two differently. This type has no
+/// <c>All</c> list: a public vocabulary in the telemetry namespace is driven as a tag set.
+/// </summary>
+internal static class TapeWireReason
+{
+    /// <summary>This process is listening. Not a promise the cells are current.</summary>
+    internal const string Listening = "listening";
+
+    /// <summary>The recorder is reconnecting and the read is refused.</summary>
+    internal const string Reconnecting = "reconnecting";
+
+    /// <summary>The hub is up and this instrument is not subscribed. The read is refused.</summary>
+    internal const string ConnectedButNotSubscribed = "connected_but_not_subscribed";
+
+    /// <summary>The recorder stopped. The read is refused.</summary>
+    internal const string Stopped = "stopped";
+
+    /// <summary>This process held the claim and another recorder took it. The read is refused.</summary>
+    internal const string ClaimTakenOver = "claim_taken_over";
+
+    /// <summary>This process held the claim and it lapsed. The read is refused.</summary>
+    internal const string ClaimLapsed = "claim_lapsed";
+
+    /// <summary>
+    /// The recorder stopped because another TopstepX session took this login. The read is refused.
+    /// </summary>
+    internal const string StoppedForSessionConflict = "stopped_for_session_conflict";
 }

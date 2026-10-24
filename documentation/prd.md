@@ -510,11 +510,16 @@ The server serves OHLCV bars for a futures instrument at a requested resolution 
   (gh#218, gh#728). When **this process is not the recorder** for that
   instrument — stdio, the switch off, or another process holding the claim — **closed** coverage is
   aggregated from stored prints in memory and `live` is false. Nothing is written: the recorder
-  does not store footprint cells as it listens, so a stored projection would be stale. `reason`
-  is a closed code. `live` true means this process is listening, not that the cells are current.
+  does not store footprint cells as it listens, so a stored projection would be stale
+  (ADR-0016). `reason` is a closed code. `live` true means this process is listening, not
+  that the cells are current.
   A window that is not the ask — a gap at the start, a cut at the end, a hole, or a roll — sets
   `covered.narrowed`. That is the only short-window flag. `covered.end` is when the data ends;
-  there is no second timestamp. This process does not project on that path (ADR-0016).
+  there is no second timestamp. The ask is floored to the bar open
+  (`floor(Start, resolution)`) before the ledger confines it, on both paths. When coverage
+  reaches that open, the edge bar is complete and `covered.start` is that open; the floor
+  itself is not a narrowing. When the ledger begins later in the bar, `covered.start` stays
+  the ledger start, so a hole is not backdated. The end is not aligned.
   A still-open sentinel is not coverage in that case. A window with no closed tape still refuses with
   a sentence naming the fix — under stdio, run a separate HTTP recorder on the same database; the
   sentence does not say to stop a recorder. Never reported healthy by default, never answered as an
@@ -707,7 +712,11 @@ The server serves OHLCV bars for a futures instrument at a requested resolution 
   tape in memory and flagged not-live (`live` false, with `reason`) — the call is not refused for
   that reason alone (gh#728). `live` true means this process is listening, not that the cells are
   current. A gap at the start or a cut at the end sets `covered.narrowed`, which is the only
-  short-window flag, and `covered.end` is when the data ends. A
+  short-window flag, and `covered.end` is when the data ends. The ask is floored to the bar
+  open before the ledger confines it, on both paths. When coverage reaches that open, the
+  edge bar is complete and `covered.start` is that open; the floor itself is not a narrowing.
+  When the ledger begins later in the bar, `covered.start` stays the ledger start, so a hole
+  is not backdated. The end is not aligned. A
   still-open sentinel is not closed coverage. A window with no closed tape still
   refuses with a sentence naming the fix, and that sentence does not say to stop the recorder —
   an empty profile and an absent tape must not look the

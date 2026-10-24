@@ -207,7 +207,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **`get_footprint` and `get_volume_profile` under stdio.** When this process is not the recorder,
   the closed window is aggregated from stored prints in memory and nothing is written. `live` is
-  false. A window up to now is cut back to the last closed run (`covered.narrowed`). A window
+  false. A window up to now is cut back to the last closed run (`covered.narrowed`). The ask
+  is floored to the bar open before the ledger confines it, on both paths, so an edge bar the
+  tape covers is complete and `covered.start` is that open. A ledger that begins later in the
+  bar is not backdated over a hole. A window
   with no closed tape still refuses and names a separate HTTP recorder; it does not say to stop
   one. A claim this process lost still refuses. The still-open sentinel is not served as history
   (gh#728, R-5.8, R-9.6).

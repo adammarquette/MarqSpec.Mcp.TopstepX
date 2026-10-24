@@ -107,8 +107,10 @@ public sealed class VolumeProfileService(
                 "A bar size must be positive.");
         }
 
+        // Floor the ask, then let the ledger confine it. A hole that begins inside the
+        // bar stays at the ledger start; coverage that reaches the open keeps the whole bar.
         CoveredTapeWindow window = await ConfineAsync(
-                venue, instrument, start, end, cancellationToken, health)
+                venue, instrument, AlignAsk(start, resolutionMinutes), end, cancellationToken, health)
             .ConfigureAwait(false);
 
         DateTimeOffset loadFrom = window.Start.AddMinutes(-resolutionMinutes);
@@ -166,6 +168,12 @@ public sealed class VolumeProfileService(
     /// <see cref="FootprintAggregator.Aggregate"/> is pure, and this method does not call
     /// <c>SaveChanges</c> (ADR-0016). Volume profile is
     /// <see cref="VolumeProfileAggregator.From"/> over these same cells.
+    /// The ask is floored to the bar open before the ledger confines it, the same rule as
+    /// the stored-cell path. When coverage reaches that open, the window reports it and
+    /// the edge bar is complete. When the ledger begins later, the window stays there, so
+    /// a hole is not backdated. The query is the only bound on the prints: an overlap
+    /// filter would hide a print the predicate let through, so the contract, the inclusive
+    /// start and the exclusive end are what decide which prints become cells.
     /// </remarks>
     /// <exception cref="NoClosedTapeException">No closed tape overlaps the ask.</exception>
     /// <exception cref="InvalidOperationException">The ask is entirely before recording began.</exception>
@@ -190,7 +198,12 @@ public sealed class VolumeProfileService(
         }
 
         CoveredTapeWindow window = await ConfineAsync(
-                venue, instrument, start, end, cancellationToken, health)
+                venue,
+                instrument,
+                AlignAsk(start, resolutionMinutes),
+                end,
+                cancellationToken,
+                health)
             .ConfigureAwait(false);
 
         List<TradeRecord> rows = await _database.Trades
@@ -214,19 +227,18 @@ public sealed class VolumeProfileService(
                 row.Direction)),
         ];
 
-        List<FootprintCell> cells = [];
-
-        foreach (FootprintCell cell in FootprintAggregator.Aggregate(prints, resolutionMinutes))
-        {
-            if (VolumeProfileAggregator.BarOverlapsWindow(
-                cell.BucketStart, resolutionMinutes, window.Start, window.End))
-            {
-                cells.Add(cell);
-            }
-        }
+        List<FootprintCell> cells = [.. FootprintAggregator.Aggregate(prints, resolutionMinutes)];
 
         return new FootprintRead(cells, window);
     }
+
+    /// <summary>
+    /// Floors an ask to the bar that contains it. Confine then runs on that instant, so
+    /// both paths include the edge bar when the ledger reaches its open, and a ledger that
+    /// begins later is not pulled backward over a hole. The end is not moved.
+    /// </summary>
+    private static DateTimeOffset AlignAsk(DateTimeOffset start, int resolutionMinutes) =>
+        BarGapDetector.AlignDown(start, TimeSpan.FromMinutes(resolutionMinutes));
 
     /// <summary>
     /// Confines the ask to the newest contiguous listening run, or refuses when no tape overlaps.

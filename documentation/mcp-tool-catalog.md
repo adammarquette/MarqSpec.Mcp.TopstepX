@@ -911,7 +911,7 @@ only goes forward from when recording began.
 Returns `{ symbol, resolutionMinutes, cells: [{ t, p, buy, sell }], covered: { start, end, narrowed },
 contracts: { span, segments: [{ contractId, firstBucket, lastBucket, barCount }] },
 front: { used, agree, tapeContractId?, tapeSessionDate?, gatewayContractId?,
-changeover?: { sessionDate, flippedAtUtc?, fromContractId, toContractId } }, live, partial, reason, dataEndsAt }`.
+changeover?: { sessionDate, flippedAtUtc?, fromContractId, toContractId } }, live, reason }`.
 
 **`covered` is the ledger window, not the ask.** A roll or listening hole narrows to the newest contiguous
 run of the contract in front and sets `narrowed`. `contracts.span` is always `SingleContract` — a profile
@@ -926,11 +926,12 @@ call, the same trigger as indicators
 whether the cells match the tape, not whether two `RecordedAt` clocks agree (gh#377).
 If the tape still produces no cell (a roll inside the bar, or prints that do not count) the tool
 **refuses** rather than returning empty `cells`. **When this process is not the recorder** for that
-instrument, closed coverage is served read-only and `live` is false (gh#728). `reason` is a closed
-code (`listening`, `never_started`, `held_by_another_recorder`). `dataEndsAt` is the exclusive end
-of the data served. `live` true means this process is listening, not that the cells are current.
-A window that runs past the last closed run is cut back to that run and `partial` is true. This
-process does not project or write cells on that path. A still-open sentinel is not that coverage.
+instrument, the closed window is aggregated from stored prints in memory and `live` is false
+(gh#728). Nothing is written. `reason` is a closed code (`listening`, `never_started`,
+`held_by_another_recorder`; the refusing states have codes too and still refuse). `live` true
+means this process is listening, not that the cells are current. A gap at the start, a cut at
+the end, a hole, or a roll sets `covered.narrowed`. That is the only short-window flag.
+`covered.end` is when the data ends. A still-open sentinel is not that coverage.
 **A window with no closed tape still refuses** with a sentence naming the fix — under stdio, run a
 separate HTTP recorder on the same database; the sentence does not say to stop a recorder. An empty
 answer and an absent tape must not look the same (gh#218). When this
@@ -948,26 +949,27 @@ disconnects any live session on the account, including a healthy trading platfor
 waits before it tries again. With the switch off, replicas (gh#772) kick each other about once per
 54-minute cycle. Tools may keep using the token already held until it ages out. Another
 symbol's subscribe does not make this one healthy and does not make its closed history read as live.
-A served read with `live` false is counted, tagged with `reason`.
-Top-level fields are always present, `live`, `partial`, `reason` and `dataEndsAt` included. **`front` is a new object, not a replacement for `contracts`.** `used` is `tape-volume`
+A read that is actually returned with `live` false is counted, tagged with `reason`. A refusal is not.
+Top-level fields are always present, `live` and `reason` included. **`front` is a new object, not a replacement for `contracts`.** `used` is `tape-volume`
 or `none` — never a silent prefer of the gateway. `tapeContractId`, `tapeSessionDate`,
 `gatewayContractId` and `changeover` are omitted when that answer does not exist. No `why` sentence
 (ADR-0008). `contracts` stays the newest listening run from cells and `TapeCoverage`.
 
 ### `get_volume_profile(symbol, resolutionMinutes, fromUtc, toUtc)`
-Volume by price, the point of control, and the 70% value area — an aggregate over the same stored cells
-`get_footprint` reads (`R-9`). Same covered-window and contract-provenance rules, same forward-only
-refusal, same on-read projection while this process is the recorder and the stored tape has prints
-the cells do not yet reflect (gh#366, gh#377).
+Volume by price, the point of control, and the 70% value area — an aggregate over the same cells
+`get_footprint` reads (`R-9`). When this process is not the recorder those cells are aggregated
+from the closed tape in memory, the same prints, and nothing is written. Same covered-window and
+contract-provenance rules, same forward-only refusal, same on-read projection while this process
+is the recorder and the stored tape has prints the cells do not yet reflect (gh#366, gh#377).
 
 Returns `{ symbol, resolutionMinutes, byPrice: [{ p, v }], pointOfControl, valueAreaLow, valueAreaHigh,
-valueAreaVolume, totalVolume, covered: { start, end, narrowed }, contracts, front, live, partial, reason, dataEndsAt }`.
+valueAreaVolume, totalVolume, covered: { start, end, narrowed }, contracts, front, live, reason }`.
 
 Coverage without volume **refuses** rather than returning an empty profile (`R-9.6`). **When this process
-is not the recorder**, closed coverage is served read-only and `live` is false (gh#728). `reason`,
-`partial` and `dataEndsAt` mean what they mean on `get_footprint`. `live` true means this process is
-listening, not that the cells are current. A window that runs past the last closed run is cut back
-and `partial` is true.
+is not the recorder**, the profile is derived from that in-memory aggregation and `live` is false
+(gh#728). `reason` and `covered.narrowed` mean what they mean on `get_footprint`. `live` true means
+this process is listening, not that the cells are current. A gap at the start or a cut at the end
+sets `covered.narrowed`.
 A window with no closed tape still **refuses** with a sentence naming the fix — an empty profile and an
 absent tape must not look the same, and the sentence does not say to stop the recorder (gh#218).
 When this process is the recorder but that instrument is reconnecting, not subscribed, or stopped,

@@ -509,10 +509,12 @@ The server serves OHLCV bars for a futures instrument at a requested resolution 
   read once per call and passed through, so the window and the live flag are the same instant
   (gh#218, gh#728). When **this process is not the recorder** for that
   instrument — stdio, the switch off, or another process holding the claim — **closed** coverage is
-  served read-only and `live` is false. `reason` is a closed code. `dataEndsAt` is when the served
-  data ends. `live` true means this process is listening, not that the cells are current. A window
-  that runs past the last closed run is cut back to that run and `partial` is true. This process
-  does not project or write cells on that path: the recorder stays the single writer (ADR-0016).
+  aggregated from stored prints in memory and `live` is false. Nothing is written: the recorder
+  does not store footprint cells as it listens, so a stored projection would be stale. `reason`
+  is a closed code. `live` true means this process is listening, not that the cells are current.
+  A window that is not the ask — a gap at the start, a cut at the end, a hole, or a roll — sets
+  `covered.narrowed`. That is the only short-window flag. `covered.end` is when the data ends;
+  there is no second timestamp. This process does not project on that path (ADR-0016).
   A still-open sentinel is not coverage in that case. A window with no closed tape still refuses with
   a sentence naming the fix — under stdio, run a separate HTTP recorder on the same database; the
   sentence does not say to stop a recorder. Never reported healthy by default, never answered as an
@@ -701,10 +703,11 @@ The server serves OHLCV bars for a futures instrument at a requested resolution 
   Collapsing two runs into a continuous envelope would claim coverage that was never there.
 - **R-9.6** A window with **no tape refuses** rather than returning an empty profile. That refusal
   is a typed result, not a match on the sentence. When this
-  process is not the recorder for that instrument, **closed** coverage is served read-only and
-  flagged not-live (`live` false, with `reason` and `dataEndsAt`) — the call is not refused for
+  process is not the recorder for that instrument, **closed** coverage is aggregated from the
+  tape in memory and flagged not-live (`live` false, with `reason`) — the call is not refused for
   that reason alone (gh#728). `live` true means this process is listening, not that the cells are
-  current. A window that runs past the last closed run is cut back and `partial` is true. A
+  current. A gap at the start or a cut at the end sets `covered.narrowed`, which is the only
+  short-window flag, and `covered.end` is when the data ends. A
   still-open sentinel is not closed coverage. A window with no closed tape still
   refuses with a sentence naming the fix, and that sentence does not say to stop the recorder —
   an empty profile and an absent tape must not look the

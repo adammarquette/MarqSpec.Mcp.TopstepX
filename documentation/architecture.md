@@ -1271,15 +1271,16 @@ and does not fault the host. Loading the files back with DuckDB or pandas is
   Live tape health is a
   mutable holder written from that same lifecycle and read at the point of use (gh#218) — the opposite
   of the store probe, which is set once at startup and never re-probed.   `get_footprint` and
-  `get_volume_profile` serve **closed** coverage read-only when this process is not the recorder for that
-  instrument, and set `live` false, with `reason` and `dataEndsAt` (gh#728). `live` true means this
-  process is listening, not that the cells are current. A window past the last closed run is cut
-  back and `partial` is true. The recorder status is read once per call. A window with no closed
+  `get_volume_profile` aggregate **closed** coverage from stored prints in memory when this process
+  is not the recorder for that instrument, write nothing, and set `live` false, with `reason`
+  (gh#728). `live` true means this process is listening, not that the cells are current. A gap at
+  the start or a cut at the end is `covered.narrowed`, the only short-window flag, and
+  `covered.end` is when the data ends. The recorder status is read once per call. A window with no closed
   tape still refuses with a sentence naming the fix, and that sentence does not say to stop the
   recorder. A recorder that is reconnecting, not
   subscribed, or stopped still refuses, closed cells included, as do a claim taken over and a claim
   lapsed — those are not "another recorder holds the claim". A still-open sentinel is coverage only while that
-  instrument is listening. A served read with `live` false is counted. The recorder resolves the
+  instrument is listening. A read that is actually returned with `live` false is counted. A refusal is not. The recorder resolves the
   scoped venue client per operation; it does not extend `IMarketDataGateway`. Quote and depth recording
   stay out of this phase, and there is still no `get_quote`.
 - **Recorder health is a read.** `get_recorder_health` and authenticated `GET /health/recorder` report whether

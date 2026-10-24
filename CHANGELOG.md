@@ -168,9 +168,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `Retention__*` is not read; dropping raw tape is out of scope and needs its own ADR.
 
 - **`live`, `reason`, `partial` and `dataEndsAt` on `get_footprint` and `get_volume_profile` (gh#728).**
+
+- **`live` and `reason` on `get_footprint` and `get_volume_profile` (gh#728).**
   `live` true means this process is listening, not that the cells are current. `reason` is a closed
-  code. `dataEndsAt` is the exclusive end of the data served. `partial` is true when that end is
-  before the window asked for. A read served with `live` false is counted, tagged with the reason.
+  code. A window that is not the ask — a gap at the start, a cut at the end, a hole, or a roll —
+  is `covered.narrowed`, and `covered.end` is when the data ends. A read served with `live` false
+  is counted, tagged with the reason, and only after the answer is actually returned.
 
 - **`TradingRiskGate` (gh#711).** Central practice-only gate with allowlist, symbol denylist, per-order and
   daily caps, dry-run preview, and append-only audit rows before every outcome. Future MCP order tools will call
@@ -208,10 +211,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - **`get_footprint` and `get_volume_profile` under stdio.** When this process is not the recorder,
-  closed tape coverage is served read-only and `live` is false. A window up to now is cut back to
-  the last closed run. A window with no closed tape still refuses and names a separate HTTP
-  recorder; it does not say to stop one. A claim this process lost still refuses. The still-open
-  sentinel is not served as history (gh#728, R-5.8, R-9.6).
+  the closed window is aggregated from stored prints in memory and nothing is written. `live` is
+  false. A window up to now is cut back to the last closed run (`covered.narrowed`). A window
+  with no closed tape still refuses and names a separate HTTP recorder; it does not say to stop
+  one. A claim this process lost still refuses. The still-open sentinel is not served as history
+  (gh#728, R-5.8, R-9.6).
 
 - **The OAuth refusal line cannot be forged.** `LogText.Sanitize` escapes CR, LF, the other C0/C1 controls,
   U+2028, U+2029, the bidi overrides and isolates, LRM, RLM, ALM, ZWSP, BOM, a lone surrogate, and a literal

@@ -12,6 +12,7 @@ using MarqSpec.Mcp.TopstepX.Telemetry;
 using MarqSpec.Mcp.TopstepX.Tests.MarketData;
 using MarqSpec.Mcp.TopstepX.Tools;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.ChangeTracking;
 using Microsoft.Extensions.Diagnostics.Metrics.Testing;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
@@ -117,13 +118,13 @@ public sealed class FootprintAndVolumeProfileToolTests : IDisposable
 
         payload.Covered.Start.Should().Be(_fourteen);
         payload.Covered.End.Should().Be(_sixteen);
-        payload.Covered.Narrowed.Should().BeTrue();
+        payload.Covered.Narrowed.Should().BeTrue(
+            "a gap at the start of the window is covered.narrowed, the only short-window flag");
+        payload.Covered.Start.Should().BeAfter(_ten);
         payload.PointOfControl.Should().Be(5000m);
         payload.TotalVolume.Should().Be(5);
         payload.Live.Should().BeTrue();
-        payload.Partial.Should().BeFalse("a late start is narrowed, and partial is only data ending before the window ends");
         payload.Reason.Should().Be("listening");
-        payload.DataEndsAt.Should().Be(_sixteen);
         payload.Contracts.Span.Should().Be(ToolPayloads.ContractSpan.SingleContract);
         payload.Contracts.Segments.Should().ContainSingle()
             .Which.ContractId.Should().Be(Front);
@@ -144,9 +145,7 @@ public sealed class FootprintAndVolumeProfileToolTests : IDisposable
         payload.Covered.End.Should().Be(_sixteen);
         payload.Covered.Narrowed.Should().BeFalse();
         payload.Live.Should().BeTrue();
-        payload.Partial.Should().BeFalse();
         payload.Reason.Should().Be("listening");
-        payload.DataEndsAt.Should().Be(payload.Covered.End);
         payload.Cells.Should().BeEquivalentTo(
         [
             new ToolPayloads.FootprintCellPoint(_bucket1430, 5000.00m, 5, 0),
@@ -266,42 +265,43 @@ public sealed class FootprintAndVolumeProfileToolTests : IDisposable
     }
 
     [Fact]
-    public async Task GetFootprint_WhenThisProcessIsNotTheRecorder_ServesClosedCoverage()
+    public async Task GetFootprint_WhenThisProcessIsNotTheRecorder_ServesTheTapeNotTheStoredCells()
     {
-        // Closed coverage another process recorded is an answer. It must not be refused just
-        // because this process is not the recorder (gh#728). "Not listening" is the wrong name:
-        // a recorder that is reconnecting is not listening either, and that one still refuses.
+        // Closed coverage another process recorded is an answer. The cells come from the prints,
+        // not from a projection the recorder never wrote. A stale cell of 4 must not win over a
+        // 50-lot print (gh#728).
         await SeedCoverageAsync(Coverage(Front, _fourteen, _sixteen));
         await SeedCellsAsync(Cell(_bucket1430, 5000m, buy: 4, sell: 1));
+        await SeedTradesAsync(Trade(_bucket1430.AddMinutes(1), 1, Front, 50, TradeDirection.Buy));
         _tape.Set(TapeAvailability.NeverStartedBecauseStdio());
 
         ToolPayloads.FootprintSeries footprint = await _tools.GetFootprint(
             "ES", FiveMinutes, _fourteen, _sixteen, CancellationToken.None);
 
-        footprint.Cells.Should().ContainSingle().Which.P.Should().Be(5000m);
+        footprint.Cells.Should().ContainSingle().Which.Buy.Should().Be(50);
+        footprint.Cells.Single().Sell.Should().Be(0);
         footprint.Covered.End.Should().Be(_sixteen);
+        footprint.Covered.Narrowed.Should().BeFalse();
         footprint.Live.Should().BeFalse();
         footprint.Reason.Should().Be(TapeClosedReadReason.NeverStarted);
-        footprint.DataEndsAt.Should().Be(_sixteen);
-        footprint.Partial.Should().BeFalse();
     }
 
     [Fact]
-    public async Task GetVolumeProfile_WhenThisProcessIsNotTheRecorder_ServesClosedCoverage()
+    public async Task GetVolumeProfile_WhenThisProcessIsNotTheRecorder_ServesTheTapeNotTheStoredCells()
     {
         await SeedCoverageAsync(Coverage(Front, _fourteen, _sixteen));
         await SeedCellsAsync(Cell(_bucket1430, 5000m, buy: 4, sell: 1));
+        await SeedTradesAsync(Trade(_bucket1430.AddMinutes(1), 1, Front, 50, TradeDirection.Buy));
         _tape.Set(TapeAvailability.NeverStartedBecauseStdio());
 
         ToolPayloads.VolumeProfileSeries profile = await _tools.GetVolumeProfile(
             "ES", FiveMinutes, _fourteen, _sixteen, CancellationToken.None);
 
+        profile.TotalVolume.Should().Be(50);
         profile.PointOfControl.Should().Be(5000m);
         profile.Covered.End.Should().Be(_sixteen);
         profile.Live.Should().BeFalse();
         profile.Reason.Should().Be(TapeClosedReadReason.NeverStarted);
-        profile.DataEndsAt.Should().Be(_sixteen);
-        profile.Partial.Should().BeFalse();
     }
 
     [Fact]
@@ -309,16 +309,16 @@ public sealed class FootprintAndVolumeProfileToolTests : IDisposable
     {
         await SeedCoverageAsync(Coverage(Front, _fourteen, _sixteen));
         await SeedCellsAsync(Cell(_bucket1430, 5000m, buy: 4, sell: 1));
+        await SeedTradesAsync(Trade(_bucket1430.AddMinutes(1), 1, Front, 50, TradeDirection.Buy));
         _tape.Set(TapeAvailability.HeldByAnotherRecorder("http-1", _sixteen));
 
         ToolPayloads.FootprintSeries footprint = await _tools.GetFootprint(
             "ES", FiveMinutes, _fourteen, _sixteen, CancellationToken.None);
 
-        footprint.Cells.Should().ContainSingle();
+        footprint.Cells.Should().ContainSingle().Which.Buy.Should().Be(50);
         footprint.Live.Should().BeFalse();
         footprint.Reason.Should().Be(TapeClosedReadReason.HeldByAnotherRecorder);
         footprint.Covered.End.Should().Be(_sixteen);
-        footprint.DataEndsAt.Should().Be(_sixteen);
     }
 
     [Fact]
@@ -326,124 +326,144 @@ public sealed class FootprintAndVolumeProfileToolTests : IDisposable
     {
         await SeedCoverageAsync(Coverage(Front, _fourteen, _sixteen));
         await SeedCellsAsync(Cell(_bucket1430, 5000m, buy: 4, sell: 1));
+        await SeedTradesAsync(Trade(_bucket1430.AddMinutes(1), 1, Front, 50, TradeDirection.Buy));
         _tape.Set(TapeAvailability.HeldByAnotherRecorder("http-1", _sixteen));
 
         ToolPayloads.VolumeProfileSeries profile = await _tools.GetVolumeProfile(
             "ES", FiveMinutes, _fourteen, _sixteen, CancellationToken.None);
 
+        profile.TotalVolume.Should().Be(50);
         profile.Live.Should().BeFalse();
         profile.Reason.Should().Be(TapeClosedReadReason.HeldByAnotherRecorder);
-        profile.DataEndsAt.Should().Be(_sixteen);
     }
 
     [Fact]
-    public async Task GetFootprint_WhenAnotherProcessIsRecordingAndTheWindowRunsToNow_FlagsTheCutBackAsPartial()
+    public async Task GetFootprint_WhenAnotherProcessIsRecordingAndTheWindowRunsToNow_FlagsTheCutBackAsNarrowed()
     {
         // The other process is still listening, so the ledger's open row runs to the sentinel.
-        // A window up to now must stop at the last closed run. partial is that comparison —
-        // data ends before the window ends — and stays false if the comparison is removed.
+        // A window up to now stops at the last closed run. covered.narrowed is that cut. There
+        // is no second partial flag.
         await SeedCoverageAsync(
             Coverage(Front, _fourteen, _sixteen),
             Coverage(Front, _sixteen, TapeCoverageRecord.StillListeningEnd));
         await SeedCellsAsync(Cell(_bucket1430, 5000m, buy: 4, sell: 1));
+        await SeedTradesAsync(Trade(_bucket1430.AddMinutes(1), 1, Front, 50, TradeDirection.Buy));
         _tape.Set(TapeAvailability.HeldByAnotherRecorder("http-1", _eighteen));
 
         ToolPayloads.FootprintSeries footprint = await _tools.GetFootprint(
             "ES", FiveMinutes, _fourteen, _eighteen, CancellationToken.None);
 
+        footprint.Cells.Single().Buy.Should().Be(50);
+        footprint.Covered.Start.Should().Be(_fourteen);
         footprint.Covered.End.Should().Be(_sixteen);
         footprint.Covered.End.Should().BeBefore(_eighteen);
-        footprint.Partial.Should().BeTrue();
-        footprint.DataEndsAt.Should().Be(_sixteen);
+        footprint.Covered.Narrowed.Should().BeTrue();
         footprint.Live.Should().BeFalse();
         footprint.Reason.Should().Be(TapeClosedReadReason.HeldByAnotherRecorder);
     }
 
     [Fact]
-    public async Task GetVolumeProfile_WhenAnotherProcessIsRecordingAndTheWindowRunsToNow_FlagsTheCutBackAsPartial()
+    public async Task GetVolumeProfile_WhenAnotherProcessIsRecordingAndTheWindowRunsToNow_FlagsTheCutBackAsNarrowed()
     {
         await SeedCoverageAsync(
             Coverage(Front, _fourteen, _sixteen),
             Coverage(Front, _sixteen, TapeCoverageRecord.StillListeningEnd));
         await SeedCellsAsync(Cell(_bucket1430, 5000m, buy: 4, sell: 1));
+        await SeedTradesAsync(Trade(_bucket1430.AddMinutes(1), 1, Front, 50, TradeDirection.Buy));
         _tape.Set(TapeAvailability.HeldByAnotherRecorder("http-1", _eighteen));
 
         ToolPayloads.VolumeProfileSeries profile = await _tools.GetVolumeProfile(
             "ES", FiveMinutes, _fourteen, _eighteen, CancellationToken.None);
 
+        profile.TotalVolume.Should().Be(50);
         profile.Covered.End.Should().Be(_sixteen);
-        profile.Partial.Should().BeTrue();
-        profile.DataEndsAt.Should().Be(_sixteen);
+        profile.Covered.Narrowed.Should().BeTrue();
         profile.Live.Should().BeFalse();
     }
 
     [Fact]
-    public async Task GetFootprint_WhenThisProcessIsNotTheRecorder_ServesStoredCellsWithoutWriting()
+    public async Task GetFootprint_WhenTheClosedRunStartsAfterTheAsk_FlagsTheGapAsNarrowed()
+    {
+        await SeedCoverageAsync(Coverage(Front, _fourteen, _sixteen));
+        await SeedTradesAsync(Trade(_bucket1430.AddMinutes(1), 1, Front, 50, TradeDirection.Buy));
+        _tape.Set(TapeAvailability.NeverStartedBecauseStdio());
+
+        ToolPayloads.FootprintSeries footprint = await _tools.GetFootprint(
+            "ES", FiveMinutes, _ten, _sixteen, CancellationToken.None);
+
+        footprint.Covered.Start.Should().Be(_fourteen);
+        footprint.Covered.Start.Should().BeAfter(_ten);
+        footprint.Covered.End.Should().Be(_sixteen);
+        footprint.Covered.Narrowed.Should().BeTrue();
+        footprint.Cells.Single().Buy.Should().Be(50);
+    }
+
+    [Fact]
+    public async Task GetFootprint_WhenThisProcessIsNotTheRecorder_ServesTheTapeWithoutWriting()
     {
         await SeedCoverageAsync(Coverage(Front, _fourteen, _sixteen));
         await SeedCellsAsync(Cell(_bucket1430, 5000m, buy: 4, sell: 1));
-        // A print the stored cell does not reflect. Projecting it would write a different cell.
         await SeedTradesAsync(Trade(_bucket1430.AddMinutes(1), 1, Front, 50, TradeDirection.Buy));
         _tape.Set(TapeAvailability.NeverStartedBecauseStdio());
-        int before = await _database.FootprintCells.CountAsync();
+        int cellsBefore = await _database.FootprintCells.CountAsync();
+        int tradesBefore = await _database.Trades.CountAsync();
+        int coverageBefore = await _database.TapeCoverage.CountAsync();
 
         ToolPayloads.FootprintSeries footprint = await _tools.GetFootprint(
             "ES", FiveMinutes, _fourteen, _sixteen, CancellationToken.None);
 
-        footprint.Cells.Should().ContainSingle().Which.Buy.Should().Be(4);
-        (await _database.FootprintCells.CountAsync()).Should().Be(before);
+        footprint.Cells.Single().Buy.Should().Be(50);
+        (await _database.FootprintCells.CountAsync()).Should().Be(cellsBefore);
+        (await _database.Trades.CountAsync()).Should().Be(tradesBefore);
+        (await _database.TapeCoverage.CountAsync()).Should().Be(coverageBefore);
+        WroteNothing();
         _footprints.Projections.Should().Be(0);
     }
 
     [Fact]
-    public async Task GetVolumeProfile_WhenThisProcessIsNotTheRecorder_ServesStoredCellsWithoutWriting()
+    public async Task GetVolumeProfile_WhenThisProcessIsNotTheRecorder_ServesTheTapeWithoutWriting()
     {
         await SeedCoverageAsync(Coverage(Front, _fourteen, _sixteen));
         await SeedCellsAsync(Cell(_bucket1430, 5000m, buy: 4, sell: 1));
         await SeedTradesAsync(Trade(_bucket1430.AddMinutes(1), 1, Front, 50, TradeDirection.Buy));
         _tape.Set(TapeAvailability.NeverStartedBecauseStdio());
-        int before = await _database.FootprintCells.CountAsync();
+        int cellsBefore = await _database.FootprintCells.CountAsync();
 
         ToolPayloads.VolumeProfileSeries profile = await _tools.GetVolumeProfile(
             "ES", FiveMinutes, _fourteen, _sixteen, CancellationToken.None);
 
-        profile.TotalVolume.Should().Be(5);
-        (await _database.FootprintCells.CountAsync()).Should().Be(before);
+        profile.TotalVolume.Should().Be(50);
+        (await _database.FootprintCells.CountAsync()).Should().Be(cellsBefore);
+        WroteNothing();
         _footprints.Projections.Should().Be(0);
     }
 
     [Fact]
-    public async Task GetFootprint_WhenTheServiceHolderDisagrees_UsesTheStatusReadOnce()
+    public async Task GetFootprint_WhenTheHolderFlipsOnTheSecondRead_UsesTheFirst()
     {
-        // The tool's holder says this process is not the recorder. The service's holder says
-        // it is listening, which would keep the open sentinel and run the window to now.
-        // Passing the one status the tool read is what keeps those two from disagreeing.
         await SeedCoverageAsync(
             Coverage(Front, _fourteen, _sixteen),
             Coverage(Front, _sixteen, TapeCoverageRecord.StillListeningEnd));
-        await SeedCellsAsync(Cell(_bucket1430, 5000m, buy: 4, sell: 1));
+        await SeedTradesAsync(Trade(_bucket1430.AddMinutes(1), 1, Front, 50, TradeDirection.Buy));
 
-        TapeAvailabilityHolder toolTape = new();
-        toolTape.Set(TapeAvailability.NeverStartedBecauseStdio());
-        TapeAvailabilityHolder serviceTape = new();
-        serviceTape.Set(TapeAvailability.Listening());
-        TapeTools tools = ToolsOver(toolTape, new VolumeProfileService(_database, serviceTape));
+        FlippingHolder tape = new();
+        TapeTools tools = ToolsOver(tape, new VolumeProfileService(_database, tape));
 
         ToolPayloads.FootprintSeries footprint = await tools.GetFootprint(
             "ES", FiveMinutes, _fourteen, _eighteen, CancellationToken.None);
 
+        tape.Reads.Should().Be(1);
         footprint.Live.Should().BeFalse();
         footprint.Reason.Should().Be(TapeClosedReadReason.NeverStarted);
         footprint.Covered.End.Should().Be(_sixteen);
-        footprint.Partial.Should().BeTrue();
-        footprint.DataEndsAt.Should().Be(_sixteen);
+        footprint.Cells.Single().Buy.Should().Be(50);
     }
 
     [Fact]
     public async Task GetFootprint_WhenClosedCoverageIsServedNotLive_CountsTheReason()
     {
         await SeedCoverageAsync(Coverage(Front, _fourteen, _sixteen));
-        await SeedCellsAsync(Cell(_bucket1430, 5000m, buy: 4, sell: 1));
+        await SeedTradesAsync(Trade(_bucket1430.AddMinutes(1), 1, Front, 50, TradeDirection.Buy));
         _tape.Set(TapeAvailability.NeverStartedBecauseStdio());
         using MetricCollector<long> reads = new(
             _telemetry, HostTelemetry.Name, HostTelemetry.TapeClosedReadsInstrument);
@@ -458,7 +478,7 @@ public sealed class FootprintAndVolumeProfileToolTests : IDisposable
     public async Task GetVolumeProfile_WhenAnotherRecorderHoldsTheClaim_CountsThatReason()
     {
         await SeedCoverageAsync(Coverage(Front, _fourteen, _sixteen));
-        await SeedCellsAsync(Cell(_bucket1430, 5000m, buy: 4, sell: 1));
+        await SeedTradesAsync(Trade(_bucket1430.AddMinutes(1), 1, Front, 50, TradeDirection.Buy));
         _tape.Set(TapeAvailability.HeldByAnotherRecorder("http-1", _sixteen));
         using MetricCollector<long> reads = new(
             _telemetry, HostTelemetry.Name, HostTelemetry.TapeClosedReadsInstrument);
@@ -481,6 +501,88 @@ public sealed class FootprintAndVolumeProfileToolTests : IDisposable
 
         footprint.Live.Should().BeTrue();
         reads.GetMeasurementSnapshot().Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task GetFootprint_WhenTheClosedWindowHasNoPrints_DoesNotCountAClosedRead()
+    {
+        await SeedCoverageAsync(Coverage(Front, _fourteen, _sixteen));
+        await SeedCellsAsync(Cell(_bucket1430, 5000m, buy: 4, sell: 1));
+        _tape.Set(TapeAvailability.NeverStartedBecauseStdio());
+        using MetricCollector<long> reads = new(
+            _telemetry, HostTelemetry.Name, HostTelemetry.TapeClosedReadsInstrument);
+
+        Func<Task> footprint = () => _tools.GetFootprint(
+            "ES", FiveMinutes, _fourteen, _sixteen, CancellationToken.None);
+
+        await footprint.Should().ThrowAsync<McpException>();
+        reads.GetMeasurementSnapshot().Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task GetVolumeProfile_WhenTheClosedWindowHasNoPrints_DoesNotCountAClosedRead()
+    {
+        await SeedCoverageAsync(Coverage(Front, _fourteen, _sixteen));
+        _tape.Set(TapeAvailability.NeverStartedBecauseStdio());
+        using MetricCollector<long> reads = new(
+            _telemetry, HostTelemetry.Name, HostTelemetry.TapeClosedReadsInstrument);
+
+        Func<Task> profile = () => _tools.GetVolumeProfile(
+            "ES", FiveMinutes, _fourteen, _sixteen, CancellationToken.None);
+
+        await profile.Should().ThrowAsync<McpException>();
+        reads.GetMeasurementSnapshot().Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task GetFootprint_WhenTheFrontRefuses_DoesNotCountAClosedRead()
+    {
+        await SeedCoverageAsync(Coverage(Front, _fourteen, _sixteen));
+        await SeedTradesAsync(Trade(_bucket1430.AddMinutes(1), 1, Front, 50, TradeDirection.Buy));
+        _tape.Set(TapeAvailability.NeverStartedBecauseStdio());
+        using MetricCollector<long> reads = new(
+            _telemetry, HostTelemetry.Name, HostTelemetry.TapeClosedReadsInstrument);
+        TapeTools tools = ToolsOver(
+            _tape,
+            new VolumeProfileService(_database, _tape),
+            new RefusingFront());
+
+        Func<Task> footprint = () => tools.GetFootprint(
+            "ES", FiveMinutes, _fourteen, _sixteen, CancellationToken.None);
+
+        (await footprint.Should().ThrowAsync<McpException>()).WithMessage("*front*");
+        reads.GetMeasurementSnapshot().Should().BeEmpty();
+    }
+
+    [Fact]
+    public void WireReason_NamesEveryTapeUnavailableReason()
+    {
+        TapeUnavailableReason[] reasons = Enum.GetValues<TapeUnavailableReason>();
+        List<string> codes = [];
+
+        foreach (TapeUnavailableReason reason in reasons)
+        {
+            string code = TapeTools.WireReason(reason);
+            code.Should().NotBeNullOrWhiteSpace();
+            code.Should().Be(code.ToLowerInvariant());
+            code.Should().NotContain(" ");
+            codes.Add(code);
+        }
+
+        codes.Should().OnlyHaveUniqueItems();
+        codes.Should().HaveCount(reasons.Length);
+        TapeTools.WireReason(TapeUnavailableReason.None).Should().Be("listening");
+        TapeTools.WireReason(TapeUnavailableReason.NeverStarted).Should().Be(TapeClosedReadReason.NeverStarted);
+        TapeTools.WireReason(TapeUnavailableReason.Reconnecting).Should().Be("reconnecting");
+        TapeTools.WireReason(TapeUnavailableReason.ConnectedButNotSubscribed)
+            .Should().Be("connected_but_not_subscribed");
+        TapeTools.WireReason(TapeUnavailableReason.Stopped).Should().Be("stopped");
+        TapeTools.WireReason(TapeUnavailableReason.HeldByAnotherRecorder)
+            .Should().Be(TapeClosedReadReason.HeldByAnotherRecorder);
+        TapeTools.WireReason(TapeUnavailableReason.ClaimTakenOver).Should().Be("claim_taken_over");
+        TapeTools.WireReason(TapeUnavailableReason.ClaimLapsed).Should().Be("claim_lapsed");
+        TapeTools.WireReason(TapeUnavailableReason.StoppedForSessionConflict)
+            .Should().Be("stopped_for_session_conflict");
     }
 
     [Fact]
@@ -698,7 +800,10 @@ public sealed class FootprintAndVolumeProfileToolTests : IDisposable
         (await call.Should().ThrowAsync<McpException>()).WithMessage(explanation);
     }
 
-    private TapeTools ToolsOver(TapeAvailabilityHolder tape, VolumeProfileService profiles)
+    private TapeTools ToolsOver(
+        TapeAvailabilityHolder tape,
+        VolumeProfileService profiles,
+        VolumeFrontReader? front = null)
     {
         IOptions<MarketDataOptions> options = Options.Create(new MarketDataOptions
         {
@@ -716,9 +821,49 @@ public sealed class FootprintAndVolumeProfileToolTests : IDisposable
             new ToolGuards(options),
             tape,
             profiles,
-            new VolumeFrontReader(new TapeVolumeFrontService(_database, gateway, calendar)),
+            front ?? new VolumeFrontReader(new TapeVolumeFrontService(_database, gateway, calendar)),
             _footprints,
             _telemetry);
+    }
+
+    /// <summary>The first read is stdio. A second read is listening, which must not be the one used.</summary>
+    private sealed class FlippingHolder : TapeAvailabilityHolder
+    {
+        public int Reads { get; private set; }
+
+        public override TapeAvailability For(string instrument)
+        {
+            Reads++;
+            return Reads == 1
+                ? TapeAvailability.NeverStartedBecauseStdio()
+                : TapeAvailability.Listening();
+        }
+    }
+
+    /// <summary>The front month refuses after the cells are already in hand.</summary>
+    private sealed class RefusingFront : VolumeFrontReader
+    {
+        public RefusingFront()
+            : base(null!)
+        {
+        }
+
+        public override Task<ToolPayloads.VolumeFrontInfo> ReadAsync(
+            InstrumentId instrument,
+            CancellationToken cancellationToken,
+            DateTimeOffset? asOfUtc = null,
+            bool resolveGateway = true) =>
+            throw new McpException("The front month could not be read.");
+    }
+
+    private void WroteNothing()
+    {
+        foreach (EntityEntry entry in _database.ChangeTracker.Entries())
+        {
+            entry.State.Should().Be(
+                EntityState.Unchanged,
+                "a non-recorder aggregates in memory and saves nothing");
+        }
     }
 
     private static long Counted(MetricCollector<long> collector, string value) =>

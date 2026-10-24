@@ -1144,7 +1144,7 @@ chown `/data/tape-exports` to that user and then drop privileges (`RAILWAY_RUN_U
 is a skipped pass, not a crash and not a silent success.
 The committed compose file forwards the environment variables and does not mount the volume.
 
-**Drive is optional and additive** (`R-10.6`, [ADR-0025](adr/0025-drive-file-scope-for-tape-export.md)).
+**Drive is optional and additive** (`R-10.6`, [ADR-0026](adr/0026-drive-file-scope-for-tape-export.md)).
 `TapeExport__Drive__FolderId` plus a credential turn it on. Prefer
 `TapeExport__Drive__ServiceAccountJsonPath` (a mounted file). Inline
 `TapeExport__Drive__ServiceAccountJson` is visible to anyone who can inspect the container. Empty

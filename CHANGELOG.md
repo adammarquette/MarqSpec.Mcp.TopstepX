@@ -141,7 +141,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   place last, and a matching receipt hash is not read again. The export is additive: local rows, older
   generations, and Drive files are not deleted. Google Drive is a second copy, off unless
   `TapeExport__Drive__FolderId` and a service-account JSON or path are set. Prefer the path. Inline JSON
-  is visible to anyone who can inspect the container. The scope is `drive.file` (ADR-0025). The same
+  is visible to anyone who can inspect the container. The scope is `drive.file` (ADR-0026). The same
   identity updates one file. A transient failure backs off. A permanent failure is not retried and keeps
   the last file id. `TapeExportReceipts` records `pending`, `drive_disabled`, `uploaded`, or `failed`.
   `export-tape` and `import-tape` archive or restore one day

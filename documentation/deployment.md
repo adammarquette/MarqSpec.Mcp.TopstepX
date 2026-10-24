@@ -282,7 +282,7 @@ Files on the volume, one pair per contract per day for trades and coverage:
 `tape-coverage/`. Footprint cells have no contract column, so those files are
 `footprint-cells/{venue}/{instrument}/{resolution}/yyyy-MM-dd.vN.csv.gz` and `.parquet`. The manifest
 `manifests/yyyy-MM-dd.json` is written last and names one generation. Drive uses the `drive.file`
-scope ([ADR-0025](adr/0025-drive-file-scope-for-tape-export.md)). Create the folder with the service
+scope ([ADR-0026](adr/0026-drive-file-scope-for-tape-export.md)). Create the folder with the service
 account and set `TapeExport__Drive__FolderId` to that id. A repeat updates the stored file id and does
 not trash anything. A transient failure is retried with backoff. A permanent failure keeps the last
 good file id. `TapeExportReceipts` stores `pending`, `drive_disabled`, `uploaded`, or `failed`.

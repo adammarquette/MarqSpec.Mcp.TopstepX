@@ -1,4 +1,4 @@
-# ADR-0025: Tape export Drive uses the drive.file scope
+# ADR-0026: Tape export Drive uses the drive.file scope
 
 **Status:** Accepted · **Date:** 2026-10-24 · **Deciders:** Adam (operator)
 **Relates to:** PRD `R-10.6`, `R-10.7` · gh#755

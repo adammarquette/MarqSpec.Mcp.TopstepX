@@ -725,7 +725,7 @@ this requirement.** `Retention__*` is out of scope and needs its own ADR (gh#758
 - **R-10.6** Google Drive is a second copy of the same files. It runs only when
   `TapeExport__Drive__FolderId` and either `TapeExport__Drive__ServiceAccountJson` or
   `TapeExport__Drive__ServiceAccountJsonPath` are set. Otherwise it makes no network call. The OAuth
-  scope is `drive.file` ([ADR-0025](adr/0025-drive-file-scope-for-tape-export.md)). Prefer the path: a
+  scope is `drive.file` ([ADR-0026](adr/0026-drive-file-scope-for-tape-export.md)). Prefer the path: a
   mounted secret file. Inline JSON is visible to anyone who can inspect the container. The same
   identity updates one Drive file (`appProperties`, or the stored file id). Nothing is trashed. One
   identity is serialised with a session advisory lock on a dedicated connection. `pending` is committed

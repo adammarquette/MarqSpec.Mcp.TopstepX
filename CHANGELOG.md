@@ -39,6 +39,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   is `idempotency_key_too_long` and writes no row. Modify charges the full new size. When trading is enabled,
   an empty `Trading__AllowedAccountIds` fails startup. The kill switch still blocks cancel and close; that
   block is pending Adam's decision.
+
 - **Railway deploy template** (gh#758). `.railway/railway.ts` describes three image-sourced services:
   `postgres` (Timescale pg17, pinned by digest), a public OAuth `server`, and a private single-replica
   `recorder`. Both server roles run one pinned image, and `/health` reports its tag and digest. Production

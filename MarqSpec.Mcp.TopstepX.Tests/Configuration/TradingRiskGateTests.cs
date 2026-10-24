@@ -562,15 +562,122 @@ public sealed class TradingRiskGateTests
         _daily.LockAcquisitions.Should().Be(1);
     }
 
+    [Fact]
+    public async Task TradingRiskGate_GatewayRefusal_ReplaysAsTheRefusal_NotOutcomeUnknown()
+    {
+        _gateway.PlaceOrderResult = ExecutionWriteResultFactory.GateRefused(
+            TradingExecutionRefusal.KillSwitchEngaged);
+        TradingRiskGate gate = Gate(new TradingExecutionOptions { Enabled = true });
+        ExecutionPlaceOrderCommand command = SamplePlace(PracticeAccountId);
+        TradingRiskAttemptContext context = new(DryRun: false, IdempotencyKey: "refused-key");
+
+        TradingRiskGateResult first = await gate.SubmitPlace(command, context, CancellationToken.None);
+        _gateway.PlaceOrderResult = ExecutionWriteResultFactory.Acknowledged(99);
+        TradingRiskGate restarted = Gate(new TradingExecutionOptions { Enabled = true });
+        TradingRiskGateResult replay = await restarted.SubmitPlace(command, context, CancellationToken.None);
+
+        first.Outcome.Should().Be(TradingAttemptOutcome.Refused);
+        first.Refusal!.Value.Code.Should().Be(TradingExecutionRefusal.KillSwitchEngaged.Code);
+        replay.Outcome.Should().Be(TradingAttemptOutcome.Refused);
+        replay.IsReplay.Should().BeTrue();
+        replay.IsRetrySafe.Should().BeTrue();
+        replay.Refusal!.Value.Code.Should().Be(TradingExecutionRefusal.KillSwitchEngaged.Code);
+        _gateway.PlaceOrderCalls.Should().Be(1);
+    }
+
+    [Fact]
+    public async Task TradingRiskGate_DisablingDuringTheAccountRead_WritesNoAuditRow()
+    {
+        ReplaceableOptions bound = new(new TradingExecutionOptions { Enabled = true });
+        TradingRiskGate gate = Gate(
+            bound.Current,
+            bound: bound,
+            onAccounts: () => bound.Current = new TradingExecutionOptions { Enabled = false });
+
+        TradingRiskGateResult result = await gate.SubmitPlace(
+            SamplePlace(PracticeAccountId),
+            new TradingRiskAttemptContext(DryRun: false, IdempotencyKey: "flipped-key"),
+            CancellationToken.None);
+
+        result.Outcome.Should().Be(TradingAttemptOutcome.Refused);
+        result.Refusal!.Value.Code.Should().Be(TradingExecutionRefusal.TradingDisabled.Code);
+        result.IsRetrySafe.Should().BeTrue();
+        _audit.Entries.Should().BeEmpty();
+        _gateway.PlaceOrderCalls.Should().Be(0);
+    }
+
+    [Fact]
+    public async Task TradingRiskGate_DisablingAfterTheClaim_RecordsTheRefusal_AndDoesNotSend()
+    {
+        ReplaceableOptions bound = new(new TradingExecutionOptions { Enabled = true });
+        _audit.AfterClaim = () => bound.Current = new TradingExecutionOptions { Enabled = false };
+        TradingRiskGate gate = Gate(bound.Current, bound: bound);
+        ExecutionPlaceOrderCommand command = SamplePlace(PracticeAccountId);
+        TradingRiskAttemptContext context = new(DryRun: false, IdempotencyKey: "claimed-then-off");
+
+        TradingRiskGateResult first = await gate.SubmitPlace(command, context, CancellationToken.None);
+        bound.Current = new TradingExecutionOptions { Enabled = true };
+        TradingRiskGateResult replay = await gate.SubmitPlace(command, context, CancellationToken.None);
+
+        first.Outcome.Should().Be(TradingAttemptOutcome.Refused);
+        first.Refusal!.Value.Code.Should().Be(TradingExecutionRefusal.TradingDisabled.Code);
+        replay.Outcome.Should().Be(TradingAttemptOutcome.Refused);
+        replay.IsReplay.Should().BeTrue();
+        replay.IsRetrySafe.Should().BeTrue();
+        _gateway.PlaceOrderCalls.Should().Be(0);
+        _audit.Entries.Should().Contain(entry => entry.Outcome == TradingAuditOutcomes.Unknown);
+        _audit.Entries.Should().Contain(entry =>
+            entry.Outcome == TradingAuditOutcomes.Refused
+            && entry.VenueErrorCode == TradingExecutionRefusal.TradingDisabled.Code);
+        _audit.Entries.Should().NotContain(entry => entry.Outcome == TradingAuditOutcomes.Attempted);
+    }
+
+    [Fact]
+    public async Task TradingRiskGate_AttemptedWriteFailure_IsARetryableRefusal_AndDoesNotSend()
+    {
+        _audit.ThrowOnAttempted = true;
+        TradingRiskGate gate = Gate(new TradingExecutionOptions { Enabled = true });
+
+        TradingRiskGateResult result = await gate.SubmitPlace(
+            SamplePlace(PracticeAccountId),
+            new TradingRiskAttemptContext(DryRun: false, IdempotencyKey: "attempted-fault"),
+            CancellationToken.None);
+
+        result.Outcome.Should().Be(TradingAttemptOutcome.Refused);
+        result.IsRetrySafe.Should().BeTrue();
+        result.Refusal!.Value.Code.Should().Be(ExecutionWriteRefusal.Error);
+        _gateway.PlaceOrderCalls.Should().Be(0);
+        _audit.Entries.Should().NotContain(entry => entry.Outcome == TradingAuditOutcomes.Attempted);
+    }
+
+    [Fact]
+    public async Task TradingRiskGate_Modify_ChargesTheFullNewSize()
+    {
+        _gateway.PlaceOrderResult = ExecutionWriteResultFactory.Acknowledged(1);
+        TradingRiskGate gate = Gate(
+            new TradingExecutionOptions { Enabled = true },
+            orders: [OpenOrder(1, MesContract)]);
+
+        await gate.SubmitModify(
+            new ExecutionModifyOrderCommand(PracticeAccountId, 1, Size: 4, LimitPrice: null, StopPrice: null),
+            new TradingRiskAttemptContext(DryRun: false, IdempotencyKey: "modify-size"),
+            CancellationToken.None);
+
+        _audit.Entries.Should().Contain(entry =>
+            entry.Outcome == TradingAuditOutcomes.Attempted && entry.ContractCount == 4);
+    }
+
     private TradingRiskGate Gate(
         TradingExecutionOptions options,
         IReadOnlyList<VenueAccount>? accounts = null,
         IReadOnlyList<VenueOrder>? orders = null,
-        string instruments = "MES")
+        string instruments = "MES",
+        IOptions<TradingExecutionOptions>? bound = null,
+        Action? onAccounts = null)
     {
         ProjectXAccountStageResolver stageResolver = new();
         TradingExecutionGate executionGate = new(
-            Options.Create(options),
+            bound ?? Options.Create(options),
             _killSwitch,
             stageResolver);
         InstrumentRegistry registry = new(Options.Create(new MarketDataOptions { Instruments = instruments }));
@@ -581,7 +688,7 @@ public sealed class TradingRiskGateTests
         return new TradingRiskGate(
             executionGate,
             _gateway,
-            new StubMarketDataGateway(resolvedAccounts, orders ?? []),
+            new StubMarketDataGateway(resolvedAccounts, orders ?? [], onAccounts),
             stageResolver,
             _unknownSignal,
             _daily,
@@ -639,15 +746,25 @@ public sealed class TradingRiskGateTests
         public bool IsEngaged { get; set; }
     }
 
+    private sealed class ReplaceableOptions(TradingExecutionOptions initial) : IOptions<TradingExecutionOptions>
+    {
+        public TradingExecutionOptions Current { get; set; } = initial;
+
+        public TradingExecutionOptions Value => Current;
+    }
+
     private sealed class StubMarketDataGateway(
         IReadOnlyList<VenueAccount> accounts,
-        IReadOnlyList<VenueOrder> orders) : IMarketDataGateway
+        IReadOnlyList<VenueOrder> orders,
+        Action? onAccounts = null) : IMarketDataGateway
     {
         public string VenueId => "stub";
 
         public Task<IReadOnlyList<VenueAccount>> GetAccountsAsync(bool onlyActive, CancellationToken cancellationToken)
         {
             _ = onlyActive;
+            _ = cancellationToken;
+            onAccounts?.Invoke();
             return Task.FromResult(accounts);
         }
 
@@ -771,8 +888,17 @@ public sealed class TradingRiskGateTests
     {
         public List<RecordedAudit> Entries { get; } = [];
 
+        public Action? AfterClaim { get; set; }
+
+        public bool ThrowOnAttempted { get; set; }
+
         public Task WriteAsync(TradingAuditWriteRequest request, CancellationToken cancellationToken)
         {
+            if (ThrowOnAttempted && request.Outcome == TradingAuditOutcomes.Attempted)
+            {
+                throw new Microsoft.EntityFrameworkCore.DbUpdateException("the attempted row was not stored");
+            }
+
             Entries.Add(new RecordedAudit(request, cancellationToken == CancellationToken.None));
             return Task.CompletedTask;
         }
@@ -800,6 +926,7 @@ public sealed class TradingRiskGateTests
                 OrderId = null,
             };
             Entries.Add(new RecordedAudit(claim, cancellationToken == CancellationToken.None));
+            AfterClaim?.Invoke();
             return Task.FromResult(TradingAuditClaimResult.Claimed());
         }
     }

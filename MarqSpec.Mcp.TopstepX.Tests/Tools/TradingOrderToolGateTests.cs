@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Net.Http;
 using System.Reflection;
 using FluentAssertions;
 using MarqSpec.Mcp.TopstepX.Configuration;
@@ -30,6 +31,7 @@ public sealed class TradingOrderToolGateTests
     private readonly CountingGateway _gateway = new();
     private readonly RecordingAuditLog _audit = new();
     private readonly FakeDailyCapCoordinator _daily = new();
+    private Exception? _accountsFailure;
 
     public static TheoryData<string> EveryOrderTool()
     {
@@ -292,6 +294,114 @@ public sealed class TradingOrderToolGateTests
         _gateway.PlaceOrderCalls.Should().Be(1);
     }
 
+    [Fact]
+    public async Task TradingRiskGate_PlaceOrder_ThrowingSend_ReturnsStructuredOutcomeUnknown()
+    {
+        _gateway.PlaceException = new InvalidOperationException("the socket timed out after the send");
+        using HostTelemetry telemetry = new();
+        TradingOrderTools tools = Tools(telemetry, new TradingExecutionOptions { Enabled = true });
+
+        ToolPayloads.TradingWriteResult result = await tools.SubmitPlace(
+            PracticeAccountId,
+            MesContract,
+            ExecutionOrderType.Market,
+            VenueSide.Buy,
+            1,
+            "send-threw");
+
+        result.Status.Should().Be(nameof(TradingAttemptOutcome.Unknown));
+        result.RetrySafety.Should().Be(ToolPayloads.TradingRetrySafety.OutcomeUnknown);
+        result.RefusalCode.Should().BeNull();
+        _gateway.PlaceOrderCalls.Should().Be(1);
+    }
+
+    [Fact]
+    public async Task TradingRiskGate_PlaceOrder_AuditWriteAfterAck_ReturnsStructuredOutcomeUnknown()
+    {
+        _gateway.Next = Acknowledged(77);
+        _audit.ThrowOnLiveWrite = true;
+        using HostTelemetry telemetry = new();
+        TradingOrderTools tools = Tools(telemetry, new TradingExecutionOptions { Enabled = true });
+
+        ToolPayloads.TradingWriteResult result = await tools.SubmitPlace(
+            PracticeAccountId,
+            MesContract,
+            ExecutionOrderType.Market,
+            VenueSide.Buy,
+            1,
+            "ack-then-audit");
+
+        result.Status.Should().Be(nameof(TradingAttemptOutcome.Unknown));
+        result.RetrySafety.Should().Be(ToolPayloads.TradingRetrySafety.OutcomeUnknown);
+        result.OrderId.Should().BeNull();
+        _gateway.PlaceOrderCalls.Should().Be(1);
+        _audit.Entries.Should().NotContain(entry => entry.Outcome == TradingAuditOutcomes.Live);
+    }
+
+    [Fact]
+    public async Task TradingRiskGate_PlaceOrder_VenueReadBeforeSend_IsARetryableError()
+    {
+        _accountsFailure = new VenueException("the account list did not answer");
+        using HostTelemetry telemetry = new();
+        TradingOrderTools tools = Tools(telemetry, new TradingExecutionOptions { Enabled = true });
+
+        ToolPayloads.TradingWriteResult result = await tools.SubmitPlace(
+            PracticeAccountId,
+            MesContract,
+            ExecutionOrderType.Market,
+            VenueSide.Buy,
+            1,
+            "read-fault");
+
+        result.Status.Should().Be(nameof(TradingAttemptOutcome.Refused));
+        result.RetrySafety.Should().Be(ToolPayloads.TradingRetrySafety.SafeToRetry);
+        result.RefusalCode.Should().Be(ExecutionWriteRefusal.Error);
+        _audit.Entries.Should().BeEmpty();
+        _gateway.PlaceOrderCalls.Should().Be(0);
+    }
+
+    [Fact]
+    public async Task TradingRiskGate_PlaceOrder_HttpFaultBeforeSend_IsAStructuredRetryableError()
+    {
+        _accountsFailure = new HttpRequestException("the venue connection failed");
+        using HostTelemetry telemetry = new();
+        TradingOrderTools tools = Tools(telemetry, new TradingExecutionOptions { Enabled = true });
+
+        ToolPayloads.TradingWriteResult result = await tools.SubmitPlace(
+            PracticeAccountId,
+            MesContract,
+            ExecutionOrderType.Market,
+            VenueSide.Buy,
+            1,
+            "http-fault");
+
+        result.Status.Should().Be(nameof(TradingAttemptOutcome.Refused));
+        result.RetrySafety.Should().Be(ToolPayloads.TradingRetrySafety.SafeToRetry);
+        result.RefusalCode.Should().Be(ExecutionWriteRefusal.Error);
+        _gateway.PlaceOrderCalls.Should().Be(0);
+    }
+
+    [Fact]
+    public async Task TradingRiskGate_PlaceOrder_DatabaseFaultBeforeSend_IsAStructuredRetryableError()
+    {
+        _audit.ThrowBeforeClaim = true;
+        using HostTelemetry telemetry = new();
+        TradingOrderTools tools = Tools(telemetry, new TradingExecutionOptions { Enabled = true });
+
+        ToolPayloads.TradingWriteResult result = await tools.SubmitPlace(
+            PracticeAccountId,
+            MesContract,
+            ExecutionOrderType.Market,
+            VenueSide.Buy,
+            1,
+            "store-fault");
+
+        result.Status.Should().Be(nameof(TradingAttemptOutcome.Refused));
+        result.RetrySafety.Should().Be(ToolPayloads.TradingRetrySafety.SafeToRetry);
+        result.RefusalCode.Should().Be(ExecutionWriteRefusal.Error);
+        _gateway.PlaceOrderCalls.Should().Be(0);
+    }
+
     [Theory]
     [InlineData(0)]
     [InlineData(-2)]
@@ -418,6 +528,115 @@ public sealed class TradingOrderToolGateTests
         _gateway.PartialClosePositionCalls.Should().Be(0);
     }
 
+    [Theory]
+    [InlineData(0)]
+    [InlineData(-3)]
+    public async Task TradingRiskGate_PartialClose_RefusesANonPositiveSize_AndDoesNotLowerTheDailyCap(int size)
+    {
+        _daily.ContractsToday = 4;
+        using HostTelemetry telemetry = new();
+        TradingOrderTools tools = Tools(telemetry, new TradingExecutionOptions { Enabled = true });
+
+        ToolPayloads.TradingWriteResult result = await tools.SubmitPartialClose(
+            PracticeAccountId,
+            MesContract,
+            size,
+            "flat-size");
+
+        result.RefusalCode.Should().Be(ExecutionWriteRefusal.SizeNotPositive);
+        result.RetrySafety.Should().Be(ToolPayloads.TradingRetrySafety.SafeToRetry);
+        _audit.Entries.Should().BeEmpty();
+        _audit.Entries.Should().NotContain(entry => entry.ContractCount < 0);
+        _gateway.PartialClosePositionCalls.Should().Be(0);
+        _daily.LockAcquisitions.Should().Be(0);
+        _daily.ContractsToday.Should().Be(4);
+    }
+
+    [Fact]
+    public async Task TradingRiskGate_PlaceOrder_RefusesAnOverlongIdempotencyKey_BeforeAnyAuditRow()
+    {
+        using HostTelemetry telemetry = new();
+        TradingOrderTools tools = Tools(telemetry, new TradingExecutionOptions { Enabled = true });
+        string key = new('k', TradingAuditClaims.MaxKeyLength + 1);
+
+        ToolPayloads.TradingWriteResult result = await tools.SubmitPlace(
+            PracticeAccountId,
+            MesContract,
+            ExecutionOrderType.Market,
+            VenueSide.Buy,
+            1,
+            key);
+
+        result.RefusalCode.Should().Be(ExecutionWriteRefusal.IdempotencyKeyTooLong);
+        result.RetrySafety.Should().Be(ToolPayloads.TradingRetrySafety.SafeToRetry);
+        _audit.Entries.Should().BeEmpty();
+        _gateway.PlaceOrderCalls.Should().Be(0);
+    }
+
+    [Fact]
+    public void OrderToolDescriptions_WarnThatTheStakesAreReal_AndNameTheRealReadTools()
+    {
+        foreach (MethodInfo method in OrderMethods())
+        {
+            string description = method.GetCustomAttribute<System.ComponentModel.DescriptionAttribute>()!.Description;
+            description.Should().Contain("the stakes are real");
+            description.Should().Contain("get_orders");
+            description.Should().Contain("get_positions");
+            description.Should().Contain("get_trades");
+            description.Should().NotContain("list_open_orders");
+            description.Should().NotContain("list_positions");
+        }
+    }
+
+    [Fact]
+    public void EveryToolNamedInADescription_IsARegisteredTool()
+    {
+        List<MethodInfo> methods = [];
+        foreach (Type type in typeof(TradingOrderTools).Assembly.GetTypes().Where(type => type.IsClass))
+        {
+            methods.AddRange(type.GetMethods(BindingFlags.Public | BindingFlags.Instance | BindingFlags.DeclaredOnly)
+                .Where(method => method.GetCustomAttribute<McpServerToolAttribute>() is not null));
+        }
+
+        HashSet<string> registered = [];
+        List<string> descriptions = [];
+        foreach (MethodInfo method in methods)
+        {
+            McpServerTool tool = McpServerTool.Create(
+                method,
+                _ => throw new InvalidOperationException("description scan does not invoke the tool"),
+                new McpServerToolCreateOptions());
+            registered.Add(tool.ProtocolTool.Name);
+            if (tool.ProtocolTool.Description is { Length: > 0 } description)
+            {
+                descriptions.Add(description);
+            }
+
+            foreach (ParameterInfo parameter in method.GetParameters())
+            {
+                string? parameterDescription = parameter
+                    .GetCustomAttribute<System.ComponentModel.DescriptionAttribute>()?.Description;
+                if (parameterDescription is { Length: > 0 })
+                {
+                    descriptions.Add(parameterDescription);
+                }
+            }
+        }
+
+        System.Text.RegularExpressions.Regex names = new(
+            @"\b[a-z][a-z0-9]*(?:_[a-z0-9]+)+\b",
+            System.Text.RegularExpressions.RegexOptions.CultureInvariant);
+        foreach (string description in descriptions)
+        {
+            foreach (System.Text.RegularExpressions.Match match in names.Matches(description))
+            {
+                registered.Should().Contain(
+                    match.Value,
+                    because: "a description names " + match.Value + " and that tool must be registered");
+            }
+        }
+    }
+
     [Fact]
     public async Task TradingRiskGate_PlaceOrder_IncludesDryRunInTheRequestHash()
     {
@@ -521,7 +740,7 @@ public sealed class TradingOrderToolGateTests
         return new TradingRiskGate(
             executionGate,
             _gateway,
-            new StubMarketDataGateway(accounts, orders),
+            new StubMarketDataGateway(accounts, orders, () => _accountsFailure),
             stageResolver,
             new RecordingUnknownSignal(),
             _daily,
@@ -725,8 +944,17 @@ public sealed class TradingOrderToolGateTests
     {
         public List<TradingAuditWriteRequest> Entries { get; } = [];
 
+        public bool ThrowOnLiveWrite { get; set; }
+
+        public bool ThrowBeforeClaim { get; set; }
+
         public Task WriteAsync(TradingAuditWriteRequest request, CancellationToken cancellationToken)
         {
+            if (ThrowOnLiveWrite && request.Outcome == TradingAuditOutcomes.Live)
+            {
+                throw new Microsoft.EntityFrameworkCore.DbUpdateException("the audit write failed after the ack");
+            }
+
             Entries.Add(request);
             return Task.CompletedTask;
         }
@@ -735,6 +963,11 @@ public sealed class TradingOrderToolGateTests
             TradingAuditWriteRequest request,
             CancellationToken cancellationToken)
         {
+            if (ThrowBeforeClaim)
+            {
+                throw new Microsoft.EntityFrameworkCore.DbUpdateException("the store rejected the claim");
+            }
+
             _ = cancellationToken;
             return Task.FromResult(TradingAuditClaimMemory.TryClaim(Entries, request));
         }
@@ -765,14 +998,24 @@ public sealed class TradingOrderToolGateTests
 
     private sealed class StubMarketDataGateway(
         IReadOnlyList<VenueAccount> accounts,
-        IReadOnlyList<VenueOrder> orders) : IMarketDataGateway
+        IReadOnlyList<VenueOrder> orders,
+        Func<Exception?>? accountsFailure = null) : IMarketDataGateway
     {
         public string VenueId => "stub";
 
         public Task<IReadOnlyList<VenueAccount>> GetAccountsAsync(
             bool onlyActive,
-            CancellationToken cancellationToken) =>
-            Task.FromResult(accounts);
+            CancellationToken cancellationToken)
+        {
+            _ = onlyActive;
+            _ = cancellationToken;
+            if (accountsFailure?.Invoke() is Exception failure)
+            {
+                throw failure;
+            }
+
+            return Task.FromResult(accounts);
+        }
 
         public Task<IReadOnlyList<VenueContract>> ResolveContractsAsync(
             InstrumentId instrument,

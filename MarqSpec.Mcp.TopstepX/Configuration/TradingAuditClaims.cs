@@ -17,8 +17,8 @@ public enum TradingAuditClaimStatus
 /// <param name="Status">Whether this call owns the send.</param>
 /// <param name="ParsedStage">Stage stored on the claim, when replaying.</param>
 /// <param name="BestOutcome">
-/// <see cref="TradingAuditOutcomes.Live"/>, <see cref="TradingAuditOutcomes.Failed"/>, or
-/// <see cref="TradingAuditOutcomes.Unknown"/>.
+/// <see cref="TradingAuditOutcomes.Live"/>, <see cref="TradingAuditOutcomes.Failed"/>,
+/// <see cref="TradingAuditOutcomes.Refused"/>, or <see cref="TradingAuditOutcomes.Unknown"/>.
 /// </param>
 /// <param name="OrderId">Broker order id from a later <c>Live</c> row, when one was stored.</param>
 /// <param name="VenueErrorCode">Venue code from the best row, when one was stored.</param>
@@ -47,7 +47,8 @@ public sealed record TradingAuditClaimResult(
 /// The key is <c>(AccountId, Tool, IdempotencyKey)</c>. The same key on another account or another tool is a
 /// different claim. <see cref="MaxKeyLength"/> matches the <c>IdempotencyKey</c> column. A pre-send row with
 /// outcome <see cref="TradingAuditOutcomes.Unknown"/> is the claim; a later <c>Live</c> or <c>Failed</c> row
-/// is what a replay prefers. Refusals and previews are not claims.
+/// is what a replay prefers. A <c>Refused</c> row recorded after that claim is preferred over the bare
+/// <c>Unknown</c> row, so a refusal is not replayed as an unknown transmit. Previews are not claims.
 /// </remarks>
 public static class TradingAuditClaims
 {
@@ -98,6 +99,18 @@ public static class TradingAuditClaims
                 TradingAuditOutcomes.Failed,
                 OrderId: null,
                 failed.VenueErrorCode);
+        }
+
+        TradingAuditWriteRequest? refused = matches.LastOrDefault(
+            row => row.Outcome == TradingAuditOutcomes.Refused);
+        if (refused is not null)
+        {
+            return new TradingAuditClaimResult(
+                TradingAuditClaimStatus.Replay,
+                refused.ParsedStage,
+                TradingAuditOutcomes.Refused,
+                OrderId: null,
+                refused.VenueErrorCode);
         }
 
         return new TradingAuditClaimResult(

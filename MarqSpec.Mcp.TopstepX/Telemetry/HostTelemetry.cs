@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Diagnostics.Metrics;
+using MarqSpec.Mcp.TopstepX.Configuration;
 using MarqSpec.Mcp.TopstepX.MarketData;
 
 namespace MarqSpec.Mcp.TopstepX.Telemetry;
@@ -633,22 +634,26 @@ public static class VenueOperation
 }
 
 /// <summary>Which venue write a gated execution call was — separate from read vocabulary (gh#710).</summary>
+/// <remarks>
+/// The five names are defined once, on <see cref="TradingMcpTools"/>. These constants alias that definition
+/// so a telemetry tag and a published tool name cannot drift.
+/// </remarks>
 public static class ExecutionOperation
 {
     /// <summary>Placing an order.</summary>
-    public const string PlaceOrderOperation = "place_order";
+    public const string PlaceOrderOperation = TradingMcpTools.PlaceOrderOperation;
 
     /// <summary>Modifying an open order.</summary>
-    public const string ModifyOrderOperation = "modify_order";
+    public const string ModifyOrderOperation = TradingMcpTools.ModifyOrderOperation;
 
     /// <summary>Canceling an order.</summary>
-    public const string CancelOrderOperation = "cancel_order";
+    public const string CancelOrderOperation = TradingMcpTools.CancelOrderOperation;
 
     /// <summary>Flattening a position.</summary>
-    public const string ClosePositionOperation = "close_position";
+    public const string ClosePositionOperation = TradingMcpTools.ClosePositionOperation;
 
     /// <summary>Partially closing a position.</summary>
-    public const string PartialClosePositionOperation = "partial_close_position";
+    public const string PartialClosePositionOperation = TradingMcpTools.PartialClosePositionOperation;
 
     /// <summary>Every value.</summary>
     public static IReadOnlyList<string> All { get; } =
@@ -724,6 +729,9 @@ public static class ExecutionWriteRefusal
     /// <summary>The caller did not supply a usable idempotency key.</summary>
     public const string IdempotencyKeyRequired = "idempotency_key_required";
 
+    /// <summary>The idempotency key is longer than the audit column. Refused before any audit row.</summary>
+    public const string IdempotencyKeyTooLong = "idempotency_key_too_long";
+
     /// <summary>The idempotency key is already stored for a different request.</summary>
     public const string IdempotencyConflict = "idempotency_conflict";
 
@@ -762,6 +770,7 @@ public static class ExecutionWriteRefusal
             VenueRejected,
             OutcomeUnknown,
             IdempotencyKeyRequired,
+            IdempotencyKeyTooLong,
             IdempotencyConflict,
             SizeNotPositive,
             PriceRequired,

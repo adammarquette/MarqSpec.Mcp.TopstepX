@@ -1060,16 +1060,19 @@ gh#750). Each call goes through `TradingRiskGate`. The tool does not take the ve
 `IExecutionGateway`. `scripts/check-no-order-path.sh` was not given a new allowlist entry for them: the C#
 methods are named `Submit*` and the published names below are the MCP `Name`.
 
-**`Trading__Enabled` defaults to false.** A call while it is false refuses with `trading_disabled` before the
-vendor client is touched. That refusal writes no audit row, charges no daily cap and calls no gateway method.
+**`Trading__Enabled` defaults to false.** While it is false the five tools are not registered, so a model
+does not see them. A call that still reaches a method refuses with `trading_disabled` before the vendor
+client is touched. That refusal writes no audit row, charges no daily cap and calls no gateway method.
+The gate re-reads the flag during the call. A disable before the claim writes no row. A disable after the
+claim records the refusal and does not send.
 The kill switch refuses with `kill_switch` on the same five tools. Cancel and close have no carve-out.
 **Pending Adam:** that block stays until he decides whether a halt may still flatten. v1 does not add a carve-out.
 
 When `Trading__Enabled` is true, startup fails if `Trading__AllowedAccountIds` is empty.
 
 **These tools write on a live practice account and the stakes are real.** A non-practice account is refused.
-Use a fresh `idempotencyKey` for each order. never retry OutcomeUnknown; reconcile via list_open_orders,
-list_positions and recent trades (`get_orders`, `get_positions`, `get_trades`).
+Use a fresh `idempotencyKey` for each order. never retry OutcomeUnknown; reconcile via `get_orders`,
+`get_positions` and `get_trades`.
 
 **Every call emits the gate's telemetry.** The span is `execution.<tool>` and the counter is
 `mcp.execution.writes`, tagged `operation`, `refusal` and `replay`. A replay is `replay=true` and is not a
@@ -1081,24 +1084,32 @@ stored transmit and does not send again. The claim is the pre-send `Unknown` aud
 so a restart, a redeploy or another replica still sees it (gh#712). Only a transmit is stored. A refusal or
 a preview is not replayed: a `trading_disabled` refusal does not become a send after trading is enabled.
 The same key with a different request hash, including a different `dryRun`, is `idempotency_conflict` and
-does not transmit. A blank key, or one longer than 256 characters, is `idempotency_key_required`. The master
-switch is checked first, so a blank key while trading is disabled is `trading_disabled`. The claim is taken
-after that check.
+does not transmit. A blank key is `idempotency_key_required` and is audited. A key longer than 256
+characters is `idempotency_key_too_long` and writes no row. The master switch is checked first, so a blank
+or over-long key while trading is disabled is `trading_disabled`. The claim is taken after that check.
+A refusal recorded after the claim is what a later replay of that key returns.
 
-**`retrySafety` is the retry signal.** `SafeToRetry` is a refusal, a preview, or a venue rejection.
-`NotSafeToRetry` is a broker acknowledgment (`status: Live`). `OutcomeUnknown` is a transmit whose outcome
-could not be classified, including a throw from the venue and a broker success that carried no order id.
-A venue exception is that structured payload, not an error result. `Live` is only that acknowledgment.
+**`retrySafety` is the retry signal.** `SafeToRetry` is a refusal, a preview, a venue rejection, or a fault
+before the send. `NotSafeToRetry` is a broker acknowledgment (`status: Live`). `OutcomeUnknown` is returned
+only when the send may have happened: a throw from the send, an audit write that fails after an ack, or a
+broker success that carried no order id. A venue, HTTP or database fault that reaches the tool is a read
+from before the send, and it is a structured `error` with `SafeToRetry`, not a raw exception and not
+`OutcomeUnknown`. `Live` is only a broker acknowledgment.
 `refusalCode`, `resultCode` and `orderId` are omitted when the call has nothing to report
 for them — they are fields, so the test is key presence.
 
 **Validation runs before any audit row.** `size` must be greater than 0 (`size_not_positive`). A limit needs
 a positive `limitPrice`, a stop needs a positive `stopPrice`, a stop-limit needs both, and a trailing stop
 needs a positive `trailPrice` (`price_required`, `price_not_positive`). Any supplied price must be positive.
-`modify_order` runs the per-order and daily caps when `size` is supplied and does not treat a missing size
-as zero. `partial_close_position` is refused when `size` exceeds the open position
-(`partial_close_exceeds_position`). `accountId` is the venue id from `list_accounts`, and only a practice
-account is accepted.
+`modify_order` runs the per-order and daily caps when `size` is supplied, charges that full new size against
+the daily cap, and does not treat a missing size as zero. `partial_close_position` is refused when `size` is
+not positive or exceeds the open position (`size_not_positive`, `partial_close_exceeds_position`), before
+the cap, so a non-positive size cannot lower it. `accountId` is the venue id from `list_accounts`, and only
+a practice account is accepted.
+
+**Which refusals write an audit row.** Validation refusals and `trading_disabled` before the claim write
+none. The kill switch, stage, allowlist, denylist, caps, a blank key, an idempotency conflict, a gateway
+refusal, and `trading_disabled` after the claim write `Refused`. A preview writes `Preview`.
 
 **`dryRun: true` runs the same gates and returns `Preview`.** It does not transmit.
 

@@ -32,8 +32,9 @@ namespace MarqSpec.Mcp.TopstepX.Configuration;
 /// request logs, so an operator can say who asked. On refusal, the method, the path and a fixed reason
 /// naming a claim. Method, path, the two scope values and the reason all pass through
 /// <see cref="LogText.Sanitize"/> — CR, LF, the other controls, the Unicode line separators, the bidi
-/// overrides and a literal backslash are escaped, the escaped text is capped, and the results are logged
-/// as structured parameters. A line break in any of them cannot open a second entry. <b>Never the token</b>:
+/// overrides, the invisible format marks, a lone surrogate and a literal backslash are escaped, the escaped
+/// text is capped, and the results are logged as structured parameters. A line break in any of them cannot
+/// open a second entry. <b>Never the token</b>:
 /// <c>SaveToken</c> is off so it is not retained on the authentication properties either, and THIS REPOSITORY
 /// IS PUBLIC.
 /// </para>

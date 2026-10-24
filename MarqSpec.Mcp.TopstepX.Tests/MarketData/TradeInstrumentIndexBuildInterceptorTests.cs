@@ -146,6 +146,122 @@ public sealed class TradeInstrumentIndexBuildInterceptorTests
         act.Should().Throw<OutOfMemoryException>();
     }
 
+    [Fact]
+    public async Task CommandFailedAsync_WhenTheBuildFails_CopiesTheCommandTimeoutOntoTheUnlock()
+    {
+        using ScriptedConnection connection = new() { Scalar = false };
+        using ScriptedCommand command = new(connection)
+        {
+            CommandText = "CALL public.marqspec_build_ix_trades_instrument_time();",
+            CommandTimeout = 123,
+        };
+
+        await new TradeInstrumentIndexBuildInterceptor().CommandFailedAsync(command, Error(command, context: null));
+
+        connection.Created.Should().ContainSingle();
+        connection.Created[0].CommandTimeout.Should().Be(123);
+        connection.Created[0].CommandText.Should().Be(TradeInstrumentIndexBuildInterceptor.ReleaseLockSql);
+    }
+
+    [Fact]
+    public async Task CommandFailedAsync_WhenTheUnlockThrows_LogsAndLeavesTheOriginalError()
+    {
+        UnlockFailure failure = new("the server is gone");
+        using ScriptedConnection connection = new() { ScalarFailure = failure };
+        using ScriptedCommand command = new(connection)
+        {
+            CommandText = TradeInstrumentIndexBuildInterceptor.PerChunkMarker,
+            CommandTimeout = 123,
+        };
+        CollectingLoggerProvider provider = new();
+        using ILoggerFactory factory = LoggerFactory.Create(builder => builder.AddProvider(provider));
+        using TopstepXDbContext context = new(new DbContextOptionsBuilder<TopstepXDbContext>()
+            .UseInMemoryDatabase(Guid.NewGuid().ToString())
+            .UseLoggerFactory(factory)
+            .Options);
+
+        Func<Task> act = () => new TradeInstrumentIndexBuildInterceptor().CommandFailedAsync(
+            command,
+            Error(command, context, new InvalidOperationException("the build failed")));
+
+        await act.Should().NotThrowAsync();
+        connection.Created.Should().ContainSingle().Which.CommandTimeout.Should().Be(123);
+        provider.Lines.Should().Contain(line =>
+            line.Level == LogLevel.Warning
+            && line.Exception == failure
+            && line.Message.Contains("was not released", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task CommandFailedAsync_WhenNoLoggerIsRegistered_StillLeavesTheOriginalError()
+    {
+        using ScriptedConnection connection = new() { ScalarFailure = new UnlockFailure("the server is gone") };
+        using ScriptedCommand command = new(connection)
+        {
+            CommandText = TradeInstrumentIndexBuildInterceptor.PerChunkMarker,
+            CommandTimeout = 123,
+        };
+
+        Func<Task> act = () => new TradeInstrumentIndexBuildInterceptor().CommandFailedAsync(
+            command,
+            Error(command, context: null));
+
+        await act.Should().NotThrowAsync();
+    }
+
+    [Fact]
+    public async Task CommandFailedAsync_WhenTheUnlockIsCancelled_DoesNotSwallowTheCancellation()
+    {
+        using ScriptedConnection connection = new() { ScalarFailure = new OperationCanceledException("stop") };
+        using ScriptedCommand command = new(connection)
+        {
+            CommandText = TradeInstrumentIndexBuildInterceptor.PerChunkMarker,
+        };
+
+        Func<Task> act = () => new TradeInstrumentIndexBuildInterceptor().CommandFailedAsync(
+            command,
+            Error(command, context: null));
+
+        await act.Should().ThrowAsync<OperationCanceledException>();
+    }
+
+    [Fact]
+    public async Task CommandFailedAsync_WhenTheUnlockFailsFatally_DoesNotSwallowIt()
+    {
+        using ScriptedConnection connection = new() { ScalarFailure = new OutOfMemoryException("unlock") };
+        using ScriptedCommand command = new(connection)
+        {
+            CommandText = TradeInstrumentIndexBuildInterceptor.PerChunkMarker,
+        };
+
+        Func<Task> act = () => new TradeInstrumentIndexBuildInterceptor().CommandFailedAsync(
+            command,
+            Error(command, context: null));
+
+        await act.Should().ThrowAsync<OutOfMemoryException>();
+    }
+
+    [Fact]
+    public async Task CommandFailedAsync_WhenWritingTheUnlockWarningThrows_LeavesTheOriginalError()
+    {
+        using ScriptedConnection connection = new() { ScalarFailure = new UnlockFailure("the server is gone") };
+        using ScriptedCommand command = new(connection)
+        {
+            CommandText = TradeInstrumentIndexBuildInterceptor.PerChunkMarker,
+        };
+        using ILoggerFactory factory = LoggerFactory.Create(builder => builder.AddProvider(new ThrowingLoggerProvider()));
+        using TopstepXDbContext context = new(new DbContextOptionsBuilder<TopstepXDbContext>()
+            .UseInMemoryDatabase(Guid.NewGuid().ToString())
+            .UseLoggerFactory(factory)
+            .Options);
+
+        Func<Task> act = () => new TradeInstrumentIndexBuildInterceptor().CommandFailedAsync(
+            command,
+            Error(command, context, new InvalidOperationException("the build failed")));
+
+        await act.Should().NotThrowAsync();
+    }
+
     private static CommandErrorEventData Error(DbCommand command, DbContext? context, Exception? original = null) =>
         new(
             new StubEventDefinition(),
@@ -189,6 +305,36 @@ public sealed class TradeInstrumentIndexBuildInterceptorTests
     }
 
     private sealed class UnlockFailure(string message) : DbException(message);
+
+    private sealed class ThrowingLoggerProvider : ILoggerProvider
+    {
+        public ILogger CreateLogger(string categoryName) => new Logger();
+
+        public void Dispose()
+        {
+        }
+
+        private sealed class Logger : ILogger
+        {
+            public IDisposable? BeginScope<TState>(TState state)
+                where TState : notnull => null;
+
+            public bool IsEnabled(LogLevel logLevel) => true;
+
+            public void Log<TState>(
+                LogLevel logLevel,
+                EventId eventId,
+                TState state,
+                Exception? exception,
+                Func<TState, Exception?, string> formatter)
+            {
+                if (formatter(state, exception).Contains("was not released", StringComparison.Ordinal))
+                {
+                    throw new InvalidOperationException("the unlock warning could not be written");
+                }
+            }
+        }
+    }
 
     private sealed class CollectingLoggerProvider : ILoggerProvider
     {

@@ -27,9 +27,10 @@ namespace MarqSpec.Mcp.TopstepX.Data;
 /// probe and the unlock copy the migration command's timeout, so they are not left on Npgsql's 30-second
 /// default. An unlock that throws <see cref="DbException"/>, <see cref="InvalidOperationException"/>, or
 /// <see cref="TimeoutException"/> is logged and swallowed, so the original command error stays the one
-/// <c>CommandFailed</c> reports. <see cref="OperationCanceledException"/> and fatal exceptions propagate.
-/// When the context has no <see cref="ILoggerFactory"/>, or resolving one throws, the warning goes to
-/// <see cref="NullLogger"/> and is not rethrown.
+/// <c>CommandFailed</c> reports. <see cref="OperationCanceledException"/> and fatal exceptions are not in
+/// that set, so they propagate. When the context has no <see cref="ILoggerFactory"/>, the warning goes to
+/// <see cref="NullLogger"/>. Any failure while resolving that logger or writing the warning is discarded.
+/// It must not replace the command error.
 /// </para>
 /// </remarks>
 internal sealed class TradeInstrumentIndexBuildInterceptor : DbCommandInterceptor
@@ -154,33 +155,32 @@ internal sealed class TradeInstrumentIndexBuildInterceptor : DbCommandIntercepto
     }
 
     /// <summary>
-    /// Database, state, and timeout failures are recoverable here. Cancellation is not: it has to stay
-    /// visible. Fatal exceptions are not in this set, so they are not swallowed either.
+    /// Database, state, and timeout failures are recoverable here. Cancellation and fatal exceptions are
+    /// outside this set, so they propagate.
     /// </summary>
     private static bool IsRecoverableUnlockFailure(Exception exception) =>
-        exception is DbException or InvalidOperationException or TimeoutException
-        && exception is not OperationCanceledException;
+        exception is DbException or InvalidOperationException or TimeoutException;
 
     private static void LogUnlockFailure(CommandErrorEventData eventData, Exception exception)
     {
-        // No logger is an explicit NullLogger, not a swallowed warning. Resolving one must not replace
-        // the command error, so a failure there keeps the same fallback.
-        ILogger logger = NullLogger<TradeInstrumentIndexBuildInterceptor>.Instance;
+        // No logger is an explicit NullLogger. Anything thrown while resolving or writing the warning is
+        // discarded: CommandFailed has to keep reporting the original command error.
         try
         {
+            ILogger logger = NullLogger<TradeInstrumentIndexBuildInterceptor>.Instance;
             ILoggerFactory? factory = eventData.Context?.GetService<ILoggerFactory>();
             if (factory is not null)
             {
                 logger = factory.CreateLogger<TradeInstrumentIndexBuildInterceptor>();
             }
-        }
-        catch (Exception resolveFailure) when (resolveFailure is InvalidOperationException or ObjectDisposedException)
-        {
-            logger = NullLogger<TradeInstrumentIndexBuildInterceptor>.Instance;
-        }
 
-        logger.LogWarning(
-            exception,
-            "The trade index build lock was not released. The original command error is unchanged.");
+            logger.LogWarning(
+                exception,
+                "The trade index build lock was not released. The original command error is unchanged.");
+        }
+        catch (Exception)
+        {
+            // See the remarks. A log failure must not become the exception startup records.
+        }
     }
 }

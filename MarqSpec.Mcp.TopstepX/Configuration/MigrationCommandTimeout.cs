@@ -10,6 +10,13 @@ namespace MarqSpec.Mcp.TopstepX.Configuration;
 internal static class MigrationCommandTimeout
 {
     /// <summary>
+    /// Receives the token <see cref="ApplyAsync"/> was called with. Null except in a test that checks
+    /// <c>Program.MigrateAsync</c> passed the host stopping token through. A call that omits the token
+    /// delivers <see cref="CancellationToken.None"/> here.
+    /// </summary>
+    internal static Action<CancellationToken>? AppliedTokenObserver { get; set; }
+
+    /// <summary>
     /// Runs <c>MigrateAsync</c> with <paramref name="commandTimeoutSeconds"/> on every command, then puts
     /// the previous timeout back, including when <c>MigrateAsync</c> throws.
     /// </summary>
@@ -23,6 +30,8 @@ internal static class MigrationCommandTimeout
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(database);
+
+        AppliedTokenObserver?.Invoke(cancellationToken);
 
         int? previous = database.GetCommandTimeout();
         database.SetCommandTimeout(commandTimeoutSeconds);

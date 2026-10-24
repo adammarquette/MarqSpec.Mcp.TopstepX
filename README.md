@@ -226,9 +226,10 @@ refusal at the point of use ([ADR-0007](documentation/adr/0007-dual-transport.md
 hypertable: the command is cancelled, the invalid index is dropped, and the next start builds it again under
 the same cap. The previous timeout is restored after the migration, including when it throws. Values outside
 `1..604800` are refused. `604800` is a typo guard. `0` is refused on purpose — Npgsql treats it as no
-timeout. On Railway a missed healthcheck fails that deploy and leaves the previous deployment running,
-because this migration runs before the process listens. The timeout will come from PR #774
-([`documentation/deployment.md`](documentation/deployment.md)).
+timeout. On Railway a missed healthcheck stops the failed container and marks the deploy failed, while the
+previous deployment keeps serving, because this migration runs before the process listens. Set
+`RAILWAY_HEALTHCHECK_TIMEOUT_SEC` to cover the build. Once a Railway config is present, its healthcheck
+timeout is that same setting ([`documentation/deployment.md`](documentation/deployment.md)).
 
 Two things this recipe deliberately does **not** carry over from `docker compose up`:
 

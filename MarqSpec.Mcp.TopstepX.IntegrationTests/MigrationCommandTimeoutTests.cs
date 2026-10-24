@@ -1,8 +1,10 @@
 using System.Data.Common;
 using System.Diagnostics;
+using System.Reflection;
 using FluentAssertions;
 using MarqSpec.Mcp.TopstepX.Configuration;
 using MarqSpec.Mcp.TopstepX.Data;
+using MarqSpec.Mcp.TopstepX.Data.Migrations;
 using MarqSpec.Mcp.TopstepX.MarketData;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.EntityFrameworkCore;
@@ -126,7 +128,7 @@ public sealed class MigrationCommandTimeoutTests
         await using (TopstepXDbContext prepared = await _fixture.CreateEmptyDatabaseAsync(name))
         {
             await prepared.GetService<IMigrator>()
-                .MigrateAsync("20261024022446_AddTradingAuditIdempotencyClaim");
+                .MigrateAsync(MigrationBeforeTheInstrumentTimeIndex());
         }
 
         FailTheIndexBuild fail = new();
@@ -143,6 +145,49 @@ public sealed class MigrationCommandTimeoutTests
         await act.Should().ThrowAsync<PostgresException>().Where(exception => exception.SqlState == "22012");
         fail.RewroteTheBuild.Should().BeTrue();
         database.Database.GetCommandTimeout().Should().Be(7);
+    }
+
+    [Fact]
+    public async Task MigrateAsync_WhenTheStoreAnswers_PassesTheHostStoppingToken()
+    {
+        WebApplicationBuilder builder = WebApplication.CreateBuilder();
+        StripAmbientEnvironment(builder);
+        builder.Configuration.AddInMemoryCollection(new Dictionary<string, string?>
+        {
+            ["ConnectionStrings:Default"] = _fixture.ConnectionString,
+            ["Mcp:Transport"] = "Stdio",
+        });
+        Program.ConfigureServices(builder, new McpOptions { Transport = McpTransport.Stdio });
+        await using WebApplication app = builder.Build();
+
+        CancellationToken? applied = null;
+        MigrationCommandTimeout.AppliedTokenObserver = token => applied = token;
+        try
+        {
+            StoreAvailability availability = await Program.MigrateAsync(app);
+            availability.IsAvailable.Should().BeTrue();
+        }
+        finally
+        {
+            MigrationCommandTimeout.AppliedTokenObserver = null;
+        }
+
+        applied.Should().Be(app.Lifetime.ApplicationStopping);
+    }
+
+    private static string MigrationBeforeTheInstrumentTimeIndex()
+    {
+        IReadOnlyList<string> ids = typeof(AddTradeInstrumentTimeIndex).Assembly
+            .GetTypes()
+            .Select(type => type.GetCustomAttribute<MigrationAttribute>())
+            .Where(attribute => attribute is not null)
+            .Select(attribute => attribute!.Id)
+            .Order(StringComparer.Ordinal)
+            .ToList();
+        int index = ids.ToList().FindIndex(id =>
+            id.EndsWith("AddTradeInstrumentTimeIndex", StringComparison.Ordinal));
+        index.Should().BeGreaterThan(0);
+        return ids[index - 1];
     }
 
     private static void StripAmbientEnvironment(WebApplicationBuilder builder)

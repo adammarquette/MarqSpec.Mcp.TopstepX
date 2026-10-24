@@ -18,7 +18,9 @@ namespace MarqSpec.Mcp.TopstepX.Configuration;
 /// <see cref="TradingAuditOutcomes.Unknown"/> row, unique per account, tool and key, is written before the
 /// send so a throw or a lost acknowledgment cannot be retried into a second send. A refusal recorded after
 /// that claim is what a replay returns. <see cref="TradingAttemptOutcome.Unknown"/> is returned only when
-/// the send may already have happened.
+/// the send may already have happened. Once the send has started, a later throw — including a daily-cap
+/// unlock or a telemetry listener — is <see cref="TradingAttemptOutcome.Unknown"/>, never a retry. Only
+/// <see cref="GateRefusedBeforeSendException"/> leaves this type for a fault from before the send.
 /// </remarks>
 public sealed class TradingRiskGate
 {
@@ -32,6 +34,12 @@ public sealed class TradingRiskGate
     private readonly TradingContractDenylist _contractDenylist;
     private readonly TradingWriteVenueAccountCache _accountCache;
     private readonly HostTelemetry _telemetry;
+
+    /// <summary>Set immediately before the vendor send. Cleared at the start of each call.</summary>
+    private bool _sendStarted;
+
+    /// <summary>Set when a test double's lock throws on dispose. The production lock does not throw.</summary>
+    private bool _leaseReleaseFailed;
 
     /// <summary>Creates the risk gate.</summary>
     public TradingRiskGate(
@@ -108,27 +116,59 @@ public sealed class TradingRiskGate
         Func<Task<TradingRiskGateResult>> body)
     {
         _accountCache.Clear();
-        using HostTelemetry.ExecutionWriteScope write = _telemetry.ExecutionWrite(operation);
+        _sendStarted = false;
+        _leaseReleaseFailed = false;
+        HostTelemetry.ExecutionWriteScope write = _telemetry.ExecutionWrite(operation);
+        TradingRiskGateResult result;
         try
         {
-            TradingRiskGateResult result = await body().ConfigureAwait(false);
-            if (result.IsReplay)
+            try
             {
-                write.MarkReplay();
-            }
+                result = await body().ConfigureAwait(false);
+                if (result.IsReplay)
+                {
+                    write.MarkReplay();
+                }
 
-            write.Outcome(ExecutionWriteRefusalForResult.For(result));
-            return result;
-        }
-        catch (Exception)
-        {
-            write.Outcome(ExecutionWriteRefusal.Error);
-            throw;
+                write.Outcome(ExecutionWriteRefusalForResult.For(result));
+            }
+            catch (VenueException exception) when (!_sendStarted)
+            {
+                // Named so the venue-failure walk sees a translation on this route. Before the send it is
+                // the same retryable fault as any other pre-send exception.
+                write.Outcome(ExecutionWriteRefusal.Error);
+                throw new GateRefusedBeforeSendException(exception);
+            }
+            catch (VenueException)
+            {
+                write.Outcome(ExecutionWriteRefusal.OutcomeUnknown);
+                result = UnknownTransmit(AccountStage.Unknown);
+            }
+            catch (Exception exception) when (!_sendStarted)
+            {
+                write.Outcome(ExecutionWriteRefusal.Error);
+                throw new GateRefusedBeforeSendException(exception);
+            }
+            catch (Exception)
+            {
+                // The send has started. Do not rethrow: the tool would otherwise have to guess, and a guess
+                // of SafeToRetry places a second live order.
+                write.Outcome(ExecutionWriteRefusal.OutcomeUnknown);
+                result = UnknownTransmit(AccountStage.Unknown);
+            }
         }
         finally
         {
+            write.Dispose();
             _accountCache.Clear();
         }
+
+        if (_sendStarted && write.BookkeepingFailed)
+        {
+            return UnknownTransmit(result.ParsedStage);
+        }
+
+        return result;
     }
 
     private async Task<TradingRiskGateResult> RunPlaceAsync(
@@ -211,39 +251,42 @@ public sealed class TradingRiskGate
                 cancellationToken).ConfigureAwait(false);
         }
 
-        await using (await _dailyCap.AcquireAccountDayLockAsync(command.AccountId, cancellationToken)
-                         .ConfigureAwait(false))
-        {
-            if (await RefuseDailyCapAsync(command.AccountId, command.Size, cancellationToken).ConfigureAwait(false)
-                is TradingExecutionRefusal daily)
+        return await WithDailyCapAsync(
+            command.AccountId,
+            stage,
+            async () =>
             {
-                return await AuditedUnlessTradingDisabledAsync(
+                if (await RefuseDailyCapAsync(command.AccountId, command.Size, cancellationToken)
+                        .ConfigureAwait(false) is TradingExecutionRefusal daily)
+                {
+                    return await AuditedUnlessTradingDisabledAsync(
+                        command.AccountId,
+                        stage,
+                        audit,
+                        command.Size,
+                        daily,
+                        cancellationToken).ConfigureAwait(false);
+                }
+
+                if (context.DryRun)
+                {
+                    return await PreviewAsync(
+                        command.AccountId,
+                        stage,
+                        audit,
+                        contractCount: command.Size,
+                        cancellationToken).ConfigureAwait(false);
+                }
+
+                return await TransmitWithCapChargeAsync(
                     command.AccountId,
                     stage,
                     audit,
-                    command.Size,
-                    daily,
+                    capChargeSize: command.Size,
+                    ct => _gateway.PlaceOrder(command, ct),
                     cancellationToken).ConfigureAwait(false);
-            }
-
-            if (context.DryRun)
-            {
-                return await PreviewAsync(
-                    command.AccountId,
-                    stage,
-                    audit,
-                    contractCount: command.Size,
-                    cancellationToken).ConfigureAwait(false);
-            }
-
-            return await TransmitWithCapChargeAsync(
-                command.AccountId,
-                stage,
-                audit,
-                capChargeSize: command.Size,
-                ct => _gateway.PlaceOrder(command, ct),
-                cancellationToken).ConfigureAwait(false);
-        }
+            },
+            cancellationToken).ConfigureAwait(false);
     }
 
     private async Task<TradingRiskGateResult> RunModifyAsync(
@@ -336,46 +379,49 @@ public sealed class TradingRiskGate
                 cancellationToken).ConfigureAwait(false);
         }
 
-        await using (await _dailyCap.AcquireAccountDayLockAsync(command.AccountId, cancellationToken)
-                         .ConfigureAwait(false))
-        {
-            if (modifySize is int dailySize
-                && await RefuseDailyCapAsync(command.AccountId, dailySize, cancellationToken).ConfigureAwait(false)
-                    is TradingExecutionRefusal daily)
+        return await WithDailyCapAsync(
+            command.AccountId,
+            stage,
+            async () =>
             {
-                return await AuditedUnlessTradingDisabledAsync(
+                if (modifySize is int dailySize
+                    && await RefuseDailyCapAsync(command.AccountId, dailySize, cancellationToken)
+                        .ConfigureAwait(false) is TradingExecutionRefusal daily)
+                {
+                    return await AuditedUnlessTradingDisabledAsync(
+                        command.AccountId,
+                        stage,
+                        audit,
+                        dailySize,
+                        daily,
+                        cancellationToken).ConfigureAwait(false);
+                }
+
+                int capCharge = 0;
+                if (modifySize is int chargedSize)
+                {
+                    capCharge = chargedSize;
+                }
+
+                if (context.DryRun)
+                {
+                    return await PreviewAsync(
+                        command.AccountId,
+                        stage,
+                        audit,
+                        contractCount: capCharge,
+                        cancellationToken).ConfigureAwait(false);
+                }
+
+                return await TransmitWithCapChargeAsync(
                     command.AccountId,
                     stage,
                     audit,
-                    dailySize,
-                    daily,
+                    capChargeSize: capCharge,
+                    ct => _gateway.ModifyOrder(command, ct),
                     cancellationToken).ConfigureAwait(false);
-            }
-
-            int capCharge = 0;
-            if (modifySize is int chargedSize)
-            {
-                capCharge = chargedSize;
-            }
-
-            if (context.DryRun)
-            {
-                return await PreviewAsync(
-                    command.AccountId,
-                    stage,
-                    audit,
-                    contractCount: capCharge,
-                    cancellationToken).ConfigureAwait(false);
-            }
-
-            return await TransmitWithCapChargeAsync(
-                command.AccountId,
-                stage,
-                audit,
-                capChargeSize: capCharge,
-                ct => _gateway.ModifyOrder(command, ct),
-                cancellationToken).ConfigureAwait(false);
-        }
+            },
+            cancellationToken).ConfigureAwait(false);
     }
 
     private async Task<TradingRiskGateResult> RunCancelAsync(
@@ -633,39 +679,42 @@ public sealed class TradingRiskGate
             return RefuseWithoutSideEffects(position);
         }
 
-        await using (await _dailyCap.AcquireAccountDayLockAsync(command.AccountId, cancellationToken)
-                         .ConfigureAwait(false))
-        {
-            if (await RefuseDailyCapAsync(command.AccountId, command.Size, cancellationToken).ConfigureAwait(false)
-                is TradingExecutionRefusal daily)
+        return await WithDailyCapAsync(
+            command.AccountId,
+            stage,
+            async () =>
             {
-                return await AuditedUnlessTradingDisabledAsync(
+                if (await RefuseDailyCapAsync(command.AccountId, command.Size, cancellationToken)
+                        .ConfigureAwait(false) is TradingExecutionRefusal daily)
+                {
+                    return await AuditedUnlessTradingDisabledAsync(
+                        command.AccountId,
+                        stage,
+                        audit,
+                        command.Size,
+                        daily,
+                        cancellationToken).ConfigureAwait(false);
+                }
+
+                if (context.DryRun)
+                {
+                    return await PreviewAsync(
+                        command.AccountId,
+                        stage,
+                        audit,
+                        contractCount: command.Size,
+                        cancellationToken).ConfigureAwait(false);
+                }
+
+                return await TransmitWithCapChargeAsync(
                     command.AccountId,
                     stage,
                     audit,
-                    command.Size,
-                    daily,
+                    capChargeSize: command.Size,
+                    ct => _gateway.PartialClosePosition(command, ct),
                     cancellationToken).ConfigureAwait(false);
-            }
-
-            if (context.DryRun)
-            {
-                return await PreviewAsync(
-                    command.AccountId,
-                    stage,
-                    audit,
-                    contractCount: command.Size,
-                    cancellationToken).ConfigureAwait(false);
-            }
-
-            return await TransmitWithCapChargeAsync(
-                command.AccountId,
-                stage,
-                audit,
-                capChargeSize: command.Size,
-                ct => _gateway.PartialClosePosition(command, ct),
-                cancellationToken).ConfigureAwait(false);
-        }
+            },
+            cancellationToken).ConfigureAwait(false);
     }
 
     private async Task<TradingExecutionRefusal?> RefuseModifyContractAsync(
@@ -957,6 +1006,7 @@ public sealed class TradingRiskGate
         ExecutionWriteResult write;
         try
         {
+            _sendStarted = true;
             write = await send(cancellationToken).ConfigureAwait(false);
         }
         catch (Exception)
@@ -1385,6 +1435,53 @@ public sealed class TradingRiskGate
             new ExecutionWriteResult(venueOutcome, GateRefusal: null, HttpStatusCode: null, vendorCode, orderId),
             Preview: null,
             IsReplay: true);
+    }
+
+    /// <summary>
+    /// Holds the daily-cap lock around <paramref name="body"/>. A release failure after the send has started
+    /// becomes <see cref="TradingAttemptOutcome.Unknown"/>. A release failure before the send leaves the
+    /// body's result alone. The release itself does not throw.
+    /// </summary>
+    private async Task<TradingRiskGateResult> WithDailyCapAsync(
+        int accountId,
+        AccountStage stage,
+        Func<Task<TradingRiskGateResult>> body,
+        CancellationToken cancellationToken)
+    {
+        IAsyncDisposable lease = await _dailyCap
+            .AcquireAccountDayLockAsync(accountId, cancellationToken)
+            .ConfigureAwait(false);
+        TradingRiskGateResult result;
+        try
+        {
+            result = await body().ConfigureAwait(false);
+        }
+        finally
+        {
+            await ReleaseDailyCapLeaseAsync(lease).ConfigureAwait(false);
+        }
+
+        if (_sendStarted && (_leaseReleaseFailed || _dailyCap.LastReleaseFailed))
+        {
+            return UnknownTransmit(stage);
+        }
+
+        return result;
+    }
+
+    private async ValueTask ReleaseDailyCapLeaseAsync(IAsyncDisposable lease)
+    {
+        try
+        {
+            await lease.DisposeAsync().ConfigureAwait(false);
+        }
+        catch (Exception)
+        {
+            // A double whose dispose throws is the probe. The production lock catches the same failure
+            // itself. Either way the exception stops here and cannot become SafeToRetry.
+            _leaseReleaseFailed = true;
+            _telemetry.RecordBookkeepingFault();
+        }
     }
 
     private static TradingRiskGateResult UnknownTransmit(AccountStage stage) =>

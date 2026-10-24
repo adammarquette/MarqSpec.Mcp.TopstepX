@@ -309,6 +309,24 @@ run_case "fail: docker-compose.dev.yml true (upper-case key)" 1 "MASTER SWITCH  
 base "$T"; mkdir -p "$T/deploy/local"; printf 'services:\n  mcp:\n    environment:\n      Trading__Enabled: "true"\n' >"$T/deploy/local/compose.yaml"
 run_case "fail: nested compose.yaml enables trading" 1 "MASTER SWITCH  deploy/local/compose.yaml:4"
 
+base "$T"; mkdir -p "$T/.railway"; printf '// Trading__Enabled: "true" in a comment is not a setting\nconst c = {\n  Trading__Enabled: "false",\n};\n' >"$T/.railway/railway.ts"
+run_case "pass: railway.ts sets the literal false" 0 "$GREEN"
+
+base "$T"; mkdir -p "$T/.railway"; printf 'const c = {\n  Trading__Enabled: "true",\n};\n' >"$T/.railway/railway.ts"
+run_case "fail: railway.ts enables trading" 1 "MASTER SWITCH  .railway/railway.ts:2"
+
+base "$T"; mkdir -p "$T/.railway"; printf 'const c = {\n  Trading__Enabled: ctx.shared.TRADING,\n};\n' >"$T/.railway/railway.ts"
+run_case "fail: railway.ts takes it from a shared variable" 1 "MASTER SWITCH  .railway/railway.ts:2"
+
+base "$T"; mkdir -p "$T/.railway"; printf 'const c = {\n  TRADING__ENABLED: "False",\n};\n' >"$T/.railway/railway.ts"
+run_case "fail: railway.ts capitalised False" 1 "MASTER SWITCH  .railway/railway.ts:2"
+
+base "$T"; mkdir -p "$T/.railway"; printf 'const c = { Other: "x" };\n' >"$T/.railway/railway.ts"
+run_case "fail: railway.ts dropped the switch" 1 "no longer sets Trading__Enabled"
+
+base "$T"; printf '{"deploy":{"env":{"Trading__Enabled":"true"}}}\n' >"$T/railway.json"
+run_case "fail: legacy railway.json enables trading" 1 "MASTER SWITCH  railway.json:1"
+
 base "$T"; printf 'ENV Trading__Enabled=true\n' >>"$T/Dockerfile"
 run_case "fail: Dockerfile ENV true" 1 "MASTER SWITCH  Dockerfile:3"
 

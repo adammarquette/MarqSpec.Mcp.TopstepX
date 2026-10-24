@@ -67,8 +67,9 @@ it before starting, and add dated entries only when nothing formal fits.
   default) but cannot see a reflection call on a built string, an innocuous wrapper inside an allowlisted
   file, or a venue method it does not list. The boundary is held by that tripwire **plus** review,
   [CODEOWNERS](.github/CODEOWNERS) on the allowlisted files (not independent review for PRs authored from
-  the owning account), and the `Gate=ADR-0024` tests. **Railway's service
-  variables are not CI-verifiable**: for a Railway deploy the off-by-default rests on the code default.
+  the owning account), and the `Gate=ADR-0024` tests. On Railway, the repo template
+  (`.railway/railway.ts`) is CI-checked to carry the literal `"false"`, but **variables edited in the Railway
+  dashboard are not CI-verifiable**: after deploy the off-by-default rests on the code default (gh#758).
   Do not widen the script's allowlists to get green.
 - **No secrets in source.** Credentials arrive through the Options pattern and environment; never a literal,
   never a tracked `appsettings.json`, never a log line. **This repository is public**, and the sibling ProjectX

@@ -37,6 +37,9 @@ public sealed class TapeExportWorker(
     private readonly TimeProvider _clock = clock;
     private readonly ILogger<TapeExportWorker> _logger = logger;
 
+    /// <summary>How many schedule delays this process has armed. Tests wait on this instead of yielding.</summary>
+    internal int DelaysArmed { get; private set; }
+
     /// <inheritdoc />
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
@@ -60,7 +63,9 @@ public sealed class TapeExportWorker(
 
             try
             {
-                await Task.Delay(delay, _clock, stoppingToken).ConfigureAwait(false);
+                Task waiting = Task.Delay(delay, _clock, stoppingToken);
+                DelaysArmed++;
+                await waiting.ConfigureAwait(false);
             }
             catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
             {

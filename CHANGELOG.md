@@ -62,13 +62,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   check already enforces the #765 contract for when it is enabled. Both checks read env keys the way .NET does
   (case-insensitive, `:` equals `__`) and refuse colon keys, colliding keys and miscased known keys.
 
-- **Tape export uploads hold a session lock, not a transaction lock** (gh#755). `pending` commits before
-  the Drive call and the file id commits after, on a connection that is not pooled. Transient retries
-  honour `Retry-After` up to 30 seconds and stop at a two-minute deadline. The Google client's own 503
-  backoff is off. Railway allows one volume per service, mounted at `/data` and owned by root. The
-  recorder start command prepares that mount (exports at `/data/tape-exports`, the Drive key at
-  `/data/keys/drive-sa.json`) and then drops privileges (`RAILWAY_RUN_UID=0`). gh#767 will move that
-  preparation into the image startup. An unwritable path is still logged and skipped.
+- **Tape export uploads hold a session lock, not a transaction lock** (gh#755, gh#767, gh#774).
+  `pending` commits before the Drive call and the file id commits after, on one direct connection for
+  the pass. That connection is not pooled, sets `lock_timeout` and TCP keepalive, and a drop fails
+  that file without aborting the rest. A deadline during backoff records `Timeout` and continues.
+  Transient retries honour `Retry-After` up to 30 seconds. The Google client's own 503 backoff is off.
+  Railway allows one volume per service, mounted at `/data`. Export there is deferred until gh#767;
+  the template (gh#774) blocks it. The start command that gh#767 will move into the image refuses
+  symlinks and does not `chown -R` the volume. An unwritable path inside the application is still
+  logged and skipped. Do not set `RAILWAY_RUN_UID=0` or enable the export on Railway until then.
 
 - **`no-order-path` now gates the order path instead of forbidding it** (gh#718, ADR-0024). The required
   check of the same name changes meaning: from "no order path exists" (ADR-0002) to a tripwire for "orders

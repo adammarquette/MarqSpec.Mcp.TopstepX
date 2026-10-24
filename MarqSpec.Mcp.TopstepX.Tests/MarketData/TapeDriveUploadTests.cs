@@ -150,11 +150,11 @@ public sealed class TapeDriveUploadTests
         List<TimeSpan> waits = [];
         TapeDriveRetryTiming timing = new()
         {
-            Wait = (delay, _) =>
+            Wait = async (delay, waitToken) =>
             {
                 waits.Add(delay);
                 clock.Advance(TapeDriveRetryTiming.Deadline);
-                return Task.CompletedTask;
+                await Task.Delay(delay, clock, waitToken);
             },
         };
         FakeTapeDriveClient client = new() { FailuresBeforeSuccess = 10, Status = 503 };

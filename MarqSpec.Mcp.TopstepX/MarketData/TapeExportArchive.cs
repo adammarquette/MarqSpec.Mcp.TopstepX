@@ -787,25 +787,25 @@ public static class TapeExportArchive
                 .ThenBy(group => group.Key.Instrument, StringComparer.Ordinal)
                 .ThenBy(group => group.Key.ContractId, StringComparer.Ordinal))
         {
-            List<TapeExportTradeRow> rows = [.. group.OrderBy(row => row.TradeTimeUtc).ThenBy(row => row.Sequence)];
             (string venue, string instrument, string contractId) = group.Key;
-            files.Add(await WriteCsvStreamAsync(
+            files.Add(await WriteTradeCsvAsync(
                 destination,
-                RelativePath(TradesDirectory, venue, instrument, contractId, 0, day.Day, CsvGzFormat, generation),
-                TradesDirectory,
-                CsvGzFormat,
+                generation,
+                day.Day,
                 venue,
                 instrument,
                 contractId,
-                0,
-                TradeHeader,
-                rows.ToAsyncEnumerable(),
-                static row => TradeLine(row),
+                group.OrderBy(row => row.TradeTimeUtc).ThenBy(row => row.Sequence).ToAsyncEnumerable(),
                 cancellationToken).ConfigureAwait(false));
-            string parquetRelative = RelativePath(TradesDirectory, venue, instrument, contractId, 0, day.Day, ParquetFormat, generation);
-            string parquet = Absolute(destination, parquetRelative);
-            await TapeExportParquet.WriteTradesAsync(parquet, rows.ToAsyncEnumerable(), cancellationToken).ConfigureAwait(false);
-            files.Add(Describe(TradesDirectory, ParquetFormat, venue, instrument, contractId, 0, parquetRelative, rows.Count, Sha256Of(parquet)));
+            files.Add(await WriteTradeParquetAsync(
+                destination,
+                generation,
+                day.Day,
+                venue,
+                instrument,
+                contractId,
+                group.OrderBy(row => row.TradeTimeUtc).ThenBy(row => row.Sequence).ToAsyncEnumerable(),
+                cancellationToken).ConfigureAwait(false));
         }
 
         foreach (IGrouping<(string Venue, string Instrument, string ContractId), TapeExportCoverageRow> group in
@@ -815,25 +815,25 @@ public static class TapeExportArchive
                 .ThenBy(group => group.Key.Instrument, StringComparer.Ordinal)
                 .ThenBy(group => group.Key.ContractId, StringComparer.Ordinal))
         {
-            List<TapeExportCoverageRow> rows = [.. group.OrderBy(row => row.RangeStart).ThenBy(row => row.RangeEnd)];
             (string venue, string instrument, string contractId) = group.Key;
-            files.Add(await WriteCsvStreamAsync(
+            files.Add(await WriteCoverageCsvAsync(
                 destination,
-                RelativePath(CoverageDirectory, venue, instrument, contractId, 0, day.Day, CsvGzFormat, generation),
-                CoverageDirectory,
-                CsvGzFormat,
+                generation,
+                day.Day,
                 venue,
                 instrument,
                 contractId,
-                0,
-                CoverageHeader,
-                rows.ToAsyncEnumerable(),
-                static row => CoverageLine(row),
+                group.OrderBy(row => row.RangeStart).ThenBy(row => row.RangeEnd).ToAsyncEnumerable(),
                 cancellationToken).ConfigureAwait(false));
-            string parquetRelative = RelativePath(CoverageDirectory, venue, instrument, contractId, 0, day.Day, ParquetFormat, generation);
-            string parquet = Absolute(destination, parquetRelative);
-            await TapeExportParquet.WriteCoverageAsync(parquet, rows.ToAsyncEnumerable(), cancellationToken).ConfigureAwait(false);
-            files.Add(Describe(CoverageDirectory, ParquetFormat, venue, instrument, contractId, 0, parquetRelative, rows.Count, Sha256Of(parquet)));
+            files.Add(await WriteCoverageParquetAsync(
+                destination,
+                generation,
+                day.Day,
+                venue,
+                instrument,
+                contractId,
+                group.OrderBy(row => row.RangeStart).ThenBy(row => row.RangeEnd).ToAsyncEnumerable(),
+                cancellationToken).ConfigureAwait(false));
         }
 
         foreach (IGrouping<(string Venue, string Instrument, int Resolution), TapeExportFootprintRow> group in
@@ -843,25 +843,25 @@ public static class TapeExportArchive
                 .ThenBy(group => group.Key.Instrument, StringComparer.Ordinal)
                 .ThenBy(group => group.Key.ResolutionMinutes))
         {
-            List<TapeExportFootprintRow> rows = [.. group.OrderBy(row => row.BucketStart).ThenBy(row => row.Price)];
             (string venue, string instrument, int resolution) = group.Key;
-            files.Add(await WriteCsvStreamAsync(
+            files.Add(await WriteFootprintCsvAsync(
                 destination,
-                RelativePath(FootprintDirectory, venue, instrument, string.Empty, resolution, day.Day, CsvGzFormat, generation),
-                "footprint",
-                CsvGzFormat,
+                generation,
+                day.Day,
                 venue,
                 instrument,
-                string.Empty,
                 resolution,
-                FootprintHeader,
-                rows.ToAsyncEnumerable(),
-                static row => FootprintLine(row),
+                group.OrderBy(row => row.BucketStart).ThenBy(row => row.Price).ToAsyncEnumerable(),
                 cancellationToken).ConfigureAwait(false));
-            string parquetRelative = RelativePath(FootprintDirectory, venue, instrument, string.Empty, resolution, day.Day, ParquetFormat, generation);
-            string parquet = Absolute(destination, parquetRelative);
-            await TapeExportParquet.WriteFootprintAsync(parquet, rows.ToAsyncEnumerable(), cancellationToken).ConfigureAwait(false);
-            files.Add(Describe("footprint", ParquetFormat, venue, instrument, string.Empty, resolution, parquetRelative, rows.Count, Sha256Of(parquet)));
+            files.Add(await WriteFootprintParquetAsync(
+                destination,
+                generation,
+                day.Day,
+                venue,
+                instrument,
+                resolution,
+                group.OrderBy(row => row.BucketStart).ThenBy(row => row.Price).ToAsyncEnumerable(),
+                cancellationToken).ConfigureAwait(false));
         }
     }
 

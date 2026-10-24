@@ -40,12 +40,13 @@ public sealed class GoogleTapeDriveClient : ITapeDriveClient, IDisposable
     private const string FolderMime = "application/vnd.google-apps.folder";
 
     private const string DuplicateFileMessage =
-        "Drive lookup found more than one file for an export identity. The first id is updated.";
+        "Drive lookup found more than one file for an export identity. The first id is updated. Count {DuplicateCount}.";
 
     private readonly string _folderId;
     private readonly string? _jsonPath;
     private readonly string? _inlineJson;
     private readonly ILogger _logger;
+    private readonly TimeProvider _clock;
     private readonly DriveService? _injected;
     private readonly ConcurrentDictionary<string, string> _folders = new(StringComparer.Ordinal);
     private readonly ConcurrentDictionary<string, SemaphoreSlim> _keys = new(StringComparer.Ordinal);
@@ -67,10 +68,15 @@ public sealed class GoogleTapeDriveClient : ITapeDriveClient, IDisposable
     /// <summary>Stores the folder id and whichever credential source is set. Does not call Drive.</summary>
     /// <param name="drive">The bound Drive settings. A path wins over inline JSON when both are set.</param>
     /// <param name="logger">Receives the duplicate-file line. Null logs nowhere.</param>
-    public GoogleTapeDriveClient(TapeExportDriveOptions drive, ILogger<GoogleTapeDriveClient>? logger = null)
+    /// <param name="clock">Clock for an HTTP-date <c>Retry-After</c>. Null uses <see cref="TimeProvider.System"/>.</param>
+    public GoogleTapeDriveClient(
+        TapeExportDriveOptions drive,
+        ILogger<GoogleTapeDriveClient>? logger = null,
+        TimeProvider? clock = null)
     {
         ArgumentNullException.ThrowIfNull(drive);
         _logger = logger ?? NullLogger<GoogleTapeDriveClient>.Instance;
+        _clock = clock ?? TimeProvider.System;
         _folderId = drive.FolderId.Trim();
         if (!string.IsNullOrWhiteSpace(drive.ServiceAccountJsonPath))
         {
@@ -88,11 +94,17 @@ public sealed class GoogleTapeDriveClient : ITapeDriveClient, IDisposable
     /// <param name="folderId">The parent folder id.</param>
     /// <param name="service">The Drive service. Disposed with this client.</param>
     /// <param name="logger">Receives the duplicate-file line. Null logs nowhere.</param>
-    public GoogleTapeDriveClient(string folderId, DriveService service, ILogger<GoogleTapeDriveClient>? logger = null)
+    /// <param name="clock">Clock for an HTTP-date <c>Retry-After</c>. Null uses <see cref="TimeProvider.System"/>.</param>
+    public GoogleTapeDriveClient(
+        string folderId,
+        DriveService service,
+        ILogger<GoogleTapeDriveClient>? logger = null,
+        TimeProvider? clock = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(folderId);
         ArgumentNullException.ThrowIfNull(service);
         _logger = logger ?? NullLogger<GoogleTapeDriveClient>.Instance;
+        _clock = clock ?? TimeProvider.System;
         _folderId = folderId;
         _injected = service;
         _service = service;
@@ -259,6 +271,11 @@ public sealed class GoogleTapeDriveClient : ITapeDriveClient, IDisposable
                 Name = name,
                 MimeType = FolderMime,
                 Parents = [parentId],
+                AppProperties = new Dictionary<string, string>(StringComparer.Ordinal)
+                {
+                    ["tapeFolder"] = name,
+                    ["tapeParent"] = parentId,
+                },
             });
             request.Fields = "id";
             request.SupportsAllDrives = true;
@@ -283,7 +300,7 @@ public sealed class GoogleTapeDriveClient : ITapeDriveClient, IDisposable
         }
     }
 
-    private static async Task<string?> FirstFolderAsync(
+    private async Task<string?> FirstFolderAsync(
         DriveService service,
         string parentId,
         string name,
@@ -331,13 +348,13 @@ public sealed class GoogleTapeDriveClient : ITapeDriveClient, IDisposable
             .ToList();
         if (ids.Count > 1)
         {
-            _logger.LogInformation(DuplicateFileMessage);
+            _logger.LogWarning(DuplicateFileMessage, ids.Count);
         }
 
         return ids.FirstOrDefault();
     }
 
-    private static async Task<string> CreateAsync(
+    private async Task<string> CreateAsync(
         DriveService service,
         string parent,
         string name,
@@ -368,7 +385,7 @@ public sealed class GoogleTapeDriveClient : ITapeDriveClient, IDisposable
         return create.ResponseBody.Id;
     }
 
-    private static async Task UpdateAsync(
+    private async Task UpdateAsync(
         DriveService service,
         string fileId,
         Stream content,
@@ -385,7 +402,7 @@ public sealed class GoogleTapeDriveClient : ITapeDriveClient, IDisposable
         await CompleteAsync(await update.UploadAsync(cancellationToken).ConfigureAwait(false)).ConfigureAwait(false);
     }
 
-    private static Task CompleteAsync(IUploadProgress progress)
+    private Task CompleteAsync(IUploadProgress progress)
     {
         if (progress.Status == UploadStatus.Completed)
         {
@@ -394,7 +411,7 @@ public sealed class GoogleTapeDriveClient : ITapeDriveClient, IDisposable
 
         if (progress.Exception is not null)
         {
-            throw Wrap(progress.Exception);
+            throw Fail(progress.Exception);
         }
 
         throw new TapeDriveException(
@@ -404,7 +421,7 @@ public sealed class GoogleTapeDriveClient : ITapeDriveClient, IDisposable
             failureType: "TapeDriveException");
     }
 
-    private static async Task<T> ExecuteAsync<T>(
+    private async Task<T> ExecuteAsync<T>(
         Func<CancellationToken, Task<T>> call,
         CancellationToken cancellationToken)
     {
@@ -414,8 +431,19 @@ public sealed class GoogleTapeDriveClient : ITapeDriveClient, IDisposable
         }
         catch (Exception exception) when (exception is not TapeDriveException)
         {
-            throw Wrap(exception);
+            throw Fail(exception);
         }
+    }
+
+    private TapeDriveException Fail(Exception exception)
+    {
+        TapeDriveException wrapped = Wrap(exception);
+        if (wrapped.StatusCode == 404)
+        {
+            _folders.Clear();
+        }
+
+        return wrapped;
     }
 
     private static TapeDriveException Wrap(Exception exception)
@@ -444,17 +472,17 @@ public sealed class GoogleTapeDriveClient : ITapeDriveClient, IDisposable
         return new TapeDriveException("Drive request failed.", status, permanent, type);
     }
 
-    private static void Attach(DriveService service)
+    private void Attach(DriveService service)
     {
         if (service.HttpClient is ConfigurableHttpClient client)
         {
-            client.MessageHandler.AddUnsuccessfulResponseHandler(RetryAfterHandler.Instance);
+            client.MessageHandler.AddUnsuccessfulResponseHandler(new RetryAfterHandler(_clock));
         }
     }
 
-    private sealed class RetryAfterHandler : IHttpUnsuccessfulResponseHandler
+    private sealed class RetryAfterHandler(TimeProvider clock) : IHttpUnsuccessfulResponseHandler
     {
-        public static readonly RetryAfterHandler Instance = new();
+        private readonly TimeProvider _clock = clock;
 
         public Task<bool> HandleResponseAsync(HandleUnsuccessfulResponseArgs args)
         {
@@ -473,7 +501,7 @@ public sealed class GoogleTapeDriveClient : ITapeDriveClient, IDisposable
                 retryAfter);
         }
 
-        private static TimeSpan? Read(HttpResponseMessage response)
+        private TimeSpan? Read(HttpResponseMessage response)
         {
             RetryConditionHeaderValue? header = response.Headers.RetryAfter;
             if (header?.Delta is TimeSpan delta)
@@ -483,7 +511,7 @@ public sealed class GoogleTapeDriveClient : ITapeDriveClient, IDisposable
 
             if (header?.Date is DateTimeOffset when)
             {
-                TimeSpan until = when - DateTimeOffset.UtcNow;
+                TimeSpan until = when - _clock.GetUtcNow();
                 return until < TimeSpan.Zero ? TimeSpan.Zero : until;
             }
 

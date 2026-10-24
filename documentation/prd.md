@@ -728,10 +728,15 @@ this requirement.** `Retention__*` is out of scope and needs its own ADR (gh#758
   scope is `drive.file` ([ADR-0026](adr/0026-drive-file-scope-for-tape-export.md)). Prefer the path: a
   mounted secret file. Inline JSON is visible to anyone who can inspect the container. The same
   identity updates one Drive file (`appProperties`, or the stored file id). Nothing is trashed. One
-  identity is serialised with a session advisory lock on a dedicated connection. `pending` is committed
-  before the upload and the file id after it. A transient failure is retried with backoff, or
-  `Retry-After` when present, inside a two-minute deadline. A permanent failure (credential, HTTP 400,
-  401, 403, 404) is not. The local file and the local rows stay, and the last good file id stays.
+  identity is serialised with a session advisory lock on one direct, non-pooled connection for the
+  pass (`lock_timeout` 30s, TCP keepalive). A dropped connection fails that file and the pass
+  continues. `pending` is committed before the upload and the file id after it. A `pending` row left
+  from an earlier pass is reported and retried. A `drive_disabled` day is exported again once Drive
+  is on. A transient failure is retried with backoff, or `Retry-After` when present, inside a
+  two-minute deadline. A deadline during the wait records `Timeout` and the next file still runs. A
+  permanent failure (credential, HTTP 400, 401, 403, 404) is not. HTTP 408, 429, 500, 502, and 503
+  are transient. The local file and the local rows stay, and the last good file id stays. Export on
+  Railway waits for gh#767; the template blocks it until then.
 - **R-10.7** Each file writes one `TapeExportReceipts` row. `pending` is the in-flight upload.
   `drive_disabled` means Drive was off. `uploaded` and `failed` are the outcomes. A failure stores the
   exception type and the HTTP status, never the credential, and does not clear `DriveFileId`. This

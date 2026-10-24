@@ -26,8 +26,9 @@ namespace MarqSpec.Mcp.TopstepX.Tests.Tools;
 /// <remarks>
 /// <para>
 /// Coverage and cells are seeded the way gh#220 / gh#221 proved them — the recorder is not built.
-/// Live tape health is a holder this fixture Sets: Listening for the stored-read path,
-/// and not-listening for the gh#218 refusal.
+/// Live tape health is a holder this fixture Sets: Listening for the stored-read path.
+/// Not listening serves closed coverage with <c>live</c> false (gh#728). No closed tape
+/// still refuses and names the fix (gh#218).
 /// </para>
 /// <para>
 /// <b>Two cases are not here — see <c>FootprintAndVolumeProfileStoreTests</c> in the integration project.</b>
@@ -84,7 +85,7 @@ public sealed class FootprintAndVolumeProfileToolTests : IDisposable
             gateway,
             new ToolGuards(options),
             _tape,
-            new VolumeProfileService(_database),
+            new VolumeProfileService(_database, _tape),
             new VolumeFrontReader(new TapeVolumeFrontService(_database, gateway, calendar)),
             new FootprintCacheService(
                 _database,
@@ -114,6 +115,7 @@ public sealed class FootprintAndVolumeProfileToolTests : IDisposable
         payload.Covered.Narrowed.Should().BeTrue();
         payload.PointOfControl.Should().Be(5000m);
         payload.TotalVolume.Should().Be(5);
+        payload.Live.Should().BeTrue();
         payload.Contracts.Span.Should().Be(ToolPayloads.ContractSpan.SingleContract);
         payload.Contracts.Segments.Should().ContainSingle()
             .Which.ContractId.Should().Be(Front);
@@ -133,6 +135,7 @@ public sealed class FootprintAndVolumeProfileToolTests : IDisposable
         payload.Covered.Start.Should().Be(_fourteen);
         payload.Covered.End.Should().Be(_sixteen);
         payload.Covered.Narrowed.Should().BeFalse();
+        payload.Live.Should().BeTrue();
         payload.Cells.Should().BeEquivalentTo(
         [
             new ToolPayloads.FootprintCellPoint(_bucket1430, 5000.00m, 5, 0),
@@ -252,27 +255,114 @@ public sealed class FootprintAndVolumeProfileToolTests : IDisposable
     }
 
     [Fact]
-    public async Task GetFootprintAndGetVolumeProfile_RefuseWithTheExplanation_WhenHealthIsNotListening()
+    public async Task GetFootprint_WhenThisProcessIsNotListening_ServesClosedCoverage()
     {
-        // Cells in the store must not look like a live tape. An absent tape refuses;
-        // it does not answer thinly.
+        // Closed coverage another process recorded is an answer. It must not be refused just
+        // because this process is not the recorder (gh#728).
         await SeedCoverageAsync(Coverage(Front, _fourteen, _sixteen));
         await SeedCellsAsync(Cell(_bucket1430, 5000m, buy: 4, sell: 1));
 
         _tape.Set(TapeAvailability.NeverStartedBecauseStdio());
-        string explanation = _tape.Value.Explanation!;
 
-        Func<Task<ToolPayloads.FootprintSeries>> footprint = () => _tools.GetFootprint(
+        ToolPayloads.FootprintSeries footprint = await _tools.GetFootprint(
             "ES", FiveMinutes, _fourteen, _sixteen, CancellationToken.None);
-        Func<Task<ToolPayloads.VolumeProfileSeries>> profile = () => _tools.GetVolumeProfile(
+        ToolPayloads.VolumeProfileSeries profile = await _tools.GetVolumeProfile(
             "ES", FiveMinutes, _fourteen, _sixteen, CancellationToken.None);
 
-        McpException footprintError = (await footprint.Should().ThrowAsync<McpException>()).Which;
-        footprintError.Message.Should().Be(explanation);
-        footprintError.Message.Should().MatchRegex("(?i)stdio|http|recordtape");
+        footprint.Cells.Should().ContainSingle()
+            .Which.P.Should().Be(5000m);
+        footprint.Covered.Start.Should().Be(_fourteen);
+        footprint.Covered.End.Should().Be(_sixteen);
+        footprint.Live.Should().BeFalse();
+        profile.PointOfControl.Should().Be(5000m);
+        profile.Covered.End.Should().Be(_sixteen);
+        profile.Live.Should().BeFalse();
+    }
 
-        McpException profileError = (await profile.Should().ThrowAsync<McpException>()).Which;
-        profileError.Message.Should().Be(explanation);
+    [Fact]
+    public async Task GetFootprint_WhenAnotherRecorderHoldsTheClaim_ServesClosedCoverageFlaggedNotLive()
+    {
+        await SeedCoverageAsync(Coverage(Front, _fourteen, _sixteen));
+        await SeedCellsAsync(Cell(_bucket1430, 5000m, buy: 4, sell: 1));
+        _tape.Set(TapeAvailability.HeldByAnotherRecorder("http-1", _sixteen));
+
+        ToolPayloads.FootprintSeries footprint = await _tools.GetFootprint(
+            "ES", FiveMinutes, _fourteen, _sixteen, CancellationToken.None);
+
+        footprint.Cells.Should().ContainSingle();
+        footprint.Live.Should().BeFalse();
+        footprint.Covered.End.Should().Be(_sixteen);
+    }
+
+    [Fact]
+    public async Task GetFootprint_WhenNotRecordingAndTheWindowIsBeforeClosedCoverage_RefusesNamingTheEarliestTime()
+    {
+        await SeedCoverageAsync(Coverage(Front, _fourteen, _sixteen));
+        await SeedCellsAsync(Cell(_bucket1430, 5000m, buy: 4, sell: 1));
+        _tape.Set(TapeAvailability.NeverStartedBecauseStdio());
+
+        string earliest = _fourteen.ToString("O", CultureInfo.InvariantCulture);
+        Func<Task> footprint = () => _tools.GetFootprint(
+            "ES", FiveMinutes, _ten, _twelve, CancellationToken.None);
+        Func<Task> profile = () => _tools.GetVolumeProfile(
+            "ES", FiveMinutes, _ten, _twelve, CancellationToken.None);
+
+        (await footprint.Should().ThrowAsync<McpException>())
+            .WithMessage("*earliest*")
+            .WithMessage("*" + earliest + "*");
+        (await profile.Should().ThrowAsync<McpException>())
+            .WithMessage("*earliest*")
+            .WithMessage("*" + earliest + "*");
+    }
+
+    [Fact]
+    public async Task GetFootprint_WhenTheRecorderIsNotSubscribed_RefusesNamingTheFix()
+    {
+        // This process is the recorder. A failed subscribe must not turn stored cells into an answer
+        // that looks like that instrument's live tape (gh#218).
+        await SeedCoverageAsync(Coverage(Front, _fourteen, _sixteen));
+        await SeedCellsAsync(Cell(_bucket1430, 5000m, buy: 4, sell: 1));
+        _tape.Set(TapeAvailability.ConnectedButNotSubscribed());
+        string explanation = _tape.For("ES").Explanation!;
+
+        Func<Task> footprint = () => _tools.GetFootprint(
+            "ES", FiveMinutes, _fourteen, _sixteen, CancellationToken.None);
+        Func<Task> profile = () => _tools.GetVolumeProfile(
+            "ES", FiveMinutes, _fourteen, _sixteen, CancellationToken.None);
+
+        (await footprint.Should().ThrowAsync<McpException>()).WithMessage(explanation);
+        (await profile.Should().ThrowAsync<McpException>()).WithMessage(explanation);
+    }
+
+    [Fact]
+    public async Task GetFootprint_WhenNotRecordingAndNoClosedTapeExists_RefusesNamingTheFix()
+    {
+        _tape.Set(TapeAvailability.NeverStartedBecauseStdio());
+        string explanation = _tape.For("ES").Explanation!;
+
+        Func<Task> footprint = () => _tools.GetFootprint(
+            "ES", FiveMinutes, _fourteen, _sixteen, CancellationToken.None);
+        Func<Task> profile = () => _tools.GetVolumeProfile(
+            "ES", FiveMinutes, _fourteen, _sixteen, CancellationToken.None);
+
+        (await footprint.Should().ThrowAsync<McpException>()).WithMessage(explanation);
+        (await profile.Should().ThrowAsync<McpException>()).WithMessage(explanation);
+    }
+
+    [Fact]
+    public async Task GetFootprint_WhenNotRecordingAndOnlyTheOpenSentinelExists_RefusesNamingTheFix()
+    {
+        // A still-open row is the other process's live listen, or a leftover. It is not closed
+        // coverage, and serving it would claim a window nobody has finished.
+        await SeedCoverageAsync(Coverage(Front, _fourteen, TapeCoverageRecord.StillListeningEnd));
+        await SeedCellsAsync(Cell(_bucket1430, 5000m, buy: 4, sell: 1));
+        _tape.Set(TapeAvailability.NeverStartedBecauseStdio());
+        string explanation = _tape.For("ES").Explanation!;
+
+        Func<Task> footprint = () => _tools.GetFootprint(
+            "ES", FiveMinutes, _fourteen, _sixteen, CancellationToken.None);
+
+        (await footprint.Should().ThrowAsync<McpException>()).WithMessage(explanation);
     }
 
     [Fact]

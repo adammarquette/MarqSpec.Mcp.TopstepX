@@ -69,9 +69,14 @@ public sealed class TapeTools(
         + "you asked for — and `contracts` with span SingleContract naming which contract was listened to. "
         + "`contracts.segments` use bar-open times from the cells (`firstBucket` / `lastBucket`), not the "
         + "exclusive coverage end — that range stays on `covered`. A roll or listening hole narrows the "
-        + "answer to the newest contiguous run and sets `covered.narrowed`. When the live tape is not "
-        + "listening for that instrument the tool refuses with a sentence naming the fix — an empty "
-        + "answer and an absent tape must not look the same. Top-level fields are always present. "
+        + "answer to the newest contiguous run and sets `covered.narrowed`. When this process is not "
+        + "the recorder for that instrument, closed coverage is served and `live` is false — live "
+        + "coverage is absent, and the answer is not a live tape. A window with no closed tape still "
+        + "refuses with a sentence naming the fix; an empty answer and an absent tape must not look "
+        + "the same. `live` is true only while this process is listening for that instrument. "
+        + "When this process is the recorder but that instrument is reconnecting, not subscribed, or "
+        + "stopped, the tool still refuses with a sentence naming the fix. "
+        + "Top-level fields are always present. "
         + "`front` names the tape volume-front beside the contract Bars would fetch — `used` is "
         + "`tape-volume` or `none`, never a silent prefer of the gateway. `contracts` stays the "
         + "newest listening run; it is not rewritten from `front`. Keys inside `front` are omitted "
@@ -87,7 +92,7 @@ public sealed class TapeTools(
         [Description("Window end, ISO-8601 UTC, exclusive.")] DateTimeOffset toUtc,
         CancellationToken cancellationToken)
     {
-        (InstrumentId instrument, FootprintRead read) = await LoadFootprintCellsAsync(
+        (InstrumentId instrument, FootprintRead read, bool live) = await LoadFootprintCellsAsync(
                 symbol, resolutionMinutes, fromUtc, toUtc, cancellationToken)
             .ConfigureAwait(false);
 
@@ -113,7 +118,8 @@ public sealed class TapeTools(
             cells,
             new ToolPayloads.CoveredWindow(read.Window.Start, read.Window.End, read.Window.Narrowed),
             ToolPayloads.ToTapeCoverage(read.Window, read.Cells),
-            await _front.ReadAsync(instrument, cancellationToken).ConfigureAwait(false));
+            await _front.ReadAsync(instrument, cancellationToken).ConfigureAwait(false),
+            live);
     }
 
     /// <summary>Aggregates stored footprint cells into a volume profile for a covered tape window.</summary>
@@ -132,9 +138,13 @@ public sealed class TapeTools(
         + "`covered` from TapeCoverage — not the window you asked for — and `contracts` with span "
         + "SingleContract naming which contract was listened to. `contracts.segments` use bar-open times "
         + "from the cells, not the exclusive coverage end. A roll or listening hole narrows the answer to "
-        + "the newest contiguous run and sets `covered.narrowed`. When the live tape is not listening the "
-        + "tool refuses with a sentence naming the fix — an empty profile and an absent tape must not look "
-        + "the same. Health is that instrument's tape, not another symbol's subscribe. Top-level "
+        + "the newest contiguous run and sets `covered.narrowed`. When this process is not the recorder, "
+        + "closed coverage is served and `live` is false — live coverage is absent, and the answer is not "
+        + "a live tape. A window with no closed tape still refuses with a sentence naming the fix; an "
+        + "empty profile and an absent tape must not look the same. `live` is true only while this "
+        + "process is listening. When this process is the recorder but that instrument is reconnecting, "
+        + "not subscribed, or stopped, the tool still refuses with a sentence naming the fix. "
+        + "Health is that instrument's tape, not another symbol's subscribe. Top-level "
         + "fields are always present. `front` names the tape volume-front beside the contract Bars "
         + "would fetch — `used` is `tape-volume` or `none`, never a silent prefer of the gateway. "
         + "`contracts` stays the newest listening run; it is not rewritten from `front`. Keys inside "
@@ -149,7 +159,7 @@ public sealed class TapeTools(
         [Description("Window end, ISO-8601 UTC, exclusive.")] DateTimeOffset toUtc,
         CancellationToken cancellationToken)
     {
-        (InstrumentId instrument, FootprintRead cells) = await LoadFootprintCellsAsync(
+        (InstrumentId instrument, FootprintRead cells, bool live) = await LoadFootprintCellsAsync(
                 symbol, resolutionMinutes, fromUtc, toUtc, cancellationToken)
             .ConfigureAwait(false);
 
@@ -168,19 +178,27 @@ public sealed class TapeTools(
             profile.TotalVolume,
             new ToolPayloads.CoveredWindow(cells.Window.Start, cells.Window.End, cells.Window.Narrowed),
             ToolPayloads.ToTapeCoverage(cells.Window, cells.Cells),
-            await _front.ReadAsync(instrument, cancellationToken).ConfigureAwait(false));
+            await _front.ReadAsync(instrument, cancellationToken).ConfigureAwait(false),
+            live);
     }
 
     /// <summary>
-    /// Resolves the instrument, validates the window, requires the live tape, ensures footprint cells are
-    /// projected, reads them, and enforces the row cap — the preamble <see cref="GetFootprint"/> and
-    /// <see cref="GetVolumeProfile"/> shared byte for byte up to the point each diverges on what to do with
-    /// the cells: <see cref="GetFootprint"/> refuses an empty read by name, <see cref="GetVolumeProfile"/>
-    /// lets <see cref="VolumeProfileAggregator"/> refuse it instead. Running the cap check here, ahead of
-    /// that divergence, does not change either tool's answer: a covered window with zero cells can never
-    /// also be over cap, so the two checks never compete for which one fires.
+    /// Resolves the instrument, validates the window, ensures footprint cells are projected, reads them,
+    /// and enforces the row cap — the preamble <see cref="GetFootprint"/> and
+    /// <see cref="GetVolumeProfile"/> share up to the point each diverges on what to do with the cells.
+    /// <see cref="GetFootprint"/> refuses an empty read by name, <see cref="GetVolumeProfile"/> lets
+    /// <see cref="VolumeProfileAggregator"/> refuse it instead. Running the cap check here, ahead of that
+    /// divergence, does not change either tool's answer: a covered window with zero cells can never also
+    /// be over cap, so the two checks never compete for which one fires.
     /// </summary>
-    private async Task<(InstrumentId Instrument, FootprintRead Read)> LoadFootprintCellsAsync(
+    /// <remarks>
+    /// This process not being the recorder is not a refusal. Closed <c>TapeCoverage</c> is served and
+    /// <see cref="TapeAvailability.IsListening"/> comes back false, so the payload can say live coverage
+    /// is absent (gh#728). A window with no closed tape still refuses, and that refusal names the fix.
+    /// The still-open sentinel is dropped by <see cref="VolumeProfileService"/> while the instrument is
+    /// not listening, so a live listen this process does not hold is not reported as coverage.
+    /// </remarks>
+    private async Task<(InstrumentId Instrument, FootprintRead Read, bool Live)> LoadFootprintCellsAsync(
         string symbol,
         int resolutionMinutes,
         DateTimeOffset fromUtc,
@@ -189,26 +207,73 @@ public sealed class TapeTools(
     {
         InstrumentId instrument = _resolver.Resolve(symbol);
         BarRange window = _guards.ValidateWindow(fromUtc, toUtc, resolutionMinutes);
-        _tape.For(instrument.Symbol).Require();
+        TapeAvailability health = _tape.For(instrument.Symbol);
+
+        // Not the recorder: stdio, the switch off, or another process holding the claim. Closed
+        // coverage is an answer. A recorder whose own subscription is down still refuses — stored
+        // cells must not look like that instrument's live tape (gh#218, gh#728).
+        if (!IsNotTheRecorder(health))
+        {
+            health.Require();
+        }
 
         await EnsureFootprintProjectedAsync(instrument, resolutionMinutes, cancellationToken)
             .ConfigureAwait(false);
 
         FootprintRead read = await ExceptionTranslation.TryAsync(
-                () => _volumeProfiles.ReadCellsAsync(
-                    _venue,
-                    instrument,
-                    resolutionMinutes,
-                    window.Start,
-                    window.End,
-                    cancellationToken),
+                () => ReadCellsOrNameTheFixAsync(
+                    health, instrument, resolutionMinutes, window, cancellationToken),
                 static ex => ex is InvalidOperationException)
             .ConfigureAwait(false);
 
         RefuseIfOverCellCap(read.Cells.Count, "footprint cells");
 
-        return (instrument, read);
+        return (instrument, read, health.IsListening);
     }
+
+    /// <summary>
+    /// Reads the cells. When this process is not recording and the store has no closed tape, the
+    /// refusal names the fix instead of reading as a quiet market.
+    /// </summary>
+    private async Task<FootprintRead> ReadCellsOrNameTheFixAsync(
+        TapeAvailability health,
+        InstrumentId instrument,
+        int resolutionMinutes,
+        BarRange window,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            return await _volumeProfiles.ReadCellsAsync(
+                    _venue,
+                    instrument,
+                    resolutionMinutes,
+                    window.Start,
+                    window.End,
+                    cancellationToken)
+                .ConfigureAwait(false);
+        }
+        catch (InvalidOperationException ex) when (IsNotTheRecorder(health) && IsNoClosedTape(ex))
+        {
+            throw new InvalidOperationException(health.Explanation);
+        }
+    }
+
+    /// <summary>
+    /// This process is not recording the instrument, as distinct from a recorder whose subscription
+    /// is down. The first may read closed coverage another process wrote. The second must not.
+    /// </summary>
+    private static bool IsNotTheRecorder(TapeAvailability health) =>
+        health.Reason is TapeUnavailableReason.NeverStarted
+            or TapeUnavailableReason.HeldByAnotherRecorder;
+
+    /// <summary>
+    /// The store's "nothing overlaps" refusal, as distinct from a window that names the earliest
+    /// covered time. The earliest-time sentence is the fact a caller needs (R-9.7); this one is
+    /// replaced, when this process is not recording, by the sentence that names the fix.
+    /// </summary>
+    private static bool IsNoClosedTape(InvalidOperationException ex) =>
+        ex.Message.Contains("no tape", StringComparison.Ordinal);
 
     /// <summary>
     /// Refuses a covered window that still has no cells after the on-read projection — a roll inside

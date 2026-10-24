@@ -78,6 +78,7 @@ decides that one host speaks stdio and streamable HTTP; grep it for `signalr`, `
 | [2026-08-29](#update-2026-08-29--live-tape-health-is-read-at-the-point-of-use) | Live tape health, written from lifecycle and required by footprint tools (gh#218) |
 | [2026-08-30](#update-2026-08-30--a-failed-open-persist-drops-the-subscribe) | A store fault after a confirmed subscribe drops the venue subscription (gh#376) |
 | [2026-08-31](#update-2026-08-31--one-recorder-per-instrument-is-a-claim-not-a-convention) | "Two subscribers on one tape" becomes a store-backed claim the second recorder is refused (gh#404) |
+| [2026-10-24](#update-2026-10-24--a-process-that-is-not-the-recorder-still-serves-closed-coverage) | A process that is not the recorder serves closed coverage and flags it not-live (gh#728) |
 
 ## Update (2026-08-28) — the standing choice is reversed
 
@@ -570,6 +571,24 @@ inside the package. Not calling `loginKey` is how that client's login body stays
 This repository cannot suppress a line the package writes itself. A `loginKey` that was already on
 the wire when a suspicion started cannot be recalled.
 
+## Update (2026-10-24) — a process that is not the recorder still serves closed coverage
+
+gh#218 required the tape tools to `Require()` that instrument's tape and refuse when it was not
+listening. That check only knows whether **this process** is recording. A stdio client — the
+transport most MCP clients launch — therefore refused `get_footprint` and `get_volume_profile`
+even when a separate HTTP recorder had already closed a `TapeCoverage` run in the shared store
+(gh#728). R-5.1 puts every tool on both transports, and "Where the recorder is allowed to run"
+above is the reason stdio does not subscribe: it reads the store the HTTP recorder writes.
+
+The tools no longer refuse solely because this process is not the recorder. Closed coverage is
+served and `live` is false, so live coverage is reported absent. The still-open sentinel stays
+what gh#365 made it: coverage only while that instrument is listening here. A window with no
+closed tape still refuses and names the fix (R-5.8, R-9.6, R-9.7). A recorder that is
+reconnecting, connected but not subscribed, or stopped still refuses, closed cells included —
+that is the gh#218 case, and another symbol's subscribe does not satisfy it. The recorder still
+starts only under HTTP when `MarketData__RecordTape` is on.
+
+
 ## Follow-ups
 
 - gh#215 — tape, coverage and footprint tables. Schema-only; landed.
@@ -587,3 +606,5 @@ the wire when a suspicion started cannot be recalled.
 - gh#772 — more than one replica. A recovery login with the switch on latches the other replica
   until restart. With the switch off, the replicas kick each other about once per 54-minute cycle.
   Still open.
+- gh#728 — stdio serves closed coverage another process recorded, flagged not-live. Landed in the
+  update above.

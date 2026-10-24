@@ -968,13 +968,17 @@ public static class ToolPayloads
     /// Tape volume-front beside the contract Bars would fetch. Always present as an object;
     /// keys inside it are omitted when that answer does not exist.
     /// </param>
+    /// <param name="Live">
+    /// Whether this process is recording that instrument. False means the cells are closed coverage
+    /// from a recorder this process is not, and live coverage is absent (gh#728). Always present.
+    /// </param>
     /// <remarks>
-    /// Top-level fields are always present. Live tape-subscription health
-    /// is not a field on this payload — when the tape is not listening the tool refuses with a sentence
-    /// naming the fix (gh#218). A covered window whose stored tape has prints the cells do not yet
-    /// reflect is projected on the read (gh#366, gh#377). If the tape still produces no cell the tool
-    /// refuses rather than returning empty <c>cells</c> — that quiet-looking shape would hide a roll
-    /// or an uncounted tape.
+    /// Top-level fields are always present. When this process is not the recorder, closed coverage
+    /// is served with <see cref="Live"/> false rather than refused (gh#728). A window with no closed
+    /// tape still refuses with a sentence naming the fix (gh#218). A covered window whose stored tape
+    /// has prints the cells do not yet reflect is projected on the read (gh#366, gh#377). If the tape
+    /// still produces no cell the tool refuses rather than returning empty <c>cells</c> — that
+    /// quiet-looking shape would hide a roll or an uncounted tape.
     /// </remarks>
     public sealed record FootprintSeries(
         string Symbol,
@@ -982,7 +986,8 @@ public static class ToolPayloads
         IReadOnlyList<FootprintCellPoint> Cells,
         CoveredWindow Covered,
         ContractCoverage Contracts,
-        VolumeFrontInfo Front);
+        VolumeFrontInfo Front,
+        bool Live);
 
     /// <summary>Volume at one price on the wire.</summary>
     /// <param name="P">The price.</param>
@@ -1008,10 +1013,14 @@ public static class ToolPayloads
     /// Tape volume-front beside the contract Bars would fetch. Always present as an object;
     /// keys inside it are omitted when that answer does not exist.
     /// </param>
+    /// <param name="Live">
+    /// Whether this process is recording that instrument. False means the profile is closed coverage
+    /// from a recorder this process is not, and live coverage is absent (gh#728). Always present.
+    /// </param>
     /// <remarks>
-    /// Top-level fields are always present. Live tape-subscription health
-    /// is not a field on this payload — when the tape is not listening the tool refuses with a sentence
-    /// naming the fix (gh#218).
+    /// Top-level fields are always present. When this process is not the recorder, closed coverage
+    /// is served with <see cref="Live"/> false rather than refused (gh#728). A window with no closed
+    /// tape still refuses with a sentence naming the fix (gh#218).
     /// </remarks>
     public sealed record VolumeProfileSeries(
         string Symbol,
@@ -1024,7 +1033,8 @@ public static class ToolPayloads
         long TotalVolume,
         CoveredWindow Covered,
         ContractCoverage Contracts,
-        VolumeFrontInfo Front);
+        VolumeFrontInfo Front,
+        bool Live);
 
     /// <summary>
     /// The session — and the instant inside it — when the volume-front flipped.

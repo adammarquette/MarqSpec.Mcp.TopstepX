@@ -56,6 +56,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   when the send throws, or when the audit write fails after the ack.
   A release that fails before the send leaves the refusal that was already decided.
 
+- **Railway staging deploy and production promotion** (gh#758). These are manual workflows and have not run
+  yet. `railway-staging` deploys a GHCR tag+digest to disposable staging (template checks, saved plan,
+  `/health` identity, synthetic seed), then records the digest that passed. `railway-promote` deploys only
+  such a digest to production, behind the `production` environment. `railway-staging-preflight` reports what
+  staging is missing (names only), and `railway-seed-check` keeps the seed in step with the migrations.
 - **Railway deploy template** (gh#758). `.railway/railway.ts` describes three image-sourced services:
   `postgres` (Timescale pg17, pinned by digest), a public OAuth `server`, and a private single-replica
   `recorder`. Both server roles run one pinned image, and `/health` reports its tag and digest. Production

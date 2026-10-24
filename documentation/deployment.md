@@ -235,6 +235,47 @@ for unbounded tape and keep its backups on.
 5. Pin the image, run `--mode deployable`, then `railway config plan`. Production deploys stay manual until
    Adam approves otherwise.
 
+### Staging deploy and promotion (gh#758)
+
+Two manual workflows. Neither has run yet.
+
+- **[`railway-staging.yml`](../.github/workflows/railway-staging.yml)** runs on `workflow_dispatch` with
+  `version` and `digest`, under environment `staging`. There is no push trigger: develop publishes no release
+  image. In order, it:
+  1. checks that the GHCR tag resolves to the digest;
+  2. pins the template with [`pin-image.sh`](../scripts/railway/pin-image.sh);
+  3. runs `--mode deployable` and `no-order-path`;
+  4. runs `railway config plan --out`, then `apply --plan`;
+  5. waits until `/health` reports exactly that version and digest
+     ([`wait-for-health.sh`](../scripts/railway/wait-for-health.sh)), so it fails if nothing shipped;
+  6. seeds the synthetic fixture;
+  7. checks `/health` again;
+  8. records the digest that passed as a `staging` GitHub deployment and a `staging-passed` artifact.
+
+  To **reset** staging, redeploy: it has no volume, so the database starts empty every time.
+- **[`railway-promote.yml`](../.github/workflows/railway-promote.yml)** runs on `workflow_dispatch` only,
+  under environment `production`. It refuses any version and digest without a successful staging record,
+  then deploys exactly that pin. A destructive plan stops it. **Production never auto-deploys**, and every
+  production run stays a manual, watched operation until Adam approves otherwise.
+
+**Seed.** [`staging-seed.sql`](../scripts/railway/seed/staging-seed.sql) is synthetic and deterministic:
+- 4,800 trades on venue `synthetic` (`MNQ` / `MES`, a fixed price formula, no account ids, keys or PII);
+- 1-minute bars derived from those trades;
+- tape coverage rows.
+
+It is idempotent (`ON CONFLICT DO NOTHING`). [`seed-staging.sh`](../scripts/railway/seed-staging.sh) refuses
+any environment but `staging` and runs `psql` inside the `postgres` service over `railway ssh`. That path is
+unverified with a project token.
+
+[`railway-seed-check.yml`](../.github/workflows/railway-seed-check.yml) keeps the seed honest on PRs: it
+applies every migration, seeds twice and compares the counts. A scrubbed snapshot of recent production tape
+is a possible later option; it needs Adam's approval and a scrub spec.
+
+**Adam's settings (not in any file):**
+- the GitHub `production` environment's required reviewers;
+- variables `RAILWAY_STAGING_BASE_URL` / `RAILWAY_PRODUCTION_BASE_URL` on those environments;
+- each `RAILWAY_TOKEN` as a Railway project token scoped to that one environment.
+
 ## Verify a running instance
 
 [`scripts/check-deployment.sh`](../scripts/check-deployment.sh) probes a **deployed** HTTPS origin from

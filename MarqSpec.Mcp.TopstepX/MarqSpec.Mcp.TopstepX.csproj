@@ -10,6 +10,7 @@
 
   <ItemGroup>
     <InternalsVisibleTo Include="MarqSpec.Mcp.TopstepX.Tests" />
+    <InternalsVisibleTo Include="MarqSpec.Mcp.TopstepX.IntegrationTests" />
   </ItemGroup>
 
   <PropertyGroup>

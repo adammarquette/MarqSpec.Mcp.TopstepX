@@ -64,6 +64,10 @@ services:
       # setting it here would only mask a compose stack whose health gate had stopped working (gh#514).
       Store__StartupWaitSeconds: "${Store__StartupWaitSeconds:-0}"
 
+      # The code default is 3600. Passed through so an operator can raise it for a large Trades hypertable
+      # without rebuilding the image. Npgsql's 30s default is what this replaces for MigrateAsync only.
+      Migrations__CommandTimeoutSeconds: "${Migrations__CommandTimeoutSeconds:-3600}"
+
       ProjectX__ApiKey: "${ProjectX__ApiKey:-}"
       ProjectX__ApiSecret: "${ProjectX__ApiSecret:-}"
       # Defaulted so `docker compose up` with credentials and no tier does not fail startup. The

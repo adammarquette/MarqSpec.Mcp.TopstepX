@@ -359,10 +359,13 @@ public sealed class RecorderHealthToolTests
         using MetricCollector<long> reads = Collect(fixture.Telemetry);
         fixture.Service.ProbeTimeout = TimeSpan.FromSeconds(2);
         fixture.Store.HoldProbe = true;
-        using CancellationTokenSource cancelled = new(TimeSpan.FromMilliseconds(50));
+        using CancellationTokenSource cancelled = new(TimeSpan.FromMilliseconds(50), fixture.Clock);
 
-        Func<Task> call = () => fixture.Tools.GetRecorderHealth(cancelled.Token);
+        Task<RecorderHealthReport.Report> pending = fixture.Tools.GetRecorderHealth(cancelled.Token);
+        await fixture.Store.ProbeEntered;
+        fixture.Clock.Advance(TimeSpan.FromMilliseconds(50));
 
+        Func<Task> call = async () => await pending.ConfigureAwait(false);
         await call.Should().ThrowAsync<OperationCanceledException>();
         reads.GetMeasurementSnapshot().Should().BeEmpty();
     }

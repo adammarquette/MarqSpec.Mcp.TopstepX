@@ -47,7 +47,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   with the root `Dockerfile` and `docker-compose.yml` ([`documentation/deployment.md`](documentation/deployment.md)).
   ADR-0023 is superseded.
 
-### Deploy
+### Changed
 
 - **Railway deploy template** (gh#758). `.railway/railway.ts` describes three image-sourced services:
   `postgres` (Timescale pg17, pinned by digest), a public OAuth `server`, and a private single-replica
@@ -61,8 +61,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   The gh#755 tape export stays off everywhere until the image contains #765 and drops root itself (#767); the
   check already enforces the #765 contract for when it is enabled. Both checks read env keys the way .NET does
   (case-insensitive, `:` equals `__`) and refuse colon keys, colliding keys and miscased known keys.
-
-### Changed
 
 - **`no-order-path` now gates the order path instead of forbidding it** (gh#718, ADR-0024). The required
   check of the same name changes meaning: from "no order path exists" (ADR-0002) to a tripwire for "orders

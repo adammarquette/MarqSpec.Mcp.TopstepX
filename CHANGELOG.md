@@ -40,6 +40,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   an empty `Trading__AllowedAccountIds` fails startup. The kill switch still blocks cancel and close; that
   block is pending Adam's decision.
 
+### Removed
+
+- **AWS CDK deployment infrastructure.** The `infra/` CDK application, OIDC deploy workflows, and related CI
+  gates are gone. **`release.yml` ends at the GHCR push** (no post-publish deploy jobs). Run published images
+  with the root `Dockerfile` and `docker-compose.yml` ([`documentation/deployment.md`](documentation/deployment.md)).
+  ADR-0023 is superseded.
+
+### Deploy
+
 - **Railway deploy template** (gh#758). `.railway/railway.ts` describes three image-sourced services:
   `postgres` (Timescale pg17, pinned by digest), a public OAuth `server`, and a private single-replica
   `recorder`. Both server roles run one pinned image, and `/health` reports its tag and digest. Production
@@ -52,13 +61,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   The gh#755 tape export stays off everywhere until the image contains #765 and drops root itself (#767); the
   check already enforces the #765 contract for when it is enabled. Both checks read env keys the way .NET does
   (case-insensitive, `:` equals `__`) and refuse colon keys, colliding keys and miscased known keys.
-
-### Removed
-
-- **AWS CDK deployment infrastructure.** The `infra/` CDK application, OIDC deploy workflows, and related CI
-  gates are gone. **`release.yml` ends at the GHCR push** (no post-publish deploy jobs). Run published images
-  with the root `Dockerfile` and `docker-compose.yml` ([`documentation/deployment.md`](documentation/deployment.md)).
-  ADR-0023 is superseded.
 
 ### Changed
 

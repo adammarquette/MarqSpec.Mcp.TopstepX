@@ -1,0 +1,147 @@
+# railway-staging.yml -- deploy ONE pinned GHCR image to the DISPOSABLE Railway staging environment (gh#758).
+#
+# Manual only (workflow_dispatch). There is no push trigger: develop publishes no release image, and this
+# deploys only an image release.yml already published, named by tag AND digest. There is NO production job
+# here; production goes through railway-promote.yml, which needs a passing staging record from this one.
+#
+# Staging is disposable: Postgres has no volume, so each deploy starts with an empty database, which this
+# then seeds with a synthetic fixture. Order: verify the image -> pin -> template checks (deployable mode,
+# Trading__Enabled literal "false") -> plan (saved) -> apply that plan -> /health reports the pinned
+# version and digest -> seed -> record the digest as a GitHub deployment + artifact.
+#
+# SECRETS: RAILWAY_TOKEN is a project token scoped to the Railway staging environment, held on the GitHub
+# `staging` environment. It reaches steps only via `env:`, never an argument, and no step uses `set -x`.
+# Railway's plan redacts variable values by default; --show-values is never passed.
+name: railway-staging
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Release tag to deploy, X.Y.Z (no v)"
+        required: true
+      digest:
+        description: "Image index digest for that tag, sha256:<64 hex>"
+        required: true
+
+permissions:
+  contents: read
+  packages: read
+  deployments: write
+
+concurrency:
+  group: railway-staging
+  cancel-in-progress: false
+
+env:
+  IMAGE: ghcr.io/adammarquette/marqspec.mcp.topstepx
+  RAILWAY_CLI_VERSION: "5.71.0"
+
+jobs:
+  deploy:
+    name: deploy + seed (staging)
+    runs-on: ubuntu-latest
+    environment: staging
+    timeout-minutes: 30
+    outputs:
+      digest: ${{ steps.record.outputs.digest }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Validate inputs
+        env:
+          VERSION: ${{ inputs.version }}
+          DIGEST: ${{ inputs.digest }}
+        run: |
+          [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "::error::version must be X.Y.Z"; exit 1; }
+          [[ "$DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "::error::digest must be sha256:<64 hex>"; exit 1; }
+
+      # Deploy identity: the tag must exist in GHCR and resolve to exactly this digest, so what ships is what
+      # was named. A digest that is not this tag's is refused rather than deployed under the wrong version.
+      - name: Verify the tag resolves to the digest
+        env:
+          VERSION: ${{ inputs.version }}
+          DIGEST: ${{ inputs.digest }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          echo "$GH_TOKEN" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin >/dev/null
+          actual="$(docker buildx imagetools inspect "$IMAGE:$VERSION" --format '{{json .Manifest.Digest}}' | tr -d '"')"
+          [ "$actual" = "$DIGEST" ] || { echo "::error::$IMAGE:$VERSION is $actual, not $DIGEST"; exit 1; }
+          echo "ok: $IMAGE:$VERSION = $DIGEST"
+
+      - name: Pin the template (local commit, not pushed)
+        env:
+          VERSION: ${{ inputs.version }}
+          DIGEST: ${{ inputs.digest }}
+        run: |
+          scripts/railway/pin-image.sh "$VERSION" "$DIGEST"
+          git -c user.name=ci -c user.email=ci@invalid commit -q -m "pin $VERSION" .railway/railway.ts
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+
+      - name: Template checks (deployable mode; Trading__Enabled literal "false")
+        run: |
+          scripts/check-railway-template.sh --mode deployable
+          scripts/check-no-order-path.sh
+
+      - name: Install the Railway CLI
+        run: npm install -g "@railway/cli@$RAILWAY_CLI_VERSION" && railway --version
+
+      - name: Plan (saved)
+        env:
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+        run: railway config plan --environment staging --out railway-plan.json
+
+      - name: Apply exactly that plan
+        env:
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+        run: railway config apply --environment staging --plan railway-plan.json --yes
+
+      # Fail if nothing shipped: /health must report THIS version and digest, not an older deployment's.
+      - name: /health reports the pinned image
+        env:
+          BASE_URL: ${{ vars.RAILWAY_STAGING_BASE_URL }}
+          VERSION: ${{ inputs.version }}
+          DIGEST: ${{ inputs.digest }}
+        run: scripts/railway/wait-for-health.sh "$BASE_URL" "$VERSION" "$DIGEST" 600
+
+      - name: Seed the synthetic fixture (staging only)
+        env:
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+        run: scripts/railway/seed-staging.sh staging
+
+      # Stays up: the seed must not have knocked anything over.
+      - name: /health still reports the pinned image
+        env:
+          BASE_URL: ${{ vars.RAILWAY_STAGING_BASE_URL }}
+          VERSION: ${{ inputs.version }}
+          DIGEST: ${{ inputs.digest }}
+        run: scripts/railway/wait-for-health.sh "$BASE_URL" "$VERSION" "$DIGEST" 120
+
+      # The record railway-promote.yml requires: a successful `staging` GitHub deployment whose payload names
+      # this exact digest. Written only after deploy, health and seed all passed.
+      - name: Record the digest that passed
+        id: record
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ inputs.version }}
+          DIGEST: ${{ inputs.digest }}
+        run: |
+          id="$(jq -n --arg ref "$GITHUB_SHA" --arg v "$VERSION" --arg d "$DIGEST" --arg img "$IMAGE" \
+                 '{ref:$ref, environment:"staging", auto_merge:false, required_contexts:[], transient_environment:true,
+                   description:("railway staging passed " + $v), payload:{image:$img, version:$v, digest:$d, checks:["deploy","health","seed"]}}' \
+               | gh api -X POST "repos/$GITHUB_REPOSITORY/deployments" --input - -q .id)"
+          gh api -X POST "repos/$GITHUB_REPOSITORY/deployments/$id/statuses" -f state=success \
+            -f environment_url="${{ vars.RAILWAY_STAGING_BASE_URL }}" -f description="deploy, health and seed passed" >/dev/null
+          jq -n --arg v "$VERSION" --arg d "$DIGEST" --arg id "$id" --arg run "$GITHUB_RUN_ID" \
+            '{version:$v, digest:$d, deployment_id:$id, run_id:$run}' > staging-passed.json
+          echo "digest=$DIGEST" >> "$GITHUB_OUTPUT"
+          echo "### Staging passed: \`$IMAGE:$VERSION@$DIGEST\` (deployment $id)" >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: staging-passed
+          path: staging-passed.json
+          retention-days: 90

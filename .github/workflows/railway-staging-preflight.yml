@@ -1,0 +1,67 @@
+# railway-staging-preflight.yml -- READ-ONLY: what is still missing in Railway staging before a deploy (gh#758).
+#
+# Prints NAMES ONLY: services, which shared variables the template needs that the environment lacks, and a
+# `railway config plan` (values redacted by Railway by default; --show-values is never passed). It changes
+# nothing in Railway: no apply, no variable writes. Every value read is reduced to its key by jq before
+# anything is printed. Runs on the PR that adds it, and on demand.
+name: railway-staging-preflight
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/railway-staging-preflight.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  preflight:
+    # Same-repo PRs only: a fork never receives the staging token.
+    if: github.event_name == 'workflow_dispatch' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    environment: staging
+    timeout-minutes: 10
+    env:
+      RAILWAY_CLI_VERSION: "5.71.0"
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+      - name: Install the Railway CLI
+        run: npm install -g "@railway/cli@$RAILWAY_CLI_VERSION" >/dev/null && railway --version
+
+      - name: Token scope and services (names only)
+        env:
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+        run: |
+          [ "${#RAILWAY_TOKEN}" -gt 0 ] || { echo "::error::RAILWAY_TOKEN is empty on the staging environment"; exit 1; }
+          railway api 'query { projectToken { projectId environmentId project { name services { edges { node { id name } } } } environment { name } } }' > scope.json \
+            || { echo "::error::the token could not read its own scope (is it a project token?)"; exit 1; }
+          jq -r '.data.projectToken // .projectToken | "project: \(.project.name)\nenvironment: \(.environment.name)\nservices: \([.project.services.edges[].node.name] | join(", "))"' scope.json
+
+      - name: Shared variables the template needs (names only)
+        env:
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+        run: |
+          s='.data.projectToken // .projectToken'
+          pid="$(jq -r "$s | .projectId" scope.json)"; eid="$(jq -r "$s | .environmentId" scope.json)"
+          railway api 'query($p: String!, $e: String!) { variables(projectId: $p, environmentId: $e) }' \
+            --var "p=$pid" --var "e=$eid" | jq -r '(.data.variables // .variables) | keys[]' | sort > have.txt
+          grep -oE 'ctx\.shared\.[A-Z0-9_]+' .railway/railway.ts | sed 's/ctx\.shared\.//' | sort -u > need.txt
+          echo "shared variables present: $(paste -sd, have.txt)"
+          missing="$(comm -23 need.txt have.txt | paste -sd, -)"
+          if [ -n "$missing" ]; then echo "::warning::MISSING shared variables: $missing"; else echo "ok: every shared variable the template references exists"; fi
+          extra="$(comm -13 need.txt have.txt | paste -sd, -)"; [ -z "$extra" ] || echo "present but unused by the template: $extra"
+
+      # Read-only. The image is still the template sentinel, so the plan shows an image change; what matters
+      # here is whether it evaluates and resolves every reference. Registry credentials are a dashboard
+      # setting the API does not expose here; check them in Railway.
+      - name: Plan (read-only, values redacted)
+        env:
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+        run: |
+          (cd scripts/railway && npm ci --ignore-scripts --no-audit --no-fund --loglevel=error)
+          mkdir -p node_modules && ln -sfn "$PWD/scripts/railway/node_modules/railway" node_modules/railway
+          railway config plan --environment staging || echo "::warning::plan did not complete; see above"

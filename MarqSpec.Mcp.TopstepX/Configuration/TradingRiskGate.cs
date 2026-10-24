@@ -49,11 +49,12 @@ public sealed class TradingRiskGate
     private bool _operationStarted;
 
     /// <summary>
-    /// Cleanup fault planted by a test and copied onto the per-call attempt. Production leaves this null.
-    /// Cancel and close take no daily-cap lease, so this is how those operations raise a post-send cleanup
-    /// fault into the handler that must not report a retry.
+    /// Cleanup fault planted by a test and copied onto the per-call attempt. Production passes null through
+    /// the public constructor. Cancel and close take no daily-cap lease, so a test passes the fault to the
+    /// internal constructor and the gate copies it onto the per-call attempt. The hook is not a settable
+    /// property on this type.
     /// </summary>
-    internal Exception? CleanupFaultForTest { get; set; }
+    private readonly Exception? _cleanupFault;
 
     /// <summary>
     /// Send-started and lease-release state for one order operation. Passed through
@@ -73,7 +74,7 @@ public sealed class TradingRiskGate
         public Exception? CleanupFault { get; set; }
     }
 
-    /// <summary>Creates the risk gate.</summary>
+    /// <summary>Creates the risk gate. Production passes no cleanup fault.</summary>
     public TradingRiskGate(
         TradingExecutionGate executionGate,
         IExecutionGateway gateway,
@@ -85,6 +86,52 @@ public sealed class TradingRiskGate
         TradingContractDenylist contractDenylist,
         TradingWriteVenueAccountCache accountCache,
         HostTelemetry telemetry)
+        : this(
+            executionGate,
+            gateway,
+            marketData,
+            stageResolver,
+            unknownStageSignal,
+            dailyCap,
+            auditLog,
+            contractDenylist,
+            accountCache,
+            telemetry,
+            cleanupFault: null)
+    {
+    }
+
+    /// <summary>
+    /// Creates the risk gate with a cleanup fault visible only to assemblies named by
+    /// <c>InternalsVisibleTo</c>. Production uses the public constructor. The fault is copied onto the
+    /// per-call attempt so cancel and close, which take no daily-cap lease, can still raise a post-send
+    /// cleanup fault into the handler that must not report a retry.
+    /// </summary>
+    /// <param name="executionGate">The disabled, halted, stage and cap checks.</param>
+    /// <param name="gateway">The venue write seam.</param>
+    /// <param name="marketData">Account, order and position reads.</param>
+    /// <param name="stageResolver">Practice-stage parsing.</param>
+    /// <param name="unknownStageSignal">Signal raised when a write is refused because the stage cannot be read.</param>
+    /// <param name="dailyCap">The session-day lock and contract rollup.</param>
+    /// <param name="auditLog">The append-only audit log.</param>
+    /// <param name="contractDenylist">The contract denylist.</param>
+    /// <param name="accountCache">The per-attempt account cache.</param>
+    /// <param name="telemetry">Execution-write spans and counters.</param>
+    /// <param name="cleanupFault">
+    /// A fault planted by a test, or null. Copied onto the per-call attempt before the operation runs.
+    /// </param>
+    internal TradingRiskGate(
+        TradingExecutionGate executionGate,
+        IExecutionGateway gateway,
+        IMarketDataGateway marketData,
+        IAccountStageResolver stageResolver,
+        ITradingUnknownStageRefusalSignal unknownStageSignal,
+        ITradingDailyCapCoordinator dailyCap,
+        ITradingAuditLogWriter auditLog,
+        TradingContractDenylist contractDenylist,
+        TradingWriteVenueAccountCache accountCache,
+        HostTelemetry telemetry,
+        Exception? cleanupFault)
     {
         _executionGate = executionGate;
         _gateway = gateway;
@@ -96,6 +143,7 @@ public sealed class TradingRiskGate
         _contractDenylist = contractDenylist;
         _accountCache = accountCache;
         _telemetry = telemetry;
+        _cleanupFault = cleanupFault;
     }
 
     /// <summary>Places an order when every gate layer permits.</summary>
@@ -154,7 +202,7 @@ public sealed class TradingRiskGate
         }
 
         _operationStarted = true;
-        SendAttempt attempt = new() { CleanupFault = CleanupFaultForTest };
+        SendAttempt attempt = new() { CleanupFault = _cleanupFault };
         _accountCache.Clear();
         HostTelemetry.ExecutionWriteScope write = _telemetry.ExecutionWrite(operation);
         TradingRiskGateResult result;

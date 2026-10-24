@@ -78,13 +78,16 @@ public sealed class TradingDailyCapCoordinatorIntegrationTests(SeriesStoreFixtur
         using MeterListener listener = new();
         listener.InstrumentPublished = (instrument, meterListener) =>
         {
-            if (instrument.Meter.Name == HostTelemetry.Name
+            // Scope, not the meter name. Every HostTelemetry publishes HostTelemetry.Name, so a name
+            // match collects a measurement another test in this process recorded.
+            if (ReferenceEquals(instrument.Meter.Scope, telemetry)
                 && instrument.Name == HostTelemetry.BookkeepingFaultsInstrument)
             {
                 meterListener.EnableMeasurementEvents(instrument);
             }
         };
-        listener.SetMeasurementEventCallback<long>((_, measurement, _, _) => faults += measurement);
+        listener.SetMeasurementEventCallback<long>(
+            (_, measurement, _, _) => Interlocked.Add(ref faults, measurement));
         listener.Start();
 
         TradingDailyCapCoordinator coordinator = new(_database, _clock, telemetry);

@@ -294,10 +294,11 @@ An order is **not treated as live** until the **broker acknowledgment** arrives.
   `SafeToRetry`. The tool catch-all is defensive: any other exception is `OutcomeUnknown`, the refusal is
   omitted, and `resultCode` is `-1` (`UnclassifiedFaultResultCode`), which is not a venue code and is not
   a retry. A structured `OutcomeUnknown` from the gate has neither a refusal nor a result code.
-  **Known conservative case:** a throw before the gate's telemetry try — constructing the span, or the
-  one-shot guard — is outside the classification that wraps a pre-send fault as `PreSendFaultException`.
-  The tool then reports `OutcomeUnknown` even though the vendor was not called. That can be a false
-  unknown. It is the conservative report: the caller reconciles instead of sending again. A replay of a bare Unknown claim returns that `Unknown` unless a later
+  **Known conservative cases,** each a false unknown. The caller reconciles instead of sending again.
+  A throw before the gate's telemetry try — constructing the span, or the one-shot guard — is outside the
+  classification that wraps a pre-send fault as `PreSendFaultException`. The tool then reports
+  `OutcomeUnknown` even though the vendor was not called. The order id is dropped after an acknowledged place.
+  A replay of a bare Unknown claim returns that `Unknown` unless a later
   `Live`, `Failed`, or `Refused` row exists, and it is never rewritten as `Live`.
   **Why an unacknowledged result is stored:** the earlier rule was "do not cache an unacked result as
   success." Caching it as `Unknown` is the opposite of caching it as success. The row exists so a crash

@@ -9,7 +9,9 @@ namespace MarqSpec.Mcp.TopstepX.Configuration;
 public static class TradingRequestHasher
 {
     /// <summary>Hashes a place-order command into a stable SHA-256 hex digest for the audit log.</summary>
-    public static string HashPlace(ExecutionPlaceOrderCommand command) =>
+    /// <param name="command">The command.</param>
+    /// <param name="dryRun">Included so a preview and a transmit of the same order are different requests.</param>
+    public static string HashPlace(ExecutionPlaceOrderCommand command, bool dryRun) =>
         Hash(
             command.AccountId,
             command.ContractId,
@@ -18,23 +20,32 @@ public static class TradingRequestHasher
             command.Size,
             command.LimitPrice,
             command.StopPrice,
-            command.TrailPrice);
+            command.TrailPrice,
+            dryRun);
 
     /// <summary>Hashes a modify-order command.</summary>
-    public static string HashModify(ExecutionModifyOrderCommand command) =>
-        Hash(command.AccountId, command.OrderId, command.Size, command.LimitPrice, command.StopPrice);
+    /// <param name="command">The command.</param>
+    /// <param name="dryRun">Included so a preview and a transmit are different requests.</param>
+    public static string HashModify(ExecutionModifyOrderCommand command, bool dryRun) =>
+        Hash(command.AccountId, command.OrderId, command.Size, command.LimitPrice, command.StopPrice, dryRun);
 
     /// <summary>Hashes a cancel-order command.</summary>
-    public static string HashCancel(ExecutionCancelOrderCommand command) =>
-        Hash(command.AccountId, command.OrderId);
+    /// <param name="command">The command.</param>
+    /// <param name="dryRun">Included so a preview and a transmit are different requests.</param>
+    public static string HashCancel(ExecutionCancelOrderCommand command, bool dryRun) =>
+        Hash(command.AccountId, command.OrderId, dryRun);
 
     /// <summary>Hashes a close-position command.</summary>
-    public static string HashClose(ExecutionClosePositionCommand command) =>
-        Hash(command.AccountId, command.ContractId);
+    /// <param name="command">The command.</param>
+    /// <param name="dryRun">Included so a preview and a transmit are different requests.</param>
+    public static string HashClose(ExecutionClosePositionCommand command, bool dryRun) =>
+        Hash(command.AccountId, command.ContractId, dryRun);
 
     /// <summary>Hashes a partial-close command.</summary>
-    public static string HashPartialClose(ExecutionPartialClosePositionCommand command) =>
-        Hash(command.AccountId, command.ContractId, command.Size);
+    /// <param name="command">The command.</param>
+    /// <param name="dryRun">Included so a preview and a transmit are different requests.</param>
+    public static string HashPartialClose(ExecutionPartialClosePositionCommand command, bool dryRun) =>
+        Hash(command.AccountId, command.ContractId, command.Size, dryRun);
 
     private static string Hash(params object?[] parts)
     {

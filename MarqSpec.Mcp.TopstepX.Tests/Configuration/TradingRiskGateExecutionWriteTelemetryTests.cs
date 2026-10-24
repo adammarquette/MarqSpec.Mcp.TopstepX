@@ -167,8 +167,7 @@ public sealed class TradingRiskGateExecutionWriteTelemetryTests
             _audit,
             denylist,
             new TradingWriteVenueAccountCache(),
-            telemetry,
-            new InMemoryTradingIdempotencyStore(TimeProvider.System));
+            telemetry);
     }
 
     private TradingRiskGate GateWithRealGateway(
@@ -205,8 +204,7 @@ public sealed class TradingRiskGateExecutionWriteTelemetryTests
             _audit,
             denylist,
             accountCache,
-            telemetry,
-            new InMemoryTradingIdempotencyStore(TimeProvider.System));
+            telemetry);
     }
 
     private static VenueAccount PracticeAccount(IAccountStageResolver stageResolver) =>
@@ -295,6 +293,14 @@ public sealed class TradingRiskGateExecutionWriteTelemetryTests
         {
             Entries.Add(request);
             return Task.CompletedTask;
+        }
+
+        public Task<TradingAuditClaimResult> TryClaimUnknownAsync(
+            TradingAuditWriteRequest request,
+            CancellationToken cancellationToken)
+        {
+            _ = cancellationToken;
+            return Task.FromResult(TradingAuditClaimMemory.TryClaim(Entries, request));
         }
     }
 

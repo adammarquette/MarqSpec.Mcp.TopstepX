@@ -1063,25 +1063,42 @@ methods are named `Submit*` and the published names below are the MCP `Name`.
 **`Trading__Enabled` defaults to false.** A call while it is false refuses with `trading_disabled` before the
 vendor client is touched. That refusal writes no audit row, charges no daily cap and calls no gateway method.
 The kill switch refuses with `kill_switch` on the same five tools. Cancel and close have no carve-out.
+**Pending Adam:** that block stays until he decides whether a halt may still flatten. v1 does not add a carve-out.
+
+When `Trading__Enabled` is true, startup fails if `Trading__AllowedAccountIds` is empty.
+
+**These tools write on a live practice account and the stakes are real.** A non-practice account is refused.
+Use a fresh `idempotencyKey` for each order. never retry OutcomeUnknown; reconcile via list_open_orders,
+list_positions and recent trades (`get_orders`, `get_positions`, `get_trades`).
 
 **Every call emits the gate's telemetry.** The span is `execution.<tool>` and the counter is
-`mcp.execution.writes`, tagged `operation` and `refusal`. The gate owns both. The tools do not open a second
-span or counter.
+`mcp.execution.writes`, tagged `operation`, `refusal` and `replay`. A replay is `replay=true` and is not a
+new outcome. The gate owns both. The tools do not open a second span or counter.
 
-**`idempotencyKey` is required.** A replay of the same account, tool and request inside 24 hours returns the
-original result and does not send again. The store is process-local: a restart forgets every key, and the
-next call with that key is a new attempt (gh#712). The stored result is the original one, including
-`Refused`, `Failed` and `Unknown` — a replay is never rewritten as `Live`. A disabled refusal is stored too,
-so turning `Trading__Enabled` on does not turn that key into a send; a new attempt needs a new key. The same
-key with a different request is `idempotency_conflict` and does not transmit. A blank key, or one longer than
-256 characters, is `idempotency_key_required`. The master switch is checked first, so a blank key while
-trading is disabled is `trading_disabled`.
+**`idempotencyKey` is required.** It is scoped per account and per tool, and `TradingAuditClaims.MaxKeyLength`
+is 256, the same width as the audit column. A replay of the same account, tool and request hash returns the
+stored transmit and does not send again. The claim is the pre-send `Unknown` audit row, unique in Postgres,
+so a restart, a redeploy or another replica still sees it (gh#712). Only a transmit is stored. A refusal or
+a preview is not replayed: a `trading_disabled` refusal does not become a send after trading is enabled.
+The same key with a different request hash, including a different `dryRun`, is `idempotency_conflict` and
+does not transmit. A blank key, or one longer than 256 characters, is `idempotency_key_required`. The master
+switch is checked first, so a blank key while trading is disabled is `trading_disabled`. The claim is taken
+after that check.
 
 **`retrySafety` is the retry signal.** `SafeToRetry` is a refusal, a preview, or a venue rejection.
 `NotSafeToRetry` is a broker acknowledgment (`status: Live`). `OutcomeUnknown` is a transmit whose outcome
-could not be classified, including a broker success that carried no order id. `Live` is only that
-acknowledgment. `refusalCode`, `resultCode` and `orderId` are omitted when the call has nothing to report
+could not be classified, including a throw from the venue and a broker success that carried no order id.
+A venue exception is that structured payload, not an error result. `Live` is only that acknowledgment.
+`refusalCode`, `resultCode` and `orderId` are omitted when the call has nothing to report
 for them — they are fields, so the test is key presence.
+
+**Validation runs before any audit row.** `size` must be greater than 0 (`size_not_positive`). A limit needs
+a positive `limitPrice`, a stop needs a positive `stopPrice`, a stop-limit needs both, and a trailing stop
+needs a positive `trailPrice` (`price_required`, `price_not_positive`). Any supplied price must be positive.
+`modify_order` runs the per-order and daily caps when `size` is supplied and does not treat a missing size
+as zero. `partial_close_position` is refused when `size` exceeds the open position
+(`partial_close_exceeds_position`). `accountId` is the venue id from `list_accounts`, and only a practice
+account is accepted.
 
 **`dryRun: true` runs the same gates and returns `Preview`.** It does not transmit.
 

@@ -693,16 +693,19 @@ Index: `(Instrument, Session, Indicator, Period, BucketStart)` — the shape of 
 | `AccountId` | `integer` | Venue account id |
 | `ParsedStage` | `varchar(16)` | Stage from a **fresh** account fetch — `Practice`, `Evaluation`, `Funded`, `Unknown` |
 | `Tool` | `varchar(64)` | MCP tool name, e.g. `place_order` |
-| `IdempotencyKey` | `varchar(256)` | Caller-supplied key for the attempt |
-| `RequestHash` | `varchar(64)` | SHA-256 hex of the normalised request — **no raw body, no secrets** |
-| `DryRun` | `boolean` | Preview (`dryRun: true`) vs transmit |
-| `ContractCount` | `integer` | Cap charge on `Attempted`; outcome rows use `0`. Session-day rollups sum `Attempted` on `place_order`, `modify_order`, and `partial_close_position` (5 PM America/Chicago boundary) |
-| `Outcome` | `varchar(32)` | Closed outcome name — e.g. `Preview`, `Refused`, `Live`, `Failed` |
-| `VenueErrorCode` | `varchar(64)` | Venue business error when a write ran; null when no gateway write |
+| `IdempotencyKey` | `varchar(256)` | Caller-supplied key. `TradingAuditClaims.MaxKeyLength` is 256, the column width. Scoped with `AccountId` and `Tool` |
+| `RequestHash` | `varchar(64)` | SHA-256 hex of the normalised request, including `dryRun` — **no raw body, no secrets** |
+| `DryRun` | `boolean` | Preview (`dryRun: true`) vs transmit. Also a part of `RequestHash` |
+| `ContractCount` | `integer` | Cap charge on `Attempted`; the pre-send `Unknown` claim and other outcome rows use `0`. Session-day rollups sum `Attempted` on `place_order`, `modify_order`, and `partial_close_position` (5 PM America/Chicago boundary) |
+| `Outcome` | `varchar(32)` | Closed outcome name — `Attempted`, `Preview`, `Refused`, `Live`, `Failed`, `Unknown` |
+| `VenueErrorCode` | `varchar(64)` | Venue business error when a write ran; null on the pre-send claim |
+| `OrderId` | `bigint` null | Broker order id on a `Live` row, so a replay can return it. Null otherwise |
 
-One row for **every** trading attempt — preview, confirm, or live — before the outcome is returned
-(ADR-0024 Proposed §5, gh#707 / gh#709). The idempotency store that suppresses
-duplicate venue calls is separate; this table is the audit trail, not the dedupe cache.
+One row for **every** trading attempt that passes validation — preview, refusal, or live — before the
+outcome is returned (ADR-0024 §5, gh#707 / gh#709 / gh#750). A size, price or partial-close refusal writes
+no row. The idempotency claim **is** a row in this table: one `Unknown` row inserted before the send, unique
+on `(AccountId, Tool, IdempotencyKey)` where `Outcome = 'Unknown'` and the key is not empty. A later `Live`
+or `Failed` row for the same key is what a replay prefers. Empty keys are outside the unique index.
 
 **The cap charge sits on `Attempted`, and outcome rows stay at `0`.** A gateway refusal after the write-ahead
 appends a second `Attempted` row with the negated count, then `Refused` at `0`, so the session-day sum nets
@@ -713,7 +716,8 @@ Tests truncate the table between cases; production has no supported mutation pat
 
 **Not a hypertable** — volume is bounded by human-scale order attempts, not bar or tape rates.
 
-Indexes: `(AccountId, AttemptedAt)` for an account's history; `(IdempotencyKey)` for correlating retries.
+Indexes: `(AccountId, AttemptedAt)` for an account's history; `(IdempotencyKey)` for correlating retries;
+unique partial `(AccountId, Tool, IdempotencyKey)` for the pre-send claim.
 
 ---
 *Changing an entity or a migration? Update the section above in the same PR. A data dictionary that lags the

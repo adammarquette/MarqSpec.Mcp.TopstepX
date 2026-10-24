@@ -45,9 +45,10 @@ public sealed class TradingExecutionOptions : IValidatableObject
     public string? KillSwitchFile { get; init; }
 
     /// <summary>
-    /// Optional venue account ids that may receive writes, comma-separated. Empty means no allowlist — every
-    /// practice account passes this layer. The list is a secondary filter only; it cannot enable evaluation,
-    /// funded or unknown accounts (ADR-0024 §2).
+    /// Venue account ids that may receive writes, comma-separated. Empty is valid only while trading is
+    /// disabled. When the master switch is on, startup refuses an empty list: an enabled server with no
+    /// allowlist would accept every practice account. The list is still a secondary filter; it cannot enable
+    /// evaluation, funded or unknown accounts (ADR-0024 §2).
     /// </summary>
     public string? AllowedAccountIds { get; init; }
 
@@ -122,6 +123,16 @@ public sealed class TradingExecutionOptions : IValidatableObject
     /// <inheritdoc />
     public IEnumerable<ValidationResult> Validate(ValidationContext validationContext)
     {
+        if (Enabled && string.IsNullOrWhiteSpace(AllowedAccountIds))
+        {
+            yield return new ValidationResult(
+                SectionName
+                + "__"
+                + nameof(AllowedAccountIds)
+                + " must list at least one account id when trading is enabled. An empty allowlist with the master switch on would accept every practice account.",
+                [nameof(AllowedAccountIds)]);
+        }
+
         if (!TryParseAccountIds(AllowedAccountIds, out _, out ValidationResult? accountError))
         {
             yield return accountError!;

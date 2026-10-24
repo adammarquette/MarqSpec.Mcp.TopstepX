@@ -646,7 +646,8 @@ public static class Program
             .ValidateOnStart();
 
         // Trading write controls (ADR-0024 v1, gh#708). Default Trading__Enabled=false. Order tools call
-        // TradingRiskGate only; the idempotency store is a singleton so a replay in this process hits.
+        // TradingRiskGate only. Idempotency is the pre-send Unknown audit row, unique per account, tool
+        // and key, so a restart or a second replica replays from the store.
         services.AddOptions<TradingExecutionOptions>()
             .Configure<IConfiguration>(TradingExecutionOptionsConfiguration.Bind)
             .ValidateDataAnnotations()
@@ -661,7 +662,6 @@ public static class Program
         services.AddScoped<ITradingDailyCapCoordinator, TradingDailyCapCoordinator>();
         services.AddScoped<TradingContractDenylist>();
         services.AddScoped<TradingWriteVenueAccountCache>();
-        services.AddSingleton<ITradingIdempotencyStore, InMemoryTradingIdempotencyStore>();
         services.AddScoped<TradingRiskGate>();
 
         // Under HTTP, exactly one authentication mode, complete — the token for StaticToken, the issuer,

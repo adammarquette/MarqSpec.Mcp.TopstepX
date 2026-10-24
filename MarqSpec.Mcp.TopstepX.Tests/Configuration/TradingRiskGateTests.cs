@@ -376,23 +376,34 @@ public sealed class TradingRiskGateTests
     }
 
     [Fact]
-    public async Task TradingRiskGate_WritesUnknownAudit_WhenGatewayThrowsAfterSend()
+    public async Task TradingRiskGate_WritesUnknownClaim_BeforeAThrowingSend_AndANewGateDoesNotSendAgain()
     {
         _gateway.PlaceOrderException = new InvalidOperationException("timeout");
         TradingRiskGate gate = Gate(new TradingExecutionOptions { Enabled = true });
+        ExecutionPlaceOrderCommand command = SamplePlace(PracticeAccountId);
 
-        Func<Task> act = () => gate.SubmitPlace(
-            SamplePlace(PracticeAccountId),
-            Context(dryRun: false),
+        TradingRiskGateResult first = await gate.SubmitPlace(
+            command,
+            new TradingRiskAttemptContext(DryRun: false, IdempotencyKey: "throw-key"),
             CancellationToken.None);
 
-        await act.Should().ThrowAsync<InvalidOperationException>();
+        first.Outcome.Should().Be(TradingAttemptOutcome.Unknown);
         _audit.Entries.Should().Contain(e =>
-            e.Outcome == TradingAuditOutcomes.Attempted && e.ContractCount == SamplePlace(PracticeAccountId).Size);
+            e.Outcome == TradingAuditOutcomes.Unknown && e.ContractCount == 0 && e.Request.IdempotencyKey == "throw-key");
         _audit.Entries.Should().Contain(e =>
-            e.Outcome == TradingAuditOutcomes.Unknown
-            && e.VenueErrorCode == nameof(InvalidOperationException)
-            && e.ContractCount == 0);
+            e.Outcome == TradingAuditOutcomes.Attempted && e.ContractCount == command.Size);
+        int callsAfterThrow = _gateway.PlaceOrderCalls;
+
+        _gateway.PlaceOrderException = null;
+        TradingRiskGate restarted = Gate(new TradingExecutionOptions { Enabled = true });
+        TradingRiskGateResult retry = await restarted.SubmitPlace(
+            command,
+            new TradingRiskAttemptContext(DryRun: false, IdempotencyKey: "throw-key"),
+            CancellationToken.None);
+
+        retry.Outcome.Should().Be(TradingAttemptOutcome.Unknown);
+        retry.IsReplay.Should().BeTrue();
+        _gateway.PlaceOrderCalls.Should().Be(callsAfterThrow);
     }
 
     [Fact]
@@ -420,7 +431,7 @@ public sealed class TradingRiskGateTests
         await gate.SubmitPlace(command, Context(dryRun: true), CancellationToken.None);
 
         _audit.Entries.Should().ContainSingle();
-        _audit.Entries[0].RequestHash.Should().Be(TradingRequestHasher.HashPlace(command));
+        _audit.Entries[0].RequestHash.Should().Be(TradingRequestHasher.HashPlace(command, dryRun: true));
     }
 
     [Fact]
@@ -577,8 +588,7 @@ public sealed class TradingRiskGateTests
             _audit,
             denylist,
             new TradingWriteVenueAccountCache(),
-            new HostTelemetry(),
-            new InMemoryTradingIdempotencyStore(TimeProvider.System));
+            new HostTelemetry());
     }
 
     private static VenueOrder OpenOrder(long orderId, string contractId) =>
@@ -661,8 +671,16 @@ public sealed class TradingRiskGateTests
 
         public Task<IReadOnlyList<VenuePosition>> GetOpenPositionsAsync(
             int accountId,
-            CancellationToken cancellationToken) =>
-            throw new NotSupportedException();
+            CancellationToken cancellationToken)
+        {
+            _ = accountId;
+            _ = cancellationToken;
+            IReadOnlyList<VenuePosition> positions =
+            [
+                new("CON.F.US.MES.Z26", SignedSize: 3, AveragePrice: 6800m, OpenedAt: DateTimeOffset.UnixEpoch),
+            ];
+            return Task.FromResult(positions);
+        }
 
         public Task<IReadOnlyList<VenueOrder>> GetOrdersAsync(
             int accountId,
@@ -757,6 +775,32 @@ public sealed class TradingRiskGateTests
         {
             Entries.Add(new RecordedAudit(request, cancellationToken == CancellationToken.None));
             return Task.CompletedTask;
+        }
+
+        public Task<TradingAuditClaimResult> TryClaimUnknownAsync(
+            TradingAuditWriteRequest request,
+            CancellationToken cancellationToken)
+        {
+            TradingAuditClaimResult? existing = TradingAuditClaims.Find(
+                Entries.Select(entry => entry.Request).Where(row =>
+                    row.AccountId == request.AccountId
+                    && row.Tool == request.Tool
+                    && row.IdempotencyKey == request.IdempotencyKey),
+                request.RequestHash);
+            if (existing is not null)
+            {
+                return Task.FromResult(existing);
+            }
+
+            TradingAuditWriteRequest claim = request with
+            {
+                Outcome = TradingAuditOutcomes.Unknown,
+                ContractCount = 0,
+                VenueErrorCode = null,
+                OrderId = null,
+            };
+            Entries.Add(new RecordedAudit(claim, cancellationToken == CancellationToken.None));
+            return Task.FromResult(TradingAuditClaimResult.Claimed());
         }
     }
 

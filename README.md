@@ -571,7 +571,10 @@ not keep the last good values.
 transport can opt in to recording the trade tape (`MarketData__RecordTape`), which is prints and volume, not
 quotes. Whenever the venue client is configured, the process keeps the held TopstepX session fresh with
 `POST /api/Auth/validate` and does not call `loginKey` on a timer. That renewal is not tied to the recorder.
-A session conflict latches login closed and stops further validate calls. A drop that is not a
+A session conflict latches login closed and stops further validate calls. A recovery `loginKey`, used
+when the held bearer is dead, disconnects whatever session is live on the account — including the
+trading platform — and a failed recovery waits before it tries again. With the switch off, two
+replicas kick each other about once per 54-minute cycle (gh#772). A drop that is not a
 conflict stops the recorder without closing login for REST tools. A tool called `get_quote` that returned a
 bar close would be a lie an agent trades on.
 

@@ -89,10 +89,13 @@ public static class HeldSessionRenewal
 /// <para>
 /// A failure backs off and closes login while the held token is still fresh. Login opens again when a
 /// later validate succeeds, when validate reports <c>ExpiredToken</c> (the bearer can never become valid),
-/// or when the held token is inside its refresh buffer, so one <c>loginKey</c> can recover the process.
-/// That close is not the one-way stop. A positive conflict (HTTP 401, <c>InvalidSession</c>,
-/// <c>SessionNotFound</c>) latches the stop when <see cref="MarketDataOptions.StopOnSessionConflict"/> is
-/// on. Once the stop is latched this loop does not post validate again.
+/// or when the held token is inside its refresh buffer. That recovery <c>loginKey</c> is budgeted: the
+/// first attempt may run immediately, and a failure waits before the next one. It disconnects whatever
+/// session is live on the account. That close is not the one-way stop. A positive conflict (HTTP 401,
+/// <c>InvalidSession</c>, <c>SessionNotFound</c>) latches the stop when
+/// <see cref="MarketDataOptions.StopOnSessionConflict"/> is on. With the switch off the same conflict
+/// backs off from 30 seconds, doubling up to 5 minutes. Once the stop is latched this loop does not post
+/// validate again. A result for a bearer this process no longer holds is ignored.
 /// </para>
 /// </remarks>
 public sealed class HeldSessionRenewer : BackgroundService
@@ -176,19 +179,32 @@ public sealed class HeldSessionRenewer : BackgroundService
                     continue;
                 }
 
-                SessionProbeVerdict verdict = await _probe
+                HeldTokenValidation validation = await _probe
                     .ValidateHeldTokenAsync(stoppingToken)
                     .ConfigureAwait(false);
-                if (verdict == SessionProbeVerdict.Valid)
+                if (!string.IsNullOrEmpty(validation.Bearer) && !validation.AppliedToHeld)
+                {
+                    // A login replaced the bearer while this validate was in flight. Leave that bearer
+                    // alone: latching, forgetting, or closing login here would undo the replacement.
+                    failures = 0;
+                    _gate.EndRenewalBackoff();
+                    _gate.NoteRecoverySuccess();
+                    _logger.LogInformation(
+                        "A TopstepX validate finished for a bearer this process no longer holds. The replacement was left in place.");
+                    continue;
+                }
+
+                if (validation.Verdict == SessionProbeVerdict.Valid)
                 {
                     failures = 0;
                     _gate.EndRenewalBackoff();
+                    _gate.NoteRecoverySuccess();
                     _logger.LogInformation(
                         "The held TopstepX session was renewed with POST /api/Auth/validate. This process did not call loginKey.");
                     continue;
                 }
 
-                if (verdict == SessionProbeVerdict.Conflict)
+                if (validation.Verdict == SessionProbeVerdict.Conflict)
                 {
                     if (_market.StopOnSessionConflict)
                     {
@@ -203,25 +219,30 @@ public sealed class HeldSessionRenewer : BackgroundService
                         return;
                     }
 
-                    failures = Math.Max(failures, 1);
+                    failures++;
                     continue;
                 }
 
-                if (verdict == SessionProbeVerdict.NeverValid)
+                if (validation.Verdict == SessionProbeVerdict.NeverValid)
                 {
                     failures++;
-                    Record(SessionRenewalRefusal.Expired);
+                    RecordReopen(SessionRenewalReopen.Expired);
                     if (_gate.StopLatched)
                     {
                         return;
                     }
 
-                    // The bearer can never become valid. Drop it so the next read is a login, not another
-                    // validate of a token the venue has already refused.
-                    _held.Forget();
+                    // The bearer can never become valid. The probe already dropped it when it was still
+                    // the one that was posted. Arm a budgeted recovery so the next read posts loginKey
+                    // once, then waits. That login disconnects whatever session is live on the account.
+                    if (validation.AppliedToHeld)
+                    {
+                        _gate.ArmRecovery(validation.Bearer);
+                    }
+
                     _gate.EndRenewalBackoff();
                     _logger.LogWarning(
-                        "Renewing the held TopstepX session returned an expired token. Login may run once so this process can recover.");
+                        "Renewing the held TopstepX session returned an expired token. A recovery login may run. That login disconnects whatever session is live on the account, and a failed login waits before it tries again.");
                     continue;
                 }
 
@@ -275,10 +296,15 @@ public sealed class HeldSessionRenewer : BackgroundService
 
         if (_held.IsNearExpiryOrExhausted(_clock))
         {
+            if (_held.TryRead(out string stale))
+            {
+                _gate.ArmRecovery(stale);
+            }
+
             _gate.EndRenewalBackoff();
-            Record(SessionRenewalRefusal.Exhausted);
+            RecordReopen(SessionRenewalReopen.Exhausted);
             _logger.LogWarning(
-                "Renewing the held TopstepX session failed and the held token is inside its refresh window. Login may run once so this process can recover.");
+                "Renewing the held TopstepX session failed and the held token is inside its refresh window. A recovery login may run. That login disconnects whatever session is live on the account, and a failed login waits before it tries again.");
             return RenewalStep.Continue;
         }
 
@@ -293,6 +319,13 @@ public sealed class HeldSessionRenewer : BackgroundService
     private void Record(string reason)
     {
         using (_telemetry.SessionRenewalRefusal(reason))
+        {
+        }
+    }
+
+    private void RecordReopen(string reason)
+    {
+        using (_telemetry.SessionRenewalReopen(reason))
         {
         }
     }

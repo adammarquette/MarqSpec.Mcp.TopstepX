@@ -932,7 +932,10 @@ reconnect the hub and will not call loginKey. The one-way stop latches only on a
 name, HTTP 401, `InvalidSession`, or `SessionNotFound`. A missing token stops the recorder and
 does not close login for these tools. The held token is renewed with `POST /api/Auth/validate`
 whenever the venue client is configured, not `loginKey`. A latched stop posts no further validate.
-An expired token, or one inside its refresh window after a failed renewal, may log in once. Tools
+An expired token, or one inside its refresh window after a failed renewal, may post a budgeted
+loginKey. That login disconnects any live session on the account, including a healthy trading
+platform. A failed login waits before it tries again. With the switch off, replicas (gh#772) kick
+each other about once per 54-minute cycle. Tools
 may keep using the token already held until it ages out. Another symbol's
 subscribe does not make this one healthy. Top-level fields are
 always present. **`front` is a new object, not a replacement for `contracts`.** `used` is `tape-volume`
@@ -957,7 +960,10 @@ reconnect the hub and will not call loginKey. The one-way stop latches only on a
 name, HTTP 401, `InvalidSession`, or `SessionNotFound`. A missing token stops the recorder and
 does not close login for these tools. The held token is renewed with `POST /api/Auth/validate`
 whenever the venue client is configured, not `loginKey`. A latched stop posts no further validate.
-An expired token, or one inside its refresh window after a failed renewal, may log in once. Tools
+An expired token, or one inside its refresh window after a failed renewal, may post a budgeted
+loginKey. That login disconnects any live session on the account, including a healthy trading
+platform. A failed login waits before it tries again. With the switch off, replicas (gh#772) kick
+each other about once per 54-minute cycle. Tools
 may keep using the token already held until it ages out. Another symbol's
 subscribe does not make this one healthy. Top-level
 fields are always present. **`front` is the same object `get_footprint` returns** — tape volume-front

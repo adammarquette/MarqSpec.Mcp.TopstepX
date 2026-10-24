@@ -20,10 +20,25 @@ public enum SessionProbeVerdict
 
     /// <summary>
     /// <c>ExpiredToken</c>. The bearer can never become valid. This is not another session, so it does
-    /// not latch the stop. The renewal loop may allow one <c>loginKey</c> so the process can recover.
+    /// not latch the stop. The renewal loop may allow a budgeted <c>loginKey</c> so the process can recover.
     /// </summary>
     NeverValid = 3,
 }
+
+/// <summary>
+/// What one validate of a held bearer decided, and whether that decision still applies to it.
+/// </summary>
+/// <param name="Verdict">The probe verdict.</param>
+/// <param name="AppliedToHeld">
+/// <see langword="true"/> when the held bearer is still the one that was posted and a store or a drop
+/// for that bearer completed. A login that replaced the bearer while validate was in flight leaves this
+/// <see langword="false"/>.
+/// </param>
+/// <param name="Bearer">The bearer that was posted. Null when nothing was posted. Not for logging.</param>
+public readonly record struct HeldTokenValidation(
+    SessionProbeVerdict Verdict,
+    bool AppliedToHeld,
+    string? Bearer);
 
 /// <summary>
 /// Reads whether this process's TopstepX session is still the one the venue will accept.

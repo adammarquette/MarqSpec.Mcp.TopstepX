@@ -16,8 +16,10 @@ namespace MarqSpec.Mcp.TopstepX.MarketData;
 /// Freshness uses the same window as that client, measured on <see cref="TimeProvider.GetTimestamp"/>
 /// and <see cref="TimeProvider.GetElapsedTime(long)"/>. A token is fresh while less than
 /// <see cref="CacheLifetime"/> minus <see cref="RefreshBuffer"/> has elapsed since it was stored.
-/// A forward jump of the wall clock does not age it. The string itself is never written to a log.
-/// The timestamp and the later read must come from the same <see cref="TimeProvider"/>.
+/// A forward jump of the wall clock does not age it. The monotonic clock does not advance while
+/// Linux is suspended, so after a long suspend the token can look fresh here and be dead at the
+/// venue. The string itself is never written to a log. The timestamp and the later read must come
+/// from the same <see cref="TimeProvider"/>.
 /// </para>
 /// </remarks>
 public sealed class HeldSession
@@ -68,9 +70,78 @@ public sealed class HeldSession
     {
         lock (_gate)
         {
-            _token = null;
-            _rememberedAt = 0;
-            _hasStamp = false;
+            ClearUnderLock();
+        }
+    }
+
+    /// <summary>
+    /// Drops the held token only when it is still <paramref name="token"/>. A login that stored a
+    /// different bearer while validate was in flight keeps that bearer.
+    /// </summary>
+    /// <param name="token">The bearer that was validated. Empty never matches.</param>
+    /// <returns><see langword="true"/> when this call cleared the held bearer.</returns>
+    internal bool ForgetIf(string? token)
+    {
+        if (string.IsNullOrEmpty(token))
+        {
+            return false;
+        }
+
+        lock (_gate)
+        {
+            if (!string.Equals(_token, token, StringComparison.Ordinal))
+            {
+                return false;
+            }
+
+            ClearUnderLock();
+            return true;
+        }
+    }
+
+    /// <summary>
+    /// Stores <paramref name="keep"/> only when the held bearer is still <paramref name="expected"/>.
+    /// A login that replaced it while validate was in flight is left alone.
+    /// </summary>
+    /// <param name="expected">The bearer that was posted. Null matches only a missing token, which is not stored.</param>
+    /// <param name="keep">The bearer to store. Empty is ignored.</param>
+    /// <param name="clock">The clock whose timestamp marks the store. The same instance later freshness reads use.</param>
+    /// <returns><see langword="true"/> when <paramref name="keep"/> was stored.</returns>
+    internal bool RememberIfCurrent(string? expected, string? keep, TimeProvider clock)
+    {
+        if (string.IsNullOrEmpty(keep))
+        {
+            return false;
+        }
+
+        ArgumentNullException.ThrowIfNull(clock);
+        lock (_gate)
+        {
+            if (!string.Equals(_token, expected, StringComparison.Ordinal))
+            {
+                return false;
+            }
+
+            _token = keep;
+            _rememberedAt = clock.GetTimestamp();
+            _hasStamp = true;
+            return true;
+        }
+    }
+
+    /// <summary>Whether the held bearer is still <paramref name="token"/>.</summary>
+    /// <param name="token">The bearer a validate posted. Empty is never current.</param>
+    /// <returns><see langword="true"/> when a result for <paramref name="token"/> still applies.</returns>
+    internal bool IsHeld(string? token)
+    {
+        if (string.IsNullOrEmpty(token))
+        {
+            return false;
+        }
+
+        lock (_gate)
+        {
+            return string.Equals(_token, token, StringComparison.Ordinal);
         }
     }
 
@@ -136,5 +207,12 @@ public sealed class HeldSession
     {
         TimeSpan elapsed = clock.GetElapsedTime(_rememberedAt);
         return elapsed >= CacheLifetime - RefreshBuffer;
+    }
+
+    private void ClearUnderLock()
+    {
+        _token = null;
+        _rememberedAt = 0;
+        _hasStamp = false;
     }
 }

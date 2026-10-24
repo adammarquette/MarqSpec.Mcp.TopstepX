@@ -350,7 +350,9 @@ documented validate error, or `POST /api/Auth/validate` reports `InvalidSession`
 or HTTP 401, and it does not call `loginKey` to reconnect
 (`MarketData__StopOnSessionConflict`, default on; gh#757, ADR-0016). A held token is renewed with
 validate whenever the venue client is configured, not only while the recorder is running, and not
-with `loginKey`. A latched stop posts no further validate. An expired token may log in once. A drop
+with `loginKey`. A latched stop posts no further validate. An expired token may post a budgeted
+`loginKey`, which disconnects any live session on the account. A failed login waits before it
+tries again. A drop
 that is not one of those signals stops the recorder and leaves
 REST login open. `AutoReconnect` stays off for both hubs while the recorder is alive.
 

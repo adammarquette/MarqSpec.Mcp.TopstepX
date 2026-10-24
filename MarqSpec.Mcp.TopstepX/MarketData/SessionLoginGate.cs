@@ -33,12 +33,18 @@ namespace MarqSpec.Mcp.TopstepX.MarketData;
 public sealed class SessionLoginGate
 {
     private readonly object _gate = new();
+    private readonly object _recovery = new();
     private readonly SemaphoreSlim _login = new(1, 1);
     private readonly TaskCompletionSource _latched = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private int _stopLatched;
     private int _probeInFlight;
     private int _suspecting;
     private int _renewalBackingOff;
+    private int _recoveryArmed;
+    private int _recoveryFailures;
+    private long _recoveryFailedAt;
+    private bool _recoveryHasFailure;
+    private string? _rejectedToken;
     private int _priorSaved;
     private bool _priorAutoReconnect;
 
@@ -78,19 +84,12 @@ public sealed class SessionLoginGate
     }
 
     /// <summary>
-    /// Marks a hub drop as unresolved and returns. Does not wait for an in-flight login: that wait would
-    /// block the SignalR callback for the HTTP timeout. Login stays closed while the suspicion is set.
-    /// The in-flight login discards its token on the re-check after <c>loginKey</c> returns. A
-    /// <c>loginKey</c> already on the wire is not recalled.
+    /// Marks a hub drop as unresolved and returns without taking the login lock, so a login that is
+    /// already queued keeps it. Login stays closed while the suspicion is set. The in-flight login
+    /// discards its token on the re-check after <c>loginKey</c> returns. A <c>loginKey</c> already
+    /// on the wire is not recalled.
     /// </summary>
-    public void BeginSuspecting()
-    {
-        MarkSuspecting();
-        if (_login.Wait(TimeSpan.Zero))
-        {
-            _login.Release();
-        }
-    }
+    public void BeginSuspecting() => MarkSuspecting();
 
     /// <summary>Sets the suspicion without waiting. <see cref="BeginSuspecting"/> does not block either.</summary>
     internal void MarkSuspecting() => Interlocked.Exchange(ref _suspecting, 1);
@@ -107,6 +106,105 @@ public sealed class SessionLoginGate
         }
 
         Interlocked.Exchange(ref _renewalBackingOff, 0);
+    }
+
+    /// <summary>
+    /// A recovery <c>loginKey</c> is armed against a bearer validate has already rejected.
+    /// The first attempt may run immediately. A failure waits on <see cref="HeldSessionRenewal.NextDelay"/>.
+    /// </summary>
+    internal bool RecoveryArmed => Volatile.Read(ref _recoveryArmed) != 0;
+
+    /// <summary>
+    /// Arms a recovery against <paramref name="rejectedToken"/>. Does not reset a failure already counted,
+    /// so a later <c>ExpiredToken</c> cannot open a tight login loop. The bearer is not logged.
+    /// </summary>
+    /// <param name="rejectedToken">The bearer that must not be stored again. Empty is ignored.</param>
+    internal void ArmRecovery(string? rejectedToken)
+    {
+        if (string.IsNullOrEmpty(rejectedToken))
+        {
+            return;
+        }
+
+        lock (_recovery)
+        {
+            _rejectedToken = rejectedToken;
+            _recoveryArmed = 1;
+        }
+    }
+
+    /// <summary>
+    /// Whether an armed recovery may call the venue now. An unarmed gate returns <see langword="true"/>:
+    /// the first connect is not budgeted.
+    /// </summary>
+    /// <param name="clock">The clock that stamped <see cref="NoteRecoveryFailure"/>.</param>
+    /// <returns><see langword="false"/> when the last failure is still inside its backoff.</returns>
+    internal bool RecoveryAttemptPermitted(TimeProvider clock)
+    {
+        ArgumentNullException.ThrowIfNull(clock);
+        if (Volatile.Read(ref _recoveryArmed) == 0)
+        {
+            return true;
+        }
+
+        lock (_recovery)
+        {
+            if (_recoveryArmed == 0 || !_recoveryHasFailure)
+            {
+                return true;
+            }
+
+            TimeSpan elapsed = clock.GetElapsedTime(_recoveryFailedAt);
+            return elapsed >= HeldSessionRenewal.NextDelay(_recoveryFailures, 0);
+        }
+    }
+
+    /// <summary>Whether <paramref name="token"/> is the bearer this recovery already rejected.</summary>
+    /// <param name="token">A bearer the client just returned. Empty is not a match. Not logged.</param>
+    /// <returns><see langword="true"/> when storing it would keep the dead session.</returns>
+    internal bool IsRejectedToken(string? token)
+    {
+        if (string.IsNullOrEmpty(token) || Volatile.Read(ref _recoveryArmed) == 0)
+        {
+            return false;
+        }
+
+        lock (_recovery)
+        {
+            return _recoveryArmed != 0
+                && string.Equals(_rejectedToken, token, StringComparison.Ordinal);
+        }
+    }
+
+    /// <summary>Counts a recovery that did not produce a new bearer, and starts its backoff.</summary>
+    /// <param name="clock">The clock the next <see cref="RecoveryAttemptPermitted"/> reads.</param>
+    internal void NoteRecoveryFailure(TimeProvider clock)
+    {
+        ArgumentNullException.ThrowIfNull(clock);
+        lock (_recovery)
+        {
+            _recoveryArmed = 1;
+            if (_recoveryFailures < 16)
+            {
+                _recoveryFailures++;
+            }
+
+            _recoveryFailedAt = clock.GetTimestamp();
+            _recoveryHasFailure = true;
+        }
+    }
+
+    /// <summary>Clears an armed recovery after a new bearer was stored, or after validate renewed one.</summary>
+    internal void NoteRecoverySuccess()
+    {
+        lock (_recovery)
+        {
+            _recoveryArmed = 0;
+            _recoveryFailures = 0;
+            _recoveryHasFailure = false;
+            _recoveryFailedAt = 0;
+            _rejectedToken = null;
+        }
     }
 
     /// <summary>Holds the login lock across one <c>loginKey</c> or refresh call.</summary>

@@ -5,7 +5,7 @@
 #
 # Railway's dashboard variables are not CI-verifiable (AGENTS.md), so the repo-side template is the one place
 # a reviewer can check them. This compiles .railway/railway.ts with strict TypeScript against the PINNED
-# Railway SDK in scripts/railway/package-lock.json, evaluates it for staging AND production, and asserts the
+# Railway SDK in scripts/railway/package-lock.json, evaluates it for staging, production, dev and an arbitrary name, and asserts the
 # resource graph (scripts/railway/evaluate-template.mjs lists every rule).
 #
 #   --mode template    (default; what CI runs) the server image may be the REPLACE_WITH_RELEASE_TAG sentinel.
@@ -36,7 +36,9 @@ fi
 ( cd "$work" && ./node_modules/.bin/tsc -p . )
 
 status=0
-for environment in staging production; do
+# EVERY environment the file might be evaluated for: the two named ones, Railway's common "dev", and an
+# arbitrary name, so a ternary on ctx.environment cannot arm anything in an environment CI never looked at.
+for environment in staging production dev pr-sandbox-1234; do
   ( cd "$work" && node evaluate-template.mjs ./out/railway.js "$environment" "$mode" ) || status=1
 done
 exit "$status"

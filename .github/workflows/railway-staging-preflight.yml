@@ -49,7 +49,7 @@ jobs:
           pid="$(jq -r "$s | .projectId" scope.json)"; eid="$(jq -r "$s | .environmentId" scope.json)"
           railway api 'query($p: String!, $e: String!) { variables(projectId: $p, environmentId: $e) }' \
             --var "p=$pid" --var "e=$eid" | jq -r '(.data.variables // .variables) | keys[]' | sort > have.txt
-          grep -oE 'ctx\.shared\.[A-Z0-9_]+' .railway/railway.ts | sed 's/ctx\.shared\.//' | sort -u > need.txt
+          grep -vE '^[[:space:]]*//' .railway/railway.ts | grep -oE 'ctx\.shared\.[A-Z0-9_]+' | sed 's/ctx\.shared\.//' | sort -u > need.txt
           echo "shared variables present: $(paste -sd, have.txt)"
           missing="$(comm -23 need.txt have.txt | paste -sd, -)"
           if [ -n "$missing" ]; then echo "::warning::MISSING shared variables: $missing"; else echo "ok: every shared variable the template references exists"; fi

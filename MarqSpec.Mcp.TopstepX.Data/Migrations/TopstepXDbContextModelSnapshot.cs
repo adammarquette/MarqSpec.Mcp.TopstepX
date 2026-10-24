@@ -379,6 +379,66 @@ namespace MarqSpec.Mcp.TopstepX.Data.Migrations
                     b.ToTable("TapeCoverage", (string)null);
                 });
 
+            modelBuilder.Entity("MarqSpec.Mcp.TopstepX.Data.Entities.TapeExportReceipt", b =>
+                {
+                    b.Property<DateOnly>("Day")
+                        .HasColumnType("date");
+
+                    b.Property<string>("Kind")
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)");
+
+                    b.Property<string>("Format")
+                        .HasMaxLength(16)
+                        .HasColumnType("character varying(16)");
+
+                    b.Property<string>("Venue")
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
+                    b.Property<string>("Instrument")
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)");
+
+                    b.Property<string>("ContractId")
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
+                    b.Property<int>("ResolutionMinutes")
+                        .HasColumnType("integer");
+
+                    b.Property<string>("DriveFileId")
+                        .HasMaxLength(128)
+                        .HasColumnType("character varying(128)");
+
+                    b.Property<DateTimeOffset>("ExportedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("RelativePath")
+                        .IsRequired()
+                        .HasMaxLength(512)
+                        .HasColumnType("character varying(512)");
+
+                    b.Property<int>("RowCount")
+                        .HasColumnType("integer");
+
+                    b.Property<string>("Sha256")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
+                    b.Property<string>("UploadState")
+                        .IsRequired()
+                        .HasMaxLength(16)
+                        .HasColumnType("character varying(16)");
+
+                    b.HasKey("Day", "Kind", "Format", "Venue", "Instrument", "ContractId", "ResolutionMinutes");
+
+                    b.HasIndex("Day", "UploadState");
+
+                    b.ToTable("TapeExportReceipts", (string)null);
+                });
+
             modelBuilder.Entity("MarqSpec.Mcp.TopstepX.Data.Entities.TapeLeaseRecord", b =>
                 {
                     b.Property<string>("Venue")

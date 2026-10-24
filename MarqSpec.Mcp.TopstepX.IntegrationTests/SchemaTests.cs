@@ -66,6 +66,7 @@ public sealed class SchemaTests(SchemaFixture fixture) : IAsyncLifetime
     [InlineData("TapeCoverage")]
     [InlineData("FootprintCells")]
     [InlineData("TradingAuditLog")]
+    [InlineData("TapeExportReceipts")]
     public async Task LedgerAndProjectionTables_AreNotHypertables(string table)
     {
         // TapeCoverage is a listening ledger (like BarCoverage); FootprintCells are a projection

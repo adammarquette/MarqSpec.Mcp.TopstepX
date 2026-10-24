@@ -440,12 +440,14 @@ and exits instead of serving — no transport is started, no MCP client is invol
 ```bash
 docker compose run --rm server rebuild-indicators
 docker compose run --rm server reselect-bars MES 2026-06-01T00:00:00Z 2026-07-01T00:00:00Z
+docker compose run --rm server export-tape
+docker compose run --rm server import-tape 2026-10-01
 ```
 
-**Both report only through the log.** Under stdio, stdout carries the protocol, so neither verb prints to the
-console; the numbers arrive as log lines. Both dispose the host before returning, because the console logger
-writes from a queue and the OTLP exporter batches on a timer — without that the **last** lines, the summary
-among them, are exactly the ones a process exit drops.
+**Each verb reports only through the log.** Under stdio, stdout carries the protocol, so none of them prints
+a result to the console; the numbers arrive as log lines. Each disposes the host before returning, because
+the console logger writes from a queue and the OTLP exporter batches on a timer — without that the **last**
+lines, the summary among them, are exactly the ones a process exit drops.
 
 ### `rebuild-indicators [symbol]`
 
@@ -522,6 +524,32 @@ the cap is per resolution and the verb takes none — the resolutions are whatev
 `Warning` after the migration ran rather than a refusal before it. And a window entirely in the future is
 accepted; it finds no stored series and says so.
 
+### `export-tape [yyyy-MM-dd]` and `import-tape [yyyy-MM-dd]`
+
+Copies recorded tape to a directory, and puts a verified copy back (`R-10`, gh#755). The optional day is
+exact `yyyy-MM-dd`. With no day, export walks every UTC day the store still holds and import walks every
+manifest. Neither verb reads `TapeExport__Enabled`.
+
+Files are gzip CSV and Parquet under `TapeExport__Path` (default `/data/tape-exports`), one pair per
+contract per day for trades and coverage. That path is a **mounted volume**; the process does not
+create the volume. `TapeExport__Format` is `csv.gz+parquet`. A UTC day is copied only after it has
+ended, and only when the manifest sha256 and row counts match. Local rows are not deleted.
+Drive (`TapeExport__Drive__FolderId` and a service-account JSON or path) is a second copy and is off
+when those are empty; a repeat replaces the file, and a failed upload leaves the local copy.
+`Retention__*` is not read; dropping raw tape needs its own ADR (gh#758). Import inserts with
+`ON CONFLICT DO NOTHING` and inserts nothing for a day that fails verification. Loading the files
+with DuckDB or pandas is [documentation/tape-export-reload.md](documentation/tape-export-reload.md).
+
+| Exit | Meaning |
+|---:|---|
+| `0` | Every day the pass touched verified. |
+| `1` | At least one day failed verification or was refused on import. |
+| `2` | The day argument is not exact `yyyy-MM-dd`. |
+| `3` | The store could not be migrated. |
+
+The full environment contract, including the names gh#758 must use, is in
+[`documentation/deployment.md`](documentation/deployment.md#config-contract-for-758).
+
 ---
 
 ## For AI agents & new readers — start here
@@ -575,8 +603,11 @@ A session conflict latches login closed and stops further validate calls. A reco
 when the held bearer is dead, disconnects whatever session is live on the account — including the
 trading platform — and a failed recovery waits before it tries again. With the switch off, two
 replicas kick each other about once per 54-minute cycle (gh#772). A drop that is not a
-conflict stops the recorder without closing login for REST tools. A tool called `get_quote` that returned a
-bar close would be a lie an agent trades on.
+conflict stops the recorder without closing login for REST tools. Recorded tape is also copied to
+`TapeExport__Path` (default `/data/tape-exports` on a mounted volume) as gzip CSV and Parquet, one pair
+of files per contract per day. The copy does not delete the rows in Postgres (`R-10`, gh#755). Drive is
+off unless `TapeExport__Drive__FolderId` and a service account are set. A tool called `get_quote` that
+returned a bar close would be a lie an agent trades on.
 
 ## How the cache works
 

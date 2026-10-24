@@ -107,6 +107,19 @@
     <PackageVersion Include="Npgsql.OpenTelemetry" Version="10.0.3" />
   </ItemGroup>
 
+  <ItemGroup Label="Tape export">
+    <!--
+      Both file formats for the scheduled tape copy (gh#755). Parquet.Net is the writer and the reader
+      the round-trip uses; DuckDB and pandas open the same files from outside this process. Host only.
+    -->
+    <PackageVersion Include="Parquet.Net" Version="6.1.0" />
+    <!--
+      Google Drive cold storage. The client is constructed only when TapeExport__Drive__FolderId and a
+      service-account value are both set; tests use a fake and never this package's network. Host only.
+    -->
+    <PackageVersion Include="Google.Apis.Drive.v3" Version="1.77.0.4301" />
+  </ItemGroup>
+
   <ItemGroup Label="Test stack">
     <PackageVersion Include="Microsoft.NET.Test.Sdk" Version="18.11.0" />
     <PackageVersion Include="xunit" Version="2.9.3" />

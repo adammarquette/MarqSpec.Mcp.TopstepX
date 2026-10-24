@@ -1,0 +1,64 @@
+# railway-seed-check.yml -- the staging seed still fits the schema, and is idempotent (gh#758).
+#
+# Applies every EF migration (idempotent script) to the same pinned Timescale image, runs the synthetic
+# seed TWICE, and requires identical counts. A migration that renames a seeded column fails here, on the PR,
+# instead of on the next staging deploy. Touches no Railway, holds no secret.
+name: railway-seed-check
+
+on:
+  pull_request:
+    paths:
+      - "scripts/railway/seed/**"
+      - "MarqSpec.Mcp.TopstepX.Data/Migrations/**"
+      - ".github/workflows/railway-seed-check.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  seed:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: timescale/timescaledb-ha:pg17@sha256:cae378810532f8402c306d5a2bc6acc2c7550193d12f2b5ef9b2532efe0e98c0
+        env:
+          POSTGRES_USER: topstepx
+          POSTGRES_DB: topstepx_mcp
+          POSTGRES_PASSWORD: ci-only-not-a-secret
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U topstepx -d topstepx_mcp" --health-interval 5s --health-retries 20
+    env:
+      PGHOST: localhost
+      PGUSER: topstepx
+      PGDATABASE: topstepx_mcp
+      PGPASSWORD: ci-only-not-a-secret
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: 10.0.x
+      - name: Migrations -> SQL
+        run: |
+          dotnet tool install --global dotnet-ef --version 10.0.11
+          dotnet ef migrations script --idempotent \
+            --project MarqSpec.Mcp.TopstepX.Data --startup-project MarqSpec.Mcp.TopstepX -o migrations.sql
+      - name: Apply migrations, seed twice, compare
+        run: |
+          psql -v ON_ERROR_STOP=1 -q -f migrations.sql
+          q='SELECT (SELECT count(*) FROM "Trades")||'"'"'/'"'"'||(SELECT count(*) FROM "Bars")||'"'"'/'"'"'||(SELECT count(*) FROM "TapeCoverage")'
+          psql -v ON_ERROR_STOP=1 -q -f scripts/railway/seed/staging-seed.sql
+          first="$(psql -tAc "$q")"
+          psql -v ON_ERROR_STOP=1 -q -f scripts/railway/seed/staging-seed.sql
+          second="$(psql -tAc "$q")"
+          echo "trades/bars/coverage after run 1: $first, after run 2: $second"
+          [ "$first" = "4800/240/2" ] || { echo "::error::unexpected seed counts $first"; exit 1; }
+          [ "$first" = "$second" ] || { echo "::error::seed is not idempotent"; exit 1; }
+      - name: Seeder refuses anything but staging
+        run: |
+          for e in production prod Staging ""; do
+            if RAILWAY_TOKEN=x scripts/railway/seed-staging.sh "$e" 2>/dev/null; then echo "::error::seeded '$e'"; exit 1; fi
+          done
+          echo ok

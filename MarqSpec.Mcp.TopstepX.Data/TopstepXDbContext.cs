@@ -82,6 +82,16 @@ public sealed class TopstepXDbContext(DbContextOptions<TopstepXDbContext> option
     public DbSet<TradingAuditLogRecord> TradingAuditLog => Set<TradingAuditLogRecord>();
 
     /// <inheritdoc />
+    /// <inheritdoc />
+    protected override void OnConfiguring(DbContextOptionsBuilder optionsBuilder)
+    {
+        // Every context, including one a test constructs by hand. Without this gate the per-chunk reloption
+        // is sent to plain Postgres and startup fails (ADR-0004, gh#756).
+        optionsBuilder.AddInterceptors(new TradeInstrumentIndexBuildInterceptor());
+        base.OnConfiguring(optionsBuilder);
+    }
+
+    /// <inheritdoc />
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         ArgumentNullException.ThrowIfNull(modelBuilder);

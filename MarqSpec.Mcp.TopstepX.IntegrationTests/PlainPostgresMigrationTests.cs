@@ -72,7 +72,8 @@ public sealed class PlainPostgresMigrationTests : IAsyncLifetime
         timescale.Should().Be(0);
         vector.Should().Be(1);
         valid.Should().BeTrue();
-        definition.Should().Contain("(Instrument, TradeTimeUtc)");
+        definition.Should().Contain("\"Instrument\"");
+        definition.Should().Contain("\"TradeTimeUtc\"");
         definition.Should().NotContain("timescaledb");
     }
 
@@ -99,6 +100,13 @@ public sealed class PlainPostgresMigrationTests : IAsyncLifetime
 
         foreach (string statement in UpStatements())
         {
+            // The per-chunk form is a later command. Plain Postgres rejects its reloption; the context
+            // gate skips it on MigrateAsync, and this direct replay skips it the same way.
+            if (statement.Contains("timescaledb.transaction_per_chunk", StringComparison.Ordinal))
+            {
+                continue;
+            }
+
             await ExecuteAsync(connection, statement);
         }
 

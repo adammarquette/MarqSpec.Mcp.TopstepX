@@ -145,6 +145,12 @@ public sealed class MarketDataToolBoundaryTests
                     typeof(ToolGuards),
                 ]
             },
+            {
+                typeof(RecorderHealthTools),
+                [
+                    typeof(RecorderHealthService),
+                ]
+            },
         };
 
     [Theory]

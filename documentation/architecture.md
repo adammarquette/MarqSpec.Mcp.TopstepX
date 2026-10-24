@@ -763,7 +763,7 @@ One host, one tool registration, two ways in ([ADR-0007](adr/0007-dual-transport
 
 ### The one path that answers without a credential
 
-Under HTTP the pipeline is three calls in one order: the liveness probe, then the bearer gate, then `/mcp`.
+Under HTTP the pipeline is the liveness probe, then the bearer gate, then `/mcp` and `GET /health/recorder`.
 **`GET /health` answers `200 application/json` with no `Authorization` header** — `{status, store, version,
 digest}` — and **every other path, method and casing stays behind the gate**, `/healthz` and
 `/health/anything` included. A load balancer's target-group probe has no credential to send, so without this
@@ -779,6 +779,13 @@ Two things about it are easy to undo by accident:
   no round trip. A probe every 30 s per task that opened a database connection would be load rather than a
   measurement of it. An unavailable store is still `200`: this is **liveness**, and the tools needing no store
   answer normally, so killing the task would replace a degraded server with no server.
+
+`GET /health/recorder` is a different request (R-5.13, gh#756). It returns the same payload as
+`get_recorder_health` — hub connection, the last stored print per contract, `TapeCoverage` holes in the
+elapsed session, and whether the database answers now — and it is mapped after the gate, so it stays
+authenticated. It is not the probe: a down feed is still HTTP 200, and it does open a database connection,
+which is why it is not on the 30 s check. The body carries no connection string and no token. The path is
+worth a span; tracing excludes only the exact `/health` probe.
 
 `version` and `digest` come from the optional `Deployment__Version` / `Deployment__ImageDigest`, `unknown`
 when unset. Nothing here declares a version in a file — the tag is the version
@@ -807,6 +814,11 @@ on a bump, so a dashboard that must not break is built on these
 | `mcp.tape.reconnects` | counter | `transition` = connected \| disconnected | `TradeTapeRecorder` |
 | `mcp.tape.lease.changes` | counter | `change` = acquired \| refused \| lost · `symbol` | `TradeTapeRecorder` (ADR-0016) |
 | `mcp.indicator.projections` | counter, values | `indicator` · `symbol` · `resolution` **or** `session` | `IndicatorProjector` |
+| `mcp.recorder.health.reads` | counter | `outcome` = ok \| degraded \| unavailable | `RecorderHealthService`, once per report (gh#756) |
+
+`mcp.recorder.health.reads` reuses the `outcome` tag key. Its values are `ok`, `degraded` and `unavailable`,
+not the cache `hit` / `miss` / `partial` set. `ok` means the hub is up, every reported contract is listening,
+the database answered, and the elapsed session has no hole.
 
 **`resolution` and `session` are alternatives, never both, and which one a measurement carries is what says
 which kind of series it was over** (gh#501). A session series has no resolution — its window is wall-clock
@@ -872,7 +884,8 @@ branches registered ahead of it. Under **`StaticToken`** — the default, the co
 what it was before gh#512. Under **`OAuth`** — the non-loopback instance of
 [ADR-0021](adr/0021-a-non-loopback-instance-is-supported.md), Amazon Cognito issuing — the pipeline is four
 calls in one order: the liveness probe, the **protected-resource metadata** (a second terminal branch, for the
-same reason as the first: a connector reads it before it has a token), the **OAuth gate**, then `/mcp`.
+same reason as the first: a connector reads it before it has a token), the **OAuth gate**, then `/mcp` and
+`GET /health/recorder`.
 
 The OAuth gate is `Microsoft.AspNetCore.Authentication.JwtBearer` doing the cryptography — the signing keys
 discovered from `{issuer}/.well-known/openid-configuration`, `iss` compared byte for byte with
@@ -901,7 +914,7 @@ carrying the fix, rather than a dead process (ADR-0007):
 
 | Absent | What still works | What refuses |
 |---|---|---|
-| Database | The tool list, `list_instruments`, `get_market_session`, `search_contracts` | Anything reading bars, indicators, levels or observations, with an `McpException` naming the fix — start the store, or set `ConnectionStrings__Default`. The **log** names the target too — `host`, `port`, `database`, `user`, never the password — but the caller does not (gh#551). `Store__StartupWaitSeconds` bounds how long startup retries first (gh#514) |
+| Database | The tool list, `list_instruments`, `get_market_session`, `search_contracts`, and `get_recorder_health` (it answers with `database` Unavailable and `gaps` omitted, R-5.13) | Anything reading bars, indicators, levels or observations, with an `McpException` naming the fix — start the store, or set `ConnectionStrings__Default`. The **log** names the target too — `host`, `port`, `database`, `user`, never the password — but the caller does not (gh#551). `Store__StartupWaitSeconds` bounds how long startup retries first (gh#514) |
 | Credentials | Everything served from the store, plus session and instrument reference | Contract resolution, account reads, and any cache miss |
 | Embedding key | Recording and searching observations — search matches text instead of meaning | Nothing |
 | OTLP endpoint | Everything — no exporter is registered, no background exporter thread runs, and nothing warns about a collector that is not there | Nothing; the server simply emits no telemetry ([ADR-0019](adr/0019-otlp-as-the-telemetry-boundary.md)) |
@@ -1122,6 +1135,10 @@ dating today's pick. It does not fetch bars and does not write a roll row.
   `get_volume_profile` refuse when **that instrument's** tape is not listening, with a sentence naming the fix. It resolves the
   scoped venue client per operation; it does not extend `IMarketDataGateway`. Quote and depth recording
   stay out of this phase, and there is still no `get_quote`.
+- **Recorder health is a read.** `get_recorder_health` and authenticated `GET /health/recorder` report whether
+  the hub is up, the last stored print per contract, `TapeCoverage` holes in the elapsed session, and a live
+  database probe that does not replace the startup answer (gh#756, R-5.13). `/health` stays liveness and the
+  one unauthenticated path.
 - **No REST poller.** Bar, contract and account fetches stay caused by a tool call. The tape recorder is a push
   subscriber, not a background poll of a quote endpoint the venue does not have. A second stdio process must
   not subscribe to the same tape, and a second HTTP one is refused a claim rather than trusted not to

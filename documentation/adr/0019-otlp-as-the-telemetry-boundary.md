@@ -374,6 +374,15 @@ the Fargate backend those secrets pointed at is **CloudWatch, in the 2026-09-10 
 Each of those cards may cite this record; none of them reopens it. gh#515's JSON console formatter for CloudWatch is untouched and remains the log path when no
 OTLP endpoint is set.
 
+## Update — 2026-10-24: recorder health is one more counter
+
+`mcp.recorder.health.reads` joins the meter (gh#756, R-5.13). One counter, tagged `outcome` =
+`ok` | `degraded` | `unavailable`, recorded once per report that was built. `ok` means the hub is up, every
+reported contract is listening, the database answered, and the elapsed session has no hole. The `outcome`
+tag key is the one `mcp.cache.reads` already uses; the values are this instrument's vocabulary, not
+`hit` / `miss` / `partial`. The architecture table remains the list of app-owned instruments. The names in
+the 2026-09-06 update above are the set as it was that day.
+
 ## Follow-ups
 
 - **Enable Transaction Search in the account before treating X-Ray OTLP as Application Signals.** AWS requires

@@ -29,7 +29,8 @@ page against either**, so check it against the code, never against another docum
   ([ADR-0021](adr/0021-a-non-loopback-instance-is-supported.md)), is a Cognito-issued access token carrying
   the `topstepx-mcp/read` scope, and a call without one gets a `401` naming the protected-resource metadata
   the connector reads to find the issuer. Which mode a deployment runs is its environment's `Mcp__Auth__Mode`;
-  `/health` answers without a credential under both (ADR-0007, gh#512).
+  `/health` answers without a credential under both (ADR-0007, gh#512). `GET /health/recorder` is not that
+  probe: it is the same report as `get_recorder_health` and stays behind the gate (R-5.13, gh#756).
 - **Numeric-only payloads.** Every field is a number, a timestamp, a boolean, or an enum name from a closed set
   this repository defines. No vendor free text is echoed back.
 - **An unknown instrument is an error**, and it names what would have been valid. A wrong symbol and a quiet
@@ -977,6 +978,33 @@ An unknown instrument is an error (`R-5.3`), not an empty roll.
 **`asOfUtc` defaults to now** and is bounded like `get_market_session`'s `atUtc` (`R-5.4`):
 past the last instant the session rules can be expressed at, the tool refuses naming both
 that instant and the horizon, rather than faulting below the boundary.
+
+### `get_recorder_health()`
+
+Whether this process's recorder is doing its job (R-5.13, gh#756). A dead recorder used to surface only in
+an end-of-day job. The same payload is served to a monitor at `GET /health/recorder`, behind the bearer
+gate. `/health` stays the unauthenticated liveness probe and does not open a database connection.
+
+Returns `{ asOfUtc, feedConnected, feed, database, session?, contracts, gaps? }`.
+
+`feedConnected` is true only when the market-data hub is up — listening, or connected and not yet
+subscribed. `feed` is the process-wide `TapeUnavailableReason` name. It is not a sentence.
+
+`database` is `Available` or `Unavailable` from a live probe. That probe does not replace the startup
+`StoreAvailability` the other tools use, and a failure carries no connection target.
+
+`contracts` lists every configured symbol, plus any stored contract the probe could read. `listening` and
+`tape` are that symbol's tape health. `contractId` is omitted when no contract is stored for the symbol.
+`lastTickUtc` is omitted when no print is stored — a missing print time is not filled in.
+
+`session` is the product session in progress, or the one that most recently closed when the market is shut.
+It is omitted when the calendar cannot name one. `gaps` are the `TapeCoverage` holes in the elapsed part of
+that session. An open listen counts through `asOfUtc` only while that symbol is still listening; a
+still-open row while it is not listening is not coverage. An empty array means the elapsed window is
+covered. The array is omitted when the ledger could not be read, which is a different statement from "no
+holes". Time still in the future of an open session is not a hole.
+
+A down feed is still HTTP 200 on `GET /health/recorder`. The tool only reads.
 
 ## Account reads
 

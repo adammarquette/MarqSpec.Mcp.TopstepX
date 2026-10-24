@@ -321,6 +321,21 @@ run_case "fail: railway.ts takes it from a shared variable" 1 "MASTER SWITCH  .r
 base "$T"; mkdir -p "$T/.railway"; printf 'const c = {\n  TRADING__ENABLED: "False",\n};\n' >"$T/.railway/railway.ts"
 run_case "fail: railway.ts capitalised False" 1 "MASTER SWITCH  .railway/railway.ts:2"
 
+base "$T"; mkdir -p "$T/.railway"; printf 'const c = {\n  Trading__Enabled: ctx.environment === "dev" ? "true" : "false",\n};\n' >"$T/.railway/railway.ts"
+run_case "fail: railway.ts ternary ending in false" 1 "MASTER SWITCH  .railway/railway.ts:2"
+
+base "$T"; mkdir -p "$T/.railway"; printf 'const on = "false";\nconst c = {\n  Trading__Enabled: on,\n};\n' >"$T/.railway/railway.ts"
+run_case "fail: railway.ts takes it from a variable" 1 "MASTER SWITCH  .railway/railway.ts:3"
+
+base "$T"; mkdir -p "$T/.railway"; printf 'const c = {\n  Trading__Enabled: process.env.X || "false",\n};\n' >"$T/.railway/railway.ts"
+run_case "fail: railway.ts fallback to false" 1 "MASTER SWITCH  .railway/railway.ts:2"
+
+base "$T"; mkdir -p "$T/.railway"; printf 'const c = {\n  Trading__Enabled:\n    "false",\n};\n' >"$T/.railway/railway.ts"
+run_case "fail: railway.ts value on a continuation line" 1 "MASTER SWITCH  .railway/railway.ts:2"
+
+base "$T"; mkdir -p "$T/.railway"; printf 'const c = {\n  Trading__Enabled: "false", // ADR-0024\n};\n' >"$T/.railway/railway.ts"
+run_case "pass: railway.ts literal false with a trailing comment" 0 "$GREEN"
+
 base "$T"; mkdir -p "$T/.railway"; printf 'const c = { Other: "x" };\n' >"$T/.railway/railway.ts"
 run_case "fail: railway.ts dropped the switch" 1 "no longer sets Trading__Enabled"
 

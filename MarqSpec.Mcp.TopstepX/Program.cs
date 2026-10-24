@@ -958,7 +958,8 @@ public static class Program
             return new RetryingTapeDriveUploader(
                 new GoogleTapeDriveClient(
                     export.Drive,
-                    sp.GetRequiredService<ILogger<GoogleTapeDriveClient>>()),
+                    sp.GetRequiredService<ILogger<GoogleTapeDriveClient>>(),
+                    sp.GetRequiredService<TimeProvider>()),
                 telemetry,
                 sp.GetRequiredService<ILogger<RetryingTapeDriveUploader>>(),
                 new TapeDriveRetryTiming(),

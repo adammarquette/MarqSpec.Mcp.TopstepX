@@ -41,9 +41,8 @@ public sealed class TapeExportWorkerTests
         TapeExportWorker worker = Worker(pass, McpTransport.Http, enabled: true, clock, leaseHeld: true);
 
         await worker.StartAsync(CancellationToken.None);
-        await SettleAsync();
+        await WaitUntilArmed(worker, 1);
         clock.Advance(TimeSpan.FromMinutes(59));
-        await SettleAsync();
 
         pass.Exports.Should().Be(0);
         await worker.StopAsync(CancellationToken.None);
@@ -57,7 +56,7 @@ public sealed class TapeExportWorkerTests
         TapeExportWorker worker = Worker(pass, McpTransport.Http, enabled: true, clock, leaseHeld: true);
 
         await worker.StartAsync(CancellationToken.None);
-        await SettleAsync();
+        await WaitUntilArmed(worker, 1);
         clock.Advance(TimeSpan.FromHours(1));
         await pass.Called.WaitAsync(TimeSpan.FromSeconds(5));
 
@@ -75,9 +74,8 @@ public sealed class TapeExportWorkerTests
         TapeExportWorker worker = Worker(pass, McpTransport.Http, enabled: true, clock, leaseHeld: true);
 
         await worker.StartAsync(CancellationToken.None);
-        await SettleAsync();
+        await WaitUntilArmed(worker, 1);
         clock.Advance(TimeSpan.FromHours(22));
-        await SettleAsync();
         pass.Exports.Should().Be(0);
 
         clock.Advance(TimeSpan.FromHours(1));
@@ -96,9 +94,9 @@ public sealed class TapeExportWorkerTests
         TapeExportWorker worker = Worker(pass, McpTransport.Http, enabled: true, clock, gate);
 
         await worker.StartAsync(CancellationToken.None);
-        await SettleAsync();
+        await WaitUntilArmed(worker, 1);
         clock.Advance(TimeSpan.FromHours(1));
-        await SettleAsync();
+        await WaitUntilArmed(worker, 2);
         pass.Exports.Should().Be(0);
 
         gate.Held = true;
@@ -117,7 +115,7 @@ public sealed class TapeExportWorkerTests
         TapeExportWorker worker = Worker(pass, McpTransport.Http, enabled: true, clock, leaseHeld: true);
 
         await worker.StartAsync(CancellationToken.None);
-        await SettleAsync();
+        await WaitUntilArmed(worker, 1);
         clock.Advance(TimeSpan.FromHours(1));
         await pass.Called.WaitAsync(TimeSpan.FromSeconds(5));
 
@@ -127,11 +125,12 @@ public sealed class TapeExportWorkerTests
         worker.ExecuteTask.IsFaulted.Should().BeFalse();
     }
 
-    private static async Task SettleAsync()
+    private static async Task WaitUntilArmed(TapeExportWorker worker, int count)
     {
-        for (int i = 0; i < 20; i++)
+        using CancellationTokenSource timeout = new(TimeSpan.FromSeconds(5));
+        while (worker.DelaysArmed < count)
         {
-            await Task.Yield();
+            await Task.Delay(1, timeout.Token);
         }
     }
 

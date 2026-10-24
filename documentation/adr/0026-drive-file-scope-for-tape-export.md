@@ -1,6 +1,6 @@
 # ADR-0026: Tape export Drive uses the drive.file scope
 
-**Status:** Accepted · **Date:** 2026-10-24 · **Deciders:** Adam (operator)
+**Status:** Accepted · **Date:** 2026-10-24 · **Deciders:** Adam (operator) · PR #765
 **Relates to:** PRD `R-10.6`, `R-10.7` · gh#755
 
 ## Context
@@ -32,10 +32,13 @@ A failed upload records the exception type and the HTTP status on the receipt, i
 else. The provider message is not copied. Permanent failures (the credential cannot be read, HTTP 400,
 401, 403, 404) are not retried. Transient failures use exponential backoff with jitter, or the
 response's `Retry-After` when it is present, capped at 30 seconds. The whole upload, retries included,
-stops at a two-minute deadline. The Google client's built-in 503 backoff is disabled so it does not
-stack. Two processes serialise one identity with a session `pg_advisory_lock` on a connection that is
-not pooled. The lock is released in a `finally`. The pending receipt commits before the upload. The
-file id commits after.
+stops at a two-minute deadline, including a wait already in progress. That wait records `Timeout`
+instead of throwing. The Google client's built-in 503 backoff is disabled so it does not stack. Two
+processes serialise one identity with a session `pg_advisory_lock` on one direct connection for the
+pass. The connection is not pooled, sets `lock_timeout` and TCP keepalive, and is reopened if it
+drops. The lock is released in a `finally`. The pending receipt commits before the upload. The file
+id commits after. A day folder stores `appProperties` and is re-listed after create, so two creators
+converge on the first id.
 
 Prefer `TapeExport__Drive__ServiceAccountJsonPath`, a file mounted into the container. Inline
 `TapeExport__Drive__ServiceAccountJson` is visible to anyone who can inspect the container. Neither value

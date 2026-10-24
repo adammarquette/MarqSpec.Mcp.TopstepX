@@ -330,7 +330,19 @@ public sealed class RetryingTapeDriveUploader : ITapeDriveUploader, IDisposable
 
                 double unit = retryAfter is null ? _timing.NextUnit() : 0d;
                 TimeSpan delay = TapeDriveRetryTiming.WaitFor(attempt, unit, retryAfter);
-                await _timing.Wait(delay, token).ConfigureAwait(false);
+                try
+                {
+                    await _timing.Wait(delay, token).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                {
+                    throw;
+                }
+                catch (OperationCanceledException)
+                {
+                    return Failed(span, upload, attempt, retries, "Timeout", status: null, permanent: false);
+                }
+
                 if (cancellationToken.IsCancellationRequested)
                 {
                     cancellationToken.ThrowIfCancellationRequested();

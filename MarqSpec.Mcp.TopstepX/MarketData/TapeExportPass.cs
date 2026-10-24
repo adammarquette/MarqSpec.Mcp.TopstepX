@@ -45,8 +45,10 @@ public interface ITapeExportPass
 /// <para>
 /// A UTC day that has not ended is not archived. A day that an open listen still overlaps is not
 /// archived either. The receipt for a failed upload keeps the last Drive file id. One identity is
-/// serialised with a session advisory lock on a connection that is not pooled. The pending receipt
-/// is committed before the upload, and the file id is committed after it.
+/// serialised with a session advisory lock on one direct connection for the pass. That connection
+/// is not pooled, sets <c>lock_timeout</c> and TCP keepalive, and is reopened if it drops. The
+/// pending receipt is committed before the upload, and the file id is committed after it. A
+/// <c>drive_disabled</c> day is exported again once Drive is on.
 /// </para>
 /// </remarks>
 public sealed class TapeExportPass(
@@ -150,6 +152,7 @@ public sealed class TapeExportPass(
         int skippedOpen = 0;
         int skippedReceipt = await CountFinishedDaysAsync(days, now, cancellationToken).ConfigureAwait(false);
         bool notedDriveDisabled = false;
+        await ReportPendingAsync(cancellationToken).ConfigureAwait(false);
 
         foreach (DateOnly day in days)
         {
@@ -486,9 +489,12 @@ public sealed class TapeExportPass(
     {
         bool failed = false;
         bool driveDisabled = !_drive.IsEnabled;
+        await using IdentityGate? gate = driveDisabled
+            ? null
+            : await IdentityGate.OpenAsync(_database, _logger, cancellationToken).ConfigureAwait(false);
         foreach (TapeExportStoredFile file in written.Files ?? [])
         {
-            failed |= await UploadOneAsync(day, file, exportedAtUtc, cancellationToken).ConfigureAwait(false);
+            failed |= await UploadOneAsync(day, file, exportedAtUtc, gate, cancellationToken).ConfigureAwait(false);
         }
 
         string manifestRelative = TapeExportArchive.ManifestRelative(day);
@@ -508,6 +514,7 @@ public sealed class TapeExportPass(
                     0,
                     TapeExportArchive.Sha256Of(manifestAbsolute)),
                 exportedAtUtc,
+                gate,
                 cancellationToken).ConfigureAwait(false);
         }
 
@@ -518,6 +525,7 @@ public sealed class TapeExportPass(
         DateOnly day,
         TapeExportStoredFile file,
         DateTimeOffset exportedAtUtc,
+        IdentityGate? gate,
         CancellationToken cancellationToken)
     {
         TapeDriveIdentity identity = new(
@@ -544,10 +552,41 @@ public sealed class TapeExportPass(
         }
 
         string key = identity.Canonical();
-        await using NpgsqlConnection gate = await OpenLockConnectionAsync(cancellationToken).ConfigureAwait(false);
+        bool held = false;
         try
         {
-            await AdvisoryAsync(gate, "pg_advisory_lock", key, cancellationToken).ConfigureAwait(false);
+            IdentityGate.LockTake take = await gate!.TryLockAsync(key, cancellationToken).ConfigureAwait(false);
+            if (take == IdentityGate.LockTake.Busy)
+            {
+                await CommitResultAsync(
+                    day,
+                    file,
+                    exportedAtUtc,
+                    driveFileId: null,
+                    TapeExportReceipt.StateFailed,
+                    "IdentityBusy",
+                    failureStatus: null,
+                    cancellationToken).ConfigureAwait(false);
+                await gate.ReopenAsync(cancellationToken).ConfigureAwait(false);
+                return true;
+            }
+
+            if (take == IdentityGate.LockTake.Lost)
+            {
+                await CommitResultAsync(
+                    day,
+                    file,
+                    exportedAtUtc,
+                    driveFileId: null,
+                    TapeExportReceipt.StateFailed,
+                    "LockLost",
+                    failureStatus: null,
+                    cancellationToken).ConfigureAwait(false);
+                await gate.ReopenAsync(cancellationToken).ConfigureAwait(false);
+                return true;
+            }
+
+            held = true;
             string? known = await CommitPendingAsync(day, file, exportedAtUtc, cancellationToken).ConfigureAwait(false);
             string absolute = Path.Combine(
                 _options.Path,
@@ -555,6 +594,22 @@ public sealed class TapeExportPass(
             TapeDriveUploadResult result = await _drive.UploadAsync(
                 new TapeDriveUpload(identity, known, file.RelativePath, () => File.OpenRead(absolute)),
                 cancellationToken).ConfigureAwait(false);
+
+            if (!await gate.ProbeAsync().ConfigureAwait(false))
+            {
+                held = false;
+                await gate.ReopenAsync(cancellationToken).ConfigureAwait(false);
+                await CommitResultAsync(
+                    day,
+                    file,
+                    exportedAtUtc,
+                    result.FileId,
+                    TapeExportReceipt.StateFailed,
+                    "LockLost",
+                    failureStatus: null,
+                    cancellationToken).ConfigureAwait(false);
+                return true;
+            }
 
             if (result.Status == TapeDriveUploadStatus.Failed)
             {
@@ -581,46 +636,27 @@ public sealed class TapeExportPass(
         }
         finally
         {
-            try
+            if (held)
             {
-                if (gate.State == ConnectionState.Open)
-                {
-                    await AdvisoryAsync(gate, "pg_advisory_unlock", key, CancellationToken.None).ConfigureAwait(false);
-                }
-            }
-            catch (Exception exception)
-            {
-                _logger.LogWarning(
-                    "Tape export could not release its identity lock ({ExceptionType}).",
-                    exception.GetType().Name);
+                await gate!.UnlockAsync(key).ConfigureAwait(false);
             }
         }
     }
 
-    private async Task<NpgsqlConnection> OpenLockConnectionAsync(CancellationToken cancellationToken)
+    private async Task ReportPendingAsync(CancellationToken cancellationToken)
     {
-        if (_database.Database.GetDbConnection() is not NpgsqlConnection source)
+        int pending = await _database.TapeExportReceipts.AsNoTracking()
+            .CountAsync(row => row.UploadState == TapeExportReceipt.StatePending, cancellationToken)
+            .ConfigureAwait(false);
+        if (pending == 0)
         {
-            throw new InvalidOperationException("Tape export store is not Postgres.");
+            return;
         }
 
-        // The password is stripped from ConnectionString after open. CloneWith keeps it and turns pooling off,
-        // so this session lock cannot return to the pool still held.
-        NpgsqlConnectionStringBuilder builder = new(source.ConnectionString)
-        {
-            Pooling = false,
-        };
-        NpgsqlConnection connection = source.CloneWith(builder.ConnectionString);
-        try
-        {
-            await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
-            return connection;
-        }
-        catch
-        {
-            await connection.DisposeAsync().ConfigureAwait(false);
-            throw;
-        }
+        _logger.LogWarning(
+            "Tape export found {PendingReceipts} receipt(s) still pending from an earlier pass.",
+            pending);
+        _telemetry.TapeUpload(TapeUploadOutcome.OrphanPending, pending);
     }
 
     private static async Task AdvisoryAsync(
@@ -632,6 +668,8 @@ public sealed class TapeExportPass(
         await using NpgsqlCommand command = new(
             "SELECT " + function + "(hashtextextended(@key, 0))",
             connection);
+        // Longer than lock_timeout, so a busy identity returns 55P03 instead of a client-side timeout.
+        command.CommandTimeout = 60;
         command.Parameters.AddWithValue("key", key);
         await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
     }
@@ -753,9 +791,10 @@ public sealed class TapeExportPass(
         DateTimeOffset now,
         CancellationToken cancellationToken)
     {
+        bool driveOn = _drive.IsEnabled;
         List<DateOnly> finished = await _database.TapeExportReceipts.AsNoTracking()
             .Where(row => row.UploadState == TapeExportReceipt.StateUploaded
-                || row.UploadState == TapeExportReceipt.StateDriveDisabled)
+                || (!driveOn && row.UploadState == TapeExportReceipt.StateDriveDisabled))
             .Select(row => row.Day)
             .Distinct()
             .ToListAsync(cancellationToken)
@@ -782,9 +821,10 @@ public sealed class TapeExportPass(
             days.Add(day);
         }
 
+        bool driveOn = _drive.IsEnabled;
         List<TapeExportReceipt> done = await _database.TapeExportReceipts.AsNoTracking()
             .Where(row => row.UploadState == TapeExportReceipt.StateUploaded
-                || row.UploadState == TapeExportReceipt.StateDriveDisabled)
+                || (!driveOn && row.UploadState == TapeExportReceipt.StateDriveDisabled))
             .ToListAsync(cancellationToken)
             .ConfigureAwait(false);
         foreach (TapeExportReceipt receipt in done)
@@ -825,7 +865,7 @@ public sealed class TapeExportPass(
         return days;
     }
 
-    private const string TradeDaysSql =
+    private string TradeDaysSql =>
         """
         SELECT DISTINCT (t."TradeTimeUtc" AT TIME ZONE 'UTC')::date
         FROM "Trades" AS t
@@ -837,11 +877,12 @@ public sealed class TapeExportPass(
               AND r."Venue" = t."Venue"
               AND r."Instrument" = t."Instrument"
               AND r."ContractId" = t."ContractId"
-              AND r."UploadState" IN ('uploaded', 'drive_disabled')
+              AND 
+        """ + FinishedUploadStateSql + """
               AND r."Sha256" <> '')
         """;
 
-    private const string CoverageDaysSql =
+    private string CoverageDaysSql =>
         """
         SELECT DISTINCT (c."RangeStart" AT TIME ZONE 'UTC')::date
         FROM "TapeCoverage" AS c
@@ -854,11 +895,12 @@ public sealed class TapeExportPass(
               AND r."Venue" = c."Venue"
               AND r."Instrument" = c."Instrument"
               AND r."ContractId" = c."ContractId"
-              AND r."UploadState" IN ('uploaded', 'drive_disabled')
+              AND 
+        """ + FinishedUploadStateSql + """
               AND r."Sha256" <> '')
         """;
 
-    private const string FootprintDaysSql =
+    private string FootprintDaysSql =>
         """
         SELECT DISTINCT (f."BucketStart" AT TIME ZONE 'UTC')::date
         FROM "FootprintCells" AS f
@@ -870,9 +912,14 @@ public sealed class TapeExportPass(
               AND r."Venue" = f."Venue"
               AND r."Instrument" = f."Instrument"
               AND r."ResolutionMinutes" = f."ResolutionMinutes"
-              AND r."UploadState" IN ('uploaded', 'drive_disabled')
+              AND 
+        """ + FinishedUploadStateSql + """
               AND r."Sha256" <> '')
         """;
+
+    private string FinishedUploadStateSql => _drive.IsEnabled
+        ? "r.\"UploadState\" = 'uploaded'"
+        : "r.\"UploadState\" IN ('uploaded', 'drive_disabled')";
 
     private readonly record struct SeriesKey(string Venue, string Instrument, string ContractId, int Resolution);
 
@@ -1024,4 +1071,194 @@ public sealed class TapeExportPass(
     }
 
     private static TapeExportReport Empty() => new(0, 0, 0, 0);
+
+    /// <summary>
+    /// One direct session for every identity in a pass. Pooling stays off so the advisory lock cannot
+    /// go back to the pool still held. <c>lock_timeout</c> bounds a waiter. Keepalive notices a half-open TCP
+    /// session. A drop is a lost lock, not a second owner.
+    /// </summary>
+    private sealed class IdentityGate : IAsyncDisposable
+    {
+        internal const string ApplicationName = "tape-export-lock";
+
+        private readonly TopstepXDbContext _database;
+        private readonly ILogger _logger;
+        private NpgsqlConnection? _connection;
+
+        private IdentityGate(TopstepXDbContext database, NpgsqlConnection connection, ILogger logger)
+        {
+            _database = database;
+            _connection = connection;
+            _logger = logger;
+        }
+
+        internal enum LockTake
+        {
+            Held,
+            Busy,
+            Lost,
+        }
+
+        internal static async Task<IdentityGate> OpenAsync(
+            TopstepXDbContext database,
+            ILogger logger,
+            CancellationToken cancellationToken)
+        {
+            NpgsqlConnection connection = await OpenConnectionAsync(database, cancellationToken).ConfigureAwait(false);
+            return new IdentityGate(database, connection, logger);
+        }
+
+        internal async Task<LockTake> TryLockAsync(string key, CancellationToken cancellationToken)
+        {
+            try
+            {
+                if (_connection is null || _connection.State != ConnectionState.Open)
+                {
+                    await ReopenAsync(cancellationToken).ConfigureAwait(false);
+                }
+
+                await AdvisoryAsync(_connection!, "pg_advisory_lock", key, cancellationToken).ConfigureAwait(false);
+                return LockTake.Held;
+            }
+            catch (OperationCanceledException)
+            {
+                throw;
+            }
+            catch (Exception exception) when (IsLockTimeout(exception))
+            {
+                return LockTake.Busy;
+            }
+            catch (Exception exception) when (IsConnectionFailure(exception))
+            {
+                _logger.LogWarning(
+                    "Tape export lost its identity lock ({ExceptionType}).",
+                    exception.GetType().Name);
+                return LockTake.Lost;
+            }
+        }
+
+        internal async Task<bool> ProbeAsync()
+        {
+            if (_connection is null || _connection.State != ConnectionState.Open)
+            {
+                return false;
+            }
+
+            try
+            {
+                await using NpgsqlCommand command = new("SELECT 1", _connection);
+                await command.ExecuteScalarAsync(CancellationToken.None).ConfigureAwait(false);
+                return true;
+            }
+            catch (Exception exception)
+            {
+                _logger.LogWarning(
+                    "Tape export lost its identity lock ({ExceptionType}).",
+                    exception.GetType().Name);
+                return false;
+            }
+        }
+
+        internal async Task UnlockAsync(string key)
+        {
+            if (_connection is null || _connection.State != ConnectionState.Open)
+            {
+                return;
+            }
+
+            try
+            {
+                await AdvisoryAsync(_connection, "pg_advisory_unlock", key, CancellationToken.None).ConfigureAwait(false);
+            }
+            catch (Exception exception)
+            {
+                _logger.LogWarning(
+                    "Tape export could not release its identity lock ({ExceptionType}).",
+                    exception.GetType().Name);
+            }
+        }
+
+        internal async Task ReopenAsync(CancellationToken cancellationToken)
+        {
+            await DisposeConnectionAsync().ConfigureAwait(false);
+            _connection = await OpenConnectionAsync(_database, cancellationToken).ConfigureAwait(false);
+        }
+
+        public async ValueTask DisposeAsync() => await DisposeConnectionAsync().ConfigureAwait(false);
+
+        private async Task DisposeConnectionAsync()
+        {
+            if (_connection is null)
+            {
+                return;
+            }
+
+            await _connection.DisposeAsync().ConfigureAwait(false);
+            _connection = null;
+        }
+
+        private static async Task<NpgsqlConnection> OpenConnectionAsync(
+            TopstepXDbContext database,
+            CancellationToken cancellationToken)
+        {
+            if (database.Database.GetDbConnection() is not NpgsqlConnection source)
+            {
+                throw new InvalidOperationException("Tape export store is not Postgres.");
+            }
+
+            // The password is stripped from ConnectionString after open. CloneWith keeps it and turns pooling off,
+            // so this session lock cannot return to the pool still held. A direct connection is required:
+            // transaction-mode pooling would drop the session lock at the end of the statement.
+            NpgsqlConnectionStringBuilder builder = new(source.ConnectionString)
+            {
+                Pooling = false,
+                ApplicationName = ApplicationName,
+                KeepAlive = 30,
+            };
+            if (builder.Pooling)
+            {
+                throw new InvalidOperationException("Tape export identity lock refuses a pooled connection.");
+            }
+
+            NpgsqlConnection connection = source.CloneWith(builder.ConnectionString);
+            try
+            {
+                await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
+                await using NpgsqlCommand timeout = new("SELECT set_config('lock_timeout', '30s', false)", connection);
+                await timeout.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
+                return connection;
+            }
+            catch
+            {
+                await connection.DisposeAsync().ConfigureAwait(false);
+                throw;
+            }
+        }
+
+        private static bool IsLockTimeout(Exception exception)
+        {
+            for (Exception? current = exception; current is not null; current = current.InnerException)
+            {
+                if (current is PostgresException postgres && postgres.SqlState == PostgresErrorCodes.LockNotAvailable)
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        private static bool IsConnectionFailure(Exception exception)
+        {
+            for (Exception? current = exception; current is not null; current = current.InnerException)
+            {
+                if (current is NpgsqlException or IOException or TimeoutException or InvalidOperationException)
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+    }
 }

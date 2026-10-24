@@ -1271,6 +1271,9 @@ public static class TapeUploadOutcome
     /// <summary>The error will not succeed on another try: bad credentials, or HTTP 400, 401, 403, or 404.</summary>
     public const string Permanent = "drive_permanent";
 
+    /// <summary>Receipts still <c>pending</c> at the start of a pass. A crash left them. The pass retries the file.</summary>
+    public const string OrphanPending = "drive_orphan_pending";
+
     /// <summary>Every value.</summary>
-    public static IReadOnlyList<string> All { get; } = [Disabled, Retried, Uploaded, Failed, Permanent];
+    public static IReadOnlyList<string> All { get; } = [Disabled, Retried, Uploaded, Failed, Permanent, OrphanPending];
 }

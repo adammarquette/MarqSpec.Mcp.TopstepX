@@ -10,6 +10,7 @@ using Google.Apis.Services;
 using MarqSpec.Mcp.TopstepX.Configuration;
 using MarqSpec.Mcp.TopstepX.MarketData;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Time.Testing;
 
 namespace MarqSpec.Mcp.TopstepX.Tests.MarketData;
 
@@ -184,6 +185,82 @@ public sealed class GoogleTapeDriveClientTests
         exception.RetryAfter.Should().Be(TimeSpan.FromSeconds(10));
     }
 
+    [Theory]
+    [InlineData(400, true)]
+    [InlineData(401, true)]
+    [InlineData(403, true)]
+    [InlineData(404, true)]
+    [InlineData(408, false)]
+    [InlineData(429, false)]
+    [InlineData(500, false)]
+    [InlineData(502, false)]
+    [InlineData(503, false)]
+    public async Task Upload_WhenDriveReturnsAStatus_ClassifiesIt(int status, bool permanent)
+    {
+        RecordingHandler handler = new() { Status = status };
+        using GoogleTapeDriveClient client = Client(handler, out _);
+
+        Func<Task> upload = () => client.UploadAsync(Upload(null, "bytes"), CancellationToken.None);
+
+        TapeDriveException exception = (await upload.Should().ThrowAsync<TapeDriveException>()).Which;
+        exception.StatusCode.Should().Be(status);
+        exception.Permanent.Should().Be(permanent);
+        handler.Requests.Should().ContainSingle();
+    }
+
+    [Fact]
+    public async Task Upload_WhenRetryAfterIsAnHttpDate_UsesTheClientClock()
+    {
+        FakeTimeProvider clock = new(new DateTimeOffset(2026, 10, 17, 6, 0, 0, TimeSpan.Zero));
+        RecordingHandler handler = new()
+        {
+            Status = 429,
+            RetryAfterDate = clock.GetUtcNow().AddSeconds(15),
+        };
+        using GoogleTapeDriveClient client = Client(handler, out _, clock: clock);
+
+        Func<Task> upload = () => client.UploadAsync(Upload("file-1", "bytes"), CancellationToken.None);
+
+        TapeDriveException exception = (await upload.Should().ThrowAsync<TapeDriveException>()).Which;
+        exception.RetryAfter.Should().Be(TimeSpan.FromSeconds(15));
+        exception.Permanent.Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task Upload_WhenAParentDisappears_DropsTheFolderCache()
+    {
+        RecordingHandler handler = new();
+        using GoogleTapeDriveClient client = Client(handler, out _);
+        await client.UploadAsync(Upload(null, "bytes"), CancellationToken.None);
+
+        handler.Status = 404;
+        Func<Task> missing = () => client.UploadAsync(Upload("file-1", "bytes"), CancellationToken.None);
+        (await missing.Should().ThrowAsync<TapeDriveException>()).Which.StatusCode.Should().Be(404);
+
+        handler.Status = 200;
+        handler.LookupMiss = true;
+        int listsBefore = FolderLists(handler);
+        await client.UploadAsync(Upload(null, "bytes"), CancellationToken.None);
+        (FolderLists(handler) - listsBefore).Should().BeGreaterThan(0);
+    }
+
+    [Fact]
+    public async Task RecordingHandler_WhenTheEncodingIsUnknown_RejectsTheBody()
+    {
+        RecordingHandler handler = new();
+        using HttpClient http = new(handler, disposeHandler: false);
+        using ByteArrayContent content = new(Encoding.UTF8.GetBytes("{\"trashed\":true}"));
+        content.Headers.ContentEncoding.Add("zstd");
+        using HttpRequestMessage request = new(HttpMethod.Post, "https://www.googleapis.com/upload/drive/v3/files")
+        {
+            Content = content,
+        };
+
+        Func<Task> send = () => http.SendAsync(request);
+
+        await send.Should().ThrowAsync<InvalidOperationException>();
+    }
+
     [Fact]
     public async Task Upload_WhenLookupReturnsTwoFiles_UpdatesTheFirstAndLogsIt()
     {
@@ -196,7 +273,10 @@ public sealed class GoogleTapeDriveClientTests
         id.Should().Be("file-a");
         handler.FileCreates.Should().Be(0);
         handler.Requests.Should().Contain(request => request.Uri.Contains("/files/file-a", StringComparison.Ordinal));
-        logger.Lines.Should().Contain("Drive lookup found more than one file for an export identity. The first id is updated.");
+        logger.Lines.Should().Contain(line =>
+            line.Contains("Drive lookup found more than one file for an export identity. The first id is updated.", StringComparison.Ordinal)
+            && line.Contains("2", StringComparison.Ordinal));
+        logger.Levels.Should().Contain(LogLevel.Warning);
         handler.Traffic.Should().NotContain("\"trashed\"");
     }
 
@@ -216,6 +296,8 @@ public sealed class GoogleTapeDriveClientTests
             client.UploadAsync(parquet, CancellationToken.None));
 
         handler.FolderCreates.Should().Be(4);
+        handler.Requests.Should().Contain(request =>
+            request.Body.Contains("\"tapeFolder\"", StringComparison.Ordinal));
     }
 
     [Fact]
@@ -240,10 +322,17 @@ public sealed class GoogleTapeDriveClientTests
         fileBody.Should().NotContain("folder-b");
     }
 
-    private static GoogleTapeDriveClient Client(RecordingHandler handler, out string marker) =>
-        Client(handler, out marker, logger: null);
+    private static int FolderLists(RecordingHandler handler) =>
+        handler.Requests.Count(request => request.Uri.Contains("mimeType", StringComparison.Ordinal));
 
-    private static GoogleTapeDriveClient Client(RecordingHandler handler, out string marker, ListLogger? logger)
+    private static GoogleTapeDriveClient Client(RecordingHandler handler, out string marker) =>
+        Client(handler, out marker, logger: null, clock: null);
+
+    private static GoogleTapeDriveClient Client(
+        RecordingHandler handler,
+        out string marker,
+        ListLogger? logger = null,
+        TimeProvider? clock = null)
     {
         marker = "secret-marker-" + Guid.NewGuid().ToString("N");
 #pragma warning disable CS0618 // The stub has no token endpoint. A bearer token skips the credential exchange.
@@ -252,7 +341,7 @@ public sealed class GoogleTapeDriveClientTests
         BaseClientService.Initializer initializer = GoogleTapeDriveClient.ServiceInitializer(credential);
         initializer.HttpClientFactory = new StubFactory(handler);
         DriveService service = new(initializer);
-        return new GoogleTapeDriveClient("folder-root", service, logger);
+        return new GoogleTapeDriveClient("folder-root", service, logger, clock);
     }
 
     private static byte[] Encode(string plain, string encoding)
@@ -293,13 +382,17 @@ public sealed class GoogleTapeDriveClientTests
 
         public IReadOnlyList<string>? ListedIds { get; init; }
 
-        public int Status { get; init; } = 200;
+        public int Status { get; set; } = 200;
 
         public string ErrorBody { get; init; } = string.Empty;
 
         public TimeSpan? RetryAfter { get; init; }
 
+        public DateTimeOffset? RetryAfterDate { get; init; }
+
         public bool ReturnEarlierFolder { get; init; }
+
+        public bool LookupMiss { get; set; }
 
         public int FileCreates { get; private set; }
 
@@ -340,6 +433,10 @@ public sealed class GoogleTapeDriveClientTests
                 {
                     failed.Headers.RetryAfter = new RetryConditionHeaderValue(retryAfter);
                 }
+                else if (RetryAfterDate is DateTimeOffset when)
+                {
+                    failed.Headers.RetryAfter = new RetryConditionHeaderValue(when);
+                }
 
                 return failed;
             }
@@ -357,6 +454,11 @@ public sealed class GoogleTapeDriveClientTests
                         ",",
                         ListedIds.Select(id => "{\"id\":\"" + id + "\"}"));
                     return Json("{\"files\":[" + listed + "]}");
+                }
+
+                if (LookupMiss && uri.Contains("appProperties", StringComparison.Ordinal))
+                {
+                    return Json("{\"files\":[]}");
                 }
 
                 string id = ListedId ?? _createdId ?? string.Empty;
@@ -485,7 +587,7 @@ public sealed class GoogleTapeDriveClientTests
                     "gzip" => new GZipStream(stream, CompressionMode.Decompress),
                     "deflate" => new DeflateStream(stream, CompressionMode.Decompress),
                     "br" => new BrotliStream(stream, CompressionMode.Decompress),
-                    _ => stream,
+                    _ => throw new InvalidOperationException("unsupported content encoding " + encoding),
                 };
             }
 
@@ -505,6 +607,8 @@ public sealed class GoogleTapeDriveClientTests
     {
         public List<string> Lines { get; } = [];
 
+        public List<LogLevel> Levels { get; } = [];
+
         public IDisposable? BeginScope<TState>(TState state)
             where TState : notnull => null;
 
@@ -517,6 +621,7 @@ public sealed class GoogleTapeDriveClientTests
             Exception? exception,
             Func<TState, Exception?, string> formatter)
         {
+            Levels.Add(logLevel);
             Lines.Add(formatter(state, exception));
         }
     }

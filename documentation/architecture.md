@@ -820,7 +820,7 @@ on a bump, so a dashboard that must not break is built on these
 | `mcp.tape.session_conflicts` | counter | `source` = hub \| api | `TradeTapeRecorder`; span `tape.session_conflict` carries `source` only (gh#757) |
 | `mcp.tape.exports` | counter | `outcome` = skipped_open \| skipped_receipt \| days_exported \| rows_exported \| verification_failed \| rows_imported \| import_refused \| lock_held \| export_failed | `TapeExportPass` (gh#755, `R-10`). One measurement per pass for a repeated outcome |
 | `mcp.tape.export.duration` | histogram, seconds | (none) | `TapeExportPass`, once per pass including a lock skip |
-| `mcp.tape.uploads` | counter | `outcome` = drive_disabled \| drive_retried \| drive_uploaded \| drive_failed \| drive_permanent | `TapeExportPass` records `drive_disabled` once when Drive is off. The retrying uploader records the others (gh#755, `R-10.6`). `drive_retried` counts the retries, not one event per attempt |
+| `mcp.tape.uploads` | counter | `outcome` = drive_disabled \| drive_retried \| drive_uploaded \| drive_failed \| drive_permanent \| drive_orphan_pending | `TapeExportPass` records `drive_disabled` once when Drive is off, and `drive_orphan_pending` for receipts still pending. The retrying uploader records the others (gh#755, `R-10.6`). `drive_retried` counts the retries, not one event per attempt |
 | `mcp.indicator.projections` | counter, values | `indicator` · `symbol` · `resolution` **or** `session` | `IndicatorProjector` |
 | `mcp.recorder.health.reads` | counter | `outcome` = ok \| degraded \| unavailable \| timeout | `RecorderHealthService`, once per report that was built (gh#756) |
 
@@ -1138,14 +1138,16 @@ Trades and closed coverage are one pair per contract per day,
 `manifests/yyyy-MM-dd.json` (`csv.gz+parquet/v1`), written last by a temp file, fsync, and rename, and
 it is the name a reader trusts. It stores the generation, each file's sha256, and the data-row count.
 An older generation is left on disk.
-The image user is uid 64198. Railway allows one volume per service and mounts it as root at `/data`,
-so the recorder's start command prepares that whole mount — exports at `/data/tape-exports` and the
-key directory `/data/keys` — then drops privileges (`RAILWAY_RUN_UID=0`, see
-[deployment](deployment.md#recorded-tape-on-a-persistent-host-gh755)). The key file is
-`/data/keys/drive-sa.json` (mode `0400`, directory mode `0700`, owned by 64198). gh#767 will move
-that preparation into the image's startup step. A volume that user cannot write is a skipped pass,
-not a crash and not a silent success.
-The committed compose file forwards the environment variables and does not mount the volume.
+The image user is uid 64198. Railway allows one volume per service and mounts it as root at `/data`.
+Export on Railway is deferred until gh#767 (the template, gh#774, keeps `[export-blocked]`). Do not
+set `RAILWAY_RUN_UID=0` or enable the export on Railway now. The start command in
+[deployment](deployment.md#recorded-tape-on-a-persistent-host-gh755) is the shape gh#767 moves into
+the image: it refuses symlinks, chowns only top-level entries that are not already uid 64198, and
+`exec runuser` drops to `mcp`. Without uid 0 that command exits and the container crash-loops. A
+volume the application cannot write is still a skipped pass, not a crash and not a silent success.
+A key placed after start stays root-owned mode 0644 until the next start, or until it is chowned
+and chmodded at placement time. The committed compose file forwards the environment variables and
+does not mount the volume.
 
 **Drive is optional and additive** (`R-10.6`, [ADR-0026](adr/0026-drive-file-scope-for-tape-export.md)).
 `TapeExport__Drive__FolderId` plus a credential turn it on. Prefer
@@ -1153,15 +1155,26 @@ The committed compose file forwards the environment variables and does not mount
 `TapeExport__Drive__ServiceAccountJson` is visible to anyone who can inspect the container. Empty
 leaves Drive off and the disabled uploader records nothing; the pass counts one `drive_disabled`.
 The OAuth scope is `drive.file`. The identity is `appProperties` plus the stored file id, not the
-display name. Nothing is trashed. Two uploads of one identity take a session `pg_advisory_lock` on a
-connection that is not returned to the pool, and release it in a `finally`. `pending` is committed
-before the upload. The file id is committed after. A transient failure waits with exponential backoff
-and jitter, or `Retry-After` when the response sends one, capped at 30 seconds, up to three attempts
-and a two-minute deadline. The Google client's own 503 backoff is off. A permanent failure is not
-retried. The local file, the Postgres rows, and the last good file id stay. Spans are `tape.export`
-(a day the pass touches) and `tape.upload` (one file, across its retries). `TapeExportReceipts` records
-`pending`, `drive_disabled`, `uploaded`, or `failed`
-(`R-10.7`). That is not a retention check.
+display name. Nothing is trashed. Day folders are created with `appProperties` and re-listed after
+create; two processes converge on the lexicographically first id and may leave one empty extra
+folder. A 404 drops the process-wide folder cache. Two uploads of one identity share one direct
+session `pg_advisory_lock` for the pass (not the pooled EF connection, and not transaction-mode
+PgBouncer). The key is `hashtextextended` of the identity (`objsubid` 1), which does not collide with
+the trading coordinator's two-int advisory locks (`objsubid` 2). The connection sets
+`lock_timeout` to 30 seconds and TCP keepalive to 30 seconds, and it is not returned to the pool.
+The lock is released in a `finally`. A drop mid-upload is `LockLost`: that file is failed, any
+returned file id is kept, and the pass opens a new connection for the next file. A lock timeout is
+`IdentityBusy` and the pass continues. `pending` is committed before the upload. The file id is
+committed after. Rows still `pending` at the start of a pass are logged and counted
+`drive_orphan_pending`, then retried. A `drive_disabled` day is finished only while Drive is off;
+turning Drive on exports it. A transient failure waits with exponential backoff and jitter, or
+`Retry-After` when the response sends one (an HTTP-date is read from the process clock), capped at
+30 seconds, up to three attempts and a two-minute deadline. A deadline that fires during the wait
+records `Timeout` and the pass continues to the next file. The Google client's own 503 backoff is
+off. HTTP 408, 429, 500, 502, and 503 stay transient. A permanent failure is not retried. The local
+file, the Postgres rows, and the last good file id stay. Spans are `tape.export` (a day the pass
+touches) and `tape.upload` (one file, across its retries). `TapeExportReceipts` records `pending`,
+`drive_disabled`, `uploaded`, or `failed` (`R-10.7`). That is not a retention check.
 
 **The copy is additive.** A day is the UTC calendar day of `TradeTimeUtc`, of a closed coverage
 `RangeStart`, or of a footprint `BucketStart`, half-open `[dayStart, dayEnd)`. It is exported once
@@ -1179,8 +1192,8 @@ open listen still overlaps is skipped. An empty database does not rediscover a d
 `ON CONFLICT DO NOTHING` and writes nothing for a day that fails verification.
 
 `mcp.tape.exports` counts the outcomes above, once per pass when the count is positive.
-`mcp.tape.uploads` counts `drive_disabled`, `drive_retried`, `drive_uploaded`, `drive_failed`, and
-`drive_permanent`, tagged only with `outcome`. `mcp.tape.export.duration` is the pass, in seconds,
+`mcp.tape.uploads` counts `drive_disabled`, `drive_retried`, `drive_uploaded`, `drive_failed`,
+`drive_permanent`, and `drive_orphan_pending`, tagged only with `outcome`. `mcp.tape.export.duration` is the pass, in seconds,
 with no tags. A thrown pass is caught, counted `export_failed`, and does not fault the host. Loading
 the files back with DuckDB or pandas is [tape-export-reload.md](tape-export-reload.md).
 

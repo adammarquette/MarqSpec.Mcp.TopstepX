@@ -294,6 +294,10 @@ public sealed partial class MarketDataOptions : IValidatableObject
         }
         catch (FormatException)
         {
+            // A session close or a holiday that does not parse is a different key. This method leaves
+            // that failure where it already surfaces, when the calendar singleton is first resolved.
+            // Early closes are the EarlyCloseException above; matching this exception's text would
+            // move a holiday failure to boot under EarlyCloses the moment the sentence changed.
             return results;
         }
 

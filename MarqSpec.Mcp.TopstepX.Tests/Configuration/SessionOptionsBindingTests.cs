@@ -248,6 +248,20 @@ public sealed class SessionOptionsBindingTests
         start.Should().Throw<OptionsValidationException>().WithMessage("*EarlyCloses*");
     }
 
+    [Fact]
+    public void EarlyCloses_WhenTheTimeIsBeforeTwoAm_FailsStartupNamingThatBound()
+    {
+        Action start = () => BindWith(builder => builder.Configuration.AddInMemoryCollection(
+            new Dictionary<string, string?>
+            {
+                ["MarketData:EarlyCloses"] = "2026-11-27 01:30",
+            }));
+
+        start.Should().Throw<OptionsValidationException>()
+            .WithMessage("*EarlyCloses*")
+            .WithMessage("*before 02:00 Central*");
+    }
+
     /// <summary>
     /// Binds through the real composition root, so this measures what the deployed server does rather than a
     /// hand-rolled binder. <paramref name="configure"/> adds whatever configuration the case needs; adding

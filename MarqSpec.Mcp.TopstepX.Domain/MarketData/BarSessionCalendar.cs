@@ -54,8 +54,11 @@ public sealed class BarSessionCalendar
     /// time. Empty when none are declared. The next session still opens at <see cref="SessionOpen"/>.
     /// </param>
     /// <exception cref="ArgumentOutOfRangeException">
-    /// The maintenance window is not positive, or is a day or longer, or an early close is before 02:00
-    /// Central or not strictly before the ordinary close.
+    /// The maintenance window is not positive, or is a day or longer, or the session close itself would
+    /// put spring-forward inside the session.
+    /// </exception>
+    /// <exception cref="EarlyCloseException">
+    /// An early close is before 02:00 Central, or it is not strictly before the ordinary close.
     /// </exception>
     public BarSessionCalendar(
         TimeOnly sessionClose,
@@ -94,13 +97,17 @@ public sealed class BarSessionCalendar
 
         foreach (KeyValuePair<DateOnly, TimeOnly> pair in earlyCloses)
         {
-            if (pair.Value < new TimeOnly(2, 0) || pair.Value >= sessionClose)
+            string when = pair.Key.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture)
+                + " "
+                + pair.Value.ToString("HH:mm", CultureInfo.InvariantCulture);
+            if (pair.Value < new TimeOnly(2, 0))
             {
-                throw new EarlyCloseException(
-                    pair.Key.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture)
-                    + " "
-                    + pair.Value.ToString("HH:mm", CultureInfo.InvariantCulture)
-                    + " is not before the ordinary session close.");
+                throw new EarlyCloseException(when + " is before 02:00 Central.");
+            }
+
+            if (pair.Value >= sessionClose)
+            {
+                throw new EarlyCloseException(when + " is not before the ordinary session close.");
             }
         }
     }
@@ -186,7 +193,10 @@ public sealed class BarSessionCalendar
     /// </param>
     /// <returns>The calendar.</returns>
     /// <exception cref="FormatException">The session close or a holiday is not in the expected shape.</exception>
-    /// <exception cref="EarlyCloseException">An early close is not <c>yyyy-MM-dd HH:mm</c>, or it is not before the ordinary close.</exception>
+    /// <exception cref="EarlyCloseException">
+    /// An early close is not <c>yyyy-MM-dd HH:mm</c>, is before 02:00 Central, or is not strictly before
+    /// the ordinary close.
+    /// </exception>
     /// <remarks>
     /// Guessing here would be a silent, compounding error: this value decides what counts as missing data, so a
     /// misparsed close either makes the store look complete when it is not, or makes it re-fetch forever.

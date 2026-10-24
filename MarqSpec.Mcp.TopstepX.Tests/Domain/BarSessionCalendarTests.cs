@@ -179,8 +179,21 @@ public sealed class BarSessionCalendarTests
     {
         Action parse = () => BarSessionCalendar.Parse("16:00", [], earlyCloses: ["2026-11-27 16:00"]);
 
-        parse.Should().Throw<EarlyCloseException>()
-            .Which.Should().NotBeAssignableTo<ArgumentOutOfRangeException>();
+        EarlyCloseException exception = parse.Should().Throw<EarlyCloseException>().Which;
+        exception.Should().NotBeAssignableTo<ArgumentOutOfRangeException>();
+        exception.Message.Should().Contain("ordinary session close");
+        exception.Message.Should().NotContain("02:00");
+    }
+
+    [Fact]
+    public void Parse_WhenAnEarlyCloseIsBeforeTwoAm_NamesThatBound()
+    {
+        Action parse = () => BarSessionCalendar.Parse("16:00", [], earlyCloses: ["2026-11-27 01:30"]);
+
+        EarlyCloseException exception = parse.Should().Throw<EarlyCloseException>().Which;
+        exception.Message.Should().Contain("01:30");
+        exception.Message.Should().Contain("before 02:00 Central");
+        exception.Message.Should().NotContain("ordinary session close");
     }
 
     [Fact]

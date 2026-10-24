@@ -1,4 +1,5 @@
 using MarqSpec.Mcp.TopstepX.Configuration;
+using MarqSpec.Mcp.TopstepX.Telemetry;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
@@ -86,9 +87,12 @@ public static class HeldSessionRenewal
 /// is not logged.
 /// </para>
 /// <para>
-/// A failure backs off and closes login until a later validate succeeds. That close is not the one-way
-/// stop. A positive conflict (HTTP 401, <c>InvalidSession</c>, <c>SessionNotFound</c>) latches the stop
-/// when <see cref="MarketDataOptions.StopOnSessionConflict"/> is on, and still does not log in.
+/// A failure backs off and closes login while the held token is still fresh. Login opens again when a
+/// later validate succeeds, when validate reports <c>ExpiredToken</c> (the bearer can never become valid),
+/// or when the held token is inside its refresh buffer, so one <c>loginKey</c> can recover the process.
+/// That close is not the one-way stop. A positive conflict (HTTP 401, <c>InvalidSession</c>,
+/// <c>SessionNotFound</c>) latches the stop when <see cref="MarketDataOptions.StopOnSessionConflict"/> is
+/// on. Once the stop is latched this loop does not post validate again.
 /// </para>
 /// </remarks>
 public sealed class HeldSessionRenewer : BackgroundService
@@ -99,15 +103,17 @@ public sealed class HeldSessionRenewer : BackgroundService
     private readonly TimeProvider _clock;
     private readonly MarketDataOptions _market;
     private readonly ILogger<HeldSessionRenewer> _logger;
+    private readonly HostTelemetry _telemetry;
     private readonly Func<double> _jitterUnit;
 
     /// <summary>Creates the renewer.</summary>
     /// <param name="held">The token already held.</param>
     /// <param name="probe">Posts validate. Does not call <c>loginKey</c>.</param>
     /// <param name="gate">Closed on a positive conflict, and for the duration of a renewal backoff.</param>
-    /// <param name="clock">The clock the wait uses.</param>
+    /// <param name="clock">The clock the wait and the freshness decision use.</param>
     /// <param name="market">Whether a positive conflict latches the stop.</param>
     /// <param name="logger">The logger. The bearer is not written here.</param>
+    /// <param name="telemetry">Records a renewal refusal. The bearer is not a tag.</param>
     /// <param name="jitterUnit">
     /// Returns a unit interval for the happy-path jitter. Production passes <see cref="Random.Shared"/>.
     /// </param>
@@ -118,6 +124,7 @@ public sealed class HeldSessionRenewer : BackgroundService
         TimeProvider clock,
         IOptions<MarketDataOptions> market,
         ILogger<HeldSessionRenewer> logger,
+        HostTelemetry telemetry,
         Func<double>? jitterUnit = null)
     {
         ArgumentNullException.ThrowIfNull(held);
@@ -126,12 +133,14 @@ public sealed class HeldSessionRenewer : BackgroundService
         ArgumentNullException.ThrowIfNull(clock);
         ArgumentNullException.ThrowIfNull(market);
         ArgumentNullException.ThrowIfNull(logger);
+        ArgumentNullException.ThrowIfNull(telemetry);
         _held = held;
         _probe = probe;
         _gate = gate;
         _clock = clock;
         _market = market.Value;
         _logger = logger;
+        _telemetry = telemetry;
         _jitterUnit = jitterUnit ?? (() => Random.Shared.NextDouble());
     }
 
@@ -143,6 +152,11 @@ public sealed class HeldSessionRenewer : BackgroundService
         {
             try
             {
+                if (StopIfLatched())
+                {
+                    return;
+                }
+
                 if (!_held.TryRead(out _))
                 {
                     // The first login has not happened. Waiting here must not close the gate.
@@ -152,6 +166,11 @@ public sealed class HeldSessionRenewer : BackgroundService
 
                 TimeSpan delay = HeldSessionRenewal.NextDelay(failures, _jitterUnit());
                 await Task.Delay(delay, _clock, stoppingToken).ConfigureAwait(false);
+                if (StopIfLatched())
+                {
+                    return;
+                }
+
                 if (!_held.TryRead(out _))
                 {
                     continue;
@@ -176,17 +195,40 @@ public sealed class HeldSessionRenewer : BackgroundService
                         _gate.LatchStop();
                     }
 
+                    Record(SessionRenewalRefusal.Conflict);
                     _logger.LogWarning(
                         "Renewing the held TopstepX session reported a conflict. This process will not call loginKey.");
+                    if (_gate.StopLatched)
+                    {
+                        return;
+                    }
+
                     failures = Math.Max(failures, 1);
                     continue;
                 }
 
-                failures++;
-                _gate.BeginRenewalBackoff();
-                _logger.LogWarning(
-                    "Renewing the held TopstepX session failed. This process will not call loginKey and will try validate again after {Backoff}.",
-                    HeldSessionRenewal.NextDelay(failures, 0));
+                if (verdict == SessionProbeVerdict.NeverValid)
+                {
+                    failures++;
+                    Record(SessionRenewalRefusal.Expired);
+                    if (_gate.StopLatched)
+                    {
+                        return;
+                    }
+
+                    // The bearer can never become valid. Drop it so the next read is a login, not another
+                    // validate of a token the venue has already refused.
+                    _held.Forget();
+                    _gate.EndRenewalBackoff();
+                    _logger.LogWarning(
+                        "Renewing the held TopstepX session returned an expired token. Login may run once so this process can recover.");
+                    continue;
+                }
+
+                if (NoteFailure(ref failures, SessionRenewalRefusal.Outage) == RenewalStep.Stop)
+                {
+                    return;
+                }
             }
             catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
             {
@@ -194,11 +236,70 @@ public sealed class HeldSessionRenewer : BackgroundService
             }
             catch (Exception)
             {
-                failures++;
-                _gate.BeginRenewalBackoff();
-                _logger.LogWarning(
-                    "Renewing the held TopstepX session failed. This process will not call loginKey.");
+                if (NoteFailure(ref failures, SessionRenewalRefusal.Outage) == RenewalStep.Stop)
+                {
+                    return;
+                }
             }
         }
+    }
+
+    /// <summary>Records one latched refusal and says whether the loop should leave.</summary>
+    /// <returns><see langword="true"/> when validate must not be posted.</returns>
+    private bool StopIfLatched()
+    {
+        if (!_gate.StopLatched)
+        {
+            return false;
+        }
+
+        Record(SessionRenewalRefusal.Latched);
+        return true;
+    }
+
+    /// <summary>
+    /// Counts a renewal that did not succeed. A token that is still fresh closes login. A token inside
+    /// the refresh buffer, or a stop that latched while this call was in flight, does not.
+    /// </summary>
+    /// <param name="failures">The consecutive-failure count. Incremented here.</param>
+    /// <param name="reasonWhenStillFresh">The refusal reason while the token is still outside the refresh buffer.</param>
+    /// <returns><see cref="RenewalStep.Stop"/> when the stop is latched and the loop must leave.</returns>
+    private RenewalStep NoteFailure(ref int failures, string reasonWhenStillFresh)
+    {
+        failures++;
+        if (_gate.StopLatched)
+        {
+            Record(SessionRenewalRefusal.Latched);
+            return RenewalStep.Stop;
+        }
+
+        if (_held.IsNearExpiryOrExhausted(_clock))
+        {
+            _gate.EndRenewalBackoff();
+            Record(SessionRenewalRefusal.Exhausted);
+            _logger.LogWarning(
+                "Renewing the held TopstepX session failed and the held token is inside its refresh window. Login may run once so this process can recover.");
+            return RenewalStep.Continue;
+        }
+
+        _gate.BeginRenewalBackoff();
+        Record(reasonWhenStillFresh);
+        _logger.LogWarning(
+            "Renewing the held TopstepX session failed. This process will not call loginKey and will try validate again after {Backoff}.",
+            HeldSessionRenewal.NextDelay(failures, 0));
+        return RenewalStep.Continue;
+    }
+
+    private void Record(string reason)
+    {
+        using (_telemetry.SessionRenewalRefusal(reason))
+        {
+        }
+    }
+
+    private enum RenewalStep
+    {
+        Continue = 0,
+        Stop = 1,
     }
 }

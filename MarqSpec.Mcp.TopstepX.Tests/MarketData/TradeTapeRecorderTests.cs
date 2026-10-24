@@ -2527,8 +2527,9 @@ public sealed class TradeTapeRecorderTests
             recorder.ExecuteTask!.IsCompleted.Should().BeFalse();
             logger.Warnings.Should().Contain(message => message.Contains("trading platform", StringComparison.Ordinal));
 
+            int fired = clock.Fired;
             clock.Advance(TimeSpan.FromSeconds(29));
-            await Task.Delay(50);
+            clock.Fired.Should().Be(fired);
             recorder.ExecuteTask.IsCompleted.Should().BeFalse();
 
             clock.Advance(TimeSpan.FromSeconds(1));
@@ -2793,8 +2794,7 @@ public sealed class TradeTapeRecorderTests
             probe.Calls.Should().Be(1);
 
             probe.Gate!.SetResult(SessionProbeVerdict.Valid);
-            await WaitUntil(() => hub.MarketConnects >= 2);
-            await Task.Delay(50);
+            await WaitUntil(() => hub.MarketConnects >= 2 && recorder.PendingLifecycleCount == 0);
             probe.Calls.Should().Be(1);
 
             await recorder.StopAsync(CancellationToken.None);
@@ -2951,7 +2951,8 @@ public sealed class TradeTapeRecorderTests
             hub.MarketConnects.Should().Be(1);
             sockets.AutoReconnect.Should().BeFalse();
 
-            GatedAuthenticationService gated = new(inner, held, gate, clock);
+            using HostTelemetry loginTelemetry = new();
+            GatedAuthenticationService gated = new(inner, held, gate, clock, loginTelemetry);
             string token = await gated.GetAccessTokenAsync(CancellationToken.None);
             token.Should().Be("from-login");
             inner.GetCalls.Should().Be(1);
@@ -3055,9 +3056,8 @@ public sealed class TradeTapeRecorderTests
             gate.LatchStop();
             hub.SimulateMarketDisconnect();
             hub.SimulateMarketReconnect();
-            await WaitUntil(() => hub.MarketDisconnects >= 1);
+            await WaitUntil(() => hub.MarketDisconnects >= 1 && recorder.PendingLifecycleCount == 0);
 
-            await Task.Delay(50);
             recorder.RestoreEntries.Should().Be(restores);
             hub.SubscribeAttempts.Should().Be(subscribes);
             hub.MarketDisconnects.Should().Be(1);
@@ -3094,7 +3094,7 @@ public sealed class TradeTapeRecorderTests
             int restores = recorder.RestoreEntries;
             int subscribes = hub.SubscribeAttempts;
             hub.SimulateMarketReconnect();
-            await Task.Delay(50);
+            await WaitUntil(() => recorder.PendingLifecycleCount == 0);
 
             recorder.RestoreEntries.Should().Be(restores);
             hub.SubscribeAttempts.Should().Be(subscribes);
@@ -3191,8 +3191,9 @@ public sealed class TradeTapeRecorderTests
             clock.Advance(TimeSpan.FromSeconds(1));
             await WaitUntil(() => probe.Calls >= 2 && clock.DelayCalls > delaysBeforeSecond);
 
+            int fired = clock.Fired;
             clock.Advance(TimeSpan.FromSeconds(1));
-            await Task.Delay(50);
+            clock.Fired.Should().Be(fired);
             probe.Calls.Should().Be(2);
 
             clock.Advance(TimeSpan.FromSeconds(1));
@@ -3497,6 +3498,7 @@ public sealed class TradeTapeRecorderTests
     private sealed class RecordingClock : FakeTimeProvider
     {
         private int _delays;
+        private int _fired;
 
         public RecordingClock(DateTimeOffset startDateTime)
             : base(startDateTime)
@@ -3505,13 +3507,20 @@ public sealed class TradeTapeRecorderTests
 
         public int DelayCalls => Volatile.Read(ref _delays);
 
+        public int Fired => Volatile.Read(ref _fired);
+
         public override ITimer CreateTimer(
             TimerCallback callback,
             object? state,
             TimeSpan dueTime,
             TimeSpan period)
         {
-            ITimer timer = base.CreateTimer(callback, state, dueTime, period);
+            TimerCallback counted = timerState =>
+            {
+                Interlocked.Increment(ref _fired);
+                callback(timerState);
+            };
+            ITimer timer = base.CreateTimer(counted, state, dueTime, period);
             Interlocked.Increment(ref _delays);
             return timer;
         }

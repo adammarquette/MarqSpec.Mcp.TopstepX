@@ -6,10 +6,13 @@ using MarqSpec.Client.ProjectX.Authentication;
 using MarqSpec.Client.ProjectX.Exceptions;
 using MarqSpec.Mcp.TopstepX.Configuration;
 using MarqSpec.Mcp.TopstepX.MarketData;
+using MarqSpec.Mcp.TopstepX.Telemetry;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Configuration.EnvironmentVariables;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Diagnostics.Metrics.Testing;
+using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
@@ -85,7 +88,7 @@ public sealed class SessionConflictTests
     [Theory]
     [InlineData(false, SessionConflictSignals.InvalidSession, SessionProbeVerdict.Conflict)]
     [InlineData(false, SessionConflictSignals.SessionNotFound, SessionProbeVerdict.Conflict)]
-    [InlineData(false, SessionConflictSignals.ExpiredToken, SessionProbeVerdict.Inconclusive)]
+    [InlineData(false, SessionConflictSignals.ExpiredToken, SessionProbeVerdict.NeverValid)]
     [InlineData(false, SessionConflictSignals.UnknownError, SessionProbeVerdict.Inconclusive)]
     [InlineData(false, 0, SessionProbeVerdict.Inconclusive)]
     [InlineData(true, 0, SessionProbeVerdict.Valid)]
@@ -123,13 +126,13 @@ public sealed class SessionConflictTests
     }
 
     [Fact]
-    public async Task ProjectXSessionConflictProbe_ExpiredTokenBody_IsNotAConflict()
+    public async Task ProjectXSessionConflictProbe_ExpiredTokenBody_IsNeverValid()
     {
         (ProjectXSessionConflictProbe probe, _, _, _) = Probe(
             """{"success":false,"errorCode":3}""",
             HttpStatusCode.OK);
 
-        (await probe.ProbeAsync(CancellationToken.None)).Should().Be(SessionProbeVerdict.Inconclusive);
+        (await probe.ProbeAsync(CancellationToken.None)).Should().Be(SessionProbeVerdict.NeverValid);
     }
 
     [Fact]
@@ -153,7 +156,7 @@ public sealed class SessionConflictTests
 
         (await probe.ProbeAsync(CancellationToken.None)).Should().Be(SessionProbeVerdict.Valid);
 
-        held.TryReadFresh(clock.GetUtcNow(), out string token).Should().BeTrue();
+        held.TryReadFresh(clock, out string token).Should().BeTrue();
         token.Should().Be("rotated-token");
         logger.Messages.Should().NotContain(message =>
             message.Contains("rotated-token", StringComparison.Ordinal));
@@ -258,7 +261,7 @@ public sealed class SessionConflictTests
             """{"success":false,"errorCode":1}""",
             HttpStatusCode.OK,
             remember: false);
-        held.Remember("aged-token", clock.GetUtcNow());
+        held.Remember("aged-token", clock);
         clock.Advance(HeldSession.CacheLifetime - HeldSession.RefreshBuffer);
 
         (await probe.ProbeAsync(CancellationToken.None)).Should().Be(SessionProbeVerdict.Inconclusive);
@@ -286,10 +289,12 @@ public sealed class SessionConflictTests
         HeldSession held = new();
         SessionLoginGate gate = new();
         FakeTimeProvider clock = new(new DateTimeOffset(2026, 10, 24, 12, 0, 0, TimeSpan.Zero));
-        held.Remember("aged-token", clock.GetUtcNow());
+        held.Remember("aged-token", clock);
         clock.Advance(HeldSession.CacheLifetime - HeldSession.RefreshBuffer);
         gate.BeginSuspecting();
-        GatedAuthenticationService gated = new(inner, held, gate, clock);
+        using HostTelemetry telemetry = new();
+        using MetricCollector<long> refusals = Collect(telemetry);
+        GatedAuthenticationService gated = new(inner, held, gate, clock, telemetry);
 
         Func<Task> read = () => gated.GetAccessTokenAsync(CancellationToken.None);
         Func<Task> refresh = () => gated.RefreshTokenAsync(CancellationToken.None);
@@ -301,6 +306,8 @@ public sealed class SessionConflictTests
         inner.GetCalls.Should().Be(0);
         inner.RefreshCalls.Should().Be(0);
         inner.ValidateCalls.Should().Be(0);
+        refusals.GetMeasurementSnapshot().Should().Contain(measurement =>
+            Equals(measurement.Tags[HostTelemetry.ReasonTag], SessionRenewalRefusal.Closed));
     }
 
     [Fact]
@@ -311,7 +318,7 @@ public sealed class SessionConflictTests
         SessionLoginGate gate = new();
         FakeTimeProvider clock = new(new DateTimeOffset(2026, 10, 24, 12, 0, 0, TimeSpan.Zero));
         gate.TryBeginProbe().Should().BeTrue();
-        GatedAuthenticationService gated = new(inner, held, gate, clock);
+        GatedAuthenticationService gated = new(inner, held, gate, clock, new HostTelemetry());
 
         Func<Task> read = () => gated.GetAccessTokenAsync(CancellationToken.None);
 
@@ -327,7 +334,7 @@ public sealed class SessionConflictTests
         SessionLoginGate gate = new();
         FakeTimeProvider clock = new(new DateTimeOffset(2026, 10, 24, 12, 0, 0, TimeSpan.Zero));
         gate.LatchStop();
-        GatedAuthenticationService gated = new(inner, held, gate, clock);
+        GatedAuthenticationService gated = new(inner, held, gate, clock, new HostTelemetry());
 
         Func<Task> read = () => gated.GetAccessTokenAsync(CancellationToken.None);
 
@@ -342,9 +349,9 @@ public sealed class SessionConflictTests
         HeldSession held = new();
         SessionLoginGate gate = new();
         FakeTimeProvider clock = new(new DateTimeOffset(2026, 10, 24, 12, 0, 0, TimeSpan.Zero));
-        held.Remember("still-fresh", clock.GetUtcNow());
+        held.Remember("still-fresh", clock);
         gate.LatchStop();
-        GatedAuthenticationService gated = new(inner, held, gate, clock);
+        GatedAuthenticationService gated = new(inner, held, gate, clock, new HostTelemetry());
 
         string token = await gated.GetAccessTokenAsync(CancellationToken.None);
 
@@ -359,13 +366,13 @@ public sealed class SessionConflictTests
         HeldSession held = new();
         SessionLoginGate gate = new();
         FakeTimeProvider clock = new(new DateTimeOffset(2026, 10, 24, 12, 0, 0, TimeSpan.Zero));
-        GatedAuthenticationService gated = new(inner, held, gate, clock);
+        GatedAuthenticationService gated = new(inner, held, gate, clock, new HostTelemetry());
 
         string token = await gated.GetAccessTokenAsync(CancellationToken.None);
 
         token.Should().Be("fresh-from-login");
         inner.GetCalls.Should().Be(1);
-        held.TryReadFresh(clock.GetUtcNow(), out string remembered).Should().BeTrue();
+        held.TryReadFresh(clock, out string remembered).Should().BeTrue();
         remembered.Should().Be("fresh-from-login");
     }
 
@@ -545,6 +552,30 @@ public sealed class SessionConflictTests
     }
 
     [Fact]
+    public async Task Program_VenueConfigured_HostsTheHeldSessionRenewer()
+    {
+        // Resolving the singleton is not the hosted-service registration. Removing AddHostedService
+        // leaves GetRequiredService green and this assertion red.
+        ServiceProvider provider = BuildHost(new Dictionary<string, string?>
+        {
+            ["ProjectX:ApiKey"] = "a-username",
+            ["ProjectX:ApiSecret"] = "an-api-key",
+            ["ProjectX:DataTier"] = "Simulated",
+            ["ProjectX:BaseUrl"] = "https://gateway.example/",
+        });
+
+        try
+        {
+            HeldSessionRenewer renewer = provider.GetRequiredService<HeldSessionRenewer>();
+            provider.GetServices<IHostedService>().Should().Contain(service => ReferenceEquals(service, renewer));
+        }
+        finally
+        {
+            await provider.DisposeAsync();
+        }
+    }
+
+    [Fact]
     public void Program_VenueNotConfigured_DoesNotRegisterTheSessionConflictProbe()
     {
         using ServiceProvider provider = BuildHost([]);
@@ -564,7 +595,7 @@ public sealed class SessionConflictTests
         (await probe.ProbeAsync(CancellationToken.None)).Should().Be(SessionProbeVerdict.Valid);
         clock.Advance(HeldSession.CacheLifetime - HeldSession.RefreshBuffer - TimeSpan.FromMinutes(30));
 
-        held.TryReadFresh(clock.GetUtcNow(), out string token).Should().BeTrue();
+        held.TryReadFresh(clock, out string token).Should().BeTrue();
         token.Should().Be("held-token");
     }
 
@@ -575,7 +606,7 @@ public sealed class SessionConflictTests
             """{"success":true,"errorCode":0}""",
             HttpStatusCode.OK,
             remember: false);
-        held.Remember("aged-token", clock.GetUtcNow());
+        held.Remember("aged-token", clock);
         clock.Advance(HeldSession.CacheLifetime - HeldSession.RefreshBuffer);
 
         (await probe.ProbeAsync(CancellationToken.None)).Should().Be(SessionProbeVerdict.Inconclusive);
@@ -589,6 +620,51 @@ public sealed class SessionConflictTests
     }
 
     [Fact]
+    public async Task ProjectXSessionConflictProbe_ValidateWhileAProbeIsInFlight_DoesNotOverlap()
+    {
+        (ProjectXSessionConflictProbe probe, ScriptedHandler handler, _, _) = Probe(
+            """{"success":true,"errorCode":0}""",
+            HttpStatusCode.OK);
+        handler.Hold = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        Task<SessionProbeVerdict> first = probe.ProbeAsync(CancellationToken.None);
+        await WaitFor(() => handler.Calls == 1);
+        Task<SessionProbeVerdict> second = probe.ValidateHeldTokenAsync(CancellationToken.None);
+        await WaitFor(() => probe.ValidateWaiting == 1 || handler.Calls >= 2);
+
+        handler.Calls.Should().Be(1);
+        probe.ValidateWaiting.Should().Be(1);
+
+        handler.Hold.SetResult(true);
+        (await first).Should().Be(SessionProbeVerdict.Valid);
+        (await second).Should().Be(SessionProbeVerdict.Valid);
+        handler.Calls.Should().Be(2);
+    }
+
+    [Fact]
+    public async Task HeldSession_WallClockJump_DoesNotAgeTheTokenOrForceLogin()
+    {
+        SplitClock clock = new(new DateTimeOffset(2026, 10, 24, 12, 0, 0, TimeSpan.Zero));
+        HeldSession held = new();
+        held.Remember("held-token", clock);
+        clock.JumpWall(TimeSpan.FromMinutes(54));
+
+        held.TryReadFresh(clock, out string token).Should().BeTrue();
+        token.Should().Be("held-token");
+
+        ScriptedAuth inner = new() { Token = "from-login" };
+        using HostTelemetry telemetry = new();
+        GatedAuthenticationService gated = new(inner, held, new SessionLoginGate(), clock, telemetry);
+        (await gated.GetAccessTokenAsync(CancellationToken.None)).Should().Be("held-token");
+        inner.GetCalls.Should().Be(0);
+
+        clock.Elapse(HeldSession.CacheLifetime - HeldSession.RefreshBuffer);
+        held.TryReadFresh(clock, out _).Should().BeFalse();
+        (await gated.GetAccessTokenAsync(CancellationToken.None)).Should().Be("from-login");
+        inner.GetCalls.Should().Be(1);
+    }
+
+    [Fact]
     public async Task GatedAuthenticationService_LoginInFlightWhenSuspectingStarts_DiscardsTheToken()
     {
         TaskCompletionSource<string> released = new(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -596,22 +672,26 @@ public sealed class SessionConflictTests
         HeldSession held = new();
         SessionLoginGate gate = new();
         FakeTimeProvider clock = new(new DateTimeOffset(2026, 10, 24, 12, 0, 0, TimeSpan.Zero));
-        GatedAuthenticationService gated = new(inner, held, gate, clock);
+        using HostTelemetry telemetry = new();
+        using MetricCollector<long> refusals = Collect(telemetry);
+        GatedAuthenticationService gated = new(inner, held, gate, clock, telemetry);
 
         Task<string> read = gated.GetAccessTokenAsync(CancellationToken.None);
         await WaitFor(() => inner.GetCalls == 1);
 
-        Task suspect = Task.Run(() => gate.BeginSuspecting());
-        await Task.Delay(50);
-        suspect.IsCompleted.Should().BeFalse();
+        // The login holds the gate. BeginSuspecting has to return on this thread anyway: the
+        // SignalR callback that calls it cannot sit in Wait for the HTTP timeout.
+        gate.BeginSuspecting();
+        gate.Suspecting.Should().BeTrue();
 
         released.SetResult("should-be-discarded");
         Func<Task> finished = async () => await read;
         await finished.Should().ThrowAsync<AuthenticationException>();
-        await suspect;
         held.TryRead(out _).Should().BeFalse();
         gate.LoginPermitted.Should().BeFalse();
         inner.GetCalls.Should().Be(1);
+        refusals.GetMeasurementSnapshot().Should().Contain(measurement =>
+            Equals(measurement.Tags[HostTelemetry.ReasonTag], SessionRenewalRefusal.Closed));
     }
 
     [Fact]
@@ -622,11 +702,11 @@ public sealed class SessionConflictTests
         SessionLoginGate gate = new();
         FakeTimeProvider clock = new(new DateTimeOffset(2026, 10, 24, 12, 0, 0, TimeSpan.Zero));
         inner.DuringRefresh = () => gate.MarkSuspecting();
-        GatedAuthenticationService gated = new(inner, held, gate, clock);
+        GatedAuthenticationService gated = new(inner, held, gate, clock, new HostTelemetry());
 
         await gated.RefreshTokenAsync(CancellationToken.None);
 
-        held.TryReadFresh(clock.GetUtcNow(), out string token).Should().BeTrue();
+        held.TryReadFresh(clock, out string token).Should().BeTrue();
         token.Should().Be("refreshed-token");
         gate.LoginPermitted.Should().BeFalse();
         inner.RefreshCalls.Should().Be(1);
@@ -692,7 +772,7 @@ public sealed class SessionConflictTests
     public async Task HeldSessionRenewer_HappyPath_PostsValidateAndStoresNewToken()
     {
         CapturingLogger<HeldSessionRenewer> logger = new();
-        (HeldSessionRenewer renewer, ScriptedHandler handler, HeldSession held, CountingClock clock, _) =
+        (HeldSessionRenewer renewer, ScriptedHandler handler, HeldSession held, CountingClock clock, _, HostTelemetry telemetry) =
             Renewer("""{"success":true,"errorCode":0,"newToken":"rotated-token"}""", HttpStatusCode.OK, logger);
 
         await renewer.StartAsync(CancellationToken.None);
@@ -706,19 +786,20 @@ public sealed class SessionConflictTests
             && request.Headers.Authorization!.Parameter == "held-token");
         handler.Requests.Should().NotContain(request =>
             request.RequestUri!.AbsolutePath.Contains("loginKey", StringComparison.Ordinal));
-        held.TryReadFresh(clock.GetUtcNow(), out string token).Should().BeTrue();
+        held.TryReadFresh(clock, out string token).Should().BeTrue();
         token.Should().Be("rotated-token");
         logger.Messages.Should().NotContain(message =>
             message.Contains("rotated-token", StringComparison.Ordinal)
             || message.Contains("held-token", StringComparison.Ordinal));
 
         await renewer.StopAsync(CancellationToken.None);
+        telemetry.Dispose();
     }
 
     [Fact]
     public async Task HeldSessionRenewer_ValidWithoutNewToken_StaysFreshPastTheOriginalCliff()
     {
-        (HeldSessionRenewer renewer, ScriptedHandler handler, HeldSession held, CountingClock clock, _) =
+        (HeldSessionRenewer renewer, ScriptedHandler handler, HeldSession held, CountingClock clock, _, HostTelemetry telemetry) =
             Renewer("""{"success":true,"errorCode":0}""", HttpStatusCode.OK, logger: null);
 
         await renewer.StartAsync(CancellationToken.None);
@@ -727,19 +808,21 @@ public sealed class SessionConflictTests
         await WaitFor(() => handler.Calls == 1);
         clock.Advance(TimeSpan.FromMinutes(24));
 
-        held.TryReadFresh(clock.GetUtcNow(), out string token).Should().BeTrue();
+        held.TryReadFresh(clock, out string token).Should().BeTrue();
         token.Should().Be("held-token");
 
         await renewer.StopAsync(CancellationToken.None);
+        telemetry.Dispose();
     }
 
     [Fact]
     public async Task HeldSessionRenewer_ValidateFailure_BacksOffWithoutLoginAndThenOpens()
     {
-        (HeldSessionRenewer renewer, ScriptedHandler handler, HeldSession held, CountingClock clock, SessionLoginGate gate) =
+        (HeldSessionRenewer renewer, ScriptedHandler handler, HeldSession held, CountingClock clock, SessionLoginGate gate, HostTelemetry telemetry) =
             Renewer("nope", HttpStatusCode.ServiceUnavailable, logger: null);
+        using MetricCollector<long> refusals = Collect(telemetry);
         ScriptedAuth inner = new() { Token = "from-login" };
-        GatedAuthenticationService gated = new(inner, held, gate, clock);
+        GatedAuthenticationService gated = new(inner, held, gate, clock, telemetry);
 
         await renewer.StartAsync(CancellationToken.None);
         await WaitFor(() => clock.Timers >= 1);
@@ -747,15 +830,19 @@ public sealed class SessionConflictTests
         clock.Advance(TimeSpan.FromMinutes(30));
         await WaitFor(() => handler.Calls == 1 && gate.RenewalBackingOff && clock.Timers > timers);
 
-        held.Remember("aged-token", clock.GetUtcNow() - HeldSession.CacheLifetime);
-        Func<Task> read = () => gated.GetAccessTokenAsync(CancellationToken.None);
-        await read.Should().ThrowAsync<AuthenticationException>();
+        held.TryReadFresh(clock, out _).Should().BeTrue();
+        Func<Task> refresh = () => gated.RefreshTokenAsync(CancellationToken.None);
+        await refresh.Should().ThrowAsync<AuthenticationException>();
+        inner.RefreshCalls.Should().Be(0);
         inner.GetCalls.Should().Be(0);
         handler.Requests.Should().NotContain(request =>
             request.RequestUri!.AbsolutePath.Contains("loginKey", StringComparison.Ordinal));
+        refusals.GetMeasurementSnapshot().Should().Contain(measurement =>
+            Equals(measurement.Tags[HostTelemetry.ReasonTag], SessionRenewalRefusal.Outage));
 
+        int fired = clock.Fired;
         clock.Advance(TimeSpan.FromSeconds(29));
-        await Task.Delay(50);
+        clock.Fired.Should().Be(fired);
         handler.Calls.Should().Be(1);
 
         handler.Status = HttpStatusCode.OK;
@@ -766,26 +853,164 @@ public sealed class SessionConflictTests
         gate.StopLatched.Should().BeFalse();
         gate.RenewalBackingOff.Should().BeFalse();
         gate.LoginPermitted.Should().BeTrue();
-        held.TryReadFresh(clock.GetUtcNow(), out string token).Should().BeTrue();
+        held.TryReadFresh(clock, out string token).Should().BeTrue();
         token.Should().Be("after-backoff");
 
         await renewer.StopAsync(CancellationToken.None);
+        telemetry.Dispose();
     }
 
     [Fact]
     public async Task HeldSessionRenewer_Unauthorized_LatchesTheStopAndDoesNotLogIn()
     {
-        (HeldSessionRenewer renewer, ScriptedHandler handler, _, CountingClock clock, SessionLoginGate gate) =
+        (HeldSessionRenewer renewer, ScriptedHandler handler, _, CountingClock clock, SessionLoginGate gate, HostTelemetry telemetry) =
             Renewer("{}", HttpStatusCode.Unauthorized, logger: null);
+        using MetricCollector<long> refusals = Collect(telemetry);
 
         await renewer.StartAsync(CancellationToken.None);
         await WaitFor(() => clock.Timers >= 1);
         clock.Advance(TimeSpan.FromMinutes(30));
         await WaitFor(() => handler.Calls == 1 && gate.StopLatched);
+        await BackgroundServiceTestSupport.AwaitCompletionAsync(renewer.ExecuteTask!);
 
+        handler.Calls.Should().Be(1);
         gate.LoginPermitted.Should().BeFalse();
         handler.Requests.Should().NotContain(request =>
             request.RequestUri!.AbsolutePath.Contains("loginKey", StringComparison.Ordinal));
+        refusals.GetMeasurementSnapshot().Should().ContainSingle(measurement =>
+            Equals(measurement.Tags[HostTelemetry.ReasonTag], SessionRenewalRefusal.Conflict));
+
+        await renewer.StopAsync(CancellationToken.None);
+        telemetry.Dispose();
+    }
+
+    [Fact]
+    public async Task HeldSessionRenewer_StopAlreadyLatched_DoesNotValidate()
+    {
+        (HeldSessionRenewer renewer, ScriptedHandler handler, _, CountingClock clock, SessionLoginGate gate, HostTelemetry telemetry) =
+            Renewer("""{"success":true,"errorCode":0}""", HttpStatusCode.OK, logger: null);
+        using MetricCollector<long> refusals = Collect(telemetry);
+
+        await renewer.StartAsync(CancellationToken.None);
+        await WaitFor(() => clock.Timers >= 1);
+        gate.LatchStop();
+        clock.Advance(TimeSpan.FromMinutes(30));
+        await BackgroundServiceTestSupport.AwaitCompletionAsync(renewer.ExecuteTask!);
+
+        handler.Calls.Should().Be(0);
+        refusals.GetMeasurementSnapshot().Should().Contain(measurement =>
+            Equals(measurement.Tags[HostTelemetry.ReasonTag], SessionRenewalRefusal.Latched));
+
+        await renewer.StopAsync(CancellationToken.None);
+        telemetry.Dispose();
+    }
+
+    [Fact]
+    public async Task HeldSessionRenewer_ExpiredToken_ReopensLoginForOneLoginKey()
+    {
+        (HeldSessionRenewer renewer, ScriptedHandler handler, HeldSession held, CountingClock clock, SessionLoginGate gate, HostTelemetry telemetry) =
+            Renewer("""{"success":false,"errorCode":3}""", HttpStatusCode.OK, logger: null);
+        using MetricCollector<long> refusals = Collect(telemetry);
+        ScriptedAuth inner = new() { Token = "from-login" };
+        GatedAuthenticationService gated = new(inner, held, gate, clock, telemetry);
+
+        await renewer.StartAsync(CancellationToken.None);
+        await WaitFor(() => clock.Timers >= 1);
+        clock.Advance(TimeSpan.FromMinutes(30));
+        await WaitFor(() => handler.Calls == 1 && gate.LoginPermitted && !held.TryRead(out _));
+
+        gate.StopLatched.Should().BeFalse();
+        gate.RenewalBackingOff.Should().BeFalse();
+        string token = await gated.GetAccessTokenAsync(CancellationToken.None);
+        token.Should().Be("from-login");
+        inner.GetCalls.Should().Be(1);
+        refusals.GetMeasurementSnapshot().Should().Contain(measurement =>
+            Equals(measurement.Tags[HostTelemetry.ReasonTag], SessionRenewalRefusal.Expired));
+
+        await renewer.StopAsync(CancellationToken.None);
+        telemetry.Dispose();
+    }
+
+    [Fact]
+    public async Task HeldSessionRenewer_ValidateOutagePastTokenExpiry_ReopensLogin()
+    {
+        (HeldSessionRenewer renewer, ScriptedHandler handler, HeldSession held, CountingClock clock, SessionLoginGate gate, HostTelemetry telemetry) =
+            Renewer("nope", HttpStatusCode.ServiceUnavailable, logger: null);
+        using MetricCollector<long> refusals = Collect(telemetry);
+        ScriptedAuth inner = new() { Token = "from-login" };
+        GatedAuthenticationService gated = new(inner, held, gate, clock, telemetry);
+
+        await renewer.StartAsync(CancellationToken.None);
+        await WaitFor(() => clock.Timers >= 1);
+        int timers = clock.Timers;
+        clock.Advance(TimeSpan.FromMinutes(30));
+        await WaitFor(() => handler.Calls == 1 && gate.RenewalBackingOff && clock.Timers > timers);
+
+        held.TryReadFresh(clock, out _).Should().BeTrue();
+        Func<Task> refresh = () => gated.RefreshTokenAsync(CancellationToken.None);
+        await refresh.Should().ThrowAsync<AuthenticationException>();
+        inner.GetCalls.Should().Be(0);
+
+        clock.Advance(TimeSpan.FromMinutes(24));
+        await WaitFor(() => gate.LoginPermitted && !gate.RenewalBackingOff);
+
+        gate.StopLatched.Should().BeFalse();
+        held.TryReadFresh(clock, out _).Should().BeFalse();
+        string token = await gated.GetAccessTokenAsync(CancellationToken.None);
+        token.Should().Be("from-login");
+        inner.GetCalls.Should().Be(1);
+        refusals.GetMeasurementSnapshot().Should().Contain(measurement =>
+            Equals(measurement.Tags[HostTelemetry.ReasonTag], SessionRenewalRefusal.Exhausted));
+
+        await renewer.StopAsync(CancellationToken.None);
+        telemetry.Dispose();
+    }
+
+    [Fact]
+    public async Task HeldSessionRenewer_JitterThrows_BacksOffAndKeepsRunning()
+    {
+        CountingClock clock = new(new DateTimeOffset(2026, 10, 24, 12, 0, 0, TimeSpan.Zero));
+        HeldSession held = new();
+        held.Remember("held-token", clock);
+        ScriptedHandler handler = new();
+        SessionLoginGate gate = new();
+        CapturingLogger<HeldSessionRenewer> logger = new();
+        using HostTelemetry telemetry = new();
+        using MetricCollector<long> refusals = Collect(telemetry);
+        int thrown = 0;
+        HeldSessionRenewer renewer = new(
+            held,
+            new ProjectXSessionConflictProbe(
+                held,
+                new ScriptedFactory(handler),
+                NullLogger<ProjectXSessionConflictProbe>.Instance,
+                clock),
+            gate,
+            clock,
+            Options.Create(new MarketDataOptions()),
+            logger,
+            telemetry,
+            () =>
+            {
+                if (Interlocked.Increment(ref thrown) == 1)
+                {
+                    throw new InvalidOperationException("renewal-failed");
+                }
+
+                return 0.5;
+            });
+
+        await renewer.StartAsync(CancellationToken.None);
+        await WaitFor(() => gate.RenewalBackingOff || renewer.ExecuteTask!.IsFaulted);
+
+        renewer.ExecuteTask!.IsFaulted.Should().BeFalse();
+        gate.RenewalBackingOff.Should().BeTrue();
+        gate.LoginPermitted.Should().BeFalse();
+        handler.Calls.Should().Be(0);
+        logger.Messages.Should().NotContain(message => message.Contains("renewal-failed", StringComparison.Ordinal));
+        refusals.GetMeasurementSnapshot().Should().Contain(measurement =>
+            Equals(measurement.Tags[HostTelemetry.ReasonTag], SessionRenewalRefusal.Outage));
+        await WaitFor(() => clock.Timers >= 1);
 
         await renewer.StopAsync(CancellationToken.None);
     }
@@ -793,7 +1018,7 @@ public sealed class SessionConflictTests
     [Fact]
     public async Task HeldSessionRenewer_ConflictWithTheSwitchOff_DoesNotLatch()
     {
-        (HeldSessionRenewer renewer, ScriptedHandler handler, _, CountingClock clock, SessionLoginGate gate) =
+        (HeldSessionRenewer renewer, ScriptedHandler handler, _, CountingClock clock, SessionLoginGate gate, HostTelemetry telemetry) =
             Renewer(
                 """{"success":false,"errorCode":1}""",
                 HttpStatusCode.OK,
@@ -810,15 +1035,17 @@ public sealed class SessionConflictTests
         gate.LoginPermitted.Should().BeTrue();
 
         await renewer.StopAsync(CancellationToken.None);
+        telemetry.Dispose();
     }
 
     [Fact]
     public async Task HeldSessionRenewer_NoTokenYet_LeavesLoginPermitted()
     {
-        FakeTimeProvider clock = new(new DateTimeOffset(2026, 10, 24, 12, 0, 0, TimeSpan.Zero));
+        CountingClock clock = new(new DateTimeOffset(2026, 10, 24, 12, 0, 0, TimeSpan.Zero));
         HeldSession held = new();
         ScriptedHandler handler = new();
         SessionLoginGate gate = new();
+        using HostTelemetry telemetry = new();
         HeldSessionRenewer renewer = new(
             held,
             new ProjectXSessionConflictProbe(
@@ -830,10 +1057,11 @@ public sealed class SessionConflictTests
             clock,
             Options.Create(new MarketDataOptions()),
             NullLogger<HeldSessionRenewer>.Instance,
+            telemetry,
             () => 0.5);
 
         await renewer.StartAsync(CancellationToken.None);
-        await Task.Delay(50);
+        await WaitFor(() => clock.Timers >= 1);
 
         handler.Calls.Should().Be(0);
         gate.LoginPermitted.Should().BeTrue();
@@ -847,17 +1075,20 @@ public sealed class SessionConflictTests
         ScriptedHandler Handler,
         HeldSession Held,
         CountingClock Clock,
-        SessionLoginGate Gate) Renewer(
+        SessionLoginGate Gate,
+        HostTelemetry Telemetry) Renewer(
         string body,
         HttpStatusCode status,
         ILogger<HeldSessionRenewer>? logger,
-        bool stopOnSessionConflict = true)
+        bool stopOnSessionConflict = true,
+        HostTelemetry? telemetry = null)
     {
         CountingClock clock = new(new DateTimeOffset(2026, 10, 24, 12, 0, 0, TimeSpan.Zero));
         HeldSession held = new();
-        held.Remember("held-token", clock.GetUtcNow());
+        held.Remember("held-token", clock);
         ScriptedHandler handler = new() { Status = status, Body = body };
         SessionLoginGate gate = new();
+        HostTelemetry recorded = telemetry ?? new HostTelemetry();
         HeldSessionRenewer renewer = new(
             held,
             new ProjectXSessionConflictProbe(
@@ -869,9 +1100,13 @@ public sealed class SessionConflictTests
             clock,
             Options.Create(new MarketDataOptions { StopOnSessionConflict = stopOnSessionConflict }),
             logger ?? NullLogger<HeldSessionRenewer>.Instance,
+            recorded,
             () => 0.5);
-        return (renewer, handler, held, clock, gate);
+        return (renewer, handler, held, clock, gate, recorded);
     }
+
+    private static MetricCollector<long> Collect(HostTelemetry telemetry) =>
+        new(telemetry, HostTelemetry.Name, HostTelemetry.SessionRenewalRefusalsInstrument);
 
     private static async Task WaitFor(Func<bool> ready)
     {
@@ -897,7 +1132,7 @@ public sealed class SessionConflictTests
         HeldSession held = new();
         if (remember)
         {
-            held.Remember("held-token", clock.GetUtcNow());
+            held.Remember("held-token", clock);
         }
 
         ScriptedHandler handler = new()
@@ -1021,7 +1256,11 @@ public sealed class SessionConflictTests
 
         public Exception? Throws { get; set; }
 
-        public int Calls { get; private set; }
+        public TaskCompletionSource<bool>? Hold { get; set; }
+
+        private int _calls;
+
+        public int Calls => Volatile.Read(ref _calls);
 
         public string? LastName { get; set; }
 
@@ -1029,11 +1268,11 @@ public sealed class SessionConflictTests
 
         public List<HttpRequestMessage> Requests { get; } = [];
 
-        protected override Task<HttpResponseMessage> SendAsync(
+        protected override async Task<HttpResponseMessage> SendAsync(
             HttpRequestMessage request,
             CancellationToken cancellationToken)
         {
-            Calls++;
+            Interlocked.Increment(ref _calls);
             LastRequest = request;
             Requests.Add(request);
             if (cancellationToken.IsCancellationRequested)
@@ -1041,16 +1280,21 @@ public sealed class SessionConflictTests
                 throw new OperationCanceledException(cancellationToken);
             }
 
+            if (Hold is not null)
+            {
+                await Hold.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
+            }
+
             if (Throws is not null)
             {
                 throw Throws;
             }
 
-            return Task.FromResult(new HttpResponseMessage(Status)
+            return new HttpResponseMessage(Status)
             {
                 Content = new StringContent(Body, Encoding.UTF8, "application/json"),
                 RequestMessage = request,
-            });
+            };
         }
     }
 
@@ -1066,9 +1310,32 @@ public sealed class SessionConflictTests
         }
     }
 
+    private sealed class SplitClock : TimeProvider
+    {
+        private DateTimeOffset _utc;
+        private long _timestamp;
+
+        public SplitClock(DateTimeOffset start) => _utc = start;
+
+        public override DateTimeOffset GetUtcNow() => _utc;
+
+        public override long TimestampFrequency => TimeSpan.TicksPerSecond;
+
+        public override long GetTimestamp() => _timestamp;
+
+        public void JumpWall(TimeSpan by) => _utc += by;
+
+        public void Elapse(TimeSpan by)
+        {
+            _utc += by;
+            _timestamp += (long)(by.TotalSeconds * TimestampFrequency);
+        }
+    }
+
     private sealed class CountingClock : FakeTimeProvider
     {
         private int _timers;
+        private int _fired;
 
         public CountingClock(DateTimeOffset start)
             : base(start)
@@ -1077,13 +1344,20 @@ public sealed class SessionConflictTests
 
         public int Timers => Volatile.Read(ref _timers);
 
+        public int Fired => Volatile.Read(ref _fired);
+
         public override ITimer CreateTimer(
             TimerCallback callback,
             object? state,
             TimeSpan dueTime,
             TimeSpan period)
         {
-            ITimer timer = base.CreateTimer(callback, state, dueTime, period);
+            TimerCallback counted = timerState =>
+            {
+                Interlocked.Increment(ref _fired);
+                callback(timerState);
+            };
+            ITimer timer = base.CreateTimer(counted, state, dueTime, period);
             Interlocked.Increment(ref _timers);
             return timer;
         }

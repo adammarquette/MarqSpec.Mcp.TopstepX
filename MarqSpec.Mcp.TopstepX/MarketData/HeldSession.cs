@@ -13,8 +13,11 @@ namespace MarqSpec.Mcp.TopstepX.MarketData;
 /// that disconnects the trading platform.
 /// </para>
 /// <para>
-/// Freshness uses the same window as that client. A token is fresh while its local expiry is more
-/// than one minute away. The string itself is never written to a log.
+/// Freshness uses the same window as that client, measured on <see cref="TimeProvider.GetTimestamp"/>
+/// and <see cref="TimeProvider.GetElapsedTime(long)"/>. A token is fresh while less than
+/// <see cref="CacheLifetime"/> minus <see cref="RefreshBuffer"/> has elapsed since it was stored.
+/// A forward jump of the wall clock does not age it. The string itself is never written to a log.
+/// The timestamp and the later read must come from the same <see cref="TimeProvider"/>.
 /// </para>
 /// </remarks>
 public sealed class HeldSession
@@ -35,22 +38,28 @@ public sealed class HeldSession
 
     private readonly object _gate = new();
     private string? _token;
-    private DateTimeOffset _expiresAt;
+    private long _rememberedAt;
+    private bool _hasStamp;
 
     /// <summary>Stores a token this process is allowed to keep using, without logging it.</summary>
     /// <param name="token">The bearer. Empty is ignored.</param>
-    /// <param name="now">When it was received. The local expiry is <see cref="CacheLifetime"/> later.</param>
-    public void Remember(string? token, DateTimeOffset now)
+    /// <param name="clock">
+    /// The clock whose <see cref="TimeProvider.GetTimestamp"/> marks when the token was received.
+    /// Later freshness reads must use this same instance.
+    /// </param>
+    public void Remember(string? token, TimeProvider clock)
     {
         if (string.IsNullOrEmpty(token))
         {
             return;
         }
 
+        ArgumentNullException.ThrowIfNull(clock);
         lock (_gate)
         {
             _token = token;
-            _expiresAt = now + CacheLifetime;
+            _rememberedAt = clock.GetTimestamp();
+            _hasStamp = true;
         }
     }
 
@@ -60,7 +69,8 @@ public sealed class HeldSession
         lock (_gate)
         {
             _token = null;
-            _expiresAt = default;
+            _rememberedAt = 0;
+            _hasStamp = false;
         }
     }
 
@@ -83,14 +93,15 @@ public sealed class HeldSession
     }
 
     /// <summary>Reads the held token when it is still outside the client's refresh buffer.</summary>
-    /// <param name="now">The clock the decision is made on.</param>
+    /// <param name="clock">The same clock passed to <see cref="Remember"/>.</param>
     /// <param name="token">The bearer, when this returns <see langword="true"/>.</param>
     /// <returns><see langword="false"/> when nothing is held or the client would already refresh it.</returns>
-    public bool TryReadFresh(DateTimeOffset now, out string token)
+    public bool TryReadFresh(TimeProvider clock, out string token)
     {
+        ArgumentNullException.ThrowIfNull(clock);
         lock (_gate)
         {
-            if (!string.IsNullOrEmpty(_token) && _expiresAt > now + RefreshBuffer)
+            if (!string.IsNullOrEmpty(_token) && _hasStamp && !IsNearExpiryUnderLock(clock))
             {
                 token = _token;
                 return true;
@@ -99,5 +110,31 @@ public sealed class HeldSession
 
         token = string.Empty;
         return false;
+    }
+
+    /// <summary>
+    /// Whether the held token is inside the client's refresh buffer or past <see cref="CacheLifetime"/>.
+    /// A missing token is not near expiry.
+    /// </summary>
+    /// <param name="clock">The same clock passed to <see cref="Remember"/>.</param>
+    /// <returns><see langword="true"/> when a login would be the client's next step for this token.</returns>
+    internal bool IsNearExpiryOrExhausted(TimeProvider clock)
+    {
+        ArgumentNullException.ThrowIfNull(clock);
+        lock (_gate)
+        {
+            if (string.IsNullOrEmpty(_token) || !_hasStamp)
+            {
+                return false;
+            }
+
+            return IsNearExpiryUnderLock(clock);
+        }
+    }
+
+    private bool IsNearExpiryUnderLock(TimeProvider clock)
+    {
+        TimeSpan elapsed = clock.GetElapsedTime(_rememberedAt);
+        return elapsed >= CacheLifetime - RefreshBuffer;
     }
 }

@@ -1152,8 +1152,11 @@ dating today's pick. It does not fetch bars and does not write a roll row.
   error (`invalid session` or `session not found`), a validate body of `InvalidSession` or
   `SessionNotFound`, or HTTP 401, disconnects, waits `MarketData__SessionConflictBackoff`, and
   does not subscribe again. The recorder does not call `loginKey` while that is suspected or after
-  the stop. The held token is renewed with `POST /api/Auth/validate` well before the client's
-  54-minute refresh, so a quiet process does not log in on a timer. An inconclusive probe does not
+  the stop. The held token is renewed with `POST /api/Auth/validate` whenever the venue client is
+  configured, well before the client's 54-minute refresh, so a quiet process does not log in on a
+  timer. A latched stop posts no further validate. A renewal failure closes login only while the
+  token is still fresh; `ExpiredToken`, or a token that has reached its refresh window, allows one
+  `loginKey` so the process can recover. Freshness follows a monotonic clock. An inconclusive probe does not
   reconnect and does not latch login; a still-fresh token is probed again on its own interval
   (one second, doubling to 30 seconds), and no fresh token stops the recorder rather than logging in
   without closing login for REST tools. The one-way latch is only a documented hub name, HTTP 401,

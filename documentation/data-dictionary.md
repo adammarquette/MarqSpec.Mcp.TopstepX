@@ -704,6 +704,10 @@ One row for **every** trading attempt — preview, confirm, or live — before t
 (ADR-0024 Proposed §5, gh#707 / gh#709). The idempotency store that suppresses
 duplicate venue calls is separate; this table is the audit trail, not the dedupe cache.
 
+**The cap charge sits on `Attempted`, and outcome rows stay at `0`.** A gateway refusal after the write-ahead
+appends a second `Attempted` row with the negated count, then `Refused` at `0`, so the session-day sum nets
+to zero. A thrown send leaves that charge on the write-ahead row; its `Unknown` row is `0`.
+
 **Append-only at the database.** `BEFORE UPDATE` and `BEFORE DELETE` triggers raise if either is attempted.
 Tests truncate the table between cases; production has no supported mutation path.
 

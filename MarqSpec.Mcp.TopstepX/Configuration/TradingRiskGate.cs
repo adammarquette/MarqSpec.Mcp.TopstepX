@@ -9,8 +9,10 @@ namespace MarqSpec.Mcp.TopstepX.Configuration;
 /// <remarks>
 /// MCP tools call this type only — never the execution gateway directly. Every member that touches
 /// stage resolution, allowlist, denylist, or the gateway re-checks
-/// <see cref="TradingExecutionGate.RefuseIfDisabledOrHalted"/> first. Daily caps charge once on the
-/// <see cref="TradingAuditOutcomes.Attempted"/> row; outcome rows use zero contract count.
+/// <see cref="TradingExecutionGate.RefuseIfDisabledOrHalted"/> first. Daily caps charge on
+/// <see cref="TradingAuditOutcomes.Attempted"/> rows; outcome rows use zero contract count. A gateway
+/// refusal after the write-ahead appends a second Attempted row with the negated count so the
+/// session-day sum nets to zero.
 /// </remarks>
 public sealed class TradingRiskGate
 {
@@ -819,7 +821,7 @@ public sealed class TradingRiskGate
                 FormatStage(stage),
                 audit,
                 TradingAuditOutcomes.Unknown,
-                contractCount: capChargeApplied,
+                contractCount: 0,
                 venueErrorCode: ex.GetType().Name,
                 CancellationToken.None).ConfigureAwait(false);
             throw;

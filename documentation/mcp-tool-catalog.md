@@ -1141,8 +1141,9 @@ the gate classified as before the send (`GateRefusedBeforeSendException` only). 
 acknowledgment (`status: Live`). `OutcomeUnknown` is returned when the send may have happened: a throw from
 the send, including a timeout during the send, an audit write that fails after an ack, a daily-cap unlock
 or a telemetry listener that fails after the send has started, or a broker success that carried no order id.
-Any other exception that reaches the tool is `OutcomeUnknown` as well, with refusal code `error`, and is not
-`SafeToRetry`. The unlock and the telemetry dispose catch their own failures, log one constant line, and
+The tool catch-all is defensive. Any other exception that reaches the tool is `OutcomeUnknown`, with refusal
+code `error`, and is never `SafeToRetry`. The gate is registered scoped and serves one order operation per
+instance; a second operation on that instance throws before any vendor call. The unlock and the telemetry dispose catch their own failures, log one constant line, and
 count them; they do not throw, and they do not by themselves choose `SafeToRetry`. `Live` is only a broker
 acknowledgment.
 `refusalCode`, `resultCode` and `orderId` are omitted when the call has nothing to report

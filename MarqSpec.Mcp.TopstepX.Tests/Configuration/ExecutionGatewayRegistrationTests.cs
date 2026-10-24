@@ -1,6 +1,8 @@
 using FluentAssertions;
 using MarqSpec.Mcp.TopstepX.Configuration;
 using MarqSpec.Mcp.TopstepX.Venue;
+using Microsoft.AspNetCore.Builder;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 
 namespace MarqSpec.Mcp.TopstepX.Tests.Configuration;
@@ -34,6 +36,22 @@ public sealed class ExecutionGatewayRegistrationTests
         using IServiceScope scope = provider.CreateScope();
         scope.ServiceProvider.GetRequiredService<IExecutionGateway>()
             .Should().BeOfType<ProjectXExecutionGateway>();
+    }
+
+    [Fact]
+    public void TradingRiskGate_IsRegisteredScoped()
+    {
+        WebApplicationBuilder builder = CompositionRootTestHost.CreateIsolatedBuilder();
+        builder.Configuration.AddInMemoryCollection(CompositionRootTestHost.BaseSettings);
+        Program.ConfigureServices(builder, new McpOptions { Transport = McpTransport.Stdio });
+
+        ServiceDescriptor registration = builder.Services
+            .Where(descriptor => descriptor.ServiceType == typeof(TradingRiskGate))
+            .Should()
+            .ContainSingle()
+            .Subject;
+
+        registration.Lifetime.Should().Be(ServiceLifetime.Scoped);
     }
 
     [Fact]

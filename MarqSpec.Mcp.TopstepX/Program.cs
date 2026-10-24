@@ -682,6 +682,9 @@ public static class Program
             sp.GetRequiredService<IOptionsMonitor<TradingExecutionOptions>>(),
             sp.GetRequiredService<InstrumentRegistry>()));
         services.AddScoped<TradingWriteVenueAccountCache>();
+        // Scoped, and one order operation per instance. TradingRiskGate throws if a second operation
+        // reuses it: the send-started flags would otherwise be cleared and a live send could be
+        // reported as safe to retry.
         services.AddScoped<TradingRiskGate>();
 
         // Under HTTP, exactly one authentication mode, complete — the token for StaticToken, the issuer,

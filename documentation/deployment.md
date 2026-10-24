@@ -89,24 +89,28 @@ requires `X.Y.Z@sha256:<digest>`. The SDK labels IaC experimental, so expect DSL
 - `production` requires exactly one volume (`postgres-data`, 10 GiB, at `/home/postgres/pgdata`).
 - The check enforces both directions. `Retention__*` stays unset everywhere (gh#763).
 
-**Tape export (gh#755, contract from PR #765).** Production only, on exactly one service, the recorder:
-- the `tape-exports` volume (10 GiB) at `/data/tape-exports`, plus `MarketData__RecordTape=true`,
-  `TapeExport__Enabled=true`, `TapeExport__Schedule=06:00` (UTC, HH:mm), `TapeExport__Path=/data/tape-exports`,
-  `TapeExport__Format=csv.gz+parquet`. The server has no volume and no `TapeExport__*` keys.
-- Drive upload is optional and not configured. `TapeExport__Drive__ServiceAccountJson` is a secret and may only be
-  `ctx.shared.TAPE_EXPORT_DRIVE_SERVICE_ACCOUNT_JSON`; `TapeExport__Drive__FolderId` may be
-  `ctx.shared.TAPE_EXPORT_DRIVE_FOLDER_ID`; `TapeExport__Drive__ServiceAccountJsonPath` must be absolute.
-- Staging: `TapeExport__Enabled=false`, no Drive keys, no export volume, no Postgres volume.
-- The check enforces: only the seven contract names; Format equals `csv.gz+parquet`; Path and JsonPath absolute;
-  Schedule HH:mm; Drive JSON a shared reference only; at most one exporter or export volume, and it is the
-  recorder; all of it off in non-production environments.
-- **Ownership.** The image runs as uid 64198 (Dockerfile `USER 64198`) and Railway mounts volumes owned by root,
-  so uid 64198 cannot write `/data/tape-exports`. Railway's documented remedy is `RAILWAY_RUN_UID=0`, which the
-  production recorder sets. Unlike Postgres, this image has no root-then-drop entrypoint, so the .NET process
-  runs **as root** in that one private container. Confidence: high that the volume is root-owned and that
-  `RAILWAY_RUN_UID=0` makes it writable; medium that nothing else in the image cares about running as root.
-  Interim only: the fix is a Maker item (an entrypoint that chowns the mount and drops to 64198), then remove
-  `RAILWAY_RUN_UID`. Verify on the first production deploy: `railway ssh --service recorder -- ls -ld /data/tape-exports`.
+**Tape export (gh#755, contract from PR #765): deferred.** `TapeExport__Enabled` is the literal `"false"` in every
+environment, and no service has an export volume or `RAILWAY_RUN_UID`. Production turns it on only when both are
+true: the deployed image contains #765, and the image chowns the mount and drops to uid 64198 at startup (#767).
+Today Railway mounts volumes root-owned and the image runs as 64198, so the only config fix would be
+`RAILWAY_RUN_UID=0`, which runs the whole .NET process as root, so it is not used. The key names are provisional
+until #765 merges.
+- When it is enabled: the production recorder only gets the `tape-exports` volume at `/data/tape-exports` and
+  `TapeExport__Enabled=true`, Schedule `06:00` (UTC, HH:mm), Path `/data/tape-exports`, Format `csv.gz+parquet`.
+  Drive upload is optional; `TapeExport__Drive__ServiceAccountJson` may only be
+  `ctx.shared.TAPE_EXPORT_DRIVE_SERVICE_ACCOUNT_JSON`.
+- The check already enforces that shape: only the seven contract names; Format `csv.gz+parquet`; absolute Path and
+  JsonPath; Schedule HH:mm; Drive JSON a shared reference only; at most one exporter or export volume, and it is the
+  recorder; in production, export on means the whole shape at once; outside production, off with no Drive keys.
+
+**Variable names are checked the way .NET reads them (r3).** .NET configuration keys are case-insensitive and
+treat `:` like `__`, but env names on Linux are case-sensitive, so `TRADING__ENABLED=true` beside
+`Trading__Enabled=false` would be two Railway variables and one app key. The template check
+(`[key-normalization]`) refuses any key containing `:`, any two keys that collide after normalising (including a
+`DOTNET_`/`ASPNETCORE_` prefix), and any spelling of a known key other than the exact one. `no-order-path` also
+refuses case, colon and computed variants of `Trading__Enabled` in `.railway/`. Railway's docs do not define the
+allowed variable-name characters; a Railway forum answer reports that a `:` in a name breaks builds, and nothing
+documents case folding. So treat both as unsupported; the check refuses them regardless.
 
 **Volume permissions (production).** Railway mounts volumes root-owned, while the image runs as `postgres`
 (uid 1000) and Postgres refuses to run as root. The template therefore:

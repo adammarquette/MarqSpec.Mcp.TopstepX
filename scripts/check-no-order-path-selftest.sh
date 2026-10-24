@@ -339,6 +339,21 @@ run_case "pass: railway.ts literal false with a trailing comment" 0 "$GREEN"
 base "$T"; mkdir -p "$T/.railway"; printf 'const c = { Other: "x" };\n' >"$T/.railway/railway.ts"
 run_case "fail: railway.ts dropped the switch" 1 "no longer sets Trading__Enabled"
 
+base "$T"; mkdir -p "$T/.railway"; printf 'const c = {\n  Trading__Enabled: "false",\n  "Trading:Enabled": "true",\n};\n' >"$T/.railway/railway.ts"
+run_case "fail: railway.ts duplicate via colon key (r3)" 1 "MASTER SWITCH  .railway/railway.ts:3"
+
+base "$T"; mkdir -p "$T/.railway"; printf 'const c = {\n  Trading__Enabled: "false",\n  "trading:enabled": "true",\n};\n' >"$T/.railway/railway.ts"
+run_case "fail: railway.ts duplicate via lower colon key (r3)" 1 "MASTER SWITCH  .railway/railway.ts:3"
+
+base "$T"; mkdir -p "$T/.railway"; printf 'const c = {\n  Trading__Enabled: "false",\n  ["TRADING" + "__ENABLED"]: "true",\n};\n' >"$T/.railway/railway.ts"
+run_case "fail: railway.ts duplicate via computed upper key (r3)" 1 "MASTER SWITCH  .railway/railway.ts:3"
+
+base "$T"; mkdir -p "$T/.railway"; printf 'const c = {\n  Trading__Enabled: "false",\n  ["Trading" + ":Enabled"]: "true",\n};\n' >"$T/.railway/railway.ts"
+run_case "fail: railway.ts duplicate via computed colon key (r3)" 1 "MASTER SWITCH  .railway/railway.ts:3"
+
+base "$T"; mkdir -p "$T/.railway"; printf 'const c = {\n  Trading__Enabled: "false",\n  trading__enabled: "true",\n};\n' >"$T/.railway/railway.ts"
+run_case "fail: railway.ts duplicate via lower key (r3)" 1 "MASTER SWITCH  .railway/railway.ts:3"
+
 base "$T"; printf '{"deploy":{"env":{"Trading__Enabled":"true"}}}\n' >"$T/railway.json"
 run_case "fail: legacy railway.json enables trading" 1 "MASTER SWITCH  railway.json:1"
 

@@ -295,12 +295,14 @@ railways="$(find . \( -name .git -o -name node_modules -o -name bin -o -name obj
 while IFS= read -r r; do
   [ -n "$r" ] || continue
   r="${r#./}"
-  status=0; lines="$(grep -niE 'trading__enabled' "$r")" || status=$?
+  status=0; lines="$(grep -niE 'trading.{0,12}enabled|["'"'"'`]trading(:|["'"'"'`]|__["'"'"'`])' "$r")" || status=$?
   [ "$status" -gt 1 ] && env_fail "CANNOT SEARCH  grep exited $status over $r"
   while IFS= read -r l; do
     [ -n "$l" ] || continue
     body="${l#*:}"
     printf '%s\n' "$body" | grep -qE '^[[:space:]]*(//|#|\*|/\*)' && continue
+    # Matched case-insensitively, with ':' and split/computed keys ("TRADING" + "__ENABLED") included, since
+    # .NET config treats Trading:Enabled, TRADING__ENABLED and Trading__Enabled as one key (r3).
     # The WHOLE line is `Trading__Enabled: "false"` (JSON/TOML quoting allowed) and nothing else: no ternary,
     # no variable, no || fallback, no value on a continuation line. Anything cleverer is refused, not parsed.
     printf '%s\n' "$body" | grep -qE '^[[:space:]]*["'"'"']?Trading__Enabled["'"'"']?[[:space:]]*[:=][[:space:]]*"false"[[:space:]]*,?[[:space:]]*(//[^"]*)?$' && continue

@@ -10,18 +10,29 @@ namespace MarqSpec.Mcp.TopstepX.Data.Migrations
         /// <inheritdoc />
         protected override void Up(MigrationBuilder migrationBuilder)
         {
-            migrationBuilder.CreateIndex(
-                name: "IX_Trades_Instrument_TradeTimeUtc",
-                table: "Trades",
-                columns: new[] { "Instrument", "TradeTimeUtc" });
+            // A plain CreateIndex runs inside the migration transaction. On the Trades hypertable that lock
+            // is held across every chunk, and MigrateAsync runs at startup while the recorder is inserting.
+            // timescaledb.transaction_per_chunk builds one chunk at a time and commits between chunks, so the
+            // statement cannot sit in that transaction. IF NOT EXISTS lets a retry finish when the index was
+            // created and the history row was not. The model and the snapshot still declare the index, so
+            // the next migration does not emit a second CreateIndex for the same columns.
+            migrationBuilder.Sql(
+                """
+                CREATE INDEX IF NOT EXISTS "IX_Trades_Instrument_TradeTimeUtc"
+                    ON "Trades" ("Instrument", "TradeTimeUtc")
+                    WITH (timescaledb.transaction_per_chunk);
+                """,
+                suppressTransaction: true);
         }
 
         /// <inheritdoc />
         protected override void Down(MigrationBuilder migrationBuilder)
         {
-            migrationBuilder.DropIndex(
-                name: "IX_Trades_Instrument_TradeTimeUtc",
-                table: "Trades");
+            migrationBuilder.Sql(
+                """
+                DROP INDEX IF EXISTS "IX_Trades_Instrument_TradeTimeUtc";
+                """,
+                suppressTransaction: true);
         }
     }
 }

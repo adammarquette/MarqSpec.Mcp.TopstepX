@@ -21,6 +21,10 @@ public readonly record struct ProductSession(DateOnly TradeDate, DateTimeOffset 
 /// session's own bounds rather than the probe that happened to land inside it.
 /// </para>
 /// <para>
+/// A declared early close shortens only the session this type returns. Recorder health is that caller.
+/// Bar expectation keeps the ordinary close and does not ask here.
+/// </para>
+/// <para>
 /// Nothing here reads a clock. The instant is an argument, so the same inputs give the same
 /// answer whenever it runs (ADR-0006).
 /// </para>

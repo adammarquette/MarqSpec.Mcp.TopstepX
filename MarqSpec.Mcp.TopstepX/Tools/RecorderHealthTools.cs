@@ -31,7 +31,10 @@ public sealed class RecorderHealthTools(RecorderHealthService health)
         + "the elapsed futures session — the one in progress, or the one that most recently closed — and is "
         + "ABSENT when the calendar cannot name one. gaps lists TapeCoverage holes in that elapsed window; "
         + "the array is ABSENT when the ledger could not be read, and an empty array means the window is "
-        + "covered. An open listen counts only while that symbol is listening. This tool only reads.")]
+        + "covered. An open listen counts only while that symbol is listening. cachedAtUtc and ageMs are "
+        + "ABSENT when this reply was just built. When this process reuses a report from the last five "
+        + "seconds, cachedAtUtc is when it was stored and ageMs is how old it is. A declared early close "
+        + "changes only this session. This tool only reads.")]
     public Task<RecorderHealthReport.Report> GetRecorderHealth(CancellationToken cancellationToken) =>
         _health.ReadAsync(cancellationToken);
 }

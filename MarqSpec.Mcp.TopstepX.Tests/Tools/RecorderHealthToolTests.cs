@@ -381,16 +381,55 @@ public sealed class RecorderHealthToolTests
     {
         await using Fixture fixture = Fixture.Open();
         using MetricCollector<long> reads = Collect(fixture.Telemetry);
-        fixture.Service.ProbeTimeout = TimeSpan.FromMilliseconds(200);
+        fixture.Service.ProbeTimeout.Should().Be(TimeSpan.FromSeconds(2));
         fixture.Store.HoldProbe = true;
 
-        RecorderHealthReport.Report report = await fixture.Tools.GetRecorderHealth(CancellationToken.None);
+        Task<RecorderHealthReport.Report> pending = fixture.Tools.GetRecorderHealth(CancellationToken.None);
+        DateTimeOffset giveUp = DateTimeOffset.UtcNow.AddSeconds(2);
+        while (fixture.Store.Probes < 1 && DateTimeOffset.UtcNow < giveUp)
+        {
+            await Task.Delay(10);
+        }
 
+        fixture.Store.Probes.Should().Be(1);
+        fixture.Clock.Advance(fixture.Service.ProbeTimeout);
+        Task finished = await Task.WhenAny(pending, Task.Delay(TimeSpan.FromMilliseconds(500)));
+        finished.Should().BeSameAs(pending);
+
+        RecorderHealthReport.Report report = await pending;
         report.Database.Should().Be(RecorderHealthReport.StoreConnectivity.Unavailable);
         report.Gaps.Should().BeNull();
         report.Contracts.Should().OnlyContain(row => row.ContractId == null);
         reads.GetMeasurementSnapshot().Should().ContainSingle()
             .Which.Tags[HostTelemetry.OutcomeTag].Should().Be(RecorderHealthOutcome.Timeout);
+    }
+
+    [Fact(Timeout = 5_000)]
+    public async Task GetRecorderHealth_WhenTheCallerCancelsDuringTheBuild_DoesNotReuseACachedReport()
+    {
+        FakeTimeProvider clock = new(_tuesday);
+        ScriptedHealthStore store = new() { HoldProbe = true };
+        RecorderHealthMemo memo = new();
+        await using Fixture first = Fixture.Sharing(store, memo, clock);
+        await using Fixture second = Fixture.Sharing(store, memo, clock);
+        using CancellationTokenSource cancelled = new();
+
+        Task<RecorderHealthReport.Report> call = first.Tools.GetRecorderHealth(cancelled.Token);
+        DateTimeOffset giveUp = DateTimeOffset.UtcNow.AddSeconds(2);
+        while (store.Probes < 1 && DateTimeOffset.UtcNow < giveUp)
+        {
+            await Task.Delay(10);
+        }
+
+        store.Probes.Should().Be(1);
+        cancelled.Cancel();
+        Func<Task> wait = async () => await call.ConfigureAwait(false);
+        await wait.Should().ThrowAsync<OperationCanceledException>();
+
+        store.HoldProbe = false;
+        await second.Tools.GetRecorderHealth(CancellationToken.None);
+
+        store.Probes.Should().Be(2);
     }
 
     [Fact]
@@ -488,6 +527,35 @@ public sealed class RecorderHealthToolTests
         store.Probes.Should().Be(2);
     }
 
+    [Fact]
+    public async Task GetRecorderHealth_WhenTheReportIsReused_ReportsWhenItWasCachedAndHowOldItIs()
+    {
+        FakeTimeProvider clock = new(_tuesday);
+        ScriptedHealthStore store = new();
+        RecorderHealthMemo memo = new();
+        await using Fixture first = Fixture.Sharing(store, memo, clock, listening: true);
+        await using Fixture second = Fixture.Sharing(store, memo, clock, listening: true);
+        store.Ticks.Add(new ContractLastTick("ES", Es, _tuesday));
+        store.Ticks.Add(new ContractLastTick("NQ", Nq, _tuesday));
+        store.Coverage.Add(Open(_open, "ES", Es));
+        store.Coverage.Add(Open(_open, "NQ", Nq));
+
+        RecorderHealthReport.Report built = await first.Tools.GetRecorderHealth(CancellationToken.None);
+        built.CachedAtUtc.Should().BeNull();
+        built.AgeMs.Should().BeNull();
+        Wire(built).TryGetProperty("cachedAtUtc", out _).Should().BeFalse();
+        Wire(built).TryGetProperty("ageMs", out _).Should().BeFalse();
+
+        clock.Advance(TimeSpan.FromMilliseconds(1500));
+        RecorderHealthReport.Report reused = await second.Tools.GetRecorderHealth(CancellationToken.None);
+
+        store.Probes.Should().Be(1);
+        reused.CachedAtUtc.Should().Be(_tuesday);
+        reused.AgeMs.Should().Be(1500);
+        Wire(reused).GetProperty("ageMs").GetInt64().Should().Be(1500);
+        Wire(reused).GetProperty("cachedAtUtc").GetDateTimeOffset().Should().Be(_tuesday);
+    }
+
     [Fact(Timeout = 5_000)]
     public async Task GetRecorderHealth_WhenTwoCallsOverlap_ScansOnce()
     {
@@ -565,13 +633,15 @@ public sealed class RecorderHealthToolTests
             RecorderHealthService service,
             HostTelemetry telemetry,
             TapeAvailabilityHolder tape,
-            ScriptedHealthStore store)
+            ScriptedHealthStore store,
+            FakeTimeProvider clock)
         {
             Tools = tools;
             Service = service;
             Telemetry = telemetry;
             Tape = tape;
             Store = store;
+            Clock = clock;
         }
 
         public RecorderHealthTools Tools { get; }
@@ -583,6 +653,8 @@ public sealed class RecorderHealthToolTests
         public TapeAvailabilityHolder Tape { get; }
 
         public ScriptedHealthStore Store { get; }
+
+        public FakeTimeProvider Clock { get; }
 
         public static Fixture Open(
             DateTimeOffset? now = null,
@@ -643,7 +715,7 @@ public sealed class RecorderHealthToolTests
                 clock,
                 telemetry,
                 memo);
-            return new Fixture(new RecorderHealthTools(service), service, telemetry, tape, store);
+            return new Fixture(new RecorderHealthTools(service), service, telemetry, tape, store, clock);
         }
     }
 

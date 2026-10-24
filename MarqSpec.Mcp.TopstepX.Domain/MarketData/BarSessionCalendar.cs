@@ -96,10 +96,11 @@ public sealed class BarSessionCalendar
         {
             if (pair.Value < new TimeOnly(2, 0) || pair.Value >= sessionClose)
             {
-                throw new ArgumentOutOfRangeException(
-                    nameof(earlyCloses),
-                    pair.Value,
-                    "An early close must be at or after 02:00 Central and strictly before the ordinary session close.");
+                throw new EarlyCloseException(
+                    pair.Key.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture)
+                    + " "
+                    + pair.Value.ToString("HH:mm", CultureInfo.InvariantCulture)
+                    + " is not before the ordinary session close.");
             }
         }
     }
@@ -164,8 +165,9 @@ public sealed class BarSessionCalendar
     /// <param name="tradeDate">The trade date.</param>
     /// <returns>The close that date's session ends at.</returns>
     /// <remarks>
-    /// Bar expectation does not call this. <see cref="ProductSessions"/> does, so a recorder-health gap stops
-    /// at the early close while the bar cache still measures the ordinary one.
+    /// Bar expectation does not call this. <see cref="ProductSessions"/> does, and recorder health is the
+    /// caller of that type, so a declared early close shortens only the health report's session. The bar
+    /// cache still measures the ordinary close.
     /// </remarks>
     public TimeOnly SessionCloseOn(DateOnly tradeDate) =>
         _earlyCloses.TryGetValue(tradeDate, out TimeOnly early) ? early : SessionClose;
@@ -183,7 +185,8 @@ public sealed class BarSessionCalendar
     /// Declared early closes, each <c>yyyy-MM-dd HH:mm</c> in Central wall-clock time. Empty when none.
     /// </param>
     /// <returns>The calendar.</returns>
-    /// <exception cref="FormatException">A value is not in the expected shape.</exception>
+    /// <exception cref="FormatException">The session close or a holiday is not in the expected shape.</exception>
+    /// <exception cref="EarlyCloseException">An early close is not <c>yyyy-MM-dd HH:mm</c>, or it is not before the ordinary close.</exception>
     /// <remarks>
     /// Guessing here would be a silent, compounding error: this value decides what counts as missing data, so a
     /// misparsed close either makes the store look complete when it is not, or makes it re-fetch forever.
@@ -235,7 +238,7 @@ public sealed class BarSessionCalendar
                 || !TimeOnly.TryParseExact(
                     parts[1], "HH:mm", CultureInfo.InvariantCulture, DateTimeStyles.None, out TimeOnly close))
             {
-                throw new FormatException("Early close '" + entry + "' is not yyyy-MM-dd HH:mm.");
+                throw new EarlyCloseException("'" + entry + "' is not yyyy-MM-dd HH:mm.");
             }
 
             parsed[day] = close;

@@ -164,6 +164,26 @@ public sealed class BarSessionCalendarTests
     }
 
     [Fact]
+    public void Parse_WhenAnEarlyCloseIsNotADateAndTime_ThrowsEarlyCloseException()
+    {
+        Action parse = () => BarSessionCalendar.Parse("16:00", [], earlyCloses: ["not-a-close"]);
+
+        EarlyCloseException exception = parse.Should().Throw<EarlyCloseException>().Which;
+        exception.Should().NotBeAssignableTo<FormatException>();
+        exception.Message.Should().NotStartWith("Early close");
+        exception.Message.Should().Contain("not-a-close");
+    }
+
+    [Fact]
+    public void Parse_WhenAnEarlyCloseIsNotBeforeTheOrdinaryClose_ThrowsEarlyCloseException()
+    {
+        Action parse = () => BarSessionCalendar.Parse("16:00", [], earlyCloses: ["2026-11-27 16:00"]);
+
+        parse.Should().Throw<EarlyCloseException>()
+            .Which.Should().NotBeAssignableTo<ArgumentOutOfRangeException>();
+    }
+
+    [Fact]
     public void IsExpectedBucket_WhenAnEarlyCloseIsDeclared_StillExpectsTheOrdinaryAfternoon()
     {
         BarSessionCalendar calendar = BarSessionCalendar.Parse("16:00", [], earlyCloses: ["2026-11-27 12:00"]);

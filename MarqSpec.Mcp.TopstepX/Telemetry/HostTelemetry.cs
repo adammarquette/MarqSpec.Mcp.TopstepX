@@ -403,7 +403,8 @@ public sealed class HostTelemetry : IDisposable
     /// <summary>Counts one recorder-health report.</summary>
     /// <param name="outcome">What the report found, from <see cref="RecorderHealthOutcome"/>.</param>
     /// <remarks>
-    /// Once per report that was actually built. A cached reply is not a second report. Cancellation records
+    /// Once per report that was actually built. A cached reply is not a second report, and a build the caller
+    /// cancelled is not a report. Cancellation records
     /// nothing: a poll that gave up is not a statement about the recorder, and it is not a
     /// <see cref="RecorderHealthOutcome.Timeout"/>. Not tagged by symbol or contract — one hub, one number,
     /// or the series splits by however many instruments the deployment happens to list.

@@ -22,8 +22,11 @@ public sealed class RecorderHealthMemo
 
     /// <summary>The stored report when it is still inside <see cref="Ttl"/>.</summary>
     /// <param name="clock">The clock the expiry is compared against. Not the wall clock.</param>
-    /// <returns>The report and the outcome it was counted as, or <see langword="null"/> when nothing is fresh.</returns>
-    public (RecorderHealthReport.Report Report, string Outcome)? Read(TimeProvider clock)
+    /// <returns>
+    /// The report, the outcome it was counted as, and when it was stored, or <see langword="null"/> when
+    /// nothing is fresh.
+    /// </returns>
+    public (RecorderHealthReport.Report Report, string Outcome, DateTimeOffset CachedAt)? Read(TimeProvider clock)
     {
         ArgumentNullException.ThrowIfNull(clock);
 
@@ -31,7 +34,7 @@ public sealed class RecorderHealthMemo
         {
             if (_entry is { } entry && clock.GetUtcNow() < entry.ExpiresAt)
             {
-                return (entry.Report, entry.Outcome);
+                return (entry.Report, entry.Outcome, entry.CachedAt);
             }
         }
 
@@ -59,11 +62,13 @@ public sealed class RecorderHealthMemo
 
         lock (_gate)
         {
-            _entry = new Entry(clock.GetUtcNow() + Ttl, report, outcome);
+            DateTimeOffset cachedAt = clock.GetUtcNow();
+            _entry = new Entry(cachedAt, cachedAt + Ttl, report, outcome);
         }
     }
 
     private sealed record Entry(
+        DateTimeOffset CachedAt,
         DateTimeOffset ExpiresAt,
         RecorderHealthReport.Report Report,
         string Outcome);

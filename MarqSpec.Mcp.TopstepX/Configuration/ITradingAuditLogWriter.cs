@@ -15,9 +15,19 @@ public interface ITradingAuditLogWriter
     /// <param name="request">The claim. <see cref="TradingAuditWriteRequest.Outcome"/> is stored as Unknown.</param>
     /// <param name="cancellationToken">The caller's cancellation token.</param>
     /// <returns>Claimed when this call inserted the row; otherwise the stored replay or conflict.</returns>
+    /// <remarks>
+    /// The body fails closed. The production writer and the gate's test doubles override it. A double that
+    /// never reaches a keyed send, including the stage tests that landed on <c>develop</c> after this branch
+    /// forked, still compiles, and a keyed send through that double does not pretend a claim was stored.
+    /// </remarks>
     Task<TradingAuditClaimResult> TryClaimUnknownAsync(
         TradingAuditWriteRequest request,
-        CancellationToken cancellationToken);
+        CancellationToken cancellationToken)
+    {
+        _ = request;
+        _ = cancellationToken;
+        throw new NotSupportedException("A trading audit writer stores the pre-send claim.");
+    }
 }
 
 /// <summary>One row to append to <c>TradingAuditLog</c>.</summary>

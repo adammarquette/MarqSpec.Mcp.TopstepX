@@ -1,5 +1,6 @@
 using MarqSpec.Client.ProjectX.Authentication;
 using MarqSpec.Client.ProjectX.Exceptions;
+using MarqSpec.Mcp.TopstepX.Telemetry;
 
 namespace MarqSpec.Mcp.TopstepX.MarketData;
 
@@ -34,32 +35,37 @@ public sealed class GatedAuthenticationService : IAuthenticationService
     private readonly HeldSession _held;
     private readonly SessionLoginGate _gate;
     private readonly TimeProvider _clock;
+    private readonly HostTelemetry _telemetry;
 
     /// <summary>Creates the gate around the venue client's authentication service.</summary>
     /// <param name="inner">The client service that posts <c>loginKey</c>. Not the interface registration.</param>
     /// <param name="held">Where a permitted token, and a validate <c>newToken</c>, are remembered.</param>
     /// <param name="gate">Whether a login is currently allowed.</param>
-    /// <param name="clock">The clock the freshness decision uses.</param>
+    /// <param name="clock">The clock the freshness decision uses. The same instance <paramref name="held"/> was stored with.</param>
+    /// <param name="telemetry">Records a login refusal. The bearer is not a tag.</param>
     public GatedAuthenticationService(
         IAuthenticationService inner,
         HeldSession held,
         SessionLoginGate gate,
-        TimeProvider clock)
+        TimeProvider clock,
+        HostTelemetry telemetry)
     {
         ArgumentNullException.ThrowIfNull(inner);
         ArgumentNullException.ThrowIfNull(held);
         ArgumentNullException.ThrowIfNull(gate);
         ArgumentNullException.ThrowIfNull(clock);
+        ArgumentNullException.ThrowIfNull(telemetry);
         _inner = inner;
         _held = held;
         _gate = gate;
         _clock = clock;
+        _telemetry = telemetry;
     }
 
     /// <inheritdoc />
     public async Task<string> GetAccessTokenAsync(CancellationToken cancellationToken = default)
     {
-        if (_held.TryReadFresh(_clock.GetUtcNow(), out string fresh))
+        if (_held.TryReadFresh(_clock, out string fresh))
         {
             return fresh;
         }
@@ -67,7 +73,7 @@ public sealed class GatedAuthenticationService : IAuthenticationService
         await _gate.EnterLoginAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            if (_held.TryReadFresh(_clock.GetUtcNow(), out fresh))
+            if (_held.TryReadFresh(_clock, out fresh))
             {
                 return fresh;
             }
@@ -87,7 +93,7 @@ public sealed class GatedAuthenticationService : IAuthenticationService
                 throw Closed();
             }
 
-            _held.Remember(token, _clock.GetUtcNow());
+            _held.Remember(token, _clock);
             return token;
         }
         finally
@@ -112,7 +118,7 @@ public sealed class GatedAuthenticationService : IAuthenticationService
             // The refresh already happened. Remember its token even if the gate closed during the call,
             // so the next read is a cache hit and does not post loginKey a second time.
             string token = await _inner.GetAccessTokenAsync(cancellationToken).ConfigureAwait(false);
-            _held.Remember(token, _clock.GetUtcNow());
+            _held.Remember(token, _clock);
         }
         finally
         {
@@ -138,6 +144,13 @@ public sealed class GatedAuthenticationService : IAuthenticationService
         await _inner.LogoutAsync(cancellationToken).ConfigureAwait(false);
     }
 
-    private static AuthenticationException Closed() =>
-        new("TopstepX login is closed because a session conflict is suspected or this process has stopped. This call will not use loginKey.");
+    private AuthenticationException Closed()
+    {
+        using (_telemetry.SessionRenewalRefusal(SessionRenewalRefusal.Closed))
+        {
+        }
+
+        return new AuthenticationException(
+            "TopstepX login is closed because a session conflict is suspected or this process has stopped. This call will not use loginKey.");
+    }
 }

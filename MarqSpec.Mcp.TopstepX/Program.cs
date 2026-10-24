@@ -851,7 +851,8 @@ public static class Program
                 CreateVenueAuthentication(serviceProvider),
                 serviceProvider.GetRequiredService<HeldSession>(),
                 serviceProvider.GetRequiredService<SessionLoginGate>(),
-                serviceProvider.GetRequiredService<TimeProvider>()));
+                serviceProvider.GetRequiredService<TimeProvider>(),
+                serviceProvider.GetRequiredService<HostTelemetry>()));
             services.AddSingleton<IAuthenticationService>(static serviceProvider =>
                 serviceProvider.GetRequiredService<GatedAuthenticationService>());
             services.AddHttpClient(ProjectXSessionConflictProbe.HttpClientName, (serviceProvider, client) =>

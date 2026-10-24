@@ -87,6 +87,9 @@ public sealed class HostTelemetry : IDisposable
     /// <summary>A session conflict that stopped the recorder (gh#757).</summary>
     public const string TapeSessionConflictsInstrument = "mcp.tape.session_conflicts";
 
+    /// <summary>A renewal or login that was refused (gh#757).</summary>
+    public const string SessionRenewalRefusalsInstrument = "mcp.session.renewal_refusals";
+
     /// <summary>Indicator values a projection pass wrote.</summary>
     public const string IndicatorProjectionsInstrument = "mcp.indicator.projections";
 
@@ -164,6 +167,7 @@ public sealed class HostTelemetry : IDisposable
     private readonly Counter<long> _tapeLeaseChanges;
     private readonly Counter<long> _recorderHealthReads;
     private readonly Counter<long> _tapeSessionConflicts;
+    private readonly Counter<long> _sessionRenewalRefusals;
     private readonly Counter<long> _indicatorProjections;
     private readonly Counter<long> _executionWrites;
     private readonly Counter<long> _bookkeepingFaults;
@@ -227,6 +231,11 @@ public sealed class HostTelemetry : IDisposable
             TapeSessionConflictsInstrument,
             unit: "{conflict}",
             description: "Session conflicts that stopped the tape recorder, by where the signal was seen.");
+
+        _sessionRenewalRefusals = _meter.CreateCounter<long>(
+            SessionRenewalRefusalsInstrument,
+            unit: "{refusal}",
+            description: "Held-session renewals and logins that were refused, by why.");
 
         _indicatorProjections = _meter.CreateCounter<long>(
             IndicatorProjectionsInstrument,
@@ -458,6 +467,26 @@ public sealed class HostTelemetry : IDisposable
         span?.SetTag(SourceTag, source);
 
         _tapeSessionConflicts.Add(1, new KeyValuePair<string, object?>(SourceTag, source));
+        return span;
+    }
+
+    /// <summary>
+    /// Records one renewal or login refusal, as a counter and a span.
+    /// </summary>
+    /// <param name="reason">Why it was refused, from <see cref="SessionRenewalRefusal"/>.</param>
+    /// <returns>The span. The caller disposes it. Null when nothing is listening.</returns>
+    /// <remarks>
+    /// <b>The reason only.</b> A validate body, a bearer, and a vendor sentence are not tags. The log line
+    /// names the outcome in this server's own words.
+    /// </remarks>
+    public Activity? SessionRenewalRefusal(string reason)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(reason);
+
+        Activity? span = Activities.StartActivity("session.renewal_refusal", ActivityKind.Internal);
+        span?.SetTag(ReasonTag, reason);
+
+        _sessionRenewalRefusals.Add(1, new KeyValuePair<string, object?>(ReasonTag, reason));
         return span;
     }
 
@@ -986,4 +1015,32 @@ public static class SessionConflictSource
 
     /// <summary>Every value.</summary>
     public static IReadOnlyList<string> All { get; } = [Hub, Api];
+}
+
+/// <summary>
+/// Why a held-session renewal or a <c>loginKey</c> was refused — the <c>reason</c> tag's closed vocabulary
+/// for <see cref="HostTelemetry.SessionRenewalRefusalsInstrument"/> (gh#757).
+/// </summary>
+public static class SessionRenewalRefusal
+{
+    /// <summary>The stop was already latched, so validate was not posted.</summary>
+    public const string Latched = "latched";
+
+    /// <summary>Validate reported <c>ExpiredToken</c>. The bearer can never become valid.</summary>
+    public const string Expired = "expired";
+
+    /// <summary>Validate failed while the held token was still fresh. Login stays closed.</summary>
+    public const string Outage = "outage";
+
+    /// <summary>Validate failed and the held token is inside its refresh window. One login may run.</summary>
+    public const string Exhausted = "exhausted";
+
+    /// <summary>Validate reported another session. Login stays closed.</summary>
+    public const string Conflict = "conflict";
+
+    /// <summary>A <c>loginKey</c> was refused because the login gate was closed.</summary>
+    public const string Closed = "closed";
+
+    /// <summary>Every value.</summary>
+    public static IReadOnlyList<string> All { get; } = [Latched, Expired, Outage, Exhausted, Conflict, Closed];
 }

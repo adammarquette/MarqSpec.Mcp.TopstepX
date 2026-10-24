@@ -232,6 +232,37 @@ public sealed class HostTelemetryTests
         span.GetTagItem(HostTelemetry.SymbolTag).Should().BeNull();
     }
 
+    [Theory]
+    [InlineData(SessionRenewalRefusal.Latched)]
+    [InlineData(SessionRenewalRefusal.Expired)]
+    [InlineData(SessionRenewalRefusal.Outage)]
+    [InlineData(SessionRenewalRefusal.Exhausted)]
+    [InlineData(SessionRenewalRefusal.Conflict)]
+    [InlineData(SessionRenewalRefusal.Closed)]
+    public void SessionRenewalRefusal_KnownReason_RecordsASpanAndACounter(string reason)
+    {
+        using HostTelemetry telemetry = new();
+        using MetricCollector<long> refusals = Collect(telemetry, HostTelemetry.SessionRenewalRefusalsInstrument);
+
+        List<Activity> spans = [];
+        using ActivityListener listener = Listen(spans, telemetry.Activities);
+
+        using (telemetry.SessionRenewalRefusal(reason))
+        {
+        }
+
+        CollectedMeasurement<long> measurement = refusals.LastMeasurement!;
+        measurement.Value.Should().Be(1);
+        measurement.Tags[HostTelemetry.ReasonTag].Should().Be(reason);
+        measurement.Tags.Should().NotContainKey(HostTelemetry.SymbolTag);
+
+        Activity span = spans.Should().ContainSingle().Subject;
+        span.OperationName.Should().Be("session.renewal_refusal");
+        span.Kind.Should().Be(ActivityKind.Internal);
+        span.GetTagItem(HostTelemetry.ReasonTag).Should().Be(reason);
+        span.GetTagItem(HostTelemetry.SymbolTag).Should().BeNull();
+    }
+
     [Fact]
     public void NoSpanIsAllocatedWhenNothingIsListening()
     {

@@ -1466,7 +1466,7 @@ public sealed class TradeTapeRecorder : BackgroundService
     /// </summary>
     private async Task WaitAndReprobeAsync(CancellationToken cancellationToken)
     {
-        if (_held is not null && !_held.TryReadFresh(_clock.GetUtcNow(), out _))
+        if (_held is not null && !_held.TryReadFresh(_clock, out _))
         {
             await StopRatherThanLoginAsync(cancellationToken).ConfigureAwait(false);
             return;

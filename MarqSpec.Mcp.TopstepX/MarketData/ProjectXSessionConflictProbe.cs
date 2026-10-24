@@ -17,11 +17,15 @@ namespace MarqSpec.Mcp.TopstepX.MarketData;
 /// body, and the next read then logs in. Either one disconnects the trading platform.
 /// </para>
 /// <para>
-/// No fresh token, a timeout, an expired-token code, an unknown code, or a call that does not land is
-/// <see cref="SessionProbeVerdict.Inconclusive"/> and does not log in. HTTP 401 is
+/// No fresh token, a timeout, an unknown code, or a call that does not land is
+/// <see cref="SessionProbeVerdict.Inconclusive"/> and does not log in.
+/// <see cref="SessionConflictSignals.ExpiredToken"/> is <see cref="SessionProbeVerdict.NeverValid"/>:
+/// the bearer can never become valid, and that is not another session. HTTP 401 is
 /// <see cref="SessionProbeVerdict.Conflict"/>: the bearer was refused, which is the same practical outcome
 /// as a killed session. A valid body stores <c>newToken</c> when one is present, and otherwise stores the
 /// same bearer again so the 55-minute window slides. The token and the response body are not logged.
+/// <see cref="ProbeAsync"/> and <see cref="ValidateHeldTokenAsync"/> share one lock, so a probe and the
+/// renewer cannot validate at the same time.
 /// </para>
 /// </remarks>
 public sealed class ProjectXSessionConflictProbe : ISessionConflictProbe
@@ -31,7 +35,9 @@ public sealed class ProjectXSessionConflictProbe : ISessionConflictProbe
 
     private static readonly JsonSerializerOptions _json = new(JsonSerializerDefaults.Web);
 
+    private readonly SemaphoreSlim _validate = new(1, 1);
     private readonly HeldSession _held;
+    private int _validateWaiting;
     private readonly IHttpClientFactory _http;
     private readonly ILogger<ProjectXSessionConflictProbe> _logger;
     private readonly TimeProvider _clock;
@@ -57,10 +63,13 @@ public sealed class ProjectXSessionConflictProbe : ISessionConflictProbe
         _clock = clock;
     }
 
+    /// <summary>How many validate calls are waiting for the shared lock. The caller that holds it is not counted.</summary>
+    internal int ValidateWaiting => Volatile.Read(ref _validateWaiting);
+
     /// <inheritdoc />
     public Task<SessionProbeVerdict> ProbeAsync(CancellationToken cancellationToken)
     {
-        if (!_held.TryReadFresh(_clock.GetUtcNow(), out string token))
+        if (!_held.TryReadFresh(_clock, out string token))
         {
             _logger.LogWarning(
                 "The session probe has no fresh TopstepX token to validate. The result is inconclusive, and this process will not call loginKey.");
@@ -89,6 +98,18 @@ public sealed class ProjectXSessionConflictProbe : ISessionConflictProbe
 
     private async Task<SessionProbeVerdict> ValidateBearerAsync(string token, CancellationToken cancellationToken)
     {
+        Interlocked.Increment(ref _validateWaiting);
+        try
+        {
+            await _validate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        }
+        catch
+        {
+            Interlocked.Decrement(ref _validateWaiting);
+            throw;
+        }
+
+        Interlocked.Decrement(ref _validateWaiting);
         try
         {
             using HttpClient http = _http.CreateClient(HttpClientName);
@@ -130,7 +151,7 @@ public sealed class ProjectXSessionConflictProbe : ISessionConflictProbe
                 // A success with no newToken still slides the client's 55-minute window. The string
                 // remembered here is never logged.
                 string keep = string.IsNullOrEmpty(payload.NewToken) ? token : payload.NewToken;
-                _held.Remember(keep, _clock.GetUtcNow());
+                _held.Remember(keep, _clock);
             }
 
             return verdict;
@@ -156,6 +177,10 @@ public sealed class ProjectXSessionConflictProbe : ISessionConflictProbe
             _logger.LogWarning(
                 "The session probe could not read the TopstepX validate response. The result is inconclusive, and this process will not call loginKey.");
             return SessionProbeVerdict.Inconclusive;
+        }
+        finally
+        {
+            _validate.Release();
         }
     }
 

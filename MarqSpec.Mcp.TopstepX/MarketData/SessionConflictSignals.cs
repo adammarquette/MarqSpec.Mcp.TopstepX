@@ -12,11 +12,17 @@ public enum SessionProbeVerdict
     Conflict = 1,
 
     /// <summary>
-    /// The probe could not decide: no fresh token was held, the token had expired, the code was unknown,
-    /// the call timed out, or the call did not land. That is not evidence of another session, and it is
-    /// not a reason to log in or reconnect.
+    /// The probe could not decide: no fresh token was held, the code was unknown, the call timed out,
+    /// or the call did not land. That is not evidence of another session, and it is not a reason to
+    /// log in or reconnect.
     /// </summary>
     Inconclusive = 2,
+
+    /// <summary>
+    /// <c>ExpiredToken</c>. The bearer can never become valid. This is not another session, so it does
+    /// not latch the stop. The renewal loop may allow one <c>loginKey</c> so the process can recover.
+    /// </summary>
+    NeverValid = 3,
 }
 
 /// <summary>
@@ -87,8 +93,9 @@ public static class SessionConflictSignals
     /// <summary>
     /// Maps a <c>/api/Auth/validate</c> result. Success is <see cref="SessionProbeVerdict.Valid"/>.
     /// <see cref="InvalidSession"/> and <see cref="SessionNotFound"/> are
-    /// <see cref="SessionProbeVerdict.Conflict"/>. Every other code, including
-    /// <see cref="ExpiredToken"/>, is <see cref="SessionProbeVerdict.Inconclusive"/>.
+    /// <see cref="SessionProbeVerdict.Conflict"/>. <see cref="ExpiredToken"/> is
+    /// <see cref="SessionProbeVerdict.NeverValid"/>. Every other code is
+    /// <see cref="SessionProbeVerdict.Inconclusive"/>.
     /// </summary>
     /// <param name="success">The response <c>success</c> flag.</param>
     /// <param name="errorCode">The response <c>errorCode</c>. Zero when the field was absent.</param>
@@ -103,6 +110,11 @@ public static class SessionConflictSignals
         if (errorCode is InvalidSession or SessionNotFound)
         {
             return SessionProbeVerdict.Conflict;
+        }
+
+        if (errorCode == ExpiredToken)
+        {
+            return SessionProbeVerdict.NeverValid;
         }
 
         return SessionProbeVerdict.Inconclusive;

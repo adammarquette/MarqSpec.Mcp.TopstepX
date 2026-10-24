@@ -429,8 +429,9 @@ does not publish hub close sentences, and neither does that schema. The intro is
 The recorder treats a hub close as a conflict only when its error or exception text contains one of
 those documented names (`invalid session`, `invalidsession`, `session not found`, `sessionnotfound`).
 Phrases such as "another session" or "another device" are **not** matched: they are not in the vendor
-docs, and no captured close text is cited here. `ExpiredToken` (3) stays inconclusive for the same
-reason the schema gives — the session aged out. HTTP 401 from validate is treated as a killed session
+docs, and no captured close text is cited here. `ExpiredToken` (3) is not a conflict — the session
+aged out, and the bearer can never become valid. The recorder still does not log in on that code.
+HTTP 401 from validate is treated as a killed session
 and stops the recorder. That status is this server's reading of a refused bearer, not a documented
 `ValidateErrorCode`.
 
@@ -449,6 +450,8 @@ flight, no conflict is suspected, no renewal backoff is in effect, and no stop i
 the call fails. Logins take one lock and check the gate again after `loginKey` returns. A result
 that lost that race is not remembered and not returned. A `loginKey` request already sent cannot be
 recalled — that window is irreducible, and the call may still have opened a session at the venue.
+Marking the suspicion does not wait on that lock. The SignalR callback must not block for the HTTP
+timeout.
 `RefreshTokenAsync` remembers a refresh that has already completed, so the next read does not log in
 a second time. `ValidateSessionAsync` throws: the client's implementation clears its cache on any
 unsuccessful body, and the next read then logs in. A `newToken` on a **valid** validate body is
@@ -457,18 +460,28 @@ again so that window slides. The token is never written to a log. The validate b
 Vendor text is not passed to the logger from this path.
 
 The held token is kept fresh by a periodic `POST /api/Auth/validate` with the bearer already held.
-That call creates no new session and does not use `loginKey`. The steady interval is 30 minutes,
-plus or minus 5 minutes of jitter, and it is clamped so a renewal still fires at least 10 minutes
-before the client's 54-minute refresh. A renewal that fails backs off from 30 seconds, doubling up
-to 5 minutes, and closes login until a later validate succeeds. That close is not the one-way stop.
-No token has been stored yet is a short poll that leaves login permitted, so the first connect can
-still log in. This replaces the hourly `loginKey` the client would otherwise post once the cache
-was inside its last minute, which is the login that kicks the platform.
+That call creates no new session and does not use `loginKey`. It runs whenever the venue client is
+configured, not only while the recorder is running. The steady interval is 30 minutes, plus or minus
+5 minutes of jitter, and it is clamped so a renewal still fires at least 10 minutes before the
+client's 54-minute refresh. A renewal that fails backs off from 30 seconds, doubling up to 5 minutes,
+and closes login while the held token is still fresh. That close is not the one-way stop. Login
+opens again when a later validate succeeds, when validate returns `ExpiredToken` (the bearer can
+never become valid), or when the token's remaining life is inside the one-minute refresh buffer, so
+one `loginKey` can recover the process. `ExpiredToken` drops the held bearer. A latched stop does
+not reopen login, and the renewer posts no further validate once the stop is latched. No token has
+been stored yet is a short poll that leaves login permitted, so the first connect can still log in.
+Freshness is monotonic elapsed time (`TimeProvider.GetTimestamp` and `GetElapsedTime`), so a forward
+jump of the wall clock does not bring that hourly `loginKey` back. A probe and a renewal validate
+take one shared lock. `mcp.session.renewal_refusals` and the `session.renewal_refusal` span record
+`reason` = `latched`, `expired`, `outage`, `exhausted`, `conflict`, or `closed`. This replaces the
+hourly `loginKey` the client would otherwise post once the cache was inside its last minute, which
+is the login that kicks the platform.
 
 **The one-way stop latches only on positive conflict evidence:** a hub close whose text contains a
 documented validate name, HTTP 401, `InvalidSession`, or `SessionNotFound`. A missing token, a
 timeout, `ExpiredToken`, `UnknownError`, a missing code, or a call that does not land does **not**
-latch it and does not close login for REST tools.
+latch it. A renewal failure closes login only while the held token is still fresh. `ExpiredToken`
+does not.
 
 **Safe default when the probe is inconclusive:** do not connect and do not call `loginKey`.
 `AutoReconnect` stays off. If a token is still held and still fresh, wait and probe it again. That
@@ -511,7 +524,9 @@ logging in. The log line and the `get_footprint` / `get_volume_profile` refusal 
 not say the process never touches the venue while a fresh token remains.
 
 `mcp.tape.session_conflicts` counts a conflict stop, tagged `source` = `hub` or `api`. The span is
-`tape.session_conflict` with that tag only. The log line is this server's own sentence.
+`tape.session_conflict` with that tag only. `mcp.session.renewal_refusals` counts a renewal or login
+refusal, tagged `reason`, and the span is `session.renewal_refusal`. The log line is this server's
+own sentence.
 
 **Residual.** The user hub is not connected by this recorder. The shared options still keep
 automatic reconnect off for it while the recorder is alive. With the switch off, a documented hub

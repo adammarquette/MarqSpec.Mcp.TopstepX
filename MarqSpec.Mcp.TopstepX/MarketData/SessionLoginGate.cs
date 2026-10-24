@@ -23,10 +23,11 @@ namespace MarqSpec.Mcp.TopstepX.MarketData;
 /// <para>
 /// Logins take <see cref="EnterLoginAsync"/> and hold it across the <c>loginKey</c> call, then re-check
 /// <see cref="LoginPermitted"/> before the token is remembered. <see cref="BeginSuspecting"/> sets the
-/// suspicion and then waits for that lock, so an in-flight login observes the suspicion and discards its
-/// result. A <c>loginKey</c> request that has already been sent cannot be recalled. That window is
-/// irreducible: the call may still have opened a session at the venue, and this process does not return
-/// or remember that token.
+/// suspicion and returns without waiting: the SignalR callback that calls it must not block for an HTTP
+/// timeout. The in-flight login observes the suspicion on its re-check and discards its result. A
+/// <c>loginKey</c> request that has already been sent cannot be recalled. That window is irreducible:
+/// the call may still have opened a session at the venue, and this process does not return or remember
+/// that token.
 /// </para>
 /// </remarks>
 public sealed class SessionLoginGate
@@ -54,8 +55,10 @@ public sealed class SessionLoginGate
     public bool Suspecting => Volatile.Read(ref _suspecting) != 0;
 
     /// <summary>
-    /// A renewal validate failed. Login stays closed until a later validate succeeds. This is not the
-    /// one-way stop: <see cref="EndRenewalBackoff"/> clears it unless <see cref="StopLatched"/> is set.
+    /// A renewal validate failed while the held token was still fresh. Login stays closed until a later
+    /// validate succeeds, until validate reports a token that can never become valid, or until the held
+    /// token is inside its refresh buffer. This is not the one-way stop: <see cref="EndRenewalBackoff"/>
+    /// clears it unless <see cref="StopLatched"/> is set.
     /// </summary>
     public bool RenewalBackingOff => Volatile.Read(ref _renewalBackingOff) != 0;
 
@@ -75,17 +78,21 @@ public sealed class SessionLoginGate
     }
 
     /// <summary>
-    /// Marks a hub drop as unresolved, then waits until any in-flight login has finished its re-check.
-    /// Login stays closed while the suspicion is set. A <c>loginKey</c> already on the wire is not recalled.
+    /// Marks a hub drop as unresolved and returns. Does not wait for an in-flight login: that wait would
+    /// block the SignalR callback for the HTTP timeout. Login stays closed while the suspicion is set.
+    /// The in-flight login discards its token on the re-check after <c>loginKey</c> returns. A
+    /// <c>loginKey</c> already on the wire is not recalled.
     /// </summary>
     public void BeginSuspecting()
     {
         MarkSuspecting();
-        _login.Wait();
-        _login.Release();
+        if (_login.Wait(TimeSpan.Zero))
+        {
+            _login.Release();
+        }
     }
 
-    /// <summary>Sets the suspicion without waiting. <see cref="BeginSuspecting"/> also waits out an in-flight login.</summary>
+    /// <summary>Sets the suspicion without waiting. <see cref="BeginSuspecting"/> does not block either.</summary>
     internal void MarkSuspecting() => Interlocked.Exchange(ref _suspecting, 1);
 
     /// <summary>Closes login after a renewal validate failed. A latched stop is left latched.</summary>

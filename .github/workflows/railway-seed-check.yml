@@ -43,6 +43,7 @@ jobs:
       - name: Migrations -> SQL
         run: |
           dotnet tool install --global dotnet-ef --version 10.0.11
+          dotnet restore MarqSpec.Mcp.TopstepX.slnx
           dotnet ef migrations script --idempotent \
             --project MarqSpec.Mcp.TopstepX.Data --startup-project MarqSpec.Mcp.TopstepX -o migrations.sql
       - name: Apply migrations, seed twice, compare

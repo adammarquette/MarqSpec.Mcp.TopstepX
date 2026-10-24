@@ -645,8 +645,8 @@ public static class Program
             .ValidateDataAnnotations()
             .ValidateOnStart();
 
-        // Trading write controls (ADR-0024 v1, gh#708). The risk gate and execution gateway register here;
-        // MCP order tools are not on this branch yet (gh#713/#715). Default Trading__Enabled=false.
+        // Trading write controls (ADR-0024 v1, gh#708). Default Trading__Enabled=false. Order tools call
+        // TradingRiskGate only; the idempotency store is a singleton so a replay in this process hits.
         services.AddOptions<TradingExecutionOptions>()
             .Configure<IConfiguration>(TradingExecutionOptionsConfiguration.Bind)
             .ValidateDataAnnotations()
@@ -661,6 +661,7 @@ public static class Program
         services.AddScoped<ITradingDailyCapCoordinator, TradingDailyCapCoordinator>();
         services.AddScoped<TradingContractDenylist>();
         services.AddScoped<TradingWriteVenueAccountCache>();
+        services.AddSingleton<ITradingIdempotencyStore, InMemoryTradingIdempotencyStore>();
         services.AddScoped<TradingRiskGate>();
 
         // Under HTTP, exactly one authentication mode, complete — the token for StaticToken, the issuer,
@@ -894,6 +895,7 @@ public static class Program
         services.AddScoped<TapeTools>();
         services.AddScoped<ContractRollTools>();
         services.AddScoped<AccountTools>();
+        services.AddScoped<TradingOrderTools>();
         services.AddScoped<SnapshotTools>();
         services.AddScoped<ObservationTools>();
         services.AddScoped<SessionBarTools>();

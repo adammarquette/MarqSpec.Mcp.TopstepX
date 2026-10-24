@@ -167,7 +167,8 @@ public sealed class TradingRiskGateExecutionWriteTelemetryTests
             _audit,
             denylist,
             new TradingWriteVenueAccountCache(),
-            telemetry);
+            telemetry,
+            new InMemoryTradingIdempotencyStore(TimeProvider.System));
     }
 
     private TradingRiskGate GateWithRealGateway(
@@ -204,7 +205,8 @@ public sealed class TradingRiskGateExecutionWriteTelemetryTests
             _audit,
             denylist,
             accountCache,
-            telemetry);
+            telemetry,
+            new InMemoryTradingIdempotencyStore(TimeProvider.System));
     }
 
     private static VenueAccount PracticeAccount(IAccountStageResolver stageResolver) =>

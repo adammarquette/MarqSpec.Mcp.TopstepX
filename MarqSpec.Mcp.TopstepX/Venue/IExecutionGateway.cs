@@ -1,7 +1,7 @@
 namespace MarqSpec.Mcp.TopstepX.Venue;
 
 /// <summary>
-/// Gated venue write seam for practice v1 (ADR-0024, gh#710). MCP tools register in later issues.
+/// Gated venue write seam for practice v1 (ADR-0024, gh#710). MCP tools call TradingRiskGate, not this type.
 /// </summary>
 /// <remarks>
 /// <para>
@@ -10,9 +10,9 @@ namespace MarqSpec.Mcp.TopstepX.Venue;
 /// vendor method names when calling the client.
 /// </para>
 /// <para>
-/// Future MCP tools reach writes through <c>TradingRiskGate</c> (gh#711), not this interface directly.
-/// Direct calls emit no execution-write OpenTelemetry — <c>TradingRiskGate.RunWithTelemetry</c> owns that
-/// counter and span per ADR-0019.
+/// MCP order tools call <c>TradingRiskGate</c> (gh#750), not this interface. Direct calls emit no
+/// execution-write OpenTelemetry — <c>TradingRiskGate.RunWithTelemetry</c> owns that counter and span
+/// per ADR-0019.
 /// </para>
 /// <para>
 /// <b>Never auto-retry.</b> When <see cref="ExecutionWriteResult.Outcome"/> is

@@ -655,7 +655,10 @@ public static class Program
         services.AddSingleton<IOptionsChangeTokenSource<TradingExecutionOptions>>(
             new ConfigurationChangeTokenSource<TradingExecutionOptions>(builder.Configuration));
 
-        services.AddSingleton<TradingKillSwitch>();
+        // Two public constructors. The container treats that as ambiguous, so these factories are the ones
+        // that read IOptionsMonitor. The IOptions constructors exist for the stage tests on develop.
+        services.AddSingleton(sp => new TradingKillSwitch(
+            sp.GetRequiredService<IOptionsMonitor<TradingExecutionOptions>>()));
         services.AddSingleton<ITradingKillSwitch>(sp => sp.GetRequiredService<TradingKillSwitch>());
         // Two public constructors, both three arguments. The container treats that as ambiguous, so this
         // factory is the one that reads IOptionsMonitor. The IOptions constructor exists for the stage
@@ -668,7 +671,9 @@ public static class Program
         services.AddSingleton<IAccountStageResolver, ProjectXAccountStageResolver>();
         services.AddScoped<ITradingAuditLogWriter, TradingAuditLogWriter>();
         services.AddScoped<ITradingDailyCapCoordinator, TradingDailyCapCoordinator>();
-        services.AddScoped<TradingContractDenylist>();
+        services.AddScoped(sp => new TradingContractDenylist(
+            sp.GetRequiredService<IOptionsMonitor<TradingExecutionOptions>>(),
+            sp.GetRequiredService<InstrumentRegistry>()));
         services.AddScoped<TradingWriteVenueAccountCache>();
         services.AddScoped<TradingRiskGate>();
 

@@ -578,8 +578,11 @@ The server serves OHLCV bars for a futures instrument at a requested resolution 
   `partial_close_position` — are the venue-write surface (gh#750, gh#714, gh#715, gh#716). Each one calls
   `TradingRiskGate` only (`R-4.1`). `Trading__Enabled` defaults to false. While it is false the five tools
   are not registered, and a call that still reaches a method refuses before any vendor send, with no audit
-  row and no gateway call. The gate reads `Trading__Enabled` from the options monitor on every check, so a
-  configuration reload turns trading off without a process restart. The kill switch blocks cancel and close
+  row and no gateway call. The five tools are listed only when `Trading__Enabled` is true at process start;
+  changing that flag does not change the listing until restart. The gate reads `Trading__Enabled`, the kill
+  switch, the denylist, the allowlist and the contract caps from the options monitor on every check, so a
+  configuration reload changes them without a process restart. A reload that fails validation refuses and
+  does not keep the last good values. The kill switch blocks cancel and close
   on that same path. Every call emits the
   gate's execution-write span and counter, tagged with the operation and the refusal reason. Each tool takes
   a caller-supplied `idempotencyKey`, at most 256 characters and scoped per account and tool. A longer key
@@ -589,8 +592,10 @@ The server serves OHLCV bars for a futures instrument at a requested resolution 
   (gh#712). A refusal taken before the claim, a refusal with a different request hash, and a preview, are
   not replayed over the claim. The result carries
   `retrySafety`: `SafeToRetry`, `NotSafeToRetry`, or `OutcomeUnknown`, matching the gate. `status: Live` is
-  only a broker acknowledgment. `OutcomeUnknown` is returned only when the send may have happened. A fault
-  before the send is a retryable `error`. Size, price and partial-close checks refuse before any audit row.
+  only a broker acknowledgment. `OutcomeUnknown` is returned when the send may have happened, including a
+  bookkeeping failure after the send has started. Only a fault the gate classified as before the send is a
+  retryable `error`. Any other exception that reaches the tool is `OutcomeUnknown`. Size, price and
+  partial-close checks refuse before any audit row.
   Modify charges the full new size against the daily cap.
   Bracket fields, `confirm_trading_action` and the OAuth trade scope are outside this requirement (gh#713,
   gh#717, gh#719). The catalogue section is `R-5`'s contract for the shapes (gh#721).

@@ -1,11 +1,8 @@
 using System.ComponentModel;
-using System.Net.Http;
 using MarqSpec.Mcp.TopstepX.Configuration;
 using MarqSpec.Mcp.TopstepX.Telemetry;
 using MarqSpec.Mcp.TopstepX.Venue;
-using Microsoft.EntityFrameworkCore;
 using ModelContextProtocol.Server;
-using Npgsql;
 
 namespace MarqSpec.Mcp.TopstepX.Tools;
 
@@ -19,8 +16,8 @@ namespace MarqSpec.Mcp.TopstepX.Tools;
 /// composition root registers this type only when trading is enabled, so a disabled server does not list
 /// the tools. Each method still refuses when trading is disabled, which is the second layer if a call
 /// arrives anyway. The kill switch blocks cancel and close on the same path. There is no carve-out.
-/// A fault from a read before the send is a retryable error. <see cref="TradingAttemptOutcome.Unknown"/>
-/// is returned only when the send may already have happened.
+/// Only <see cref="GateRefusedBeforeSendException"/> is a retryable error. Every other exception is
+/// <see cref="TradingAttemptOutcome.Unknown"/>, because the send may already have happened.
 /// </remarks>
 public sealed class TradingOrderTools(TradingRiskGate gate)
 {
@@ -243,42 +240,42 @@ public sealed class TradingOrderTools(TradingRiskGate gate)
             TradingRiskGateResult result = await attempt.ConfigureAwait(false);
             return ToolPayloads.FromGate(result);
         }
-        catch (VenueException)
+        catch (GateRefusedBeforeSendException)
         {
-            return BeforeSendFault();
-        }
-        catch (HttpRequestException)
-        {
-            return BeforeSendFault();
-        }
-        catch (TimeoutException)
-        {
-            return BeforeSendFault();
-        }
-        catch (DbUpdateException)
-        {
-            return BeforeSendFault();
-        }
-        catch (NpgsqlException)
-        {
+            // The gate raises this only when the send has not started. The venue was not touched by this
+            // failure, so the caller may retry.
             return BeforeSendFault();
         }
         catch (Exception)
         {
-            // Anything that escaped the gate was a read or a store fault before the send. A throw from the
-            // send, including a timeout, is caught there and returned as OutcomeUnknown.
-            return BeforeSendFault();
+            // The send may already have started, or the fault was not classified as pre-send. A Live row can
+            // exist. SafeToRetry would let a fresh key place a second order, so this is OutcomeUnknown.
+            return UnclassifiedFault();
         }
     }
 
     /// <summary>
-    /// A read or a store fault that reached the tool happened before the send. The venue was not touched
-    /// by this failure, so the caller may retry. Database and HTTP errors stay inside this result.
+    /// A fault the gate classified as before the send. The venue was not touched by this failure, so the
+    /// caller may retry. Database and HTTP errors stay inside this result.
     /// </summary>
     private static ToolPayloads.TradingWriteResult BeforeSendFault() =>
         new(
             nameof(TradingAttemptOutcome.Refused),
             ToolPayloads.TradingRetrySafety.SafeToRetry,
+            AccountStage.Unknown,
+            ExecutionWriteRefusal.Error,
+            ResultCode: null,
+            OrderId: null);
+
+    /// <summary>
+    /// A fault the gate did not classify as before the send. Not retryable. The refusal code is
+    /// <see cref="ExecutionWriteRefusal.Error"/> so this fallback cannot be mistaken for the structured
+    /// <c>OutcomeUnknown</c> the gate returns, which carries no refusal code.
+    /// </summary>
+    private static ToolPayloads.TradingWriteResult UnclassifiedFault() =>
+        new(
+            nameof(TradingAttemptOutcome.Unknown),
+            ToolPayloads.TradingRetrySafety.OutcomeUnknown,
             AccountStage.Unknown,
             ExecutionWriteRefusal.Error,
             ResultCode: null,

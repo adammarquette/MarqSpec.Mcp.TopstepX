@@ -196,17 +196,27 @@ for bracket visibility — **read-only**, no stage gate beyond existing auth.
 Layers are ordered; an earlier refusal **must not** call the gateway for a write.
 
 1. **Master enable** — `Trading__Enabled=false` by default. The five tools are registered only when the flag
-   is true, so a disabled server does not list them. Each method still refuses when the flag is false, before
-   the vendor client, with no audit row and no gateway call. The gate reads the flag from
+   is true **at process start**, so a disabled server does not list them. Listing does not change until the
+   process restarts: turning the flag on does not register the tools, and turning it off refuses every call
+   immediately but leaves the tools listed until restart. Each method still refuses when the flag is false,
+   before the vendor client, with no audit row and no gateway call. The gate reads the flag from
    `IOptionsMonitor<TradingExecutionOptions>.CurrentValue` on every check, so a configuration reload turns
-   trading off without a process restart. A disable that lands before the idempotency claim writes no audit
+   trading off without a process restart. The same monitor is what a reload of `Trading__KillSwitch`,
+   `Trading__KillSwitchFile`, `Trading__DeniedSymbols`, `Trading__AllowedAccountIds`,
+   `Trading__MaxContractsPerOrder` and `Trading__MaxContractsPerDay` is read through. A reload that fails
+   validation throws from the options monitor rather than publishing the invalid document, and the next
+   check refuses with `trading_configuration_invalid`. The last good values are not kept. A disable
+   that lands before the idempotency claim writes no audit
    row. A disable that lands after the claim
    records the refusal and does not send. The kill switch blocks cancel and close on that same path.
    **Pending Adam:** whether a halt should keep blocking cancel and close. v1 keeps the block. A carve-out
    would be a write the switch does not cover, and v1 has no separate flatten privilege. Do not change it
    until Adam decides.
-2. **Kill switch** — env or file flag the operator can flip without redeploy; checked on every call, including
-   cancel and close. Same pending decision as the master-enable bullet.
+2. **Kill switch** — env, file, or `Trading__KillSwitch` in configuration. The environment variable and the
+   file are read on every check. The configured flag and the file path come from
+   `IOptionsMonitor<TradingExecutionOptions>.CurrentValue`, so a reload changes them without a restart and
+   retargets the watcher when the path changes. A reload that fails validation engages the switch. Checked
+   on every call, including cancel and close. Same pending decision as the master-enable bullet.
 3. **Practice-only stage gate (hard, v1)** — fresh account fetch + `ResolveStage` as §2; **cannot be overridden
    by config** in v1.
 4. **Account allowlist** — secondary: `accountId` must appear when the list is set; it does **not** bypass

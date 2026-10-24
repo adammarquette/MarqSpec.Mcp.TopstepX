@@ -196,6 +196,91 @@ public sealed class TradingExecutionGateTests
         gate.RefuseIfDisabledOrHalted().Should().Be(TradingExecutionRefusal.TradingDisabled);
     }
 
+    [Fact]
+    public void TradingKillSwitch_FollowsARealOptionsMonitorChange()
+    {
+        using ServiceProvider provider = TradingHost(out IConfigurationRoot configuration, out MemoryConfigurationProvider memory);
+        TradingKillSwitch killSwitch = provider.GetRequiredService<TradingKillSwitch>();
+        TradingExecutionGate gate = provider.GetRequiredService<TradingExecutionGate>();
+
+        killSwitch.IsEngaged.Should().BeFalse();
+        gate.RefuseIfDisabledOrHalted().Should().BeNull();
+
+        memory.Set("Trading:KillSwitch", "true");
+        configuration.Reload();
+
+        killSwitch.IsEngaged.Should().BeTrue();
+        gate.RefuseIfDisabledOrHalted().Should().Be(TradingExecutionRefusal.KillSwitchEngaged);
+    }
+
+    [Fact]
+    public void TradingContractDenylist_FollowsARealOptionsMonitorChange()
+    {
+        using ServiceProvider provider = TradingHost(out IConfigurationRoot configuration, out MemoryConfigurationProvider memory);
+        using IServiceScope scope = provider.CreateScope();
+        TradingContractDenylist denylist = scope.ServiceProvider.GetRequiredService<TradingContractDenylist>();
+
+        denylist.RefuseIfContractDenied("CON.F.US.MES.Z26").Should().BeNull();
+
+        memory.Set("Trading:DeniedSymbols", "MES");
+        configuration.Reload();
+
+        denylist.RefuseIfContractDenied("CON.F.US.MES.Z26")
+            .Should().Be(TradingExecutionRefusal.SymbolDenied("MES"));
+    }
+
+    [Fact]
+    public void TradingExecutionGate_InvalidReload_FailsClosed()
+    {
+        using ServiceProvider provider = TradingHost(out IConfigurationRoot configuration, out MemoryConfigurationProvider memory);
+        using IServiceScope scope = provider.CreateScope();
+        TradingExecutionGate gate = provider.GetRequiredService<TradingExecutionGate>();
+        TradingContractDenylist denylist = scope.ServiceProvider.GetRequiredService<TradingContractDenylist>();
+
+        gate.RefuseIfDisabledOrHalted().Should().BeNull();
+
+        memory.Set("Trading:MaxContractsPerOrder", "0");
+        FluentActions.Invoking(configuration.Reload)
+            .Should().Throw<AggregateException>()
+            .Which.Flatten().InnerExceptions.Should().Contain(exception =>
+                exception is OptionsValidationException);
+
+        TradingExecutionRefusal refusal = gate.RefuseIfDisabledOrHalted()
+            ?? throw new InvalidOperationException("an invalid reload should refuse");
+        refusal.Code.Should().Be("trading_configuration_invalid");
+        refusal.Message.Should().Be(
+            "Trading configuration failed validation. The last good values are not kept.");
+        gate.RefuseIfDisabledOrHalted().Should().Be(refusal);
+
+        TradingExecutionRefusal denied = denylist.RefuseIfContractDenied("CON.F.US.MES.Z26")
+            ?? throw new InvalidOperationException("an invalid reload should refuse the denylist");
+        denied.Code.Should().Be("trading_configuration_invalid");
+    }
+
+    private static ServiceProvider TradingHost(
+        out IConfigurationRoot configuration,
+        out MemoryConfigurationProvider memory)
+    {
+        Dictionary<string, string?> settings = new()
+        {
+            ["ConnectionStrings:Default"] = "Host=localhost;Database=x;Username=u;Password=p",
+            ["MarketData:Instruments"] = "ES,NQ,MES",
+            ["MarketData:SessionCloseCentral"] = "16:00",
+            ["MarketData:MaxRows"] = "5000",
+            ["Trading:Enabled"] = "true",
+            ["Trading:AllowedAccountIds"] = "1",
+            ["Trading:KillSwitch"] = "false",
+            ["Trading:DeniedSymbols"] = "",
+        };
+        WebApplicationBuilder builder = WebApplication.CreateBuilder();
+        builder.Configuration.AddInMemoryCollection(settings);
+        Program.ConfigureServices(builder, new McpOptions { Transport = McpTransport.Stdio });
+        ServiceProvider provider = builder.Services.BuildServiceProvider();
+        configuration = builder.Configuration;
+        memory = configuration.Providers.OfType<MemoryConfigurationProvider>().Last();
+        return provider;
+    }
+
     /// <summary>Kill switch refuses before any account fetch.</summary>
     [Fact]
     [Trait("Gate", "ADR-0024")]

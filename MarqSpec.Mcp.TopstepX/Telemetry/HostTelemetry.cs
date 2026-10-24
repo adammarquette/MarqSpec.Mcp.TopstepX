@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Diagnostics.Metrics;
 using MarqSpec.Mcp.TopstepX.Configuration;
 using MarqSpec.Mcp.TopstepX.MarketData;
+using Microsoft.Extensions.Logging;
 
 namespace MarqSpec.Mcp.TopstepX.Telemetry;
 
@@ -86,6 +87,15 @@ public sealed class HostTelemetry : IDisposable
     /// <summary>One gated execution write, refused or transmitted (ADR-0024, gh#710).</summary>
     public const string ExecutionWritesInstrument = "mcp.execution.writes";
 
+    /// <summary>
+    /// A bookkeeping failure after a trading attempt: the daily-cap unlock or the execution-write telemetry
+    /// itself. Untagged. It must not decide the trading outcome (gh#750).
+    /// </summary>
+    public const string BookkeepingFaultsInstrument = "mcp.execution.bookkeeping.faults";
+
+    /// <summary>Logged when bookkeeping fails. Constant, so a connection string cannot land in the line.</summary>
+    private const string BookkeepingFaultMessage = "Trading bookkeeping failed.";
+
     /// <summary>Which cache-aside series a read was of. Values: <see cref="CacheSeries"/>.</summary>
     public const string SeriesTag = "series";
 
@@ -145,16 +155,20 @@ public sealed class HostTelemetry : IDisposable
     private readonly Counter<long> _tapeLeaseChanges;
     private readonly Counter<long> _indicatorProjections;
     private readonly Counter<long> _executionWrites;
+    private readonly Counter<long> _bookkeepingFaults;
+    private readonly ILogger<HostTelemetry>? _logger;
 
     /// <summary>Creates the meter and the activity source.</summary>
+    /// <param name="logger">Optional. A bookkeeping failure logs one constant line through it.</param>
     /// <remarks>
     /// <b>The meter carries this instance as its <c>Scope</c>.</b> That is what lets a test collect from the
     /// instance it built rather than from every meter in the process that happens to share the name — the
     /// unit tier constructs one of these per test, and without a scope <c>MetricCollector</c> would match
     /// them all and read a number another test produced.
     /// </remarks>
-    public HostTelemetry()
+    public HostTelemetry(ILogger<HostTelemetry>? logger = null)
     {
+        _logger = logger;
         _meter = new Meter(new MeterOptions(Name) { Scope = this });
         Activities = new ActivitySource(Name);
 
@@ -202,6 +216,28 @@ public sealed class HostTelemetry : IDisposable
             ExecutionWritesInstrument,
             unit: "{write}",
             description: "Gated execution writes, by operation and by refusal reason.");
+
+        _bookkeepingFaults = _meter.CreateCounter<long>(
+            BookkeepingFaultsInstrument,
+            unit: "{fault}",
+            description: "Daily-cap unlock or execution-write telemetry failures. Untagged.");
+    }
+
+    /// <summary>
+    /// Counts one bookkeeping failure and logs a constant line. Never throws: a listener on this counter
+    /// must not replace the trading outcome.
+    /// </summary>
+    public void RecordBookkeepingFault()
+    {
+        try
+        {
+            _logger?.LogError(BookkeepingFaultMessage);
+            _bookkeepingFaults.Add(1);
+        }
+        catch (Exception)
+        {
+            // The count is the signal. A listener that throws while it is recorded must not escape.
+        }
     }
 
     /// <summary>The spans this repository names. Children of the SDK's <c>tools/call</c> span.</summary>
@@ -543,6 +579,12 @@ public sealed class HostTelemetry : IDisposable
         /// </summary>
         public void MarkReplay() => _replay = ExecutionWriteReplay.True;
 
+        /// <summary>
+        /// True when closing this scope threw. The gate reads it after dispose. Disposal itself does not
+        /// throw and does not replace the trading result.
+        /// </summary>
+        public bool BookkeepingFailed { get; private set; }
+
         /// <inheritdoc />
         public void Dispose()
         {
@@ -553,17 +595,27 @@ public sealed class HostTelemetry : IDisposable
 
             _closed = true;
 
-            string refusal = _refusal ?? ExecutionWriteRefusal.Error;
-            _span?.SetTag(RefusalTag, refusal);
-            _span?.SetTag(ReplayTag, _replay);
+            try
+            {
+                string refusal = _refusal ?? ExecutionWriteRefusal.Error;
+                _span?.SetTag(RefusalTag, refusal);
+                _span?.SetTag(ReplayTag, _replay);
 
-            _telemetry._executionWrites.Add(
-                1,
-                new KeyValuePair<string, object?>(OperationTag, _operation),
-                new KeyValuePair<string, object?>(RefusalTag, refusal),
-                new KeyValuePair<string, object?>(ReplayTag, _replay));
+                _telemetry._executionWrites.Add(
+                    1,
+                    new KeyValuePair<string, object?>(OperationTag, _operation),
+                    new KeyValuePair<string, object?>(RefusalTag, refusal),
+                    new KeyValuePair<string, object?>(ReplayTag, _replay));
 
-            _span?.Dispose();
+                _span?.Dispose();
+            }
+            catch (Exception)
+            {
+                // A synchronous MeterListener or ActivityListener runs on this thread. It must not escape:
+                // the trading result is already decided, and a throw here used to become SafeToRetry.
+                BookkeepingFailed = true;
+                _telemetry.RecordBookkeepingFault();
+            }
         }
     }
 }

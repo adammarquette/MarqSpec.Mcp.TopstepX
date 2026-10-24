@@ -581,6 +581,64 @@ public sealed class TradingOrderToolGateTests
         _gateway.PlaceOrderCalls.Should().Be(0);
     }
 
+    [Fact]
+    public async Task TradingRiskGate_PlaceOrder_ThrowingUnlockAfterAck_ReturnsOutcomeUnknown()
+    {
+        _gateway.Next = Acknowledged(77);
+        _daily.ThrowOnDispose = true;
+        using HostTelemetry telemetry = new();
+        using MetricCollector<long> faults = ListenFaults(telemetry);
+        TradingOrderTools tools = Tools(telemetry, new TradingExecutionOptions { Enabled = true });
+
+        ToolPayloads.TradingWriteResult result = await tools.SubmitPlace(
+            PracticeAccountId,
+            MesContract,
+            ExecutionOrderType.Market,
+            VenueSide.Buy,
+            1,
+            "unlock-after-ack");
+
+        result.Status.Should().Be(nameof(TradingAttemptOutcome.Unknown));
+        result.RetrySafety.Should().Be(ToolPayloads.TradingRetrySafety.OutcomeUnknown);
+        result.RefusalCode.Should().BeNull();
+        result.OrderId.Should().BeNull();
+        _gateway.PlaceOrderCalls.Should().Be(1);
+        _audit.Entries.Should().Contain(entry => entry.Outcome == TradingAuditOutcomes.Live);
+        faults.LastMeasurement!.Value.Should().Be(1);
+    }
+
+    [Fact]
+    public async Task TradingRiskGate_PlaceOrder_ThrowingSpanListenerAfterAck_ReturnsOutcomeUnknown()
+    {
+        _gateway.Next = Acknowledged(77);
+        using HostTelemetry telemetry = new();
+        using MetricCollector<long> faults = ListenFaults(telemetry);
+        using ActivityListener listener = new()
+        {
+            ShouldListenTo = source => ReferenceEquals(source, telemetry.Activities),
+            Sample = (ref ActivityCreationOptions<ActivityContext> _) => ActivitySamplingResult.AllDataAndRecorded,
+            ActivityStopped = _ => throw new InvalidOperationException("span listener failed"),
+        };
+        ActivitySource.AddActivityListener(listener);
+        TradingOrderTools tools = Tools(telemetry, new TradingExecutionOptions { Enabled = true });
+
+        ToolPayloads.TradingWriteResult result = await tools.SubmitPlace(
+            PracticeAccountId,
+            MesContract,
+            ExecutionOrderType.Market,
+            VenueSide.Buy,
+            1,
+            "span-after-ack");
+
+        result.Status.Should().Be(nameof(TradingAttemptOutcome.Unknown));
+        result.RetrySafety.Should().Be(ToolPayloads.TradingRetrySafety.OutcomeUnknown);
+        result.RefusalCode.Should().BeNull();
+        result.OrderId.Should().BeNull();
+        _gateway.PlaceOrderCalls.Should().Be(1);
+        _audit.Entries.Should().Contain(entry => entry.Outcome == TradingAuditOutcomes.Live);
+        faults.LastMeasurement!.Value.Should().Be(1);
+    }
+
     [Theory]
     [InlineData(0)]
     [InlineData(-2)]
@@ -998,6 +1056,9 @@ public sealed class TradingOrderToolGateTests
     private static MetricCollector<long> ListenWrites(HostTelemetry telemetry) =>
         new(telemetry, HostTelemetry.Name, HostTelemetry.ExecutionWritesInstrument);
 
+    private static MetricCollector<long> ListenFaults(HostTelemetry telemetry) =>
+        new(telemetry, HostTelemetry.Name, HostTelemetry.BookkeepingFaultsInstrument);
+
     private static void AssertWrite(
         MetricCollector<long> writes,
         IReadOnlyList<Activity> spans,
@@ -1160,10 +1221,12 @@ public sealed class TradingOrderToolGateTests
 
         public int ContractsToday { get; set; }
 
+        public bool ThrowOnDispose { get; set; }
+
         public Task<IAsyncDisposable> AcquireAccountDayLockAsync(int accountId, CancellationToken cancellationToken)
         {
             LockAcquisitions++;
-            return Task.FromResult<IAsyncDisposable>(new NoopLock());
+            return Task.FromResult<IAsyncDisposable>(new NoopLock(ThrowOnDispose));
         }
 
         public Task<int> GetConservativeContractTotalTodayUtcAsync(
@@ -1171,9 +1234,12 @@ public sealed class TradingOrderToolGateTests
             CancellationToken cancellationToken) =>
             Task.FromResult(ContractsToday);
 
-        private sealed class NoopLock : IAsyncDisposable
+        private sealed class NoopLock(bool throwOnDispose) : IAsyncDisposable
         {
-            public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+            public ValueTask DisposeAsync() =>
+                throwOnDispose
+                    ? throw new InvalidOperationException("advisory unlock failed")
+                    : ValueTask.CompletedTask;
         }
     }
 

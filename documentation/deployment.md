@@ -102,11 +102,29 @@ until #765 merges.
   it may only be `ctx.shared.TAPE_EXPORT_DRIVE_SERVICE_ACCOUNT_JSON`, and the check prints a `drive-json-inline`
   warning. The Drive scope is `drive.file`, so `TapeExport__Drive__FolderId` must be a folder the service account
   itself created; a folder shared with it is not reachable.
+- **Where the Drive key file lives on Railway (when enabled).** Railway has no secret-file mount, and it allows
+  **one volume per service**, so the key has to sit on the recorder's export volume, but outside
+  `TapeExport__Path` so it can never be swept into an export. The plan for #767's PR is to mount the volume at
+  `/data`, keep `TapeExport__Path=/data/tape-exports`, and put the key at
+  `TapeExport__Drive__ServiceAccountJsonPath=/data/keys/drive-sa.json`. The file is mode `0400` and the
+  directory `0700`, both owned by `64198:64198`. It is placed once over `railway ssh` from stdin, never through a
+  variable or the repo, and it persists on the volume. Rotation replaces the file the same way. Until #767, the
+  check fails any export-on setup (`[export-blocked]`, flipped by `EXPORT_UNBLOCKED` in `evaluate-template.mjs`).
 - The export worker (PR #765 at a186a62) runs only on `TapeExport__Schedule`, while it holds the recorder lease,
   with no pass at startup. Export therefore stays with the recorder, even across a two-recorder overlap.
+- Trading keys: only `TradingExecutionOptions`' seven names are allowed. `MaxContractsPerOrder` is 1..5 and
+  `MaxContractsPerDay` 1..50; these are the code defaults, deliberately tighter than its `[Range]`. Values may not
+  carry leading or trailing whitespace, `POSTGRES_HOST_AUTH_METHOD=trust` is refused in any spelling, and
+  `Store__StartupWaitSeconds` must be plain decimal digits.
 - The check already enforces that shape: only the seven contract names; Format `csv.gz+parquet`; absolute Path and
   JsonPath; Schedule HH:mm; Drive JSON a shared reference only; at most one exporter or export volume, and it is the
   recorder; in production, export on means the whole shape at once; outside production, off with no Drive keys.
+
+**One server replica, one region (gh#772).** Until two sessions or replicas trading one account is decided, the
+check (`[single-server]`) requires `server` to state exactly one replica (`numReplicas: 1`), in every environment,
+with no multi-region config. SDK 3.16.0 expresses scale only as `replicas` / `regions`, which compile to
+`deploy.numReplicas` / `deploy.multiRegionConfig`. It has no autoscaling field, so there is none to pin. A replica
+count or region changed in the dashboard after a deploy is invisible to CI.
 
 **Variable names are checked the way .NET reads them (r3).** .NET configuration keys are case-insensitive and
 treat `:` like `__`, but env names on Linux are case-sensitive, so `TRADING__ENABLED=true` beside

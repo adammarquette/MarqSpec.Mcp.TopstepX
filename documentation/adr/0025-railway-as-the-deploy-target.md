@@ -61,6 +61,9 @@ front of a plaintext `8080` listener and health-checked `/health`. On Railway:
   startup pass), so export is recorder-only. Drive uses the `drive.file` scope, so `TapeExport__Drive__FolderId`
   must be a folder the service account created. Prefer `TapeExport__Drive__ServiceAccountJsonPath`; inline
   `ServiceAccountJson` is visible to anyone who can inspect the container, and is shared-reference-only if used.
+  Railway has no secret-file mount and one volume per service, so the key file goes on the recorder's volume
+  outside `TapeExport__Path`: the volume is mounted at `/data`, and the key is `/data/keys/drive-sa.json`, mode 0400,
+  owned by 64198 (deployment.md). CI blocks any export-on setup until #767 flips `EXPORT_UNBLOCKED`.
 
 - **Postgres verification:** on the first (manual) production deploy, `initdb` succeeds on the volume, and
   one restart keeps the data.

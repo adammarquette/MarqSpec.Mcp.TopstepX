@@ -200,6 +200,67 @@ expect reject template base-url-arbitrary 'ProjectX__BaseUrl: "https://api.topst
 expect reject template plaintext-port-cleared 'ASPNETCORE_HTTP_PORTS: "8080"' 'ASPNETCORE_HTTP_PORTS: ""'
 expect reject template aspnetcore-urls-set 'ASPNETCORE_HTTP_PORTS: "8080",' 'ASPNETCORE_HTTP_PORTS: "8080", ASPNETCORE_URLS: "http://+:5000",'
 expect reject template https-ports-set 'ASPNETCORE_HTTP_PORTS: "8080",' 'ASPNETCORE_HTTP_PORTS: "8080", ASPNETCORE_HTTPS_PORTS: "",'
+NAMED='[export-blocked]' expect reject template r3-root-recorder-restored \
+  'const pgdata = production ? volume("postgres-data", { sizeMB: 10240 }) : undefined;' 'const pgdata = production ? volume("postgres-data", { sizeMB: 10240 }) : undefined;
+  const exports = production ? volume("tape-exports", { sizeMB: 10240 }) : undefined;' \
+  'resources: [postgres, server, recorder, ...(pgdata ? [pgdata] : [])]' 'resources: [postgres, server, recorder, ...(pgdata ? [pgdata] : []), ...(exports ? [exports] : [])]' \
+  'replicas: 1,
+    deploy: {
+      ...RESTART,' '...(exports ? { volumeMounts: { "/data/tape-exports": exports } } : {}),
+    replicas: 1,
+    deploy: {
+      ...RESTART,' \
+  'TapeExport__Enabled: "false",' 'TapeExport__Enabled: production ? "true" : "false",
+      ...(production ? { TapeExport__Schedule: "06:00", TapeExport__Path: "/data/tape-exports", TapeExport__Format: "csv.gz+parquet", RAILWAY_RUN_UID: "0" } : {}),'
+NAMED='[export-blocked]' expect reject template export-volume-only-blocked \
+  'const pgdata = production ? volume("postgres-data", { sizeMB: 10240 }) : undefined;' 'const pgdata = production ? volume("postgres-data", { sizeMB: 10240 }) : undefined;
+  const exports = production ? volume("tape-exports", { sizeMB: 10240 }) : undefined;' \
+  'resources: [postgres, server, recorder, ...(pgdata ? [pgdata] : [])]' 'resources: [postgres, server, recorder, ...(pgdata ? [pgdata] : []), ...(exports ? [exports] : [])]' \
+  'replicas: 1,
+    deploy: {
+      ...RESTART,' '...(exports ? { volumeMounts: { "/data/tape-exports": exports } } : {}),
+    replicas: 1,
+    deploy: {
+      ...RESTART,'
+NAMED='[export-blocked]' expect reject template export-on-blocked 'TapeExport__Enabled: "false",' 'TapeExport__Enabled: production ? "true" : "false",'
+NAMED='[export-blocked]' expect reject template recorder-run-uid-blocked 'TapeExport__Enabled: "false",' 'TapeExport__Enabled: "false", RAILWAY_RUN_UID: "0",'
+# --- r4: Trading__* allowlist and bounds, whitespace, trust, plain-digit wait ---
+expect reject template trading-max-per-order-1000 'Trading__Enabled: "false",' 'Trading__Enabled: "false", Trading__MaxContractsPerOrder: "1000",'
+expect reject template trading-max-per-order-6 'Trading__Enabled: "false",' 'Trading__Enabled: "false", Trading__MaxContractsPerOrder: "6",'
+expect accept template trading-max-per-order-5 'Trading__Enabled: "false",' 'Trading__Enabled: "false", Trading__MaxContractsPerOrder: "5",'
+expect reject template trading-max-per-day-51 'Trading__Enabled: "false",' 'Trading__Enabled: "false", Trading__MaxContractsPerDay: "51",'
+expect reject template trading-max-per-day-zero 'Trading__Enabled: "false",' 'Trading__Enabled: "false", Trading__MaxContractsPerDay: "0",'
+expect accept template trading-max-per-day-50 'Trading__Enabled: "false",' 'Trading__Enabled: "false", Trading__MaxContractsPerDay: "50",'
+expect reject template trading-unknown-key 'Trading__Enabled: "false",' 'Trading__Enabled: "false", Trading__Mode: "live",'
+expect reject template trading-indexed-allowed-ids 'Trading__Enabled: "false",' 'Trading__Enabled: "false", Trading__AllowedAccountIds__0: "12345",'
+expect reject template trading-killswitch-file-relative 'Trading__Enabled: "false",' 'Trading__Enabled: "false", Trading__KillSwitchFile: "kill",'
+expect reject template trading-denied-symbols-junk 'Trading__Enabled: "false",' 'Trading__Enabled: "false", Trading__DeniedSymbols: "MNQ; rm",'
+expect accept template trading-denied-symbols-ok 'Trading__Enabled: "false",' 'Trading__Enabled: "false", Trading__DeniedSymbols: "MNQ,MES",'
+expect reject template trading-allowed-ids-junk 'Trading__AllowedAccountIds: "",' 'Trading__AllowedAccountIds: "all",'
+expect reject template postgres-trust-leading-space 'RAILWAY_RUN_UID: "0",' 'RAILWAY_RUN_UID: "0", POSTGRES_HOST_AUTH_METHOD: " trust",'
+expect reject template postgres-trust-upper 'RAILWAY_RUN_UID: "0",' 'RAILWAY_RUN_UID: "0", POSTGRES_HOST_AUTH_METHOD: "TRUST",'
+expect reject template value-trailing-space 'Trading__Enabled: "false",' 'Trading__Enabled: "false", Otel__Exporter: "otlp ",'
+expect reject template startup-wait-hex 'Store__StartupWaitSeconds: "90"' 'Store__StartupWaitSeconds: "0x5A"'
+expect reject template startup-wait-exponent 'Store__StartupWaitSeconds: "90"' 'Store__StartupWaitSeconds: "9e1"'
+expect reject template startup-wait-padded 'Store__StartupWaitSeconds: "90"' 'Store__StartupWaitSeconds: " 90"'
+# --- gh#772: exactly one server replica, no multi-region, in every environment ---
+NAMED='[single-server]' expect reject template server-two-replicas 'replicas: 1,
+    deploy: { ...RESTART },' 'replicas: 2,
+    deploy: { ...RESTART },'
+NAMED='[single-server]' expect reject template server-replicas-omitted 'replicas: 1,
+    deploy: { ...RESTART },' 'deploy: { ...RESTART },'
+NAMED='[single-server]' expect reject template server-two-replicas-in-production 'replicas: 1,
+    deploy: { ...RESTART },' 'replicas: ctx.environment === "production" ? 2 : 1,
+    deploy: { ...RESTART },'
+NAMED='[single-server]' expect reject template server-multi-region 'replicas: 1,
+    deploy: { ...RESTART },' 'regions: { "us-west2": 1, "europe-west4": 1 },
+    deploy: { ...RESTART },'
+NAMED='[single-server]' expect reject template server-per-region-replicas 'replicas: 1,
+    deploy: { ...RESTART },' 'replicas: { "us-west2": 1, "us-east4": 1 },
+    deploy: { ...RESTART },'
+expect reject template server-deploy-num-replicas 'replicas: 1,
+    deploy: { ...RESTART },' 'replicas: 1,
+    deploy: { ...RESTART, numReplicas: 3 },'
 expect reject template startup-wait-zero 'Store__StartupWaitSeconds: "90"' 'Store__StartupWaitSeconds: "0"'
 expect reject template restart-retries-zero 'restartPolicyMaxRetries: 10 }' 'restartPolicyMaxRetries: 0 }'
 expect reject template server-records-tape 'MarketData__RecordTape: "false"' 'MarketData__RecordTape: "true"'

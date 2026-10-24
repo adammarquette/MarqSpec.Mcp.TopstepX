@@ -235,6 +235,7 @@ public sealed class CompositionRootTests
     [InlineData(typeof(ObservationTools))]
     [InlineData(typeof(SessionBarTools))]
     [InlineData(typeof(SessionIndicatorTools))]
+    [InlineData(typeof(RecorderHealthTools))]
     public void EveryToolTypeCanBeResolvedFromARequestScope(Type toolType)
     {
         // The MCP SDK activates a tool type per call from the request scope, and it resolves constructor

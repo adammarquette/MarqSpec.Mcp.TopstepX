@@ -594,6 +594,17 @@ The server serves OHLCV bars for a futures instrument at a requested resolution 
   Modify charges the full new size against the daily cap.
   Bracket fields, `confirm_trading_action` and the OAuth trade scope are outside this requirement (gh#713,
   gh#717, gh#719). The catalogue section is `R-5`'s contract for the shapes (gh#721).
+- **R-5.13** **`get_recorder_health`** and **`GET /health/recorder`** return the same payload, and the HTTP
+  path stays behind the bearer gate (gh#756). `feedConnected` is true only when the market-data hub is up —
+  listening, or connected and not yet subscribed. `feed` is the process-wide `TapeUnavailableReason` name.
+  `database` is `Available` or `Unavailable` from a live probe that does not replace the startup
+  `StoreAvailability` the other tools use. `lastTickUtc` is omitted when no print is stored for that
+  contract. `gaps` are the `TapeCoverage` holes in the elapsed portion of the current product session, or of
+  the session that most recently closed when the market is shut. An open listen counts through the report
+  instant only while that instrument is listening; a still-open row while it is not listening is not
+  coverage. `gaps` is omitted when the ledger could not be read — an empty array means the window is
+  covered. A missing print time is omitted, never substituted. The endpoint is not the liveness probe: a
+  down feed is still HTTP 200, and `/health` stays the one unauthenticated path. The tool only reads.
 
 ## R-6 — Observations
 

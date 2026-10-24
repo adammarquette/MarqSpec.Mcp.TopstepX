@@ -42,6 +42,10 @@ namespace MarqSpec.Mcp.TopstepX.Configuration;
 /// <b>Nothing about the venue, the token or the connection string appears in the body.</b> This is the only
 /// thing on the server reachable with no credential, and THIS REPOSITORY IS PUBLIC.
 /// </para>
+/// <para>
+/// <b><c>GET /health/recorder</c> is not this probe.</b> It is a mapped endpoint behind the gate
+/// (R-5.13, gh#756). A prefix match here would hand that report out with no credential.
+/// </para>
 /// </remarks>
 public static class HealthEndpoint
 {

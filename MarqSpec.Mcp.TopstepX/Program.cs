@@ -142,7 +142,8 @@ public static class Program
         // BEFORE MapMcp, so the gate sits in front of the endpoint rather than beside it. Options validation
         // already refuses to start the HTTP transport with no mode configured, or with both; this is what
         // makes that requirement mean something at request time (ADR-0007). The gate is global in both
-        // modes, and the only things past it are the terminal branches above it.
+        // modes. The terminal branches above it are the only unauthenticated paths. Endpoints mapped after
+        // it — `/mcp` and `GET /health/recorder` — stay behind it.
         if (mcp.Auth.Mode == McpAuthMode.OAuth)
         {
             // The RFC 9728 document the 401 names; a connector reads it before it has a token, so it is the
@@ -156,6 +157,12 @@ public static class Program
         }
 
         app.MapMcp(McpOptions.McpEndpointPath);
+
+        // AFTER the gate, and a mapped endpoint rather than a terminal branch, so it stays authenticated.
+        // `/health` is the probe and reaches nothing. This path opens a database connection, which is why
+        // it is not on the 30 s probe, and it is worth a span: IsTraced excludes only the exact probe path
+        // (gh#756, R-5.13).
+        app.MapRecorderHealth();
     }
 
     /// <summary>Runs the built host, treating a shutdown asked for during startup as a shutdown.</summary>
@@ -908,6 +915,15 @@ public static class Program
         services.AddScoped<ObservationTools>();
         services.AddScoped<SessionBarTools>();
         services.AddScoped<SessionIndicatorTools>();
+
+        // The recorder report (gh#756). The store is scoped because it takes the DbContext; the tool and the
+        // HTTP endpoint both resolve the service, so it has to be registered — ActivatorUtilities does not
+        // construct an unregistered dependency, and the endpoint's MapGet has the same rule.
+        services.AddScoped<EfRecorderHealthStore>();
+        services.AddScoped<IRecorderHealthStore>(static provider =>
+            provider.GetRequiredService<EfRecorderHealthStore>());
+        services.AddScoped<RecorderHealthService>();
+        services.AddScoped<RecorderHealthTools>();
 
         // One registration, one tool set, two ways in (ADR-0007). The transport is the only thing that
         // differs, and it is chosen here rather than by a second AddMcpServer call — registering the server

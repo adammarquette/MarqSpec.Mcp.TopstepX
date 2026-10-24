@@ -80,6 +80,9 @@ public sealed class HostTelemetry : IDisposable
     /// <summary>A tape-claim hand-off (ADR-0016).</summary>
     public const string TapeLeaseChangesInstrument = "mcp.tape.lease.changes";
 
+    /// <summary>One recorder-health report (gh#756, R-5.13).</summary>
+    public const string RecorderHealthReadsInstrument = "mcp.recorder.health.reads";
+
     /// <summary>Indicator values a projection pass wrote.</summary>
     public const string IndicatorProjectionsInstrument = "mcp.indicator.projections";
 
@@ -143,6 +146,7 @@ public sealed class HostTelemetry : IDisposable
     private readonly Counter<long> _tapeTicks;
     private readonly Counter<long> _tapeReconnects;
     private readonly Counter<long> _tapeLeaseChanges;
+    private readonly Counter<long> _recorderHealthReads;
     private readonly Counter<long> _indicatorProjections;
     private readonly Counter<long> _executionWrites;
 
@@ -192,6 +196,11 @@ public sealed class HostTelemetry : IDisposable
             TapeLeaseChangesInstrument,
             unit: "{change}",
             description: "Tape-claim hand-offs, by instrument and by what happened to the claim.");
+
+        _recorderHealthReads = _meter.CreateCounter<long>(
+            RecorderHealthReadsInstrument,
+            unit: "{read}",
+            description: "Recorder-health reports, by whether the recorder was ok, degraded or unavailable.");
 
         _indicatorProjections = _meter.CreateCounter<long>(
             IndicatorProjectionsInstrument,
@@ -390,6 +399,16 @@ public sealed class HostTelemetry : IDisposable
             1,
             new KeyValuePair<string, object?>(SymbolTag, symbol),
             new KeyValuePair<string, object?>(ChangeTag, change));
+
+    /// <summary>Counts one recorder-health report.</summary>
+    /// <param name="outcome">What the report found, from <see cref="RecorderHealthOutcome"/>.</param>
+    /// <remarks>
+    /// Once per report that was actually built. Cancellation records nothing: a poll that gave up is not a
+    /// statement about the recorder. Not tagged by symbol or contract — one hub, one number, or the series
+    /// splits by however many instruments the deployment happens to list.
+    /// </remarks>
+    public void RecorderHealthRead(string outcome) =>
+        _recorderHealthReads.Add(1, new KeyValuePair<string, object?>(OutcomeTag, outcome));
 
     /// <summary>Counts the values a projection pass wrote for one indicator.</summary>
     /// <param name="indicator">The indicator's stable lowercase name.</param>
@@ -838,4 +857,26 @@ public static class TapeLeaseChange
 
     /// <summary>Every value.</summary>
     public static IReadOnlyList<string> All { get; } = [Acquired, Refused, Lost];
+}
+
+/// <summary>
+/// What a recorder-health report found — the <c>outcome</c> tag on <c>mcp.recorder.health.reads</c>.
+/// </summary>
+/// <remarks>
+/// The tag key is the one <see cref="HostTelemetry.OutcomeTag"/> already declares. These values are this
+/// instrument's vocabulary, not the cache hit/miss/partial set (gh#756).
+/// </remarks>
+public static class RecorderHealthOutcome
+{
+    /// <summary>The hub is up, every reported contract is listening, and the elapsed session has no hole.</summary>
+    public const string Ok = "ok";
+
+    /// <summary>The report was readable and the recorder is not fully healthy, or the session could not be named.</summary>
+    public const string Degraded = "degraded";
+
+    /// <summary>The database did not answer, so the ledger is unknown.</summary>
+    public const string Unavailable = "unavailable";
+
+    /// <summary>Every value.</summary>
+    public static IReadOnlyList<string> All { get; } = [Ok, Degraded, Unavailable];
 }

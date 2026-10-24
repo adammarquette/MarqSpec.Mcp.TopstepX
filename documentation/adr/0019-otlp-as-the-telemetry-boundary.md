@@ -392,7 +392,8 @@ documented validate error) or `api` (`POST /api/Auth/validate` returned `Invalid
 `SessionNotFound`, or HTTP 401). The span
 is `tape.session_conflict`, tagged with `source` only. The vendor's close sentence is not a tag and
 not a span attribute: it is free text, a new series per distinct sentence, and a place a credential
-can land. The names join the stable surface above; the 2026-09-06 list is the set as it was that day.
+can land. The venue client can still write that sentence to its own log when its code runs; this
+repository does not copy it. The names join the stable surface above; the 2026-09-06 list is the set as it was that day.
 
 ## Follow-ups
 

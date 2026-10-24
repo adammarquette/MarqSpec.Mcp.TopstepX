@@ -20,8 +20,8 @@ namespace MarqSpec.Mcp.TopstepX.MarketData;
 /// No fresh token, a timeout, an expired-token code, an unknown code, or a call that does not land is
 /// <see cref="SessionProbeVerdict.Inconclusive"/> and does not log in. HTTP 401 is
 /// <see cref="SessionProbeVerdict.Conflict"/>: the bearer was refused, which is the same practical outcome
-/// as a killed session. A <c>newToken</c> on a valid body is remembered and never logged. The response
-/// body is not logged.
+/// as a killed session. A valid body stores <c>newToken</c> when one is present, and otherwise stores the
+/// same bearer again so the 55-minute window slides. The token and the response body are not logged.
 /// </para>
 /// </remarks>
 public sealed class ProjectXSessionConflictProbe : ISessionConflictProbe
@@ -58,15 +58,37 @@ public sealed class ProjectXSessionConflictProbe : ISessionConflictProbe
     }
 
     /// <inheritdoc />
-    public async Task<SessionProbeVerdict> ProbeAsync(CancellationToken cancellationToken)
+    public Task<SessionProbeVerdict> ProbeAsync(CancellationToken cancellationToken)
     {
         if (!_held.TryReadFresh(_clock.GetUtcNow(), out string token))
         {
             _logger.LogWarning(
                 "The session probe has no fresh TopstepX token to validate. The result is inconclusive, and this process will not call loginKey.");
-            return SessionProbeVerdict.Inconclusive;
+            return Task.FromResult(SessionProbeVerdict.Inconclusive);
         }
 
+        return ValidateBearerAsync(token, cancellationToken);
+    }
+
+    /// <summary>
+    /// Posts validate with whatever bearer is held, including one inside the client's refresh buffer.
+    /// The renewal loop uses this so a quiet process does not call <c>loginKey</c> at about 54 minutes.
+    /// No held token is inconclusive and does not log in.
+    /// </summary>
+    /// <param name="cancellationToken">The stopping token.</param>
+    /// <returns>What validate could decide.</returns>
+    public Task<SessionProbeVerdict> ValidateHeldTokenAsync(CancellationToken cancellationToken)
+    {
+        if (!_held.TryRead(out string token))
+        {
+            return Task.FromResult(SessionProbeVerdict.Inconclusive);
+        }
+
+        return ValidateBearerAsync(token, cancellationToken);
+    }
+
+    private async Task<SessionProbeVerdict> ValidateBearerAsync(string token, CancellationToken cancellationToken)
+    {
         try
         {
             using HttpClient http = _http.CreateClient(HttpClientName);
@@ -103,9 +125,12 @@ public sealed class ProjectXSessionConflictProbe : ISessionConflictProbe
             }
 
             SessionProbeVerdict verdict = SessionConflictSignals.FromValidate(payload.Success, payload.ErrorCode);
-            if (verdict == SessionProbeVerdict.Valid && !string.IsNullOrEmpty(payload.NewToken))
+            if (verdict == SessionProbeVerdict.Valid)
             {
-                _held.Remember(payload.NewToken, _clock.GetUtcNow());
+                // A success with no newToken still slides the client's 55-minute window. The string
+                // remembered here is never logged.
+                string keep = string.IsNullOrEmpty(payload.NewToken) ? token : payload.NewToken;
+                _held.Remember(keep, _clock.GetUtcNow());
             }
 
             return verdict;

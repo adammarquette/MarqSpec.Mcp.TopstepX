@@ -17,15 +17,27 @@ namespace MarqSpec.Mcp.TopstepX.MarketData;
 /// <para>
 /// The flag is put back only when this process is leaving without a latched stop, and it is put back to the
 /// value it had, including <see langword="false"/>. A latched stop is one-way: a probe that later comes back
-/// valid does not turn reconnect on again.
+/// valid does not turn reconnect on again. Clearing a suspicion, ending a probe, or ending a renewal
+/// backoff does not clear it.
+/// </para>
+/// <para>
+/// Logins take <see cref="EnterLoginAsync"/> and hold it across the <c>loginKey</c> call, then re-check
+/// <see cref="LoginPermitted"/> before the token is remembered. <see cref="BeginSuspecting"/> sets the
+/// suspicion and then waits for that lock, so an in-flight login observes the suspicion and discards its
+/// result. A <c>loginKey</c> request that has already been sent cannot be recalled. That window is
+/// irreducible: the call may still have opened a session at the venue, and this process does not return
+/// or remember that token.
 /// </para>
 /// </remarks>
 public sealed class SessionLoginGate
 {
     private readonly object _gate = new();
+    private readonly SemaphoreSlim _login = new(1, 1);
+    private readonly TaskCompletionSource _latched = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private int _stopLatched;
     private int _probeInFlight;
     private int _suspecting;
+    private int _renewalBackingOff;
     private int _priorSaved;
     private bool _priorAutoReconnect;
 
@@ -41,14 +53,62 @@ public sealed class SessionLoginGate
     /// </summary>
     public bool Suspecting => Volatile.Read(ref _suspecting) != 0;
 
+    /// <summary>
+    /// A renewal validate failed. Login stays closed until a later validate succeeds. This is not the
+    /// one-way stop: <see cref="EndRenewalBackoff"/> clears it unless <see cref="StopLatched"/> is set.
+    /// </summary>
+    public bool RenewalBackingOff => Volatile.Read(ref _renewalBackingOff) != 0;
+
+    /// <summary>Completes when <see cref="LatchStop"/> runs. The recorder watches this.</summary>
+    public Task Latched => _latched.Task;
+
     /// <summary>Whether a call may post <c>loginKey</c>. Fresh held tokens are still readable.</summary>
-    public bool LoginPermitted => !StopLatched && !ProbeInFlight && !Suspecting;
+    public bool LoginPermitted => !StopLatched && !ProbeInFlight && !Suspecting && !RenewalBackingOff;
 
     /// <summary>Latches the stop. Later clears and restores do not undo it.</summary>
-    public void LatchStop() => Interlocked.Exchange(ref _stopLatched, 1);
+    public void LatchStop()
+    {
+        if (Interlocked.Exchange(ref _stopLatched, 1) == 0)
+        {
+            _latched.TrySetResult();
+        }
+    }
 
-    /// <summary>Marks a hub drop as unresolved. Login stays closed while this is set.</summary>
-    public void BeginSuspecting() => Interlocked.Exchange(ref _suspecting, 1);
+    /// <summary>
+    /// Marks a hub drop as unresolved, then waits until any in-flight login has finished its re-check.
+    /// Login stays closed while the suspicion is set. A <c>loginKey</c> already on the wire is not recalled.
+    /// </summary>
+    public void BeginSuspecting()
+    {
+        MarkSuspecting();
+        _login.Wait();
+        _login.Release();
+    }
+
+    /// <summary>Sets the suspicion without waiting. <see cref="BeginSuspecting"/> also waits out an in-flight login.</summary>
+    internal void MarkSuspecting() => Interlocked.Exchange(ref _suspecting, 1);
+
+    /// <summary>Closes login after a renewal validate failed. A latched stop is left latched.</summary>
+    public void BeginRenewalBackoff() => Interlocked.Exchange(ref _renewalBackingOff, 1);
+
+    /// <summary>Opens login after a renewal validate succeeded, unless the stop is already latched.</summary>
+    public void EndRenewalBackoff()
+    {
+        if (StopLatched)
+        {
+            return;
+        }
+
+        Interlocked.Exchange(ref _renewalBackingOff, 0);
+    }
+
+    /// <summary>Holds the login lock across one <c>loginKey</c> or refresh call.</summary>
+    /// <param name="cancellationToken">Cancels the wait. The lock is not taken when this throws.</param>
+    internal async Task EnterLoginAsync(CancellationToken cancellationToken) =>
+        await _login.WaitAsync(cancellationToken).ConfigureAwait(false);
+
+    /// <summary>Releases the lock taken by <see cref="EnterLoginAsync"/>.</summary>
+    internal void ExitLogin() => _login.Release();
 
     /// <summary>Clears the suspicion after a valid probe, unless the stop is already latched.</summary>
     public void ClearSuspecting()
@@ -122,6 +182,9 @@ public sealed class SessionLoginGate
     /// <summary>
     /// The delay the client's policy returns for the first retry: none when automatic reconnect is off,
     /// otherwise the uncapped first step <c>min(InitialReconnectDelaySeconds, MaxReconnectDelaySeconds)</c>.
+    /// Copied from <c>MarqSpec.Client.ProjectX</c> 3.0.0 <c>ReconnectPolicy.NextRetryDelay</c>, whose first
+    /// step is the initial delay (default one second) and which returns no delay when
+    /// <see cref="ProjectXWebSocketOptions.AutoReconnect"/> is false.
     /// </summary>
     /// <param name="options">The options the policy reads.</param>
     /// <returns>No delay when reconnect is off, which is SignalR's signal to stop.</returns>

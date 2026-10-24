@@ -296,7 +296,8 @@ public sealed class SessionConflictTests
 
         await read.Should().ThrowAsync<AuthenticationException>();
         await refresh.Should().ThrowAsync<AuthenticationException>();
-        (await gated.ValidateSessionAsync(CancellationToken.None)).Should().BeFalse();
+        Func<Task> validate = () => gated.ValidateSessionAsync(CancellationToken.None);
+        await validate.Should().ThrowAsync<NotSupportedException>();
         inner.GetCalls.Should().Be(0);
         inner.RefreshCalls.Should().Be(0);
         inner.ValidateCalls.Should().Be(0);
@@ -534,6 +535,8 @@ public sealed class SessionConflictTests
             .Should().BeOfType<ProjectXSessionConflictProbe>();
         provider.GetRequiredService<IAuthenticationService>()
             .Should().BeOfType<GatedAuthenticationService>();
+        provider.GetService<AuthenticationService>().Should().BeNull();
+        provider.GetRequiredService<HeldSessionRenewer>().Should().NotBeNull();
 
         using HttpClient client = provider.GetRequiredService<IHttpClientFactory>()
             .CreateClient(ProjectXSessionConflictProbe.HttpClientName);
@@ -547,6 +550,336 @@ public sealed class SessionConflictTests
         using ServiceProvider provider = BuildHost([]);
 
         provider.GetService<ISessionConflictProbe>().Should().BeNull();
+        provider.GetService<HeldSessionRenewer>().Should().BeNull();
+    }
+
+    [Fact]
+    public async Task ProjectXSessionConflictProbe_ValidWithoutNewToken_SlidesTheFreshnessWindow()
+    {
+        (ProjectXSessionConflictProbe probe, _, HeldSession held, FakeTimeProvider clock) = Probe(
+            """{"success":true,"errorCode":0}""",
+            HttpStatusCode.OK);
+        clock.Advance(TimeSpan.FromMinutes(30));
+
+        (await probe.ProbeAsync(CancellationToken.None)).Should().Be(SessionProbeVerdict.Valid);
+        clock.Advance(HeldSession.CacheLifetime - HeldSession.RefreshBuffer - TimeSpan.FromMinutes(30));
+
+        held.TryReadFresh(clock.GetUtcNow(), out string token).Should().BeTrue();
+        token.Should().Be("held-token");
+    }
+
+    [Fact]
+    public async Task ProjectXSessionConflictProbe_AgedHeldToken_ValidateHeldPostsThatBearerAndDoesNotLogIn()
+    {
+        (ProjectXSessionConflictProbe probe, ScriptedHandler handler, HeldSession held, FakeTimeProvider clock) = Probe(
+            """{"success":true,"errorCode":0}""",
+            HttpStatusCode.OK,
+            remember: false);
+        held.Remember("aged-token", clock.GetUtcNow());
+        clock.Advance(HeldSession.CacheLifetime - HeldSession.RefreshBuffer);
+
+        (await probe.ProbeAsync(CancellationToken.None)).Should().Be(SessionProbeVerdict.Inconclusive);
+        (await probe.ValidateHeldTokenAsync(CancellationToken.None)).Should().Be(SessionProbeVerdict.Valid);
+        handler.Calls.Should().Be(1);
+        handler.Requests.Should().ContainSingle(request =>
+            request.RequestUri!.AbsolutePath == "/api/Auth/validate"
+            && request.Headers.Authorization!.Parameter == "aged-token");
+        handler.Requests.Should().NotContain(request =>
+            request.RequestUri!.AbsolutePath.Contains("loginKey", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task GatedAuthenticationService_LoginInFlightWhenSuspectingStarts_DiscardsTheToken()
+    {
+        TaskCompletionSource<string> released = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        ScriptedAuth inner = new() { GetGate = released };
+        HeldSession held = new();
+        SessionLoginGate gate = new();
+        FakeTimeProvider clock = new(new DateTimeOffset(2026, 10, 24, 12, 0, 0, TimeSpan.Zero));
+        GatedAuthenticationService gated = new(inner, held, gate, clock);
+
+        Task<string> read = gated.GetAccessTokenAsync(CancellationToken.None);
+        await WaitFor(() => inner.GetCalls == 1);
+
+        Task suspect = Task.Run(() => gate.BeginSuspecting());
+        await Task.Delay(50);
+        suspect.IsCompleted.Should().BeFalse();
+
+        released.SetResult("should-be-discarded");
+        Func<Task> finished = async () => await read;
+        await finished.Should().ThrowAsync<AuthenticationException>();
+        await suspect;
+        held.TryRead(out _).Should().BeFalse();
+        gate.LoginPermitted.Should().BeFalse();
+        inner.GetCalls.Should().Be(1);
+    }
+
+    [Fact]
+    public async Task GatedAuthenticationService_RefreshThatAlreadyHappened_IsRememberedWhenTheGateCloses()
+    {
+        ScriptedAuth inner = new() { Token = "refreshed-token" };
+        HeldSession held = new();
+        SessionLoginGate gate = new();
+        FakeTimeProvider clock = new(new DateTimeOffset(2026, 10, 24, 12, 0, 0, TimeSpan.Zero));
+        inner.DuringRefresh = () => gate.MarkSuspecting();
+        GatedAuthenticationService gated = new(inner, held, gate, clock);
+
+        await gated.RefreshTokenAsync(CancellationToken.None);
+
+        held.TryReadFresh(clock.GetUtcNow(), out string token).Should().BeTrue();
+        token.Should().Be("refreshed-token");
+        gate.LoginPermitted.Should().BeFalse();
+        inner.RefreshCalls.Should().Be(1);
+        inner.GetCalls.Should().Be(1);
+    }
+
+    [Fact]
+    public void SessionLoginGate_AfterLatchStop_ClearSuspectingAndEndProbe_LeaveLoginClosed()
+    {
+        SessionLoginGate gate = new();
+        gate.BeginSuspecting();
+        gate.TryBeginProbe().Should().BeTrue();
+        gate.BeginRenewalBackoff();
+        gate.LatchStop();
+
+        gate.ClearSuspecting();
+        gate.EndProbe();
+        gate.EndRenewalBackoff();
+
+        gate.StopLatched.Should().BeTrue();
+        gate.LoginPermitted.Should().BeFalse();
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(0.5)]
+    [InlineData(1)]
+    public void HeldSessionRenewal_HappyPath_FiresAtLeastTenMinutesBeforeTheCliff(double jitterUnit)
+    {
+        TimeSpan delay = HeldSessionRenewal.NextDelay(consecutiveFailures: 0, jitterUnit);
+        TimeSpan latest = HeldSession.CacheLifetime - HeldSession.RefreshBuffer - HeldSessionRenewal.LeadBeforeCliff;
+
+        delay.Should().BeLessThanOrEqualTo(latest);
+        delay.Should().BeGreaterThan(TimeSpan.Zero);
+    }
+
+    [Fact]
+    public void HeldSessionRenewal_Jitter_IsThirtyMinutesPlusOrMinusFive()
+    {
+        HeldSessionRenewal.NextDelay(0, 0).Should().Be(TimeSpan.FromMinutes(25));
+        HeldSessionRenewal.NextDelay(0, 0.5).Should().Be(TimeSpan.FromMinutes(30));
+        HeldSessionRenewal.NextDelay(0, 1).Should().Be(TimeSpan.FromMinutes(35));
+    }
+
+    [Fact]
+    public void HeldSessionRenewal_Failure_BacksOffFromThirtySecondsToFiveMinutes()
+    {
+        HeldSessionRenewal.NextDelay(1, 0.5).Should().Be(TimeSpan.FromSeconds(30));
+        HeldSessionRenewal.NextDelay(2, 0.5).Should().Be(TimeSpan.FromSeconds(60));
+        HeldSessionRenewal.NextDelay(10, 0.5).Should().Be(TimeSpan.FromMinutes(5));
+    }
+
+    [Fact]
+    public void SessionReprobe_Delay_StartsAtOneSecondAndCapsAtThirty()
+    {
+        SessionReprobe.DelayForAttempt(0).Should().Be(TimeSpan.FromSeconds(1));
+        SessionReprobe.DelayForAttempt(1).Should().Be(TimeSpan.FromSeconds(2));
+        SessionReprobe.DelayForAttempt(5).Should().Be(TimeSpan.FromSeconds(30));
+        SessionReprobe.DelayForAttempt(20).Should().Be(TimeSpan.FromSeconds(30));
+    }
+
+    [Fact]
+    public async Task HeldSessionRenewer_HappyPath_PostsValidateAndStoresNewToken()
+    {
+        CapturingLogger<HeldSessionRenewer> logger = new();
+        (HeldSessionRenewer renewer, ScriptedHandler handler, HeldSession held, CountingClock clock, _) =
+            Renewer("""{"success":true,"errorCode":0,"newToken":"rotated-token"}""", HttpStatusCode.OK, logger);
+
+        await renewer.StartAsync(CancellationToken.None);
+        await WaitFor(() => clock.Timers >= 1);
+        handler.Calls.Should().Be(0);
+        clock.Advance(TimeSpan.FromMinutes(30));
+        await WaitFor(() => handler.Calls == 1);
+
+        handler.Requests.Should().ContainSingle(request =>
+            request.RequestUri!.AbsolutePath == "/api/Auth/validate"
+            && request.Headers.Authorization!.Parameter == "held-token");
+        handler.Requests.Should().NotContain(request =>
+            request.RequestUri!.AbsolutePath.Contains("loginKey", StringComparison.Ordinal));
+        held.TryReadFresh(clock.GetUtcNow(), out string token).Should().BeTrue();
+        token.Should().Be("rotated-token");
+        logger.Messages.Should().NotContain(message =>
+            message.Contains("rotated-token", StringComparison.Ordinal)
+            || message.Contains("held-token", StringComparison.Ordinal));
+
+        await renewer.StopAsync(CancellationToken.None);
+    }
+
+    [Fact]
+    public async Task HeldSessionRenewer_ValidWithoutNewToken_StaysFreshPastTheOriginalCliff()
+    {
+        (HeldSessionRenewer renewer, ScriptedHandler handler, HeldSession held, CountingClock clock, _) =
+            Renewer("""{"success":true,"errorCode":0}""", HttpStatusCode.OK, logger: null);
+
+        await renewer.StartAsync(CancellationToken.None);
+        await WaitFor(() => clock.Timers >= 1);
+        clock.Advance(TimeSpan.FromMinutes(30));
+        await WaitFor(() => handler.Calls == 1);
+        clock.Advance(TimeSpan.FromMinutes(24));
+
+        held.TryReadFresh(clock.GetUtcNow(), out string token).Should().BeTrue();
+        token.Should().Be("held-token");
+
+        await renewer.StopAsync(CancellationToken.None);
+    }
+
+    [Fact]
+    public async Task HeldSessionRenewer_ValidateFailure_BacksOffWithoutLoginAndThenOpens()
+    {
+        (HeldSessionRenewer renewer, ScriptedHandler handler, HeldSession held, CountingClock clock, SessionLoginGate gate) =
+            Renewer("nope", HttpStatusCode.ServiceUnavailable, logger: null);
+        ScriptedAuth inner = new() { Token = "from-login" };
+        GatedAuthenticationService gated = new(inner, held, gate, clock);
+
+        await renewer.StartAsync(CancellationToken.None);
+        await WaitFor(() => clock.Timers >= 1);
+        int timers = clock.Timers;
+        clock.Advance(TimeSpan.FromMinutes(30));
+        await WaitFor(() => handler.Calls == 1 && gate.RenewalBackingOff && clock.Timers > timers);
+
+        held.Remember("aged-token", clock.GetUtcNow() - HeldSession.CacheLifetime);
+        Func<Task> read = () => gated.GetAccessTokenAsync(CancellationToken.None);
+        await read.Should().ThrowAsync<AuthenticationException>();
+        inner.GetCalls.Should().Be(0);
+        handler.Requests.Should().NotContain(request =>
+            request.RequestUri!.AbsolutePath.Contains("loginKey", StringComparison.Ordinal));
+
+        clock.Advance(TimeSpan.FromSeconds(29));
+        await Task.Delay(50);
+        handler.Calls.Should().Be(1);
+
+        handler.Status = HttpStatusCode.OK;
+        handler.Body = """{"success":true,"errorCode":0,"newToken":"after-backoff"}""";
+        clock.Advance(TimeSpan.FromSeconds(1));
+        await WaitFor(() => handler.Calls == 2);
+
+        gate.StopLatched.Should().BeFalse();
+        gate.RenewalBackingOff.Should().BeFalse();
+        gate.LoginPermitted.Should().BeTrue();
+        held.TryReadFresh(clock.GetUtcNow(), out string token).Should().BeTrue();
+        token.Should().Be("after-backoff");
+
+        await renewer.StopAsync(CancellationToken.None);
+    }
+
+    [Fact]
+    public async Task HeldSessionRenewer_Unauthorized_LatchesTheStopAndDoesNotLogIn()
+    {
+        (HeldSessionRenewer renewer, ScriptedHandler handler, _, CountingClock clock, SessionLoginGate gate) =
+            Renewer("{}", HttpStatusCode.Unauthorized, logger: null);
+
+        await renewer.StartAsync(CancellationToken.None);
+        await WaitFor(() => clock.Timers >= 1);
+        clock.Advance(TimeSpan.FromMinutes(30));
+        await WaitFor(() => handler.Calls == 1 && gate.StopLatched);
+
+        gate.LoginPermitted.Should().BeFalse();
+        handler.Requests.Should().NotContain(request =>
+            request.RequestUri!.AbsolutePath.Contains("loginKey", StringComparison.Ordinal));
+
+        await renewer.StopAsync(CancellationToken.None);
+    }
+
+    [Fact]
+    public async Task HeldSessionRenewer_ConflictWithTheSwitchOff_DoesNotLatch()
+    {
+        (HeldSessionRenewer renewer, ScriptedHandler handler, _, CountingClock clock, SessionLoginGate gate) =
+            Renewer(
+                """{"success":false,"errorCode":1}""",
+                HttpStatusCode.OK,
+                logger: null,
+                stopOnSessionConflict: false);
+
+        await renewer.StartAsync(CancellationToken.None);
+        await WaitFor(() => clock.Timers >= 1);
+        int timers = clock.Timers;
+        clock.Advance(TimeSpan.FromMinutes(30));
+        await WaitFor(() => handler.Calls >= 1 && clock.Timers > timers);
+
+        gate.StopLatched.Should().BeFalse();
+        gate.LoginPermitted.Should().BeTrue();
+
+        await renewer.StopAsync(CancellationToken.None);
+    }
+
+    [Fact]
+    public async Task HeldSessionRenewer_NoTokenYet_LeavesLoginPermitted()
+    {
+        FakeTimeProvider clock = new(new DateTimeOffset(2026, 10, 24, 12, 0, 0, TimeSpan.Zero));
+        HeldSession held = new();
+        ScriptedHandler handler = new();
+        SessionLoginGate gate = new();
+        HeldSessionRenewer renewer = new(
+            held,
+            new ProjectXSessionConflictProbe(
+                held,
+                new ScriptedFactory(handler),
+                NullLogger<ProjectXSessionConflictProbe>.Instance,
+                clock),
+            gate,
+            clock,
+            Options.Create(new MarketDataOptions()),
+            NullLogger<HeldSessionRenewer>.Instance,
+            () => 0.5);
+
+        await renewer.StartAsync(CancellationToken.None);
+        await Task.Delay(50);
+
+        handler.Calls.Should().Be(0);
+        gate.LoginPermitted.Should().BeTrue();
+        gate.StopLatched.Should().BeFalse();
+
+        await renewer.StopAsync(CancellationToken.None);
+    }
+
+    private static (
+        HeldSessionRenewer Renewer,
+        ScriptedHandler Handler,
+        HeldSession Held,
+        CountingClock Clock,
+        SessionLoginGate Gate) Renewer(
+        string body,
+        HttpStatusCode status,
+        ILogger<HeldSessionRenewer>? logger,
+        bool stopOnSessionConflict = true)
+    {
+        CountingClock clock = new(new DateTimeOffset(2026, 10, 24, 12, 0, 0, TimeSpan.Zero));
+        HeldSession held = new();
+        held.Remember("held-token", clock.GetUtcNow());
+        ScriptedHandler handler = new() { Status = status, Body = body };
+        SessionLoginGate gate = new();
+        HeldSessionRenewer renewer = new(
+            held,
+            new ProjectXSessionConflictProbe(
+                held,
+                new ScriptedFactory(handler),
+                NullLogger<ProjectXSessionConflictProbe>.Instance,
+                clock),
+            gate,
+            clock,
+            Options.Create(new MarketDataOptions { StopOnSessionConflict = stopOnSessionConflict }),
+            logger ?? NullLogger<HeldSessionRenewer>.Instance,
+            () => 0.5);
+        return (renewer, handler, held, clock, gate);
+    }
+
+    private static async Task WaitFor(Func<bool> ready)
+    {
+        using CancellationTokenSource timeout = new(TimeSpan.FromSeconds(15));
+        while (!ready())
+        {
+            await Task.Delay(10, timeout.Token);
+        }
     }
 
     private static (
@@ -632,6 +965,10 @@ public sealed class SessionConflictTests
 
         public Exception? GetThrows { get; set; }
 
+        public TaskCompletionSource<string>? GetGate { get; set; }
+
+        public Action? DuringRefresh { get; set; }
+
         public int GetCalls { get; private set; }
 
         public int RefreshCalls { get; private set; }
@@ -640,7 +977,7 @@ public sealed class SessionConflictTests
 
         public int LogoutCalls { get; private set; }
 
-        public Task<string> GetAccessTokenAsync(CancellationToken cancellationToken = default)
+        public async Task<string> GetAccessTokenAsync(CancellationToken cancellationToken = default)
         {
             GetCalls++;
             if (GetThrows is not null)
@@ -648,12 +985,18 @@ public sealed class SessionConflictTests
                 throw GetThrows;
             }
 
-            return Task.FromResult(Token);
+            if (GetGate is not null)
+            {
+                return await GetGate.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
+            }
+
+            return Token;
         }
 
         public Task RefreshTokenAsync(CancellationToken cancellationToken = default)
         {
             RefreshCalls++;
+            DuringRefresh?.Invoke();
             return Task.CompletedTask;
         }
 
@@ -720,6 +1063,62 @@ public sealed class SessionConflictTests
             {
                 BaseAddress = new Uri("https://gateway.example/"),
             };
+        }
+    }
+
+    private sealed class CountingClock : FakeTimeProvider
+    {
+        private int _timers;
+
+        public CountingClock(DateTimeOffset start)
+            : base(start)
+        {
+        }
+
+        public int Timers => Volatile.Read(ref _timers);
+
+        public override ITimer CreateTimer(
+            TimerCallback callback,
+            object? state,
+            TimeSpan dueTime,
+            TimeSpan period)
+        {
+            ITimer timer = base.CreateTimer(callback, state, dueTime, period);
+            Interlocked.Increment(ref _timers);
+            return timer;
+        }
+    }
+
+    private sealed class CapturingLogger<T> : ILogger<T>
+    {
+        public List<string> Messages { get; } = [];
+
+        public IDisposable BeginScope<TState>(TState state)
+            where TState : notnull => NullScope.Instance;
+
+        public bool IsEnabled(LogLevel logLevel) => true;
+
+        public void Log<TState>(
+            LogLevel logLevel,
+            EventId eventId,
+            TState state,
+            Exception? exception,
+            Func<TState, Exception?, string> formatter)
+        {
+            Messages.Add(formatter(state, exception));
+            if (exception is not null)
+            {
+                Messages.Add(exception.ToString());
+            }
+        }
+
+        private sealed class NullScope : IDisposable
+        {
+            public static readonly NullScope Instance = new();
+
+            public void Dispose()
+            {
+            }
         }
     }
 

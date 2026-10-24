@@ -148,7 +148,8 @@ public sealed class TapeAvailability
         new(
             TapeUnavailableReason.Stopped,
             "The trade-tape recorder stopped because it does not hold a fresh TopstepX token, and it "
-            + "will not call loginKey. It will not reconnect the market hub. Restart this server to record again.");
+            + "will not call loginKey. It will not reconnect the market hub. This does not close login "
+            + "for REST tools. Restart this server to record again.");
 
     /// <summary>Another process holds this instrument's tape claim.</summary>
     /// <param name="holder">The owner recorded on the claim row.</param>

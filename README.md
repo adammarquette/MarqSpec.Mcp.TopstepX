@@ -569,7 +569,10 @@ not keep the last good values.
 
 **There is no `get_quote`.** ProjectX publishes no REST quote endpoint; live bid/ask is SignalR-only. The HTTP
 transport can opt in to recording the trade tape (`MarketData__RecordTape`), which is prints and volume, not
-quotes. A tool called `get_quote` that returned a bar close would be a lie an agent trades on.
+quotes. While that recorder is running it keeps the held TopstepX session fresh with `POST /api/Auth/validate`
+and does not call `loginKey` on a timer. A session conflict latches login closed. A drop that is not a
+conflict stops the recorder without closing login for REST tools. A tool called `get_quote` that returned a
+bar close would be a lie an agent trades on.
 
 ## How the cache works
 

@@ -348,7 +348,9 @@ out of Phase 5. The recorder (gh#216) writes prints to `Trades` under HTTP when
 `MarketData__RecordTape` is on; Client#86/#87 landed in 3.0.0. It stops itself when the hub names a
 documented validate error, or `POST /api/Auth/validate` reports `InvalidSession`, `SessionNotFound`,
 or HTTP 401, and it does not call `loginKey` to reconnect
-(`MarketData__StopOnSessionConflict`, default on; gh#757, ADR-0016).
+(`MarketData__StopOnSessionConflict`, default on; gh#757, ADR-0016). A held token is renewed with
+validate, not `loginKey`. A drop that is not one of those signals stops the recorder and leaves
+REST login open. `AutoReconnect` stays off for both hubs while the recorder is alive.
 
 > One gotcha for whoever adds it: **you subscribe by full contract id, but quotes come back tagged by product
 > root.** Subscribing to `CON.F.US.MES.U26` succeeds, and every quote then reports `F.US.MES`. A stream

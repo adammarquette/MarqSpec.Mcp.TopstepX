@@ -104,6 +104,9 @@ for (const s of services) {
     if (RESERVED.test(key)) fail(`${s.name}: ${key} is not read by this build (gh#763); keep it out of the deploy template`);
     if (/^tapeexport(__|:)/i.test(key) && !EXPORT_KEYS.includes(key)) fail(`${s.name}: ${key} is not a gh#755 key (${EXPORT_KEYS.join(", ")})`);
     if (key === "TapeExport__Drive__ServiceAccountJson" && v.type !== "sharedReference") fail(`${s.name}: TapeExport__Drive__ServiceAccountJson is a secret; only ctx.shared.TAPE_EXPORT_DRIVE_SERVICE_ACCOUNT_JSON, never a literal`);
+    // PR #765 (a186a62): prefer TapeExport__Drive__ServiceAccountJsonPath. The inline JSON, even as a shared
+    // reference, is readable by anyone who can inspect the container's environment.
+    else if (key === "TapeExport__Drive__ServiceAccountJson") console.warn(`warn [drive-json-inline] ${s.name}: prefer TapeExport__Drive__ServiceAccountJsonPath; inline service-account JSON is visible in the container environment`);
     if (v.type === "preserve" || v.type === "raw") fail(`${s.name}: ${key} uses ${v.type}; state the value or a shared reference`);
     if (v.type === "sharedReference") {
       const allowed = SHARED[v.name];

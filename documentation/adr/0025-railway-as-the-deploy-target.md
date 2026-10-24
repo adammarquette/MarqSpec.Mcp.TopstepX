@@ -57,6 +57,10 @@ front of a plaintext `8080` listener and health-checked `/health`. On Railway:
 
 - **Tape export (deferred):** enable it on the production recorder only after #765 merges (its `TapeExport__*`
   names are provisional until then) and the image's chown-then-drop-to-64198 startup step ships (#767).
+  As of #765 at a186a62, the worker runs only on `TapeExport__Schedule` while holding the recorder lease (no
+  startup pass), so export is recorder-only. Drive uses the `drive.file` scope, so `TapeExport__Drive__FolderId`
+  must be a folder the service account created. Prefer `TapeExport__Drive__ServiceAccountJsonPath`; inline
+  `ServiceAccountJson` is visible to anyone who can inspect the container, and is shared-reference-only if used.
 
 - **Postgres verification:** on the first (manual) production deploy, `initdb` succeeds on the volume, and
   one restart keeps the data.

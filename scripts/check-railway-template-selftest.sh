@@ -91,6 +91,7 @@ expect reject template export-enabled-not-boolean 'TapeExport__Enabled: "false",
 expect reject template run-uid-on-recorder 'TapeExport__Enabled: "false",' 'TapeExport__Enabled: "false", RAILWAY_RUN_UID: "0",'
 expect reject template drive-folder-in-staging 'TapeExport__Enabled: "false",' 'TapeExport__Enabled: "false", TapeExport__Drive__FolderId: "abc",'
 expect reject template drive-json-literal 'TapeExport__Enabled: "false",' 'TapeExport__Enabled: "false", TapeExport__Drive__ServiceAccountJson: "{}",'
+NAMED='[drive-json-inline]' expect accept template drive-json-shared-warns 'TapeExport__Enabled: "false",' 'TapeExport__Enabled: "false", ...(ctx.environment === "production" ? { TapeExport__Drive__ServiceAccountJson: ctx.shared.TAPE_EXPORT_DRIVE_SERVICE_ACCOUNT_JSON } : {}),'
 expect reject template export-path-relative 'TapeExport__Enabled: "false",' 'TapeExport__Enabled: "false", TapeExport__Path: "data/tape-exports",'
 expect reject template drive-json-path-relative 'TapeExport__Enabled: "false",' 'TapeExport__Enabled: "false", TapeExport__Drive__ServiceAccountJsonPath: "keys/sa.json",'
 expect reject template export-format-other 'TapeExport__Enabled: "false",' 'TapeExport__Enabled: "false", TapeExport__Format: "csv",'

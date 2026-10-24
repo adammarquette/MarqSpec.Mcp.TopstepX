@@ -97,8 +97,13 @@ Today Railway mounts volumes root-owned and the image runs as 64198, so the only
 until #765 merges.
 - When it is enabled: the production recorder only gets the `tape-exports` volume at `/data/tape-exports` and
   `TapeExport__Enabled=true`, Schedule `06:00` (UTC, HH:mm), Path `/data/tape-exports`, Format `csv.gz+parquet`.
-  Drive upload is optional; `TapeExport__Drive__ServiceAccountJson` may only be
-  `ctx.shared.TAPE_EXPORT_DRIVE_SERVICE_ACCOUNT_JSON`.
+  Drive upload is optional. Prefer `TapeExport__Drive__ServiceAccountJsonPath` (absolute) to a key file. The inline
+  `TapeExport__Drive__ServiceAccountJson` is visible to anyone who can inspect the container. If it is used anyway,
+  it may only be `ctx.shared.TAPE_EXPORT_DRIVE_SERVICE_ACCOUNT_JSON`, and the check prints a `drive-json-inline`
+  warning. The Drive scope is `drive.file`, so `TapeExport__Drive__FolderId` must be a folder the service account
+  itself created; a folder shared with it is not reachable.
+- The export worker (PR #765 at a186a62) runs only on `TapeExport__Schedule`, while it holds the recorder lease,
+  with no pass at startup. Export therefore stays with the recorder, even across a two-recorder overlap.
 - The check already enforces that shape: only the seven contract names; Format `csv.gz+parquet`; absolute Path and
   JsonPath; Schedule HH:mm; Drive JSON a shared reference only; at most one exporter or export volume, and it is the
   recorder; in production, export on means the whole shape at once; outside production, off with no Drive keys.

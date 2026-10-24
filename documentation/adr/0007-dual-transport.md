@@ -1273,17 +1273,19 @@ The gate's own refusal line logs the request method and path (gh#747). Both are 
 under this mode the listener is reachable from the internet, so a CR or LF in either value is a second log
 entry — CodeQL `cs/log-forging` at `OAuthBearerGate.UseOAuthBearerGate`. `LogText.Sanitize` escapes CR, LF,
 the other C0/C1 controls, U+2028, U+2029, the bidi overrides and isolates (U+202A–U+202E, U+2066–U+2069),
-LRM and RLM (U+200E, U+200F), ALM (U+061C), ZWSP (U+200B), BOM (U+FEFF), a lone surrogate, and a literal
-backslash, each as a backslash, the letter u, and four hexadecimal digits. A well-formed surrogate pair stays
-one character. Escaping the backslash means the six characters of a written carriage-return escape in the
-input are not the escape a real CR becomes. The escaped text is capped at 1024 characters, on an escape
-boundary and not through the middle of a pair, with ` [truncated]` appended when it is longer. A copy of
-that marker in the input is not left intact, so the exact suffix means the cap appended it. One control
+LRM and RLM (U+200E, U+200F), ALM (U+061C), ZWSP (U+200B), BOM (U+FEFF), a lone surrogate, a literal
+backslash, and an opening bracket, each as a backslash, the letter u, and four hexadecimal digits. A
+well-formed surrogate pair stays one character. Escaping the backslash means the six characters of a written
+carriage-return escape in the input are not the escape a real CR becomes. The escaped text is capped at 1024
+characters, on an escape boundary and not through the middle of a pair, with ` [truncated]` appended when it
+is longer. The bracket is escaped in that same replace, so a copy of the marker is not that suffix, and a
+bracket followed by a backslash stays distinct from a bracket alone. One control
 expands to six characters, and an 8 KB path of them would otherwise be about 48 KB. The call passes the
 results as structured parameters. The same helper covers `sub` and `client_id` on the success scope, and
 the `reselect-bars` command-line refusal. The reason is still a type name or a fixed phrase naming a claim.
 The token is still never logged. `LogTextTests` pins each character class, the forged escape, the output
-cap, the escape boundary, the emoji on the cap, the caller-supplied marker, and a missing value.
+cap, the escape boundary, the emoji on the cap, the caller-supplied marker, the marker on the cap
+boundary, the plain marker kept distinct from one that already contains a backslash, and a missing value.
 `AForgedMethodOrPath_CannotOpenASecondLogEntry` pins the forged line;
 `APercentEncodedLineBreakInThePath_CannotOpenASecondLogEntry` pins a `%0D%0A` path;
 `AnEightKilobyteControlPath_IsCappedOnTheRefusalLine` pins the cap on the gate's own record;

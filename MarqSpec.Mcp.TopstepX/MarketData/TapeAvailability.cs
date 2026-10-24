@@ -126,16 +126,29 @@ public sealed class TapeAvailability
             "The trade-tape recorder stopped. Prints will not be recorded until the process restarts.");
 
     /// <summary>
-    /// The recorder stopped because this login conflicted with another session, and it will not reconnect.
+    /// The recorder stopped because this login conflicted with another session. It will not reconnect
+    /// the hub and will not call <c>loginKey</c>. A tool may keep using the token already held until
+    /// that token ages out.
     /// </summary>
     /// <returns>An unavailable marker naming the platform and the switch.</returns>
     public static TapeAvailability StoppedForSessionConflict() =>
         new(
             TapeUnavailableReason.StoppedForSessionConflict,
             "The trade-tape recorder stopped because this TopstepX login conflicted with another session. "
-            + "It disconnected and will not reconnect, so it does not kick the trading platform offline. "
-            + "Close that platform and restart this server to record again, or set "
-            + "MarketData__StopOnSessionConflict=false to keep reconnecting.");
+            + "It will not reconnect the market hub and will not call loginKey, so a new login does not "
+            + "kick the trading platform offline. Tools may keep using the token already held until it "
+            + "ages out, and then they fail instead of logging in. Close that platform and restart this "
+            + "server to record again, or set MarketData__StopOnSessionConflict=false to keep reconnecting.");
+
+    /// <summary>
+    /// The recorder stopped because it had no fresh token and will not call <c>loginKey</c> to get one.
+    /// </summary>
+    /// <returns>An unavailable marker. The reason is <see cref="TapeUnavailableReason.Stopped"/>.</returns>
+    public static TapeAvailability StoppedRatherThanLogin() =>
+        new(
+            TapeUnavailableReason.Stopped,
+            "The trade-tape recorder stopped because it does not hold a fresh TopstepX token, and it "
+            + "will not call loginKey. It will not reconnect the market hub. Restart this server to record again.");
 
     /// <summary>Another process holds this instrument's tape claim.</summary>
     /// <param name="holder">The owner recorded on the claim row.</param>

@@ -131,9 +131,12 @@ public sealed class TradeTapeRecorder : BackgroundService
     private IProjectXWebSocketClient? _hub;
     private ISessionConflictProbe? _probe;
     private ProjectXWebSocketOptions? _socketOptions;
+    private SessionLoginGate _loginGate = new();
+    private HeldSession? _held;
     private readonly CancellationTokenSource _conflictStop = new();
     private int _conflictArmed;
     private int _conflictStopStarted;
+    private int _stoodDownWithoutLogin;
     private long _recorded;
     private long _dropped;
 
@@ -237,6 +240,19 @@ public sealed class TradeTapeRecorder : BackgroundService
     /// <summary>Prints the bounded channel refused because it was full.</summary>
     public long DroppedPrints => Interlocked.Read(ref _dropped);
 
+    /// <summary>Lifecycle work queued and not yet started. Tests use this to see a guard without waiting.</summary>
+    internal int PendingLifecycleCount => Volatile.Read(ref _lifecycleWaiting);
+
+    private int _lifecycleWaiting;
+
+    private void Enqueue(LifecycleWork work)
+    {
+        if (_lifecycle.Writer.TryWrite(work))
+        {
+            Interlocked.Increment(ref _lifecycleWaiting);
+        }
+    }
+
     /// <inheritdoc />
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
@@ -270,6 +286,12 @@ public sealed class TradeTapeRecorder : BackgroundService
                 _hub = resolved;
                 _probe = scope.ServiceProvider.GetService<ISessionConflictProbe>();
                 _socketOptions = scope.ServiceProvider.GetService<IOptions<ProjectXWebSocketOptions>>()?.Value;
+                _held = scope.ServiceProvider.GetService<HeldSession>();
+                SessionLoginGate? sharedGate = scope.ServiceProvider.GetService<SessionLoginGate>();
+                if (sharedGate is not null)
+                {
+                    _loginGate = sharedGate;
+                }
 
                 IMarketDataGateway gateway = scope.ServiceProvider.GetRequiredService<IMarketDataGateway>();
 
@@ -346,6 +368,13 @@ public sealed class TradeTapeRecorder : BackgroundService
                 _hub.ConnectionStatusChanged += OnConnectionStatusChanged;
                 try
                 {
+                    // SignalR arms the first retry before Reconnecting fires. The client's policy
+                    // already has to see AutoReconnect false, or that first retry logs in.
+                    if (_market.StopOnSessionConflict && _socketOptions is not null)
+                    {
+                        _loginGate.SuppressAutomaticRetry(_socketOptions);
+                    }
+
                     await _hub.ConnectMarketHubAsync(stoppingToken).ConfigureAwait(false);
                     drain = true;
                 }
@@ -390,7 +419,9 @@ public sealed class TradeTapeRecorder : BackgroundService
                     _lifecycle.Writer.TryComplete();
                     _tape.Set(ConflictArmed
                         ? TapeAvailability.StoppedForSessionConflict()
-                        : TapeAvailability.Stopped());
+                        : StoodDownWithoutLogin
+                            ? TapeAvailability.StoppedRatherThanLogin()
+                            : TapeAvailability.Stopped());
                 }
             }
         }
@@ -412,6 +443,11 @@ public sealed class TradeTapeRecorder : BackgroundService
         }
         finally
         {
+            if (_socketOptions is not null)
+            {
+                _loginGate.RestorePriorAutoReconnect(_socketOptions);
+            }
+
             // Every exit, not just the clean one: a claim this process is no longer recording
             // under would otherwise make the next start wait out the whole expiry for nothing.
             try
@@ -835,9 +871,20 @@ public sealed class TradeTapeRecorder : BackgroundService
             return;
         }
 
-        // A conflict is already stopping. A reconnect that lands anyway must not subscribe
-        // again — that login is what knocks the trading platform off.
-        if (ConflictArmed)
+        // A hub phrase latches the stop before any await. A probe that is already in flight must
+        // observe the latch and must not connect when it returns.
+        if (_market.StopOnSessionConflict
+            && change.PreviousState == ConnectionState.Connected
+            && change.CurrentState != ConnectionState.Connected
+            && SessionConflictSignals.IsHubConflict(change.ErrorMessage, change.Exception?.Message))
+        {
+            ArmSessionConflict();
+            _tape.Set(TapeAvailability.StoppedForSessionConflict());
+            Enqueue(LifecycleWork.StopForHubConflict);
+            return;
+        }
+
+        if (_loginGate.StopLatched)
         {
             return;
         }
@@ -845,10 +892,17 @@ public sealed class TradeTapeRecorder : BackgroundService
         if (change.CurrentState == ConnectionState.Connected
             && change.PreviousState != ConnectionState.Connected)
         {
+            // A probe or a suspicion is still open. The client's own reconnect must not be
+            // followed by another subscribe from this recorder.
+            if (_loginGate.Suspecting)
+            {
+                return;
+            }
+
             // Connected is not listening. Tools must refuse until restore completes.
             _telemetry.TapeReconnect(TapeTransition.Connected);
             _tape.Set(TapeAvailability.ConnectedButNotSubscribed());
-            _lifecycle.Writer.TryWrite(LifecycleWork.RestoreSubscriptions);
+            Enqueue(LifecycleWork.RestoreSubscriptions);
             return;
         }
 
@@ -857,36 +911,31 @@ public sealed class TradeTapeRecorder : BackgroundService
         {
             _telemetry.TapeReconnect(TapeTransition.Disconnected);
             _ledger.CloseOpenRangesAt(_clock.GetUtcNow());
-            _lifecycle.Writer.TryWrite(LifecycleWork.PersistCloses);
-
-            if (_market.StopOnSessionConflict
-                && SessionConflictSignals.IsHubConflict(change.ErrorMessage, change.Exception?.Message))
-            {
-                ArmSessionConflict();
-                _tape.Set(TapeAvailability.StoppedForSessionConflict());
-                _lifecycle.Writer.TryWrite(LifecycleWork.StopForHubConflict);
-                return;
-            }
+            Enqueue(LifecycleWork.PersistCloses);
 
             _tape.Set(TapeAvailability.Reconnecting());
 
             if (_market.StopOnSessionConflict && _probe is not null)
             {
-                // Hold the client's automatic reconnect until validate says the session is still ours.
-                // The policy reads this flag on each attempt (Client gh#69).
+                // The first retry was gated before Connect. Hold the flag off again in case an
+                // operator, or a previous path, turned it back on while the probe runs.
                 if (_socketOptions is not null)
                 {
-                    _socketOptions.AutoReconnect = false;
+                    _loginGate.SuppressAutomaticRetry(_socketOptions);
                 }
 
-                _lifecycle.Writer.TryWrite(LifecycleWork.ProbeSession);
+                _loginGate.BeginSuspecting();
+                if (_loginGate.TryBeginProbe())
+                {
+                    Enqueue(LifecycleWork.ProbeSession);
+                }
             }
         }
     }
 
     private void OnTrade(object? sender, TradeUpdate update)
     {
-        if (ConflictArmed)
+        if (ConflictArmed || _loginGate.Suspecting || _loginGate.StopLatched)
         {
             return;
         }
@@ -909,6 +958,7 @@ public sealed class TradeTapeRecorder : BackgroundService
         await foreach (LifecycleWork work in _lifecycle.Reader.ReadAllAsync(stoppingToken)
             .ConfigureAwait(false))
         {
+            Interlocked.Decrement(ref _lifecycleWaiting);
             try
             {
                 switch (work)
@@ -921,6 +971,9 @@ public sealed class TradeTapeRecorder : BackgroundService
                         break;
                     case LifecycleWork.ProbeSession:
                         await ProbeSessionAsync(stoppingToken).ConfigureAwait(false);
+                        break;
+                    case LifecycleWork.ReprobeAfterBackoff:
+                        await ReprobeAfterBackoffAsync(stoppingToken).ConfigureAwait(false);
                         break;
                     case LifecycleWork.StopForHubConflict:
                         await StopForSessionConflictAsync(SessionConflictSource.Hub, stoppingToken)
@@ -943,7 +996,7 @@ public sealed class TradeTapeRecorder : BackgroundService
 
     private async Task RestoreSubscriptionsAsync(CancellationToken cancellationToken)
     {
-        if (ConflictArmed)
+        if (ConflictArmed || _loginGate.StopLatched || _loginGate.Suspecting)
         {
             return;
         }
@@ -987,7 +1040,7 @@ public sealed class TradeTapeRecorder : BackgroundService
         Attribution attribution,
         CancellationToken cancellationToken)
     {
-        if (ConflictArmed)
+        if (ConflictArmed || _loginGate.StopLatched || _loginGate.Suspecting)
         {
             return false;
         }
@@ -1226,65 +1279,103 @@ public sealed class TradeTapeRecorder : BackgroundService
 
     private bool ConflictArmed => Volatile.Read(ref _conflictArmed) != 0;
 
+    private bool StoodDownWithoutLogin => Volatile.Read(ref _stoodDownWithoutLogin) != 0;
+
     /// <summary>
-    /// Stops further subscribes and turns the venue client's automatic reconnect off.
+    /// Latches the stop and turns the venue client's automatic reconnect off. The remembered operator
+    /// value is not replaced with <see langword="true"/>.
     /// </summary>
-    /// <remarks>
-    /// The client's <c>ReconnectPolicy</c> reads <see cref="ProjectXWebSocketOptions.AutoReconnect"/> on every
-    /// attempt and returns no delay when it is false, which is what ends the fight with the platform.
-    /// </remarks>
     private void ArmSessionConflict()
     {
         Interlocked.Exchange(ref _conflictArmed, 1);
+        _loginGate.LatchStop();
         if (_socketOptions is not null)
         {
-            _socketOptions.AutoReconnect = false;
+            _loginGate.SuppressAutomaticRetry(_socketOptions);
         }
     }
 
     private async Task ProbeSessionAsync(CancellationToken cancellationToken)
     {
-        if (ConflictArmed || _probe is null)
-        {
-            return;
-        }
-
-        SessionProbeVerdict verdict;
         try
         {
-            verdict = await _probe.ProbeAsync(cancellationToken).ConfigureAwait(false);
-        }
-        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-        {
-            throw;
-        }
-        catch (Exception exception)
-        {
-            _logger.LogWarning(
-                exception,
-                "The session probe failed. The hub drop is being treated as a transport fault.");
-            verdict = SessionProbeVerdict.Inconclusive;
-        }
+            if (ConflictArmed || _loginGate.StopLatched || _probe is null)
+            {
+                return;
+            }
 
-        if (ConflictArmed)
-        {
-            return;
-        }
+            SessionProbeVerdict verdict;
+            try
+            {
+                verdict = await _probe.ProbeAsync(cancellationToken).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception)
+            {
+                _logger.LogWarning(
+                    "The session probe failed. The result is inconclusive, and this process will not call loginKey.");
+                verdict = SessionProbeVerdict.Inconclusive;
+            }
 
-        if (verdict == SessionProbeVerdict.Conflict)
-        {
-            await StopForSessionConflictAsync(SessionConflictSource.Api, cancellationToken)
-                .ConfigureAwait(false);
-            return;
-        }
+            // The stop wins. A valid answer must not turn reconnect back on or connect the hub.
+            if (ConflictArmed || _loginGate.StopLatched)
+            {
+                return;
+            }
 
-        if (_socketOptions is not null)
-        {
-            _socketOptions.AutoReconnect = true;
-        }
+            if (verdict == SessionProbeVerdict.Conflict)
+            {
+                _loginGate.LatchStop();
+                await StopForSessionConflictAsync(SessionConflictSource.Api, cancellationToken)
+                    .ConfigureAwait(false);
+                return;
+            }
 
+            if (verdict == SessionProbeVerdict.Valid)
+            {
+                if (ConflictArmed || _loginGate.StopLatched)
+                {
+                    return;
+                }
+
+                _loginGate.ClearSuspecting();
+                if (ConflictArmed || _loginGate.StopLatched)
+                {
+                    _loginGate.BeginSuspecting();
+                    return;
+                }
+
+                await ConnectAfterAValidProbeAsync(cancellationToken).ConfigureAwait(false);
+                return;
+            }
+
+            await WaitAndReprobeAsync(cancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            _loginGate.EndProbe();
+        }
+    }
+
+    /// <summary>
+    /// Connects the market hub only after a valid probe, and only when no stop is latched and no
+    /// SignalR reconnect is already in progress. Does not turn <c>AutoReconnect</c> back on.
+    /// </summary>
+    private async Task ConnectAfterAValidProbeAsync(CancellationToken cancellationToken)
+    {
         IProjectXWebSocketClient? hub = _hub;
-        if (hub is null || hub.MarketHubState == ConnectionState.Connected)
+        if (hub is null
+            || hub.MarketHubState == ConnectionState.Connected
+            || hub.MarketHubState == ConnectionState.Reconnecting
+            || hub.MarketHubState == ConnectionState.Connecting)
+        {
+            return;
+        }
+
+        if (ConflictArmed || _loginGate.StopLatched)
         {
             return;
         }
@@ -1297,12 +1388,88 @@ public sealed class TradeTapeRecorder : BackgroundService
         {
             throw;
         }
-        catch (Exception exception)
+        catch (Exception)
         {
             _logger.LogError(
-                exception,
-                "The trade-tape recorder could not reconnect after a hub drop that was not a session conflict.");
+                "The trade-tape recorder could not reconnect after a hub drop that was not a session conflict. It will not call loginKey.");
         }
+    }
+
+    /// <summary>
+    /// An inconclusive probe does not connect and does not log in. A fresh held token waits out the
+    /// backoff and is probed again. No fresh token stops the recorder, because another probe cannot
+    /// succeed without a login.
+    /// </summary>
+    private async Task WaitAndReprobeAsync(CancellationToken cancellationToken)
+    {
+        if (_held is not null && !_held.TryReadFresh(_clock.GetUtcNow(), out _))
+        {
+            await StopRatherThanLoginAsync(cancellationToken).ConfigureAwait(false);
+            return;
+        }
+
+        _logger.LogWarning(
+            "The session probe was inconclusive. The market hub stays disconnected and this process will not call loginKey. It will probe the held token again after {Backoff}.",
+            _market.SessionConflictBackoff);
+
+        try
+        {
+            await Task.Delay(_market.SessionConflictBackoff, _clock, cancellationToken).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+
+        if (ConflictArmed || _loginGate.StopLatched)
+        {
+            return;
+        }
+
+        // EndProbe in the caller's finally releases this flight. Begin the next one only after that,
+        // by enqueueing rather than recursing, so a zero backoff cannot overflow the stack.
+        Enqueue(LifecycleWork.ReprobeAfterBackoff);
+    }
+
+    private async Task ReprobeAfterBackoffAsync(CancellationToken cancellationToken)
+    {
+        if (ConflictArmed || _loginGate.StopLatched || _probe is null)
+        {
+            return;
+        }
+
+        if (!_loginGate.TryBeginProbe())
+        {
+            return;
+        }
+
+        await ProbeSessionAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    private async Task StopRatherThanLoginAsync(CancellationToken cancellationToken)
+    {
+        if (Interlocked.Exchange(ref _conflictStopStarted, 1) != 0)
+        {
+            return;
+        }
+
+        Interlocked.Exchange(ref _stoodDownWithoutLogin, 1);
+        _loginGate.LatchStop();
+        if (_socketOptions is not null)
+        {
+            _loginGate.SuppressAutomaticRetry(_socketOptions);
+        }
+
+        _logger.LogWarning(
+            "The trade-tape recorder is stopping because it does not hold a fresh TopstepX token, and it "
+            + "will not call loginKey to obtain one. It will not reconnect the market hub. Restart this "
+            + "server to record again.");
+
+        _tape.Set(TapeAvailability.StoppedRatherThanLogin());
+        _ledger.CloseOpenRangesAt(_clock.GetUtcNow());
+        Enqueue(LifecycleWork.PersistCloses);
+        await DisconnectIfIdleAsync().ConfigureAwait(false);
+        await FinishConflictStopAsync(cancellationToken).ConfigureAwait(false);
     }
 
     private async Task StopForSessionConflictAsync(string source, CancellationToken cancellationToken)
@@ -1317,42 +1484,59 @@ public sealed class TradeTapeRecorder : BackgroundService
         {
             _logger.LogWarning(
                 "The trade-tape recorder is stopping because this TopstepX login conflicted with another "
-                + "session ({Source}). It will disconnect and will not reconnect, so this process does not "
-                + "kick the trading platform offline. Close that platform and restart this server to record "
-                + "again, or set MarketData__StopOnSessionConflict=false to keep reconnecting.",
+                + "session ({Source}). It will disconnect the market hub and will not reconnect it, and it "
+                + "will not call loginKey, so a new login does not kick the trading platform offline. Tools "
+                + "may keep calling the venue with the token already held until that token ages out; after "
+                + "that they fail instead of logging in. Restart this server to record again, or set "
+                + "MarketData__StopOnSessionConflict=false to keep reconnecting.",
                 source);
 
             _tape.Set(TapeAvailability.StoppedForSessionConflict());
             _ledger.CloseOpenRangesAt(_clock.GetUtcNow());
-            _lifecycle.Writer.TryWrite(LifecycleWork.PersistCloses);
+            Enqueue(LifecycleWork.PersistCloses);
+            await DisconnectIfIdleAsync().ConfigureAwait(false);
+            await FinishConflictStopAsync(cancellationToken).ConfigureAwait(false);
+        }
+    }
 
-            IProjectXWebSocketClient? hub = _hub;
-            if (hub is not null)
-            {
-                try
-                {
-                    await hub.DisconnectMarketHubAsync(CancellationToken.None).ConfigureAwait(false);
-                }
-                catch (Exception exception)
-                {
-                    _logger.LogError(
-                        exception,
-                        "The trade-tape recorder could not disconnect the market hub after a session conflict.");
-                }
-            }
+    /// <summary>
+    /// Disconnects a hub that is up. A SignalR reconnect already in progress is left alone:
+    /// <c>StopAsync</c> would abort it.
+    /// </summary>
+    private async Task DisconnectIfIdleAsync()
+    {
+        IProjectXWebSocketClient? hub = _hub;
+        if (hub is null
+            || hub.MarketHubState == ConnectionState.Reconnecting
+            || hub.MarketHubState == ConnectionState.Connecting)
+        {
+            return;
+        }
 
-            try
-            {
-                await Task.Delay(_market.SessionConflictBackoff, _clock, cancellationToken).ConfigureAwait(false);
-            }
-            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-            {
-            }
+        try
+        {
+            await hub.DisconnectMarketHubAsync(CancellationToken.None).ConfigureAwait(false);
+        }
+        catch (Exception)
+        {
+            _logger.LogError(
+                "The trade-tape recorder could not disconnect the market hub after a session conflict.");
+        }
+    }
 
-            if (!_conflictStop.IsCancellationRequested)
-            {
-                _conflictStop.Cancel();
-            }
+    private async Task FinishConflictStopAsync(CancellationToken cancellationToken)
+    {
+        try
+        {
+            await Task.Delay(_market.SessionConflictBackoff, _clock, cancellationToken).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+        }
+
+        if (!_conflictStop.IsCancellationRequested)
+        {
+            _conflictStop.Cancel();
         }
     }
 
@@ -1379,6 +1563,7 @@ public sealed class TradeTapeRecorder : BackgroundService
         RestoreSubscriptions,
         PersistCloses,
         ProbeSession,
+        ReprobeAfterBackoff,
         StopForHubConflict,
     }
 }

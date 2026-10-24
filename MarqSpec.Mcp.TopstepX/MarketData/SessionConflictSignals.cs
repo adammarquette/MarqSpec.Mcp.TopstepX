@@ -12,8 +12,9 @@ public enum SessionProbeVerdict
     Conflict = 1,
 
     /// <summary>
-    /// The probe could not decide: the token had expired, the code was unknown, or the call did not land.
-    /// That is not evidence of another session.
+    /// The probe could not decide: no fresh token was held, the token had expired, the code was unknown,
+    /// the call timed out, or the call did not land. That is not evidence of another session, and it is
+    /// not a reason to log in or reconnect.
     /// </summary>
     Inconclusive = 2,
 }
@@ -39,14 +40,17 @@ public interface ISessionConflictProbe
 /// <remarks>
 /// <para>
 /// TopstepX allows one device session. The trading platform and this recorder share the login, and the
-/// client's automatic reconnect logs in again, which disconnects the platform. The phrases and the
-/// validate codes below are the signals the recorder stops on. A closed socket with no such signal is a
-/// transport drop and is reconnected.
+/// client's automatic reconnect logs in again, which disconnects the platform. A hub close is a conflict
+/// only when its text contains a documented <c>ValidateErrorCode</c> name. Anything else is probed with
+/// the token already held, and only <c>InvalidSession</c>, <c>SessionNotFound</c>, or HTTP 401 stops
+/// the recorder. An inconclusive probe does not log in and does not reconnect.
 /// </para>
 /// <para>
-/// Validate codes are the gateway's <c>ValidateErrorCode</c>: 1 <c>InvalidSession</c>, 2
+/// Validate codes are the gateway's <c>ValidateErrorCode</c>, quoted from
+/// <c>https://api.topstepx.com/swagger/v1/swagger.json</c>: 0 Success, 1 <c>InvalidSession</c>, 2
 /// <c>SessionNotFound</c>, 3 <c>ExpiredToken</c>, 4 <c>UnknownError</c>. Expiry is not a conflict — the
-/// session aged out, nobody else took it.
+/// session aged out, nobody else took it. The realtime guide does not publish hub close sentences, so
+/// phrases such as "another session" are not matched.
 /// </para>
 /// </remarks>
 public static class SessionConflictSignals
@@ -63,23 +67,14 @@ public static class SessionConflictSignals
     /// <summary>Gateway <c>ValidateErrorCode.UnknownError</c>. Not a conflict.</summary>
     public const int UnknownError = 4;
 
+    // Documented ValidateErrorCode names only. The gateway realtime guide does not publish the
+    // hub's close sentences, so undocumented phrases are not treated as a conflict.
     private static readonly string[] _hubPhrases =
     [
-        "another session",
-        "another device",
-        "other device",
-        "new device",
-        "concurrent session",
-        "multiple session",
-        "logged in elsewhere",
-        "logged in from another",
-        "session conflict",
         "invalid session",
         "invalidsession",
         "session not found",
         "sessionnotfound",
-        "session has ended",
-        "session was ended",
     ];
 
     /// <summary>Whether a hub close message is a session conflict rather than a transport drop.</summary>

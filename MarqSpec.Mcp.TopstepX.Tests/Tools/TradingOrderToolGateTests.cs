@@ -647,6 +647,63 @@ public sealed class TradingOrderToolGateTests
     }
 
     [Fact]
+    public async Task TradingRiskGate_PlaceOrder_SwallowedDailyCapReleaseAfterAck_ReturnsOutcomeUnknown()
+    {
+        _gateway.Next = Acknowledged(77);
+        _daily.SwallowReleaseFailure = true;
+        using HostTelemetry telemetry = new();
+        using MetricCollector<long> writes = ListenWrites(telemetry);
+        List<Activity> spans = [];
+        using ActivityListener listener = Listen(spans, telemetry.Activities);
+        TradingOrderTools tools = Tools(telemetry, new TradingExecutionOptions { Enabled = true });
+
+        ToolPayloads.TradingWriteResult result = await tools.SubmitPlace(
+            PracticeAccountId,
+            MesContract,
+            ExecutionOrderType.Market,
+            VenueSide.Buy,
+            1,
+            "swallowed-release-after-ack");
+
+        AssertStructuredOutcomeUnknown(result);
+        result.ParsedStage.Should().Be(AccountStage.Unknown);
+        result.RetrySafety.Should().NotBe(ToolPayloads.TradingRetrySafety.SafeToRetry);
+        _gateway.PlaceOrderCalls.Should().Be(1);
+        _daily.LockAcquisitions.Should().Be(1);
+        _daily.LastReleaseFailed.Should().BeTrue();
+        _audit.Entries.Should().Contain(entry =>
+            entry.Outcome == TradingAuditOutcomes.Live && entry.OrderId == 77);
+        AssertWrite(writes, spans, TradingMcpTools.PlaceOrderOperation, ExecutionWriteRefusal.OutcomeUnknown);
+    }
+
+    [Fact]
+    public async Task TradingRiskGate_PlaceOrder_SwallowedDailyCapReleaseBeforeSend_KeepsTheDailyCapRefusal()
+    {
+        _daily.ContractsToday = 10;
+        _daily.SwallowReleaseFailure = true;
+        using HostTelemetry telemetry = new();
+        TradingOrderTools tools = Tools(
+            telemetry,
+            new TradingExecutionOptions { Enabled = true, MaxContractsPerDay = 10 });
+
+        ToolPayloads.TradingWriteResult result = await tools.SubmitPlace(
+            PracticeAccountId,
+            MesContract,
+            ExecutionOrderType.Market,
+            VenueSide.Buy,
+            1,
+            "swallowed-release-before-send");
+
+        result.Status.Should().Be(nameof(TradingAttemptOutcome.Refused));
+        result.RetrySafety.Should().Be(ToolPayloads.TradingRetrySafety.SafeToRetry);
+        result.RetrySafety.Should().NotBe(ToolPayloads.TradingRetrySafety.OutcomeUnknown);
+        result.RefusalCode.Should().Be(ExecutionWriteRefusal.DailyContractLimitExceeded);
+        _gateway.PlaceOrderCalls.Should().Be(0);
+        _daily.LockAcquisitions.Should().Be(1);
+        _daily.LastReleaseFailed.Should().BeTrue();
+    }
+
+    [Fact]
     public async Task TradingRiskGate_PlaceOrder_ThrowingSpanListenerAfterAck_ReturnsOutcomeUnknown()
     {
         _gateway.Next = Acknowledged(77);
@@ -1146,7 +1203,7 @@ public sealed class TradingOrderToolGateTests
         ];
         IReadOnlyList<VenueOrder> orders = [OpenOrder()];
 
-        TradingRiskGate gate = new(
+        return new TradingRiskGate(
             executionGate,
             _gateway,
             new StubMarketDataGateway(accounts, orders, () => _accountsFailure),
@@ -1156,11 +1213,8 @@ public sealed class TradingOrderToolGateTests
             _audit,
             denylist,
             new TradingWriteVenueAccountCache(),
-            telemetry)
-        {
-            CleanupFaultForTest = _cleanupFaultForTest,
-        };
-        return gate;
+            telemetry,
+            _cleanupFaultForTest);
     }
 
     private static Task<ToolPayloads.TradingWriteResult> Call(
@@ -1395,16 +1449,24 @@ public sealed class TradingOrderToolGateTests
 
         public int ContractsToday { get; set; }
 
-        public bool LastReleaseFailed => false;
+        public bool LastReleaseFailed { get; private set; }
 
         public bool ThrowOnDispose { get; set; }
 
         public Exception? DisposeException { get; set; }
 
+        /// <summary>
+        /// The real session lock swallows a release failure and reports <see cref="LastReleaseFailed"/>
+        /// without throwing. Set beside <see cref="ThrowOnDispose"/> when the dispose exception and the flag
+        /// must both be visible to the gate.
+        /// </summary>
+        public bool SwallowReleaseFailure { get; set; }
+
         public Task<IAsyncDisposable> AcquireAccountDayLockAsync(int accountId, CancellationToken cancellationToken)
         {
             LockAcquisitions++;
-            return Task.FromResult<IAsyncDisposable>(new NoopLock(ThrowOnDispose, DisposeException));
+            LastReleaseFailed = false;
+            return Task.FromResult<IAsyncDisposable>(new NoopLock(this));
         }
 
         public Task<int> GetConservativeContractTotalTodayUtcAsync(
@@ -1412,16 +1474,21 @@ public sealed class TradingOrderToolGateTests
             CancellationToken cancellationToken) =>
             Task.FromResult(ContractsToday);
 
-        private sealed class NoopLock(bool throwOnDispose, Exception? disposeException) : IAsyncDisposable
+        private sealed class NoopLock(FakeDailyCapCoordinator owner) : IAsyncDisposable
         {
             public ValueTask DisposeAsync()
             {
-                if (!throwOnDispose)
+                if (owner.SwallowReleaseFailure)
+                {
+                    owner.LastReleaseFailed = true;
+                }
+
+                if (!owner.ThrowOnDispose)
                 {
                     return ValueTask.CompletedTask;
                 }
 
-                throw disposeException ?? new InvalidOperationException("advisory unlock failed");
+                throw owner.DisposeException ?? new InvalidOperationException("advisory unlock failed");
             }
         }
     }

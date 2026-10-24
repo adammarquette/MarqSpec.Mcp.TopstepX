@@ -387,18 +387,19 @@ a deploy limit: zero is refused because Npgsql treats it as no timeout. Compose 
 `${Migrations__CommandTimeoutSeconds:-3600}`.
 
 `MigrateAsync` runs in `Main` before the process listens, so `/health` does not answer while a migration
-is in progress. Railway's default healthcheck timeout is 300 seconds. A deploy that misses that window is
-marked failed, and the previous deployment keeps running. That is not a container kill, and a restart
+is in progress. Railway's default healthcheck timeout is 300 seconds. Set
+`RAILWAY_HEALTHCHECK_TIMEOUT_SEC` to at least the expected build. That variable is the timeout. Once a
+Railway config is present, its healthcheck timeout is the same setting. A deploy that misses the window
+stops the failed container and is marked failed, while the previous deployment keeps serving. A restart
 policy does not rebuild the index by itself. The next deploy drops an invalid index and builds it again.
 
-The healthcheck timeout will come from the Railway config in PR #774 (`.railway/railway.ts`,
-`healthcheckTimeout` 3900) once that change lands. The reconcile of this note with that config is part of
-PR #774.
-
 One replica of each service is not enough on its own. The server and the recorder both migrate, and they
-take the same session advisory lock. The second waits, up to the command timeout, then fails with `57014`
-and exits. It does not leave a partial index: the create is `IF NOT EXISTS` after the lock. The healthcheck
-window has to cover that wait as well as the build.
+take the same session advisory lock. The second waits, up to the command timeout (default 3600 seconds),
+then fails with `57014` and exits. It does not leave a partial index: the create is `IF NOT EXISTS` after
+the lock. Worst case the first build holds the lock for the whole command timeout, and the second has
+already spent time on earlier commands before it starts waiting. A 3900-second healthcheck is 300 seconds
+past that default command timeout, so it does not cover a full wait that begins after other migration
+work. Size `RAILWAY_HEALTHCHECK_TIMEOUT_SEC` for the build plus that wait, not for the build alone.
 
 The composed server has no healthcheck of its own. Postgres uses `pg_isready` with `start_period: 20s`,
 and the server waits on that, not on the server listening. If you add a healthcheck on the server that

@@ -95,20 +95,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `ES,NQ,MES,MNQ,MGC,MCL` — the same string in `MarketDataOptions`, `.env.example` and compose —
   so MES / MNQ / MGC / MCL no longer return "Unknown instrument" out of the box (gh#694).
 
-### Fixed
-
-- **Migration command timeout (gh#756, PR #761).** The previous command timeout is restored when
-  `MigrateAsync` throws, including when a migration command fails, and when the call is cancelled. Startup
-  passes the host stopping token into that migration, the same token the reach probe already uses. The
-  index-build probe and unlock use the migration command's timeout. An unlock that throws a database,
-  timeout, or invalid-operation error is logged and does not replace the original command error. A missing
-  logger is `NullLogger`. Cancellation and fatal exceptions still propagate.
-  `documentation/deployment.md` records that a Railway healthcheck miss fails the deploy and leaves the
-  previous deployment running. The healthcheck timeout will come from PR #774. The server and the recorder
-  both migrate against the same advisory lock, so the healthcheck window has to cover the wait. A
-  plain-Postgres build of the trade index blocks writes on `Trades` for the build. The seven-day ceiling
-  stays a typo guard.
-
 ### Added
 
 - **`get_recorder_health` and `GET /health/recorder` (gh#756).** Read-only report of `feedConnected`, `feed`,
@@ -219,6 +205,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   suffix the cap appends. The gate logs method, path, reason, `sub` and `client_id` through it, and the
   `reselect-bars` command-line refusal does too. The token is still never logged (gh#747,
   [ADR-0007](documentation/adr/0007-dual-transport.md)).
+
+- **Migration command timeout (gh#756, PR #761).** The previous command timeout is restored when
+  `MigrateAsync` throws, including when a migration command fails, and when the call is cancelled. Startup
+  passes the host stopping token into that migration, the same token the reach probe already uses. The
+  index-build probe and unlock use the migration command's timeout, on the async failure path as well as
+  the sync one. An unlock that throws a database, timeout, or invalid-operation error is logged and does
+  not replace the original command error. A failure while resolving or writing that log is discarded. A
+  missing logger is `NullLogger`. Cancellation and fatal exceptions still propagate.
+  `documentation/deployment.md` records that a missed Railway healthcheck stops the failed container and
+  marks the deploy failed, while the previous deployment keeps serving. `RAILWAY_HEALTHCHECK_TIMEOUT_SEC`
+  is that timeout. The server and the recorder both migrate against the same advisory lock, so the window
+  has to cover the build plus the wait. A plain-Postgres build of the trade index blocks writes on
+  `Trades` for the build. The seven-day ceiling stays a typo guard.
 
 ## [0.5.0] - 2026-09-11
 

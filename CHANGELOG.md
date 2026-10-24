@@ -39,11 +39,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   is `idempotency_key_too_long` and writes no row. Modify charges the full new size. When trading is enabled,
   an empty `Trading__AllowedAccountIds` fails startup. The kill switch still blocks cancel and close; that
   block is pending Adam's decision.
-- **Railway deploy template** (gh#758). `.railway/railway.ts` describes `postgres` (Timescale pg17 on a
-  volume), a public OAuth `server` and a private single-replica `recorder`, all from pinned images; secrets are
-  Railway shared variables. A new `railway-template` CI job checks it offline (not yet required), and
-  `no-order-path` now holds `Trading__Enabled` in `.railway/`. Retention keys are proposed only, pending an
-  ADR; ADR-0025 (Railway as the target) is a draft. See
+- **Railway deploy template** (gh#758). `.railway/railway.ts` describes three image-sourced services:
+  `postgres` (Timescale pg17, pinned by digest), a public OAuth `server`, and a private single-replica
+  `recorder`. Both server roles run one pinned image, and `/health` reports its tag and digest. Production
+  keeps Postgres on a volume; staging and other environments are disposable, with no volume and no export.
+  Secrets are Railway shared variables. A new `railway-template` CI job checks the template offline for every
+  environment name; it is not a required check yet. `no-order-path` now refuses any `Trading__Enabled` in
+  `.railway/` that is not the literal `"false"`. Nothing is deployed by this change. ADR-0025 (Railway as the
+  target) is a draft; retention keys are proposed names only, pending their own ADR. See
   [`documentation/deployment.md`](documentation/deployment.md#railway-gh758).
 
 ### Removed

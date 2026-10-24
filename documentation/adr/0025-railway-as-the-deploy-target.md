@@ -16,32 +16,56 @@ images stay private on GHCR, and TopstepX ships only as an image.
 
 ## Decision (proposed)
 
-1. **The Railway project is described by `.railway/railway.ts`**, Railway's Infrastructure-as-Code file. The
-   legacy `railway.json` / `railway.toml` is deprecated and not used.
-2. **Image sources only.** `server` and `recorder` run the private GHCR image pinned to `X.Y.Z` and/or
-   `@sha256:`, with auto-updates off. Postgres is `timescale/timescaledb-ha:pg17` on a Railway volume.
-   Railway never builds this repository.
-3. **Two roles from one image.** `server` is public and runs OAuth. `recorder` records the tape, is private,
-   and runs a single replica.
-4. **Secrets are environment shared variables**, referenced from the file and never stored in it. The GHCR
+1. **`.railway/railway.ts` describes the Railway project.** This is Railway's Infrastructure-as-Code file;
+   the legacy `railway.json` / `railway.toml` is deprecated and not used.
+2. **Image sources only.** `server` and `recorder` run ONE GHCR image constant, pinned `X.Y.Z@sha256:`, with
+   auto-updates off. `Deployment__Version` / `Deployment__ImageDigest` are derived from that constant.
+   Postgres is `timescale/timescaledb-ha:pg17`, pinned by digest. Railway never builds this repository.
+3. **Two roles from one image.** `server` is public and runs OAuth; its resource URL is its own Railway
+   domain over https. `recorder` records the tape, is private, has no OAuth keys, and runs one replica.
+4. **Staging is disposable; production keeps the data.** Outside production there is no volume, no backups
+   and no tape export, so every redeploy starts with an empty database. Production requires the volume.
+5. **Secrets are environment shared variables.** The file references them and never stores them. The GHCR
    pull credential is a dashboard setting.
-5. **CI checks the template offline** (`railway-template`, plus `no-order-path` for `Trading__Enabled`).
-   Changes made in the dashboard stay unverifiable, and this ADR says so rather than pretending otherwise.
-6. **Swappable:** keys and images match compose, so another orchestrator can be driven from the same facts.
+6. **CI checks the template offline.** `railway-template` evaluates it for every environment name; the
+   required `no-order-path` holds a literal `Trading__Enabled: "false"`. Dashboard edits stay unverifiable,
+   and this ADR says so rather than pretending otherwise.
+7. **Swappable, not a mirror.** The template reuses compose's image and configuration key *names*, so another
+   orchestrator can be driven from the same facts. Values differ where Railway differs (ports, startup wait,
+   auth); `deployment.md` lists each difference.
+
+**ADR-0021's load balancer, mapped onto Railway's edge.** ADR-0021 put a TLS-terminating load balancer in
+front of a plaintext `8080` listener and health-checked `/health`. On Railway:
+- Railway's edge terminates TLS and routes to `PORT=8080`;
+- the deployment healthcheck is `/health`;
+- the edge is `server`'s only path in, so forwarded headers are trusted there and nowhere else;
+- `recorder` has no edge at all.
 
 ## Consequences
 
-- An Accepted version of this record supersedes the "Running the new image ... is not automated here"
-  framing in `deployment.md` only if apply is later automated. This draft does not automate it.
-- The Postgres volume relies on `RAILWAY_RUN_UID=0` plus the image's root-then-`gosu` entrypoint. Confirm it
-  on staging before accepting.
-- A recorder redeploy briefly runs two recorders. See `deployment.md` and the lease's skew caveat.
+- **What this ADR changes.** It names a target; it does not automate one. Applying the template stays an
+  operator action (`railway config plan`, then `apply`). Production deploys stay manual until Adam approves
+  otherwise, so `deployment.md`'s "running the new image is not automated here" remains true for production.
+- **Postgres volume.** It relies on `RAILWAY_RUN_UID=0` plus the image's root-then-`gosu` entrypoint, which
+  has not been observed on Railway. Staging has no volume, so it is verified on the first production deploy.
+- **Recorder redeploys.** A redeploy briefly runs two recorders (`deployment.md`).
 
 ## Open items before acceptance
 
-- **Data retention** reverses "the tape is a record" (AddTradeTape migration, SchemaTests). It needs its own
-  ADR, and it must sequence after gh#755's export. Proposed key names are in `.env.example`.
-- Whether `server` and `recorder` both migrate at startup, or only one should.
-- Whether `railway-template` becomes a required check.
+- **Postgres verification:** on the first (manual) production deploy, `initdb` succeeds on the volume, and
+  one restart keeps the data.
+- **Railway Pro (decision for Adam):** pulling a private GHCR image needs Railway Pro. Either pay for it or
+  make the image public; the template is the same either way.
+- **Resource URL:** confirm `RAILWAY_PUBLIC_DOMAIN` is the host connectors use once a custom domain is added
+  (`check-deployment.sh` compares `resource` exactly).
+- **Version stamping:** `/health` reports the tag and digest derived from the image constant. Check that it
+  matches on the first deploy.
+- **Lease (Maker, product):** clock skew can let a second recorder write during a redeploy. Does a recorder
+  waiting on the lease report healthy?
+- **Migrations (Maker, product):** `server` and `recorder` both migrate at startup. Is that intended, or
+  should only one migrate?
+- **Data retention** reverses "the tape is a record" and is tracked as its own ADR issue, gh#763. No pruning until it
+  is accepted, and it sequences after gh#755's export.
+- **Required check:** whether `railway-template` becomes a required check (Adam's branch rule).
 
 Assisted-by: Grok Bot (Cursor)

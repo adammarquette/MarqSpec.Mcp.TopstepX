@@ -2,6 +2,7 @@ using FluentAssertions;
 using MarqSpec.Mcp.TopstepX.Configuration;
 using MarqSpec.Mcp.TopstepX.Data;
 using MarqSpec.Mcp.TopstepX.Data.Entities;
+using MarqSpec.Mcp.TopstepX.Domain.MarketData;
 using MarqSpec.Mcp.TopstepX.MarketData;
 using MarqSpec.Mcp.TopstepX.Telemetry;
 using MarqSpec.Mcp.TopstepX.Tests.Configuration;
@@ -63,6 +64,18 @@ public sealed class StdioClosedTapeReadTests : IDisposable
             RecordedAt = _recorded,
         });
         database.FootprintCells.AddRange(Cells());
+        database.Trades.Add(new TradeRecord
+        {
+            Venue = Venue,
+            Instrument = "ES",
+            ContractId = ContractId,
+            TradeTimeUtc = _runStart.AddMinutes(1),
+            Sequence = 1,
+            Price = 6800.00m,
+            Size = 50,
+            Direction = MarqSpec.Mcp.TopstepX.Domain.MarketData.TradeDirection.Buy,
+            RecordedAt = _recorded,
+        });
         database.SaveChanges();
     }
 
@@ -77,14 +90,15 @@ public sealed class StdioClosedTapeReadTests : IDisposable
         ToolPayloads.FootprintSeries payload = await tools.GetFootprint(
             "ES", FiveMinutes, _runStart, _runEnd, CancellationToken.None);
 
-        payload.Cells.Should().HaveCount(24);
+        payload.Cells.Should().ContainSingle().Which.Buy.Should().Be(50);
+        payload.Cells.Single().P.Should().Be(6800.00m);
         payload.Covered.Start.Should().Be(_runStart);
         payload.Covered.End.Should().Be(_runEnd);
         payload.Covered.Narrowed.Should().BeFalse();
         payload.Live.Should().BeFalse();
         payload.Reason.Should().Be(TapeClosedReadReason.NeverStarted);
-        payload.DataEndsAt.Should().Be(_runEnd);
-        payload.Partial.Should().BeFalse();
+        scope.ServiceProvider.GetRequiredService<TopstepXDbContext>().FootprintCells.Count()
+            .Should().Be(24, "the stale projection is not rewritten");
     }
 
     [Fact]
@@ -97,12 +111,11 @@ public sealed class StdioClosedTapeReadTests : IDisposable
             "ES", FiveMinutes, _runStart, _runEnd, CancellationToken.None);
 
         payload.PointOfControl.Should().Be(6800.00m);
+        payload.TotalVolume.Should().Be(50);
         payload.Covered.Start.Should().Be(_runStart);
         payload.Covered.End.Should().Be(_runEnd);
         payload.Live.Should().BeFalse();
         payload.Reason.Should().Be(TapeClosedReadReason.NeverStarted);
-        payload.DataEndsAt.Should().Be(_runEnd);
-        payload.Partial.Should().BeFalse();
     }
 
     private static void UseInMemoryStore(IServiceCollection services, string name)

@@ -29,7 +29,7 @@ namespace MarqSpec.Mcp.TopstepX.MarketData;
 /// to listening would let a tool succeed before the recorder had written anything.
 /// </para>
 /// </remarks>
-public sealed class TapeAvailabilityHolder
+public class TapeAvailabilityHolder
 {
     private volatile TapeAvailability _value = TapeAvailability.NeverStarted();
     private readonly ConcurrentDictionary<string, TapeAvailability> _byInstrument = new(StringComparer.Ordinal);
@@ -41,7 +41,11 @@ public sealed class TapeAvailabilityHolder
     /// <summary>The current subscription state for one instrument.</summary>
     /// <param name="instrument">The instrument symbol.</param>
     /// <returns>That instrument's tape health.</returns>
-    public TapeAvailability For(string instrument)
+    /// <remarks>
+    /// Virtual so a test double can answer the first read and a different value on the second.
+    /// Production has this one implementation. A tool that calls it twice can disagree with itself.
+    /// </remarks>
+    public virtual TapeAvailability For(string instrument)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(instrument);
 

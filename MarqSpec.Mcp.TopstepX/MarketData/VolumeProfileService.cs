@@ -146,6 +146,89 @@ public sealed class VolumeProfileService(
     }
 
     /// <summary>
+    /// Aggregates the closed window from stored prints. Nothing is written.
+    /// </summary>
+    /// <param name="venue">The venue.</param>
+    /// <param name="instrument">The instrument.</param>
+    /// <param name="resolutionMinutes">The bar size to bucket at.</param>
+    /// <param name="start">The start of the ask, inclusive.</param>
+    /// <param name="end">The end of the ask, exclusive.</param>
+    /// <param name="cancellationToken">The caller's cancellation token.</param>
+    /// <param name="health">
+    /// The recorder status read once for this call. A still-open row is not coverage while
+    /// this snapshot is not listening.
+    /// </param>
+    /// <returns>Cells from <see cref="FootprintAggregator"/> and the ledger window.</returns>
+    /// <remarks>
+    /// The recorder does not write footprint cells as it listens. A process that is not the
+    /// recorder therefore cannot serve the stored projection: it would be stale, partial, or
+    /// absent, and the refusal would tell a stdio caller to project. The tape is the record.
+    /// <see cref="FootprintAggregator.Aggregate"/> is pure, and this method does not call
+    /// <c>SaveChanges</c> (ADR-0016). Volume profile is
+    /// <see cref="VolumeProfileAggregator.From"/> over these same cells.
+    /// </remarks>
+    /// <exception cref="NoClosedTapeException">No closed tape overlaps the ask.</exception>
+    /// <exception cref="InvalidOperationException">The ask is entirely before recording began.</exception>
+    public async Task<FootprintRead> AggregateClosedCoverageAsync(
+        string venue,
+        InstrumentId instrument,
+        int resolutionMinutes,
+        DateTimeOffset start,
+        DateTimeOffset end,
+        CancellationToken cancellationToken,
+        TapeAvailability health)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(venue);
+        ArgumentNullException.ThrowIfNull(health);
+
+        if (resolutionMinutes <= 0)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(resolutionMinutes),
+                resolutionMinutes,
+                "A bar size must be positive.");
+        }
+
+        CoveredTapeWindow window = await ConfineAsync(
+                venue, instrument, start, end, cancellationToken, health)
+            .ConfigureAwait(false);
+
+        List<TradeRecord> rows = await _database.Trades
+            .AsNoTracking()
+            .Where(trade => trade.Venue == venue
+                && trade.Instrument == instrument.Symbol
+                && trade.ContractId == window.ContractId
+                && trade.TradeTimeUtc >= window.Start
+                && trade.TradeTimeUtc < window.End)
+            .ToListAsync(cancellationToken)
+            .ConfigureAwait(false);
+
+        List<TradePrint> prints =
+        [
+            .. rows.Select(row => new TradePrint(
+                row.Instrument,
+                row.ContractId,
+                row.TradeTimeUtc,
+                row.Price,
+                row.Size,
+                row.Direction)),
+        ];
+
+        List<FootprintCell> cells = [];
+
+        foreach (FootprintCell cell in FootprintAggregator.Aggregate(prints, resolutionMinutes))
+        {
+            if (VolumeProfileAggregator.BarOverlapsWindow(
+                cell.BucketStart, resolutionMinutes, window.Start, window.End))
+            {
+                cells.Add(cell);
+            }
+        }
+
+        return new FootprintRead(cells, window);
+    }
+
+    /// <summary>
     /// Confines the ask to the newest contiguous listening run, or refuses when no tape overlaps.
     /// </summary>
     private async Task<CoveredTapeWindow> ConfineAsync(

@@ -23,7 +23,7 @@ namespace MarqSpec.Mcp.TopstepX.Tools;
 /// </para>
 /// </remarks>
 /// <param name="volumeFront">The tape-derived front-month service.</param>
-public sealed class VolumeFrontReader(TapeVolumeFrontService volumeFront)
+public class VolumeFrontReader(TapeVolumeFrontService volumeFront)
 {
     private readonly TapeVolumeFrontService _volumeFront = volumeFront;
 
@@ -33,7 +33,7 @@ public sealed class VolumeFrontReader(TapeVolumeFrontService volumeFront)
     /// <param name="asOfUtc">The instant to evaluate, or null for the newest.</param>
     /// <param name="resolveGateway">Whether the gateway's live pick is asked for at all.</param>
     /// <returns>The front, as the payload reports it.</returns>
-    public async Task<ToolPayloads.VolumeFrontInfo> ReadAsync(
+    public virtual async Task<ToolPayloads.VolumeFrontInfo> ReadAsync(
         InstrumentId instrument,
         CancellationToken cancellationToken,
         DateTimeOffset? asOfUtc = null,

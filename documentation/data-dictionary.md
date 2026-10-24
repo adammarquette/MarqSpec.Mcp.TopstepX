@@ -794,8 +794,9 @@ delete tape.
 **This is not a retention policy** (`R-10.7`, gh#755). It records that a file was written and whether
 the Drive upload finished, so a later decision can check. `Retention__*` is not read.
 `UploadState = failed` means the local file and the local rows are still there, and `DriveFileId` is
-the last id that landed. `drive_disabled` means Drive was not configured. `pending` is the in-flight
-upload and is not a finished copy. Not a hypertable.
+the last id that landed. `drive_disabled` means Drive was not configured. `pending` is committed in its
+own transaction before the upload, so another session can see it, and it is not a finished copy. The
+file id is written in a second transaction after the upload returns. Not a hypertable.
 
 Index: `(Day, UploadState)` — the read that decision would make.
 

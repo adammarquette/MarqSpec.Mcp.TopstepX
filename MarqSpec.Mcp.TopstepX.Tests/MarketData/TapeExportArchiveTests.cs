@@ -283,6 +283,25 @@ public sealed class TapeExportArchiveTests
     }
 
     [Fact]
+    public void RelativePath_WhenTheSegmentBreaksTheNameRegex_Refuses()
+    {
+        string[] segments = [new string('A', 65), "CON ID"];
+        foreach (string segment in segments)
+        {
+            Action path = () => TapeExportArchive.RelativePath(
+                TapeExportArchive.TradesDirectory,
+                "test",
+                "ES",
+                segment,
+                0,
+                _day,
+                TapeExportArchive.CsvGzFormat);
+
+            path.Should().Throw<InvalidOperationException>();
+        }
+    }
+
+    [Fact]
     public void RelativePath_WhenTheContractContainsANul_Refuses()
     {
         Action path = () => TapeExportArchive.RelativePath(

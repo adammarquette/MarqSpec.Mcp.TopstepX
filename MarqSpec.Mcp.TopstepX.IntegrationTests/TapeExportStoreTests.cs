@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.Data.Common;
+using System.Globalization;
 using System.IO.Compression;
 using System.Text;
 using FluentAssertions;
@@ -15,6 +16,7 @@ using Microsoft.Extensions.Diagnostics.Metrics.Testing;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using Microsoft.Extensions.Time.Testing;
+using Npgsql;
 
 namespace MarqSpec.Mcp.TopstepX.IntegrationTests;
 
@@ -364,16 +366,38 @@ public sealed class TapeExportStoreTests : IAsyncLifetime
         receipt.DriveFileId.Should().Be("observed-file");
     }
 
+    [Fact]
+    public async Task Export_WhenTwoConnectionsRaceOneIdentity_CreatesOneDriveFile()
+    {
+        await SeedTradeAsync(On(_oldDay, 14), 1, 5123.25m);
+        string left = Path.Combine(_destination, "left");
+        string right = Path.Combine(_destination, "right");
+        Directory.CreateDirectory(left);
+        Directory.CreateDirectory(right);
+        RacingDriveClient client = new(_fixture.ConnectionString);
+        using HostTelemetry telemetry = new();
+        RetryingTapeDriveUploader uploader = new(client, telemetry);
+        await using TopstepXDbContext other = _fixture.CreateContext();
+
+        await Task.WhenAll(
+            Pass(telemetry, uploader, path: left).ExportAsync(null, CancellationToken.None),
+            Pass(telemetry, uploader, other, right).ExportAsync(null, CancellationToken.None));
+
+        client.CreatesPerIdentity.Should().NotBeEmpty();
+        client.CreatesPerIdentity.Values.Should().OnlyContain(count => count == 1);
+    }
+
     private TapeExportPass Pass(
         HostTelemetry telemetry,
         ITapeDriveUploader? drive = null,
-        TopstepXDbContext? database = null) =>
+        TopstepXDbContext? database = null,
+        string? path = null) =>
         new(
             database ?? _database,
             Options.Create(new TapeExportOptions
             {
                 Enabled = true,
-                Path = _destination,
+                Path = path ?? _destination,
                 Schedule = TapeExportOptions.DefaultSchedule,
                 Format = TapeExportOptions.DefaultFormat,
             }),
@@ -565,6 +589,55 @@ public sealed class TapeExportStoreTests : IAsyncLifetime
             {
                 gate.Release();
             }
+        }
+    }
+
+    /// <summary>
+    /// No in-process lock. The first create waits until a second caller is inside or a session is blocked
+    /// on an advisory lock, so removing <c>pg_advisory_lock</c> lets both creates land.
+    /// </summary>
+    private sealed class RacingDriveClient(string connectionString) : ITapeDriveClient
+    {
+        private readonly ConcurrentDictionary<string, int> _inside = new(StringComparer.Ordinal);
+        private readonly ConcurrentDictionary<string, int> _creates = new(StringComparer.Ordinal);
+
+        public IReadOnlyDictionary<string, int> CreatesPerIdentity => _creates;
+
+        public async Task<string> UploadAsync(TapeDriveUpload upload, CancellationToken cancellationToken)
+        {
+            string key = upload.Identity.Canonical();
+            if (!string.IsNullOrEmpty(upload.KnownFileId))
+            {
+                await using Stream ignored = upload.Open();
+                return upload.KnownFileId;
+            }
+
+            int ticket = _inside.AddOrUpdate(key, 1, (_, count) => count + 1);
+            if (ticket == 1)
+            {
+                DateTimeOffset until = DateTimeOffset.UtcNow.AddSeconds(8);
+                while (DateTimeOffset.UtcNow < until
+                    && _inside.GetValueOrDefault(key) < 2
+                    && !await AdvisoryWaiterAsync(cancellationToken).ConfigureAwait(false))
+                {
+                    await Task.Delay(20, cancellationToken).ConfigureAwait(false);
+                }
+            }
+
+            int created = _creates.AddOrUpdate(key, 1, (_, count) => count + 1);
+            await using Stream content = upload.Open();
+            return "race-" + created.ToString(CultureInfo.InvariantCulture);
+        }
+
+        private async Task<bool> AdvisoryWaiterAsync(CancellationToken cancellationToken)
+        {
+            await using NpgsqlConnection connection = new(connectionString);
+            await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
+            await using NpgsqlCommand command = new(
+                "SELECT COUNT(*) FROM pg_locks WHERE locktype = 'advisory' AND NOT granted",
+                connection);
+            object? scalar = await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
+            return Convert.ToInt64(scalar, CultureInfo.InvariantCulture) > 0;
         }
     }
 }

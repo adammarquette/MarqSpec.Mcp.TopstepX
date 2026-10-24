@@ -30,7 +30,11 @@ WORKDIR /app
 # this it prints "Cannot load library libgssapi_krb5.so.2" as the FIRST line in the log. It is harmless -- the
 # connection succeeds -- which is precisely the problem: an alarming error above a successful startup sends
 # the next person debugging something that is not broken.
-RUN apt-get update  && apt-get install -y --no-install-recommends libgssapi-krb5-2  && rm -rf /var/lib/apt/lists/*
+# util-linux provides runuser. A Railway volume is mounted as root; the documented start
+# command chowns it and then drops to uid 64198. The image entrypoint itself stays dotnet.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends libgssapi-krb5-2 util-linux \
+    && rm -rf /var/lib/apt/lists/*
 
 # Non-root. This process holds brokerage credentials and reaches the public internet; there is no reason for
 # it to be able to write to its own image.

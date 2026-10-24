@@ -799,12 +799,12 @@ public static class TapeExportArchive
                 contractId,
                 0,
                 TradeHeader,
-                StreamRows(rows),
+                rows.ToAsyncEnumerable(),
                 static row => TradeLine(row),
                 cancellationToken).ConfigureAwait(false));
             string parquetRelative = RelativePath(TradesDirectory, venue, instrument, contractId, 0, day.Day, ParquetFormat, generation);
             string parquet = Absolute(destination, parquetRelative);
-            await TapeExportParquet.WriteTradesAsync(parquet, StreamRows(rows), cancellationToken).ConfigureAwait(false);
+            await TapeExportParquet.WriteTradesAsync(parquet, rows.ToAsyncEnumerable(), cancellationToken).ConfigureAwait(false);
             files.Add(Describe(TradesDirectory, ParquetFormat, venue, instrument, contractId, 0, parquetRelative, rows.Count, Sha256Of(parquet)));
         }
 
@@ -827,12 +827,12 @@ public static class TapeExportArchive
                 contractId,
                 0,
                 CoverageHeader,
-                StreamRows(rows),
+                rows.ToAsyncEnumerable(),
                 static row => CoverageLine(row),
                 cancellationToken).ConfigureAwait(false));
             string parquetRelative = RelativePath(CoverageDirectory, venue, instrument, contractId, 0, day.Day, ParquetFormat, generation);
             string parquet = Absolute(destination, parquetRelative);
-            await TapeExportParquet.WriteCoverageAsync(parquet, StreamRows(rows), cancellationToken).ConfigureAwait(false);
+            await TapeExportParquet.WriteCoverageAsync(parquet, rows.ToAsyncEnumerable(), cancellationToken).ConfigureAwait(false);
             files.Add(Describe(CoverageDirectory, ParquetFormat, venue, instrument, contractId, 0, parquetRelative, rows.Count, Sha256Of(parquet)));
         }
 
@@ -855,12 +855,12 @@ public static class TapeExportArchive
                 string.Empty,
                 resolution,
                 FootprintHeader,
-                StreamRows(rows),
+                rows.ToAsyncEnumerable(),
                 static row => FootprintLine(row),
                 cancellationToken).ConfigureAwait(false));
             string parquetRelative = RelativePath(FootprintDirectory, venue, instrument, string.Empty, resolution, day.Day, ParquetFormat, generation);
             string parquet = Absolute(destination, parquetRelative);
-            await TapeExportParquet.WriteFootprintAsync(parquet, StreamRows(rows), cancellationToken).ConfigureAwait(false);
+            await TapeExportParquet.WriteFootprintAsync(parquet, rows.ToAsyncEnumerable(), cancellationToken).ConfigureAwait(false);
             files.Add(Describe("footprint", ParquetFormat, venue, instrument, string.Empty, resolution, parquetRelative, rows.Count, Sha256Of(parquet)));
         }
     }
@@ -956,15 +956,6 @@ public static class TapeExportArchive
             cancellationToken).ConfigureAwait(false);
 
         return Describe(kind, format, venue, instrument, contractId, resolutionMinutes, relative, count, Sha256Of(absolute));
-    }
-
-    private static async IAsyncEnumerable<T> StreamRows<T>(IEnumerable<T> rows)
-    {
-        foreach (T row in rows)
-        {
-            yield return row;
-            await Task.CompletedTask.ConfigureAwait(false);
-        }
     }
 
     private static TapeExportStoredFile Describe(
@@ -1244,10 +1235,6 @@ public static class TapeExportArchive
     private static string Segment(string value, string what)
     {
         if (value is null
-            || value.Contains('\0', StringComparison.Ordinal)
-            || value.Contains('/', StringComparison.Ordinal)
-            || value.Contains('\\', StringComparison.Ordinal)
-            || Path.IsPathRooted(value)
             || value is "." or ".."
             || !_segment.IsMatch(value))
         {
@@ -1324,13 +1311,7 @@ public static class TapeExportArchive
 
     private static bool IsLink(string path)
     {
-        FileAttributes attributes = File.GetAttributes(path);
-        if (attributes.HasFlag(FileAttributes.ReparsePoint))
-        {
-            return true;
-        }
-
-        return new FileInfo(path).LinkTarget is not null;
+        return File.GetAttributes(path).HasFlag(FileAttributes.ReparsePoint);
     }
 
     private static string DayName(DateOnly day) =>

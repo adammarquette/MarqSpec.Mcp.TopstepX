@@ -1,11 +1,15 @@
 using System.Collections.Concurrent;
 using System.Globalization;
+using System.Net.Http.Headers;
 using Google;
 using Google.Apis.Auth.OAuth2;
 using Google.Apis.Drive.v3;
+using Google.Apis.Http;
 using Google.Apis.Services;
 using Google.Apis.Upload;
 using MarqSpec.Mcp.TopstepX.Configuration;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 using DriveFile = Google.Apis.Drive.v3.Data.File;
 using FileList = Google.Apis.Drive.v3.Data.FileList;
 
@@ -35,20 +39,38 @@ public sealed class GoogleTapeDriveClient : ITapeDriveClient, IDisposable
 
     private const string FolderMime = "application/vnd.google-apps.folder";
 
+    private const string DuplicateFileMessage =
+        "Drive lookup found more than one file for an export identity. The first id is updated.";
+
     private readonly string _folderId;
     private readonly string? _jsonPath;
     private readonly string? _inlineJson;
+    private readonly ILogger _logger;
     private readonly DriveService? _injected;
     private readonly ConcurrentDictionary<string, string> _folders = new(StringComparer.Ordinal);
     private readonly ConcurrentDictionary<string, SemaphoreSlim> _keys = new(StringComparer.Ordinal);
+    private readonly ConcurrentDictionary<string, SemaphoreSlim> _folderGates = new(StringComparer.Ordinal);
     private readonly object _gate = new();
     private DriveService? _service;
 
+    /// <summary>The Drive service settings this process uses. The library's own 503 backoff is off.</summary>
+    /// <param name="credential">The scoped credential.</param>
+    /// <returns>An initializer whose backoff policy is <see cref="ExponentialBackOffPolicy.None"/>.</returns>
+    public static BaseClientService.Initializer ServiceInitializer(IConfigurableHttpClientInitializer credential) =>
+        new()
+        {
+            HttpClientInitializer = credential,
+            ApplicationName = "MarqSpec.Mcp.TopstepX",
+            DefaultExponentialBackOffPolicy = ExponentialBackOffPolicy.None,
+        };
+
     /// <summary>Stores the folder id and whichever credential source is set. Does not call Drive.</summary>
     /// <param name="drive">The bound Drive settings. A path wins over inline JSON when both are set.</param>
-    public GoogleTapeDriveClient(TapeExportDriveOptions drive)
+    /// <param name="logger">Receives the duplicate-file line. Null logs nowhere.</param>
+    public GoogleTapeDriveClient(TapeExportDriveOptions drive, ILogger<GoogleTapeDriveClient>? logger = null)
     {
         ArgumentNullException.ThrowIfNull(drive);
+        _logger = logger ?? NullLogger<GoogleTapeDriveClient>.Instance;
         _folderId = drive.FolderId.Trim();
         if (!string.IsNullOrWhiteSpace(drive.ServiceAccountJsonPath))
         {
@@ -65,13 +87,16 @@ public sealed class GoogleTapeDriveClient : ITapeDriveClient, IDisposable
     /// <summary>Uses a service the caller already built, so a test can stub HTTP. Does not read a credential.</summary>
     /// <param name="folderId">The parent folder id.</param>
     /// <param name="service">The Drive service. Disposed with this client.</param>
-    public GoogleTapeDriveClient(string folderId, DriveService service)
+    /// <param name="logger">Receives the duplicate-file line. Null logs nowhere.</param>
+    public GoogleTapeDriveClient(string folderId, DriveService service, ILogger<GoogleTapeDriveClient>? logger = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(folderId);
         ArgumentNullException.ThrowIfNull(service);
+        _logger = logger ?? NullLogger<GoogleTapeDriveClient>.Instance;
         _folderId = folderId;
         _injected = service;
         _service = service;
+        Attach(service);
     }
 
     /// <inheritdoc />
@@ -135,6 +160,11 @@ public sealed class GoogleTapeDriveClient : ITapeDriveClient, IDisposable
         {
             gate.Dispose();
         }
+
+        foreach (SemaphoreSlim gate in _folderGates.Values)
+        {
+            gate.Dispose();
+        }
     }
 
     private DriveService Service()
@@ -157,11 +187,8 @@ public sealed class GoogleTapeDriveClient : ITapeDriveClient, IDisposable
                     ? CredentialFactory.FromFile<ServiceAccountCredential>(_jsonPath)
                     : CredentialFactory.FromJson<ServiceAccountCredential>(_inlineJson ?? string.Empty);
                 GoogleCredential credential = account.ToGoogleCredential().CreateScoped(OAuthScope);
-                _service = new DriveService(new BaseClientService.Initializer
-                {
-                    HttpClientInitializer = credential,
-                    ApplicationName = "MarqSpec.Mcp.TopstepX",
-                });
+                _service = new DriveService(ServiceInitializer(credential));
+                Attach(_service);
                 return _service;
             }
             catch (Exception)
@@ -211,6 +238,57 @@ public sealed class GoogleTapeDriveClient : ITapeDriveClient, IDisposable
             return cached;
         }
 
+        SemaphoreSlim folderGate = _folderGates.GetOrAdd(cacheKey, _ => new SemaphoreSlim(1, 1));
+        await folderGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            if (_folders.TryGetValue(cacheKey, out cached))
+            {
+                return cached;
+            }
+
+            string? existing = await FirstFolderAsync(service, parentId, name, cancellationToken).ConfigureAwait(false);
+            if (existing is not null)
+            {
+                _folders[cacheKey] = existing;
+                return existing;
+            }
+
+            FilesResource.CreateRequest request = service.Files.Create(new DriveFile
+            {
+                Name = name,
+                MimeType = FolderMime,
+                Parents = [parentId],
+            });
+            request.Fields = "id";
+            request.SupportsAllDrives = true;
+            DriveFile created = await ExecuteAsync(request.ExecuteAsync, cancellationToken).ConfigureAwait(false);
+            string? again = await FirstFolderAsync(service, parentId, name, cancellationToken).ConfigureAwait(false);
+            string? chosen = again ?? created.Id;
+            if (string.IsNullOrEmpty(chosen))
+            {
+                throw new TapeDriveException(
+                    "Tape export could not create a Drive folder.",
+                    statusCode: null,
+                    permanent: false,
+                    failureType: "TapeDriveException");
+            }
+
+            _folders[cacheKey] = chosen;
+            return chosen;
+        }
+        finally
+        {
+            folderGate.Release();
+        }
+    }
+
+    private static async Task<string?> FirstFolderAsync(
+        DriveService service,
+        string parentId,
+        string name,
+        CancellationToken cancellationToken)
+    {
         FilesResource.ListRequest list = service.Files.List();
         list.Q = "name = '" + Escape(name) + "' and '" + Escape(parentId)
             + "' in parents and mimeType = '" + FolderMime + "' and trashed = false";
@@ -218,35 +296,14 @@ public sealed class GoogleTapeDriveClient : ITapeDriveClient, IDisposable
         list.SupportsAllDrives = true;
         list.IncludeItemsFromAllDrives = true;
         FileList found = await ExecuteAsync(list.ExecuteAsync, cancellationToken).ConfigureAwait(false);
-        if (found.Files is { Count: > 0 } && !string.IsNullOrEmpty(found.Files[0].Id))
-        {
-            _folders[cacheKey] = found.Files[0].Id;
-            return found.Files[0].Id;
-        }
-
-        FilesResource.CreateRequest request = service.Files.Create(new DriveFile
-        {
-            Name = name,
-            MimeType = FolderMime,
-            Parents = [parentId],
-        });
-        request.Fields = "id";
-        request.SupportsAllDrives = true;
-        DriveFile created = await ExecuteAsync(request.ExecuteAsync, cancellationToken).ConfigureAwait(false);
-        if (string.IsNullOrEmpty(created.Id))
-        {
-            throw new TapeDriveException(
-                "Tape export could not create a Drive folder.",
-                statusCode: null,
-                permanent: false,
-                failureType: "TapeDriveException");
-        }
-
-        _folders[cacheKey] = created.Id;
-        return created.Id;
+        return found.Files?
+            .Select(file => file.Id)
+            .Where(id => !string.IsNullOrEmpty(id))
+            .Order(StringComparer.Ordinal)
+            .FirstOrDefault();
     }
 
-    private static async Task<string?> FindByPropertiesAsync(
+    private async Task<string?> FindByPropertiesAsync(
         DriveService service,
         IDictionary<string, string> properties,
         CancellationToken cancellationToken)
@@ -266,11 +323,18 @@ public sealed class GoogleTapeDriveClient : ITapeDriveClient, IDisposable
             return null;
         }
 
-        return found.Files
+        List<string> ids = found.Files
             .Select(file => file.Id)
             .Where(id => !string.IsNullOrEmpty(id))
+            .Select(id => id!)
             .Order(StringComparer.Ordinal)
-            .FirstOrDefault();
+            .ToList();
+        if (ids.Count > 1)
+        {
+            _logger.LogInformation(DuplicateFileMessage);
+        }
+
+        return ids.FirstOrDefault();
     }
 
     private static async Task<string> CreateAsync(
@@ -378,6 +442,53 @@ public sealed class GoogleTapeDriveClient : ITapeDriveClient, IDisposable
 
         bool permanent = status is 400 or 401 or 403 or 404;
         return new TapeDriveException("Drive request failed.", status, permanent, type);
+    }
+
+    private static void Attach(DriveService service)
+    {
+        if (service.HttpClient is ConfigurableHttpClient client)
+        {
+            client.MessageHandler.AddUnsuccessfulResponseHandler(RetryAfterHandler.Instance);
+        }
+    }
+
+    private sealed class RetryAfterHandler : IHttpUnsuccessfulResponseHandler
+    {
+        public static readonly RetryAfterHandler Instance = new();
+
+        public Task<bool> HandleResponseAsync(HandleUnsuccessfulResponseArgs args)
+        {
+            TimeSpan? retryAfter = Read(args.Response);
+            if (retryAfter is null)
+            {
+                return Task.FromResult(false);
+            }
+
+            int status = (int)args.Response.StatusCode;
+            throw new TapeDriveException(
+                "Drive request failed.",
+                status,
+                status is 400 or 401 or 403 or 404,
+                "GoogleApiException",
+                retryAfter);
+        }
+
+        private static TimeSpan? Read(HttpResponseMessage response)
+        {
+            RetryConditionHeaderValue? header = response.Headers.RetryAfter;
+            if (header?.Delta is TimeSpan delta)
+            {
+                return delta;
+            }
+
+            if (header?.Date is DateTimeOffset when)
+            {
+                TimeSpan until = when - DateTimeOffset.UtcNow;
+                return until < TimeSpan.Zero ? TimeSpan.Zero : until;
+            }
+
+            return null;
+        }
     }
 
     private static Dictionary<string, string> Properties(TapeDriveIdentity identity) => new(StringComparer.Ordinal)

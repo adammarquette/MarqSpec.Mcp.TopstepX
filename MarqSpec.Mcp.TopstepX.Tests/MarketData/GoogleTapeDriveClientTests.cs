@@ -1,4 +1,6 @@
+using System.IO.Compression;
 using System.Net;
+using System.Net.Http.Headers;
 using System.Text;
 using FluentAssertions;
 using Google.Apis.Auth.OAuth2;
@@ -7,6 +9,7 @@ using Google.Apis.Http;
 using Google.Apis.Services;
 using MarqSpec.Mcp.TopstepX.Configuration;
 using MarqSpec.Mcp.TopstepX.MarketData;
+using Microsoft.Extensions.Logging;
 
 namespace MarqSpec.Mcp.TopstepX.Tests.MarketData;
 
@@ -129,19 +132,143 @@ public sealed class GoogleTapeDriveClientTests
         }
     }
 
-    private static GoogleTapeDriveClient Client(RecordingHandler handler, out string marker)
+    [Theory]
+    [InlineData("gzip")]
+    [InlineData("deflate")]
+    [InlineData("br")]
+    public async Task RecordingHandler_WhenTheBodyIsEncoded_ExposesTrashAndSecrets(string encoding)
+    {
+        string marker = "secret-marker-" + Guid.NewGuid().ToString("N");
+        string plain = "{\"trashed\":true,\"note\":\"" + marker + "\",\"pem\":\"-----BEGIN PRIVATE KEY-----\"}";
+        RecordingHandler handler = new();
+        using HttpClient http = new(handler, disposeHandler: false);
+        using ByteArrayContent content = new(Encode(plain, encoding));
+        content.Headers.ContentEncoding.Add(encoding);
+        using HttpRequestMessage request = new(HttpMethod.Post, "https://www.googleapis.com/upload/drive/v3/files?uploadType=resumable")
+        {
+            Content = content,
+        };
+
+        await http.SendAsync(request);
+
+        handler.Traffic.Should().Contain("\"trashed\":true");
+        handler.Traffic.Should().Contain(marker);
+        handler.Traffic.Should().Contain("BEGIN PRIVATE KEY");
+    }
+
+    [Fact]
+    public async Task Upload_WhenDriveReturns503_DoesNotUseTheLibraryBackoff()
+    {
+        RecordingHandler handler = new() { Status = 503 };
+        using GoogleTapeDriveClient client = Client(handler, out _);
+
+        Func<Task> upload = () => client.UploadAsync(Upload("file-1", "bytes"), CancellationToken.None);
+
+        TapeDriveException exception = (await upload.Should().ThrowAsync<TapeDriveException>()).Which;
+        exception.StatusCode.Should().Be(503);
+        exception.Permanent.Should().BeFalse();
+        handler.Requests.Should().ContainSingle();
+    }
+
+    [Fact]
+    public async Task Upload_WhenDriveSendsRetryAfter_ReportsThatDelay()
+    {
+        RecordingHandler handler = new() { Status = 429, RetryAfter = TimeSpan.FromSeconds(10) };
+        using GoogleTapeDriveClient client = Client(handler, out _);
+
+        Func<Task> upload = () => client.UploadAsync(Upload("file-1", "bytes"), CancellationToken.None);
+
+        TapeDriveException exception = (await upload.Should().ThrowAsync<TapeDriveException>()).Which;
+        exception.StatusCode.Should().Be(429);
+        exception.Permanent.Should().BeFalse();
+        exception.RetryAfter.Should().Be(TimeSpan.FromSeconds(10));
+    }
+
+    [Fact]
+    public async Task Upload_WhenLookupReturnsTwoFiles_UpdatesTheFirstAndLogsIt()
+    {
+        RecordingHandler handler = new() { ListedIds = ["file-b", "file-a"] };
+        ListLogger logger = new();
+        using GoogleTapeDriveClient client = Client(handler, out _, logger);
+
+        string id = await client.UploadAsync(Upload(null, "bytes"), CancellationToken.None);
+
+        id.Should().Be("file-a");
+        handler.FileCreates.Should().Be(0);
+        handler.Requests.Should().Contain(request => request.Uri.Contains("/files/file-a", StringComparison.Ordinal));
+        logger.Lines.Should().Contain("Drive lookup found more than one file for an export identity. The first id is updated.");
+        handler.Traffic.Should().NotContain("\"trashed\"");
+    }
+
+    [Fact]
+    public async Task Upload_WhenTwoIdentitiesShareAFolder_CreatesThatFolderOnce()
+    {
+        RecordingHandler handler = new();
+        using GoogleTapeDriveClient client = Client(handler, out _);
+        TapeDriveUpload parquet = new(
+            _identity with { Format = "parquet" },
+            null,
+            "trades/test/ES/CON.F.US.EP.Z26/2026-10-01.v1.parquet",
+            () => new MemoryStream(Encoding.UTF8.GetBytes("parquet")));
+
+        await Task.WhenAll(
+            client.UploadAsync(Upload(null, "csv"), CancellationToken.None),
+            client.UploadAsync(parquet, CancellationToken.None));
+
+        handler.FolderCreates.Should().Be(4);
+    }
+
+    [Fact]
+    public async Task Upload_WhenAFolderCreateRaces_UsesTheEarliestId()
+    {
+        RecordingHandler handler = new() { ReturnEarlierFolder = true };
+        using GoogleTapeDriveClient client = Client(handler, out _);
+
+        await client.UploadAsync(
+            new TapeDriveUpload(
+                _identity,
+                null,
+                "day/2026-10-01.v1.csv.gz",
+                () => new MemoryStream(Encoding.UTF8.GetBytes("bytes"))),
+            CancellationToken.None);
+
+        string fileBody = handler.Requests
+            .Single(request => request.Uri.Contains("uploadType=resumable", StringComparison.Ordinal)
+                && request.Body.Contains("csv.gz", StringComparison.Ordinal))
+            .Body;
+        fileBody.Should().Contain("folder-a");
+        fileBody.Should().NotContain("folder-b");
+    }
+
+    private static GoogleTapeDriveClient Client(RecordingHandler handler, out string marker) =>
+        Client(handler, out marker, logger: null);
+
+    private static GoogleTapeDriveClient Client(RecordingHandler handler, out string marker, ListLogger? logger)
     {
         marker = "secret-marker-" + Guid.NewGuid().ToString("N");
 #pragma warning disable CS0618 // The stub has no token endpoint. A bearer token skips the credential exchange.
         GoogleCredential credential = GoogleCredential.FromAccessToken("ya29.test");
 #pragma warning restore CS0618
-        DriveService service = new(new BaseClientService.Initializer
+        BaseClientService.Initializer initializer = GoogleTapeDriveClient.ServiceInitializer(credential);
+        initializer.HttpClientFactory = new StubFactory(handler);
+        DriveService service = new(initializer);
+        return new GoogleTapeDriveClient("folder-root", service, logger);
+    }
+
+    private static byte[] Encode(string plain, string encoding)
+    {
+        byte[] bytes = Encoding.UTF8.GetBytes(plain);
+        using MemoryStream output = new();
+        Stream stream = encoding switch
         {
-            HttpClientInitializer = credential,
-            HttpClientFactory = new StubFactory(handler),
-            ApplicationName = "tape-export-test",
-        });
-        return new GoogleTapeDriveClient("folder-root", service);
+            "gzip" => new GZipStream(output, CompressionLevel.Fastest, leaveOpen: true),
+            "deflate" => new DeflateStream(output, CompressionLevel.Fastest, leaveOpen: true),
+            "br" => new BrotliStream(output, CompressionLevel.Fastest, leaveOpen: true),
+            _ => throw new InvalidOperationException(encoding),
+        };
+        stream.Write(bytes);
+        stream.Dispose();
+        return output.ToArray();
     }
 
     private static TapeDriveUpload Upload(string? fileId, string bytes) =>
@@ -164,13 +291,27 @@ public sealed class GoogleTapeDriveClientTests
 
         public string? ListedId { get; init; }
 
+        public IReadOnlyList<string>? ListedIds { get; init; }
+
         public int Status { get; init; } = 200;
 
         public string ErrorBody { get; init; } = string.Empty;
 
+        public TimeSpan? RetryAfter { get; init; }
+
+        public bool ReturnEarlierFolder { get; init; }
+
         public int FileCreates { get; private set; }
 
+        public int FolderCreates { get; private set; }
+
         private string? _createdId;
+
+        private int _folderLists;
+
+        private readonly HashSet<string> _folderNames = new(StringComparer.Ordinal);
+
+        private readonly object _folders = new();
 
         public string Traffic => string.Join(
             "\n",
@@ -180,9 +321,7 @@ public sealed class GoogleTapeDriveClientTests
             HttpRequestMessage request,
             CancellationToken cancellationToken)
         {
-            string body = request.Content is null
-                ? string.Empty
-                : await request.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+            string body = await ReadBodyAsync(request, cancellationToken).ConfigureAwait(false);
             string uri = request.RequestUri?.ToString() ?? string.Empty;
             Requests.Add((request.Method.Method, uri, body));
 
@@ -193,14 +332,33 @@ public sealed class GoogleTapeDriveClientTests
 
             if (Status != 200)
             {
-                return new HttpResponseMessage((HttpStatusCode)Status)
+                HttpResponseMessage failed = new((HttpStatusCode)Status)
                 {
                     Content = new StringContent("{\"error\":\"" + ErrorBody + "\"}", Encoding.UTF8, "application/json"),
                 };
+                if (RetryAfter is TimeSpan retryAfter)
+                {
+                    failed.Headers.RetryAfter = new RetryConditionHeaderValue(retryAfter);
+                }
+
+                return failed;
             }
 
             if (request.Method == HttpMethod.Get)
             {
+                if (uri.Contains("mimeType", StringComparison.Ordinal))
+                {
+                    return Json(FolderList(uri));
+                }
+
+                if (ListedIds is { Count: > 0 })
+                {
+                    string listed = string.Join(
+                        ",",
+                        ListedIds.Select(id => "{\"id\":\"" + id + "\"}"));
+                    return Json("{\"files\":[" + listed + "]}");
+                }
+
                 string id = ListedId ?? _createdId ?? string.Empty;
                 string files = uri.Contains("appProperties", StringComparison.Ordinal) && id.Length > 0
                     ? "{\"files\":[{\"id\":\"" + id + "\"}]}"
@@ -234,10 +392,105 @@ public sealed class GoogleTapeDriveClientTests
 
             if (request.Method == HttpMethod.Post)
             {
-                return Json("{\"id\":\"folder-1\"}");
+                return Json(CreatedFolder(body));
             }
 
             return Json("{\"id\":\"file-1\"}");
+        }
+
+        private string FolderList(string uri)
+        {
+            int n = Interlocked.Increment(ref _folderLists);
+            if (ReturnEarlierFolder)
+            {
+                return n == 1
+                    ? "{\"files\":[]}"
+                    : "{\"files\":[{\"id\":\"folder-b\"},{\"id\":\"folder-a\"}]}";
+            }
+
+            string name = QueryName(uri);
+            lock (_folders)
+            {
+                return _folderNames.Contains(name)
+                    ? "{\"files\":[{\"id\":\"folder-" + name + "\"}]}"
+                    : "{\"files\":[]}";
+            }
+        }
+
+        private string CreatedFolder(string body)
+        {
+            FolderCreates++;
+            if (ReturnEarlierFolder)
+            {
+                return "{\"id\":\"folder-b\"}";
+            }
+
+            string name = BodyName(body);
+            lock (_folders)
+            {
+                _folderNames.Add(name);
+            }
+
+            return "{\"id\":\"folder-" + name + "\"}";
+        }
+
+        private static string QueryName(string uri)
+        {
+            const string marker = "name = '";
+            int start = uri.IndexOf(marker, StringComparison.Ordinal);
+            if (start < 0)
+            {
+                string decoded = Uri.UnescapeDataString(uri);
+                start = decoded.IndexOf(marker, StringComparison.Ordinal);
+                uri = decoded;
+            }
+
+            if (start < 0)
+            {
+                return string.Empty;
+            }
+
+            start += marker.Length;
+            int end = uri.IndexOf('\'', start);
+            return end < 0 ? string.Empty : uri[start..end];
+        }
+
+        private static string BodyName(string body)
+        {
+            const string marker = "\"name\":\"";
+            int start = body.IndexOf(marker, StringComparison.Ordinal);
+            if (start < 0)
+            {
+                return "folder";
+            }
+
+            start += marker.Length;
+            int end = body.IndexOf('"', start);
+            return end < 0 ? "folder" : body[start..end];
+        }
+
+        private static async Task<string> ReadBodyAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            if (request.Content is null)
+            {
+                return string.Empty;
+            }
+
+            byte[] payload = await request.Content.ReadAsByteArrayAsync(cancellationToken).ConfigureAwait(false);
+            Stream stream = new MemoryStream(payload);
+            foreach (string encoding in request.Content.Headers.ContentEncoding.Reverse())
+            {
+                stream = encoding.ToLowerInvariant() switch
+                {
+                    "gzip" => new GZipStream(stream, CompressionMode.Decompress),
+                    "deflate" => new DeflateStream(stream, CompressionMode.Decompress),
+                    "br" => new BrotliStream(stream, CompressionMode.Decompress),
+                    _ => stream,
+                };
+            }
+
+            using StreamReader reader = new(stream, Encoding.UTF8);
+            return await reader.ReadToEndAsync(cancellationToken).ConfigureAwait(false);
         }
 
         private static HttpResponseMessage Json(string json) =>
@@ -246,5 +499,25 @@ public sealed class GoogleTapeDriveClientTests
                 Content = new StringContent(json, Encoding.UTF8, "application/json"),
             };
 
+    }
+
+    private sealed class ListLogger : ILogger<GoogleTapeDriveClient>
+    {
+        public List<string> Lines { get; } = [];
+
+        public IDisposable? BeginScope<TState>(TState state)
+            where TState : notnull => null;
+
+        public bool IsEnabled(LogLevel logLevel) => true;
+
+        public void Log<TState>(
+            LogLevel logLevel,
+            EventId eventId,
+            TState state,
+            Exception? exception,
+            Func<TState, Exception?, string> formatter)
+        {
+            Lines.Add(formatter(state, exception));
+        }
     }
 }

@@ -154,7 +154,7 @@ public sealed class TradingRiskGateLegacyStageTests
 
         TradingRiskGateResult second = await AssertRefusalAsync(
             telemetry,
-            () => rig.Gate.SubmitPlace(Place(LegacyPracticeAccountId), Live(), CancellationToken.None),
+            () => rig.NextGate().SubmitPlace(Place(LegacyPracticeAccountId), Live(), CancellationToken.None),
             ExecutionOperation.PlaceOrderOperation,
             ExecutionWriteRefusal.NonPracticeAccount);
 
@@ -255,29 +255,32 @@ public sealed class TradingRiskGateLegacyStageTests
         TradingExecutionGate executionGate = new(Options.Create(options), new FakeKillSwitch(), _stageResolver);
         InstrumentRegistry registry = new(Options.Create(new MarketDataOptions { Instruments = "MES" }));
         TradingContractDenylist denylist = new(Options.Create(options), registry);
-        TradingWriteVenueAccountCache accountCache = new();
-        IExecutionGateway gateway = new ProjectXExecutionGateway(
-            executionGate,
-            accounts,
-            new RecordingUnknownSignal(),
-            client,
-            accountCache,
-            telemetry,
-            NullLogger<ProjectXExecutionGateway>.Instance);
+        TradingRiskGate NewGate()
+        {
+            TradingWriteVenueAccountCache accountCache = new();
+            IExecutionGateway gateway = new ProjectXExecutionGateway(
+                executionGate,
+                accounts,
+                new RecordingUnknownSignal(),
+                client,
+                accountCache,
+                telemetry,
+                NullLogger<ProjectXExecutionGateway>.Instance);
 
-        TradingRiskGate gate = new(
-            executionGate,
-            gateway,
-            accounts,
-            _stageResolver,
-            new RecordingUnknownSignal(),
-            new FakeDailyCapCoordinator(),
-            new RecordingAuditLog(),
-            denylist,
-            accountCache,
-            telemetry);
+            return new(
+                executionGate,
+                gateway,
+                accounts,
+                _stageResolver,
+                new RecordingUnknownSignal(),
+                new FakeDailyCapCoordinator(),
+                new RecordingAuditLog(),
+                denylist,
+                accountCache,
+                telemetry);
+        }
 
-        return new StageRig(vendor, gate, accounts);
+        return new StageRig(vendor, NewGate(), accounts, NewGate);
     }
 
     private static ActivityListener Listen(List<Activity> into, ActivitySource source)
@@ -297,7 +300,8 @@ public sealed class TradingRiskGateLegacyStageTests
     private sealed record StageRig(
         ExecutionOrderClient Vendor,
         TradingRiskGate Gate,
-        MutableAccountsGateway Accounts);
+        MutableAccountsGateway Accounts,
+        Func<TradingRiskGate> NextGate);
 
     private sealed class MutableAccountsGateway(VenueAccount account) : IMarketDataGateway
     {

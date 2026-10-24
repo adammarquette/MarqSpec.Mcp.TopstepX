@@ -132,14 +132,15 @@ public sealed class TradingOrderToolGateTests
     {
         _gateway.Next = Acknowledged(42);
         using HostTelemetry telemetry = new();
-        TradingOrderTools tools = Tools(telemetry, new TradingExecutionOptions { Enabled = true });
+        TradingExecutionOptions options = new() { Enabled = true };
+        TradingOrderTools tools = Tools(telemetry, options);
 
         using MetricCollector<long> writes = ListenWrites(telemetry);
         List<Activity> spans = [];
         using ActivityListener listener = Listen(spans, telemetry.Activities);
 
         ToolPayloads.TradingWriteResult first = await Call(tools, operation, "same-key");
-        ToolPayloads.TradingWriteResult replay = await Call(tools, operation, "same-key");
+        ToolPayloads.TradingWriteResult replay = await Call(Tools(telemetry, options), operation, "same-key");
 
         first.Status.Should().Be(nameof(TradingAttemptOutcome.Live));
         first.RetrySafety.Should().Be(ToolPayloads.TradingRetrySafety.NotSafeToRetry);
@@ -165,10 +166,11 @@ public sealed class TradingOrderToolGateTests
             VendorErrorCode: null,
             OrderId: null);
         using HostTelemetry telemetry = new();
-        TradingOrderTools tools = Tools(telemetry, new TradingExecutionOptions { Enabled = true });
+        TradingExecutionOptions options = new() { Enabled = true };
+        TradingOrderTools tools = Tools(telemetry, options);
 
         ToolPayloads.TradingWriteResult first = await Call(tools, operation, "unknown-key");
-        ToolPayloads.TradingWriteResult replay = await Call(tools, operation, "unknown-key");
+        ToolPayloads.TradingWriteResult replay = await Call(Tools(telemetry, options), operation, "unknown-key");
 
         first.Status.Should().Be(nameof(TradingAttemptOutcome.Unknown));
         first.RetrySafety.Should().Be(ToolPayloads.TradingRetrySafety.OutcomeUnknown);
@@ -203,7 +205,8 @@ public sealed class TradingOrderToolGateTests
     {
         _gateway.Next = Acknowledged(42);
         using HostTelemetry telemetry = new();
-        TradingOrderTools tools = Tools(telemetry, new TradingExecutionOptions { Enabled = true });
+        TradingExecutionOptions options = new() { Enabled = true };
+        TradingOrderTools tools = Tools(telemetry, options);
 
         using MetricCollector<long> writes = ListenWrites(telemetry);
         List<Activity> spans = [];
@@ -212,7 +215,7 @@ public sealed class TradingOrderToolGateTests
         await Call(tools, operation, "conflict-key");
         (int size, long orderId, string contractId) = ConflictOf(operation);
         ToolPayloads.TradingWriteResult conflict = await Call(
-            tools,
+            Tools(telemetry, options),
             operation,
             "conflict-key",
             size,
@@ -445,7 +448,12 @@ public sealed class TradingOrderToolGateTests
 
         _gateway.PlaceException = null;
         _gateway.Next = Acknowledged(99);
-        ToolPayloads.TradingWriteResult replay = await allowed.SubmitPlace(
+        TradingOrderTools replayTools = Tools(allowedTelemetry, new TradingExecutionOptions
+        {
+            Enabled = true,
+            AllowedAccountIds = PracticeAccountId.ToString(System.Globalization.CultureInfo.InvariantCulture),
+        });
+        ToolPayloads.TradingWriteResult replay = await replayTools.SubmitPlace(
             PracticeAccountId,
             MesContract,
             ExecutionOrderType.Market,
@@ -464,7 +472,8 @@ public sealed class TradingOrderToolGateTests
     {
         _gateway.PlaceException = new InvalidOperationException("the send threw");
         using HostTelemetry telemetry = new();
-        TradingOrderTools tools = Tools(telemetry, new TradingExecutionOptions { Enabled = true });
+        TradingExecutionOptions options = new() { Enabled = true };
+        TradingOrderTools tools = Tools(telemetry, options);
 
         ToolPayloads.TradingWriteResult thrown = await tools.SubmitPlace(
             PracticeAccountId,
@@ -473,7 +482,7 @@ public sealed class TradingOrderToolGateTests
             VenueSide.Buy,
             1,
             "K");
-        ToolPayloads.TradingWriteResult conflict = await tools.SubmitPlace(
+        ToolPayloads.TradingWriteResult conflict = await Tools(telemetry, options).SubmitPlace(
             PracticeAccountId,
             MesContract,
             ExecutionOrderType.Market,
@@ -481,7 +490,7 @@ public sealed class TradingOrderToolGateTests
             2,
             "K");
         _gateway.PlaceException = null;
-        ToolPayloads.TradingWriteResult replay = await tools.SubmitPlace(
+        ToolPayloads.TradingWriteResult replay = await Tools(telemetry, options).SubmitPlace(
             PracticeAccountId,
             MesContract,
             ExecutionOrderType.Market,
@@ -737,7 +746,10 @@ public sealed class TradingOrderToolGateTests
         _audit.Entries.Should().BeEmpty();
         _gateway.ModifyOrderCalls.Should().Be(0);
 
-        ToolPayloads.TradingWriteResult overCap = await tools.SubmitModify(
+        TradingOrderTools capped = Tools(
+            telemetry,
+            new TradingExecutionOptions { Enabled = true, MaxContractsPerDay = 10 });
+        ToolPayloads.TradingWriteResult overCap = await capped.SubmitModify(
             PracticeAccountId,
             OpenOrderId,
             "mod-cap",
@@ -927,13 +939,62 @@ public sealed class TradingOrderToolGateTests
         ExecutionPlaceOrderCommand second = first with { AccountId = 101 };
 
         await gate.SubmitPlace(first, new TradingRiskAttemptContext(false, "shared-key"), CancellationToken.None);
-        TradingRiskGateResult otherAccount = await gate.SubmitPlace(
+        TradingRiskGateResult otherAccount = await Gate(telemetry, new TradingExecutionOptions { Enabled = true })
+            .SubmitPlace(
             second,
             new TradingRiskAttemptContext(false, "shared-key"),
             CancellationToken.None);
 
         otherAccount.Outcome.Should().Be(TradingAttemptOutcome.Live);
         _gateway.PlaceOrderCalls.Should().Be(2);
+    }
+
+    [Fact]
+    public async Task TradingRiskGate_SecondOperationOnTheSameInstance_ThrowsBeforeAnyVendorCall()
+    {
+        using HostTelemetry telemetry = new();
+        TradingRiskGate gate = Gate(telemetry, new TradingExecutionOptions());
+        ExecutionPlaceOrderCommand command = new(
+            PracticeAccountId,
+            MesContract,
+            ExecutionOrderType.Market,
+            VenueSide.Buy,
+            1,
+            null,
+            null,
+            null);
+
+        TradingRiskGateResult first = await gate.SubmitPlace(
+            command,
+            new TradingRiskAttemptContext(false, "first-key"),
+            CancellationToken.None);
+
+        first.Outcome.Should().Be(TradingAttemptOutcome.Refused);
+        _gateway.PlaceOrderCalls.Should().Be(0);
+
+        Func<Task> second = () => gate.SubmitModify(
+            new ExecutionModifyOrderCommand(PracticeAccountId, OpenOrderId, Size: 1, null, null),
+            new TradingRiskAttemptContext(false, "second-key"),
+            CancellationToken.None);
+
+        await second.Should().ThrowAsync<InvalidOperationException>();
+        _gateway.PlaceOrderCalls.Should().Be(0);
+        _gateway.ModifyOrderCalls.Should().Be(0);
+        _gateway.CancelOrderCalls.Should().Be(0);
+        _gateway.ClosePositionCalls.Should().Be(0);
+        _gateway.PartialClosePositionCalls.Should().Be(0);
+    }
+
+    [Fact]
+    public async Task TradingOrderTools_UnexpectedException_IsOutcomeUnknown_NeverSafeToRetry()
+    {
+        ToolPayloads.TradingWriteResult result = await TradingOrderTools.RunAsync(
+            Task.FromException<TradingRiskGateResult>(new InvalidOperationException("unclassified")));
+
+        result.Status.Should().Be(nameof(TradingAttemptOutcome.Unknown));
+        result.RetrySafety.Should().Be(ToolPayloads.TradingRetrySafety.OutcomeUnknown);
+        result.RefusalCode.Should().Be(ExecutionWriteRefusal.Error);
+        result.OrderId.Should().BeNull();
     }
 
     [Fact]

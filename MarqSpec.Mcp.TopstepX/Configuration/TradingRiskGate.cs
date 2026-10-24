@@ -21,6 +21,10 @@ namespace MarqSpec.Mcp.TopstepX.Configuration;
 /// the send may already have happened. Once the send has started, a later throw — including a daily-cap
 /// unlock or a telemetry listener — is <see cref="TradingAttemptOutcome.Unknown"/>, never a retry. Only
 /// <see cref="GateRefusedBeforeSendException"/> leaves this type for a fault from before the send.
+/// One instance serves one order operation. The type is registered scoped so each request gets a
+/// fresh gate. <see cref="_sendStarted"/> and <see cref="_leaseReleaseFailed"/> are instance state;
+/// a second operation would clear them and could report a live send as safe to retry, so it throws
+/// <see cref="InvalidOperationException"/> before any vendor call.
 /// </remarks>
 public sealed class TradingRiskGate
 {
@@ -35,11 +39,18 @@ public sealed class TradingRiskGate
     private readonly TradingWriteVenueAccountCache _accountCache;
     private readonly HostTelemetry _telemetry;
 
-    /// <summary>Set immediately before the vendor send. Cleared at the start of each call.</summary>
+    /// <summary>Set immediately before the vendor send. Cleared at the start of the one operation.</summary>
     private bool _sendStarted;
 
     /// <summary>Set when a test double's lock throws on dispose. The production lock does not throw.</summary>
     private bool _leaseReleaseFailed;
+
+    /// <summary>
+    /// One order operation per instance. Set at entry, before <see cref="_sendStarted"/> is cleared.
+    /// Those flags are only safe because the gate is registered scoped and each request builds a new
+    /// instance. A second operation on this instance throws rather than reuse them.
+    /// </summary>
+    private bool _operationStarted;
 
     /// <summary>Creates the risk gate.</summary>
     public TradingRiskGate(
@@ -115,6 +126,13 @@ public sealed class TradingRiskGate
         string operation,
         Func<Task<TradingRiskGateResult>> body)
     {
+        if (_operationStarted)
+        {
+            throw new InvalidOperationException(
+                "TradingRiskGate serves one order operation. A second call on the same instance is refused.");
+        }
+
+        _operationStarted = true;
         _accountCache.Clear();
         _sendStarted = false;
         _leaseReleaseFailed = false;

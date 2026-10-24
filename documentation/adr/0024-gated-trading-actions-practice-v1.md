@@ -279,7 +279,10 @@ An order is **not treated as live** until the **broker acknowledgment** arrives.
   `Unknown` **before** the send, so a throw during the send, or an audit write that fails after an ack,
   returns a structured `OutcomeUnknown` and does not rethrow. A failure before the send — a venue read, an
   HTTP fault, or a store fault that happens before the gateway is called — is a retryable `error` with no
-  side effects, not `OutcomeUnknown`. A replay of a bare Unknown claim returns that `Unknown` unless a later
+  side effects, not `OutcomeUnknown`. The risk gate is registered scoped and serves one order operation
+  per instance. A second operation on that instance throws before any vendor call: the send-started state
+  is instance state, and reusing it could report a live send as safe to retry. The tool catch-all is
+  defensive and maps any other exception to `OutcomeUnknown`, never `SafeToRetry`. A replay of a bare Unknown claim returns that `Unknown` unless a later
   `Live`, `Failed`, or `Refused` row exists, and it is never rewritten as `Live`.
   **Why an unacknowledged result is stored:** the earlier rule was "do not cache an unacked result as
   success." Caching it as `Unknown` is the opposite of caching it as success. The row exists so a crash

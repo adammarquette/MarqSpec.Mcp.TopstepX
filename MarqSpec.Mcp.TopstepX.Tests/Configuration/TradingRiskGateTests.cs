@@ -617,7 +617,8 @@ public sealed class TradingRiskGateTests
 
         TradingRiskGateResult first = await gate.SubmitPlace(command, context, CancellationToken.None);
         bound.Current = new TradingExecutionOptions { Enabled = true };
-        TradingRiskGateResult replay = await gate.SubmitPlace(command, context, CancellationToken.None);
+        TradingRiskGateResult replay = await Gate(bound.Current, bound: bound)
+            .SubmitPlace(command, context, CancellationToken.None);
 
         first.Outcome.Should().Be(TradingAttemptOutcome.Refused);
         first.Refusal!.Value.Code.Should().Be(TradingExecutionRefusal.TradingDisabled.Code);

@@ -590,7 +590,10 @@ or a cut at the end, including a window up to now while another process is still
 The ask is floored to the bar open before the ledger confines it, on both paths. When
 coverage reaches that open, the edge bar is complete and `covered.start` is that open; the
 floor itself is not a narrowing. When the ledger begins later in the bar, `covered.start`
-stays the ledger start, so a hole is not backdated. The end is not aligned. The recorder
+stays the ledger start, so a hole is not backdated. The end is aligned up to the bar close
+before the ledger confines it, on both paths. When coverage reaches that close, the edge
+bar is complete and `covered.end` is that close; the alignment itself is not a narrowing.
+When the ledger ends sooner, `covered.end` stays the ledger end. The recorder
 status is read once per call and passed through, so the flag and the
 window cannot disagree. The still-open sentinel stays what gh#365 made it: coverage only
 while that instrument is listening here. A window with no closed tape still refuses, and

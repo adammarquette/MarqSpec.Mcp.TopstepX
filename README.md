@@ -145,6 +145,8 @@ switch defaults off). `get_footprint` and `get_volume_profile` then aggregate th
 is listening, not that the cells are current. A gap at the start or a cut at the end sets
 `covered.narrowed`, and `covered.end` is when the data ends. An ask that starts inside a bar
 is floored to that bar's open when the tape covers it, and `covered.start` is that open.
+An ask that ends inside a bar is aligned up to that bar's close when the tape covers it,
+and `covered.end` is that close.
 The read does not write cells. A still-open listen is not reported as history. A window
 with no closed tape still refuses and names the fix: run that separate HTTP recorder.
 The sentence does not say to stop one. There is no backfill for

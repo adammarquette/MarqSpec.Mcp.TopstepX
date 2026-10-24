@@ -34,16 +34,26 @@ public sealed class TapeAvailabilityHolder
     private volatile TapeAvailability _value = TapeAvailability.NeverStarted();
     private readonly ConcurrentDictionary<string, TapeAvailability> _byInstrument = new(StringComparer.Ordinal);
     private readonly ConcurrentDictionary<string, TapeAvailability> _unclaimed = new(StringComparer.Ordinal);
+    private readonly Func<string, TapeAvailability>? _forProbe;
+
+    /// <summary>The production holder. Nothing can replace <see cref="For"/> after this.</summary>
+    public TapeAvailabilityHolder()
+    {
+    }
+
+    /// <summary>
+    /// Test seam. The probe is fixed here, so the production singleton cannot be flipped.
+    /// The test assembly sees this through InternalsVisibleTo, which is why the type stays sealed.
+    /// </summary>
+    /// <param name="forProbe">The answer <see cref="For"/> returns, ignoring stored state.</param>
+    internal TapeAvailabilityHolder(Func<string, TapeAvailability> forProbe)
+    {
+        ArgumentNullException.ThrowIfNull(forProbe);
+        _forProbe = forProbe;
+    }
 
     /// <summary>The process-wide state, when no per-instrument override applies.</summary>
     public TapeAvailability Value => _value;
-
-    /// <summary>
-    /// Test seam. When set, <see cref="For"/> returns this answer and does not read the
-    /// stored state. Production leaves it unset. The test assembly reaches it through
-    /// InternalsVisibleTo, which is why this type stays sealed.
-    /// </summary>
-    internal Func<string, TapeAvailability>? ForOverride { get; set; }
 
     /// <summary>The current subscription state for one instrument.</summary>
     /// <param name="instrument">The instrument symbol.</param>
@@ -55,7 +65,7 @@ public sealed class TapeAvailabilityHolder
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(instrument);
 
-        if (ForOverride is { } probe)
+        if (_forProbe is { } probe)
         {
             return probe(instrument);
         }

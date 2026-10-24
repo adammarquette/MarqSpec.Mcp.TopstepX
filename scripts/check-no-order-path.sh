@@ -39,8 +39,11 @@
 #         - every appsettings*.json, keys flattened (":" and "__") and lower-cased as .NET binds them;
 #         - every docker-compose*.y(a)ml / compose*.y(a)ml at any depth passes ${Trading__Enabled:-false} (or false), any key casing;
 #         - Dockerfile ENV/ARG and .env.example never set it to anything but false.
-#       RAILWAY'S SERVICE VARIABLES ARE NOT CI-VERIFIABLE (no railway.json/railway.toml here); for a Railway
-#       deploy the default rests on the code default checked above, and on whoever edits those variables.
+#         - every file under .railway/ (the Railway IaC template, gh#758) and any railway.json/railway.toml
+#           sets it only as the literal "false" (code comments skipped), and .railway/railway.ts sets it at all.
+#       RAILWAY'S DASHBOARD VARIABLES ARE STILL NOT CI-VERIFIABLE: the template is what a reviewed deploy
+#       applies, but an edit made in Railway afterwards is invisible here and rests on the code default and on
+#       whoever made it.
 #   (5) THE GATE exists at exactly GATE_FILE -- absent, or present anywhere else, FAILS (no skip). In EVERY
 #       member of TradingRiskGate, RefuseIfDisabledOrHalted( comes before any ResolveStage(, allowlist,
 #       denylist or order call in that member; the file calls ResolveStage( and names AccountStage.Practice.
@@ -283,6 +286,26 @@ while IFS= read -r c; do
 done <<<"$composes"
 if [ -f docker-compose.yml ] && ! grep -qiE 'trading__enabled' docker-compose.yml; then
   fail "MASTER SWITCH  docker-compose.yml no longer passes Trading__Enabled at all" "Keep the explicit \${Trading__Enabled:-false} passthrough."
+fi
+
+# Railway IaC (.railway/*) and legacy railway.json/railway.toml: every assignment is the literal "false" (gh#758).
+railways="$(find . \( -name .git -o -name node_modules -o -name bin -o -name obj \) -prune -o -type f \( -path './.railway/*' -o -name 'railway.json' -o -name 'railway.toml' \) -print)" || env_fail "CANNOT LIST  find failed looking for Railway config"
+while IFS= read -r r; do
+  [ -n "$r" ] || continue
+  r="${r#./}"
+  status=0; lines="$(grep -niE 'trading__enabled' "$r")" || status=$?
+  [ "$status" -gt 1 ] && env_fail "CANNOT SEARCH  grep exited $status over $r"
+  while IFS= read -r l; do
+    [ -n "$l" ] || continue
+    body="${l#*:}"
+    printf '%s\n' "$body" | grep -qE '^[[:space:]]*(//|#|\*|/\*)' && continue
+    printf '%s\n' "$body" | grep -qiE '^[[:space:]]*["'"'"']?trading__enabled["'"'"']?[[:space:]]*[:=][[:space:]]*' \
+      && printf '%s\n' "$body" | grep -qE '[:=][[:space:]]*"false"[[:space:]]*,?[[:space:]]*(//.*)?$' && continue
+    fail "MASTER SWITCH  $r:${l%%:*} must set Trading__Enabled to the literal \"false\"" "$body"
+  done <<<"$lines"
+done <<<"$railways"
+if [ -f .railway/railway.ts ] && ! grep -vE '^[[:space:]]*//' .railway/railway.ts | grep -qiE 'trading__enabled[[:space:]]*:'; then
+  fail "MASTER SWITCH  .railway/railway.ts no longer sets Trading__Enabled" "Keep the explicit Trading__Enabled: \"false\" (gh#758)."
 fi
 
 # Dockerfile(s) and .env.example: any assignment must be false.

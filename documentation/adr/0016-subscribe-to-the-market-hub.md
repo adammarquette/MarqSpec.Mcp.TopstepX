@@ -581,12 +581,22 @@ even when a separate HTTP recorder had already closed a `TapeCoverage` run in th
 above is the reason stdio does not subscribe: it reads the store the HTTP recorder writes.
 
 The tools no longer refuse solely because this process is not the recorder. Closed coverage is
-served and `live` is false, so live coverage is reported absent. The still-open sentinel stays
-what gh#365 made it: coverage only while that instrument is listening here. A window with no
-closed tape still refuses and names the fix (R-5.8, R-9.6, R-9.7). A recorder that is
-reconnecting, connected but not subscribed, or stopped still refuses, closed cells included —
-that is the gh#218 case, and another symbol's subscribe does not satisfy it. The recorder still
-starts only under HTTP when `MarketData__RecordTape` is on.
+served read-only — no on-read rebuild and no write of footprint cells, so this record's single
+writer stays one — and `live` is false. `reason` is a closed code. `dataEndsAt` is when the
+served data ends. `live` true means this process is listening, not that the cells are current.
+A window that runs past the last closed run, which is what "up to now" is while another process
+is still recording, is cut back to that run and `partial` is true. The recorder status is read
+once per call and passed through, so the flag and the window cannot disagree. The still-open
+sentinel stays what gh#365 made it: coverage only while that instrument is listening here. A
+window with no closed tape still refuses, and that fact is a typed result rather than a match
+on the sentence. The sentence names the fix and does not say to stop the recorder: under stdio
+it says to run a separate HTTP process on the same database (R-5.8, R-9.6, R-9.7). A recorder
+that is reconnecting, connected but not subscribed, or stopped still refuses, closed cells
+included — that is the gh#218 case. `ClaimTakenOver` and `ClaimLapsed` are their own reason
+codes, not `HeldByAnotherRecorder`, and they refuse the same way: this process was the recorder
+and stood down. Another symbol's subscribe does not satisfy any of those. A served read with
+`live` false is counted, tagged with why. The recorder still starts only under HTTP when
+`MarketData__RecordTape` is on.
 
 
 ## Follow-ups

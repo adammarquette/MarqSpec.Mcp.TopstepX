@@ -3,6 +3,7 @@ using MarqSpec.Mcp.TopstepX.Configuration;
 using MarqSpec.Mcp.TopstepX.Data;
 using MarqSpec.Mcp.TopstepX.Data.Entities;
 using MarqSpec.Mcp.TopstepX.MarketData;
+using MarqSpec.Mcp.TopstepX.Telemetry;
 using MarqSpec.Mcp.TopstepX.Tests.Configuration;
 using MarqSpec.Mcp.TopstepX.Tests.MarketData;
 using MarqSpec.Mcp.TopstepX.Tools;
@@ -81,6 +82,9 @@ public sealed class StdioClosedTapeReadTests : IDisposable
         payload.Covered.End.Should().Be(_runEnd);
         payload.Covered.Narrowed.Should().BeFalse();
         payload.Live.Should().BeFalse();
+        payload.Reason.Should().Be(TapeClosedReadReason.NeverStarted);
+        payload.DataEndsAt.Should().Be(_runEnd);
+        payload.Partial.Should().BeFalse();
     }
 
     [Fact]
@@ -96,6 +100,9 @@ public sealed class StdioClosedTapeReadTests : IDisposable
         payload.Covered.Start.Should().Be(_runStart);
         payload.Covered.End.Should().Be(_runEnd);
         payload.Live.Should().BeFalse();
+        payload.Reason.Should().Be(TapeClosedReadReason.NeverStarted);
+        payload.DataEndsAt.Should().Be(_runEnd);
+        payload.Partial.Should().BeFalse();
     }
 
     private static void UseInMemoryStore(IServiceCollection services, string name)

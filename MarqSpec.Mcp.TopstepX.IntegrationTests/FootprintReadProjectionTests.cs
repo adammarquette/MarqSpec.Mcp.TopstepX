@@ -287,7 +287,8 @@ public sealed class FootprintReadProjectionTests : IAsyncLifetime
                 new FootprintProjector(_database, NullLogger<FootprintProjector>.Instance),
                 _clock,
                 NullLogger<FootprintCacheService>.Instance,
-                _telemetry));
+                _telemetry),
+            _telemetry);
     }
 
     private async Task SeedTapeAsync(params TradeRecord[] trades)

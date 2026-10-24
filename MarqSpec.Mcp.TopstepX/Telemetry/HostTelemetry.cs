@@ -95,6 +95,10 @@ public sealed class HostTelemetry : IDisposable
 
     /// <summary>One budgeted recovery login (gh#757).</summary>
     public const string SessionRecoveryLoginsInstrument = "mcp.session.recovery_logins";
+    /// <summary>
+    /// A footprint or volume-profile read served with <c>live</c> false (gh#728).
+    /// </summary>
+    public const string TapeClosedReadsInstrument = "mcp.tape.closed.reads";
 
     /// <summary>Indicator values a projection pass wrote.</summary>
     public const string IndicatorProjectionsInstrument = "mcp.indicator.projections";
@@ -185,6 +189,7 @@ public sealed class HostTelemetry : IDisposable
     private readonly Counter<long> _sessionRenewalRefusals;
     private readonly Counter<long> _sessionRenewalReopens;
     private readonly Counter<long> _sessionRecoveryLogins;
+    private readonly Counter<long> _tapeClosedReads;
     private readonly Counter<long> _indicatorProjections;
     private readonly Counter<long> _executionWrites;
     private readonly Counter<long> _bookkeepingFaults;
@@ -266,6 +271,10 @@ public sealed class HostTelemetry : IDisposable
             SessionRecoveryLoginsInstrument,
             unit: "{login}",
             description: "Budgeted recovery logins, by whether a new bearer was stored.");
+        _tapeClosedReads = _meter.CreateCounter<long>(
+            TapeClosedReadsInstrument,
+            unit: "{read}",
+            description: "Footprint and volume-profile reads served from closed coverage, by why live is false.");
 
         _indicatorProjections = _meter.CreateCounter<long>(
             IndicatorProjectionsInstrument,
@@ -647,6 +656,18 @@ public sealed class HostTelemetry : IDisposable
             new KeyValuePair<string, object?>(OperationTag, operation),
             new KeyValuePair<string, object?>(ReasonTag, reason));
     }
+    /// <summary>Counts one footprint or volume-profile read served with <c>live</c> false.</summary>
+    /// <param name="symbol">The venue-neutral instrument symbol.</param>
+    /// <param name="reason">Why live is false, from <see cref="TapeClosedReadReason"/>.</param>
+    /// <remarks>
+    /// Recorded only when the read is served. A refusal — reconnecting, stopped, a claim this
+    /// process lost — is not a closed read and is not counted here.
+    /// </remarks>
+    public void ClosedTapeRead(string symbol, string reason) =>
+        _tapeClosedReads.Add(
+            1,
+            new KeyValuePair<string, object?>(SymbolTag, symbol),
+            new KeyValuePair<string, object?>(ReasonTag, reason));
 
     /// <summary>Counts the values a projection pass wrote for one indicator.</summary>
     /// <param name="indicator">The indicator's stable lowercase name.</param>
@@ -1347,4 +1368,24 @@ public static class TapeUploadReason
     /// <summary>Every value.</summary>
     public static IReadOnlyList<string> All { get; } =
         [Uploaded, Retried, Timeout, Permanent, Failed, Disabled, OrphanPending, IdentityBusy, LockLost, LockFault];
+}
+
+/// <summary>
+/// Why a footprint or volume-profile read was served with <c>live</c> false — the
+/// <c>reason</c> tag on <see cref="HostTelemetry.TapeClosedReadsInstrument"/>.
+/// </summary>
+/// <remarks>
+/// Only the states that serve closed coverage. A recorder that is reconnecting, stopped,
+/// or that lost its own claim refuses the read and is not a value here.
+/// </remarks>
+public static class TapeClosedReadReason
+{
+    /// <summary>This process never started recording — stdio, the switch off, or no venue client.</summary>
+    public const string NeverStarted = "never_started";
+
+    /// <summary>Another process holds the claim, so this one reads that recorder's closed runs.</summary>
+    public const string HeldByAnotherRecorder = "held_by_another_recorder";
+
+    /// <summary>Every value.</summary>
+    public static IReadOnlyList<string> All { get; } = [NeverStarted, HeldByAnotherRecorder];
 }

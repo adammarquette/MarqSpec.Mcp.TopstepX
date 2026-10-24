@@ -141,8 +141,11 @@ subscribes: two subscribers on one tape would double every volume
 ([ADR-0016](documentation/adr/0016-subscribe-to-the-market-hub.md)). Run a separate HTTP process
 against the **same database** with `MarketData__RecordTape=true` (HTTP alone is not enough; the
 switch defaults off). `get_footprint` and `get_volume_profile` then serve that recorder's **closed**
-coverage and set `live` to false — live coverage is absent, and a still-open listen is not reported
-as history. A window with no closed tape still refuses and names the fix. There is no backfill for
+coverage and set `live` to false, with `reason` and `dataEndsAt`. `live` true means this process
+is listening, not that the cells are current. A window that runs past the last closed run is cut
+back and `partial` is true. The read does not write cells. A still-open listen is not reported
+as history. A window with no closed tape still refuses and names the fix: run that separate HTTP
+recorder. The sentence does not say to stop one. There is no backfill for
 the period before that recorder started.
 
 ### The stdio transport in the container

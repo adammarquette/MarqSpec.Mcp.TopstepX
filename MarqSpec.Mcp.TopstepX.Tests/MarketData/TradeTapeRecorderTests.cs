@@ -1861,7 +1861,7 @@ public sealed class TradeTapeRecorderTests
             clock.Advance(timeToLive / 3);
 
             await WaitUntil(
-                () => tape.For("ES").Reason == TapeUnavailableReason.HeldByAnotherRecorder,
+                () => tape.For("ES").Reason == TapeUnavailableReason.ClaimTakenOver,
                 "a renewal that finds the row taken is a loss, and the loser stands down");
 
             hub.TradeSubscriptions.Should().BeEmpty(
@@ -1924,7 +1924,7 @@ public sealed class TradeTapeRecorderTests
 
             clock.Advance(timeToLive / 3);
             await WaitUntil(
-                () => tape.For("ES").Reason == TapeUnavailableReason.HeldByAnotherRecorder);
+                () => tape.For("ES").Reason == TapeUnavailableReason.ClaimTakenOver);
 
             TapeCoverageRecord range = CoverageRows(database).Should().ContainSingle().Subject;
             TradeRecord overlap = TradeRows(database).Should().ContainSingle().Subject;
@@ -2230,7 +2230,8 @@ public sealed class TradeTapeRecorderTests
                 new FootprintProjector(database, NullLogger<FootprintProjector>.Instance),
                 clock,
                 NullLogger<FootprintCacheService>.Instance,
-                _telemetry));
+                _telemetry),
+            _telemetry);
     }
 
     private static TradeUpdate Print(

@@ -16,6 +16,7 @@ public sealed class TradingDailyCapCoordinator(
 
     /// <inheritdoc />
     public bool LastReleaseFailed => _lastReleaseFailed;
+
     /// <summary>Distinct advisory lock class for trading daily caps (gh#711).</summary>
     public const int AdvisoryLockClassId = 0x0711_0024;
 

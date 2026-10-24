@@ -615,9 +615,10 @@ The server serves OHLCV bars for a futures instrument at a requested resolution 
   `retrySafety`: `SafeToRetry`, `NotSafeToRetry`, or `OutcomeUnknown`, matching the gate. `status: Live` is
   only a broker acknowledgment. `OutcomeUnknown` is returned when the send may have happened, including a
   bookkeeping failure after the send has started. Only a fault the gate classified as before the send is a
-  retryable `error`. The tool catch-all is defensive: any other exception is `OutcomeUnknown`, never a retry.
-  The gate is scoped and serves one order operation per instance; a second operation throws before any vendor
-  call. Size, price and
+  retryable `error` (`PreSendFaultException` only). The tool catch-all is defensive: any other exception is
+  `OutcomeUnknown` with no refusal and `resultCode` `-1`, never a retry. The gate is scoped, keeps
+  send-started state on the call, and serves one order operation per instance; a second operation throws
+  before any vendor call. A throw before that classification can report a false `OutcomeUnknown`. Size, price and
   partial-close checks refuse before any audit row.
   Modify charges the full new size against the daily cap.
   Bracket fields, `confirm_trading_action` and the OAuth trade scope are outside this requirement (gh#713,

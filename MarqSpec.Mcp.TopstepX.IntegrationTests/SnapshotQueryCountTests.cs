@@ -236,12 +236,14 @@ public sealed class SnapshotQueryCountTests(SchemaFixture fixture) : IAsyncLifet
 
     /// <summary>The latest bucket whose contract is not the venue front (<c>TenureStartAsync</c>).</summary>
     private static bool IsNonFrontTenureProbe(string sql) =>
-        sql.Contains("\"ContractId\" IS NULL", StringComparison.Ordinal)
+        sql.Contains("\"Bars\"", StringComparison.Ordinal)
+        && sql.Contains("\"ContractId\" IS NULL", StringComparison.Ordinal)
         && sql.Contains("DESC", StringComparison.Ordinal);
 
     /// <summary>The earliest bucket on the venue front (<c>TenureStartAsync</c>).</summary>
     private static bool IsFrontTenureProbe(string sql) =>
-        sql.Contains("\"BucketStart\"", StringComparison.Ordinal)
+        sql.Contains("\"Bars\"", StringComparison.Ordinal)
+        && sql.Contains("\"BucketStart\"", StringComparison.Ordinal)
         && sql.Contains("\"ContractId\" =", StringComparison.Ordinal)
         && sql.Contains("LIMIT 1", StringComparison.Ordinal)
         && !sql.Contains("DESC", StringComparison.Ordinal);

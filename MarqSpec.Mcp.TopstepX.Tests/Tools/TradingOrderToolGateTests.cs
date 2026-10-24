@@ -32,6 +32,7 @@ public sealed class TradingOrderToolGateTests
     private readonly RecordingAuditLog _audit = new();
     private readonly FakeDailyCapCoordinator _daily = new();
     private Exception? _accountsFailure;
+    private Exception? _cleanupFaultForTest;
 
     public static TheoryData<string> EveryOrderTool()
     {
@@ -596,7 +597,10 @@ public sealed class TradingOrderToolGateTests
         _gateway.Next = Acknowledged(77);
         _daily.ThrowOnDispose = true;
         using HostTelemetry telemetry = new();
+        using MetricCollector<long> writes = ListenWrites(telemetry);
         using MetricCollector<long> faults = ListenFaults(telemetry);
+        List<Activity> spans = [];
+        using ActivityListener listener = Listen(spans, telemetry.Activities);
         TradingOrderTools tools = Tools(telemetry, new TradingExecutionOptions { Enabled = true });
 
         ToolPayloads.TradingWriteResult result = await tools.SubmitPlace(
@@ -607,13 +611,39 @@ public sealed class TradingOrderToolGateTests
             1,
             "unlock-after-ack");
 
-        result.Status.Should().Be(nameof(TradingAttemptOutcome.Unknown));
-        result.RetrySafety.Should().Be(ToolPayloads.TradingRetrySafety.OutcomeUnknown);
-        result.RefusalCode.Should().BeNull();
-        result.OrderId.Should().BeNull();
+        AssertStructuredOutcomeUnknown(result);
+        result.RetrySafety.Should().NotBe(ToolPayloads.TradingRetrySafety.SafeToRetry);
         _gateway.PlaceOrderCalls.Should().Be(1);
+        _daily.LockAcquisitions.Should().Be(1);
         _audit.Entries.Should().Contain(entry => entry.Outcome == TradingAuditOutcomes.Live);
         faults.LastMeasurement!.Value.Should().Be(1);
+        AssertWrite(writes, spans, TradingMcpTools.PlaceOrderOperation, ExecutionWriteRefusal.OutcomeUnknown);
+    }
+
+    [Fact]
+    public async Task TradingRiskGate_PlaceOrder_VenueCleanupFaultAfterSend_IsOutcomeUnknown_AndNotSafeToRetry()
+    {
+        _gateway.Next = Acknowledged(77);
+        _daily.ThrowOnDispose = true;
+        _daily.DisposeException = new VenueException("session dispose failed after the send");
+        using HostTelemetry telemetry = new();
+        using MetricCollector<long> writes = ListenWrites(telemetry);
+        List<Activity> spans = [];
+        using ActivityListener listener = Listen(spans, telemetry.Activities);
+        TradingOrderTools tools = Tools(telemetry, new TradingExecutionOptions { Enabled = true });
+
+        ToolPayloads.TradingWriteResult result = await tools.SubmitPlace(
+            PracticeAccountId,
+            MesContract,
+            ExecutionOrderType.Market,
+            VenueSide.Buy,
+            1,
+            "venue-cleanup-after-send");
+
+        AssertStructuredOutcomeUnknown(result);
+        result.RetrySafety.Should().NotBe(ToolPayloads.TradingRetrySafety.SafeToRetry);
+        _gateway.PlaceOrderCalls.Should().Be(1);
+        AssertWrite(writes, spans, TradingMcpTools.PlaceOrderOperation, ExecutionWriteRefusal.OutcomeUnknown);
     }
 
     [Fact]
@@ -985,16 +1015,66 @@ public sealed class TradingOrderToolGateTests
         _gateway.PartialClosePositionCalls.Should().Be(0);
     }
 
+    [Theory]
+    [InlineData(TradingMcpTools.PlaceOrderOperation)]
+    [InlineData(TradingMcpTools.CancelOrderOperation)]
+    [InlineData(TradingMcpTools.ClosePositionOperation)]
+    public async Task TradingRiskGate_CleanupFaultAfterSend_IsOutcomeUnknown_AndNotSafeToRetry(string operation)
+    {
+        _gateway.Next = Acknowledged(77);
+        _cleanupFaultForTest = new InvalidOperationException("session dispose failed after the send");
+        using HostTelemetry telemetry = new();
+        using MetricCollector<long> writes = ListenWrites(telemetry);
+        List<Activity> spans = [];
+        using ActivityListener listener = Listen(spans, telemetry.Activities);
+        TradingOrderTools tools = Tools(telemetry, new TradingExecutionOptions { Enabled = true });
+
+        ToolPayloads.TradingWriteResult result = await Call(tools, operation, operation + "-cleanup-after-send");
+
+        AssertStructuredOutcomeUnknown(result);
+        result.RetrySafety.Should().NotBe(ToolPayloads.TradingRetrySafety.SafeToRetry);
+        CallsFor(operation).Should().Be(1);
+        _daily.LockAcquisitions.Should().Be(operation == TradingMcpTools.PlaceOrderOperation ? 1 : 0);
+        _audit.Entries.Should().Contain(entry => entry.Outcome == TradingAuditOutcomes.Live);
+        AssertWrite(writes, spans, operation, ExecutionWriteRefusal.OutcomeUnknown);
+    }
+
     [Fact]
-    public async Task TradingOrderTools_UnexpectedException_IsOutcomeUnknown_NeverSafeToRetry()
+    public async Task TradingOrderTools_UnclassifiedException_IsOutcomeUnknown_AndNotSafeToRetry()
     {
         ToolPayloads.TradingWriteResult result = await TradingOrderTools.RunAsync(
             Task.FromException<TradingRiskGateResult>(new InvalidOperationException("unclassified")));
 
         result.Status.Should().Be(nameof(TradingAttemptOutcome.Unknown));
         result.RetrySafety.Should().Be(ToolPayloads.TradingRetrySafety.OutcomeUnknown);
-        result.RefusalCode.Should().Be(ExecutionWriteRefusal.Error);
+        result.RetrySafety.Should().NotBe(ToolPayloads.TradingRetrySafety.SafeToRetry);
+        result.RefusalCode.Should().BeNull();
+        result.ResultCode.Should().Be(ToolPayloads.UnclassifiedFaultResultCode);
         result.OrderId.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task TradingRiskGate_CancelOrder_ThrowingSpanListenerAfterAck_ReturnsOutcomeUnknown()
+    {
+        ToolPayloads.TradingWriteResult result = await SubmitWithThrowingSpan(
+            tools => tools.SubmitCancel(PracticeAccountId, OpenOrderId, "cancel-span-after-ack"));
+
+        AssertStructuredOutcomeUnknown(result);
+        _gateway.CancelOrderCalls.Should().Be(1);
+        _daily.LockAcquisitions.Should().Be(0);
+        _audit.Entries.Should().Contain(entry => entry.Outcome == TradingAuditOutcomes.Live);
+    }
+
+    [Fact]
+    public async Task TradingRiskGate_ClosePosition_ThrowingSpanListenerAfterAck_ReturnsOutcomeUnknown()
+    {
+        ToolPayloads.TradingWriteResult result = await SubmitWithThrowingSpan(
+            tools => tools.SubmitClose(PracticeAccountId, MesContract, "close-span-after-ack"));
+
+        AssertStructuredOutcomeUnknown(result);
+        _gateway.ClosePositionCalls.Should().Be(1);
+        _daily.LockAcquisitions.Should().Be(0);
+        _audit.Entries.Should().Contain(entry => entry.Outcome == TradingAuditOutcomes.Live);
     }
 
     [Fact]
@@ -1018,6 +1098,35 @@ public sealed class TradingOrderToolGateTests
         ]);
     }
 
+    private async Task<ToolPayloads.TradingWriteResult> SubmitWithThrowingSpan(
+        Func<TradingOrderTools, Task<ToolPayloads.TradingWriteResult>> call)
+    {
+        _gateway.Next = Acknowledged(77);
+        using HostTelemetry telemetry = new();
+        using MetricCollector<long> faults = ListenFaults(telemetry);
+        using ActivityListener listener = new()
+        {
+            ShouldListenTo = source => ReferenceEquals(source, telemetry.Activities),
+            Sample = (ref ActivityCreationOptions<ActivityContext> _) => ActivitySamplingResult.AllDataAndRecorded,
+            ActivityStopped = _ => throw new InvalidOperationException("span listener failed"),
+        };
+        ActivitySource.AddActivityListener(listener);
+        TradingOrderTools tools = Tools(telemetry, new TradingExecutionOptions { Enabled = true });
+
+        ToolPayloads.TradingWriteResult result = await call(tools);
+        faults.LastMeasurement!.Value.Should().Be(1);
+        return result;
+    }
+
+    private static void AssertStructuredOutcomeUnknown(ToolPayloads.TradingWriteResult result)
+    {
+        result.Status.Should().Be(nameof(TradingAttemptOutcome.Unknown));
+        result.RetrySafety.Should().Be(ToolPayloads.TradingRetrySafety.OutcomeUnknown);
+        result.RefusalCode.Should().BeNull();
+        result.ResultCode.Should().BeNull();
+        result.OrderId.Should().BeNull();
+    }
+
     private TradingOrderTools Tools(HostTelemetry telemetry, TradingExecutionOptions options) =>
         new(Gate(telemetry, options));
 
@@ -1037,7 +1146,7 @@ public sealed class TradingOrderToolGateTests
         ];
         IReadOnlyList<VenueOrder> orders = [OpenOrder()];
 
-        return new TradingRiskGate(
+        TradingRiskGate gate = new(
             executionGate,
             _gateway,
             new StubMarketDataGateway(accounts, orders, () => _accountsFailure),
@@ -1047,7 +1156,11 @@ public sealed class TradingOrderToolGateTests
             _audit,
             denylist,
             new TradingWriteVenueAccountCache(),
-            telemetry);
+            telemetry)
+        {
+            CleanupFaultForTest = _cleanupFaultForTest,
+        };
+        return gate;
     }
 
     private static Task<ToolPayloads.TradingWriteResult> Call(
@@ -1282,12 +1395,16 @@ public sealed class TradingOrderToolGateTests
 
         public int ContractsToday { get; set; }
 
+        public bool LastReleaseFailed => false;
+
         public bool ThrowOnDispose { get; set; }
+
+        public Exception? DisposeException { get; set; }
 
         public Task<IAsyncDisposable> AcquireAccountDayLockAsync(int accountId, CancellationToken cancellationToken)
         {
             LockAcquisitions++;
-            return Task.FromResult<IAsyncDisposable>(new NoopLock(ThrowOnDispose));
+            return Task.FromResult<IAsyncDisposable>(new NoopLock(ThrowOnDispose, DisposeException));
         }
 
         public Task<int> GetConservativeContractTotalTodayUtcAsync(
@@ -1295,12 +1412,17 @@ public sealed class TradingOrderToolGateTests
             CancellationToken cancellationToken) =>
             Task.FromResult(ContractsToday);
 
-        private sealed class NoopLock(bool throwOnDispose) : IAsyncDisposable
+        private sealed class NoopLock(bool throwOnDispose, Exception? disposeException) : IAsyncDisposable
         {
-            public ValueTask DisposeAsync() =>
-                throwOnDispose
-                    ? throw new InvalidOperationException("advisory unlock failed")
-                    : ValueTask.CompletedTask;
+            public ValueTask DisposeAsync()
+            {
+                if (!throwOnDispose)
+                {
+                    return ValueTask.CompletedTask;
+                }
+
+                throw disposeException ?? new InvalidOperationException("advisory unlock failed");
+            }
         }
     }
 

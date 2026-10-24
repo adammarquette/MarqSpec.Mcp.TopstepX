@@ -376,6 +376,8 @@ public sealed class TradingRiskGateLegacyStageTests
 
     private sealed class FakeDailyCapCoordinator : ITradingDailyCapCoordinator
     {
+        public bool LastReleaseFailed => false;
+
         public Task<IAsyncDisposable> AcquireAccountDayLockAsync(
             int accountId,
             CancellationToken cancellationToken) =>

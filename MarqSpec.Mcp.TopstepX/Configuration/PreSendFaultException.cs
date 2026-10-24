@@ -8,11 +8,11 @@ namespace MarqSpec.Mcp.TopstepX.Configuration;
 /// <c>OutcomeUnknown</c>, because the send may already have been acknowledged and a fresh idempotency key
 /// would place a second live order (gh#750).
 /// </remarks>
-public sealed class GateRefusedBeforeSendException : Exception
+public sealed class PreSendFaultException : Exception
 {
     /// <summary>Creates the exception around the fault that was caught before the send.</summary>
     /// <param name="inner">The fault. It is not copied into the message.</param>
-    public GateRefusedBeforeSendException(Exception inner)
+    public PreSendFaultException(Exception inner)
         : base("The trading attempt failed before the vendor send.", inner)
     {
     }

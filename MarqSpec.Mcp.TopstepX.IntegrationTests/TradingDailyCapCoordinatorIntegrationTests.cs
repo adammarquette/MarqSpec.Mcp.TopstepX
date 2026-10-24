@@ -1,3 +1,5 @@
+using System.Data.Common;
+using System.Diagnostics.Metrics;
 using FluentAssertions;
 using MarqSpec.Mcp.TopstepX.Configuration;
 using MarqSpec.Mcp.TopstepX.Data;
@@ -65,6 +67,36 @@ public sealed class TradingDailyCapCoordinatorIntegrationTests(SeriesStoreFixtur
         await firstLock.DisposeAsync();
         await using IAsyncDisposable secondLock = await blocked;
         secondLock.Should().NotBeNull();
+    }
+
+    [Fact]
+    [Trait("Gate", "ADR-0024")]
+    public async Task SessionLock_DisposeAsync_SwallowsADisposedConnection()
+    {
+        using HostTelemetry telemetry = new();
+        long faults = 0;
+        using MeterListener listener = new();
+        listener.InstrumentPublished = (instrument, meterListener) =>
+        {
+            if (instrument.Meter.Name == HostTelemetry.Name
+                && instrument.Name == HostTelemetry.BookkeepingFaultsInstrument)
+            {
+                meterListener.EnableMeasurementEvents(instrument);
+            }
+        };
+        listener.SetMeasurementEventCallback<long>((_, measurement, _, _) => faults += measurement);
+        listener.Start();
+
+        TradingDailyCapCoordinator coordinator = new(_database, _clock, telemetry);
+        IAsyncDisposable lease = await coordinator.AcquireAccountDayLockAsync(100, CancellationToken.None);
+        DbConnection connection = _database.Database.GetDbConnection();
+        await connection.DisposeAsync();
+
+        Func<Task> release = async () => await lease.DisposeAsync();
+
+        await release.Should().NotThrowAsync();
+        coordinator.LastReleaseFailed.Should().BeTrue();
+        faults.Should().Be(1);
     }
 
     private static TradingAuditLogRecord Row(DateTimeOffset at, string outcome, int contractCount) =>

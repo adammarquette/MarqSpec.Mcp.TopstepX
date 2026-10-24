@@ -315,6 +315,8 @@ public sealed class TradingRiskGateDisabledTelemetryTests
     {
         public int LockAcquisitions { get; private set; }
 
+        public bool LastReleaseFailed => false;
+
         public Task<IAsyncDisposable> AcquireAccountDayLockAsync(int accountId, CancellationToken cancellationToken)
         {
             LockAcquisitions++;

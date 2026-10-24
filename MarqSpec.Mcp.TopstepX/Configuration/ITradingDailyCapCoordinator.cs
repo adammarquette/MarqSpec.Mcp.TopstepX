@@ -9,10 +9,10 @@ public interface ITradingDailyCapCoordinator
     Task<IAsyncDisposable> AcquireAccountDayLockAsync(int accountId, CancellationToken cancellationToken);
 
     /// <summary>
-    /// True when the most recent release on this instance failed. Test doubles that do not track a release
-    /// keep the default, false. The gate reads this after dispose and does not let the failure become a retry.
+    /// True when the most recent release on this instance failed. Every implementation reports it. The gate
+    /// reads this after dispose and does not let the failure become a retry.
     /// </summary>
-    bool LastReleaseFailed => false;
+    bool LastReleaseFailed { get; }
 
     /// <summary>
     /// Contracts charged on <see cref="TradingAuditOutcomes.Attempted"/> rows for the current Topstep session day.

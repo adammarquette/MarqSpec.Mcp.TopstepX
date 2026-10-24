@@ -1,3 +1,4 @@
+using MarqSpec.Mcp.TopstepX.Telemetry;
 using MarqSpec.Mcp.TopstepX.Venue;
 
 namespace MarqSpec.Mcp.TopstepX.Configuration;
@@ -136,6 +137,18 @@ public readonly record struct TradingExecutionRefusal(string Code, string Messag
     /// <summary>Trading configuration failed validation and cannot be applied safely.</summary>
     public static TradingExecutionRefusal InvalidConfiguration(string detail) =>
         new("trading_configuration_invalid", detail);
+
+    /// <summary>The caller did not supply a usable idempotency key.</summary>
+    public static TradingExecutionRefusal IdempotencyKeyRequired { get; } =
+        new(
+            ExecutionWriteRefusal.IdempotencyKeyRequired,
+            "idempotencyKey is required and must be at most 256 characters. A replay of the same key returns the original result and does not send again.");
+
+    /// <summary>The idempotency key is already stored for a different request.</summary>
+    public static TradingExecutionRefusal IdempotencyConflict { get; } =
+        new(
+            ExecutionWriteRefusal.IdempotencyConflict,
+            "idempotencyKey was already used for a different account, tool or request. Use a new key for a new attempt.");
 
     /// <summary>The modify target order was not returned by a fresh order fetch.</summary>
     public static TradingExecutionRefusal OrderNotFound(long orderId) =>

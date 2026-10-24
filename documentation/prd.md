@@ -449,9 +449,13 @@ The server serves OHLCV bars for a futures instrument at a requested resolution 
 
 ## R-4 — Read-only venue boundary
 
-- **R-4.1** **No code path in this repository transmits an order.** Not behind a flag, not behind a
-  confirmation, not in a "safe" wrapper ([ADR-0002](adr/0002-read-only-venue-boundary.md)).
-- **R-4.2** This is enforced by a CI gate over the product projects, not only asserted in documentation.
+- **R-4.1** **A venue write exists only behind `TradingRiskGate`.** `Trading__Enabled` defaults to false and
+  refuses every order operation, including cancel and close, before the vendor client is called and with no
+  side effects. The kill switch blocks the same calls. MCP tools call the gate and never the vendor client or
+  `IExecutionGateway` ([ADR-0024](adr/0024-gated-trading-actions-practice-v1.md), which supersedes
+  [ADR-0002](adr/0002-read-only-venue-boundary.md)).
+- **R-4.2** `scripts/check-no-order-path.sh` enforces that boundary over the product projects. Order-method
+  names stay in the execution seam. The five order tools do not widen that allowlist (gh#750).
 - **R-4.3** Account, position, order and trade **reads** are in scope. Reading what happened is not
   transmitting.
 
@@ -570,6 +574,16 @@ The server serves OHLCV bars for a futures instrument at a requested resolution 
   unknown name is refused by listing the session vocabulary (`R-5.3`). They are their own tool type
   ([ADR-0017](adr/0017-one-tool-type-per-concern.md)) and the window caps refuse rather than truncate
   (`R-5.4`, `R-1.13`). See [ADR-0022](adr/0022-session-bars-derived-complete-or-absent.md) (gh#501, gh#496).
+- **R-5.13** **Five order tools** — `place_order`, `modify_order`, `cancel_order`, `close_position` and
+  `partial_close_position` — are the venue-write surface (gh#750, gh#714, gh#715, gh#716). Each one calls
+  `TradingRiskGate` only (`R-4.1`). `Trading__Enabled` defaults to false and refuses before any vendor send,
+  with no audit row and no gateway call; the kill switch blocks cancel and close on that same path. Every
+  call emits the gate's execution-write span and counter, tagged with the operation and the refusal reason.
+  Each tool takes a caller-supplied `idempotencyKey`; a replay within 24 hours in the same process returns
+  the original result and does not send again (gh#712). The result carries `retrySafety`: `SafeToRetry`,
+  `NotSafeToRetry`, or `OutcomeUnknown`, matching the gate. `status: Live` is only a broker acknowledgment.
+  Bracket fields, `confirm_trading_action` and the OAuth trade scope are outside this requirement (gh#713,
+  gh#717, gh#719). The catalogue section is `R-5`'s contract for the shapes (gh#721).
 
 ## R-6 — Observations
 

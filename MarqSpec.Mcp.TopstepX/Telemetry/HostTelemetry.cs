@@ -706,6 +706,12 @@ public static class ExecutionWriteRefusal
     /// <summary>The transmit outcome could not be classified safely for retry.</summary>
     public const string OutcomeUnknown = "outcome_unknown";
 
+    /// <summary>The caller did not supply a usable idempotency key.</summary>
+    public const string IdempotencyKeyRequired = "idempotency_key_required";
+
+    /// <summary>The idempotency key is already stored for a different request.</summary>
+    public const string IdempotencyConflict = "idempotency_conflict";
+
     /// <summary>Every value.</summary>
     public static IReadOnlyList<string> All { get; } =
         [
@@ -728,6 +734,8 @@ public static class ExecutionWriteRefusal
             Error,
             VenueRejected,
             OutcomeUnknown,
+            IdempotencyKeyRequired,
+            IdempotencyConflict,
         ];
 }
 

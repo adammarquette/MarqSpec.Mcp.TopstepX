@@ -577,7 +577,8 @@ public sealed class TradingRiskGateTests
             _audit,
             denylist,
             new TradingWriteVenueAccountCache(),
-            new HostTelemetry());
+            new HostTelemetry(),
+            new InMemoryTradingIdempotencyStore(TimeProvider.System));
     }
 
     private static VenueOrder OpenOrder(long orderId, string contractId) =>

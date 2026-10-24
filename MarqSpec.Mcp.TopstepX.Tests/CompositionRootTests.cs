@@ -230,6 +230,7 @@ public sealed class CompositionRootTests
     [InlineData(typeof(TapeTools))]
     [InlineData(typeof(ContractRollTools))]
     [InlineData(typeof(AccountTools))]
+    [InlineData(typeof(TradingOrderTools))]
     [InlineData(typeof(SnapshotTools))]
     [InlineData(typeof(ObservationTools))]
     [InlineData(typeof(SessionBarTools))]

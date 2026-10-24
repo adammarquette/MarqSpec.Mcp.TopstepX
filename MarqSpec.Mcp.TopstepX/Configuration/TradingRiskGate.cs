@@ -26,6 +26,7 @@ public sealed class TradingRiskGate
     private readonly TradingContractDenylist _contractDenylist;
     private readonly TradingWriteVenueAccountCache _accountCache;
     private readonly HostTelemetry _telemetry;
+    private readonly ITradingIdempotencyStore _idempotency;
 
     /// <summary>Creates the risk gate.</summary>
     public TradingRiskGate(
@@ -38,7 +39,8 @@ public sealed class TradingRiskGate
         ITradingAuditLogWriter auditLog,
         TradingContractDenylist contractDenylist,
         TradingWriteVenueAccountCache accountCache,
-        HostTelemetry telemetry)
+        HostTelemetry telemetry,
+        ITradingIdempotencyStore idempotency)
     {
         _executionGate = executionGate;
         _gateway = gateway;
@@ -50,6 +52,7 @@ public sealed class TradingRiskGate
         _contractDenylist = contractDenylist;
         _accountCache = accountCache;
         _telemetry = telemetry;
+        _idempotency = idempotency;
     }
 
     /// <summary>Places an order when every gate layer permits.</summary>
@@ -59,7 +62,12 @@ public sealed class TradingRiskGate
         CancellationToken cancellationToken) =>
         RunWithTelemetry(
             ExecutionOperation.PlaceOrderOperation,
-            () => RunPlaceAsync(command, context, cancellationToken));
+            command.AccountId,
+            TradingMcpTools.PlaceOrderOperation,
+            TradingRequestHasher.HashPlace(command),
+            context,
+            lease => RunPlaceAsync(command, context, lease, cancellationToken),
+            cancellationToken);
 
     /// <summary>Modifies an order when every gate layer permits.</summary>
     public Task<TradingRiskGateResult> SubmitModify(
@@ -68,7 +76,12 @@ public sealed class TradingRiskGate
         CancellationToken cancellationToken) =>
         RunWithTelemetry(
             ExecutionOperation.ModifyOrderOperation,
-            () => RunModifyAsync(command, context, cancellationToken));
+            command.AccountId,
+            TradingMcpTools.ModifyOrderOperation,
+            TradingRequestHasher.HashModify(command),
+            context,
+            lease => RunModifyAsync(command, context, lease, cancellationToken),
+            cancellationToken);
 
     /// <summary>Cancels an order when every gate layer permits.</summary>
     public Task<TradingRiskGateResult> SubmitCancel(
@@ -77,7 +90,12 @@ public sealed class TradingRiskGate
         CancellationToken cancellationToken) =>
         RunWithTelemetry(
             ExecutionOperation.CancelOrderOperation,
-            () => RunCancelAsync(command, context, cancellationToken));
+            command.AccountId,
+            TradingMcpTools.CancelOrderOperation,
+            TradingRequestHasher.HashCancel(command),
+            context,
+            lease => RunCancelAsync(command, context, lease, cancellationToken),
+            cancellationToken);
 
     /// <summary>Flattens a position when every gate layer permits.</summary>
     public Task<TradingRiskGateResult> SubmitClose(
@@ -86,7 +104,12 @@ public sealed class TradingRiskGate
         CancellationToken cancellationToken) =>
         RunWithTelemetry(
             ExecutionOperation.ClosePositionOperation,
-            () => RunCloseAsync(command, context, cancellationToken));
+            command.AccountId,
+            TradingMcpTools.ClosePositionOperation,
+            TradingRequestHasher.HashClose(command),
+            context,
+            lease => RunCloseAsync(command, context, lease, cancellationToken),
+            cancellationToken);
 
     /// <summary>Partially closes a position when every gate layer permits.</summary>
     public Task<TradingRiskGateResult> SubmitPartialClose(
@@ -95,17 +118,42 @@ public sealed class TradingRiskGate
         CancellationToken cancellationToken) =>
         RunWithTelemetry(
             ExecutionOperation.PartialClosePositionOperation,
-            () => RunPartialCloseAsync(command, context, cancellationToken));
+            command.AccountId,
+            TradingMcpTools.PartialClosePositionOperation,
+            TradingRequestHasher.HashPartialClose(command),
+            context,
+            lease => RunPartialCloseAsync(command, context, lease, cancellationToken),
+            cancellationToken);
 
     private async Task<TradingRiskGateResult> RunWithTelemetry(
         string operation,
-        Func<Task<TradingRiskGateResult>> body)
+        int accountId,
+        string tool,
+        string requestHash,
+        TradingRiskAttemptContext context,
+        Func<TradingIdempotencyLease, Task<TradingRiskGateResult>> body,
+        CancellationToken cancellationToken)
     {
         _accountCache.Clear();
         using HostTelemetry.ExecutionWriteScope write = _telemetry.ExecutionWrite(operation);
+        TradingIdempotencyLease? lease = null;
         try
         {
-            TradingRiskGateResult result = await body().ConfigureAwait(false);
+            lease = await _idempotency.LeaseAsync(
+                context.IdempotencyKey,
+                accountId,
+                tool,
+                requestHash,
+                cancellationToken).ConfigureAwait(false);
+
+            if (lease.Prior is { } prior)
+            {
+                write.Outcome(ExecutionWriteRefusalForResult.For(prior));
+                return prior;
+            }
+
+            TradingRiskGateResult result = await body(lease).ConfigureAwait(false);
+            lease.Remember(result);
             write.Outcome(ExecutionWriteRefusalForResult.For(result));
             return result;
         }
@@ -116,6 +164,11 @@ public sealed class TradingRiskGate
         }
         finally
         {
+            if (lease is not null)
+            {
+                await lease.DisposeAsync().ConfigureAwait(false);
+            }
+
             _accountCache.Clear();
         }
     }
@@ -123,6 +176,7 @@ public sealed class TradingRiskGate
     private async Task<TradingRiskGateResult> RunPlaceAsync(
         ExecutionPlaceOrderCommand command,
         TradingRiskAttemptContext context,
+        TradingIdempotencyLease lease,
         CancellationToken cancellationToken)
     {
         AuditEnvelope audit = Envelope(
@@ -144,6 +198,12 @@ public sealed class TradingRiskGate
                 contractCount: command.Size,
                 masterOrHalt,
                 cancellationToken).ConfigureAwait(false);
+        }
+
+        if (await BlockedByIdempotencyAsync(command.AccountId, audit, context, lease, cancellationToken)
+                .ConfigureAwait(false) is { } idempotencyBlock)
+        {
+            return idempotencyBlock;
         }
 
         (AccountStage stage, TradingExecutionRefusal? stageRefusal) = await ResolvePracticeStageAsync(
@@ -231,6 +291,7 @@ public sealed class TradingRiskGate
     private async Task<TradingRiskGateResult> RunModifyAsync(
         ExecutionModifyOrderCommand command,
         TradingRiskAttemptContext context,
+        TradingIdempotencyLease lease,
         CancellationToken cancellationToken)
     {
         AuditEnvelope audit = Envelope(
@@ -253,6 +314,12 @@ public sealed class TradingRiskGate
                 contractCount: capSize,
                 masterOrHalt,
                 cancellationToken).ConfigureAwait(false);
+        }
+
+        if (await BlockedByIdempotencyAsync(command.AccountId, audit, context, lease, cancellationToken)
+                .ConfigureAwait(false) is { } idempotencyBlock)
+        {
+            return idempotencyBlock;
         }
 
         (AccountStage stage, TradingExecutionRefusal? stageRefusal) = await ResolvePracticeStageAsync(
@@ -343,6 +410,7 @@ public sealed class TradingRiskGate
     private async Task<TradingRiskGateResult> RunCancelAsync(
         ExecutionCancelOrderCommand command,
         TradingRiskAttemptContext context,
+        TradingIdempotencyLease lease,
         CancellationToken cancellationToken)
     {
         AuditEnvelope audit = Envelope(
@@ -364,6 +432,12 @@ public sealed class TradingRiskGate
                 contractCount: 0,
                 masterOrHalt,
                 cancellationToken).ConfigureAwait(false);
+        }
+
+        if (await BlockedByIdempotencyAsync(command.AccountId, audit, context, lease, cancellationToken)
+                .ConfigureAwait(false) is { } idempotencyBlock)
+        {
+            return idempotencyBlock;
         }
 
         (AccountStage stage, TradingExecutionRefusal? stageRefusal) = await ResolvePracticeStageAsync(
@@ -412,6 +486,7 @@ public sealed class TradingRiskGate
     private async Task<TradingRiskGateResult> RunCloseAsync(
         ExecutionClosePositionCommand command,
         TradingRiskAttemptContext context,
+        TradingIdempotencyLease lease,
         CancellationToken cancellationToken)
     {
         AuditEnvelope audit = Envelope(
@@ -433,6 +508,12 @@ public sealed class TradingRiskGate
                 contractCount: 0,
                 masterOrHalt,
                 cancellationToken).ConfigureAwait(false);
+        }
+
+        if (await BlockedByIdempotencyAsync(command.AccountId, audit, context, lease, cancellationToken)
+                .ConfigureAwait(false) is { } idempotencyBlock)
+        {
+            return idempotencyBlock;
         }
 
         (AccountStage stage, TradingExecutionRefusal? stageRefusal) = await ResolvePracticeStageAsync(
@@ -492,6 +573,7 @@ public sealed class TradingRiskGate
     private async Task<TradingRiskGateResult> RunPartialCloseAsync(
         ExecutionPartialClosePositionCommand command,
         TradingRiskAttemptContext context,
+        TradingIdempotencyLease lease,
         CancellationToken cancellationToken)
     {
         AuditEnvelope audit = Envelope(
@@ -513,6 +595,12 @@ public sealed class TradingRiskGate
                 contractCount: command.Size,
                 masterOrHalt,
                 cancellationToken).ConfigureAwait(false);
+        }
+
+        if (await BlockedByIdempotencyAsync(command.AccountId, audit, context, lease, cancellationToken)
+                .ConfigureAwait(false) is { } idempotencyBlock)
+        {
+            return idempotencyBlock;
         }
 
         (AccountStage stage, TradingExecutionRefusal? stageRefusal) = await ResolvePracticeStageAsync(
@@ -973,6 +1061,47 @@ public sealed class TradingRiskGate
                 contractCount,
                 venueErrorCode),
             cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Refuses a missing key or a conflicting replay after the master switch and before any stage fetch.
+    /// A stored hit is returned by <see cref="RunWithTelemetry"/> and never reaches here.
+    /// </summary>
+    private async Task<TradingRiskGateResult?> BlockedByIdempotencyAsync(
+        int accountId,
+        AuditEnvelope audit,
+        TradingRiskAttemptContext context,
+        TradingIdempotencyLease lease,
+        CancellationToken cancellationToken)
+    {
+        if (audit.IdempotencyKey.Length > InMemoryTradingIdempotencyStore.MaxKeyLength)
+        {
+            return RefuseWithoutSideEffects(TradingExecutionRefusal.IdempotencyKeyRequired);
+        }
+
+        if (context.RequireIdempotencyKey && string.IsNullOrWhiteSpace(audit.IdempotencyKey))
+        {
+            return await RefuseAsync(
+                accountId,
+                ParsedStage.Unresolved,
+                audit,
+                contractCount: 0,
+                TradingExecutionRefusal.IdempotencyKeyRequired,
+                cancellationToken).ConfigureAwait(false);
+        }
+
+        if (lease.Conflicts)
+        {
+            return await RefuseAsync(
+                accountId,
+                ParsedStage.Unresolved,
+                audit,
+                contractCount: 0,
+                TradingExecutionRefusal.IdempotencyConflict,
+                cancellationToken).ConfigureAwait(false);
+        }
+
+        return null;
     }
 
     private static AuditEnvelope Envelope(string tool, string requestHash, TradingRiskAttemptContext context) =>

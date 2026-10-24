@@ -35,17 +35,34 @@ public interface IRecorderHealthStore
     /// </remarks>
     Task<bool> DatabaseConnectedAsync(CancellationToken cancellationToken);
 
-    /// <summary>The latest stored print per contract.</summary>
+    /// <summary>
+    /// The latest stored print per contract inside <c>[windowStart, windowEnd]</c>, for the named instruments.
+    /// </summary>
+    /// <param name="instruments">The configured symbols. A print for any other symbol is not read.</param>
+    /// <param name="windowStart">Inclusive.</param>
+    /// <param name="windowEnd">Inclusive. The caller passes the report instant, and a print at that instant has happened.</param>
     /// <param name="cancellationToken">The caller's cancellation token.</param>
-    /// <returns>One row per contract that has a print. Empty when the tape has none.</returns>
-    Task<IReadOnlyList<ContractLastTick>> LastTicksAsync(CancellationToken cancellationToken);
+    /// <returns>
+    /// One row per contract that printed inside the window. Empty when none did, or the window is empty.
+    /// </returns>
+    /// <remarks>
+    /// Bounded on purpose. The latest print in the whole tape is a scan of every row ever stored, and a
+    /// health poll is not a reason to do that (gh#756).
+    /// </remarks>
+    Task<IReadOnlyList<ContractLastTick>> LastTicksAsync(
+        IReadOnlyCollection<string> instruments,
+        DateTimeOffset windowStart,
+        DateTimeOffset windowEnd,
+        CancellationToken cancellationToken);
 
-    /// <summary>Listening ranges that overlap <c>[windowStart, windowEnd)</c>.</summary>
+    /// <summary>Listening ranges for the named instruments that overlap <c>[windowStart, windowEnd)</c>.</summary>
+    /// <param name="instruments">The configured symbols. A range for any other symbol is not read.</param>
     /// <param name="windowStart">Inclusive.</param>
     /// <param name="windowEnd">Exclusive.</param>
     /// <param name="cancellationToken">The caller's cancellation token.</param>
     /// <returns>The overlapping ranges, including a still-open listen.</returns>
     Task<IReadOnlyList<CoverageSlice>> CoverageAsync(
+        IReadOnlyCollection<string> instruments,
         DateTimeOffset windowStart,
         DateTimeOffset windowEnd,
         CancellationToken cancellationToken);

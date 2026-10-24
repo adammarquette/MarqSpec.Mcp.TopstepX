@@ -164,6 +164,16 @@ public sealed class BarSessionCalendarTests
     }
 
     [Fact]
+    public void IsExpectedBucket_WhenAnEarlyCloseIsDeclared_StillExpectsTheOrdinaryAfternoon()
+    {
+        BarSessionCalendar calendar = BarSessionCalendar.Parse("16:00", [], earlyCloses: ["2026-11-27 12:00"]);
+        DateTimeOffset bucket = MarketClock.FromMarket(new DateOnly(2026, 11, 27), new TimeOnly(13, 0));
+
+        calendar.SessionCloseOn(new DateOnly(2026, 11, 27)).Should().Be(new TimeOnly(12, 0));
+        calendar.IsExpectedBucket(bucket, _fiveMinutes).Should().BeTrue();
+    }
+
+    [Fact]
     public void Constructor_RefusesANonPositiveMaintenanceWindow()
     {
         Action build = () => new BarSessionCalendar(new TimeOnly(16, 0), [], TimeSpan.Zero);

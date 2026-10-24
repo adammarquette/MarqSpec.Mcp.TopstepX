@@ -57,10 +57,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **`get_recorder_health` and `GET /health/recorder` (gh#756).** Read-only report of feed connection, the last
-  stored print per contract, coverage gaps in the elapsed session, and whether the database answers. The HTTP
-  path is behind the bearer gate. `/health` stays the unauthenticated liveness probe. A missing print time
-  and an unreadable ledger are omitted, not filled in.
+- **`get_recorder_health` and `GET /health/recorder` (gh#756).** Read-only report of `feedConnected`, `feed`,
+  `database`, `lastTickUtc` and `gaps` for the configured symbols and the contracts active in the elapsed
+  session. The HTTP path is behind the bearer gate. `/health` stays the unauthenticated liveness probe.
+  `lastTickUtc`, `contractId`, `session` and `gaps` are omitted when they do not apply.
 
 - **`TradingRiskGate` (gh#711).** Central practice-only gate with allowlist, symbol denylist, per-order and
   daily caps, dry-run preview, and append-only audit rows before every outcome. Future MCP order tools will call

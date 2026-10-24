@@ -210,6 +210,32 @@ public sealed class SessionOptionsBindingTests
             .Be(new SessionDefinition("full", new TimeOnly(15, 0), new TimeOnly(13, 0), 60));
     }
 
+    [Fact]
+    public void EarlyCloses_WhenConfigured_ShortenTheCalendarTheHostBuilds()
+    {
+        BarSessionCalendar calendar = CalendarWith(new Dictionary<string, string?>
+        {
+            ["MarketData:EarlyCloses"] = "2026-11-27 12:00",
+            ["MarketData:Instruments"] = "ES,NQ",
+            ["MarketData:MaxRows"] = "5000",
+        });
+
+        calendar.SessionCloseOn(new DateOnly(2026, 11, 27)).Should().Be(new TimeOnly(12, 0));
+        calendar.SessionCloseOn(new DateOnly(2026, 11, 26)).Should().Be(new TimeOnly(16, 0));
+    }
+
+    [Fact]
+    public void EarlyCloses_WhenTheValueIsNotADateAndTime_FailsStartup()
+    {
+        Action start = () => BindWith(builder => builder.Configuration.AddInMemoryCollection(
+            new Dictionary<string, string?>
+            {
+                ["MarketData:EarlyCloses"] = "not-a-close",
+            }));
+
+        start.Should().Throw<OptionsValidationException>().WithMessage("*Early close*");
+    }
+
     /// <summary>
     /// Binds through the real composition root, so this measures what the deployed server does rather than a
     /// hand-rolled binder. <paramref name="configure"/> adds whatever configuration the case needs; adding
@@ -245,5 +271,27 @@ public sealed class SessionOptionsBindingTests
         });
 
         return provider.GetRequiredService<IOptions<MarketDataOptions>>().Value;
+    }
+
+    private static BarSessionCalendar CalendarWith(Dictionary<string, string?> settings)
+    {
+        WebApplicationBuilder builder = WebApplication.CreateBuilder();
+        IConfigurationBuilder sources = builder.Configuration;
+        foreach (EnvironmentVariablesConfigurationSource ambient in sources.Sources
+            .OfType<EnvironmentVariablesConfigurationSource>()
+            .Where(source => string.IsNullOrEmpty(source.Prefix))
+            .ToList())
+        {
+            sources.Sources.Remove(ambient);
+        }
+
+        builder.Configuration.AddInMemoryCollection(settings);
+        Program.ConfigureServices(builder, new McpOptions { Transport = McpTransport.Stdio });
+        using ServiceProvider provider = builder.Services.BuildServiceProvider(new ServiceProviderOptions
+        {
+            ValidateOnBuild = true,
+            ValidateScopes = true,
+        });
+        return provider.GetRequiredService<BarSessionCalendar>();
     }
 }

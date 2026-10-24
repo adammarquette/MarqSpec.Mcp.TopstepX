@@ -71,6 +71,17 @@ public sealed partial class MarketDataOptions : IValidatableObject
     public string Holidays { get; init; } = string.Empty;
 
     /// <summary>
+    /// Declared early closes, comma-separated <c>yyyy-MM-dd HH:mm</c> in Central wall-clock time.
+    /// </summary>
+    /// <remarks>
+    /// Configuration rather than a feed, on the same terms as <see cref="Holidays"/>. A declared date ends
+    /// that trade date's recorder-health session at the stated time. The next session still opens at the
+    /// ordinary reopen. Bar expectation keeps <see cref="SessionCloseCentral"/>, so the afternoon after an
+    /// early close still looks like missing bars. An undeclared early close is the same visible cost.
+    /// </remarks>
+    public string EarlyCloses { get; init; } = string.Empty;
+
+    /// <summary>
     /// The largest number of rows a single windowed read returns.
     /// </summary>
     /// <remarks>
@@ -177,6 +188,10 @@ public sealed partial class MarketDataOptions : IValidatableObject
     /// <returns>The holiday strings, trimmed and non-empty.</returns>
     public IReadOnlyList<string> HolidayList() => SplitList(Holidays);
 
+    /// <summary>The declared early closes, parsed as <c>yyyy-MM-dd HH:mm</c> tokens.</summary>
+    /// <returns>The early-close strings, trimmed and non-empty.</returns>
+    public IReadOnlyList<string> EarlyCloseList() => SplitList(EarlyCloses);
+
     /// <summary>The configured instruments, parsed.</summary>
     /// <returns>The symbols, trimmed and non-empty.</returns>
     public IReadOnlyList<string> InstrumentList() => SplitList(Instruments);
@@ -267,10 +282,23 @@ public sealed partial class MarketDataOptions : IValidatableObject
         BarSessionCalendar calendar;
         try
         {
-            calendar = BarSessionCalendar.Parse(SessionCloseCentral, HolidayList());
+            calendar = BarSessionCalendar.Parse(
+                SessionCloseCentral,
+                HolidayList(),
+                earlyCloses: EarlyCloseList());
         }
-        catch (FormatException)
+        catch (FormatException exception)
         {
+            if (exception.Message.StartsWith("Early close", StringComparison.Ordinal))
+            {
+                results.Add(new ValidationResult(exception.Message, [nameof(EarlyCloses)]));
+            }
+
+            return results;
+        }
+        catch (ArgumentOutOfRangeException exception) when (exception.ParamName == "earlyCloses")
+        {
+            results.Add(new ValidationResult(exception.Message, [nameof(EarlyCloses)]));
             return results;
         }
 

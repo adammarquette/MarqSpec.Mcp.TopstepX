@@ -33,10 +33,25 @@ public sealed class EfRecorderHealthStore(TopstepXDbContext database) : IRecorde
     }
 
     /// <inheritdoc />
-    public async Task<IReadOnlyList<ContractLastTick>> LastTicksAsync(CancellationToken cancellationToken)
+    public async Task<IReadOnlyList<ContractLastTick>> LastTicksAsync(
+        IReadOnlyCollection<string> instruments,
+        DateTimeOffset windowStart,
+        DateTimeOffset windowEnd,
+        CancellationToken cancellationToken)
     {
+        ArgumentNullException.ThrowIfNull(instruments);
+
+        if (instruments.Count == 0 || windowEnd <= windowStart)
+        {
+            return [];
+        }
+
+        string[] symbols = [.. instruments];
         var grouped = await _database.Trades
             .AsNoTracking()
+            .Where(trade => symbols.Contains(trade.Instrument)
+                && trade.TradeTimeUtc >= windowStart
+                && trade.TradeTimeUtc <= windowEnd)
             .GroupBy(trade => new { trade.Instrument, trade.ContractId })
             .Select(group => new
             {
@@ -54,13 +69,24 @@ public sealed class EfRecorderHealthStore(TopstepXDbContext database) : IRecorde
 
     /// <inheritdoc />
     public async Task<IReadOnlyList<CoverageSlice>> CoverageAsync(
+        IReadOnlyCollection<string> instruments,
         DateTimeOffset windowStart,
         DateTimeOffset windowEnd,
         CancellationToken cancellationToken)
     {
+        ArgumentNullException.ThrowIfNull(instruments);
+
+        if (instruments.Count == 0 || windowEnd <= windowStart)
+        {
+            return [];
+        }
+
+        string[] symbols = [.. instruments];
         List<CoverageSlice> slices = await _database.TapeCoverage
             .AsNoTracking()
-            .Where(row => row.RangeStart < windowEnd && row.RangeEnd > windowStart)
+            .Where(row => symbols.Contains(row.Instrument)
+                && row.RangeStart < windowEnd
+                && row.RangeEnd > windowStart)
             .Select(row => new CoverageSlice(row.Instrument, row.ContractId, row.RangeStart, row.RangeEnd))
             .ToListAsync(cancellationToken)
             .ConfigureAwait(false);

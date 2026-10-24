@@ -5,6 +5,7 @@ using MarqSpec.Mcp.TopstepX.Configuration;
 using MarqSpec.Mcp.TopstepX.MarketData;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
+using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
@@ -251,5 +252,25 @@ public sealed class HealthEndpointTests
         using HttpResponseMessage response = await probe.Client.PostAsync("/health", content: null);
 
         response.StatusCode.Should().Be(HttpStatusCode.Unauthorized);
+    }
+
+    [Fact]
+    public void IsTraced_WhenThePathIsTheProbe_DoesNotTraceIt()
+    {
+        DefaultHttpContext context = new();
+        context.Request.Path = HealthEndpoint.Path;
+
+        Program.IsTraced(context).Should().BeFalse();
+        HealthEndpoint.IsProbePath(context.Request.Path).Should().BeTrue();
+    }
+
+    [Fact]
+    public void IsTraced_WhenTheProbePathDiffersByCase_StillTracesIt()
+    {
+        DefaultHttpContext context = new();
+        context.Request.Path = "/Health";
+
+        HealthEndpoint.IsProbePath(context.Request.Path).Should().BeFalse();
+        Program.IsTraced(context).Should().BeTrue();
     }
 }

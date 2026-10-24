@@ -377,8 +377,9 @@ OTLP endpoint is set.
 ## Update — 2026-10-24: recorder health is one more counter
 
 `mcp.recorder.health.reads` joins the meter (gh#756, R-5.13). One counter, tagged `outcome` =
-`ok` | `degraded` | `unavailable`, recorded once per report that was built. `ok` means the hub is up, every
-reported contract is listening, the database answered, and the elapsed session has no hole. The `outcome`
+`ok` | `degraded` | `unavailable` | `timeout`, recorded once per report that was built. `ok` means the hub is
+up, every reported contract is listening, the database answered, and the elapsed session has no hole.
+`timeout` is the database deadline, not a caller cancelling. The `outcome`
 tag key is the one `mcp.cache.reads` already uses; the values are this instrument's vocabulary, not
 `hit` / `miss` / `partial`. The architecture table remains the list of app-owned instruments. The names in
 the 2026-09-06 update above are the set as it was that day.

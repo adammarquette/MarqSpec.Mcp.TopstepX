@@ -781,11 +781,14 @@ Two things about it are easy to undo by accident:
   answer normally, so killing the task would replace a degraded server with no server.
 
 `GET /health/recorder` is a different request (R-5.13, gh#756). It returns the same payload as
-`get_recorder_health` — hub connection, the last stored print per contract, `TapeCoverage` holes in the
-elapsed session, and whether the database answers now — and it is mapped after the gate, so it stays
-authenticated. It is not the probe: a down feed is still HTTP 200, and it does open a database connection,
-which is why it is not on the 30 s check. The body carries no connection string and no token. The path is
-worth a span; tracing excludes only the exact `/health` probe.
+`get_recorder_health` — hub connection, the last stored print of each contract active in the elapsed
+session, `TapeCoverage` holes in that session, and whether the database answers now — and it is mapped
+after the gate, so it stays authenticated. A contract whose prints and coverage ended before the session
+is not a row. It is not the probe: a down feed is still HTTP 200, and it does open a database connection,
+which is why it is not on the 30 s check. The body carries no connection string and no token. The report
+span is `recorder.health`, and the HTTP span carries the same `outcome`. Tracing excludes only the exact
+`/health` probe, matched ordinally, the same comparison the probe uses, so `/Health` stays behind the gate
+and is still traced.
 
 `version` and `digest` come from the optional `Deployment__Version` / `Deployment__ImageDigest`, `unknown`
 when unset. Nothing here declares a version in a file — the tag is the version
@@ -814,11 +817,14 @@ on a bump, so a dashboard that must not break is built on these
 | `mcp.tape.reconnects` | counter | `transition` = connected \| disconnected | `TradeTapeRecorder` |
 | `mcp.tape.lease.changes` | counter | `change` = acquired \| refused \| lost · `symbol` | `TradeTapeRecorder` (ADR-0016) |
 | `mcp.indicator.projections` | counter, values | `indicator` · `symbol` · `resolution` **or** `session` | `IndicatorProjector` |
-| `mcp.recorder.health.reads` | counter | `outcome` = ok \| degraded \| unavailable | `RecorderHealthService`, once per report (gh#756) |
+| `mcp.recorder.health.reads` | counter | `outcome` = ok \| degraded \| unavailable \| timeout | `RecorderHealthService`, once per report that was built (gh#756) |
 
-`mcp.recorder.health.reads` reuses the `outcome` tag key. Its values are `ok`, `degraded` and `unavailable`,
-not the cache `hit` / `miss` / `partial` set. `ok` means the hub is up, every reported contract is listening,
-the database answered, and the elapsed session has no hole.
+`mcp.recorder.health.reads` reuses the `outcome` tag key. Its values are `ok`, `degraded`, `unavailable` and
+`timeout`, not the cache `hit` / `miss` / `partial` set. `ok` means the hub is up, every reported contract is
+listening, the database answered, and the elapsed session has no hole. `timeout` means the database check
+exceeded its deadline; the wire still says `database` Unavailable, and a caller who cancelled is not this
+value and is not counted. A report is reused for a few seconds, so a tight poll does not scan the tape again
+and does not count a second read.
 
 **`resolution` and `session` are alternatives, never both, and which one a measurement carries is what says
 which kind of series it was over** (gh#501). A session series has no resolution — its window is wall-clock
@@ -1136,9 +1142,9 @@ dating today's pick. It does not fetch bars and does not write a roll row.
   scoped venue client per operation; it does not extend `IMarketDataGateway`. Quote and depth recording
   stay out of this phase, and there is still no `get_quote`.
 - **Recorder health is a read.** `get_recorder_health` and authenticated `GET /health/recorder` report whether
-  the hub is up, the last stored print per contract, `TapeCoverage` holes in the elapsed session, and a live
-  database probe that does not replace the startup answer (gh#756, R-5.13). `/health` stays liveness and the
-  one unauthenticated path.
+  the hub is up, the last stored print of each contract active in the elapsed session, `TapeCoverage` holes
+  in that session, and a live database probe that does not replace the startup answer (gh#756, R-5.13).
+  `/health` stays liveness and the one unauthenticated path.
 - **No REST poller.** Bar, contract and account fetches stay caused by a tool call. The tape recorder is a push
   subscriber, not a background poll of a quote endpoint the venue does not have. A second stdio process must
   not subscribe to the same tape, and a second HTTP one is refused a claim rather than trusted not to

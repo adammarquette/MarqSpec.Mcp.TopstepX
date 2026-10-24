@@ -27,6 +27,13 @@ namespace MarqSpec.Mcp.TopstepX.Domain.MarketData;
 /// <b>Known bound:</b> a bucket that would straddle the close is reported not-expected, which is exactly what
 /// the gateway's <c>includePartialBar: false</c> produces. Sub-hour resolutions never approach that bound.
 /// </para>
+/// <para>
+/// <b>An early close shortens the recorder-health session only.</b> <see cref="SessionCloseOn"/> is the close
+/// <c>ProductSessions</c> asks for. <see cref="IsExpectedBucket"/> and <see cref="TradeDateFor"/> keep the
+/// ordinary close, so the hours after a declared early close still look like missing bars. Changing that
+/// would make the bar cache treat an afternoon the venue did publish as a hole, or the reverse, and the
+/// health report is the reader that was wrong.
+/// </para>
 /// </remarks>
 public sealed class BarSessionCalendar
 {
@@ -34,6 +41,7 @@ public sealed class BarSessionCalendar
     public static readonly TimeSpan DefaultMaintenanceWindow = TimeSpan.FromHours(1);
 
     private readonly HashSet<DateOnly> _holidays;
+    private readonly Dictionary<DateOnly, TimeOnly> _earlyCloses;
 
     /// <summary>Creates the calendar for a product's session.</summary>
     /// <param name="sessionClose">The daily session close, in Central wall-clock time.</param>
@@ -41,13 +49,19 @@ public sealed class BarSessionCalendar
     /// <param name="maintenanceWindow">
     /// How long the venue is down between the close and the next open. Defaults to one hour.
     /// </param>
+    /// <param name="earlyCloses">
+    /// Trade dates whose session ends earlier than <paramref name="sessionClose"/>, in Central wall-clock
+    /// time. Empty when none are declared. The next session still opens at <see cref="SessionOpen"/>.
+    /// </param>
     /// <exception cref="ArgumentOutOfRangeException">
-    /// The maintenance window is not positive, or is a day or longer.
+    /// The maintenance window is not positive, or is a day or longer, or an early close is before 02:00
+    /// Central or not strictly before the ordinary close.
     /// </exception>
     public BarSessionCalendar(
         TimeOnly sessionClose,
         IReadOnlyCollection<DateOnly> holidays,
-        TimeSpan? maintenanceWindow = null)
+        TimeSpan? maintenanceWindow = null,
+        IReadOnlyDictionary<DateOnly, TimeOnly>? earlyCloses = null)
     {
         ArgumentNullException.ThrowIfNull(holidays);
 
@@ -61,10 +75,33 @@ public sealed class BarSessionCalendar
         }
 
         RefuseIfSpringForwardWouldShortenSession(sessionClose, window);
+        RefuseEarlyCloses(sessionClose, earlyCloses);
 
         SessionClose = sessionClose;
         MaintenanceWindow = window;
         _holidays = [.. holidays];
+        _earlyCloses = earlyCloses is null
+            ? []
+            : new Dictionary<DateOnly, TimeOnly>(earlyCloses);
+    }
+
+    private static void RefuseEarlyCloses(TimeOnly sessionClose, IReadOnlyDictionary<DateOnly, TimeOnly>? earlyCloses)
+    {
+        if (earlyCloses is null)
+        {
+            return;
+        }
+
+        foreach (KeyValuePair<DateOnly, TimeOnly> pair in earlyCloses)
+        {
+            if (pair.Value < new TimeOnly(2, 0) || pair.Value >= sessionClose)
+            {
+                throw new ArgumentOutOfRangeException(
+                    nameof(earlyCloses),
+                    pair.Value,
+                    "An early close must be at or after 02:00 Central and strictly before the ordinary session close.");
+            }
+        }
     }
 
     /// <summary>
@@ -120,6 +157,19 @@ public sealed class BarSessionCalendar
     /// <summary>When the next session opens, in Central wall-clock time — the close plus the maintenance window.</summary>
     public TimeOnly SessionOpen => SessionClose.Add(MaintenanceWindow);
 
+    /// <summary>
+    /// The close of <paramref name="tradeDate"/>, in Central wall-clock time. An ordinary day returns
+    /// <see cref="SessionClose"/>; a declared early close returns that earlier time.
+    /// </summary>
+    /// <param name="tradeDate">The trade date.</param>
+    /// <returns>The close that date's session ends at.</returns>
+    /// <remarks>
+    /// Bar expectation does not call this. <see cref="ProductSessions"/> does, so a recorder-health gap stops
+    /// at the early close while the bar cache still measures the ordinary one.
+    /// </remarks>
+    public TimeOnly SessionCloseOn(DateOnly tradeDate) =>
+        _earlyCloses.TryGetValue(tradeDate, out TimeOnly early) ? early : SessionClose;
+
     /// <summary>The declared non-trading days.</summary>
     public IReadOnlyCollection<DateOnly> Holidays => _holidays;
 
@@ -129,6 +179,9 @@ public sealed class BarSessionCalendar
     /// <param name="sessionClose">The session close, <c>HH:mm</c> in Central time.</param>
     /// <param name="holidays">The declared holidays, each <c>yyyy-MM-dd</c>.</param>
     /// <param name="maintenanceWindow">The maintenance window; defaults to one hour.</param>
+    /// <param name="earlyCloses">
+    /// Declared early closes, each <c>yyyy-MM-dd HH:mm</c> in Central wall-clock time. Empty when none.
+    /// </param>
     /// <returns>The calendar.</returns>
     /// <exception cref="FormatException">A value is not in the expected shape.</exception>
     /// <remarks>
@@ -138,7 +191,8 @@ public sealed class BarSessionCalendar
     public static BarSessionCalendar Parse(
         string sessionClose,
         IReadOnlyCollection<string> holidays,
-        TimeSpan? maintenanceWindow = null)
+        TimeSpan? maintenanceWindow = null,
+        IReadOnlyCollection<string>? earlyCloses = null)
     {
         ArgumentNullException.ThrowIfNull(sessionClose);
         ArgumentNullException.ThrowIfNull(holidays);
@@ -161,7 +215,33 @@ public sealed class BarSessionCalendar
             parsed.Add(day);
         }
 
-        return new BarSessionCalendar(close, parsed, maintenanceWindow);
+        return new BarSessionCalendar(close, parsed, maintenanceWindow, ParseEarlyCloses(earlyCloses));
+    }
+
+    private static Dictionary<DateOnly, TimeOnly> ParseEarlyCloses(IReadOnlyCollection<string>? entries)
+    {
+        Dictionary<DateOnly, TimeOnly> parsed = [];
+        if (entries is null)
+        {
+            return parsed;
+        }
+
+        foreach (string entry in entries)
+        {
+            string[] parts = entry.Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+            if (parts.Length != 2
+                || !DateOnly.TryParseExact(
+                    parts[0], "yyyy-MM-dd", CultureInfo.InvariantCulture, DateTimeStyles.None, out DateOnly day)
+                || !TimeOnly.TryParseExact(
+                    parts[1], "HH:mm", CultureInfo.InvariantCulture, DateTimeStyles.None, out TimeOnly close))
+            {
+                throw new FormatException("Early close '" + entry + "' is not yyyy-MM-dd HH:mm.");
+            }
+
+            parsed[day] = close;
+        }
+
+        return parsed;
     }
 
     /// <summary>

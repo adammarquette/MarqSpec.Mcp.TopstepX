@@ -104,6 +104,7 @@ services:
 
       MarketData__SessionCloseCentral: "${MarketData__SessionCloseCentral:-16:00}"
       MarketData__Holidays: "${MarketData__Holidays:-}"
+      MarketData__EarlyCloses: "${MarketData__EarlyCloses:-}"
       MarketData__MaxRows: "${MarketData__MaxRows:-5000}"
       MarketData__Instruments: "${MarketData__Instruments:-ES,NQ,MES,MNQ,MGC,MCL}"
       # The named sessions session bars are aggregated over. HH:mm-HH:mm in Central WALL-CLOCK time,

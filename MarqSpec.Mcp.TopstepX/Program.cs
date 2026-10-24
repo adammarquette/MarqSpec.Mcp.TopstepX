@@ -42,14 +42,6 @@ public static class Program
     /// <summary>Npgsql's meter. Its activity source is subscribed by the driver's own extension.</summary>
     private const string NpgsqlTelemetryName = "Npgsql";
 
-    /// <summary>
-    /// The health probe's path — the one request not worth a span.
-    /// </summary>
-    /// <remarks>
-    /// A path name rather than a reference to an endpoint, because there is no endpoint yet: gh#513 owns it.
-    /// </remarks>
-    private const string HealthProbePath = "/health";
-
     /// <summary>Runs the server, or a CLI verb.</summary>
     /// <param name="args">Command-line arguments.</param>
     /// <returns>The process exit code.</returns>
@@ -457,14 +449,14 @@ public static class Program
     /// same search results and on the same bill as the tool calls somebody is looking for.
     /// </para>
     /// <para>
-    /// <b>Matched on the exact path, not a prefix.</b> A prefix match would silently swallow a future
-    /// <c>/health/detail</c> — an endpoint whose whole purpose would be to be worth reading. gh#513 owns the
-    /// endpoint itself and has not landed; this lands on the path name now so it is already in place when the
-    /// endpoint arrives, rather than being the thing everyone forgets afterwards.
+    /// <b>The same ordinal comparison the probe uses.</b> <see cref="HealthEndpoint.IsProbePath"/> is the one
+    /// match. A prefix would swallow <c>/health/recorder</c>. A case-insensitive match would stop tracing
+    /// <c>/Health</c> while the gate still answers it 401 — two policies for one path. Keeping this
+    /// case-sensitive does not unauthenticate anything: the probe itself stays an exact <c>GET /health</c>.
     /// </para>
     /// </remarks>
-    private static bool IsTraced(HttpContext context) =>
-        !context.Request.Path.Equals(HealthProbePath, StringComparison.OrdinalIgnoreCase);
+    internal static bool IsTraced(HttpContext context) =>
+        !HealthEndpoint.IsProbePath(context.Request.Path);
 
     /// <summary>The <c>service.version</c> resource attribute.</summary>
     /// <returns>The assembly's informational version, without build metadata.</returns>
@@ -720,7 +712,10 @@ public static class Program
         services.AddSingleton(sp =>
         {
             MarketDataOptions options = sp.GetRequiredService<IOptions<MarketDataOptions>>().Value;
-            return BarSessionCalendar.Parse(options.SessionCloseCentral, options.HolidayList());
+            return BarSessionCalendar.Parse(
+                options.SessionCloseCentral,
+                options.HolidayList(),
+                earlyCloses: options.EarlyCloseList());
         });
 
         // After the calendar, because it is stated against one: every definition is re-checked here against
@@ -919,6 +914,7 @@ public static class Program
         // The recorder report (gh#756). The store is scoped because it takes the DbContext; the tool and the
         // HTTP endpoint both resolve the service, so it has to be registered — ActivatorUtilities does not
         // construct an unregistered dependency, and the endpoint's MapGet has the same rule.
+        services.AddSingleton<RecorderHealthMemo>();
         services.AddScoped<EfRecorderHealthStore>();
         services.AddScoped<IRecorderHealthStore>(static provider =>
             provider.GetRequiredService<EfRecorderHealthStore>());

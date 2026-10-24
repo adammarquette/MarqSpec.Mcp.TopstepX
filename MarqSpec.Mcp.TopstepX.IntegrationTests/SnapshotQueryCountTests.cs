@@ -98,8 +98,8 @@ public sealed class CountingInterceptor : DbCommandInterceptor
 /// <para>
 /// <b>Measured, before and after.</b> A default call — two resolutions, a hundred bars each, over a warm
 /// series — cost <b>60</b> statements, <b>44</b> of them the indicator block: eleven values plus eleven
-/// separate reads of <c>Bars</c> for each value's contract, twice over. It now costs <b>18</b>, with that
-/// block down to one statement per resolution.
+/// separate reads of <c>Bars</c> for each value's contract, twice over. The indicator block is one statement
+/// per resolution. On the store this fixture empties first, the whole call is <b>20</b>.
 /// </para>
 /// <para>
 /// The <c>ContractId</c> read is counted <b>at zero</b> rather than the total being asserted alone, because
@@ -122,8 +122,11 @@ public sealed class SnapshotQueryCountTests(SchemaFixture fixture) : IAsyncLifet
     /// <summary>What a default call cost before gh#388, measured on this fixture.</summary>
     private const int StatementsBefore = 60;
 
-    /// <summary>And after. Asserted as a ceiling: a cheaper snapshot is never a regression.</summary>
-    private const int StatementsAfter = 18;
+    /// <summary>
+    /// And after, on the store this fixture empties first. Asserted as a ceiling: a cheaper snapshot is
+    /// never a regression. A warm neighbour left in the shared database used to hide two statements.
+    /// </summary>
+    private const int StatementsAfter = 20;
 
     private static DateTimeOffset Start =>
         MarketClock.FromMarket(new DateOnly(2026, 8, 18), new TimeOnly(9, 0)).ToUniversalTime();

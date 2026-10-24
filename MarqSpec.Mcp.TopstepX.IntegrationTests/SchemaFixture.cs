@@ -30,7 +30,7 @@ public sealed class SchemaFixture : IAsyncLifetime
         .WithPassword("test-only")
         .Build();
 
-    private string? _truncate;
+    private string? _reset;
 
     /// <summary>The connection string for the running container.</summary>
     public string ConnectionString => _postgres.GetConnectionString();
@@ -95,8 +95,16 @@ public sealed class SchemaFixture : IAsyncLifetime
     /// hand-kept list goes stale the first time a table is added, and it goes stale silently.
     /// </para>
     /// <para>
+    /// Rows are deleted rather than truncated. <c>TRUNCATE</c> on a hypertable drops its chunks, and the next
+    /// two-session insert then waits out the command timeout creating the first chunk again
+    /// (<c>IndicatorReconcileConcurrencyTests</c>). A delete leaves the chunks in place. Sequences are
+    /// restarted so the next identity is 1, which <c>TRUNCATE … RESTART IDENTITY</c> used to do. Foreign keys
+    /// are not consulted for that delete: <c>session_replication_role</c> is the test role's privilege, and a
+    /// hand-kept delete order would be a second list to keep stale.
+    /// </para>
+    /// <para>
     /// A migration test that needs the rows a migration found uses <see cref="CreateEmptyDatabaseAsync"/> and
-    /// does not call this. Truncating the shared database would not unmigrate it, and it would not recreate
+    /// does not call this. Emptying the shared database would not unmigrate it, and it would not recreate
     /// the pre-migration shape those tests walk up to.
     /// </para>
     /// </remarks>
@@ -104,18 +112,38 @@ public sealed class SchemaFixture : IAsyncLifetime
     {
         await using TopstepXDbContext database = CreateContext();
 
-        _truncate ??= "TRUNCATE TABLE "
-            + string.Join(
-                ", ",
+        if (_reset is null)
+        {
+            string deletes = string.Join(
+                "\n",
                 database.Model.GetEntityTypes()
                     .Select(entity => entity.GetTableName())
                     .Where(table => table is not null)
                     .Distinct(StringComparer.Ordinal)
                     .Order(StringComparer.Ordinal)
-                    .Select(table => $"\"{table}\""))
-            + " RESTART IDENTITY CASCADE;";
+                    .Select(table => $"DELETE FROM \"{table}\";"));
 
-        await database.Database.ExecuteSqlRawAsync(_truncate);
+            _reset = "SET session_replication_role = replica;\n"
+                + deletes
+                + """
+
+                SET session_replication_role = DEFAULT;
+                DO $$
+                DECLARE seq record;
+                BEGIN
+                  FOR seq IN
+                    SELECT n.nspname AS sch, c.relname AS seqname
+                    FROM pg_class c
+                    JOIN pg_namespace n ON n.oid = c.relnamespace
+                    WHERE c.relkind = 'S' AND n.nspname = 'public'
+                  LOOP
+                    EXECUTE format('ALTER SEQUENCE %I.%I RESTART WITH 1', seq.sch, seq.seqname);
+                  END LOOP;
+                END $$;
+                """;
+        }
+
+        await database.Database.ExecuteSqlRawAsync(_reset);
     }
 
     /// <inheritdoc />

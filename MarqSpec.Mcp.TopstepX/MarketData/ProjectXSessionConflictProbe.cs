@@ -1,25 +1,27 @@
+using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using System.Text.Json;
-using MarqSpec.Client.ProjectX.Authentication;
-using MarqSpec.Client.ProjectX.Exceptions;
 using Microsoft.Extensions.Logging;
 
 namespace MarqSpec.Mcp.TopstepX.MarketData;
 
 /// <summary>
-/// Asks <c>POST /api/Auth/validate</c> whether this process's token is still the venue's session.
+/// Asks <c>POST /api/Auth/validate</c> whether the token this process already holds is still the venue's session.
 /// </summary>
 /// <remarks>
 /// <para>
-/// Uses the token <see cref="IAuthenticationService.GetAccessTokenAsync"/> already holds. It does not call
-/// <see cref="IAuthenticationService.ValidateSessionAsync"/>, because that method clears the token on any
-/// unsuccessful body and the next read then calls <c>loginKey</c> — a new login, which is what disconnects
-/// the trading platform. It does not call <see cref="IAuthenticationService.RefreshTokenAsync"/>.
+/// Reads <see cref="HeldSession"/> only. It does not call <c>GetAccessTokenAsync</c>,
+/// <c>ValidateSessionAsync</c>, or <c>RefreshTokenAsync</c>. The first of those posts <c>loginKey</c> once
+/// the client's cache is inside its last minute. The second clears the cached token on any unsuccessful
+/// body, and the next read then logs in. Either one disconnects the trading platform.
 /// </para>
 /// <para>
-/// The response body is not logged. A vendor sentence is free text, and this repository has already leaked
-/// a credential through a log line once.
+/// No fresh token, a timeout, an expired-token code, an unknown code, or a call that does not land is
+/// <see cref="SessionProbeVerdict.Inconclusive"/> and does not log in. HTTP 401 is
+/// <see cref="SessionProbeVerdict.Conflict"/>: the bearer was refused, which is the same practical outcome
+/// as a killed session. A <c>newToken</c> on a valid body is remembered and never logged. The response
+/// body is not logged.
 /// </para>
 /// </remarks>
 public sealed class ProjectXSessionConflictProbe : ISessionConflictProbe
@@ -29,47 +31,39 @@ public sealed class ProjectXSessionConflictProbe : ISessionConflictProbe
 
     private static readonly JsonSerializerOptions _json = new(JsonSerializerDefaults.Web);
 
-    private readonly IAuthenticationService _authentication;
+    private readonly HeldSession _held;
     private readonly IHttpClientFactory _http;
     private readonly ILogger<ProjectXSessionConflictProbe> _logger;
+    private readonly TimeProvider _clock;
 
     /// <summary>Creates the probe.</summary>
-    /// <param name="authentication">The process's token cache. Not used to start a login on failure.</param>
+    /// <param name="held">The token already held. Not a login.</param>
     /// <param name="http">Factory for <see cref="HttpClientName"/>.</param>
-    /// <param name="logger">The logger.</param>
+    /// <param name="logger">The logger. Vendor text is not written here.</param>
+    /// <param name="clock">The clock the freshness decision uses.</param>
     public ProjectXSessionConflictProbe(
-        IAuthenticationService authentication,
+        HeldSession held,
         IHttpClientFactory http,
-        ILogger<ProjectXSessionConflictProbe> logger)
+        ILogger<ProjectXSessionConflictProbe> logger,
+        TimeProvider clock)
     {
-        ArgumentNullException.ThrowIfNull(authentication);
+        ArgumentNullException.ThrowIfNull(held);
         ArgumentNullException.ThrowIfNull(http);
         ArgumentNullException.ThrowIfNull(logger);
-        _authentication = authentication;
+        ArgumentNullException.ThrowIfNull(clock);
+        _held = held;
         _http = http;
         _logger = logger;
+        _clock = clock;
     }
 
     /// <inheritdoc />
     public async Task<SessionProbeVerdict> ProbeAsync(CancellationToken cancellationToken)
     {
-        string token;
-        try
+        if (!_held.TryReadFresh(_clock.GetUtcNow(), out string token))
         {
-            token = await _authentication.GetAccessTokenAsync(cancellationToken).ConfigureAwait(false);
-        }
-        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-        {
-            throw;
-        }
-        catch (AuthenticationException exception)
-        {
-            _logger.LogWarning(exception, "The session probe could not read the current TopstepX token.");
-            return SessionProbeVerdict.Inconclusive;
-        }
-
-        if (string.IsNullOrEmpty(token))
-        {
+            _logger.LogWarning(
+                "The session probe has no fresh TopstepX token to validate. The result is inconclusive, and this process will not call loginKey.");
             return SessionProbeVerdict.Inconclusive;
         }
 
@@ -83,10 +77,18 @@ public sealed class ProjectXSessionConflictProbe : ISessionConflictProbe
                 .SendAsync(request, cancellationToken)
                 .ConfigureAwait(false);
 
+            if (response.StatusCode == HttpStatusCode.Unauthorized)
+            {
+                _logger.LogWarning(
+                    "The session probe was refused (HTTP {StatusCode}). The held session is being treated as ended, and this process will not call loginKey.",
+                    (int)response.StatusCode);
+                return SessionProbeVerdict.Conflict;
+            }
+
             if (!response.IsSuccessStatusCode)
             {
                 _logger.LogWarning(
-                    "The session probe could not validate the TopstepX session (HTTP {StatusCode}).",
+                    "The session probe could not validate the TopstepX session (HTTP {StatusCode}). The result is inconclusive, and this process will not call loginKey.",
                     (int)response.StatusCode);
                 return SessionProbeVerdict.Inconclusive;
             }
@@ -100,20 +102,34 @@ public sealed class ProjectXSessionConflictProbe : ISessionConflictProbe
                 return SessionProbeVerdict.Inconclusive;
             }
 
-            return SessionConflictSignals.FromValidate(payload.Success, payload.ErrorCode);
+            SessionProbeVerdict verdict = SessionConflictSignals.FromValidate(payload.Success, payload.ErrorCode);
+            if (verdict == SessionProbeVerdict.Valid && !string.IsNullOrEmpty(payload.NewToken))
+            {
+                _held.Remember(payload.NewToken, _clock.GetUtcNow());
+            }
+
+            return verdict;
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
             throw;
         }
-        catch (HttpRequestException exception)
+        catch (OperationCanceledException)
         {
-            _logger.LogWarning(exception, "The session probe could not reach TopstepX to validate the session.");
+            _logger.LogWarning(
+                "The session probe timed out before TopstepX answered. The result is inconclusive, and this process will not call loginKey.");
             return SessionProbeVerdict.Inconclusive;
         }
-        catch (JsonException exception)
+        catch (HttpRequestException)
         {
-            _logger.LogWarning(exception, "The session probe could not read the TopstepX validate response.");
+            _logger.LogWarning(
+                "The session probe could not reach TopstepX to validate the session. The result is inconclusive, and this process will not call loginKey.");
+            return SessionProbeVerdict.Inconclusive;
+        }
+        catch (JsonException)
+        {
+            _logger.LogWarning(
+                "The session probe could not read the TopstepX validate response. The result is inconclusive, and this process will not call loginKey.");
             return SessionProbeVerdict.Inconclusive;
         }
     }
@@ -123,5 +139,7 @@ public sealed class ProjectXSessionConflictProbe : ISessionConflictProbe
         public bool Success { get; set; }
 
         public int ErrorCode { get; set; }
+
+        public string? NewToken { get; set; }
     }
 }

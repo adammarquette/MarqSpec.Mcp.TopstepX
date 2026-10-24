@@ -13,6 +13,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
+using Microsoft.Extensions.Time.Testing;
 
 namespace MarqSpec.Mcp.TopstepX.Tests.MarketData;
 
@@ -24,6 +25,15 @@ public sealed class SessionConflictTests
 {
     public static TheoryData<string> HubConflictPhrases() =>
     [
+        "invalid session",
+        "invalidsession",
+        "session not found",
+        "sessionnotfound",
+        "The gateway closed: Invalid Session",
+    ];
+
+    public static TheoryData<string> UndocumentedHubPhrases() =>
+    [
         "another session",
         "another device",
         "other device",
@@ -33,20 +43,22 @@ public sealed class SessionConflictTests
         "logged in elsewhere",
         "logged in from another",
         "session conflict",
-        "invalid session",
-        "invalidsession",
-        "session not found",
-        "sessionnotfound",
         "session has ended",
         "session was ended",
-        "The gateway closed: Another Session took this login",
     ];
 
     [Theory]
     [MemberData(nameof(HubConflictPhrases))]
-    public void SessionConflictSignals_HubMessageNamesAnotherSession_IsAConflict(string message)
+    public void SessionConflictSignals_HubMessageNamesADocumentedError_IsAConflict(string message)
     {
         SessionConflictSignals.IsHubConflict(message, exceptionMessage: null).Should().BeTrue();
+    }
+
+    [Theory]
+    [MemberData(nameof(UndocumentedHubPhrases))]
+    public void SessionConflictSignals_UndocumentedHubPhrase_IsNotAConflict(string message)
+    {
+        SessionConflictSignals.IsHubConflict(message, exceptionMessage: null).Should().BeFalse();
     }
 
     [Theory]
@@ -64,9 +76,9 @@ public sealed class SessionConflictTests
     }
 
     [Fact]
-    public void SessionConflictSignals_HubExceptionNamesAnotherDevice_IsAConflict()
+    public void SessionConflictSignals_HubExceptionNamesInvalidSession_IsAConflict()
     {
-        SessionConflictSignals.IsHubConflict(errorMessage: null, "Signed in on another device")
+        SessionConflictSignals.IsHubConflict(errorMessage: null, "Signed out: Invalid Session")
             .Should().BeTrue();
     }
 
@@ -78,7 +90,7 @@ public sealed class SessionConflictTests
     [InlineData(false, 0, SessionProbeVerdict.Inconclusive)]
     [InlineData(true, 0, SessionProbeVerdict.Valid)]
     [InlineData(true, SessionConflictSignals.InvalidSession, SessionProbeVerdict.Valid)]
-    public void SessionConflictSignals_ValidateResult_MapsToTheVerdict(
+    public void SessionConflictSignals_ValidateSuccessAndErrorCode_MapsToTheVerdict(
         bool success,
         int errorCode,
         SessionProbeVerdict verdict)
@@ -90,8 +102,8 @@ public sealed class SessionConflictTests
     public async Task ProjectXSessionConflictProbe_InvalidSessionBody_IsAConflict()
     {
         CapturingLogger logger = new();
-        (ProjectXSessionConflictProbe probe, ScriptedAuth auth, ScriptedHandler handler) = Probe(
-            """{"success":false,"errorCode":1,"detail":"vendor-sentence-must-not-be-logged"}""",
+        (ProjectXSessionConflictProbe probe, ScriptedHandler handler, _, _) = Probe(
+            """{"success":false,"errorCode":1,"errorMessage":"vendor-sentence-must-not-be-logged"}""",
             HttpStatusCode.OK,
             logger);
 
@@ -104,17 +116,16 @@ public sealed class SessionConflictTests
         handler.LastRequest.RequestUri!.AbsolutePath.Should().Be("/api/Auth/validate");
         handler.LastRequest.Headers.Authorization!.Scheme.Should().Be("Bearer");
         handler.LastRequest.Headers.Authorization.Parameter.Should().Be("held-token");
-        auth.RefreshCalls.Should().Be(0);
-        auth.ValidateCalls.Should().Be(0);
-        auth.LogoutCalls.Should().Be(0);
-        logger.Warnings.Should().NotContain(message =>
+        logger.Messages.Should().NotContain(message =>
             message.Contains("vendor-sentence-must-not-be-logged", StringComparison.Ordinal));
+        logger.Messages.Should().NotContain(message =>
+            message.Contains("held-token", StringComparison.Ordinal));
     }
 
     [Fact]
     public async Task ProjectXSessionConflictProbe_ExpiredTokenBody_IsNotAConflict()
     {
-        (ProjectXSessionConflictProbe probe, _, _) = Probe(
+        (ProjectXSessionConflictProbe probe, _, _, _) = Probe(
             """{"success":false,"errorCode":3}""",
             HttpStatusCode.OK);
 
@@ -124,7 +135,7 @@ public sealed class SessionConflictTests
     [Fact]
     public async Task ProjectXSessionConflictProbe_SuccessBody_IsValid()
     {
-        (ProjectXSessionConflictProbe probe, _, _) = Probe(
+        (ProjectXSessionConflictProbe probe, _, _, _) = Probe(
             """{"success":true,"errorCode":0}""",
             HttpStatusCode.OK);
 
@@ -132,10 +143,30 @@ public sealed class SessionConflictTests
     }
 
     [Fact]
+    public async Task ProjectXSessionConflictProbe_ValidateReturnsNewToken_RemembersItAndDoesNotLogIt()
+    {
+        CapturingLogger logger = new();
+        (ProjectXSessionConflictProbe probe, ScriptedHandler handler, HeldSession held, FakeTimeProvider clock) = Probe(
+            """{"success":true,"errorCode":0,"newToken":"rotated-token"}""",
+            HttpStatusCode.OK,
+            logger);
+
+        (await probe.ProbeAsync(CancellationToken.None)).Should().Be(SessionProbeVerdict.Valid);
+
+        held.TryReadFresh(clock.GetUtcNow(), out string token).Should().BeTrue();
+        token.Should().Be("rotated-token");
+        logger.Messages.Should().NotContain(message =>
+            message.Contains("rotated-token", StringComparison.Ordinal));
+
+        (await probe.ProbeAsync(CancellationToken.None)).Should().Be(SessionProbeVerdict.Valid);
+        handler.LastRequest!.Headers.Authorization!.Parameter.Should().Be("rotated-token");
+    }
+
+    [Fact]
     public async Task ProjectXSessionConflictProbe_MissingErrorCode_IsInconclusive()
     {
         // A missing number is missing. success:false with no code is not InvalidSession.
-        (ProjectXSessionConflictProbe probe, _, _) = Probe(
+        (ProjectXSessionConflictProbe probe, _, _, _) = Probe(
             """{"success":false}""",
             HttpStatusCode.OK);
 
@@ -145,40 +176,254 @@ public sealed class SessionConflictTests
     [Fact]
     public async Task ProjectXSessionConflictProbe_ValidateHttpFailure_IsInconclusive()
     {
-        (ProjectXSessionConflictProbe probe, ScriptedAuth auth, ScriptedHandler handler) = Probe(
-            "nope",
-            HttpStatusCode.ServiceUnavailable);
+        CapturingLogger logger = new();
+        (ProjectXSessionConflictProbe probe, ScriptedHandler handler, _, _) = Probe(
+            "vendor-sentence-must-not-be-logged",
+            HttpStatusCode.ServiceUnavailable,
+            logger);
 
         (await probe.ProbeAsync(CancellationToken.None)).Should().Be(SessionProbeVerdict.Inconclusive);
         handler.Calls.Should().Be(1);
-        auth.RefreshCalls.Should().Be(0);
-        auth.ValidateCalls.Should().Be(0);
+        logger.Messages.Should().NotContain(message =>
+            message.Contains("vendor-sentence-must-not-be-logged", StringComparison.Ordinal));
+        logger.Messages.Should().Contain(message => message.Contains("503", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task ProjectXSessionConflictProbe_UnauthorizedValidate_IsAConflict()
+    {
+        CapturingLogger logger = new();
+        (ProjectXSessionConflictProbe probe, ScriptedHandler handler, _, _) = Probe(
+            """{"errorMessage":"vendor-sentence-must-not-be-logged"}""",
+            HttpStatusCode.Unauthorized,
+            logger);
+
+        (await probe.ProbeAsync(CancellationToken.None)).Should().Be(SessionProbeVerdict.Conflict);
+        handler.Calls.Should().Be(1);
+        handler.LastRequest!.RequestUri!.AbsolutePath.Should().Be("/api/Auth/validate");
+        logger.Messages.Should().NotContain(message =>
+            message.Contains("vendor-sentence-must-not-be-logged", StringComparison.Ordinal));
     }
 
     [Fact]
     public async Task ProjectXSessionConflictProbe_NetworkFailure_IsInconclusive()
     {
-        (ProjectXSessionConflictProbe probe, _, ScriptedHandler handler) = Probe(
+        CapturingLogger logger = new();
+        (ProjectXSessionConflictProbe probe, ScriptedHandler handler, _, _) = Probe(
             "{}",
             HttpStatusCode.OK,
-            throws: new HttpRequestException("the gateway could not be reached"));
+            logger,
+            throws: new HttpRequestException("vendor-sentence-must-not-be-logged"));
 
         (await probe.ProbeAsync(CancellationToken.None)).Should().Be(SessionProbeVerdict.Inconclusive);
         handler.Calls.Should().Be(1);
+        logger.Messages.Should().NotContain(message =>
+            message.Contains("vendor-sentence-must-not-be-logged", StringComparison.Ordinal));
     }
 
     [Fact]
-    public async Task ProjectXSessionConflictProbe_TokenLookupFails_IsInconclusive()
+    public async Task ProjectXSessionConflictProbe_HttpTimeout_IsInconclusive()
     {
-        (ProjectXSessionConflictProbe probe, ScriptedAuth auth, ScriptedHandler handler) = Probe(
-            """{"success":false,"errorCode":1}""",
+        CapturingLogger logger = new();
+        (ProjectXSessionConflictProbe probe, ScriptedHandler handler, _, _) = Probe(
+            "{}",
+            HttpStatusCode.OK,
+            logger,
+            throws: new TaskCanceledException("vendor-sentence-must-not-be-logged"));
+
+        (await probe.ProbeAsync(CancellationToken.None)).Should().Be(SessionProbeVerdict.Inconclusive);
+        handler.Calls.Should().Be(1);
+        logger.Messages.Should().NotContain(message =>
+            message.Contains("vendor-sentence-must-not-be-logged", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task ProjectXSessionConflictProbe_CallerCancellation_Propagates()
+    {
+        (ProjectXSessionConflictProbe probe, _, _, _) = Probe(
+            """{"success":true,"errorCode":0}""",
             HttpStatusCode.OK);
-        auth.GetThrows = new AuthenticationException("the cached token could not be read");
+        using CancellationTokenSource cancelled = new();
+        cancelled.Cancel();
+
+        Func<Task> act = () => probe.ProbeAsync(cancelled.Token);
+
+        await act.Should().ThrowAsync<OperationCanceledException>();
+    }
+
+    [Fact]
+    public async Task ProjectXSessionConflictProbe_AgedHeldToken_DoesNotCallLoginOrValidate()
+    {
+        (ProjectXSessionConflictProbe probe, ScriptedHandler handler, HeldSession held, FakeTimeProvider clock) = Probe(
+            """{"success":false,"errorCode":1}""",
+            HttpStatusCode.OK,
+            remember: false);
+        held.Remember("aged-token", clock.GetUtcNow());
+        clock.Advance(HeldSession.CacheLifetime - HeldSession.RefreshBuffer);
 
         (await probe.ProbeAsync(CancellationToken.None)).Should().Be(SessionProbeVerdict.Inconclusive);
         handler.Calls.Should().Be(0);
-        auth.RefreshCalls.Should().Be(0);
-        auth.ValidateCalls.Should().Be(0);
+        handler.Requests.Should().NotContain(request =>
+            request.RequestUri!.AbsolutePath.Contains("loginKey", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task ProjectXSessionConflictProbe_NoFreshHeldToken_IsInconclusiveAndDoesNotCallValidate()
+    {
+        (ProjectXSessionConflictProbe probe, ScriptedHandler handler, _, _) = Probe(
+            """{"success":false,"errorCode":1}""",
+            HttpStatusCode.OK,
+            remember: false);
+
+        (await probe.ProbeAsync(CancellationToken.None)).Should().Be(SessionProbeVerdict.Inconclusive);
+        handler.Calls.Should().Be(0);
+    }
+
+    [Fact]
+    public async Task GatedAuthenticationService_LoginClosedAndTokenAgedOut_DoesNotCallTheInnerLogin()
+    {
+        ScriptedAuth inner = new();
+        HeldSession held = new();
+        SessionLoginGate gate = new();
+        FakeTimeProvider clock = new(new DateTimeOffset(2026, 10, 24, 12, 0, 0, TimeSpan.Zero));
+        held.Remember("aged-token", clock.GetUtcNow());
+        clock.Advance(HeldSession.CacheLifetime - HeldSession.RefreshBuffer);
+        gate.BeginSuspecting();
+        GatedAuthenticationService gated = new(inner, held, gate, clock);
+
+        Func<Task> read = () => gated.GetAccessTokenAsync(CancellationToken.None);
+        Func<Task> refresh = () => gated.RefreshTokenAsync(CancellationToken.None);
+
+        await read.Should().ThrowAsync<AuthenticationException>();
+        await refresh.Should().ThrowAsync<AuthenticationException>();
+        (await gated.ValidateSessionAsync(CancellationToken.None)).Should().BeFalse();
+        inner.GetCalls.Should().Be(0);
+        inner.RefreshCalls.Should().Be(0);
+        inner.ValidateCalls.Should().Be(0);
+    }
+
+    [Fact]
+    public async Task GatedAuthenticationService_ProbeInFlightAndTokenAgedOut_DoesNotCallTheInnerLogin()
+    {
+        ScriptedAuth inner = new();
+        HeldSession held = new();
+        SessionLoginGate gate = new();
+        FakeTimeProvider clock = new(new DateTimeOffset(2026, 10, 24, 12, 0, 0, TimeSpan.Zero));
+        gate.TryBeginProbe().Should().BeTrue();
+        GatedAuthenticationService gated = new(inner, held, gate, clock);
+
+        Func<Task> read = () => gated.GetAccessTokenAsync(CancellationToken.None);
+
+        await read.Should().ThrowAsync<AuthenticationException>();
+        inner.GetCalls.Should().Be(0);
+    }
+
+    [Fact]
+    public async Task GatedAuthenticationService_StopLatchedAndTokenAgedOut_DoesNotCallTheInnerLogin()
+    {
+        ScriptedAuth inner = new();
+        HeldSession held = new();
+        SessionLoginGate gate = new();
+        FakeTimeProvider clock = new(new DateTimeOffset(2026, 10, 24, 12, 0, 0, TimeSpan.Zero));
+        gate.LatchStop();
+        GatedAuthenticationService gated = new(inner, held, gate, clock);
+
+        Func<Task> read = () => gated.GetAccessTokenAsync(CancellationToken.None);
+
+        await read.Should().ThrowAsync<AuthenticationException>();
+        inner.GetCalls.Should().Be(0);
+    }
+
+    [Fact]
+    public async Task GatedAuthenticationService_LoginClosedWithAFreshToken_ReturnsItWithoutLogin()
+    {
+        ScriptedAuth inner = new();
+        HeldSession held = new();
+        SessionLoginGate gate = new();
+        FakeTimeProvider clock = new(new DateTimeOffset(2026, 10, 24, 12, 0, 0, TimeSpan.Zero));
+        held.Remember("still-fresh", clock.GetUtcNow());
+        gate.LatchStop();
+        GatedAuthenticationService gated = new(inner, held, gate, clock);
+
+        string token = await gated.GetAccessTokenAsync(CancellationToken.None);
+
+        token.Should().Be("still-fresh");
+        inner.GetCalls.Should().Be(0);
+    }
+
+    [Fact]
+    public async Task GatedAuthenticationService_LoginPermittedAndTokenAgedOut_CallsTheInnerLogin()
+    {
+        ScriptedAuth inner = new() { Token = "fresh-from-login" };
+        HeldSession held = new();
+        SessionLoginGate gate = new();
+        FakeTimeProvider clock = new(new DateTimeOffset(2026, 10, 24, 12, 0, 0, TimeSpan.Zero));
+        GatedAuthenticationService gated = new(inner, held, gate, clock);
+
+        string token = await gated.GetAccessTokenAsync(CancellationToken.None);
+
+        token.Should().Be("fresh-from-login");
+        inner.GetCalls.Should().Be(1);
+        held.TryReadFresh(clock.GetUtcNow(), out string remembered).Should().BeTrue();
+        remembered.Should().Be("fresh-from-login");
+    }
+
+    [Fact]
+    public void SessionLoginGate_AutoReconnectFalse_FirstRetryDelayIsNull()
+    {
+        MarqSpec.Client.ProjectX.Configuration.WebSocketOptions options = new()
+        {
+            AutoReconnect = false,
+            InitialReconnectDelaySeconds = 1,
+            MaxReconnectDelaySeconds = 5,
+        };
+
+        SessionLoginGate.FirstAutomaticRetryDelay(options).Should().BeNull();
+    }
+
+    [Fact]
+    public void SessionLoginGate_AutoReconnectTrue_FirstRetryDelayMatchesTheClient()
+    {
+        MarqSpec.Client.ProjectX.Configuration.WebSocketOptions options = new()
+        {
+            AutoReconnect = true,
+            InitialReconnectDelaySeconds = 1,
+            MaxReconnectDelaySeconds = 5,
+        };
+
+        SessionLoginGate.FirstAutomaticRetryDelay(options).Should().Be(TimeSpan.FromSeconds(1));
+    }
+
+    [Fact]
+    public void SessionLoginGate_SuppressThenRestore_PutsBackThePriorValue()
+    {
+        SessionLoginGate gate = new();
+        MarqSpec.Client.ProjectX.Configuration.WebSocketOptions leftOff = new() { AutoReconnect = false };
+        MarqSpec.Client.ProjectX.Configuration.WebSocketOptions leftOn = new() { AutoReconnect = true };
+
+        gate.SuppressAutomaticRetry(leftOff);
+        leftOff.AutoReconnect.Should().BeFalse();
+        gate.RestorePriorAutoReconnect(leftOff);
+        leftOff.AutoReconnect.Should().BeFalse();
+
+        SessionLoginGate other = new();
+        other.SuppressAutomaticRetry(leftOn);
+        leftOn.AutoReconnect.Should().BeFalse();
+        other.RestorePriorAutoReconnect(leftOn);
+        leftOn.AutoReconnect.Should().BeTrue();
+    }
+
+    [Fact]
+    public void SessionLoginGate_StopLatched_DoesNotRestoreAutoReconnect()
+    {
+        SessionLoginGate gate = new();
+        MarqSpec.Client.ProjectX.Configuration.WebSocketOptions options = new() { AutoReconnect = true };
+        gate.SuppressAutomaticRetry(options);
+        gate.LatchStop();
+
+        gate.RestorePriorAutoReconnect(options);
+
+        options.AutoReconnect.Should().BeFalse();
     }
 
     [Fact]
@@ -220,7 +465,7 @@ public sealed class SessionConflictTests
         options.Validate(new ValidationContext(options)).Should().Contain(result =>
             result.ErrorMessage != null
             && result.ErrorMessage.Contains(
-                "MarketData__SessionConflictBackoff",
+                "MarketData:SessionConflictBackoff",
                 StringComparison.Ordinal)
             && result.MemberNames.Contains(nameof(MarketDataOptions.SessionConflictBackoff)));
     }
@@ -237,7 +482,7 @@ public sealed class SessionConflictTests
     [Theory]
     [InlineData(0)]
     [InlineData(120)]
-    public void MarketDataOptions_SessionConflictBackoff_AcceptsZeroThroughTwoMinutes(int seconds)
+    public void MarketDataOptions_SessionConflictBackoffAtZeroAndTwoMinutes_IsAccepted(int seconds)
     {
         MarketDataOptions options = new() { SessionConflictBackoff = TimeSpan.FromSeconds(seconds) };
 
@@ -287,6 +532,8 @@ public sealed class SessionConflictTests
 
         provider.GetRequiredService<ISessionConflictProbe>()
             .Should().BeOfType<ProjectXSessionConflictProbe>();
+        provider.GetRequiredService<IAuthenticationService>()
+            .Should().BeOfType<GatedAuthenticationService>();
 
         using HttpClient client = provider.GetRequiredService<IHttpClientFactory>()
             .CreateClient(ProjectXSessionConflictProbe.HttpClientName);
@@ -304,27 +551,34 @@ public sealed class SessionConflictTests
 
     private static (
         ProjectXSessionConflictProbe Probe,
-        ScriptedAuth Auth,
-        ScriptedHandler Handler) Probe(
+        ScriptedHandler Handler,
+        HeldSession Held,
+        FakeTimeProvider Clock) Probe(
         string body,
         HttpStatusCode status,
         ILogger<ProjectXSessionConflictProbe>? logger = null,
-        Exception? throws = null)
+        Exception? throws = null,
+        bool remember = true)
     {
-        ScriptedAuth auth = new();
+        FakeTimeProvider clock = new(new DateTimeOffset(2026, 10, 24, 12, 0, 0, TimeSpan.Zero));
+        HeldSession held = new();
+        if (remember)
+        {
+            held.Remember("held-token", clock.GetUtcNow());
+        }
+
         ScriptedHandler handler = new()
         {
-            Response = new HttpResponseMessage(status)
-            {
-                Content = new StringContent(body, Encoding.UTF8, "application/json"),
-            },
+            Status = status,
+            Body = body,
             Throws = throws,
         };
         ProjectXSessionConflictProbe probe = new(
-            auth,
+            held,
             new ScriptedFactory(handler),
-            logger ?? NullLogger<ProjectXSessionConflictProbe>.Instance);
-        return (probe, auth, handler);
+            logger ?? NullLogger<ProjectXSessionConflictProbe>.Instance,
+            clock);
+        return (probe, handler, held, clock);
     }
 
     private static ServiceProvider BuildHost(Dictionary<string, string?> extra)
@@ -418,7 +672,9 @@ public sealed class SessionConflictTests
 
     private sealed class ScriptedHandler : HttpMessageHandler
     {
-        public HttpResponseMessage Response { get; set; } = new(HttpStatusCode.OK);
+        public HttpStatusCode Status { get; set; } = HttpStatusCode.OK;
+
+        public string Body { get; set; } = "{}";
 
         public Exception? Throws { get; set; }
 
@@ -428,18 +684,30 @@ public sealed class SessionConflictTests
 
         public HttpRequestMessage? LastRequest { get; private set; }
 
+        public List<HttpRequestMessage> Requests { get; } = [];
+
         protected override Task<HttpResponseMessage> SendAsync(
             HttpRequestMessage request,
             CancellationToken cancellationToken)
         {
             Calls++;
             LastRequest = request;
+            Requests.Add(request);
+            if (cancellationToken.IsCancellationRequested)
+            {
+                throw new OperationCanceledException(cancellationToken);
+            }
+
             if (Throws is not null)
             {
                 throw Throws;
             }
 
-            return Task.FromResult(Response);
+            return Task.FromResult(new HttpResponseMessage(Status)
+            {
+                Content = new StringContent(Body, Encoding.UTF8, "application/json"),
+                RequestMessage = request,
+            });
         }
     }
 
@@ -459,6 +727,8 @@ public sealed class SessionConflictTests
     {
         public List<string> Warnings { get; } = [];
 
+        public List<string> Messages { get; } = [];
+
         public IDisposable BeginScope<TState>(TState state)
             where TState : notnull => NullScope.Instance;
 
@@ -471,9 +741,16 @@ public sealed class SessionConflictTests
             Exception? exception,
             Func<TState, Exception?, string> formatter)
         {
+            string rendered = formatter(state, exception);
+            Messages.Add(rendered);
+            if (exception is not null)
+            {
+                Messages.Add(exception.ToString());
+            }
+
             if (logLevel >= LogLevel.Warning)
             {
-                Warnings.Add(formatter(state, exception));
+                Warnings.Add(rendered);
             }
         }
 

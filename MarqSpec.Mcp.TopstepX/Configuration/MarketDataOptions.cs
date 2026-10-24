@@ -45,6 +45,12 @@ public sealed partial class MarketDataOptions : IValidatableObject
     /// <summary>The configuration section this binds to.</summary>
     public const string SectionName = "MarketData";
 
+    /// <summary>How long the recorder stays disconnected after a session conflict before it finishes stopping.</summary>
+    public static readonly TimeSpan DefaultSessionConflictBackoff = TimeSpan.FromSeconds(5);
+
+    /// <summary>The longest backoff startup will accept. Longer than this is a stuck recorder, not a pause.</summary>
+    public static readonly TimeSpan MaxSessionConflictBackoff = TimeSpan.FromMinutes(2);
+
     /// <summary>
     /// The daily session close in Central <b>wall-clock</b> time, <c>HH:mm</c>.
     /// </summary>
@@ -142,12 +148,6 @@ public sealed partial class MarketDataOptions : IValidatableObject
     /// </remarks>
     public bool RecordTape { get; init; }
 
-    /// <summary>How long the recorder stays disconnected after a session conflict before it finishes stopping.</summary>
-    public static readonly TimeSpan DefaultSessionConflictBackoff = TimeSpan.FromSeconds(5);
-
-    /// <summary>The longest backoff startup will accept. Longer than this is a stuck recorder, not a pause.</summary>
-    public static readonly TimeSpan MaxSessionConflictBackoff = TimeSpan.FromMinutes(2);
-
     /// <summary>
     /// Whether a session conflict stops the recorder instead of reconnecting.
     /// </summary>
@@ -160,9 +160,11 @@ public sealed partial class MarketDataOptions : IValidatableObject
     /// </para>
     /// <para>
     /// Set <c>MarketData__StopOnSessionConflict=false</c> only when this process should keep the session
-    /// and the platform is expected to be the one that drops. A plain transport drop is still reconnected
-    /// either way. <see cref="SessionConflictBackoff"/> is how long the stop waits, disconnected, before
-    /// the recorder releases its claim. Zero finishes the stop immediately.
+    /// and the platform is expected to be the one that drops. A transport drop whose validate result is
+    /// valid is reconnected by this process, without turning automatic reconnect back on. An inconclusive
+    /// probe does not reconnect and does not call <c>loginKey</c>. <see cref="SessionConflictBackoff"/>
+    /// is how long the stop waits, disconnected, before the recorder releases its claim. Zero finishes
+    /// the stop immediately.
     /// </para>
     /// </remarks>
     public bool StopOnSessionConflict { get; init; } = true;
@@ -172,7 +174,7 @@ public sealed partial class MarketDataOptions : IValidatableObject
     /// </summary>
     /// <remarks>
     /// From <see cref="TimeSpan.Zero"/> through <see cref="MaxSessionConflictBackoff"/>. A value outside
-    /// that range fails startup, naming <c>MarketData__SessionConflictBackoff</c>.
+    /// that range fails startup, naming <c>MarketData:SessionConflictBackoff</c>.
     /// </remarks>
     public TimeSpan SessionConflictBackoff { get; init; } = DefaultSessionConflictBackoff;
 
@@ -316,7 +318,7 @@ public sealed partial class MarketDataOptions : IValidatableObject
         if (SessionConflictBackoff < TimeSpan.Zero || SessionConflictBackoff > MaxSessionConflictBackoff)
         {
             results.Add(new ValidationResult(
-                SectionName + "__SessionConflictBackoff must be from 00:00:00 through 00:02:00 inclusive. "
+                SectionName + ":SessionConflictBackoff must be from 00:00:00 through 00:02:00 inclusive. "
                 + "It was '" + SessionConflictBackoff.ToString("c", CultureInfo.InvariantCulture) + "'.",
                 [nameof(SessionConflictBackoff)]));
         }

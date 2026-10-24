@@ -387,8 +387,9 @@ the 2026-09-06 update above are the set as it was that day.
 ## Update — 2026-10-24: a session conflict is a counter and a span (gh#757)
 
 `mcp.tape.session_conflicts` counts a stop the tape recorder takes because another TopstepX session
-has this login. The tag is `source`, and its vocabulary is `hub` (the market hub's close named another
-session) or `api` (`POST /api/Auth/validate` returned `InvalidSession` or `SessionNotFound`). The span
+has this login. The tag is `source`, and its vocabulary is `hub` (the market hub's close named a
+documented validate error) or `api` (`POST /api/Auth/validate` returned `InvalidSession`,
+`SessionNotFound`, or HTTP 401). The span
 is `tape.session_conflict`, tagged with `source` only. The vendor's close sentence is not a tag and
 not a span attribute: it is free text, a new series per distinct sentence, and a place a credential
 can land. The names join the stable surface above; the 2026-09-06 list is the set as it was that day.

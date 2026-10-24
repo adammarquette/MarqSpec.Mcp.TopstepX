@@ -837,9 +837,21 @@ public static class Program
             services.AddProjectXApiClient(builder.Configuration);
             services.SuppressTransportRetriesOnVenueWrites();
 
-            // The recorder's session probe. Registered only beside the venue client, because it reads
-            // IAuthenticationService, which does not exist on the unconfigured branch. It posts the token
-            // already held to /api/Auth/validate and does not start a login (gh#757).
+            // The recorder's session probe and the login gate in front of the venue client (gh#757).
+            // Registered only beside the venue client: AuthenticationService does not exist on the
+            // unconfigured branch. The probe reads HeldSession and does not call GetAccessTokenAsync.
+            // The gated service is what SignalR's AccessTokenProvider and the REST handler both resolve,
+            // so an aged token cannot post loginKey while a conflict is suspected or after a stop.
+            services.AddSingleton<HeldSession>();
+            services.AddSingleton<SessionLoginGate>();
+            services.AddSingleton(static serviceProvider => new GatedAuthenticationService(
+                serviceProvider.GetRequiredService<AuthenticationService>(),
+                serviceProvider.GetRequiredService<HeldSession>(),
+                serviceProvider.GetRequiredService<SessionLoginGate>(),
+                serviceProvider.GetRequiredService<TimeProvider>()));
+            services.RemoveAll<IAuthenticationService>();
+            services.AddSingleton<IAuthenticationService>(static serviceProvider =>
+                serviceProvider.GetRequiredService<GatedAuthenticationService>());
             services.AddHttpClient(ProjectXSessionConflictProbe.HttpClientName, (serviceProvider, client) =>
             {
                 ProjectXOptions projectX = serviceProvider.GetRequiredService<IOptions<ProjectXOptions>>().Value;
@@ -847,9 +859,10 @@ public static class Program
                 client.Timeout = TimeSpan.FromSeconds(10);
             });
             services.AddSingleton<ISessionConflictProbe>(serviceProvider => new ProjectXSessionConflictProbe(
-                serviceProvider.GetRequiredService<IAuthenticationService>(),
+                serviceProvider.GetRequiredService<HeldSession>(),
                 serviceProvider.GetRequiredService<IHttpClientFactory>(),
-                serviceProvider.GetRequiredService<ILogger<ProjectXSessionConflictProbe>>()));
+                serviceProvider.GetRequiredService<ILogger<ProjectXSessionConflictProbe>>(),
+                serviceProvider.GetRequiredService<TimeProvider>()));
 
             // SINGLETON, while the gateway consuming it is scoped. The vendor's 50-requests-per-30-seconds
             // allowance on History/retrieveBars is counted against the CREDENTIAL, so it has to be shared

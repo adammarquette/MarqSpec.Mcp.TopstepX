@@ -1148,10 +1148,14 @@ dating today's pick. It does not fetch bars and does not write a roll row.
   term is the acknowledged residual (ADR-0016).
   A session conflict stops that loop instead of reconnecting (gh#757, ADR-0016): the recorder and
   the trading platform share one TopstepX login, and another login disconnects the platform.
-  `MarketData__StopOnSessionConflict` defaults on. A hub close that names another session, or a
-  validate result of invalid session or session not found, disconnects, waits
-  `MarketData__SessionConflictBackoff`, and does not subscribe again. A plain transport drop is
-  still restored. The refusal the tape tools return names the platform and the switch.
+  `MarketData__StopOnSessionConflict` defaults on. A hub close that names a documented validate
+  error (`invalid session` or `session not found`), a validate body of `InvalidSession` or
+  `SessionNotFound`, or HTTP 401, disconnects, waits `MarketData__SessionConflictBackoff`, and
+  does not subscribe again. The recorder does not call `loginKey` while that is suspected or after
+  the stop. An inconclusive probe does not reconnect; a still-fresh token is probed again, and no
+  fresh token stops the recorder rather than logging in. A validate result of valid is connected by
+  this process with automatic reconnect left off. The refusal the tape tools return names the
+  platform, the switch, and that limit.
   Live tape health is a
   mutable holder written from that same lifecycle and read at the point of use (gh#218) — the opposite
   of the store probe, which is set once at startup and never re-probed. `get_footprint` and

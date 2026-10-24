@@ -87,8 +87,26 @@ requires `X.Y.Z@sha256:<digest>`. The SDK labels IaC experimental, so expect DSL
   container's ephemeral storage, so every redeploy starts empty. Staging exists to test changes before prod
   and keeps no long-term data.
 - `production` requires exactly one volume (`postgres-data`, 10 GiB, at `/home/postgres/pgdata`).
-- The check enforces both directions. It rejects `TapeExport__*` / `Retention__*` everywhere until their
-  ADRs land.
+- The check enforces both directions. `Retention__*` stays unset everywhere (gh#763).
+
+**Tape export (gh#755, contract from PR #765).** Production only, on exactly one service, the recorder:
+- the `tape-exports` volume (10 GiB) at `/data/tape-exports`, plus `MarketData__RecordTape=true`,
+  `TapeExport__Enabled=true`, `TapeExport__Schedule=06:00` (UTC, HH:mm), `TapeExport__Path=/data/tape-exports`,
+  `TapeExport__Format=csv.gz+parquet`. The server has no volume and no `TapeExport__*` keys.
+- Drive upload is optional and not configured. `TapeExport__Drive__ServiceAccountJson` is a secret and may only be
+  `ctx.shared.TAPE_EXPORT_DRIVE_SERVICE_ACCOUNT_JSON`; `TapeExport__Drive__FolderId` may be
+  `ctx.shared.TAPE_EXPORT_DRIVE_FOLDER_ID`; `TapeExport__Drive__ServiceAccountJsonPath` must be absolute.
+- Staging: `TapeExport__Enabled=false`, no Drive keys, no export volume, no Postgres volume.
+- The check enforces: only the seven contract names; Format equals `csv.gz+parquet`; Path and JsonPath absolute;
+  Schedule HH:mm; Drive JSON a shared reference only; at most one exporter or export volume, and it is the
+  recorder; all of it off in non-production environments.
+- **Ownership.** The image runs as uid 64198 (Dockerfile `USER 64198`) and Railway mounts volumes owned by root,
+  so uid 64198 cannot write `/data/tape-exports`. Railway's documented remedy is `RAILWAY_RUN_UID=0`, which the
+  production recorder sets. Unlike Postgres, this image has no root-then-drop entrypoint, so the .NET process
+  runs **as root** in that one private container. Confidence: high that the volume is root-owned and that
+  `RAILWAY_RUN_UID=0` makes it writable; medium that nothing else in the image cares about running as root.
+  Interim only: the fix is a Maker item (an entrypoint that chowns the mount and drops to 64198), then remove
+  `RAILWAY_RUN_UID`. Verify on the first production deploy: `railway ssh --service recorder -- ls -ld /data/tape-exports`.
 
 **Volume permissions (production).** Railway mounts volumes root-owned, while the image runs as `postgres`
 (uid 1000) and Postgres refuses to run as root. The template therefore:

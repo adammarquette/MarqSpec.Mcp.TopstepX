@@ -39,6 +39,8 @@ const SHARED = {
   MCP_OAUTH_ISSUER: ["Mcp__OAuth__Issuer"],
   MCP_OAUTH_CLIENT_IDS: ["Mcp__OAuth__ClientIds"],
   MCP_RECORDER_BEARER_TOKEN: ["Mcp__HttpBearerToken"],
+  TAPE_EXPORT_DRIVE_SERVICE_ACCOUNT_JSON: ["TapeExport__Drive__ServiceAccountJson"],
+  TAPE_EXPORT_DRIVE_FOLDER_ID: ["TapeExport__Drive__FolderId"],
 };
 // Secret-bearing keys: any non-empty value must be a ctx.shared reference, never a literal. (Non-secret
 // per-environment values such as the issuer or data tier are required to be shared by the role checks below.)
@@ -46,7 +48,12 @@ const SECRET_KEY = /(password|secret|apikey|api_key|token|credentials?)$|(^|__)h
 const RESOURCE_URL = "https://${{RAILWAY_PUBLIC_DOMAIN}}/mcp";
 const REQUIRED_SCOPE = "topstepx-mcp/read";
 const CREDENTIAL_SHAPE = /(ghp_|gho_|ghs_|github_pat_|glpat-|sk-[A-Za-z0-9]|xox[abp]-|AKIA[0-9A-Z]{12}|-----BEGIN|[A-Za-z0-9+/=_-]{40,})/;
-const RESERVED = /^(Retention__|TapeExport__)/;
+// Retention__* is not read by this build (gh#763); keep it out of the template.
+const RESERVED = /^Retention__/;
+// gh#755's contract (PR #765), exactly these names.
+const EXPORT_KEYS = ["TapeExport__Enabled", "TapeExport__Schedule", "TapeExport__Path", "TapeExport__Format",
+  "TapeExport__Drive__FolderId", "TapeExport__Drive__ServiceAccountJson", "TapeExport__Drive__ServiceAccountJsonPath"];
+const EXPORT_MOUNT = "/data/tape-exports";
 
 const services = graph.resources.filter((r) => r.type === "service");
 const byName = Object.fromEntries(services.map((s) => [s.name, s]));
@@ -69,7 +76,9 @@ for (const s of services) {
   if (s.name === "postgres" && Object.keys(net).length) fail(`${s.name}: must have no domain or networking (${JSON.stringify(net)})`);
 
   for (const [key, v] of Object.entries(env)) {
-    if (RESERVED.test(key)) fail(`${s.name}: ${key} is a reserved name pending an ADR; keep it out of the deploy template`);
+    if (RESERVED.test(key)) fail(`${s.name}: ${key} is not read by this build (gh#763); keep it out of the deploy template`);
+    if (key.startsWith("TapeExport__") && !EXPORT_KEYS.includes(key)) fail(`${s.name}: ${key} is not a gh#755 key (${EXPORT_KEYS.join(", ")})`);
+    if (key === "TapeExport__Drive__ServiceAccountJson" && v.type !== "sharedReference") fail(`${s.name}: TapeExport__Drive__ServiceAccountJson is a secret; only ctx.shared.TAPE_EXPORT_DRIVE_SERVICE_ACCOUNT_JSON, never a literal`);
     if (v.type === "preserve" || v.type === "raw") fail(`${s.name}: ${key} uses ${v.type}; state the value or a shared reference`);
     if (v.type === "sharedReference") {
       const allowed = SHARED[v.name];
@@ -92,6 +101,10 @@ for (const s of services) {
       if (value !== RESOURCE_URL) fail(`server: Mcp__OAuth__ResourceUrl must be exactly ${RESOURCE_URL} (https, this service's own domain, /mcp)`);
       continue;
     }
+    if (key === "TapeExport__Format" && value !== "csv.gz+parquet") fail(`${s.name}: TapeExport__Format must be csv.gz+parquet, got "${value}"`);
+    if ((key === "TapeExport__Path" || key === "TapeExport__Drive__ServiceAccountJsonPath") && value !== "" && !value.startsWith("/")) fail(`${s.name}: ${key} must be an absolute path, got "${value}"`);
+    if (key === "TapeExport__Schedule" && !/^([01]\d|2[0-3]):[0-5]\d$/.test(value)) fail(`${s.name}: TapeExport__Schedule must be HH:mm UTC, got "${value}"`);
+    if (key === "TapeExport__Enabled" && !["true", "false"].includes(value)) fail(`${s.name}: TapeExport__Enabled must be "true" or "false", got "${value}"`);
     if (value.includes("${{")) fail(`${s.name}: ${key} carries a hand-written template; use a typed or shared reference`);
     if (SECRET_KEY.test(key) && value !== "") fail(`${s.name}: ${key} carries a secret; it must be a ctx.shared reference, not a literal`);
     if (key === "ASPNETCORE_URLS" || key === "ASPNETCORE_HTTPS_PORTS") fail(`${s.name}: ${key} must not be set; ASPNETCORE_HTTP_PORTS=8080 is the only listener (TLS is Railway's edge)`);
@@ -188,6 +201,31 @@ if (recorder) {
   if (d.overlapSeconds !== 0) fail("recorder: overlapSeconds must be 0 to shorten the two-recorder window");
   if (!(d.drainingSeconds >= 10)) fail("recorder: drainingSeconds must give the lease time to release (>= 10)");
 }
+
+// ---- tape export (gh#755) -------------------------------------------------------------------------------
+const exportMounted = (s) => Object.values(s.volumeAttachments ?? {}).some((m) => m.mountPath === EXPORT_MOUNT);
+const exportOn = (s) => literal(s.variables?.TapeExport__Enabled) === "true";
+const exporters = services.filter((s) => exportMounted(s) || exportOn(s));
+if (exporters.length > 1) fail(`tape export: at most one service may export or mount ${EXPORT_MOUNT}; got ${exporters.map((s) => s.name).join(", ")}`);
+for (const s of exporters) if (s.name !== "recorder") fail(`${s.name}: only the recorder exports the tape (TapeExport__Enabled / ${EXPORT_MOUNT})`);
+for (const s of services) for (const [k, m] of Object.entries(s.volumeAttachments ?? {}))
+  if (!(s.name === "postgres" && m.mountPath === PG_MOUNT) && !(s.name === "recorder" && m.mountPath === EXPORT_MOUNT)) fail(`${s.name}: unexpected volume ${k} at ${m.mountPath}`);
+if (recorder) {
+  const env = recorder.variables ?? {};
+  if (environment === "production") {
+    const m = Object.values(recorder.volumeAttachments ?? {});
+    if (m.length !== 1 || m[0].mountPath !== EXPORT_MOUNT) fail(`recorder: production needs exactly one export volume at ${EXPORT_MOUNT}`);
+    if (!exportOn(recorder)) fail("recorder: production runs TapeExport__Enabled=true");
+    if (literal(env.TapeExport__Path) !== EXPORT_MOUNT) fail(`recorder: TapeExport__Path must be the mounted volume ${EXPORT_MOUNT}`);
+    if (literal(env.TapeExport__Format) !== "csv.gz+parquet") fail("recorder: production states TapeExport__Format=csv.gz+parquet");
+    if (literal(env.RAILWAY_RUN_UID) !== "0") fail("recorder: the export volume is root-owned and the image runs as uid 64198; RAILWAY_RUN_UID must be \"0\" (deployment.md)");
+  } else {
+    if (literal(env.TapeExport__Enabled) !== "false") fail(`recorder: ${environment} is disposable; TapeExport__Enabled must be the literal "false"`);
+    for (const k of Object.keys(env)) if (k.startsWith("TapeExport__Drive__")) fail(`recorder: ${environment} has no export target; ${k} must not be set`);
+    if (env.RAILWAY_RUN_UID) fail(`recorder: ${environment} has no export volume, so it must not run as root (RAILWAY_RUN_UID)`);
+  }
+}
+if (server && Object.keys(server.variables ?? {}).some((k) => k.startsWith("TapeExport__") || k === "RAILWAY_RUN_UID")) fail("server: no TapeExport__* keys and no RAILWAY_RUN_UID on the server");
 
 // ---- named check: recorder-private ---------------------------------------------------------------------
 // The recorder holds the tape lease and a static bearer token; nothing on the internet may reach it.

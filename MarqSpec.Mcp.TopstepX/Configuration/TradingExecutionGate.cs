@@ -17,6 +17,26 @@ public sealed class TradingExecutionGate(
     ITradingKillSwitch killSwitch,
     IAccountStageResolver stageResolver)
 {
+    /// <summary>
+    /// Accepts the options wrapper the stage tests on <c>develop</c> pass to <c>new</c>.
+    /// </summary>
+    /// <param name="options">A fixed options instance. It does not observe a configuration reload.</param>
+    /// <param name="killSwitch">The kill switch.</param>
+    /// <param name="stageResolver">The practice-stage resolver.</param>
+    /// <remarks>
+    /// Those tests are not on this branch. The pull-request build merges <c>develop</c> and compiles them
+    /// here, and they construct this gate with <c>Options.Create</c>. The composition root builds the gate
+    /// from <see cref="IOptionsMonitor{TOptions}"/>, so a reload still turns the master switch off without
+    /// a restart. Two constructors of the same length are ambiguous to the container, which is why that
+    /// registration is a factory.
+    /// </remarks>
+    public TradingExecutionGate(
+        IOptions<TradingExecutionOptions> options,
+        ITradingKillSwitch killSwitch,
+        IAccountStageResolver stageResolver)
+        : this(new FixedOptionsMonitor(options), killSwitch, stageResolver)
+    {
+    }
     private readonly ITradingKillSwitch _killSwitch = killSwitch;
     private readonly IAccountStageResolver _stageResolver = stageResolver;
 
@@ -190,5 +210,25 @@ public sealed class TradingExecutionGate(
 
         AccountStage stage = _stageResolver.ResolveFromFreshVenueAccount(account);
         return RefuseIfStageBlocksWrite(stage, accountId, unknownStageSignal);
+    }
+
+    /// <summary>An options monitor over one <see cref="IOptions{TOptions}"/> instance.</summary>
+    private sealed class FixedOptionsMonitor(IOptions<TradingExecutionOptions> options)
+        : IOptionsMonitor<TradingExecutionOptions>
+    {
+        public TradingExecutionOptions CurrentValue => options.Value;
+
+        public TradingExecutionOptions Get(string? name) => options.Value;
+
+        public IDisposable OnChange(Action<TradingExecutionOptions, string?> listener) => Empty.Instance;
+
+        private sealed class Empty : IDisposable
+        {
+            public static readonly Empty Instance = new();
+
+            public void Dispose()
+            {
+            }
+        }
     }
 }

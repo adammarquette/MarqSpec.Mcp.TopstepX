@@ -707,6 +707,10 @@ no row. The idempotency claim **is** a row in this table: one `Unknown` row inse
 on `(AccountId, Tool, IdempotencyKey)` where `Outcome = 'Unknown'` and the key is not empty. A later `Live`
 or `Failed` row for the same key is what a replay prefers. Empty keys are outside the unique index.
 
+**The cap charge sits on `Attempted`, and outcome rows stay at `0`.** A gateway refusal after the write-ahead
+appends a second `Attempted` row with the negated count, then `Refused` at `0`, so the session-day sum nets
+to zero. A thrown send leaves that charge on the write-ahead row; its `Unknown` row is `0`.
+
 **Append-only at the database.** `BEFORE UPDATE` and `BEFORE DELETE` triggers raise if either is attempted.
 Tests truncate the table between cases; production has no supported mutation path.
 

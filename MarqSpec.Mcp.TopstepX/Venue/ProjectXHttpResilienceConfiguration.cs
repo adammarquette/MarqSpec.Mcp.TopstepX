@@ -22,7 +22,8 @@ internal static class ProjectXHttpResilienceConfiguration
         services.PostConfigureAll<HttpStandardResilienceOptions>(options =>
         {
             HttpRetryStrategyOptions retry = options.Retry;
-            var previous = retry.ShouldHandle!;
+            // Non-nullable. HttpRetryStrategyOptions assigns Polly's default predicate in its constructor.
+            var previous = retry.ShouldHandle;
 
             retry.ShouldHandle = args =>
             {

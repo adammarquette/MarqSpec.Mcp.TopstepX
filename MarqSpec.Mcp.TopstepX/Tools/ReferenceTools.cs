@@ -15,7 +15,6 @@ namespace MarqSpec.Mcp.TopstepX.Tools;
 /// </summary>
 /// <remarks>
 /// Every tool here is marked <c>ReadOnly</c>. Venue writes are gated elsewhere (ADR-0024); nothing here transmits.
-/// a client can actually read it.
 /// </remarks>
 [McpServerToolType]
 public sealed class ReferenceTools(

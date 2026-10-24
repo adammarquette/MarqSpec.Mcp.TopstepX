@@ -1093,8 +1093,11 @@ public static class Program
         {
             // Through the logger, not Console.Error: the stdio transport's logging is already configured
             // (ConfigureLogging), and a bare Console write would be the only one in this codebase -- on the
-            // one transport where stdout is the protocol.
-            logger.LogError("reselect-bars refused the command line: {Reason}", ex.Message);
+            // one transport where stdout is the protocol. The message is the operator's text; escape it
+            // before it is a field, so a CR in an argument cannot open a second line.
+            logger.LogError(
+                "reselect-bars refused the command line: {Reason}",
+                LogText.Sanitize(ex.Message));
             return ReselectExit.From(ex);
         }
 

@@ -14,7 +14,7 @@ public sealed class ProjectXClientPackageVersionTests
         Assembly assembly = typeof(IProjectXApiClient).Assembly;
         string informational = assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()!.InformationalVersion;
 
-        informational.Should().StartWith("3.0.0");
+        AssertInformationalVersionPinned(informational);
     }
 
     [Fact]
@@ -38,6 +38,13 @@ public sealed class ProjectXClientPackageVersionTests
     public void InformationalVersionPin_WouldFailFor3_1_0()
     {
         const string bumped = "3.1.0+abc123";
-        bumped.Should().NotStartWith("3.0.0");
+        Action act = () => AssertInformationalVersionPinned(bumped);
+
+        act.Should().Throw<Exception>(
+            because: "3.1.0 must miss the same comparison the 3.0.0 informational-version pin uses");
     }
+
+    /// <summary>The comparison both pin facts apply. A looser prefix accepts 3.1.0 and the sibling fact fails.</summary>
+    private static void AssertInformationalVersionPinned(string informational) =>
+        informational.Should().StartWith("3.0.0");
 }

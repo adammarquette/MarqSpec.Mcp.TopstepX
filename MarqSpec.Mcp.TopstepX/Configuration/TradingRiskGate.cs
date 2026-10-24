@@ -10,9 +10,11 @@ namespace MarqSpec.Mcp.TopstepX.Configuration;
 /// MCP tools call this type only — never the execution gateway directly. Every member that touches
 /// stage resolution, allowlist, denylist, or the gateway re-checks
 /// <see cref="TradingExecutionGate.RefuseIfDisabledOrHalted"/> first. The master switch is checked before
-/// the idempotency claim. Daily caps charge once on the <see cref="TradingAuditOutcomes.Attempted"/> row.
-/// A pre-send <see cref="TradingAuditOutcomes.Unknown"/> row, unique per account, tool and key, is written
-/// before the send so a throw or a lost acknowledgment cannot be retried into a second send.
+/// the idempotency claim. Daily caps charge on <see cref="TradingAuditOutcomes.Attempted"/> rows; outcome
+/// rows use zero contract count. A gateway refusal after the write-ahead appends a second Attempted row
+/// with the negated count so the session-day sum nets to zero. A pre-send
+/// <see cref="TradingAuditOutcomes.Unknown"/> row, unique per account, tool and key, is written before the
+/// send so a throw or a lost acknowledgment cannot be retried into a second send.
 /// </remarks>
 public sealed class TradingRiskGate
 {

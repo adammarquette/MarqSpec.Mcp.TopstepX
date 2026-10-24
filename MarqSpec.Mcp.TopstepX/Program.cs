@@ -657,7 +657,13 @@ public static class Program
 
         services.AddSingleton<TradingKillSwitch>();
         services.AddSingleton<ITradingKillSwitch>(sp => sp.GetRequiredService<TradingKillSwitch>());
-        services.AddSingleton<TradingExecutionGate>();
+        // Two public constructors, both three arguments. The container treats that as ambiguous, so this
+        // factory is the one that reads IOptionsMonitor. The IOptions constructor exists for the stage
+        // tests on develop, which still call new TradingExecutionGate(Options.Create(...), ...).
+        services.AddSingleton(sp => new TradingExecutionGate(
+            sp.GetRequiredService<IOptionsMonitor<TradingExecutionOptions>>(),
+            sp.GetRequiredService<ITradingKillSwitch>(),
+            sp.GetRequiredService<IAccountStageResolver>()));
         services.AddSingleton<ITradingUnknownStageRefusalSignal, NullTradingUnknownStageRefusalSignal>();
         services.AddSingleton<IAccountStageResolver, ProjectXAccountStageResolver>();
         services.AddScoped<ITradingAuditLogWriter, TradingAuditLogWriter>();

@@ -156,6 +156,17 @@ public sealed class TradingExecutionGateTests
     }
 
     [Fact]
+    public void TradingExecutionGate_OptionsCreate_StillRefusesWhenTradingIsDisabled()
+    {
+        TradingExecutionGate gate = new(
+            Options.Create(new TradingExecutionOptions { Enabled = false }),
+            new FakeKillSwitch(),
+            new ProjectXAccountStageResolver());
+
+        gate.RefuseIfDisabledOrHalted().Should().Be(TradingExecutionRefusal.TradingDisabled);
+    }
+
+    [Fact]
     public void TradingExecutionGate_MasterSwitch_FollowsARealOptionsMonitorChange()
     {
         Dictionary<string, string?> settings = new()

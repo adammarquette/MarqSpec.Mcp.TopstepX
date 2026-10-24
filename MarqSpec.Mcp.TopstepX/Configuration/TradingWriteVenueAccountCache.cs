@@ -6,10 +6,11 @@ namespace MarqSpec.Mcp.TopstepX.Configuration;
 /// Holds the account row a risk-gate call already fetched so the execution gateway does not list accounts again.
 /// </summary>
 /// <remarks>
-/// The row is populated during <c>ResolvePracticeStageAsync</c> under the daily-cap advisory lock, immediately
-/// before the write-ahead <c>Attempted</c> audit row (ADR-0024 §5). The execution gateway reuses it for
-/// <see cref="TradingExecutionGate.RefuseWriteUnlessPermittedAsync"/> so a second list call is skipped; it is
-/// the same fetch the stage gate used, not a later refresh after lock wait.
+/// <see cref="TradingRiskGate"/> remembers the row in <c>ResolvePracticeStageAsync</c>, which runs before
+/// <c>AcquireAccountDayLockAsync</c> on place, modify, and partial close. Cancel and close take no daily-cap
+/// lock, so the row is not captured under that lock and can be as old as the lock wait. It is still the fresh
+/// fetch for this call (ADR-0024 §2 and §5). The execution gateway reuses it for
+/// <see cref="TradingExecutionGate.RefuseWriteUnlessPermittedAsync"/> instead of listing accounts again.
 /// </remarks>
 public sealed class TradingWriteVenueAccountCache
 {
